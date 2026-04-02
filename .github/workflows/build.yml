@@ -1,0 +1,51 @@
+name: Build VSIX
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - run: npm install -g @vscode/vsce
+
+      - name: Package extension
+        run: vsce package -o flatppl-0.1.0-dev.vsix --no-git-tag-version
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: flatppl-dev
+          path: flatppl-0.1.0-dev.vsix
+
+      - name: Update dev release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: Development Build
+          prerelease: true
+          files: flatppl-0.1.0-dev.vsix
+          body: |
+            Latest development build of the FlatPPL VS Code extension.
+            Built from commit ${{ github.sha }}.
+
+            Install with:
+            ```
+            curl -L https://github.com/${{ github.repository }}/releases/download/dev/flatppl-0.1.0-dev.vsix -o flatppl-0.1.0-dev.vsix
+            code --install-extension flatppl-0.1.0-dev.vsix
+            ```

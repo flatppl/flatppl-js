@@ -1,0 +1,131 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "FlatPPL",
+  "scopeName": "source.flatppl",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#placeholder" },
+    { "include": "#hole" },
+    { "include": "#special-form" },
+    { "include": "#kernel" },
+    { "include": "#measure-combinator" },
+    { "include": "#analysis-operation" },
+    { "include": "#builtin-function" },
+    { "include": "#constant" },
+    { "include": "#predefined-set" },
+    { "include": "#operator" },
+    { "include": "#assignment" },
+    { "include": "#function-call" },
+    { "include": "#dot-access" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.flatppl"
+    },
+    "string": {
+      "name": "string.quoted.double.flatppl",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.flatppl",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.flatppl",
+          "match": "\\b[0-9]+\\.[0-9]*([eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.flatppl",
+          "match": "\\b[0-9]+[eE][+-]?[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.flatppl",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "placeholder": {
+      "name": "variable.other.placeholder.flatppl",
+      "match": "\\b_[a-zA-Z][a-zA-Z0-9]*_\\b"
+    },
+    "hole": {
+      "name": "variable.other.hole.flatppl",
+      "match": "(?<![a-zA-Z0-9])_(?![a-zA-Z0-9_])"
+    },
+    "special-form": {
+      "match": "\\b(draw|lawof|functionof|fn|fchain|bijection|elementof|valueset|relabel|load_module|load_table)\\b",
+      "name": "keyword.other.special-form.flatppl"
+    },
+    "kernel": {
+      "match": "\\b(Normal|Exponential|LogNormal|Gamma|Beta|Uniform|Poisson|ContinuedPoisson|Bernoulli|Binomial|MvNormal|PoissonProcess|CrystalBall|DoubleSidedCrystalBall|Argus|BreitWigner|RelativisticBreitWigner|Voigtian|BifurcatedGaussian|GeneralizedNormal|Lebesgue|Counting|Dirac)\\b",
+      "name": "entity.name.type.kernel.flatppl"
+    },
+    "measure-combinator": {
+      "match": "\\b(weighted|logweighted|normalize|totalmass|superpose|joint|jointchain|chain|iid|truncate|pushfwd)\\b",
+      "name": "entity.name.function.measure.flatppl"
+    },
+    "analysis-operation": {
+      "match": "\\b(likelihoodof|joint_likelihood|densityof|logdensityof|bayesupdate)\\b",
+      "name": "entity.name.function.analysis.flatppl"
+    },
+    "builtin-function": {
+      "match": "\\b(broadcast|get|cat|record|filter|selectbins|table|rowstack|colstack|linspace|extlinspace|interval|fill|eye|onehot|bincounts|interp_pwlin|interp_pwexp|interp_poly2_lin|interp_poly6_lin|interp_poly6_exp|polynomial|bernstein|stepwise|exp|log|log10|pow|sqrt|abs|abs2|sin|cos|min|max|floor|ceil|conj|cis|complex|real|imag|sum|product|length|ifelse|land|lor|lnot|lxor|transpose|adjoint|det|logabsdet|inv|trace|linsolve|lower_cholesky|row_gram|col_gram|self_outer|diagmat)(?=\\s*\\()",
+      "name": "entity.name.function.builtin.flatppl"
+    },
+    "constant": {
+      "match": "\\b(true|false|inf|pi|im)\\b",
+      "name": "constant.language.flatppl"
+    },
+    "predefined-set": {
+      "match": "\\b(reals|posreals|nonnegreals|integers|complexes|anything)\\b",
+      "name": "constant.other.set.flatppl"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.flatppl",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.flatppl",
+          "match": "[+\\-*/]"
+        },
+        {
+          "name": "keyword.operator.membership.flatppl",
+          "match": "\\bin\\b"
+        },
+        {
+          "name": "keyword.operator.selector.flatppl",
+          "match": "\\ball\\b"
+        }
+      ]
+    },
+    "assignment": {
+      "match": "(?<![=!<>])=(?!=)",
+      "name": "keyword.operator.assignment.flatppl"
+    },
+    "function-call": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
+      "name": "entity.name.function.call.flatppl"
+    },
+    "dot-access": {
+      "match": "\\.([a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": { "name": "variable.other.member.flatppl" }
+      }
+    },
+    "identifier": {
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+      "name": "variable.other.flatppl"
+    }
+  }
+}

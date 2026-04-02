@@ -1,0 +1,50 @@
+{
+  "name": "flatppl",
+  "displayName": "FlatPPL",
+  "description": "Syntax highlighting for the FlatPPL stochastic language",
+  "version": "0.1.0",
+  "publisher": "flatppl",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flatppl/flatppl-vscode"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "flatppl",
+        "aliases": [
+          "FlatPPL",
+          "flatppl"
+        ],
+        "extensions": [
+          ".flatppl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "flatppl",
+        "scopeName": "source.flatppl",
+        "path": "./syntaxes/flatppl.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.flatppl.codeblock",
+        "path": "./syntaxes/flatppl-markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.flatppl": "flatppl"
+        }
+      }
+    ]
+  }
+}
