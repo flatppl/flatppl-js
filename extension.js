@@ -32,7 +32,7 @@ function activate(context) {
     const dagData = computeSubDAG(bindingMap, name);
 
     DAGPanel.createOrShow(context);
-    DAGPanel.currentPanel.update(dagData, name);
+    DAGPanel.currentPanel.update(dagData, name, editor.document.uri);
     return true;
   }
 

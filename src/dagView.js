@@ -29,13 +29,32 @@ class DAGPanel {
   constructor(panel, context) {
     this._panel = panel;
     this._context = context;
+    this._sourceUri = null;
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
       DAGPanel.currentPanel = undefined;
     });
+    this._panel.webview.onDidReceiveMessage(msg => {
+      if (msg.type === 'navigateTo' && this._sourceUri != null) {
+        const line = msg.line;
+        const uri = this._sourceUri;
+        vscode.window.showTextDocument(uri, {
+          viewColumn: vscode.ViewColumn.One,
+          preserveFocus: false,
+        }).then(editor => {
+          const pos = new vscode.Position(line, 0);
+          editor.selection = new vscode.Selection(pos, pos);
+          editor.revealRange(
+            new vscode.Range(pos, pos),
+            vscode.TextEditorRevealType.InCenterIfOutsideViewport
+          );
+        });
+      }
+    });
   }
 
-  update(dagData, targetName) {
+  update(dagData, targetName, sourceUri) {
+    if (sourceUri) this._sourceUri = sourceUri;
     this._panel.title = `FlatPPL DAG: ${targetName}`;
     this._panel.webview.postMessage({ type: 'updateDAG', data: dagData });
   }
@@ -96,6 +115,23 @@ class DAGPanel {
       overflow: hidden; text-overflow: ellipsis;
     }
     #info .hint { opacity: 0.4; font-style: italic; }
+    #tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      background: var(--vscode-editorHoverWidget-background, #2d2d30);
+      color: var(--vscode-editorHoverWidget-foreground, #ccc);
+      border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+      border-radius: 3px;
+      padding: 4px 8px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 12px;
+      white-space: pre;
+      max-width: 400px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 100;
+    }
     #legend {
       position: absolute; top: 8px; right: 8px;
       background: var(--vscode-editor-background);
@@ -113,9 +149,10 @@ class DAGPanel {
 </head>
 <body>
   <div id="cy"></div>
+  <div id="tooltip"></div>
   <div id="legend"></div>
   <div id="info">
-    <span class="hint">Click a node to see details</span>
+    <span class="hint">Click a node to see details &middot; double-click to jump to source</span>
   </div>
 
   <script nonce="${nonce}" src="${cytoscapeUri}"></script>
@@ -123,6 +160,8 @@ class DAGPanel {
   <script nonce="${nonce}" src="${cytoscapeDagreUri}"></script>
   <script nonce="${nonce}">
   (function() {
+    const vscodeApi = acquireVsCodeApi();
+
     const TYPE_STYLE = {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
       stochastic:    { color: '#B39DDB', shape: 'ellipse',          label: 'stochastic (draw)' },
@@ -227,8 +266,38 @@ class DAGPanel {
       cy.on('tap', function(evt) {
         if (evt.target === cy) {
           document.getElementById('info').innerHTML =
-            '<span class="hint">Click a node to see details</span>';
+            '<span class="hint">Click a node to see details &middot; double-click to jump to source &middot; double-click to jump to source</span>';
         }
+      });
+
+      cy.on('dbltap', 'node', function(evt) {
+        var line = evt.target.data('line');
+        if (line >= 0) {
+          vscodeApi.postMessage({ type: 'navigateTo', line: line });
+        }
+      });
+
+      var tip = document.getElementById('tooltip');
+      cy.on('mouseover', 'node', function(evt) {
+        var d = evt.target.data();
+        var expr = d.expr || '';
+        if (!expr) return;
+        tip.textContent = d.label + ' = ' + expr;
+        tip.style.display = 'block';
+        var pos = evt.renderedPosition;
+        var cRect = document.getElementById('cy').getBoundingClientRect();
+        var tx = pos.x + cRect.left + 12;
+        var ty = pos.y + cRect.top - 30;
+        if (tx + tip.offsetWidth > cRect.right - 8) tx = cRect.right - tip.offsetWidth - 8;
+        if (ty < cRect.top + 4) ty = pos.y + cRect.top + 16;
+        tip.style.left = tx + 'px';
+        tip.style.top = ty + 'px';
+      });
+      cy.on('mouseout', 'node', function() {
+        tip.style.display = 'none';
+      });
+      cy.on('viewport', function() {
+        tip.style.display = 'none';
       });
     }
 
@@ -251,6 +320,7 @@ class DAGPanel {
             shape: ts.shape,
             nodeType: node.type,
             expr: node.expr || '',
+            line: node.line != null ? node.line : -1,
             isBoundary: node.isBoundary || false,
             isTarget: node.isTarget || false,
             width: Math.max(node.id.length * 9 + 24, 60),
@@ -282,7 +352,7 @@ class DAGPanel {
       buildLegend();
 
       document.getElementById('info').innerHTML =
-        '<span class="hint">Click a node to see details</span>';
+        '<span class="hint">Click a node to see details &middot; double-click to jump to source</span>';
     }
 
     window.addEventListener('message', function(event) {
