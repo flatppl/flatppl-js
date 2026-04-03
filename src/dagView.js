@@ -106,7 +106,22 @@ class DAGPanel {
       font-size: var(--vscode-font-size, 13px);
       overflow: hidden;
     }
-    #cy { width: 100vw; height: calc(100vh - 60px); }
+    #header {
+      padding: 5px 14px;
+      border-bottom: 1px solid var(--vscode-panel-border, #444);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 14px);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.8;
+      min-height: 26px;
+      display: flex;
+      align-items: center;
+    }
+    #header .target-name { font-weight: 600; }
+    #header .target-eq { opacity: 0.5; margin: 0 4px; }
+    #cy { width: 100vw; height: calc(100vh - 86px); }
     #info {
       height: 60px;
       padding: 6px 14px;
@@ -141,7 +156,7 @@ class DAGPanel {
       border-radius: 3px;
       padding: 4px 8px;
       font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 12px;
+      font-size: var(--vscode-editor-font-size, 14px);
       white-space: pre;
       max-width: 400px;
       overflow: hidden;
@@ -149,17 +164,17 @@ class DAGPanel {
       z-index: 100;
     }
     #back-btn {
-      position: absolute; top: 8px; left: 8px;
       display: none;
       background: var(--vscode-button-secondaryBackground, #3a3d41);
       color: var(--vscode-button-secondaryForeground, #ccc);
       border: 1px solid var(--vscode-button-border, transparent);
       border-radius: 3px;
-      padding: 3px 10px;
+      padding: 2px 8px;
       font-size: 12px;
       cursor: pointer;
-      z-index: 50;
       font-family: var(--vscode-font-family, sans-serif);
+      flex-shrink: 0;
+      margin-right: 10px;
     }
     #back-btn:hover {
       background: var(--vscode-button-secondaryHoverBackground, #505355);
@@ -180,9 +195,9 @@ class DAGPanel {
   </style>
 </head>
 <body>
+  <div id="header"><button id="back-btn">&larr; Back</button><span id="header-expr"></span></div>
   <div id="cy"></div>
   <div id="tooltip"></div>
-  <button id="back-btn">&larr; Back</button>
   <div id="legend"></div>
   <div id="info">
     <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source</span>
@@ -218,6 +233,38 @@ class DAGPanel {
 
     function esc(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function truncateExpr(expr) {
+      if (!expr) return '';
+      // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
+      var arrMatch = expr.match(/^\[(.+)\]$/);
+      if (arrMatch) {
+        var items = arrMatch[1].split(/\s*,\s*/);
+        if (items.length > 6) {
+          var head = items.slice(0, 3).join(', ');
+          var tail = items.slice(-3).join(', ');
+          return '[' + head + ', \u2026, ' + tail + ']';
+        }
+      }
+      // Truncate other long expressions in the middle
+      if (expr.length > 80) {
+        return expr.slice(0, 38) + ' \u2026 ' + expr.slice(-38);
+      }
+      return expr;
+    }
+
+    function updateHeader(data) {
+      var el = document.getElementById('header-expr');
+      var target = null;
+      for (var i = 0; i < data.nodes.length; i++) {
+        if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
+      }
+      if (!target) { el.innerHTML = ''; return; }
+      var name = target.label || target.id;
+      var expr = truncateExpr(target.expr);
+      el.innerHTML = '<span class="target-name">' + esc(name) + '</span>'
+        + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
     }
 
     function updateBackBtn() {
@@ -409,6 +456,7 @@ class DAGPanel {
 
       cy.fit(undefined, 40);
       buildLegend();
+      updateHeader(data);
 
       document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
     }
