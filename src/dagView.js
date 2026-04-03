@@ -242,6 +242,16 @@ class DAGPanel {
             }
           },
           {
+            selector: 'edge[edgeType = "call"]',
+            style: {
+              'line-style': 'dashed',
+              'line-dash-pattern': [6, 4],
+              'line-color': '#bbb',
+              'target-arrow-color': '#bbb',
+              'width': 1.5,
+            }
+          },
+          {
             selector: 'node:selected',
             style: {
               'border-color': '#2196F3',
@@ -266,7 +276,7 @@ class DAGPanel {
       cy.on('tap', function(evt) {
         if (evt.target === cy) {
           document.getElementById('info').innerHTML =
-            '<span class="hint">Click a node to see details &middot; double-click to jump to source &middot; double-click to jump to source</span>';
+            '<span class="hint">Click a node to see details &middot; double-click to jump to source</span>';
         }
       });
 
@@ -315,7 +325,7 @@ class DAGPanel {
           group: 'nodes',
           data: {
             id: node.id,
-            label: node.id,
+            label: node.label || node.id,
             color: ts.color,
             shape: ts.shape,
             nodeType: node.type,
@@ -323,7 +333,7 @@ class DAGPanel {
             line: node.line != null ? node.line : -1,
             isBoundary: node.isBoundary || false,
             isTarget: node.isTarget || false,
-            width: Math.max(node.id.length * 9 + 24, 60),
+            width: Math.max((node.label || node.id).length * 9 + 24, 60),
           },
         });
       }
@@ -332,7 +342,7 @@ class DAGPanel {
         var edge = data.edges[j];
         elements.push({
           group: 'edges',
-          data: { source: edge.source, target: edge.target },
+          data: { source: edge.source, target: edge.target, edgeType: edge.edgeType || 'data' },
         });
       }
 

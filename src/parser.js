@@ -82,6 +82,7 @@ function parseFlatPPL(text) {
   // Second pass: resolve dependencies via identifier matching
   for (const binding of bindings) {
     const deps = new Set();
+    const callDeps = new Set();
     const rhs = binding.rhs;
     const re = /\b([a-zA-Z_]\w*)\b/g;
     let m;
@@ -92,8 +93,11 @@ function parseFlatPPL(text) {
       if (/^\s*=(?!=)/.test(after)) continue;
       if (!allNames.has(ident) || binding.names.includes(ident)) continue;
       deps.add(ident);
+      // Identifier immediately followed by ( is in callable position
+      if (/^\s*\(/.test(after)) callDeps.add(ident);
     }
     binding.deps = [...deps];
+    binding.callDeps = [...callDeps];
   }
 
   return bindings;
@@ -106,7 +110,7 @@ function createBindingMap(bindings) {
   const map = new Map();
   for (const b of bindings) {
     for (const name of b.names) {
-      map.set(name, { name, line: b.line, rhs: b.rhs, type: b.type, deps: b.deps });
+      map.set(name, { name, line: b.line, rhs: b.rhs, type: b.type, deps: b.deps, callDeps: b.callDeps });
     }
   }
   return map;
@@ -121,10 +125,15 @@ function computeSubDAG(bindingMap, nodeName) {
   if (!binding) return { nodes: [], edges: [] };
 
   let boundaryVars = new Set();
+  let boundaryLabels = new Map(); // varName -> argName
+  let parsed = null;
   if (binding.type === 'lawof' || binding.type === 'functionof') {
-    const parsed = parseBoundaryInputs(binding.rhs);
+    parsed = parseBoundaryInputs(binding.rhs);
     if (parsed) {
       boundaryVars = new Set(Object.values(parsed.boundaries));
+      for (const [argName, varName] of Object.entries(parsed.boundaries)) {
+        boundaryLabels.set(varName, argName);
+      }
     }
   }
 
@@ -138,6 +147,7 @@ function computeSubDAG(bindingMap, nodeName) {
 
     visited.set(name, {
       id: name,
+      label: boundaryLabels.get(name),
       type: b ? b.type : 'unknown',
       expr: b ? b.rhs : '',
       line: b ? b.line : -1,
@@ -147,13 +157,61 @@ function computeSubDAG(bindingMap, nodeName) {
 
     if (isBoundary || !b) return;
 
+    const calls = new Set(b.callDeps || []);
     for (const dep of b.deps) {
-      edges.push({ source: dep, target: name });
+      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
       visit(dep);
     }
   }
 
   visit(nodeName);
+
+  // Synthetic input nodes for functionof/lawof placeholder boundaries
+  if (parsed) {
+    for (const [argName, varName] of Object.entries(parsed.boundaries)) {
+      if (!bindingMap.has(varName)) {
+        const synId = nodeName + ':' + argName;
+        visited.set(synId, {
+          id: synId,
+          label: argName,
+          type: 'input',
+          expr: '',
+          line: binding.line,
+          isBoundary: true,
+          isTarget: false,
+        });
+        edges.push({ source: synId, target: nodeName });
+      }
+    }
+  }
+
+  // Synthetic input nodes for fn holes
+  if (binding.type === 'fn') {
+    const fnMatch = binding.rhs.match(/^fn\s*\((.+)\)\s*$/s);
+    if (fnMatch) {
+      const inner = fnMatch[1];
+      const holeRe = /\b_\b/g;
+      let count = 0;
+      let m;
+      while ((m = holeRe.exec(inner)) !== null) {
+        const after = inner.slice(m.index + 1);
+        if (/^\s*=(?!=)/.test(after)) continue;
+        count++;
+        const synId = nodeName + ':_' + count;
+        visited.set(synId, {
+          id: synId,
+          label: '_',
+          type: 'input',
+          expr: '',
+          line: binding.line,
+          isBoundary: true,
+          isTarget: false,
+        });
+        edges.push({ source: synId, target: nodeName });
+      }
+    }
+  }
+
   return { nodes: [...visited.values()], edges };
 }
 
