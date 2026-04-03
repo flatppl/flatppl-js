@@ -30,6 +30,7 @@ class DAGPanel {
     this._panel = panel;
     this._context = context;
     this._sourceUri = null;
+    this._onZoomInto = null;
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
       DAGPanel.currentPanel = undefined;
@@ -50,13 +51,28 @@ class DAGPanel {
           );
         });
       }
+      if (msg.type === 'zoomInto' && this._onZoomInto) {
+        this._onZoomInto(msg.nodeId);
+      }
+      if (msg.type === 'updateTitle') {
+        this._panel.title = `FlatPPL DAG: ${msg.name}`;
+      }
     });
   }
 
-  update(dagData, targetName, sourceUri) {
+  set onZoomInto(callback) {
+    this._onZoomInto = callback;
+  }
+
+  update(dagData, targetName, sourceUri, pushHistory) {
     if (sourceUri) this._sourceUri = sourceUri;
     this._panel.title = `FlatPPL DAG: ${targetName}`;
-    this._panel.webview.postMessage({ type: 'updateDAG', data: dagData });
+    this._panel.webview.postMessage({
+      type: 'updateDAG',
+      data: dagData,
+      targetName,
+      pushHistory: !!pushHistory,
+    });
   }
 
   _getHtml() {
@@ -132,6 +148,22 @@ class DAGPanel {
       text-overflow: ellipsis;
       z-index: 100;
     }
+    #back-btn {
+      position: absolute; top: 8px; left: 8px;
+      display: none;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 3px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      z-index: 50;
+      font-family: var(--vscode-font-family, sans-serif);
+    }
+    #back-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #505355);
+    }
     #legend {
       position: absolute; top: 8px; right: 8px;
       background: var(--vscode-editor-background);
@@ -150,9 +182,10 @@ class DAGPanel {
 <body>
   <div id="cy"></div>
   <div id="tooltip"></div>
+  <button id="back-btn">&larr; Back</button>
   <div id="legend"></div>
   <div id="info">
-    <span class="hint">Click a node to see details &middot; double-click to jump to source</span>
+    <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source</span>
   </div>
 
   <script nonce="${nonce}" src="${cytoscapeUri}"></script>
@@ -160,9 +193,10 @@ class DAGPanel {
   <script nonce="${nonce}" src="${cytoscapeDagreUri}"></script>
   <script nonce="${nonce}">
   (function() {
-    const vscodeApi = acquireVsCodeApi();
+    var vscodeApi = acquireVsCodeApi();
+    var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
 
-    const TYPE_STYLE = {
+    var TYPE_STYLE = {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
       stochastic:    { color: '#B39DDB', shape: 'ellipse',          label: 'stochastic (draw)' },
       deterministic: { color: '#90A4AE', shape: 'round-rectangle',  label: 'deterministic' },
@@ -177,18 +211,24 @@ class DAGPanel {
       unknown:       { color: '#BDBDBD', shape: 'rectangle',        label: 'unknown' },
     };
 
-    let cy = null;
-    let shownTypes = new Set();
+    var cy = null;
+    var shownTypes = new Set();
+    var history = [];
+    var currentState = null;
 
     function esc(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
+    function updateBackBtn() {
+      document.getElementById('back-btn').style.display = history.length > 0 ? 'block' : 'none';
+    }
+
     function buildLegend() {
-      const el = document.getElementById('legend');
+      var el = document.getElementById('legend');
       el.innerHTML = '';
-      for (const t of shownTypes) {
-        const s = TYPE_STYLE[t] || TYPE_STYLE.unknown;
+      for (var t of shownTypes) {
+        var s = TYPE_STYLE[t] || TYPE_STYLE.unknown;
         el.innerHTML += '<div class="item">'
           + '<span class="swatch" style="background:' + s.color + '"></span>'
           + '<span>' + esc(s.label) + '</span></div>';
@@ -265,7 +305,16 @@ class DAGPanel {
         wheelSensitivity: 0.3,
       });
 
+      // Ctrl/Cmd+click: jump to source
       cy.on('tap', 'node', function(evt) {
+        var oe = evt.originalEvent;
+        if (oe && (oe.ctrlKey || oe.metaKey)) {
+          var line = evt.target.data('line');
+          if (line >= 0) {
+            vscodeApi.postMessage({ type: 'navigateTo', line: line });
+          }
+          return;
+        }
         var d = evt.target.data();
         document.getElementById('info').innerHTML =
           '<div class="row"><span class="name">' + esc(d.label)
@@ -275,16 +324,16 @@ class DAGPanel {
 
       cy.on('tap', function(evt) {
         if (evt.target === cy) {
-          document.getElementById('info').innerHTML =
-            '<span class="hint">Click a node to see details &middot; double-click to jump to source</span>';
+          document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
         }
       });
 
+      // Double-click: drill into node's sub-DAG
       cy.on('dbltap', 'node', function(evt) {
-        var line = evt.target.data('line');
-        if (line >= 0) {
-          vscodeApi.postMessage({ type: 'navigateTo', line: line });
-        }
+        var nodeId = evt.target.data('id');
+        // Don't drill into synthetic nodes (placeholder/hole inputs)
+        if (nodeId.indexOf(':') !== -1) return;
+        vscodeApi.postMessage({ type: 'zoomInto', nodeId: nodeId });
       });
 
       var tip = document.getElementById('tooltip');
@@ -311,7 +360,7 @@ class DAGPanel {
       });
     }
 
-    function updateDAG(data) {
+    function renderDAG(data) {
       if (!cy) initCy();
 
       shownTypes.clear();
@@ -361,14 +410,31 @@ class DAGPanel {
       cy.fit(undefined, 40);
       buildLegend();
 
-      document.getElementById('info').innerHTML =
-        '<span class="hint">Click a node to see details &middot; double-click to jump to source</span>';
+      document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
     }
 
+    // Back button
+    document.getElementById('back-btn').addEventListener('click', function() {
+      if (history.length === 0) return;
+      currentState = history.pop();
+      renderDAG(currentState.data);
+      updateBackBtn();
+      vscodeApi.postMessage({ type: 'updateTitle', name: currentState.targetName });
+    });
+
     window.addEventListener('message', function(event) {
-      if (event.data && event.data.type === 'updateDAG') {
-        updateDAG(event.data.data);
+      var msg = event.data;
+      if (!msg || msg.type !== 'updateDAG') return;
+
+      if (msg.pushHistory && currentState) {
+        history.push(currentState);
+      } else if (!msg.pushHistory) {
+        history = [];
       }
+
+      currentState = { data: msg.data, targetName: msg.targetName };
+      renderDAG(msg.data);
+      updateBackBtn();
     });
 
     initCy();

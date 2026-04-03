@@ -8,6 +8,7 @@ function activate(context) {
   let cachedUri = '';
   let cachedVersion = -1;
   let cachedResult = null;
+  let lastSourceUri = null;
 
   function getParsed(document) {
     const uri = document.uri.toString();
@@ -18,6 +19,17 @@ function activate(context) {
     cachedVersion = document.version;
     cachedUri = uri;
     return cachedResult;
+  }
+
+  function setupZoomHandler() {
+    if (!DAGPanel.currentPanel) return;
+    DAGPanel.currentPanel.onZoomInto = (nodeId) => {
+      if (!cachedResult) return;
+      const dagData = computeSubDAG(cachedResult.bindingMap, nodeId);
+      if (dagData.nodes.length > 0) {
+        DAGPanel.currentPanel.update(dagData, nodeId, null, true);
+      }
+    };
   }
 
   function showDAGForCursor(editor) {
@@ -32,7 +44,9 @@ function activate(context) {
     const dagData = computeSubDAG(bindingMap, name);
 
     DAGPanel.createOrShow(context);
-    DAGPanel.currentPanel.update(dagData, name, editor.document.uri);
+    setupZoomHandler();
+    lastSourceUri = editor.document.uri;
+    DAGPanel.currentPanel.update(dagData, name, editor.document.uri, false);
     return true;
   }
 
