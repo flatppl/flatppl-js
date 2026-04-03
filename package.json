@@ -1,8 +1,8 @@
 {
   "name": "flatppl",
   "displayName": "FlatPPL",
-  "description": "Syntax highlighting for the FlatPPL stochastic language",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and DAG visualization for the FlatPPL stochastic language",
+  "version": "0.2.0",
   "publisher": "flatppl",
   "license": "MIT",
   "icon": "icon.png",
@@ -13,10 +13,29 @@
   "engines": {
     "vscode": "^1.75.0"
   },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:flatppl"
+  ],
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Visualization"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "flatppl.showDAG",
+        "title": "FlatPPL: Show DAG"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "flatppl.showDAG",
+          "when": "editorLangId == flatppl"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "flatppl",
