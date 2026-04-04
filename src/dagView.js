@@ -88,6 +88,9 @@ class DAGPanel {
     const cytoscapeDagreUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'cytoscape-dagre.js')
     );
+    const echartsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'echarts.min.js')
+    );
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -216,6 +219,7 @@ class DAGPanel {
   <script nonce="${nonce}" src="${cytoscapeUri}"></script>
   <script nonce="${nonce}" src="${dagreUri}"></script>
   <script nonce="${nonce}" src="${cytoscapeDagreUri}"></script>
+  <script nonce="${nonce}" src="${echartsUri}"></script>
   <script nonce="${nonce}">
   (function() {
     var vscodeApi = acquireVsCodeApi();
@@ -417,7 +421,9 @@ class DAGPanel {
       });
     }
 
-    // --- Data visualization (custom Canvas) ---
+    // --- Data visualization ---
+
+    var echart = null;
 
     function parseValues(expr) {
       if (!expr) return null;
@@ -436,71 +442,6 @@ class DAGPanel {
       return null;
     }
 
-    function drawStepHistogram(dv, values) {
-      var dpr = window.devicePixelRatio || 1;
-      var rect = dv.getBoundingClientRect();
-      var W = rect.width, H = rect.height;
-      if (W === 0 || H === 0) return;
-      var canvas = document.createElement('canvas');
-      canvas.width = W * dpr; canvas.height = H * dpr;
-      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-      dv.appendChild(canvas);
-      var ctx = canvas.getContext('2d');
-      ctx.scale(dpr, dpr);
-
-      var n = values.length;
-      var vMin = values[0], vMax = values[0];
-      for (var i = 1; i < n; i++) {
-        if (values[i] < vMin) vMin = values[i];
-        if (values[i] > vMax) vMax = values[i];
-      }
-      var vRange = vMax - vMin || Math.abs(vMax) || 1;
-      vMin -= vRange * 0.08; vMax += vRange * 0.08; vRange = vMax - vMin;
-
-      var ml = 55, mr = 15, mt = 15, mb = 35;
-      var pw = W - ml - mr, ph = H - mt - mb;
-      function xPos(idx) { return ml + (idx / n) * pw; }
-      function yPos(val) { return mt + (1 - (val - vMin) / vRange) * ph; }
-
-      var fg = getComputedStyle(document.body).color || '#ccc';
-
-      // Zero line
-      if (vMin < 0 && vMax > 0) {
-        ctx.save(); ctx.strokeStyle = fg; ctx.globalAlpha = 0.25; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(ml, yPos(0)); ctx.lineTo(ml + pw, yPos(0)); ctx.stroke();
-        ctx.restore();
-      }
-      // Axes
-      ctx.save(); ctx.strokeStyle = fg; ctx.globalAlpha = 0.4; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(ml, mt); ctx.lineTo(ml, mt + ph); ctx.lineTo(ml + pw, mt + ph); ctx.stroke();
-      ctx.restore();
-      // Y ticks
-      ctx.save(); ctx.fillStyle = fg; ctx.globalAlpha = 0.6;
-      ctx.font = '11px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
-      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-      for (var t = 0; t <= 5; t++) {
-        var val = vMin + (t / 5) * vRange;
-        ctx.fillText(Math.abs(val) >= 1 && Math.abs(val) < 10000 ? val.toFixed(1) : val.toPrecision(3), ml - 6, yPos(val));
-      }
-      // X ticks
-      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      var xStep = Math.max(1, Math.ceil(n / 12));
-      for (var xi = 0; xi < n; xi += xStep)
-        ctx.fillText(xi.toString(), xPos(xi) + pw / n * 0.5, mt + ph + 6);
-      ctx.restore();
-      // Step line
-      ctx.strokeStyle = TYPE_STYLE.literal.color;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      var binW = pw / n;
-      for (var si = 0; si < n; si++) {
-        var xl = ml + si * binW, xr = xl + binW, yv = yPos(values[si]);
-        if (si === 0) ctx.moveTo(xl, yv); else ctx.lineTo(xl, yv);
-        ctx.lineTo(xr, yv);
-      }
-      ctx.stroke();
-    }
-
     function showDataView(data) {
       var target = null;
       for (var i = 0; i < data.nodes.length; i++)
@@ -512,6 +453,7 @@ class DAGPanel {
       var dv = document.getElementById('dataview');
       document.getElementById('cy').style.display = 'none';
       document.getElementById('legend').style.display = 'none';
+      if (echart) { echart.dispose(); echart = null; }
       dv.innerHTML = '';
 
       if (parsed.type === 'scalar') {
@@ -519,7 +461,39 @@ class DAGPanel {
         dv.innerHTML = '<span class="scalar-value">' + esc(String(parsed.value)) + '</span>';
       } else if (parsed.type === 'array' && parsed.values.length > 0) {
         dv.style.display = 'block';
-        drawStepHistogram(dv, parsed.values);
+        var fg = getComputedStyle(document.body).color || '#ccc';
+        var vals = parsed.values;
+        var n = vals.length;
+        var stepData = [];
+        for (var si = 0; si < n; si++) {
+          stepData.push([si, vals[si]]);
+          stepData.push([si + 1, vals[si]]);
+        }
+        echart = echarts.init(dv);
+        echart.setOption({
+          animation: false,
+          grid: { left: 55, right: 20, top: 15, bottom: 40, containLabel: false },
+          xAxis: {
+            type: 'value', name: 'index', nameLocation: 'center', nameGap: 25,
+            min: 0, max: n,
+            axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+            axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+            axisLabel: { color: fg, opacity: 0.6 },
+            splitLine: { show: false },
+            minInterval: 1,
+          },
+          yAxis: {
+            type: 'value',
+            axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+            axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+            axisLabel: { color: fg, opacity: 0.6 },
+            splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+          },
+          series: [{
+            type: 'line', data: stepData, symbol: 'none',
+            lineStyle: { color: TYPE_STYLE.literal.color, width: 2 },
+          }],
+        });
       } else {
         dv.style.display = 'none';
         document.getElementById('cy').style.display = 'block';
@@ -530,6 +504,7 @@ class DAGPanel {
     }
 
     function hideDataView() {
+      if (echart) { echart.dispose(); echart = null; }
       document.getElementById('dataview').style.display = 'none';
       document.getElementById('dataview').innerHTML = '';
       document.getElementById('cy').style.display = 'block';
