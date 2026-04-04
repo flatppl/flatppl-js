@@ -6,9 +6,7 @@ Note: This extension is in early development and may be unstable. It is not publ
 
 ## Features
 
-- Syntax highlighting for `.flatppl` files
-- Highlighting of FlatPPL code blocks in Markdown preview (` ```flatppl `)
-- Comment toggling, bracket matching, and auto-closing pairs
+Work in progress.
 
 ## Installation
 
@@ -19,12 +17,31 @@ curl -L https://github.com/flatppl/flatppl-vscode/releases/download/dev/flatppl-
 code --install-extension flatppl-0.1.0-dev.vsix
 ```
 
-### Local development
+### Extension development
+
+#### Local development (VS Code Desktop)
 
 ```sh
 git clone https://github.com/flatppl/flatppl-vscode
-ln -s `realpath flatppl-vscode` ~/.vscode/extensions/flatppl-vscode
+ln -s "$(realpath flatppl-vscode)" ~/.vscode/extensions/flatppl.flatppl
 ```
+
+#### Remote development (VS Code Remote-SSH)
+
+On the remote host:
+
+```sh
+git clone https://github.com/flatppl/flatppl-vscode
+ln -s "$(realpath flatppl-vscode)" ~/.vscode-server/extensions/flatppl.flatppl
+```
+
+Note: The symlink name must be `flatppl.flatppl` (matching `publisher.name` from
+`package.json`).
+
+#### Reloading
+
+Reload the VS Code window via VS-Code command "Developer: Reload Window" after
+making changes to the extension code.
 
 ## About FlatPPL
 
