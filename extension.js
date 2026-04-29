@@ -56,8 +56,8 @@ function activate(context) {
     if (!editor || editor.document.languageId !== 'flatppl') return false;
 
     const { bindings } = getParsed(editor.document);
-    const line = editor.selection.active.line;
-    const binding = findBindingAtLine(bindings, line);
+    const pos = editor.selection.active;
+    const binding = findBindingAtLine(bindings, pos.line, pos.character);
     if (!binding) return false;
 
     const name = binding.name;
@@ -85,21 +85,19 @@ function activate(context) {
   // --- Live DAG update on cursor move ---
 
   let updateTimeout;
-  let lastShownLine = -1;
+  let lastShownName = '';
 
   const selectionListener = vscode.window.onDidChangeTextEditorSelection(e => {
     if (!DAGPanel.currentPanel) return;
     if (e.textEditor.document.languageId !== 'flatppl') return;
 
-    const line = e.selections[0].active.line;
-    if (line === lastShownLine) return;
-
     clearTimeout(updateTimeout);
     updateTimeout = setTimeout(() => {
       const { bindings } = getParsed(e.textEditor.document);
-      const binding = findBindingAtLine(bindings, line);
-      if (binding) {
-        lastShownLine = line;
+      const pos = e.selections[0].active;
+      const binding = findBindingAtLine(bindings, pos.line, pos.character);
+      if (binding && binding.name !== lastShownName) {
+        lastShownName = binding.name;
         showDAGForCursor(e.textEditor);
       }
     }, 150);

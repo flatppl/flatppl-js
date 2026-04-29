@@ -216,11 +216,29 @@ function computeDisintegrateSubDAG(bindings, binding) {
 }
 
 /**
- * Find the binding whose definition is on the given line number.
+ * Find the binding at the given source position.
+ *
+ * If `col` is provided and the cursor is within the column range of one of the
+ * binding's LHS names (e.g. on `prior` in `forward_kernel, prior = ...`),
+ * return that specific binding. Otherwise fall back to the first binding
+ * defined on that line.
+ *
+ * @param {Map} bindings
+ * @param {number} line - 0-based line number
+ * @param {number} [col] - optional 0-based column number
  */
-function findBindingAtLine(bindings, lineNumber) {
+function findBindingAtLine(bindings, line, col) {
+  if (col != null) {
+    for (const b of bindings.values()) {
+      const nl = b.nameLoc;
+      if (nl && nl.start.line === line && nl.end.line === line
+          && col >= nl.start.col && col <= nl.end.col) {
+        return b;
+      }
+    }
+  }
   for (const b of bindings.values()) {
-    if (b.line === lineNumber) return b;
+    if (b.line === line) return b;
   }
   return null;
 }

@@ -131,3 +131,27 @@ test('dag: findBindingAtLine returns null for non-binding lines', () => {
   const { bindings } = processSource(src);
   assert.equal(findBindingAtLine(bindings, 1), null);
 });
+
+test('dag: findBindingAtLine returns specific name when col is given (decomposition)', () => {
+  // forward_kernel, prior = ...
+  // columns:        ^0           ^16  (forward_kernel ends at 14, prior at ~21)
+  const src = 'forward_kernel, prior = (1, 2)\n';
+  const { bindings } = processSource(src);
+  // Cursor on 'forward_kernel' (col 5) -> forward_kernel
+  assert.equal(findBindingAtLine(bindings, 0, 5).name, 'forward_kernel');
+  // Cursor on 'prior' (col 18) -> prior
+  assert.equal(findBindingAtLine(bindings, 0, 18).name, 'prior');
+});
+
+test('dag: findBindingAtLine without col returns first binding (legacy behaviour)', () => {
+  const src = 'forward_kernel, prior = (1, 2)\n';
+  const { bindings } = processSource(src);
+  assert.equal(findBindingAtLine(bindings, 0).name, 'forward_kernel');
+});
+
+test('dag: findBindingAtLine col falls back to first binding when col is off-name', () => {
+  // Cursor on the RHS — no name match, fall back to first binding on the line
+  const src = 'a, b = (1, 2)\n';
+  const { bindings } = processSource(src);
+  assert.equal(findBindingAtLine(bindings, 0, 10).name, 'a');
+});
