@@ -1,6 +1,6 @@
 'use strict';
 
-const { extractBoundaries, countHoles } = require('./analyzer');
+const { extractBoundaries, countHoles, collectDeps } = require('./analyzer');
 
 /**
  * Compute the ancestor sub-DAG of a node.
@@ -119,28 +119,7 @@ function computeSubDAG(bindings, nodeName) {
 function computeDisintegrateSubDAG(bindings, binding) {
   const role = binding.disintegrateRole;
   const isKernel = role.kind === 'kernel';
-
   const selected = new Set(role.selectorFields);
-  const targetFields = isKernel
-    ? role.selectorFields.filter(f => role.jointFields.has(f))
-    : [...role.jointFields.keys()].filter(f => !selected.has(f));
-  const boundaryFields = isKernel
-    ? [...role.jointFields.keys()].filter(f => !selected.has(f))
-    : [];
-
-  // Build boundary sets: (field-derived) + (inherited from joint)
-  const boundaryVars = new Set();
-  const boundaryLabels = new Map(); // varName -> argName
-
-  for (const f of boundaryFields) {
-    const v = role.jointFields.get(f);
-    boundaryVars.add(v);
-    boundaryLabels.set(v, f);
-  }
-  for (const [argName, varName] of role.inheritedBoundaries) {
-    boundaryVars.add(varName);
-    if (!boundaryLabels.has(varName)) boundaryLabels.set(varName, argName);
-  }
 
   const visited = new Map();
   const edges = [];
@@ -155,6 +134,48 @@ function computeDisintegrateSubDAG(bindings, binding) {
     isBoundary: false,
     isTarget: true,
   });
+
+  if (role.jointKind === 'lawof_record') {
+    return computeLawofRecordDisintegration(bindings, binding, role, isKernel, selected, visited, edges);
+  }
+  if (role.jointKind === 'joint') {
+    return computeJointDisintegration(bindings, binding, role, isKernel, selected, visited, edges);
+  }
+  if (role.jointKind === 'jointchain') {
+    return computeJointchainDisintegration(bindings, binding, role, isKernel, selected, visited, edges);
+  }
+
+  // Unknown joint kind — return just the result node alone.
+  return { nodes: [...visited.values()], edges };
+}
+
+/**
+ * Tier 1 — joint constructed via `lawof(record(field = node, ...), [bnds...])`.
+ * Each field is bound to a module-level identifier; unselected fields become
+ * boundary inputs of the kernel (and are absent from the prior).
+ */
+function computeLawofRecordDisintegration(bindings, binding, role, isKernel, selected, visited, edges) {
+  const targetFields = isKernel
+    ? role.selectorFields.filter(f => role.jointFields.has(f))
+    : [...role.jointFields.keys()].filter(f => !selected.has(f));
+  const boundaryFields = isKernel
+    ? [...role.jointFields.keys()].filter(f => !selected.has(f))
+    : [];
+
+  const boundaryVars = new Set();
+  const boundaryLabels = new Map();
+
+  for (const f of boundaryFields) {
+    const node = role.jointFields.get(f); // Identifier AST node
+    if (node && node.type === 'Identifier') {
+      boundaryVars.add(node.name);
+      boundaryLabels.set(node.name, f);
+    }
+  }
+  for (const [argName, varName] of role.inheritedBoundaries) {
+    boundaryVars.add(varName);
+    if (!boundaryLabels.has(varName)) boundaryLabels.set(varName, argName);
+  }
 
   function visit(name) {
     if (visited.has(name)) return;
@@ -180,22 +201,20 @@ function computeDisintegrateSubDAG(bindings, binding) {
     }
   }
 
-  // Trace targets back; their ancestors stop at boundaries.
+  // Trace target fields; ancestors stop at boundaries.
   for (const f of targetFields) {
-    const v = role.jointFields.get(f);
-    if (!v) continue;
+    const node = role.jointFields.get(f);
+    if (!node || node.type !== 'Identifier') continue;
+    const v = node.name;
     edges.push({ source: v, target: binding.name, edgeType: 'data' });
     visit(v);
   }
 
-  // Boundaries (kernel inputs) — include them, edge to result, but don't trace deeper.
   for (const v of boundaryVars) {
     if (!visited.has(v)) visit(v);
     edges.push({ source: v, target: binding.name, edgeType: 'data' });
   }
 
-  // Synthetic input nodes for inherited boundaries that aren't bound module-locally
-  // (e.g., when joint had a placeholder-style boundary).
   for (const [argName, varName] of role.inheritedBoundaries) {
     if (!bindings.has(varName) && !visited.has(varName)) {
       const synId = binding.name + ':' + argName;
@@ -209,6 +228,151 @@ function computeDisintegrateSubDAG(bindings, binding) {
         isTarget: false,
       });
       edges.push({ source: synId, target: binding.name, edgeType: 'data' });
+    }
+  }
+
+  return { nodes: [...visited.values()], edges };
+}
+
+/**
+ * Tier 2 — joint constructed via `joint(name = M, ...)` keyword form.
+ * Components are independent: there are no cross-boundaries between the
+ * selected and unselected fields. Each field's contribution to the kernel
+ * (or prior) sub-DAG is the set of module-level identifiers referenced by
+ * its measure expression.
+ */
+function computeJointDisintegration(bindings, binding, role, isKernel, selected, visited, edges) {
+  const allFields = [...role.jointFields.keys()];
+  const myFields = isKernel
+    ? allFields.filter(f => selected.has(f))
+    : allFields.filter(f => !selected.has(f));
+
+  const definedNames = new Set(bindings.keys());
+  const collectedDeps = new Set();
+  const collectedCallDeps = new Set();
+
+  for (const f of myFields) {
+    const expr = role.jointFields.get(f);
+    if (!expr) continue;
+    const { deps, callDeps } = collectDeps(expr, definedNames);
+    for (const d of deps) collectedDeps.add(d);
+    for (const d of callDeps) collectedCallDeps.add(d);
+  }
+
+  function visit(name) {
+    if (visited.has(name)) return;
+    const b = bindings.get(name);
+    visited.set(name, {
+      id: name,
+      type: b ? b.type : 'unknown',
+      expr: b ? b.rhs : '',
+      line: b ? b.line : -1,
+      isBoundary: false,
+      isTarget: false,
+    });
+    if (!b) return;
+    const calls = new Set(b.callDeps || []);
+    for (const dep of b.deps) {
+      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
+      visit(dep);
+    }
+  }
+
+  for (const dep of collectedDeps) {
+    edges.push({
+      source: dep,
+      target: binding.name,
+      edgeType: collectedCallDeps.has(dep) ? 'call' : 'data',
+    });
+    visit(dep);
+  }
+
+  return { nodes: [...visited.values()], edges };
+}
+
+/**
+ * Tier 2 — joint constructed via `jointchain(name1 = M, name2 = K, ...)`.
+ * The chain order is significant: later kernels may depend on earlier
+ * variates. We don't fully model that variate graph; we approximate as
+ * follows:
+ *  - Selected/unselected component expressions contribute their module-level
+ *    deps as ancestors of the kernel/prior (like the joint case).
+ *  - Any unselected field appearing BEFORE a selected field in the chain
+ *    becomes a synthetic boundary input on the kernel (labelled with the
+ *    field name). This is exact for the "trailing-suffix selection" case
+ *    (e.g., `disintegrate("c", jointchain(a, b, c))` → kernel needs a, b).
+ *  - For prior, we treat unselected fields like an independent joint —
+ *    the actual disintegration may be intractable in non-suffix selection
+ *    cases, but the visualization is still informative.
+ */
+function computeJointchainDisintegration(bindings, binding, role, isKernel, selected, visited, edges) {
+  const allFieldsOrdered = [...role.jointFields.keys()];
+  const myFields = isKernel
+    ? allFieldsOrdered.filter(f => selected.has(f))
+    : allFieldsOrdered.filter(f => !selected.has(f));
+
+  const definedNames = new Set(bindings.keys());
+  const collectedDeps = new Set();
+  const collectedCallDeps = new Set();
+
+  for (const f of myFields) {
+    const expr = role.jointFields.get(f);
+    if (!expr) continue;
+    const { deps, callDeps } = collectDeps(expr, definedNames);
+    for (const d of deps) collectedDeps.add(d);
+    for (const d of callDeps) collectedCallDeps.add(d);
+  }
+
+  function visit(name) {
+    if (visited.has(name)) return;
+    const b = bindings.get(name);
+    visited.set(name, {
+      id: name,
+      type: b ? b.type : 'unknown',
+      expr: b ? b.rhs : '',
+      line: b ? b.line : -1,
+      isBoundary: false,
+      isTarget: false,
+    });
+    if (!b) return;
+    const calls = new Set(b.callDeps || []);
+    for (const dep of b.deps) {
+      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
+      visit(dep);
+    }
+  }
+
+  for (const dep of collectedDeps) {
+    edges.push({
+      source: dep,
+      target: binding.name,
+      edgeType: collectedCallDeps.has(dep) ? 'call' : 'data',
+    });
+    visit(dep);
+  }
+
+  // For the kernel: add synthetic boundary inputs for any unselected fields
+  // that appear before the first selected field in the chain.
+  if (isKernel) {
+    const firstSelectedIdx = allFieldsOrdered.findIndex(f => selected.has(f));
+    if (firstSelectedIdx > 0) {
+      for (let i = 0; i < firstSelectedIdx; i++) {
+        const f = allFieldsOrdered[i];
+        if (selected.has(f)) continue;
+        const synId = binding.name + ':' + f;
+        if (!visited.has(synId)) {
+          visited.set(synId, {
+            id: synId,
+            label: f,
+            type: 'input',
+            expr: '',
+            line: binding.line,
+            isBoundary: true,
+            isTarget: false,
+          });
+          edges.push({ source: synId, target: binding.name, edgeType: 'data' });
+        }
+      }
     }
   }
 

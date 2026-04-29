@@ -1,6 +1,6 @@
 'use strict';
 const vscode = require('vscode');
-const { processSource, computeSubDAG, findBindingAtLine } = require('./engine');
+const { processSource, computeSubDAG, findBindingAtLine, builtins } = require('./engine');
 const { DAGPanel } = require('./src/dagView');
 
 function activate(context) {
@@ -181,6 +181,149 @@ function activate(context) {
     }
   });
 
+  // --- Completion provider ---
+
+  // Snippets for built-in distributions: typing the name and accepting the
+  // suggestion drops in a placeholder list of standard parameters.
+  const DIST_SNIPPETS = {
+    Normal: 'Normal(mu = ${1:0.0}, sigma = ${2:1.0})',
+    Exponential: 'Exponential(rate = ${1:1.0})',
+    Uniform: 'Uniform(support = ${1:reals})',
+    LogNormal: 'LogNormal(mu = ${1:0.0}, sigma = ${2:1.0})',
+    Cauchy: 'Cauchy(location = ${1:0.0}, scale = ${2:1.0})',
+    StudentT: 'StudentT(nu = ${1:1.0})',
+    Logistic: 'Logistic(mu = ${1:0.0}, s = ${2:1.0})',
+    Gamma: 'Gamma(shape = ${1:1.0}, rate = ${2:1.0})',
+    InverseGamma: 'InverseGamma(shape = ${1:1.0}, scale = ${2:1.0})',
+    Beta: 'Beta(alpha = ${1:1.0}, beta = ${2:1.0})',
+    Weibull: 'Weibull(shape = ${1:1.0}, scale = ${2:1.0})',
+    Bernoulli: 'Bernoulli(p = ${1:0.5})',
+    Categorical: 'Categorical(p = ${1:[0.5, 0.5]})',
+    Binomial: 'Binomial(n = ${1:1}, p = ${2:0.5})',
+    Poisson: 'Poisson(rate = ${1:1.0})',
+    GeneralizedNormal: 'GeneralizedNormal(mean = ${1:0.0}, alpha = ${2:1.0}, beta = ${3:2.0})',
+    MvNormal: 'MvNormal(mu = ${1}, cov = ${2})',
+    Dirichlet: 'Dirichlet(alpha = ${1})',
+    Multinomial: 'Multinomial(n = ${1}, p = ${2})',
+    Wishart: 'Wishart(nu = ${1}, scale = ${2})',
+    InverseWishart: 'InverseWishart(nu = ${1}, scale = ${2})',
+    LKJ: 'LKJ(n = ${1}, eta = ${2:1.0})',
+    LKJCholesky: 'LKJCholesky(n = ${1}, eta = ${2:1.0})',
+    PoissonProcess: 'PoissonProcess(intensity = ${1})',
+    BinnedPoissonProcess: 'BinnedPoissonProcess(bins = ${1}, intensity = ${2})',
+    Lebesgue: 'Lebesgue(support = ${1:reals})',
+    Counting: 'Counting(support = ${1:integers})',
+    Dirac: 'Dirac(value = ${1})',
+  };
+
+  // Snippets for special forms — drop in a body placeholder.
+  const SPECIAL_SNIPPETS = {
+    elementof: 'elementof(${1:reals})',
+    external: 'external(${1:reals})',
+    draw: 'draw(${1})',
+    lawof: 'lawof(${1})',
+    functionof: 'functionof(${1})',
+    fn: 'fn(${1})',
+    record: 'record(${1})',
+    likelihoodof: 'likelihoodof(${1:kernel}, ${2:data})',
+    bayesupdate: 'bayesupdate(${1:L}, ${2:prior})',
+    disintegrate: 'disintegrate(${1:["field"]}, ${2:joint_model})',
+    load_module: 'load_module("${1:path.flatppl}")',
+    standard_module: 'standard_module("${1:name}", "${2:0.1}")',
+    load_data: 'load_data(source = "${1:path}", valueset = ${2:reals})',
+  };
+
+  function makeBuiltinCompletions() {
+    const items = [];
+
+    // Special forms
+    for (const name of builtins.SPECIAL_FORMS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Keyword);
+      const snippet = SPECIAL_SNIPPETS[name];
+      if (snippet) {
+        item.insertText = new vscode.SnippetString(snippet);
+        item.detail = 'special form';
+      } else {
+        item.detail = 'special form';
+      }
+      items.push(item);
+    }
+
+    // Distributions
+    for (const name of builtins.DISTRIBUTIONS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Class);
+      const snippet = DIST_SNIPPETS[name];
+      if (snippet) item.insertText = new vscode.SnippetString(snippet);
+      item.detail = 'distribution';
+      items.push(item);
+    }
+
+    // Measure operations
+    for (const name of builtins.MEASURE_OPS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+      item.detail = 'measure operation';
+      items.push(item);
+    }
+
+    // Built-in functions
+    for (const name of builtins.BUILTIN_FUNCTIONS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+      item.detail = 'built-in function';
+      items.push(item);
+    }
+
+    // Set constructors
+    for (const name of builtins.SET_CONSTRUCTORS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+      item.detail = 'set constructor';
+      items.push(item);
+    }
+
+    // Predefined sets
+    for (const name of builtins.SETS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Constant);
+      item.detail = 'set';
+      items.push(item);
+    }
+
+    // Constants
+    for (const name of builtins.CONSTANTS) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Constant);
+      item.detail = 'constant';
+      items.push(item);
+    }
+
+    // Reserved names
+    for (const name of builtins.RESERVED_NAMES) {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Module);
+      item.detail = 'reserved module';
+      items.push(item);
+    }
+
+    return items;
+  }
+
+  const builtinCompletions = makeBuiltinCompletions();
+
+  const completionProvider = vscode.languages.registerCompletionItemProvider('flatppl', {
+    provideCompletionItems(document, position) {
+      const { bindings } = getParsed(document);
+      const items = [...builtinCompletions];
+
+      // Add user-defined names from this document
+      for (const b of bindings.values()) {
+        const item = new vscode.CompletionItem(b.name, vscode.CompletionItemKind.Variable);
+        item.detail = b.type;
+        if (b.rhs) {
+          item.documentation = new vscode.MarkdownString('```flatppl\n' + b.name + ' = ' + b.rhs + '\n```');
+        }
+        items.push(item);
+      }
+
+      return items;
+    }
+  });
+
   // --- Clean up diagnostics on close ---
 
   const closeListener = vscode.workspace.onDidCloseTextDocument(doc => {
@@ -194,7 +337,7 @@ function activate(context) {
 
   context.subscriptions.push(
     showDagCmd, selectionListener, changeListener, openListener, closeListener,
-    defProvider, hoverProvider, symbolProvider,
+    defProvider, hoverProvider, symbolProvider, completionProvider,
   );
 }
 

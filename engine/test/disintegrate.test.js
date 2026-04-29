@@ -236,3 +236,146 @@ test('disintegrate (complex fixture): chain-based joint falls back to plain trac
   const ids = new Set(dag.nodes.map(n => n.id));
   assert.ok(ids.has('joint_chained'));
 });
+
+// --- Tier 2: joint(name = M, ...) keyword form ---
+
+test('disintegrate Tier 2: joint(...) keyword form is recognised', () => {
+  const src = `
+mu_p = elementof(reals)
+joint_indep = joint(
+    theta1 = Normal(mu = mu_p, sigma = 1.0),
+    theta2 = Exponential(rate = 1.0)
+)
+fk, pr = disintegrate("theta1", joint_indep)
+`;
+  const { bindings, diagnostics } = processSource(src);
+  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  // Both decomposed names should be classified as lawof (kernel/measure)
+  assert.equal(bindings.get('fk').type, 'lawof');
+  assert.equal(bindings.get('pr').type, 'lawof');
+  assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'joint');
+});
+
+test('disintegrate Tier 2: kernel ancestors come from selected component expressions', () => {
+  // theta1 = Normal(mu = mu_p, sigma = 1) -> kernel depends on mu_p
+  // theta2 = Exponential(rate = 1) -> not selected, mu_p NOT involved
+  const src = `
+mu_p = elementof(reals)
+joint_indep = joint(
+    theta1 = Normal(mu = mu_p, sigma = 1.0),
+    theta2 = Exponential(rate = 1.0)
+)
+fk, pr = disintegrate("theta1", joint_indep)
+`;
+  const { bindings } = processSource(src);
+  const fk = computeSubDAG(bindings, 'fk');
+  const ids = new Set(fk.nodes.map(n => n.id));
+  // mu_p is the only module-level node referenced by Normal(mu = mu_p, sigma = 1)
+  assert.ok(ids.has('mu_p'), 'kernel should include mu_p as ancestor');
+  // Ensure NO "boundary" annotation — joint components are independent
+  for (const n of fk.nodes) {
+    if (n.id !== 'fk') assert.equal(n.isBoundary, false);
+  }
+});
+
+test('disintegrate Tier 2: prior ancestors come from unselected component expressions', () => {
+  const src = `
+mu_p = elementof(reals)
+rate_p = elementof(posreals)
+joint_indep = joint(
+    theta1 = Normal(mu = mu_p, sigma = 1.0),
+    theta2 = Exponential(rate = rate_p)
+)
+fk, pr = disintegrate("theta1", joint_indep)
+`;
+  const { bindings } = processSource(src);
+  const pr = computeSubDAG(bindings, 'pr');
+  const ids = new Set(pr.nodes.map(n => n.id));
+  // theta2's M depends only on rate_p; mu_p should NOT be in the prior's DAG
+  assert.ok(ids.has('rate_p'));
+  assert.ok(!ids.has('mu_p'), 'prior should not contain selected-only deps');
+});
+
+test('disintegrate Tier 2: multi-field selector', () => {
+  const src = `
+a = elementof(reals)
+b = elementof(reals)
+c = elementof(reals)
+m = joint(
+    f1 = Normal(mu = a, sigma = 1.0),
+    f2 = Normal(mu = b, sigma = 1.0),
+    f3 = Normal(mu = c, sigma = 1.0)
+)
+fk, pr = disintegrate(["f1", "f2"], m)
+`;
+  const { bindings } = processSource(src);
+  const fk = computeSubDAG(bindings, 'fk');
+  const fkIds = new Set(fk.nodes.map(n => n.id));
+  // Kernel has deps from f1 and f2 (a, b) but NOT c
+  assert.ok(fkIds.has('a'));
+  assert.ok(fkIds.has('b'));
+  assert.ok(!fkIds.has('c'));
+
+  const pr = computeSubDAG(bindings, 'pr');
+  const prIds = new Set(pr.nodes.map(n => n.id));
+  assert.ok(prIds.has('c'));
+  assert.ok(!prIds.has('a'));
+  assert.ok(!prIds.has('b'));
+});
+
+// --- Tier 2: jointchain(name = M, ...) keyword form ---
+
+test('disintegrate Tier 2 (jointchain): keyword form is recognised', () => {
+  const src = `
+mu_p = elementof(reals)
+m = jointchain(
+    a = Normal(mu = 0.0, sigma = 1.0),
+    b = Normal(mu = mu_p, sigma = 1.0)
+)
+fk, pr = disintegrate("b", m)
+`;
+  const { bindings, diagnostics } = processSource(src);
+  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'jointchain');
+  assert.equal(bindings.get('fk').type, 'lawof');
+});
+
+test('disintegrate Tier 2 (jointchain): trailing selection adds synthetic boundary for earlier field', () => {
+  // selected ["b"] — kernel needs synthetic 'a' boundary (chain-earlier).
+  const src = `
+mu_p = elementof(reals)
+m = jointchain(
+    a = Normal(mu = 0.0, sigma = 1.0),
+    b = Normal(mu = mu_p, sigma = 1.0)
+)
+fk, pr = disintegrate("b", m)
+`;
+  const { bindings } = processSource(src);
+  const fk = computeSubDAG(bindings, 'fk');
+  const ids = new Set(fk.nodes.map(n => n.id));
+  // Synthetic boundary 'a' for the kernel
+  const aBoundary = fk.nodes.find(n => n.id === 'fk:a');
+  assert.ok(aBoundary, 'expected synthetic boundary node fk:a');
+  assert.equal(aBoundary.label, 'a');
+  assert.equal(aBoundary.isBoundary, true);
+  // The kernel also picks up mu_p as ancestor (used in b's expression)
+  assert.ok(ids.has('mu_p'));
+});
+
+test('disintegrate Tier 2 (jointchain): leading selection has no synthetic boundary', () => {
+  // selected ["a"] — kernel is the chain head, no preceding fields.
+  const src = `
+mu_p = elementof(reals)
+m = jointchain(
+    a = Normal(mu = mu_p, sigma = 1.0),
+    b = Normal(mu = 0.0, sigma = 1.0)
+)
+fk, pr = disintegrate("a", m)
+`;
+  const { bindings } = processSource(src);
+  const fk = computeSubDAG(bindings, 'fk');
+  // No synthetic field-name boundary
+  for (const n of fk.nodes) {
+    if (n.id !== 'fk') assert.equal(n.isBoundary, false);
+  }
+});

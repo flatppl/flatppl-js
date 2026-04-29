@@ -212,44 +212,85 @@ function extractBoundaries(valueNode) {
  * Extract the field map from a joint-measure expression, when it can be
  * statically resolved.
  *
- * Currently handles Tier 1: `lawof(record(name1 = node1, name2 = node2, ...), [boundaries...])`.
+ * Recognised forms:
+ *  - Tier 1 (`lawof_record`): `lawof(record(name1 = node1, ...), [boundaries...])`
+ *    — each field maps to a module-level node name.
+ *  - Tier 2 (`joint`): `joint(name1 = M1, ...)` keyword form
+ *    — each field maps to an inline measure expression. Components are
+ *    independent (no cross-boundaries between fields).
+ *
  * Returns:
- *   { fields: Map<fieldName, identifier-name>,
+ *   { kind: 'lawof_record' | 'joint',
+ *     fields: Map<fieldName, AST-expression>,
  *     inheritedBoundaries: Map<argName, varName> }
  * or null if the structure cannot be statically resolved.
+ *
+ * For 'lawof_record', each field's expression is an Identifier referring to a
+ * module-level binding.
+ * For 'joint', each field's expression is an arbitrary measure expression
+ * (typically a CallExpr like Normal(...) or a measure-algebra construction).
  */
 function extractJointFields(valueNode) {
   if (!valueNode || valueNode.type !== 'CallExpr') return null;
   if (!valueNode.callee || valueNode.callee.type !== 'Identifier') return null;
-  if (valueNode.callee.name !== 'lawof') return null;
-  if (valueNode.args.length === 0) return null;
 
-  const firstArg = valueNode.args[0];
-  if (firstArg.type !== 'CallExpr' || !firstArg.callee
-      || firstArg.callee.type !== 'Identifier'
-      || firstArg.callee.name !== 'record') {
-    return null;
-  }
-
-  const fields = new Map();
-  for (const arg of firstArg.args) {
-    if (arg.type !== 'KeywordArg') return null; // not statically resolvable
-    if (arg.value.type !== 'Identifier') return null; // can't trace back to a node name
-    fields.set(arg.name, arg.value.name);
-  }
-
-  // Inherited boundaries (kwargs after first arg of lawof)
-  const inheritedBoundaries = new Map();
-  for (let i = 1; i < valueNode.args.length; i++) {
-    const arg = valueNode.args[i];
-    if (arg.type === 'KeywordArg') {
-      let varName = null;
-      if (arg.value.type === 'Identifier') varName = arg.value.name;
-      else if (arg.value.type === 'Placeholder') varName = '_' + arg.value.name + '_';
-      if (varName) inheritedBoundaries.set(arg.name, varName);
+  // ----- Tier 1: lawof(record(...)) -----
+  if (valueNode.callee.name === 'lawof') {
+    if (valueNode.args.length === 0) return null;
+    const firstArg = valueNode.args[0];
+    if (firstArg.type !== 'CallExpr' || !firstArg.callee
+        || firstArg.callee.type !== 'Identifier'
+        || firstArg.callee.name !== 'record') {
+      return null;
     }
+
+    const fields = new Map();
+    for (const arg of firstArg.args) {
+      if (arg.type !== 'KeywordArg') return null; // not statically resolvable
+      if (arg.value.type !== 'Identifier') return null; // can't trace back to a node name
+      fields.set(arg.name, arg.value);
+    }
+
+    const inheritedBoundaries = new Map();
+    for (let i = 1; i < valueNode.args.length; i++) {
+      const arg = valueNode.args[i];
+      if (arg.type === 'KeywordArg') {
+        let varName = null;
+        if (arg.value.type === 'Identifier') varName = arg.value.name;
+        else if (arg.value.type === 'Placeholder') varName = '_' + arg.value.name + '_';
+        if (varName) inheritedBoundaries.set(arg.name, varName);
+      }
+    }
+    return { kind: 'lawof_record', fields, inheritedBoundaries };
   }
-  return { fields, inheritedBoundaries };
+
+  // ----- Tier 2: joint(name1 = M1, ...) keyword form -----
+  if (valueNode.callee.name === 'joint') {
+    if (valueNode.args.length === 0) return null;
+    const fields = new Map();
+    for (const arg of valueNode.args) {
+      if (arg.type !== 'KeywordArg') return null; // positional joint not statically inspectable here
+      fields.set(arg.name, arg.value); // arbitrary measure expression
+    }
+    return { kind: 'joint', fields, inheritedBoundaries: new Map() };
+  }
+
+  // ----- Tier 2: jointchain(name1 = M1, name2 = K2, ...) keyword form -----
+  // The chain order matters: later fields may depend on earlier fields' variates.
+  // We don't try to model that fully here — for disintegration along trailing
+  // selected fields, the kernel gets synthesized chain-earlier field labels as
+  // boundary inputs (see dag.js).
+  if (valueNode.callee.name === 'jointchain') {
+    if (valueNode.args.length === 0) return null;
+    const fields = new Map();
+    for (const arg of valueNode.args) {
+      if (arg.type !== 'KeywordArg') return null;
+      fields.set(arg.name, arg.value);
+    }
+    return { kind: 'jointchain', fields, inheritedBoundaries: new Map() };
+  }
+
+  return null;
 }
 
 /**
@@ -304,10 +345,82 @@ function detectDisintegration(stmt, bindingMap) {
     priorName: stmt.names[1].name,
     selectorFields,
     jointName: jointArg.name,
+    jointKind: jointInfo.kind,
     jointFields: jointInfo.fields,
     inheritedBoundaries: jointInfo.inheritedBoundaries,
     selectorLoc: selectorArg.loc,
   };
+}
+
+/**
+ * Validate hole (`_`) and placeholder (`_name_`) usage according to the spec:
+ *  - `_` is only valid inside `fn(...)`.
+ *  - `_name_` is only valid inside `functionof(...)` or `lawof(...)`.
+ *
+ * Scope is determined by the nearest enclosing special form.
+ *
+ * @param {object} node - root expression node
+ * @param {Diagnostic[]} diagnostics - mutable, appended to
+ */
+function validateHolesAndPlaceholders(node, diagnostics) {
+  // scope can be: 'normal', 'fn', 'reify' (functionof/lawof)
+  function walk(node, scope) {
+    if (!node) return;
+    switch (node.type) {
+      case 'Hole':
+        if (scope !== 'fn') {
+          diagnostics.push({
+            severity: 'error',
+            message: "Hole '_' may only appear inside fn(...)",
+            loc: node.loc,
+          });
+        }
+        return;
+      case 'Placeholder':
+        if (scope !== 'reify') {
+          diagnostics.push({
+            severity: 'error',
+            message: `Placeholder '_${node.name}_' may only appear inside functionof(...) or lawof(...)`,
+            loc: node.loc,
+          });
+        }
+        return;
+      case 'CallExpr': {
+        let inner = scope;
+        if (node.callee && node.callee.type === 'Identifier') {
+          if (node.callee.name === 'fn') inner = 'fn';
+          else if (node.callee.name === 'functionof' || node.callee.name === 'lawof') inner = 'reify';
+        }
+        walk(node.callee, scope);
+        for (const a of node.args) walk(a, inner);
+        return;
+      }
+      case 'BinaryExpr':
+        walk(node.left, scope);
+        walk(node.right, scope);
+        return;
+      case 'UnaryExpr':
+        walk(node.operand, scope);
+        return;
+      case 'ArrayLiteral':
+      case 'TupleLiteral':
+        for (const e of node.elements) walk(e, scope);
+        return;
+      case 'IndexExpr':
+        walk(node.object, scope);
+        for (const i of node.indices) walk(i, scope);
+        return;
+      case 'FieldAccess':
+        walk(node.object, scope);
+        return;
+      case 'KeywordArg':
+        walk(node.value, scope);
+        return;
+      // Identifier, NumberLiteral, StringLiteral, BoolLiteral, ConstantRef,
+      // SetRef, SliceAll: nothing to do.
+    }
+  }
+  walk(node, 'normal');
 }
 
 /**
@@ -409,6 +522,7 @@ function analyze(ast, source) {
 
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialForm(stmt.value));
+    validateHolesAndPlaceholders(stmt.value, diagnostics);
     const { deps, callDeps } = collectDeps(stmt.value, definedNames);
     const rhs = sliceSource(source, stmt.value.loc);
 
@@ -497,5 +611,6 @@ function analyze(ast, source) {
 module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
-  countHoles, collectIdentRefs, sliceSource,
+  countHoles, validateHolesAndPlaceholders,
+  collectIdentRefs, sliceSource,
 };
