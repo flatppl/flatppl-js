@@ -8,13 +8,14 @@ class DAGPanel {
   static createOrShow(context) {
     const column = vscode.ViewColumn.Beside;
     if (DAGPanel.currentPanel) {
-      DAGPanel.currentPanel._panel.reveal(column);
+      // Don't steal focus from the editor when the panel updates.
+      DAGPanel.currentPanel._panel.reveal(column, /* preserveFocus */ true);
       return;
     }
     const panel = vscode.window.createWebviewPanel(
       DAGPanel.viewType,
       'FlatPPL DAG',
-      column,
+      { viewColumn: column, preserveFocus: true },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
