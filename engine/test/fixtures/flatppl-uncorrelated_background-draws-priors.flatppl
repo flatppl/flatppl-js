@@ -1,0 +1,31 @@
+# ===== Broadcasted operations =====
+
+bcadd = broadcasted(add)
+bcmul = broadcasted(mul)
+
+# ===== Nominal templates and uncertainties =====
+sig = [12.0, 11.0]
+bkg = [50.0, 52.0]
+dbkg = [3.0, 7.0]
+
+# ===== Observed data =====
+obs_data = [51.0, 48.0]
+
+# ===== Free parameter =====
+mu = elementof(nonnegreals)
+
+# ===== Draw nuisance parameters from prior =====
+tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
+gamma = draw(broadcast(Gamma, bcadd(tau, 1.0), tau))
+
+# ===== Expected counts and observation draw =====
+expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
+obs = draw(broadcast(Poisson, expected))
+
+# ===== Structural disintegration =====
+joint_model = lawof(record(gamma = gamma, obs = obs), mu = mu)
+forward_kernel, prior = disintegrate("obs", joint_model)
+
+# ===== Likelihood and posterior (both kernels in mu) =====
+L = likelihoodof(forward_kernel, obs_data)
+posterior = bayesupdate(L, prior)

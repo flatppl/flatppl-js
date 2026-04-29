@@ -1,0 +1,33 @@
+# ===== Broadcasted operations =====
+
+bcadd = broadcasted(add)
+bcmul = broadcasted(mul)
+
+# ===== Nominal templates and uncertainties =====
+sig = [12.0, 11.0]
+bkg = [50.0, 52.0]
+dbkg = [3.0, 7.0]
+
+# ===== Observed data =====
+obs_data = [51.0, 48.0]
+
+# ===== Free parameters =====
+mu = elementof(nonnegreals)
+gamma = elementof(cartpow(posreals, 2))
+
+# ===== Observation model =====
+expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
+obs_model = broadcast(Poisson, expected)
+
+# ===== Likelihood =====
+L_obs = likelihoodof(obs_model, obs_data)
+
+# ===== Prior: Gamma on gamma, improper flat on mu =====
+tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
+prior = joint(
+    mu = Lebesgue(support = nonnegreals),
+    gamma = broadcast(Gamma, bcadd(tau, 1.0), tau)
+)
+
+# ===== Unnormalized posterior =====
+posterior = bayesupdate(L_obs, prior)

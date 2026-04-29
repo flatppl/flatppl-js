@@ -209,6 +209,108 @@ function extractBoundaries(valueNode) {
 }
 
 /**
+ * Extract the field map from a joint-measure expression, when it can be
+ * statically resolved.
+ *
+ * Currently handles Tier 1: `lawof(record(name1 = node1, name2 = node2, ...), [boundaries...])`.
+ * Returns:
+ *   { fields: Map<fieldName, identifier-name>,
+ *     inheritedBoundaries: Map<argName, varName> }
+ * or null if the structure cannot be statically resolved.
+ */
+function extractJointFields(valueNode) {
+  if (!valueNode || valueNode.type !== 'CallExpr') return null;
+  if (!valueNode.callee || valueNode.callee.type !== 'Identifier') return null;
+  if (valueNode.callee.name !== 'lawof') return null;
+  if (valueNode.args.length === 0) return null;
+
+  const firstArg = valueNode.args[0];
+  if (firstArg.type !== 'CallExpr' || !firstArg.callee
+      || firstArg.callee.type !== 'Identifier'
+      || firstArg.callee.name !== 'record') {
+    return null;
+  }
+
+  const fields = new Map();
+  for (const arg of firstArg.args) {
+    if (arg.type !== 'KeywordArg') return null; // not statically resolvable
+    if (arg.value.type !== 'Identifier') return null; // can't trace back to a node name
+    fields.set(arg.name, arg.value.name);
+  }
+
+  // Inherited boundaries (kwargs after first arg of lawof)
+  const inheritedBoundaries = new Map();
+  for (let i = 1; i < valueNode.args.length; i++) {
+    const arg = valueNode.args[i];
+    if (arg.type === 'KeywordArg') {
+      let varName = null;
+      if (arg.value.type === 'Identifier') varName = arg.value.name;
+      else if (arg.value.type === 'Placeholder') varName = '_' + arg.value.name + '_';
+      if (varName) inheritedBoundaries.set(arg.name, varName);
+    }
+  }
+  return { fields, inheritedBoundaries };
+}
+
+/**
+ * Detect a disintegrate-decomposition statement and resolve its structure.
+ *
+ *   kernel_name, prior_name = disintegrate(selector, joint_ref)
+ *
+ * `selector` may be a string literal or an array of string literals.
+ * `joint_ref` must be an Identifier referencing a binding whose RHS is a
+ * statically-resolvable joint measure (currently: lawof(record(...))).
+ *
+ * Returns null if any part doesn't match.
+ *
+ * @param {object} stmt - AssignStatement
+ * @param {Map} bindingMap - already-built bindings map (for joint lookup)
+ * @returns {{ kernelName, priorName, selectorFields, jointName, jointFields, inheritedBoundaries } | null}
+ */
+function detectDisintegration(stmt, bindingMap) {
+  if (stmt.type !== 'AssignStatement') return null;
+  if (stmt.names.length !== 2) return null;
+  if (stmt.value.type !== 'CallExpr') return null;
+  if (!stmt.value.callee || stmt.value.callee.type !== 'Identifier') return null;
+  if (stmt.value.callee.name !== 'disintegrate') return null;
+  if (stmt.value.args.length !== 2) return null;
+
+  const selectorArg = stmt.value.args[0];
+  const jointArg = stmt.value.args[1];
+
+  // Parse selector
+  let selectorFields = null;
+  if (selectorArg.type === 'StringLiteral') {
+    selectorFields = [selectorArg.value];
+  } else if (selectorArg.type === 'ArrayLiteral') {
+    selectorFields = [];
+    for (const el of selectorArg.elements) {
+      if (el.type !== 'StringLiteral') return null;
+      selectorFields.push(el.value);
+    }
+  } else {
+    return null;
+  }
+
+  if (jointArg.type !== 'Identifier') return null;
+  const jointBinding = bindingMap.get(jointArg.name);
+  if (!jointBinding) return null;
+
+  const jointInfo = extractJointFields(jointBinding.node.value);
+  if (!jointInfo) return null;
+
+  return {
+    kernelName: stmt.names[0].name,
+    priorName: stmt.names[1].name,
+    selectorFields,
+    jointName: jointArg.name,
+    jointFields: jointInfo.fields,
+    inheritedBoundaries: jointInfo.inheritedBoundaries,
+    selectorLoc: selectorArg.loc,
+  };
+}
+
+/**
  * For fn() calls, count hole arguments in the expression.
  */
 function countHoles(valueNode) {
@@ -360,10 +462,40 @@ function analyze(ast, source) {
     }
   }
 
+  // Third pass: detect disintegrate-decompositions, tag results, validate selectors.
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement') continue;
+    const info = detectDisintegration(stmt, bindings);
+    if (!info) continue;
+
+    // Validate selector fields exist in the joint's record
+    for (const field of info.selectorFields) {
+      if (!info.jointFields.has(field)) {
+        diagnostics.push({
+          severity: 'error',
+          message: `disintegrate: selector field '${field}' not found in joint measure '${info.jointName}'`,
+          loc: info.selectorLoc,
+        });
+      }
+    }
+
+    const kernel = bindings.get(info.kernelName);
+    const prior = bindings.get(info.priorName);
+    if (kernel) {
+      kernel.type = 'lawof';
+      kernel.disintegrateRole = { kind: 'kernel', ...info };
+    }
+    if (prior) {
+      prior.type = 'lawof';
+      prior.disintegrateRole = { kind: 'prior', ...info };
+    }
+  }
+
   return { bindings, diagnostics, symbols };
 }
 
 module.exports = {
-  analyze, classifyStatement, collectDeps, extractBoundaries, countHoles,
-  collectIdentRefs, sliceSource,
+  analyze, classifyStatement, collectDeps,
+  extractBoundaries, extractJointFields, detectDisintegration,
+  countHoles, collectIdentRefs, sliceSource,
 };

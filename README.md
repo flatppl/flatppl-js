@@ -4,6 +4,11 @@ VS-Code support for FlatPPL, the Flat Portable Probabilistic Language.
 
 Note: This extension is in early development and may be unstable. It is not published on the VS Code Marketplace yet, see below for installation instructions.
 
+## About FlatPPL
+
+FlatPPL is a minimal, inference-agnostic stochastic language for specifying
+probabilistic models.
+
 ## Features
 
 Work in progress.
@@ -43,10 +48,26 @@ Note: The symlink name must be `flatppl.flatppl` (matching `publisher.name` from
 Reload the VS Code window via VS-Code command "Developer: Reload Window" after
 making changes to the extension code.
 
-## About FlatPPL
+#### Running tests
 
-FlatPPL is a minimal, inference-agnostic stochastic language for specifying
-probabilistic models.
+The language engine (tokenizer, parser, analyzer, DAG extraction) lives in
+[`engine/`](engine/) and has its own test suite based on the Node.js
+built-in test runner (no extra dependencies required).
+
+From the repository root:
+
+```sh
+npm test
+```
+
+Or directly from inside the engine directory:
+
+```sh
+cd engine
+node --test 'test/*.test.js'
+```
+
+See [`engine/README.md`](engine/README.md) for details.
 
 ## License
 

@@ -205,13 +205,15 @@ function parse(tokens) {
         AST.loc(lbracket.loc.start.line, lbracket.loc.start.col, endLoc.end.line, endLoc.end.col));
     }
 
-    // Unexpected token
-    const bad = advance();
+    // Unexpected token: report and return an error placeholder.
+    // Don't consume NEWLINE/EOF — those are needed to terminate the statement.
+    const bad = peek();
     diagnostics.push({
       severity: 'error',
       message: `Unexpected token '${bad.value}' (${bad.type})`,
       loc: bad.loc,
     });
+    if (!at(T.NEWLINE) && !at(T.EOF)) advance();
     return AST.Identifier('__error__', bad.loc);
   }
 

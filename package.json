@@ -14,6 +14,9 @@
     "vscode": "^1.75.0"
   },
   "main": "./extension.js",
+  "scripts": {
+    "test": "cd engine && node --test 'test/*.test.js'"
+  },
   "activationEvents": [
     "onLanguage:flatppl"
   ],
