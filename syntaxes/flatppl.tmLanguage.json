@@ -12,9 +12,12 @@
     { "include": "#kernel" },
     { "include": "#measure-combinator" },
     { "include": "#analysis-operation" },
+    { "include": "#higher-order" },
+    { "include": "#set-constructor" },
     { "include": "#builtin-function" },
     { "include": "#constant" },
     { "include": "#predefined-set" },
+    { "include": "#reserved-name" },
     { "include": "#operator" },
     { "include": "#assignment" },
     { "include": "#function-call" },
@@ -33,6 +36,10 @@
       "patterns": [
         {
           "name": "constant.character.escape.flatppl",
+          "match": "\\\\[\\\\\"nrt0]"
+        },
+        {
+          "name": "invalid.illegal.escape.flatppl",
           "match": "\\\\."
         }
       ]
@@ -40,54 +47,91 @@
     "number": {
       "patterns": [
         {
-          "name": "constant.numeric.float.flatppl",
-          "match": "\\b[0-9]+\\.[0-9]*([eE][+-]?[0-9]+)?\\b"
+          "comment": "Hex integer with optional underscores between digits",
+          "name": "constant.numeric.integer.hex.flatppl",
+          "match": "\\b0[xX][0-9a-fA-F]+(_[0-9a-fA-F]+)*\\b"
         },
         {
+          "comment": "Decimal float with fractional part and optional exponent",
           "name": "constant.numeric.float.flatppl",
-          "match": "\\b[0-9]+[eE][+-]?[0-9]+\\b"
+          "match": "\\b[0-9]+(_[0-9]+)*\\.([0-9]+(_[0-9]+)*)?([eE][+-]?[0-9]+(_[0-9]+)*)?"
         },
         {
+          "comment": "Leading-dot float (.5, .5e7)",
+          "name": "constant.numeric.float.flatppl",
+          "match": "(?<![\\w.])\\.[0-9]+(_[0-9]+)*([eE][+-]?[0-9]+(_[0-9]+)*)?"
+        },
+        {
+          "comment": "Decimal integer with exponent (sci notation, e.g. 1e7)",
+          "name": "constant.numeric.float.flatppl",
+          "match": "\\b[0-9]+(_[0-9]+)*[eE][+-]?[0-9]+(_[0-9]+)*\\b"
+        },
+        {
+          "comment": "Decimal integer with optional underscores between digits",
           "name": "constant.numeric.integer.flatppl",
-          "match": "\\b[0-9]+\\b"
+          "match": "\\b[0-9]+(_[0-9]+)*\\b"
         }
       ]
     },
     "placeholder": {
+      "comment": "Placeholder variables _name_ used inside functionof/lawof",
       "name": "variable.other.placeholder.flatppl",
-      "match": "\\b_[a-zA-Z][a-zA-Z0-9]*_\\b"
+      "match": "\\b_[a-zA-Z][a-zA-Z0-9_]*_\\b"
     },
     "hole": {
+      "comment": "Hole _ used inside fn(...) or as a discard name",
       "name": "variable.other.hole.flatppl",
       "match": "(?<![a-zA-Z0-9])_(?![a-zA-Z0-9_])"
     },
     "special-form": {
-      "match": "\\b(draw|lawof|functionof|fn|fchain|bijection|elementof|valueset|relabel|load_module|load_table)\\b",
+      "comment": "Special operations with their own syntax rules",
+      "match": "\\b(draw|lawof|functionof|fn|elementof|external|valueset|load_module|standard_module|load_data)\\b",
       "name": "keyword.other.special-form.flatppl"
     },
     "kernel": {
-      "match": "\\b(Normal|Exponential|LogNormal|Gamma|Beta|Uniform|Poisson|ContinuedPoisson|Bernoulli|Binomial|MvNormal|PoissonProcess|CrystalBall|DoubleSidedCrystalBall|Argus|BreitWigner|RelativisticBreitWigner|Voigtian|BifurcatedGaussian|GeneralizedNormal|Lebesgue|Counting|Dirac)\\b",
+      "comment": "Built-in distribution constructors and fundamental measures",
+      "match": "\\b(Uniform|Normal|GeneralizedNormal|Cauchy|StudentT|Logistic|LogNormal|Exponential|Gamma|Weibull|InverseGamma|Beta|Bernoulli|Categorical|Binomial|Poisson|MvNormal|Wishart|InverseWishart|LKJ|LKJCholesky|Dirichlet|Multinomial|PoissonProcess|BinnedPoissonProcess|Dirac|Lebesgue|Counting)\\b",
       "name": "entity.name.type.kernel.flatppl"
     },
     "measure-combinator": {
+      "comment": "Measure-algebra operations",
       "match": "\\b(weighted|logweighted|normalize|totalmass|superpose|joint|jointchain|chain|iid|truncate|pushfwd)\\b",
       "name": "entity.name.function.measure.flatppl"
     },
     "analysis-operation": {
-      "match": "\\b(likelihoodof|joint_likelihood|densityof|logdensityof|bayesupdate)\\b",
+      "comment": "Likelihood, posterior, and disintegration operations",
+      "match": "\\b(likelihoodof|joint_likelihood|densityof|logdensityof|bayesupdate|disintegrate)\\b",
       "name": "entity.name.function.analysis.flatppl"
     },
+    "higher-order": {
+      "comment": "Higher-order callables and function annotations",
+      "match": "\\b(broadcast|broadcasted|reduce|scan|fchain|bijection)\\b",
+      "name": "entity.name.function.higher-order.flatppl"
+    },
+    "set-constructor": {
+      "comment": "Set-construction callables",
+      "match": "\\b(interval|cartprod|cartpow|stdsimplex)\\b",
+      "name": "entity.name.function.set-constructor.flatppl"
+    },
     "builtin-function": {
-      "match": "\\b(broadcast|get|cat|record|filter|selectbins|table|rowstack|colstack|linspace|extlinspace|interval|fill|eye|onehot|bincounts|interp_pwlin|interp_pwexp|interp_poly2_lin|interp_poly6_lin|interp_poly6_exp|polynomial|bernstein|stepwise|exp|log|log10|pow|sqrt|abs|abs2|sin|cos|min|max|floor|ceil|conj|cis|complex|real|imag|sum|product|length|ifelse|land|lor|lnot|lxor|transpose|adjoint|det|logabsdet|inv|trace|linsolve|lower_cholesky|row_gram|col_gram|self_outer|diagmat)(?=\\s*\\()",
-      "name": "entity.name.function.builtin.flatppl"
+      "comment": "Built-in functions and value constructors",
+      "match": "\\b(identity|vector|array|fill|zeros|ones|eye|onehot|linspace|extlinspace|get|cat|rowstack|colstack|record|table|tuple|partition|reverse|relabel|preset|fixed|boolean|integer|real|complex|string|imag|exp|log|log10|pow|sqrt|abs|abs2|sin|cos|tan|min|max|floor|ceil|round|div|mod|conj|cis|gamma|loggamma|logit|invlogit|probit|invprobit|add|sub|mul|divide|neg|equal|unequal|lt|le|gt|ge|isfinite|isinf|isnan|iszero|transpose|adjoint|det|logabsdet|inv|trace|linsolve|lower_cholesky|row_gram|col_gram|self_outer|diagmat|sum|mean|var|prod|maximum|minimum|length|l1norm|l2norm|l1unit|l2unit|logsumexp|softmax|logsoftmax|land|lor|lnot|lxor|ifelse|filter|selectbins|bincounts|polynomial|bernstein|stepwise|rngstate|rnginit|rand|checked)(?=\\s*\\()",
+      "name": "support.function.builtin.flatppl"
     },
     "constant": {
+      "comment": "Predefined value constants",
       "match": "\\b(true|false|inf|pi|im)\\b",
       "name": "constant.language.flatppl"
     },
     "predefined-set": {
-      "match": "\\b(reals|posreals|nonnegreals|integers|complexes|anything)\\b",
+      "comment": "Predefined sets",
+      "match": "\\b(reals|posreals|nonnegreals|unitinterval|posintegers|nonnegintegers|integers|booleans|complexes|rngstates|anything)\\b",
       "name": "constant.other.set.flatppl"
+    },
+    "reserved-name": {
+      "comment": "Reserved module references and special bindings",
+      "match": "\\b(self|base|flatppl_compat)\\b",
+      "name": "variable.language.flatppl"
     },
     "operator": {
       "patterns": [

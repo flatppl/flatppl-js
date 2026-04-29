@@ -35,6 +35,7 @@ function token(type, value, startLine, startCol, endLine, endCol) {
 
 function isAlpha(ch) { return /[a-zA-Z]/.test(ch); }
 function isDigit(ch) { return /[0-9]/.test(ch); }
+function isHexDigit(ch) { return /[0-9a-fA-F]/.test(ch); }
 function isAlphaNum(ch) { return /[a-zA-Z0-9]/.test(ch); }
 function isIdentStart(ch) { return isAlpha(ch) || ch === '_'; }
 function isIdentChar(ch) { return isAlphaNum(ch) || ch === '_'; }
@@ -96,14 +97,24 @@ function tokenize(source) {
       let raw = '"';
       while (pos < source.length && at() !== '"' && at() !== '\n') {
         if (at() === '\\' && pos + 1 < source.length) {
+          const escStartLine = line, escStartCol = col;
           raw += advance(); // backslash
           raw += advance(); // escaped char
           const esc = raw[raw.length - 1];
           if (esc === 'n') value += '\n';
           else if (esc === 't') value += '\t';
+          else if (esc === 'r') value += '\r';
+          else if (esc === '0') value += '\0';
           else if (esc === '\\') value += '\\';
           else if (esc === '"') value += '"';
-          else value += esc;
+          else {
+            diagnostics.push({
+              severity: 'error',
+              message: `Invalid escape sequence '\\${esc}'`,
+              loc: { start: { line: escStartLine, col: escStartCol }, end: { line, col } },
+            });
+            value += esc;
+          }
         } else {
           const c = advance();
           raw += c;
@@ -119,18 +130,44 @@ function tokenize(source) {
       continue;
     }
 
-    // Number literal
+    // Number literal (decimal, hex, with optional underscores between digits)
     if (isDigit(ch) || (ch === '.' && isDigit(at(1)))) {
       let num = '';
-      while (pos < source.length && isDigit(at())) num += advance();
+      // Hex: 0x HexDigit (_? HexDigit)*  — at least one hex digit required
+      if (ch === '0' && (at(1) === 'x' || at(1) === 'X')) {
+        num += advance(); // 0
+        num += advance(); // x
+        if (!isHexDigit(at())) {
+          diagnostics.push({
+            severity: 'error',
+            message: 'Hex literal requires at least one hex digit after 0x',
+            loc: { start: { line: startLine, col: startCol }, end: { line, col } },
+          });
+        }
+        while (pos < source.length && (isHexDigit(at()) || (at() === '_' && isHexDigit(at(1))))) {
+          num += advance();
+        }
+        tokens.push(token(T.NUMBER, num, startLine, startCol, line, col));
+        continue;
+      }
+      // Decimal integer part
+      while (pos < source.length && (isDigit(at()) || (at() === '_' && isDigit(at(1))))) {
+        num += advance();
+      }
+      // Fractional part
       if (at() === '.' && at(1) !== '.') {
         num += advance(); // dot
-        while (pos < source.length && isDigit(at())) num += advance();
+        while (pos < source.length && (isDigit(at()) || (at() === '_' && isDigit(at(1))))) {
+          num += advance();
+        }
       }
+      // Exponent
       if (at() === 'e' || at() === 'E') {
         num += advance(); // e/E
         if (at() === '+' || at() === '-') num += advance();
-        while (pos < source.length && isDigit(at())) num += advance();
+        while (pos < source.length && (isDigit(at()) || (at() === '_' && isDigit(at(1))))) {
+          num += advance();
+        }
       }
       tokens.push(token(T.NUMBER, num, startLine, startCol, line, col));
       continue;

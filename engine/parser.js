@@ -159,12 +159,32 @@ function parse(tokens) {
       return AST.Identifier(tok.value, tok.loc);
     }
 
-    // Parenthesized expression
+    // Parenthesized expression or tuple literal: (expr) | (expr, expr [, expr...])
     if (at(T.LPAREN)) {
-      advance(); // (
-      const expr = parseExpr();
+      const lparen = advance(); // (
+      const first = parseExpr();
+      // Tuple? Requires at least one comma.
+      if (at(T.COMMA)) {
+        const elements = [first];
+        while (at(T.COMMA)) {
+          advance();
+          if (at(T.RPAREN)) break; // trailing comma
+          elements.push(parseExpr());
+        }
+        const rparen = expect(T.RPAREN);
+        const endLoc = rparen ? rparen.loc : (elements[elements.length - 1] || first).loc;
+        const tupleLoc = AST.loc(lparen.loc.start.line, lparen.loc.start.col, endLoc.end.line, endLoc.end.col);
+        if (elements.length < 2) {
+          diagnostics.push({
+            severity: 'error',
+            message: 'Tuples must have at least two elements; single-element tuples are not supported',
+            loc: tupleLoc,
+          });
+        }
+        return AST.TupleLiteral(elements, tupleLoc);
+      }
       expect(T.RPAREN);
-      return expr;
+      return first;
     }
 
     // Array literal [a, b, c]
@@ -204,6 +224,20 @@ function parse(tokens) {
       advance();
       if (at(T.RPAREN)) break; // trailing comma
       args.push(parseArg());
+    }
+    // Enforce: positional args must come before keyword args
+    let seenKwarg = false;
+    for (const a of args) {
+      if (a.type === 'KeywordArg') {
+        seenKwarg = true;
+      } else if (seenKwarg) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'Positional argument cannot follow keyword argument',
+          loc: a.loc,
+        });
+        break;
+      }
     }
     return args;
   }
@@ -246,8 +280,11 @@ function parse(tokens) {
   function parseStatement() {
     const startTok = peek();
 
-    // Must start with an identifier (LHS of assignment)
-    if (!at(T.IDENT)) {
+    // Bare `_` (HOLE token) is a valid LHS name (discards the value).
+    // The grammar's `Name` allows `_` lexically; we accept either IDENT or HOLE here.
+    function isLhsName() { return at(T.IDENT) || at(T.HOLE); }
+
+    if (!isLhsName()) {
       diagnostics.push({
         severity: 'error',
         message: `Expected variable name, got '${startTok.value}'`,
@@ -264,7 +301,7 @@ function parse(tokens) {
 
     while (at(T.COMMA)) {
       advance(); // ,
-      if (at(T.IDENT)) {
+      if (isLhsName()) {
         names.push(AST.Identifier(peek().value, peek().loc));
         advance();
       } else {

@@ -63,6 +63,10 @@ function ArrayLiteral(elements, loc) {
   return { type: 'ArrayLiteral', elements, loc };
 }
 
+function TupleLiteral(elements, loc) {
+  return { type: 'TupleLiteral', elements, loc };
+}
+
 function BinaryExpr(op, left, right, loc) {
   return { type: 'BinaryExpr', op, left, right, loc };
 }
@@ -96,7 +100,7 @@ module.exports = {
   Program, AssignStatement, ErrorStatement, Comment,
   Identifier, NumberLiteral, StringLiteral, BoolLiteral,
   ConstantRef, SetRef, Placeholder, Hole,
-  ArrayLiteral, BinaryExpr, UnaryExpr,
+  ArrayLiteral, TupleLiteral, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, FieldAccess,
   KeywordArg, SliceAll,
 };

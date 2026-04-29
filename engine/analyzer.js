@@ -13,18 +13,21 @@ function classifyStatement(valueNode) {
     switch (name) {
       case 'draw': return 'stochastic';
       case 'elementof': return 'input';
+      case 'external': return 'input';
       case 'lawof': return 'lawof';
       case 'functionof': return 'functionof';
       case 'fn': return 'fn';
       case 'likelihoodof': return 'likelihood';
       case 'bayesupdate': return 'bayesupdate';
       case 'load_module': return 'module';
-      case 'load_table': return 'table';
+      case 'standard_module': return 'module';
+      case 'load_data': return 'data';
     }
   }
 
   if (valueNode.type === 'ArrayLiteral' || valueNode.type === 'NumberLiteral'
-      || valueNode.type === 'StringLiteral') {
+      || valueNode.type === 'StringLiteral' || valueNode.type === 'TupleLiteral'
+      || valueNode.type === 'BoolLiteral') {
     return 'literal';
   }
 
@@ -72,6 +75,7 @@ function validateSpecialForm(valueNode) {
     }
     case 'draw':
     case 'elementof':
+    case 'external':
     case 'valueset': {
       // Single positional expression
       if (args.length !== 1) {
@@ -95,9 +99,22 @@ function validateSpecialForm(valueNode) {
       }
       break;
     }
-    case 'load_table': {
-      if (args.length !== 1) {
-        diags.push({ severity: 'error', message: `load_table() requires exactly one file path argument`, loc: valueNode.loc });
+    case 'standard_module': {
+      // Two positional arguments: module name and version string
+      if (args.length !== 2) {
+        diags.push({ severity: 'error', message: `standard_module() requires exactly two arguments (name, version)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `standard_module() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+    case 'load_data': {
+      // source (positional or keyword) + valueset (keyword)
+      if (args.length === 0) {
+        diags.push({ severity: 'error', message: `load_data() requires source and valueset arguments`, loc: valueNode.loc });
       }
       break;
     }
@@ -144,6 +161,7 @@ function collectDeps(node, definedNames) {
         walk(node.object, false);
         break;
       case 'ArrayLiteral':
+      case 'TupleLiteral':
         for (const el of node.elements) walk(el, false);
         break;
       case 'KeywordArg':
@@ -207,7 +225,7 @@ function countHoles(valueNode) {
     }
     if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); }
     if (node.type === 'UnaryExpr') walk(node.operand);
-    if (node.type === 'ArrayLiteral') for (const e of node.elements) walk(e);
+    if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') for (const e of node.elements) walk(e);
     if (node.type === 'IndexExpr') { walk(node.object); for (const i of node.indices) walk(i); }
     if (node.type === 'FieldAccess') walk(node.object);
     if (node.type === 'KeywordArg') walk(node.value);
@@ -246,7 +264,7 @@ function collectIdentRefs(node) {
     if (node.type === 'CallExpr') { walk(node.callee); for (const a of node.args) walk(a); }
     if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); }
     if (node.type === 'UnaryExpr') walk(node.operand);
-    if (node.type === 'ArrayLiteral') for (const e of node.elements) walk(e);
+    if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') for (const e of node.elements) walk(e);
     if (node.type === 'IndexExpr') { walk(node.object); for (const i of node.indices) walk(i); }
     if (node.type === 'FieldAccess') walk(node.object);
     if (node.type === 'KeywordArg') walk(node.value);
