@@ -29,7 +29,7 @@
       {
         "command": "flatppl.showDAG",
         "title": "FlatPPL: Show DAG",
-        "icon": "$(graph)"
+        "icon": "$(type-hierarchy-sub)"
       }
     ],
     "menus": {
