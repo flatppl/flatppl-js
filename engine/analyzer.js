@@ -608,9 +608,260 @@ function analyze(ast, source) {
   return { bindings, diagnostics, symbols };
 }
 
+/**
+ * Test whether a string is a valid public/private/auto-generated binding name.
+ *
+ * Rejects: reserved names (self, base), bare `_`, placeholder pattern `_x_`,
+ * and any name that doesn't match one of the canonical regular-expression
+ * patterns from the spec (`docs/04-design.md#sec:binding-names`).
+ */
+function isValidBindingName(name) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  if (name === 'self' || name === 'base') return false;
+  if (name === '_') return false; // discard, not a renameable target
+  // Public:        ^[A-Za-z][A-Za-z0-9_]*$
+  // Private:       ^_[A-Za-z]([A-Za-z0-9_]*[A-Za-z0-9])?$
+  // Auto-gen:      ^__[A-Za-z0-9][A-Za-z0-9_]*$
+  return /^[A-Za-z][A-Za-z0-9_]*$/.test(name)
+      || /^_[A-Za-z]([A-Za-z0-9_]*[A-Za-z0-9])?$/.test(name)
+      || /^__[A-Za-z0-9][A-Za-z0-9_]*$/.test(name);
+}
+
+/**
+ * Test whether a string is a valid placeholder source token (with surrounding
+ * underscores, e.g. `_par_`).
+ */
+function isValidPlaceholderText(text) {
+  return typeof text === 'string'
+      && /^_[A-Za-z]([A-Za-z0-9_]*[A-Za-z0-9])?_$/.test(text);
+}
+
+/**
+ * Plan a rename action at a given cursor position.
+ *
+ * Walks the AST, identifies what's under the cursor, and returns enough info
+ * for a rename provider to act on. Returns null when the position isn't a
+ * renameable target (e.g. on a literal, a comment, or a bare-`_` LHS).
+ *
+ * @param {object} ast - parsed Program AST
+ * @param {Map} bindings - analyzer bindings map
+ * @param {number} line - 0-based cursor line
+ * @param {number} col - 0-based cursor column
+ * @returns {{ kind: 'binding', oldName: string, targetLoc, locs: Loc[] }
+ *         | { kind: 'placeholder', oldName: string, targetLoc, locs: Loc[] }
+ *         | null}
+ *
+ * For 'binding': `locs` includes the binding's defining nameLoc plus every
+ *   Identifier reference site in any other statement's RHS.
+ * For 'placeholder': `oldName` is the placeholder *inner* name (without the
+ *   surrounding underscores). `locs` includes every Placeholder node that
+ *   shares the same nearest enclosing `functionof`/`lawof` scope.
+ *   Each loc covers the full `_name_` source span.
+ */
+function planRename(ast, bindings, line, col) {
+  function inLoc(loc) {
+    return loc && loc.start.line <= line && line <= loc.end.line
+        && (loc.start.line < line || col >= loc.start.col)
+        && (line < loc.end.line || col <= loc.end.col);
+  }
+
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement') continue;
+
+    // LHS names — direct binding references.
+    for (const nameNode of stmt.names) {
+      if (!inLoc(nameNode.loc)) continue;
+      const name = nameNode.name;
+      if (name === '_') return null; // discard binding, can't rename
+      if (!bindings.has(name)) return null;
+      return planBindingRename(ast, bindings, name);
+    }
+
+    // RHS expression — could be an identifier reference or a placeholder.
+    const target = findCursorTargetInExpr(stmt.value, inLoc);
+    if (target) {
+      if (target.kind === 'identifier') {
+        if (!bindings.has(target.name)) return null;
+        return planBindingRename(ast, bindings, target.name);
+      }
+      if (target.kind === 'placeholder' && target.scope) {
+        return planPlaceholderRename(target.scope, target.name, target.loc);
+      }
+    }
+  }
+  return null;
+}
+
+function planBindingRename(ast, bindings, name) {
+  const binding = bindings.get(name);
+  if (!binding) return null;
+
+  const locs = [binding.nameLoc];
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement') continue;
+    const refs = collectIdentRefs(stmt.value);
+    for (const ref of refs) {
+      if (ref.name === name) locs.push(ref.loc);
+    }
+  }
+  return { kind: 'binding', oldName: name, targetLoc: binding.nameLoc, locs };
+}
+
+function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
+  const locs = [];
+  function walk(node) {
+    if (!node) return;
+    if (node.type === 'Placeholder') {
+      if (node.name === name) locs.push(node.loc);
+      return;
+    }
+    if (node.type === 'CallExpr') {
+      // Stop at NESTED functionof/lawof — those are different placeholder scopes.
+      if (node !== scopeCallExpr
+          && node.callee && node.callee.type === 'Identifier'
+          && (node.callee.name === 'functionof' || node.callee.name === 'lawof')) {
+        return;
+      }
+      walk(node.callee);
+      for (const a of node.args) walk(a);
+      return;
+    }
+    if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); return; }
+    if (node.type === 'UnaryExpr') { walk(node.operand); return; }
+    if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') {
+      for (const e of node.elements) walk(e);
+      return;
+    }
+    if (node.type === 'IndexExpr') {
+      walk(node.object);
+      for (const i of node.indices) walk(i);
+      return;
+    }
+    if (node.type === 'FieldAccess') { walk(node.object); return; }
+    if (node.type === 'KeywordArg') { walk(node.value); return; }
+  }
+  for (const a of scopeCallExpr.args) walk(a);
+  return { kind: 'placeholder', oldName: name, targetLoc, locs };
+}
+
+/**
+ * Find a renameable AST node at the cursor position within an expression.
+ * Tracks the nearest enclosing functionof/lawof CallExpr as the placeholder
+ * scope.
+ */
+function findCursorTargetInExpr(root, inLoc) {
+  let result = null;
+  function walk(node, scope) {
+    if (!node || result) return;
+    if (node.type === 'Identifier' && inLoc(node.loc)) {
+      result = { kind: 'identifier', name: node.name, loc: node.loc };
+      return;
+    }
+    if (node.type === 'Placeholder' && inLoc(node.loc)) {
+      result = { kind: 'placeholder', name: node.name, loc: node.loc, scope };
+      return;
+    }
+    if (node.type === 'CallExpr') {
+      let inner = scope;
+      if (node.callee && node.callee.type === 'Identifier'
+          && (node.callee.name === 'functionof' || node.callee.name === 'lawof')) {
+        inner = node;
+      }
+      walk(node.callee, scope);
+      for (const a of node.args) walk(a, inner);
+      return;
+    }
+    if (node.type === 'BinaryExpr') { walk(node.left, scope); walk(node.right, scope); return; }
+    if (node.type === 'UnaryExpr') { walk(node.operand, scope); return; }
+    if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') {
+      for (const e of node.elements) walk(e, scope);
+      return;
+    }
+    if (node.type === 'IndexExpr') {
+      walk(node.object, scope);
+      for (const i of node.indices) walk(i, scope);
+      return;
+    }
+    if (node.type === 'FieldAccess') { walk(node.object, scope); return; }
+    if (node.type === 'KeywordArg') { walk(node.value, scope); return; }
+  }
+  walk(root, null);
+  return result;
+}
+
+/**
+ * Find the chain of enclosing AST node ranges at a given cursor position,
+ * ordered from innermost to outermost.
+ *
+ * Used by SelectionRangeProvider to power "Expand Selection" (Shift+Alt+→).
+ *
+ * @param {object} ast - parsed Program AST
+ * @param {number} line - 0-based cursor line
+ * @param {number} col - 0-based cursor column
+ * @returns {Array<Loc>} innermost first
+ */
+function findEnclosingRanges(ast, line, col) {
+  function inLoc(loc) {
+    return loc && loc.start.line <= line && line <= loc.end.line
+        && (loc.start.line < line || col >= loc.start.col)
+        && (line < loc.end.line || col <= loc.end.col);
+  }
+
+  const ranges = []; // outermost first; we'll reverse at the end
+
+  function walk(node) {
+    if (!node) return;
+    // Program has no .loc — descend into body without recording a range.
+    if (node.type === 'Program') {
+      for (const s of node.body) walk(s);
+      return;
+    }
+    if (!node.loc || !inLoc(node.loc)) return;
+    ranges.push(node.loc);
+    // Recurse into children — the deepest matching node is appended last.
+    switch (node.type) {
+      case 'AssignStatement':
+        for (const n of node.names) walk(n);
+        walk(node.value);
+        break;
+      case 'CallExpr':
+        walk(node.callee);
+        for (const a of node.args) walk(a);
+        break;
+      case 'BinaryExpr':
+        walk(node.left);
+        walk(node.right);
+        break;
+      case 'UnaryExpr':
+        walk(node.operand);
+        break;
+      case 'ArrayLiteral':
+      case 'TupleLiteral':
+        for (const e of node.elements) walk(e);
+        break;
+      case 'IndexExpr':
+        walk(node.object);
+        for (const i of node.indices) walk(i);
+        break;
+      case 'FieldAccess':
+        walk(node.object);
+        break;
+      case 'KeywordArg':
+        walk(node.value);
+        break;
+      // Leaf nodes have no children to walk.
+    }
+  }
+
+  walk(ast);
+  return ranges.reverse(); // innermost first
+}
+
 module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
   countHoles, validateHolesAndPlaceholders,
   collectIdentRefs, sliceSource,
+  planRename, isValidBindingName, isValidPlaceholderText,
+  findEnclosingRanges,
 };

@@ -1,6 +1,8 @@
 'use strict';
 const vscode = require('vscode');
-const { processSource, computeSubDAG, findBindingAtLine, builtins } = require('./engine');
+const { processSource, computeSubDAG, findBindingAtLine, builtins,
+  planRename, isValidBindingName, isValidPlaceholderText,
+  findEnclosingRanges } = require('./engine');
 const { DAGPanel } = require('./src/dagView');
 
 function activate(context) {
@@ -324,6 +326,122 @@ function activate(context) {
     }
   });
 
+  // --- Rename provider (F2) ---
+
+  function locToRange(loc) {
+    return new vscode.Range(
+      loc.start.line, loc.start.col,
+      loc.end.line, loc.end.col
+    );
+  }
+
+  const renameProvider = vscode.languages.registerRenameProvider('flatppl', {
+    prepareRename(document, position) {
+      const { ast, bindings } = getParsed(document);
+      const plan = planRename(ast, bindings, position.line, position.character);
+      if (!plan) {
+        // Throw to give VS Code a clear "not renameable" signal.
+        throw new Error("This element cannot be renamed");
+      }
+      return {
+        range: locToRange(plan.targetLoc),
+        placeholder: plan.kind === 'placeholder'
+          ? '_' + plan.oldName + '_'
+          : plan.oldName,
+      };
+    },
+
+    provideRenameEdits(document, position, newName) {
+      const { ast, bindings } = getParsed(document);
+      const plan = planRename(ast, bindings, position.line, position.character);
+      if (!plan) return null;
+
+      // Validate new name based on rename kind.
+      if (plan.kind === 'binding') {
+        if (!isValidBindingName(newName)) {
+          throw new Error(`'${newName}' is not a valid binding name`);
+        }
+        // Reject conflicts with existing bindings (except the one being renamed).
+        if (newName !== plan.oldName && bindings.has(newName)) {
+          throw new Error(`Name '${newName}' is already defined`);
+        }
+        // Reject built-in shadowing? Spec allows it ("built-ins are shadowable"),
+        // so we don't block it here — the user is intentionally shadowing.
+      } else if (plan.kind === 'placeholder') {
+        if (!isValidPlaceholderText(newName)) {
+          throw new Error(`'${newName}' is not a valid placeholder (must look like _name_)`);
+        }
+      }
+
+      const edit = new vscode.WorkspaceEdit();
+      const replaceText = newName; // already includes underscores for placeholder case
+      for (const loc of plan.locs) {
+        edit.replace(document.uri, locToRange(loc), replaceText);
+      }
+      return edit;
+    }
+  });
+
+  // --- Find All References (Shift+F12) ---
+
+  const referenceProvider = vscode.languages.registerReferenceProvider('flatppl', {
+    provideReferences(document, position, refContext) {
+      const { ast, bindings } = getParsed(document);
+      const plan = planRename(ast, bindings, position.line, position.character);
+      if (!plan) return null;
+      // For binding renames, locs[0] is the LHS definition and the rest are
+      // references. Honour includeDeclaration accordingly.
+      let locs = plan.locs;
+      if (plan.kind === 'binding' && refContext && refContext.includeDeclaration === false) {
+        locs = locs.slice(1);
+      }
+      return locs.map(loc => new vscode.Location(document.uri, locToRange(loc)));
+    }
+  });
+
+  // --- Document Highlight (auto, when cursor is on an identifier) ---
+
+  const highlightProvider = vscode.languages.registerDocumentHighlightProvider('flatppl', {
+    provideDocumentHighlights(document, position) {
+      const { ast, bindings } = getParsed(document);
+      const plan = planRename(ast, bindings, position.line, position.character);
+      if (!plan) return null;
+      return plan.locs.map((loc, i) => {
+        // For bindings: first loc is the LHS definition (Write); rest are refs (Read).
+        // For placeholders: all are textually equivalent (Text).
+        let kind = vscode.DocumentHighlightKind.Text;
+        if (plan.kind === 'binding') {
+          kind = (i === 0)
+            ? vscode.DocumentHighlightKind.Write
+            : vscode.DocumentHighlightKind.Read;
+        }
+        return new vscode.DocumentHighlight(locToRange(loc), kind);
+      });
+    }
+  });
+
+  // --- Selection Range (Shift+Alt+→ to expand selection) ---
+
+  const selectionRangeProvider = vscode.languages.registerSelectionRangeProvider('flatppl', {
+    provideSelectionRanges(document, positions) {
+      const { ast } = getParsed(document);
+      return positions.map(pos => {
+        const ranges = findEnclosingRanges(ast, pos.line, pos.character);
+        if (ranges.length === 0) {
+          // Fall back to the word range so VS Code's default still works.
+          const wordRange = document.getWordRangeAtPosition(pos);
+          return wordRange ? new vscode.SelectionRange(wordRange) : null;
+        }
+        // Build a parent chain from outermost down to innermost.
+        let current = null;
+        for (let i = ranges.length - 1; i >= 0; i--) {
+          current = new vscode.SelectionRange(locToRange(ranges[i]), current);
+        }
+        return current;
+      }).filter(Boolean);
+    }
+  });
+
   // --- Clean up diagnostics on close ---
 
   const closeListener = vscode.workspace.onDidCloseTextDocument(doc => {
@@ -338,6 +456,7 @@ function activate(context) {
   context.subscriptions.push(
     showDagCmd, selectionListener, changeListener, openListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
+    renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
   );
 }
 
