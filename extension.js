@@ -3,7 +3,7 @@ const vscode = require('vscode');
 const { processSource, computeSubDAG, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges } = require('./engine');
-const { DAGPanel } = require('./src/dagView');
+const { FlatPPLPanel } = require('./src/visualPanel');
 
 function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
@@ -44,12 +44,12 @@ function activate(context) {
   }
 
   function setupZoomHandler() {
-    if (!DAGPanel.currentPanel) return;
-    DAGPanel.currentPanel.onZoomInto = (nodeId) => {
+    if (!FlatPPLPanel.currentPanel) return;
+    FlatPPLPanel.currentPanel.onZoomInto = (nodeId) => {
       if (!cachedResult) return;
       const dagData = computeSubDAG(cachedResult.bindings, nodeId);
       if (dagData.nodes.length > 0) {
-        DAGPanel.currentPanel.update(dagData, nodeId, null, true);
+        FlatPPLPanel.currentPanel.update(dagData, nodeId, null, true);
       }
     };
   }
@@ -71,15 +71,15 @@ function activate(context) {
     const name = binding.name;
     const dagData = computeSubDAG(bindings, name);
 
-    DAGPanel.createOrShow(context);
+    FlatPPLPanel.createOrShow(context);
     setupZoomHandler();
-    DAGPanel.currentPanel.update(dagData, name, editor.document.uri, false);
+    FlatPPLPanel.currentPanel.update(dagData, name, editor.document.uri, false);
     return true;
   }
 
   // --- Commands ---
 
-  const showDagCmd = vscode.commands.registerCommand('flatppl.showDAG', () => {
+  const showDagCmd = vscode.commands.registerCommand('flatppl.visualize', () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'flatppl') {
       vscode.window.showErrorMessage('Place cursor in a FlatPPL file');
@@ -96,7 +96,7 @@ function activate(context) {
   let lastShownName = '';
 
   const selectionListener = vscode.window.onDidChangeTextEditorSelection(e => {
-    if (!DAGPanel.currentPanel) return;
+    if (!FlatPPLPanel.currentPanel) return;
     if (e.textEditor.document.languageId !== 'flatppl') return;
 
     clearTimeout(updateTimeout);

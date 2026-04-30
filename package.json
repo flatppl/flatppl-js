@@ -27,21 +27,21 @@
   "contributes": {
     "commands": [
       {
-        "command": "flatppl.showDAG",
-        "title": "FlatPPL: Show DAG",
+        "command": "flatppl.visualize",
+        "title": "FlatPPL: Visualize",
         "icon": "$(type-hierarchy-sub)"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "flatppl.showDAG",
+          "command": "flatppl.visualize",
           "when": "editorLangId == flatppl"
         }
       ],
       "editor/title": [
         {
-          "command": "flatppl.showDAG",
+          "command": "flatppl.visualize",
           "when": "editorLangId == flatppl",
           "group": "navigation"
         }

@@ -1,20 +1,20 @@
 'use strict';
 const vscode = require('vscode');
 
-class DAGPanel {
+class FlatPPLPanel {
   static currentPanel = undefined;
-  static viewType = 'flatpplDAG';
+  static viewType = 'flatpplPanel';
 
   static createOrShow(context) {
     const column = vscode.ViewColumn.Beside;
-    if (DAGPanel.currentPanel) {
+    if (FlatPPLPanel.currentPanel) {
       // Don't steal focus from the editor when the panel updates.
-      DAGPanel.currentPanel._panel.reveal(column, /* preserveFocus */ true);
+      FlatPPLPanel.currentPanel._panel.reveal(column, /* preserveFocus */ true);
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      DAGPanel.viewType,
-      'FlatPPL DAG',
+      FlatPPLPanel.viewType,
+      'FlatPPL',
       { viewColumn: column, preserveFocus: true },
       {
         enableScripts: true,
@@ -24,7 +24,7 @@ class DAGPanel {
         ],
       }
     );
-    DAGPanel.currentPanel = new DAGPanel(panel, context);
+    FlatPPLPanel.currentPanel = new FlatPPLPanel(panel, context);
   }
 
   constructor(panel, context) {
@@ -34,7 +34,7 @@ class DAGPanel {
     this._onZoomInto = null;
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
-      DAGPanel.currentPanel = undefined;
+      FlatPPLPanel.currentPanel = undefined;
     });
     this._panel.webview.onDidReceiveMessage(msg => {
       if (msg.type === 'navigateTo' && this._sourceUri != null) {
@@ -56,7 +56,7 @@ class DAGPanel {
         this._onZoomInto(msg.nodeId);
       }
       if (msg.type === 'updateTitle') {
-        this._panel.title = `FlatPPL DAG: ${msg.name}`;
+        this._panel.title = `FlatPPL: ${msg.name}`;
       }
     });
   }
@@ -67,7 +67,7 @@ class DAGPanel {
 
   update(dagData, targetName, sourceUri, pushHistory) {
     if (sourceUri) this._sourceUri = sourceUri;
-    this._panel.title = `FlatPPL DAG: ${targetName}`;
+    this._panel.title = `FlatPPL: ${targetName}`;
     this._panel.webview.postMessage({
       type: 'updateDAG',
       data: dagData,
@@ -100,7 +100,7 @@ class DAGPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
-  <title>FlatPPL DAG</title>
+  <title>FlatPPL</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -650,4 +650,4 @@ function getNonce() {
   return text;
 }
 
-module.exports = { DAGPanel };
+module.exports = { FlatPPLPanel };
