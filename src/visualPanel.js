@@ -89,6 +89,12 @@ class FlatPPLPanel {
     const cytoscapeDagreUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'cytoscape-dagre.js')
     );
+    const cytoscapeLayersUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'cytoscape-layers.min.js')
+    );
+    const cytoscapeBubblesetsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'cytoscape-bubblesets.min.js')
+    );
     const echartsUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'echarts.min.js')
     );
@@ -228,6 +234,8 @@ class FlatPPLPanel {
   <script nonce="${nonce}" src="${cytoscapeUri}"></script>
   <script nonce="${nonce}" src="${dagreUri}"></script>
   <script nonce="${nonce}" src="${cytoscapeDagreUri}"></script>
+  <script nonce="${nonce}" src="${cytoscapeLayersUri}"></script>
+  <script nonce="${nonce}" src="${cytoscapeBubblesetsUri}"></script>
   <script nonce="${nonce}" src="${echartsUri}"></script>
   <script nonce="${nonce}">
   (function() {
@@ -238,7 +246,7 @@ class FlatPPLPanel {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
       draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
       call:          { color: '#90A4AE', shape: 'round-rectangle',  label: 'call' },
-      lawof:         { color: '#81C784', shape: 'hexagon',          label: 'lawof' },
+      lawof:         { color: '#81C784', shape: 'round-hexagon',    label: 'lawof' },
       functionof:    { color: '#FFB74D', shape: 'hexagon',          label: 'functionof' },
       fn:            { color: '#FFF176', shape: 'hexagon',          label: 'fn' },
       literal:       { color: '#F48FB1', shape: 'rectangle',        label: 'literal' },
@@ -250,6 +258,7 @@ class FlatPPLPanel {
     };
 
     var cy = null;
+    var bb = null;
     var shownTypes = new Set();
     var history = [];
     var currentState = null;
@@ -336,6 +345,20 @@ class FlatPPLPanel {
             }
           },
           {
+            // Reification nodes (lawof, functionof, fn): match the surrounding
+            // bubble — translucent fill in the type color, solid border in
+            // the same color at the bubble's stroke width — so they read
+            // as belonging to the bubble rather than floating inside.
+            selector: 'node[nodeType = "lawof"], node[nodeType = "functionof"], node[nodeType = "fn"]',
+            style: {
+              'background-color': 'data(color)',
+              'background-opacity': 0.18,
+              'border-color': 'data(color)',
+              'border-width': 1.5,
+              'color': 'data(color)',
+            }
+          },
+          {
             selector: 'node[?isBoundary]',
             style: {
               'border-color': '#FFD600',
@@ -372,6 +395,27 @@ class FlatPPLPanel {
             }
           },
           {
+            // Hidden edges — present so dagre uses them for layout, but
+            // not rendered (the enclosing bubble conveys the relation).
+            selector: 'edge[?hidden]',
+            style: {
+              'visibility': 'hidden',
+            }
+          },
+          {
+            // Tether: faint connection from a reified value to its
+            // reification node. Same kernel-internal flow as the hidden
+            // edges, but drawn so you can see what is being reified.
+            selector: 'edge[edgeType = "tether"]',
+            style: {
+              'line-color': function(ele) { return ele.target().data('color') || '#aaa'; },
+              'opacity': 0.6,
+              'width': 1.5,
+              'target-arrow-shape': 'none',
+              'curve-style': 'straight',
+            }
+          },
+          {
             selector: 'node:selected',
             style: {
               'border-color': '#2196F3',
@@ -384,6 +428,24 @@ class FlatPPLPanel {
         layout: { name: 'preset' },
         wheelSensitivity: 0.3,
       });
+
+      if (typeof cy.bubbleSets === 'function') {
+        // bubblesets uses one scratch key per cytoscape node; when paths
+        // share nodes (e.g. theta1 belongs to both prior and forward_kernel),
+        // their cached geometry stomps on each other and one path goes empty
+        // on update. Workaround: tear down and rebuild all paths on drag
+        // release, rAF-batched. Updates skipped during drag for snappiness.
+        bb = cy.bubbleSets({ interactive: false });
+        var bbRedrawScheduled = false;
+        cy.on('free', 'node', function() {
+          if (!bb || bbRedrawScheduled || !currentState) return;
+          bbRedrawScheduled = true;
+          requestAnimationFrame(function() {
+            bbRedrawScheduled = false;
+            if (currentState) drawReificationLassos(currentState.data);
+          });
+        });
+      }
 
       // Ctrl/Cmd+click: jump to source
       cy.on('tap', 'node', function(evt) {
@@ -417,7 +479,7 @@ class FlatPPLPanel {
         var d = evt.target.data();
         var expr = d.expr || '';
         if (!expr) return;
-        tip.textContent = d.label + ' = ' + expr;
+        tip.textContent = d.label ? (d.label + ' = ' + expr) : expr;
         tip.style.display = 'block';
         var pos = evt.renderedPosition;
         var cRect = document.getElementById('cy').getBoundingClientRect();
@@ -528,6 +590,87 @@ class FlatPPLPanel {
 
     // --- DAG rendering ---
 
+    // Tear down all bubble paths and clear leftover scratch. Two bubblesets-js
+    // bugs we work around here:
+    //   1) path.remove() sets scratch.bubbleSets to {} on each element. The
+    //      next addPath's update sees the truthy empty object and crashes on
+    //      linesEquals(undefined, lines). Fix: removeScratch fully.
+    //   2) path.remove() detaches listeners but does NOT cancel callbacks
+    //      already queued in the throttle. Those queued callbacks fire after
+    //      tear-down and call this.update() on the dead path. Fix: stomp
+    //      path.update to a no-op before removing.
+    function teardownBubbles() {
+      if (!bb) return;
+      bb.getPaths().forEach(function(p) {
+        p.update = function() {};
+        bb.removePath(p);
+      });
+      cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
+    }
+
+    // Member-id set for one reification's bubble: its own kernel PLUS the
+    // full kernel of any nested reification whose name appears in this
+    // kernel. Nested-reification synthetic nodes need positive potential —
+    // not just "avoid exemption" — for the outer contour to wrap around
+    // them rather than pinching past.
+    function bubbleMemberIds(r, allReifications) {
+      var ids = {};
+      for (var i = 0; i < r.kernel.length; i++) ids[r.kernel[i]] = true;
+      for (var j = 0; j < allReifications.length; j++) {
+        var r2 = allReifications[j];
+        if (r2 === r || !ids[r2.name]) continue;
+        for (var k = 0; k < r2.kernel.length; k++) ids[r2.kernel[k]] = true;
+      }
+      return ids;
+    }
+
+    function drawReificationLassos(data) {
+      if (!bb || !data.reifications) return;
+      teardownBubbles();
+
+      for (var k = 0; k < data.reifications.length; k++) {
+        var r = data.reifications[k];
+        if (r.kernel.length < 2) continue;
+        var ts = TYPE_STYLE[r.type];
+        if (!ts) continue;
+
+        var memberIds = bubbleMemberIds(r, data.reifications);
+        var nodes = cy.collection();
+        for (var memId in memberIds) {
+          nodes = nodes.union(cy.getElementById(memId));
+        }
+        // Hidden edges (visibility:hidden) can return undefined endpoints,
+        // which silently corrupts bubblesets' potential field — exclude.
+        var edges = cy.edges().filter(function(e) {
+          return nodes.contains(e.source())
+            && nodes.contains(e.target())
+            && !e.data('hidden');
+        });
+        var avoid = cy.nodes().difference(nodes);
+
+        bb.addPath(nodes, edges, avoid, {
+          // virtualEdges: connect spatially-disconnected member groups via
+          // routed connectors. Required for kernels spread across the
+          // canvas — marching squares only traces one component per call.
+          virtualEdges: true,
+          style: {
+            fill: hexToRgba(ts.color, 0.12),
+            stroke: ts.color,
+            strokeWidth: '1.5px',
+            strokeOpacity: '0.7',
+          },
+        });
+      }
+    }
+
+    function hexToRgba(hex, alpha) {
+      var m = /^#([0-9a-f]{6})$/i.exec(hex);
+      if (!m) return hex;
+      var n = parseInt(m[1], 16);
+      var r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    }
+
     function renderDAG(data) {
       if (!cy) initCy();
       updateHeader(data);
@@ -553,32 +696,82 @@ class FlatPPLPanel {
         var node = data.nodes[i];
         var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
         shownTypes.add(node.type);
+        // Closed-measure lawof bindings have no free inputs — they're
+        // distributions like any other measure (e.g. Normal(0,1)). Render
+        // as round-rectangle to match the 'call' shape used for other
+        // measure-typed values, rather than the round-hexagon used for
+        // parameterized kernels.
+        var shape = node.closedMeasure ? 'round-rectangle' : ts.shape;
+        // Anonymous nodes (inline-expression targets) have label === ''
+        // deliberately and show their expression on hover only. Others
+        // fall back to their id.
+        var displayLabel = node.label === '' ? '' : (node.label || node.id);
+        var width = displayLabel === ''
+          ? 60
+          : Math.max(displayLabel.length * 9 + 24, 60);
         elements.push({
           group: 'nodes',
           data: {
             id: node.id,
-            label: node.label || node.id,
+            label: displayLabel,
             color: ts.color,
-            shape: ts.shape,
+            shape: shape,
             nodeType: node.type,
             phase: node.phase || '',
             expr: node.expr || '',
             line: node.line != null ? node.line : -1,
             isBoundary: node.isBoundary || false,
             isTarget: node.isTarget || false,
-            width: Math.max((node.label || node.id).length * 9 + 24, 60),
+            width: width,
           },
         });
       }
 
+      // For edges entering a reification node from inside its bubble:
+      //   - if source is one of the reification's targets (the value being
+      //     reified): keep visible but render as a faint "tether"
+      //   - else (boundary arg or other kernel member): fully hide; the
+      //     bubble already conveys that flow. Edge is kept in cy so dagre
+      //     uses it for layout.
+      var reifMembers = {}; // reifName -> {memberId: true}
+      var reifTargets = {}; // reifName -> {targetId: true}
+      if (data.reifications) {
+        for (var ri = 0; ri < data.reifications.length; ri++) {
+          var rf = data.reifications[ri];
+          reifMembers[rf.name] = {};
+          for (var mi = 0; mi < rf.kernel.length; mi++) reifMembers[rf.name][rf.kernel[mi]] = true;
+          reifTargets[rf.name] = {};
+          var ts2 = rf.targets || [];
+          for (var ti = 0; ti < ts2.length; ti++) reifTargets[rf.name][ts2[ti]] = true;
+        }
+      }
+
       for (var j = 0; j < data.edges.length; j++) {
         var edge = data.edges[j];
+        var edgeType = edge.edgeType || 'data';
+        var hidden = false;
+        var membersForTarget = reifMembers[edge.target];
+        if (membersForTarget && membersForTarget[edge.source] && edge.source !== edge.target) {
+          if (reifTargets[edge.target] && reifTargets[edge.target][edge.source]) {
+            edgeType = 'tether';
+          } else {
+            hidden = true;
+          }
+        }
         elements.push({
           group: 'edges',
-          data: { source: edge.source, target: edge.target, edgeType: edge.edgeType || 'data' },
+          data: {
+            source: edge.source,
+            target: edge.target,
+            edgeType: edgeType,
+            hidden: hidden,
+          },
         });
       }
 
+      // Tear down old bubble paths BEFORE detaching elements so we can
+      // clear scratch on still-attached cytoscape elements.
+      teardownBubbles();
       cy.elements().remove();
       cy.add(elements);
 
@@ -592,6 +785,7 @@ class FlatPPLPanel {
       }).run();
 
       cy.fit(undefined, 40);
+      drawReificationLassos(data);
       buildLegend();
 
       // Show details for the target node automatically (the cursor is already

@@ -2,6 +2,73 @@
 
 const { extractBoundaries, countHoles, collectDeps } = require('./analyzer');
 
+function firstPositionalArg(callExpr) {
+  if (!callExpr || !callExpr.args) return null;
+  for (const arg of callExpr.args) {
+    if (arg.type !== 'KeywordArg') return arg;
+  }
+  return null;
+}
+
+// Collect every Placeholder reference (in `_name_` form) under an AST subtree.
+function collectPlaceholders(node, out) {
+  if (!node) return;
+  if (node.type === 'Placeholder') {
+    out.add('_' + (node.name || '') + '_');
+    return;
+  }
+  switch (node.type) {
+    case 'BinaryExpr':   collectPlaceholders(node.left, out); collectPlaceholders(node.right, out); break;
+    case 'UnaryExpr':    collectPlaceholders(node.operand, out); break;
+    case 'CallExpr':
+      collectPlaceholders(node.callee, out);
+      for (const a of node.args) collectPlaceholders(a, out);
+      break;
+    case 'IndexExpr':
+      collectPlaceholders(node.object, out);
+      for (const i of node.indices) collectPlaceholders(i, out);
+      break;
+    case 'FieldAccess':  collectPlaceholders(node.object, out); break;
+    case 'KeywordArg':   collectPlaceholders(node.value, out); break;
+    case 'ArrayLiteral':
+    case 'TupleLiteral':
+      for (const el of node.elements) collectPlaceholders(el, out);
+      break;
+  }
+}
+
+// Render an AST node to a short source-like string. Used both for node
+// labels (with default short maxLen) and hover tooltips (with a longer
+// maxLen). Recurses into compound expressions; truncates with "…".
+function renderExprShort(node, maxLen) {
+  if (maxLen == null) maxLen = 24;
+  function r(n) {
+    if (!n) return '';
+    switch (n.type) {
+      case 'Identifier':     return n.name;
+      case 'NumberLiteral':  return n.raw != null ? n.raw : String(n.value);
+      case 'StringLiteral':  return '"' + n.value + '"';
+      case 'BoolLiteral':    return String(n.value);
+      case 'ConstantRef':    return n.name;
+      case 'SetRef':         return n.name;
+      case 'Placeholder':    return '_' + (n.name || '') + '_';
+      case 'Hole':           return '_';
+      case 'BinaryExpr':     return r(n.left) + ' ' + n.op + ' ' + r(n.right);
+      case 'UnaryExpr':      return n.op + r(n.operand);
+      case 'CallExpr':       return r(n.callee) + '(' + (n.args || []).map(r).join(', ') + ')';
+      case 'KeywordArg':     return n.name + ' = ' + r(n.value);
+      case 'IndexExpr':      return r(n.object) + '[' + (n.indices || []).map(r).join(', ') + ']';
+      case 'FieldAccess':    return r(n.object) + '.' + n.field;
+      case 'ArrayLiteral':   return '[' + (n.elements || []).map(r).join(', ') + ']';
+      case 'TupleLiteral':   return '(' + (n.elements || []).map(r).join(', ') + ')';
+      default:               return '(…)';
+    }
+  }
+  const s = r(node);
+  return s.length > maxLen ? s.slice(0, maxLen - 1) + '…' : s;
+}
+
+
 /**
  * Compute the ancestor sub-DAG of a node.
  * For lawof/functionof, boundary inputs stop the backwards trace.
@@ -19,7 +86,9 @@ function computeSubDAG(bindings, nodeName) {
 
   // Special path: disintegration result.
   if (binding.disintegrateRole) {
-    return computeDisintegrateSubDAG(bindings, binding);
+    const result = computeDisintegrateSubDAG(bindings, binding);
+    if (!result.reifications) result.reifications = [];
+    return result;
   }
 
   let boundaryVars = new Set();
@@ -53,12 +122,85 @@ function computeSubDAG(bindings, nodeName) {
       line: b ? b.line : -1,
       isBoundary,
       isTarget: name === nodeName,
+      closedMeasure: b && b.type === 'lawof' && isClosedMeasure(bindings, name),
     });
 
     if (isBoundary || !b) return;
 
+    // For lawof/functionof, optionally synthesize:
+    //   - an anonymous "expression target" node, when the first positional
+    //     arg is a compound expression, so the bubble has a clear value-
+    //     being-reified that external nodes can tether to;
+    //   - boundary input nodes for placeholder kwargs (varName not bound).
+    // Both are skipped when the binding is fn-like.
+    let inlineExprDeps = null;
+    let inlineExprId = null;
+    if ((b.type === 'lawof' || b.type === 'functionof')
+        && !isFnLike(bindings, name)
+        && b.node && b.node.value) {
+      const firstArg = firstPositionalArg(b.node.value);
+      const placeholdersInBody = new Set();
+      if (firstArg) collectPlaceholders(firstArg, placeholdersInBody);
+
+      // Synthesize anonymous expression target when first positional arg
+      // is not a bare identifier.
+      if (firstArg && firstArg.type !== 'Identifier') {
+        const definedNames = new Set(bindings.keys());
+        const argResult = collectDeps(firstArg, definedNames);
+        inlineExprDeps = argResult.deps;
+        inlineExprId = name + ':target';
+        visited.set(inlineExprId, {
+          id: inlineExprId,
+          // Empty label — anonymous bridge node, identifies itself via
+          // hover (rendered first-arg expression).
+          label: '',
+          type: 'call',
+          phase: b.phase,
+          expr: renderExprShort(firstArg, 200),
+          line: b.line,
+          isBoundary: false,
+          isTarget: false,
+        });
+        edges.push({ source: inlineExprId, target: name, edgeType: 'data' });
+        for (const dep of inlineExprDeps) {
+          edges.push({ source: dep, target: inlineExprId, edgeType: 'data' });
+          visit(dep);
+        }
+      }
+
+      // Synthetic boundary inputs for placeholder kwargs (varName not bound).
+      // Label uses the placeholder syntax (`_foo_`) so the original
+      // identifier is visible. Edge targets the expression node when the
+      // placeholder is actually used in the body, else the reification.
+      const localBoundaries = extractBoundaries(b.node.value);
+      if (localBoundaries) {
+        for (const [argName, varName] of localBoundaries) {
+          if (!bindings.has(varName)) {
+            const synId = name + ':' + argName;
+            if (!visited.has(synId)) {
+              visited.set(synId, {
+                id: synId,
+                label: varName,
+                type: 'input',
+                phase: 'parameterized',
+                expr: '',
+                line: b.line,
+                isBoundary: true,
+                isTarget: false,
+              });
+              const edgeTarget = (inlineExprId && placeholdersInBody.has(varName))
+                ? inlineExprId
+                : name;
+              edges.push({ source: synId, target: edgeTarget });
+            }
+          }
+        }
+      }
+    }
+
     const calls = new Set(b.callDeps || []);
     for (const dep of b.deps) {
+      if (inlineExprDeps && inlineExprDeps.has(dep)) continue;
       edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
       visit(dep);
     }
@@ -66,46 +208,109 @@ function computeSubDAG(bindings, nodeName) {
 
   visit(nodeName);
 
-  // Synthetic input nodes for functionof/lawof placeholder boundaries
-  if (boundaries) {
-    for (const [argName, varName] of boundaries) {
-      if (!bindings.has(varName)) {
-        const synId = nodeName + ':' + argName;
-        visited.set(synId, {
-          id: synId,
-          label: argName,
-          type: 'input',
-          phase: 'parameterized',
-          expr: '',
-          line: binding.line,
-          isBoundary: true,
-          isTarget: false,
-        });
-        edges.push({ source: synId, target: nodeName });
-      }
-    }
-  }
+  const reifications = computeReifications(bindings, visited);
+  return { nodes: [...visited.values()], edges, reifications };
+}
 
-  // Synthetic input nodes for fn holes
-  if (binding.type === 'fn') {
-    const holeCount = countHoles(binding.node.value);
-    for (let i = 1; i <= holeCount; i++) {
-      const synId = nodeName + ':_' + i;
-      visited.set(synId, {
-        id: synId,
-        label: '_',
-        type: 'input',
-        phase: 'parameterized',
-        expr: '',
-        line: binding.line,
-        isBoundary: true,
-        isTarget: false,
-      });
-      edges.push({ source: synId, target: nodeName });
-    }
-  }
+/**
+ * For each lawof/functionof (or disintegration-result) binding visible in
+ * the sub-DAG, compute the set of visible nodes that belong to its kernel.
+ * Boundary inputs stop the trace, so kernels respect lawof/functionof
+ * semantics rather than naive ancestor walks.
+ */
+function computeReifications(bindings, visited) {
+  const out = [];
+  for (const [name] of visited) {
+    if (name.indexOf(':') !== -1) continue; // skip synthetic nodes
+    const b = bindings.get(name);
+    if (!b) continue;
+    if (b.type !== 'lawof' && b.type !== 'functionof') continue;
+    // fn-like reifications get no bubble — the bare hexagon is enough.
+    if (isFnLike(bindings, name)) continue;
 
-  return { nodes: [...visited.values()], edges };
+    const kernel = kernelNames(bindings, name);
+    const visibleKernel = new Set();
+    for (const k of kernel) if (visited.has(k)) visibleKernel.add(k);
+    // Include synthetic nodes (anon expression target, placeholder boundaries)
+    // belonging to this reification.
+    for (const [vid] of visited) {
+      if (vid.startsWith(name + ':')) visibleKernel.add(vid);
+    }
+    if (visibleKernel.size < 2) continue;
+
+    let boundaryVars = new Set();
+    const boundaries = extractBoundaries(b.node.value);
+    if (boundaries) boundaryVars = new Set(boundaries.values());
+
+    // If an anonymous expression target exists, that is THE target of the
+    // reification (the inline expression being reified). Otherwise, target
+    // deps are the simple-identifier first args.
+    let targets;
+    const syntheticTargetId = name + ':target';
+    if (visited.has(syntheticTargetId)) {
+      targets = [syntheticTargetId];
+    } else {
+      targets = (b.deps || []).filter(d => !boundaryVars.has(d) && visited.has(d));
+    }
+
+    out.push({ name, type: b.type, kernel: [...visibleKernel], targets });
+  }
+  return out;
+}
+
+/**
+ * A lawof binding is a closed measure if it has no free inputs:
+ * no explicit boundary args AND no elementof/external ancestor.
+ * (A Markov kernel has at least one free input — explicit or implicit.)
+ */
+function isClosedMeasure(bindings, bindingName) {
+  const binding = bindings.get(bindingName);
+  if (!binding || binding.type !== 'lawof') return false;
+  const boundaries = extractBoundaries(binding.node.value);
+  if (boundaries && boundaries.size > 0) return false;
+  const seen = new Set();
+  function hasInput(name) {
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const b = bindings.get(name);
+    if (!b) return false;
+    if (b.type === 'input') return true;
+    for (const dep of b.deps) if (hasInput(dep)) return true;
+    return false;
+  }
+  return !hasInput(bindingName);
+}
+
+// True for a lawof/functionof whose kernel walk yields only itself —
+// no other real bindings reachable. The body uses only placeholders and
+// literals, so semantically it's a bare lambda. We render such nodes as
+// just the hexagon (like `fn`), with no bubble or synthetic children.
+function isFnLike(bindings, bindingName) {
+  const b = bindings.get(bindingName);
+  if (!b || (b.type !== 'lawof' && b.type !== 'functionof')) return false;
+  const kn = kernelNames(bindings, bindingName);
+  return kn.size === 1 && kn.has(bindingName);
+}
+
+function kernelNames(bindings, bindingName) {
+  const binding = bindings.get(bindingName);
+  if (!binding) return new Set();
+  let boundaryVars = new Set();
+  if (binding.type === 'lawof' || binding.type === 'functionof') {
+    const boundaries = extractBoundaries(binding.node.value);
+    if (boundaries) boundaryVars = new Set(boundaries.values());
+  }
+  const visited = new Set();
+  function visit(name) {
+    if (visited.has(name)) return;
+    visited.add(name);
+    if (boundaryVars.has(name)) return;
+    const b = bindings.get(name);
+    if (!b) return;
+    for (const dep of b.deps) visit(dep);
+  }
+  visit(bindingName);
+  return visited;
 }
 
 /**

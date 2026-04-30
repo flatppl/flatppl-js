@@ -74,26 +74,25 @@ z = f(y)
 });
 
 test('dag: synthetic boundary nodes for placeholder boundaries', () => {
-  // _par_ is a placeholder; argName 'par' becomes a synthetic boundary
+  // _par_ is a placeholder; argName 'par' becomes a synthetic boundary,
+  // labeled with the placeholder syntax (not the kwarg name) so the
+  // original identifier in the body remains visible.
   const dag = dagOf(`
-f = functionof(5.0 * _par_, par = _par_)
+c = 5.0
+f = functionof(c * _par_, par = _par_)
 `, 'f');
-  const synth = dag.nodes.find(n => n.id.startsWith('f:'));
+  const synth = dag.nodes.find(n => n.id === 'f:par');
   assert.ok(synth);
-  assert.equal(synth.label, 'par');
+  assert.equal(synth.label, '_par_');
   assert.equal(synth.isBoundary, true);
 });
 
-test('dag: synthetic _ holes for fn', () => {
+test('dag: fn renders as a bare hexagon — no synthetic hole nodes', () => {
   const dag = dagOf(`
 g = fn(_ + _)
 `, 'g');
   const holes = dag.nodes.filter(n => n.id.startsWith('g:_'));
-  assert.equal(holes.length, 2);
-  for (const h of holes) {
-    assert.equal(h.label, '_');
-    assert.equal(h.isBoundary, true);
-  }
+  assert.equal(holes.length, 0);
 });
 
 test('dag: bayesian_inference_1 model node sub-DAG', () => {
