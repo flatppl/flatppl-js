@@ -28,7 +28,8 @@
     "commands": [
       {
         "command": "flatppl.showDAG",
-        "title": "FlatPPL: Show DAG"
+        "title": "FlatPPL: Show DAG",
+        "icon": "$(graph)"
       }
     ],
     "menus": {
@@ -36,6 +37,13 @@
         {
           "command": "flatppl.showDAG",
           "when": "editorLangId == flatppl"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "flatppl.showDAG",
+          "when": "editorLangId == flatppl",
+          "group": "navigation"
         }
       ]
     },

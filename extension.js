@@ -59,8 +59,14 @@ function activate(context) {
 
     const { bindings } = getParsed(editor.document);
     const pos = editor.selection.active;
-    const binding = findBindingAtLine(bindings, pos.line, pos.character);
-    if (!binding) return false;
+    let binding = findBindingAtLine(bindings, pos.line, pos.character);
+    // Fall back to the last binding in the file if cursor isn't on one
+    // (e.g. on a comment line or blank line).
+    if (!binding) {
+      const all = [...bindings.values()];
+      if (all.length === 0) return false;
+      binding = all[all.length - 1];
+    }
 
     const name = binding.name;
     const dagData = computeSubDAG(bindings, name);
@@ -80,7 +86,7 @@ function activate(context) {
       return;
     }
     if (!showDAGForCursor(editor)) {
-      vscode.window.showInformationMessage('Place cursor on a variable definition line');
+      vscode.window.showInformationMessage('No bindings to visualize in this file');
     }
   });
 
