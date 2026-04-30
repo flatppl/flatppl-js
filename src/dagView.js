@@ -154,6 +154,14 @@ class DAGPanel {
       background: var(--vscode-badge-background, #444);
       color: var(--vscode-badge-foreground, #fff);
     }
+    #info .phase {
+      font-size: 11px;
+      padding: 1px 6px; border-radius: 3px;
+      color: #fff;
+    }
+    #info .phase-fixed         { background: #607D8B; }
+    #info .phase-parameterized { background: #4DD0E1; color: #222; }
+    #info .phase-stochastic    { background: #B39DDB; color: #222; }
     #info .expr {
       opacity: 0.5; white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis;
@@ -228,8 +236,8 @@ class DAGPanel {
 
     var TYPE_STYLE = {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
-      stochastic:    { color: '#B39DDB', shape: 'ellipse',          label: 'stochastic (draw)' },
-      deterministic: { color: '#90A4AE', shape: 'round-rectangle',  label: 'deterministic' },
+      draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
+      call:          { color: '#90A4AE', shape: 'round-rectangle',  label: 'call' },
       lawof:         { color: '#81C784', shape: 'hexagon',          label: 'lawof' },
       functionof:    { color: '#FFB74D', shape: 'hexagon',          label: 'functionof' },
       fn:            { color: '#FFF176', shape: 'tag',              label: 'fn' },
@@ -378,9 +386,12 @@ class DAGPanel {
           return;
         }
         var d = evt.target.data();
+        var phase = d.phase || 'unknown';
+        var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
         document.getElementById('info').innerHTML =
           '<div class="row"><span class="name">' + esc(d.label)
-          + '</span><span class="type">' + esc(d.nodeType) + '</span></div>'
+          + '</span><span class="type">' + esc(d.nodeType) + '</span>'
+          + phaseTag + '</div>'
           + '<div class="expr">' + esc(d.expr) + '</div>';
       });
 
@@ -539,6 +550,7 @@ class DAGPanel {
             color: ts.color,
             shape: ts.shape,
             nodeType: node.type,
+            phase: node.phase || '',
             expr: node.expr || '',
             line: node.line != null ? node.line : -1,
             isBoundary: node.isBoundary || false,

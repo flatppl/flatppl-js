@@ -6,12 +6,12 @@ const { isKnownName } = require('./builtins');
  * Classify a statement by examining the RHS expression.
  */
 function classifyStatement(valueNode) {
-  if (!valueNode) return 'deterministic';
+  if (!valueNode) return 'call';
 
   if (valueNode.type === 'CallExpr' && valueNode.callee.type === 'Identifier') {
     const name = valueNode.callee.name;
     switch (name) {
-      case 'draw': return 'stochastic';
+      case 'draw': return 'draw';
       case 'elementof': return 'input';
       case 'external': return 'input';
       case 'lawof': return 'lawof';
@@ -31,7 +31,7 @@ function classifyStatement(valueNode) {
     return 'literal';
   }
 
-  return 'deterministic';
+  return 'call';
 }
 
 /**
@@ -353,6 +353,74 @@ function detectDisintegration(stmt, bindingMap) {
 }
 
 /**
+ * Compute the phase of every binding via ancestor analysis, per spec
+ * (`docs/04-design.md#phases`).
+ *
+ *  - `draw(...)` self → stochastic
+ *  - `elementof(...)` self → parameterized
+ *  - `external(...)` self → fixed (despite being an "input")
+ *  - any other binding → max of its dependencies' phases, where
+ *    stochastic > parameterized > fixed
+ *
+ * @param {Map} bindings
+ * @returns {Map<string, 'fixed' | 'parameterized' | 'stochastic'>}
+ */
+function computePhases(bindings) {
+  const phases = new Map();
+  const visiting = new Set();
+
+  function calleeName(b) {
+    const v = b && b.node && b.node.value;
+    if (v && v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier') {
+      return v.callee.name;
+    }
+    return null;
+  }
+
+  function maxPhase(a, b) {
+    if (a === 'stochastic' || b === 'stochastic') return 'stochastic';
+    if (a === 'parameterized' || b === 'parameterized') return 'parameterized';
+    return 'fixed';
+  }
+
+  function phaseOf(name) {
+    if (phases.has(name)) return phases.get(name);
+    if (visiting.has(name)) return 'fixed'; // cycle (shouldn't occur in valid code)
+    visiting.add(name);
+
+    const b = bindings.get(name);
+    if (!b) {
+      visiting.delete(name);
+      phases.set(name, 'fixed');
+      return 'fixed';
+    }
+
+    const cn = calleeName(b);
+    let phase;
+    if (cn === 'draw') {
+      phase = 'stochastic';
+    } else if (cn === 'elementof') {
+      phase = 'parameterized';
+    } else if (cn === 'external') {
+      phase = 'fixed';
+    } else {
+      phase = 'fixed';
+      for (const dep of b.deps) {
+        phase = maxPhase(phase, phaseOf(dep));
+        if (phase === 'stochastic') break;
+      }
+    }
+
+    visiting.delete(name);
+    phases.set(name, phase);
+    return phase;
+  }
+
+  for (const name of bindings.keys()) phaseOf(name);
+  return phases;
+}
+
+/**
  * Validate that all literal integer indices in `IndexExpr` nodes are >= 1.
  * FlatPPL uses 1-based indexing throughout (arrays, tables, tuples), so a
  * literal `x[0]` or `x[-1]` is always invalid regardless of the container's
@@ -620,7 +688,7 @@ function analyze(ast, source) {
 
       // Build symbol for outline
       const kindMap = {
-        stochastic: 'Variable', input: 'Variable', deterministic: 'Variable',
+        draw: 'Variable', input: 'Variable', call: 'Variable',
         lawof: 'Function', functionof: 'Function', fn: 'Function',
         likelihood: 'Variable', bayesupdate: 'Variable',
         literal: 'Constant', module: 'Module', table: 'Variable',
@@ -662,6 +730,14 @@ function analyze(ast, source) {
       prior.type = 'lawof';
       prior.disintegrateRole = { kind: 'prior', ...info };
     }
+  }
+
+  // Fourth pass: compute phases (stochastic | parameterized | fixed) by
+  // ancestor analysis, per spec.
+  const phases = computePhases(bindings);
+  for (const [name, phase] of phases) {
+    const b = bindings.get(name);
+    if (b) b.phase = phase;
   }
 
   return { bindings, diagnostics, symbols };
@@ -920,6 +996,7 @@ module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
   countHoles, validateHolesAndPlaceholders,
+  computePhases,
   collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges,

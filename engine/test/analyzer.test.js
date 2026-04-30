@@ -7,15 +7,15 @@ function process(src) {
   return processSource(src);
 }
 
-test('analyzer: classifies stochastic/deterministic/input', () => {
+test('analyzer: classifies draw/call/input', () => {
   const { bindings } = process(`
 mu = elementof(reals)
 x = draw(Normal(mu = mu, sigma = 1))
 y = 2 * x
 `);
   assert.equal(bindings.get('mu').type, 'input');
-  assert.equal(bindings.get('x').type, 'stochastic');
-  assert.equal(bindings.get('y').type, 'deterministic');
+  assert.equal(bindings.get('x').type, 'draw');
+  assert.equal(bindings.get('y').type, 'call');
 });
 
 test('analyzer: classifies external as input', () => {

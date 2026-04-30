@@ -147,8 +147,9 @@ function activate(context) {
       const binding = bindings.get(word);
       if (!binding) return null;
 
+      const phaseStr = binding.phase ? `, phase: *${binding.phase}*` : '';
       const lines = [
-        `**${binding.name}** \u2014 *${binding.type}*`,
+        `**${binding.name}** \u2014 *${binding.type}*${phaseStr}`,
         '```flatppl',
         `${binding.name} = ${binding.rhs}`,
         '```',

@@ -4,7 +4,7 @@ const { tokenize, T } = require('./tokenizer');
 const { parse } = require('./parser');
 const { analyze, collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges } = require('./analyzer');
+  findEnclosingRanges, computePhases } = require('./analyzer');
 const { computeSubDAG, findBindingAtLine } = require('./dag');
 const AST = require('./ast');
 const builtins = require('./builtins');
@@ -31,7 +31,7 @@ module.exports = {
   parse,
   analyze, collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges,
+  findEnclosingRanges, computePhases,
   computeSubDAG, findBindingAtLine,
   AST, builtins,
 };

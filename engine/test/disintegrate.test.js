@@ -227,9 +227,9 @@ test('disintegrate (complex fixture): chain-based joint falls back to plain trac
   // Neither should have a disintegrate role — fall-back regime.
   assert.equal(fk_d.disintegrateRole, undefined);
   assert.equal(pr_d.disintegrateRole, undefined);
-  // Their type should still be 'deterministic' (decomposition default)
-  assert.equal(fk_d.type, 'deterministic');
-  assert.equal(pr_d.type, 'deterministic');
+  // Their type should still be 'call' (decomposition default)
+  assert.equal(fk_d.type, 'call');
+  assert.equal(pr_d.type, 'call');
 
   // Sub-DAG just walks through joint_chained as a dep.
   const dag = computeSubDAG(bindings, 'fk_d');
