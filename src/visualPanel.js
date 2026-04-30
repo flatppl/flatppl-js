@@ -240,7 +240,7 @@ class FlatPPLPanel {
       call:          { color: '#90A4AE', shape: 'round-rectangle',  label: 'call' },
       lawof:         { color: '#81C784', shape: 'hexagon',          label: 'lawof' },
       functionof:    { color: '#FFB74D', shape: 'hexagon',          label: 'functionof' },
-      fn:            { color: '#FFF176', shape: 'tag',              label: 'fn' },
+      fn:            { color: '#FFF176', shape: 'hexagon',          label: 'fn' },
       literal:       { color: '#F48FB1', shape: 'rectangle',        label: 'literal' },
       likelihood:    { color: '#EF9A9A', shape: 'octagon',          label: 'likelihood' },
       bayesupdate:   { color: '#FFAB91', shape: 'octagon',          label: 'bayesupdate' },
