@@ -353,6 +353,64 @@ function detectDisintegration(stmt, bindingMap) {
 }
 
 /**
+ * Validate that all literal integer indices in `IndexExpr` nodes are >= 1.
+ * FlatPPL uses 1-based indexing throughout (arrays, tables, tuples), so a
+ * literal `x[0]` or `x[-1]` is always invalid regardless of the container's
+ * type. Runtime expressions are not checked.
+ *
+ * @param {object} node - root expression node
+ * @param {Diagnostic[]} diagnostics - mutable, appended to
+ */
+function validateIndexing(node, diagnostics) {
+  function checkIndex(idx) {
+    // Direct integer literal: x[0], x[2.5] (non-integer is a type error elsewhere)
+    if (idx.type === 'NumberLiteral'
+        && Number.isInteger(idx.value) && idx.value <= 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: `Invalid index ${idx.value}: FlatPPL uses 1-based indexing (indices start at 1)`,
+        loc: idx.loc,
+      });
+      return;
+    }
+    // Negated literal: x[-1] parses as UnaryExpr('-', NumberLiteral(1))
+    if (idx.type === 'UnaryExpr' && idx.op === '-'
+        && idx.operand.type === 'NumberLiteral'
+        && Number.isInteger(idx.operand.value) && idx.operand.value > 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: `Invalid index -${idx.operand.value}: FlatPPL uses 1-based indexing (indices start at 1)`,
+        loc: idx.loc,
+      });
+    }
+  }
+
+  function walk(node) {
+    if (!node) return;
+    if (node.type === 'IndexExpr') {
+      walk(node.object);
+      for (const i of node.indices) {
+        checkIndex(i);
+        walk(i);
+      }
+      return;
+    }
+    if (node.type === 'CallExpr') { walk(node.callee); for (const a of node.args) walk(a); return; }
+    if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); return; }
+    if (node.type === 'UnaryExpr') { walk(node.operand); return; }
+    if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') {
+      for (const e of node.elements) walk(e);
+      return;
+    }
+    if (node.type === 'FieldAccess') { walk(node.object); return; }
+    if (node.type === 'KeywordArg') { walk(node.value); return; }
+    // Leaves: NumberLiteral, StringLiteral, BoolLiteral, ConstantRef, SetRef,
+    // Identifier, Placeholder, Hole, SliceAll — no recursion.
+  }
+  walk(node);
+}
+
+/**
  * Validate hole (`_`) and placeholder (`_name_`) usage according to the spec:
  *  - `_` is only valid inside `fn(...)`.
  *  - `_name_` is only valid inside `functionof(...)` or `lawof(...)`.
@@ -523,6 +581,7 @@ function analyze(ast, source) {
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialForm(stmt.value));
     validateHolesAndPlaceholders(stmt.value, diagnostics);
+    validateIndexing(stmt.value, diagnostics);
     const { deps, callDeps } = collectDeps(stmt.value, definedNames);
     const rhs = sliceSource(source, stmt.value.loc);
 
