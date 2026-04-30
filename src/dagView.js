@@ -258,6 +258,16 @@ class DAGPanel {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
+    function showNodeInfo(d) {
+      var phase = d.phase || 'unknown';
+      var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
+      document.getElementById('info').innerHTML =
+        '<div class="row"><span class="name">' + esc(d.label)
+        + '</span><span class="type">' + esc(d.nodeType) + '</span>'
+        + phaseTag + '</div>'
+        + '<div class="expr">' + esc(d.expr) + '</div>';
+    }
+
     function truncateExpr(expr) {
       if (!expr) return '';
       // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
@@ -385,14 +395,7 @@ class DAGPanel {
           }
           return;
         }
-        var d = evt.target.data();
-        var phase = d.phase || 'unknown';
-        var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
-        document.getElementById('info').innerHTML =
-          '<div class="row"><span class="name">' + esc(d.label)
-          + '</span><span class="type">' + esc(d.nodeType) + '</span>'
-          + phaseTag + '</div>'
-          + '<div class="expr">' + esc(d.expr) + '</div>';
+        showNodeInfo(evt.target.data());
       });
 
       cy.on('tap', function(evt) {
@@ -530,7 +533,15 @@ class DAGPanel {
       updateHeader(data);
 
       if (data.nodes.length === 1 && showDataView(data)) {
-        document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
+        // Data view has no clickable graph nodes — show the target's details
+        // directly in the info bar.
+        var t = data.nodes[0];
+        showNodeInfo({
+          label: t.label || t.id,
+          nodeType: t.type,
+          phase: t.phase || '',
+          expr: t.expr || '',
+        });
         return;
       }
       hideDataView();
@@ -583,7 +594,19 @@ class DAGPanel {
       cy.fit(undefined, 40);
       buildLegend();
 
-      document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
+      // Show details for the target node automatically (the cursor is already
+      // on it in the source). Falls back to the hint if no target is present.
+      var target = data.nodes.find(function(n) { return n.isTarget; });
+      if (target) {
+        showNodeInfo({
+          label: target.label || target.id,
+          nodeType: target.type,
+          phase: target.phase || '',
+          expr: target.expr || '',
+        });
+      } else {
+        document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
+      }
     }
 
     // Back button
