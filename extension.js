@@ -218,7 +218,7 @@ function activate(context) {
     Dirac: 'Dirac(value = ${1})',
   };
 
-  // Snippets for special forms — drop in a body placeholder.
+  // Snippets for special operations — drop in a body placeholder.
   const SPECIAL_SNIPPETS = {
     elementof: 'elementof(${1:reals})',
     external: 'external(${1:reals})',
@@ -239,15 +239,13 @@ function activate(context) {
     const items = [];
 
     // Special forms
-    for (const name of builtins.SPECIAL_FORMS) {
+    for (const name of builtins.SPECIAL_OPERATIONS) {
       const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Keyword);
       const snippet = SPECIAL_SNIPPETS[name];
       if (snippet) {
         item.insertText = new vscode.SnippetString(snippet);
-        item.detail = 'special form';
-      } else {
-        item.detail = 'special form';
       }
+      item.detail = 'special operation';
       items.push(item);
     }
 

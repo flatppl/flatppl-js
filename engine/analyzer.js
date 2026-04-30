@@ -35,10 +35,10 @@ function classifyStatement(valueNode) {
 }
 
 /**
- * Validate argument structure of special forms.
+ * Validate argument structure of special operations.
  * Returns an array of diagnostics.
  */
-function validateSpecialForm(valueNode) {
+function validateSpecialOperation(valueNode) {
   if (!valueNode || valueNode.type !== 'CallExpr') return [];
   if (!valueNode.callee || valueNode.callee.type !== 'Identifier') return [];
 
@@ -415,7 +415,7 @@ function validateIndexing(node, diagnostics) {
  *  - `_` is only valid inside `fn(...)`.
  *  - `_name_` is only valid inside `functionof(...)` or `lawof(...)`.
  *
- * Scope is determined by the nearest enclosing special form.
+ * Scope is determined by the nearest enclosing special operation.
  *
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
@@ -579,7 +579,7 @@ function analyze(ast, source) {
     if (stmt.type !== 'AssignStatement') continue;
 
     const stmtType = classifyStatement(stmt.value);
-    diagnostics.push(...validateSpecialForm(stmt.value));
+    diagnostics.push(...validateSpecialOperation(stmt.value));
     validateHolesAndPlaceholders(stmt.value, diagnostics);
     validateIndexing(stmt.value, diagnostics);
     const { deps, callDeps } = collectDeps(stmt.value, definedNames);

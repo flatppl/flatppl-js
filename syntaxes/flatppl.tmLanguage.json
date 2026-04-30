@@ -8,7 +8,7 @@
     { "include": "#number" },
     { "include": "#placeholder" },
     { "include": "#hole" },
-    { "include": "#special-form" },
+    { "include": "#special-operation" },
     { "include": "#kernel" },
     { "include": "#measure-combinator" },
     { "include": "#analysis-operation" },
@@ -83,10 +83,10 @@
       "name": "variable.other.hole.flatppl",
       "match": "(?<![a-zA-Z0-9])_(?![a-zA-Z0-9_])"
     },
-    "special-form": {
+    "special-operation": {
       "comment": "Special operations with their own syntax rules",
       "match": "\\b(draw|lawof|functionof|fn|elementof|external|valueset|load_module|standard_module|load_data)\\b",
-      "name": "keyword.other.special-form.flatppl"
+      "name": "keyword.other.special-operation.flatppl"
     },
     "kernel": {
       "comment": "Built-in distribution constructors and fundamental measures",

@@ -35,7 +35,7 @@ const SPECIAL_BINDINGS = new Set([
 ]);
 
 // Special operations — not ordinary function calls, have custom syntax rules
-const SPECIAL_FORMS = new Set([
+const SPECIAL_OPERATIONS = new Set([
   // Variates and reification
   'draw', 'lawof', 'functionof', 'fn',
   // Inputs
@@ -134,7 +134,7 @@ const MEASURE_OPS = new Set([
 // All known names (union of everything that is a built-in callable, set, or constant)
 const ALL_KNOWN = new Set([
   ...CONSTANTS, ...SETS, ...SET_CONSTRUCTORS,
-  ...SPECIAL_FORMS, ...BUILTIN_FUNCTIONS, ...DISTRIBUTIONS, ...MEASURE_OPS,
+  ...SPECIAL_OPERATIONS, ...BUILTIN_FUNCTIONS, ...DISTRIBUTIONS, ...MEASURE_OPS,
   ...RESERVED_NAMES, ...SPECIAL_BINDINGS,
 ]);
 
@@ -154,8 +154,8 @@ function isSet(name) {
   return SETS.has(name);
 }
 
-function isSpecialForm(name) {
-  return SPECIAL_FORMS.has(name);
+function isSpecialOperation(name) {
+  return SPECIAL_OPERATIONS.has(name);
 }
 
 function isReserved(name) {
@@ -164,7 +164,7 @@ function isReserved(name) {
 
 module.exports = {
   CONSTANTS, BOOL_LITERALS, SETS, SET_CONSTRUCTORS,
-  RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_FORMS,
+  RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_OPERATIONS,
   BUILTIN_FUNCTIONS, DISTRIBUTIONS, MEASURE_OPS, ALL_KNOWN,
-  isKnownName, isConstant, isBoolLiteral, isSet, isSpecialForm, isReserved,
+  isKnownName, isConstant, isBoolLiteral, isSet, isSpecialOperation, isReserved,
 };
