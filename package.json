@@ -29,7 +29,7 @@
       {
         "command": "flatppl.visualize",
         "title": "FlatPPL: Visualize",
-        "icon": "$(type-hierarchy-sub)"
+        "icon": "$(type-hierarchy-super)"
       }
     ],
     "menus": {
