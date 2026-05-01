@@ -246,7 +246,13 @@ class FlatPPLPanel {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
       draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
       call:          { color: '#90A4AE', shape: 'round-rectangle',  label: 'call' },
-      lawof:         { color: '#81C784', shape: 'round-hexagon',    label: 'lawof' },
+      // lawof always produces a measure; rendered like other measure-typed
+      // values (round-rectangle).
+      lawof:         { color: '#81C784', shape: 'round-rectangle',  label: 'lawof (measure)' },
+      // kernelof always produces a Markov kernel — round-hexagon.
+      kernelof:      { color: '#81C784', shape: 'round-hexagon',    label: 'kernelof (kernel)' },
+      // functionof produces a function (hexagon) by default; if its first
+      // arg is a measure, we override the shape to round-hexagon below.
       functionof:    { color: '#FFB74D', shape: 'hexagon',          label: 'functionof' },
       fn:            { color: '#FFF176', shape: 'hexagon',          label: 'fn' },
       literal:       { color: '#F48FB1', shape: 'rectangle',        label: 'literal' },
@@ -349,7 +355,7 @@ class FlatPPLPanel {
             // bubble — translucent fill in the type color, solid border in
             // the same color at the bubble's stroke width — so they read
             // as belonging to the bubble rather than floating inside.
-            selector: 'node[nodeType = "lawof"], node[nodeType = "functionof"], node[nodeType = "fn"]',
+            selector: 'node[nodeType = "lawof"], node[nodeType = "functionof"], node[nodeType = "kernelof"], node[nodeType = "fn"]',
             style: {
               'background-color': 'data(color)',
               'background-opacity': 0.18,
@@ -696,12 +702,14 @@ class FlatPPLPanel {
         var node = data.nodes[i];
         var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
         shownTypes.add(node.type);
-        // Closed-measure lawof bindings have no free inputs — they're
-        // distributions like any other measure (e.g. Normal(0,1)). Render
-        // as round-rectangle to match the 'call' shape used for other
-        // measure-typed values, rather than the round-hexagon used for
-        // parameterized kernels.
-        var shape = node.closedMeasure ? 'round-rectangle' : ts.shape;
+        // Override shape based on the engine-computed reification kind:
+        // - 'kernel': round-hexagon (a Markov kernel — kernelof, or
+        //   functionof on a measure-typed expression)
+        // - 'measure': round-rectangle (lawof always produces a measure)
+        // - else: fall back to TYPE_STYLE default for the binding's type
+        var shape = ts.shape;
+        if (node.kind === 'kernel')      shape = 'round-hexagon';
+        else if (node.kind === 'measure') shape = 'round-rectangle';
         // Anonymous nodes (inline-expression targets) have label === ''
         // deliberately and show their expression on hover only. Others
         // fall back to their id.

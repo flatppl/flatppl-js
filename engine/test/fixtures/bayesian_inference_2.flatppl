@@ -3,11 +3,17 @@
 # Same model as bayesian_inference.flatppl, expressed by disintegration of the
 # joint instead of separate prior/model reifications.
 
-# Stochastic nodes
-theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
-theta2 = draw(Exponential(rate = 1.0))
+# Prior distributions
+theta1_dist = Normal(mu = 0.0, sigma = 1.0)
+theta2_dist = Exponential(rate = 1.0)
 
-f_a = functionof(5.0 * _par_, par = _par_)
+# Prior variates
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+
+c = 5.0
+
+f_a = functionof(c * _par_, par = _par_)
 f_b = fn(abs(_) * _)
 
 # Deterministic transform

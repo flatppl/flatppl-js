@@ -147,10 +147,10 @@ test('planRename for cursor on a placeholder', () => {
   assert.equal(result.locs.length, 2);
 });
 
-test('planRename for placeholder in lawof', () => {
-  const src = 'm = lawof(_x_, x = _x_)\n';
-  // First _x_ is at col 10-12
-  const result = plan(src, 0, 11);
+test('planRename for placeholder in kernelof', () => {
+  const src = 'm = kernelof(_x_, x = _x_)\n';
+  // First _x_ is at col 13-15
+  const result = plan(src, 0, 14);
   assert.ok(result);
   assert.equal(result.kind, 'placeholder');
   assert.equal(result.oldName, 'x');

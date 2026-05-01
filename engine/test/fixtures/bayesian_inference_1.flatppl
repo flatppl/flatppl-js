@@ -1,11 +1,17 @@
 # A simple Bayesian example: two fit parameters with independent priors and a
 # deterministic model followed by IID normal observations.
 
-# Prior variates
-theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
-theta2 = draw(Exponential(rate = 1.0))
+# Prior distributions
+theta1_dist = Normal(mu = 0.0, sigma = 1.0)
+theta2_dist = Exponential(rate = 1.0)
 
-f_a = functionof(5.0 * _par_, par = _par_)
+# Prior variates
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+
+c = 5.0
+
+f_a = functionof(c * _par_, par = _par_)
 f_b = fn(abs(_) * _)
 
 # Deterministic transform
@@ -17,13 +23,13 @@ obs = draw(iid(Normal(mu = a, sigma = b), 10))
 
 # Reify different sub-DAGs prior and forward model kernel
 prior = lawof(record(theta1 = theta1, theta2 = theta2))
-model = lawof(record(obs = obs), theta1 = theta1, theta2 = theta2)
+forward_kernel = kernelof(record(obs = obs), theta1 = theta1, theta2 = theta2)
 
 # Observed data
 observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]
 
 # Likelihood
-L = likelihoodof(model, record(obs = observed_data))
+L = likelihoodof(forward_kernel, record(obs = observed_data))
 
 # Non-normalized posterior
 posterior = bayesupdate(L, prior)

@@ -34,14 +34,14 @@ for (const name of PARSE_FIXTURES) {
   });
 }
 
-test('integration: bayesian_inference_1 model DAG includes correct ancestors', () => {
+test('integration: bayesian_inference_1 forward_kernel DAG includes correct ancestors', () => {
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_1.flatppl'), 'utf8');
   const { bindings } = processSource(src);
-  const dag = computeSubDAG(bindings, 'model');
+  const dag = computeSubDAG(bindings, 'forward_kernel');
   const ids = new Set(dag.nodes.map(n => n.id));
   // Must include kernel target (obs), boundaries (theta1, theta2),
   // and the deterministic chain (a, b, f_a, f_b)
-  for (const id of ['model', 'obs', 'a', 'b', 'f_a', 'f_b', 'theta1', 'theta2']) {
+  for (const id of ['forward_kernel', 'obs', 'a', 'b', 'f_a', 'f_b', 'theta1', 'theta2']) {
     assert.ok(ids.has(id), `missing ${id}`);
   }
   assert.equal(dag.nodes.find(n => n.id === 'theta1').isBoundary, true);

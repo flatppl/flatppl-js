@@ -1,6 +1,49 @@
 'use strict';
 
-const { isKnownName } = require('./builtins');
+const { isKnownName, MEASURE_PRODUCING } = require('./builtins');
+
+/**
+ * Determine whether an expression produces a measure (probability measure
+ * or general measure) — as opposed to a value, kernel, or function.
+ *
+ * Measures come from: `lawof(...)`, distribution constructors (Normal, ...),
+ * and measure-algebra ops that combine measures (iid, joint, chain, ...).
+ *
+ * NB: kernels (kernelof, functionof on a measure) are NOT measures — they
+ * are functions returning measures.
+ *
+ * @param {object} node - AST expression
+ * @param {Map} bindings - bindings map (for Identifier resolution)
+ * @param {Set} [seen] - cycle guard
+ */
+function isMeasureExpr(node, bindings, seen) {
+  if (!node) return false;
+  if (!seen) seen = new Set();
+  switch (node.type) {
+    case 'Identifier': {
+      const name = node.name;
+      if (seen.has(name)) return false;
+      seen.add(name);
+      const b = bindings.get(name);
+      if (!b) return false;
+      if (b.type === 'lawof') return true;
+      // 'call'-type bindings can be measure-typed (e.g., theta_dist = Normal(...)).
+      if (b.type === 'call' && b.node && b.node.value) {
+        return isMeasureExpr(b.node.value, bindings, seen);
+      }
+      return false;
+    }
+    case 'CallExpr': {
+      if (!node.callee || node.callee.type !== 'Identifier') return false;
+      const name = node.callee.name;
+      if (name === 'lawof') return true;
+      if (MEASURE_PRODUCING.has(name)) return true;
+      return false;
+    }
+    default:
+      return false;
+  }
+}
 
 /**
  * Classify a statement by examining the RHS expression.
@@ -16,6 +59,7 @@ function classifyStatement(valueNode) {
       case 'external': return 'input';
       case 'lawof': return 'lawof';
       case 'functionof': return 'functionof';
+      case 'kernelof': return 'kernelof';
       case 'fn': return 'fn';
       case 'likelihoodof': return 'likelihood';
       case 'bayesupdate': return 'bayesupdate';
@@ -48,7 +92,7 @@ function validateSpecialOperation(valueNode) {
 
   switch (name) {
     case 'functionof':
-    case 'lawof': {
+    case 'kernelof': {
       // First arg must be a positional expression, rest must be keyword args
       if (args.length === 0) {
         diags.push({ severity: 'error', message: `${name}() requires at least one argument`, loc: valueNode.loc });
@@ -61,6 +105,25 @@ function validateSpecialOperation(valueNode) {
         if (args[i].type !== 'KeywordArg') {
           diags.push({ severity: 'error', message: `Arguments after the first in ${name}() must be keyword boundary inputs (name = node)`, loc: args[i].loc });
         }
+      }
+      break;
+    }
+    case 'lawof': {
+      // Unary: a single positional expression. Boundary keyword args were
+      // moved to kernelof() — flag them with a migration hint.
+      if (args.length === 0) {
+        diags.push({ severity: 'error', message: `lawof() requires exactly one argument`, loc: valueNode.loc });
+        break;
+      }
+      if (args[0].type === 'KeywordArg') {
+        diags.push({ severity: 'error', message: `lawof() argument must be an expression, not a keyword argument`, loc: args[0].loc });
+      }
+      for (let i = 1; i < args.length; i++) {
+        diags.push({
+          severity: 'error',
+          message: `lawof() takes a single argument; for a Markov kernel use kernelof(expr, ...keyword boundaries)`,
+          loc: args[i].loc,
+        });
       }
       break;
     }
@@ -178,15 +241,16 @@ function collectDeps(node, definedNames) {
 }
 
 /**
- * For lawof/functionof calls, extract boundary inputs from keyword args.
+ * For functionof/kernelof calls, extract boundary inputs from keyword args.
  * Returns Map<argName, varName> for args after the first positional arg.
- * Placeholders resolve to their inner name.
+ * Placeholders resolve to their inner name. (lawof is unary and has no
+ * boundary kwargs.)
  */
 function extractBoundaries(valueNode) {
   if (!valueNode || valueNode.type !== 'CallExpr') return null;
   const callee = valueNode.callee;
   if (!callee || callee.type !== 'Identifier') return null;
-  if (callee.name !== 'lawof' && callee.name !== 'functionof') return null;
+  if (callee.name !== 'functionof' && callee.name !== 'kernelof') return null;
 
   const boundaries = new Map();
   const args = valueNode.args;
@@ -213,8 +277,9 @@ function extractBoundaries(valueNode) {
  * statically resolved.
  *
  * Recognised forms:
- *  - Tier 1 (`lawof_record`): `lawof(record(name1 = node1, ...), [boundaries...])`
- *    — each field maps to a module-level node name.
+ *  - Tier 1 (`lawof_record`): `lawof(record(name1 = node1, ...))`
+ *    — each field maps to a module-level node name. lawof is unary now,
+ *    so there are no inherited boundaries from this form.
  *  - Tier 2 (`joint`): `joint(name1 = M1, ...)` keyword form
  *    — each field maps to an inline measure expression. Components are
  *    independent (no cross-boundaries between fields).
@@ -234,9 +299,12 @@ function extractJointFields(valueNode) {
   if (!valueNode || valueNode.type !== 'CallExpr') return null;
   if (!valueNode.callee || valueNode.callee.type !== 'Identifier') return null;
 
-  // ----- Tier 1: lawof(record(...)) -----
+  // ----- Tier 1: lawof(record(...)) (unary) -----
+  // Disintegrate operates on joint *measures*, so only unary lawof of a
+  // record qualifies as a Tier 1 target. `kernelof(record(...), kwargs...)`
+  // produces a kernel, not a joint measure, and cannot be disintegrated.
   if (valueNode.callee.name === 'lawof') {
-    if (valueNode.args.length === 0) return null;
+    if (valueNode.args.length !== 1) return null;
     const firstArg = valueNode.args[0];
     if (firstArg.type !== 'CallExpr' || !firstArg.callee
         || firstArg.callee.type !== 'Identifier'
@@ -250,18 +318,7 @@ function extractJointFields(valueNode) {
       if (arg.value.type !== 'Identifier') return null; // can't trace back to a node name
       fields.set(arg.name, arg.value);
     }
-
-    const inheritedBoundaries = new Map();
-    for (let i = 1; i < valueNode.args.length; i++) {
-      const arg = valueNode.args[i];
-      if (arg.type === 'KeywordArg') {
-        let varName = null;
-        if (arg.value.type === 'Identifier') varName = arg.value.name;
-        else if (arg.value.type === 'Placeholder') varName = '_' + arg.value.name + '_';
-        if (varName) inheritedBoundaries.set(arg.name, varName);
-      }
-    }
-    return { kind: 'lawof_record', fields, inheritedBoundaries };
+    return { kind: 'lawof_record', fields, inheritedBoundaries: new Map() };
   }
 
   // ----- Tier 2: joint(name1 = M1, ...) keyword form -----
@@ -481,7 +538,8 @@ function validateIndexing(node, diagnostics) {
 /**
  * Validate hole (`_`) and placeholder (`_name_`) usage according to the spec:
  *  - `_` is only valid inside `fn(...)`.
- *  - `_name_` is only valid inside `functionof(...)` or `lawof(...)`.
+ *  - `_name_` is only valid inside `functionof(...)` or `kernelof(...)`.
+ *    (lawof is unary now and cannot bind placeholders.)
  *
  * Scope is determined by the nearest enclosing special operation.
  *
@@ -489,7 +547,7 @@ function validateIndexing(node, diagnostics) {
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
 function validateHolesAndPlaceholders(node, diagnostics) {
-  // scope can be: 'normal', 'fn', 'reify' (functionof/lawof)
+  // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof)
   function walk(node, scope) {
     if (!node) return;
     switch (node.type) {
@@ -506,7 +564,7 @@ function validateHolesAndPlaceholders(node, diagnostics) {
         if (scope !== 'reify') {
           diagnostics.push({
             severity: 'error',
-            message: `Placeholder '_${node.name}_' may only appear inside functionof(...) or lawof(...)`,
+            message: `Placeholder '_${node.name}_' may only appear inside functionof(...) or kernelof(...)`,
             loc: node.loc,
           });
         }
@@ -515,7 +573,7 @@ function validateHolesAndPlaceholders(node, diagnostics) {
         let inner = scope;
         if (node.callee && node.callee.type === 'Identifier') {
           if (node.callee.name === 'fn') inner = 'fn';
-          else if (node.callee.name === 'functionof' || node.callee.name === 'lawof') inner = 'reify';
+          else if (node.callee.name === 'functionof' || node.callee.name === 'kernelof') inner = 'reify';
         }
         walk(node.callee, scope);
         for (const a of node.args) walk(a, inner);
@@ -689,7 +747,7 @@ function analyze(ast, source) {
       // Build symbol for outline
       const kindMap = {
         draw: 'Variable', input: 'Variable', call: 'Variable',
-        lawof: 'Function', functionof: 'Function', fn: 'Function',
+        lawof: 'Function', functionof: 'Function', kernelof: 'Function', fn: 'Function',
         likelihood: 'Variable', bayesupdate: 'Variable',
         literal: 'Constant', module: 'Module', table: 'Variable',
       };
@@ -723,7 +781,9 @@ function analyze(ast, source) {
     const kernel = bindings.get(info.kernelName);
     const prior = bindings.get(info.priorName);
     if (kernel) {
-      kernel.type = 'lawof';
+      // Disintegration's kernel result is a Markov kernel (parameterized
+      // measure with explicit inputs), not a closed measure.
+      kernel.type = 'kernelof';
       kernel.disintegrateRole = { kind: 'kernel', ...info };
     }
     if (prior) {
@@ -851,10 +911,10 @@ function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
       return;
     }
     if (node.type === 'CallExpr') {
-      // Stop at NESTED functionof/lawof — those are different placeholder scopes.
+      // Stop at NESTED functionof/kernelof — those are different placeholder scopes.
       if (node !== scopeCallExpr
           && node.callee && node.callee.type === 'Identifier'
-          && (node.callee.name === 'functionof' || node.callee.name === 'lawof')) {
+          && (node.callee.name === 'functionof' || node.callee.name === 'kernelof')) {
         return;
       }
       walk(node.callee);
@@ -881,8 +941,8 @@ function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
 
 /**
  * Find a renameable AST node at the cursor position within an expression.
- * Tracks the nearest enclosing functionof/lawof CallExpr as the placeholder
- * scope.
+ * Tracks the nearest enclosing functionof/kernelof CallExpr as the
+ * placeholder scope.
  */
 function findCursorTargetInExpr(root, inLoc) {
   let result = null;
@@ -899,7 +959,7 @@ function findCursorTargetInExpr(root, inLoc) {
     if (node.type === 'CallExpr') {
       let inner = scope;
       if (node.callee && node.callee.type === 'Identifier'
-          && (node.callee.name === 'functionof' || node.callee.name === 'lawof')) {
+          && (node.callee.name === 'functionof' || node.callee.name === 'kernelof')) {
         inner = node;
       }
       walk(node.callee, scope);
@@ -996,7 +1056,7 @@ module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
   countHoles, validateHolesAndPlaceholders,
-  computePhases,
+  computePhases, isMeasureExpr,
   collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges,

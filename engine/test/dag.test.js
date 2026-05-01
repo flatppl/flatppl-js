@@ -35,13 +35,13 @@ test('dag: unknown node returns empty', () => {
   assert.deepEqual(dag.edges, []);
 });
 
-test('dag: lawof boundary inputs stop the trace', () => {
+test('dag: kernelof boundary inputs stop the trace', () => {
   // 'theta' is a boundary input — its ancestors should NOT appear in the sub-DAG.
   const dag = dagOf(`
 src = elementof(reals)
 theta = src * 2
 x = draw(Normal(mu = theta, sigma = 1))
-m = lawof(x, theta = theta)
+m = kernelof(x, theta = theta)
 `, 'm');
   const ids = dag.nodes.map(n => n.id).sort();
   assert.deepEqual(ids, ['m', 'theta', 'x']);
@@ -50,11 +50,11 @@ m = lawof(x, theta = theta)
   assert.equal(thetaNode.isBoundary, true);
 });
 
-test('dag: lawof boundary uses argName as label', () => {
+test('dag: kernelof boundary uses argName as label', () => {
   const dag = dagOf(`
 v = elementof(reals)
 y = v * 2
-m = lawof(y, alpha = v)
+m = kernelof(y, alpha = v)
 `, 'm');
   const vNode = dag.nodes.find(n => n.id === 'v');
   assert.equal(vNode.isBoundary, true);
@@ -105,7 +105,7 @@ f_b = fn(abs(_) * _)
 a = f_a(theta1)
 b = f_b(theta1, theta2)
 obs = draw(iid(Normal(mu = a, sigma = b), 10))
-model = lawof(record(obs = obs), theta1 = theta1, theta2 = theta2)
+model = kernelof(record(obs = obs), theta1 = theta1, theta2 = theta2)
 `;
   const dag = dagOf(src, 'model');
   const ids = new Set(dag.nodes.map(n => n.id));

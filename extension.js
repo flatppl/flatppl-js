@@ -232,6 +232,7 @@ function activate(context) {
     draw: 'draw(${1})',
     lawof: 'lawof(${1})',
     functionof: 'functionof(${1})',
+    kernelof: 'kernelof(${1})',
     fn: 'fn(${1})',
     record: 'record(${1})',
     likelihoodof: 'likelihoodof(${1:kernel}, ${2:data})',

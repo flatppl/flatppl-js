@@ -1,6 +1,27 @@
 'use strict';
 
-const { extractBoundaries, countHoles, collectDeps } = require('./analyzer');
+const { extractBoundaries, countHoles, collectDeps, isMeasureExpr } = require('./analyzer');
+
+// Reification kinds for visualization purposes.
+//   'measure' — lawof(x): always produces a measure (closed or parametric)
+//   'kernel'  — kernelof(x, ...) or functionof(measure, ...): a Markov kernel
+//   'function'— functionof(value, ...): a deterministic function
+//   'lambda'  — fn(...): a lambda
+function reificationKind(binding, bindings) {
+  if (!binding) return null;
+  switch (binding.type) {
+    case 'lawof':     return 'measure';
+    case 'kernelof':  return 'kernel';
+    case 'fn':        return 'lambda';
+    case 'functionof': {
+      const firstArg = binding.node && binding.node.value
+        ? firstPositionalArg(binding.node.value)
+        : null;
+      return isMeasureExpr(firstArg, bindings) ? 'kernel' : 'function';
+    }
+    default: return null;
+  }
+}
 
 function firstPositionalArg(callExpr) {
   if (!callExpr || !callExpr.args) return null;
@@ -71,9 +92,10 @@ function renderExprShort(node, maxLen) {
 
 /**
  * Compute the ancestor sub-DAG of a node.
- * For lawof/functionof, boundary inputs stop the backwards trace.
+ * For functionof/kernelof, boundary inputs stop the backwards trace.
+ * (lawof is unary and never specifies boundaries directly.)
  * For nodes tagged with disintegrateRole, synthesize the equivalent
- * lawof-shaped sub-DAG (target/boundary inputs derived from the joint
+ * kernel/prior sub-DAG (target/boundary inputs derived from the joint
  * measure's record fields and the disintegration selector).
  *
  * @param {Map} bindings - from analyzer: Map<name, BindingInfo>
@@ -93,10 +115,9 @@ function computeSubDAG(bindings, nodeName) {
 
   let boundaryVars = new Set();
   let boundaryLabels = new Map(); // varName -> argName
-  let boundaries = null;
 
-  if (binding.type === 'lawof' || binding.type === 'functionof') {
-    boundaries = extractBoundaries(binding.node.value);
+  if (binding.type === 'functionof' || binding.type === 'kernelof') {
+    const boundaries = extractBoundaries(binding.node.value);
     if (boundaries) {
       boundaryVars = new Set(boundaries.values());
       for (const [argName, varName] of boundaries) {
@@ -117,17 +138,17 @@ function computeSubDAG(bindings, nodeName) {
       id: name,
       label: boundaryLabels.get(name),
       type: b ? b.type : 'unknown',
+      kind: reificationKind(b, bindings),
       phase: b ? b.phase : undefined,
       expr: b ? b.rhs : '',
       line: b ? b.line : -1,
       isBoundary,
       isTarget: name === nodeName,
-      closedMeasure: b && b.type === 'lawof' && isClosedMeasure(bindings, name),
     });
 
     if (isBoundary || !b) return;
 
-    // For lawof/functionof, optionally synthesize:
+    // For lawof/functionof/kernelof, optionally synthesize:
     //   - an anonymous "expression target" node, when the first positional
     //     arg is a compound expression, so the bubble has a clear value-
     //     being-reified that external nodes can tether to;
@@ -137,7 +158,7 @@ function computeSubDAG(bindings, nodeName) {
     // of a new scope — they render as plain nodes connected from the joint).
     let inlineExprDeps = null;
     let inlineExprId = null;
-    if ((b.type === 'lawof' || b.type === 'functionof')
+    if ((b.type === 'lawof' || b.type === 'functionof' || b.type === 'kernelof')
         && !b.disintegrateRole
         && !isFnLike(bindings, name)
         && b.node && b.node.value) {
@@ -216,10 +237,10 @@ function computeSubDAG(bindings, nodeName) {
 }
 
 /**
- * For each lawof/functionof (or disintegration-result) binding visible in
- * the sub-DAG, compute the set of visible nodes that belong to its kernel.
- * Boundary inputs stop the trace, so kernels respect lawof/functionof
- * semantics rather than naive ancestor walks.
+ * For each lawof/functionof/kernelof (or disintegration-result) binding
+ * visible in the sub-DAG, compute the set of visible nodes that belong to
+ * its kernel. Boundary inputs stop the trace, so kernels respect the
+ * reification semantics rather than naive ancestor walks.
  */
 function computeReifications(bindings, visited) {
   const out = [];
@@ -227,7 +248,7 @@ function computeReifications(bindings, visited) {
     if (name.indexOf(':') !== -1) continue; // skip synthetic nodes
     const b = bindings.get(name);
     if (!b) continue;
-    if (b.type !== 'lawof' && b.type !== 'functionof') continue;
+    if (b.type !== 'lawof' && b.type !== 'functionof' && b.type !== 'kernelof') continue;
     // Disintegration results are decompositions of a joint measure, not
     // reifications of a new scope. Render them as plain nodes connected
     // from the joint — no bubble.
@@ -260,51 +281,21 @@ function computeReifications(bindings, visited) {
       targets = (b.deps || []).filter(d => !boundaryVars.has(d) && visited.has(d));
     }
 
-    out.push({ name, type: b.type, kernel: [...visibleKernel], targets });
+    const kind = reificationKind(b, bindings);
+    out.push({ name, type: b.type, kind, kernel: [...visibleKernel], targets });
   }
   return out;
 }
 
-/**
- * A lawof binding is a closed measure if it has no free inputs:
- * no explicit boundary args AND no elementof/external ancestor.
- * (A Markov kernel has at least one free input — explicit or implicit.)
- *
- * For disintegration results: the kernel is always parameterized (it takes
- * the unselected fields as inputs), the prior is closed iff the joint had
- * no inherited boundaries.
- */
-function isClosedMeasure(bindings, bindingName) {
-  const binding = bindings.get(bindingName);
-  if (!binding || binding.type !== 'lawof') return false;
-  if (binding.disintegrateRole) {
-    if (binding.disintegrateRole.kind === 'kernel') return false;
-    const inh = binding.disintegrateRole.inheritedBoundaries;
-    return !inh || inh.size === 0;
-  }
-  const boundaries = extractBoundaries(binding.node.value);
-  if (boundaries && boundaries.size > 0) return false;
-  const seen = new Set();
-  function hasInput(name) {
-    if (seen.has(name)) return false;
-    seen.add(name);
-    const b = bindings.get(name);
-    if (!b) return false;
-    if (b.type === 'input') return true;
-    for (const dep of b.deps) if (hasInput(dep)) return true;
-    return false;
-  }
-  return !hasInput(bindingName);
-}
-
-// True for a lawof/functionof whose kernel members (other than itself) are
-// all "constants in scope" — fixed-phase bindings whose value is determined
-// at compile time (literals and computations over literals). Such a
-// reification has no meaningful runtime scope to enclose; we render it as
-// just the hexagon (like `fn`), with no bubble or synthetic children.
+// True for a lawof/functionof/kernelof whose kernel members (other than
+// itself) are all "constants in scope" — fixed-phase bindings whose value
+// is determined at compile time (literals and computations over literals).
+// Such a reification has no meaningful runtime scope to enclose; we render
+// it as just the hexagon (like `fn`), with no bubble or synthetic children.
 function isFnLike(bindings, bindingName) {
   const b = bindings.get(bindingName);
-  if (!b || (b.type !== 'lawof' && b.type !== 'functionof')) return false;
+  if (!b) return false;
+  if (b.type !== 'lawof' && b.type !== 'functionof' && b.type !== 'kernelof') return false;
   const kn = kernelNames(bindings, bindingName);
   for (const n of kn) {
     if (n === bindingName) continue;
@@ -318,7 +309,7 @@ function kernelNames(bindings, bindingName) {
   const binding = bindings.get(bindingName);
   if (!binding) return new Set();
   let boundaryVars = new Set();
-  if (binding.type === 'lawof' || binding.type === 'functionof') {
+  if (binding.type === 'functionof' || binding.type === 'kernelof') {
     const boundaries = extractBoundaries(binding.node.value);
     if (boundaries) boundaryVars = new Set(boundaries.values());
   }
@@ -339,12 +330,12 @@ function kernelNames(bindings, bindingName) {
  * Synthesize the sub-DAG for a disintegration result.
  *
  * For `kernel, prior = disintegrate(selector, joint)` where
- * `joint = lawof(record(field1 = node1, ..., fieldN = nodeN), [argA = nodeA, ...])`:
+ * `joint = lawof(record(field1 = node1, ..., fieldN = nodeN))` (lawof is
+ * unary — joint measures have no inherited boundaries):
  *
  * - Kernel: target = selected fields' nodes; boundaries = unselected fields'
- *   nodes (with field names as labels) + inherited joint boundaries.
- * - Prior: target = unselected fields' nodes; boundaries = inherited joint
- *   boundaries only.
+ *   nodes (with field names as labels).
+ * - Prior: target = unselected fields' nodes; no boundaries.
  */
 function computeDisintegrateSubDAG(bindings, binding) {
   const role = binding.disintegrateRole;
@@ -359,6 +350,7 @@ function computeDisintegrateSubDAG(bindings, binding) {
     id: binding.name,
     label: binding.name,
     type: binding.type,
+    kind: reificationKind(binding, bindings),
     phase: binding.phase,
     expr: binding.rhs,
     line: binding.line,
@@ -381,7 +373,7 @@ function computeDisintegrateSubDAG(bindings, binding) {
 }
 
 /**
- * Tier 1 — joint constructed via `lawof(record(field = node, ...), [bnds...])`.
+ * Tier 1 — joint constructed via `lawof(record(field = node, ...))` (unary).
  * Each field is bound to a module-level identifier; unselected fields become
  * boundary inputs of the kernel (and are absent from the prior).
  */

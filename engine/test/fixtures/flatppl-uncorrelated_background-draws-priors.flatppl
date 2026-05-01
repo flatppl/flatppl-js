@@ -23,7 +23,7 @@ expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
 obs = draw(broadcast(Poisson, expected))
 
 # ===== Structural disintegration =====
-joint_model = lawof(record(gamma = gamma, obs = obs), mu = mu)
+joint_model = lawof(record(gamma = gamma, obs = obs))
 forward_kernel, prior = disintegrate("obs", joint_model)
 
 # ===== Likelihood and posterior (both kernels in mu) =====

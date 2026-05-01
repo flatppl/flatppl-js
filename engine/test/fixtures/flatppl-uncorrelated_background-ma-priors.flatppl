@@ -18,9 +18,10 @@ gamma = elementof(cartpow(posreals, 2))
 # ===== Observation model =====
 expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
 obs_model = broadcast(Poisson, expected)
+obs_kernel = functionof(obs_model, mu = mu, gamma = gamma)
 
 # ===== Likelihood =====
-L_obs = likelihoodof(obs_model, obs_data)
+L_obs = likelihoodof(obs_kernel, obs_data)
 
 # ===== Prior: Gamma on gamma, improper flat on mu =====
 tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)

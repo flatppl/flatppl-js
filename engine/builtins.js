@@ -37,7 +37,7 @@ const SPECIAL_BINDINGS = new Set([
 // Special operations — not ordinary function calls, have custom syntax rules
 const SPECIAL_OPERATIONS = new Set([
   // Variates and reification
-  'draw', 'lawof', 'functionof', 'fn',
+  'draw', 'lawof', 'functionof', 'kernelof', 'fn',
   // Inputs
   'elementof', 'external', 'valueset',
   // Module operations
@@ -131,6 +131,18 @@ const MEASURE_OPS = new Set([
   'disintegrate',
 ]);
 
+// Built-in callables that produce a measure-typed value. Used to decide
+// whether `functionof(expr, ...)` reifies a function (value expr) or a
+// kernel (measure expr). NB: `totalmass`, `densityof`, `logdensityof`,
+// `likelihoodof`, `joint_likelihood`, and `disintegrate` are excluded —
+// they return scalars, density functions, or tuples, not measures.
+const MEASURE_PRODUCING = new Set([
+  ...DISTRIBUTIONS,
+  'weighted', 'logweighted', 'bayesupdate', 'normalize',
+  'superpose', 'joint', 'iid', 'chain', 'jointchain',
+  'truncate', 'pushfwd',
+]);
+
 // All known names (union of everything that is a built-in callable, set, or constant)
 const ALL_KNOWN = new Set([
   ...CONSTANTS, ...SETS, ...SET_CONSTRUCTORS,
@@ -165,6 +177,6 @@ function isReserved(name) {
 module.exports = {
   CONSTANTS, BOOL_LITERALS, SETS, SET_CONSTRUCTORS,
   RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_OPERATIONS,
-  BUILTIN_FUNCTIONS, DISTRIBUTIONS, MEASURE_OPS, ALL_KNOWN,
+  BUILTIN_FUNCTIONS, DISTRIBUTIONS, MEASURE_OPS, MEASURE_PRODUCING, ALL_KNOWN,
   isKnownName, isConstant, isBoolLiteral, isSet, isSpecialOperation, isReserved,
 };

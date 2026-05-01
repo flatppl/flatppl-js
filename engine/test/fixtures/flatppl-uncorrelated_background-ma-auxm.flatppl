@@ -22,12 +22,14 @@ gamma = elementof(cartpow(posreals, 2))
 # ===== Observation model =====
 expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
 obs_model = broadcast(Poisson, expected)
+obs_kernel = functionof(obs_model, mu = mu, gamma = gamma)
 
 # ===== Auxiliary constraint model =====
 tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
 aux_model = broadcast(hepphys.ContinuedPoisson, bcmul(gamma, tau))
+aux_kernel = functionof(aux_model, gamma = gamma)
 
 # ===== Likelihoods =====
-L_obs = likelihoodof(obs_model, obs_data)
-L_aux = likelihoodof(aux_model, tau)
+L_obs = likelihoodof(obs_kernel, obs_data)
+L_aux = likelihoodof(aux_kernel, tau)
 L = joint_likelihood(L_obs, L_aux)

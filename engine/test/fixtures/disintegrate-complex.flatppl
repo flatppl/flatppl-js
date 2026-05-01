@@ -17,14 +17,14 @@ shift = theta1 + theta2
 obs1 = draw(Normal(mu = shift, sigma = 1.0))
 obs2 = draw(Normal(mu = theta1, sigma = sigma))
 
-# ---- Joint with inherited boundary inputs ----
+# ---- Joint with parametric ancestors ----
 #
-# The joint has its own boundary inputs (mu, sigma); both the forward kernel
-# and the prior produced by disintegrate should inherit them.
+# theta1 depends on mu and sigma (parametric); the resulting joint is a
+# parametric measure. Disintegration produces a kernel and prior that
+# remain parametric in mu, sigma.
 
 joint_with_inputs = lawof(
-    record(theta1 = theta1, theta2 = theta2, obs1 = obs1, obs2 = obs2),
-    mu = mu, sigma = sigma)
+    record(theta1 = theta1, theta2 = theta2, obs1 = obs1, obs2 = obs2))
 
 # Single-field selector (string form). Kernel: obs1; prior: theta1, theta2, obs2.
 fk_a, pr_a = disintegrate("obs1", joint_with_inputs)

@@ -74,7 +74,7 @@
       ]
     },
     "placeholder": {
-      "comment": "Placeholder variables _name_ used inside functionof/lawof",
+      "comment": "Placeholder variables _name_ used inside functionof/kernelof",
       "name": "variable.other.placeholder.flatppl",
       "match": "\\b_[a-zA-Z][a-zA-Z0-9_]*_\\b"
     },
@@ -85,7 +85,7 @@
     },
     "special-operation": {
       "comment": "Special operations with their own syntax rules",
-      "match": "\\b(draw|lawof|functionof|fn|elementof|external|valueset|load_module|standard_module|load_data)\\b",
+      "match": "\\b(draw|lawof|functionof|kernelof|fn|elementof|external|valueset|load_module|standard_module|load_data)\\b",
       "name": "keyword.other.special-operation.flatppl"
     },
     "kernel": {

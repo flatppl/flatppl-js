@@ -14,8 +14,8 @@ forward_kernel, prior = disintegrate(["obs"], joint_model)
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
 
-  // Both should be classified as lawof (they are kernels/measures)
-  assert.equal(bindings.get('forward_kernel').type, 'lawof');
+  // Kernel result is a Markov kernel; prior result is a measure.
+  assert.equal(bindings.get('forward_kernel').type, 'kernelof');
   assert.equal(bindings.get('prior').type, 'lawof');
 
   // forward_kernel sub-DAG: target=obs, boundaries=theta1, theta2
@@ -65,31 +65,34 @@ fk, pr = disintegrate("b", joint_model)
   assert.ok(!prIds.has('b'));
 });
 
-test('disintegrate: inherited boundaries from joint lawof carry through', () => {
-  // joint has its own boundary input mu — both kernel and prior inherit it.
+test('disintegrate: parametric joint ancestors flow through to kernel and prior', () => {
+  // mu is a parametric input (elementof). The joint depends on it, and so
+  // do both the kernel and prior — they remain parametric in mu.
   const src = `
 mu = elementof(reals)
 gamma = draw(Normal(mu = 0, sigma = 1))
 obs = draw(Normal(mu = gamma * mu, sigma = 1))
-joint_model = lawof(record(gamma = gamma, obs = obs), mu = mu)
+joint_model = lawof(record(gamma = gamma, obs = obs))
 fk, pr = disintegrate("obs", joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
 
-  // forward_kernel: target=obs; boundaries=gamma (unselected), mu (inherited)
+  // forward_kernel: target=obs; boundary=gamma (unselected); mu reachable as
+  // a parametric input ancestor.
   const fk = computeSubDAG(bindings, 'fk');
   const fkIds = new Set(fk.nodes.map(n => n.id));
   assert.ok(fkIds.has('obs'));
   assert.equal(fk.nodes.find(n => n.id === 'gamma').isBoundary, true);
-  assert.equal(fk.nodes.find(n => n.id === 'mu').isBoundary, true);
+  assert.ok(fkIds.has('mu'));
 
-  // prior: target=gamma; mu is inherited boundary
+  // prior: target=gamma; mu reachable as parametric ancestor (gamma's
+  // distribution doesn't actually use mu in this fixture, but if it did
+  // the prior would expose it).
   const pr = computeSubDAG(bindings, 'pr');
   const prIds = new Set(pr.nodes.map(n => n.id));
   assert.ok(prIds.has('gamma'));
   assert.equal(pr.nodes.find(n => n.id === 'gamma').isBoundary, false);
-  assert.equal(pr.nodes.find(n => n.id === 'mu').isBoundary, true);
 });
 
 test('disintegrate: fall back to plain trace when joint is non-lawof', () => {
@@ -166,16 +169,18 @@ test('disintegrate (complex fixture): parses without errors', () => {
   assert.equal(errors.length, 0, `errors: ${JSON.stringify(errors)}`);
 });
 
-test('disintegrate (complex fixture): single-field kernel inherits joint boundaries', () => {
+test('disintegrate (complex fixture): single-field kernel — unselected fields are boundaries', () => {
   const src = fs.readFileSync(FIXTURE, 'utf8');
   const { bindings } = processSource(src);
   const fk = computeSubDAG(bindings, 'fk_a');
   const ids = new Set(fk.nodes.map(n => n.id));
 
-  // Target obs1 is reachable; theta1, theta2, obs2 become boundaries (from unselected fields);
-  // mu, sigma remain boundaries (inherited from joint).
+  // Target obs1 reachable. Unselected fields theta1, theta2, obs2 become
+  // explicit boundary inputs of the kernel — the trace stops there, so
+  // parametric ancestors of those (mu, sigma) are not reachable in this
+  // particular kernel sub-DAG.
   assert.ok(ids.has('obs1'));
-  for (const b of ['theta1', 'theta2', 'obs2', 'mu', 'sigma']) {
+  for (const b of ['theta1', 'theta2', 'obs2']) {
     const node = fk.nodes.find(n => n.id === b);
     assert.ok(node, `missing boundary ${b}`);
     assert.equal(node.isBoundary, true, `${b} should be boundary`);
@@ -200,9 +205,9 @@ test('disintegrate (complex fixture): multi-field kernel and matching prior', ()
   // Prior has theta1, theta2 as targets; obs1, obs2 should not appear at all
   for (const t of ['theta1', 'theta2']) assert.ok(prIds.has(t));
   for (const x of ['obs1', 'obs2']) assert.ok(!prIds.has(x));
-  // Inherited boundaries mu, sigma preserved
-  for (const b of ['mu', 'sigma']) {
-    assert.equal(pr.nodes.find(n => n.id === b).isBoundary, true);
+  // Parametric ancestors mu, sigma flow through to the prior.
+  for (const x of ['mu', 'sigma']) {
+    assert.ok(prIds.has(x), `${x} should be reachable as parametric ancestor`);
   }
 });
 
@@ -250,8 +255,8 @@ fk, pr = disintegrate("theta1", joint_indep)
 `;
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
-  // Both decomposed names should be classified as lawof (kernel/measure)
-  assert.equal(bindings.get('fk').type, 'lawof');
+  // Kernel result is a Markov kernel; prior result is a measure.
+  assert.equal(bindings.get('fk').type, 'kernelof');
   assert.equal(bindings.get('pr').type, 'lawof');
   assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'joint');
 });
@@ -337,7 +342,7 @@ fk, pr = disintegrate("b", m)
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
   assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'jointchain');
-  assert.equal(bindings.get('fk').type, 'lawof');
+  assert.equal(bindings.get('fk').type, 'kernelof');
 });
 
 test('disintegrate Tier 2 (jointchain): trailing selection adds synthetic boundary for earlier field', () => {

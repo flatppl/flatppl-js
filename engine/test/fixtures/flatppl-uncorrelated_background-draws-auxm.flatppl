@@ -28,6 +28,6 @@ tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
 aux = draw(broadcast(hepphys.ContinuedPoisson, bcmul(gamma, tau)))
 
 # ===== Likelihoods =====
-L_obs = likelihoodof(lawof(obs), obs_data)
-L_aux = likelihoodof(lawof(aux), tau)
+L_obs = likelihoodof(kernelof(obs), obs_data)
+L_aux = likelihoodof(kernelof(aux), tau)
 L = joint_likelihood(L_obs, L_aux)
