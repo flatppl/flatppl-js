@@ -76,10 +76,11 @@ z = f(y)
 test('dag: synthetic boundary nodes for placeholder boundaries', () => {
   // _par_ is a placeholder; argName 'par' becomes a synthetic boundary,
   // labeled with the placeholder syntax (not the kwarg name) so the
-  // original identifier in the body remains visible.
+  // original identifier in the body remains visible. The body uses a
+  // non-fixed-phase binding so the reification isn't fn-like.
   const dag = dagOf(`
-c = 5.0
-f = functionof(c * _par_, par = _par_)
+x = elementof(reals)
+f = functionof(x * _par_, par = _par_)
 `, 'f');
   const synth = dag.nodes.find(n => n.id === 'f:par');
   assert.ok(synth);

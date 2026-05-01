@@ -132,10 +132,13 @@ function computeSubDAG(bindings, nodeName) {
     //     arg is a compound expression, so the bubble has a clear value-
     //     being-reified that external nodes can tether to;
     //   - boundary input nodes for placeholder kwargs (varName not bound).
-    // Both are skipped when the binding is fn-like.
+    // Skipped for fn-like bindings and for disintegration results
+    // (the latter are decompositions of an existing joint, not reifications
+    // of a new scope — they render as plain nodes connected from the joint).
     let inlineExprDeps = null;
     let inlineExprId = null;
     if ((b.type === 'lawof' || b.type === 'functionof')
+        && !b.disintegrateRole
         && !isFnLike(bindings, name)
         && b.node && b.node.value) {
       const firstArg = firstPositionalArg(b.node.value);
@@ -225,6 +228,10 @@ function computeReifications(bindings, visited) {
     const b = bindings.get(name);
     if (!b) continue;
     if (b.type !== 'lawof' && b.type !== 'functionof') continue;
+    // Disintegration results are decompositions of a joint measure, not
+    // reifications of a new scope. Render them as plain nodes connected
+    // from the joint — no bubble.
+    if (b.disintegrateRole) continue;
     // fn-like reifications get no bubble — the bare hexagon is enough.
     if (isFnLike(bindings, name)) continue;
 
@@ -262,10 +269,19 @@ function computeReifications(bindings, visited) {
  * A lawof binding is a closed measure if it has no free inputs:
  * no explicit boundary args AND no elementof/external ancestor.
  * (A Markov kernel has at least one free input — explicit or implicit.)
+ *
+ * For disintegration results: the kernel is always parameterized (it takes
+ * the unselected fields as inputs), the prior is closed iff the joint had
+ * no inherited boundaries.
  */
 function isClosedMeasure(bindings, bindingName) {
   const binding = bindings.get(bindingName);
   if (!binding || binding.type !== 'lawof') return false;
+  if (binding.disintegrateRole) {
+    if (binding.disintegrateRole.kind === 'kernel') return false;
+    const inh = binding.disintegrateRole.inheritedBoundaries;
+    return !inh || inh.size === 0;
+  }
   const boundaries = extractBoundaries(binding.node.value);
   if (boundaries && boundaries.size > 0) return false;
   const seen = new Set();
@@ -281,15 +297,21 @@ function isClosedMeasure(bindings, bindingName) {
   return !hasInput(bindingName);
 }
 
-// True for a lawof/functionof whose kernel walk yields only itself —
-// no other real bindings reachable. The body uses only placeholders and
-// literals, so semantically it's a bare lambda. We render such nodes as
+// True for a lawof/functionof whose kernel members (other than itself) are
+// all "constants in scope" — fixed-phase bindings whose value is determined
+// at compile time (literals and computations over literals). Such a
+// reification has no meaningful runtime scope to enclose; we render it as
 // just the hexagon (like `fn`), with no bubble or synthetic children.
 function isFnLike(bindings, bindingName) {
   const b = bindings.get(bindingName);
   if (!b || (b.type !== 'lawof' && b.type !== 'functionof')) return false;
   const kn = kernelNames(bindings, bindingName);
-  return kn.size === 1 && kn.has(bindingName);
+  for (const n of kn) {
+    if (n === bindingName) continue;
+    const nb = bindings.get(n);
+    if (!nb || nb.phase !== 'fixed') return false;
+  }
+  return true;
 }
 
 function kernelNames(bindings, bindingName) {
