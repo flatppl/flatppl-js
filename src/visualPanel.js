@@ -242,13 +242,13 @@ class FlatPPLPanel {
     var vscodeApi = acquireVsCodeApi();
     var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
 
-    // Color choices form an additive triple (blue + pink ≈ purple), so the
+    // Color choices form an additive triple (blue + green ≈ teal), so the
     // family relationships read visually: lawof (measure) and functionof
     // (function) sit at the two "primary" hues, kernelof (a function of a
-    // measure) sits at their additive mix. Material 300 palette — pastel
-    // enough to read as bubble fills at low alpha against a dark editor
-    // background, and the blue+pink+purple triple is robust under
-    // protanopia/deuteranopia (red-green colorblind).
+    // measure) sits at their additive mix. Viridis-style green/blue/teal
+    // palette — perceptually ordered, colorblind-safe (the differences
+    // live in distinct RGB channels), and quiet enough to read as bubble
+    // fills at low alpha against a dark editor background.
     var TYPE_STYLE = {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
       draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
@@ -257,12 +257,12 @@ class FlatPPLPanel {
       lawof:         { color: '#64B5F6', shape: 'round-rectangle',  label: 'lawof (measure)' },
       // kernelof always produces a Markov kernel — round-hexagon. Color
       // is also applied to functionof-of-measure below (same kind).
-      kernelof:      { color: '#BA68C8', shape: 'round-hexagon',    label: 'kernelof (kernel)' },
+      kernelof:      { color: '#4DB6AC', shape: 'round-hexagon',    label: 'kernelof (kernel)' },
       // functionof produces a function by default (hexagon). When its
       // first arg is a measure the engine reports kind='kernel' and the
       // node picks up kernelof's shape and color.
-      functionof:    { color: '#F06292', shape: 'hexagon',          label: 'functionof' },
-      fn:            { color: '#F06292', shape: 'hexagon',          label: 'fn' },
+      functionof:    { color: '#81C784', shape: 'hexagon',          label: 'functionof' },
+      fn:            { color: '#81C784', shape: 'hexagon',          label: 'fn' },
       literal:       { color: '#F48FB1', shape: 'rectangle',        label: 'literal' },
       likelihood:    { color: '#EF9A9A', shape: 'octagon',          label: 'likelihood' },
       bayesupdate:   { color: '#FFAB91', shape: 'octagon',          label: 'bayesupdate' },
