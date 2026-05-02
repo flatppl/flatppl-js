@@ -291,9 +291,8 @@ function extractBoundaries(valueNode) {
  *    independent (no cross-boundaries between fields).
  *
  * Returns:
- *   { kind: 'lawof_record' | 'joint',
- *     fields: Map<fieldName, AST-expression>,
- *     inheritedBoundaries: Map<argName, varName> }
+ *   { kind: 'lawof_record' | 'joint' | 'jointchain',
+ *     fields: Map<fieldName, AST-expression> }
  * or null if the structure cannot be statically resolved.
  *
  * For 'lawof_record', each field's expression is an Identifier referring to a
@@ -324,7 +323,7 @@ function extractJointFields(valueNode) {
       if (arg.value.type !== 'Identifier') return null; // can't trace back to a node name
       fields.set(arg.name, arg.value);
     }
-    return { kind: 'lawof_record', fields, inheritedBoundaries: new Map() };
+    return { kind: 'lawof_record', fields };
   }
 
   // ----- Tier 2: joint(name1 = M1, ...) keyword form -----
@@ -335,7 +334,7 @@ function extractJointFields(valueNode) {
       if (arg.type !== 'KeywordArg') return null; // positional joint not statically inspectable here
       fields.set(arg.name, arg.value); // arbitrary measure expression
     }
-    return { kind: 'joint', fields, inheritedBoundaries: new Map() };
+    return { kind: 'joint', fields };
   }
 
   // ----- Tier 2: jointchain(name1 = M1, name2 = K2, ...) keyword form -----
@@ -350,7 +349,7 @@ function extractJointFields(valueNode) {
       if (arg.type !== 'KeywordArg') return null;
       fields.set(arg.name, arg.value);
     }
-    return { kind: 'jointchain', fields, inheritedBoundaries: new Map() };
+    return { kind: 'jointchain', fields };
   }
 
   return null;
@@ -369,7 +368,7 @@ function extractJointFields(valueNode) {
  *
  * @param {object} stmt - AssignStatement
  * @param {Map} bindingMap - already-built bindings map (for joint lookup)
- * @returns {{ kernelName, priorName, selectorFields, jointName, jointFields, inheritedBoundaries } | null}
+ * @returns {{ kernelName, priorName, selectorFields, jointName, jointKind, jointFields, selectorLoc } | null}
  */
 function detectDisintegration(stmt, bindingMap) {
   if (stmt.type !== 'AssignStatement') return null;
@@ -412,9 +411,8 @@ function detectDisintegration(stmt, bindingMap) {
     priorName: stmt.names[1].name,
     selectorFields,
     jointName: jointArg.name,
-    jointKind:           jointInfo ? jointInfo.kind                : null,
-    jointFields:         jointInfo ? jointInfo.fields              : null,
-    inheritedBoundaries: jointInfo ? jointInfo.inheritedBoundaries : new Map(),
+    jointKind:   jointInfo ? jointInfo.kind   : null,
+    jointFields: jointInfo ? jointInfo.fields : null,
     selectorLoc: selectorArg.loc,
   };
 }
@@ -648,34 +646,6 @@ function validateHolesAndPlaceholders(node, diagnostics) {
     }
   }
   walk(node, 'normal');
-}
-
-/**
- * For fn() calls, count hole arguments in the expression.
- */
-function countHoles(valueNode) {
-  if (!valueNode || valueNode.type !== 'CallExpr') return 0;
-  if (!valueNode.callee || valueNode.callee.name !== 'fn') return 0;
-
-  let count = 0;
-  function walk(node) {
-    if (!node) return;
-    if (node.type === 'Hole') { count++; return; }
-    if (node.type === 'CallExpr') {
-      walk(node.callee);
-      for (const a of node.args) walk(a);
-    }
-    if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); }
-    if (node.type === 'UnaryExpr') walk(node.operand);
-    if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') for (const e of node.elements) walk(e);
-    if (node.type === 'IndexExpr') { walk(node.object); for (const i of node.indices) walk(i); }
-    if (node.type === 'FieldAccess') walk(node.object);
-    if (node.type === 'KeywordArg') walk(node.value);
-  }
-
-  // Walk the first argument of fn()
-  for (const arg of valueNode.args) walk(arg);
-  return count;
 }
 
 /**
@@ -1136,7 +1106,7 @@ function findEnclosingRanges(ast, line, col) {
 module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
-  countHoles, validateHolesAndPlaceholders,
+  validateHolesAndPlaceholders,
   computePhases, isMeasureExpr,
   collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,

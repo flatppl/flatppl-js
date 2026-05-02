@@ -1,6 +1,6 @@
 'use strict';
 
-const { extractBoundaries, countHoles, collectDeps, isMeasureExpr } = require('./analyzer');
+const { extractBoundaries, collectDeps, isMeasureExpr } = require('./analyzer');
 
 // Resolve a binding's "effective" RHS view. For most bindings this is
 // just the literal RHS; for disintegration results that have a
