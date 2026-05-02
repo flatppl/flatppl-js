@@ -1,0 +1,43 @@
+# A simple Bayesian example using structural disintegration: build the joint
+# distribution first, then disintegrate to extract the forward kernel and prior.
+# Same model as bayesian_inference.flatppl, expressed by disintegration of the
+# joint instead of separate prior/model reifications.
+
+# Prior distributions
+theta1_dist = Normal(mu = 0.0, sigma = 1.0)
+theta2_dist = Exponential(rate = 1.0)
+
+# Prior variates
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+
+c = 5.0
+
+f_a = functionof(c * _par_, par = _par_)
+f_b = fn(abs(_) * _)
+
+# Deterministic transform
+a = f_a(par = theta1)
+b = f_b(theta1, theta2)
+
+# IID observations from the forward model
+obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
+
+# prior and forward model
+prior = lawof(record(theta1 = theta1, theta2 = theta2))
+forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
+
+# Joint distribution over parameters and observations
+joint_model = jointchain(prior, forward_kernel)
+
+# Structural disintegration, should be eqivalent to forward_kernel and prior
+forward_kernel2, prior2 = disintegrate(["obs"], joint_model)
+
+# Observed data
+observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]
+
+# Likelihood
+L = likelihoodof(forward_kernel2, record(obs = observed_data))
+
+# Non-normalized posterior
+posterior = bayesupdate(L, prior2)
