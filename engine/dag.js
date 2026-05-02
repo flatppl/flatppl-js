@@ -154,6 +154,13 @@ function computeSubDAG(bindings, nodeName) {
     const e = useEffective ? eff(b) : { value: b && b.node && b.node.value, deps: (b && b.deps) || [], callDeps: (b && b.callDeps) || [] };
     const isBoundary = boundaryVars.has(name);
 
+    // If this binding is a disintegration result whose Plan came back
+    // Unsupported, surface that to the renderer so it can mark the node
+    // visually — the trace through it is the literal source, not a
+    // structural decomposition.
+    const planUnsupported = b && b.disintegratePlan && b.disintegratePlan.kind === 'unsupported'
+      ? b.disintegratePlan : null;
+
     visited.set(name, {
       id: name,
       label: boundaryLabels.get(name),
@@ -164,6 +171,9 @@ function computeSubDAG(bindings, nodeName) {
       line: b ? b.line : -1,
       isBoundary,
       isTarget: name === nodeName,
+      unsupported: planUnsupported ? true : undefined,
+      unsupportedReason: planUnsupported ? planUnsupported.reason : undefined,
+      unsupportedDetail: planUnsupported && planUnsupported.detail ? planUnsupported.detail : undefined,
     });
 
     if (isBoundary || !b) return;

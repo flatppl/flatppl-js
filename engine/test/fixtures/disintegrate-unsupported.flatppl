@@ -1,0 +1,46 @@
+# Demo file for the "Unsupported plan" visual marker. Three disintegrations
+# are wired up below — one resolves structurally (Synthesized), one resolves
+# by Delegate, and two return Unsupported for distinct, principled reasons.
+# Only the Unsupported results should render with a dotted orange border;
+# the others should render with their normal kernel/measure styling.
+
+# --- shared building blocks ---
+mu_p   = elementof(reals)
+rate_p = elementof(posreals)
+
+# === Case 1: synthesized — lawof(record(...)) selecting one field. ========
+a = draw(Normal(mu = mu_p, sigma = 1.0))
+b = draw(Normal(mu = a,    sigma = 1.0))
+joint_lr = lawof(record(a = a, b = b))
+
+# Resolves to a synthesized Plan (kernelof + lawof). No dotted border.
+fk_ok, pr_ok = disintegrate(["b"], joint_lr)
+
+
+# === Case 2: delegate — jointchain(prior_b, kernel_b) suffix selection. ===
+prior_b  = lawof(record(theta = draw(Normal(mu = 0, sigma = 1))))
+kernel_b = kernelof(joint(obs = Normal(mu = mu_p, sigma = 1.0)),
+                    theta = _theta_)
+joint_d  = jointchain(prior_b, kernel_b)
+
+# Resolves by Delegate to (kernel_b, prior_b). No dotted border.
+fk_del, pr_del = disintegrate(["obs"], joint_d)
+
+
+# === Case 3: unsupported — chain(...) is structurally unresolvable. =======
+joint_chained = chain(Normal(mu = 0, sigma = 1), Normal(mu = 0, sigma = 1))
+
+# Plan returns Unsupported (chain marginalizes intermediates).
+# Renders with dotted orange border + reason in the info panel.
+fk_chain, pr_chain = disintegrate(["x"], joint_chained)
+
+
+# === Case 4: unsupported — non-suffix selector on jointchain(kw). =========
+joint_kw = jointchain(
+    a = Normal(mu = 0,    sigma = 1.0),
+    b = Normal(mu = mu_p, sigma = 1.0)
+)
+
+# Selecting only the leading chain field is the inversion direction —
+# requires Bayes-update, not structural rewriting. Unsupported.
+fk_lead, pr_lead = disintegrate(["a"], joint_kw)

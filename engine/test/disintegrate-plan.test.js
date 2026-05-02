@@ -251,6 +251,58 @@ fk, pr = disintegrate(["c"], joint_model)
   assert.deepEqual([...kernelFields].sort(), ['c']);
 });
 
+// --- Unsupported-plan visual marker fixture ------------------------
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { computeSubDAG } = require('../index');
+const UNSUPPORTED_FIXTURE = path.join(__dirname, 'fixtures', 'disintegrate-unsupported.flatppl');
+
+test('Unsupported fixture: parses cleanly and produces expected plan kinds', () => {
+  const src = fs.readFileSync(UNSUPPORTED_FIXTURE, 'utf8');
+  const { bindings, diagnostics } = processSource(src);
+  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+
+  // Synthesized: lawof(record(a=a, b=b)) selecting "b".
+  assert.equal(bindings.get('fk_ok').disintegratePlan.kind, 'synthesized');
+  assert.equal(bindings.get('fk_ok').type, 'kernelof');
+
+  // Delegate: jointchain(prior_b, kernel_b) selecting "obs".
+  assert.equal(bindings.get('fk_del').disintegratePlan.kind, 'delegate');
+  assert.equal(bindings.get('fk_del').type, 'kernelof');
+
+  // Unsupported: chain has no structural rule.
+  assert.equal(bindings.get('fk_chain').disintegratePlan.kind, 'unsupported');
+  assert.match(bindings.get('fk_chain').disintegratePlan.reason, /chain/);
+  assert.equal(bindings.get('fk_chain').type, 'call'); // fall-back, not tagged kernelof
+
+  // Unsupported: non-suffix selector on jointchain(kw).
+  assert.equal(bindings.get('fk_lead').disintegratePlan.kind, 'unsupported');
+  assert.match(bindings.get('fk_lead').disintegratePlan.reason, /suffix/);
+  assert.equal(bindings.get('fk_lead').type, 'call');
+});
+
+test('Unsupported fixture: dag node carries unsupported marker + reason', () => {
+  const src = fs.readFileSync(UNSUPPORTED_FIXTURE, 'utf8');
+  const { bindings } = processSource(src);
+
+  // Resolved cases: no unsupported marker.
+  for (const name of ['fk_ok', 'fk_del']) {
+    const dag = computeSubDAG(bindings, name);
+    const root = dag.nodes.find(n => n.id === name);
+    assert.ok(!root.unsupported, `${name} should not carry unsupported marker`);
+  }
+
+  // Unresolved cases: marker + reason present, surfaced for the renderer.
+  for (const name of ['fk_chain', 'fk_lead']) {
+    const dag = computeSubDAG(bindings, name);
+    const root = dag.nodes.find(n => n.id === name);
+    assert.equal(root.unsupported, true, `${name} should carry unsupported marker`);
+    assert.ok(root.unsupportedReason && root.unsupportedReason.length > 0,
+      `${name} should carry a reason string`);
+  }
+});
+
 // --- AST hygiene: synthesized nodes carry synthLoc ----------------
 
 test('Plan: synthesized AST nodes are marked synthetic', () => {

@@ -276,11 +276,18 @@ class FlatPPLPanel {
     function showNodeInfo(d) {
       var phase = d.phase || 'unknown';
       var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
+      var unsupportedRow = '';
+      if (d.unsupported) {
+        var msg = 'disintegration unresolved: ' + esc(d.unsupportedReason || '');
+        if (d.unsupportedDetail) msg += ' — ' + esc(d.unsupportedDetail);
+        unsupportedRow = '<div class="expr" style="color:#FF8A65;">' + msg + '</div>';
+      }
       document.getElementById('info').innerHTML =
         '<div class="row"><span class="name">' + esc(d.label)
         + '</span><span class="type">' + esc(d.nodeType) + '</span>'
         + phaseTag + '</div>'
-        + '<div class="expr">' + esc(d.expr) + '</div>';
+        + '<div class="expr">' + esc(d.expr) + '</div>'
+        + unsupportedRow;
     }
 
     function truncateExpr(expr) {
@@ -370,6 +377,18 @@ class FlatPPLPanel {
               'border-color': '#FFD600',
               'border-width': 3,
               'border-style': 'dashed',
+            }
+          },
+          {
+            // Disintegration result whose Plan came back Unsupported —
+            // the trace through it is the user's literal source, not a
+            // structural decomposition. Dotted orange border distinguishes
+            // it from boundary inputs (dashed yellow) and target (solid blue).
+            selector: 'node[?unsupported]',
+            style: {
+              'border-color': '#FF8A65',
+              'border-width': 3,
+              'border-style': 'dotted',
             }
           },
           {
@@ -730,6 +749,9 @@ class FlatPPLPanel {
             line: node.line != null ? node.line : -1,
             isBoundary: node.isBoundary || false,
             isTarget: node.isTarget || false,
+            unsupported: !!node.unsupported,
+            unsupportedReason: node.unsupportedReason || '',
+            unsupportedDetail: node.unsupportedDetail || '',
             width: width,
           },
         });
