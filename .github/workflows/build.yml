@@ -24,28 +24,28 @@ jobs:
       - run: npm install -g @vscode/vsce
 
       - name: Package extension
-        run: vsce package -o flatppl-0.1.0-dev.vsix --no-git-tag-version
+        run: vsce package -o flatppl-0.1.0-nightly.vsix --no-git-tag-version
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v7
         with:
-          name: flatppl-dev
-          path: flatppl-0.1.0-dev.vsix
+          name: flatppl-nightly
+          path: flatppl-0.1.0-nightly.vsix
 
-      - name: Update dev release
+      - name: Update nightly release
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: dev
-          name: Development Build
+          tag_name: nightly
+          name: Nightly Build
           prerelease: true
-          files: flatppl-0.1.0-dev.vsix
+          files: flatppl-0.1.0-nightly.vsix
           body: |
-            Latest development build of the FlatPPL VS Code extension.
+            Nightly build of the FlatPPL VS Code extension.
             Built from commit ${{ github.sha }}.
 
             Install with:
             ```
-            curl -L https://github.com/${{ github.repository }}/releases/download/dev/flatppl-0.1.0-dev.vsix -o flatppl-0.1.0-dev.vsix
-            code --install-extension flatppl-0.1.0-dev.vsix
+            curl -L https://github.com/${{ github.repository }}/releases/download/nightly/flatppl-0.1.0-nightly.vsix -o flatppl-0.1.0-nightly.vsix
+            code --install-extension flatppl-0.1.0-nightly.vsix
             ```

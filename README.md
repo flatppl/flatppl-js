@@ -15,11 +15,11 @@ Work in progress.
 
 ## Installation
 
-### Install latest dev build
+### Install latest nightly build
 
 ```sh
-curl -L https://github.com/flatppl/flatppl-vscode/releases/download/dev/flatppl-0.1.0-dev.vsix -o flatppl-0.1.0-dev.vsix
-code --install-extension flatppl-0.1.0-dev.vsix
+curl -L https://github.com/flatppl/flatppl-vscode/releases/download/nightly/flatppl-0.1.0-nightly.vsix -o flatppl-0.1.0-nightly.vsix
+code --install-extension flatppl-0.1.0-nightly.vsix
 ```
 
 ### Extension development
