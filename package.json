@@ -15,7 +15,16 @@
   },
   "main": "./extension.js",
   "scripts": {
-    "test": "cd engine && node --test 'test/*.test.js'"
+    "test": "cd engine && node --test 'test/*.test.js'",
+    "build:vendor": "node lib/build-vendor.mjs"
+  },
+  "devDependencies": {
+    "cytoscape": "^3.30.4",
+    "@dagrejs/dagre": "^3.0.0",
+    "cytoscape-dagre": "^2.5.0",
+    "cytoscape-bubblesets": "^4.1.0",
+    "cytoscape-layers": "^3.1.0",
+    "echarts": "^5.5.1"
   },
   "activationEvents": [
     "onLanguage:flatppl"

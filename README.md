@@ -28,8 +28,16 @@ code --install-extension flatppl-0.1.0-nightly.vsix
 
 ```sh
 git clone https://github.com/flatppl/flatppl-vscode
+cd flatppl-vscode
+npm install
+npm run build:vendor
+cd ..
 ln -s "$(realpath flatppl-vscode)" ~/.vscode/extensions/flatppl.flatppl
 ```
+
+Re-run `npm run build:vendor` after changing dependencies in `package.json`.
+The build script also regenerates `THIRD-PARTY-LICENSES.md` from the actual
+bundled deps.
 
 #### Remote development (VS Code Remote-SSH)
 
@@ -37,6 +45,10 @@ On the remote host:
 
 ```sh
 git clone https://github.com/flatppl/flatppl-vscode
+cd flatppl-vscode
+npm install
+npm run build:vendor
+cd ..
 ln -s "$(realpath flatppl-vscode)" ~/.vscode-server/extensions/flatppl.flatppl
 ```
 

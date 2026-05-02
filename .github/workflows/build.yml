@@ -23,6 +23,12 @@ jobs:
 
       - run: npm install -g @vscode/vsce
 
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Build vendored libraries (cytoscape, echarts, stdlib bundle, …)
+        run: npm run build:vendor
+
       - name: Package extension
         run: vsce package -o flatppl-0.1.0-nightly.vsix --no-git-tag-version
 

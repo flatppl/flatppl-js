@@ -2,3 +2,13 @@
 .gitignore
 .vscodeignore
 *.vsix
+
+# All third-party libs are devDependencies, bundled into lib/ at build
+# time; node_modules itself doesn't ship.
+node_modules/**
+package-lock.json
+
+# Build inputs — only the build *outputs* (lib/*.min.js etc.) belong
+# in the vsix, the inputs do not.
+lib/build-vendor.mjs
+lib/stdlib-entry.mjs
