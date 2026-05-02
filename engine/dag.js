@@ -30,6 +30,12 @@ function reificationKind(binding, bindings) {
       const firstArg = firstPositionalArg(eff(binding).value);
       return isMeasureExpr(firstArg, bindings) ? 'kernel' : 'function';
     }
+    case 'call': {
+      // Plain call bindings that *produce* a measure (e.g.
+      // `theta1_dist = Normal(...)`) read as measures in the graph,
+      // even though they're not explicitly reified via `lawof`.
+      return isMeasureExpr(eff(binding).value, bindings) ? 'measure' : null;
+    }
     default: return null;
   }
 }

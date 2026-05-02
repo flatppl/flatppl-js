@@ -453,10 +453,25 @@ class FlatPPLPanel {
               'font-size': '10px',
               'font-style': 'italic',
               'color': function(ele) { return ele.target().data('color') || '#aaa'; },
-              'text-background-color': 'var(--vscode-editor-background, #1e1e1e)',
-              'text-background-opacity': 0.85,
-              'text-background-padding': '2px',
+              // Full text opacity overrides the edge's 0.6 — the line stays
+              // faint, the label reads as bright as a node label.
+              'text-opacity': 1,
+              // Center the label on the line and let an opaque background
+              // pad visually break the line at the label — the tether
+              // appears to connect into the lawof/kernelof/… box on both
+              // sides, like a labeled link in an electrical schematic.
+              // Literal hex (not a CSS var) — cytoscape draws on HTML canvas
+              // and cannot resolve "var(--name)" values, so a CSS variable
+              // would silently fall back to a transparent background and
+              // let the line show through.
               'text-rotation': 'autorotate',
+              'text-background-color': '#1e1e1e',
+              'text-background-opacity': 1,
+              'text-background-padding': '2px',
+              'text-background-shape': 'roundrectangle',
+              'text-border-width': 1,
+              'text-border-color': function(ele) { return ele.target().data('color') || '#aaa'; },
+              'text-border-opacity': 0.6,
             }
           },
           {
