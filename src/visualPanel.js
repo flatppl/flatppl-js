@@ -485,7 +485,7 @@ class FlatPPLPanel {
         ],
         elements: [],
         layout: { name: 'preset' },
-        wheelSensitivity: 0.3,
+        wheelSensitivity: 2,
       });
 
       if (typeof cy.bubbleSets === 'function') {
