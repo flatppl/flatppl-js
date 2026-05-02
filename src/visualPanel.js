@@ -439,6 +439,9 @@ class FlatPPLPanel {
             // Tether: faint connection from a reified value to its
             // reification node. Same kernel-internal flow as the hidden
             // edges, but drawn so you can see what is being reified.
+            // Labeled with the reification keyword (lawof / functionof /
+            // kernelof / fn) so the operation is legible without having
+            // to read the target node.
             selector: 'edge[edgeType = "tether"]',
             style: {
               'line-color': function(ele) { return ele.target().data('color') || '#aaa'; },
@@ -446,6 +449,14 @@ class FlatPPLPanel {
               'width': 1.5,
               'target-arrow-shape': 'none',
               'curve-style': 'straight',
+              'label': 'data(tetherLabel)',
+              'font-size': '10px',
+              'font-style': 'italic',
+              'color': function(ele) { return ele.target().data('color') || '#aaa'; },
+              'text-background-color': 'var(--vscode-editor-background, #1e1e1e)',
+              'text-background-opacity': 0.85,
+              'text-background-padding': '2px',
+              'text-rotation': 'autorotate',
             }
           },
           {
@@ -795,6 +806,13 @@ class FlatPPLPanel {
         }
       }
 
+      // Map binding name -> binding type, used to label tether edges with
+      // the reification keyword (lawof / functionof / kernelof / fn).
+      var typeByName = {};
+      for (var ni = 0; ni < data.nodes.length; ni++) {
+        typeByName[data.nodes[ni].id] = data.nodes[ni].type;
+      }
+
       for (var j = 0; j < data.edges.length; j++) {
         var edge = data.edges[j];
         var edgeType = edge.edgeType || 'data';
@@ -807,6 +825,13 @@ class FlatPPLPanel {
             hidden = true;
           }
         }
+        var tetherLabel = '';
+        if (edgeType === 'tether') {
+          var t = typeByName[edge.target];
+          if (t === 'lawof' || t === 'functionof' || t === 'kernelof' || t === 'fn') {
+            tetherLabel = t;
+          }
+        }
         elements.push({
           group: 'edges',
           data: {
@@ -814,6 +839,7 @@ class FlatPPLPanel {
             target: edge.target,
             edgeType: edgeType,
             hidden: hidden,
+            tetherLabel: tetherLabel,
           },
         });
       }
