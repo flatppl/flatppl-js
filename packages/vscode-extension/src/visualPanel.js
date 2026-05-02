@@ -31,12 +31,16 @@ class FlatPPLPanel {
     this._panel = panel;
     this._context = context;
     this._sourceUri = null;
-    this._onZoomInto = null;
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
       FlatPPLPanel.currentPanel = undefined;
     });
     this._panel.webview.onDidReceiveMessage(msg => {
+      // Editor-navigation request from a webview node click. The webview
+      // owns its own DAG state now (parses source locally, handles zoom-
+      // into events without a host round-trip), so the only remaining
+      // host-bound messages are ones that need VS Code API access:
+      // moving the editor cursor and updating the panel title.
       if (msg.type === 'navigateTo' && this._sourceUri != null) {
         const line = msg.line;
         const uri = this._sourceUri;
@@ -52,26 +56,30 @@ class FlatPPLPanel {
           );
         });
       }
-      if (msg.type === 'zoomInto' && this._onZoomInto) {
-        this._onZoomInto(msg.nodeId);
-      }
       if (msg.type === 'updateTitle') {
         this._panel.title = `FlatPPL: ${msg.name}`;
       }
     });
   }
 
-  set onZoomInto(callback) {
-    this._onZoomInto = callback;
-  }
-
-  update(dagData, targetName, sourceUri, pushHistory) {
+  /**
+   * Push a fresh source text to the webview, optionally with a target
+   * binding name to focus on. The webview parses the source via its own
+   * `FlatPPLEngine` instance, computes the sub-DAG for `targetName` (or
+   * picks a sensible default if null), and renders.
+   *
+   * Replaces the older `update(dagData, ...)` API: the extension host no
+   * longer pre-computes DAGs. This keeps a single source of truth in the
+   * webview and means one engine codebase serves both the VS Code panel
+   * and the future standalone web preview.
+   */
+  updateSource(source, targetName, sourceUri, pushHistory) {
     if (sourceUri) this._sourceUri = sourceUri;
-    this._panel.title = `FlatPPL: ${targetName}`;
+    if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
     this._panel.webview.postMessage({
-      type: 'updateDAG',
-      data: dagData,
-      targetName,
+      type: 'sourceUpdate',
+      source,
+      targetName: targetName || null,
       pushHistory: !!pushHistory,
     });
   }
@@ -97,6 +105,17 @@ class FlatPPLPanel {
     );
     const echartsUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'echarts.min.js')
+    );
+    // Engine bundle: same FlatPPL parser/analyzer/DAG-builder used by the
+    // extension host, packaged as a browser-loadable IIFE that exposes
+    // `globalThis.FlatPPLEngine`. The webview uses it to parse incoming
+    // source text, build bindings, and compute sub-DAGs locally — replacing
+    // the older flow where the extension host did this work and shipped
+    // pre-rendered DAG data over the postMessage wire. Running the engine
+    // in the webview makes the visualizer self-contained and lays the
+    // foundation for the future standalone web preview (no extension host).
+    const engineUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'engine.min.js')
     );
 
     return /* html */ `<!DOCTYPE html>
@@ -237,6 +256,7 @@ class FlatPPLPanel {
   <script nonce="${nonce}" src="${cytoscapeLayersUri}"></script>
   <script nonce="${nonce}" src="${cytoscapeBubblesetsUri}"></script>
   <script nonce="${nonce}" src="${echartsUri}"></script>
+  <script nonce="${nonce}" src="${engineUri}"></script>
   <script nonce="${nonce}">
   (function() {
     var vscodeApi = acquireVsCodeApi();
@@ -525,12 +545,16 @@ class FlatPPLPanel {
         }
       });
 
-      // Double-click: drill into node's sub-DAG
+      // Double-click: drill into node's sub-DAG. Handled locally — the
+      // webview owns the parsed bindings and recomputes the sub-DAG itself
+      // (no host round-trip). Title sync to the editor still goes via a
+      // postMessage to the host since the title is on the VS Code panel.
       cy.on('dbltap', 'node', function(evt) {
         var nodeId = evt.target.data('id');
-        // Don't drill into synthetic nodes (placeholder/hole inputs)
+        // Don't drill into synthetic nodes (placeholder/hole inputs).
         if (nodeId.indexOf(':') !== -1) return;
-        vscodeApi.postMessage({ type: 'zoomInto', nodeId: nodeId });
+        focusNode(nodeId, /* pushHistory */ true);
+        vscodeApi.postMessage({ type: 'updateTitle', name: nodeId });
       });
 
       var tip = document.getElementById('tooltip');
@@ -893,7 +917,58 @@ class FlatPPLPanel {
       }
     }
 
-    // Back button
+    // ---------------------------------------------------------------
+    // Local model state
+    //
+    // The webview parses the .flatppl source itself (via the bundled
+    // FlatPPLEngine) instead of receiving pre-rendered DAG data from the
+    // extension host. This keeps the visualizer self-contained and lets
+    // the same code run in a future standalone web preview.
+    //
+    // Two caches:
+    //   currentSource  — last parsed source text (string)
+    //   currentBindings — engine.processSource(currentSource).bindings
+    // We re-parse only when source changes; clicking through nodes (zoom-
+    // into) reuses currentBindings and just recomputes the sub-DAG.
+    // ---------------------------------------------------------------
+    var currentSource = null;
+    var currentBindings = null;
+
+    /**
+     * Re-render the DAG focused on targetName using the cached bindings.
+     * If pushHistory is true, the current view is pushed onto the back-
+     * button stack first. If targetName is null, falls back to the last
+     * binding in document order (the same default the extension host used
+     * before this refactor).
+     */
+    function focusNode(targetName, pushHistory) {
+      if (!currentBindings) return;
+      // Pick a default target when none is supplied: the last user-defined
+      // binding. Mirrors the extension host's previous fall-back logic.
+      if (!targetName) {
+        var allNames = [];
+        currentBindings.forEach(function(_b, name) { allNames.push(name); });
+        if (allNames.length === 0) return;
+        targetName = allNames[allNames.length - 1];
+      }
+      var dagData = FlatPPLEngine.computeSubDAG(currentBindings, targetName);
+      if (!dagData || dagData.nodes.length === 0) return;
+
+      if (pushHistory && currentState) {
+        history.push(currentState);
+      } else if (!pushHistory) {
+        history = [];
+      }
+
+      currentState = { data: dagData, targetName: targetName };
+      renderDAG(dagData);
+      updateBackBtn();
+    }
+
+    // Back button: pop the previous view; bindings are unchanged, only
+    // re-render with the saved sub-DAG data. (We push state objects that
+    // hold both the data and the target name, so we don't have to recompute
+    // when going back.)
     document.getElementById('back-btn').addEventListener('click', function() {
       if (history.length === 0) return;
       currentState = history.pop();
@@ -904,17 +979,25 @@ class FlatPPLPanel {
 
     window.addEventListener('message', function(event) {
       var msg = event.data;
-      if (!msg || msg.type !== 'updateDAG') return;
+      if (!msg || msg.type !== 'sourceUpdate') return;
 
-      if (msg.pushHistory && currentState) {
-        history.push(currentState);
-      } else if (!msg.pushHistory) {
-        history = [];
+      // Only re-parse when source actually changed. Cursor-driven retargets
+      // re-use the cached bindings (saves the parse for typical "click
+      // around" interactions where the user navigates without editing).
+      if (msg.source !== currentSource) {
+        currentSource = msg.source;
+        try {
+          var result = FlatPPLEngine.processSource(msg.source);
+          currentBindings = result.bindings;
+        } catch (e) {
+          // Parse error: keep the previous bindings so the visualizer
+          // stays usable while the user fixes their syntax. Errors flow
+          // through VS Code diagnostics in the editor anyway.
+          console.error('FlatPPL parse error:', e);
+          return;
+        }
       }
-
-      currentState = { data: msg.data, targetName: msg.targetName };
-      renderDAG(msg.data);
-      updateBackBtn();
+      focusNode(msg.targetName, msg.pushHistory);
     });
 
     initCy();

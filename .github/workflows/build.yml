@@ -23,20 +23,25 @@ jobs:
 
       - run: npm install -g @vscode/vsce
 
-      - name: Install dev dependencies
+      - name: Install workspace dev dependencies
         run: npm ci
 
-      - name: Build vendored libraries (cytoscape, echarts, stdlib bundle, …)
+      - name: Run engine tests
+        run: npm test
+
+      - name: Build vendored libs + engine bundle + grammars
         run: npm run build:vendor
 
       - name: Package extension
-        run: vsce package -o flatppl-0.1.0-nightly.vsix --no-git-tag-version
+        run: |
+          cd packages/vscode-extension
+          vsce package -o ../../flatppl-vscode-extension-nightly.vsix --no-git-tag-version --no-dependencies
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v7
         with:
-          name: flatppl-nightly
-          path: flatppl-0.1.0-nightly.vsix
+          name: flatppl-vscode-extension-nightly
+          path: flatppl-vscode-extension-nightly.vsix
 
       - name: Update nightly release
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -45,13 +50,13 @@ jobs:
           tag_name: nightly
           name: Nightly Build
           prerelease: true
-          files: flatppl-0.1.0-nightly.vsix
+          files: flatppl-vscode-extension-nightly.vsix
           body: |
             Nightly build of the FlatPPL VS Code extension.
             Built from commit ${{ github.sha }}.
 
             Install with:
             ```
-            curl -L https://github.com/${{ github.repository }}/releases/download/nightly/flatppl-0.1.0-nightly.vsix -o flatppl-0.1.0-nightly.vsix
-            code --install-extension flatppl-0.1.0-nightly.vsix
+            curl -L https://github.com/${{ github.repository }}/releases/download/nightly/flatppl-vscode-extension-nightly.vsix -o flatppl-vscode-extension-nightly.vsix
+            code --install-extension flatppl-vscode-extension-nightly.vsix
             ```

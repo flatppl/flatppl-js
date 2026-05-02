@@ -1,0 +1,29 @@
+{
+  "name": "@flatppl/engine",
+  "version": "0.1.0",
+  "description": "Tokenizer, parser, analyzer, IR-lowering, and DAG-extraction utilities for the FlatPPL probabilistic language. JavaScript reference implementation.",
+  "license": "MIT",
+  "main": "./index.js",
+  "files": [
+    "*.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flatppl/flatppl-js",
+    "directory": "packages/engine"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.js'"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "flatppl",
+    "probabilistic",
+    "parser",
+    "ast"
+  ]
+}

@@ -1,90 +1,22 @@
 {
-  "name": "flatppl",
-  "displayName": "FlatPPL",
-  "description": "Syntax highlighting and DAG visualization for the FlatPPL stochastic language",
-  "version": "0.2.0",
-  "publisher": "flatppl",
+  "name": "flatppl-js",
+  "private": true,
+  "version": "0.0.0",
+  "description": "JavaScript ecosystem for FlatPPL — engine, VS Code extension, future LSP and web preview.",
   "license": "MIT",
-  "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/flatppl/flatppl-vscode"
+    "url": "https://github.com/flatppl/flatppl-js"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "build:vendor": "npm run --workspace=packages/vscode-extension build:vendor",
+    "watch:vendor": "npm run --workspace=packages/vscode-extension watch:vendor"
   },
   "engines": {
-    "vscode": "^1.75.0"
-  },
-  "main": "./extension.js",
-  "scripts": {
-    "test": "cd engine && node --test 'test/*.test.js'",
-    "build:vendor": "node lib/build-vendor.mjs"
-  },
-  "devDependencies": {
-    "cytoscape": "^3.30.4",
-    "@dagrejs/dagre": "^3.0.0",
-    "cytoscape-dagre": "^2.5.0",
-    "cytoscape-bubblesets": "^4.1.0",
-    "cytoscape-layers": "^3.1.0",
-    "echarts": "^5.5.1"
-  },
-  "activationEvents": [
-    "onLanguage:flatppl"
-  ],
-  "categories": [
-    "Programming Languages",
-    "Visualization"
-  ],
-  "contributes": {
-    "commands": [
-      {
-        "command": "flatppl.visualize",
-        "title": "FlatPPL: Visualize",
-        "icon": "$(type-hierarchy-super)"
-      }
-    ],
-    "menus": {
-      "commandPalette": [
-        {
-          "command": "flatppl.visualize",
-          "when": "editorLangId == flatppl"
-        }
-      ],
-      "editor/title": [
-        {
-          "command": "flatppl.visualize",
-          "when": "editorLangId == flatppl",
-          "group": "navigation"
-        }
-      ]
-    },
-    "languages": [
-      {
-        "id": "flatppl",
-        "aliases": [
-          "FlatPPL",
-          "flatppl"
-        ],
-        "extensions": [
-          ".flatppl"
-        ],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "flatppl",
-        "scopeName": "source.flatppl",
-        "path": "./syntaxes/flatppl.tmLanguage.json"
-      },
-      {
-        "scopeName": "markdown.flatppl.codeblock",
-        "path": "./syntaxes/flatppl-markdown.tmLanguage.json",
-        "injectTo": [
-          "text.html.markdown"
-        ],
-        "embeddedLanguages": {
-          "meta.embedded.block.flatppl": "flatppl"
-        }
-      }
-    ]
+    "node": ">=18"
   }
 }

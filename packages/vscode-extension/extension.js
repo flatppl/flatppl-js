@@ -1,8 +1,20 @@
 'use strict';
 const vscode = require('vscode');
-const { processSource, computeSubDAG, findBindingAtLine, builtins,
+// The extension host loads the engine module via Node `require` for IDE
+// features (diagnostics, hover, definition, rename). The visualizer panel
+// runs its own copy of the same engine bundled into a browser-loadable
+// IIFE (`lib/engine.min.js`); the host posts source text to the webview
+// and the webview parses, builds bindings, and computes sub-DAGs locally.
+// computeSubDAG is therefore no longer used here — kept the import out
+// to make the change explicit if anyone ever adds it back.
+//
+// `@flatppl/engine` resolves via the npm workspace symlink to the sibling
+// `packages/engine/` directory; in CI / installed builds it resolves to the
+// hoisted `node_modules/@flatppl/engine`. Either way, the same source is
+// loaded and tested.
+const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges } = require('./engine');
+  findEnclosingRanges } = require('@flatppl/engine');
 const { FlatPPLPanel } = require('./src/visualPanel');
 
 function activate(context) {
@@ -43,37 +55,29 @@ function activate(context) {
     return cachedResult;
   }
 
-  function setupZoomHandler() {
-    if (!FlatPPLPanel.currentPanel) return;
-    FlatPPLPanel.currentPanel.onZoomInto = (nodeId) => {
-      if (!cachedResult) return;
-      const dagData = computeSubDAG(cachedResult.bindings, nodeId);
-      if (dagData.nodes.length > 0) {
-        FlatPPLPanel.currentPanel.update(dagData, nodeId, null, true);
-      }
-    };
-  }
-
+  // Show the visualizer for whichever binding contains the cursor (or
+  // fall back to the last binding if the cursor is on a comment / blank
+  // line). The host's only jobs now are:
+  //   - finding the cursor's binding name (uses analyzer, host-side)
+  //   - posting source + targetName to the webview, which parses + renders
+  //
+  // No more `computeSubDAG` here — the webview owns that.
   function showDAGForCursor(editor) {
     if (!editor || editor.document.languageId !== 'flatppl') return false;
 
     const { bindings } = getParsed(editor.document);
     const pos = editor.selection.active;
     let binding = findBindingAtLine(bindings, pos.line, pos.character);
-    // Fall back to the last binding in the file if cursor isn't on one
-    // (e.g. on a comment line or blank line).
     if (!binding) {
       const all = [...bindings.values()];
       if (all.length === 0) return false;
       binding = all[all.length - 1];
     }
 
-    const name = binding.name;
-    const dagData = computeSubDAG(bindings, name);
-
+    const source = editor.document.getText();
     FlatPPLPanel.createOrShow(context);
-    setupZoomHandler();
-    FlatPPLPanel.currentPanel.update(dagData, name, editor.document.uri, false);
+    FlatPPLPanel.currentPanel.updateSource(
+      source, binding.name, editor.document.uri, /* pushHistory */ false);
     return true;
   }
 

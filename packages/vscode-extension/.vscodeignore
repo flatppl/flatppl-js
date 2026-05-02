@@ -1,0 +1,14 @@
+.git/**
+.gitignore
+.vscodeignore
+*.vsix
+
+# Workspace-hoisted devDependencies. Everything that ships in the vsix
+# is bundled into lib/ by build-vendor.mjs; node_modules itself doesn't ship.
+node_modules/**
+**/node_modules/**
+package-lock.json
+../../package-lock.json
+
+# Build inputs — only build outputs (lib/* and grammars/*) ship in the vsix.
+build-vendor.mjs
