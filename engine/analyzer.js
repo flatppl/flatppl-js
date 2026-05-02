@@ -1,6 +1,12 @@
 'use strict';
 
 const { isKnownName, MEASURE_PRODUCING } = require('./builtins');
+// Lazy require to avoid a circular load (disintegrate requires analyzer).
+let _disintegratePlan = null;
+function disintegratePlan(...args) {
+  if (!_disintegratePlan) _disintegratePlan = require('./disintegrate').disintegratePlan;
+  return _disintegratePlan(...args);
+}
 
 /**
  * Determine whether an expression produces a measure (probability measure
@@ -394,19 +400,56 @@ function detectDisintegration(stmt, bindingMap) {
   const jointBinding = bindingMap.get(jointArg.name);
   if (!jointBinding) return null;
 
+  // We no longer pre-screen with extractJointFields — the rewriter will
+  // determine structurally whether this disintegration is supported, and
+  // selector errors come back as Unsupported reasons. extractJointFields
+  // is kept around for selector-error diagnostics on the cases it does
+  // recognise (see pass 3 in analyze).
   const jointInfo = extractJointFields(jointBinding.node.value);
-  if (!jointInfo) return null;
 
   return {
     kernelName: stmt.names[0].name,
     priorName: stmt.names[1].name,
     selectorFields,
     jointName: jointArg.name,
-    jointKind: jointInfo.kind,
-    jointFields: jointInfo.fields,
-    inheritedBoundaries: jointInfo.inheritedBoundaries,
+    jointKind:           jointInfo ? jointInfo.kind                : null,
+    jointFields:         jointInfo ? jointInfo.fields              : null,
+    inheritedBoundaries: jointInfo ? jointInfo.inheritedBoundaries : new Map(),
     selectorLoc: selectorArg.loc,
   };
+}
+
+/**
+ * Attach an "effective RHS" view to a binding so the DAG renderer can
+ * treat it as if its source were `effectiveValue` instead of the
+ * statement's literal RHS. Used by disintegration to render synthesized
+ * kernel/prior expressions naturally.
+ */
+function attachEffectiveRhs(binding, effectiveValue, definedNames) {
+  binding.effectiveValue = effectiveValue;
+  const { deps, callDeps } = collectDeps(effectiveValue, definedNames);
+  // Self-references are never deps for rendering purposes.
+  for (const n of binding.names || [binding.name]) {
+    deps.delete(n);
+    callDeps.delete(n);
+  }
+  binding.effectiveDeps = [...deps];
+  binding.effectiveCallDeps = [...callDeps];
+}
+
+/**
+ * For a Plan.delegate disintegration result, mirror the delegate target's
+ * RHS view onto this binding so it renders identically — same kernelof/
+ * lawof structure, same boundaries, same ancestor trace. The binding
+ * keeps its own identity (LHS name, source location) but shares the
+ * target's effective semantics.
+ */
+function attachDelegate(binding, targetName, bindings) {
+  const target = bindings.get(targetName);
+  if (!target || !target.node || !target.node.value) return;
+  binding.effectiveValue    = target.node.value;
+  binding.effectiveDeps     = [...(target.deps || [])];
+  binding.effectiveCallDeps = [...(target.callDeps || [])];
 }
 
 /**
@@ -767,28 +810,66 @@ function analyze(ast, source) {
     const info = detectDisintegration(stmt, bindings);
     if (!info) continue;
 
-    // Validate selector fields exist in the joint's record
-    for (const field of info.selectorFields) {
-      if (!info.jointFields.has(field)) {
-        diagnostics.push({
-          severity: 'error',
-          message: `disintegrate: selector field '${field}' not found in joint measure '${info.jointName}'`,
-          loc: info.selectorLoc,
-        });
+    // Validate selector fields exist in the joint's record (when the joint
+    // is in a form whose fields we can statically enumerate). For positional
+    // jointchain or other forms, the rewriter's Unsupported reason carries
+    // the equivalent diagnostic — emitted below.
+    if (info.jointFields) {
+      for (const field of info.selectorFields) {
+        if (!info.jointFields.has(field)) {
+          diagnostics.push({
+            severity: 'error',
+            message: `disintegrate: selector field '${field}' not found in joint measure '${info.jointName}'`,
+            loc: info.selectorLoc,
+          });
+        }
       }
     }
 
-    const kernel = bindings.get(info.kernelName);
-    const prior = bindings.get(info.priorName);
-    if (kernel) {
-      // Disintegration's kernel result is a Markov kernel (parameterized
-      // measure with explicit inputs), not a closed measure.
-      kernel.type = 'kernelof';
-      kernel.disintegrateRole = { kind: 'kernel', ...info };
+    // Compute the structural-disintegration Plan first; downstream tagging
+    // depends on whether the rewriter could resolve the joint structurally.
+    const jointBinding = bindings.get(info.jointName);
+    let plan = null;
+    if (jointBinding && jointBinding.node && jointBinding.node.value) {
+      plan = disintegratePlan(
+        jointBinding.node.value, info.selectorFields, bindings,
+        { seen: new Set(), source: info.jointName });
     }
-    if (prior) {
-      prior.type = 'lawof';
-      prior.disintegrateRole = { kind: 'prior', ...info };
+
+    const kernel = bindings.get(info.kernelName);
+    const prior  = bindings.get(info.priorName);
+
+    // Only tag the result bindings as kernel/prior of a structural
+    // disintegration when the rewriter actually resolved one. Unsupported
+    // plans fall back to the plain dep trace via the literal RHS.
+    const resolved = plan && (plan.kind === 'synthesized' || plan.kind === 'delegate');
+    if (resolved) {
+      if (kernel) {
+        kernel.type = 'kernelof';
+        kernel.disintegrateRole = { kind: 'kernel', ...info };
+        kernel.disintegratePlan = plan;
+      }
+      if (prior) {
+        prior.type = 'lawof';
+        prior.disintegrateRole = { kind: 'prior', ...info };
+        prior.disintegratePlan = plan;
+      }
+
+      if (plan.kind === 'synthesized') {
+        if (kernel) attachEffectiveRhs(kernel, plan.kernel, definedNames);
+        if (prior)  attachEffectiveRhs(prior,  plan.prior,  definedNames);
+      } else /* delegate */ {
+        // Render the result identically to the delegate target — this is
+        // the "the disintegration recovered an existing binding" case.
+        if (kernel) attachDelegate(kernel, plan.kernel.binding, bindings);
+        if (prior)  attachDelegate(prior,  plan.prior.binding,  bindings);
+      }
+    } else if (plan) {
+      // Keep the Plan around (even Unsupported) so the renderer or a
+      // future diagnostic surface can read its reason. Don't change the
+      // binding's type — fall back to plain dep trace.
+      if (kernel) kernel.disintegratePlan = plan;
+      if (prior)  prior.disintegratePlan  = plan;
     }
   }
 

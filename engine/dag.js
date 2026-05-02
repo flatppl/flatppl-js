@@ -2,6 +2,19 @@
 
 const { extractBoundaries, countHoles, collectDeps, isMeasureExpr } = require('./analyzer');
 
+// Resolve a binding's "effective" RHS view. For most bindings this is
+// just the literal RHS; for disintegration results that have a
+// synthesized Plan, it returns the Plan's expression so the renderer
+// can treat them as bona-fide kernelof/lawof bindings.
+function eff(b) {
+  if (!b) return { value: null, deps: [], callDeps: [] };
+  return {
+    value:    b.effectiveValue    != null ? b.effectiveValue    : (b.node && b.node.value),
+    deps:     b.effectiveDeps     != null ? b.effectiveDeps     : (b.deps     || []),
+    callDeps: b.effectiveCallDeps != null ? b.effectiveCallDeps : (b.callDeps || []),
+  };
+}
+
 // Reification kinds for visualization purposes.
 //   'measure' — lawof(x): always produces a measure (closed or parametric)
 //   'kernel'  — kernelof(x, ...) or functionof(measure, ...): a Markov kernel
@@ -14,9 +27,7 @@ function reificationKind(binding, bindings) {
     case 'kernelof':  return 'kernel';
     case 'fn':        return 'lambda';
     case 'functionof': {
-      const firstArg = binding.node && binding.node.value
-        ? firstPositionalArg(binding.node.value)
-        : null;
+      const firstArg = firstPositionalArg(eff(binding).value);
       return isMeasureExpr(firstArg, bindings) ? 'kernel' : 'function';
     }
     default: return null;
@@ -94,9 +105,14 @@ function renderExprShort(node, maxLen) {
  * Compute the ancestor sub-DAG of a node.
  * For functionof/kernelof, boundary inputs stop the backwards trace.
  * (lawof is unary and never specifies boundaries directly.)
- * For nodes tagged with disintegrateRole, synthesize the equivalent
- * kernel/prior sub-DAG (target/boundary inputs derived from the joint
- * measure's record fields and the disintegration selector).
+ *
+ * Disintegration results are rendered uniformly with the rest: the
+ * analyzer attaches an `effectiveValue/Deps/CallDeps` view derived from
+ * the synthesized Plan, and `eff()` reads through to those when present.
+ * The renderer just walks the effective expression like any user-written
+ * kernelof/lawof binding — boundary inputs declared in the synthesized
+ * `kernelof(...)` produce boundaries (and synthetic boundary nodes when
+ * the input names don't resolve to bindings in scope).
  *
  * @param {Map} bindings - from analyzer: Map<name, BindingInfo>
  * @param {string} nodeName - the target node name
@@ -106,18 +122,17 @@ function computeSubDAG(bindings, nodeName) {
   const binding = bindings.get(nodeName);
   if (!binding) return { nodes: [], edges: [] };
 
-  // Special path: disintegration result.
-  if (binding.disintegrateRole) {
-    const result = computeDisintegrateSubDAG(bindings, binding);
-    if (!result.reifications) result.reifications = [];
-    return result;
-  }
+  // Disintegration with an Unsupported plan → plain dep trace using the
+  // analyzer-recorded deps (the user's literal disintegrate(...) call).
+  // Synthesized plans expose their RHS via eff().value/deps below, so the
+  // root binding renders like any user-written kernelof/lawof.
 
+  const rootValue = eff(binding).value;
   let boundaryVars = new Set();
   let boundaryLabels = new Map(); // varName -> argName
 
   if (binding.type === 'functionof' || binding.type === 'kernelof') {
-    const boundaries = extractBoundaries(binding.node.value);
+    const boundaries = extractBoundaries(rootValue);
     if (boundaries) {
       boundaryVars = new Set(boundaries.values());
       for (const [argName, varName] of boundaries) {
@@ -129,9 +144,14 @@ function computeSubDAG(bindings, nodeName) {
   const visited = new Map();
   const edges = [];
 
-  function visit(name) {
+  function visit(name, useEffective) {
     if (visited.has(name)) return;
     const b = bindings.get(name);
+    // Effective-RHS overlays apply only at the inspection root. Transitive
+    // visits use the literal RHS so a top-level view still reflects the
+    // user's source structure — e.g., descending through `prior2` reaches
+    // `joint_model`, not the rewriter's synthesized view of it.
+    const e = useEffective ? eff(b) : { value: b && b.node && b.node.value, deps: (b && b.deps) || [], callDeps: (b && b.callDeps) || [] };
     const isBoundary = boundaryVars.has(name);
 
     visited.set(name, {
@@ -153,16 +173,16 @@ function computeSubDAG(bindings, nodeName) {
     //     arg is a compound expression, so the bubble has a clear value-
     //     being-reified that external nodes can tether to;
     //   - boundary input nodes for placeholder kwargs (varName not bound).
-    // Skipped for fn-like bindings and for disintegration results
-    // (the latter are decompositions of an existing joint, not reifications
-    // of a new scope — they render as plain nodes connected from the joint).
+    // Skipped for fn-like bindings (their reification has no scope), and
+    // for transitive visits to disintegration results (they appear as
+    // plain nodes in someone else's trace).
     let inlineExprDeps = null;
     let inlineExprId = null;
     if ((b.type === 'lawof' || b.type === 'functionof' || b.type === 'kernelof')
-        && !b.disintegrateRole
         && !isFnLike(bindings, name)
-        && b.node && b.node.value) {
-      const firstArg = firstPositionalArg(b.node.value);
+        && (useEffective || !b.disintegrateRole)
+        && e.value) {
+      const firstArg = firstPositionalArg(e.value);
       const placeholdersInBody = new Set();
       if (firstArg) collectPlaceholders(firstArg, placeholdersInBody);
 
@@ -196,7 +216,7 @@ function computeSubDAG(bindings, nodeName) {
       // Label uses the placeholder syntax (`_foo_`) so the original
       // identifier is visible. Edge targets the expression node when the
       // placeholder is actually used in the body, else the reification.
-      const localBoundaries = extractBoundaries(b.node.value);
+      const localBoundaries = extractBoundaries(e.value);
       if (localBoundaries) {
         for (const [argName, varName] of localBoundaries) {
           if (!bindings.has(varName)) {
@@ -222,17 +242,17 @@ function computeSubDAG(bindings, nodeName) {
       }
     }
 
-    const calls = new Set(b.callDeps || []);
-    for (const dep of b.deps) {
+    const calls = new Set(e.callDeps || []);
+    for (const dep of e.deps) {
       if (inlineExprDeps && inlineExprDeps.has(dep)) continue;
       edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
-      visit(dep);
+      visit(dep, false);
     }
   }
 
-  visit(nodeName);
+  visit(nodeName, true);
 
-  const reifications = computeReifications(bindings, visited);
+  const reifications = computeReifications(bindings, visited, nodeName);
   return { nodes: [...visited.values()], edges, reifications };
 }
 
@@ -242,19 +262,19 @@ function computeSubDAG(bindings, nodeName) {
  * its kernel. Boundary inputs stop the trace, so kernels respect the
  * reification semantics rather than naive ancestor walks.
  */
-function computeReifications(bindings, visited) {
+function computeReifications(bindings, visited, rootName) {
   const out = [];
   for (const [name] of visited) {
     if (name.indexOf(':') !== -1) continue; // skip synthetic nodes
     const b = bindings.get(name);
     if (!b) continue;
     if (b.type !== 'lawof' && b.type !== 'functionof' && b.type !== 'kernelof') continue;
-    // Disintegration results are decompositions of a joint measure, not
-    // reifications of a new scope. Render them as plain nodes connected
-    // from the joint — no bubble.
-    if (b.disintegrateRole) continue;
     // fn-like reifications get no bubble — the bare hexagon is enough.
     if (isFnLike(bindings, name)) continue;
+    // Disintegration results get a bubble only when they're the inspection
+    // target. As an ancestor in someone else's trace, they render as a
+    // plain node — the user's source structure is the natural view.
+    if (b.disintegrateRole && name !== rootName) continue;
 
     const kernel = kernelNames(bindings, name);
     const visibleKernel = new Set();
@@ -266,8 +286,9 @@ function computeReifications(bindings, visited) {
     }
     if (visibleKernel.size < 2) continue;
 
+    const e = eff(b);
     let boundaryVars = new Set();
-    const boundaries = extractBoundaries(b.node.value);
+    const boundaries = extractBoundaries(e.value);
     if (boundaries) boundaryVars = new Set(boundaries.values());
 
     // If an anonymous expression target exists, that is THE target of the
@@ -278,7 +299,7 @@ function computeReifications(bindings, visited) {
     if (visited.has(syntheticTargetId)) {
       targets = [syntheticTargetId];
     } else {
-      targets = (b.deps || []).filter(d => !boundaryVars.has(d) && visited.has(d));
+      targets = (e.deps || []).filter(d => !boundaryVars.has(d) && visited.has(d));
     }
 
     const kind = reificationKind(b, bindings);
@@ -310,302 +331,25 @@ function kernelNames(bindings, bindingName) {
   if (!binding) return new Set();
   let boundaryVars = new Set();
   if (binding.type === 'functionof' || binding.type === 'kernelof') {
-    const boundaries = extractBoundaries(binding.node.value);
+    const boundaries = extractBoundaries(eff(binding).value);
     if (boundaries) boundaryVars = new Set(boundaries.values());
   }
   const visited = new Set();
-  function visit(name) {
+  function visit(name, useEffective) {
     if (visited.has(name)) return;
     visited.add(name);
     if (boundaryVars.has(name)) return;
     const b = bindings.get(name);
     if (!b) return;
-    for (const dep of b.deps) visit(dep);
+    // Use effective deps for the root (so synthesized disintegration RHS
+    // is honoured), literal deps for everything reached transitively.
+    const deps = useEffective ? eff(b).deps : (b.deps || []);
+    for (const dep of deps) visit(dep, false);
   }
-  visit(bindingName);
+  visit(bindingName, true);
   return visited;
 }
 
-/**
- * Synthesize the sub-DAG for a disintegration result.
- *
- * For `kernel, prior = disintegrate(selector, joint)` where
- * `joint = lawof(record(field1 = node1, ..., fieldN = nodeN))` (lawof is
- * unary — joint measures have no inherited boundaries):
- *
- * - Kernel: target = selected fields' nodes; boundaries = unselected fields'
- *   nodes (with field names as labels).
- * - Prior: target = unselected fields' nodes; no boundaries.
- */
-function computeDisintegrateSubDAG(bindings, binding) {
-  const role = binding.disintegrateRole;
-  const isKernel = role.kind === 'kernel';
-  const selected = new Set(role.selectorFields);
-
-  const visited = new Map();
-  const edges = [];
-
-  // The disintegration result node itself.
-  visited.set(binding.name, {
-    id: binding.name,
-    label: binding.name,
-    type: binding.type,
-    kind: reificationKind(binding, bindings),
-    phase: binding.phase,
-    expr: binding.rhs,
-    line: binding.line,
-    isBoundary: false,
-    isTarget: true,
-  });
-
-  if (role.jointKind === 'lawof_record') {
-    return computeLawofRecordDisintegration(bindings, binding, role, isKernel, selected, visited, edges);
-  }
-  if (role.jointKind === 'joint') {
-    return computeJointDisintegration(bindings, binding, role, isKernel, selected, visited, edges);
-  }
-  if (role.jointKind === 'jointchain') {
-    return computeJointchainDisintegration(bindings, binding, role, isKernel, selected, visited, edges);
-  }
-
-  // Unknown joint kind — return just the result node alone.
-  return { nodes: [...visited.values()], edges };
-}
-
-/**
- * Tier 1 — joint constructed via `lawof(record(field = node, ...))` (unary).
- * Each field is bound to a module-level identifier; unselected fields become
- * boundary inputs of the kernel (and are absent from the prior).
- */
-function computeLawofRecordDisintegration(bindings, binding, role, isKernel, selected, visited, edges) {
-  const targetFields = isKernel
-    ? role.selectorFields.filter(f => role.jointFields.has(f))
-    : [...role.jointFields.keys()].filter(f => !selected.has(f));
-  const boundaryFields = isKernel
-    ? [...role.jointFields.keys()].filter(f => !selected.has(f))
-    : [];
-
-  const boundaryVars = new Set();
-  const boundaryLabels = new Map();
-
-  for (const f of boundaryFields) {
-    const node = role.jointFields.get(f); // Identifier AST node
-    if (node && node.type === 'Identifier') {
-      boundaryVars.add(node.name);
-      boundaryLabels.set(node.name, f);
-    }
-  }
-  for (const [argName, varName] of role.inheritedBoundaries) {
-    boundaryVars.add(varName);
-    if (!boundaryLabels.has(varName)) boundaryLabels.set(varName, argName);
-  }
-
-  function visit(name) {
-    if (visited.has(name)) return;
-    const b = bindings.get(name);
-    const isBoundary = boundaryVars.has(name);
-
-    visited.set(name, {
-      id: name,
-      label: boundaryLabels.get(name),
-      type: b ? b.type : 'unknown',
-      phase: b ? b.phase : undefined,
-      expr: b ? b.rhs : '',
-      line: b ? b.line : -1,
-      isBoundary,
-      isTarget: false,
-    });
-
-    if (isBoundary || !b) return;
-
-    const calls = new Set(b.callDeps || []);
-    for (const dep of b.deps) {
-      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
-      visit(dep);
-    }
-  }
-
-  // Trace target fields; ancestors stop at boundaries.
-  for (const f of targetFields) {
-    const node = role.jointFields.get(f);
-    if (!node || node.type !== 'Identifier') continue;
-    const v = node.name;
-    edges.push({ source: v, target: binding.name, edgeType: 'data' });
-    visit(v);
-  }
-
-  for (const v of boundaryVars) {
-    if (!visited.has(v)) visit(v);
-    edges.push({ source: v, target: binding.name, edgeType: 'data' });
-  }
-
-  for (const [argName, varName] of role.inheritedBoundaries) {
-    if (!bindings.has(varName) && !visited.has(varName)) {
-      const synId = binding.name + ':' + argName;
-      visited.set(synId, {
-        id: synId,
-        label: argName,
-        type: 'input',
-        phase: 'parameterized',
-        expr: '',
-        line: binding.line,
-        isBoundary: true,
-        isTarget: false,
-      });
-      edges.push({ source: synId, target: binding.name, edgeType: 'data' });
-    }
-  }
-
-  return { nodes: [...visited.values()], edges };
-}
-
-/**
- * Tier 2 — joint constructed via `joint(name = M, ...)` keyword form.
- * Components are independent: there are no cross-boundaries between the
- * selected and unselected fields. Each field's contribution to the kernel
- * (or prior) sub-DAG is the set of module-level identifiers referenced by
- * its measure expression.
- */
-function computeJointDisintegration(bindings, binding, role, isKernel, selected, visited, edges) {
-  const allFields = [...role.jointFields.keys()];
-  const myFields = isKernel
-    ? allFields.filter(f => selected.has(f))
-    : allFields.filter(f => !selected.has(f));
-
-  const definedNames = new Set(bindings.keys());
-  const collectedDeps = new Set();
-  const collectedCallDeps = new Set();
-
-  for (const f of myFields) {
-    const expr = role.jointFields.get(f);
-    if (!expr) continue;
-    const { deps, callDeps } = collectDeps(expr, definedNames);
-    for (const d of deps) collectedDeps.add(d);
-    for (const d of callDeps) collectedCallDeps.add(d);
-  }
-
-  function visit(name) {
-    if (visited.has(name)) return;
-    const b = bindings.get(name);
-    visited.set(name, {
-      id: name,
-      type: b ? b.type : 'unknown',
-      phase: b ? b.phase : undefined,
-      expr: b ? b.rhs : '',
-      line: b ? b.line : -1,
-      isBoundary: false,
-      isTarget: false,
-    });
-    if (!b) return;
-    const calls = new Set(b.callDeps || []);
-    for (const dep of b.deps) {
-      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
-      visit(dep);
-    }
-  }
-
-  for (const dep of collectedDeps) {
-    edges.push({
-      source: dep,
-      target: binding.name,
-      edgeType: collectedCallDeps.has(dep) ? 'call' : 'data',
-    });
-    visit(dep);
-  }
-
-  return { nodes: [...visited.values()], edges };
-}
-
-/**
- * Tier 2 — joint constructed via `jointchain(name1 = M, name2 = K, ...)`.
- * The chain order is significant: later kernels may depend on earlier
- * variates. We don't fully model that variate graph; we approximate as
- * follows:
- *  - Selected/unselected component expressions contribute their module-level
- *    deps as ancestors of the kernel/prior (like the joint case).
- *  - Any unselected field appearing BEFORE a selected field in the chain
- *    becomes a synthetic boundary input on the kernel (labelled with the
- *    field name). This is exact for the "trailing-suffix selection" case
- *    (e.g., `disintegrate("c", jointchain(a, b, c))` → kernel needs a, b).
- *  - For prior, we treat unselected fields like an independent joint —
- *    the actual disintegration may be intractable in non-suffix selection
- *    cases, but the visualization is still informative.
- */
-function computeJointchainDisintegration(bindings, binding, role, isKernel, selected, visited, edges) {
-  const allFieldsOrdered = [...role.jointFields.keys()];
-  const myFields = isKernel
-    ? allFieldsOrdered.filter(f => selected.has(f))
-    : allFieldsOrdered.filter(f => !selected.has(f));
-
-  const definedNames = new Set(bindings.keys());
-  const collectedDeps = new Set();
-  const collectedCallDeps = new Set();
-
-  for (const f of myFields) {
-    const expr = role.jointFields.get(f);
-    if (!expr) continue;
-    const { deps, callDeps } = collectDeps(expr, definedNames);
-    for (const d of deps) collectedDeps.add(d);
-    for (const d of callDeps) collectedCallDeps.add(d);
-  }
-
-  function visit(name) {
-    if (visited.has(name)) return;
-    const b = bindings.get(name);
-    visited.set(name, {
-      id: name,
-      type: b ? b.type : 'unknown',
-      phase: b ? b.phase : undefined,
-      expr: b ? b.rhs : '',
-      line: b ? b.line : -1,
-      isBoundary: false,
-      isTarget: false,
-    });
-    if (!b) return;
-    const calls = new Set(b.callDeps || []);
-    for (const dep of b.deps) {
-      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
-      visit(dep);
-    }
-  }
-
-  for (const dep of collectedDeps) {
-    edges.push({
-      source: dep,
-      target: binding.name,
-      edgeType: collectedCallDeps.has(dep) ? 'call' : 'data',
-    });
-    visit(dep);
-  }
-
-  // For the kernel: add synthetic boundary inputs for any unselected fields
-  // that appear before the first selected field in the chain.
-  if (isKernel) {
-    const firstSelectedIdx = allFieldsOrdered.findIndex(f => selected.has(f));
-    if (firstSelectedIdx > 0) {
-      for (let i = 0; i < firstSelectedIdx; i++) {
-        const f = allFieldsOrdered[i];
-        if (selected.has(f)) continue;
-        const synId = binding.name + ':' + f;
-        if (!visited.has(synId)) {
-          visited.set(synId, {
-            id: synId,
-            label: f,
-            type: 'input',
-            phase: 'parameterized',
-            expr: '',
-            line: binding.line,
-            isBoundary: true,
-            isTarget: false,
-          });
-          edges.push({ source: synId, target: binding.name, edgeType: 'data' });
-        }
-      }
-    }
-  }
-
-  return { nodes: [...visited.values()], edges };
-}
 
 /**
  * Find the binding at the given source position.

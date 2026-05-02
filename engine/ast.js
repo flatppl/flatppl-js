@@ -7,6 +7,21 @@ function loc(startLine, startCol, endLine, endCol) {
   return { start: { line: startLine, col: startCol }, end: { line: endLine, col: endCol } };
 }
 
+// Loc marker for nodes that didn't come from the parser — produced by the
+// engine itself (rewriters, lowerings). The `synthetic: true` flag lets
+// downstream code distinguish provenance; `source` is an optional tag
+// pointing back to whatever produced the node (e.g. a binding name).
+// `start`/`end` carry sentinel positions so any consumer that expects a
+// well-formed loc still works.
+function synthLoc(source) {
+  return {
+    start: { line: -1, col: -1 },
+    end: { line: -1, col: -1 },
+    synthetic: true,
+    source: source || null,
+  };
+}
+
 // --- Statements ---
 
 function Program(body, comments) {
@@ -96,7 +111,7 @@ function SliceAll(loc) {
 }
 
 module.exports = {
-  loc,
+  loc, synthLoc,
   Program, AssignStatement, ErrorStatement, Comment,
   Identifier, NumberLiteral, StringLiteral, BoolLiteral,
   ConstantRef, SetRef, Placeholder, Hole,

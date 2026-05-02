@@ -6,6 +6,7 @@ const { analyze, collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, computePhases } = require('./analyzer');
 const { computeSubDAG, findBindingAtLine } = require('./dag');
+const disintegrate = require('./disintegrate');
 const AST = require('./ast');
 const builtins = require('./builtins');
 
@@ -33,5 +34,6 @@ module.exports = {
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, computePhases,
   computeSubDAG, findBindingAtLine,
+  disintegrate,
   AST, builtins,
 };
