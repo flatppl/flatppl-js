@@ -254,15 +254,15 @@ class FlatPPLPanel {
       draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
       call:          { color: '#90A4AE', shape: 'round-rectangle',  label: 'call' },
       // lawof always produces a measure; rendered as a round-rectangle.
-      lawof:         { color: '#64B5F6', shape: 'round-rectangle',  label: 'lawof (measure)' },
+      lawof:         { color: '#42A5F5', shape: 'round-rectangle',  label: 'lawof (measure)' },
       // kernelof always produces a Markov kernel — round-hexagon. Color
       // is also applied to functionof-of-measure below (same kind).
-      kernelof:      { color: '#4DB6AC', shape: 'round-hexagon',    label: 'kernelof (kernel)' },
+      kernelof:      { color: '#26A69A', shape: 'round-hexagon',    label: 'kernelof (kernel)' },
       // functionof produces a function by default (hexagon). When its
       // first arg is a measure the engine reports kind='kernel' and the
       // node picks up kernelof's shape and color.
-      functionof:    { color: '#81C784', shape: 'hexagon',          label: 'functionof' },
-      fn:            { color: '#81C784', shape: 'hexagon',          label: 'fn' },
+      functionof:    { color: '#66BB6A', shape: 'hexagon',          label: 'functionof' },
+      fn:            { color: '#66BB6A', shape: 'hexagon',          label: 'fn' },
       literal:       { color: '#F48FB1', shape: 'rectangle',        label: 'literal' },
       likelihood:    { color: '#EF9A9A', shape: 'octagon',          label: 'likelihood' },
       bayesupdate:   { color: '#FFAB91', shape: 'octagon',          label: 'bayesupdate' },
