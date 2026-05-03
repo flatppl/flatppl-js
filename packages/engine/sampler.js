@@ -268,20 +268,30 @@ function density(measureIR, env, opts) {
   const entry = lookupDistribution(measureIR);
   const dist = makeAnalytical(measureIR, env);
 
-  const qLo = opts.qLo != null ? opts.qLo : 0.001;
-  const qHi = opts.qHi != null ? opts.qHi : 0.999;
-
-  // Determine plot range. Use distribution support intersected with
-  // quantile bounds — quantile bounds keep things manageable for
-  // unbounded supports (Normal, Cauchy, …); support keeps values
-  // physically meaningful where the support is bounded.
-  let lo = isFinite(dist.quantile(qLo)) ? dist.quantile(qLo) : null;
-  let hi = isFinite(dist.quantile(qHi)) ? dist.quantile(qHi) : null;
-  // Some distributions (e.g. discrete) have well-defined finite support
-  // even when quantiles are integer-valued.
-  const support = readSupport(dist);
-  if (lo == null) lo = support[0];
-  if (hi == null) hi = support[1];
+  // Plot range can be set three ways, in priority order:
+  //   1. opts.range = [lo, hi]   — explicit override. Used when the
+  //      caller already has a sample histogram and wants the analytical
+  //      curve to align exactly with the bars (no extending past the
+  //      first/last bin edge).
+  //   2. quantile bounds          — opts.qLo, opts.qHi (defaults
+  //      0.001..0.999). Useful when no histogram is available; keeps
+  //      heavy-tailed distributions readable by trimming the far tails.
+  //   3. distribution support     — fallback when the quantile call
+  //      returns ±Infinity (e.g. Cauchy at q=0). Discrete dists may
+  //      land here even with finite quantiles.
+  let lo, hi;
+  if (Array.isArray(opts.range) && opts.range.length === 2) {
+    lo = opts.range[0];
+    hi = opts.range[1];
+  } else {
+    const qLo = opts.qLo != null ? opts.qLo : 0.001;
+    const qHi = opts.qHi != null ? opts.qHi : 0.999;
+    lo = isFinite(dist.quantile(qLo)) ? dist.quantile(qLo) : null;
+    hi = isFinite(dist.quantile(qHi)) ? dist.quantile(qHi) : null;
+    const support = readSupport(dist);
+    if (lo == null) lo = support[0];
+    if (hi == null) hi = support[1];
+  }
 
   if (entry.discrete) {
     // Counting reference: evaluate the PMF at integer atoms in the range.

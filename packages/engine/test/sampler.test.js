@@ -312,6 +312,19 @@ test('density: continuous distribution returns lebesgue-reference grid', () => {
   assert.ok(Math.abs(area - 1) < 0.01, `PDF integrates to ${area}, not ~1`);
 });
 
+test('density: opts.range overrides the quantile-derived plot range', () => {
+  const ir = distIR('Exponential', { rate: 1 });
+  const d = sampler.density(ir, {}, { range: [0, 5], gridPoints: 50 });
+  assert.equal(d.support[0], 0);
+  assert.equal(d.support[1], 5);
+  assert.equal(d.xs.length, 50);
+  // First grid point at lo, last at hi.
+  assert.equal(d.xs[0], 0);
+  assert.equal(d.xs[d.xs.length - 1], 5);
+  // PDF non-negative; Exponential mode at 0.
+  for (const y of d.ys) assert.ok(y >= 0);
+});
+
 test('density: discrete distribution returns counting-reference atoms', () => {
   const ir = distIR('Poisson', { rate: 3 });
   const d = sampler.density(ir, {});
