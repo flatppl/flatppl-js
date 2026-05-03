@@ -84,6 +84,17 @@ class FlatPPLPanel {
     });
   }
 
+  /**
+   * Push the current visualization config to the webview. Called once
+   * on panel creation and again whenever a relevant `flatppl.*`
+   * configuration value changes. The webview clears its sample cache
+   * on receipt if numbers like sampleCount have changed — cached
+   * arrays were sized to the old count and can't be reused.
+   */
+  updateConfig(config) {
+    this._panel.webview.postMessage({ type: 'configUpdate', config });
+  }
+
   _getHtml() {
     const webview = this._panel.webview;
     const nonce = getNonce();
@@ -829,7 +840,13 @@ class FlatPPLPanel {
     var rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
-    var SAMPLE_COUNT = 5000;
+    // Sample budget per binding when the visualizer renders a histogram.
+    // Owned by VS Code's configuration (flatppl.visualization.sampleCount,
+    // default 10000); the host pushes it via a configUpdate message and
+    // updates it on settings changes. Value here is just an in-flight
+    // default until the first configUpdate arrives — the panel always
+    // boots with a config push from the host.
+    var SAMPLE_COUNT = 10000;
 
     function rebuildDerivations() {
       if (!currentBindings) { derivationsState = null; sampleCache = new Map(); return; }
@@ -1890,7 +1907,26 @@ class FlatPPLPanel {
 
     window.addEventListener('message', function(event) {
       var msg = event.data;
-      if (!msg || msg.type !== 'sourceUpdate') return;
+      if (!msg) return;
+
+      if (msg.type === 'configUpdate') {
+        // The host pushed updated visualization settings. Currently
+        // only sampleCount matters; if it changed, drop every cached
+        // Float64Array (each was sized to the old SAMPLE_COUNT and
+        // can't be reused) and re-render the current plot at the new
+        // count if the plot pane is open.
+        var cfg = msg.config || {};
+        if (typeof cfg.sampleCount === 'number'
+            && cfg.sampleCount > 0
+            && cfg.sampleCount !== SAMPLE_COUNT) {
+          SAMPLE_COUNT = cfg.sampleCount | 0;
+          sampleCache = new Map();
+          if (plotEnabled) renderPlotForCurrent();
+        }
+        return;
+      }
+
+      if (msg.type !== 'sourceUpdate') return;
 
       // Only re-parse when source actually changed. Cursor-driven retargets
       // re-use the cached bindings (saves the parse for typical "click
