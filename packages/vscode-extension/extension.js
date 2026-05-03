@@ -75,9 +75,22 @@ function activate(context) {
     const pos = editor.selection.active;
     let binding = findBindingAtLine(bindings, pos.line, pos.character);
     if (!binding) {
+      // Cursor isn't on a binding (blank line, comment, between
+      // statements, or past the last binding). Pick the next binding
+      // at or below the cursor's line — that's the one the user is
+      // most likely about to write/edit/read. If they're already past
+      // every binding, fall back to the last binding so we always
+      // surface *something*.
       const all = [...bindings.values()];
       if (all.length === 0) return false;
-      binding = all[all.length - 1];
+      const cursorLine = pos.line;
+      let next = null;
+      for (const b of all) {
+        if (b.line >= cursorLine && (!next || b.line < next.line)) {
+          next = b;
+        }
+      }
+      binding = next || all[all.length - 1];
     }
 
     const source = editor.document.getText();
