@@ -157,44 +157,64 @@ class FlatPPLPanel {
     }
     #header .target-name { font-weight: 600; }
     #header .target-eq { opacity: 0.5; margin: 0 4px; }
-    /* Tab bar between header and main view. The tab buttons swap the main
-       panel between the DAG (#graph-panel) and the density/sample plot
-       (#plot-panel). Heights below subtract: header(~32px) + tabs(28px) +
-       info(60px) + small borders. */
-    #tabs {
-      display: flex; padding: 0 14px; gap: 2px;
-      border-bottom: 1px solid var(--vscode-panel-border, #444);
-      height: 28px; align-items: stretch;
-      background: var(--vscode-editor-background);
+    /* Vertical split layout: graph on top, plot on bottom. The header
+       hosts a Plot on/off toggle (default off). When the toggle is off
+       the plot panel collapses to zero height and the graph fills the
+       content area. When on, the area is split 60/40 between the two
+       panels. The plot panel is always rendered when enabled — even
+       for non-plottable bindings it shows a "Not plottable" message,
+       so users navigating the graph see a stable layout instead of
+       the panel appearing/disappearing.
+
+       Heights subtract header(~32px) + info(60px). */
+    #plot-toggle {
+      margin-left: auto;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 2px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--vscode-font-family, sans-serif);
+      flex-shrink: 0;
     }
-    .tab {
-      padding: 0 14px; cursor: pointer; user-select: none;
-      display: flex; align-items: center;
-      font-size: 12px; opacity: 0.65;
-      border: 1px solid transparent; border-bottom: none;
-      border-radius: 3px 3px 0 0;
-      margin-bottom: -1px;
+    #plot-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
+    #plot-toggle.on {
+      background: var(--vscode-button-background, #0e639c);
+      color: var(--vscode-button-foreground, #fff);
+      border-color: var(--vscode-button-border, transparent);
     }
-    .tab:hover:not(.disabled) { opacity: 0.9; }
-    .tab.active {
-      opacity: 1;
-      background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
-      border-color: var(--vscode-panel-border, #444);
-      border-bottom: 1px solid var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+    #plot-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+    #main {
+      display: flex; flex-direction: column;
+      width: 100vw; height: calc(100vh - 86px);
+      overflow: hidden;
     }
-    .tab.disabled { cursor: default; opacity: 0.25; }
-    .panel { display: none; }
-    .panel.active { display: block; }
-    #graph-panel.active { display: block; position: relative; }
-    #plot-panel { width: 100vw; height: calc(100vh - 114px); }
-    #plot-panel.active { display: flex; align-items: center; justify-content: center; }
+    #graph-panel {
+      flex: 1 1 60%; min-height: 80px;
+      position: relative; overflow: hidden;
+    }
+    #graph-panel.full { flex: 1 1 100%; }
+    #plot-panel {
+      flex: 1 1 40%; min-height: 80px;
+      border-top: 1px solid var(--vscode-panel-border, #444);
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    #plot-panel.hidden {
+      flex: 0 0 0; min-height: 0; border-top: none;
+    }
     #plot-content { width: 100%; height: 100%; }
     #plot-empty {
       opacity: 0.5; font-style: italic; padding: 20px; text-align: center;
     }
-    #cy { width: 100vw; height: calc(100vh - 114px); }
+    /* Graph internals fill graph-panel — switched from full-viewport
+       sizing to 100% of the parent so the split-flex layout governs. */
+    #cy { width: 100%; height: 100%; }
     #dataview {
-      display: none; width: 100vw; height: calc(100vh - 114px);
+      display: none; width: 100%; height: 100%;
       align-items: center; justify-content: center;
     }
     #dataview canvas { display: block; }
@@ -283,18 +303,20 @@ class FlatPPLPanel {
   </style>
 </head>
 <body>
-  <div id="header"><button id="back-btn">&larr; Back</button><span id="header-expr"></span></div>
-  <div id="tabs">
-    <div id="tab-graph" class="tab active" data-tab="graph">Graph</div>
-    <div id="tab-plot"  class="tab disabled" data-tab="plot" title="No plot available for this binding">Plot</div>
+  <div id="header">
+    <button id="back-btn">&larr; Back</button>
+    <span id="header-expr"></span>
+    <button id="plot-toggle" title="Toggle the plot panel">Plot: off</button>
   </div>
-  <div id="graph-panel" class="panel active">
-    <div id="cy"></div>
-    <div id="dataview"></div>
-    <div id="legend"></div>
-  </div>
-  <div id="plot-panel" class="panel">
-    <div id="plot-content"></div>
+  <div id="main">
+    <div id="graph-panel" class="full">
+      <div id="cy"></div>
+      <div id="dataview"></div>
+      <div id="legend"></div>
+    </div>
+    <div id="plot-panel" class="hidden">
+      <div id="plot-content"></div>
+    </div>
   </div>
   <div id="tooltip"></div>
   <div id="info">
@@ -925,43 +947,46 @@ class FlatPPLPanel {
       return null;
     }
 
-    function setTabState(plottable) {
-      var tabPlot = document.getElementById('tab-plot');
-      if (plottable) {
-        tabPlot.classList.remove('disabled');
-        tabPlot.title = 'Show density plot';
-      } else {
-        tabPlot.classList.add('disabled');
-        tabPlot.title = 'No plot available for this binding';
-        // If we were on the Plot tab and it just got disabled (e.g. user
-        // navigated to a non-stochastic binding), bounce back to Graph.
-        if (tabPlot.classList.contains('active')) activateTab('graph');
-      }
-    }
+    // Plot panel visibility — separate from "is the current binding
+    // plottable?". When plotEnabled is true, the plot pane occupies
+    // the bottom 40% of the panel; when false, it's collapsed and the
+    // graph pane takes the full content area. The pane content always
+    // reflects the current focused binding, so flipping plotEnabled
+    // back on never shows stale data.
+    var plotEnabled = false;
 
-    function activateTab(name) {
-      var tabs = document.querySelectorAll('.tab');
-      for (var i = 0; i < tabs.length; i++) {
-        var t = tabs[i];
-        if (t.dataset.tab === name && !t.classList.contains('disabled')) {
-          t.classList.add('active');
-        } else {
-          t.classList.remove('active');
-        }
-      }
-      var graphActive = name === 'graph';
-      document.getElementById('graph-panel').classList.toggle('active', graphActive);
-      document.getElementById('plot-panel').classList.toggle('active', !graphActive);
-      if (!graphActive) {
-        // Plot tab activated — render if we have a current IR pending.
-        if (currentPlotPlan) renderPlotForCurrent();
-        // echarts must be told to resize after becoming visible (it
-        // measured 0×0 while hidden).
+    function setPlotEnabled(enabled) {
+      plotEnabled = !!enabled;
+      var plot = document.getElementById('plot-panel');
+      var graph = document.getElementById('graph-panel');
+      var btn  = document.getElementById('plot-toggle');
+      plot.classList.toggle('hidden', !plotEnabled);
+      graph.classList.toggle('full',  !plotEnabled);
+      btn.classList.toggle('on', plotEnabled);
+      btn.textContent = 'Plot: ' + (plotEnabled ? 'on' : 'off');
+      // Persist across panel reopens. VS Code restores webview state
+      // automatically when the panel is shown again.
+      try { vscodeApi.setState({ plotEnabled: plotEnabled }); } catch (_) {}
+      if (plotEnabled) {
+        // Render whatever the current plan says — including the
+        // "not plottable" message if the focused binding isn't
+        // chainable. Echarts also needs resize after becoming visible
+        // (it measures 0×0 while collapsed).
+        renderPlotForCurrent();
         if (plotEchart) plotEchart.resize();
-      } else if (cy) {
-        // Graph re-shown: cytoscape may have skipped resize during hidden
-        // state. resize() + fit() restores the layout cleanly.
-        cy.resize();
+      } else if (plotEchart) {
+        // Tear down the echart instance to avoid keeping its canvas /
+        // event listeners alive while the panel is collapsed. It'll
+        // be reconstructed on the next renderDensity call.
+        try { plotEchart.dispose(); } catch (_) {}
+        plotEchart = null;
+      }
+      // Cytoscape skipped resize while the graph pane was at a
+      // different height — kick it now so the layout fills correctly.
+      if (cy) {
+        // requestAnimationFrame so the flex re-layout has settled
+        // before we ask cytoscape for the new size.
+        requestAnimationFrame(function() { cy.resize(); cy.fit(undefined, 40); });
       }
     }
 
@@ -972,8 +997,14 @@ class FlatPPLPanel {
     }
 
     function renderPlotForCurrent() {
+      // The plot panel stays mounted whenever plotEnabled is true. When
+      // the focused binding isn't plottable (lawof, modules, etc.) we
+      // still show *something* — a "Not plottable" message — so the
+      // panel doesn't appear/disappear under the user as they click
+      // around the DAG.
       if (!currentPlotPlan) {
-        showPlotMessage('No distribution to plot.');
+        var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
+        showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
         return;
       }
       showPlotMessage('Computing density…');
@@ -1093,18 +1124,17 @@ class FlatPPLPanel {
       var plan = buildPlotPlan(binding, currentBindings);
       currentPlotPlan = plan;
       currentPlotBindingName = bindingName;
-      setTabState(!!plan);
-      var plotActive = document.getElementById('plot-panel').classList.contains('active');
-      if (plotActive) renderPlotForCurrent();
+      // Plot pane stays visible whenever plotEnabled is true. When the
+      // current binding isn't plottable, renderPlotForCurrent() shows
+      // a "Not plottable" message in place of a chart.
+      if (plotEnabled) renderPlotForCurrent();
     }
 
-    // Tab click handlers. Disabled tabs ignore clicks.
-    document.getElementById('tab-graph').addEventListener('click', function() {
-      activateTab('graph');
-    });
-    document.getElementById('tab-plot').addEventListener('click', function() {
-      if (this.classList.contains('disabled')) return;
-      activateTab('plot');
+    // Plot toggle click handler. Restores from VS Code webview state on
+    // first paint (see initial setPlotEnabled call below) so the user's
+    // preference survives reloads.
+    document.getElementById('plot-toggle').addEventListener('click', function() {
+      setPlotEnabled(!plotEnabled);
     });
 
     // --- DAG rendering ---
@@ -1439,6 +1469,14 @@ class FlatPPLPanel {
     });
 
     initCy();
+
+    // Restore Plot toggle state from the webview's persistent state so
+    // the user's preference survives panel close/reopen and VS Code
+    // window reloads. Default is OFF for first-time use — the plot
+    // panel is opt-in to keep the initial DAG-only experience clean.
+    var prevState = null;
+    try { prevState = vscodeApi.getState(); } catch (_) {}
+    setPlotEnabled(prevState && prevState.plotEnabled === true);
   })();
   </script>
 </body>
