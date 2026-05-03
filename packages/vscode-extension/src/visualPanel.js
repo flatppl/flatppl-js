@@ -1529,20 +1529,14 @@ class FlatPPLPanel {
       if (!cy) initCy();
       updateHeader(data);
 
-      if (data.nodes.length === 1 && showDataView(data)) {
-        // Data view has no clickable graph nodes — show the target's details
-        // directly in the info bar.
-        var t = data.nodes[0];
-        showNodeInfo({
-          label: t.label || t.id,
-          nodeType: t.type,
-          phase: t.phase || '',
-          expr: t.expr || '',
-        });
-        return;
-      }
-      hideDataView();
-
+      // Note: the legacy dataview-swap (which replaced cytoscape with a
+      // floating "5" / step-line array view when the DAG had a single
+      // literal node) used to fire here. We removed it because the Plot
+      // panel now owns scalar / value rendering — keeping the graph
+      // pane always graphical means clicking around the DAG never
+      // surprises the user with a different layout in the same area.
+      // showDataView / hideDataView remain defined above in case we
+      // want to repurpose them for array-data preview later.
       shownTypes.clear();
       var elements = [];
 
