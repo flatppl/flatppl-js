@@ -177,6 +177,28 @@ function buildSampleChain(targetName, bindings) {
   visit(targetName);
   if (unsupported) return { unsupported };
 
+  // If the target was classified 'skip' (a measure-alias binding like
+  //   theta1_dist = Normal(0, 1)
+  // — its deps got walked but no chain step was pushed for the target
+  // itself), promote it now to a sample step using its lowered RHS.
+  // The user is asking for samples *from this measure*, so we synthesise
+  // the step that does exactly that. Any upstream stochastic params the
+  // alias references are already in the chain via the dep walk above.
+  const targetAppeared = order.some(s => s.name === targetName);
+  if (!targetAppeared) {
+    const targetBinding = bindings.get(targetName);
+    if (targetBinding && targetBinding.node && targetBinding.node.value) {
+      let targetIR;
+      try { targetIR = lowerExpr(targetBinding.node.value); } catch (_) { targetIR = null; }
+      if (targetIR && targetIR.kind === 'call' && targetIR.op
+          && SAMPLEABLE_DISTRIBUTIONS.has(targetIR.op)) {
+        order.push({ name: targetName, kind: 'sample', ir: targetIR });
+      } else {
+        return { unsupported: { reason: `target '${targetName}' produced no chain step` } };
+      }
+    }
+  }
+
   // Mark whether the target's leaf distribution is discrete so the
   // density estimator picks histogram over KDE.
   const lastStep = order[order.length - 1];

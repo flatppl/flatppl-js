@@ -898,65 +898,42 @@ class FlatPPLPanel {
     }
 
     /**
-     * Decide *how* to plot a binding and return a plan the renderer can
-     * dispatch on. Three outcomes:
+     * Build a plot plan for a binding. The orchestrator does the heavy
+     * lifting — it decides whether the binding is sample-able and
+     * returns a topo-ordered chain. Here we additionally inspect the
+     * leaf step's IR to flag whether an analytical PDF/pmf is available
+     * (i.e. all kwargs are literals after alias resolution); if so the
+     * worker can compute the exact density curve, otherwise it'll fall
+     * back to KDE on the samples.
      *
-     *   { mode: 'analytical', ir }  — exact PDF/pmf from stdlib via the
-     *     worker's 'density' message. Used when the binding is a 'draw'
-     *     of a registered distribution with all-literal kwargs (so the
-     *     worker doesn't need any upstream env).
-     *   { mode: 'chain', chain, discrete }  — sample-based density via
-     *     'densityFromChain'. Used when the binding (or one of its
-     *     dependencies) is stochastic; the orchestrator topologically
-     *     orders the steps.
-     *   null  — not plottable; Plot tab gets disabled.
-     *
-     * Analytical wins when both are applicable: it's exact and free of
-     * KDE bandwidth artifacts. Chains are the fallback for everything
-     * the orchestrator marks as supported but the analytical path
-     * doesn't.
+     * Returns:
+     *   { chain, discrete, analyticalIR? }   — plottable
+     *   null                                 — not plottable
      */
     function buildPlotPlan(binding, bindingsMap) {
-      if (!binding || !binding.node || !binding.node.value) return null;
-
-      // Path 1: try analytical. Lower the (inner) distribution call and
-      // require all-literal kwargs.
-      var v = binding.node.value;
-      if (v.callee && v.callee.type === 'Identifier') {
-        var inner = v;
-        if (v.callee.name === 'draw') {
-          if (v.args && v.args.length === 1) inner = v.args[0];
-          else inner = null;
-        }
-        if (inner && inner.type === 'CallExpr' && inner.callee
-            && inner.callee.type === 'Identifier') {
-          var ir = null;
-          try { ir = FlatPPLEngine.lower.lowerExpr(inner); }
-          catch (_) { ir = null; }
-          if (ir && ir.kind === 'call' && ir.op
-              && (!ir.args || ir.args.length === 0)) {
-            var allLit = true;
-            var kw = ir.kwargs || {};
-            for (var k in kw) {
-              if (kw[k].kind !== 'lit') { allLit = false; break; }
-            }
-            if (allLit) return { mode: 'analytical', ir: ir };
-          }
-        }
-      }
-
-      // Path 2: chain-based. Ask the orchestrator if it can sample the
-      // target. Returns unsupported for reified scopes, modules,
-      // unsupported distributions, etc. — in which case we end up with
-      // the Plot tab disabled.
+      if (!binding) return null;
+      var plan;
       try {
-        var plan = FlatPPLEngine.orchestrator.buildSampleChain(binding.name, bindingsMap);
-        if (plan && plan.chain && plan.chain.length > 0) {
-          return { mode: 'chain', chain: plan.chain, discrete: !!plan.discrete };
-        }
-      } catch (_) { /* fall through */ }
+        plan = FlatPPLEngine.orchestrator.buildSampleChain(binding.name, bindingsMap);
+      } catch (_) { return null; }
+      if (!plan || !plan.chain || plan.chain.length === 0) return null;
 
-      return null;
+      // The leaf (target's) step's IR is what density() should compute
+      // analytically, IF its kwargs are all literals. Refs in kwargs
+      // mean the leaf depends on stochastic upstreams whose values
+      // change per draw — there's no closed-form marginal then.
+      var leaf = plan.chain[plan.chain.length - 1];
+      var analyticalIR = null;
+      if (leaf && leaf.kind === 'sample' && leaf.ir && leaf.ir.kind === 'call'
+          && leaf.ir.op && (!leaf.ir.args || leaf.ir.args.length === 0)) {
+        var allLit = true;
+        var kw = leaf.ir.kwargs || {};
+        for (var k in kw) {
+          if (kw[k].kind !== 'lit') { allLit = false; break; }
+        }
+        if (allLit) analyticalIR = leaf.ir;
+      }
+      return { chain: plan.chain, discrete: !!plan.discrete, analyticalIR: analyticalIR };
     }
 
     // Plot panel visibility — separate from "is the current binding
@@ -1019,93 +996,181 @@ class FlatPPLPanel {
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
         return;
       }
-      showPlotMessage('Computing density…');
+      showPlotMessage('Sampling…');
       // Snapshot the plan reference so a focus change during the round-
       // trip can be detected and the stale reply discarded.
       var planForCall = currentPlotPlan;
-      var request;
-      if (planForCall.mode === 'analytical') {
-        request = sendWorker({ type: 'density', ir: planForCall.ir, opts: { gridPoints: 256 } });
-      } else if (planForCall.mode === 'chain') {
-        request = sendWorker({
-          type: 'densityFromChain',
-          chain: planForCall.chain,
-          count: CHAIN_SAMPLE_COUNT,
-          discrete: planForCall.discrete,
-          opts: { gridPoints: 256 },
-        });
-      } else {
-        showPlotMessage('No distribution to plot.');
-        return;
-      }
-      request
+      sendWorker({
+        type: 'samplesPlot',
+        chain: planForCall.chain,
+        count: CHAIN_SAMPLE_COUNT,
+        discrete: planForCall.discrete,
+        analyticalIR: planForCall.analyticalIR || undefined,
+        opts: { gridPoints: 256 },
+      })
         .then(function(reply) {
           if (currentPlotPlan !== planForCall) return;
-          renderDensity(reply, planForCall);
+          renderSamplesAndDensity(reply, planForCall);
         })
         .catch(function(err) {
           if (currentPlotPlan !== planForCall) return;
-          showPlotMessage('Could not compute density: ' + esc(err.message || String(err)));
+          showPlotMessage('Could not compute plot: ' + esc(err.message || String(err)));
         });
     }
 
-    function renderDensity(d, plan) {
+    /**
+     * Render the Plot panel from a samplesPlot worker reply.
+     *
+     * The reply has three parts:
+     *   reply.samples   — raw Float64Array (kept for future use; not
+     *                     directly drawn here, but available if we want
+     *                     to add e.g. a sample trace later)
+     *   reply.histogram — equal-width bars (FD for continuous, integer
+     *                     for discrete), area-normalised so they read
+     *                     directly against a PDF/PMF curve
+     *   reply.density   — smooth analytical curve (when leaf has all-
+     *                     literal kwargs) OR KDE estimate; null for
+     *                     discrete-with-no-analytical (the histogram
+     *                     itself is already the empirical pmf)
+     *
+     * Both layers (bars + curve) use the focused binding's TYPE_STYLE
+     * color from the DAG view, so a stochastic 'draw' node plots
+     * purple, a measure-alias 'call' node plots grey-blue, etc. Bars
+     * sit at low alpha; the line/dots are opaque on top.
+     */
+    function renderSamplesAndDensity(reply, plan) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';
-      // Convert the typed-array transferred from the worker to plain
-      // arrays for echarts. Float64Array works as a series source in
-      // recent echarts but plain pairs are simpler and let us combine
-      // x/y trivially.
-      var xs = d.xs, ys = d.ys;
-      var pairs = new Array(xs.length);
-      for (var i = 0; i < xs.length; i++) pairs[i] = [xs[i], ys[i]];
 
-      // Discrete (counting reference) distributions plot as bars at the
-      // integer atoms; continuous (Lebesgue) plot as a filled area curve.
-      var discrete = d.reference === 'counting';
-      var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
-      // Density-source tag: analytical paths show "(pdf)" / "(pmf)";
-      // sampled paths show the estimator method ("kde" / "histogram")
-      // plus the sample count, so the user can tell at a glance whether
-      // they're looking at an exact curve or a Monte-Carlo estimate.
-      var methodLabel;
-      if (plan && plan.mode === 'chain') {
-        var m = d.method || (discrete ? 'histogram' : 'kde');
-        methodLabel = m + ' from ' + CHAIN_SAMPLE_COUNT + ' samples';
-      } else {
-        methodLabel = discrete ? 'pmf' : 'pdf';
-      }
-      var seriesColor = TYPE_STYLE.draw.color;
+      // Look up the binding's DAG-view color so the plot reads as
+      // belonging to the same node the user is hovering on the graph.
+      // Fallback: TYPE_STYLE.draw (purple) if the binding type is
+      // missing or unknown — every plottable binding has a defined
+      // type but defending against a future analyzer change is cheap.
+      var binding = currentBindings && currentPlotBindingName
+        ? currentBindings.get(currentPlotBindingName) : null;
+      var bindingType = (binding && binding.type) || 'draw';
+      var style = TYPE_STYLE[bindingType] || TYPE_STYLE.draw;
+      var color = style.color;
 
-      plotEchart = echarts.init(el);
-      var series;
+      var hist = reply.histogram;
+      var dens = reply.density;
+      var discrete = (hist && hist.reference === 'counting');
+
+      // Empirical histogram bars. For continuous, echarts' bar series
+      // doesn't naturally do equal-width bars on a value xAxis; we use
+      // a custom-render with the precomputed bin edges so the bars sit
+      // at their actual x positions and widths regardless of zoom.
+      // For discrete, the simpler bar series with categoryGap=40% gives
+      // the spaced "lollipop"-ish look standard for pmfs.
+      var samplesSeries;
       if (discrete) {
-        series = [{
+        var pairs = new Array(hist.xs.length);
+        for (var i = 0; i < hist.xs.length; i++) pairs[i] = [hist.xs[i], hist.ys[i]];
+        samplesSeries = {
+          name: 'samples',
           type: 'bar',
           data: pairs,
-          itemStyle: { color: seriesColor },
+          itemStyle: { color: color, opacity: 0.5 },
           barCategoryGap: '40%',
-        }];
+          z: 1,
+        };
       } else {
-        series = [{
-          type: 'line',
-          data: pairs,
-          symbol: 'none',
-          smooth: false,
-          lineStyle: { color: seriesColor, width: 2 },
-          areaStyle: { color: seriesColor, opacity: 0.18 },
-        }];
+        // Continuous: render bars via custom shape so widths track the
+        // actual bin edges (not echarts' auto category spacing).
+        var rects = [];
+        for (var i = 0; i < hist.xs.length; i++) {
+          rects.push({
+            value: [hist.xs[i], hist.ys[i]],
+            x0: hist.binEdges[i],
+            x1: hist.binEdges[i + 1],
+          });
+        }
+        samplesSeries = {
+          name: 'samples',
+          type: 'custom',
+          data: rects,
+          renderItem: function(_params, api) {
+            var pt = api.value(0); // unused — we use the explicit edges below
+            var rec = api.value(2); // also unused; we close over rects instead
+            // Use the data point reference rather than pt/rec so this
+            // closure stays compatible with echarts' value indexing across
+            // versions. api.coord maps [x, y] data → pixel coordinates.
+            var idx = _params.dataIndex;
+            var d = rects[idx];
+            var lt = api.coord([d.x0, d.value[1]]);  // left-top corner
+            var rb = api.coord([d.x1, 0]);           // right-bottom corner
+            return {
+              type: 'rect',
+              shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
+              style: api.style({ fill: color, opacity: 0.5, stroke: color, lineWidth: 0.5 }),
+            };
+          },
+          encode: { x: 0, y: 1 },
+          z: 1,
+        };
       }
+
+      // Density curve overlay (when available). Discrete + analytical
+      // renders as scatter dots at integer atoms; continuous as a line.
+      var densitySeries = null;
+      if (dens && dens.xs && dens.xs.length > 0) {
+        var dPairs = new Array(dens.xs.length);
+        for (var j = 0; j < dens.xs.length; j++) dPairs[j] = [dens.xs[j], dens.ys[j]];
+        if (discrete) {
+          densitySeries = {
+            name: 'density',
+            type: 'scatter',
+            data: dPairs,
+            symbol: 'circle', symbolSize: 8,
+            itemStyle: { color: color, borderColor: fg, borderWidth: 1, opacity: 1 },
+            z: 2,
+          };
+        } else {
+          densitySeries = {
+            name: 'density',
+            type: 'line',
+            data: dPairs,
+            symbol: 'none', smooth: false,
+            lineStyle: { color: color, width: 2, opacity: 1 },
+            z: 2,
+          };
+        }
+      }
+
+      var series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
+      var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
+
+      var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
+      var subtitle = '';
+      if (dens && dens.method) {
+        subtitle = dens.method === 'analytical'
+          ? (discrete ? 'pmf' : 'pdf')
+          : dens.method;  // 'kde'
+        subtitle = 'samples (' + CHAIN_SAMPLE_COUNT + ') + ' + subtitle;
+      } else {
+        subtitle = 'samples (' + CHAIN_SAMPLE_COUNT + ')';
+      }
+
+      plotEchart = echarts.init(el);
       plotEchart.setOption({
         animation: false,
-        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+        grid: { left: 60, right: 25, top: 50, bottom: 50, containLabel: false },
         title: {
-          text: distLabel + ' — ' + methodLabel,
-          left: 'center', top: 4,
-          textStyle: { color: fg, fontSize: 12, fontWeight: 'normal', opacity: 0.8 },
+          text: distLabel,
+          subtext: subtitle,
+          left: 'center', top: 2,
+          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+          subtextStyle: { color: fg, fontSize: 11, opacity: 0.7 },
         },
-        tooltip: { trigger: 'axis' },
+        legend: {
+          data: legendData,
+          top: 2, right: 12,
+          textStyle: { color: fg, fontSize: 11 },
+          itemWidth: 14, itemHeight: 8,
+        },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
         xAxis: {
           type: 'value',
           name: 'x', nameLocation: 'center', nameGap: 28,
@@ -1114,6 +1179,9 @@ class FlatPPLPanel {
           axisLabel: { color: fg, opacity: 0.6 },
           splitLine: { show: false },
           minInterval: discrete ? 1 : null,
+          // Anchor the visible range to the histogram support — the
+          // density curve, computed on a wider quantile-padded grid,
+          // can extend a bit beyond; let echarts auto-fit so both fit.
         },
         yAxis: {
           type: 'value',
