@@ -221,6 +221,27 @@ class FlatPPLPanel {
     #plot-empty {
       opacity: 0.5; font-style: italic; padding: 20px; text-align: center;
     }
+    /* Stop button shown alongside "Sampling…" while a request is in
+       flight. Clicking it terminates the worker (which aborts any
+       running tight loop) and rejects in-flight promises; the cache
+       on the main thread is preserved, so any binding that finished
+       before the cancel stays available. */
+    #plot-content .plot-stop-btn {
+      margin-top: 14px;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 4px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      font-style: normal; opacity: 0.9;
+      font-family: var(--vscode-font-family, sans-serif);
+    }
+    #plot-content .plot-stop-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #505355);
+      opacity: 1;
+    }
     /* Constant-value display: shown when every sample is the same
        value (literal binding, deterministic arithmetic of literals,
        or a degenerate distribution). A histogram of identical values
@@ -1161,10 +1182,41 @@ class FlatPPLPanel {
       }
     }
 
-    function showPlotMessage(html) {
+    function showPlotMessage(html, options) {
       if (plotEchart) { plotEchart.dispose(); plotEchart = null; }
       var el = document.getElementById('plot-content');
-      el.innerHTML = '<div id="plot-empty">' + html + '</div>';
+      var cancellable = options && options.cancellable;
+      var stopHtml = cancellable
+        ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
+        : '';
+      el.innerHTML = '<div id="plot-empty">' + html + stopHtml + '</div>';
+      if (cancellable) {
+        var btn = document.getElementById('plot-stop-btn');
+        if (btn) btn.addEventListener('click', cancelAllSampling);
+      }
+    }
+
+    /**
+     * Cancel any in-flight sample requests by terminating the worker
+     * and rejecting every pending promise. The main-thread sample
+     * cache is preserved, so bindings that finished before the cancel
+     * stay available — only the in-flight request is dropped.
+     *
+     * The next sendWorker() call will lazily re-spawn the worker via
+     * ensureSamplerWorker(). Cheap enough that we don't bother
+     * keeping a "warm" worker around.
+     */
+    function cancelAllSampling() {
+      if (samplerWorker) {
+        try { samplerWorker.terminate(); } catch (_) {}
+        samplerWorker = null;
+        samplerWorkerPromise = null;
+      }
+      var entries = pendingRequests.values();
+      pendingRequests = new Map();
+      for (var entry of entries) {
+        try { entry.reject(new Error('cancelled')); } catch (_) {}
+      }
     }
 
     function renderPlotForCurrent() {
@@ -1178,7 +1230,12 @@ class FlatPPLPanel {
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
         return;
       }
-      showPlotMessage(currentPlotPlan.mode === 'array' ? 'Loading…' : 'Sampling…');
+      // Array-mode loads the cached array synchronously (no worker
+      // round-trip), so a Stop button is pointless for it. Sampling
+      // mode shows the Stop button so the user can abort long
+      // operations (per-i ref chains under huge sample counts).
+      var arrayMode = currentPlotPlan.mode === 'array';
+      showPlotMessage(arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode });
       var planForCall = currentPlotPlan;
 
       // Cache hit avoids the worker entirely. We still defer through
@@ -1229,7 +1286,15 @@ class FlatPPLPanel {
         })
         .catch(function(err) {
           if (currentPlotPlan !== planForCall) return;
-          showPlotMessage('Could not compute plot: ' + esc(err.message || String(err)));
+          var msg = err && err.message ? err.message : String(err);
+          if (msg === 'cancelled') {
+            // User clicked Stop. Make the message actionable rather
+            // than dead-end so they know how to retry.
+            var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
+            showPlotMessage('Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.');
+          } else {
+            showPlotMessage('Could not compute plot: ' + esc(msg));
+          }
         });
     }
 
