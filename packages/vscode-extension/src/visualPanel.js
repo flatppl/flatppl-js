@@ -752,7 +752,7 @@ class FlatPPLPanel {
     //   { mode: 'analytical', ir }
     //   { mode: 'chain', chain, discrete }
     // Used both as the "is plot tab enabled?" flag and as the render
-    // input. `currentPlotBindingName` tracks which binding produced it
+    // input. currentPlotBindingName tracks which binding produced it
     // (for the chart title and stale-reply guards).
     var currentPlotPlan = null;
     var currentPlotBindingName = null;
@@ -810,11 +810,11 @@ class FlatPPLPanel {
      * dispatch on. Three outcomes:
      *
      *   { mode: 'analytical', ir }  — exact PDF/pmf from stdlib via the
-     *     worker's `density` message. Used when the binding is a 'draw'
+     *     worker's 'density' message. Used when the binding is a 'draw'
      *     of a registered distribution with all-literal kwargs (so the
      *     worker doesn't need any upstream env).
      *   { mode: 'chain', chain, discrete }  — sample-based density via
-     *     `densityFromChain`. Used when the binding (or one of its
+     *     'densityFromChain'. Used when the binding (or one of its
      *     dependencies) is stochastic; the orchestrator topologically
      *     orders the steps.
      *   null  — not plottable; Plot tab gets disabled.
