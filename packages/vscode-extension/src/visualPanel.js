@@ -1267,6 +1267,41 @@ class FlatPPLPanel {
     }
 
     /**
+     * Common echarts zoom config — mouse-wheel + drag zoom on x via
+     * the inside-type dataZoom, plus a top-left toolbox button for
+     * rectangle-select zoom and a reset button. y-axis stays fixed:
+     * zooming probability values alone is rarely useful and the
+     * rectangle-select would otherwise need a second click to reset
+     * each axis.
+     *
+     * filterMode 'none' keeps out-of-window data rendered (just
+     * clipped) so panning is smooth.
+     *
+     * Returned fresh each call so the caller can pass to setOption.
+     */
+    function plotZoomOptions(fg) {
+      return {
+        dataZoom: [
+          { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+        ],
+        toolbox: {
+          show: true,
+          left: 12, top: 4,
+          itemSize: 14,
+          iconStyle: { borderColor: fg, opacity: 0.55 },
+          emphasis: { iconStyle: { borderColor: fg, opacity: 1 } },
+          feature: {
+            dataZoom: {
+              yAxisIndex: 'none',
+              title: { zoom: 'Zoom rectangle', back: 'Reset zoom' },
+            },
+            restore: { title: 'Reset' },
+          },
+        },
+      };
+    }
+
+    /**
      * Render a fixed-length array as an index→value step plot. Used
      * for literal-array bindings (observed_data = [1.2, 3.4, …]),
      * which aren't samples of a distribution. The series is drawn as
@@ -1292,15 +1327,23 @@ class FlatPPLPanel {
 
       if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
       plotEchart = echarts.init(el);
+      var zoomOpts = plotZoomOptions(fg);
+      var arrayLegendLabel = n + ' values';
       plotEchart.setOption({
         animation: false,
-        grid: { left: 60, right: 25, top: 50, bottom: 50, containLabel: false },
+        dataZoom: zoomOpts.dataZoom,
+        toolbox: zoomOpts.toolbox,
+        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
         title: {
           text: distLabel,
-          subtext: 'array (' + n + ' values)',
-          left: 'center', top: 2,
+          left: 'center', top: 4,
           textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
-          subtextStyle: { color: fg, fontSize: 11, opacity: 0.7 },
+        },
+        legend: {
+          data: [arrayLegendLabel],
+          top: 4, right: 12,
+          textStyle: { color: fg, fontSize: 11 },
+          itemWidth: 14, itemHeight: 8,
         },
         // No tooltip / axisPointer — the user doesn't need to read off
         // exact values from a hover crosshair, and the moving lines
@@ -1325,6 +1368,7 @@ class FlatPPLPanel {
           splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
         },
         series: [{
+          name: arrayLegendLabel,
           type: 'line', data: stepData, symbol: 'none',
           lineStyle: { color: color, width: 2 },
         }],
@@ -1459,32 +1503,31 @@ class FlatPPLPanel {
       // Density overlay is only ever the analytical PDF/pmf — there's
       // no smoothed-from-samples curve. (KDE was tried but dropped: it
       // smears mass past the support, which mis-suggests density where
-      // there is none. See worker.js.)
+      // there is none. See worker.js.) The samples-series legend label
+      // doubles as the sample count display so we don't burn vertical
+      // space on a subtitle.
+      var samplesLabel = SAMPLE_COUNT + ' samples';
+      samplesSeries.name = samplesLabel;
       var series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
-      var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
+      var legendData = densitySeries ? [samplesLabel, 'density'] : [samplesLabel];
 
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
-      // Density (when shown) is always analytical now — KDE was tried
-      // but dropped because of boundary smearing. So a non-null dens
-      // implies the exact PDF/PMF.
-      var subtitle = dens
-        ? 'samples (' + SAMPLE_COUNT + ') + analytical ' + (discrete ? 'pmf' : 'pdf')
-        : 'samples (' + SAMPLE_COUNT + ')';
 
       plotEchart = echarts.init(el);
+      var zoomOpts2 = plotZoomOptions(fg);
       plotEchart.setOption({
         animation: false,
-        grid: { left: 60, right: 25, top: 50, bottom: 50, containLabel: false },
+        dataZoom: zoomOpts2.dataZoom,
+        toolbox: zoomOpts2.toolbox,
+        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
         title: {
           text: distLabel,
-          subtext: subtitle,
-          left: 'center', top: 2,
+          left: 'center', top: 4,
           textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
-          subtextStyle: { color: fg, fontSize: 11, opacity: 0.7 },
         },
         legend: {
           data: legendData,
-          top: 2, right: 12,
+          top: 4, right: 12,
           textStyle: { color: fg, fontSize: 11 },
           itemWidth: 14, itemHeight: 8,
         },
