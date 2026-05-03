@@ -75,10 +75,26 @@ function activate(context) {
     }
 
     const source = editor.document.getText();
+    const wasNew = !FlatPPLPanel.currentPanel;
     FlatPPLPanel.createOrShow(context);
+    if (wasNew) {
+      // Push initial config alongside source so the webview's sample
+      // cache and SAMPLE_COUNT are correct on the first plot request.
+      FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
+    }
     FlatPPLPanel.currentPanel.updateSource(
       source, binding.name, editor.document.uri, /* pushHistory */ false);
     return true;
+  }
+
+  // Read the current visualization-related settings into a plain
+  // object that can be postMessage'd to the webview. Centralised here
+  // so initial-load and onDidChangeConfiguration share one shape.
+  function readVisualizationConfig() {
+    const cfg = vscode.workspace.getConfiguration('flatppl.visualization');
+    return {
+      sampleCount: cfg.get('sampleCount', 10000),
+    };
   }
 
   // --- Commands ---
@@ -463,10 +479,20 @@ function activate(context) {
     if (doc.languageId === 'flatppl') getParsed(doc);
   }
 
+  // Push configuration changes to a live panel. Filter to our own
+  // namespace so unrelated settings don't trigger a webview round-trip.
+  const configListener = vscode.workspace.onDidChangeConfiguration(e => {
+    if (!e.affectsConfiguration('flatppl.visualization')) return;
+    if (FlatPPLPanel.currentPanel) {
+      FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
+    }
+  });
+
   context.subscriptions.push(
     showDagCmd, selectionListener, changeListener, openListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
+    configListener,
   );
 }
 
