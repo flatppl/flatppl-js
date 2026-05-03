@@ -62,7 +62,13 @@ function activate(context) {
   //   - posting source + targetName to the webview, which parses + renders
   //
   // No more `computeSubDAG` here — the webview owns that.
-  function showDAGForCursor(editor) {
+  // pushHistory is true for navigation events (cursor moves driven by
+  // editor selection, ctrl-click in the DAG that hops the cursor),
+  // false for the initial open or other "fresh start" cases. The
+  // webview's focusNode only pushes when the target actually changes,
+  // so passing true here is safe even when the cursor lands on the
+  // same binding.
+  function showDAGForCursor(editor, pushHistory) {
     if (!editor || editor.document.languageId !== 'flatppl') return false;
 
     const { bindings } = getParsed(editor.document);
@@ -83,7 +89,7 @@ function activate(context) {
       FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
     }
     FlatPPLPanel.currentPanel.updateSource(
-      source, binding.name, editor.document.uri, /* pushHistory */ false);
+      source, binding.name, editor.document.uri, /* pushHistory */ !!pushHistory);
     return true;
   }
 
@@ -94,6 +100,7 @@ function activate(context) {
     const cfg = vscode.workspace.getConfiguration('flatppl.visualization');
     return {
       sampleCount: cfg.get('sampleCount', 100000),
+      dagNavigationHistoryCap: cfg.get('dagNavigationHistoryCap', 1000),
     };
   }
 
@@ -126,7 +133,9 @@ function activate(context) {
       const binding = findBindingAtLine(bindings, pos.line, pos.character);
       if (binding && binding.name !== lastShownName) {
         lastShownName = binding.name;
-        showDAGForCursor(e.textEditor);
+        // Cursor-driven navigation: push onto the visualizer's
+        // history so the user can step back through their path.
+        showDAGForCursor(e.textEditor, /* pushHistory */ true);
       }
     }, 150);
   });

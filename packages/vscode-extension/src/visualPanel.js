@@ -422,6 +422,14 @@ class FlatPPLPanel {
     var shownTypes = new Set();
     var history = [];
     var currentState = null;
+    // Bound on the DAG-navigation history (back-button stack). Cheap
+    // insurance against pathological growth (a runaway extension or
+    // rapid-fire navigation). Each entry is a sub-DAG's data plus a
+    // name string, so a few hundred is plenty without thinking about
+    // memory. Owned by the host setting flatppl.visualization.
+    // dagNavigationHistoryCap (default 1000); the host pushes its
+    // value via configUpdate alongside sampleCount.
+    var HISTORY_CAP = 1000;
 
     function esc(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1984,10 +1992,19 @@ class FlatPPLPanel {
       var dagData = FlatPPLEngine.computeSubDAG(currentBindings, targetName);
       if (!dagData || dagData.nodes.length === 0) return;
 
-      if (pushHistory && currentState) {
+      // History grows only when (a) the caller asked us to push, and
+      // (b) the target actually changed from what's currently shown.
+      //   - cursor moves / ctrl-click / drill-down → push (target moved)
+      //   - source-only updates (RHS edits) → no-op (target preserved)
+      //   - same-target refocus → no-op
+      // Capped at HISTORY_CAP entries to bound memory: each entry holds
+      // a sub-DAG's nodes + edges (~few KB), so a few hundred entries
+      // is plenty for navigation but well below any pressure point. On
+      // overflow we drop the oldest entry (FIFO trim) — going way back
+      // is rare enough that this is the right trade-off.
+      if (pushHistory && currentState && currentState.targetName !== targetName) {
         history.push(currentState);
-      } else if (!pushHistory) {
-        history = [];
+        if (history.length > HISTORY_CAP) history.shift();
       }
 
       currentState = { data: dagData, targetName: targetName };
@@ -2014,18 +2031,28 @@ class FlatPPLPanel {
       if (!msg) return;
 
       if (msg.type === 'configUpdate') {
-        // The host pushed updated visualization settings. Currently
-        // only sampleCount matters; if it changed, drop every cached
-        // Float64Array (each was sized to the old SAMPLE_COUNT and
-        // can't be reused) and re-render the current plot at the new
-        // count if the plot pane is open.
+        // The host pushed updated visualization settings.
         var cfg = msg.config || {};
+
+        // sampleCount: drop every cached Float64Array on change (each
+        // was sized to the old SAMPLE_COUNT and can't be reused) and
+        // re-render the current plot at the new count.
         if (typeof cfg.sampleCount === 'number'
             && cfg.sampleCount > 0
             && cfg.sampleCount !== SAMPLE_COUNT) {
           SAMPLE_COUNT = cfg.sampleCount | 0;
           sampleCache = new Map();
           if (plotEnabled) renderPlotForCurrent();
+        }
+
+        // dagNavigationHistoryCap: re-bind the limit and trim oldest
+        // entries that exceed the new cap. Doesn't affect currentState
+        // or the back button beyond the trim.
+        if (typeof cfg.dagNavigationHistoryCap === 'number'
+            && cfg.dagNavigationHistoryCap >= 0) {
+          HISTORY_CAP = cfg.dagNavigationHistoryCap | 0;
+          while (history.length > HISTORY_CAP) history.shift();
+          updateBackBtn();
         }
         return;
       }
