@@ -1284,6 +1284,36 @@ class FlatPPLPanel {
     }
 
     /**
+     * Resolve a binding's plot color to match the DAG renderer's
+     * choice exactly. The DAG picks color from TYPE_STYLE[node.type]
+     * but then overrides it when node.kind says "measure" (lawof
+     * blue) or "kernel" (kernelof teal). Without those overrides the
+     * plot for a measure-typed binding (theta1_dist, type='call')
+     * would draw in grey instead of the blue used in the DAG bubble,
+     * breaking the visual link between the two views.
+     *
+     * Fall back to TYPE_STYLE[binding.type] when the binding isn't in
+     * the current DAG — paths that update the plot independent of
+     * the DAG (rare, but possible during config-update reflows).
+     */
+    function colorForBinding(bindingName) {
+      if (currentState && currentState.data && currentState.data.nodes) {
+        var nodes = currentState.data.nodes;
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          if (n.id !== bindingName) continue;
+          if (n.kind === 'kernel')  return TYPE_STYLE.kernelof.color;
+          if (n.kind === 'measure') return TYPE_STYLE.lawof.color;
+          var ts = TYPE_STYLE[n.type] || TYPE_STYLE.unknown;
+          return ts.color;
+        }
+      }
+      var binding = currentBindings && currentBindings.get(bindingName);
+      var bindingType = (binding && binding.type) || 'draw';
+      return (TYPE_STYLE[bindingType] || TYPE_STYLE.draw).color;
+    }
+
+    /**
      * Common echarts zoom config — mouse-wheel + drag zoom on x via
      * the inside-type dataZoom, plus a top-left toolbox button for
      * rectangle-select zoom and a reset button. y-axis stays fixed:
@@ -1339,7 +1369,11 @@ class FlatPPLPanel {
         stepData[2 * i]     = [i, arr[i]];
         stepData[2 * i + 1] = [i + 1, arr[i]];
       }
-      var color = (TYPE_STYLE.literal && TYPE_STYLE.literal.color) || fg;
+      // Same DAG-aligned color resolution the histogram path uses.
+      // For a literal-array node this normally lands on TYPE_STYLE.literal
+      // (pink), but going via colorForBinding picks up any future
+      // node.kind overrides automatically.
+      var color = colorForBinding(currentPlotBindingName);
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'array';
 
       if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
@@ -1423,14 +1457,11 @@ class FlatPPLPanel {
 
       // Look up the binding's DAG-view color so the plot reads as
       // belonging to the same node the user is hovering on the graph.
-      // Fallback: TYPE_STYLE.draw (purple) if the binding type is
-      // missing or unknown — every plottable binding has a defined
-      // type but defending against a future analyzer change is cheap.
-      var binding = currentBindings && currentPlotBindingName
-        ? currentBindings.get(currentPlotBindingName) : null;
-      var bindingType = (binding && binding.type) || 'draw';
-      var style = TYPE_STYLE[bindingType] || TYPE_STYLE.draw;
-      var color = style.color;
+      // Match the DAG renderer's color choice exactly — including its
+      // node.kind override that maps a measure-typed binding to the
+      // lawof blue rather than the generic 'call' grey. See
+      // colorForBinding above.
+      var color = colorForBinding(currentPlotBindingName);
 
       var hist = reply.histogram;
       var dens = reply.density;
