@@ -637,12 +637,13 @@ class FlatPPLPanel {
         }
         var d = evt.target.data();
         showNodeInfo(d);
-        // Synthetic nodes (placeholders, holes) carry IDs like
-        // "name:placeholder" — skip the plot update for those, no
-        // binding exists in the analyzer's map.
-        if (d.id && d.id.indexOf(':') === -1) {
-          updatePlotForBinding(d.id);
-        }
+        // Always re-target the plot to whatever the user clicked. For
+        // synthetic nodes (anonymous inline expressions, placeholders,
+        // holes — recognised by ':' in the id) there's no binding to
+        // sample, so updatePlotForBinding ends up rendering a
+        // "Not plottable" placeholder. Either way the plot reflects
+        // the current selection rather than a stale earlier focus.
+        updatePlotForBinding(d.id);
       });
 
       cy.on('tap', function(evt) {
@@ -1524,7 +1525,11 @@ class FlatPPLPanel {
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
       var plan = buildPlotPlan(binding, currentBindings);
       currentPlotPlan = plan;
-      currentPlotBindingName = bindingName;
+      // Only surface the clicked name in the plot UI when it actually
+      // names a binding. Synthetic nodes (anonymous inline expressions,
+      // placeholders, holes) carry IDs like 'prior:target' that aren't
+      // useful to the user — fall back to a generic message.
+      currentPlotBindingName = binding ? bindingName : null;
       // Plot pane stays visible whenever plotEnabled is true. When the
       // current binding isn't plottable, renderPlotForCurrent() shows
       // a "Not plottable" message in place of a chart.
