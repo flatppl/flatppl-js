@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Editor-title icon for `flatppl.visualize` (Visualize Binding).
+  16×16. Strokes use `currentColor` so the icon picks up the theme's
+  active-icon color automatically — works on both light and dark
+  themes without separate files. Replace `currentColor` with a fixed
+  hex only if you specifically want to override theme colors.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor">
+  <ellipse cx="3.358"  cy="3.5"   rx="1.958" ry="1.958" stroke-width="0.8" />
+  <ellipse cx="11.358" cy="3.5"   rx="1.958" ry="1.958" stroke-width="0.8" />
+  <ellipse cx="7.5"    cy="12.5"  rx="1.958" ry="1.958" stroke-width="1.084" />
+  <path d="M 3.867,5.16 6.287,10.717" stroke-width="0.8" stroke-linecap="butt" />
+  <path d="M 11.037,5.16 8.617,10.717" stroke-width="0.8" stroke-linecap="butt" />
+</svg>
