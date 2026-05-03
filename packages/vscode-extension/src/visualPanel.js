@@ -1139,31 +1139,17 @@ class FlatPPLPanel {
         }
       }
 
-      // Density-curve labelling: be explicit about whether the curve is
-      // exact (analytical PDF/pmf) or an approximation (KDE on samples).
-      // Users navigating from a closed-form leaf to one with a stochastic
-      // parent shouldn't confuse the two — the legend label and the
-      // subtitle both surface "KDE" so the approximate nature is hard
-      // to miss. Histogram is sampled-from-truth for both paths so its
-      // label stays plain "samples".
-      var densityLegendLabel = 'density';
-      if (dens && dens.method === 'kde') {
-        densityLegendLabel = 'density (KDE — approx.)';
-      }
+      // Density overlay is only ever the analytical PDF/pmf — there's
+      // no smoothed-from-samples curve. (KDE was tried but dropped: it
+      // smears mass past the support, which mis-suggests density where
+      // there is none. See worker.js.)
       var series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
-      var legendData = densitySeries ? ['samples', densityLegendLabel] : ['samples'];
-      // Rename the density series to match the legend so echarts pairs them.
-      if (densitySeries) densitySeries.name = densityLegendLabel;
+      var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
 
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
-      var subtitle;
-      if (dens && dens.method === 'analytical') {
-        subtitle = 'samples (' + CHAIN_SAMPLE_COUNT + ') + analytical ' + (discrete ? 'pmf' : 'pdf');
-      } else if (dens && dens.method === 'kde') {
-        subtitle = 'samples (' + CHAIN_SAMPLE_COUNT + ') + KDE (approximate density)';
-      } else {
-        subtitle = 'samples (' + CHAIN_SAMPLE_COUNT + ')';
-      }
+      var subtitle = (dens && dens.method === 'analytical')
+        ? 'samples (' + CHAIN_SAMPLE_COUNT + ') + analytical ' + (discrete ? 'pmf' : 'pdf')
+        : 'samples (' + CHAIN_SAMPLE_COUNT + ')';
 
       plotEchart = echarts.init(el);
       plotEchart.setOption({
