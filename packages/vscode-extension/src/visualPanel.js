@@ -117,6 +117,13 @@ class FlatPPLPanel {
     const engineUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'engine.min.js')
     );
+    // Sampler-worker bundle: loaded by the webview as a Web Worker (not a
+    // top-level script). The worker owns Philox RNG state + stdlib's
+    // distribution code, so the main webview thread never sees stdlib. The
+    // CSP below adds `worker-src` for this URI.
+    const samplerWorkerUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'sampler-worker.min.js')
+    );
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -124,7 +131,7 @@ class FlatPPLPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource}; style-src 'unsafe-inline'; worker-src ${webview.cspSource} blob:;">
   <title>FlatPPL</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -150,9 +157,44 @@ class FlatPPLPanel {
     }
     #header .target-name { font-weight: 600; }
     #header .target-eq { opacity: 0.5; margin: 0 4px; }
-    #cy { width: 100vw; height: calc(100vh - 86px); }
+    /* Tab bar between header and main view. The tab buttons swap the main
+       panel between the DAG (#graph-panel) and the density/sample plot
+       (#plot-panel). Heights below subtract: header(~32px) + tabs(28px) +
+       info(60px) + small borders. */
+    #tabs {
+      display: flex; padding: 0 14px; gap: 2px;
+      border-bottom: 1px solid var(--vscode-panel-border, #444);
+      height: 28px; align-items: stretch;
+      background: var(--vscode-editor-background);
+    }
+    .tab {
+      padding: 0 14px; cursor: pointer; user-select: none;
+      display: flex; align-items: center;
+      font-size: 12px; opacity: 0.65;
+      border: 1px solid transparent; border-bottom: none;
+      border-radius: 3px 3px 0 0;
+      margin-bottom: -1px;
+    }
+    .tab:hover:not(.disabled) { opacity: 0.9; }
+    .tab.active {
+      opacity: 1;
+      background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+      border-color: var(--vscode-panel-border, #444);
+      border-bottom: 1px solid var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+    }
+    .tab.disabled { cursor: default; opacity: 0.25; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    #graph-panel.active { display: block; position: relative; }
+    #plot-panel { width: 100vw; height: calc(100vh - 114px); }
+    #plot-panel.active { display: flex; align-items: center; justify-content: center; }
+    #plot-content { width: 100%; height: 100%; }
+    #plot-empty {
+      opacity: 0.5; font-style: italic; padding: 20px; text-align: center;
+    }
+    #cy { width: 100vw; height: calc(100vh - 114px); }
     #dataview {
-      display: none; width: 100vw; height: calc(100vh - 86px);
+      display: none; width: 100vw; height: calc(100vh - 114px);
       align-items: center; justify-content: center;
     }
     #dataview canvas { display: block; }
@@ -242,10 +284,19 @@ class FlatPPLPanel {
 </head>
 <body>
   <div id="header"><button id="back-btn">&larr; Back</button><span id="header-expr"></span></div>
-  <div id="cy"></div>
-  <div id="dataview"></div>
+  <div id="tabs">
+    <div id="tab-graph" class="tab active" data-tab="graph">Graph</div>
+    <div id="tab-plot"  class="tab disabled" data-tab="plot" title="No plot available for this binding">Plot</div>
+  </div>
+  <div id="graph-panel" class="panel active">
+    <div id="cy"></div>
+    <div id="dataview"></div>
+    <div id="legend"></div>
+  </div>
+  <div id="plot-panel" class="panel">
+    <div id="plot-content"></div>
+  </div>
   <div id="tooltip"></div>
-  <div id="legend"></div>
   <div id="info">
     <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source</span>
   </div>
@@ -261,6 +312,10 @@ class FlatPPLPanel {
   (function() {
     var vscodeApi = acquireVsCodeApi();
     var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
+    // Sampler-worker URL injected by the host. Used lazily — no worker is
+    // spawned until the user picks a binding for which the Plot tab is
+    // enabled (a 'draw' of a known distribution with literal params).
+    var SAMPLER_WORKER_URL = ${JSON.stringify(samplerWorkerUri.toString())};
 
     // Color choices form an additive triple (blue + green ≈ teal), so the
     // family relationships read visually: lawof (measure) and functionof
@@ -671,6 +726,284 @@ class FlatPPLPanel {
       document.getElementById('legend').style.display = '';
     }
 
+    // ---------------------------------------------------------------
+    // Plot panel — density / sample histograms via the sampler-worker.
+    //
+    // The Plot tab shows the analytical density of the currently focused
+    // binding when that binding is a 'draw' of a known distribution with
+    // literal parameters (so the worker doesn't need to dependency-walk
+    // upstream randoms — that's the orchestrator's job, deferred to a
+    // later iteration). When the binding isn't plottable, the Plot tab
+    // is shown disabled.
+    //
+    // The sampler-worker is spawned lazily on first plot request so the
+    // ~1 MB worker bundle (stdlib + sampler) doesn't load for users who
+    // never open the Plot tab. We keep the worker alive across focus
+    // changes; only its 'setSeed' / 'init' is replayed on demand. A
+    // request-id counter pairs replies to outstanding promises so we
+    // can multiplex multiple in-flight requests cleanly.
+    // ---------------------------------------------------------------
+
+    var samplerWorker = null;
+    var samplerReqId = 0;
+    var pendingRequests = new Map(); // id → { resolve, reject }
+    var plotEchart = null;
+    var currentPlotIR = null;          // last IR sent to the worker, used to
+                                       // skip re-renders on no-op focus changes
+    var currentPlotBindingName = null; // binding name the IR came from
+
+    function ensureSamplerWorker() {
+      if (samplerWorker) return samplerWorker;
+      try {
+        samplerWorker = new Worker(SAMPLER_WORKER_URL);
+      } catch (e) {
+        console.error('FlatPPL: failed to spawn sampler worker:', e);
+        return null;
+      }
+      samplerWorker.addEventListener('message', function(ev) {
+        var reply = ev.data;
+        if (!reply || reply.id == null) return;
+        var p = pendingRequests.get(reply.id);
+        if (!p) return;
+        pendingRequests.delete(reply.id);
+        if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
+        else p.resolve(reply);
+      });
+      samplerWorker.addEventListener('error', function(e) {
+        // A top-level worker error fails every outstanding request — there's
+        // no way to know which request the error pertains to, and the worker
+        // may be dead. Reject all and reset.
+        console.error('FlatPPL sampler worker error:', e.message || e);
+        for (var entry of pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
+        pendingRequests.clear();
+        try { samplerWorker.terminate(); } catch (_) {}
+        samplerWorker = null;
+      });
+      // Initialize with a fixed seed for deterministic output. Future:
+      // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
+      sendWorker({ type: 'init', seed: 1 });
+      return samplerWorker;
+    }
+
+    function sendWorker(msg) {
+      var w = ensureSamplerWorker();
+      if (!w) return Promise.reject(new Error('sampler worker unavailable'));
+      var id = ++samplerReqId;
+      var wrapped = Object.assign({ id: id }, msg);
+      return new Promise(function(resolve, reject) {
+        pendingRequests.set(id, { resolve: resolve, reject: reject });
+        w.postMessage(wrapped);
+      });
+    }
+
+    /**
+     * Inspect a binding's AST and return the inner-distribution IR if the
+     * binding is a 'draw' of a known distribution with all-literal
+     * parameters — i.e. something the worker can 'density' directly.
+     * Returns null otherwise (signalling "Plot tab disabled").
+     *
+     * Why so restrictive? The worker's 'density' walks one distribution
+     * call. Refs in kwargs would need an env populated by upstream
+     * sampling, and we don't have a dependency-walking orchestrator yet
+     * (that's the next iteration). Literal-only is a clean MVP that
+     * already covers most prior distributions in the example file.
+     */
+    function getPlottableIR(binding) {
+      if (!binding || !binding.node || !binding.node.value) return null;
+      var v = binding.node.value;
+      if (!v.callee || v.callee.type !== 'Identifier') return null;
+      // Accept either draw(Dist(...)) or a bare distribution call (rare,
+      // but harmless if a user writes one as a binding RHS).
+      var inner = v;
+      if (v.callee.name === 'draw') {
+        if (!v.args || v.args.length !== 1) return null;
+        inner = v.args[0];
+      }
+      if (!inner || inner.type !== 'CallExpr' || !inner.callee
+          || inner.callee.type !== 'Identifier') return null;
+      // We don't have a list of "known distributions" exported on the
+      // main-thread side (it lives in sampler.js, worker-only). Fall
+      // back to: lower the AST, send to worker, let the worker error
+      // the request if the dist isn't registered. A conservative pre-
+      // check would import builtins.DISTRIBUTIONS from the engine but
+      // that list includes distributions the worker's stdlib registry
+      // doesn't yet implement (Logistic, MvNormal, etc.) — leaving the
+      // worker as the source of truth keeps the tab truthful.
+      var ir;
+      try {
+        ir = FlatPPLEngine.lower.lowerExpr(inner);
+      } catch (e) {
+        return null;
+      }
+      if (!ir || ir.kind !== 'call' || !ir.op) return null;
+      // Reject any non-literal kwargs — those need upstream values we
+      // can't compute yet (see comment above).
+      var kw = ir.kwargs || {};
+      for (var k in kw) {
+        if (kw[k].kind !== 'lit') return null;
+      }
+      // Reject positional args of any kind — the registered distributions
+      // all use kwargs, so positional means "not the simple shape".
+      if (ir.args && ir.args.length) return null;
+      return ir;
+    }
+
+    function setTabState(plottable) {
+      var tabPlot = document.getElementById('tab-plot');
+      if (plottable) {
+        tabPlot.classList.remove('disabled');
+        tabPlot.title = 'Show density plot';
+      } else {
+        tabPlot.classList.add('disabled');
+        tabPlot.title = 'No plot available for this binding';
+        // If we were on the Plot tab and it just got disabled (e.g. user
+        // navigated to a non-stochastic binding), bounce back to Graph.
+        if (tabPlot.classList.contains('active')) activateTab('graph');
+      }
+    }
+
+    function activateTab(name) {
+      var tabs = document.querySelectorAll('.tab');
+      for (var i = 0; i < tabs.length; i++) {
+        var t = tabs[i];
+        if (t.dataset.tab === name && !t.classList.contains('disabled')) {
+          t.classList.add('active');
+        } else {
+          t.classList.remove('active');
+        }
+      }
+      var graphActive = name === 'graph';
+      document.getElementById('graph-panel').classList.toggle('active', graphActive);
+      document.getElementById('plot-panel').classList.toggle('active', !graphActive);
+      if (!graphActive) {
+        // Plot tab activated — render if we have a current IR pending.
+        if (currentPlotIR) renderPlotForCurrent();
+        // echarts must be told to resize after becoming visible (it
+        // measured 0×0 while hidden).
+        if (plotEchart) plotEchart.resize();
+      } else if (cy) {
+        // Graph re-shown: cytoscape may have skipped resize during hidden
+        // state. resize() + fit() restores the layout cleanly.
+        cy.resize();
+      }
+    }
+
+    function showPlotMessage(html) {
+      if (plotEchart) { plotEchart.dispose(); plotEchart = null; }
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '<div id="plot-empty">' + html + '</div>';
+    }
+
+    function renderPlotForCurrent() {
+      if (!currentPlotIR) {
+        showPlotMessage('No distribution to plot.');
+        return;
+      }
+      showPlotMessage('Computing density…');
+      var irForCall = currentPlotIR;
+      sendWorker({ type: 'density', ir: irForCall, opts: { gridPoints: 256 } })
+        .then(function(reply) {
+          // Stale-reply guard: if the user changed focus before this
+          // density returned, drop the result.
+          if (currentPlotIR !== irForCall) return;
+          renderDensity(reply);
+        })
+        .catch(function(err) {
+          if (currentPlotIR !== irForCall) return;
+          showPlotMessage('Could not compute density: ' + esc(err.message || String(err)));
+        });
+    }
+
+    function renderDensity(d) {
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      // Convert the typed-array transferred from the worker to plain
+      // arrays for echarts. Float64Array works as a series source in
+      // recent echarts but plain pairs are simpler and let us combine
+      // x/y trivially.
+      var xs = d.xs, ys = d.ys;
+      var pairs = new Array(xs.length);
+      for (var i = 0; i < xs.length; i++) pairs[i] = [xs[i], ys[i]];
+
+      // Discrete (counting reference) distributions plot as bars at the
+      // integer atoms; continuous (Lebesgue) plot as a filled area curve.
+      var discrete = d.reference === 'counting';
+      var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
+      var seriesColor = TYPE_STYLE.draw.color;
+
+      plotEchart = echarts.init(el);
+      var series;
+      if (discrete) {
+        series = [{
+          type: 'bar',
+          data: pairs,
+          itemStyle: { color: seriesColor },
+          barCategoryGap: '40%',
+        }];
+      } else {
+        series = [{
+          type: 'line',
+          data: pairs,
+          symbol: 'none',
+          smooth: false,
+          lineStyle: { color: seriesColor, width: 2 },
+          areaStyle: { color: seriesColor, opacity: 0.18 },
+        }];
+      }
+      plotEchart.setOption({
+        animation: false,
+        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+        title: {
+          text: distLabel + ' — ' + (discrete ? 'pmf' : 'pdf'),
+          left: 'center', top: 4,
+          textStyle: { color: fg, fontSize: 12, fontWeight: 'normal', opacity: 0.8 },
+        },
+        tooltip: { trigger: 'axis' },
+        xAxis: {
+          type: 'value',
+          name: 'x', nameLocation: 'center', nameGap: 28,
+          axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { show: false },
+          minInterval: discrete ? 1 : null,
+        },
+        yAxis: {
+          type: 'value',
+          name: discrete ? 'P(X=x)' : 'p(x)',
+          nameLocation: 'center', nameGap: 45,
+          axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+          min: 0,
+        },
+        series: series,
+      });
+    }
+
+    // Call after every focusNode() to update the Plot tab's enabled
+    // state and (if visible) re-render its content.
+    function updatePlotForBinding(bindingName) {
+      var binding = currentBindings ? currentBindings.get(bindingName) : null;
+      var ir = getPlottableIR(binding);
+      currentPlotIR = ir;
+      currentPlotBindingName = bindingName;
+      setTabState(!!ir);
+      var plotActive = document.getElementById('plot-panel').classList.contains('active');
+      if (plotActive) renderPlotForCurrent();
+    }
+
+    // Tab click handlers. Disabled tabs ignore clicks.
+    document.getElementById('tab-graph').addEventListener('click', function() {
+      activateTab('graph');
+    });
+    document.getElementById('tab-plot').addEventListener('click', function() {
+      if (this.classList.contains('disabled')) return;
+      activateTab('plot');
+    });
+
     // --- DAG rendering ---
 
     // Tear down all bubble paths and clear leftover scratch. Two bubblesets-js
@@ -963,6 +1296,7 @@ class FlatPPLPanel {
       currentState = { data: dagData, targetName: targetName };
       renderDAG(dagData);
       updateBackBtn();
+      updatePlotForBinding(targetName);
     }
 
     // Back button: pop the previous view; bindings are unchanged, only
@@ -974,6 +1308,7 @@ class FlatPPLPanel {
       currentState = history.pop();
       renderDAG(currentState.data);
       updateBackBtn();
+      updatePlotForBinding(currentState.targetName);
       vscodeApi.postMessage({ type: 'updateTitle', name: currentState.targetName });
     });
 
