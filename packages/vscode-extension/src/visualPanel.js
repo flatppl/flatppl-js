@@ -131,7 +131,7 @@ class FlatPPLPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource}; style-src 'unsafe-inline'; worker-src ${webview.cspSource} blob:;">
+    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource} blob:; style-src 'unsafe-inline'; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource};">
   <title>FlatPPL</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -745,6 +745,8 @@ class FlatPPLPanel {
     // ---------------------------------------------------------------
 
     var samplerWorker = null;
+    var samplerWorkerPromise = null;   // Promise<Worker> while spawn is in-flight
+    var samplerWorkerError = null;     // last spawn error, surfaced in the UI
     var samplerReqId = 0;
     var pendingRequests = new Map(); // id → { resolve, reject }
     var plotEchart = null;
@@ -761,15 +763,63 @@ class FlatPPLPanel {
     // Tuned for sub-100ms response on a single Normal chain.
     var CHAIN_SAMPLE_COUNT = 5000;
 
+    /**
+     * Asynchronously spawn the sampler worker, caching the result.
+     * Returns a Promise<Worker> so callers can await spawn completion.
+     *
+     * Why blob-URL? VS Code webviews are sandboxed iframes whose CSP and
+     * cross-origin posture refuses 'new Worker(webview-uri)' in some
+     * VS Code versions. The reliable workaround is to fetch the bundle
+     * text via the webview URI (which IS allowed by connect-src) and
+     * spawn the worker from a same-origin blob: URL. This pattern is
+     * also documented in the official VS Code webview samples.
+     */
     function ensureSamplerWorker() {
-      if (samplerWorker) return samplerWorker;
-      try {
-        samplerWorker = new Worker(SAMPLER_WORKER_URL);
-      } catch (e) {
-        console.error('FlatPPL: failed to spawn sampler worker:', e);
-        return null;
-      }
-      samplerWorker.addEventListener('message', function(ev) {
+      if (samplerWorker) return Promise.resolve(samplerWorker);
+      if (samplerWorkerPromise) return samplerWorkerPromise;
+
+      samplerWorkerPromise = (async function() {
+        // Try direct construction first — cheapest path on hosts where
+        // it works. Fall back to blob: on any failure (security error,
+        // cross-origin block, etc.).
+        var w = null;
+        try {
+          w = new Worker(SAMPLER_WORKER_URL);
+        } catch (e) {
+          // continue to blob fallback
+          console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:', e && e.message);
+        }
+        if (!w) {
+          var resp = await fetch(SAMPLER_WORKER_URL);
+          if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status + ' ' + resp.statusText);
+          var src = await resp.text();
+          var blob = new Blob([src], { type: 'application/javascript' });
+          var url = URL.createObjectURL(blob);
+          w = new Worker(url);
+          // The blob URL only needs to live until the Worker has parsed
+          // its source — revoke after a short delay so the URL isn't
+          // leaked (the worker keeps running independently).
+          setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
+        }
+        wireWorker(w);
+        samplerWorker = w;
+        // Initialize with a fixed seed for deterministic output. Future:
+        // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
+        sendWorkerNow(w, { type: 'init', seed: 1 });
+        return w;
+      })();
+
+      samplerWorkerPromise.catch(function(err) {
+        samplerWorkerError = err;
+        samplerWorkerPromise = null;
+        console.error('FlatPPL: sampler worker unavailable:', err);
+      });
+
+      return samplerWorkerPromise;
+    }
+
+    function wireWorker(w) {
+      w.addEventListener('message', function(ev) {
         var reply = ev.data;
         if (!reply || reply.id == null) return;
         var p = pendingRequests.get(reply.id);
@@ -778,30 +828,38 @@ class FlatPPLPanel {
         if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
         else p.resolve(reply);
       });
-      samplerWorker.addEventListener('error', function(e) {
+      w.addEventListener('error', function(e) {
         // A top-level worker error fails every outstanding request — there's
         // no way to know which request the error pertains to, and the worker
-        // may be dead. Reject all and reset.
+        // may be dead. Reject all and reset so a future request can retry
+        // the spawn.
         console.error('FlatPPL sampler worker error:', e.message || e);
         for (var entry of pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
         pendingRequests.clear();
-        try { samplerWorker.terminate(); } catch (_) {}
-        samplerWorker = null;
+        try { w.terminate(); } catch (_) {}
+        if (samplerWorker === w) {
+          samplerWorker = null;
+          samplerWorkerPromise = null;
+        }
       });
-      // Initialize with a fixed seed for deterministic output. Future:
-      // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
-      sendWorker({ type: 'init', seed: 1 });
-      return samplerWorker;
+    }
+
+    // Fire-and-forget message send (used during init when we don't care
+    // about the reply). Distinct from sendWorker so we don't allocate a
+    // pending-request entry for messages whose reply is just an 'ok'.
+    function sendWorkerNow(w, msg) {
+      var id = ++samplerReqId;
+      w.postMessage(Object.assign({ id: id }, msg));
     }
 
     function sendWorker(msg) {
-      var w = ensureSamplerWorker();
-      if (!w) return Promise.reject(new Error('sampler worker unavailable'));
-      var id = ++samplerReqId;
-      var wrapped = Object.assign({ id: id }, msg);
-      return new Promise(function(resolve, reject) {
-        pendingRequests.set(id, { resolve: resolve, reject: reject });
-        w.postMessage(wrapped);
+      return ensureSamplerWorker().then(function(w) {
+        var id = ++samplerReqId;
+        var wrapped = Object.assign({ id: id }, msg);
+        return new Promise(function(resolve, reject) {
+          pendingRequests.set(id, { resolve: resolve, reject: reject });
+          w.postMessage(wrapped);
+        });
       });
     }
 
