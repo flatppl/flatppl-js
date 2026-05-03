@@ -492,7 +492,11 @@ test('samplesPlot: continuous + analyticalIR returns histogram + analytical dens
   assert.ok(Math.abs(r.density.ys[imax] - 0.3989) < 0.02);
 });
 
-test('samplesPlot: continuous without analyticalIR returns KDE density', () => {
+test('samplesPlot: continuous without analyticalIR returns null density (no KDE)', () => {
+  // KDE was dropped from the samplesPlot fallback path because it can
+  // misrepresent boundary behaviour (an Exponential's KDE leaks into
+  // x<0). The histogram alone is what we render in that case; the
+  // density slot stays null so the UI shows "samples only".
   const w = createWorkerHandler();
   w.handle({ type: 'init', seed: 4 });
   const r = w.handle({
@@ -502,11 +506,8 @@ test('samplesPlot: continuous without analyticalIR returns KDE density', () => {
     discrete: false,
     // no analyticalIR
   });
-  assert.equal(r.density.method, 'kde');
-  // KDE mode near 5.
-  let imax = 0;
-  for (let i = 1; i < r.density.ys.length; i++) if (r.density.ys[i] > r.density.ys[imax]) imax = i;
-  assert.ok(Math.abs(r.density.xs[imax] - 5) < 0.5);
+  assert.equal(r.density, null);
+  assert.ok(r.histogram.xs.length > 0);
 });
 
 test('samplesPlot: discrete returns integer histogram, density analytical-or-null', () => {

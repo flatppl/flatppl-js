@@ -139,10 +139,17 @@ function createWorkerHandler(opts = {}) {
             // shouldn't matter — but threading it costs nothing).
             density = samplerLib.density(msg.analyticalIR, callEnv, opts);
             density.method = 'analytical';
-          } else if (!msg.discrete) {
-            density = kdeDensity(samples, opts);
-            density.method = 'kde';
           }
+          // Intentionally NO KDE fallback here. KDE without boundary
+          // correction smears mass past the support of the true
+          // distribution (an Exponential's KDE leaks into x<0, etc.),
+          // which mis-suggests density where there is none. The
+          // histogram alone is honest about the empirical distribution
+          // and doesn't pretend to be smooth where the underlying
+          // measure isn't. If you want a smooth overlay later, add
+          // boundary-aware KDE (reflection / boundary-corrected
+          // kernels / log-scale KDE for support [0,∞)) and bring it
+          // back behind a different method tag.
           return { type: 'samplesPlot', id, samples, histogram, density };
         }
         case 'densityFromChain': {
