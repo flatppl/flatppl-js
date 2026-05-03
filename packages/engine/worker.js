@@ -120,18 +120,43 @@ function createWorkerHandler(opts = {}) {
           // (distIR, refArrays, seed) always produce the same output.
           // Per-binding seeding is the main thread's job — this just
           // honours whatever seed it sends.
+          //
+          // PERF: there are two paths.
+          //   * static-params (refArrays empty) — kwargs resolve to
+          //     literals so the stdlib factory is constant. Build it
+          //     once via samplerLib.makeSampler() and call its
+          //     `draw()` N times. This avoids ~N factory allocations
+          //     and brings 1M Normal draws from ~10s down to ~tens of
+          //     ms; the factory build is by far the dominant cost.
+          //   * per-i-params (refArrays non-empty) — at least one
+          //     kwarg references an upstream sample, so params change
+          //     per draw and we have to call rand() per i. Slower,
+          //     but unavoidable without batched-parameter stdlib APIs
+          //     (which random-array-* offers but at the cost of
+          //     additional dependencies).
           const count = msg.count | 0;
           if (count <= 0) throw new Error(`drawN.count must be positive integer (got ${msg.count})`);
           const refArrays = msg.refArrays || {};
+          const refKeys = Object.keys(refArrays);
           let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
           const out = new Float64Array(count);
-          const drawEnv = {};
-          for (let i = 0; i < count; i++) {
-            for (const k in refArrays) drawEnv[k] = refArrays[k][i];
-            const [v, next] = samplerLib.rand(state, msg.ir, drawEnv);
-            state = next;
-            out[i] = v;
+
+          if (refKeys.length === 0) {
+            // Static-params fast path.
+            const s = samplerLib.makeSampler(state, msg.ir, {});
+            for (let i = 0; i < count; i++) out[i] = s.draw();
+            state = s.getState();
+          } else {
+            // Per-i-params path.
+            const drawEnv = {};
+            for (let i = 0; i < count; i++) {
+              for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+              const [v, next] = samplerLib.rand(state, msg.ir, drawEnv);
+              state = next;
+              out[i] = v;
+            }
           }
+
           // Only update session RNG if no explicit seed was given. Per-
           // binding seeded calls leave the session state alone so the
           // calls are independent of arrival order.

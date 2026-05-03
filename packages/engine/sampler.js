@@ -233,6 +233,38 @@ function rand(state, measureIR, env) {
 }
 
 /**
+ * Build a reusable sampler closure for `measureIR` with parameters
+ * resolved against `env`. Use this when you want to draw N samples
+ * from a *fixed-parameter* distribution — building stdlib's factory
+ * once and calling its returned function N times is dramatically
+ * faster than calling rand() N times (factory creation dominates the
+ * per-draw cost; a single `sampler()` call is just one PRNG read +
+ * one transform).
+ *
+ * Returns:
+ *   {
+ *     draw():    number  — draw one sample, advances internal state
+ *     getState(): rng.State — current Philox state for handing back
+ *                              to the caller after a batch
+ *   }
+ *
+ * Caller must NOT use this when params depend on per-draw upstreams
+ * (e.g. mu = mu_i, sigma = 1) — the factory bakes in the params at
+ * construction time. The orchestrator's per-i ref path should keep
+ * calling rand() per draw, or rebuild the sampler per chunk.
+ */
+function makeSampler(state, measureIR, env) {
+  const entry = lookupDistribution(measureIR);
+  const params = resolveParams(measureIR, entry, env);
+  const prng = makePhiloxPrngAdapter(state);
+  const sampler = entry.randFn.factory(...params, { prng });
+  return {
+    draw: sampler,
+    getState: () => prng.getState(),
+  };
+}
+
+/**
  * Build a parameterized stdlib constructor for analytical queries.
  * Returns the stdlib distribution instance — has methods like .pdf(x),
  * .cdf(x), .quantile(p), .mean, .variance, .stdev, .support, etc.
@@ -490,6 +522,7 @@ function readSupport(dist) {
 module.exports = {
   // Primary API
   rand,
+  makeSampler,
   density,
   makeAnalytical,
   evaluateExpr,
