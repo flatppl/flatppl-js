@@ -93,7 +93,7 @@ function activate(context) {
   function readVisualizationConfig() {
     const cfg = vscode.workspace.getConfiguration('flatppl.visualization');
     return {
-      sampleCount: cfg.get('sampleCount', 10000),
+      sampleCount: cfg.get('sampleCount', 100000),
     };
   }
 

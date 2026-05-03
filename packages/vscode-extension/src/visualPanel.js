@@ -863,11 +863,11 @@ class FlatPPLPanel {
     // marginal cost grows linearly. Tuned for sub-100ms response.
     // Sample budget per binding when the visualizer renders a histogram.
     // Owned by VS Code's configuration (flatppl.visualization.sampleCount,
-    // default 10000); the host pushes it via a configUpdate message and
-    // updates it on settings changes. Value here is just an in-flight
-    // default until the first configUpdate arrives — the panel always
-    // boots with a config push from the host.
-    var SAMPLE_COUNT = 10000;
+    // default 100000, max 10_000_000); the host pushes it via a
+    // configUpdate message and updates it on settings changes. Value
+    // here is just an in-flight default until the first configUpdate
+    // arrives — the panel always boots with a config push from the host.
+    var SAMPLE_COUNT = 100000;
 
     function rebuildDerivations() {
       if (!currentBindings) { derivationsState = null; sampleCache = new Map(); return; }
