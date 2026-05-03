@@ -1144,7 +1144,22 @@ class FlatPPLPanel {
           // and it's skipped entirely for variates and chain-mode
           // (stochastic-parent) measures.
           if (planForCall.analyticalIR) {
-            return sendWorker({ type: 'density', ir: planForCall.analyticalIR, opts: { gridPoints: 256 } })
+            // Anchor the density curve's x-range to the histogram's
+            // first/last bin edges. Otherwise the curve uses its own
+            // quantile-derived grid which can extend past the bars
+            // (and into impossible regions, e.g. x<0 for Exponential).
+            // Discrete histograms expose [lo, hi] integer atoms in
+            // their support field; FD histograms expose binEdges[0]
+            // through binEdges[N].
+            var range;
+            if (hist.binEdges && hist.binEdges.length > 1) {
+              range = [hist.binEdges[0], hist.binEdges[hist.binEdges.length - 1]];
+            } else if (hist.support) {
+              range = [hist.support[0], hist.support[1]];
+            }
+            var densOpts = { gridPoints: 256 };
+            if (range) densOpts.range = range;
+            return sendWorker({ type: 'density', ir: planForCall.analyticalIR, opts: densOpts })
               .then(function(densReply) { return { samples: samples, histogram: hist, density: densReply }; });
           }
           return { samples: samples, histogram: hist, density: null };
