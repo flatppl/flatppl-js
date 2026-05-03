@@ -95,6 +95,24 @@ class FlatPPLPanel {
     this._panel.webview.postMessage({ type: 'configUpdate', config });
   }
 
+  /**
+   * Render the module-level (multi-root) DAG. Distinct from
+   * updateSource which centers a single-target sub-DAG; module mode
+   * shows every binding linked by its dependencies. Title is
+   * normalized to "FlatPPL: module" so the editor tab reflects the
+   * mode. The webview pushes a history entry when pushHistory is
+   * true so the back-button can return to a prior single-binding view.
+   */
+  showModule(source, sourceUri, pushHistory) {
+    if (sourceUri) this._sourceUri = sourceUri;
+    this._panel.title = 'FlatPPL: module';
+    this._panel.webview.postMessage({
+      type: 'showModule',
+      source,
+      pushHistory: !!pushHistory,
+    });
+  }
+
   _getHtml() {
     const webview = this._panel.webview;
     const nonce = getNonce();
@@ -471,8 +489,20 @@ class FlatPPLPanel {
       return expr;
     }
 
+    // Sentinel name for the module-overview state. Distinct from any
+    // user binding name (binding identifiers are barewords; the
+    // sentinel uses ':' which the analyzer can't produce). Used by
+    // updateHeader, updatePlotForBinding, and the back-button to
+    // distinguish module view from a single-binding view.
+    var MODULE_TARGET = ':module';
+
     function updateHeader(data) {
       var el = document.getElementById('header-expr');
+      // Module view: no per-node target; just label the view.
+      if (currentState && currentState.targetName === MODULE_TARGET) {
+        el.innerHTML = '<span class="target-name">module</span>';
+        return;
+      }
       var target = null;
       for (var i = 0; i < data.nodes.length; i++) {
         if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
@@ -1234,8 +1264,12 @@ class FlatPPLPanel {
       // panel doesn't appear/disappear under the user as they click
       // around the DAG.
       if (!currentPlotPlan) {
-        var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
-        showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
+        if (currentState && currentState.targetName === MODULE_TARGET) {
+          showPlotMessage('Click a binding in the graph to plot it.');
+        } else {
+          var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
+          showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
+        }
         return;
       }
       // Array-mode loads the cached array synchronously (no worker
@@ -2013,6 +2047,31 @@ class FlatPPLPanel {
       updatePlotForBinding(targetName);
     }
 
+    /**
+     * Render the module-level (multi-root) DAG. Plot pane shows a
+     * "click a binding to plot it" message because there's no single
+     * focused binding here. Pushes onto history when requested and
+     * the previous view wasn't already the module view.
+     */
+    function enterModuleView(pushHistory) {
+      if (!currentBindings) return;
+      var dagData = FlatPPLEngine.computeFullDAG(currentBindings);
+      if (!dagData || dagData.nodes.length === 0) return;
+
+      if (pushHistory && currentState && currentState.targetName !== MODULE_TARGET) {
+        history.push(currentState);
+        if (history.length > HISTORY_CAP) history.shift();
+      }
+
+      currentState = { data: dagData, targetName: MODULE_TARGET };
+      renderDAG(dagData);
+      updateBackBtn();
+      // No specific binding to plot in module view. Pass null so the
+      // Plot panel renders its placeholder; renderPlotForCurrent
+      // recognizes module mode and tailors the message.
+      updatePlotForBinding(null);
+    }
+
     // Back button: pop the previous view; bindings are unchanged, only
     // re-render with the saved sub-DAG data. (We push state objects that
     // hold both the data and the target name, so we don't have to recompute
@@ -2022,8 +2081,17 @@ class FlatPPLPanel {
       currentState = history.pop();
       renderDAG(currentState.data);
       updateBackBtn();
-      updatePlotForBinding(currentState.targetName);
-      vscodeApi.postMessage({ type: 'updateTitle', name: currentState.targetName });
+      // Module view has no per-binding plot target and no per-binding
+      // title — call updatePlotForBinding(null) so the plot pane shows
+      // its module-mode placeholder, and tell the host to set a
+      // generic title rather than the sentinel string.
+      if (currentState.targetName === MODULE_TARGET) {
+        updatePlotForBinding(null);
+        vscodeApi.postMessage({ type: 'updateTitle', name: 'module' });
+      } else {
+        updatePlotForBinding(currentState.targetName);
+        vscodeApi.postMessage({ type: 'updateTitle', name: currentState.targetName });
+      }
     });
 
     window.addEventListener('message', function(event) {
@@ -2057,7 +2125,7 @@ class FlatPPLPanel {
         return;
       }
 
-      if (msg.type !== 'sourceUpdate') return;
+      if (msg.type !== 'sourceUpdate' && msg.type !== 'showModule') return;
 
       // Only re-parse when source actually changed. Cursor-driven retargets
       // re-use the cached bindings (saves the parse for typical "click
@@ -2080,7 +2148,11 @@ class FlatPPLPanel {
           return;
         }
       }
-      focusNode(msg.targetName, msg.pushHistory);
+      if (msg.type === 'showModule') {
+        enterModuleView(msg.pushHistory);
+      } else {
+        focusNode(msg.targetName, msg.pushHistory);
+      }
     });
 
     initCy();

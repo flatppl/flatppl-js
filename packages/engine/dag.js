@@ -395,4 +395,68 @@ function findBindingAtLine(bindings, line, col) {
   return null;
 }
 
-module.exports = { computeSubDAG, findBindingAtLine };
+/**
+ * Build a DAG covering every binding in the module ("show module"
+ * view). Implemented as the union of computeSubDAG()'s output starting
+ * from each leaf binding (those not referenced as a dep by any other
+ * binding) — ancestor-walks from leaves cover every reachable
+ * binding. If somehow nothing qualifies as a leaf (would only happen
+ * with a cyclic binding graph, which the analyzer should already
+ * reject), we fall back to every binding as a root.
+ *
+ * Output has the same shape as computeSubDAG so the renderer doesn't
+ * need a separate code path. No node carries `isTarget=true` — the
+ * full-module view has no distinguished focus.
+ *
+ * @param {Map} bindings
+ * @returns {{ nodes: object[], edges: object[], reifications: object[] }}
+ */
+function computeFullDAG(bindings) {
+  if (!bindings || bindings.size === 0) {
+    return { nodes: [], edges: [], reifications: [] };
+  }
+
+  // Leaves: bindings that no other binding depends on. Their
+  // ancestor-walks (computeSubDAG) cover everything reachable.
+  const referenced = new Set();
+  for (const b of bindings.values()) {
+    if (b && b.deps) for (const d of b.deps) referenced.add(d);
+  }
+  const allNames = [...bindings.keys()];
+  const leaves = allNames.filter(n => !referenced.has(n));
+  const roots = leaves.length > 0 ? leaves : allNames;
+
+  // Union sub-DAGs by name / edge-key. A binding visited from two
+  // different leaves shouldn't appear twice; nor should an edge.
+  const nodesByName = new Map();
+  const edges = [];
+  const edgeKeys = new Set();
+  const reifications = [];
+  const reifNames = new Set();
+
+  for (const root of roots) {
+    const sub = computeSubDAG(bindings, root);
+    for (const n of sub.nodes) {
+      if (nodesByName.has(n.id)) continue;
+      // Drop the per-leaf isTarget flag — there's no global target in
+      // a module view. Cloning shallowly so the source object isn't
+      // mutated if some other view holds onto it.
+      nodesByName.set(n.id, Object.assign({}, n, { isTarget: false }));
+    }
+    for (const e of sub.edges) {
+      const key = e.source + '→' + e.target + '|' + (e.edgeType || '');
+      if (edgeKeys.has(key)) continue;
+      edgeKeys.add(key);
+      edges.push(e);
+    }
+    for (const r of (sub.reifications || [])) {
+      if (reifNames.has(r.name)) continue;
+      reifNames.add(r.name);
+      reifications.push(r);
+    }
+  }
+
+  return { nodes: [...nodesByName.values()], edges, reifications };
+}
+
+module.exports = { computeSubDAG, computeFullDAG, findBindingAtLine };

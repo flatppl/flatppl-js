@@ -106,6 +106,25 @@ function activate(context) {
     return true;
   }
 
+  // Show the module-level (multi-root) DAG. Distinct from
+  // showDAGForCursor — there's no per-cursor target; the panel just
+  // renders every binding linked by its dependencies, the user clicks
+  // around to drill into a single binding view.
+  function showModuleForCurrent(editor) {
+    if (!editor || editor.document.languageId !== 'flatppl') return false;
+    const { bindings } = getParsed(editor.document);
+    if (bindings.size === 0) return false;
+    const source = editor.document.getText();
+    const wasNew = !FlatPPLPanel.currentPanel;
+    FlatPPLPanel.createOrShow(context);
+    if (wasNew) {
+      FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
+    }
+    FlatPPLPanel.currentPanel.showModule(
+      source, editor.document.uri, /* pushHistory */ true);
+    return true;
+  }
+
   // Read the current visualization-related settings into a plain
   // object that can be postMessage'd to the webview. Centralised here
   // so initial-load and onDidChangeConfiguration share one shape.
@@ -126,6 +145,17 @@ function activate(context) {
       return;
     }
     if (!showDAGForCursor(editor)) {
+      vscode.window.showInformationMessage('No bindings to visualize in this file');
+    }
+  });
+
+  const showModuleCmd = vscode.commands.registerCommand('flatppl.visualizeModule', () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'flatppl') {
+      vscode.window.showErrorMessage('Place cursor in a FlatPPL file');
+      return;
+    }
+    if (!showModuleForCurrent(editor)) {
       vscode.window.showInformationMessage('No bindings to visualize in this file');
     }
   });
@@ -528,7 +558,7 @@ function activate(context) {
   });
 
   context.subscriptions.push(
-    showDagCmd, selectionListener, changeListener, openListener, closeListener,
+    showDagCmd, showModuleCmd, selectionListener, changeListener, openListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
     configListener,

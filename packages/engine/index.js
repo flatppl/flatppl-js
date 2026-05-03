@@ -5,7 +5,7 @@ const { parse } = require('./parser');
 const { analyze, collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, computePhases } = require('./analyzer');
-const { computeSubDAG, findBindingAtLine } = require('./dag');
+const { computeSubDAG, computeFullDAG, findBindingAtLine } = require('./dag');
 const disintegrate = require('./disintegrate');
 const AST = require('./ast');
 const builtins = require('./builtins');
@@ -43,7 +43,7 @@ module.exports = {
   analyze, collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, computePhases,
-  computeSubDAG, findBindingAtLine,
+  computeSubDAG, computeFullDAG, findBindingAtLine,
   disintegrate,
   AST, builtins,
   // Lightweight sampling-stack components (no stdlib pull-in)
