@@ -41,12 +41,12 @@
       {
         "command": "flatppl.visualize",
         "title": "FlatPPL: Visualize Binding",
-        "icon": "$(type-hierarchy-super)"
+        "icon": "./media/visualize-binding.svg"
       },
       {
         "command": "flatppl.visualizeModule",
         "title": "FlatPPL: Visualize Module",
-        "icon": "$(type-hierarchy)"
+        "icon": "./media/visualize-module.svg"
       }
     ],
     "menus": {
