@@ -119,18 +119,47 @@ const engineBuildOpts = {
   },
 };
 
+// Sampler-worker bundle: a separate browser-loadable artifact that runs
+// inside a Web Worker spawned from the webview. Bundling the worker
+// distinct from the main engine bundle lets us:
+//   * Pull in the heavy stdlib distribution code only on the worker side
+//     (it's not needed for parsing/DAG visualization).
+//   * Keep the main-thread engine bundle small for fast webview startup.
+//   * Stay portable to VS Code Web — the worker entry can be loaded via
+//     a webview URI and the message protocol is identical.
+//
+// `format: 'iife'` is fine for workers: there's no top-level export that
+// callers need to grab, only `self.onmessage` side-effects. The bundle's
+// IIFE wrapper runs once on worker startup and registers the listener.
+const samplerWorkerBuildOpts = {
+  entryPoints: [join(enginePkg, 'worker-entry.js')],
+  outfile: join(libDir, 'sampler-worker.min.js'),
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  platform: 'browser',
+  target: ['es2020'],
+  legalComments: 'inline',
+};
+
 if (WATCH) {
-  // Watch mode: rebuild engine.min.js on every change under packages/engine/.
+  // Watch mode: rebuild both bundles on every change under packages/engine/.
   // The process keeps running until killed (Ctrl+C). Reload the VS Code
-  // window after a rebuild to pick up the new bundle in the webview.
-  const ctx = await esbuild.context(engineBuildOpts);
-  await ctx.rebuild();
-  console.log('  bundled engine -> lib/engine.min.js');
-  await ctx.watch();
+  // window after a rebuild to pick up the new bundles in the webview.
+  const engineCtx = await esbuild.context(engineBuildOpts);
+  const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
+  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild()]);
+  console.log('  bundled engine        -> lib/engine.min.js');
+  console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
+  await Promise.all([engineCtx.watch(), workerCtx.watch()]);
   console.log('  watching packages/engine/ for changes (Ctrl+C to exit)…');
 } else {
-  await esbuild.build(engineBuildOpts);
-  console.log('  bundled engine -> lib/engine.min.js');
+  await Promise.all([
+    esbuild.build(engineBuildOpts),
+    esbuild.build(samplerWorkerBuildOpts),
+  ]);
+  console.log('  bundled engine        -> lib/engine.min.js');
+  console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
 }
 
 // ---------------------------------------------------------------------
