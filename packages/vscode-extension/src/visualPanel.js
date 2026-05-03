@@ -1965,13 +1965,21 @@ class FlatPPLPanel {
      */
     function focusNode(targetName, pushHistory) {
       if (!currentBindings) return;
-      // Pick a default target when none is supplied: the last user-defined
-      // binding. Mirrors the extension host's previous fall-back logic.
+      // No targetName supplied → prefer keeping the current focus.
+      // This is the path used by source-only updates from the host
+      // (the user is editing the RHS of the already-shown binding —
+      // they don't want their place reset to "last binding"). Falls
+      // through to the last binding when there's no prior focus or
+      // the focused binding was deleted by the edit.
       if (!targetName) {
-        var allNames = [];
-        currentBindings.forEach(function(_b, name) { allNames.push(name); });
-        if (allNames.length === 0) return;
-        targetName = allNames[allNames.length - 1];
+        if (currentState && currentBindings.has(currentState.targetName)) {
+          targetName = currentState.targetName;
+        } else {
+          var allNames = [];
+          currentBindings.forEach(function(_b, name) { allNames.push(name); });
+          if (allNames.length === 0) return;
+          targetName = allNames[allNames.length - 1];
+        }
       }
       var dagData = FlatPPLEngine.computeSubDAG(currentBindings, targetName);
       if (!dagData || dagData.nodes.length === 0) return;

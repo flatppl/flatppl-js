@@ -131,12 +131,29 @@ function activate(context) {
     }, 150);
   });
 
-  // --- Re-parse on document change (for diagnostics) ---
+  // --- Re-parse on document change (for diagnostics + visualizer) ---
+
+  let changePushTimeout;
 
   const changeListener = vscode.workspace.onDidChangeTextDocument(e => {
-    if (e.document.languageId === 'flatppl') {
-      getParsed(e.document);
-    }
+    if (e.document.languageId !== 'flatppl') return;
+    getParsed(e.document);
+
+    // Also push the updated source to the visualizer if it's open.
+    // Without this, editing a binding's RHS doesn't refresh the
+    // panel — the selection listener only fires on cursor moves and
+    // gates on binding-name change, so RHS-only edits get missed.
+    // Pass targetName=null so the webview keeps its current focus
+    // (the user is editing the binding they're looking at; they
+    // don't want their place reset).
+    if (!FlatPPLPanel.currentPanel) return;
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document !== e.document) return;
+    clearTimeout(changePushTimeout);
+    changePushTimeout = setTimeout(() => {
+      FlatPPLPanel.currentPanel.updateSource(
+        editor.document.getText(), null, editor.document.uri, /* pushHistory */ false);
+    }, 200);
   });
 
   // --- Parse on open ---
