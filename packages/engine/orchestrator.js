@@ -331,13 +331,237 @@ function isEvaluable(ir) {
   }
 }
 
+// =====================================================================
+// Derivations: a per-binding description of how to compute its samples.
+//
+// Where buildSampleChain produces a topologically-ordered execution
+// plan for a single target, buildDerivations produces a *dictionary*
+// covering every binding the orchestrator can sample. The main thread
+// uses it to back a content-addressed sample cache: when the user
+// clicks a node, we recursively materialise its samples (and cache
+// them), reusing cached arrays for any deps already computed.
+//
+// Derivation kinds:
+//   { kind: 'sample',   distIR }           — sample N from distIR per i
+//                                            (kwargs may have refs to
+//                                             other binding names —
+//                                             those are resolved via
+//                                             the cache at compute time)
+//   { kind: 'alias',    from: '<name>' }   — share another binding's
+//                                            sample array, no fresh draws.
+//                                            Used for variates
+//                                              theta1 = draw(theta1_dist)
+//                                            and lawof aliases
+//                                              x = lawof(y)
+//   { kind: 'evaluate', ir }               — element-wise deterministic
+//                                            compute, e.g. s = mu + 1
+//
+// The variate-vs-measure semantics live entirely in the alias rule:
+// `theta1 = draw(theta1_dist)` becomes alias→theta1_dist, so theta1
+// and theta1_dist literally share their cached Float64Array. There is
+// never a "second draw" that happens to look statistically the same;
+// they are the same array.
+//
+// Bindings that can't be derived (reified scopes, modules, multivariate
+// laws like lawof(record(...)), unsupported distributions) are omitted
+// from the result. The visualizer treats absence of a derivation as
+// "not plottable".
+// =====================================================================
+
+/**
+ * Build a derivation dictionary for every chainable binding.
+ *
+ * @param {Map<string, BindingInfo>} bindings  from analyzer.analyze()
+ * @returns {{
+ *   derivations: { [name: string]: object },  // alias / sample / evaluate
+ *   discrete:    { [name: string]: boolean },  // resolved-leaf discreteness
+ * }}
+ */
+function buildDerivations(bindings) {
+  const derivations = Object.create(null);
+
+  // Initial classification — every binding considered independently.
+  // We resolve cross-binding ref validity in a follow-up pass so a
+  // dropped derivation can cascade: if A depends on B and B becomes
+  // unsupported, A also drops.
+  for (const [name, binding] of bindings) {
+    const d = classifyDerivation(binding, bindings);
+    if (d) derivations[name] = d;
+  }
+
+  // Drop derivations whose refs point to unsatisfiable names. Iterate
+  // until stable; one pass isn't enough because removing A might leave
+  // B's refs stranded, and so on.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const name of Object.keys(derivations)) {
+      if (!derivationRefsValid(derivations[name], derivations, bindings)) {
+        delete derivations[name];
+        changed = true;
+      }
+    }
+  }
+
+  // Discrete map: walk through aliases to find each binding's leaf
+  // sample step. evaluate-only bindings inherit the discreteness of
+  // their inputs naively, but we treat them as continuous — arithmetic
+  // on integer-valued samples produces fractional values via mul/div,
+  // and even when it doesn't (a + 1) the user usually wants continuous
+  // FD bins for a generic "transformed" view. Toggle-ability via opts
+  // is a future refinement.
+  const discrete = Object.create(null);
+  for (const name of Object.keys(derivations)) {
+    discrete[name] = isDiscreteAt(name, derivations);
+  }
+
+  return { derivations, discrete };
+}
+
+/**
+ * Classify a single binding into one of the three derivation kinds,
+ * or null if it isn't sample-able under our current support set.
+ *
+ * The 'draw' case is the interesting one: it can resolve to either an
+ * inline distribution call or an alias to another binding (the
+ * underlying measure). When the inner is a ref, we emit an alias —
+ * NOT a sample. This is what gives variates and their measures the
+ * same cached samples.
+ */
+function classifyDerivation(binding, bindings) {
+  if (!binding || !binding.node || !binding.node.value) return null;
+  let rhsIR;
+  try { rhsIR = lowerExpr(binding.node.value); } catch (_) { return null; }
+
+  if (binding.type === 'draw') {
+    if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'draw') return null;
+    const inner = (rhsIR.args && rhsIR.args[0]) || null;
+    if (!inner) return null;
+    // draw(<ref>): alias. The samples of the variate ARE the samples
+    // of the underlying measure; no extra RNG consumption.
+    if (inner.kind === 'ref' && inner.ns === 'self') {
+      if (!bindings.has(inner.name)) return null;
+      return { kind: 'alias', from: inner.name };
+    }
+    // draw(<inline-dist-call>): treat the inline dist as if it were
+    // a freshly-named anonymous measure binding. We sample directly.
+    if (inner.kind === 'call' && inner.op && SAMPLEABLE_DISTRIBUTIONS.has(inner.op)) {
+      return { kind: 'sample', distIR: inner };
+    }
+    return null;
+  }
+
+  // 'lawof' is the dual of 'draw' for our purposes: lawof(<ref>) is
+  // the measure that ref's variate is drawn from, so its samples
+  // coincide with the ref's samples. lawof(<complex expr>) (e.g.
+  // lawof(record(...))) is multivariate and unplottable today.
+  if (binding.type === 'lawof') {
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'lawof'
+        && rhsIR.args && rhsIR.args.length === 1) {
+      const arg = rhsIR.args[0];
+      if (arg.kind === 'ref' && arg.ns === 'self' && bindings.has(arg.name)) {
+        return { kind: 'alias', from: arg.name };
+      }
+    }
+    return null;
+  }
+
+  if (binding.type === 'call' || binding.type === 'literal') {
+    // Measure construction: call to a sampleable distribution.
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op
+        && SAMPLEABLE_DISTRIBUTIONS.has(rhsIR.op)) {
+      return { kind: 'sample', distIR: rhsIR };
+    }
+    // Deterministic arithmetic on cached samples.
+    if (isEvaluable(rhsIR)) {
+      return { kind: 'evaluate', ir: rhsIR };
+    }
+    return null;
+  }
+
+  // Reifications, modules, inputs, joints, likelihoods, bayesupdate: unsupported.
+  return null;
+}
+
+/**
+ * Whether a derivation's outgoing references are satisfiable —
+ * i.e. every 'self' ref it contains points at a binding that itself
+ * has a derivation. Aliases just check the target.
+ */
+function derivationRefsValid(d, derivations, bindings) {
+  if (d.kind === 'alias') {
+    return Object.prototype.hasOwnProperty.call(derivations, d.from);
+  }
+  const ir = d.kind === 'sample' ? d.distIR : d.ir;
+  const refs = collectSelfRefs(ir);
+  for (const r of refs) {
+    if (!Object.prototype.hasOwnProperty.call(derivations, r)) return false;
+  }
+  return true;
+}
+
+function isDiscreteAt(name, derivations, visited) {
+  visited = visited || new Set();
+  if (visited.has(name)) return false; // cycle guard
+  visited.add(name);
+  const d = derivations[name];
+  if (!d) return false;
+  if (d.kind === 'alias')   return isDiscreteAt(d.from, derivations, visited);
+  if (d.kind === 'sample')  return DISCRETE_DISTRIBUTIONS.has(d.distIR.op);
+  return false; // evaluate — see comment in buildDerivations.
+}
+
+/**
+ * Walk through alias chains to find the underlying sample step's IR.
+ * Used to surface the analytical density opportunity for measure
+ * bindings: if a binding's leaf step is a sample step with all-literal
+ * kwargs, the analytical PDF/PMF from stdlib is callable on that IR.
+ *
+ * Returns null if the chain doesn't bottom out on a sample step
+ * (e.g. it's an evaluate-only binding) or if a cycle is hit.
+ */
+function leafSampleIR(name, derivations, visited) {
+  visited = visited || new Set();
+  if (visited.has(name)) return null;
+  visited.add(name);
+  const d = derivations[name];
+  if (!d) return null;
+  if (d.kind === 'alias')   return leafSampleIR(d.from, derivations, visited);
+  if (d.kind === 'sample')  return d.distIR;
+  return null;
+}
+
+/**
+ * Collect the names of every (ref self <name>) inside an IR subtree.
+ * Used by the worker / main thread to gather upstream sample arrays
+ * before drawing or evaluating. Doesn't follow into reified scopes —
+ * those introduce their own scope and their bodies aren't part of the
+ * outer binding's data dependencies for sampling.
+ */
+function collectSelfRefs(ir) {
+  const seen = new Set();
+  walk(ir);
+  return seen;
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.kind === 'ref' && node.ns === 'self') seen.add(node.name);
+    if (node.args)   for (const a of node.args)            walk(a);
+    if (node.kwargs) for (const k in node.kwargs)          walk(node.kwargs[k]);
+    if (node.body)                                          walk(node.body);
+    // Reified-scope params/paramKwargs are name lists, not IRs.
+  }
+}
+
 module.exports = {
   buildSampleChain,
+  buildDerivations,
+  collectSelfRefs,
+  leafSampleIR,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.
   SAMPLEABLE_DISTRIBUTIONS,
   DISCRETE_DISTRIBUTIONS,
   EVALUABLE_OPS,
-  _internal: { classifyForChain, isEvaluable },
+  _internal: { classifyForChain, isEvaluable, classifyDerivation, isDiscreteAt },
 };

@@ -21,7 +21,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource } = require('..');
-const { buildSampleChain, _internal: { isEvaluable, classifyForChain } } = require('../orchestrator');
+const {
+  buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
+  _internal: { isEvaluable, classifyForChain },
+} = require('../orchestrator');
 
 function chainOf(source, target) {
   const { bindings } = processSource(source);
@@ -221,6 +224,133 @@ test('isEvaluable: literals, refs, consts, evaluable ops', () => {
 // =====================================================================
 // Cycle detection (defensive)
 // =====================================================================
+
+// =====================================================================
+// buildDerivations — main-thread sample-cache key/derivation map
+// =====================================================================
+
+function derivationsOf(source) {
+  const { bindings } = processSource(source);
+  return buildDerivations(bindings);
+}
+
+test('derivations: variate aliases its underlying measure', () => {
+  // theta1 = draw(theta1_dist) means theta1's samples ARE theta1_dist's
+  // samples — so the derivation must be an alias, not a fresh sample step.
+  // The main-thread cache then gives both names the same Float64Array
+  // when materialised.
+  const { derivations, discrete } = derivationsOf(`
+theta1_dist = Normal(mu = 0, sigma = 1)
+theta1      = draw(theta1_dist)
+`);
+  assert.deepEqual(derivations.theta1, { kind: 'alias', from: 'theta1_dist' });
+  assert.equal(derivations.theta1_dist.kind, 'sample');
+  assert.equal(derivations.theta1_dist.distIR.op, 'Normal');
+  assert.equal(discrete.theta1, false);
+  assert.equal(discrete.theta1_dist, false);
+});
+
+test('derivations: lawof(<ref>) aliases the ref', () => {
+  const { derivations } = derivationsOf(`
+y = draw(Normal(mu = 0, sigma = 1))
+m = lawof(y)
+`);
+  assert.deepEqual(derivations.m, { kind: 'alias', from: 'y' });
+});
+
+test('derivations: inline draw(Dist(...)) becomes a sample step on the inner', () => {
+  const { derivations } = derivationsOf(`
+y = draw(Normal(mu = 0, sigma = 1))
+`);
+  assert.equal(derivations.y.kind, 'sample');
+  assert.equal(derivations.y.distIR.op, 'Normal');
+});
+
+test('derivations: deterministic arithmetic becomes evaluate', () => {
+  const { derivations } = derivationsOf(`
+mu = draw(Normal(mu = 0, sigma = 1))
+s  = mu + 1
+`);
+  assert.equal(derivations.s.kind, 'evaluate');
+  // The evaluate IR is the lowered RHS: (call add (ref mu) (lit 1))
+  assert.equal(derivations.s.ir.op, 'add');
+});
+
+test('derivations: discrete leaf flagged via alias chain', () => {
+  const { discrete } = derivationsOf(`
+k_dist = Poisson(rate = 3)
+k      = draw(k_dist)
+`);
+  assert.equal(discrete.k, true);
+  assert.equal(discrete.k_dist, true);
+});
+
+test('derivations: unsupported binding is omitted, dependents drop too', () => {
+  // prior is a multivariate lawof — unsupported. theta1 still has a
+  // derivation (it doesn't reference prior). Anything that refs prior
+  // would cascade-drop.
+  const { derivations } = derivationsOf(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+prior  = lawof(record(theta1 = theta1))
+ghost  = prior + 1
+`);
+  assert.ok(derivations.theta1);
+  assert.ok(!('prior' in derivations));
+  assert.ok(!('ghost' in derivations));
+});
+
+test('derivations: bayesian_inference_3 fixture covers the expected nodes', () => {
+  // Smoke check on the user's example file. theta1_dist / theta2_dist
+  // are sample steps; theta1 / theta2 are aliases; prior, prior2,
+  // forward_kernel, etc. are unsupported (lawof / functionof / module).
+  const { derivations } = derivationsOf(`
+theta1_dist = Normal(mu = 0.0, sigma = 1.0)
+theta2_dist = Exponential(rate = 1.0)
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+`);
+  assert.equal(derivations.theta1_dist.kind, 'sample');
+  assert.equal(derivations.theta2_dist.kind, 'sample');
+  assert.deepEqual(derivations.theta1, { kind: 'alias', from: 'theta1_dist' });
+  assert.deepEqual(derivations.theta2, { kind: 'alias', from: 'theta2_dist' });
+});
+
+// =====================================================================
+// collectSelfRefs / leafSampleIR
+// =====================================================================
+
+test('collectSelfRefs: nested kwargs yield the full ref set', () => {
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: {
+      mu: { kind: 'call', op: 'add', args: [
+        { kind: 'ref', ns: 'self', name: 'a' },
+        { kind: 'ref', ns: 'self', name: 'b' },
+      ]},
+      sigma: { kind: 'lit', value: 1 },
+    },
+  };
+  const refs = collectSelfRefs(ir);
+  assert.ok(refs.has('a'));
+  assert.ok(refs.has('b'));
+  assert.equal(refs.size, 2);
+});
+
+test('leafSampleIR: walks alias chain to the underlying sample IR', () => {
+  const derivations = {
+    theta1_dist: { kind: 'sample', distIR: { op: 'Normal' } },
+    theta1:      { kind: 'alias',  from: 'theta1_dist' },
+    theta1_alt:  { kind: 'alias',  from: 'theta1' },
+  };
+  assert.equal(leafSampleIR('theta1_alt', derivations).op, 'Normal');
+});
+
+test('leafSampleIR: returns null for evaluate-only chains', () => {
+  const derivations = {
+    s: { kind: 'evaluate', ir: { kind: 'call', op: 'add' } },
+  };
+  assert.equal(leafSampleIR('s', derivations), null);
+});
 
 test('chain: self-reference detected (defensive — analyzer normally rejects)', () => {
   // Manually construct a fake binding map with a cycle.

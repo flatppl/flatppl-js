@@ -12,6 +12,7 @@ const builtins = require('./builtins');
 const rng = require('./rng');
 const lower = require('./lower');
 const orchestrator = require('./orchestrator');
+const histogram = require('./histogram');
 // NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
 // stdlib's distribution packages (~1 MB after bundling) and are intended
 // for the sampler-worker bundle only. Main-thread / extension-host code
@@ -46,5 +47,5 @@ module.exports = {
   disintegrate,
   AST, builtins,
   // Lightweight sampling-stack components (no stdlib pull-in)
-  rng, lower, orchestrator,
+  rng, lower, orchestrator, histogram,
 };

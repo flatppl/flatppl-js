@@ -784,6 +784,127 @@ class FlatPPLPanel {
     var samplerReqId = 0;
     var pendingRequests = new Map(); // id → { resolve, reject }
     var plotEchart = null;
+
+    // ---------------------------------------------------------------
+    // Main-thread sample cache.
+    //
+    // The cache lives here, not on the worker, so:
+    //   - Samples persist across worker recycles.
+    //   - Variates and their underlying measures share Float64Arrays
+    //     (theta1's "samples" ARE theta1_dist's samples — same reference).
+    //   - Click-around the DAG hits the cache → instant re-render.
+    //   - Source edits invalidate everything by clearing the map.
+    //
+    // Each binding has at most one entry. Aliases share the array
+    // reference (no copy). Deterministic transforms reuse parents'
+    // arrays element-wise via the worker's evaluateN primitive.
+    //
+    // Per-binding seeding: we derive a deterministic seed from a
+    // string hash of the binding name XOR'd with a root seed. Two
+    // independent random variables (theta1_dist, theta2_dist) thus
+    // get statistically independent streams without coupling to the
+    // order of materialisation. A future "Resample" button can bump
+    // rootSeed and clear the cache to redraw everything.
+    // ---------------------------------------------------------------
+    var derivationsState = null;       // { derivations, discrete } from orchestrator
+    var sampleCache = new Map();       // Map<name, Float64Array>
+    var rootSeed = 1;
+    var SAMPLE_COUNT = CHAIN_SAMPLE_COUNT;  // alias kept for the legacy constant
+
+    function rebuildDerivations() {
+      if (!currentBindings) { derivationsState = null; sampleCache = new Map(); return; }
+      try {
+        derivationsState = FlatPPLEngine.orchestrator.buildDerivations(currentBindings);
+      } catch (e) {
+        console.error('FlatPPL: buildDerivations failed:', e);
+        derivationsState = null;
+      }
+      // Source change invalidates every cached array — derivations
+      // (or just signatures) may have shifted under any of them.
+      sampleCache = new Map();
+    }
+
+    /**
+     * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
+     * each binding its own RNG stream for drawN(). Independent of
+     * arrival order — two independent variables stay independent
+     * regardless of which one the user clicked first.
+     */
+    function nameSeed(name) {
+      var h = 2166136261;
+      for (var i = 0; i < name.length; i++) {
+        h = h ^ name.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return (h ^ rootSeed) >>> 0;
+    }
+
+    /**
+     * Recursively materialise samples for a binding, reusing cache
+     * entries for any deps already computed. Returns Promise<Float64Array>
+     * because dep materialisation involves worker round-trips. Callers
+     * must await.
+     *
+     * Aliases share the SAME array reference as their target (no copy)
+     * so click-flipping between a variate and its measure is free.
+     */
+    function getSamples(name) {
+      if (sampleCache.has(name)) return Promise.resolve(sampleCache.get(name));
+      if (!derivationsState) return Promise.reject(new Error('no model loaded'));
+      var d = derivationsState.derivations[name];
+      if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
+
+      var promise;
+      if (d.kind === 'alias') {
+        promise = getSamples(d.from).then(function(arr) {
+          // Cache the alias under its own name pointing at the same
+          // Float64Array. They are now genuinely identical references.
+          sampleCache.set(name, arr);
+          return arr;
+        });
+      } else if (d.kind === 'sample') {
+        promise = collectRefArrays(d.distIR).then(function(refArrays) {
+          return sendWorker({
+            type: 'drawN',
+            ir: d.distIR,
+            count: SAMPLE_COUNT,
+            refArrays: refArrays,
+            seed: nameSeed(name),
+          });
+        }).then(function(reply) {
+          sampleCache.set(name, reply.samples);
+          return reply.samples;
+        });
+      } else if (d.kind === 'evaluate') {
+        promise = collectRefArrays(d.ir).then(function(refArrays) {
+          return sendWorker({
+            type: 'evaluateN',
+            ir: d.ir,
+            count: SAMPLE_COUNT,
+            refArrays: refArrays,
+          });
+        }).then(function(reply) {
+          sampleCache.set(name, reply.samples);
+          return reply.samples;
+        });
+      } else {
+        return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
+      }
+      return promise;
+    }
+
+    /** Walk an IR for all (ref self <name>) and return a refName→Float64Array map. */
+    function collectRefArrays(ir) {
+      var refs = FlatPPLEngine.orchestrator.collectSelfRefs(ir);
+      var names = [];
+      refs.forEach(function(n) { names.push(n); });
+      return Promise.all(names.map(function(n) { return getSamples(n); }))
+        .then(function(arrays) {
+          var out = {};
+          for (var i = 0; i < names.length; i++) out[names[i]] = arrays[i];
+          return out;
+        });
+    }
     // Current plot plan from buildPlotPlan(). Two shapes:
     //   { mode: 'analytical', ir }
     //   { mode: 'chain', chain, discrete }
@@ -921,29 +1042,29 @@ class FlatPPLPanel {
      *   { chain, discrete, analyticalIR? }   — plottable
      *   null                                 — not plottable
      */
-    function buildPlotPlan(binding, bindingsMap) {
-      if (!binding) return null;
-      var plan;
-      try {
-        plan = FlatPPLEngine.orchestrator.buildSampleChain(binding.name, bindingsMap);
-      } catch (_) { return null; }
-      if (!plan || !plan.chain || plan.chain.length === 0) return null;
+    function buildPlotPlan(binding /*, bindingsMap */) {
+      if (!binding || !derivationsState) return null;
+      var name = binding.name;
+      if (!derivationsState.derivations[name]) return null;
+      var discrete = !!derivationsState.discrete[name];
 
       // Variates never get a density overlay — see rule 1 above.
+      // For measures, the overlay is the analytical PDF/PMF when the
+      // resolved leaf has all-literal kwargs (closed-form marginal).
       var analyticalIR = null;
       if (binding.type !== 'draw') {
-        var leaf = plan.chain[plan.chain.length - 1];
-        if (leaf && leaf.kind === 'sample' && leaf.ir && leaf.ir.kind === 'call'
-            && leaf.ir.op && (!leaf.ir.args || leaf.ir.args.length === 0)) {
+        var leafIR = FlatPPLEngine.orchestrator.leafSampleIR(name, derivationsState.derivations);
+        if (leafIR && leafIR.kind === 'call' && leafIR.op
+            && (!leafIR.args || leafIR.args.length === 0)) {
           var allLit = true;
-          var kw = leaf.ir.kwargs || {};
+          var kw = leafIR.kwargs || {};
           for (var k in kw) {
             if (kw[k].kind !== 'lit') { allLit = false; break; }
           }
-          if (allLit) analyticalIR = leaf.ir;
+          if (allLit) analyticalIR = leafIR;
         }
       }
-      return { chain: plan.chain, discrete: !!plan.discrete, analyticalIR: analyticalIR };
+      return { name: name, discrete: discrete, analyticalIR: analyticalIR };
     }
 
     // Plot panel visibility — separate from "is the current binding
@@ -1007,19 +1128,31 @@ class FlatPPLPanel {
         return;
       }
       showPlotMessage('Sampling…');
-      // Snapshot the plan reference so a focus change during the round-
-      // trip can be detected and the stale reply discarded.
       var planForCall = currentPlotPlan;
-      sendWorker({
-        type: 'samplesPlot',
-        chain: planForCall.chain,
-        count: CHAIN_SAMPLE_COUNT,
-        discrete: planForCall.discrete,
-        analyticalIR: planForCall.analyticalIR || undefined,
-        opts: { gridPoints: 256 },
-      })
+
+      // Cache hit avoids the worker entirely. We still defer through
+      // a microtask so the UI flush is uniform and the stale-reply
+      // guard pattern stays the same.
+      Promise.resolve()
+        .then(function() { return getSamples(planForCall.name); })
+        .then(function(samples) {
+          if (currentPlotPlan !== planForCall) return null;
+          // Histogram lives on the main thread now — no round-trip.
+          var hist = planForCall.discrete
+            ? FlatPPLEngine.histogram.integerHistogram(samples)
+            : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples);
+          // Only fetch analytical density when applicable. This is
+          // the only worker round-trip per plot for measure bindings,
+          // and it's skipped entirely for variates and chain-mode
+          // (stochastic-parent) measures.
+          if (planForCall.analyticalIR) {
+            return sendWorker({ type: 'density', ir: planForCall.analyticalIR, opts: { gridPoints: 256 } })
+              .then(function(densReply) { return { samples: samples, histogram: hist, density: densReply }; });
+          }
+          return { samples: samples, histogram: hist, density: null };
+        })
         .then(function(reply) {
-          if (currentPlotPlan !== planForCall) return;
+          if (!reply || currentPlotPlan !== planForCall) return;
           renderSamplesAndDensity(reply, planForCall);
         })
         .catch(function(err) {
@@ -1157,7 +1290,10 @@ class FlatPPLPanel {
       var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
 
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
-      var subtitle = (dens && dens.method === 'analytical')
+      // Density (when shown) is always analytical now — KDE was tried
+      // but dropped because of boundary smearing. So a non-null dens
+      // implies the exact PDF/PMF.
+      var subtitle = dens
         ? 'samples (' + CHAIN_SAMPLE_COUNT + ') + analytical ' + (discrete ? 'pmf' : 'pdf')
         : 'samples (' + CHAIN_SAMPLE_COUNT + ')';
 
@@ -1545,6 +1681,11 @@ class FlatPPLPanel {
         try {
           var result = FlatPPLEngine.processSource(msg.source);
           currentBindings = result.bindings;
+          // Source change → rebuild derivations and clear sample cache.
+          // The orchestrator's derivations key the cache, so any change
+          // (renamed bindings, edited dist params, new dependencies)
+          // requires a full reset.
+          rebuildDerivations();
         } catch (e) {
           // Parse error: keep the previous bindings so the visualizer
           // stays usable while the user fixes their syntax. Errors flow
