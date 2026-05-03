@@ -898,13 +898,24 @@ class FlatPPLPanel {
     }
 
     /**
-     * Build a plot plan for a binding. The orchestrator does the heavy
-     * lifting — it decides whether the binding is sample-able and
-     * returns a topo-ordered chain. Here we additionally inspect the
-     * leaf step's IR to flag whether an analytical PDF/pmf is available
-     * (i.e. all kwargs are literals after alias resolution); if so the
-     * worker can compute the exact density curve, otherwise it'll fall
-     * back to KDE on the samples.
+     * Build a plot plan for a binding. The orchestrator decides
+     * sample-ability and returns a topo-ordered chain. Here we
+     * additionally decide whether the analytical PDF/pmf curve should
+     * accompany the histogram.
+     *
+     * Two semantic rules govern the density overlay:
+     *   1. A density belongs to a *measure*, not to a variate. A
+     *      stochastic binding like 'theta1 = draw(theta1_dist)' is a
+     *      single drawn value — its samples have an empirical
+     *      distribution, but the density itself is a property of the
+     *      law theta1_dist. So variates (binding.type === 'draw')
+     *      get samples-only; their underlying measure is where the
+     *      density curve lives.
+     *   2. A measure binding shows the analytical density only when
+     *      the leaf, after alias resolution, has all-literal kwargs.
+     *      A measure with stochastic parents has no closed-form
+     *      marginal density; we'd need numerical marginalisation,
+     *      which is more honest as a histogram.
      *
      * Returns:
      *   { chain, discrete, analyticalIR? }   — plottable
@@ -918,20 +929,19 @@ class FlatPPLPanel {
       } catch (_) { return null; }
       if (!plan || !plan.chain || plan.chain.length === 0) return null;
 
-      // The leaf (target's) step's IR is what density() should compute
-      // analytically, IF its kwargs are all literals. Refs in kwargs
-      // mean the leaf depends on stochastic upstreams whose values
-      // change per draw — there's no closed-form marginal then.
-      var leaf = plan.chain[plan.chain.length - 1];
+      // Variates never get a density overlay — see rule 1 above.
       var analyticalIR = null;
-      if (leaf && leaf.kind === 'sample' && leaf.ir && leaf.ir.kind === 'call'
-          && leaf.ir.op && (!leaf.ir.args || leaf.ir.args.length === 0)) {
-        var allLit = true;
-        var kw = leaf.ir.kwargs || {};
-        for (var k in kw) {
-          if (kw[k].kind !== 'lit') { allLit = false; break; }
+      if (binding.type !== 'draw') {
+        var leaf = plan.chain[plan.chain.length - 1];
+        if (leaf && leaf.kind === 'sample' && leaf.ir && leaf.ir.kind === 'call'
+            && leaf.ir.op && (!leaf.ir.args || leaf.ir.args.length === 0)) {
+          var allLit = true;
+          var kw = leaf.ir.kwargs || {};
+          for (var k in kw) {
+            if (kw[k].kind !== 'lit') { allLit = false; break; }
+          }
+          if (allLit) analyticalIR = leaf.ir;
         }
-        if (allLit) analyticalIR = leaf.ir;
       }
       return { chain: plan.chain, discrete: !!plan.discrete, analyticalIR: analyticalIR };
     }
