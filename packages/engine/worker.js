@@ -94,6 +94,35 @@ function createWorkerHandler(opts = {}) {
           const value = samplerLib.evaluateExpr(msg.ir, callEnv);
           return { type: 'value', id, value };
         }
+        case 'sampleChain': {
+          // Ancestral sampling: walk an orchestrator-built chain N times,
+          // threading a per-draw env through each step, and emit the
+          // last step's value into the output array. The orchestrator
+          // is responsible for placing steps in topological order so
+          // every `ref` resolves against an earlier step's name (or the
+          // shared callEnv).
+          const callEnv = msg.env ? { ...msg.env, ...env } : { ...env };
+          const count = msg.count | 0;
+          if (count <= 0) throw new Error(`sampleChain.count must be positive integer (got ${msg.count})`);
+          const out = runChain(msg.chain, count, callEnv);
+          return { type: 'samples', id, samples: out };
+        }
+        case 'densityFromChain': {
+          // Run the chain to draw N samples, then estimate the marginal
+          // density of the leaf binding from those samples. KDE for
+          // continuous (`discrete: false`), integer histogram for
+          // discrete (`discrete: true`). The reply mirrors the analytical
+          // `density` shape so the UI can render either uniformly.
+          const callEnv = msg.env ? { ...msg.env, ...env } : { ...env };
+          const count = msg.count | 0;
+          if (count <= 0) throw new Error(`densityFromChain.count must be positive integer (got ${msg.count})`);
+          const samples = runChain(msg.chain, count, callEnv);
+          const opts = msg.opts || {};
+          const d = msg.discrete
+            ? histogramDensity(samples, opts)
+            : kdeDensity(samples, opts);
+          return { type: 'density', id, ...d, method: msg.discrete ? 'histogram' : 'kde' };
+        }
         case 'dispose': {
           // Caller (entry shim) is expected to close the worker after this.
           philox = null;
@@ -119,7 +148,156 @@ function createWorkerHandler(opts = {}) {
     return { philox, env };
   }
 
+  /**
+   * Walk the chain `count` times, drawing or evaluating per step,
+   * threading per-draw env through. Returns Float64Array(count) of
+   * the last step's value per draw. Updates the closed-over `philox`
+   * state so subsequent worker requests see the advanced RNG.
+   */
+  function runChain(chain, count, baseEnv) {
+    if (!Array.isArray(chain) || chain.length === 0) {
+      throw new Error('sampleChain.chain must be a non-empty array');
+    }
+    const out = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      // Per-draw env: shallow-copy of base so each draw is independent.
+      // Earlier-step names get bound here as we walk; later steps can
+      // reference them via `ref` IRs in their own subexpressions.
+      const drawEnv = { ...baseEnv };
+      let lastValue = NaN;
+      for (let j = 0; j < chain.length; j++) {
+        const step = chain[j];
+        if (step.kind === 'sample') {
+          const [v, next] = samplerLib.rand(philox, step.ir, drawEnv);
+          philox = next;
+          drawEnv[step.name] = v;
+          lastValue = v;
+        } else if (step.kind === 'evaluate') {
+          const v = samplerLib.evaluateExpr(step.ir, drawEnv);
+          drawEnv[step.name] = v;
+          lastValue = v;
+        } else {
+          throw new Error(`sampleChain: unknown step kind '${step.kind}'`);
+        }
+      }
+      out[i] = lastValue;
+    }
+    return out;
+  }
+
   return { handle, _inspect };
+}
+
+// =====================================================================
+// Density estimation — used by `densityFromChain` to turn a sample
+// array into a smooth curve for plotting. Pure-numeric, no stdlib.
+// Lives at module scope so it can be unit-tested independently of the
+// handler closure.
+// =====================================================================
+
+/**
+ * Gaussian kernel density estimate on a uniform grid. Bandwidth is
+ * chosen by Silverman's rule of thumb (h = 1.06 σ n^(-1/5)) by default,
+ * which is reasonable for unimodal continuous distributions and at
+ * worst slightly oversmooths for heavier-tailed shapes. Tests don't
+ * lock in the exact KDE values, only that the curve is non-negative,
+ * normalised, and concentrates around the true mode.
+ *
+ * Grid extends a few bandwidths past the sample [min, max] so the
+ * tails decay smoothly to (near-)zero before the axis ends.
+ *
+ * @param {Float64Array|number[]} samples
+ * @param {object} [opts]
+ * @param {number} [opts.gridPoints=200]
+ * @param {number} [opts.bandwidth]   override Silverman's choice
+ * @returns {{ xs: Float64Array, ys: Float64Array, support: [number, number], reference: 'lebesgue' }}
+ */
+function kdeDensity(samples, opts = {}) {
+  const n = samples.length;
+  if (n === 0) {
+    // Edge case: no samples → empty plot. Caller usually has count > 0
+    // but this keeps us from crashing on degenerate input.
+    return { xs: new Float64Array(0), ys: new Float64Array(0), support: [0, 0], reference: 'lebesgue' };
+  }
+  const { mean, sd } = meanSd(samples);
+  let h = opts.bandwidth;
+  if (!(h > 0)) {
+    // Silverman: 1.06 σ n^(-1/5). Falls back to a small floor if all
+    // samples coincide (sd=0) so the kernel is finite-width.
+    h = sd > 0 ? 1.06 * sd * Math.pow(n, -0.2) : 1.0;
+  }
+  let lo = +Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = samples[i];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  // Pad the grid by 3h on each side so kernel tails decay before the axis.
+  const padLo = lo - 3 * h;
+  const padHi = hi + 3 * h;
+  const points = opts.gridPoints | 0 || 200;
+  const xs = new Float64Array(points);
+  const ys = new Float64Array(points);
+  const norm = 1 / (n * h * Math.sqrt(2 * Math.PI));
+  for (let i = 0; i < points; i++) {
+    const x = padLo + (padHi - padLo) * i / (points - 1);
+    xs[i] = x;
+    let acc = 0;
+    for (let j = 0; j < n; j++) {
+      const z = (x - samples[j]) / h;
+      acc += Math.exp(-0.5 * z * z);
+    }
+    ys[i] = acc * norm;
+  }
+  return { xs, ys, support: [padLo, padHi], reference: 'lebesgue' };
+}
+
+/**
+ * Probability mass function via integer-bin histogram. Bins are unit
+ * width centred on each integer atom from min(samples) to max(samples).
+ * Result is normalised to sum to 1 over the support, so it can be
+ * plotted alongside analytical pmfs without further scaling.
+ *
+ * @param {Float64Array|number[]} samples
+ * @param {object} [opts]
+ * @returns {{ xs: Float64Array, ys: Float64Array, support: [number, number], reference: 'counting' }}
+ */
+function histogramDensity(samples, opts = {}) {
+  const n = samples.length;
+  if (n === 0) {
+    return { xs: new Float64Array(0), ys: new Float64Array(0), support: [0, 0], reference: 'counting' };
+  }
+  let lo = +Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = Math.round(samples[i]);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  const span = hi - lo + 1;
+  const xs = new Float64Array(span);
+  const ys = new Float64Array(span);
+  for (let i = 0; i < span; i++) xs[i] = lo + i;
+  for (let i = 0; i < n; i++) {
+    const k = Math.round(samples[i]) - lo;
+    ys[k] += 1;
+  }
+  for (let i = 0; i < span; i++) ys[i] /= n;
+  return { xs, ys, support: [lo, hi], reference: 'counting' };
+}
+
+function meanSd(samples) {
+  const n = samples.length;
+  let s = 0;
+  for (let i = 0; i < n; i++) s += samples[i];
+  const mean = s / n;
+  let v = 0;
+  for (let i = 0; i < n; i++) {
+    const d = samples[i] - mean;
+    v += d * d;
+  }
+  // Use n (population) rather than n-1 (sample). Bandwidth selection
+  // is a heuristic, the bias correction wouldn't move the answer.
+  return { mean, sd: Math.sqrt(v / n) };
 }
 
 // Helper: collect the transferable buffers in a reply. The browser shim
@@ -142,4 +320,7 @@ function transferablesOf(reply) {
 module.exports = {
   createWorkerHandler,
   transferablesOf,
+  // Exported for unit-testing the density estimators in isolation
+  // (tests/worker.test.js). Not part of the worker protocol surface.
+  _internal: { kdeDensity, histogramDensity, meanSd },
 };

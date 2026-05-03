@@ -748,9 +748,18 @@ class FlatPPLPanel {
     var samplerReqId = 0;
     var pendingRequests = new Map(); // id → { resolve, reject }
     var plotEchart = null;
-    var currentPlotIR = null;          // last IR sent to the worker, used to
-                                       // skip re-renders on no-op focus changes
-    var currentPlotBindingName = null; // binding name the IR came from
+    // Current plot plan from buildPlotPlan(). Two shapes:
+    //   { mode: 'analytical', ir }
+    //   { mode: 'chain', chain, discrete }
+    // Used both as the "is plot tab enabled?" flag and as the render
+    // input. `currentPlotBindingName` tracks which binding produced it
+    // (for the chart title and stale-reply guards).
+    var currentPlotPlan = null;
+    var currentPlotBindingName = null;
+    // Sample budget for chain-based plots. Higher → smoother KDE / more
+    // accurate histograms, but quadratic in KDE cost (O(n*gridPoints)).
+    // Tuned for sub-100ms response on a single Normal chain.
+    var CHAIN_SAMPLE_COUNT = 5000;
 
     function ensureSamplerWorker() {
       if (samplerWorker) return samplerWorker;
@@ -797,55 +806,65 @@ class FlatPPLPanel {
     }
 
     /**
-     * Inspect a binding's AST and return the inner-distribution IR if the
-     * binding is a 'draw' of a known distribution with all-literal
-     * parameters — i.e. something the worker can 'density' directly.
-     * Returns null otherwise (signalling "Plot tab disabled").
+     * Decide *how* to plot a binding and return a plan the renderer can
+     * dispatch on. Three outcomes:
      *
-     * Why so restrictive? The worker's 'density' walks one distribution
-     * call. Refs in kwargs would need an env populated by upstream
-     * sampling, and we don't have a dependency-walking orchestrator yet
-     * (that's the next iteration). Literal-only is a clean MVP that
-     * already covers most prior distributions in the example file.
+     *   { mode: 'analytical', ir }  — exact PDF/pmf from stdlib via the
+     *     worker's `density` message. Used when the binding is a 'draw'
+     *     of a registered distribution with all-literal kwargs (so the
+     *     worker doesn't need any upstream env).
+     *   { mode: 'chain', chain, discrete }  — sample-based density via
+     *     `densityFromChain`. Used when the binding (or one of its
+     *     dependencies) is stochastic; the orchestrator topologically
+     *     orders the steps.
+     *   null  — not plottable; Plot tab gets disabled.
+     *
+     * Analytical wins when both are applicable: it's exact and free of
+     * KDE bandwidth artifacts. Chains are the fallback for everything
+     * the orchestrator marks as supported but the analytical path
+     * doesn't.
      */
-    function getPlottableIR(binding) {
+    function buildPlotPlan(binding, bindingsMap) {
       if (!binding || !binding.node || !binding.node.value) return null;
+
+      // Path 1: try analytical. Lower the (inner) distribution call and
+      // require all-literal kwargs.
       var v = binding.node.value;
-      if (!v.callee || v.callee.type !== 'Identifier') return null;
-      // Accept either draw(Dist(...)) or a bare distribution call (rare,
-      // but harmless if a user writes one as a binding RHS).
-      var inner = v;
-      if (v.callee.name === 'draw') {
-        if (!v.args || v.args.length !== 1) return null;
-        inner = v.args[0];
+      if (v.callee && v.callee.type === 'Identifier') {
+        var inner = v;
+        if (v.callee.name === 'draw') {
+          if (v.args && v.args.length === 1) inner = v.args[0];
+          else inner = null;
+        }
+        if (inner && inner.type === 'CallExpr' && inner.callee
+            && inner.callee.type === 'Identifier') {
+          var ir = null;
+          try { ir = FlatPPLEngine.lower.lowerExpr(inner); }
+          catch (_) { ir = null; }
+          if (ir && ir.kind === 'call' && ir.op
+              && (!ir.args || ir.args.length === 0)) {
+            var allLit = true;
+            var kw = ir.kwargs || {};
+            for (var k in kw) {
+              if (kw[k].kind !== 'lit') { allLit = false; break; }
+            }
+            if (allLit) return { mode: 'analytical', ir: ir };
+          }
+        }
       }
-      if (!inner || inner.type !== 'CallExpr' || !inner.callee
-          || inner.callee.type !== 'Identifier') return null;
-      // We don't have a list of "known distributions" exported on the
-      // main-thread side (it lives in sampler.js, worker-only). Fall
-      // back to: lower the AST, send to worker, let the worker error
-      // the request if the dist isn't registered. A conservative pre-
-      // check would import builtins.DISTRIBUTIONS from the engine but
-      // that list includes distributions the worker's stdlib registry
-      // doesn't yet implement (Logistic, MvNormal, etc.) — leaving the
-      // worker as the source of truth keeps the tab truthful.
-      var ir;
+
+      // Path 2: chain-based. Ask the orchestrator if it can sample the
+      // target. Returns unsupported for reified scopes, modules,
+      // unsupported distributions, etc. — in which case we end up with
+      // the Plot tab disabled.
       try {
-        ir = FlatPPLEngine.lower.lowerExpr(inner);
-      } catch (e) {
-        return null;
-      }
-      if (!ir || ir.kind !== 'call' || !ir.op) return null;
-      // Reject any non-literal kwargs — those need upstream values we
-      // can't compute yet (see comment above).
-      var kw = ir.kwargs || {};
-      for (var k in kw) {
-        if (kw[k].kind !== 'lit') return null;
-      }
-      // Reject positional args of any kind — the registered distributions
-      // all use kwargs, so positional means "not the simple shape".
-      if (ir.args && ir.args.length) return null;
-      return ir;
+        var plan = FlatPPLEngine.orchestrator.buildSampleChain(binding.name, bindingsMap);
+        if (plan && plan.chain && plan.chain.length > 0) {
+          return { mode: 'chain', chain: plan.chain, discrete: !!plan.discrete };
+        }
+      } catch (_) { /* fall through */ }
+
+      return null;
     }
 
     function setTabState(plottable) {
@@ -877,7 +896,7 @@ class FlatPPLPanel {
       document.getElementById('plot-panel').classList.toggle('active', !graphActive);
       if (!graphActive) {
         // Plot tab activated — render if we have a current IR pending.
-        if (currentPlotIR) renderPlotForCurrent();
+        if (currentPlotPlan) renderPlotForCurrent();
         // echarts must be told to resize after becoming visible (it
         // measured 0×0 while hidden).
         if (plotEchart) plotEchart.resize();
@@ -895,26 +914,41 @@ class FlatPPLPanel {
     }
 
     function renderPlotForCurrent() {
-      if (!currentPlotIR) {
+      if (!currentPlotPlan) {
         showPlotMessage('No distribution to plot.');
         return;
       }
       showPlotMessage('Computing density…');
-      var irForCall = currentPlotIR;
-      sendWorker({ type: 'density', ir: irForCall, opts: { gridPoints: 256 } })
+      // Snapshot the plan reference so a focus change during the round-
+      // trip can be detected and the stale reply discarded.
+      var planForCall = currentPlotPlan;
+      var request;
+      if (planForCall.mode === 'analytical') {
+        request = sendWorker({ type: 'density', ir: planForCall.ir, opts: { gridPoints: 256 } });
+      } else if (planForCall.mode === 'chain') {
+        request = sendWorker({
+          type: 'densityFromChain',
+          chain: planForCall.chain,
+          count: CHAIN_SAMPLE_COUNT,
+          discrete: planForCall.discrete,
+          opts: { gridPoints: 256 },
+        });
+      } else {
+        showPlotMessage('No distribution to plot.');
+        return;
+      }
+      request
         .then(function(reply) {
-          // Stale-reply guard: if the user changed focus before this
-          // density returned, drop the result.
-          if (currentPlotIR !== irForCall) return;
-          renderDensity(reply);
+          if (currentPlotPlan !== planForCall) return;
+          renderDensity(reply, planForCall);
         })
         .catch(function(err) {
-          if (currentPlotIR !== irForCall) return;
+          if (currentPlotPlan !== planForCall) return;
           showPlotMessage('Could not compute density: ' + esc(err.message || String(err)));
         });
     }
 
-    function renderDensity(d) {
+    function renderDensity(d, plan) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';
@@ -930,6 +964,17 @@ class FlatPPLPanel {
       // integer atoms; continuous (Lebesgue) plot as a filled area curve.
       var discrete = d.reference === 'counting';
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
+      // Density-source tag: analytical paths show "(pdf)" / "(pmf)";
+      // sampled paths show the estimator method ("kde" / "histogram")
+      // plus the sample count, so the user can tell at a glance whether
+      // they're looking at an exact curve or a Monte-Carlo estimate.
+      var methodLabel;
+      if (plan && plan.mode === 'chain') {
+        var m = d.method || (discrete ? 'histogram' : 'kde');
+        methodLabel = m + ' from ' + CHAIN_SAMPLE_COUNT + ' samples';
+      } else {
+        methodLabel = discrete ? 'pmf' : 'pdf';
+      }
       var seriesColor = TYPE_STYLE.draw.color;
 
       plotEchart = echarts.init(el);
@@ -955,7 +1000,7 @@ class FlatPPLPanel {
         animation: false,
         grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
         title: {
-          text: distLabel + ' — ' + (discrete ? 'pmf' : 'pdf'),
+          text: distLabel + ' — ' + methodLabel,
           left: 'center', top: 4,
           textStyle: { color: fg, fontSize: 12, fontWeight: 'normal', opacity: 0.8 },
         },
@@ -987,10 +1032,10 @@ class FlatPPLPanel {
     // state and (if visible) re-render its content.
     function updatePlotForBinding(bindingName) {
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
-      var ir = getPlottableIR(binding);
-      currentPlotIR = ir;
+      var plan = buildPlotPlan(binding, currentBindings);
+      currentPlotPlan = plan;
       currentPlotBindingName = bindingName;
-      setTabState(!!ir);
+      setTabState(!!plan);
       var plotActive = document.getElementById('plot-panel').classList.contains('active');
       if (plotActive) renderPlotForCurrent();
     }

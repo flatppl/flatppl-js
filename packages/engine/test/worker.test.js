@@ -21,7 +21,7 @@ const assert = require('node:assert/strict');
 const { Worker } = require('node:worker_threads');
 const { join } = require('node:path');
 
-const { createWorkerHandler, transferablesOf } = require('../worker');
+const { createWorkerHandler, transferablesOf, _internal: workerInternal } = require('../worker');
 
 function synthLoc() {
   return { start: { line: -1, col: -1 }, end: { line: -1, col: -1 }, synthetic: true };
@@ -325,6 +325,204 @@ test('entry shim: full round-trip via worker_threads (init, sample, density, dis
     await worker.terminate().catch(() => {});
   }
 });
+
+// =====================================================================
+// sampleChain / densityFromChain — orchestrator-friendly bulk sampling.
+// =====================================================================
+
+function refIRSelf(name) {
+  // 'ref' from the ns the worker's evaluator/sampler uses for binding
+  // lookups. The orchestrator builds these the same way via lower.js.
+  return { kind: 'ref', ns: 'self', name, loc: synthLoc() };
+}
+
+test('sampleChain: single sample step (no deps) returns Float64Array', () => {
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const r = w.handle({
+    type: 'sampleChain',
+    chain: [{ name: 'y', kind: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }) }],
+    count: 100,
+  });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.samples.length, 100);
+  let mean = 0;
+  for (let i = 0; i < r.samples.length; i++) mean += r.samples[i];
+  mean /= r.samples.length;
+  assert.ok(Math.abs(mean) < 0.3, `mean ${mean} not near 0`);
+});
+
+test('sampleChain: ancestral sampling threads per-draw env', () => {
+  // mu ~ Normal(0, 0.001) — practically a Dirac at 0.
+  // y  ~ Normal(mu + 100, 0.001) — should pile up around 100.
+  // If ancestral sampling didn't thread mu, y would not see mu's draw
+  // and the worker would error on the unbound ref.
+  const chain = [
+    { name: 'mu', kind: 'sample',
+      ir: { kind: 'call', op: 'Normal',
+            kwargs: { mu: { kind: 'lit', value: 0, loc: synthLoc() },
+                      sigma: { kind: 'lit', value: 0.001, loc: synthLoc() } },
+            loc: synthLoc() } },
+    { name: 'shifted', kind: 'evaluate',
+      ir: { kind: 'call', op: 'add',
+            args: [refIRSelf('mu'), { kind: 'lit', value: 100, loc: synthLoc() }],
+            loc: synthLoc() } },
+    { name: 'y', kind: 'sample',
+      ir: { kind: 'call', op: 'Normal',
+            kwargs: { mu: refIRSelf('shifted'),
+                      sigma: { kind: 'lit', value: 0.001, loc: synthLoc() } },
+            loc: synthLoc() } },
+  ];
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 2 });
+  const r = w.handle({ type: 'sampleChain', chain, count: 200 });
+  assert.equal(r.type, 'samples');
+  let mean = 0;
+  for (let i = 0; i < r.samples.length; i++) mean += r.samples[i];
+  mean /= r.samples.length;
+  assert.ok(Math.abs(mean - 100) < 0.05, `mean ${mean} not near 100`);
+});
+
+test('sampleChain: reproducible across handlers with same seed', () => {
+  const chain = [
+    { name: 'a', kind: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }) },
+    { name: 'b', kind: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }) },
+  ];
+  const a = createWorkerHandler();
+  const b = createWorkerHandler();
+  a.handle({ type: 'init', seed: 99 });
+  b.handle({ type: 'init', seed: 99 });
+  const ra = a.handle({ type: 'sampleChain', chain, count: 50 });
+  const rb = b.handle({ type: 'sampleChain', chain, count: 50 });
+  for (let i = 0; i < 50; i++) assert.equal(ra.samples[i], rb.samples[i]);
+});
+
+test('sampleChain: empty chain → error', () => {
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const r = w.handle({ type: 'sampleChain', chain: [], count: 10 });
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /non-empty array/);
+});
+
+test('sampleChain: zero count → error', () => {
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const r = w.handle({
+    type: 'sampleChain',
+    chain: [{ name: 'y', kind: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }) }],
+    count: 0,
+  });
+  assert.equal(r.type, 'error');
+});
+
+test('sampleChain: unknown step kind → error', () => {
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const r = w.handle({
+    type: 'sampleChain',
+    chain: [{ name: 'y', kind: 'wat', ir: distIR('Normal', { mu: 0, sigma: 1 }) }],
+    count: 1,
+  });
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /unknown step kind/);
+});
+
+test('densityFromChain: continuous → KDE method, lebesgue ref, mode near mean', () => {
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const chain = [{ name: 'y', kind: 'sample', ir: distIR('Normal', { mu: 5, sigma: 1 }) }];
+  const r = w.handle({ type: 'densityFromChain', chain, count: 2000, discrete: false, opts: { gridPoints: 100 } });
+  assert.equal(r.type, 'density');
+  assert.equal(r.method, 'kde');
+  assert.equal(r.reference, 'lebesgue');
+  // Find the argmax of ys; it should sit near x=5.
+  let imax = 0;
+  for (let i = 1; i < r.ys.length; i++) if (r.ys[i] > r.ys[imax]) imax = i;
+  assert.ok(Math.abs(r.xs[imax] - 5) < 0.5, `KDE mode at x=${r.xs[imax]} not near 5`);
+});
+
+test('densityFromChain: discrete → histogram method, counting ref, integer atoms', () => {
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 7 });
+  const chain = [{ name: 'k', kind: 'sample', ir: distIR('Poisson', { rate: 4 }) }];
+  const r = w.handle({ type: 'densityFromChain', chain, count: 2000, discrete: true });
+  assert.equal(r.method, 'histogram');
+  assert.equal(r.reference, 'counting');
+  // All x values are integers.
+  for (let i = 0; i < r.xs.length; i++) {
+    assert.ok(Number.isInteger(r.xs[i]));
+  }
+  // Probabilities sum to (~) 1.
+  let total = 0;
+  for (let i = 0; i < r.ys.length; i++) total += r.ys[i];
+  assert.ok(Math.abs(total - 1) < 1e-9, `histogram sum ${total} ≠ 1`);
+  // Mode should be near the Poisson mode (floor(rate) = 4).
+  let imax = 0;
+  for (let i = 1; i < r.ys.length; i++) if (r.ys[i] > r.ys[imax]) imax = i;
+  assert.ok(Math.abs(r.xs[imax] - 4) <= 1, `mode at x=${r.xs[imax]} far from 4`);
+});
+
+// ---------------------------------------------------------------------
+// Density-estimator unit tests (decoupled from the handler closure).
+// ---------------------------------------------------------------------
+
+test('kdeDensity: degenerate (no samples) returns empty', () => {
+  const r = workerInternal.kdeDensity(new Float64Array(0));
+  assert.equal(r.xs.length, 0);
+  assert.equal(r.ys.length, 0);
+  assert.equal(r.reference, 'lebesgue');
+});
+
+test('kdeDensity: all-equal samples → finite curve (no NaN)', () => {
+  // sd=0 fallback path. Bandwidth shouldn't go to zero.
+  const samples = new Float64Array([3, 3, 3, 3, 3]);
+  const r = workerInternal.kdeDensity(samples);
+  assert.equal(r.xs.length, 200);
+  for (let i = 0; i < r.ys.length; i++) {
+    assert.ok(Number.isFinite(r.ys[i]), `ys[${i}] not finite`);
+    assert.ok(r.ys[i] >= 0, `ys[${i}] < 0`);
+  }
+});
+
+test('kdeDensity: bandwidth override scales smoothness', () => {
+  const xs = new Float64Array(100);
+  for (let i = 0; i < 100; i++) xs[i] = Math.sin(i);
+  const tight = workerInternal.kdeDensity(xs, { bandwidth: 0.05, gridPoints: 100 });
+  const wide  = workerInternal.kdeDensity(xs, { bandwidth: 1.0,  gridPoints: 100 });
+  // Wider bandwidth → flatter peaks. Compare max-y vs min-y span.
+  function spread(d) {
+    let lo = +Infinity, hi = -Infinity;
+    for (let i = 0; i < d.ys.length; i++) {
+      if (d.ys[i] < lo) lo = d.ys[i];
+      if (d.ys[i] > hi) hi = d.ys[i];
+    }
+    return hi - lo;
+  }
+  assert.ok(spread(tight) > spread(wide));
+});
+
+test('histogramDensity: probabilities sum to 1, atoms are integers', () => {
+  const r = workerInternal.histogramDensity(new Float64Array([0, 1, 1, 2, 2, 2, 3]));
+  let s = 0;
+  for (let i = 0; i < r.ys.length; i++) s += r.ys[i];
+  assert.ok(Math.abs(s - 1) < 1e-12);
+  for (let i = 0; i < r.xs.length; i++) assert.ok(Number.isInteger(r.xs[i]));
+  assert.equal(r.support[0], 0);
+  assert.equal(r.support[1], 3);
+});
+
+test('meanSd: matches naive computation', () => {
+  const samples = [1, 2, 3, 4, 5];
+  const { mean, sd } = workerInternal.meanSd(samples);
+  assert.equal(mean, 3);
+  // Population sd of 1..5 is sqrt(2) ≈ 1.4142.
+  assert.ok(Math.abs(sd - Math.sqrt(2)) < 1e-12);
+});
+
+// =====================================================================
+// (continuing the entry-shim end-to-end tests from before)
+// =====================================================================
 
 test('entry shim: error replies survive postMessage', async () => {
   const entry = join(__dirname, '..', 'worker-entry.js');
