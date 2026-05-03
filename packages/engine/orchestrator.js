@@ -144,11 +144,17 @@ function buildSampleChain(targetName, bindings) {
       return;
     }
 
-    // Classify the step. Three shapes are supported today:
-    //   1. draw(<dist-call>)  → sample step on the inner dist IR
-    //   2. literal/numeric    → evaluate step (lit IR)
-    //   3. deterministic call → evaluate step (lowered RHS)
-    const stepKind = classifyForChain(binding, rhsIR);
+    // Classify the step. Four shapes are supported today:
+    //   1. draw(<dist-call>)        → sample step on the inner dist IR
+    //   2. draw(<ref-to-measure>)   → sample step using the resolved
+    //                                  underlying dist IR (alias chase)
+    //   3. literal/numeric          → evaluate step (lit IR)
+    //   4. deterministic arithmetic → evaluate step (lowered RHS)
+    // A fifth, "skip", covers measure-alias bindings (like
+    //   `m = Normal(...)`) that downstream draws inline. They produce
+    //   no chain step of their own; their deps are still walked so any
+    //   stochastic parents inside the alias body land in the chain.
+    const stepKind = classifyForChain(binding, rhsIR, bindings);
     if (!stepKind) {
       unsupported = {
         reason: `binding '${name}' (type=${binding.type}) is not chainable for sampling yet`,
@@ -158,9 +164,11 @@ function buildSampleChain(targetName, bindings) {
 
     if (stepKind.kind === 'sample') {
       order.push({ name, kind: 'sample', ir: stepKind.distIR });
-    } else {
+    } else if (stepKind.kind === 'evaluate') {
       order.push({ name, kind: 'evaluate', ir: rhsIR });
     }
+    // 'skip' contributes nothing to the chain — its deps were already
+    // walked above. This is the alias case.
 
     visiting.delete(name);
     visited.add(name);
@@ -182,20 +190,42 @@ function buildSampleChain(targetName, bindings) {
 
 /**
  * Decide how a single binding contributes to the chain.
- * Returns null if not chainable, otherwise:
- *   { kind: 'sample',   distIR }   — sample from `distIR` per draw
- *   { kind: 'evaluate' }            — call evaluateExpr on the lowered RHS
+ * Returns null if not chainable, otherwise one of:
+ *   { kind: 'sample',   distIR }  — sample from distIR per draw
+ *   { kind: 'evaluate' }          — call evaluateExpr on the lowered RHS
+ *   { kind: 'skip' }              — measure alias; deps walked, no
+ *                                    chain step produced for this name
  */
-function classifyForChain(binding, rhsIR) {
-  // Stochastic binding: `y = draw(<dist-call>)`. The lowered RHS is a
-  // `(call draw <args>)`; we want the args[0] (the dist-call IR) for
+function classifyForChain(binding, rhsIR, bindings) {
+  // Stochastic binding: `y = draw(...)`. The lowered RHS is a
+  // (call draw <args>); we want the args[0] (the dist-call IR) for
   // the sample step so the worker doesn't have to special-case 'draw'.
+  // `args[0]` may be either:
+  //   * a direct distribution call: draw(Normal(0, 1))
+  //   * a ref to a measure alias:   draw(theta1_dist)   where
+  //     theta1_dist = Normal(0, 1) lives one (or more) hops away.
+  // resolveMeasure handles both, chasing through alias chains until
+  // it bottoms out on a sampleable dist call.
   if (binding.type === 'draw') {
     if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'draw') return null;
     const inner = (rhsIR.args && rhsIR.args[0]) || null;
-    if (!inner || inner.kind !== 'call' || !inner.op) return null;
-    if (!SAMPLEABLE_DISTRIBUTIONS.has(inner.op)) return null;
-    return { kind: 'sample', distIR: inner };
+    if (!inner) return null;
+    const distIR = resolveMeasure(inner, bindings, new Set());
+    if (!distIR) return null;
+    return { kind: 'sample', distIR };
+  }
+
+  // Measure-alias binding: e.g. `theta1_dist = Normal(0, 1)`. The
+  // analyzer classifies this as type='call'. It's *not* itself a
+  // scalar — it constructs a measure that downstream draws sample
+  // from. We don't add it to the chain (no scalar value to thread)
+  // but we still want its deps walked, so the right answer is 'skip'.
+  // Detection: the lowered RHS is a (call <DistName> ...) with
+  // DistName in SAMPLEABLE_DISTRIBUTIONS. Anything else under
+  // type='call' falls through to the deterministic-arithmetic path.
+  if (binding.type === 'call' && rhsIR && rhsIR.kind === 'call' && rhsIR.op
+      && SAMPLEABLE_DISTRIBUTIONS.has(rhsIR.op)) {
+    return { kind: 'skip' };
   }
 
   // Deterministic literal binding: `pi_over_2 = pi / 2` etc. Either:
@@ -207,7 +237,7 @@ function classifyForChain(binding, rhsIR) {
     return null;
   }
 
-  // Inputs (`elementof`) are external boundary values — they MUST be
+  // Inputs (elementof) are external boundary values — they MUST be
   // supplied via the env passed alongside the chain. The chain itself
   // doesn't need a step for them.
   if (binding.type === 'input') {
@@ -216,6 +246,37 @@ function classifyForChain(binding, rhsIR) {
 
   // Reifications, modules, joints, likelihoods, bayesupdate, … all
   // unsupported in this iteration.
+  return null;
+}
+
+/**
+ * Resolve a measure-typed expression to a concrete distribution IR.
+ * Walks through `(ref self <name>)` aliases by looking up bindings
+ * and lowering their RHS, until we land on a `(call <Dist> ...)`
+ * whose op is sampleable. Returns the dist IR on success, null
+ * otherwise. The IR returned is fresh (lowered each call) so callers
+ * are free to embed it without worrying about aliasing.
+ *
+ * @param {object} ir   IR node — a `call` (potentially a dist call)
+ *                      or a `ref` we should chase
+ * @param {Map}    bindings  binding map for ref lookup
+ * @param {Set<string>} seen  cycle guard — names currently being chased
+ * @returns {object | null}
+ */
+function resolveMeasure(ir, bindings, seen) {
+  if (!ir) return null;
+  if (ir.kind === 'call' && ir.op && SAMPLEABLE_DISTRIBUTIONS.has(ir.op)) {
+    return ir;
+  }
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (seen.has(ir.name)) return null; // cycle in alias chain
+    seen.add(ir.name);
+    const b = bindings.get(ir.name);
+    if (!b || !b.node || !b.node.value) return null;
+    let bIR;
+    try { bIR = lowerExpr(b.node.value); } catch (_) { return null; }
+    return resolveMeasure(bIR, bindings, seen);
+  }
   return null;
 }
 
