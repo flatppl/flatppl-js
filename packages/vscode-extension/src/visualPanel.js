@@ -1301,7 +1301,11 @@ class FlatPPLPanel {
           textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
           subtextStyle: { color: fg, fontSize: 11, opacity: 0.7 },
         },
-        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        // No tooltip / axisPointer — the user doesn't need to read off
+        // exact values from a hover crosshair, and the moving lines
+        // are visually noisy. Re-enable here if a future plot view
+        // (e.g. trace diagnostics) actually needs precise readouts.
+        tooltip: { show: false },
         xAxis: {
           type: 'value',
           name: 'index', nameLocation: 'center', nameGap: 28,
@@ -1483,7 +1487,11 @@ class FlatPPLPanel {
           textStyle: { color: fg, fontSize: 11 },
           itemWidth: 14, itemHeight: 8,
         },
-        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        // No tooltip / axisPointer — the user doesn't need to read off
+        // exact values from a hover crosshair, and the moving lines
+        // are visually noisy. Re-enable here if a future plot view
+        // (e.g. trace diagnostics) actually needs precise readouts.
+        tooltip: { show: false },
         xAxis: {
           type: 'value',
           name: 'x', nameLocation: 'center', nameGap: 28,
