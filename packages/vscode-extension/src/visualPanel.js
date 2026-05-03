@@ -603,7 +603,12 @@ class FlatPPLPanel {
         });
       }
 
-      // Ctrl/Cmd+click: jump to source
+      // Ctrl/Cmd+click: jump to source.
+      // Plain click: select the node — info bar updates AND the plot
+      // panel re-targets to this binding. The plot follows the
+      // selection rather than the DAG's terminal target so users can
+      // explore the graph node-by-node and read each binding's
+      // distribution in place.
       cy.on('tap', 'node', function(evt) {
         var oe = evt.originalEvent;
         if (oe && (oe.ctrlKey || oe.metaKey)) {
@@ -613,7 +618,14 @@ class FlatPPLPanel {
           }
           return;
         }
-        showNodeInfo(evt.target.data());
+        var d = evt.target.data();
+        showNodeInfo(d);
+        // Synthetic nodes (placeholders, holes) carry IDs like
+        // "name:placeholder" — skip the plot update for those, no
+        // binding exists in the analyzer's map.
+        if (d.id && d.id.indexOf(':') === -1) {
+          updatePlotForBinding(d.id);
+        }
       });
 
       cy.on('tap', function(evt) {
