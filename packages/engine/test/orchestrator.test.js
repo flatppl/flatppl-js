@@ -43,6 +43,34 @@ test('chain: single draw of Normal with literal params', () => {
   assert.equal(r.discrete, false);
 });
 
+test('chain: measure-alias as target → single sample step on resolved IR', () => {
+  // theta1_dist is a measure construction (analyzer type='call'). When
+  // it's a transitive dep, classifyForChain marks it 'skip'; when it's
+  // the target the orchestrator must promote it to a sample step so
+  // there's a value to draw.
+  const r = chainOf('theta1_dist = Normal(mu = 0, sigma = 1)', 'theta1_dist');
+  assert.equal(r.unsupported, undefined);
+  assert.equal(r.chain.length, 1);
+  assert.equal(r.chain[0].name, 'theta1_dist');
+  assert.equal(r.chain[0].kind, 'sample');
+  assert.equal(r.chain[0].ir.op, 'Normal');
+});
+
+test('chain: draw of measure alias resolves through the alias', () => {
+  // Same model as bayesian_inference_3.flatppl. theta1's chain step's
+  // IR is the resolved Normal call (not a (ref self theta1_dist) IR).
+  const src = `
+theta1_dist = Normal(mu = 0, sigma = 1)
+theta1      = draw(theta1_dist)
+`;
+  const r = chainOf(src, 'theta1');
+  assert.equal(r.unsupported, undefined);
+  // theta1_dist is 'skip' (alias), so the chain has only theta1's step.
+  assert.equal(r.chain.length, 1);
+  assert.equal(r.chain[0].name, 'theta1');
+  assert.equal(r.chain[0].ir.op, 'Normal');
+});
+
 test('chain: discrete leaf is flagged', () => {
   const r = chainOf('k = draw(Poisson(rate = 3))', 'k');
   assert.equal(r.unsupported, undefined);
