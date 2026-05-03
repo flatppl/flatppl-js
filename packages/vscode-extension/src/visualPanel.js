@@ -809,7 +809,9 @@ class FlatPPLPanel {
     var derivationsState = null;       // { derivations, discrete } from orchestrator
     var sampleCache = new Map();       // Map<name, Float64Array>
     var rootSeed = 1;
-    var SAMPLE_COUNT = CHAIN_SAMPLE_COUNT;  // alias kept for the legacy constant
+    // Sample budget for chain-based plots. Higher → smoother histograms,
+    // marginal cost grows linearly. Tuned for sub-100ms response.
+    var SAMPLE_COUNT = 5000;
 
     function rebuildDerivations() {
       if (!currentBindings) { derivationsState = null; sampleCache = new Map(); return; }
@@ -913,10 +915,6 @@ class FlatPPLPanel {
     // (for the chart title and stale-reply guards).
     var currentPlotPlan = null;
     var currentPlotBindingName = null;
-    // Sample budget for chain-based plots. Higher → smoother KDE / more
-    // accurate histograms, but quadratic in KDE cost (O(n*gridPoints)).
-    // Tuned for sub-100ms response on a single Normal chain.
-    var CHAIN_SAMPLE_COUNT = 5000;
 
     /**
      * Asynchronously spawn the sampler worker, caching the result.
@@ -1294,8 +1292,8 @@ class FlatPPLPanel {
       // but dropped because of boundary smearing. So a non-null dens
       // implies the exact PDF/PMF.
       var subtitle = dens
-        ? 'samples (' + CHAIN_SAMPLE_COUNT + ') + analytical ' + (discrete ? 'pmf' : 'pdf')
-        : 'samples (' + CHAIN_SAMPLE_COUNT + ')';
+        ? 'samples (' + SAMPLE_COUNT + ') + analytical ' + (discrete ? 'pmf' : 'pdf')
+        : 'samples (' + SAMPLE_COUNT + ')';
 
       plotEchart = echarts.init(el);
       plotEchart.setOption({
