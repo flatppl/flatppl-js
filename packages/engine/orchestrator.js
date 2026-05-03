@@ -472,6 +472,27 @@ function classifyDerivation(binding, bindings) {
         && SAMPLEABLE_DISTRIBUTIONS.has(rhsIR.op)) {
       return { kind: 'sample', distIR: rhsIR };
     }
+    // Numeric array literal: lowered to (call vector lit lit ...).
+    // Treated as static data, not samples — the cache stores the
+    // values verbatim (length = array length, not SAMPLE_COUNT) and
+    // the plot panel renders an index/value step plot rather than a
+    // histogram. We accept only the simplest shape (every entry a
+    // numeric lit) to keep the typing trivial; deeper shapes (nested
+    // arrays, refs, computed entries) can be added later.
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'vector'
+        && Array.isArray(rhsIR.args) && rhsIR.args.length > 0) {
+      const values = [];
+      let allNumericLits = true;
+      for (const a of rhsIR.args) {
+        if (a && a.kind === 'lit' && typeof a.value === 'number') {
+          values.push(a.value);
+        } else {
+          allNumericLits = false;
+          break;
+        }
+      }
+      if (allNumericLits) return { kind: 'array', values };
+    }
     // Deterministic arithmetic on cached samples.
     if (isEvaluable(rhsIR)) {
       return { kind: 'evaluate', ir: rhsIR };
@@ -492,6 +513,8 @@ function derivationRefsValid(d, derivations, bindings) {
   if (d.kind === 'alias') {
     return Object.prototype.hasOwnProperty.call(derivations, d.from);
   }
+  // Static array literals carry no refs by construction.
+  if (d.kind === 'array') return true;
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
   const refs = collectSelfRefs(ir);
   for (const r of refs) {

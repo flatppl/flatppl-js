@@ -906,6 +906,14 @@ class FlatPPLPanel {
           sampleCache.set(name, reply.samples);
           return reply.samples;
         });
+      } else if (d.kind === 'array') {
+        // Static array literal — values verbatim, no sampling, no
+        // worker round-trip. Cached length equals the array length,
+        // NOT SAMPLE_COUNT; the plot path detects this via the
+        // derivation kind on the plan.
+        var arr = Float64Array.from(d.values);
+        sampleCache.set(name, arr);
+        promise = Promise.resolve(arr);
       } else {
         return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
       }
@@ -1060,8 +1068,18 @@ class FlatPPLPanel {
     function buildPlotPlan(binding /*, bindingsMap */) {
       if (!binding || !derivationsState) return null;
       var name = binding.name;
-      if (!derivationsState.derivations[name]) return null;
+      var d = derivationsState.derivations[name];
+      if (!d) return null;
       var discrete = !!derivationsState.discrete[name];
+
+      // Render mode dispatches the plot path:
+      //   'array'   — static fixed-length sequence, plotted as
+      //               index/value step line (legacy data preview).
+      //   'samples' — Monte-Carlo samples, plotted as histogram + an
+      //               optional analytical density overlay.
+      if (d.kind === 'array') {
+        return { name: name, mode: 'array' };
+      }
 
       // Variates never get a density overlay — see rule 1 above.
       // For measures, the overlay is the analytical PDF/PMF when the
@@ -1079,7 +1097,7 @@ class FlatPPLPanel {
           if (allLit) analyticalIR = leafIR;
         }
       }
-      return { name: name, discrete: discrete, analyticalIR: analyticalIR };
+      return { name: name, mode: 'samples', discrete: discrete, analyticalIR: analyticalIR };
     }
 
     // Plot panel visibility — separate from "is the current binding
@@ -1142,7 +1160,7 @@ class FlatPPLPanel {
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
         return;
       }
-      showPlotMessage('Sampling…');
+      showPlotMessage(currentPlotPlan.mode === 'array' ? 'Loading…' : 'Sampling…');
       var planForCall = currentPlotPlan;
 
       // Cache hit avoids the worker entirely. We still defer through
@@ -1152,6 +1170,12 @@ class FlatPPLPanel {
         .then(function() { return getSamples(planForCall.name); })
         .then(function(samples) {
           if (currentPlotPlan !== planForCall) return null;
+          // Array-mode: skip histogram + density entirely; the data
+          // is a fixed-length sequence to plot as index→value, not
+          // a sample of a distribution.
+          if (planForCall.mode === 'array') {
+            return { samples: samples, mode: 'array' };
+          }
           // Histogram lives on the main thread now — no round-trip.
           var hist = planForCall.discrete
             ? FlatPPLEngine.histogram.integerHistogram(samples)
@@ -1241,10 +1265,80 @@ class FlatPPLPanel {
       return String(parseFloat(v.toPrecision(12)));
     }
 
+    /**
+     * Render a fixed-length array as an index→value step plot. Used
+     * for literal-array bindings (observed_data = [1.2, 3.4, …]),
+     * which aren't samples of a distribution. The series is drawn as
+     * piecewise-constant horizontal segments — same shape as the
+     * legacy "data preview" view that used to swap into the graph
+     * pane, now living in the plot pane next to the DAG.
+     */
+    function renderArrayStepPlot(arr) {
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      var n = arr.length;
+      // Build piecewise-constant step data: each value v at index i
+      // contributes two points (i, v) and (i+1, v). echarts then
+      // draws segments connecting consecutive entries.
+      var stepData = new Array(n * 2);
+      for (var i = 0; i < n; i++) {
+        stepData[2 * i]     = [i, arr[i]];
+        stepData[2 * i + 1] = [i + 1, arr[i]];
+      }
+      var color = (TYPE_STYLE.literal && TYPE_STYLE.literal.color) || fg;
+      var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'array';
+
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      plotEchart = echarts.init(el);
+      plotEchart.setOption({
+        animation: false,
+        grid: { left: 60, right: 25, top: 50, bottom: 50, containLabel: false },
+        title: {
+          text: distLabel,
+          subtext: 'array (' + n + ' values)',
+          left: 'center', top: 2,
+          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+          subtextStyle: { color: fg, fontSize: 11, opacity: 0.7 },
+        },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        xAxis: {
+          type: 'value',
+          name: 'index', nameLocation: 'center', nameGap: 28,
+          min: 0, max: n,
+          minInterval: 1,
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { show: false },
+        },
+        yAxis: {
+          type: 'value',
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+        },
+        series: [{
+          type: 'line', data: stepData, symbol: 'none',
+          lineStyle: { color: color, width: 2 },
+        }],
+      });
+    }
+
     function renderSamplesAndDensity(reply, plan) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';
+
+      // Array-data short-circuit: render an index→value step plot.
+      // Skips the constant check below — a five-element array of all
+      // 1s is a legitimate data sequence, not a scalar to be displayed
+      // as text.
+      if (plan && plan.mode === 'array') {
+        renderArrayStepPlot(reply.samples);
+        return;
+      }
 
       // Constant-value short-circuit: dispose any stale echart and
       // render a simple "name = value" block. Doing this *before*
