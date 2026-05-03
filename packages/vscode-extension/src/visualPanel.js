@@ -210,6 +210,23 @@ class FlatPPLPanel {
     #plot-empty {
       opacity: 0.5; font-style: italic; padding: 20px; text-align: center;
     }
+    /* Constant-value display: shown when every sample is the same
+       value (literal binding, deterministic arithmetic of literals,
+       or a degenerate distribution). A histogram of identical values
+       is uninformative, so we render the value as readable text. */
+    #plot-content .scalar-display {
+      width: 100%; height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 6px;
+      font-family: var(--vscode-editor-font-family, monospace);
+    }
+    #plot-content .scalar-display .name {
+      font-size: 13px; opacity: 0.6;
+    }
+    #plot-content .scalar-display .value {
+      font-size: 36px; font-weight: 300;
+    }
     /* Graph internals fill graph-panel — switched from full-viewport
        sizing to 100% of the parent so the split-flex layout governs. */
     #cy { width: 100%; height: 100%; }
@@ -1194,10 +1211,55 @@ class FlatPPLPanel {
      * purple, a measure-alias 'call' node plots grey-blue, etc. Bars
      * sit at low alpha; the line/dots are opaque on top.
      */
+    /**
+     * True when every sample equals the first one. Catches:
+     *   - literal bindings (c = 5.0)
+     *   - derived constants (d = c + 1) — same value at every i
+     *   - aliases to constants
+     *   - degenerate distributions (e.g. Normal(0, 0))
+     * Plotting a histogram for these is just a single tall bar; render
+     * the scalar value as text instead. The check is O(n) but n=5000
+     * floats is sub-millisecond.
+     */
+    function samplesAreConstant(samples) {
+      if (!samples || samples.length === 0) return false;
+      var v = samples[0];
+      for (var i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
+      return true;
+    }
+
+    /**
+     * Format a fixed scalar for display. JavaScript's default String()
+     * gives "5" for 5.0 and full precision for things like 0.1+0.2;
+     * we strip trailing zeros via toPrecision(12) → parseFloat → String
+     * so 5.0 reads "5", 3.14159 stays "3.14159", and noisy
+     * float-arithmetic results like 0.30000000000000004 become "0.3".
+     */
+    function formatScalar(v) {
+      if (!Number.isFinite(v)) return String(v);
+      if (Number.isInteger(v)) return String(v);
+      return String(parseFloat(v.toPrecision(12)));
+    }
+
     function renderSamplesAndDensity(reply, plan) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';
+
+      // Constant-value short-circuit: dispose any stale echart and
+      // render a simple "name = value" block. Doing this *before*
+      // looking up colors / building series so we don't waste any
+      // setup work that the bars/density branches would do.
+      if (samplesAreConstant(reply.samples)) {
+        if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+        var name = currentPlotBindingName ? esc(currentPlotBindingName) : '';
+        el.innerHTML =
+          '<div class="scalar-display">'
+          + (name ? '<div class="name">' + name + '</div>' : '')
+          + '<div class="value">' + esc(formatScalar(reply.samples[0])) + '</div>'
+          + '</div>';
+        return;
+      }
 
       // Look up the binding's DAG-view color so the plot reads as
       // belonging to the same node the user is hovering on the graph.
