@@ -124,6 +124,119 @@ function renderExprShort(node, maxLen) {
  * @param {string} nodeName - the target node name
  * @returns {{ nodes: object[], edges: object[] }}
  */
+/**
+ * Walk a binding's RHS AST to classify each Identifier by whether it
+ * appears wrapped in `lawof(...)` or `draw(...)` (the two domain-
+ * lifting operators we surface as synthetic nodes), or used directly.
+ *
+ * Returns:
+ *   {
+ *     wrapped: Map<refName, 'lawof' | 'draw'>   — innermost wrapper per ref;
+ *                                                 first occurrence wins
+ *     direct:  Set<refName>                     — refs used outside any wrapper
+ *   }
+ *
+ * A ref can appear in both maps when the same name is used both
+ * directly and inside a wrapper (rare but possible). Refs only
+ * inside a wrapper get a synthetic node + edges through it; refs
+ * with any direct use additionally get a direct edge. Refs with
+ * neither — i.e. AST shapes the walker doesn't traverse — fall
+ * through to a direct edge in the caller (defensive default).
+ *
+ * Skip behaviour:
+ *   * If the binding's TOP-LEVEL RHS is itself `draw(...)` (with
+ *     binding.type === 'draw') or `lawof(...)` (with binding.type
+ *     === 'lawof'), the binding ALREADY represents that operator
+ *     and shouldn't redundantly synthesise it. We descend into the
+ *     args of the top-level wrapper as if we were starting fresh.
+ *   * Reification scopes (functionof / kernelof / fn bodies) belong
+ *     to a different namespace; we don't recurse into them.
+ */
+function collectWrappedRefs(binding) {
+  const wrapped = new Map();
+  const direct = new Set();
+  if (!binding || !binding.node || !binding.node.value) {
+    return { wrapped, direct };
+  }
+  const root = binding.node.value;
+  // If the binding IS a draw / lawof, descend past the top-level
+  // operator before classifying.
+  let entryNodes = [root];
+  if (root.type === 'CallExpr' && root.callee && root.callee.type === 'Identifier'
+      && Array.isArray(root.args)) {
+    const op = root.callee.name;
+    if ((op === 'draw' && binding.type === 'draw')
+        || (op === 'lawof' && binding.type === 'lawof')) {
+      entryNodes = root.args;
+    }
+  }
+  for (const n of entryNodes) classifyRefUsages(n, wrapped, direct, null);
+  return { wrapped, direct };
+}
+
+function classifyRefUsages(node, wrapped, direct, currentWrapper) {
+  if (!node || typeof node !== 'object') return;
+
+  if (node.type === 'Identifier') {
+    if (currentWrapper) {
+      if (!wrapped.has(node.name)) wrapped.set(node.name, currentWrapper);
+    } else {
+      direct.add(node.name);
+    }
+    return;
+  }
+
+  if (node.type === 'CallExpr') {
+    const calleeName = node.callee && node.callee.type === 'Identifier'
+      ? node.callee.name : null;
+    // Switch wrapper when entering draw / lawof. Innermost wins; we
+    // don't track nested wrappers (rare and visually noisy).
+    let next = currentWrapper;
+    if (calleeName === 'draw' || calleeName === 'lawof') next = calleeName;
+    // Don't descend into reification scopes — different namespace.
+    if (calleeName === 'functionof' || calleeName === 'kernelof' || calleeName === 'fn') {
+      return;
+    }
+    if (Array.isArray(node.args)) {
+      for (const a of node.args) classifyRefUsages(a, wrapped, direct, next);
+    }
+    return;
+  }
+
+  if (node.type === 'KeywordArg') {
+    classifyRefUsages(node.value, wrapped, direct, currentWrapper);
+    return;
+  }
+  if (node.type === 'BinaryExpr') {
+    classifyRefUsages(node.left,    wrapped, direct, currentWrapper);
+    classifyRefUsages(node.right,   wrapped, direct, currentWrapper);
+    return;
+  }
+  if (node.type === 'UnaryExpr') {
+    classifyRefUsages(node.operand, wrapped, direct, currentWrapper);
+    return;
+  }
+  if (node.type === 'IndexExpr') {
+    classifyRefUsages(node.object,  wrapped, direct, currentWrapper);
+    if (Array.isArray(node.indices)) {
+      for (const i of node.indices) classifyRefUsages(i, wrapped, direct, currentWrapper);
+    }
+    return;
+  }
+  if (node.type === 'FieldAccess') {
+    classifyRefUsages(node.object, wrapped, direct, currentWrapper);
+    return;
+  }
+  if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') {
+    if (Array.isArray(node.elements)) {
+      for (const e of node.elements) classifyRefUsages(e, wrapped, direct, currentWrapper);
+    }
+    return;
+  }
+  // Other AST node types (literals, placeholders, holes, set/const
+  // refs, slice-all) carry no Identifier children we care about.
+}
+
 function computeSubDAG(bindings, nodeName) {
   const binding = bindings.get(nodeName);
   if (!binding) return { nodes: [], edges: [] };
@@ -264,25 +377,82 @@ function computeSubDAG(bindings, nodeName) {
       }
     }
 
+    // Classify each ref by whether it appears wrapped in `lawof(...)`
+    // or `draw(...)` inside the RHS — those are the two ops that lift
+    // a value into a different "domain" (lawof: value → measure;
+    // draw: measure → stochastic value), and surfacing them as nodes
+    // makes the structural type story visible in the graph instead of
+    // hiding it inside an expression.
+    //
+    // Skip the synthesis when the binding ITSELF is the wrapper (e.g.
+    // `y = draw(...)` already gets the inline-target rendering for
+    // its argument). For nested cases — e.g. `s = 2 * draw(m)` or
+    // `w = weighted(0.5, lawof(theta))` — we add a synthetic node
+    // between the inner ident and the binding, with the appropriate
+    // edge types: the boundary edge into a draw / lawof carries the
+    // op's edge type so the renderer can colour it specially.
+    const wrappedRefs = collectWrappedRefs(b);
     const calls = new Set(e.callDeps || []);
     for (const dep of e.deps) {
       if (inlineExprDeps && inlineExprDeps.has(dep)) continue;
-      // Edge classification:
-      //   call → dep is a function being invoked by the binding's RHS
-      //   draw → dep flows directly into a draw(...) operation —
-      //          the boundary between deterministic and stochastic.
-      //          This applies only to the binding-level deps of a
-      //          draw-typed binding (i.e. the measure being drawn
-      //          from, when referenced by name rather than inlined);
-      //          drawing it specially in the renderer makes the
-      //          model's stochastic structure visually obvious.
-      //   data → everything else (plain dataflow).
-      let edgeType;
-      if (calls.has(dep))         edgeType = 'call';
-      else if (b && b.type === 'draw') edgeType = 'draw';
-      else                         edgeType = 'data';
-      edges.push({ source: dep, target: name, edgeType });
-      visit(dep, false);
+
+      const wrapper = wrappedRefs.wrapped.get(dep);
+      const usedDirectly = wrappedRefs.direct.has(dep);
+
+      if (wrapper) {
+        // Anonymous synthetic node representing the lawof / draw of
+        // this dep. id keyed by (binding, op, dep) — one synthetic
+        // per (binding, op, dep) combination even if the dep appears
+        // wrapped multiple times (typical visualisation simplicity;
+        // genuinely-independent multiple draws of the same measure
+        // are rare enough not to add per-occurrence ids).
+        const synId = name + ':' + wrapper + ':' + dep;
+        if (!visited.has(synId)) {
+          visited.set(synId, {
+            id: synId,
+            label: '',
+            type: wrapper,
+            // For lawof: the synthetic IS the measure produced by
+            // reifying the inner value. Set kind='measure' so the
+            // renderer's color-resolution picks the lawof blue.
+            kind: wrapper === 'lawof' ? 'measure' : undefined,
+            // For draw: the synthetic produces a stochastic value;
+            // for lawof: a measure (deterministic per spec
+            // §sec:lawof). The renderer's phase-color logic uses
+            // these for fill colour on value-typed nodes.
+            phase: wrapper === 'draw' ? 'stochastic' : 'fixed',
+            expr: wrapper + '(' + dep + ')',
+            line: b.line,
+            isBoundary: false,
+            isTarget: false,
+          });
+        }
+        // Edge classification mirrors the binding-level case:
+        //   dep → synthetic: 'draw' if the synthetic is a draw (the
+        //                    boundary edge into the draw operation);
+        //                    'data' for lawof (no special colour).
+        //   synthetic → binding: 'data' — the value or measure simply
+        //                        flows into the binding's RHS.
+        edges.push({
+          source: dep, target: synId,
+          edgeType: wrapper === 'draw' ? 'draw' : 'data',
+        });
+        edges.push({ source: synId, target: name, edgeType: 'data' });
+        visit(dep, false);
+      }
+
+      // Direct edge: dep used outside any draw/lawof wrapper, OR a
+      // defensive fallback when the AST walker missed it (shouldn't
+      // happen — e.deps is built from the same AST — but no
+      // visualization regression if the dep wasn't classified).
+      if (usedDirectly || !wrapper) {
+        let edgeType;
+        if (calls.has(dep))               edgeType = 'call';
+        else if (b && b.type === 'draw')  edgeType = 'draw';
+        else                              edgeType = 'data';
+        edges.push({ source: dep, target: name, edgeType });
+        visit(dep, false);
+      }
     }
   }
 

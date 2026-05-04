@@ -543,6 +543,13 @@ function computePhases(bindings) {
       phase = 'parameterized';
     } else if (cn === 'external') {
       phase = 'fixed';
+    } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
+      // Hidden draw inside arithmetic / call — e.g. `s = 2 * draw(m)`.
+      // The top-level callee isn't 'draw' so the cn check above
+      // misses it, but the binding's value is still stochastic. The
+      // walker skips reification bodies (their draws live in a
+      // different scope).
+      phase = 'stochastic';
     } else {
       phase = 'fixed';
       for (const dep of b.deps) {
@@ -558,6 +565,40 @@ function computePhases(bindings) {
 
   for (const name of bindings.keys()) phaseOf(name);
   return phases;
+}
+
+/**
+ * True iff the AST contains a `draw(...)` call somewhere inside,
+ * not counting reification bodies (which have their own scope).
+ *
+ * Used by computePhases / computePhasesForScope to catch hidden
+ * draws — e.g. `s = 2 * draw(m)` should classify s as stochastic
+ * even though the binding's top-level callee is `mul`, not `draw`.
+ */
+function rhsContainsInlineDraw(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (node.type === 'CallExpr' && node.callee
+      && node.callee.type === 'Identifier') {
+    if (node.callee.name === 'draw') return true;
+    // Don't descend into reification bodies (different namespace).
+    if (node.callee.name === 'functionof'
+        || node.callee.name === 'kernelof'
+        || node.callee.name === 'fn') return false;
+    if (Array.isArray(node.args)) {
+      for (const a of node.args) if (rhsContainsInlineDraw(a)) return true;
+    }
+    return false;
+  }
+  for (const k of ['args', 'value', 'left', 'right', 'operand', 'object', 'elements', 'indices']) {
+    const c = node[k];
+    if (c == null) continue;
+    if (Array.isArray(c)) {
+      for (const x of c) if (rhsContainsInlineDraw(x)) return true;
+    } else if (typeof c === 'object' && rhsContainsInlineDraw(c)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -640,6 +681,13 @@ function computePhasesForScope(bindings, boundaryNames) {
       phase = 'parameterized';
     } else if (cn === 'external') {
       phase = 'fixed';
+    } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
+      // Hidden draw inside an expression — same reasoning as in
+      // computePhases. The boundary cut at boundaryNames takes
+      // precedence (caught at the top of phaseOf), so an inline
+      // draw on a name shadowed by a boundary still resolves to
+      // 'parameterized'.
+      phase = 'stochastic';
     } else {
       phase = 'fixed';
       for (const dep of b.deps) {
