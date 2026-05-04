@@ -613,19 +613,14 @@ class FlatPPLPanel {
           },
           {
             // Draw edges: the boundary between deterministic and
-            // stochastic. We render them in the draw node's purple,
-            // with a short dash pattern that visually evokes
-            // "stochastic" without being noisy. Thicker than data
-            // edges to draw the eye to where stochasticity enters
-            // the model. Arrow head matches the line color.
+            // stochastic. Solid line in the variate's purple, slightly
+            // thicker than dataflow edges so the eye lands on where
+            // stochasticity enters the model.
             selector: 'edge[edgeType = "draw"]',
             style: {
-              'line-style': 'dashed',
-              'line-dash-pattern': [3, 3],
               'line-color': TYPE_STYLE.draw.color,
               'target-arrow-color': TYPE_STYLE.draw.color,
               'width': 2.5,
-              'opacity': 0.85,
             }
           },
           {
