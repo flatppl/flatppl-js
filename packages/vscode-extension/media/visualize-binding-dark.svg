@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Editor-title icon for `flatppl.visualize` (Visualize Binding) —
+  DARK-theme variant.
+
+  Why two SVGs (and not one with `currentColor`)?
+  VS Code renders contributed command icons as <img> elements. SVGs
+  loaded via <img> don't inherit the surrounding page's CSS, so
+  `currentColor` resolves against the SVG's own (default-black)
+  context — they always render black regardless of theme. Codicons
+  work via a font, not <img>, which is why they DO theme. For
+  contributed SVG command icons the documented approach is to ship
+  a {light, dark} pair with hardcoded colors.
+
+  Colors picked to match VS Code's default icon palette:
+    dark : #c5c5c5  (matches Dark+ editor-foreground icon color)
+    light: #424242  (matches Light+)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#c5c5c5">
+  <ellipse cx="3.358"  cy="3.5"   rx="1.958" ry="1.958" stroke-width="0.8" />
+  <ellipse cx="11.358" cy="3.5"   rx="1.958" ry="1.958" stroke-width="0.8" />
+  <ellipse cx="7.5"    cy="12.5"  rx="1.958" ry="1.958" stroke-width="1.084" />
+  <path d="M 3.867,5.16 6.287,10.717" stroke-width="0.8" stroke-linecap="butt" />
+  <path d="M 11.037,5.16 8.617,10.717" stroke-width="0.8" stroke-linecap="butt" />
+</svg>

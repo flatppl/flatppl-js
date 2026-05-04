@@ -1,11 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!--
-  Editor-title icon for `flatppl.visualizeModule` (Visualize Module).
-  16×16. Same DAG glyph as visualize-binding, framed by a border to
-  read as "the whole module". Strokes use `currentColor` so the icon
-  picks up the theme's active-icon color automatically.
+  Editor-title icon for `flatppl.visualizeModule` (Visualize Module)
+  — LIGHT-theme variant. See visualize-binding-dark.svg for the why.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor">
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#424242">
   <rect x="1.422" y="1.422" width="13.157" height="13.157" stroke-width="0.8" />
   <ellipse cx="4.453"  cy="4.453"  rx="1.622" ry="1.622" stroke-width="0.662" />
   <ellipse cx="11.077" cy="4.453"  rx="1.622" ry="1.622" stroke-width="0.662" />
