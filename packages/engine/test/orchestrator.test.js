@@ -276,6 +276,80 @@ s  = mu + 1
   assert.equal(derivations.s.ir.op, 'add');
 });
 
+// --- weighted / logweighted / normalize derivations ---
+
+test('derivations: weighted(<lit>, <ref>) → kind=weighted with precomputed logShift', () => {
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+mw = weighted(2.0, m)
+`);
+  assert.equal(derivations.mw.kind, 'weighted');
+  assert.equal(derivations.mw.from, 'm');
+  assert.ok(Math.abs(derivations.mw.logShift - Math.log(2)) < 1e-12);
+});
+
+test('derivations: weighted(<binding-of-constant>, <ref>) resolves through', () => {
+  // Weight = a binding that itself reduces to a literal.
+  const { derivations } = derivationsOf(`
+c = 0.5
+m = Normal(mu = 0, sigma = 1)
+mw = weighted(c, m)
+`);
+  assert.equal(derivations.mw.kind, 'weighted');
+  assert.ok(Math.abs(derivations.mw.logShift - Math.log(0.5)) < 1e-12);
+});
+
+test('derivations: weighted with non-positive scalar is unsupported', () => {
+  // weight must be > 0 for a valid measure reweighting.
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+mw = weighted(0.0, m)
+`);
+  assert.ok(!('mw' in derivations));
+});
+
+test('derivations: logweighted(<lit>, <ref>) → kind=weighted with logShift = lit', () => {
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+mw = logweighted(-3.5, m)
+`);
+  assert.equal(derivations.mw.kind, 'weighted');
+  assert.equal(derivations.mw.from, 'm');
+  assert.ok(Math.abs(derivations.mw.logShift - (-3.5)) < 1e-12);
+});
+
+test('derivations: normalize(<ref>) → kind=normalize', () => {
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+mn = normalize(m)
+`);
+  assert.equal(derivations.mn.kind, 'normalize');
+  assert.equal(derivations.mn.from, 'm');
+});
+
+test('derivations: normalize(weighted(c, m)) chains both', () => {
+  // Common pattern: normalize(weighted(...)) to renormalise an
+  // arbitrarily-scaled measure back onto the probability scale.
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+mw = weighted(2.0, m)
+mn = normalize(mw)
+`);
+  assert.equal(derivations.mw.kind, 'weighted');
+  assert.equal(derivations.mn.kind, 'normalize');
+  assert.equal(derivations.mn.from, 'mw');
+});
+
+test('derivations: weighted with function-of-variate weight is unsupported (for now)', () => {
+  // weighted(fn(_*2), m) — the weight depends on the base's variate.
+  // Future work; current orchestrator only handles constant weights.
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+mw = weighted(fn(_ * 2), m)
+`);
+  assert.ok(!('mw' in derivations));
+});
+
 test('derivations: numeric array literal becomes an array derivation', () => {
   const { derivations } = derivationsOf('observed = [1.2, 3.4, 5.1, 2.8]');
   assert.equal(derivations.observed.kind, 'array');

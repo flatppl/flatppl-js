@@ -472,6 +472,58 @@ function classifyDerivation(binding, bindings) {
         && SAMPLEABLE_DISTRIBUTIONS.has(rhsIR.op)) {
       return { kind: 'sample', distIR: rhsIR };
     }
+
+    // Density reweighting: weighted(<constant>, <base-measure-ref>).
+    // Only the constant-weight case is supported here — function-of-
+    // variate weights need per-atom evaluation (similar to per-i ref
+    // params in drawN) and aren't wired yet. The visualPanel applies
+    // the precomputed log-shift to the parent measure's logWeights.
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'weighted'
+        && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
+      const baseExpr   = rhsIR.args[1];
+      const weightExpr = rhsIR.args[0];
+      if (baseExpr.kind === 'ref' && baseExpr.ns === 'self'
+          && bindings.has(baseExpr.name)) {
+        const w = resolveConstant(weightExpr, bindings, new Set());
+        if (w != null && w > 0 && Number.isFinite(w)) {
+          return { kind: 'weighted', from: baseExpr.name, logShift: Math.log(w) };
+        }
+      }
+      return null;
+    }
+
+    // Log-density reweighting: logweighted(<constant>, <base-measure-ref>).
+    // Direct analogue of `weighted` in log-space — the weight is added
+    // to each parent atom's logWeight. Useful when the user already
+    // has a log-density on hand (likelihoods, etc.).
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'logweighted'
+        && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
+      const baseExpr  = rhsIR.args[1];
+      const lwExpr    = rhsIR.args[0];
+      if (baseExpr.kind === 'ref' && baseExpr.ns === 'self'
+          && bindings.has(baseExpr.name)) {
+        const lw = resolveConstant(lwExpr, bindings, new Set());
+        if (lw != null && Number.isFinite(lw)) {
+          return { kind: 'weighted', from: baseExpr.name, logShift: lw };
+        }
+      }
+      return null;
+    }
+
+    // Normalisation: normalize(<measure-ref>). Subtracts logSumExp
+    // from each weight so the result is a probability measure
+    // (totalLogMass = 0). For an already-uniform measure (totalLogMass
+    // = 0) this is a no-op; for a re-weighted one it brings it back
+    // onto the probability scale.
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'normalize'
+        && Array.isArray(rhsIR.args) && rhsIR.args.length === 1) {
+      const baseExpr = rhsIR.args[0];
+      if (baseExpr.kind === 'ref' && baseExpr.ns === 'self'
+          && bindings.has(baseExpr.name)) {
+        return { kind: 'normalize', from: baseExpr.name };
+      }
+      return null;
+    }
     // Numeric array literal: lowered to (call vector lit lit ...).
     // Treated as static data, not samples — the cache stores the
     // values verbatim (length = array length, not SAMPLE_COUNT) and
@@ -507,10 +559,11 @@ function classifyDerivation(binding, bindings) {
 /**
  * Whether a derivation's outgoing references are satisfiable —
  * i.e. every 'self' ref it contains points at a binding that itself
- * has a derivation. Aliases just check the target.
+ * has a derivation. Aliases / weighted / normalize just check the
+ * target.
  */
 function derivationRefsValid(d, derivations, bindings) {
-  if (d.kind === 'alias') {
+  if (d.kind === 'alias' || d.kind === 'weighted' || d.kind === 'normalize') {
     return Object.prototype.hasOwnProperty.call(derivations, d.from);
   }
   // Static array literals carry no refs by construction.
@@ -523,14 +576,66 @@ function derivationRefsValid(d, derivations, bindings) {
   return true;
 }
 
+/**
+ * Resolve an IR node to a constant numeric value, or null if it
+ * doesn't reduce. Handles literal numerics, the named built-in
+ * constants the evaluator knows, and refs to bindings whose RHS
+ * itself reduces to a constant. Used by `weighted` / `logweighted`
+ * derivations to pre-compute the log-shift at classification time
+ * rather than at sample-render time. Cycle-guarded.
+ */
+function resolveConstant(ir, bindings, seen) {
+  if (!ir) return null;
+  if (ir.kind === 'lit') {
+    if (typeof ir.value === 'number' && Number.isFinite(ir.value)) return ir.value;
+    return null;
+  }
+  if (ir.kind === 'const') {
+    if (ir.name === 'pi')  return Math.PI;
+    if (ir.name === 'e')   return Math.E;
+    if (ir.name === 'inf') return Infinity;
+    return null;
+  }
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (seen.has(ir.name)) return null;
+    seen.add(ir.name);
+    const b = bindings.get(ir.name);
+    if (!b || !b.node || !b.node.value) return null;
+    let bIR;
+    try { bIR = lowerExpr(b.node.value); } catch (_) { return null; }
+    return resolveConstant(bIR, bindings, seen);
+  }
+  // Constant-fold small arithmetic. Crucially, the parser lowers a
+  // negative literal `-3.5` to `(call neg (lit 3.5))`, so without this
+  // we'd fail to recognise plain negative numbers as constants. The
+  // operator set matches EVALUABLE_OPS so the language's evaluator
+  // semantics agree at this level.
+  if (ir.kind === 'call' && ir.op && Array.isArray(ir.args)) {
+    const args = ir.args.map(a => resolveConstant(a, bindings, seen));
+    if (args.some(v => v == null)) return null;
+    switch (ir.op) {
+      case 'neg': return args.length === 1 ? -args[0] : null;
+      case 'pos': return args.length === 1 ?  args[0] : null;
+      case 'add': return args.length === 2 ? args[0] + args[1] : null;
+      case 'sub': return args.length === 2 ? args[0] - args[1] : null;
+      case 'mul': return args.length === 2 ? args[0] * args[1] : null;
+      case 'div': return args.length === 2 ? args[0] / args[1] : null;
+      default: return null;
+    }
+  }
+  return null;
+}
+
 function isDiscreteAt(name, derivations, visited) {
   visited = visited || new Set();
   if (visited.has(name)) return false; // cycle guard
   visited.add(name);
   const d = derivations[name];
   if (!d) return false;
-  if (d.kind === 'alias')   return isDiscreteAt(d.from, derivations, visited);
-  if (d.kind === 'sample')  return DISCRETE_DISTRIBUTIONS.has(d.distIR.op);
+  if (d.kind === 'alias')     return isDiscreteAt(d.from, derivations, visited);
+  if (d.kind === 'weighted')  return isDiscreteAt(d.from, derivations, visited);
+  if (d.kind === 'normalize') return isDiscreteAt(d.from, derivations, visited);
+  if (d.kind === 'sample')    return DISCRETE_DISTRIBUTIONS.has(d.distIR.op);
   return false; // evaluate — see comment in buildDerivations.
 }
 

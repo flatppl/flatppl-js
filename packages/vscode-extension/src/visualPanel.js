@@ -1133,6 +1133,35 @@ class FlatPPLPanel {
         var m = { samples: Float64Array.from(d.values), logWeights: null };
         measureCache.set(name, m);
         promise = Promise.resolve(m);
+      } else if (d.kind === 'weighted') {
+        // weighted(c, base) and logweighted(lc, base) both reduce to
+        // "shift each parent atom's logWeight by a precomputed
+        // constant" — the orchestrator stored the constant as
+        // d.logShift (= log(c) for weighted, lc verbatim for
+        // logweighted). Same samples reference; fresh logWeights
+        // array via materialiseUniform → add shift in place.
+        promise = getMeasure(d.from).then(function(parent) {
+          var lifted = FlatPPLEngine.empirical.materialiseUniform(parent);
+          var w = new Float64Array(lifted.logWeights.length);
+          for (var i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] + d.logShift;
+          var m = { samples: lifted.samples, logWeights: w };
+          measureCache.set(name, m);
+          return m;
+        });
+      } else if (d.kind === 'normalize') {
+        // normalize(base) brings the result onto the probability scale
+        // by subtracting logSumExp from every weight. For an already-
+        // normalised parent (totalLogMass = 0) this is the identity
+        // up to floating-point roundoff.
+        promise = getMeasure(d.from).then(function(parent) {
+          var lifted = FlatPPLEngine.empirical.materialiseUniform(parent);
+          var lse = FlatPPLEngine.empirical.logSumExp(lifted.logWeights);
+          var w = new Float64Array(lifted.logWeights.length);
+          for (var i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] - lse;
+          var m = { samples: lifted.samples, logWeights: w };
+          measureCache.set(name, m);
+          return m;
+        });
       } else {
         return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
       }
@@ -1450,12 +1479,14 @@ class FlatPPLPanel {
           var histKey = planForCall.name + '|' + (planForCall.discrete ? 'd' : 'c');
           var hist = histogramCache.get(histKey);
           if (!hist) {
-            // TODO when weighted measures land: pass measure.logWeights
-            // through to a weighted-histogram path. For now everything
-            // is null-uniform, which collapses to the count/N path.
+            // Pass logWeights through to the histogram so weighted
+            // measures (post weighted/bayesupdate/normalize) render
+            // their bars correctly. For unweighted measures this is
+            // null and the histogram takes its fast count/N path.
+            var histOpts = measure.logWeights ? { logWeights: measure.logWeights } : {};
             hist = planForCall.discrete
-              ? FlatPPLEngine.histogram.integerHistogram(samples)
-              : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples);
+              ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
+              : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
             histogramCache.set(histKey, hist);
           }
           // Only fetch analytical density when applicable. This is
