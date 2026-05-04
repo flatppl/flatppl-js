@@ -221,7 +221,13 @@ function computeSubDAG(bindings, nodeName) {
           isBoundary: false,
           isTarget: false,
         });
-        edges.push({ source: inlineExprId, target: name, edgeType: 'data' });
+        // The inline-expr node feeds *into* this binding's RHS. When
+        // the binding is a draw, the inline-expr is the measure being
+        // drawn from — that final hop into a draw-typed node is the
+        // distinguished "stochastic transition" we visually mark.
+        // Deps of the inline-expr itself are still plain data flow.
+        const inlineEdgeType = (b && b.type === 'draw') ? 'draw' : 'data';
+        edges.push({ source: inlineExprId, target: name, edgeType: inlineEdgeType });
         for (const dep of inlineExprDeps) {
           edges.push({ source: dep, target: inlineExprId, edgeType: 'data' });
           visit(dep);
@@ -261,7 +267,21 @@ function computeSubDAG(bindings, nodeName) {
     const calls = new Set(e.callDeps || []);
     for (const dep of e.deps) {
       if (inlineExprDeps && inlineExprDeps.has(dep)) continue;
-      edges.push({ source: dep, target: name, edgeType: calls.has(dep) ? 'call' : 'data' });
+      // Edge classification:
+      //   call → dep is a function being invoked by the binding's RHS
+      //   draw → dep flows directly into a draw(...) operation —
+      //          the boundary between deterministic and stochastic.
+      //          This applies only to the binding-level deps of a
+      //          draw-typed binding (i.e. the measure being drawn
+      //          from, when referenced by name rather than inlined);
+      //          drawing it specially in the renderer makes the
+      //          model's stochastic structure visually obvious.
+      //   data → everything else (plain dataflow).
+      let edgeType;
+      if (calls.has(dep))         edgeType = 'call';
+      else if (b && b.type === 'draw') edgeType = 'draw';
+      else                         edgeType = 'data';
+      edges.push({ source: dep, target: name, edgeType });
       visit(dep, false);
     }
   }
