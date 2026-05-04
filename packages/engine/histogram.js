@@ -28,9 +28,18 @@
  * counts. Bars are area-normalised to PDF scale so they can be
  * overlaid against a stdlib analytical PDF directly.
  *
+ * Weight-aware: when opts.logWeights is provided, both the trim
+ * quantiles and the IQR (which sets the FD bin width) are computed
+ * over the *weighted* empirical CDF, and bin heights are accumulated
+ * with normalised weights instead of unit counts. With logWeights
+ * absent or null, the routine falls back to the unweighted-uniform
+ * path which collapses to the original behaviour byte-for-byte.
+ *
  * @param {Float64Array|number[]} samples
  * @param {object} [opts]
- * @param {number} [opts.trimQ=0.005]  trim each tail to this quantile
+ * @param {Float64Array} [opts.logWeights]  per-atom log-weights (length matches samples).
+ *                                          Pass null/undefined for uniform-weight measures.
+ * @param {number} [opts.trimQ=0.005]       trim each tail to this quantile
  * @param {number} [opts.maxBins=200]
  * @param {number} [opts.minBins=8]
  */
@@ -43,12 +52,39 @@ function freedmanDiaconisHistogram(samples, opts = {}) {
       support: [0, 0], reference: 'lebesgue',
     };
   }
-  const sorted = Float64Array.from(samples);
-  sorted.sort();
+
+  const lw = opts.logWeights;
+  const weighted = lw && lw.length === n;
+
+  // For weighted: pre-compute normalised weights once, sort sample
+  // indices by value. For unweighted: sort the values directly (no
+  // weight bookkeeping needed). Quantile lookups happen against the
+  // sorted view in both cases.
+  let sorted, sortedW;
+  if (weighted) {
+    const norm = normaliseWeights(lw);
+    const idx = new Int32Array(n);
+    for (let i = 0; i < n; i++) idx[i] = i;
+    // Sort by sample value. Indirection lets us keep the per-atom
+    // weight aligned with the sorted value.
+    idx.sort((a, b) => samples[a] - samples[b]);
+    sorted  = new Float64Array(n);
+    sortedW = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      sorted[i]  = samples[idx[i]];
+      sortedW[i] = norm[idx[i]];
+    }
+  } else {
+    sorted = Float64Array.from(samples);
+    sorted.sort();
+  }
 
   const trimQ = opts.trimQ != null ? opts.trimQ : 0.005;
-  const lo = quantileSorted(sorted, trimQ);
-  const hi = quantileSorted(sorted, 1 - trimQ);
+  const qFn = weighted
+    ? (q) => weightedQuantileSorted(sorted, sortedW, q)
+    : (q) => quantileSorted(sorted, q);
+  const lo = qFn(trimQ);
+  const hi = qFn(1 - trimQ);
   if (!(hi > lo)) {
     // All samples coincide — emit a single 1-wide bin centred on the
     // common value so the chart doesn't crash on zero-width bars.
@@ -62,8 +98,8 @@ function freedmanDiaconisHistogram(samples, opts = {}) {
     };
   }
 
-  const q1 = quantileSorted(sorted, 0.25);
-  const q3 = quantileSorted(sorted, 0.75);
+  const q1 = qFn(0.25);
+  const q3 = qFn(0.75);
   const iqr = q3 - q1;
   let binWidth;
   if (iqr > 0) binWidth = 2 * iqr * Math.pow(n, -1 / 3);
@@ -78,16 +114,34 @@ function freedmanDiaconisHistogram(samples, opts = {}) {
   const binEdges = new Float64Array(nBins + 1);
   for (let i = 0; i <= nBins; i++) binEdges[i] = lo + i * binWidth;
 
+  // Bin accumulation. Unweighted: each in-trim sample contributes 1
+  // to its bin → normalisation factor = 1 / (n * binWidth) gives the
+  // pdf-scale height we want. Weighted: each contributes its
+  // normalised weight (which sums to 1 across all atoms) → norm
+  // factor = 1 / binWidth, since the weighted accumulator already
+  // accounts for total mass.
   const counts = new Float64Array(nBins);
-  for (let i = 0; i < n; i++) {
-    const v = samples[i];
-    if (v < lo || v > hi) continue;
-    let bin = Math.floor((v - lo) / binWidth);
-    if (bin >= nBins) bin = nBins - 1;
-    if (bin < 0) bin = 0;
-    counts[bin]++;
+  if (weighted) {
+    const norm = normaliseWeights(lw);
+    for (let i = 0; i < n; i++) {
+      const v = samples[i];
+      if (v < lo || v > hi) continue;
+      let bin = Math.floor((v - lo) / binWidth);
+      if (bin >= nBins) bin = nBins - 1;
+      if (bin < 0) bin = 0;
+      counts[bin] += norm[i];
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const v = samples[i];
+      if (v < lo || v > hi) continue;
+      let bin = Math.floor((v - lo) / binWidth);
+      if (bin >= nBins) bin = nBins - 1;
+      if (bin < 0) bin = 0;
+      counts[bin]++;
+    }
   }
-  const norm = 1 / (n * binWidth);
+  const norm = weighted ? 1 / binWidth : 1 / (n * binWidth);
   const ys = new Float64Array(nBins);
   const xs = new Float64Array(nBins);
   for (let i = 0; i < nBins; i++) {
@@ -101,12 +155,24 @@ function freedmanDiaconisHistogram(samples, opts = {}) {
  * Probability mass function via integer-bin histogram. Bins are unit
  * width centred on each integer atom from min(samples) to max(samples).
  * Heights are normalised to sum to 1 (probability scale).
+ *
+ * Weight-aware: when `opts.logWeights` is provided, each atom
+ * contributes its normalised weight to its integer bin instead of a
+ * unit count. With null/undefined weights this collapses to the
+ * original unweighted-uniform behaviour.
+ *
+ * @param {Float64Array|number[]} samples
+ * @param {object} [opts]
+ * @param {Float64Array} [opts.logWeights]
  */
-function integerHistogram(samples) {
+function integerHistogram(samples, opts = {}) {
   const n = samples.length;
   if (n === 0) {
     return { xs: new Float64Array(0), ys: new Float64Array(0), support: [0, 0], reference: 'counting' };
   }
+  const lw = opts && opts.logWeights;
+  const weighted = lw && lw.length === n;
+
   let lo = +Infinity, hi = -Infinity;
   for (let i = 0; i < n; i++) {
     const v = Math.round(samples[i]);
@@ -117,12 +183,91 @@ function integerHistogram(samples) {
   const xs = new Float64Array(span);
   const ys = new Float64Array(span);
   for (let i = 0; i < span; i++) xs[i] = lo + i;
-  for (let i = 0; i < n; i++) {
-    const k = Math.round(samples[i]) - lo;
-    ys[k] += 1;
+  if (weighted) {
+    // Weighted: accumulate normalised weights (which sum to 1) into
+    // their integer bins. Result is already on the probability scale
+    // — no extra division step.
+    const norm = normaliseWeights(lw);
+    for (let i = 0; i < n; i++) {
+      const k = Math.round(samples[i]) - lo;
+      ys[k] += norm[i];
+    }
+  } else {
+    // Unweighted: count atoms, then divide by N so heights sum to 1.
+    for (let i = 0; i < n; i++) {
+      const k = Math.round(samples[i]) - lo;
+      ys[k] += 1;
+    }
+    for (let i = 0; i < span; i++) ys[i] /= n;
   }
-  for (let i = 0; i < span; i++) ys[i] /= n;
   return { xs, ys, support: [lo, hi], reference: 'counting' };
+}
+
+/**
+ * Convert per-atom log-weights into linear-space normalised weights
+ * (sum = 1), in a numerically stable way: subtract the max log-weight
+ * before exp, then divide by the total. Returns a fresh Float64Array.
+ *
+ * Lives here in histogram.js (rather than being imported from
+ * empirical.js) because it's a histogram-implementation detail and we
+ * want histogram.js dep-free of empirical.js — they're peers, not in
+ * a stack. The duplication with empirical.logSumExp's stability trick
+ * is small (~10 lines) and lets the two modules evolve independently.
+ */
+function normaliseWeights(logWeights) {
+  const n = logWeights.length;
+  if (n === 0) return new Float64Array(0);
+  let max = logWeights[0];
+  for (let i = 1; i < n; i++) if (logWeights[i] > max) max = logWeights[i];
+  if (!Number.isFinite(max)) {
+    // All -Infinity → can't normalise; return uniform as a safe fallback.
+    const out = new Float64Array(n);
+    out.fill(1 / n);
+    return out;
+  }
+  const out = new Float64Array(n);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    out[i] = Math.exp(logWeights[i] - max);
+    total += out[i];
+  }
+  if (total > 0) {
+    for (let i = 0; i < n; i++) out[i] /= total;
+  }
+  return out;
+}
+
+/**
+ * Weighted quantile from sorted (samples, normalised-weights) arrays.
+ * Inverts the weighted empirical CDF: q-th quantile is the value
+ * where cumulative weight first reaches q. Linearly interpolates
+ * between adjacent atoms to avoid quantile values jumping
+ * discontinuously across atoms.
+ *
+ * Caller passes both arrays already sorted by the underlying sample
+ * value (sortedSamples), with sortedNormWeights re-permuted to match.
+ * normaliseWeights produces the per-atom weights in the original
+ * order; sort with index indirection to preserve the pairing.
+ */
+function weightedQuantileSorted(sortedSamples, sortedNormWeights, q) {
+  const n = sortedSamples.length;
+  if (n === 0) return NaN;
+  if (n === 1) return sortedSamples[0];
+  let cum = 0;
+  for (let i = 0; i < n; i++) {
+    const cumNext = cum + sortedNormWeights[i];
+    if (cumNext >= q) {
+      // q lies between cum and cumNext. Linearly interpolate the value
+      // between (sortedSamples[i-1], sortedSamples[i]) by where in
+      // [cum, cumNext] the target q sits. For i=0 the only sensible
+      // answer is sortedSamples[0] (no left neighbour to interp from).
+      if (i === 0 || sortedNormWeights[i] <= 0) return sortedSamples[i];
+      const t = (q - cum) / sortedNormWeights[i];
+      return sortedSamples[i - 1] * (1 - t) + sortedSamples[i] * t;
+    }
+    cum = cumNext;
+  }
+  return sortedSamples[n - 1];
 }
 
 /**
