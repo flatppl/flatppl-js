@@ -524,6 +524,34 @@ function classifyDerivation(binding, bindings) {
       }
       return null;
     }
+
+    // Additive superposition: superpose(<ref>, <ref>, ...).
+    // Concatenates the components' atoms (with their weights), then
+    // resamples back to the global N at materialisation time. The
+    // resample is what re-establishes the shared-N axis so a
+    // superposed binding can still be jointly-composed downstream.
+    // Per FlatPPL spec §sec:additive-superposition the result is
+    // generally not normalised — totals add. The visualPanel's
+    // resampler bakes this into uniformly-weighted output (with
+    // total mass conceptually = sum of inputs); call normalize(...)
+    // explicitly to land on the probability scale.
+    //
+    // Inline measure expressions (e.g. superpose(Normal(0,1), m))
+    // could be supported by introducing anonymous derivations, but
+    // for now we require every component to be a binding ref so the
+    // data flow stays straightforward.
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'superpose'
+        && Array.isArray(rhsIR.args) && rhsIR.args.length >= 1) {
+      const fromNames = [];
+      for (const arg of rhsIR.args) {
+        if (arg.kind === 'ref' && arg.ns === 'self' && bindings.has(arg.name)) {
+          fromNames.push(arg.name);
+        } else {
+          return null;
+        }
+      }
+      return { kind: 'superpose', fromNames };
+    }
     // Numeric array literal: lowered to (call vector lit lit ...).
     // Treated as static data, not samples — the cache stores the
     // values verbatim (length = array length, not SAMPLE_COUNT) and
@@ -565,6 +593,15 @@ function classifyDerivation(binding, bindings) {
 function derivationRefsValid(d, derivations, bindings) {
   if (d.kind === 'alias' || d.kind === 'weighted' || d.kind === 'normalize') {
     return Object.prototype.hasOwnProperty.call(derivations, d.from);
+  }
+  // Superpose: every component must be derivable. Empty/missing
+  // components were already rejected by classifyDerivation, so we
+  // only need the recursive check here.
+  if (d.kind === 'superpose') {
+    for (const n of d.fromNames) {
+      if (!Object.prototype.hasOwnProperty.call(derivations, n)) return false;
+    }
+    return true;
   }
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;
@@ -636,6 +673,17 @@ function isDiscreteAt(name, derivations, visited) {
   if (d.kind === 'weighted')  return isDiscreteAt(d.from, derivations, visited);
   if (d.kind === 'normalize') return isDiscreteAt(d.from, derivations, visited);
   if (d.kind === 'sample')    return DISCRETE_DISTRIBUTIONS.has(d.distIR.op);
+  if (d.kind === 'superpose') {
+    // A superposition is discrete only if every component is. Mixed
+    // discrete/continuous superpositions don't have a clean
+    // histogram representation; treating them as continuous (FD
+    // bins) is the safer default.
+    if (d.fromNames.length === 0) return false;
+    for (const n of d.fromNames) {
+      if (!isDiscreteAt(n, derivations, new Set(visited))) return false;
+    }
+    return true;
+  }
   return false; // evaluate — see comment in buildDerivations.
 }
 

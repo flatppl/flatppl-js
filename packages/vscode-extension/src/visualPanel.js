@@ -1070,6 +1070,26 @@ class FlatPPLPanel {
     }
 
     /**
+     * Wrap a Philox state in a closure that returns U(0,1) uniforms,
+     * matching the `() => number` callback shape that
+     * empirical.systematicResample / multinomialResample expect.
+     * Used for deterministic main-thread resampling under a
+     * per-binding seed (currently: superpose).
+     *
+     * Same-engine RNG as the worker's drawN, but instantiated locally
+     * so empirical.js stays dep-free of rng.js — visualPanel does
+     * the wiring at the call site.
+     */
+    function makeMainThreadPrng(seed) {
+      var state = FlatPPLEngine.rng.stateFromKey(seed);
+      return function() {
+        var pair = FlatPPLEngine.rng.nextUniform(state);
+        state = pair[1];
+        return pair[0];
+      };
+    }
+
+    /**
      * Recursively materialise the empirical measure for a binding,
      * reusing cache entries for any deps already computed.
      * Returns Promise<EmpiricalMeasure>.
@@ -1159,6 +1179,46 @@ class FlatPPLPanel {
           var w = new Float64Array(lifted.logWeights.length);
           for (var i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] - lse;
           var m = { samples: lifted.samples, logWeights: w };
+          measureCache.set(name, m);
+          return m;
+        });
+      } else if (d.kind === 'superpose') {
+        // Superpose: concat parents' samples + logWeights, then
+        // systematic-resample back to SAMPLE_COUNT so the result
+        // lives on the same shared-N axis as everything else (and
+        // can be jointly composed downstream). The resampled output
+        // has uniform weights (logWeights: null) since systematic
+        // resampling produces equally-weighted atoms in distribution.
+        promise = Promise.all(d.fromNames.map(getMeasure)).then(function(parents) {
+          var totalN = 0;
+          for (var p = 0; p < parents.length; p++) totalN += parents[p].samples.length;
+          if (totalN === 0) {
+            var empty = { samples: new Float64Array(0), logWeights: null };
+            measureCache.set(name, empty);
+            return empty;
+          }
+          // Materialise + concat. Each parent's logWeights gets lifted
+          // to an explicit array so we can pour them into the combined
+          // array via .set; uniform parents become an array of -log(N)
+          // (their per-parent N).
+          var combinedSamples = new Float64Array(totalN);
+          var combinedLogWeights = new Float64Array(totalN);
+          var offset = 0;
+          for (var k = 0; k < parents.length; k++) {
+            var lifted = FlatPPLEngine.empirical.materialiseUniform(parents[k]);
+            combinedSamples.set(lifted.samples, offset);
+            combinedLogWeights.set(lifted.logWeights, offset);
+            offset += lifted.samples.length;
+          }
+          // Per-binding-seeded prng so the resample is deterministic
+          // for a given (binding, source). One Philox draw is all
+          // systematic needs; nameSeed gives independence across
+          // bindings.
+          var prng = makeMainThreadPrng(nameSeed(name));
+          var idx = FlatPPLEngine.empirical.systematicResample(combinedLogWeights, SAMPLE_COUNT, prng);
+          var out = new Float64Array(SAMPLE_COUNT);
+          for (var i = 0; i < SAMPLE_COUNT; i++) out[i] = combinedSamples[idx[i]];
+          var m = { samples: out, logWeights: null };
           measureCache.set(name, m);
           return m;
         });

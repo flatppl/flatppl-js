@@ -340,6 +340,68 @@ mn = normalize(mw)
   assert.equal(derivations.mn.from, 'mw');
 });
 
+// --- superpose derivations ---
+
+test('derivations: superpose(<ref>, <ref>) → kind=superpose with parent names', () => {
+  const { derivations } = derivationsOf(`
+m1 = Normal(mu = 0, sigma = 1)
+m2 = Normal(mu = 5, sigma = 1)
+ms = superpose(m1, m2)
+`);
+  assert.equal(derivations.ms.kind, 'superpose');
+  assert.deepEqual(derivations.ms.fromNames, ['m1', 'm2']);
+});
+
+test('derivations: superpose with 3+ components keeps the order', () => {
+  const { derivations } = derivationsOf(`
+m1 = Normal(mu = 0, sigma = 1)
+m2 = Normal(mu = 1, sigma = 1)
+m3 = Normal(mu = 2, sigma = 1)
+ms = superpose(m1, m2, m3)
+`);
+  assert.deepEqual(derivations.ms.fromNames, ['m1', 'm2', 'm3']);
+});
+
+test('derivations: superpose with inline measure (not a ref) is unsupported', () => {
+  // superpose(Normal(0,1), m) — left arg is an inline call, not a
+  // binding ref. Future work; currently we require every component
+  // to be a binding ref.
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+ms = superpose(Normal(mu = 1, sigma = 1), m)
+`);
+  assert.ok(!('ms' in derivations));
+});
+
+test('derivations: superpose with a non-derivable component cascades to unsupported', () => {
+  // prior is a multivariate lawof — not derivable. The dependent
+  // superpose drops out via the cascade-prune pass.
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0, sigma = 1)
+prior = lawof(record(theta = m))
+ms = superpose(m, prior)
+`);
+  assert.ok(!('ms' in derivations));
+});
+
+test('derivations: superpose of all-discrete components → discrete', () => {
+  const { discrete } = derivationsOf(`
+m1 = Poisson(rate = 2)
+m2 = Poisson(rate = 5)
+ms = superpose(m1, m2)
+`);
+  assert.equal(discrete.ms, true);
+});
+
+test('derivations: superpose with mixed continuous/discrete → continuous', () => {
+  const { discrete } = derivationsOf(`
+m1 = Poisson(rate = 2)
+m2 = Normal(mu = 0, sigma = 1)
+ms = superpose(m1, m2)
+`);
+  assert.equal(discrete.ms, false);
+});
+
 test('derivations: weighted with function-of-variate weight is unsupported (for now)', () => {
   // weighted(fn(_*2), m) — the weight depends on the base's variate.
   // Future work; current orchestrator only handles constant weights.
