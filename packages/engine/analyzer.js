@@ -451,6 +451,48 @@ function attachDelegate(binding, targetName, bindings) {
 }
 
 /**
+ * Classify the surface keyword of a disintegration's kernel-side
+ * result — 'functionof' when the underlying reified body is a
+ * measure, 'kernelof' when it's a (typically stochastic) value.
+ * Per FlatPPL spec §sec:kernelof, `kernelof(x, ...)` requires `x`
+ * to not be a measure, so a measure-bodied parametric kernel is
+ * canonically `functionof(<measure>, ...)`.
+ *
+ *   - delegate plan: mirror the delegate target's own type. If the
+ *     user wrote `forward_kernel = functionof(obs_dist, theta=theta)`
+ *     and `disintegrate(...)` recovers it, `forward_kernel2.type`
+ *     should also read 'functionof' — it's the same kernel.
+ *   - synthesized plan: ask isMeasureExpr of the synthesized kernel
+ *     expression. disintegrate.js's wrapAsKernelOrFunctionOf already
+ *     emits the spec-compliant keyword in the AST; we mirror it on
+ *     the binding type so the renderer's tether label matches.
+ */
+function kernelTypeForPlan(plan, bindings) {
+  if (plan.kind === 'delegate') {
+    const target = bindings.get(plan.kernel.binding);
+    if (target && (target.type === 'functionof' || target.type === 'kernelof')) {
+      return target.type;
+    }
+    // Target isn't itself a reification (e.g. it's a measure binding
+    // playing the role of a constant kernel). 'kernelof' stays the
+    // safe default; the renderer's color override won't surprise the
+    // user since the kind resolution downstream still reads the body.
+    return 'kernelof';
+  }
+  // synthesized: the kernel expression is a CallExpr to either
+  // 'functionof' or 'kernelof'. Honour whatever wrapAsKernelOrFunctionOf
+  // emitted.
+  const expr = plan.kernel;
+  if (expr && expr.type === 'CallExpr' && expr.callee && expr.callee.type === 'Identifier') {
+    const name = expr.callee.name;
+    if (name === 'functionof' || name === 'kernelof') return name;
+  }
+  // Constant-kernel synthesis (no boundary inputs) emits the body
+  // directly — classify it by whether it's a measure.
+  return isMeasureExpr(expr, bindings) ? 'functionof' : 'kernelof';
+}
+
+/**
  * Compute the phase of every binding via ancestor analysis, per spec
  * (`docs/04-design.md#phases`).
  *
@@ -814,8 +856,18 @@ function analyze(ast, source) {
     // plans fall back to the plain dep trace via the literal RHS.
     const resolved = plan && (plan.kind === 'synthesized' || plan.kind === 'delegate');
     if (resolved) {
+      // The kernel-side result classifies as 'functionof' when its
+      // underlying body is a measure (per FlatPPL spec §sec:kernelof:
+      // `kernelof(x, ...)` requires `x` to NOT be a measure; reifying a
+      // measure-typed body uses `functionof`). For a delegate plan we
+      // mirror the delegate target's surface type so that
+      // forward_kernel2 = disintegrate("obs", joint_model)
+      // displays the same keyword as the user-written forward_kernel
+      // it recovers. For a synthesized plan we read the synthesized
+      // expression's keyword directly — disintegrate.js already picks
+      // it via isMeasureExpr.
       if (kernel) {
-        kernel.type = 'kernelof';
+        kernel.type = kernelTypeForPlan(plan, bindings);
         kernel.disintegrateRole = { kind: 'kernel', ...info };
         kernel.disintegratePlan = plan;
       }

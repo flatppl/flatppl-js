@@ -33,7 +33,7 @@
 // on.
 
 const ast = require('./ast');
-const { collectDeps } = require('./analyzer');
+const { collectDeps, isMeasureExpr } = require('./analyzer');
 
 // Minimal AST construction helpers, all stamped with synthLoc(source).
 function mkIdent(name, source)        { return ast.Identifier(name, ast.synthLoc(source)); }
@@ -380,7 +380,7 @@ function ruleJointchain(node, selector, bindings, ctx) {
   const allPositional = node.args.every(a => a.type !== 'KeywordArg');
 
   if (allKeyword) {
-    return jointchainKeyword(node, selector, ctx);
+    return jointchainKeyword(node, selector, bindings, ctx);
   }
   if (allPositional) {
     return jointchainPositional(node, selector, bindings, ctx);
@@ -388,7 +388,7 @@ function ruleJointchain(node, selector, bindings, ctx) {
   return unsupported('jointchain mixing keyword and positional args', node);
 }
 
-function jointchainKeyword(node, selector, ctx) {
+function jointchainKeyword(node, selector, bindings, ctx) {
   const fieldNames = node.args.map(a => a.name);
 
   for (const s of selector) {
@@ -425,26 +425,40 @@ function jointchainKeyword(node, selector, ctx) {
     ? priorArgs[0].value
     : mkCall('jointchain', priorArgs.map(a => mkKwArg(a.name, a.value, ctx.source)), ctx.source);
 
-  // Wrap kernel side in `kernelof(body, n1=n1, ...)` so the chain's
-  // implicit "earlier-field-as-input" semantics is encoded as explicit
+  // Wrap kernel side as a parametric kernel. The chain's implicit
+  // "earlier-field-as-input" semantics is encoded as explicit
   // boundary inputs. The boundary names refer to the joint's variates,
-  // which typically aren't bindings in the host scope — so when the
-  // renderer walks the resulting kernelof, `extractBoundaries` produces
-  // synthetic boundary nodes for them, exactly as if the user had hand-
-  // written the kernel.
-  const kernelExpr = wrapAsKernelOf(kernelBody, priorArgs.map(a => a.name), ctx);
+  // which typically aren't bindings in the host scope — when the
+  // renderer walks the resulting reification, `extractBoundaries`
+  // produces synthetic boundary nodes for them, exactly as if the user
+  // had hand-written the kernel.
+  //
+  // Keyword choice: per FlatPPL spec, `kernelof(x, ...)` requires `x`
+  // to NOT be a measure (it implicitly takes lawof(x)); reifying a
+  // measure-typed body uses `functionof` instead, which produces a
+  // kernel when its body is a measure. wrapAsKernelOrFunctionOf picks
+  // the right one based on isMeasureExpr.
+  const kernelExpr = wrapAsKernelOrFunctionOf(kernelBody, priorArgs.map(a => a.name), bindings, ctx);
   return synthesized(kernelExpr, priorExpr);
 }
 
-// Build `kernelof(body, n=n, ...)` — or just `body` if no boundary names
-// are supplied (constant kernel = measure).
-function wrapAsKernelOf(body, boundaryNames, ctx) {
+// Build `kernelof(body, n=n, ...)` (when body is a value) or
+// `functionof(body, n=n, ...)` (when body is a measure) — or just
+// `body` if no boundary names are supplied (constant kernel = the
+// measure / value itself).
+//
+// The keyword distinction matters per FlatPPL spec §sec:kernelof:
+// `kernelof`'s first arg must not be a measure. Both forms produce a
+// kernel here (since the result is a parameterised measure-or-stochastic-
+// value), but only the spec-compliant keyword is emitted.
+function wrapAsKernelOrFunctionOf(body, boundaryNames, bindings, ctx) {
   if (boundaryNames.length === 0) return body;
   const args = [body];
   for (const n of boundaryNames) {
     args.push(mkKwArg(n, mkIdent(n, ctx.source), ctx.source));
   }
-  return mkCall('kernelof', args, ctx.source);
+  const op = isMeasureExpr(body, bindings) ? 'functionof' : 'kernelof';
+  return mkCall(op, args, ctx.source);
 }
 
 // Positional jointchain — bayesian_inference_3's case. Each component is
@@ -541,7 +555,7 @@ function jointchainPositional(node, selector, bindings, ctx) {
   }
   const kernelBody = build(kernelComps);
   const kernelExpr = priorFieldsAllKnown
-    ? wrapAsKernelOf(kernelBody, priorBoundaryNames, ctx)
+    ? wrapAsKernelOrFunctionOf(kernelBody, priorBoundaryNames, bindings, ctx)
     : kernelBody;
   return synthesized(kernelExpr, build(priorComps));
 }
