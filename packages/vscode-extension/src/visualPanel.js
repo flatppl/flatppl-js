@@ -1071,7 +1071,7 @@ class FlatPPLPanel {
 
     /**
      * Wrap a Philox state in a closure that returns U(0,1) uniforms,
-     * matching the `() => number` callback shape that
+     * matching the "() => number" callback shape that
      * empirical.systematicResample / multinomialResample expect.
      * Used for deterministic main-thread resampling under a
      * per-binding seed (currently: superpose).
@@ -1570,9 +1570,11 @@ class FlatPPLPanel {
             var densOpts = { gridPoints: 256 };
             if (range) densOpts.range = range;
             return sendWorker({ type: 'density', ir: planForCall.analyticalIR, opts: densOpts })
-              .then(function(densReply) { return { samples: samples, histogram: hist, density: densReply }; });
+              .then(function(densReply) {
+                return { samples: samples, histogram: hist, density: densReply, measure: measure };
+              });
           }
-          return { samples: samples, histogram: hist, density: null };
+          return { samples: samples, histogram: hist, density: null, measure: measure };
         })
         .then(function(reply) {
           if (!reply || currentPlotPlan !== planForCall) return;
@@ -1920,17 +1922,42 @@ class FlatPPLPanel {
 
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
 
+      // ESS readout: only meaningful for weighted measures. Uniform-
+      // weight measures have ESS = N exactly, which is uninformative
+      // chrome. The Kish-style ESS already lives in empirical.js.
+      //
+      // Color thresholds (per the design discussion):
+      //   ESS/N ≥ 0.5  → neutral   (weights nearly uniform)
+      //   0.1 ≤ <0.5   → amber     (noticeably non-uniform)
+      //   < 0.1        → red       (degenerate; viz may mislead)
+      var essSubtitle = '';
+      var essColor = fg;
+      var measure = reply.measure;
+      if (measure && measure.logWeights) {
+        var ess = FlatPPLEngine.empirical.effectiveSampleSize(measure);
+        var N = measure.samples.length;
+        var ratio = N > 0 ? ess / N : 0;
+        // Round ESS to an integer for display — the fractional part is
+        // numerical noise from the log-space computation.
+        essSubtitle = 'ESS: ' + Math.round(ess) + ' / ' + N;
+        if      (ratio >= 0.5) essColor = fg;
+        else if (ratio >= 0.1) essColor = '#FFB300';
+        else                   essColor = '#E57373';
+      }
+
       plotEchart = echarts.init(el);
       var zoomOpts2 = plotZoomOptions(fg);
       plotEchart.setOption({
         animation: false,
         dataZoom: zoomOpts2.dataZoom,
         toolbox: zoomOpts2.toolbox,
-        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+        grid: { left: 60, right: 25, top: essSubtitle ? 46 : 30, bottom: 50, containLabel: false },
         title: {
           text: distLabel,
+          subtext: essSubtitle,
           left: 'center', top: 4,
           textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+          subtextStyle: { color: essColor, fontSize: 11, opacity: 0.9 },
         },
         legend: {
           data: legendData,
