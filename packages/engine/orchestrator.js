@@ -51,6 +51,7 @@
 // orchestrator at all.
 
 const { lowerExpr } = require('./lower');
+const { isMeasureExpr } = require('./analyzer');
 
 // Distributions the worker's REGISTRY currently implements. Hardcoded
 // here to avoid pulling sampler.js (and stdlib) into the main bundle.
@@ -473,82 +474,64 @@ function classifyDerivation(binding, bindings) {
       return { kind: 'sample', distIR: rhsIR };
     }
 
-    // Density reweighting: weighted(<constant>, <base-measure-ref>).
-    // Only the constant-weight case is supported here — function-of-
-    // variate weights need per-atom evaluation (similar to per-i ref
-    // params in drawN) and aren't wired yet. The visualPanel applies
-    // the precomputed log-shift to the parent measure's logWeights.
+    // Measure-algebra ops require *measures* as their measure-typed
+    // arguments — passing a value (e.g. `weighted(0.5, theta1)` where
+    // theta1 is a draw) is a type error per spec §sec:measure-algebra.
+    // We use isMeasureExpr on the original AST args (not the lowered
+    // IR) because that helper already encodes all the special cases
+    // (lawof / draw / MEASURE_PRODUCING). The orchestrator's lowered-IR
+    // matching tells us which OP we're looking at; the AST tells us
+    // which OPERANDS are actually measures.
+    const ast = binding.node.value;
+
+    // Density reweighting: weighted(<constant>, <measure-expr>).
+    // Function-of-variate weights are deferred (need per-atom eval).
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'weighted'
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
-      const baseExpr   = rhsIR.args[1];
+      const baseAst    = ast.args[1];
       const weightExpr = rhsIR.args[0];
-      if (baseExpr.kind === 'ref' && baseExpr.ns === 'self'
-          && bindings.has(baseExpr.name)) {
-        const w = resolveConstant(weightExpr, bindings, new Set());
-        if (w != null && w > 0 && Number.isFinite(w)) {
-          return { kind: 'weighted', from: baseExpr.name, logShift: Math.log(w) };
-        }
-      }
-      return null;
+      const baseName = resolveMeasureBaseName(baseAst, bindings);
+      if (baseName == null) return null;
+      const w = resolveConstant(weightExpr, bindings, new Set());
+      if (w == null || !(w > 0) || !Number.isFinite(w)) return null;
+      return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
     }
 
-    // Log-density reweighting: logweighted(<constant>, <base-measure-ref>).
-    // Direct analogue of `weighted` in log-space — the weight is added
-    // to each parent atom's logWeight. Useful when the user already
-    // has a log-density on hand (likelihoods, etc.).
+    // Log-density reweighting: logweighted(<constant>, <measure-expr>).
+    // Same shape as weighted, but the weight is the log already.
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'logweighted'
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
-      const baseExpr  = rhsIR.args[1];
-      const lwExpr    = rhsIR.args[0];
-      if (baseExpr.kind === 'ref' && baseExpr.ns === 'self'
-          && bindings.has(baseExpr.name)) {
-        const lw = resolveConstant(lwExpr, bindings, new Set());
-        if (lw != null && Number.isFinite(lw)) {
-          return { kind: 'weighted', from: baseExpr.name, logShift: lw };
-        }
-      }
-      return null;
+      const baseAst = ast.args[1];
+      const lwExpr  = rhsIR.args[0];
+      const baseName = resolveMeasureBaseName(baseAst, bindings);
+      if (baseName == null) return null;
+      const lw = resolveConstant(lwExpr, bindings, new Set());
+      if (lw == null || !Number.isFinite(lw)) return null;
+      return { kind: 'weighted', from: baseName, logShift: lw };
     }
 
-    // Normalisation: normalize(<measure-ref>). Subtracts logSumExp
-    // from each weight so the result is a probability measure
-    // (totalLogMass = 0). For an already-uniform measure (totalLogMass
-    // = 0) this is a no-op; for a re-weighted one it brings it back
-    // onto the probability scale.
+    // Normalisation: normalize(<measure-expr>). Subtracts logSumExp
+    // from each weight so the result is a probability measure.
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'normalize'
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 1) {
-      const baseExpr = rhsIR.args[0];
-      if (baseExpr.kind === 'ref' && baseExpr.ns === 'self'
-          && bindings.has(baseExpr.name)) {
-        return { kind: 'normalize', from: baseExpr.name };
-      }
-      return null;
+      const baseAst = ast.args[0];
+      const baseName = resolveMeasureBaseName(baseAst, bindings);
+      if (baseName == null) return null;
+      return { kind: 'normalize', from: baseName };
     }
 
-    // Additive superposition: superpose(<ref>, <ref>, ...).
-    // Concatenates the components' atoms (with their weights), then
-    // resamples back to the global N at materialisation time. The
-    // resample is what re-establishes the shared-N axis so a
-    // superposed binding can still be jointly-composed downstream.
-    // Per FlatPPL spec §sec:additive-superposition the result is
-    // generally not normalised — totals add. The visualPanel's
-    // resampler bakes this into uniformly-weighted output (with
-    // total mass conceptually = sum of inputs); call normalize(...)
-    // explicitly to land on the probability scale.
-    //
-    // Inline measure expressions (e.g. superpose(Normal(0,1), m))
-    // could be supported by introducing anonymous derivations, but
-    // for now we require every component to be a binding ref so the
-    // data flow stays straightforward.
+    // Additive superposition: superpose(<measure-expr>, ...).
+    // Per spec §sec:additive-superposition the result is generally
+    // not normalised — totals add. Components must be measures (a
+    // value summand is a type error).
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'superpose'
         && Array.isArray(rhsIR.args) && rhsIR.args.length >= 1) {
       const fromNames = [];
-      for (const arg of rhsIR.args) {
-        if (arg.kind === 'ref' && arg.ns === 'self' && bindings.has(arg.name)) {
-          fromNames.push(arg.name);
-        } else {
-          return null;
-        }
+      for (let i = 0; i < rhsIR.args.length; i++) {
+        const argAst = ast.args[i];
+        const baseName = resolveMeasureBaseName(argAst, bindings);
+        if (baseName == null) return null;
+        fromNames.push(baseName);
       }
       return { kind: 'superpose', fromNames };
     }
@@ -621,6 +604,46 @@ function derivationRefsValid(d, derivations, bindings) {
  * derivations to pre-compute the log-shift at classification time
  * rather than at sample-render time. Cycle-guarded.
  */
+/**
+ * Resolve a measure-typed AST argument (the measure operand of
+ * weighted / normalize / superpose, etc.) to a binding name we can
+ * alias the new derivation to. Returns null when the argument isn't a
+ * shape we currently support.
+ *
+ * Accepts:
+ *   - Identifier(<name>) where <name>'s binding is a measure (per
+ *     spec §sec:measure-algebra; uses isMeasureExpr to be robust to
+ *     lawof bindings, alias chains, distribution constructors,
+ *     weighted/normalize/superpose results, etc.)
+ *   - CallExpr `lawof(<ident>)` — the spec's identity law gives
+ *     `lawof(draw(m)) = m`, and our empirical-measure cache treats
+ *     a variate and its underlying measure as the same atoms +
+ *     weights, so we alias to the inner ident's cached measure
+ *     directly. This is the spec-correct way to lift a value into a
+ *     measure on the fly.
+ *
+ * Inline measure constructions (e.g. `weighted(0.5, Normal(0, 1))`,
+ * or chains like `weighted(0.5, normalize(m))`) need anonymous
+ * intermediate derivations and are deferred — the user can split
+ * them into named bindings for now.
+ */
+function resolveMeasureBaseName(astNode, bindings) {
+  if (!astNode) return null;
+  if (astNode.type === 'Identifier' && bindings.has(astNode.name)) {
+    return isMeasureExpr(astNode, bindings) ? astNode.name : null;
+  }
+  if (astNode.type === 'CallExpr'
+      && astNode.callee && astNode.callee.type === 'Identifier'
+      && astNode.callee.name === 'lawof'
+      && Array.isArray(astNode.args) && astNode.args.length === 1) {
+    const inner = astNode.args[0];
+    if (inner && inner.type === 'Identifier' && bindings.has(inner.name)) {
+      return inner.name;
+    }
+  }
+  return null;
+}
+
 function resolveConstant(ir, bindings, seen) {
   if (!ir) return null;
   if (ir.kind === 'lit') {

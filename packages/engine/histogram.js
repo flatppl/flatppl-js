@@ -114,22 +114,35 @@ function freedmanDiaconisHistogram(samples, opts = {}) {
   const binEdges = new Float64Array(nBins + 1);
   for (let i = 0; i <= nBins; i++) binEdges[i] = lo + i * binWidth;
 
-  // Bin accumulation. Unweighted: each in-trim sample contributes 1
-  // to its bin → normalisation factor = 1 / (n * binWidth) gives the
-  // pdf-scale height we want. Weighted: each contributes its
-  // normalised weight (which sums to 1 across all atoms) → norm
-  // factor = 1 / binWidth, since the weighted accumulator already
-  // accounts for total mass.
+  // Bin accumulation. Mass-faithful per spec §sec:measure-algebra
+  // ("operations never rescale their inputs or outputs"):
+  //
+  //   unweighted: each in-trim atom contributes 1 to its bin; final
+  //               normalisation factor 1 / (n * binWidth) makes bars
+  //               integrate to 1 — total mass of a uniform 1/N over N
+  //               atoms is 1, which matches.
+  //
+  //   weighted:   each atom contributes exp(logWeight) (its actual
+  //               atomic mass) directly. No normalisation step. Final
+  //               factor is just 1 / binWidth, so bars integrate to
+  //               the empirical measure's actual total mass —
+  //               weighted(0.5, m) renders bars at half the height of
+  //               m's bars, which is the correct visualization of
+  //               "this measure has half the mass of m."
+  //
+  // For uniform-weight measures with explicit logWeights = -log(N)
+  // per atom, exp(...) = 1/N and the weighted path collapses to the
+  // unweighted path numerically, so the two paths agree on the
+  // probability-measure case.
   const counts = new Float64Array(nBins);
   if (weighted) {
-    const norm = normaliseWeights(lw);
     for (let i = 0; i < n; i++) {
       const v = samples[i];
       if (v < lo || v > hi) continue;
       let bin = Math.floor((v - lo) / binWidth);
       if (bin >= nBins) bin = nBins - 1;
       if (bin < 0) bin = 0;
-      counts[bin] += norm[i];
+      counts[bin] += Math.exp(lw[i]);
     }
   } else {
     for (let i = 0; i < n; i++) {
@@ -184,16 +197,20 @@ function integerHistogram(samples, opts = {}) {
   const ys = new Float64Array(span);
   for (let i = 0; i < span; i++) xs[i] = lo + i;
   if (weighted) {
-    // Weighted: accumulate normalised weights (which sum to 1) into
-    // their integer bins. Result is already on the probability scale
-    // — no extra division step.
-    const norm = normaliseWeights(lw);
+    // Mass-faithful per spec §sec:measure-algebra: accumulate raw
+    // exp(logWeight) into integer bins so the resulting heights sum
+    // to the empirical measure's actual total mass. weighted(0.5, m)
+    // shows bars at half the height of m's; normalize(...) brings
+    // them back onto the probability scale.
     for (let i = 0; i < n; i++) {
       const k = Math.round(samples[i]) - lo;
-      ys[k] += norm[i];
+      ys[k] += Math.exp(lw[i]);
     }
   } else {
-    // Unweighted: count atoms, then divide by N so heights sum to 1.
+    // Unweighted: count atoms, then divide by N. Total mass of a
+    // uniform 1/N over N atoms is 1, so heights sum to 1 — which
+    // matches what the weighted path computes for explicit-uniform
+    // logWeights.
     for (let i = 0; i < n; i++) {
       const k = Math.round(samples[i]) - lo;
       ys[k] += 1;

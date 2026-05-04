@@ -112,21 +112,23 @@ test('integerHistogram: explicit uniform logWeights matches unweighted', () => {
   }
 });
 
-test('integerHistogram: weighted branch picks up the weights', () => {
+test('integerHistogram: weighted branch picks up raw atomic mass (mass-faithful)', () => {
   // Three atoms at integers 0, 1, 2 with weights [1, 4, 1] (linear).
-  // Probabilities should be [1/6, 4/6, 1/6].
+  // Per spec §sec:measure-algebra ("operations never rescale"), the
+  // histogram reflects the measure's actual atomic mass — bars
+  // [1, 4, 1] with total mass 6, NOT a probability-normalised
+  // [1/6, 4/6, 1/6]. Run normalize(...) to land on probability scale.
   const samples = new Float64Array([0, 1, 2]);
   const lw = new Float64Array([Math.log(1), Math.log(4), Math.log(1)]);
   const r = integerHistogram(samples, { logWeights: lw });
   assert.equal(r.reference, 'counting');
   assert.deepEqual(Array.from(r.xs), [0, 1, 2]);
-  // Sum to 1 (probability scale), and the middle atom dominates.
   let s = 0;
   for (let i = 0; i < r.ys.length; i++) s += r.ys[i];
-  assert.ok(Math.abs(s - 1) < 1e-12);
-  assert.ok(Math.abs(r.ys[0] - 1/6) < 1e-12);
-  assert.ok(Math.abs(r.ys[1] - 4/6) < 1e-12);
-  assert.ok(Math.abs(r.ys[2] - 1/6) < 1e-12);
+  assert.ok(Math.abs(s - 6) < 1e-12, `total mass ${s} should be 6`);
+  assert.ok(Math.abs(r.ys[0] - 1) < 1e-12);
+  assert.ok(Math.abs(r.ys[1] - 4) < 1e-12);
+  assert.ok(Math.abs(r.ys[2] - 1) < 1e-12);
 });
 
 test('freedmanDiaconisHistogram: uniform weights produce approximately the same shape as unweighted', () => {
