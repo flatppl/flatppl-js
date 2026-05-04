@@ -874,18 +874,29 @@ class FlatPPLPanel {
     var plotEchart = null;
 
     // ---------------------------------------------------------------
-    // Main-thread sample cache.
+    // Main-thread empirical-measure cache.
     //
-    // The cache lives here, not on the worker, so:
-    //   - Samples persist across worker recycles.
-    //   - Variates and their underlying measures share Float64Arrays
-    //     (theta1's "samples" ARE theta1_dist's samples — same reference).
+    // The cache holds an EmpiricalMeasure per binding:
+    //   { samples:    Float64Array,            // the atom values
+    //     logWeights: Float64Array | null }    // null = uniform 1/N
+    //
+    // Why a measure (not just samples)? When we add weighted,
+    // bayesupdate, and superpose, we'll need per-atom weights to
+    // represent the result correctly. Storing the structure now, even
+    // with logWeights always null, lets those operations land later
+    // without churning every consumer. For unweighted measures the
+    // null-uniform convention costs nothing — logSumExp(null) = 0,
+    // so total mass = 1 (probability measure), and histograms take
+    // the simple count/N path.
+    //
+    // Why main-thread cache (not worker-side)?
+    //   - Survives worker recycles (the user's Stop button terminates
+    //     the worker; the cache stays valid).
+    //   - Variates and their underlying measures share the SAME
+    //     EmpiricalMeasure object (same samples, same logWeights) —
+    //     theta1's measure IS theta1_dist's measure, by reference.
     //   - Click-around the DAG hits the cache → instant re-render.
     //   - Source edits invalidate everything by clearing the map.
-    //
-    // Each binding has at most one entry. Aliases share the array
-    // reference (no copy). Deterministic transforms reuse parents'
-    // arrays element-wise via the worker's evaluateN primitive.
     //
     // Per-binding seeding: we derive a deterministic seed from a
     // string hash of the binding name XOR'd with a root seed. Two
@@ -895,7 +906,15 @@ class FlatPPLPanel {
     // rootSeed and clear the cache to redraw everything.
     // ---------------------------------------------------------------
     var derivationsState = null;       // { derivations, discrete } from orchestrator
-    var sampleCache = new Map();       // Map<name, Float64Array>
+    var measureCache = new Map();      // Map<name, EmpiricalMeasure>
+    // Per-binding histogram cache. Histogram computation is O(N) and
+    // for N=1M takes a noticeable few ms; caching keeps click-flipping
+    // between previously-viewed bindings instant. Invalidated together
+    // with measureCache (source change, configUpdate). Key includes
+    // the discrete flag so the same name plotted discrete vs. continuous
+    // gets distinct cache entries (defensive — discreteness is fixed
+    // per binding today but the door's open for future modes).
+    var histogramCache = new Map();    // Map<"name|d"|"name|c", histogram>
     var rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
@@ -908,16 +927,24 @@ class FlatPPLPanel {
     var SAMPLE_COUNT = 100000;
 
     function rebuildDerivations() {
-      if (!currentBindings) { derivationsState = null; sampleCache = new Map(); return; }
+      if (!currentBindings) {
+        derivationsState = null;
+        measureCache = new Map();
+        histogramCache = new Map();
+        return;
+      }
       try {
         derivationsState = FlatPPLEngine.orchestrator.buildDerivations(currentBindings);
       } catch (e) {
         console.error('FlatPPL: buildDerivations failed:', e);
         derivationsState = null;
       }
-      // Source change invalidates every cached array — derivations
-      // (or just signatures) may have shifted under any of them.
-      sampleCache = new Map();
+      // Source change invalidates every cached measure — derivations
+      // (or just signatures) may have shifted under any of them. Drop
+      // the histogram cache too since histograms are downstream of
+      // measures.
+      measureCache = new Map();
+      histogramCache = new Map();
     }
 
     /**
@@ -936,27 +963,28 @@ class FlatPPLPanel {
     }
 
     /**
-     * Recursively materialise samples for a binding, reusing cache
-     * entries for any deps already computed. Returns Promise<Float64Array>
-     * because dep materialisation involves worker round-trips. Callers
-     * must await.
+     * Recursively materialise the empirical measure for a binding,
+     * reusing cache entries for any deps already computed.
+     * Returns Promise<EmpiricalMeasure>.
      *
-     * Aliases share the SAME array reference as their target (no copy)
-     * so click-flipping between a variate and its measure is free.
+     * Aliases share the SAME EmpiricalMeasure object (same samples
+     * array, same logWeights ref) so click-flipping between a variate
+     * and its measure is free. With null-uniform logWeights the cache
+     * is purely additive over today's behaviour — no extra allocation.
      */
-    function getSamples(name) {
-      if (sampleCache.has(name)) return Promise.resolve(sampleCache.get(name));
+    function getMeasure(name) {
+      if (measureCache.has(name)) return Promise.resolve(measureCache.get(name));
       if (!derivationsState) return Promise.reject(new Error('no model loaded'));
       var d = derivationsState.derivations[name];
       if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
 
       var promise;
       if (d.kind === 'alias') {
-        promise = getSamples(d.from).then(function(arr) {
-          // Cache the alias under its own name pointing at the same
-          // Float64Array. They are now genuinely identical references.
-          sampleCache.set(name, arr);
-          return arr;
+        promise = getMeasure(d.from).then(function(m) {
+          // Alias: same measure object, period. Reference equality is
+          // intentional — theta1 and theta1_dist literally share weights.
+          measureCache.set(name, m);
+          return m;
         });
       } else if (d.kind === 'sample') {
         promise = collectRefArrays(d.distIR).then(function(refArrays) {
@@ -968,8 +996,12 @@ class FlatPPLPanel {
             seed: nameSeed(name),
           });
         }).then(function(reply) {
-          sampleCache.set(name, reply.samples);
-          return reply.samples;
+          // Worker reply already has the EmpiricalMeasure shape
+          // (samples + logWeights). Wrap minimally — drop the
+          // protocol-level type/id fields.
+          var m = { samples: reply.samples, logWeights: reply.logWeights || null };
+          measureCache.set(name, m);
+          return m;
         });
       } else if (d.kind === 'evaluate') {
         promise = collectRefArrays(d.ir).then(function(refArrays) {
@@ -980,17 +1012,20 @@ class FlatPPLPanel {
             refArrays: refArrays,
           });
         }).then(function(reply) {
-          sampleCache.set(name, reply.samples);
-          return reply.samples;
+          // TODO when weighted ops land: deterministic transforms
+          // preserve the parents' weights (they're index-aligned). For
+          // now every parent is unweighted (null) so the result is too.
+          var m = { samples: reply.samples, logWeights: reply.logWeights || null };
+          measureCache.set(name, m);
+          return m;
         });
       } else if (d.kind === 'array') {
         // Static array literal — values verbatim, no sampling, no
-        // worker round-trip. Cached length equals the array length,
-        // NOT SAMPLE_COUNT; the plot path detects this via the
-        // derivation kind on the plan.
-        var arr = Float64Array.from(d.values);
-        sampleCache.set(name, arr);
-        promise = Promise.resolve(arr);
+        // worker round-trip. Length equals the array length, NOT
+        // SAMPLE_COUNT; the plot path detects this via plan.mode.
+        var m = { samples: Float64Array.from(d.values), logWeights: null };
+        measureCache.set(name, m);
+        promise = Promise.resolve(m);
       } else {
         return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
       }
@@ -1002,10 +1037,13 @@ class FlatPPLPanel {
       var refs = FlatPPLEngine.orchestrator.collectSelfRefs(ir);
       var names = [];
       refs.forEach(function(n) { names.push(n); });
-      return Promise.all(names.map(function(n) { return getSamples(n); }))
-        .then(function(arrays) {
+      return Promise.all(names.map(function(n) { return getMeasure(n); }))
+        .then(function(measures) {
+          // The worker primitives still consume bare Float64Arrays per
+          // ref — weights only matter at the binding being computed,
+          // not its inputs. Extract .samples here at the boundary.
           var out = {};
-          for (var i = 0; i < names.length; i++) out[names[i]] = arrays[i];
+          for (var i = 0; i < names.length; i++) out[names[i]] = measures[i].samples;
           return out;
         });
     }
@@ -1284,9 +1322,10 @@ class FlatPPLPanel {
       // a microtask so the UI flush is uniform and the stale-reply
       // guard pattern stays the same.
       Promise.resolve()
-        .then(function() { return getSamples(planForCall.name); })
-        .then(function(samples) {
+        .then(function() { return getMeasure(planForCall.name); })
+        .then(function(measure) {
           if (currentPlotPlan !== planForCall) return null;
+          var samples = measure.samples;
           // Array-mode: skip histogram + density entirely; the data
           // is a fixed-length sequence to plot as index→value, not
           // a sample of a distribution.
@@ -1294,9 +1333,24 @@ class FlatPPLPanel {
             return { samples: samples, mode: 'array' };
           }
           // Histogram lives on the main thread now — no round-trip.
-          var hist = planForCall.discrete
-            ? FlatPPLEngine.histogram.integerHistogram(samples)
-            : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples);
+          // Cache by (name, discrete) so that click-flipping back to a
+          // previously-rendered binding is instant. Cache lives only
+          // as long as the underlying measure: rebuildDerivations and
+          // configUpdate (sampleCount change) clear both. Discreteness
+          // is folded into the key because the orchestrator's discrete
+          // flag could in principle change between rebuilds (it can't
+          // today, but future spec features might add knobs).
+          var histKey = planForCall.name + '|' + (planForCall.discrete ? 'd' : 'c');
+          var hist = histogramCache.get(histKey);
+          if (!hist) {
+            // TODO when weighted measures land: pass measure.logWeights
+            // through to a weighted-histogram path. For now everything
+            // is null-uniform, which collapses to the count/N path.
+            hist = planForCall.discrete
+              ? FlatPPLEngine.histogram.integerHistogram(samples)
+              : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples);
+            histogramCache.set(histKey, hist);
+          }
           // Only fetch analytical density when applicable. This is
           // the only worker round-trip per plot for measure bindings,
           // and it's skipped entirely for variates and chain-mode
@@ -2102,14 +2156,17 @@ class FlatPPLPanel {
         // The host pushed updated visualization settings.
         var cfg = msg.config || {};
 
-        // sampleCount: drop every cached Float64Array on change (each
-        // was sized to the old SAMPLE_COUNT and can't be reused) and
-        // re-render the current plot at the new count.
+        // sampleCount: drop every cached EmpiricalMeasure on change
+        // (each was sized to the old SAMPLE_COUNT and can't be reused)
+        // and re-render the current plot at the new count. The
+        // histogram cache must go too — it's keyed by binding name
+        // but the underlying samples will be different.
         if (typeof cfg.sampleCount === 'number'
             && cfg.sampleCount > 0
             && cfg.sampleCount !== SAMPLE_COUNT) {
           SAMPLE_COUNT = cfg.sampleCount | 0;
-          sampleCache = new Map();
+          measureCache = new Map();
+          histogramCache = new Map();
           if (plotEnabled) renderPlotForCurrent();
         }
 

@@ -161,7 +161,10 @@ function createWorkerHandler(opts = {}) {
           // binding seeded calls leave the session state alone so the
           // calls are independent of arrival order.
           if (msg.seed == null) philox = state;
-          return { type: 'samples', id, samples: out };
+          // EmpiricalMeasure shape: samples + logWeights. Variates and
+          // independent draws come back unweighted (null = uniform 1/N);
+          // weighted operations attach explicit per-atom weights later.
+          return { type: 'samples', id, samples: out, logWeights: null };
         }
         case 'evaluateN': {
           // Element-wise deterministic compute. ir typically a (call op …)
@@ -175,7 +178,11 @@ function createWorkerHandler(opts = {}) {
             for (const k in refArrays) callEnv[k] = refArrays[k][i];
             out[i] = samplerLib.evaluateExpr(msg.ir, callEnv);
           }
-          return { type: 'samples', id, samples: out };
+          // Deterministic transforms preserve their parents' weights.
+          // The main thread is responsible for plumbing the parent's
+          // logWeights through; the worker just emits null here and
+          // lets that wrap-up happen at the cache boundary.
+          return { type: 'samples', id, samples: out, logWeights: null };
         }
         case 'dispose': {
           philox = null;
@@ -208,8 +215,14 @@ function createWorkerHandler(opts = {}) {
 // arrays move zero-copy across the worker boundary.
 function transferablesOf(reply) {
   if (!reply) return [];
-  if (reply.type === 'samples' && reply.samples instanceof Float64Array) {
-    return [reply.samples.buffer];
+  if (reply.type === 'samples') {
+    const out = [];
+    if (reply.samples    instanceof Float64Array) out.push(reply.samples.buffer);
+    // logWeights is null for unweighted measures (which is everything
+    // until the weighted-ops land). When it becomes a typed array,
+    // ship its buffer too so weighted draws stay zero-copy.
+    if (reply.logWeights instanceof Float64Array) out.push(reply.logWeights.buffer);
+    return out;
   }
   if (reply.type === 'density') {
     const out = [];

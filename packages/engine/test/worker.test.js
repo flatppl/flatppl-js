@@ -348,6 +348,30 @@ test('drawN: returns Float64Array of requested length', () => {
   for (let i = 0; i < 100; i++) assert.ok(Number.isFinite(r.samples[i]));
 });
 
+test('drawN: reply carries the EmpiricalMeasure shape (samples + logWeights)', () => {
+  // Variates and i.i.d. draws are unweighted by construction. The
+  // worker emits logWeights: null so the main-thread cache wraps it
+  // as { samples, logWeights: null } directly. Once weighted ops land
+  // this slot will hold an explicit Float64Array for those cases.
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const r = w.handle({ type: 'drawN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 10, seed: 1 });
+  assert.equal(r.type, 'samples');
+  assert.ok('logWeights' in r, 'reply must include logWeights field');
+  assert.equal(r.logWeights, null, 'unweighted draws → logWeights: null');
+});
+
+test('evaluateN: reply carries the EmpiricalMeasure shape', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({
+    type: 'evaluateN',
+    ir: { kind: 'lit', value: 1, loc: synthLoc() },
+    count: 5,
+  });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.logWeights, null);
+});
+
 test('drawN: same (ir, seed) yields identical samples regardless of session state', () => {
   // Per-call seeding is the whole point of drawN: the main-thread
   // cache should get deterministic per-binding output, independent
