@@ -313,7 +313,9 @@ class FlatPPLPanel {
       padding: 1px 6px; border-radius: 3px;
       color: #fff;
     }
-    #info .phase-fixed         { background: #607D8B; }
+    /* Phase tag colors — kept in sync with the JS PHASE_COLORS map so
+       the info-bar tag and the node fill match for any given phase. */
+    #info .phase-fixed         { background: #90A4AE; color: #222; }
     #info .phase-parameterized { background: #4DD0E1; color: #222; }
     #info .phase-stochastic    { background: #B39DDB; color: #222; }
     #info .expr {
@@ -362,6 +364,12 @@ class FlatPPLPanel {
       font-size: 11px; opacity: 0.85;
       display: flex; flex-direction: column; gap: 3px;
     }
+    #legend .section {
+      font-weight: 600; opacity: 0.55; font-size: 10px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-top: 6px;
+    }
+    #legend .section:first-child { margin-top: 0; }
     #legend .item { display: flex; align-items: center; gap: 6px; }
     #legend .swatch {
       width: 14px; height: 14px; border-radius: 3px;
@@ -413,6 +421,31 @@ class FlatPPLPanel {
     // palette — perceptually ordered, colorblind-safe (the differences
     // live in distinct RGB channels), and quiet enough to read as bubble
     // fills at low alpha against a dark editor background.
+    // Phase-driven colors for value-producing nodes (draw / call /
+    // computed values inside a kernel scope). Type-producing nodes
+    // (lawof, kernelof, functionof, fn, literal, …) keep their own
+    // colors below — they're not on the value-phase axis.
+    //
+    // Kept in sync with #info .phase-* CSS so the in-bar phase tag
+    // colour matches the node fill colour for any given phase.
+    //
+    // The choices match the historical TYPE_STYLE.{input, draw, call}
+    // colours so the visual story stays familiar:
+    //   stochastic    → was draw            (purple)
+    //   parameterized → was input/elementof (teal)
+    //   fixed         → was call/literal    (blue-grey)
+    var PHASE_COLORS = {
+      stochastic:    '#B39DDB',
+      parameterized: '#4DD0E1',
+      fixed:         '#90A4AE',
+    };
+
+    // Standalone color for the "draw" arrow — the boundary between
+    // deterministic and stochastic in the model. A darker shade of the
+    // stochastic phase color so the line reads boldly without being
+    // confused for a node fill.
+    var DRAW_EDGE_COLOR = '#7E57C2';
+
     var TYPE_STYLE = {
       input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
       draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
@@ -518,15 +551,76 @@ class FlatPPLPanel {
       document.getElementById('back-btn').style.display = history.length > 0 ? 'block' : 'none';
     }
 
+    /**
+     * Two-section legend: Phase (color axis) and Type (color axis for
+     * structural nodes). Only shows entries actually present in the
+     * current view, so the legend stays compact for small models.
+     *
+     * Phase entries appear when value-producing nodes ('draw', 'call')
+     * are visible — those are the ones that get phase-colored. Type
+     * entries appear for any structural type whose nodes are present
+     * (lawof, kernelof, functionof, fn, literal, input, likelihood,
+     * bayesupdate, module, table). draw / call don't appear in the
+     * Type list because their color comes from Phase, not Type.
+     */
     function buildLegend() {
       var el = document.getElementById('legend');
-      el.innerHTML = '';
-      for (var t of shownTypes) {
-        var s = TYPE_STYLE[t] || TYPE_STYLE.unknown;
-        el.innerHTML += '<div class="item">'
-          + '<span class="swatch" style="background:' + s.color + '"></span>'
-          + '<span>' + esc(s.label) + '</span></div>';
+
+      // Walk the current sub-DAG to find which phases and types are
+      // actually visible. shownTypes from the renderer covers types;
+      // we collect phases here directly.
+      var phasesShown = new Set();
+      var typesShown = new Set(shownTypes);
+      if (currentState && currentState.data) {
+        for (var i = 0; i < currentState.data.nodes.length; i++) {
+          var n = currentState.data.nodes[i];
+          if ((n.type === 'draw' || n.type === 'call') && n.phase) {
+            phasesShown.add(n.phase);
+          }
+        }
       }
+
+      var html = '';
+
+      // Phase section — fixed display order matching the conceptual
+      // axis (most uncertainty → least).
+      var orderedPhases = [
+        ['stochastic',    'stochastic'],
+        ['parameterized', 'parameterized'],
+        ['fixed',         'fixed'],
+      ];
+      var phaseEntries = orderedPhases.filter(function(p) { return phasesShown.has(p[0]); });
+      if (phaseEntries.length > 0) {
+        html += '<div class="section">phase</div>';
+        for (var i = 0; i < phaseEntries.length; i++) {
+          var p = phaseEntries[i];
+          html += '<div class="item">'
+            + '<span class="swatch" style="background:' + PHASE_COLORS[p[0]] + '"></span>'
+            + '<span>' + esc(p[1]) + '</span></div>';
+        }
+      }
+
+      // Type section — structural-only types whose color is type-driven
+      // (not phase-driven). draw and call are intentionally excluded:
+      // the user already sees them via the Phase section above.
+      var orderedTypes = [
+        'lawof', 'kernelof', 'functionof', 'fn',
+        'literal', 'input',
+        'likelihood', 'bayesupdate',
+        'module', 'table',
+      ];
+      var typeEntries = orderedTypes.filter(function(t) { return typesShown.has(t); });
+      if (typeEntries.length > 0) {
+        html += '<div class="section">type</div>';
+        for (var j = 0; j < typeEntries.length; j++) {
+          var s = TYPE_STYLE[typeEntries[j]];
+          html += '<div class="item">'
+            + '<span class="swatch" style="background:' + s.color + '"></span>'
+            + '<span>' + esc(s.label) + '</span></div>';
+        }
+      }
+
+      el.innerHTML = html;
     }
 
     function initCy() {
@@ -613,13 +707,14 @@ class FlatPPLPanel {
           },
           {
             // Draw edges: the boundary between deterministic and
-            // stochastic. Solid line in the variate's purple, slightly
-            // thicker than dataflow edges so the eye lands on where
-            // stochasticity enters the model.
+            // stochastic. Solid line in a darker purple than the
+            // node fill so it reads boldly as a line; thicker than
+            // dataflow edges so the eye lands on where stochasticity
+            // enters the model.
             selector: 'edge[edgeType = "draw"]',
             style: {
-              'line-color': TYPE_STYLE.draw.color,
-              'target-arrow-color': TYPE_STYLE.draw.color,
+              'line-color': DRAW_EDGE_COLOR,
+              'target-arrow-color': DRAW_EDGE_COLOR,
               'width': 2.5,
             }
           },
@@ -1915,18 +2010,46 @@ class FlatPPLPanel {
         var node = data.nodes[i];
         var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
         shownTypes.add(node.type);
-        // Override shape and color based on the engine-computed reification
-        // kind. functionof on a measure is semantically a Markov kernel —
-        // it should read as kernelof (purple round-hexagon), regardless
-        // of which keyword the user wrote.
+
+        // Shape: type-driven (carries the structural info — what *kind*
+        // of binding this is). The engine-computed reification kind
+        // overrides for "functionof acting on a measure → render as a
+        // kernel" so the user sees a kernel regardless of which
+        // keyword they wrote.
         var shape = ts.shape;
-        var color = ts.color;
+        if (node.kind === 'kernel')      shape = 'round-hexagon';
+        else if (node.kind === 'measure') shape = 'round-rectangle';
+
+        // Color: phase-driven for value-producing nodes (semantic info —
+        // is this random / a parameter / a constant?). Type-driven for
+        // structural nodes (measures, kernels, functions, literals,
+        // likelihoods, etc.) where a phase classification would be
+        // misleading or meaningless.
+        //
+        //   value-producing: 'draw' | 'call'
+        //                    → PHASE_COLORS[node.phase]
+        //   measure:         node.kind === 'measure' || type === 'lawof'
+        //                    → lawof blue
+        //   kernel:          node.kind === 'kernel' || type === 'kernelof'
+        //                    → kernelof teal
+        //   function:        type === 'functionof' | 'fn'
+        //                    → functionof green
+        //   everything else: TYPE_STYLE[type].color (literal pink, input
+        //                    teal, likelihood/bayesupdate red/orange, …)
+        //
+        // Inside a reification bubble, node.phase has been overridden to
+        // the scope-local phase by dag.js's applyScopeLocalPhases — so
+        // the same theta1 reads stochastic in the main view and
+        // parameterized inside a kernel bubble.
+        var color;
         if (node.kind === 'kernel') {
-          shape = 'round-hexagon';
           color = TYPE_STYLE.kernelof.color;
         } else if (node.kind === 'measure') {
-          shape = 'round-rectangle';
           color = TYPE_STYLE.lawof.color;
+        } else if (node.type === 'draw' || node.type === 'call') {
+          color = PHASE_COLORS[node.phase] || ts.color;
+        } else {
+          color = ts.color;
         }
         // Anonymous nodes (inline-expression targets) have label === ''
         // deliberately and show their expression on hover only. Others

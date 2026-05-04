@@ -561,6 +561,103 @@ function computePhases(bindings) {
 }
 
 /**
+ * Phase computation parameterised by a set of "boundary" names that
+ * are treated as `parameterized` leaves regardless of their global
+ * phase. Used to compute scope-local phases inside reified subgraphs:
+ * a kernelof / functionof / lawof bubble cuts the phase chain at its
+ * kwargs, because those names are *parameters* of the reification —
+ * a value gets passed in for them at call time, so within the body
+ * they are by definition `parameterized` rather than `stochastic`.
+ *
+ * Example:
+ *   theta1 = draw(theta1_dist)               # globally: stochastic
+ *   beta1  = 2 * theta1                       # globally: stochastic
+ *   k = functionof(beta1, theta1 = theta1)
+ * Inside k's body, theta1 is the kernel parameter, so:
+ *   computePhasesForScope(bindings, new Set(['theta1']))
+ * gives:
+ *   theta1 → 'parameterized'   (overridden by boundary)
+ *   beta1  → 'parameterized'   (depends only on theta1 in this scope)
+ *
+ * Nested reifications: pass the union of all enclosing scopes'
+ * boundary names — every "outer" parameter is also `parameterized`
+ * from the inner scope's perspective (the outer hasn't been called
+ * yet either).
+ *
+ * Implementation note: this is a near-copy of computePhases with a
+ * boundaryNames-set check. Keeping them separate (rather than making
+ * computePhases a special case of this with an empty set) lets the
+ * fast common-case path stay tight, and the scope helper carries
+ * comments explaining its reification-specific semantics.
+ *
+ * @param {Map} bindings
+ * @param {Set<string>} boundaryNames
+ * @returns {Map<string, 'fixed' | 'parameterized' | 'stochastic'>}
+ */
+function computePhasesForScope(bindings, boundaryNames) {
+  if (!boundaryNames || boundaryNames.size === 0) return computePhases(bindings);
+  const phases = new Map();
+  const visiting = new Set();
+
+  function calleeName(b) {
+    const v = b && b.node && b.node.value;
+    if (v && v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier') {
+      return v.callee.name;
+    }
+    return null;
+  }
+
+  function maxPhase(a, b) {
+    if (a === 'stochastic' || b === 'stochastic') return 'stochastic';
+    if (a === 'parameterized' || b === 'parameterized') return 'parameterized';
+    return 'fixed';
+  }
+
+  function phaseOf(name) {
+    if (phases.has(name)) return phases.get(name);
+    // Boundary cut: a kwarg of the enclosing reification. The phase
+    // walk stops here — the value gets supplied at call time, so by
+    // construction the body sees it as a parameter.
+    if (boundaryNames.has(name)) {
+      phases.set(name, 'parameterized');
+      return 'parameterized';
+    }
+    if (visiting.has(name)) return 'fixed';
+    visiting.add(name);
+
+    const b = bindings.get(name);
+    if (!b) {
+      visiting.delete(name);
+      phases.set(name, 'fixed');
+      return 'fixed';
+    }
+
+    const cn = calleeName(b);
+    let phase;
+    if (cn === 'draw') {
+      phase = 'stochastic';
+    } else if (cn === 'elementof') {
+      phase = 'parameterized';
+    } else if (cn === 'external') {
+      phase = 'fixed';
+    } else {
+      phase = 'fixed';
+      for (const dep of b.deps) {
+        phase = maxPhase(phase, phaseOf(dep));
+        if (phase === 'stochastic') break;
+      }
+    }
+
+    visiting.delete(name);
+    phases.set(name, phase);
+    return phase;
+  }
+
+  for (const name of bindings.keys()) phaseOf(name);
+  return phases;
+}
+
+/**
  * Validate that all literal integer indices in `IndexExpr` nodes are >= 1.
  * FlatPPL uses 1-based indexing throughout (arrays, tables, tuples), so a
  * literal `x[0]` or `x[-1]` is always invalid regardless of the container's
@@ -1159,7 +1256,7 @@ module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
   validateHolesAndPlaceholders,
-  computePhases, isMeasureExpr,
+  computePhases, computePhasesForScope, isMeasureExpr,
   collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges,

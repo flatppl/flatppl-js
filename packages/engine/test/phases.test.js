@@ -2,6 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource, computePhases } = require('../index');
+const { computePhasesForScope } = require('../analyzer');
+const { computeSubDAG } = require('../dag');
 
 function phasesOf(src) {
   const { bindings } = processSource(src);
@@ -114,4 +116,59 @@ y = 2 * x
   assert.equal(phases.get('mu'), 'parameterized');
   assert.equal(phases.get('x'), 'stochastic');
   assert.equal(phases.get('y'), 'stochastic');
+});
+
+// --- computePhasesForScope: scope-local phase under boundaries ---
+
+test('phase: computePhasesForScope cuts the chain at boundary names', () => {
+  // Globally beta1 is stochastic (depends on draw via theta1).
+  // With theta1 declared as a boundary input, beta1's phase walk
+  // stops at theta1 → 'parameterized', so beta1 itself reads as
+  // 'parameterized' too.
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+beta1 = 2 * theta1
+`);
+  const global = computePhases(bindings);
+  assert.equal(global.get('theta1'), 'stochastic');
+  assert.equal(global.get('beta1'),  'stochastic');
+
+  const scoped = computePhasesForScope(bindings, new Set(['theta1']));
+  assert.equal(scoped.get('theta1'), 'parameterized');
+  assert.equal(scoped.get('beta1'),  'parameterized');
+});
+
+test('phase: computePhasesForScope with empty boundaries === computePhases', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+x = draw(Normal(mu = mu, sigma = 1))
+y = 2 * x
+`);
+  const a = computePhases(bindings);
+  const b = computePhasesForScope(bindings, new Set());
+  for (const k of a.keys()) assert.equal(b.get(k), a.get(k));
+});
+
+// --- DAG: scope-local phase override applied to in-bubble nodes ---
+
+test('phase: DAG nodes inside a kernel bubble carry scope-local phase', () => {
+  // forward_kernel's body has theta1/theta2 as boundary inputs.
+  // Inside the bubble, both they and beta1 (= 2*theta2) read as
+  // 'parameterized'; outside, they're stochastic.
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Exponential(rate = 1))
+beta1  = 2 * theta2
+obs    = draw(Normal(mu = beta1, sigma = 1))
+fk     = functionof(obs, theta1 = theta1, theta2 = theta2)
+`);
+  const dag = computeSubDAG(bindings, 'fk');
+  const byId = new Map(dag.nodes.map(n => [n.id, n]));
+  // Inside the kernel: theta2 and beta1 cut by the boundary.
+  assert.equal(byId.get('theta2').phase, 'parameterized');
+  assert.equal(byId.get('beta1').phase,  'parameterized');
+  // Global view of the same bindings still has them stochastic.
+  const global = computePhases(bindings);
+  assert.equal(global.get('theta2'), 'stochastic');
+  assert.equal(global.get('beta1'),  'stochastic');
 });

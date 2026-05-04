@@ -1,6 +1,6 @@
 'use strict';
 
-const { extractBoundaries, collectDeps, isMeasureExpr } = require('./analyzer');
+const { extractBoundaries, collectDeps, isMeasureExpr, computePhasesForScope } = require('./analyzer');
 
 // Resolve a binding's "effective" RHS view. For most bindings this is
 // just the literal RHS; for disintegration results that have a
@@ -289,7 +289,71 @@ function computeSubDAG(bindings, nodeName) {
   visit(nodeName, true);
 
   const reifications = computeReifications(bindings, visited, nodeName);
+  applyScopeLocalPhases(visited, reifications, bindings);
   return { nodes: [...visited.values()], edges, reifications };
+}
+
+/**
+ * Override each in-bubble node's `phase` field with its scope-local
+ * phase. A reification cuts the phase chain at its kwargs (those names
+ * are *parameters* — values get supplied at call time, so within the
+ * body they're `parameterized` rather than `stochastic`).
+ *
+ * Nesting: process largest-kernel reifications first, smallest last,
+ * so the innermost containing scope wins for any node that's in
+ * multiple bubbles. Each scope's boundaries union with its enclosing
+ * scopes' boundaries so a parameter of an outer kernel reads as
+ * `parameterized` from the inner scope's perspective too (the outer
+ * kernel hasn't been "called" yet either).
+ *
+ * Synthetic boundary nodes (placeholders, holes — IDs containing ':')
+ * are skipped: their phase is hardcoded at construction and isn't a
+ * function of source bindings.
+ */
+function applyScopeLocalPhases(visited, reifications, bindings) {
+  if (!reifications || reifications.length === 0) return;
+
+  // Per-reification boundary set. extractBoundaries returns Map<argName, varName>;
+  // varName is the body-side identifier that becomes a `%local` reference,
+  // i.e. the host-binding name the boundary cuts. That's what
+  // computePhasesForScope wants.
+  const boundariesOf = new Map();
+  for (const r of reifications) {
+    const b = bindings.get(r.name);
+    if (!b) continue;
+    const e = eff(b);
+    const m = extractBoundaries(e.value);
+    boundariesOf.set(r.name, m ? new Set(m.values()) : new Set());
+  }
+
+  // Sort reifications so containers come before contained. Larger
+  // kernels enclose smaller ones — sort by kernel size descending.
+  // (Two unrelated reifications can have any order; their kernels
+  // don't overlap so writes don't conflict.)
+  const ordered = reifications.slice().sort((a, b) => b.kernel.length - a.kernel.length);
+
+  // For each reification, accumulate the union of its own boundaries
+  // plus all enclosing reifications' boundaries, then compute scope-
+  // local phases under that boundary set.
+  for (const r of ordered) {
+    const ownBoundaries = boundariesOf.get(r.name) || new Set();
+    const allBoundaries = new Set(ownBoundaries);
+    // Find enclosing reifications: those whose kernel contains r.name.
+    for (const outer of reifications) {
+      if (outer === r) continue;
+      if (!outer.kernel.includes(r.name)) continue;
+      const ob = boundariesOf.get(outer.name);
+      if (ob) for (const x of ob) allBoundaries.add(x);
+    }
+    const scopePhases = computePhasesForScope(bindings, allBoundaries);
+    for (const id of r.kernel) {
+      if (id.indexOf(':') !== -1) continue;
+      const node = visited.get(id);
+      if (!node) continue;
+      const p = scopePhases.get(id);
+      if (p != null) node.phase = p;
+    }
+  }
 }
 
 /**
@@ -475,6 +539,20 @@ function computeFullDAG(bindings) {
       reifications.push(r);
     }
   }
+
+  // Each per-leaf sub-DAG had applyScopeLocalPhases run against its
+  // local `visited`. In the union, a node may have inherited a phase
+  // from whichever leaf saw it first — that may or may not match the
+  // node's actual scope membership in the merged graph (e.g. a node
+  // outside any bubble in leaf-A but inside a bubble in leaf-B).
+  // Reset every non-synthetic node's phase to its global value, then
+  // re-apply scope overrides against the merged reifications.
+  for (const [id, node] of nodesByName) {
+    if (id.indexOf(':') !== -1) continue;
+    const b = bindings.get(id);
+    if (b && b.phase != null) node.phase = b.phase;
+  }
+  applyScopeLocalPhases(nodesByName, reifications, bindings);
 
   return { nodes: [...nodesByName.values()], edges, reifications };
 }
