@@ -105,10 +105,18 @@ fk, pr = disintegrate("b", m)
   const plan = planFor(src, 'fk');
   assert.equal(plan.kind, 'synthesized');
   // Single-component sides collapse: prior = a's measure verbatim;
-  // kernel = b's measure wrapped in kernelof with `a` as a boundary input
-  // (the chain's earlier-field-as-input semantics, encoded explicitly).
+  // kernel = b's measure parameterised over `a` (the chain's earlier-
+  // field-as-input semantics encoded explicitly).
+  //
+  // Note: `functionof`, not `kernelof`. Per the FlatPPL spec
+  // (docs/04-design.md §sec:kernelof), `kernelof(x, ...)` requires `x`
+  // to NOT be a measure — it implicitly takes `lawof(x)`. Reifying a
+  // measure-typed body (Normal(...) here) uses `functionof`, which
+  // also produces a kernel when its body is a measure. The previous
+  // implementation always emitted kernelof; the synthesizer now picks
+  // the spec-compliant keyword via isMeasureExpr(body, bindings).
   assert.equal(render(plan.kernel),
-    'kernelof(Normal(mu = mu_p, sigma = 1.0), a = a)');
+    'functionof(Normal(mu = mu_p, sigma = 1.0), a = a)');
   assert.equal(render(plan.prior),
     'Normal(mu = 0.0, sigma = 1.0)');
 });

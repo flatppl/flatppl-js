@@ -66,7 +66,11 @@ test('integration: bayesian_inference_3 disintegration produces Delegate plans',
   assert.equal(pr2.disintegratePlan.kind, 'delegate');
   assert.equal(fk2.disintegratePlan.kernel.binding, 'forward_kernel');
   assert.equal(pr2.disintegratePlan.prior.binding,  'prior');
-  assert.equal(fk2.type, 'kernelof');
+  // The delegate target's surface type wins so forward_kernel2 reads
+  // the same keyword the user wrote on forward_kernel:
+  //   forward_kernel = functionof(obs_dist, theta1=theta1, theta2=theta2)
+  // — `functionof` because obs_dist is a measure (spec §sec:kernelof).
+  assert.equal(fk2.type, 'functionof');
   assert.equal(pr2.type, 'lawof');
 });
 

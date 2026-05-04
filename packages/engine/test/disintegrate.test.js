@@ -255,8 +255,11 @@ fk, pr = disintegrate("theta1", joint_indep)
 `;
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
-  // Kernel result is a Markov kernel; prior result is a measure.
-  assert.equal(bindings.get('fk').type, 'kernelof');
+  // Kernel result is a Markov kernel parameterised over a measure-typed
+  // body (Normal(...)) — surface keyword is `functionof` per spec
+  // §sec:kernelof: `kernelof(x, ...)` requires `x` to NOT be a measure.
+  // Prior is a marginal measure → `lawof`.
+  assert.equal(bindings.get('fk').type, 'functionof');
   assert.equal(bindings.get('pr').type, 'lawof');
   assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'joint');
 });
@@ -342,7 +345,9 @@ fk, pr = disintegrate("b", m)
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
   assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'jointchain');
-  assert.equal(bindings.get('fk').type, 'kernelof');
+  // Body of the synthesized kernel is a measure (Normal(...)) so the
+  // surface keyword is `functionof`, not `kernelof` (spec §sec:kernelof).
+  assert.equal(bindings.get('fk').type, 'functionof');
 });
 
 test('disintegrate Tier 2 (jointchain): trailing selection adds synthetic boundary for earlier field', () => {
