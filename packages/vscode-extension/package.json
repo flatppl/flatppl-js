@@ -41,12 +41,18 @@
       {
         "command": "flatppl.visualize",
         "title": "FlatPPL: Visualize Binding",
-        "icon": "./media/visualize-binding.svg"
+        "icon": {
+          "light": "./media/visualize-binding-light.svg",
+          "dark":  "./media/visualize-binding-dark.svg"
+        }
       },
       {
         "command": "flatppl.visualizeModule",
         "title": "FlatPPL: Visualize Module",
-        "icon": "./media/visualize-module.svg"
+        "icon": {
+          "light": "./media/visualize-module-light.svg",
+          "dark":  "./media/visualize-module-dark.svg"
+        }
       }
     ],
     "menus": {
