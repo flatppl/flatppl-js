@@ -569,6 +569,38 @@ test('per-atom weighted: inline draw nested inside an arithmetic expression', ()
   }
 });
 
+test('lifting: deeply nested inline measure expression in draw composes correctly', () => {
+  // theta4 = draw(weighted(draw(theta2_dist), theta1_dist))
+  //
+  // The lift pass produces:
+  //   __anon_inner = draw(theta2_dist)    (alias to theta2_dist)
+  //   __anon_outer = weighted(__anon_inner, theta1_dist)
+  //   theta4       = draw(__anon_outer)   (alias to __anon_outer)
+  //
+  // Computationally identical to the user-named version
+  //   tmp = draw(theta2_dist)
+  //   theta4_dist = weighted(tmp, theta1_dist)
+  //   theta4 = draw(theta4_dist)
+  // — both end up reading theta1_dist's samples weighted by
+  // log(theta2_dist.samples_i).
+  const inlineSrc = `
+    theta1_dist = Normal(mu=0, sigma=1)
+    theta2_dist = Exponential(rate=1)
+    theta4 = draw(weighted(draw(theta2_dist), theta1_dist))
+  `;
+  const namedSrc = `
+    theta1_dist = Normal(mu=0, sigma=1)
+    theta2_dist = Exponential(rate=1)
+    tmp = draw(theta2_dist)
+    theta4_dist = weighted(tmp, theta1_dist)
+    theta4 = draw(theta4_dist)
+  `;
+  const inline = materialise('theta4', processSource(inlineSrc).bindings);
+  const named  = materialise('theta4', processSource(namedSrc).bindings);
+  assertSameSamples(inline, named, 'inline vs named samples');
+  assertSameLogWeights(inline, named, 1e-12, 'inline vs named logWeights');
+});
+
 test('orchestrator: weighted(<measure>, m) is rejected as a type error', () => {
   // Per spec §sec:measure-algebra the first argument of weighted
   // must be a value, not a measure. theta_dist IS a measure, so

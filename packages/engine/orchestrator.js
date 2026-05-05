@@ -303,62 +303,232 @@ function resolveMeasure(ir, bindings, seen) {
   return null;
 }
 
+// =====================================================================
+// Inline-subexpression lifting
+//
+// FlatPPL operators have positional argument-type expectations: draw()
+// expects a measure, weighted() expects (value, measure), normalize()
+// expects a measure, etc. A user can supply either a bare reference to
+// a binding or an inline expression in any of those positions, and the
+// language semantics treat the two as equivalent — caching aside, an
+// intermediate binding is just a name for a sub-expression.
+//
+// Rather than have every classifier branch handle inline forms one by
+// one (and re-bug each time a new op is added), we run a single AST
+// rewrite that lifts every non-trivial inline subexpression in a
+// measure-arg position to a synthetic anonymous binding `__anon_N`,
+// replacing the in-place AST with a reference. After lifting, every
+// measure-typed argument is a bare Identifier; the existing classifier
+// handles all forms uniformly. Inline `draw(<...>)` in a value slot
+// gets the same treatment so the surviving value expression is
+// evaluable end-to-end.
+//
+// Mutability: every binding's RHS is deep-cloned before being walked,
+// so the original bindings map (and its AST nodes) are untouched.
+// Calling buildDerivations twice on the same bindings is therefore
+// idempotent — each call sees pristine input.
+//
+// Synthetic bindings carry `synthetic: true` so downstream layers
+// (DAG render, plot pane) can choose to display them differently or
+// hide them entirely.
+// =====================================================================
+
 /**
- * Rewrite every `draw(<measure-ref>)` subexpression to the bare ref.
+ * Argument-type signature for a known op, given its positional arity.
  *
- * Variates and their underlying measures share the same EmpiricalMeasure
- * (alias rule in classifyDerivation) — `theta = draw(theta_dist)` makes
- * `theta` and `theta_dist` literally point at one Float64Array. So in
- * any value context, an inline `draw(<measure-ref>)` and a bare ref to
- * the measure binding produce the same per-atom values; we can rewrite
- * one to the other before checking evaluability.
+ * Returns an array of expected types (one per arg position) or null if
+ * the op isn't recognised. Types are:
+ *   'measure'           — must be a measure-typed expression
+ *   'value'             — must be a value-typed expression
+ *   'value-or-measure'  — lawof's argument: either is acceptable
  *
- * This lets weighted/logweighted accept inline draws in their weight
- * slot — e.g. `weighted(draw(theta_dist), m)` and `weighted(2 *
- * draw(theta_dist), m)` — without `draw` needing to live in
- * EVALUABLE_OPS (it doesn't: it consumes RNG state, which the
- * deterministic evaluator can't model).
- *
- * Returns the input unchanged if no rewrite applies. Recurses into
- * args / kwargs so the rewrite is deep, not just at the root.
+ * Distribution constructors are positional-empty by convention (their
+ * params come via kwargs, all of type 'value'); their kwargs are
+ * handled separately in the visitor.
  */
-function unwrapInlineDraws(ir, bindings) {
-  if (!ir || typeof ir !== 'object') return ir;
-  // Root case: (call draw (ref self <name>)) where <name> is a
-  // measure-typed binding. Strip the draw, return the ref.
-  if (ir.kind === 'call' && ir.op === 'draw'
-      && Array.isArray(ir.args) && ir.args.length === 1) {
-    const inner = ir.args[0];
-    if (inner && inner.kind === 'ref' && inner.ns === 'self'
-        && bindings.has(inner.name)) {
-      return inner;
+function argSignature(op, numArgs) {
+  if (op === 'draw')                              return ['measure'];
+  if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
+  if (op === 'normalize')                         return ['measure'];
+  if (op === 'superpose')                         return Array(numArgs).fill('measure');
+  if (op === 'lawof')                             return ['value-or-measure'];
+  if (SAMPLEABLE_DISTRIBUTIONS.has(op))           return Array(numArgs).fill('value');
+  if (EVALUABLE_OPS.has(op))                      return Array(numArgs).fill('value');
+  return null;
+}
+
+/**
+ * True when an op accepts only value-typed kwargs (so the visitor
+ * recurses into them without treating them as measure positions).
+ * Currently every op we know about that takes kwargs uses them for
+ * value parameters — distribution constructors and arithmetic.
+ */
+function opUsesValueKwargs(op) {
+  return SAMPLEABLE_DISTRIBUTIONS.has(op) || EVALUABLE_OPS.has(op);
+}
+
+/**
+ * Map an AST RHS to the binding `type` the analyzer would assign.
+ * Mirrors classifyStatement in analyzer.js for the subset that can
+ * appear after lifting; we don't redirect to the analyzer because
+ * pulling it in here would create a cycle.
+ */
+function inferSyntheticType(astNode) {
+  if (!astNode) return 'call';
+  if (astNode.type === 'CallExpr' && astNode.callee && astNode.callee.type === 'Identifier') {
+    switch (astNode.callee.name) {
+      case 'draw':       return 'draw';
+      case 'lawof':      return 'lawof';
+      case 'functionof': return 'functionof';
+      case 'kernelof':   return 'kernelof';
+      case 'fn':         return 'fn';
     }
+    return 'call';
   }
-  // Recursive case: rewrite child IRs. Allocates a new node only if
-  // something below changed; otherwise returns ir as-is so callers
-  // can rely on reference equality for "no rewrite" checks.
-  if (ir.kind === 'call') {
-    let changed = false;
-    let newArgs = ir.args;
-    if (ir.args) {
-      newArgs = ir.args.map(a => {
-        const u = unwrapInlineDraws(a, bindings);
-        if (u !== a) changed = true;
-        return u;
-      });
+  switch (astNode.type) {
+    case 'NumberLiteral':
+    case 'StringLiteral':
+    case 'BoolLiteral':
+    case 'ArrayLiteral':
+    case 'TupleLiteral': return 'literal';
+  }
+  return 'call';
+}
+
+/**
+ * Walk every binding's RHS AST, lifting non-trivial subexpressions
+ * in measure-arg positions (and inline `draw(...)` in value-arg
+ * positions) to fresh synthetic bindings. Returns a new bindings Map
+ * containing the originals with their RHS rewritten in-place, plus
+ * one entry per synthesized anonymous binding.
+ *
+ * The pass is idempotent: rerunning it on the output is a no-op
+ * because every measure-arg position is already a bare Identifier
+ * after the first pass.
+ */
+function liftInlineSubexpressions(bindings) {
+  const out = new Map(bindings);
+  let counter = 0;
+  function freshName() {
+    let n;
+    do { n = '__anon' + (counter++); } while (out.has(n));
+    return n;
+  }
+  function makeIdent(name, loc) {
+    return { type: 'Identifier', name, loc: loc || null };
+  }
+  function makeSyntheticBinding(name, ast) {
+    return {
+      name,
+      names: [name],
+      line: ast.loc && ast.loc.start ? ast.loc.start.line : -1,
+      rhs: '',
+      type: inferSyntheticType(ast),
+      deps: [], callDeps: [],
+      node: { value: ast, names: [makeIdent(name, ast.loc)], loc: ast.loc, type: 'AssignStatement' },
+      nameLoc: ast.loc,
+      synthetic: true,
+    };
+  }
+
+  // Deep-clone each binding's RHS before walking so the lift's
+  // mutations stay local; the caller's bindings map is untouched.
+  for (const [name, binding] of bindings) {
+    if (!binding.node || !binding.node.value) continue;
+    const cloned = cloneAst(binding.node.value);
+    visit(cloned);
+    out.set(name, {
+      ...binding,
+      node: { ...binding.node, value: cloned },
+    });
+  }
+  return out;
+
+  function cloneAst(node) {
+    if (node == null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(cloneAst);
+    const copy = {};
+    for (const k in node) copy[k] = cloneAst(node[k]);
+    return copy;
+  }
+
+  // -- Visitor ----------------------------------------------------------
+  // visit() walks INTO a node, lifting children if needed. The lift
+  // helpers (liftMeasure / liftValue / liftMeasureOrValue) are mutually
+  // recursive with visit() through their internal `visit(astArg)` call
+  // — that's how deep nesting flattens out one anon at a time.
+
+  function visit(astNode) {
+    if (!astNode) return;
+    if (astNode.type === 'BinaryExpr') {
+      astNode.left  = liftValue(astNode.left);
+      astNode.right = liftValue(astNode.right);
+      return;
     }
-    let newKwargs = ir.kwargs;
-    if (ir.kwargs) {
-      newKwargs = {};
-      for (const k in ir.kwargs) {
-        const u = unwrapInlineDraws(ir.kwargs[k], bindings);
-        if (u !== ir.kwargs[k]) changed = true;
-        newKwargs[k] = u;
+    if (astNode.type === 'UnaryExpr') {
+      astNode.operand = liftValue(astNode.operand);
+      return;
+    }
+    if (astNode.type !== 'CallExpr') return;
+    if (!astNode.callee || astNode.callee.type !== 'Identifier') return;
+
+    const op = astNode.callee.name;
+    const numArgs = astNode.args ? astNode.args.length : 0;
+    const sig = argSignature(op, numArgs);
+
+    if (astNode.args) {
+      for (let i = 0; i < astNode.args.length; i++) {
+        const a = astNode.args[i];
+        if (a && a.type === 'KeywordArg') {
+          if (opUsesValueKwargs(op)) a.value = liftValue(a.value);
+          continue;
+        }
+        const expected = sig ? sig[i] : null;
+        if      (expected === 'measure')          astNode.args[i] = liftMeasure(a);
+        else if (expected === 'value-or-measure') astNode.args[i] = liftMeasureOrValue(a);
+        else                                      astNode.args[i] = liftValue(a);
       }
     }
-    if (changed) return { ...ir, args: newArgs, kwargs: newKwargs };
+    if (astNode.kwargs && opUsesValueKwargs(op)) {
+      for (const k in astNode.kwargs) astNode.kwargs[k] = liftValue(astNode.kwargs[k]);
+    }
   }
-  return ir;
+
+  function liftMeasure(astArg) {
+    if (!astArg) return astArg;
+    visit(astArg);
+    if (astArg.type === 'Identifier') return astArg;
+    const name = freshName();
+    out.set(name, makeSyntheticBinding(name, astArg));
+    return makeIdent(name, astArg.loc);
+  }
+
+  function liftValue(astArg) {
+    if (!astArg) return astArg;
+    visit(astArg);
+    // Only inline `draw(...)` is lifted from a value position — every
+    // other value-typed expression (literals, identifiers, arithmetic)
+    // is evaluable in place.
+    if (astArg.type === 'CallExpr' && astArg.callee
+        && astArg.callee.type === 'Identifier' && astArg.callee.name === 'draw') {
+      const name = freshName();
+      out.set(name, makeSyntheticBinding(name, astArg));
+      return makeIdent(name, astArg.loc);
+    }
+    return astArg;
+  }
+
+  function liftMeasureOrValue(astArg) {
+    // lawof's argument can be either; lift any non-trivial expression
+    // for uniformity (visit recurses into it first to handle nested
+    // measure-arg positions).
+    if (!astArg) return astArg;
+    visit(astArg);
+    if (astArg.type === 'Identifier') return astArg;
+    const name = freshName();
+    out.set(name, makeSyntheticBinding(name, astArg));
+    return makeIdent(name, astArg.loc);
+  }
 }
 
 /**
@@ -437,6 +607,13 @@ function isEvaluable(ir) {
  * }}
  */
 function buildDerivations(bindings) {
+  // Pre-pass: lift inline subexpressions so every measure-arg position
+  // is a bare ref and every value-arg is evaluable. After lifting, the
+  // classifier below handles all forms uniformly — there's no special
+  // case for inline weighted/normalize/superpose/draw inside another
+  // measure expression.
+  bindings = liftInlineSubexpressions(bindings);
+
   const derivations = Object.create(null);
 
   // Initial classification — every binding considered independently.
@@ -554,9 +731,10 @@ function classifyDerivation(binding, bindings) {
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
       const weightAst  = ast.args[0];
       const baseAst    = ast.args[1];
-      // Unwrap any inline draw(<measure-ref>) in the weight expression
-      // to a bare ref before checking evaluability — see helper.
-      const weightExpr = unwrapInlineDraws(rhsIR.args[0], bindings);
+      // After liftInlineSubexpressions the weight slot's IR is already
+      // either a literal/ref or an evaluable arithmetic tree — any
+      // inline draws have been lifted to synthetic anonymous variates.
+      const weightExpr = rhsIR.args[0];
       const baseName = resolveMeasureBaseName(baseAst, bindings);
       if (baseName == null) return null;
       if (isMeasureExpr(weightAst, bindings)) return null;
@@ -579,7 +757,7 @@ function classifyDerivation(binding, bindings) {
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
       const weightAst = ast.args[0];
       const baseAst   = ast.args[1];
-      const lwExpr    = unwrapInlineDraws(rhsIR.args[0], bindings);
+      const lwExpr    = rhsIR.args[0];
       const baseName = resolveMeasureBaseName(baseAst, bindings);
       if (baseName == null) return null;
       if (isMeasureExpr(weightAst, bindings)) return null;

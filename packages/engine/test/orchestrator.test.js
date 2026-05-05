@@ -258,12 +258,19 @@ m = lawof(y)
   assert.deepEqual(derivations.m, { kind: 'alias', from: 'y' });
 });
 
-test('derivations: inline draw(Dist(...)) becomes a sample step on the inner', () => {
+test('derivations: inline draw(Dist(...)) lifts the dist to a synthetic anon, y aliases it', () => {
+  // After the lift pass, every measure-arg position is a bare ref.
+  // Inline `Normal(0, 1)` in draw's measure slot becomes a synthetic
+  // anonymous binding (with a 'sample' derivation), and y aliases to it.
+  // Equivalent computation as the previous shape; uniform classifier.
   const { derivations } = derivationsOf(`
 y = draw(Normal(mu = 0, sigma = 1))
 `);
-  assert.equal(derivations.y.kind, 'sample');
-  assert.equal(derivations.y.distIR.op, 'Normal');
+  assert.equal(derivations.y.kind, 'alias');
+  const anon = derivations.y.from;
+  assert.match(anon, /^__anon\d+$/);
+  assert.equal(derivations[anon].kind, 'sample');
+  assert.equal(derivations[anon].distIR.op, 'Normal');
 });
 
 test('derivations: deterministic arithmetic becomes evaluate', () => {
@@ -362,15 +369,20 @@ ms = superpose(m1, m2, m3)
   assert.deepEqual(derivations.ms.fromNames, ['m1', 'm2', 'm3']);
 });
 
-test('derivations: superpose with inline measure (not a ref) is unsupported', () => {
-  // superpose(Normal(0,1), m) — left arg is an inline call, not a
-  // binding ref. Future work; currently we require every component
-  // to be a binding ref.
+test('derivations: superpose with inline measure lifts the inline arg to a synthetic anon', () => {
+  // The lift pass makes every measure-arg position a bare ref before
+  // classification, so inline measure components are now first-class.
+  // superpose(Normal(...), m) gains a synthetic anon for the inline
+  // Normal and `ms.fromNames` references it alongside `m`.
   const { derivations } = derivationsOf(`
 m = Normal(mu = 0, sigma = 1)
 ms = superpose(Normal(mu = 1, sigma = 1), m)
 `);
-  assert.ok(!('ms' in derivations));
+  assert.equal(derivations.ms.kind, 'superpose');
+  assert.equal(derivations.ms.fromNames.length, 2);
+  assert.match(derivations.ms.fromNames[0], /^__anon\d+$/);
+  assert.equal(derivations.ms.fromNames[1], 'm');
+  assert.equal(derivations[derivations.ms.fromNames[0]].kind, 'sample');
 });
 
 test('derivations: superpose with a non-derivable component cascades to unsupported', () => {
