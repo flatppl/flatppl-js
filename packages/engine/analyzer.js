@@ -1048,6 +1048,12 @@ function analyze(ast, source) {
     if (b) b.phase = phase;
   }
 
+  // Structural type inference (FlatPIR §sec:flatpir). Mutates each
+  // binding to set `inferredType`, returns diagnostics for type
+  // mismatches that join the existing diagnostic stream.
+  const typeDiagnostics = require('./typeinfer').inferTypes(bindings);
+  for (const d of typeDiagnostics) diagnostics.push(d);
+
   return { bindings, diagnostics, symbols };
 }
 

@@ -14,6 +14,8 @@ const lower = require('./lower');
 const orchestrator = require('./orchestrator');
 const histogram = require('./histogram');
 const empirical = require('./empirical');
+const types = require('./types');
+const typeinfer = require('./typeinfer');
 // NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
 // stdlib's distribution packages (~1 MB after bundling) and are intended
 // for the sampler-worker bundle only. Main-thread / extension-host code
@@ -49,4 +51,5 @@ module.exports = {
   AST, builtins,
   // Lightweight sampling-stack components (no stdlib pull-in)
   rng, lower, orchestrator, histogram, empirical,
+  types, typeinfer,
 };

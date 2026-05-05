@@ -76,7 +76,11 @@ test('show: produces readable strings for diagnostics', () => {
   assert.equal(T.show(T.record({ x: T.REAL })), 'record{x: real}');
   assert.equal(T.show(T.deferred()), 'deferred');
   assert.equal(T.show(T.failed('cycle')), 'failed("cycle")');
-  assert.equal(T.show(T.tvar('T')), "'T");
+  // Bare type variables render with the leading apostrophe; show()
+  // also strips the freshness suffix added by signatureOf so users
+  // see 'T not 'T_3 in diagnostics.
+  assert.equal(T.show(T.tvar('T')),    "'T");
+  assert.equal(T.show(T.tvar('T_42')), "'T");
 });
 
 // =====================================================================
@@ -105,8 +109,16 @@ test('unify: identical concrete types succeed with empty subst', () => {
   assert.equal(s.size, 0);
 });
 
-test('unify: mismatched scalars fail', () => {
-  assert.equal(T.unify(T.REAL, T.INTEGER, new Map()), null);
+test('unify: scalar promotion lets booleans ⊂ integers ⊂ reals → complexes unify', () => {
+  // §sec:valuetypes canonical embeddings. Integer literals unify with
+  // the (real, real) kwargs of distribution constructors and other
+  // arithmetic-typed signatures.
+  assert.ok(T.unify(T.INTEGER, T.REAL, new Map()));
+  assert.ok(T.unify(T.REAL,    T.INTEGER, new Map()));   // symmetric
+  assert.ok(T.unify(T.BOOLEAN, T.INTEGER, new Map()));
+  assert.ok(T.unify(T.REAL,    T.COMPLEX, new Map()));
+  // String is outside the numeric tower — no promotion.
+  assert.equal(T.unify(T.STRING, T.REAL, new Map()), null);
 });
 
 test('unify: variable binds to concrete type', () => {
@@ -152,16 +164,22 @@ test('unify: nested measure with type variable', () => {
   assert.ok(T.equal(s.get('T'), T.REAL));
 });
 
-test('unify: array element types unify, %dynamic dims accept anything', () => {
-  const s = T.unify(T.array(1, [3], T.REAL),
+test('unify: array dims and elements respect their respective rules', () => {
+  // %dynamic dims accept anything.
+  assert.ok(T.unify(T.array(1, [3], T.REAL),
                     T.array(1, ['%dynamic'], T.REAL),
-                    new Map());
-  assert.ok(s);
-  // Element-type mismatch fails.
+                    new Map()));
+  // Element types follow the same lenient scalar rule used at the top
+  // level: an integer-element array unifies with a real-element array
+  // (canonical embedding integers ⊂ reals).
+  assert.ok(T.unify(T.array(1, [3], T.REAL),
+                    T.array(1, [3], T.INTEGER),
+                    new Map()));
+  // Outside-the-numeric-tower element mismatch still fails.
   assert.equal(T.unify(T.array(1, [3], T.REAL),
-                       T.array(1, [3], T.INTEGER),
+                       T.array(1, [3], T.STRING),
                        new Map()), null);
-  // Concrete-dim mismatch fails.
+  // Concrete-dim mismatch still fails.
   assert.equal(T.unify(T.array(1, [3], T.REAL),
                        T.array(1, [4], T.REAL),
                        new Map()), null);

@@ -172,7 +172,17 @@ function unify(a, b, subst) {
   if (a.kind !== b.kind) return null;
   switch (a.kind) {
     case 'scalar':
-      return a.prim === b.prim ? subst : null;
+      // Strict equality, OR canonical promotion either direction.
+      // §sec:valuetypes: "booleans ⊂ integers ⊂ reals" with a canonical
+      // embedding into complexes. So `Normal(mu=0, sigma=1)` (integer
+      // literals) unifies cleanly against the (real, real) kwarg
+      // signature, and `equal(b, 1)` (boolean vs integer) doesn't
+      // emit a spurious error. Subtyping is intentionally collapsed
+      // into unification here — keeps the inference machinery simple
+      // and matches the spec's "may use these embeddings implicitly".
+      if (a.prim === b.prim) return subst;
+      if (canPromote(a.prim, b.prim) || canPromote(b.prim, a.prim)) return subst;
+      return null;
     case 'measure':
       return unify(a.domain, b.domain, subst);
     case 'array': {
@@ -207,6 +217,15 @@ function unify(a, b, subst) {
     }
   }
   return null;
+}
+
+// Scalar promotion lattice (least → most permissive). Used by unify's
+// scalar case to admit canonical embeddings (booleans ⊂ integers ⊂
+// reals → complexes) without a separate subtype-check pass.
+const SCALAR_RANK = { boolean: 0, integer: 1, real: 2, complex: 3 };
+function canPromote(from, to) {
+  return SCALAR_RANK[from] != null && SCALAR_RANK[to] != null
+    && SCALAR_RANK[from] <= SCALAR_RANK[to];
 }
 
 // Walk a type one level — replace it with its substitution if it's a
@@ -253,7 +272,14 @@ function show(t) {
     case 'record':   return 'record{' + Object.keys(t.fields).map(k => k + ': ' + show(t.fields[k])).join(', ') + '}';
     case 'tuple':    return 'tuple<' + t.elems.map(show).join(', ') + '>';
     case 'measure':  return 'measure<' + show(t.domain) + '>';
-    case 'var':      return "'" + t.id;
+    case 'var': {
+      // Strip the freshness suffix '_NNN' added by signatureOf —
+      // users see 'T not 'T_3'. Variables that haven't been resolved
+      // by unification are unknown placeholders; a generic 'T reads
+      // better in error messages than the internal counter.
+      const base = t.id.replace(/_\d+$/, '');
+      return "'" + base;
+    }
   }
   return '<unknown>';
 }
