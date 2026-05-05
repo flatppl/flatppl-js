@@ -276,10 +276,12 @@ function inferTypes(bindings) {
     if (positional.length !== 1) return arityError('elementof', 1, positional.length, loc);
     const t = setValueType(positional[0]);
     if (t == null) {
+      const argT = inferExpr(positional[0]);
+      // Cascade silently when upstream already failed.
+      if (argT && argT.kind === 'failed') return T.failed('elementof cascade');
       diagnostics.push({
         severity: 'error',
-        message: 'elementof expects a set or set-constructor expression; got '
-          + T.show(inferExpr(positional[0])),
+        message: 'elementof expects a set or set-constructor expression; got ' + T.show(argT),
         loc: positional[0].loc,
       });
       return T.failed('elementof bad arg');
@@ -363,6 +365,7 @@ function inferTypes(bindings) {
   function inferLawof(positional, loc) {
     if (positional.length !== 1) return arityError('lawof', 1, positional.length, loc);
     const at = inferExpr(positional[0]);
+    if (at && at.kind === 'failed') return T.failed('lawof cascade');
     // lawof of a measure is permitted (the spec's identity law makes
     // it redundant but valid) — return as-is.
     if (T.isMeasure(at)) return at;
@@ -391,6 +394,8 @@ function inferTypes(bindings) {
         fields[k] = at.domain;
       } else if (at.kind === 'deferred' || at.kind === 'any') {
         fields[k] = T.deferred();
+      } else if (at.kind === 'failed') {
+        return T.failed('joint cascade');
       } else {
         diagnostics.push({
           severity: 'error',
@@ -429,7 +434,12 @@ function inferTypes(bindings) {
     });
     return T.failed(op + ' arity');
   }
+  // For arg / kwarg errors, suppress the diagnostic when the actual
+  // type is already %failed — the upstream cause emitted its own
+  // diagnostic and we'd just be repeating it (with cosmetic noise like
+  // "got failed(undefined name foo)"). Cascade silently in that case.
   function argError(op, i, expected, got, loc) {
+    if (got && got.kind === 'failed') return T.failed(op + ' arg type (cascade)');
     diagnostics.push({
       severity: 'error',
       message: op + ': arg ' + (i + 1) + ' expects ' + T.show(expected)
@@ -439,6 +449,7 @@ function inferTypes(bindings) {
     return T.failed(op + ' arg type');
   }
   function kwargError(op, k, expected, got, loc) {
+    if (got && got.kind === 'failed') return T.failed(op + ' kwarg type (cascade)');
     diagnostics.push({
       severity: 'error',
       message: op + ': kwarg "' + k + '" expects ' + T.show(expected)
