@@ -1,0 +1,271 @@
+'use strict';
+
+// Unit tests for engine/types.js — the FlatPIR type representation
+// and built-in signature registry.
+//
+// Coverage:
+//   - Type constructors produce the expected shapes
+//   - equal / show / isMeasure / isValue
+//   - unify on concrete types, type variables, deferred/any
+//   - signatureOf yields fresh variables per call site
+//   - A representative cross-section of registered built-in signatures
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const T = require('../types');
+
+// =====================================================================
+// Constructors and constants
+// =====================================================================
+
+test('constructors: scalar / measure / array / record / tuple / tvar', () => {
+  assert.deepEqual(T.scalar('real'),   { kind: 'scalar', prim: 'real' });
+  assert.deepEqual(T.measure(T.REAL),  { kind: 'measure', domain: { kind: 'scalar', prim: 'real' } });
+  assert.deepEqual(T.array(1, [3], T.REAL),
+    { kind: 'array', rank: 1, shape: [3], elem: { kind: 'scalar', prim: 'real' } });
+  assert.deepEqual(T.record({ x: T.REAL }),
+    { kind: 'record', fields: { x: { kind: 'scalar', prim: 'real' } } });
+  assert.deepEqual(T.tuple([T.REAL, T.INTEGER]),
+    { kind: 'tuple', elems: [{ kind: 'scalar', prim: 'real' }, { kind: 'scalar', prim: 'integer' }] });
+  assert.deepEqual(T.tvar('T'), { kind: 'var', id: 'T' });
+});
+
+test('REAL / INTEGER / BOOLEAN / COMPLEX / STRING are stable singletons', () => {
+  assert.equal(T.REAL.prim, 'real');
+  assert.equal(T.INTEGER.prim, 'integer');
+  assert.equal(T.BOOLEAN.prim, 'boolean');
+  assert.equal(T.COMPLEX.prim, 'complex');
+  assert.equal(T.STRING.prim, 'string');
+});
+
+// =====================================================================
+// Equality
+// =====================================================================
+
+test('equal: identical primitives', () => {
+  assert.ok(T.equal(T.REAL, T.scalar('real')));
+  assert.ok(!T.equal(T.REAL, T.INTEGER));
+});
+
+test('equal: nested measure types', () => {
+  assert.ok(T.equal(T.measure(T.REAL), T.measure(T.scalar('real'))));
+  assert.ok(!T.equal(T.measure(T.REAL), T.measure(T.INTEGER)));
+});
+
+test('equal: array dim and element', () => {
+  assert.ok(T.equal(T.array(1, [3], T.REAL), T.array(1, [3], T.REAL)));
+  assert.ok(!T.equal(T.array(1, [3], T.REAL), T.array(1, [4], T.REAL)));
+  assert.ok(!T.equal(T.array(1, [3], T.REAL), T.array(2, [3, 3], T.REAL)));
+});
+
+test('equal: record fields are order-sensitive (per spec)', () => {
+  // §sec:valuetypes: "Field order is part of the record's identity"
+  assert.ok(!T.equal(T.record({ a: T.REAL, b: T.INTEGER }),
+                     T.record({ b: T.INTEGER, a: T.REAL })));
+});
+
+// =====================================================================
+// show
+// =====================================================================
+
+test('show: produces readable strings for diagnostics', () => {
+  assert.equal(T.show(T.REAL), 'real');
+  assert.equal(T.show(T.measure(T.REAL)), 'measure<real>');
+  assert.equal(T.show(T.array(1, [3], T.REAL)), 'array<1, [3], real>');
+  assert.equal(T.show(T.record({ x: T.REAL })), 'record{x: real}');
+  assert.equal(T.show(T.deferred()), 'deferred');
+  assert.equal(T.show(T.failed('cycle')), 'failed("cycle")');
+  assert.equal(T.show(T.tvar('T')), "'T");
+});
+
+// =====================================================================
+// isMeasure / isValue
+// =====================================================================
+
+test('isMeasure / isValue: predicate sanity', () => {
+  assert.ok(T.isMeasure(T.measure(T.REAL)));
+  assert.ok(!T.isMeasure(T.REAL));
+  assert.ok(T.isValue(T.REAL));
+  assert.ok(T.isValue(T.array(1, [3], T.REAL)));
+  assert.ok(!T.isValue(T.measure(T.REAL)));
+  // Deferred / any default to "could be value" so we don't emit
+  // spurious errors before inference completes.
+  assert.ok(T.isValue(T.deferred()));
+  assert.ok(T.isValue(T.any()));
+});
+
+// =====================================================================
+// Unification
+// =====================================================================
+
+test('unify: identical concrete types succeed with empty subst', () => {
+  const s = T.unify(T.REAL, T.REAL, new Map());
+  assert.ok(s);
+  assert.equal(s.size, 0);
+});
+
+test('unify: mismatched scalars fail', () => {
+  assert.equal(T.unify(T.REAL, T.INTEGER, new Map()), null);
+});
+
+test('unify: variable binds to concrete type', () => {
+  const v = T.tvar('T');
+  const s = T.unify(v, T.REAL, new Map());
+  assert.ok(s);
+  assert.ok(T.equal(s.get('T'), T.REAL));
+});
+
+test('unify: variables on both sides eventually bind through transitivity', () => {
+  const a = T.tvar('A'), b = T.tvar('B');
+  let s = T.unify(a, b, new Map());
+  assert.ok(s);
+  s = T.unify(a, T.REAL, s);
+  assert.ok(s);
+  // After resolving through the chain, both end up at REAL.
+  assert.ok(T.equal(T.substitute(a, s), T.REAL));
+  assert.ok(T.equal(T.substitute(b, s), T.REAL));
+});
+
+test('unify: occurs check rejects T = measure<T>', () => {
+  const v = T.tvar('T');
+  assert.equal(T.unify(v, T.measure(v), new Map()), null);
+});
+
+test('unify: deferred succeeds against any concrete type without binding', () => {
+  // %deferred means "we will fill this in later" — unification doesn't
+  // commit it to the concrete side, which is correct since the deferred
+  // slot may resolve to something else when its turn comes.
+  const s = T.unify(T.deferred(), T.measure(T.REAL), new Map());
+  assert.ok(s);
+});
+
+test('unify: failed never unifies', () => {
+  assert.equal(T.unify(T.failed('upstream'), T.REAL, new Map()), null);
+  assert.equal(T.unify(T.REAL, T.failed('upstream'), new Map()), null);
+});
+
+test('unify: nested measure with type variable', () => {
+  const v = T.tvar('T');
+  const s = T.unify(T.measure(v), T.measure(T.REAL), new Map());
+  assert.ok(s);
+  assert.ok(T.equal(s.get('T'), T.REAL));
+});
+
+test('unify: array element types unify, %dynamic dims accept anything', () => {
+  const s = T.unify(T.array(1, [3], T.REAL),
+                    T.array(1, ['%dynamic'], T.REAL),
+                    new Map());
+  assert.ok(s);
+  // Element-type mismatch fails.
+  assert.equal(T.unify(T.array(1, [3], T.REAL),
+                       T.array(1, [3], T.INTEGER),
+                       new Map()), null);
+  // Concrete-dim mismatch fails.
+  assert.equal(T.unify(T.array(1, [3], T.REAL),
+                       T.array(1, [4], T.REAL),
+                       new Map()), null);
+});
+
+// =====================================================================
+// Substitute
+// =====================================================================
+
+test('substitute: applies binding through nested types', () => {
+  const v = T.tvar('T');
+  const s = new Map([['T', T.REAL]]);
+  assert.ok(T.equal(T.substitute(v, s), T.REAL));
+  assert.ok(T.equal(T.substitute(T.measure(v), s), T.measure(T.REAL)));
+  assert.ok(T.equal(T.substitute(T.array(1, [3], v), s),
+                    T.array(1, [3], T.REAL)));
+});
+
+test('substitute: leaves unbound variables in place', () => {
+  const v = T.tvar('U');
+  const s = new Map([['T', T.REAL]]);
+  assert.deepEqual(T.substitute(v, s), v);
+});
+
+// =====================================================================
+// signatureOf
+// =====================================================================
+
+test('signatureOf: Normal has the expected kwargs / result shape', () => {
+  const sig = T.signatureOf('Normal');
+  assert.deepEqual(sig.args, null);
+  assert.ok(T.equal(sig.kwargs.mu, T.REAL));
+  assert.ok(T.equal(sig.kwargs.sigma, T.REAL));
+  assert.ok(T.equal(sig.result, T.measure(T.REAL)));
+});
+
+test('signatureOf: weighted is polymorphic — (real, measure<T>) → measure<T>', () => {
+  const sig = T.signatureOf('weighted');
+  assert.equal(sig.args.length, 2);
+  assert.ok(T.equal(sig.args[0], T.REAL));
+  assert.equal(sig.args[1].kind, 'measure');
+  assert.equal(sig.args[1].domain.kind, 'var');
+  // result variable is the SAME variable as args[1].domain (per
+  // signature), so unifying args[1] against measure<real> at a call
+  // site also concretises the result.
+  assert.equal(sig.result.domain.id, sig.args[1].domain.id);
+});
+
+test('signatureOf: each call yields fresh variable IDs', () => {
+  // Two call sites of weighted must not share unification state.
+  const a = T.signatureOf('weighted');
+  const b = T.signatureOf('weighted');
+  assert.notEqual(a.args[1].domain.id, b.args[1].domain.id);
+});
+
+test('signatureOf: superpose marks variadic', () => {
+  const sig = T.signatureOf('superpose');
+  assert.equal(sig.variadic, 'positional');
+});
+
+test('signatureOf: draw extracts the value type from a measure', () => {
+  const sig = T.signatureOf('draw');
+  // draw: (measure<T>) → T — args[0] and result share their var.
+  assert.equal(sig.args[0].domain.id, sig.result.id);
+});
+
+test('signatureOf: unknown op returns null', () => {
+  assert.equal(T.signatureOf('not_a_real_op_xyz'), null);
+});
+
+test('hasSignature: true for built-ins, false for unknowns', () => {
+  assert.ok(T.hasSignature('Normal'));
+  assert.ok(T.hasSignature('weighted'));
+  assert.ok(!T.hasSignature('not_a_real_op_xyz'));
+});
+
+// =====================================================================
+// Cross-cut: instantiation + unification at a call site
+// =====================================================================
+
+test('integration: weighted(real, measure<real>) infers result = measure<real>', () => {
+  // Mirrors what the inference pass will do at every call site.
+  const sig = T.signatureOf('weighted');
+  let s = T.unify(sig.args[0], T.REAL, new Map());
+  s = T.unify(sig.args[1], T.measure(T.REAL), s);
+  const result = T.substitute(sig.result, s);
+  assert.ok(T.equal(result, T.measure(T.REAL)));
+});
+
+test('integration: weighted(measure<real>, measure<real>) is a type error', () => {
+  // Mirrors the failing case the user reported:
+  //   invalid1_dist = weighted(theta2_dist, theta1_dist)
+  // arg 0 is a measure where a value is expected → unify fails.
+  const sig = T.signatureOf('weighted');
+  const s = T.unify(sig.args[0], T.measure(T.REAL), new Map());
+  assert.equal(s, null);
+});
+
+test('integration: weighted(real, real) is a type error', () => {
+  // The other failing case:
+  //   invalid2_dist = weighted(theta2, theta1)
+  // arg 1 is a value where a measure is expected → unify fails.
+  const sig = T.signatureOf('weighted');
+  let s = T.unify(sig.args[0], T.REAL, new Map());
+  s = T.unify(sig.args[1], T.REAL, s);
+  assert.equal(s, null);
+});
