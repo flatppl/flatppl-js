@@ -135,7 +135,24 @@ function materialise(name, bindings, opts) {
         const parent = go(d.from);
         const lifted = empirical.materialiseUniform(parent);
         const w = new Float64Array(lifted.logWeights.length);
-        for (let i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] + d.logShift;
+        if (d.weightIR) {
+          const refArrays = collectRefArrays(d.weightIR);
+          const reply = worker.handle({
+            type: 'evaluateN', ir: d.weightIR, count: sampleCount, refArrays,
+          });
+          if (reply.type === 'error') throw new Error(reply.message);
+          const weights = reply.samples;
+          if (d.isLog) {
+            for (let i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] + weights[i];
+          } else {
+            for (let i = 0; i < w.length; i++) {
+              const v = weights[i];
+              w[i] = (v > 0) ? lifted.logWeights[i] + Math.log(v) : -Infinity;
+            }
+          }
+        } else {
+          for (let i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] + d.logShift;
+        }
         m = { samples: lifted.samples, logWeights: w };
         break;
       }
@@ -394,6 +411,132 @@ test('identity: normalize(superpose(m, m)) ≡ normalize(m) — statistical equi
   // is the spec claim — check directly.
   assert.ok(Math.abs(a.mean - b.mean) < 0.05, `means differ: ${a.mean} vs ${b.mean}`);
   assert.ok(Math.abs(a.sd   - b.sd)   < 0.05, `sds differ: ${a.sd} vs ${b.sd}`);
+});
+
+// =====================================================================
+// Function-of-variate weights: weighted(<expr>, m) and
+// logweighted(<expr>, m) where the weight depends on per-atom values
+// rather than being a constant. The orchestrator stores weightIR; the
+// materialiser evaluates it per-i and adds the (log-)result to the
+// parent's logWeights, atom-aligned through the shared sample axis.
+// =====================================================================
+
+test('per-atom weighted: log-weights track log(weight_i) atom-wise', () => {
+  // theta is Exponential(1) — strictly positive, so log(theta_i) is
+  // finite and varies per atom. weighted(theta, m) must therefore
+  // produce non-uniform logWeights matching log(theta.samples) — not
+  // their mean, not a single constant shift.
+  const src = `
+    theta_dist = Exponential(rate=1)
+    theta = draw(theta_dist)
+    m = Normal(mu=0, sigma=1)
+    w = weighted(theta, m)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const theta = materialise('theta', bindings, { cache });
+  const W     = materialise('w',     bindings, { cache });
+  // Same samples (alias chain through materialiseUniform).
+  const M     = materialise('m',     bindings, { cache });
+  assert.equal(W.samples, M.samples, 'weighted should share parent samples');
+  // logWeights[i] = log(theta_i) + log(1/N).  Subtract the uniform
+  // baseline and we should recover log(theta_i).
+  const N = W.logWeights.length;
+  const baseline = -Math.log(N);
+  for (let i = 0; i < N; i++) {
+    const expected = Math.log(theta.samples[i]);
+    const got = W.logWeights[i] - baseline;
+    assert.ok(Math.abs(got - expected) < 1e-12,
+      `atom ${i}: log(theta=${theta.samples[i]}) expected ${expected}, got ${got}`);
+  }
+  // Sanity: per-atom variation, not a flat shift.
+  let minLW = Infinity, maxLW = -Infinity;
+  for (let i = 0; i < N; i++) {
+    if (W.logWeights[i] < minLW) minLW = W.logWeights[i];
+    if (W.logWeights[i] > maxLW) maxLW = W.logWeights[i];
+  }
+  assert.ok(maxLW - minLW > 0.5, 'expected meaningful per-atom variation');
+});
+
+test('per-atom logweighted: log-weights track lw_i directly (no log call)', () => {
+  // logweighted(theta, m) where theta is on the log scale already —
+  // logWeights[i] = theta_i + log(1/N), no log() applied.
+  const src = `
+    theta_dist = Normal(mu=0, sigma=1)
+    theta = draw(theta_dist)
+    m = Normal(mu=0, sigma=1)
+    w = logweighted(theta, m)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const theta = materialise('theta', bindings, { cache });
+  const W     = materialise('w',     bindings, { cache });
+  const N = W.logWeights.length;
+  const baseline = -Math.log(N);
+  for (let i = 0; i < N; i++) {
+    const got = W.logWeights[i] - baseline;
+    assert.ok(Math.abs(got - theta.samples[i]) < 1e-12,
+      `atom ${i}: expected lw=${theta.samples[i]}, got ${got}`);
+  }
+});
+
+test('per-atom weighted: arithmetic expressions in the weight slot', () => {
+  // Weight is `2 * theta` — exercises the evaluable-expression path,
+  // not just a bare ref. Confirms the orchestrator routes evaluateN
+  // refs and the materialiser threads them through correctly.
+  const src = `
+    theta_dist = Exponential(rate=1)
+    theta = draw(theta_dist)
+    m = Normal(mu=0, sigma=1)
+    w = weighted(2 * theta, m)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const theta = materialise('theta', bindings, { cache });
+  const W     = materialise('w',     bindings, { cache });
+  const N = W.logWeights.length;
+  const baseline = -Math.log(N);
+  for (let i = 0; i < N; i++) {
+    const expected = Math.log(2 * theta.samples[i]);
+    const got = W.logWeights[i] - baseline;
+    assert.ok(Math.abs(got - expected) < 1e-10,
+      `atom ${i}: expected ${expected}, got ${got}`);
+  }
+});
+
+test('per-atom weighted: zero-valued atoms become -Infinity (zero mass)', () => {
+  // weighted(0, m) is a valid edge case: the atom carries no mass.
+  // The materialiser turns log(0) into -Infinity rather than NaN.
+  // Build a weight expression that produces zero at every atom.
+  const src = `
+    theta_dist = Normal(mu=0, sigma=1)
+    theta = draw(theta_dist)
+    m = Normal(mu=0, sigma=1)
+    w = weighted(0 * theta, m)
+  `;
+  const { bindings } = processSource(src);
+  const W = materialise('w', bindings);
+  for (let i = 0; i < W.logWeights.length; i++) {
+    assert.equal(W.logWeights[i], -Infinity, `atom ${i} should have -Inf log-weight`);
+  }
+  // Total mass = log(0) = -Infinity (the measure is the zero measure).
+  assert.equal(empirical.totalLogMass(W), -Infinity);
+});
+
+test('orchestrator: weighted(<measure>, m) is rejected as a type error', () => {
+  // Per spec §sec:measure-algebra the first argument of weighted
+  // must be a value, not a measure. theta_dist IS a measure, so
+  // this should not produce a derivation at all.
+  const src = `
+    theta_dist = Normal(mu=0, sigma=1)
+    m = Normal(mu=0, sigma=1)
+    w = weighted(theta_dist, m)
+  `;
+  const { bindings } = processSource(src);
+  const { orchestrator } = require('..');
+  const { derivations } = orchestrator.buildDerivations(bindings);
+  assert.equal(derivations.w, undefined,
+    'weighted(<measure>, m) should be rejected; got ' + JSON.stringify(derivations.w));
 });
 
 test('identity: weighted preserves base samples reference (no extra draws)', () => {

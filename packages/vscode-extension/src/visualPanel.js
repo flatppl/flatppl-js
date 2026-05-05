@@ -1209,15 +1209,56 @@ class FlatPPLPanel {
         measureCache.set(name, m);
         promise = Promise.resolve(m);
       } else if (d.kind === 'weighted') {
-        // weighted(c, base) and logweighted(lc, base) both reduce to
-        // "shift each parent atom's logWeight by a precomputed
-        // constant" — the orchestrator stored the constant as
-        // d.logShift (= log(c) for weighted, lc verbatim for
-        // logweighted). Same samples reference; fresh logWeights
-        // array via materialiseUniform → add shift in place.
+        // weighted(w, base) and logweighted(lw, base) both reduce to
+        // "shift each parent atom's logWeight":
+        //   - constant fast path: orchestrator pre-computed d.logShift,
+        //     uniform across atoms.
+        //   - per-atom path: orchestrator stored d.weightIR; we
+        //     evaluateN it here (per-i) and apply log() unless d.isLog
+        //     says it's already on the log scale.
+        // Per-atom alignment is meaningful because every binding's
+        // samples share the same i ∈ [0, N) axis through the
+        // EmpiricalMeasure cache — atom i of weight is paired with
+        // atom i of base, matching whatever upstream coupling exists.
         promise = getMeasure(d.from).then(function(parent) {
           var lifted = FlatPPLEngine.empirical.materialiseUniform(parent);
           var w = new Float64Array(lifted.logWeights.length);
+          if (d.weightIR) {
+            return collectRefArrays(d.weightIR).then(function(refArrays) {
+              return sendWorker({
+                type: 'evaluateN',
+                ir: d.weightIR,
+                count: SAMPLE_COUNT,
+                refArrays: refArrays,
+              });
+            }).then(function(reply) {
+              var weights = reply.samples;
+              var nonPos = 0;
+              if (d.isLog) {
+                for (var i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] + weights[i];
+              } else {
+                for (var j = 0; j < w.length; j++) {
+                  var v = weights[j];
+                  if (v > 0) {
+                    w[j] = lifted.logWeights[j] + Math.log(v);
+                  } else {
+                    // log of 0 = -Infinity (atom contributes no mass);
+                    // log of a negative is undefined per spec — treat
+                    // as zero-mass too and surface a one-line warning.
+                    w[j] = -Infinity;
+                    if (v < 0) nonPos++;
+                  }
+                }
+                if (nonPos > 0) {
+                  console.warn('weighted(' + name + '): ' + nonPos
+                    + ' negative weight sample(s) treated as zero mass');
+                }
+              }
+              var m = { samples: lifted.samples, logWeights: w };
+              measureCache.set(name, m);
+              return m;
+            });
+          }
           for (var i = 0; i < w.length; i++) w[i] = lifted.logWeights[i] + d.logShift;
           var m = { samples: lifted.samples, logWeights: w };
           measureCache.set(name, m);
