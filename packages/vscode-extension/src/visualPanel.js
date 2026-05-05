@@ -313,11 +313,12 @@ class FlatPPLPanel {
       padding: 1px 6px; border-radius: 3px;
       color: #fff;
     }
-    /* Phase tag colors — kept in sync with the JS PHASE_COLORS map so
-       the info-bar tag and the node fill match for any given phase. */
-    #info .phase-fixed         { background: #90A4AE; color: #222; }
-    #info .phase-parameterized { background: #4DD0E1; color: #222; }
-    #info .phase-stochastic    { background: #B39DDB; color: #222; }
+    /* Phase tag colors. CSS custom properties are set at startup from
+       the JS PALETTE so the in-bar tag and the node fill share one
+       source of truth. */
+    #info .phase-fixed         { background: var(--phase-fixed);         color: #222; }
+    #info .phase-parameterized { background: var(--phase-parameterized); color: #222; }
+    #info .phase-stochastic    { background: var(--phase-stochastic);    color: #222; }
     #info .expr {
       opacity: 0.5; white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis;
@@ -414,59 +415,113 @@ class FlatPPLPanel {
     // enabled (a 'draw' of a known distribution with literal params).
     var SAMPLER_WORKER_URL = ${JSON.stringify(samplerWorkerUri.toString())};
 
-    // Color choices form an additive triple (blue + green ≈ teal), so the
-    // family relationships read visually: lawof (measure) and functionof
-    // (function) sit at the two "primary" hues, kernelof (a function of a
-    // measure) sits at their additive mix. Viridis-style green/blue/teal
-    // palette — perceptually ordered, colorblind-safe (the differences
-    // live in distinct RGB channels), and quiet enough to read as bubble
-    // fills at low alpha against a dark editor background.
-    // Phase-driven colors for value-producing nodes (draw / call /
-    // computed values inside a kernel scope). Type-producing nodes
-    // (lawof, kernelof, functionof, fn, literal, …) keep their own
-    // colors below — they're not on the value-phase axis.
+    // ---- Palette ----
     //
-    // Kept in sync with #info .phase-* CSS so the in-bar phase tag
-    // colour matches the node fill colour for any given phase.
+    // Single source of truth for every node / edge / bubble colour the
+    // visualizer uses. PHASE_COLORS, TYPE_STYLE, DRAW_EDGE_COLOR, and
+    // the #info .phase-* CSS rules all reference these names — change a
+    // hex here and every consumer follows.
     //
-    // The choices match the historical TYPE_STYLE.{input, draw, call}
-    // colours so the visual story stays familiar:
-    //   stochastic    → was draw            (purple)
-    //   parameterized → was input/elementof (teal)
-    //   fixed         → was call/literal    (blue-grey)
+    // Naming reflects what the colour *means*, not where it shows up:
+    //   phaseStochastic / parameterized / fixed
+    //                          — value-producing nodes (draw, call) and
+    //                            their #info phase tags
+    //   measure                — lawof bindings + measure-kind reifications
+    //   kernel                 — kernelof bindings + kernel-kind reifications
+    //   fn                     — functionof / fn bindings
+    //   literal/…/unknown      — purely structural type colours
+    //   drawEdge               — the "draw" arrow (deterministic →
+    //                            stochastic boundary)
+    //
+    // Hue strategy: lawof/kernelof/functionof form an additive triple
+    // (blue + green ≈ teal) so family relationships read visually,
+    // viridis-style and colourblind-safe. The phase trio reuses the
+    // historical draw/input/call hex values so the visual story stays
+    // familiar after the shift to phase-driven colouring.
+    var PALETTE = {
+      phaseStochastic:    '#B39DDB',  // purple
+      phaseParameterized: '#4DD0E1',  // teal
+      phaseFixed:         '#90A4AE',  // blue-grey
+      measure:            '#42A5F5',  // bright blue
+      kernel:             '#26A69A',  // teal-green
+      fn:                 '#66BB6A',  // green
+      literal:            '#F48FB1',  // pink
+      likelihood:         '#EF9A9A',  // light red
+      bayesupdate:        '#FFAB91',  // light orange
+      module:             '#80CBC4',  // teal-green (lighter)
+      table:              '#A1887F',  // brown
+      unknown:            '#BDBDBD',  // grey
+      drawEdge:           '#7E57C2',  // darker purple than phaseStochastic
+    };
+
+    // Mirror the phase colours into CSS custom properties so the
+    // #info .phase-* tag rules pick them up without a duplicate hex
+    // literal in the stylesheet.
+    (function bindPaletteToCss() {
+      var s = document.documentElement.style;
+      s.setProperty('--phase-stochastic',    PALETTE.phaseStochastic);
+      s.setProperty('--phase-parameterized', PALETTE.phaseParameterized);
+      s.setProperty('--phase-fixed',         PALETTE.phaseFixed);
+    })();
+
+    // Phase → fill colour for value-producing nodes (draw / call /
+    // computed values inside a kernel scope). Used by both the DAG
+    // renderer and the legend.
     var PHASE_COLORS = {
-      stochastic:    '#B39DDB',
-      parameterized: '#4DD0E1',
-      fixed:         '#90A4AE',
+      stochastic:    PALETTE.phaseStochastic,
+      parameterized: PALETTE.phaseParameterized,
+      fixed:         PALETTE.phaseFixed,
     };
 
-    // Standalone color for the "draw" arrow — the boundary between
-    // deterministic and stochastic in the model. A darker shade of the
-    // stochastic phase color so the line reads boldly without being
-    // confused for a node fill.
-    var DRAW_EDGE_COLOR = '#7E57C2';
+    // Stand-alone for the "draw" edge — visually distinct from any
+    // node fill so a stochastic boundary reads as an edge, not a fill.
+    var DRAW_EDGE_COLOR = PALETTE.drawEdge;
 
+    // Type → { color, shape, legend label }. The phase trio (input /
+    // draw / call) intentionally reuses PALETTE.phase* so a
+    // value-producing node falls back to the matching phase colour
+    // when phase metadata is missing.
     var TYPE_STYLE = {
-      input:         { color: '#4DD0E1', shape: 'diamond',          label: 'input (elementof)' },
-      draw:          { color: '#B39DDB', shape: 'ellipse',          label: 'draw' },
-      call:          { color: '#90A4AE', shape: 'round-rectangle',  label: 'call' },
-      // lawof always produces a measure; rendered as a round-rectangle.
-      lawof:         { color: '#42A5F5', shape: 'round-rectangle',  label: 'lawof (measure)' },
-      // kernelof always produces a Markov kernel — round-hexagon. Color
-      // is also applied to functionof-of-measure below (same kind).
-      kernelof:      { color: '#26A69A', shape: 'round-hexagon',    label: 'kernelof (kernel)' },
-      // functionof produces a function by default (hexagon). When its
-      // first arg is a measure the engine reports kind='kernel' and the
-      // node picks up kernelof's shape and color.
-      functionof:    { color: '#66BB6A', shape: 'hexagon',          label: 'functionof' },
-      fn:            { color: '#66BB6A', shape: 'hexagon',          label: 'fn' },
-      literal:       { color: '#F48FB1', shape: 'rectangle',        label: 'literal' },
-      likelihood:    { color: '#EF9A9A', shape: 'octagon',          label: 'likelihood' },
-      bayesupdate:   { color: '#FFAB91', shape: 'octagon',          label: 'bayesupdate' },
-      module:        { color: '#80CBC4', shape: 'round-rectangle',  label: 'module' },
-      table:         { color: '#A1887F', shape: 'round-rectangle',  label: 'table' },
-      unknown:       { color: '#BDBDBD', shape: 'rectangle',        label: 'unknown' },
+      input:       { color: PALETTE.phaseParameterized, shape: 'diamond',         label: 'input (elementof)' },
+      draw:        { color: PALETTE.phaseStochastic,    shape: 'ellipse',         label: 'draw' },
+      call:        { color: PALETTE.phaseFixed,         shape: 'round-rectangle', label: 'call' },
+      lawof:       { color: PALETTE.measure,            shape: 'round-rectangle', label: 'lawof (measure)' },
+      kernelof:    { color: PALETTE.kernel,             shape: 'round-hexagon',   label: 'kernelof (kernel)' },
+      functionof:  { color: PALETTE.fn,                 shape: 'hexagon',         label: 'functionof' },
+      fn:          { color: PALETTE.fn,                 shape: 'hexagon',         label: 'fn' },
+      literal:     { color: PALETTE.literal,            shape: 'rectangle',       label: 'literal' },
+      likelihood:  { color: PALETTE.likelihood,         shape: 'octagon',         label: 'likelihood' },
+      bayesupdate: { color: PALETTE.bayesupdate,        shape: 'octagon',         label: 'bayesupdate' },
+      module:      { color: PALETTE.module,             shape: 'round-rectangle', label: 'module' },
+      table:       { color: PALETTE.table,              shape: 'round-rectangle', label: 'table' },
+      unknown:     { color: PALETTE.unknown,            shape: 'rectangle',       label: 'unknown' },
     };
+
+    /**
+     * Single source of truth for "what colour does this node get?".
+     * Used by the DAG renderer, the plot-view colorForBinding lookup,
+     * and the reification-bubble fill so all three views stay coherent.
+     *
+     * Decision tree:
+     *   kind === 'kernel'         → kernelof teal (overrides type)
+     *   kind === 'measure'        → lawof blue   (overrides type)
+     *   type ∈ {'draw', 'call'}   → PHASE_COLORS[phase]   (value node)
+     *   else                      → TYPE_STYLE[type].color (structural)
+     *
+     * Inside a reification bubble, node.phase has already been
+     * overridden to the scope-local phase by dag.js's
+     * applyScopeLocalPhases — so the same theta1 reads stochastic in
+     * the main view and parameterized inside a kernel bubble.
+     */
+    function resolveNodeColor(node) {
+      if (node.kind === 'kernel')  return TYPE_STYLE.kernelof.color;
+      if (node.kind === 'measure') return TYPE_STYLE.lawof.color;
+      var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
+      if (node.type === 'draw' || node.type === 'call') {
+        return PHASE_COLORS[node.phase] || ts.color;
+      }
+      return ts.color;
+    }
 
     var cy = null;
     var bb = null;
@@ -1672,17 +1727,15 @@ class FlatPPLPanel {
       if (currentState && currentState.data && currentState.data.nodes) {
         var nodes = currentState.data.nodes;
         for (var i = 0; i < nodes.length; i++) {
-          var n = nodes[i];
-          if (n.id !== bindingName) continue;
-          if (n.kind === 'kernel')  return TYPE_STYLE.kernelof.color;
-          if (n.kind === 'measure') return TYPE_STYLE.lawof.color;
-          var ts = TYPE_STYLE[n.type] || TYPE_STYLE.unknown;
-          return ts.color;
+          if (nodes[i].id === bindingName) return resolveNodeColor(nodes[i]);
         }
       }
+      // Fallback when the plot is updating ahead of the DAG (rare, but
+      // possible during config-update reflows). currentBindings has
+      // .type but not .kind/.phase, so resolveNodeColor naturally
+      // degrades to the type colour.
       var binding = currentBindings && currentBindings.get(bindingName);
-      var bindingType = (binding && binding.type) || 'draw';
-      return (TYPE_STYLE[bindingType] || TYPE_STYLE.draw).color;
+      return resolveNodeColor({ type: (binding && binding.type) || 'draw' });
     }
 
     /**
@@ -2074,14 +2127,10 @@ class FlatPPLPanel {
       for (var k = 0; k < data.reifications.length; k++) {
         var r = data.reifications[k];
         if (r.kernel.length < 2) continue;
-        var ts = TYPE_STYLE[r.type];
-        if (!ts) continue;
-        // Mirror the kind-based color override applied to nodes: a
-        // functionof of a measure is semantically a kernel, so its bubble
-        // takes the kernelof color.
-        var bubbleColor = ts.color;
-        if (r.kind === 'kernel')      bubbleColor = TYPE_STYLE.kernelof.color;
-        else if (r.kind === 'measure') bubbleColor = TYPE_STYLE.lawof.color;
+        if (!TYPE_STYLE[r.type]) continue;
+        // Same colour the bubble's reification node would get — keeps
+        // bubble fill, bubble stroke, and node fill in lockstep.
+        var bubbleColor = resolveNodeColor(r);
 
         var memberIds = bubbleMemberIds(r, data.reifications);
         var nodes = cy.collection();
@@ -2149,37 +2198,7 @@ class FlatPPLPanel {
         if (node.kind === 'kernel')      shape = 'round-hexagon';
         else if (node.kind === 'measure') shape = 'round-rectangle';
 
-        // Color: phase-driven for value-producing nodes (semantic info —
-        // is this random / a parameter / a constant?). Type-driven for
-        // structural nodes (measures, kernels, functions, literals,
-        // likelihoods, etc.) where a phase classification would be
-        // misleading or meaningless.
-        //
-        //   value-producing: 'draw' | 'call'
-        //                    → PHASE_COLORS[node.phase]
-        //   measure:         node.kind === 'measure' || type === 'lawof'
-        //                    → lawof blue
-        //   kernel:          node.kind === 'kernel' || type === 'kernelof'
-        //                    → kernelof teal
-        //   function:        type === 'functionof' | 'fn'
-        //                    → functionof green
-        //   everything else: TYPE_STYLE[type].color (literal pink, input
-        //                    teal, likelihood/bayesupdate red/orange, …)
-        //
-        // Inside a reification bubble, node.phase has been overridden to
-        // the scope-local phase by dag.js's applyScopeLocalPhases — so
-        // the same theta1 reads stochastic in the main view and
-        // parameterized inside a kernel bubble.
-        var color;
-        if (node.kind === 'kernel') {
-          color = TYPE_STYLE.kernelof.color;
-        } else if (node.kind === 'measure') {
-          color = TYPE_STYLE.lawof.color;
-        } else if (node.type === 'draw' || node.type === 'call') {
-          color = PHASE_COLORS[node.phase] || ts.color;
-        } else {
-          color = ts.color;
-        }
+        var color = resolveNodeColor(node);
         // Anonymous nodes (inline-expression targets) have label === ''
         // deliberately and show their expression on hover only. Others
         // fall back to their id.
