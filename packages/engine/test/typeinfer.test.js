@@ -104,7 +104,7 @@ test('weighted(measure, measure): structurally invalid → diagnostic', () => {
     invalid = weighted(theta2_dist, theta1_dist)
   `);
   assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /weighted: arg 1 expects real, got measure<real>/);
+  assert.match(errors[0].message, /weighted: arg 1 expects real, got measure over real/);
   assert.equal(errors[0].severity, 'error');
 });
 
@@ -119,7 +119,7 @@ test('weighted(value, value): structurally invalid → diagnostic', () => {
     invalid = weighted(theta2, theta1)
   `);
   assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /weighted: arg 2 expects measure<'T>, got real/);
+  assert.match(errors[0].message, /weighted: arg 2 expects measure, got real/);
 });
 
 test('weighted(value, measure): valid — no diagnostic, infers measure<real>', () => {

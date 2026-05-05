@@ -256,32 +256,68 @@ function occurs(id, t, subst) {
 }
 
 /**
- * Render a type as a human-readable string. Used in diagnostics
- * ("expected scalar real, got measure<scalar real>") and for FlatPIR
- * round-trip equivalence checking (not bit-equal to the canonical
- * S-expression, but lossless and easy to read).
+ * Render a type in human-readable form for user-facing diagnostics.
+ *
+ * The output uses plain English rather than the angle-bracket
+ * "measure<T>" / "array<1,[3],T>" syntax — FlatPPL surface doesn't
+ * have parametric type syntax, and users seeing "measure<'T_3>" tend
+ * to read it as a literal foreign string. So:
+ *
+ *   measure (free domain)        → "measure"
+ *   measure over real            → "measure over real"
+ *   array<1, [3], real>          → "array of real (length 3)"
+ *   array<1, [%dynamic], real>   → "array of real"
+ *   array<2, [3, 4], real>       → "2d array of real (shape 3×4)"
+ *   record with named fields     → "record with fields a: real, b: integer"
+ *   tuple<real, integer>         → "tuple (real, integer)"
+ *   free type variable           → "any" (the freshness counter has
+ *                                   no meaning to users; an unresolved
+ *                                   variable means "we couldn't pin
+ *                                   this down" which reads as "any")
+ *
+ * Round-trip-faithful FlatPIR rendering (canonical S-expressions) is
+ * a separate concern and would belong in a dedicated `showSExpr`
+ * helper if needed.
  */
 function show(t) {
   if (!t) return '<null>';
   switch (t.kind) {
     case 'deferred': return 'deferred';
-    case 'failed':   return 'failed("' + t.reason + '")';
+    case 'failed':   return 'failed (' + t.reason + ')';
     case 'any':      return 'any';
     case 'scalar':   return t.prim;
-    case 'array':    return 'array<' + t.rank + ', [' + t.shape.join(',') + '], ' + show(t.elem) + '>';
-    case 'record':   return 'record{' + Object.keys(t.fields).map(k => k + ': ' + show(t.fields[k])).join(', ') + '}';
-    case 'tuple':    return 'tuple<' + t.elems.map(show).join(', ') + '>';
-    case 'measure':  return 'measure<' + show(t.domain) + '>';
-    case 'var': {
-      // Strip the freshness suffix '_NNN' added by signatureOf —
-      // users see 'T not 'T_3'. Variables that haven't been resolved
-      // by unification are unknown placeholders; a generic 'T reads
-      // better in error messages than the internal counter.
-      const base = t.id.replace(/_\d+$/, '');
-      return "'" + base;
-    }
+    case 'array':    return showArray(t);
+    case 'record':   return showRecord(t);
+    case 'tuple':    return 'tuple (' + t.elems.map(show).join(', ') + ')';
+    case 'measure':  return showMeasure(t);
+    case 'var':      return 'any';  // unresolved → user-facing "any"
   }
   return '<unknown>';
+}
+
+function showMeasure(t) {
+  // Drop the domain when it's an unresolved type variable — "measure"
+  // reads better than "measure over any". Keep it whenever the
+  // domain is concrete or compound.
+  if (t.domain && t.domain.kind === 'var') return 'measure';
+  return 'measure over ' + show(t.domain);
+}
+
+function showArray(t) {
+  const concrete = t.shape.every(d => d !== '%dynamic');
+  const elem = show(t.elem);
+  if (t.rank === 1) {
+    return concrete ? 'array of ' + elem + ' (length ' + t.shape[0] + ')'
+                    : 'array of ' + elem;
+  }
+  return concrete ? t.rank + 'd array of ' + elem + ' (shape ' + t.shape.join('×') + ')'
+                  : t.rank + 'd array of ' + elem;
+}
+
+function showRecord(t) {
+  const ks = Object.keys(t.fields);
+  if (ks.length === 0) return 'record';
+  return 'record with fields ' + ks.map(k => k + ': ' + show(t.fields[k])).join(', ');
 }
 
 /** Whether `t` is a measure type (or one that resolves to a measure). */

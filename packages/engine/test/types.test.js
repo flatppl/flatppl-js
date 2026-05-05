@@ -69,18 +69,26 @@ test('equal: record fields are order-sensitive (per spec)', () => {
 // show
 // =====================================================================
 
-test('show: produces readable strings for diagnostics', () => {
+test('show: produces user-facing diagnostic-friendly strings', () => {
   assert.equal(T.show(T.REAL), 'real');
-  assert.equal(T.show(T.measure(T.REAL)), 'measure<real>');
-  assert.equal(T.show(T.array(1, [3], T.REAL)), 'array<1, [3], real>');
-  assert.equal(T.show(T.record({ x: T.REAL })), 'record{x: real}');
+  // Concrete domains use "measure over X"; unresolved variables
+  // collapse to bare "measure" so users don't see implementation noise.
+  assert.equal(T.show(T.measure(T.REAL)),  'measure over real');
+  assert.equal(T.show(T.measure(T.tvar('T'))), 'measure');
+  // Arrays render with shape if every dim is concrete; %dynamic dims
+  // suppress the shape annotation.
+  assert.equal(T.show(T.array(1, [3], T.REAL)),         'array of real (length 3)');
+  assert.equal(T.show(T.array(1, ['%dynamic'], T.REAL)), 'array of real');
+  assert.equal(T.show(T.array(2, [3, 4], T.REAL)),      '2d array of real (shape 3×4)');
+  assert.equal(T.show(T.record({ x: T.REAL, y: T.INTEGER })),
+               'record with fields x: real, y: integer');
+  assert.equal(T.show(T.tuple([T.REAL, T.INTEGER])),    'tuple (real, integer)');
   assert.equal(T.show(T.deferred()), 'deferred');
-  assert.equal(T.show(T.failed('cycle')), 'failed("cycle")');
-  // Bare type variables render with the leading apostrophe; show()
-  // also strips the freshness suffix added by signatureOf so users
-  // see 'T not 'T_3 in diagnostics.
-  assert.equal(T.show(T.tvar('T')),    "'T");
-  assert.equal(T.show(T.tvar('T_42')), "'T");
+  assert.equal(T.show(T.failed('cycle')), 'failed (cycle)');
+  // Free type variables render as "any" — their internal IDs would
+  // be confusing to users.
+  assert.equal(T.show(T.tvar('T')),    'any');
+  assert.equal(T.show(T.tvar('T_42')), 'any');
 });
 
 // =====================================================================
