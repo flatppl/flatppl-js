@@ -484,30 +484,54 @@ function classifyDerivation(binding, bindings) {
     // which OPERANDS are actually measures.
     const ast = binding.node.value;
 
-    // Density reweighting: weighted(<constant>, <measure-expr>).
-    // Function-of-variate weights are deferred (need per-atom eval).
+    // Density reweighting: weighted(<value-expr>, <measure-expr>).
+    //   - constant value-expr → uniform log-shift, precomputed here.
+    //   - per-atom value-expr → store the IR; evaluate at materialise
+    //                           time and add log(w_i) to logWeights[i].
+    // Per spec §sec:measure-algebra the first argument MUST be a value
+    // (non-negative real). A measure-typed weight is a type error and
+    // gets rejected; a value-typed expression that we can't sample (no
+    // derivation in scope) also gets rejected.
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'weighted'
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
+      const weightAst  = ast.args[0];
       const baseAst    = ast.args[1];
       const weightExpr = rhsIR.args[0];
       const baseName = resolveMeasureBaseName(baseAst, bindings);
       if (baseName == null) return null;
+      if (isMeasureExpr(weightAst, bindings)) return null;
       const w = resolveConstant(weightExpr, bindings, new Set());
-      if (w == null || !(w > 0) || !Number.isFinite(w)) return null;
-      return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
+      if (w != null) {
+        if (!(w > 0) || !Number.isFinite(w)) return null;
+        return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
+      }
+      if (isEvaluable(weightExpr)) {
+        return { kind: 'weighted', from: baseName, weightIR: weightExpr, isLog: false };
+      }
+      return null;
     }
 
-    // Log-density reweighting: logweighted(<constant>, <measure-expr>).
-    // Same shape as weighted, but the weight is the log already.
+    // Log-density reweighting: logweighted(<value-expr>, <measure-expr>).
+    // Same two paths as weighted, but the user has already supplied
+    // log-weights — we add them in directly with no log() call. Negative
+    // and even -Infinity values are valid (probability 0).
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'logweighted'
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
-      const baseAst = ast.args[1];
-      const lwExpr  = rhsIR.args[0];
+      const weightAst = ast.args[0];
+      const baseAst   = ast.args[1];
+      const lwExpr    = rhsIR.args[0];
       const baseName = resolveMeasureBaseName(baseAst, bindings);
       if (baseName == null) return null;
+      if (isMeasureExpr(weightAst, bindings)) return null;
       const lw = resolveConstant(lwExpr, bindings, new Set());
-      if (lw == null || !Number.isFinite(lw)) return null;
-      return { kind: 'weighted', from: baseName, logShift: lw };
+      if (lw != null) {
+        if (!Number.isFinite(lw)) return null;
+        return { kind: 'weighted', from: baseName, logShift: lw };
+      }
+      if (isEvaluable(lwExpr)) {
+        return { kind: 'weighted', from: baseName, weightIR: lwExpr, isLog: true };
+      }
+      return null;
     }
 
     // Normalisation: normalize(<measure-expr>). Subtracts logSumExp
@@ -574,8 +598,20 @@ function classifyDerivation(binding, bindings) {
  * target.
  */
 function derivationRefsValid(d, derivations, bindings) {
-  if (d.kind === 'alias' || d.kind === 'weighted' || d.kind === 'normalize') {
+  if (d.kind === 'alias' || d.kind === 'normalize') {
     return Object.prototype.hasOwnProperty.call(derivations, d.from);
+  }
+  if (d.kind === 'weighted') {
+    if (!Object.prototype.hasOwnProperty.call(derivations, d.from)) return false;
+    // Per-atom path also depends on every binding referenced by its
+    // weight expression — those need derivations of their own so the
+    // visualPanel can build refArrays for evaluateN.
+    if (d.weightIR) {
+      for (const r of collectSelfRefs(d.weightIR)) {
+        if (!Object.prototype.hasOwnProperty.call(derivations, r)) return false;
+      }
+    }
+    return true;
   }
   // Superpose: every component must be derivable. Empty/missing
   // components were already rejected by classifyDerivation, so we
