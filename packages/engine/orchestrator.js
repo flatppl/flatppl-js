@@ -304,6 +304,64 @@ function resolveMeasure(ir, bindings, seen) {
 }
 
 /**
+ * Rewrite every `draw(<measure-ref>)` subexpression to the bare ref.
+ *
+ * Variates and their underlying measures share the same EmpiricalMeasure
+ * (alias rule in classifyDerivation) — `theta = draw(theta_dist)` makes
+ * `theta` and `theta_dist` literally point at one Float64Array. So in
+ * any value context, an inline `draw(<measure-ref>)` and a bare ref to
+ * the measure binding produce the same per-atom values; we can rewrite
+ * one to the other before checking evaluability.
+ *
+ * This lets weighted/logweighted accept inline draws in their weight
+ * slot — e.g. `weighted(draw(theta_dist), m)` and `weighted(2 *
+ * draw(theta_dist), m)` — without `draw` needing to live in
+ * EVALUABLE_OPS (it doesn't: it consumes RNG state, which the
+ * deterministic evaluator can't model).
+ *
+ * Returns the input unchanged if no rewrite applies. Recurses into
+ * args / kwargs so the rewrite is deep, not just at the root.
+ */
+function unwrapInlineDraws(ir, bindings) {
+  if (!ir || typeof ir !== 'object') return ir;
+  // Root case: (call draw (ref self <name>)) where <name> is a
+  // measure-typed binding. Strip the draw, return the ref.
+  if (ir.kind === 'call' && ir.op === 'draw'
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    const inner = ir.args[0];
+    if (inner && inner.kind === 'ref' && inner.ns === 'self'
+        && bindings.has(inner.name)) {
+      return inner;
+    }
+  }
+  // Recursive case: rewrite child IRs. Allocates a new node only if
+  // something below changed; otherwise returns ir as-is so callers
+  // can rely on reference equality for "no rewrite" checks.
+  if (ir.kind === 'call') {
+    let changed = false;
+    let newArgs = ir.args;
+    if (ir.args) {
+      newArgs = ir.args.map(a => {
+        const u = unwrapInlineDraws(a, bindings);
+        if (u !== a) changed = true;
+        return u;
+      });
+    }
+    let newKwargs = ir.kwargs;
+    if (ir.kwargs) {
+      newKwargs = {};
+      for (const k in ir.kwargs) {
+        const u = unwrapInlineDraws(ir.kwargs[k], bindings);
+        if (u !== ir.kwargs[k]) changed = true;
+        newKwargs[k] = u;
+      }
+    }
+    if (changed) return { ...ir, args: newArgs, kwargs: newKwargs };
+  }
+  return ir;
+}
+
+/**
  * Whether the worker's evaluateExpr can compute this IR end-to-end
  * given a numeric env. Conservative — returns false for anything we're
  * not 100% sure the evaluator handles, so the orchestrator can short-
@@ -496,7 +554,9 @@ function classifyDerivation(binding, bindings) {
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
       const weightAst  = ast.args[0];
       const baseAst    = ast.args[1];
-      const weightExpr = rhsIR.args[0];
+      // Unwrap any inline draw(<measure-ref>) in the weight expression
+      // to a bare ref before checking evaluability — see helper.
+      const weightExpr = unwrapInlineDraws(rhsIR.args[0], bindings);
       const baseName = resolveMeasureBaseName(baseAst, bindings);
       if (baseName == null) return null;
       if (isMeasureExpr(weightAst, bindings)) return null;
@@ -519,7 +579,7 @@ function classifyDerivation(binding, bindings) {
         && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
       const weightAst = ast.args[0];
       const baseAst   = ast.args[1];
-      const lwExpr    = rhsIR.args[0];
+      const lwExpr    = unwrapInlineDraws(rhsIR.args[0], bindings);
       const baseName = resolveMeasureBaseName(baseAst, bindings);
       if (baseName == null) return null;
       if (isMeasureExpr(weightAst, bindings)) return null;

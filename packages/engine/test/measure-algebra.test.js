@@ -523,6 +523,52 @@ test('per-atom weighted: zero-valued atoms become -Infinity (zero mass)', () => 
   assert.equal(empirical.totalLogMass(W), -Infinity);
 });
 
+test('per-atom weighted: inline draw(<measure-ref>) in the weight slot', () => {
+  // weighted(draw(theta_dist), m) — an inline draw in the weight
+  // slot. The orchestrator unwraps it to a ref to theta_dist (variates
+  // and measures share samples in our cache), so the per-atom path
+  // works just as if the user had written the named-variate version.
+  const src = `
+    theta_dist = Exponential(rate=1)
+    m = Normal(mu=0, sigma=1)
+    w_inline = weighted(draw(theta_dist), m)
+    theta = draw(theta_dist)
+    w_named  = weighted(theta, m)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const inline = materialise('w_inline', bindings, { cache });
+  const named  = materialise('w_named',  bindings, { cache });
+  // The inline form aliases through theta_dist; the named form
+  // aliases through theta which itself aliases to theta_dist. Both
+  // end up reading theta_dist's samples → bit-equal logWeights.
+  assertSameSamples(inline, named, 'inline-draw vs named-variate samples');
+  assertSameLogWeights(inline, named, 1e-12, 'inline-draw vs named-variate logWeights');
+});
+
+test('per-atom weighted: inline draw nested inside an arithmetic expression', () => {
+  // weighted(2 * draw(theta_dist), m) — exercises the recursive walk
+  // in unwrapInlineDraws. After unwrap the IR is `2 * theta_dist`,
+  // which is evaluable; logWeights should track log(2 * theta_i).
+  const src = `
+    theta_dist = Exponential(rate=1)
+    m = Normal(mu=0, sigma=1)
+    w = weighted(2 * draw(theta_dist), m)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const theta_dist = materialise('theta_dist', bindings, { cache });
+  const W          = materialise('w',          bindings, { cache });
+  const N = W.logWeights.length;
+  const baseline = -Math.log(N);
+  for (let i = 0; i < N; i++) {
+    const expected = Math.log(2 * theta_dist.samples[i]);
+    const got = W.logWeights[i] - baseline;
+    assert.ok(Math.abs(got - expected) < 1e-10,
+      `atom ${i}: expected ${expected}, got ${got}`);
+  }
+});
+
 test('orchestrator: weighted(<measure>, m) is rejected as a type error', () => {
   // Per spec §sec:measure-algebra the first argument of weighted
   // must be a value, not a measure. theta_dist IS a measure, so
