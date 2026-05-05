@@ -1054,6 +1054,24 @@ function analyze(ast, source) {
   const typeDiagnostics = require('./typeinfer').inferTypes(bindings);
   for (const d of typeDiagnostics) diagnostics.push(d);
 
+  // Bin diagnostics back onto their bindings so downstream consumers
+  // (DAG view, plot pane) can answer "does this binding have an
+  // error?" without re-walking the global diagnostic list. First match
+  // wins — diagnostics carry a single source location and bindings
+  // don't overlap by construction.
+  for (const d of diagnostics) {
+    if (!d.loc) continue;
+    for (const [, b] of bindings) {
+      const nl = b.node && b.node.loc;
+      if (!nl) continue;
+      if (d.loc.start.line >= nl.start.line && d.loc.start.line <= nl.end.line) {
+        if (!b.diagnostics) b.diagnostics = [];
+        b.diagnostics.push(d);
+        break;
+      }
+    }
+  }
+
   return { bindings, diagnostics, symbols };
 }
 

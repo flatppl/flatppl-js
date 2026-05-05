@@ -550,12 +550,24 @@ class FlatPPLPanel {
         if (d.unsupportedDetail) msg += ' — ' + esc(d.unsupportedDetail);
         unsupportedRow = '<div class="expr" style="color:#FF8A65;">' + msg + '</div>';
       }
+      // Type-error row(s). Drawn in the same red as the node border so
+      // the visual link reads at a glance. Each diagnostic gets its own
+      // line — a single binding can pick up several mismatches if its
+      // RHS has multiple bad arg positions.
+      var errorRow = '';
+      var errors = errorsForBinding(d.id);
+      if (errors && errors.length > 0) {
+        for (var i = 0; i < errors.length; i++) {
+          errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
+        }
+      }
       document.getElementById('info').innerHTML =
         '<div class="row"><span class="name">' + esc(d.label)
         + '</span><span class="type">' + esc(d.nodeType) + '</span>'
         + phaseTag + '</div>'
         + '<div class="expr">' + esc(d.expr) + '</div>'
-        + unsupportedRow;
+        + unsupportedRow
+        + errorRow;
     }
 
     function truncateExpr(expr) {
@@ -730,6 +742,19 @@ class FlatPPLPanel {
               'border-color': '#FF8A65',
               'border-width': 3,
               'border-style': 'dotted',
+            }
+          },
+          {
+            // Bindings with analyzer-level error diagnostics (typeinfer
+            // mismatch, undefined ref, etc.) get a solid red border.
+            // Distinct from the dashed yellow boundary and dotted orange
+            // unsupported markers so the three semantic signals don't
+            // collide visually.
+            selector: 'node[?hasError]',
+            style: {
+              'border-color': '#E57373',
+              'border-width': 3,
+              'border-style': 'solid',
             }
           },
           {
@@ -1603,14 +1628,27 @@ class FlatPPLPanel {
       // the focused binding isn't plottable (lawof, modules, etc.) we
       // still show *something* — a "Not plottable" message — so the
       // panel doesn't appear/disappear under the user as they click
-      // around the DAG.
+      // around the DAG. If the binding has analyzer-level type errors,
+      // we surface those instead — they're more actionable than a
+      // generic "not plottable" notice.
       if (!currentPlotPlan) {
         if (currentState && currentState.targetName === MODULE_TARGET) {
           showPlotMessage('Click a binding in the graph to plot it.');
-        } else {
-          var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
-          showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
+          return;
         }
+        var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
+        var typeErrors = errorsForBinding(currentPlotBindingName);
+        if (typeErrors && typeErrors.length > 0) {
+          var msg = '<strong>' + name + '</strong> is semantically invalid:'
+            + '<ul style="margin: 6px 0 0 16px; padding: 0;">';
+          for (var i = 0; i < typeErrors.length; i++) {
+            msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
+          }
+          msg += '</ul>';
+          showPlotMessage(msg);
+          return;
+        }
+        showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
         return;
       }
       // Array-mode loads the cached array synchronously (no worker
@@ -1764,6 +1802,22 @@ class FlatPPLPanel {
      * the current DAG — paths that update the plot independent of
      * the DAG (rare, but possible during config-update reflows).
      */
+    /**
+     * Return the analyzer-level error diagnostics that landed on a
+     * binding (typeinfer mismatches, undefined refs, etc.), or null
+     * if there are none. Source for both the plot pane's
+     * "semantically invalid" message and the DAG's red error border.
+     */
+    function errorsForBinding(bindingName) {
+      if (!bindingName || !currentState || !currentState.data
+          || !currentState.data.nodes) return null;
+      var nodes = currentState.data.nodes;
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].id === bindingName) return nodes[i].errors || null;
+      }
+      return null;
+    }
+
     function colorForBinding(bindingName) {
       if (currentState && currentState.data && currentState.data.nodes) {
         var nodes = currentState.data.nodes;
@@ -2263,6 +2317,7 @@ class FlatPPLPanel {
             unsupported: !!node.unsupported,
             unsupportedReason: node.unsupportedReason || '',
             unsupportedDetail: node.unsupportedDetail || '',
+            hasError: !!(node.errors && node.errors.length > 0),
             width: width,
           },
         });

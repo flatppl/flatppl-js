@@ -280,6 +280,15 @@ function computeSubDAG(bindings, nodeName) {
     const planUnsupported = b && b.disintegratePlan && b.disintegratePlan.kind === 'unsupported'
       ? b.disintegratePlan : null;
 
+    // Type-error surfacing: any analyzer-level error diagnostic that
+    // landed on this binding (typeinfer mismatches, undefined refs,
+    // …) gets passed through so the renderer can mark the node and
+    // the plot pane can show a "semantically invalid" message
+    // instead of a generic "not plottable".
+    const errorDiags = b && b.diagnostics
+      ? b.diagnostics.filter(d => d.severity === 'error')
+      : null;
+
     visited.set(name, {
       id: name,
       label: boundaryLabels.get(name),
@@ -293,6 +302,7 @@ function computeSubDAG(bindings, nodeName) {
       unsupported: planUnsupported ? true : undefined,
       unsupportedReason: planUnsupported ? planUnsupported.reason : undefined,
       unsupportedDetail: planUnsupported && planUnsupported.detail ? planUnsupported.detail : undefined,
+      errors: (errorDiags && errorDiags.length > 0) ? errorDiags : undefined,
     });
 
     if (isBoundary || !b) return;
