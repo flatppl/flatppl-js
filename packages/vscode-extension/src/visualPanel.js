@@ -1218,7 +1218,18 @@ class FlatPPLPanel {
           var idx = FlatPPLEngine.empirical.systematicResample(combinedLogWeights, SAMPLE_COUNT, prng);
           var out = new Float64Array(SAMPLE_COUNT);
           for (var i = 0; i < SAMPLE_COUNT; i++) out[i] = combinedSamples[idx[i]];
-          var m = { samples: out, logWeights: null };
+          // Mass-faithful per spec §sec:additive-superposition:
+          // superpose's total mass is the sum of input masses, NOT
+          // automatically renormalised. The resampled N atoms each
+          // carry (totalInputMass / N) of the mass, so logWeights
+          // is a uniform array of (totalLogMass − log(N)). This
+          // preserves the spec invariant that operations don't
+          // rescale; call normalize(...) to land on probability scale.
+          var totalLogMass = FlatPPLEngine.empirical.logSumExp(combinedLogWeights);
+          var perAtom = totalLogMass - Math.log(SAMPLE_COUNT);
+          var outW = new Float64Array(SAMPLE_COUNT);
+          outW.fill(perAtom);
+          var m = { samples: out, logWeights: outW };
           measureCache.set(name, m);
           return m;
         });
