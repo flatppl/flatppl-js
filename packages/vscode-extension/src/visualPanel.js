@@ -1635,6 +1635,7 @@ class FlatPPLPanel {
       var el = document.getElementById('plot-content');
       el.style.display = '';
       el.style.gridTemplateColumns = '';
+      el.style.gridTemplateRows = '';
       el.style.gap = '';
       el.style.padding = '';
       el.style.boxSizing = '';
@@ -1949,78 +1950,228 @@ class FlatPPLPanel {
      * legacy "data preview" view that used to swap into the graph
      * pane, now living in the plot pane next to the DAG.
      */
+    // Persistent per-binding selection of which axes appear in the
+    // corner plot. Reset when the focused binding changes; survives
+    // re-renders triggered by checkbox clicks. Max 4 axes selected
+    // at any time (NxN corner plots get unreadable beyond that).
+    var recordSelection = null;
+    var CORNER_MAX_AXES = 4;
+
     /**
-     * Render marginal histograms for a record-shaped EmpiricalMeasure.
-     * Each field gets its own histogram in a CSS grid — the SoA layout
-     * makes this trivial: m.fields.<name>.samples is the marginal
-     * column, ready for FD binning. Top-level logWeights apply to
-     * every field since they share atoms (per spec, joint sampling
-     * produces atoms not per-field independent weights).
+     * Enumerate the plottable scalar leaves of a record-shaped
+     * measure with their display labels. Currently flat (no nested
+     * records / arrays); when nested support lands, this will
+     * recurse and produce labels like "obs[0]", "obs[1]", … so users
+     * can pick any leaf out of the structure.
+     */
+    function listScalarAxes(measure) {
+      var out = [];
+      var ks = Object.keys(measure.fields || {});
+      for (var i = 0; i < ks.length; i++) {
+        var sub = measure.fields[ks[i]];
+        if (sub.samples instanceof Float64Array) {
+          out.push({ key: ks[i], label: ks[i], samples: sub.samples });
+        }
+      }
+      return out;
+    }
+
+    /**
+     * Render a record-shaped EmpiricalMeasure as a corner plot,
+     * with a checkbox row above for axis selection (max 4 axes).
      *
-     * Phase 1 keeps the per-marginal view simple: bars only, no
-     * analytical density overlay (those are per-component which
-     * we don't carry yet). Pair plots / corner plots are a later
-     * commit.
+     * Corner plot:
+     *   - diagonal:        1D marginal histogram of each selected axis
+     *   - below-diagonal:  2D joint scatter for each (axis_j, axis_i)
+     *                      pair with i > j
+     *   - above-diagonal:  empty (corner-plot convention)
+     *
+     * SoA pays off here: marginals are sub.samples; joints are just
+     * two columns zipped index-wise — no copy, no projection.
      */
     function renderRecordMarginals(measure, bindingName) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
-      // Tear down any prior single-chart instance so its canvas
-      // doesn't bleed through under the grid.
       if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
 
-      var fieldNames = Object.keys(measure.fields);
-      var n = fieldNames.length;
-      // Approximately-square grid layout. With ≤4 fields a single row
-      // reads better than 2×2 (full-width marginals); ≥5 wraps.
-      var cols = n <= 4 ? n : Math.ceil(Math.sqrt(n));
-      el.style.display = 'grid';
-      el.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
-      el.style.gap = '10px';
+      var axes = listScalarAxes(measure);
+      if (axes.length === 0) {
+        showPlotMessage('No scalar fields to plot for <strong>' + esc(bindingName) + '</strong>.', { hint: true });
+        return;
+      }
+
+      // Reset selection when the focused binding changes. Default
+      // selection is the first CORNER_MAX_AXES axes.
+      if (!recordSelection || recordSelection.bindingName !== bindingName) {
+        recordSelection = {
+          bindingName: bindingName,
+          selected: axes.slice(0, CORNER_MAX_AXES).map(function(a) { return a.key; }),
+        };
+      } else {
+        // Drop any selections that no longer correspond to a present
+        // axis (shouldn't normally happen, but defensive).
+        var present = {}; axes.forEach(function(a) { present[a.key] = true; });
+        recordSelection.selected = recordSelection.selected.filter(function(k) { return present[k]; });
+      }
+
+      // ---- Layout: selector row on top, corner grid below ----
+      el.style.display = 'flex';
+      el.style.flexDirection = 'column';
       el.style.padding = '10px';
       el.style.boxSizing = 'border-box';
+      el.style.gap = '8px';
+
+      var selectorBar = renderAxisSelector(axes, function() {
+        // Re-render the corner section in place. Recompute on each
+        // toggle — cheap for up to a few thousand atoms; for larger
+        // sample counts the FD histograms dominate but still finish
+        // in well under a frame.
+        renderCornerGrid(cornerHost, measure, bindingName);
+      });
+      el.appendChild(selectorBar);
+
+      var cornerHost = document.createElement('div');
+      cornerHost.style.flex = '1';
+      cornerHost.style.minHeight = '0';
+      el.appendChild(cornerHost);
+
+      renderCornerGrid(cornerHost, measure, bindingName);
+    }
+
+    /**
+     * Build a horizontal checkbox row for axis selection. Each box
+     * corresponds to a scalar leaf of the record. The first
+     * CORNER_MAX_AXES boxes are checked by default; toggling honors
+     * the cap (a 5th check is rejected with a brief disabled hint —
+     * users uncheck one to check another).
+     *
+     * The onChange callback fires whenever the selection changes,
+     * so the corner plot below can be redrawn.
+     */
+    function renderAxisSelector(axes, onChange) {
+      var bar = document.createElement('div');
+      bar.style.display = 'flex';
+      bar.style.flexWrap = 'wrap';
+      bar.style.gap = '12px';
+      bar.style.alignItems = 'center';
+      bar.style.fontSize = '12px';
+      bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      bar.style.padding = '6px 8px';
+      bar.style.background = 'rgba(255,255,255,0.02)';
+      bar.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
+      bar.style.borderRadius = '3px';
+      bar.style.maxHeight = '28%';
+      bar.style.overflowY = 'auto';
+
+      var hint = document.createElement('span');
+      hint.textContent = 'Axes (max ' + CORNER_MAX_AXES + '):';
+      hint.style.opacity = '0.6';
+      bar.appendChild(hint);
+
+      axes.forEach(function(axis) {
+        var label = document.createElement('label');
+        label.style.display = 'inline-flex';
+        label.style.alignItems = 'center';
+        label.style.gap = '4px';
+        label.style.cursor = 'pointer';
+        label.style.userSelect = 'none';
+
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = recordSelection.selected.indexOf(axis.key) >= 0;
+        cb.addEventListener('change', function() {
+          var idx = recordSelection.selected.indexOf(axis.key);
+          if (cb.checked) {
+            if (idx >= 0) return;
+            if (recordSelection.selected.length >= CORNER_MAX_AXES) {
+              // Bounce the check back; the cap is hard.
+              cb.checked = false;
+              return;
+            }
+            recordSelection.selected.push(axis.key);
+          } else {
+            if (idx >= 0) recordSelection.selected.splice(idx, 1);
+          }
+          onChange();
+        });
+        label.appendChild(cb);
+
+        var name = document.createElement('span');
+        name.textContent = axis.label;
+        name.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        label.appendChild(name);
+
+        bar.appendChild(label);
+      });
+      return bar;
+    }
+
+    /**
+     * Build the corner-plot grid (diagonal marginals + below-diagonal
+     * scatters) for the currently-selected axes. host is the parent
+     * div whose contents we replace; it must be a flex/block child
+     * with a fixed height so the inner grid expands correctly.
+     */
+    function renderCornerGrid(host, measure, bindingName) {
+      host.innerHTML = '';
+      var axes = listScalarAxes(measure)
+        .filter(function(a) { return recordSelection.selected.indexOf(a.key) >= 0; });
+      var n = axes.length;
+      if (n === 0) {
+        var empty = document.createElement('div');
+        empty.textContent = 'Select at least one axis to plot.';
+        empty.style.opacity = '0.5';
+        empty.style.padding = '24px';
+        empty.style.textAlign = 'center';
+        host.appendChild(empty);
+        return;
+      }
 
       var fg = getComputedStyle(document.body).color || '#ccc';
       var color = colorForBinding(bindingName);
       var logWeights = measure.logWeights;
       var histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
-      // Stash the per-field charts so resize/dispose pick them up
-      // when the plot pane is re-rendered. (We don't currently wire
-      // up resize for marginals; one cell takes its parent's width
-      // and grid does the rest.)
-      var charts = [];
-      for (var i = 0; i < fieldNames.length; i++) {
-        var fname = fieldNames[i];
-        var sub = measure.fields[fname];
-        var samples = sub.samples;
-        if (!samples) continue;   // skip nested record/array — Phase 1
+      host.style.display = 'grid';
+      host.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
+      host.style.gridTemplateRows    = 'repeat(' + n + ', 1fr)';
+      host.style.gap = '8px';
+      host.style.minHeight = '0';
 
+      // Per-cell builder: each cell is a labelled chart container.
+      // Returns the inner chart div (for echarts.init).
+      function makeCell(label, row, col) {
         var cell = document.createElement('div');
         cell.style.display = 'flex';
         cell.style.flexDirection = 'column';
-        cell.style.minHeight = '180px';
-        cell.style.minWidth = '0';   // lets flex children shrink in grid cells
+        cell.style.gridRow    = (row + 1) + ' / span 1';
+        cell.style.gridColumn = (col + 1) + ' / span 1';
+        cell.style.minHeight = '0';
+        cell.style.minWidth  = '0';
         cell.style.background = 'rgba(255,255,255,0.02)';
         cell.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
         cell.style.borderRadius = '3px';
+        var lab = document.createElement('div');
+        lab.textContent = label;
+        lab.style.padding = '4px 8px 0 8px';
+        lab.style.fontSize = '12px';
+        lab.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        lab.style.opacity = '0.85';
+        cell.appendChild(lab);
+        var inner = document.createElement('div');
+        inner.style.flex = '1';
+        inner.style.minHeight = '0';
+        cell.appendChild(inner);
+        host.appendChild(cell);
+        return inner;
+      }
 
-        var label = document.createElement('div');
-        label.textContent = bindingName + '.' + fname;
-        label.style.padding = '4px 8px 0 8px';
-        label.style.fontSize = '12px';
-        label.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-        label.style.opacity = '0.85';
-        cell.appendChild(label);
-
-        var chartDiv = document.createElement('div');
-        chartDiv.style.flex = '1';
-        chartDiv.style.minHeight = '0';
-        cell.appendChild(chartDiv);
-        el.appendChild(cell);
-
+      // ---- Diagonals: 1D marginals --------------------------------
+      for (var i = 0; i < n; i++) {
+        var fname = axes[i].label;
+        var samples = axes[i].samples;
+        var inner = makeCell(bindingName + '.' + fname, i, i);
         var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
-
         var rects = [];
         for (var k = 0; k < hist.xs.length; k++) {
           rects.push({
@@ -2031,8 +2182,8 @@ class FlatPPLPanel {
         }
         var seriesColor = color;
         var seriesRects = rects;
-        var ec = echarts.init(chartDiv);
-        ec.setOption({
+        var ec1 = echarts.init(inner);
+        ec1.setOption({
           backgroundColor: 'transparent',
           animation: false,
           grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
@@ -2066,13 +2217,67 @@ class FlatPPLPanel {
             encode: { x: 0, y: 1 },
           }],
         });
-        charts.push(ec);
       }
 
-      // Reset grid styling when the next render reassigns plot-content
-      // — leave a marker so we can clean up if the next render isn't
-      // also a multivariate one. plotEchart stays null; the per-cell
-      // charts each manage their own canvases.
+      if (n < 2) return;   // single-field record: only the diagonal
+
+      // ---- Below-diagonal: 2D joint scatters ----------------------
+      // Subsample if N is large enough that overplotting kills
+      // readability. ECharts handles 50k points fine; 100k starts to
+      // chug. Take an even slice (deterministic) so the visual is
+      // stable across re-renders.
+      var anyN = measure.fields[fieldNames[0]].samples.length;
+      var maxPoints = 20000;
+      var stride = anyN > maxPoints ? Math.ceil(anyN / maxPoints) : 1;
+      // Pre-build one positional list per field to avoid repeated
+      // .samples lookups in the inner loop below.
+      var cols = fieldNames.map(function(fn) { return measure.fields[fn].samples; });
+
+      for (var row = 1; row < n; row++) {
+        for (var col = 0; col < row; col++) {
+          var xName = fieldNames[col];
+          var yName = fieldNames[row];
+          var xCol = cols[col], yCol = cols[row];
+          var inner2 = makeCell(yName + ' vs ' + xName, row, col);
+          var pts = [];
+          for (var p = 0; p < anyN; p += stride) {
+            pts.push([xCol[p], yCol[p]]);
+          }
+          // Point opacity scales with point count — denser data
+          // gets more transparency so clouds don't saturate.
+          var alpha = Math.max(0.05, Math.min(0.6, 800 / pts.length));
+          var ec2 = echarts.init(inner2);
+          ec2.setOption({
+            backgroundColor: 'transparent',
+            animation: false,
+            grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
+            xAxis: {
+              type: 'value', scale: true,
+              axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, fontSize: 10 },
+              splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
+            },
+            yAxis: {
+              type: 'value', scale: true,
+              axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.5, fontSize: 10 },
+              splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
+            },
+            series: [{
+              type: 'scatter',
+              data: pts,
+              symbolSize: 3,
+              large: true,
+              largeThreshold: 2000,
+              itemStyle: { color: color, opacity: alpha },
+            }],
+          });
+        }
+      }
+      // Above-diagonal cells are intentionally left empty (corner-
+      // plot convention).
     }
 
     function renderArrayStepPlot(arr) {
