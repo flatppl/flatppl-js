@@ -238,6 +238,60 @@ function multinomialResample(logWeights, n, prng) {
   return indices;
 }
 
+// =====================================================================
+// Multivariate sample shapes (struct-of-arrays)
+// =====================================================================
+//
+// EmpiricalMeasure generalises to a recursive shape:
+//
+//   { shape: 'scalar', samples, logWeights }                              (current default)
+//   { shape: 'record', fields: { <name>: EmpiricalMeasure }, logWeights }
+//   { shape: 'tuple',  elems:  [ EmpiricalMeasure, … ],     logWeights }
+//   { shape: 'array',  samples, dims, logWeights }    // flat N*prod(dims)
+//
+// Top-level `logWeights` lives at the root only — one weight per atom,
+// shared across all fields/elements (joint sampling produces atoms,
+// not per-field draws). Sub-level EmpiricalMeasures carry their own
+// `samples` / `fields` / `elems` but no separate weights — querying
+// any leaf's mass goes through the root.
+//
+// Why SoA (not array-of-records): each field is its own contiguous
+// Float64Array, indexed by atom. Marginals (just take a column),
+// pair plots (two columns side-by-side), Arrow serialisation
+// (column → arrow vector), and `record(t)` ↔ `table(r)` auto-
+// conversion (literally the same shape) all fall out for free.
+//
+// Back-compat: an EmpiricalMeasure without an explicit `shape` field
+// is treated as `'scalar'` — matches the pre-multivariate format.
+//
+// Constructors below produce well-formed multivariate measures.
+// They're thin builders: callers populate the fields/elems with
+// already-materialised sub-measures.
+
+/** Build a record-shaped measure. `fields` is `{name: subMeasure}`. */
+function recordMeasure(fields, logWeights) {
+  return { shape: 'record', fields, logWeights: logWeights || null };
+}
+
+/** Build a tuple-shaped measure. `elems` is `[subMeasure, ...]`. */
+function tupleMeasure(elems, logWeights) {
+  return { shape: 'tuple', elems, logWeights: logWeights || null };
+}
+
+/**
+ * Build an array-shaped measure. Samples are flat (atom-major):
+ * `samples[i*stride + j]` is atom i's j-th element. `dims` records
+ * the per-atom shape (e.g. `[10]` for `iid(M, 10)`).
+ */
+function arrayMeasure(samples, dims, logWeights) {
+  return { shape: 'array', samples, dims, logWeights: logWeights || null };
+}
+
+/** Effective shape — back-compat shim. Untagged measures are scalar. */
+function shapeOf(measure) {
+  return (measure && measure.shape) || 'scalar';
+}
+
 module.exports = {
   logSumExp,
   totalLogMass,
@@ -245,4 +299,6 @@ module.exports = {
   materialiseUniform,
   systematicResample,
   multinomialResample,
+  // Multivariate
+  recordMeasure, tupleMeasure, arrayMeasure, shapeOf,
 };

@@ -1310,6 +1310,38 @@ class FlatPPLPanel {
           measureCache.set(name, m);
           return m;
         });
+      } else if (d.kind === 'record') {
+        // Multivariate (record/joint): each field's source binding
+        // gets materialised independently; we assemble them into a
+        // record-shaped EmpiricalMeasure (struct-of-arrays — one
+        // sub-measure per field). logWeights at the top level is
+        // the join of all fields' weights (independent components
+        // multiply, so log-weights add). This is the SoA layout
+        // documented in empirical.js: marginals are just
+        // m.fields.<name>; pair plots take any two fields directly.
+        var fieldNames = Object.keys(d.fields);
+        var fieldDeps  = fieldNames.map(function(k) { return d.fields[k]; });
+        promise = Promise.all(fieldDeps.map(getMeasure)).then(function(subs) {
+          var fields = {};
+          var weighted = [];
+          for (var i = 0; i < fieldNames.length; i++) {
+            fields[fieldNames[i]] = subs[i];
+            if (subs[i].logWeights) weighted.push(subs[i].logWeights);
+          }
+          var lw = null;
+          if (weighted.length > 0) {
+            var N = weighted[0].length;
+            lw = new Float64Array(N);
+            for (var j = 0; j < N; j++) {
+              var s = 0;
+              for (var w = 0; w < weighted.length; w++) s += weighted[w][j];
+              lw[j] = s;
+            }
+          }
+          var m = FlatPPLEngine.empirical.recordMeasure(fields, lw);
+          measureCache.set(name, m);
+          return m;
+        });
       } else if (d.kind === 'superpose') {
         // Superpose: concat parents' samples + logWeights, then
         // systematic-resample back to SAMPLE_COUNT so the result
@@ -1593,8 +1625,24 @@ class FlatPPLPanel {
       }
     }
 
+    /**
+     * Reset plot-content's inline style. The marginals view sets
+     * display:grid with several layout properties; subsequent
+     * single-chart views need a clean slate so their content fills
+     * the pane without inheriting a stale grid.
+     */
+    function resetPlotContentStyle() {
+      var el = document.getElementById('plot-content');
+      el.style.display = '';
+      el.style.gridTemplateColumns = '';
+      el.style.gap = '';
+      el.style.padding = '';
+      el.style.boxSizing = '';
+    }
+
     function showPlotMessage(html, options) {
       if (plotEchart) { plotEchart.dispose(); plotEchart = null; }
+      resetPlotContentStyle();
       var el = document.getElementById('plot-content');
       var cancellable = options && options.cancellable;
       var hint       = options && options.hint;
@@ -1677,6 +1725,15 @@ class FlatPPLPanel {
         .then(function() { return getMeasure(planForCall.name); })
         .then(function(measure) {
           if (currentPlotPlan !== planForCall) return null;
+          // Multivariate (record-shaped) measure: render a grid of
+          // marginal histograms — one per field. Each field's
+          // sub-measure shares the top-level logWeights since
+          // record/joint produces atoms (joint draws), not per-field
+          // independent weights.
+          if (measure.shape === 'record') {
+            renderRecordMarginals(measure, planForCall.name);
+            return null;   // skip the scalar-render path below
+          }
           var samples = measure.samples;
           // Array-mode: skip histogram + density entirely; the data
           // is a fixed-length sequence to plot as index→value, not
@@ -1888,7 +1945,134 @@ class FlatPPLPanel {
      * legacy "data preview" view that used to swap into the graph
      * pane, now living in the plot pane next to the DAG.
      */
+    /**
+     * Render marginal histograms for a record-shaped EmpiricalMeasure.
+     * Each field gets its own histogram in a CSS grid — the SoA layout
+     * makes this trivial: m.fields.<name>.samples is the marginal
+     * column, ready for FD binning. Top-level logWeights apply to
+     * every field since they share atoms (per spec, joint sampling
+     * produces atoms not per-field independent weights).
+     *
+     * Phase 1 keeps the per-marginal view simple: bars only, no
+     * analytical density overlay (those are per-component which
+     * we don't carry yet). Pair plots / corner plots are a later
+     * commit.
+     */
+    function renderRecordMarginals(measure, bindingName) {
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      // Tear down any prior single-chart instance so its canvas
+      // doesn't bleed through under the grid.
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+
+      var fieldNames = Object.keys(measure.fields);
+      var n = fieldNames.length;
+      // Approximately-square grid layout. With ≤4 fields a single row
+      // reads better than 2×2 (full-width marginals); ≥5 wraps.
+      var cols = n <= 4 ? n : Math.ceil(Math.sqrt(n));
+      el.style.display = 'grid';
+      el.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+      el.style.gap = '10px';
+      el.style.padding = '10px';
+      el.style.boxSizing = 'border-box';
+
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      var color = colorForBinding(bindingName);
+      var logWeights = measure.logWeights;
+      var histOptsBase = logWeights ? { logWeights: logWeights } : {};
+
+      // Stash the per-field charts so resize/dispose pick them up
+      // when the plot pane is re-rendered. (We don't currently wire
+      // up resize for marginals; one cell takes its parent's width
+      // and grid does the rest.)
+      var charts = [];
+      for (var i = 0; i < fieldNames.length; i++) {
+        var fname = fieldNames[i];
+        var sub = measure.fields[fname];
+        var samples = sub.samples;
+        if (!samples) continue;   // skip nested record/array — Phase 1
+
+        var cell = document.createElement('div');
+        cell.style.display = 'flex';
+        cell.style.flexDirection = 'column';
+        cell.style.minHeight = '180px';
+        cell.style.minWidth = '0';   // lets flex children shrink in grid cells
+        cell.style.background = 'rgba(255,255,255,0.02)';
+        cell.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
+        cell.style.borderRadius = '3px';
+
+        var label = document.createElement('div');
+        label.textContent = bindingName + '.' + fname;
+        label.style.padding = '4px 8px 0 8px';
+        label.style.fontSize = '12px';
+        label.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        label.style.opacity = '0.85';
+        cell.appendChild(label);
+
+        var chartDiv = document.createElement('div');
+        chartDiv.style.flex = '1';
+        chartDiv.style.minHeight = '0';
+        cell.appendChild(chartDiv);
+        el.appendChild(cell);
+
+        var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
+
+        var rects = [];
+        for (var k = 0; k < hist.xs.length; k++) {
+          rects.push({
+            value: [hist.xs[k], hist.ys[k]],
+            x0: hist.binEdges[k],
+            x1: hist.binEdges[k + 1],
+          });
+        }
+        var seriesColor = color;
+        var seriesRects = rects;
+        var ec = echarts.init(chartDiv);
+        ec.setOption({
+          backgroundColor: 'transparent',
+          animation: false,
+          grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
+          xAxis: {
+            type: 'value', scale: true,
+            axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisLabel: { color: fg, opacity: 0.6, fontSize: 10 },
+            splitLine: { show: false },
+          },
+          yAxis: {
+            type: 'value', scale: true,
+            axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisLabel: { color: fg, opacity: 0.5, fontSize: 10 },
+            splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
+          },
+          series: [{
+            type: 'custom',
+            data: seriesRects,
+            renderItem: function(_p, api) {
+              var d = seriesRects[_p.dataIndex];
+              var lt = api.coord([d.x0, d.value[1]]);
+              var rb = api.coord([d.x1, 0]);
+              return {
+                type: 'rect',
+                shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
+                style: api.style({ fill: seriesColor, opacity: 0.55, stroke: seriesColor, lineWidth: 0.5 }),
+              };
+            },
+            encode: { x: 0, y: 1 },
+          }],
+        });
+        charts.push(ec);
+      }
+
+      // Reset grid styling when the next render reassigns plot-content
+      // — leave a marker so we can clean up if the next render isn't
+      // also a multivariate one. plotEchart stays null; the per-cell
+      // charts each manage their own canvases.
+    }
+
     function renderArrayStepPlot(arr) {
+      resetPlotContentStyle();
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';
@@ -1959,6 +2143,7 @@ class FlatPPLPanel {
     }
 
     function renderSamplesAndDensity(reply, plan) {
+      resetPlotContentStyle();
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';

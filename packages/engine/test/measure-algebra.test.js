@@ -190,6 +190,33 @@ function materialise(name, bindings, opts) {
         m = { samples: out, logWeights: outW };
         break;
       }
+      case 'record': {
+        // Multivariate: materialise each field's source binding,
+        // assemble into a record-shaped EmpiricalMeasure (SoA).
+        // logWeights at the top level is the join of all fields'
+        // weights — we materialise each component (unifying their
+        // weight arrays via materialiseUniform) and sum log-weights
+        // index-aligned. Uniform components contribute -log(N) each.
+        const fields = {};
+        const componentArrays = [];
+        for (const fname in d.fields) {
+          const sub = go(d.fields[fname]);
+          fields[fname] = sub;
+          if (sub.logWeights) componentArrays.push(sub.logWeights);
+        }
+        let logWeights = null;
+        if (componentArrays.length > 0) {
+          const N = componentArrays[0].length;
+          logWeights = new Float64Array(N);
+          for (let i = 0; i < N; i++) {
+            let s = 0;
+            for (const arr of componentArrays) s += arr[i];
+            logWeights[i] = s;
+          }
+        }
+        m = empirical.recordMeasure(fields, logWeights);
+        break;
+      }
       default:
         throw new Error(`unsupported derivation kind '${d.kind}' in materialise()`);
     }
@@ -674,6 +701,80 @@ test('user-call inlining: kernel application yields a measure', () => {
   const applied = materialise('obs', processSource(kernelApply).bindings);
   // Sample-level equivalence given matching seeds.
   assertSameSamples(inlined, applied, 'kernel-application vs inlined-draw samples');
+});
+
+// =====================================================================
+// Multivariate (record-shaped) measures: SoA sample layout
+// =====================================================================
+//
+// `joint(a=M_a, b=M_b)` and `record(x=v_x, y=v_y)` both produce
+// record-shaped EmpiricalMeasures: per-field sub-measures keyed by
+// the surface name, sharing one top-level logWeights. Marginals are
+// just `m.fields.<name>` — no flattening, no projection.
+
+test('joint: produces a record-shaped measure with per-field sub-measures', () => {
+  const src = `
+    a = Normal(mu = 0, sigma = 1)
+    b = Exponential(rate = 1)
+    j = joint(p = a, q = b)
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('j', bindings);
+  assert.equal(m.shape, 'record');
+  assert.ok(m.fields.p, 'has field p');
+  assert.ok(m.fields.q, 'has field q');
+  // Each field is itself an EmpiricalMeasure with its own samples.
+  assert.ok(m.fields.p.samples instanceof Float64Array);
+  assert.ok(m.fields.q.samples instanceof Float64Array);
+  assert.equal(m.fields.p.samples.length, m.fields.q.samples.length);
+});
+
+test('joint: marginal of field "p" matches direct materialisation of M_p', () => {
+  // Materialising the joint and then projecting field p should
+  // produce the same sample array as materialising M_p directly,
+  // given matching seeds (same per-binding seeding via nameSeed).
+  const src = `
+    a = Normal(mu = 0, sigma = 1)
+    b = Exponential(rate = 1)
+    j = joint(p = a, q = b)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const direct = materialise('a', bindings, { cache });
+  const j      = materialise('j', bindings, { cache });
+  assert.equal(j.fields.p, direct, 'shared sub-measure object');
+});
+
+test('record: value-typed record with per-field variates is also record-shaped', () => {
+  // record(x=variate, y=variate) — same SoA shape as joint, just
+  // value-typed at the language level.
+  const src = `
+    a_dist = Normal(mu = 0, sigma = 1)
+    b_dist = Exponential(rate = 1)
+    a = draw(a_dist)
+    b = draw(b_dist)
+    r = record(x = a, y = b)
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('r', bindings);
+  assert.equal(m.shape, 'record');
+  assert.equal(Object.keys(m.fields).length, 2);
+  assert.ok(m.fields.x.samples instanceof Float64Array);
+  assert.ok(m.fields.y.samples instanceof Float64Array);
+});
+
+test('record: empirical.shapeOf returns the right discriminator', () => {
+  const src = `
+    m = Normal(mu = 0, sigma = 1)
+    r = joint(x = m)
+  `;
+  const { bindings } = processSource(src);
+  const cache = new Map();
+  const scalar = materialise('m', bindings, { cache });
+  const record = materialise('r', bindings, { cache });
+  // Untagged scalar measures default to 'scalar' for back-compat.
+  assert.equal(empirical.shapeOf(scalar), 'scalar');
+  assert.equal(empirical.shapeOf(record), 'record');
 });
 
 test('orchestrator: weighted(<measure>, m) is rejected as a type error', () => {

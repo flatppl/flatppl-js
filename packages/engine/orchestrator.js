@@ -483,11 +483,20 @@ function liftInlineSubexpressions(bindings) {
     const numArgs = astNode.args ? astNode.args.length : 0;
     const sig = argSignature(op, numArgs);
 
+    // record/joint/jointchain fields: each kwarg value gets lifted to
+    // a synthetic binding so the classifier can read them as bare
+    // refs. record/jointchain fields are values; joint fields are
+    // measures. Both pass through liftMeasure (= "lift non-trivial
+    // expression to anon binding") — the distinction lives at type
+    // inference, not at lifting.
+    const isRecordLike = op === 'record' || op === 'joint' || op === 'jointchain';
+
     if (astNode.args) {
       for (let i = 0; i < astNode.args.length; i++) {
         const a = astNode.args[i];
         if (a && a.type === 'KeywordArg') {
-          if (opUsesValueKwargs(op)) a.value = liftValue(a.value);
+          if (isRecordLike)             a.value = liftMeasure(a.value);
+          else if (opUsesValueKwargs(op)) a.value = liftValue(a.value);
           continue;
         }
         const expected = sig ? sig[i] : null;
@@ -975,6 +984,29 @@ function classifyDerivation(binding, bindings) {
       }
       return { kind: 'superpose', fromNames };
     }
+    // record(name1=val1, ...) builds a record-typed value at every atom.
+    // joint(name1=M1, ...) builds a measure over a record (joint of
+    // measures). At the EmpiricalMeasure level both produce the same
+    // SoA shape (record fields → per-field sub-measures); the
+    // type-system distinction (value vs measure) is recorded by
+    // typeinfer, not by the derivation kind. We unify them here as
+    // `kind: 'record'` and let the materialiser combine the per-field
+    // sub-measures.
+    //
+    // Spec §03 line 126: `record(t)` ↔ `table(r)` auto-conversion is
+    // free at this layer — both have the same SoA shape.
+    if (rhsIR && rhsIR.kind === 'call' && (rhsIR.op === 'record' || rhsIR.op === 'joint')
+        && rhsIR.fields && rhsIR.fields.length > 0) {
+      const fields = {};
+      for (const f of rhsIR.fields) {
+        // Per-field operand: must be a binding ref after lifting.
+        // `record` accepts value refs; `joint` accepts measure refs.
+        // Either way it's a `(ref self <name>)` to a derivable binding.
+        if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
+        fields[f.name] = f.value.name;
+      }
+      return { kind: 'record', fields };
+    }
     // Numeric array literal: lowered to (call vector lit lit ...).
     // Treated as static data, not samples — the cache stores the
     // values verbatim (length = array length, not SAMPLE_COUNT) and
@@ -1035,6 +1067,13 @@ function derivationRefsValid(d, derivations, bindings) {
   if (d.kind === 'superpose') {
     for (const n of d.fromNames) {
       if (!Object.prototype.hasOwnProperty.call(derivations, n)) return false;
+    }
+    return true;
+  }
+  // Record: every field's source binding must be derivable.
+  if (d.kind === 'record') {
+    for (const k in d.fields) {
+      if (!Object.prototype.hasOwnProperty.call(derivations, d.fields[k])) return false;
     }
     return true;
   }

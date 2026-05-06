@@ -390,12 +390,14 @@ ms = superpose(Normal(mu = 1, sigma = 1), m)
 });
 
 test('derivations: superpose with a non-derivable component cascades to unsupported', () => {
-  // prior is a multivariate lawof — not derivable. The dependent
-  // superpose drops out via the cascade-prune pass.
+  // chain (Markov-chain composition / marginalization over the
+  // intermediate measure) isn't classified as a derivation — it's
+  // out of scope for the visualizer. The dependent superpose
+  // drops out via the cascade-prune pass.
   const { derivations } = derivationsOf(`
 m = Normal(mu = 0, sigma = 1)
-prior = lawof(record(theta = m))
-ms = superpose(m, prior)
+unsupp = chain(m, m)
+ms = superpose(m, unsupp)
 `);
   assert.ok(!('ms' in derivations));
 });
@@ -453,16 +455,17 @@ k      = draw(k_dist)
 });
 
 test('derivations: unsupported binding is omitted, dependents drop too', () => {
-  // prior is a multivariate lawof — unsupported. theta1 still has a
-  // derivation (it doesn't reference prior). Anything that refs prior
-  // would cascade-drop.
+  // unsupp uses `chain`, which isn't classified. theta1 still has a
+  // derivation (it doesn't reference unsupp). Anything that refs
+  // unsupp drops via the cascade-prune pass.
   const { derivations } = derivationsOf(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
-prior  = lawof(record(theta1 = theta1))
-ghost  = prior + 1
+m      = Normal(mu = 0, sigma = 1)
+unsupp = chain(m, m)
+ghost  = unsupp + 1
 `);
   assert.ok(derivations.theta1);
-  assert.ok(!('prior' in derivations));
+  assert.ok(!('unsupp' in derivations));
   assert.ok(!('ghost' in derivations));
 });
 
