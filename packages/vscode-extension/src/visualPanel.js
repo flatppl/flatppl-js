@@ -1950,12 +1950,17 @@ class FlatPPLPanel {
      * legacy "data preview" view that used to swap into the graph
      * pane, now living in the plot pane next to the DAG.
      */
-    // Persistent per-binding selection of which axes appear in the
-    // corner plot. Reset when the focused binding changes; survives
-    // re-renders triggered by checkbox clicks. Max 4 axes selected
-    // at any time (NxN corner plots get unreadable beyond that).
+    // Persistent per-binding plot state for record-shaped measures:
+    // selected axes (which scalar leaves to plot) and the chosen view
+    // mode ('corner' | 'strips'). Reset when the focused binding
+    // changes; survives re-renders triggered by checkbox / toggle
+    // clicks. Max-axes cap depends on mode — corner plots become
+    // unreadable past 4x4; the density-strips view scales to many
+    // axes since it's just one column per axis.
     var recordSelection = null;
     var CORNER_MAX_AXES = 4;
+    var STRIPS_MAX_AXES = 16;
+    function maxAxesFor(mode) { return mode === 'strips' ? STRIPS_MAX_AXES : CORNER_MAX_AXES; }
 
     /**
      * Enumerate the plottable scalar leaves of a record-shaped
@@ -2001,41 +2006,96 @@ class FlatPPLPanel {
       }
 
       // Reset selection when the focused binding changes. Default
-      // selection is the first CORNER_MAX_AXES axes.
+      // mode is 'corner'; default selection is the first
+      // maxAxesFor(mode) axes.
       if (!recordSelection || recordSelection.bindingName !== bindingName) {
         recordSelection = {
           bindingName: bindingName,
+          mode: 'corner',
           selected: axes.slice(0, CORNER_MAX_AXES).map(function(a) { return a.key; }),
         };
       } else {
-        // Drop any selections that no longer correspond to a present
-        // axis (shouldn't normally happen, but defensive).
         var present = {}; axes.forEach(function(a) { present[a.key] = true; });
         recordSelection.selected = recordSelection.selected.filter(function(k) { return present[k]; });
       }
 
-      // ---- Layout: selector row on top, corner grid below ----
+      // ---- Layout: toolbar (mode toggle + axis selector) on top, plot below ----
       el.style.display = 'flex';
       el.style.flexDirection = 'column';
       el.style.padding = '10px';
       el.style.boxSizing = 'border-box';
       el.style.gap = '8px';
 
-      var selectorBar = renderAxisSelector(axes, function() {
-        // Re-render the corner section in place. Recompute on each
-        // toggle — cheap for up to a few thousand atoms; for larger
-        // sample counts the FD histograms dominate but still finish
-        // in well under a frame.
-        renderCornerGrid(cornerHost, measure, bindingName);
-      });
-      el.appendChild(selectorBar);
+      function rerender() {
+        if (recordSelection.mode === 'strips') renderDensityStrips(plotHost, measure, bindingName);
+        else                                   renderCornerGrid  (plotHost, measure, bindingName);
+      }
 
-      var cornerHost = document.createElement('div');
-      cornerHost.style.flex = '1';
-      cornerHost.style.minHeight = '0';
-      el.appendChild(cornerHost);
+      var toolbar = renderRecordToolbar(axes, rerender);
+      el.appendChild(toolbar);
 
-      renderCornerGrid(cornerHost, measure, bindingName);
+      var plotHost = document.createElement('div');
+      plotHost.style.flex = '1';
+      plotHost.style.minHeight = '0';
+      el.appendChild(plotHost);
+
+      rerender();
+    }
+
+    /**
+     * Top-of-plot toolbar: a "view mode" toggle (Corner / 2D strips)
+     * plus the axis-selector row beneath it. The two are visually
+     * grouped so the user understands they govern the same chart.
+     */
+    function renderRecordToolbar(axes, onChange) {
+      var bar = document.createElement('div');
+      bar.style.display = 'flex';
+      bar.style.flexDirection = 'column';
+      bar.style.gap = '6px';
+
+      // ---- Mode toggle row ----
+      var modeRow = document.createElement('div');
+      modeRow.style.display = 'flex';
+      modeRow.style.gap = '4px';
+      modeRow.style.fontSize = '12px';
+
+      function makeModeBtn(modeKey, label, title) {
+        var b = document.createElement('button');
+        b.textContent = label;
+        b.title = title;
+        b.style.cursor = 'pointer';
+        b.style.fontSize = '12px';
+        b.style.padding = '3px 10px';
+        b.style.border = '1px solid var(--vscode-button-border, transparent)';
+        b.style.borderRadius = '3px';
+        var active = recordSelection.mode === modeKey;
+        b.style.background = active
+          ? 'var(--vscode-button-background, #0e639c)'
+          : 'var(--vscode-button-secondaryBackground, #3a3d41)';
+        b.style.color = active
+          ? 'var(--vscode-button-foreground, #fff)'
+          : 'var(--vscode-button-secondaryForeground, #ccc)';
+        b.addEventListener('click', function() {
+          if (recordSelection.mode === modeKey) return;
+          recordSelection.mode = modeKey;
+          // Re-clip the selection to the new mode's cap.
+          var cap = maxAxesFor(modeKey);
+          if (recordSelection.selected.length > cap) {
+            recordSelection.selected = recordSelection.selected.slice(0, cap);
+          }
+          onChange();
+        });
+        return b;
+      }
+      modeRow.appendChild(makeModeBtn('corner', 'Corner',
+        'NxN grid: marginals on the diagonal, joints below'));
+      modeRow.appendChild(makeModeBtn('strips', '2D',
+        'One column per axis with vertical density shading'));
+      bar.appendChild(modeRow);
+
+      // ---- Axis selector row ----
+      bar.appendChild(renderAxisSelector(axes, onChange));
+      return bar;
     }
 
     /**
@@ -2049,6 +2109,7 @@ class FlatPPLPanel {
      * so the corner plot below can be redrawn.
      */
     function renderAxisSelector(axes, onChange) {
+      var cap = maxAxesFor(recordSelection.mode);
       var bar = document.createElement('div');
       bar.style.display = 'flex';
       bar.style.flexWrap = 'wrap';
@@ -2064,7 +2125,7 @@ class FlatPPLPanel {
       bar.style.overflowY = 'auto';
 
       var hint = document.createElement('span');
-      hint.textContent = 'Axes (max ' + CORNER_MAX_AXES + '):';
+      hint.textContent = 'Axes (max ' + cap + '):';
       hint.style.opacity = '0.6';
       bar.appendChild(hint);
 
@@ -2083,8 +2144,7 @@ class FlatPPLPanel {
           var idx = recordSelection.selected.indexOf(axis.key);
           if (cb.checked) {
             if (idx >= 0) return;
-            if (recordSelection.selected.length >= CORNER_MAX_AXES) {
-              // Bounce the check back; the cap is hard.
+            if (recordSelection.selected.length >= cap) {
               cb.checked = false;
               return;
             }
@@ -2104,6 +2164,154 @@ class FlatPPLPanel {
         bar.appendChild(label);
       });
       return bar;
+    }
+
+    /**
+     * Render the selected axes as a 2D density-strip view: one
+     * column per axis, where each column shades by the per-axis
+     * marginal density along y. Useful for array-shaped data where
+     * each index slot has its own marginal — corner plots scale
+     * O(N²) cells, this scales O(N).
+     *
+     * Implementation: per axis, compute an FD histogram. For each
+     * bin in that axis, draw a horizontal rect spanning the column
+     * width with opacity proportional to bin density (relative to
+     * the axis's max). The y-axis is shared across all columns
+     * (global value range) so columns are visually comparable.
+     *
+     * ECharts has a heatmap series that could do this for free,
+     * but the value-axis variant restricts to a regular grid; we
+     * want each axis's bin grid to align to its own FD-derived
+     * edges. Custom render gives that flexibility cheaply.
+     */
+    function renderDensityStrips(host, measure, bindingName) {
+      host.innerHTML = '';
+      var axes = listScalarAxes(measure)
+        .filter(function(a) { return recordSelection.selected.indexOf(a.key) >= 0; });
+      var n = axes.length;
+      if (n === 0) {
+        var empty = document.createElement('div');
+        empty.textContent = 'Select at least one axis to plot.';
+        empty.style.opacity = '0.5';
+        empty.style.padding = '24px';
+        empty.style.textAlign = 'center';
+        host.appendChild(empty);
+        return;
+      }
+
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      var color = colorForBinding(bindingName);
+      var logWeights = measure.logWeights;
+      var histOptsBase = logWeights ? { logWeights: logWeights } : {};
+
+      // Per-axis FD histograms + global y range.
+      var hists = axes.map(function(a) {
+        return FlatPPLEngine.histogram.freedmanDiaconisHistogram(a.samples, histOptsBase);
+      });
+      var yMin = Infinity, yMax = -Infinity, peakDensity = 0;
+      for (var i = 0; i < hists.length; i++) {
+        var h = hists[i];
+        if (!h.binEdges || h.binEdges.length === 0) continue;
+        if (h.binEdges[0] < yMin) yMin = h.binEdges[0];
+        if (h.binEdges[h.binEdges.length - 1] > yMax) yMax = h.binEdges[h.binEdges.length - 1];
+        for (var j = 0; j < h.ys.length; j++) {
+          if (h.ys[j] > peakDensity) peakDensity = h.ys[j];
+        }
+      }
+      if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
+        var info = document.createElement('div');
+        info.textContent = 'No variation across selected axes.';
+        info.style.opacity = '0.5';
+        info.style.padding = '24px';
+        info.style.textAlign = 'center';
+        host.appendChild(info);
+        return;
+      }
+
+      // One echarts instance hosts the whole strip view. Categories on
+      // x (one per axis); value y (continuous, shared range). Bins
+      // rendered as semi-transparent rects via custom series.
+      host.style.display = '';
+      host.style.gridTemplateColumns = '';
+      host.style.gridTemplateRows = '';
+      host.innerHTML = '';
+      var chartDiv = document.createElement('div');
+      chartDiv.style.width = '100%';
+      chartDiv.style.height = '100%';
+      host.appendChild(chartDiv);
+
+      // Build the rect data: one entry per (axis_idx, bin) pair.
+      // Each entry carries [axis_idx, bin_y_center, density] plus
+      // the bin's [lo, hi] for the rendered rect height.
+      var data = [];
+      for (var ai = 0; ai < hists.length; ai++) {
+        var hh = hists[ai];
+        for (var bi = 0; bi < hh.ys.length; bi++) {
+          data.push({
+            value: [ai, hh.xs[bi], hh.ys[bi]],
+            edges: [hh.binEdges[bi], hh.binEdges[bi + 1]],
+          });
+        }
+      }
+      var seriesColor = color;
+      var ec = echarts.init(chartDiv);
+      ec.setOption({
+        backgroundColor: 'transparent',
+        animation: false,
+        grid: { left: 60, right: 25, top: 10, bottom: 60, containLabel: false },
+        xAxis: {
+          type: 'category',
+          data: axes.map(function(a) { return a.label; }),
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: {
+            color: fg, opacity: 0.7, fontSize: 11,
+            interval: 0,
+            rotate: axes.length > 8 ? 60 : 0,
+            fontFamily: 'var(--vscode-editor-font-family, monospace)',
+          },
+          splitLine: { show: false },
+        },
+        yAxis: {
+          type: 'value', scale: true,
+          min: yMin, max: yMax,
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6, fontSize: 11 },
+          splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
+        },
+        series: [{
+          type: 'custom',
+          data: data,
+          renderItem: function(_p, api) {
+            var d = data[_p.dataIndex];
+            var density = d.value[2];
+            // Column-centred horizontal extent: ~70% of slot width.
+            var cx = api.coord([d.value[0], (d.edges[0] + d.edges[1]) / 2]);
+            var top = api.coord([d.value[0], d.edges[1]]);
+            var bot = api.coord([d.value[0], d.edges[0]]);
+            // ECharts category axes give bandWidth via api.size.
+            var bandSize = api.size([1, 0])[0];
+            var halfWidth = bandSize * 0.35;
+            // Opacity scales linearly with density relative to the
+            // peak across all axes — keeps bright cells comparable.
+            var opacity = peakDensity > 0
+              ? Math.max(0.04, 0.85 * density / peakDensity)
+              : 0;
+            return {
+              type: 'rect',
+              shape: {
+                x: cx[0] - halfWidth,
+                y: top[1],
+                width: halfWidth * 2,
+                height: bot[1] - top[1],
+              },
+              style: api.style({ fill: seriesColor, opacity: opacity, stroke: 'none' }),
+            };
+          },
+          encode: { x: 0, y: 1 },
+        }],
+      });
     }
 
     /**
