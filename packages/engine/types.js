@@ -73,6 +73,26 @@ function measure(domain) { return { kind: 'measure', domain }; }
  *  fresh batch of variables so two call sites can't accidentally share. */
 function tvar(id)       { return { kind: 'var', id }; }
 
+/** User-defined function. `inputs` is an array of `{name, type}` for
+ *  the function's parameters; `result` is the body's inferred type.
+ *
+ *  FlatPIR canonical form is `(%function (%inputs <name>...))` —
+ *  carrying parameter names only, with the result type recomputed at
+ *  each call site by traversing the body. We carry `result` as an
+ *  engine-internal extension because for our purposes the body's
+ *  result type is fixed at definition time (we don't yet support
+ *  per-call-site polymorphism that varies with input types). When/if
+ *  we add full polymorphism, this stays type-checked: `result` becomes
+ *  the *generic* result of the body, and call-site inference
+ *  specialises it. */
+function funcType(inputs, result)   { return { kind: 'function', inputs, result }; }
+
+/** User-defined transition kernel. Same shape as a function but the
+ *  result type is always a measure (per spec §sec:functionof-measure:
+ *  a functionof with a measure body is a kernel). Named to avoid
+ *  collision with the `fn` and `kernelof` built-in surface forms. */
+function kernelType(inputs, result) { return { kind: 'kernel',   inputs, result }; }
+
 // Convenience constants for the most common scalar types. Use these
 // rather than re-allocating scalar('real') everywhere — equality is
 // structural so the savings are micro, but it reads better.
@@ -123,6 +143,15 @@ function equal(a, b) {
       return true;
     case 'measure':
       return equal(a.domain, b.domain);
+    case 'function':
+    case 'kernel': {
+      if (a.inputs.length !== b.inputs.length) return false;
+      for (let i = 0; i < a.inputs.length; i++) {
+        if (a.inputs[i].name !== b.inputs[i].name) return false;
+        if (!equal(a.inputs[i].type, b.inputs[i].type)) return false;
+      }
+      return equal(a.result, b.result);
+    }
     case 'var':
       return a.id === b.id;
   }
@@ -148,6 +177,11 @@ function substitute(t, subst) {
     const out = {};
     for (const k in t.fields) out[k] = substitute(t.fields[k], subst);
     return record(out);
+  }
+  if (t.kind === 'function' || t.kind === 'kernel') {
+    return { kind: t.kind,
+      inputs: t.inputs.map(i => ({ name: i.name, type: substitute(i.type, subst) })),
+      result: substitute(t.result, subst) };
   }
   return t;
 }
@@ -290,6 +324,8 @@ function show(t) {
     case 'record':   return showRecord(t);
     case 'tuple':    return 'tuple (' + t.elems.map(show).join(', ') + ')';
     case 'measure':  return showMeasure(t);
+    case 'function': return showCallable('function', t);
+    case 'kernel':   return showCallable('kernel',   t);
     case 'var':      return 'any';  // unresolved → user-facing "any"
   }
   return '<unknown>';
@@ -320,6 +356,14 @@ function showRecord(t) {
   return 'record with fields ' + ks.map(k => k + ': ' + show(t.fields[k])).join(', ');
 }
 
+function showCallable(label, t) {
+  // "function f(par: real) → real" reads naturally next to a user
+  // identifier (the function's name surfaces from context). Kernels
+  // get the same shape with the result type as a measure.
+  const params = t.inputs.map(i => i.name + ': ' + show(i.type)).join(', ');
+  return label + '(' + params + ') → ' + show(t.result);
+}
+
 /** Whether `t` is a measure type (or one that resolves to a measure). */
 function isMeasure(t) {
   return t != null && t.kind === 'measure';
@@ -347,6 +391,11 @@ function isValue(t) {
       return true;
   }
   return false;
+}
+
+/** Whether `t` is a user-defined callable (function or kernel). */
+function isCallable(t) {
+  return t != null && (t.kind === 'function' || t.kind === 'kernel');
 }
 
 // =====================================================================
@@ -552,9 +601,10 @@ function hasSignature(opName) {
 module.exports = {
   // Constructors
   deferred, failed, any, scalar, array, record, tuple, measure, tvar,
+  funcType, kernelType,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING,
   // Operations
-  equal, substitute, unify, show, isMeasure, isValue,
+  equal, substitute, unify, show, isMeasure, isValue, isCallable,
   // Signatures
   signatureOf, hasSignature,
 };

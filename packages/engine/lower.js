@@ -191,8 +191,16 @@ const MODULE_LOAD_FORMS = new Set([
 
 function _lowerExpr(node, ctx) {
   switch (node.type) {
-    case 'NumberLiteral':
-      return { kind: 'lit', value: node.value, loc: node.loc };
+    case 'NumberLiteral': {
+      // Preserve the lexical integer-vs-real distinction. JS Numbers
+      // can't tell `1.0` from `1` once parsed (both === 1), so we
+      // record `numType` from the source text. Per FlatPIR spec
+      // (Literal values §): integer if the digit pattern has no
+      // decimal point or exponent, else real.
+      const raw = String(node.raw != null ? node.raw : node.value);
+      const numType = /^[+-]?\d+$/.test(raw) ? 'integer' : 'real';
+      return { kind: 'lit', value: node.value, numType, loc: node.loc };
+    }
 
     case 'StringLiteral':
       return { kind: 'lit', value: node.value, loc: node.loc };

@@ -19,8 +19,10 @@ fk_ok, pr_ok = disintegrate(["b"], joint_lr)
 
 # === Case 2: delegate — jointchain(prior_b, kernel_b) suffix selection. ===
 prior_b  = lawof(record(theta = draw(Normal(mu = 0, sigma = 1))))
-kernel_b = kernelof(joint(obs = Normal(mu = mu_p, sigma = 1.0)),
-                    theta = _theta_)
+# functionof for a measure body produces a kernel (§sec:functionof-measure);
+# kernelof would be a type error here per §sec:kernelof "x must not be a measure".
+kernel_b = functionof(joint(obs = Normal(mu = mu_p, sigma = 1.0)),
+                      theta = _theta_)
 joint_d  = jointchain(prior_b, kernel_b)
 
 # Resolves by Delegate to (kernel_b, prior_b). No dotted border.

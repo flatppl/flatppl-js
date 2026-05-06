@@ -1048,10 +1048,24 @@ function analyze(ast, source) {
     if (b) b.phase = phase;
   }
 
+  // Lower to FlatPIR-aligned in-memory module. The LoweredModule is
+  // the single source of truth for the program's executable form;
+  // all subsequent passes (type inference now, derivation building
+  // later) operate on it. The original AST stays in `bindings.node`
+  // for source-level concerns (DAG display, source-located
+  // diagnostics).
+  const pir = require('./pir');
+  const loweredModule = pir.lowerToModule(bindings);
+
   // Structural type inference (FlatPIR §sec:flatpir). Mutates each
-  // binding to set `inferredType`, returns diagnostics for type
-  // mismatches that join the existing diagnostic stream.
-  const typeDiagnostics = require('./typeinfer').inferTypes(bindings);
+  // lowered binding to set `inferredType` and writes per-call
+  // `meta.type` annotations. We mirror inferredType back onto the
+  // analyzer-level bindings for consumers that haven't migrated yet.
+  const typeDiagnostics = require('./typeinfer').inferTypes(loweredModule);
+  for (const [name, lb] of loweredModule.bindings) {
+    const b = bindings.get(name);
+    if (b) b.inferredType = lb.inferredType;
+  }
   for (const d of typeDiagnostics) diagnostics.push(d);
 
   // Bin diagnostics back onto their bindings so downstream consumers
@@ -1072,7 +1086,7 @@ function analyze(ast, source) {
     }
   }
 
-  return { bindings, diagnostics, symbols };
+  return { bindings, loweredModule, diagnostics, symbols };
 }
 
 /**

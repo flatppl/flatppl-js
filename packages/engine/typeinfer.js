@@ -1,70 +1,55 @@
 'use strict';
 
-// FlatPIR structural type inference, Phase 2 — walks the analyzer's
-// bindings map, attaches an `inferredType` to each binding, and
-// returns the diagnostics found along the way (type mismatches at
-// call sites, unknown references, cycles).
+// FlatPIR structural type inference.
 //
-// Design
+// Operates on the LoweredModule produced by `pir.lowerToModule(...)`.
+// Walks each binding's lowered RHS, infers a type for every call,
+// writes per-call meta annotations (FlatPIR `(%meta type phase)`,
+// type slot only — phase is in phaseinfer.js), and sets
+// `binding.inferredType` to the type of the binding's outermost
+// expression for fast lookup.
+//
+// Diagnostics are collected into a flat array compatible with the
+// analyzer's existing diagnostic stream (same {severity, message,
+// loc} shape) so they merge cleanly into the editor.
+//
+// Why on lowered IR
+// =================
+// The source AST has many node kinds (BinaryExpr, UnaryExpr,
+// ArrayLiteral, TupleLiteral, FieldAccess, etc.). FlatPIR collapses
+// them all to calls — `add`, `mul`, `vector`, `tuple`, `get_field`,
+// etc. The inference pass over the IR is therefore one switch on
+// {lit, const, ref, hole, call}, with the call case dispatching by
+// op name. Cleaner; fewer special cases.
+//
+// Polymorphism
+// ============
+// Built-in signatures use type variables (`weighted: (real,
+// measure<T>) → measure<T>`); types.js's unify handles them.
+//
+// User-defined function/kernel signatures carry their result type
+// directly (computed at definition time by inferring the body in the
+// scope where parameters take their declared types). For now we
+// don't recompute the body's type per call site — that polymorphic
+// flow is in the FlatPIR spec but unused in practice for the
+// visualizer's current scope. Added when needed.
+//
+// Scopes
 // ======
-// One pass over the bindings, with on-demand recursion for refs.
-// Cycle detection via a `visiting` set: if inferring binding A leads
-// back to A before A's type is known, the cycle is broken with
-// (%failed "cyclic …") and downstream uses see `failed`. Once a
-// binding is resolved its type is memoised on the binding info so
-// the same binding isn't walked twice.
-//
-// Inference rules (high level)
-// ----------------------------
-//   * NumberLiteral        — INTEGER if lexically integer-shaped, else REAL.
-//   * StringLiteral        — STRING.
-//   * BoolLiteral          — BOOLEAN.
-//   * ConstantRef pi/inf   — REAL.   im → COMPLEX.   true/false → BOOLEAN.
-//   * SetRef <name>        — internal "set" marker (consumed by elementof).
-//   * Identifier <name>    — recursively infer the named binding.
-//   * Hole / Placeholder   — %any.
-//   * ArrayLiteral         — array<unify of elements, length-N>.
-//   * TupleLiteral         — tuple<elementwise>.
-//   * BinaryExpr/UnaryExpr — desugared to the matching call op via
-//                            BIN_OP_TO_NAME / UN_OP_TO_NAME.
-//   * CallExpr <op>        — look up signature, unify args, instantiate
-//                            result. Handful of "special" ops (record,
-//                            joint, tuple, lawof, elementof) get bespoke
-//                            handling because their structural shape
-//                            depends on actuals (e.g. record's fields).
-//   * IndexExpr/FieldAccess — partially handled (record field access
-//                              works; array indexing returns deferred).
-//
-// Subtyping
-// ---------
-// Numeric promotion (booleans ⊂ integers ⊂ reals → complexes) lives
-// in types.js's unify() — the inference pass is unaware of it. So a
-// kwarg signature `mu: real` accepts an integer literal `0` cleanly,
-// matching the spec's "may use these canonical embeddings implicitly".
-//
-// What's NOT here
-// ---------------
-//   * User-defined function calls ((%call (%ref ...) args)) — deferred
-//     until kernels/functions are implemented in the engine.
-//   * load_data, load_module — return %deferred for now; load_data
-//     specifically should yield a %table with %nrows %dynamic, but we
-//     don't have the %table category implemented yet.
-//   * Cross-module inference (load_module into another module).
-//   * Phase information — already lives in analyzer.computePhases.
+// `functionof(body, kw=...)` and `kernelof(body, kw=...)` introduce
+// an inner `%local` scope. Inside their bodies, parameter refs are
+// `(%ref %local <name>)`. The inference pass tracks an active scope
+// stack: a Map<paramName, type> for each enclosing reified callable.
+// %local refs resolve against this stack; %self refs against the
+// module's binding map.
 
 const T = require('./types');
 const builtins = require('./builtins');
 
-// Lexical-form integer detection. NumberLiteral.raw preserves the
-// source text; if there's no decimal point or exponent, the literal
-// is integer-typed per spec §sec:flatpir Literal values.
-function isIntegerLiteral(raw) {
-  if (raw == null) return false;
-  return /^[+-]?\d+$/.test(String(raw));
-}
+// =====================================================================
+// Constant maps (carried over from the AST-based version)
+// =====================================================================
 
-// Built-in constant → type. Mirrors CONSTANTS in builtins.js. The
-// analyzer surfaces these as ConstantRef nodes; we map by name.
 const CONST_TYPES = {
   pi:    T.REAL,
   inf:   T.REAL,
@@ -73,10 +58,6 @@ const CONST_TYPES = {
   false: T.BOOLEAN,
 };
 
-// Set name → element type. Used by elementof: `elementof(reals)` is
-// real-typed, `elementof(integers)` is integer-typed. Refinement
-// (posreals, unitinterval, etc.) collapses to its structural category
-// per spec §sec:flatpir "Sets and types are distinct".
 const SET_VALUE_TYPES = {
   reals: T.REAL, posreals: T.REAL, nonnegreals: T.REAL, unitinterval: T.REAL,
   integers: T.INTEGER, posintegers: T.INTEGER, nonnegintegers: T.INTEGER,
@@ -86,91 +67,257 @@ const SET_VALUE_TYPES = {
   anything: T.any(),
 };
 
-// Surface AST operators → built-in op names. Mirrors BIN_OP_MAP /
-// UN_OP_MAP in lower.js but kept locally to avoid pulling lower.js
-// (which requires the full builtins map) just for two tables.
-const BIN_OP_TO_NAME = {
-  '+':  'add',  '-':  'sub',  '*':  'mul',  '/': 'div',
-  '<':  'lt',   '<=': 'le',   '>':  'gt',   '>=': 'ge',
-  '==': 'equal', '!=': 'unequal',
-};
-const UN_OP_TO_NAME = { '-': 'neg', '+': 'pos' };
+// =====================================================================
+// Public entry
+// =====================================================================
 
 /**
- * Run structural type inference over `bindings` (the analyzer's
- * Map<string, BindingInfo>). Mutates each binding to set
- * `binding.inferredType`. Returns a flat array of diagnostics in the
- * standard {severity, message, loc} shape (matches existing analyzer
- * diagnostics so they merge into one stream).
- *
- * Idempotent: re-running on the same map is a no-op (the second pass
- * sees `inferredType` already set and short-circuits).
+ * Run type inference over a LoweredModule. Mutates each binding to
+ * set `binding.inferredType` and writes per-call `meta.type`
+ * annotations. Returns diagnostics for type mismatches; loc fields
+ * point at the source AST positions captured during lowering.
  */
-function inferTypes(bindings) {
+function inferTypes(loweredModule) {
   const diagnostics = [];
-  const visiting = new Set();   // names currently being inferred (cycle guard)
-  const visited  = new Set();   // names whose type is finalised
+  const visiting = new Set();
+  const visited  = new Set();
 
-  for (const [name] of bindings) inferBinding(name);
+  for (const [name] of loweredModule.bindings) inferBinding(name);
   return diagnostics;
 
   function inferBinding(name) {
-    const binding = bindings.get(name);
-    if (!binding) return T.failed('unknown binding "' + name + '"');
-    if (visited.has(name))  return binding.inferredType || T.deferred();
+    const b = loweredModule.bindings.get(name);
+    if (!b)                   return T.failed('unknown binding "' + name + '"');
+    if (visited.has(name))    return b.inferredType || T.deferred();
     if (visiting.has(name)) {
       const t = T.failed('cyclic type inference at "' + name + '"');
-      binding.inferredType = t;
+      b.inferredType = t;
       return t;
     }
     visiting.add(name);
-    const t = (binding.node && binding.node.value)
-      ? inferExpr(binding.node.value)
-      : T.failed('"' + name + '" has no RHS');
+    const t = inferExpr(b.rhs, []);   // [] = no enclosing scopes
     visiting.delete(name);
     visited.add(name);
-    binding.inferredType = t;
+    b.inferredType = t;
     return t;
   }
 
-  function inferExpr(astNode) {
-    if (!astNode) return T.failed('null expression');
-    switch (astNode.type) {
-      case 'NumberLiteral':
-        return isIntegerLiteral(astNode.raw) ? T.INTEGER : T.REAL;
-      case 'StringLiteral': return T.STRING;
-      case 'BoolLiteral':   return T.BOOLEAN;
-      case 'ConstantRef':   return CONST_TYPES[astNode.name] || T.any();
-      case 'SetRef':        return setMarker(astNode.name);
-      case 'Identifier':    return inferIdentifier(astNode);
-      case 'Hole':
-      case 'Placeholder':   return T.any();
-      case 'ArrayLiteral':  return inferArrayLiteral(astNode);
-      case 'TupleLiteral':  return T.tuple(astNode.elements.map(inferExpr));
-      case 'BinaryExpr':    return inferOp(BIN_OP_TO_NAME[astNode.op], astNode.op,
-                                            [astNode.left, astNode.right], {}, astNode.loc);
-      case 'UnaryExpr':     return inferOp(UN_OP_TO_NAME[astNode.op],  astNode.op,
-                                            [astNode.operand], {}, astNode.loc);
-      case 'CallExpr':      return inferCall(astNode);
-      case 'FieldAccess':   return inferFieldAccess(astNode);
-      case 'IndexExpr':     return T.deferred();   // shape-aware indexing TBD
+  // -------------------------------------------------------------------
+  // Expression-level inference
+  // -------------------------------------------------------------------
+  // `scopes` is a stack of Map<paramName, type> for each enclosing
+  // functionof/kernelof. Top of stack is the innermost scope.
+
+  function inferExpr(expr, scopes) {
+    if (!expr) return T.failed('null expression');
+    switch (expr.kind) {
+      case 'lit':   return inferLit(expr);
+      case 'const': return inferConst(expr);
+      case 'ref':   return inferRef(expr, scopes);
+      case 'hole':  return T.any();   // bound positionally inside fn(...)
+      case 'call':  return inferCall(expr, scopes);
     }
     return T.deferred();
   }
 
-  function inferIdentifier(node) {
-    if (bindings.has(node.name))           return inferBinding(node.name);
-    if (builtins.isConstant(node.name))    return CONST_TYPES[node.name] || T.any();
-    if (builtins.isSet(node.name))         return setMarker(node.name);
-    // Names like 'self' / 'base' / load_module aliases shouldn't appear
-    // bare in expressions; the analyzer already flagged unknown refs as
-    // warnings. We mark as failed so dependents propagate cleanly.
-    return T.failed('undefined name "' + node.name + '"');
+  function inferLit(expr) {
+    const v = expr.value;
+    if (typeof v === 'number') {
+      // Lower.js preserves the lexical-form distinction in `numType`
+      // (integer literals have no decimal/exponent in source).
+      // Fall back to runtime check for synthesized lits without it.
+      if (expr.numType === 'integer') return T.INTEGER;
+      if (expr.numType === 'real')    return T.REAL;
+      return Number.isInteger(v) ? T.INTEGER : T.REAL;
+    }
+    if (typeof v === 'boolean') return T.BOOLEAN;
+    if (typeof v === 'string')  return T.STRING;
+    return T.deferred();
   }
 
-  function inferArrayLiteral(node) {
-    if (node.elements.length === 0) return T.array(1, [0], T.any());
-    const elemTypes = node.elements.map(inferExpr);
+  function inferConst(expr) {
+    if (CONST_TYPES[expr.name])  return CONST_TYPES[expr.name];
+    if (builtins.isSet(expr.name)) return setMarker(expr.name);
+    return T.any();
+  }
+
+  function inferRef(expr, scopes) {
+    if (expr.ns === '%local') {
+      // Look up in the scope stack from innermost outward.
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        if (scopes[i].has(expr.name)) return scopes[i].get(expr.name);
+      }
+      return T.failed('unbound %local "' + expr.name + '"');
+    }
+    if (expr.ns === 'self') {
+      if (loweredModule.bindings.has(expr.name)) return inferBinding(expr.name);
+      // Some surface idents (constants, set names) lower as refs
+      // rather than const — handle that gracefully here too.
+      if (CONST_TYPES[expr.name])    return CONST_TYPES[expr.name];
+      if (builtins.isSet(expr.name)) return setMarker(expr.name);
+      return T.failed('undefined name "' + expr.name + '"');
+    }
+    // Cross-module ref — not yet implemented.
+    return T.deferred();
+  }
+
+  function inferCall(expr, scopes) {
+    // User-defined call: lower.js puts the callee on `target`.
+    if (expr.target) return inferUserCall(expr, scopes);
+
+    // Special-cased ops whose result type depends on actuals or
+    // structural shape in ways that don't fit the static signature
+    // table.
+    switch (expr.op) {
+      case 'elementof': return write(inferElementof(expr, scopes), expr);
+      case 'lawof':     return write(inferLawof(expr, scopes), expr);
+      case 'record':    return write(inferRecord(expr, scopes), expr);
+      case 'joint':     return write(inferJoint(expr, scopes), expr);
+      case 'tuple':     return write(inferTuple(expr, scopes), expr);
+      case 'vector':    return write(inferVector(expr, scopes), expr);
+      case 'functionof':
+      case 'kernelof':
+      case 'fn':        return write(inferReification(expr, scopes), expr);
+    }
+
+    return write(inferGenericCall(expr, scopes), expr);
+  }
+
+  // Helper to attach inferred type to the call's meta slot AND
+  // return the type. setMeta is from pir.js but we don't import to
+  // keep this module standalone — direct write is fine.
+  function write(t, expr) {
+    if (!expr.meta) expr.meta = {};
+    expr.meta.type = t;
+    return t;
+  }
+
+  // -------------------------------------------------------------------
+  // Generic call inference: signature lookup + arg unify
+  // -------------------------------------------------------------------
+
+  function inferGenericCall(expr, scopes) {
+    const op = expr.op;
+    const sig = T.signatureOf(op);
+    if (!sig) return T.deferred();
+
+    let s = new Map();
+    const args   = expr.args   || [];
+    const kwargs = expr.kwargs || {};
+
+    if (sig.args !== null) {
+      const rawN = sig.args.length;
+      const got  = args.length;
+      const variadic = sig.variadic === 'positional';
+      const fixedN = variadic ? rawN - 1 : rawN;
+      if (variadic) {
+        if (got < fixedN) return arityError(op, '≥' + fixedN, got, expr.loc);
+      } else if (got !== rawN) {
+        return arityError(op, rawN, got, expr.loc);
+      }
+      for (let i = 0; i < fixedN; i++) {
+        const at = inferExpr(args[i], scopes);
+        const next = T.unify(sig.args[i], at, s);
+        if (next == null) return argError(op, i, sig.args[i], at, args[i].loc);
+        s = next;
+      }
+      if (variadic) {
+        const tail = sig.args[rawN - 1];
+        for (let i = fixedN; i < got; i++) {
+          const at = inferExpr(args[i], scopes);
+          const next = T.unify(tail, at, s);
+          if (next == null) return argError(op, i, tail, at, args[i].loc);
+          s = next;
+        }
+      }
+    }
+
+    for (const k in sig.kwargs) {
+      if (!(k in kwargs)) continue;   // optional/defaulted kwargs allowed missing
+      const at = inferExpr(kwargs[k], scopes);
+      const next = T.unify(sig.kwargs[k], at, s);
+      if (next == null) return kwargError(op, k, sig.kwargs[k], at, kwargs[k].loc);
+      s = next;
+    }
+    return T.substitute(sig.result, s);
+  }
+
+  // -------------------------------------------------------------------
+  // Special-case op handlers
+  // -------------------------------------------------------------------
+
+  function inferElementof(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError('elementof', 1, args.length, expr.loc);
+    const t = setValueType(args[0], scopes);
+    if (t == null) {
+      const argT = inferExpr(args[0], scopes);
+      if (argT && argT.kind === 'failed') return T.failed('elementof cascade');
+      diagnostics.push({
+        severity: 'error',
+        message: 'elementof expects a set or set-constructor expression; got ' + T.show(argT),
+        loc: args[0].loc,
+      });
+      return T.failed('elementof bad arg');
+    }
+    return t;
+  }
+
+  function inferLawof(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError('lawof', 1, args.length, expr.loc);
+    const at = inferExpr(args[0], scopes);
+    if (at && at.kind === 'failed') return T.failed('lawof cascade');
+    if (T.isMeasure(at)) return at;             // identity law: lawof(measure) = measure
+    if (T.isValue(at))   return T.measure(at);
+    diagnostics.push({
+      severity: 'error',
+      message: 'lawof expects a value-typed argument, got ' + T.show(at),
+      loc: args[0].loc,
+    });
+    return T.failed('lawof bad arg');
+  }
+
+  function inferRecord(expr, scopes) {
+    // record uses `fields` (ordered), not `kwargs`.
+    const fields = expr.fields || [];
+    const out = {};
+    for (const f of fields) out[f.name] = inferExpr(f.value, scopes);
+    return T.record(out);
+  }
+
+  function inferJoint(expr, scopes) {
+    const fields = expr.fields || [];
+    const out = {};
+    for (const f of fields) {
+      const at = inferExpr(f.value, scopes);
+      if (T.isMeasure(at)) out[f.name] = at.domain;
+      else if (at.kind === 'deferred' || at.kind === 'any') out[f.name] = T.deferred();
+      else if (at.kind === 'failed') return T.failed('joint cascade');
+      else {
+        diagnostics.push({
+          severity: 'error',
+          message: 'joint kwarg "' + f.name + '" expects a measure, got ' + T.show(at),
+          loc: f.value.loc || expr.loc,
+        });
+        return T.failed('joint bad kwarg');
+      }
+    }
+    return T.measure(T.record(out));
+  }
+
+  function inferTuple(expr, scopes) {
+    const args = expr.args || [];
+    return T.tuple(args.map(a => inferExpr(a, scopes)));
+  }
+
+  function inferVector(expr, scopes) {
+    // `(call vector e1 e2 …)` — the array's length is the number of
+    // arguments (statically known); the element type is the unifying
+    // type of the elements. Empty vectors get an %any element type.
+    const args = expr.args || [];
+    if (args.length === 0) return T.array(1, [0], T.any());
+    const elemTypes = args.map(a => inferExpr(a, scopes));
     let s = new Map();
     let elem = elemTypes[0];
     for (let i = 1; i < elemTypes.length; i++) {
@@ -180,174 +327,241 @@ function inferTypes(bindings) {
           severity: 'error',
           message: 'array element type mismatch: '
             + T.show(elem) + ' vs ' + T.show(elemTypes[i]),
-          loc: node.elements[i].loc,
+          loc: args[i].loc || expr.loc,
         });
         return T.failed('array element mismatch');
       }
       s = next;
       elem = T.substitute(elem, s);
     }
-    return T.array(1, [node.elements.length], T.substitute(elem, s));
+    return T.array(1, [args.length], T.substitute(elem, s));
   }
 
-  function inferCall(node) {
-    if (!node.callee || node.callee.type !== 'Identifier') return T.deferred();
-    const op = node.callee.name;
-    // Split positional vs kwargs (KeywordArg nodes are kwargs).
-    const positional = [];
-    const kwargs = {};
-    for (const a of (node.args || [])) {
-      if (a && a.type === 'KeywordArg') kwargs[a.name] = a.value;
-      else positional.push(a);
+  // -------------------------------------------------------------------
+  // Reification: functionof / kernelof / fn
+  // -------------------------------------------------------------------
+  //
+  // Per spec §sec:functionof and §sec:kernelof:
+  //   * functionof(body, kw=...) reifies body into a callable. If body
+  //     is value-typed, the result is a function; if measure-typed, a
+  //     kernel.
+  //   * kernelof(body, kw=...) ≡ functionof(lawof(body), kw=...) —
+  //     always produces a kernel; the body must be value-typed.
+  //   * fn(body) lowers to functionof with placeholder parameters
+  //     extracted from the body's holes.
+  //
+  // The function's parameters carry the type of their boundary. For a
+  // placeholder boundary (`par = _par_`), the parameter's type is %any
+  // (the placeholder is `elementof(anything)` per spec). For an
+  // elementof-bound boundary (`par = _some_elementof`), it's the value
+  // type of that elementof's set. For a stochastic-bound boundary
+  // (`theta1 = theta1`), the parameter type is the boundary expression's
+  // structural type — the spec says boundaries are substituted with
+  // `elementof(valueset(boundary))` whose value type follows the
+  // boundary's domain.
+
+  function inferReification(expr, scopes) {
+    const op = expr.op;
+    const params = expr.params || [];        // declared parameter names (in `%local`)
+    // Build the scope: each param → its declared type. We compute
+    // declared types from paramKwargs (the surface-keyword side of
+    // each parameter binding) when present; for fn(...) bodies whose
+    // holes are positional, params come with no keyword and we
+    // default to %any.
+    const paramKwargs = expr.paramKwargs || [];
+    const newScope = new Map();
+    for (let i = 0; i < params.length; i++) {
+      // For functionof/kernelof: paramKwargs[i] is the surface name
+      // for the i-th param. The kwarg's value (in `kwargs`) is the
+      // boundary expression. Type-infer it to derive the parameter
+      // type.
+      let paramType = T.any();
+      const kwName = paramKwargs[i];
+      if (kwName && expr.kwargs && expr.kwargs[kwName]) {
+        const boundaryT = inferExpr(expr.kwargs[kwName], scopes);
+        // The reified parameter has the structural type of the
+        // boundary value. For measure-typed boundaries we error out
+        // — the spec's boundary substitution requires a value.
+        if (T.isMeasure(boundaryT)) {
+          diagnostics.push({
+            severity: 'error',
+            message: op + ' boundary "' + kwName + '" must be a value, got ' + T.show(boundaryT),
+            loc: expr.kwargs[kwName].loc || expr.loc,
+          });
+          paramType = T.failed(op + ' boundary type');
+        } else if (T.isValue(boundaryT)) {
+          paramType = boundaryT;
+        }
+      }
+      newScope.set(params[i], paramType);
     }
-    return inferOp(op, op, positional, kwargs, node.loc);
+
+    // Special case: fn(body) — we don't have explicit params yet
+    // (lower.js leaves holes in place). For now, accept fn but mark
+    // its inputs as %any. (A future pass should hoist holes to named
+    // placeholders so fn lowers uniformly to functionof.)
+    if (op === 'fn') {
+      const innerScopes = scopes.concat([newScope]);
+      const bodyT = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
+      const inputs = [];   // unknown until we count holes; left empty for now
+      return T.isMeasure(bodyT) ? T.kernelType(inputs, bodyT)
+                                : T.funcType(inputs,   bodyT);
+    }
+
+    // functionof / kernelof.
+    const innerScopes = scopes.concat([newScope]);
+    const bodyT = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
+    // Inputs use the *surface* keyword name from paramKwargs — that's
+    // what call-site kwargs bind to (`f(par = beta1)` references the
+    // surface `par`, not the internal scope-local `_par`). Types come
+    // from the scope (keyed by internal name).
+    const inputs = params.map((p, i) => ({
+      name: paramKwargs[i] || p,
+      type: newScope.get(p),
+    }));
+
+    if (op === 'kernelof') {
+      // Per spec §sec:kernelof: x must NOT be a measure. If it is,
+      // we still produce a kernel (kernelof of a measure would be
+      // pointless but not our place to enforce arithmetically here);
+      // emit a diagnostic so the user knows.
+      if (T.isMeasure(bodyT)) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'kernelof body must be a value (use functionof for a measure body)',
+          loc: expr.body.loc || expr.loc,
+        });
+        return T.failed('kernelof of measure');
+      }
+      // The kernel's effective body is lawof(body), which is a
+      // measure over body's value type. So the result type is the
+      // kernel's body lifted to a measure.
+      const lifted = T.measure(bodyT);
+      return T.kernelType(inputs, lifted);
+    }
+
+    // functionof: split by body kind.
+    if (T.isMeasure(bodyT))   return T.kernelType(inputs, bodyT);
+    if (T.isValue(bodyT))     return T.funcType(inputs,   bodyT);
+    if (bodyT.kind === 'failed') return T.failed('functionof cascade');
+    return T.deferred();
   }
 
-  // Generic call-site inference. `op` is the registry key; `displayOp`
-  // is what we put in diagnostic text (for binary/unary ops we want
-  // the surface symbol, not the lowered name).
-  function inferOp(op, displayOp, positional, kwargs, callLoc) {
-    if (!op) return T.failed('unsupported operator "' + displayOp + '"');
+  // -------------------------------------------------------------------
+  // User-defined call: callee is a (%ref self <fn-name>)
+  // -------------------------------------------------------------------
 
-    // Special-cased ops whose result type depends on actuals in ways
-    // the static signature table can't express.
-    switch (op) {
-      case 'elementof': return inferElementof(positional, callLoc);
-      case 'lawof':     return inferLawof(positional, callLoc);
-      case 'record':    return inferRecord(kwargs);
-      case 'joint':     return inferJoint(kwargs, callLoc);
-      case 'tuple':     return T.tuple(positional.map(inferExpr));
+  function inferUserCall(expr, scopes) {
+    const head = expr.target;
+    if (!head || head.ns !== 'self') {
+      // Cross-module user calls — not yet implemented.
+      return write(T.deferred(), expr);
+    }
+    const calleeType = inferBinding(head.name);
+    if (!T.isCallable(calleeType)) {
+      // Cascade silently when the callee already failed or is still
+      // deferred (couldn't infer its type — e.g. unknown built-in,
+      // standard module function not yet typed). Only error when we
+      // positively know it's a non-callable (scalar / measure / etc.).
+      if (calleeType && (calleeType.kind === 'failed' || calleeType.kind === 'deferred'
+                         || calleeType.kind === 'any')) {
+        return write(T.deferred(), expr);
+      }
+      diagnostics.push({
+        severity: 'error',
+        message: '"' + head.name + '" is not callable (got ' + T.show(calleeType) + ')',
+        loc: expr.loc,
+      });
+      return write(T.failed('not callable'), expr);
     }
 
-    const sig = T.signatureOf(op);
-    if (!sig) return T.deferred();   // unknown / not yet typed → don't error
+    // For now: take the callee's `result` directly. This is the
+    // "monomorphic-at-definition" simplification. Once we add full
+    // polymorphism, we'd traverse the callee's body with the call
+    // site's actual argument types.
+    //
+    // We DO type-check the call args against the callee's input
+    // types — that catches passing wrong-typed values to functions.
+    const inputs = calleeType.inputs;
+    const args   = expr.args   || [];
+    const kwargs = expr.kwargs || {};
 
-    let s = new Map();
-
-    // Positional arguments
-    if (sig.args !== null) {
-      const rawN = sig.args.length;
-      const got  = positional.length;
-      const variadic = sig.variadic === 'positional';
-      const fixedN = variadic ? rawN - 1 : rawN;
-      if (variadic) {
-        if (got < fixedN) return arityError(displayOp, '≥' + fixedN, got, callLoc);
-      } else if (got !== rawN) {
-        return arityError(displayOp, rawN, got, callLoc);
+    // Positional first, then keyword. Spec allows both calling
+    // conventions for user-defined callables with explicit boundaries.
+    for (let i = 0; i < inputs.length; i++) {
+      const inp = inputs[i];
+      let actual = null, actualLoc = expr.loc;
+      if (i < args.length) {
+        actual = inferExpr(args[i], scopes);
+        actualLoc = args[i].loc;
+      } else if (inp.name in kwargs) {
+        actual = inferExpr(kwargs[inp.name], scopes);
+        actualLoc = kwargs[inp.name].loc;
+      } else {
+        // Missing argument. Diagnostic but don't bail — the result
+        // type doesn't depend on which inputs were supplied (we use
+        // the function's declared result).
+        diagnostics.push({
+          severity: 'error',
+          message: 'call to "' + head.name + '" missing argument "' + inp.name + '"',
+          loc: expr.loc,
+        });
+        continue;
       }
-      // Check the fixed positions
-      for (let i = 0; i < fixedN; i++) {
-        const at = inferExpr(positional[i]);
-        const next = T.unify(sig.args[i], at, s);
-        if (next == null) return argError(displayOp, i, sig.args[i], at, positional[i].loc);
-        s = next;
-      }
-      // Check the variadic tail (every remaining actual unifies with
-      // the last expected type).
-      if (variadic) {
-        const tail = sig.args[rawN - 1];
-        for (let i = fixedN; i < got; i++) {
-          const at = inferExpr(positional[i]);
-          const next = T.unify(tail, at, s);
-          if (next == null) return argError(displayOp, i, tail, at, positional[i].loc);
-          s = next;
+      if (actual && actual.kind !== 'failed') {
+        const s = T.unify(inp.type, actual, new Map());
+        if (s == null) {
+          diagnostics.push({
+            severity: 'error',
+            message: head.name + ': arg "' + inp.name + '" expects ' + T.show(inp.type)
+              + ', got ' + T.show(actual),
+            loc: actualLoc,
+          });
         }
       }
     }
-
-    // Required kwargs. Missing kwargs are NOT an error here — many
-    // kwargs have defaults the engine would supply at lowering time
-    // (e.g. distribution parameter defaults). Unknown kwargs are
-    // also not flagged; we may not model every accepted parameter.
-    for (const k in sig.kwargs) {
-      if (!(k in kwargs)) continue;
-      const at = inferExpr(kwargs[k]);
-      const next = T.unify(sig.kwargs[k], at, s);
-      if (next == null) return kwargError(displayOp, k, sig.kwargs[k], at, kwargs[k].loc);
-      s = next;
-    }
-
-    return T.substitute(sig.result, s);
+    return write(calleeType.result, expr);
   }
 
-  // ---- Special-case op handlers --------------------------------------
+  // -------------------------------------------------------------------
+  // Set-expression value-type resolution (used by elementof)
+  // -------------------------------------------------------------------
 
-  function inferElementof(positional, loc) {
-    if (positional.length !== 1) return arityError('elementof', 1, positional.length, loc);
-    const t = setValueType(positional[0]);
-    if (t == null) {
-      const argT = inferExpr(positional[0]);
-      // Cascade silently when upstream already failed.
-      if (argT && argT.kind === 'failed') return T.failed('elementof cascade');
-      diagnostics.push({
-        severity: 'error',
-        message: 'elementof expects a set or set-constructor expression; got ' + T.show(argT),
-        loc: positional[0].loc,
-      });
-      return T.failed('elementof bad arg');
+  function setValueType(expr, scopes) {
+    if (!expr) return null;
+    if (expr.kind === 'const' && SET_VALUE_TYPES[expr.name] !== undefined) {
+      return SET_VALUE_TYPES[expr.name];
     }
-    return t;
-  }
-
-  /**
-   * Resolve a set expression to the type of values that "live in" it,
-   * for elementof. Returns null if the expression isn't a recognised
-   * set form. Sets aren't first-class types (per spec §sec:flatpir
-   * "Sets and types are distinct"), so we only walk far enough to get
-   * a value-type answer for the elementof use-case.
-   *
-   * Supported shapes:
-   *   reals / posreals / nonnegreals / unitinterval / …  → scalar real
-   *   integers / posintegers / nonnegintegers           → scalar integer
-   *   booleans                                          → scalar boolean
-   *   complexes                                         → scalar complex
-   *   anything / rngstates                              → %any
-   *   interval(lo, hi)                                  → real
-   *   stdsimplex(n)                                     → array<1, [n], real>
-   *   cartpow(S, n)                                     → array<1, [n], elem(S)>
-   *   cartpow(S, n, m, …)                               → array<rank, [n,m,…], elem(S)>
-   *   cartprod(S1, S2, …)                               → tuple<elem(S1), …>  (positional)
-   *   cartprod(a=S1, b=S2, …)                           → record{a: elem(S1), …}  (kwargs)
-   */
-  function setValueType(node) {
-    if (!node) return null;
-    if (node.type === 'SetRef')           return SET_VALUE_TYPES[node.name] || T.any();
-    if (node.type === 'Identifier' && builtins.isSet(node.name))
-                                          return SET_VALUE_TYPES[node.name] || T.any();
-    if (node.type !== 'CallExpr')         return null;
-    if (!node.callee || node.callee.type !== 'Identifier') return null;
-    const op = node.callee.name;
-    switch (op) {
+    if (expr.kind === 'ref' && expr.ns === 'self' && SET_VALUE_TYPES[expr.name] !== undefined) {
+      return SET_VALUE_TYPES[expr.name];
+    }
+    if (expr.kind !== 'call') return null;
+    switch (expr.op) {
       case 'interval':   return T.REAL;
       case 'stdsimplex': {
-        const n = literalIntFrom(node.args[0]);
-        return T.array(1, [n != null ? n : '%dynamic'], T.REAL);
+        const n = expr.args && expr.args[0] && expr.args[0].kind === 'lit'
+          && Number.isInteger(expr.args[0].value) ? expr.args[0].value : '%dynamic';
+        return T.array(1, [n], T.REAL);
       }
       case 'cartpow': {
-        const inner = setValueType(node.args[0]);
+        const inner = setValueType(expr.args[0], scopes);
         if (inner == null) return null;
-        const dims = node.args.slice(1).map(literalIntFrom)
-          .map(n => n != null ? n : '%dynamic');
+        const dims = (expr.args || []).slice(1).map(a =>
+          (a.kind === 'lit' && Number.isInteger(a.value)) ? a.value : '%dynamic');
         return T.array(dims.length, dims, inner);
       }
       case 'cartprod': {
-        // Split positional vs keyword. The two forms produce different
-        // shapes per spec §sec:valuetypes Sets.
-        const pos = [], kw = {};
-        for (const a of node.args) {
-          if (a && a.type === 'KeywordArg') kw[a.name] = a.value;
-          else pos.push(a);
-        }
-        if (Object.keys(kw).length > 0) {
-          const fields = {};
-          for (const k in kw) {
-            const t = setValueType(kw[k]);
+        const fields = expr.fields || null;
+        if (fields && fields.length > 0) {
+          const out = {};
+          for (const f of fields) {
+            const t = setValueType(f.value, scopes);
             if (t == null) return null;
-            fields[k] = t;
+            out[f.name] = t;
           }
-          return T.record(fields);
+          return T.record(out);
         }
-        const elems = pos.map(setValueType);
+        const elems = (expr.args || []).map(a => setValueType(a, scopes));
         if (elems.some(e => e == null)) return null;
         return elems.length === 1 ? elems[0] : T.tuple(elems);
       }
@@ -355,76 +569,9 @@ function inferTypes(bindings) {
     return null;
   }
 
-  /** Pull an integer literal out of an AST node, or null if not literal. */
-  function literalIntFrom(node) {
-    if (!node) return null;
-    if (node.type === 'NumberLiteral' && isIntegerLiteral(node.raw)) return node.value;
-    return null;
-  }
-
-  function inferLawof(positional, loc) {
-    if (positional.length !== 1) return arityError('lawof', 1, positional.length, loc);
-    const at = inferExpr(positional[0]);
-    if (at && at.kind === 'failed') return T.failed('lawof cascade');
-    // lawof of a measure is permitted (the spec's identity law makes
-    // it redundant but valid) — return as-is.
-    if (T.isMeasure(at)) return at;
-    if (T.isValue(at))   return T.measure(at);
-    diagnostics.push({
-      severity: 'error',
-      message: 'lawof expects a value-typed argument, got ' + T.show(at),
-      loc: positional[0].loc,
-    });
-    return T.failed('lawof bad arg');
-  }
-
-  function inferRecord(kwargs) {
-    const fields = {};
-    for (const k in kwargs) fields[k] = inferExpr(kwargs[k]);
-    return T.record(fields);
-  }
-
-  function inferJoint(kwargs, callLoc) {
-    // joint(name1=M1, name2=M2, ...) → measure<record{name1: T1, name2: T2, ...}>
-    // Each kwarg must be measure-typed; we extract its domain.
-    const fields = {};
-    for (const k in kwargs) {
-      const at = inferExpr(kwargs[k]);
-      if (T.isMeasure(at)) {
-        fields[k] = at.domain;
-      } else if (at.kind === 'deferred' || at.kind === 'any') {
-        fields[k] = T.deferred();
-      } else if (at.kind === 'failed') {
-        return T.failed('joint cascade');
-      } else {
-        diagnostics.push({
-          severity: 'error',
-          message: 'joint kwarg "' + k + '" expects a measure, got ' + T.show(at),
-          loc: kwargs[k].loc || callLoc,
-        });
-        return T.failed('joint bad kwarg');
-      }
-    }
-    return T.measure(T.record(fields));
-  }
-
-  // ---- Field access --------------------------------------------------
-
-  function inferFieldAccess(node) {
-    const objT = inferExpr(node.object);
-    if (objT.kind === 'record' && objT.fields[node.field]) return objT.fields[node.field];
-    if (objT.kind === 'record') {
-      diagnostics.push({
-        severity: 'error',
-        message: 'unknown field "' + node.field + '" on record',
-        loc: node.loc,
-      });
-      return T.failed('unknown field');
-    }
-    return T.deferred();   // tables, modules, deferred objects
-  }
-
-  // ---- Diagnostics helpers -------------------------------------------
+  // -------------------------------------------------------------------
+  // Diagnostics helpers (suppress cascades when inputs already failed)
+  // -------------------------------------------------------------------
 
   function arityError(op, expected, got, loc) {
     diagnostics.push({
@@ -434,10 +581,6 @@ function inferTypes(bindings) {
     });
     return T.failed(op + ' arity');
   }
-  // For arg / kwarg errors, suppress the diagnostic when the actual
-  // type is already %failed — the upstream cause emitted its own
-  // diagnostic and we'd just be repeating it (with cosmetic noise like
-  // "got failed(undefined name foo)"). Cascade silently in that case.
   function argError(op, i, expected, got, loc) {
     if (got && got.kind === 'failed') return T.failed(op + ' arg type (cascade)');
     diagnostics.push({
@@ -458,13 +601,9 @@ function inferTypes(bindings) {
     });
     return T.failed(op + ' kwarg type');
   }
-
-  function setMarker(name) {
-    // Internal-only "set" marker, not a user-visible type. elementof
-    // recognises it by `kind === 'set'`. Anywhere else gets a deferred
-    // back from isValue() which falls back to deferred handling.
-    return { kind: 'set', name };
-  }
 }
+
+// Internal "set" marker — not a user-facing type. elementof handles it.
+function setMarker(name) { return { kind: 'set', name }; }
 
 module.exports = { inferTypes };

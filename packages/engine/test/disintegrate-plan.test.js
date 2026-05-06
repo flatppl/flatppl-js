@@ -139,9 +139,11 @@ fk, pr = disintegrate("a", m)
 // --- v1: jointchain positional → Delegate -------------------------
 
 test('Plan: jointchain positional with two binding-identifier sides → Delegate', () => {
+  // Per spec §sec:kernelof "x must not be a measure", use functionof
+  // for measure bodies — they produce kernels via §sec:functionof-measure.
   const src = `
 prior = Normal(mu = 0.0, sigma = 1.0)
-forward_kernel = kernelof(Normal(mu = _a_, sigma = 1.0), a = _a_)
+forward_kernel = functionof(Normal(mu = _a_, sigma = 1.0), a = _a_)
 joint_model = jointchain(prior, forward_kernel)
 fk, pr = disintegrate(["forward_kernel"], joint_model)
 `;
@@ -275,9 +277,12 @@ test('Unsupported fixture: parses cleanly and produces expected plan kinds', () 
   assert.equal(bindings.get('fk_ok').disintegratePlan.kind, 'synthesized');
   assert.equal(bindings.get('fk_ok').type, 'kernelof');
 
-  // Delegate: jointchain(prior_b, kernel_b) selecting "obs".
+  // Delegate: jointchain(prior_b, kernel_b) selecting "obs". Surface
+  // type follows the delegate target — kernel_b uses `functionof`
+  // (with a measure body, per spec §sec:functionof-measure → kernel),
+  // not `kernelof` which would be a type error here.
   assert.equal(bindings.get('fk_del').disintegratePlan.kind, 'delegate');
-  assert.equal(bindings.get('fk_del').type, 'kernelof');
+  assert.equal(bindings.get('fk_del').type, 'functionof');
 
   // Unsupported: chain has no structural rule.
   assert.equal(bindings.get('fk_chain').disintegratePlan.kind, 'unsupported');
