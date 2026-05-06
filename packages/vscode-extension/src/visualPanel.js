@@ -2434,17 +2434,17 @@ class FlatPPLPanel {
       // readability. ECharts handles 50k points fine; 100k starts to
       // chug. Take an even slice (deterministic) so the visual is
       // stable across re-renders.
-      var anyN = measure.fields[fieldNames[0]].samples.length;
+      var anyN = axes[0].samples.length;
       var maxPoints = 20000;
       var stride = anyN > maxPoints ? Math.ceil(anyN / maxPoints) : 1;
-      // Pre-build one positional list per field to avoid repeated
+      // Pre-build one positional list per axis to avoid repeated
       // .samples lookups in the inner loop below.
-      var cols = fieldNames.map(function(fn) { return measure.fields[fn].samples; });
+      var cols = axes.map(function(a) { return a.samples; });
 
       for (var row = 1; row < n; row++) {
         for (var col = 0; col < row; col++) {
-          var xName = fieldNames[col];
-          var yName = fieldNames[row];
+          var xName = axes[col].label;
+          var yName = axes[row].label;
           var xCol = cols[col], yCol = cols[row];
           var inner2 = makeCell(yName + ' vs ' + xName, row, col);
           var pts = [];
