@@ -601,6 +601,81 @@ test('lifting: deeply nested inline measure expression in draw composes correctl
   assertSameLogWeights(inline, named, 1e-12, 'inline vs named logWeights');
 });
 
+// =====================================================================
+// User-defined functions: functionof / kernelof inlining
+// =====================================================================
+//
+// Per spec §sec:functionof "functionof(f(a, b), a=a, b=b) ≡ f", a
+// function call is semantically equivalent to its inlined body with
+// parameter refs substituted. We assert this identity at the
+// EmpiricalMeasure level: `a = f_a(par = beta1)` produces samples
+// identical to `a = c * beta1` (the inlined body).
+
+test('user-call inlining: f_a(par=beta1) is identical to the inlined body', () => {
+  const inlinedSrc = `
+    c = 2.5
+    theta_dist = Normal(mu = 0, sigma = 1)
+    theta = draw(theta_dist)
+    beta1 = 2 * theta
+    a = c * beta1
+  `;
+  const userCallSrc = `
+    c = 2.5
+    _par = elementof(reals)
+    f_a = functionof(c * _par, par = _par)
+    theta_dist = Normal(mu = 0, sigma = 1)
+    theta = draw(theta_dist)
+    beta1 = 2 * theta
+    a = f_a(par = beta1)
+  `;
+  const inlined  = materialise('a', processSource(inlinedSrc).bindings);
+  const userCall = materialise('a', processSource(userCallSrc).bindings);
+  // Same per-binding seeding produces identical sample sequences when
+  // the underlying computation matches.
+  assertSameSamples(inlined, userCall, 'user-call vs inlined body samples');
+});
+
+test('user-call inlining: nested user calls compose', () => {
+  // f composes with g via nested user call sites. Per the identity
+  // law, the result is the same as inlining everything by hand.
+  const handInlined = `
+    theta = draw(Normal(mu = 0, sigma = 1))
+    a = 2 * (theta + 1)
+  `;
+  const composed = `
+    _x = elementof(reals)
+    g = functionof(_x + 1, x = _x)
+    _y = elementof(reals)
+    f = functionof(2 * _y, y = _y)
+    theta = draw(Normal(mu = 0, sigma = 1))
+    a = f(y = g(x = theta))
+  `;
+  const inlined  = materialise('a', processSource(handInlined).bindings);
+  const userCall = materialise('a', processSource(composed).bindings);
+  assertSameSamples(inlined, userCall, 'composed user-calls vs hand-inlined samples');
+});
+
+test('user-call inlining: kernel application yields a measure', () => {
+  // functionof(measure_expr, kw=...) produces a kernel per
+  // §sec:functionof-measure. Applying it gives a measure derivation.
+  // We sample from the kernel's body in parallel to a hand-inlined
+  // version and check they match.
+  const handInlined = `
+    theta = draw(Normal(mu = 0, sigma = 1))
+    obs = draw(Normal(mu = theta, sigma = 1))
+  `;
+  const kernelApply = `
+    _t = elementof(reals)
+    fwd = functionof(Normal(mu = _t, sigma = 1), theta = _t)
+    theta = draw(Normal(mu = 0, sigma = 1))
+    obs = draw(fwd(theta = theta))
+  `;
+  const inlined = materialise('obs', processSource(handInlined).bindings);
+  const applied = materialise('obs', processSource(kernelApply).bindings);
+  // Sample-level equivalence given matching seeds.
+  assertSameSamples(inlined, applied, 'kernel-application vs inlined-draw samples');
+});
+
 test('orchestrator: weighted(<measure>, m) is rejected as a type error', () => {
   // Per spec §sec:measure-algebra the first argument of weighted
   // must be a value, not a measure. theta_dist IS a measure, so

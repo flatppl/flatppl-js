@@ -317,19 +317,31 @@ test('lower: functionof with placeholder params', () => {
   assert.equal(ir.body.args[1].name, '_par_');
 });
 
-test('lower: kernelof with mixed identifier and placeholder params', () => {
+test('lower: kernelof lowers to functionof(lawof(body), kw)', () => {
+  // Per spec §sec:kernelof line 421-422: kernelof(x, kw) is
+  // equivalent to functionof(lawof(x), kw). We perform that rewrite
+  // at lower time so downstream IR consumers (type inference,
+  // orchestrator) see only one reification form. (NB: the body
+  // here is a Normal, which would type-check as invalid kernelof
+  // input; the lowering test pins the structural rewrite, not the
+  // type-correctness.)
   const ir = lowerOne(`
     k = kernelof(Normal(mu = theta1, sigma = _spread_),
                  theta1 = theta1, spread = _spread_)
   `);
-  assert.equal(ir.op, 'kernelof');
+  assert.equal(ir.op, 'functionof');
   assert.deepEqual(ir.params, ['theta1', '_spread_']);
   assert.deepEqual(ir.paramKwargs, ['theta1', 'spread']);
+  // Body is wrapped in lawof.
+  assert.equal(ir.body.op, 'lawof');
+  assert.equal(ir.body.args[0].op, 'Normal');
 });
 
 test('lower: nested reification — inner scope shadows outer', () => {
-  // Inner `kernelof` introduces its own param `x`; references to `x` in the
-  // inner body should resolve to that, not to any outer-scope `x`.
+  // Inner `kernelof` introduces its own param `_x_`; references to
+  // `_x_` in the inner body should resolve to that, not to any
+  // outer-scope. After kernelof's lowering, both reifications use
+  // op='functionof', and the inner body is wrapped in lawof.
   const ir = lowerOne(`
     f = functionof(
       kernelof(Normal(mu = _x_, sigma = 1), x = _x_),
@@ -337,23 +349,30 @@ test('lower: nested reification — inner scope shadows outer', () => {
   `);
   assert.equal(ir.op, 'functionof');
   assert.deepEqual(ir.params, ['outer_param']);
-  // Body is the kernelof
   const inner = ir.body;
-  assert.equal(inner.op, 'kernelof');
+  assert.equal(inner.op, 'functionof');   // kernelof lowered to functionof
   assert.deepEqual(inner.params, ['_x_']);
-  // Inner Normal's mu refs %local _x_.
-  assert.equal(inner.body.kwargs.mu.ns, '%local');
-  assert.equal(inner.body.kwargs.mu.name, '_x_');
+  // Inner body is lawof(Normal(...)); Normal's mu refs %local _x_.
+  assert.equal(inner.body.op, 'lawof');
+  assert.equal(inner.body.args[0].op, 'Normal');
+  assert.equal(inner.body.args[0].kwargs.mu.ns, '%local');
+  assert.equal(inner.body.args[0].kwargs.mu.name, '_x_');
 });
 
-test('lower: fn(_) lambda body is the expression with bare holes', () => {
+test('lower: fn(_) lowers to functionof with auto-named placeholders', () => {
+  // Per spec §sec:fn line 618-636: fn(<body>) lowers to
+  // functionof(<body-with-_argN_>, arg1=_arg1_, ...). Holes are
+  // numbered left-to-right.
   const ir = lowerOne('g = fn(_ + _)');
-  assert.equal(ir.op, 'fn');
-  assert.ok(ir.body, 'fn has body');
-  // Body is `add(_, _)` where each arg is a hole.
+  assert.equal(ir.op, 'functionof');
+  assert.deepEqual(ir.params,      ['_arg1_', '_arg2_']);
+  assert.deepEqual(ir.paramKwargs, ['arg1',   'arg2']);
+  // Body: (add (ref %local _arg1_) (ref %local _arg2_))
   assert.equal(ir.body.op, 'add');
-  assert.equal(ir.body.args[0].kind, 'hole');
-  assert.equal(ir.body.args[1].kind, 'hole');
+  assert.equal(ir.body.args[0].ns,   '%local');
+  assert.equal(ir.body.args[0].name, '_arg1_');
+  assert.equal(ir.body.args[1].ns,   '%local');
+  assert.equal(ir.body.args[1].name, '_arg2_');
 });
 
 // =====================================================================

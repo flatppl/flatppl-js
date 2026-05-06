@@ -215,7 +215,11 @@ test('isEvaluable: literals, refs, consts, evaluable ops', () => {
     args: [{ kind: 'lit', value: 1 }, { kind: 'lit', value: 2 }],
   }), true);
   assert.equal(isEvaluable({
-    kind: 'call', op: 'log',  // not in EVALUABLE_OPS yet
+    kind: 'call', op: 'log',  // log is now evaluable (added with abs/exp/sqrt/...)
+    args: [{ kind: 'lit', value: 1 }],
+  }), true);
+  assert.equal(isEvaluable({
+    kind: 'call', op: 'unknown_op_xyz',
     args: [{ kind: 'lit', value: 1 }],
   }), false);
   assert.equal(isEvaluable({ kind: 'call', op: 'add', args: [{ kind: 'lit', value: 1 }, { kind: 'hole' }] }), false);

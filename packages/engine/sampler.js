@@ -417,6 +417,20 @@ const ARITH_OPS = {
   div: (a, b) => a / b,
   neg: a => -a,
   pos: a => +a,
+  // Common unary maths — extend EVALUABLE_OPS in orchestrator.js
+  // alongside any addition here so the static gate matches.
+  abs:   a => Math.abs(a),
+  exp:   a => Math.exp(a),
+  log:   a => Math.log(a),
+  log10: a => Math.log10(a),
+  sqrt:  a => Math.sqrt(a),
+  sin:   a => Math.sin(a),
+  cos:   a => Math.cos(a),
+  tan:   a => Math.tan(a),
+  floor: a => Math.floor(a),
+  ceil:  a => Math.ceil(a),
+  round: a => Math.round(a),
+  pow:   (a, b) => Math.pow(a, b),
 };
 
 function evaluateCall(ir, env) {

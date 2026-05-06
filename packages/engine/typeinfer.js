@@ -175,9 +175,10 @@ function inferTypes(loweredModule) {
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
-      case 'functionof':
-      case 'kernelof':
-      case 'fn':        return write(inferReification(expr, scopes), expr);
+      // kernelof and fn are lowered to functionof by lower.js (per
+      // spec §sec:kernelof line 421-422 and §sec:fn line 618-628),
+      // so we only see functionof here.
+      case 'functionof': return write(inferReification(expr, scopes), expr);
     }
 
     return write(inferGenericCall(expr, scopes), expr);
@@ -361,34 +362,27 @@ function inferTypes(loweredModule) {
   // boundary's domain.
 
   function inferReification(expr, scopes) {
-    const op = expr.op;
-    const params = expr.params || [];        // declared parameter names (in `%local`)
-    // Build the scope: each param → its declared type. We compute
-    // declared types from paramKwargs (the surface-keyword side of
-    // each parameter binding) when present; for fn(...) bodies whose
-    // holes are positional, params come with no keyword and we
-    // default to %any.
-    const paramKwargs = expr.paramKwargs || [];
+    // Only `functionof` reaches here — kernelof and fn are lowered
+    // to functionof by lower.js. The kernelof spec rule "x must not
+    // be a measure" emerges naturally from the lawof inside the
+    // lowered form (lawof requires a value-typed argument); we don't
+    // need a special case here.
+    const params      = expr.params      || [];   // scope-local names
+    const paramKwargs = expr.paramKwargs || [];   // surface kwarg names
     const newScope = new Map();
     for (let i = 0; i < params.length; i++) {
-      // For functionof/kernelof: paramKwargs[i] is the surface name
-      // for the i-th param. The kwarg's value (in `kwargs`) is the
-      // boundary expression. Type-infer it to derive the parameter
-      // type.
       let paramType = T.any();
       const kwName = paramKwargs[i];
       if (kwName && expr.kwargs && expr.kwargs[kwName]) {
         const boundaryT = inferExpr(expr.kwargs[kwName], scopes);
-        // The reified parameter has the structural type of the
-        // boundary value. For measure-typed boundaries we error out
-        // — the spec's boundary substitution requires a value.
         if (T.isMeasure(boundaryT)) {
           diagnostics.push({
             severity: 'error',
-            message: op + ' boundary "' + kwName + '" must be a value, got ' + T.show(boundaryT),
+            message: 'functionof boundary "' + kwName
+              + '" must be a value, got ' + T.show(boundaryT),
             loc: expr.kwargs[kwName].loc || expr.loc,
           });
-          paramType = T.failed(op + ' boundary type');
+          paramType = T.failed('functionof boundary type');
         } else if (T.isValue(boundaryT)) {
           paramType = boundaryT;
         }
@@ -396,53 +390,19 @@ function inferTypes(loweredModule) {
       newScope.set(params[i], paramType);
     }
 
-    // Special case: fn(body) — we don't have explicit params yet
-    // (lower.js leaves holes in place). For now, accept fn but mark
-    // its inputs as %any. (A future pass should hoist holes to named
-    // placeholders so fn lowers uniformly to functionof.)
-    if (op === 'fn') {
-      const innerScopes = scopes.concat([newScope]);
-      const bodyT = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
-      const inputs = [];   // unknown until we count holes; left empty for now
-      return T.isMeasure(bodyT) ? T.kernelType(inputs, bodyT)
-                                : T.funcType(inputs,   bodyT);
-    }
-
-    // functionof / kernelof.
     const innerScopes = scopes.concat([newScope]);
     const bodyT = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
     // Inputs use the *surface* keyword name from paramKwargs — that's
-    // what call-site kwargs bind to (`f(par = beta1)` references the
-    // surface `par`, not the internal scope-local `_par`). Types come
-    // from the scope (keyed by internal name).
+    // what call-site kwargs bind to. Types come from the scope.
     const inputs = params.map((p, i) => ({
       name: paramKwargs[i] || p,
       type: newScope.get(p),
     }));
 
-    if (op === 'kernelof') {
-      // Per spec §sec:kernelof: x must NOT be a measure. If it is,
-      // we still produce a kernel (kernelof of a measure would be
-      // pointless but not our place to enforce arithmetically here);
-      // emit a diagnostic so the user knows.
-      if (T.isMeasure(bodyT)) {
-        diagnostics.push({
-          severity: 'error',
-          message: 'kernelof body must be a value (use functionof for a measure body)',
-          loc: expr.body.loc || expr.loc,
-        });
-        return T.failed('kernelof of measure');
-      }
-      // The kernel's effective body is lawof(body), which is a
-      // measure over body's value type. So the result type is the
-      // kernel's body lifted to a measure.
-      const lifted = T.measure(bodyT);
-      return T.kernelType(inputs, lifted);
-    }
-
-    // functionof: split by body kind.
-    if (T.isMeasure(bodyT))   return T.kernelType(inputs, bodyT);
-    if (T.isValue(bodyT))     return T.funcType(inputs,   bodyT);
+    // Per spec §sec:functionof-measure: a functionof with a measure
+    // body produces a kernel; with a value body, a function.
+    if (T.isMeasure(bodyT))      return T.kernelType(inputs, bodyT);
+    if (T.isValue(bodyT))        return T.funcType(inputs,   bodyT);
     if (bodyT.kind === 'failed') return T.failed('functionof cascade');
     return T.deferred();
   }

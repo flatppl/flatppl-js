@@ -453,34 +453,87 @@ function _lowerReification(op, node, ctx) {
   for (const p of params) innerLocal.add(p);
   const innerCtx = { ...ctx, localScope: innerLocal };
 
+  let body = _lowerExpr(args[0], innerCtx);
+
+  // kernelof(x, kw) ≡ functionof(lawof(x), kw) per spec §sec:kernelof
+  // line 421-422. The boundary substitution applies BEFORE the inner
+  // lawof is interpreted — exactly what we get by wrapping the body
+  // in lawof inside the same scope and emitting functionof. After
+  // this rewrite, downstream IR consumers (type inference,
+  // orchestrator) see one uniform reification form.
+  let outOp = op;
+  if (op === 'kernelof') {
+    body = { kind: 'call', op: 'lawof', args: [body], loc: args[0].loc };
+    outOp = 'functionof';
+  }
+
   return {
     kind:        'call',
-    op,
+    op:          outOp,
     params,
     paramKwargs,
-    body:        _lowerExpr(args[0], innerCtx),
+    body,
     loc:         node.loc,
   };
 }
 
 // ---------------------------------------------------------------------
-// `fn(<body>)` — the holes inside `body` are implicit parameters.
+// `fn(<body>)` is sugar for `functionof(<body-with-placeholders>,
+// arg1=_arg1_, arg2=_arg2_, ...)` per spec §sec:fn (lines 618-636).
+// We perform that lowering here so downstream IR consumers see only
+// `functionof` and the holes are gone — every parameter is named.
 //
-// The analyzer separately validates that holes appear only inside fn(...).
-// We don't extract a params list here; the holes carry their position
-// through `kind: 'hole'`. A future consumer that wants explicit param
-// names can scan the body for holes (see analyzer's `countHoles`).
+// Hole numbering is left-to-right reading order on the AST. We walk
+// the body, replace each Hole AST node with a Placeholder named
+// `_argN_`, count holes, then synthesize the equivalent functionof
+// IR with `params` / `paramKwargs` matching the holes' indices.
 
 function _lowerFn(node, ctx) {
   if (node.args.length !== 1 || node.args[0].type === 'KeywordArg') {
     throw new Error(`lower: fn() requires exactly one expression argument`);
   }
-  return {
-    kind: 'call',
-    op:   'fn',
-    body: _lowerExpr(node.args[0], ctx),
-    loc:  node.loc,
+  const bodyAst = node.args[0];
+
+  // Walk the body in reading order; replace each Hole with a
+  // Placeholder named `arg1`, `arg2`, … (inner-name convention,
+  // matching the parser; _lowerReification will wrap with the
+  // surrounding underscores). We deep-clone so the original AST
+  // isn't touched — other consumers (DAG render, source diagnostics)
+  // still see the user's `fn(_)` form.
+  let counter = 0;
+  function rewriteHoles(astNode) {
+    if (astNode == null || typeof astNode !== 'object') return astNode;
+    if (Array.isArray(astNode)) return astNode.map(rewriteHoles);
+    if (astNode.type === 'Hole') {
+      counter++;
+      return { type: 'Placeholder', name: 'arg' + counter, loc: astNode.loc };
+    }
+    const out = {};
+    for (const k in astNode) out[k] = rewriteHoles(astNode[k]);
+    return out;
+  }
+  const rewrittenBody = rewriteHoles(bodyAst);
+  const numHoles = counter;
+
+  // Build a synthesized `functionof(<body>, arg1=_arg1_, …)` AST and
+  // delegate to the existing reification lowering. One code path,
+  // no duplicate scope-tracking logic.
+  const kwargs = [];
+  for (let i = 1; i <= numHoles; i++) {
+    kwargs.push({
+      type: 'KeywordArg',
+      name: 'arg' + i,
+      value: { type: 'Placeholder', name: 'arg' + i, loc: bodyAst.loc },
+      loc: bodyAst.loc,
+    });
+  }
+  const synthesized = {
+    type:   'CallExpr',
+    callee: { type: 'Identifier', name: 'functionof', loc: node.callee.loc },
+    args:   [rewrittenBody, ...kwargs],
+    loc:    node.loc,
   };
+  return _lowerReification('functionof', synthesized, ctx);
 }
 
 // ---------------------------------------------------------------------

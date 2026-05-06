@@ -82,10 +82,14 @@ const DISCRETE_DISTRIBUTIONS = new Set([
 // here.
 const EVALUABLE_OPS = new Set([
   // Operator desugaring (BIN_OP_MAP / UN_OP_MAP in lower.js).
-  // This list mirrors sampler.js's ARITH_OPS exactly. Comparisons,
-  // log/exp/sqrt/abs, etc. are NOT here yet — extend both sides
-  // together if you add them.
+  // This list mirrors sampler.js's ARITH_OPS exactly. Extend both
+  // sides together when adding ops (the static gate must match the
+  // worker's evaluator).
   'add', 'sub', 'mul', 'div', 'neg', 'pos',
+  'abs', 'exp', 'log', 'log10', 'sqrt',
+  'sin', 'cos', 'tan',
+  'floor', 'ceil', 'round',
+  'pow',
 ]);
 
 /**
@@ -435,7 +439,10 @@ function liftInlineSubexpressions(bindings) {
   // mutations stay local; the caller's bindings map is untouched.
   for (const [name, binding] of bindings) {
     if (!binding.node || !binding.node.value) continue;
-    const cloned = cloneAst(binding.node.value);
+    let cloned = cloneAst(binding.node.value);
+    // Top-level user-call inlining: `a = f(args)` becomes `a = <body>`
+    // with parameter refs in <body> substituted by call args.
+    cloned = inlineUserCall(cloned);
     visit(cloned);
     out.set(name, {
       ...binding,
@@ -496,6 +503,7 @@ function liftInlineSubexpressions(bindings) {
 
   function liftMeasure(astArg) {
     if (!astArg) return astArg;
+    astArg = inlineUserCall(astArg);
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
     const name = freshName();
@@ -505,6 +513,7 @@ function liftInlineSubexpressions(bindings) {
 
   function liftValue(astArg) {
     if (!astArg) return astArg;
+    astArg = inlineUserCall(astArg);
     visit(astArg);
     // Only inline `draw(...)` is lifted from a value position — every
     // other value-typed expression (literals, identifiers, arithmetic)
@@ -523,11 +532,180 @@ function liftInlineSubexpressions(bindings) {
     // for uniformity (visit recurses into it first to handle nested
     // measure-arg positions).
     if (!astArg) return astArg;
+    astArg = inlineUserCall(astArg);
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
     const name = freshName();
     out.set(name, makeSyntheticBinding(name, astArg));
     return makeIdent(name, astArg.loc);
+  }
+
+  // -- User-call inlining ----------------------------------------------
+  //
+  // When a binding's RHS or any sub-expression is a call to a
+  // user-defined function/kernel (`a = f_a(par = beta1)`), we inline
+  // the function's body with parameter refs substituted by the call's
+  // arguments. The result replaces the original CallExpr node and
+  // gets re-walked by the lift pass — so nested user calls,
+  // measure-algebra inside the body, etc. all flatten out uniformly.
+  //
+  // Per spec §sec:functionof: `functionof(f(a, b), a=a, b=b) ≡ f`.
+  // Our implementation realises this by AST-level beta reduction,
+  // bottoming out on the function's body. Bodies are deep-cloned
+  // per call site so different invocations don't share mutated trees.
+
+  function inlineUserCall(astArg) {
+    // Iterate to a fixed point — inlined body might itself be (or
+    // contain at its root) another user call (chained: f then g).
+    let prev = null;
+    while (astArg !== prev) {
+      prev = astArg;
+      astArg = inlineOnce(astArg);
+    }
+    return astArg;
+  }
+
+  function inlineOnce(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    const fnName = astArg.callee.name;
+    const fnBinding = bindings.get(fnName);
+    if (!fnBinding) return astArg;
+    // We only inline real reified callables. fn and kernelof are
+    // lowered to functionof in the IR (see lower.js); for AST-level
+    // inlining we still see the surface forms, so we accept all
+    // three. The substitution rules below assume named (kwarg)
+    // parameters, which works because:
+    //   - functionof: surface form is already named.
+    //   - kernelof: same surface shape.
+    //   - fn(...): surface form has positional `_` holes; per spec
+    //     §sec:fn line 593-595 each hole is normatively named
+    //     `arg1`, `arg2`, …, so positional call args bind in order
+    //     and `argN=` kwargs bind to the N-th hole. Handled below.
+    if (fnBinding.type !== 'functionof' && fnBinding.type !== 'kernelof'
+        && fnBinding.type !== 'fn') {
+      return astArg;
+    }
+    const fnAst = fnBinding.node && fnBinding.node.value;
+    if (!fnAst || fnAst.type !== 'CallExpr' || !fnAst.args || fnAst.args.length === 0) {
+      return astArg;
+    }
+
+    // The function's body is the first positional arg.
+    const bodyAst = fnAst.args[0];
+    if (!bodyAst || bodyAst.type === 'KeywordArg') return astArg;
+
+    // fn(<body>) at the AST level: substitute holes positionally.
+    // (lower.js handles the equivalent IR-level lowering for type
+    // inference, but we work on AST here for the orchestrator's
+    // inlining.)
+    if (fnBinding.type === 'fn') {
+      const numHoles = countHoles(bodyAst);
+      const positional = new Array(numHoles).fill(undefined);
+      let posIdx = 0;
+      for (const a of (astArg.args || [])) {
+        if (a.type === 'KeywordArg') {
+          const m = /^arg(\d+)$/.exec(a.name);
+          if (m) {
+            const idx = parseInt(m[1], 10) - 1;
+            if (idx >= 0 && idx < numHoles) positional[idx] = a.value;
+          }
+        } else if (posIdx < numHoles) {
+          positional[posIdx++] = a;
+        }
+      }
+      return substituteHolesPositional(cloneAst(bodyAst), positional);
+    }
+
+    // Build the substitution: surface kwarg name → call's arg AST.
+    // Then map surface → internal (the placeholder/binding name used
+    // in the body via %local) so we can substitute body identifiers.
+    //
+    // Surface order is the order of kwargs in the function's
+    // declaration. Internal name is the kwarg's value when it's a
+    // bare Identifier (e.g. `par = _par_` → surface 'par', internal '_par_').
+    // Anything else (boundary that's a complex expression) — skip;
+    // those need real surgery, deferred to a later commit.
+    const surfaceOrder = [];
+    const internalForSurface = {};
+    for (let i = 1; i < fnAst.args.length; i++) {
+      const a = fnAst.args[i];
+      if (a.type !== 'KeywordArg') continue;
+      surfaceOrder.push(a.name);
+      if (a.value && a.value.type === 'Identifier') {
+        internalForSurface[a.name] = a.value.name;
+      } else {
+        // Non-trivial boundary (e.g. functionof(body, theta=theta_expr)
+        // where theta_expr isn't a bare ref). For now we use the
+        // surface name as the internal name — body refs to it will
+        // miss the substitution and fall through to outer-scope refs.
+        // Real boundary substitution comes later.
+        internalForSurface[a.name] = a.name;
+      }
+    }
+
+    // Walk the call's args. KeywordArg → match by surface name;
+    // positional → match by surfaceOrder.
+    const argMap = Object.create(null);
+    let posIdx = 0;
+    for (const a of (astArg.args || [])) {
+      if (a.type === 'KeywordArg') {
+        const internal = internalForSurface[a.name];
+        if (internal) argMap[internal] = a.value;
+      } else {
+        const surface = surfaceOrder[posIdx++];
+        const internal = surface ? internalForSurface[surface] : null;
+        if (internal) argMap[internal] = a;
+      }
+    }
+
+    // Substitute identifiers in a deep-cloned body. Different call
+    // sites get independent ASTs.
+    return substituteIdents(cloneAst(bodyAst), argMap);
+  }
+
+  function substituteIdents(ast, sub) {
+    if (ast == null || typeof ast !== 'object') return ast;
+    if (Array.isArray(ast)) return ast.map(c => substituteIdents(c, sub));
+    if (ast.type === 'Identifier' && sub[ast.name]) {
+      // Replace with a clone of the substitute so mutations to either
+      // side don't bleed across the boundary.
+      return cloneAst(sub[ast.name]);
+    }
+    const out = {};
+    for (const k in ast) out[k] = substituteIdents(ast[k], sub);
+    return out;
+  }
+
+  // Walk the AST in reading order, replacing each Hole with the
+  // corresponding positional arg. Holes whose `positional[i]` is
+  // undefined stay as Hole (unbound — caller's responsibility to
+  // flag the missing arg).
+  function substituteHolesPositional(ast, positional) {
+    let i = 0;
+    function walk(node) {
+      if (node == null || typeof node !== 'object') return node;
+      if (Array.isArray(node)) return node.map(walk);
+      if (node.type === 'Hole') {
+        const arg = positional[i++];
+        return arg ? cloneAst(arg) : node;
+      }
+      const out = {};
+      for (const k in node) out[k] = walk(node[k]);
+      return out;
+    }
+    return walk(ast);
+  }
+
+  function countHoles(ast) {
+    let n = 0;
+    (function walk(node) {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+      if (node.type === 'Hole') { n++; return; }
+      for (const k in node) walk(node[k]);
+    })(ast);
+    return n;
   }
 }
 
