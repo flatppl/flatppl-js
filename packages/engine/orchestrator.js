@@ -437,16 +437,32 @@ function liftInlineSubexpressions(bindings) {
 
   // Deep-clone each binding's RHS before walking so the lift's
   // mutations stay local; the caller's bindings map is untouched.
+  // We lift TWO ASTs per binding when present:
+  //   - node.value      (the user-written RHS; preserved by the
+  //                      analyzer for round-trip and source-located
+  //                      diagnostics)
+  //   - effectiveValue  (the analyzer's rewriter-resolved canonical
+  //                      RHS; for a disintegration delegate it's
+  //                      the delegate target's RHS, for a synthesized
+  //                      disintegration it's the synthesized rewrite,
+  //                      otherwise undefined)
+  // classifyDerivation reads effectiveValue when present, so it
+  // needs the lifted shape too.
   for (const [name, binding] of bindings) {
     if (!binding.node || !binding.node.value) continue;
     let cloned = cloneAst(binding.node.value);
-    // Top-level user-call inlining: `a = f(args)` becomes `a = <body>`
-    // with parameter refs in <body> substituted by call args.
     cloned = inlineUserCall(cloned);
     visit(cloned);
+    let effLifted = binding.effectiveValue;
+    if (effLifted) {
+      effLifted = cloneAst(effLifted);
+      effLifted = inlineUserCall(effLifted);
+      visit(effLifted);
+    }
     out.set(name, {
       ...binding,
       node: { ...binding.node, value: cloned },
+      effectiveValue: effLifted,
     });
   }
   return out;
@@ -853,8 +869,17 @@ function buildDerivations(bindings) {
  */
 function classifyDerivation(binding, bindings) {
   if (!binding || !binding.node || !binding.node.value) return null;
+
+  // Use the analyzer's rewriter-resolved RHS when it's set. This
+  // is the canonical "what does this binding actually compute?" AST:
+  //   - Disintegration delegate plan: the delegate target's RHS.
+  //   - Disintegration synthesized plan: the synthesized rewrite.
+  //   - Otherwise: same as node.value.
+  // Reading it uniformly means the orchestrator classifies all forms
+  // through one path — no per-rewrite-kind special cases.
+  const rhsAst = binding.effectiveValue || binding.node.value;
   let rhsIR;
-  try { rhsIR = lowerExpr(binding.node.value); } catch (_) { return null; }
+  try { rhsIR = lowerExpr(rhsAst); } catch (_) { return null; }
 
   if (binding.type === 'draw') {
     if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'draw') return null;
