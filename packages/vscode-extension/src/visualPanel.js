@@ -237,8 +237,15 @@ class FlatPPLPanel {
     }
     #plot-content { width: 100%; height: 100%; }
     #plot-empty {
-      opacity: 0.5; font-style: italic; padding: 20px; text-align: center;
+      opacity: 0.7; padding: 24px; text-align: center;
+      font-size: 14px; line-height: 1.5;
+      max-width: 600px; margin: 0 auto;
     }
+    /* Italics for the placeholder hints ("Click a binding…", "Not
+       plottable…") but NOT for type-error messages — those need to
+       read clearly. */
+    #plot-empty.hint { font-style: italic; opacity: 0.5; }
+    #plot-empty ul { text-align: left; display: inline-block; }
     /* Stop button shown alongside "Sampling…" while a request is in
        flight. Clicking it terminates the worker (which aborts any
        running tight loop) and rejects in-flight promises; the cache
@@ -1590,10 +1597,12 @@ class FlatPPLPanel {
       if (plotEchart) { plotEchart.dispose(); plotEchart = null; }
       var el = document.getElementById('plot-content');
       var cancellable = options && options.cancellable;
+      var hint       = options && options.hint;
       var stopHtml = cancellable
         ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
         : '';
-      el.innerHTML = '<div id="plot-empty">' + html + stopHtml + '</div>';
+      var cls = hint ? ' class="hint"' : '';
+      el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
       if (cancellable) {
         var btn = document.getElementById('plot-stop-btn');
         if (btn) btn.addEventListener('click', cancelAllSampling);
@@ -1633,14 +1642,16 @@ class FlatPPLPanel {
       // generic "not plottable" notice.
       if (!currentPlotPlan) {
         if (currentState && currentState.targetName === MODULE_TARGET) {
-          showPlotMessage('Click a binding in the graph to plot it.');
+          showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
           return;
         }
         var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
         var typeErrors = errorsForBinding(currentPlotBindingName);
         if (typeErrors && typeErrors.length > 0) {
+          // Errors get full opacity and the regular plot-empty font
+          // size — they're actionable, not placeholder text.
           var msg = '<strong>' + name + '</strong> is semantically invalid:'
-            + '<ul style="margin: 6px 0 0 16px; padding: 0;">';
+            + '<ul>';
           for (var i = 0; i < typeErrors.length; i++) {
             msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
           }
@@ -1648,7 +1659,7 @@ class FlatPPLPanel {
           showPlotMessage(msg);
           return;
         }
-        showPlotMessage('Not plottable for <strong>' + name + '</strong>.');
+        showPlotMessage('Not plottable for <strong>' + name + '</strong>.', { hint: true });
         return;
       }
       // Array-mode loads the cached array synchronously (no worker
@@ -1656,7 +1667,7 @@ class FlatPPLPanel {
       // mode shows the Stop button so the user can abort long
       // operations (per-i ref chains under huge sample counts).
       var arrayMode = currentPlotPlan.mode === 'array';
-      showPlotMessage(arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode });
+      showPlotMessage(arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
       var planForCall = currentPlotPlan;
 
       // Cache hit avoids the worker entirely. We still defer through
@@ -1732,8 +1743,9 @@ class FlatPPLPanel {
             // User clicked Stop. Make the message actionable rather
             // than dead-end so they know how to retry.
             var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
-            showPlotMessage('Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.');
+            showPlotMessage('Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
           } else {
+            // Real errors are actionable; not italic/dimmed.
             showPlotMessage('Could not compute plot: ' + esc(msg));
           }
         });
