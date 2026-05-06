@@ -1685,26 +1685,30 @@ class FlatPPLPanel {
       // the focused binding isn't plottable (lawof, modules, etc.) we
       // still show *something* — a "Not plottable" message — so the
       // panel doesn't appear/disappear under the user as they click
-      // around the DAG. If the binding has analyzer-level type errors,
-      // we surface those instead — they're more actionable than a
-      // generic "not plottable" notice.
+      // around the DAG.
+      //
+      // Type errors take priority over EVERYTHING. The orchestrator
+      // is structural and may produce a derivation for a binding
+      // whose body has a type error — e.g. weighted(exp(pow(M),1), N)
+      // where pow(measure) is invalid. The plot pane must short-
+      // circuit on errors before sampling, otherwise we'd render a
+      // valid-looking empty histogram with NaN samples instead of
+      // the actionable diagnostic.
+      var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
+      var typeErrors = errorsForBinding(currentPlotBindingName);
+      if (typeErrors && typeErrors.length > 0) {
+        var msg = '<strong>' + name + '</strong> is semantically invalid:'
+          + '<ul>';
+        for (var i = 0; i < typeErrors.length; i++) {
+          msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
+        }
+        msg += '</ul>';
+        showPlotMessage(msg);
+        return;
+      }
       if (!currentPlotPlan) {
         if (currentState && currentState.targetName === MODULE_TARGET) {
           showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
-          return;
-        }
-        var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
-        var typeErrors = errorsForBinding(currentPlotBindingName);
-        if (typeErrors && typeErrors.length > 0) {
-          // Errors get full opacity and the regular plot-empty font
-          // size — they're actionable, not placeholder text.
-          var msg = '<strong>' + name + '</strong> is semantically invalid:'
-            + '<ul>';
-          for (var i = 0; i < typeErrors.length; i++) {
-            msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
-          }
-          msg += '</ul>';
-          showPlotMessage(msg);
           return;
         }
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.', { hint: true });
