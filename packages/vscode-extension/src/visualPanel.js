@@ -2218,7 +2218,7 @@ class FlatPPLPanel {
 
       function rerender() {
         toolbarHost.innerHTML = '';
-        toolbarHost.appendChild(renderRecordToolbar(axes, rerender));
+        toolbarHost.appendChild(renderRecordToolbar(axes, rerender, measure));
         if (recordSelection.mode === 'marginals') {
           // Marginals mode plots every axis (no cap, no selection).
           renderDensityStrips(plotHost, measure, bindingName, axes);
@@ -2239,7 +2239,7 @@ class FlatPPLPanel {
      * elements) so mode buttons reflect active state and the
      * selector visibility tracks the mode.
      */
-    function renderRecordToolbar(axes, onChange) {
+    function renderRecordToolbar(axes, onChange, measure) {
       var bar = document.createElement('div');
       bar.style.display = 'flex';
       bar.style.flexWrap = 'wrap';
@@ -2301,7 +2301,64 @@ class FlatPPLPanel {
         bar.appendChild(sep);
         bar.appendChild(renderAxisDropdown(axes, onChange));
       }
+
+      // Sample-quality readout pinned to the right edge.
+      if (measure) {
+        var spacer = document.createElement('div');
+        spacer.style.marginLeft = 'auto';
+        bar.appendChild(spacer);
+        bar.appendChild(renderSampleStats(measure));
+      }
       return bar;
+    }
+
+    /**
+     * Compact "N: ...  ESS: ..." readout for the toolbar's right
+     * edge. ESS is appended only for weighted measures; for an
+     * unweighted measure (logWeights=null) ESS == N is uninformative.
+     */
+    function renderSampleStats(measure) {
+      var wrap = document.createElement('span');
+      wrap.style.display = 'inline-flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '0.6em';
+      wrap.style.opacity = '0.85';
+      wrap.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+      wrap.style.fontSize = '0.92em';
+
+      var nLabel = document.createElement('span');
+      nLabel.textContent = 'N: ' + formatCount(measureAtomCount(measure));
+      nLabel.title = 'Total atom count in the empirical measure';
+      wrap.appendChild(nLabel);
+
+      if (measure.logWeights) {
+        var N = measureAtomCount(measure);
+        var ess = FlatPPLEngine.empirical.effectiveSampleSize(measure);
+        var pct = N > 0 ? (ess / N * 100) : 0;
+        var essLabel = document.createElement('span');
+        essLabel.textContent = 'ESS: ' + formatCount(ess) + ' (' + pct.toFixed(1) + '%)';
+        essLabel.title = 'Kish effective sample size: atoms-equivalent count after importance reweighting (sufficiency depends on the question being asked).';
+        wrap.appendChild(essLabel);
+      }
+      return wrap;
+    }
+
+    function measureAtomCount(measure) {
+      // Record-shaped measures (e.g. lawof(record(...)) priors and
+      // bayesupdate posteriors thereof) have no top-level .samples;
+      // pull length from any field's samples — all fields share the
+      // same atom count by construction.
+      if (measure.fields) {
+        var anyKey = Object.keys(measure.fields)[0];
+        return anyKey ? measure.fields[anyKey].samples.length : 0;
+      }
+      if (measure.samples) return measure.samples.length;
+      return 0;
+    }
+
+    function formatCount(n) {
+      // Integer-formatted count with thousands separators.
+      return Math.round(n).toLocaleString('en-US');
     }
 
     /**
