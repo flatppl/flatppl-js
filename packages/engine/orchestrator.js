@@ -356,6 +356,12 @@ function argSignature(op, numArgs) {
   if (op === 'normalize')                         return ['measure'];
   if (op === 'superpose')                         return Array(numArgs).fill('measure');
   if (op === 'lawof')                             return ['value-or-measure'];
+  if (op === 'iid') {
+    // iid(<measure>, n, m, ...): first arg measure-typed, rest values.
+    const sig = ['measure'];
+    for (let i = 1; i < numArgs; i++) sig.push('value');
+    return sig;
+  }
   if (SAMPLEABLE_DISTRIBUTIONS.has(op))           return Array(numArgs).fill('value');
   if (EVALUABLE_OPS.has(op))                      return Array(numArgs).fill('value');
   return null;
@@ -1032,6 +1038,27 @@ function classifyDerivation(binding, bindings) {
       }
       return { kind: 'record', fields };
     }
+    // iid(M, n, ...): per spec §sec:iid, a measure over arrays of
+    // shape [n, ...] of M-domain values. After lifting, M is a bare
+    // ref to a measure binding; each dim is a literal positive
+    // integer (refs to integer constants are pinned to %dynamic at
+    // type-inference but we need a concrete number to allocate
+    // sample buffers — folding via resolveConstant keeps this
+    // simple). 1-D iid is the common case (`iid(Normal(0,1), 10)`);
+    // higher-rank stays straightforward.
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'iid'
+        && Array.isArray(rhsIR.args) && rhsIR.args.length >= 2) {
+      const baseAst = ast.args[0];
+      const baseName = resolveMeasureBaseName(baseAst, bindings);
+      if (baseName == null) return null;
+      const dims = [];
+      for (let i = 1; i < rhsIR.args.length; i++) {
+        const n = resolveConstant(rhsIR.args[i], bindings, new Set());
+        if (n == null || !Number.isInteger(n) || n <= 0) return null;
+        dims.push(n);
+      }
+      return { kind: 'iid', from: baseName, dims };
+    }
     // Numeric array literal: lowered to (call vector lit lit ...).
     // Treated as static data, not samples — the cache stores the
     // values verbatim (length = array length, not SAMPLE_COUNT) and
@@ -1101,6 +1128,10 @@ function derivationRefsValid(d, derivations, bindings) {
       if (!Object.prototype.hasOwnProperty.call(derivations, d.fields[k])) return false;
     }
     return true;
+  }
+  // iid: the inner measure must be derivable.
+  if (d.kind === 'iid') {
+    return Object.prototype.hasOwnProperty.call(derivations, d.from);
   }
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;

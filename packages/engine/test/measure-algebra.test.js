@@ -190,6 +190,22 @@ function materialise(name, bindings, opts) {
         m = { samples: out, logWeights: outW };
         break;
       }
+      case 'iid': {
+        // iid(M, n, …): draw count*prod(dims) scalars from the inner
+        // measure's distIR, layout atom-major (atom i occupies indices
+        // [i*k, (i+1)*k) where k = prod(dims)). The worker's drawN
+        // takes a `repeat: k` shortcut that does this in one pass.
+        const distIR = orchestrator.leafSampleIR(d.from, derivations);
+        if (!distIR) throw new Error("iid: can't resolve leaf sample IR for " + d.from);
+        const k = d.dims.reduce((p, n) => p * n, 1);
+        const reply = worker.handle({
+          type: 'drawN', ir: distIR, count: sampleCount, repeat: k,
+          seed: nameSeed(name, rootSeed),
+        });
+        if (reply.type === 'error') throw new Error(reply.message);
+        m = empirical.arrayMeasure(reply.samples, d.dims, null);
+        break;
+      }
       case 'record': {
         // Multivariate: materialise each field's source binding,
         // assemble into a record-shaped EmpiricalMeasure (SoA).
@@ -775,6 +791,86 @@ test('record: empirical.shapeOf returns the right discriminator', () => {
   // Untagged scalar measures default to 'scalar' for back-compat.
   assert.equal(empirical.shapeOf(scalar), 'scalar');
   assert.equal(empirical.shapeOf(record), 'record');
+});
+
+// =====================================================================
+// iid: array-shaped sampling
+// =====================================================================
+
+test('iid: produces an array-shaped measure with N*k flat samples', () => {
+  const src = `
+    obs_dist = iid(Normal(mu = 0, sigma = 1), 10)
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('obs_dist', bindings, { sampleCount: 256 });
+  assert.equal(m.shape, 'array');
+  assert.deepEqual(m.dims, [10]);
+  // Atom-major: N atoms × k inner = 256 * 10 = 2560.
+  assert.equal(m.samples.length, 2560);
+});
+
+test('iid: marginal distribution at each index matches the inner measure', () => {
+  // Spec identity (informally): the value distribution of the j-th
+  // slot across atoms is the same as the inner measure's value
+  // distribution. Test by mean-and-variance comparison: for
+  // Normal(2, 0.5), each iid slot's empirical (mean, sd) should
+  // be near (2, 0.5).
+  const src = `
+    obs_dist = iid(Normal(mu = 2, sigma = 0.5), 5)
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('obs_dist', bindings, { sampleCount: 8192 });
+  // Marginal for slot j = atom-major samples at positions j, j+k, j+2k, ...
+  const k = m.dims[0];
+  for (let j = 0; j < k; j++) {
+    let sum = 0, sumSq = 0;
+    const N = m.samples.length / k;
+    for (let i = 0; i < N; i++) {
+      const v = m.samples[i * k + j];
+      sum += v; sumSq += v * v;
+    }
+    const mean = sum / N;
+    const sd = Math.sqrt(sumSq / N - mean * mean);
+    assert.ok(Math.abs(mean - 2) < 0.05, `slot ${j} mean ${mean} not near 2`);
+    assert.ok(Math.abs(sd   - 0.5) < 0.05, `slot ${j} sd ${sd} not near 0.5`);
+  }
+});
+
+test('iid: nested inside a joint record produces a record with an array field', () => {
+  // The `obs_dist = joint(obs = iid(Normal(...), 10))` pattern from
+  // bayesian_inference_3.flatppl. Materialised result is a record
+  // measure whose obs field is itself an array measure.
+  const src = `
+    obs_dist = joint(obs = iid(Normal(mu = 0, sigma = 1), 10))
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('obs_dist', bindings, { sampleCount: 64 });
+  assert.equal(m.shape, 'record');
+  assert.ok(m.fields.obs);
+  const obs = m.fields.obs;
+  assert.equal(obs.shape, 'array');
+  assert.deepEqual(obs.dims, [10]);
+  assert.equal(obs.samples.length, 640);  // 64 atoms × 10 inner
+});
+
+test('iid: with a single-atom shape (n=1) is essentially the inner measure', () => {
+  // iid(M, 1) is structurally an array<1, [1], ...> measure but
+  // statistically equivalent to M. Confirms n=1 doesn't tickle a
+  // special case in the worker's repeat path.
+  const src = `
+    m  = Normal(mu = 0, sigma = 1)
+    m1 = iid(m, 1)
+  `;
+  const { bindings } = processSource(src);
+  const direct = materialise('m',  bindings, { sampleCount: 128 });
+  const single = materialise('m1', bindings, { sampleCount: 128 });
+  assert.equal(single.shape, 'array');
+  assert.deepEqual(single.dims, [1]);
+  assert.equal(single.samples.length, 128);
+  // Independent seeds (different binding names → different seeds)
+  // so samples won't be identical, but the marginal stats agree.
+  function mean(arr) { let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; }
+  assert.ok(Math.abs(mean(direct.samples) - mean(single.samples)) < 0.2);
 });
 
 test('orchestrator: weighted(<measure>, m) is rejected as a type error', () => {

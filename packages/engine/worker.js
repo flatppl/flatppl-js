@@ -121,39 +121,63 @@ function createWorkerHandler(opts = {}) {
           // Per-binding seeding is the main thread's job — this just
           // honours whatever seed it sends.
           //
+          // `repeat: k` (optional, default 1) draws k iid samples per
+          // outer atom — the iid(M, k) sampling primitive. Output is
+          // length `count * repeat`, atom-major (atom i's slot is
+          // [i*repeat, (i+1)*repeat)). When repeat===1 the layout
+          // collapses to today's flat samples array.
+          //
           // PERF: there are two paths.
           //   * static-params (refArrays empty) — kwargs resolve to
           //     literals so the stdlib factory is constant. Build it
           //     once via samplerLib.makeSampler() and call its
-          //     `draw()` N times. This avoids ~N factory allocations
-          //     and brings 1M Normal draws from ~10s down to ~tens of
-          //     ms; the factory build is by far the dominant cost.
+          //     `draw()` count*repeat times. This avoids ~N factory
+          //     allocations and brings 1M Normal draws from ~10s down
+          //     to ~tens of ms; the factory build is by far the
+          //     dominant cost.
           //   * per-i-params (refArrays non-empty) — at least one
           //     kwarg references an upstream sample, so params change
-          //     per draw and we have to call rand() per i. Slower,
-          //     but unavoidable without batched-parameter stdlib APIs
-          //     (which random-array-* offers but at the cost of
-          //     additional dependencies).
-          const count = msg.count | 0;
-          if (count <= 0) throw new Error(`drawN.count must be positive integer (got ${msg.count})`);
+          //     per outer atom. Inner k iid draws share atom i's
+          //     params (each upstream ref resolves to refArrays[k][i]
+          //     for all inner draws), so we still build the sampler
+          //     once per outer i and call .draw() k times — much
+          //     cheaper than k separate worker round-trips.
+          const count  = msg.count  | 0;
+          const repeat = (msg.repeat | 0) || 1;
+          if (count  <= 0) throw new Error(`drawN.count must be positive integer (got ${msg.count})`);
+          if (repeat <= 0) throw new Error(`drawN.repeat must be positive integer (got ${msg.repeat})`);
           const refArrays = msg.refArrays || {};
           const refKeys = Object.keys(refArrays);
           let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
-          const out = new Float64Array(count);
+          const total = count * repeat;
+          const out = new Float64Array(total);
 
           if (refKeys.length === 0) {
-            // Static-params fast path.
+            // Static-params fast path: one sampler instance for the
+            // whole call, regardless of repeat.
             const s = samplerLib.makeSampler(state, msg.ir, {});
-            for (let i = 0; i < count; i++) out[i] = s.draw();
+            for (let i = 0; i < total; i++) out[i] = s.draw();
             state = s.getState();
           } else {
-            // Per-i-params path.
+            // Per-i-params path. Atom i's k inner draws share params,
+            // so we rebuild the sampler once per outer atom (not per
+            // inner draw).
             const drawEnv = {};
-            for (let i = 0; i < count; i++) {
-              for (const k of refKeys) drawEnv[k] = refArrays[k][i];
-              const [v, next] = samplerLib.rand(state, msg.ir, drawEnv);
-              state = next;
-              out[i] = v;
+            if (repeat === 1) {
+              for (let i = 0; i < count; i++) {
+                for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+                const [v, next] = samplerLib.rand(state, msg.ir, drawEnv);
+                state = next;
+                out[i] = v;
+              }
+            } else {
+              for (let i = 0; i < count; i++) {
+                for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+                const s = samplerLib.makeSampler(state, msg.ir, drawEnv);
+                const base = i * repeat;
+                for (let j = 0; j < repeat; j++) out[base + j] = s.draw();
+                state = s.getState();
+              }
             }
           }
 

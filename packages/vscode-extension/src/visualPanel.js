@@ -1329,6 +1329,26 @@ class FlatPPLPanel {
           measureCache.set(name, m);
           return m;
         });
+      } else if (d.kind === 'iid') {
+        // iid(M, n, …): N atoms × k inner draws, packed atom-major
+        // into one Float64Array. The worker's drawN takes an optional
+        // repeat=k so this is one round-trip rather than k. We
+        // resolve the leaf distribution IR through the alias chain
+        // so the worker draws from the original distribution call.
+        var distIR = FlatPPLEngine.orchestrator.leafSampleIR(d.from, derivationsState.derivations);
+        if (!distIR) {
+          promise = Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
+        } else {
+          var k = d.dims.reduce(function(p, n) { return p * n; }, 1);
+          promise = sendWorker({
+            type: 'drawN', ir: distIR, count: SAMPLE_COUNT, repeat: k,
+            seed: nameSeed(name),
+          }).then(function(reply) {
+            var m = FlatPPLEngine.empirical.arrayMeasure(reply.samples, d.dims, null);
+            measureCache.set(name, m);
+            return m;
+          });
+        }
       } else if (d.kind === 'record') {
         // Multivariate (record/joint): each field's source binding
         // gets materialised independently; we assemble them into a
@@ -1749,14 +1769,13 @@ class FlatPPLPanel {
         .then(function() { return getMeasure(planForCall.name); })
         .then(function(measure) {
           if (currentPlotPlan !== planForCall) return null;
-          // Multivariate (record-shaped) measure: render a grid of
-          // marginal histograms — one per field. Each field's
-          // sub-measure shares the top-level logWeights since
-          // record/joint produces atoms (joint draws), not per-field
-          // independent weights.
-          if (measure.shape === 'record') {
+          // Multivariate (record- or array-shaped) measure: route to
+          // the corner / 2D-strip renderer, which uses listScalarAxes
+          // to pull out one selectable axis per scalar leaf (record
+          // fields and 1-indexed array slots alike).
+          if (measure.shape === 'record' || measure.shape === 'array') {
             renderRecordMarginals(measure, planForCall.name);
-            return null;   // skip the scalar-render path below
+            return null;
           }
           var samples = measure.samples;
           // Array-mode: skip histogram + density entirely; the data
@@ -1982,21 +2001,53 @@ class FlatPPLPanel {
     function maxAxesFor(mode) { return mode === 'strips' ? STRIPS_MAX_AXES : CORNER_MAX_AXES; }
 
     /**
-     * Enumerate the plottable scalar leaves of a record-shaped
-     * measure with their display labels. Currently flat (no nested
-     * records / arrays); when nested support lands, this will
-     * recurse and produce labels like "obs[0]", "obs[1]", … so users
-     * can pick any leaf out of the structure.
+     * Enumerate the plottable scalar leaves of a multivariate
+     * EmpiricalMeasure, with display labels and synthetic per-axis
+     * sample arrays.
+     *
+     *   - record fields with scalar samples → axis with the field name.
+     *   - record fields with array samples → one axis per array slot,
+     *     labelled "field[i]" (1-indexed per spec §03 line 148);
+     *     the per-axis samples array is a strided extract from the
+     *     atom-major buffer.
+     *   - top-level array measures → one axis per slot, labelled
+     *     "[i]" (the binding name itself shows up in the bubble).
+     *
+     * Strided extracts allocate fresh Float64Arrays — small (~N
+     * elements) so cheap; gives downstream code the same scalar-shape
+     * Float64Array regardless of whether the source was a flat record
+     * field or a column of an iid array.
      */
     function listScalarAxes(measure) {
       var out = [];
-      var ks = Object.keys(measure.fields || {});
-      for (var i = 0; i < ks.length; i++) {
-        var sub = measure.fields[ks[i]];
-        if (sub.samples instanceof Float64Array) {
-          out.push({ key: ks[i], label: ks[i], samples: sub.samples });
+      function walk(m, prefix) {
+        if (m.fields) {
+          var ks = Object.keys(m.fields);
+          for (var i = 0; i < ks.length; i++) {
+            walk(m.fields[ks[i]], prefix ? (prefix + '.' + ks[i]) : ks[i]);
+          }
+          return;
+        }
+        if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
+          // Total inner stride per atom = prod(dims).
+          var k = m.dims.reduce(function(p, n) { return p * n; }, 1);
+          var N = m.samples.length / k;
+          for (var slot = 0; slot < k; slot++) {
+            // Stride-extract slot j across atoms.
+            var col = new Float64Array(N);
+            for (var i = 0; i < N; i++) col[i] = m.samples[i * k + slot];
+            // 1-indexed labels per FlatPPL convention.
+            var label = (prefix ? prefix : '') + '[' + (slot + 1) + ']';
+            out.push({ key: label, label: label, samples: col });
+          }
+          return;
+        }
+        if (m.samples instanceof Float64Array) {
+          // Plain scalar leaf.
+          out.push({ key: prefix, label: prefix, samples: m.samples });
         }
       }
+      walk(measure, '');
       return out;
     }
 
