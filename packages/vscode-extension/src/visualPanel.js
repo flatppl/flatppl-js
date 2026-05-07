@@ -2065,29 +2065,34 @@ class FlatPPLPanel {
     }
 
     /**
-     * Top-of-plot toolbar: a "view mode" toggle (Corner / 2D strips)
-     * plus the axis-selector row beneath it. The two are visually
-     * grouped so the user understands they govern the same chart.
+     * Single-row toolbar: view-mode toggle on the left, axis selector
+     * checkboxes on the right. One row keeps the plot area tall.
      */
     function renderRecordToolbar(axes, onChange) {
       var bar = document.createElement('div');
       bar.style.display = 'flex';
-      bar.style.flexDirection = 'column';
-      bar.style.gap = '6px';
+      bar.style.flexWrap = 'wrap';
+      bar.style.gap = '0.75em';
+      bar.style.alignItems = 'center';
+      bar.style.padding = '0.4em 0.6em';
+      bar.style.background = 'rgba(255,255,255,0.02)';
+      bar.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
+      bar.style.borderRadius = '3px';
+      bar.style.fontSize = '0.92em';
+      bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
 
-      // ---- Mode toggle row ----
-      var modeRow = document.createElement('div');
-      modeRow.style.display = 'flex';
-      modeRow.style.gap = '4px';
-      modeRow.style.fontSize = '12px';
+      // ---- Mode toggle group ----
+      var modeGroup = document.createElement('div');
+      modeGroup.style.display = 'flex';
+      modeGroup.style.gap = '0.25em';
 
       function makeModeBtn(modeKey, label, title) {
         var b = document.createElement('button');
         b.textContent = label;
         b.title = title;
         b.style.cursor = 'pointer';
-        b.style.fontSize = '12px';
-        b.style.padding = '3px 10px';
+        b.style.fontSize = '1em';
+        b.style.padding = '0.2em 0.8em';
         b.style.border = '1px solid var(--vscode-button-border, transparent)';
         b.style.borderRadius = '3px';
         var active = recordSelection.mode === modeKey;
@@ -2100,7 +2105,6 @@ class FlatPPLPanel {
         b.addEventListener('click', function() {
           if (recordSelection.mode === modeKey) return;
           recordSelection.mode = modeKey;
-          // Re-clip the selection to the new mode's cap.
           var cap = maxAxesFor(modeKey);
           if (recordSelection.selected.length > cap) {
             recordSelection.selected = recordSelection.selected.slice(0, cap);
@@ -2109,43 +2113,21 @@ class FlatPPLPanel {
         });
         return b;
       }
-      modeRow.appendChild(makeModeBtn('corner', 'Corner',
+      modeGroup.appendChild(makeModeBtn('corner', 'Corner',
         'NxN grid: marginals on the diagonal, joints below'));
-      modeRow.appendChild(makeModeBtn('strips', '2D',
+      modeGroup.appendChild(makeModeBtn('strips', '2D',
         'One column per axis with vertical density shading'));
-      bar.appendChild(modeRow);
+      bar.appendChild(modeGroup);
 
-      // ---- Axis selector row ----
-      bar.appendChild(renderAxisSelector(axes, onChange));
-      return bar;
-    }
+      // Vertical separator between mode toggle and axis selector.
+      var sep = document.createElement('div');
+      sep.style.width = '1px';
+      sep.style.alignSelf = 'stretch';
+      sep.style.background = 'rgba(255,255,255,0.1)';
+      bar.appendChild(sep);
 
-    /**
-     * Build a horizontal checkbox row for axis selection. Each box
-     * corresponds to a scalar leaf of the record. The first
-     * CORNER_MAX_AXES boxes are checked by default; toggling honors
-     * the cap (a 5th check is rejected with a brief disabled hint —
-     * users uncheck one to check another).
-     *
-     * The onChange callback fires whenever the selection changes,
-     * so the corner plot below can be redrawn.
-     */
-    function renderAxisSelector(axes, onChange) {
+      // ---- Axis selector (inline, no nested container) ----
       var cap = maxAxesFor(recordSelection.mode);
-      var bar = document.createElement('div');
-      bar.style.display = 'flex';
-      bar.style.flexWrap = 'wrap';
-      bar.style.gap = '12px';
-      bar.style.alignItems = 'center';
-      bar.style.fontSize = '12px';
-      bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-      bar.style.padding = '6px 8px';
-      bar.style.background = 'rgba(255,255,255,0.02)';
-      bar.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
-      bar.style.borderRadius = '3px';
-      bar.style.maxHeight = '28%';
-      bar.style.overflowY = 'auto';
-
       var hint = document.createElement('span');
       hint.textContent = 'Axes (max ' + cap + '):';
       hint.style.opacity = '0.6';
@@ -2155,7 +2137,7 @@ class FlatPPLPanel {
         var label = document.createElement('label');
         label.style.display = 'inline-flex';
         label.style.alignItems = 'center';
-        label.style.gap = '4px';
+        label.style.gap = '0.3em';
         label.style.cursor = 'pointer';
         label.style.userSelect = 'none';
 
@@ -2188,6 +2170,16 @@ class FlatPPLPanel {
       return bar;
     }
 
+    /**
+     * Build a horizontal checkbox row for axis selection. Each box
+     * corresponds to a scalar leaf of the record. The first
+     * CORNER_MAX_AXES boxes are checked by default; toggling honors
+     * the cap (a 5th check is rejected with a brief disabled hint —
+     * users uncheck one to check another).
+     *
+     * The onChange callback fires whenever the selection changes,
+     * so the corner plot below can be redrawn.
+     */
     /**
      * Render the selected axes as a 2D density-strip view: one
      * column per axis, where each column shades by the per-axis
@@ -2362,45 +2354,83 @@ class FlatPPLPanel {
       var logWeights = measure.logWeights;
       var histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
+      // Grid layout with two extra tracks: a leftmost column for
+      // vertical y-axis labels (one per plot row), and a bottom row
+      // for horizontal x-axis labels (one per plot column). The y
+      // labels' track is auto-sized to the label width; the x
+      // labels' track to the label height.
+      //
+      //   col:    [auto] [1fr] [1fr] ... [1fr]       n+1 columns
+      //   row:    [1fr]                              n rows of plots
+      //           [1fr]
+      //           ...
+      //           [auto]                             1 row of x labels
       host.style.display = 'grid';
-      host.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
-      host.style.gridTemplateRows    = 'repeat(' + n + ', 1fr)';
-      host.style.gap = '8px';
+      host.style.gridTemplateColumns = 'auto repeat(' + n + ', 1fr)';
+      host.style.gridTemplateRows    = 'repeat(' + n + ', 1fr) auto';
+      host.style.gap = '6px';
       host.style.minHeight = '0';
 
-      // Per-cell builder: each cell is a labelled chart container.
-      // Returns the inner chart div (for echarts.init).
-      function makeCell(label, row, col) {
+      // ---- y-axis labels (left column, vertical) -----------------
+      // Each label sits in column 1 (the auto-sized leftmost
+      // track) at row r+1, naming the variable on the y-axis of
+      // every cell in that row. Rotated 90deg counterclockwise so
+      // it reads bottom-up.
+      for (var yi = 0; yi < n; yi++) {
+        var ylab = document.createElement('div');
+        ylab.textContent = axes[yi].label;
+        ylab.style.gridColumn = '1 / span 1';
+        ylab.style.gridRow = (yi + 1) + ' / span 1';
+        ylab.style.writingMode = 'vertical-rl';
+        ylab.style.transform = 'rotate(180deg)';
+        ylab.style.display = 'flex';
+        ylab.style.alignItems = 'center';
+        ylab.style.justifyContent = 'center';
+        ylab.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        ylab.style.fontSize = '0.92em';
+        ylab.style.opacity = '0.85';
+        ylab.style.padding = '0 0.3em';
+        host.appendChild(ylab);
+      }
+
+      // ---- x-axis labels (bottom row, horizontal) ----------------
+      // Each label sits in row n+1 (the auto-sized bottom track)
+      // at column c+2 (skipping the leftmost y-label track),
+      // naming the variable on the x-axis of every cell in that
+      // column.
+      for (var xi = 0; xi < n; xi++) {
+        var xlab = document.createElement('div');
+        xlab.textContent = axes[xi].label;
+        xlab.style.gridColumn = (xi + 2) + ' / span 1';
+        xlab.style.gridRow = (n + 1) + ' / span 1';
+        xlab.style.textAlign = 'center';
+        xlab.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        xlab.style.fontSize = '0.92em';
+        xlab.style.opacity = '0.85';
+        xlab.style.padding = '0.2em 0';
+        host.appendChild(xlab);
+      }
+
+      // Per-cell builder: chart container only — no internal label,
+      // axis names live on the grid edges. (Plot row r, plot col c
+      // → grid row r+1, grid col c+2 because of the two label tracks.)
+      function makeCell(row, col) {
         var cell = document.createElement('div');
-        cell.style.display = 'flex';
-        cell.style.flexDirection = 'column';
         cell.style.gridRow    = (row + 1) + ' / span 1';
-        cell.style.gridColumn = (col + 1) + ' / span 1';
+        cell.style.gridColumn = (col + 2) + ' / span 1';
         cell.style.minHeight = '0';
         cell.style.minWidth  = '0';
         cell.style.background = 'rgba(255,255,255,0.02)';
         cell.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
         cell.style.borderRadius = '3px';
-        var lab = document.createElement('div');
-        lab.textContent = label;
-        lab.style.padding = '4px 8px 0 8px';
-        lab.style.fontSize = '12px';
-        lab.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-        lab.style.opacity = '0.85';
-        cell.appendChild(lab);
-        var inner = document.createElement('div');
-        inner.style.flex = '1';
-        inner.style.minHeight = '0';
-        cell.appendChild(inner);
         host.appendChild(cell);
-        return inner;
+        return cell;
       }
 
       // ---- Diagonals: 1D marginals --------------------------------
       for (var i = 0; i < n; i++) {
-        var fname = axes[i].label;
         var samples = axes[i].samples;
-        var inner = makeCell(bindingName + '.' + fname, i, i);
+        var inner = makeCell(i, i);
         var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
         var rects = [];
         for (var k = 0; k < hist.xs.length; k++) {
@@ -2465,10 +2495,8 @@ class FlatPPLPanel {
 
       for (var row = 1; row < n; row++) {
         for (var col = 0; col < row; col++) {
-          var xName = axes[col].label;
-          var yName = axes[row].label;
           var xCol = cols[col], yCol = cols[row];
-          var inner2 = makeCell(yName + ' vs ' + xName, row, col);
+          var inner2 = makeCell(row, col);
           var pts = [];
           for (var p = 0; p < anyN; p += stride) {
             pts.push([xCol[p], yCol[p]]);
