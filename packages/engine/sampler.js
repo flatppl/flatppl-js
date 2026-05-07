@@ -92,6 +92,30 @@ const randBernoulli   = require('@stdlib/random-base-bernoulli');
 const randBinomial    = require('@stdlib/random-base-binomial');
 const randPoisson     = require('@stdlib/random-base-poisson');
 
+// Log-density / log-mass functions. Continuous distributions get a
+// direct -logpdf module (Lebesgue reference); discrete distributions
+// get either a direct -logpmf (counting reference) or a -pmf that we
+// wrap with Math.log. Either way the function signature is uniform —
+// `(x, ...params) → log p(x)` — so the trace evaluator (traceeval.js)
+// can dispatch on it generically.
+const logpdfNormal      = require('@stdlib/stats-base-dists-normal-logpdf');
+const logpdfExponential = require('@stdlib/stats-base-dists-exponential-logpdf');
+const logpdfLogNormal   = require('@stdlib/stats-base-dists-lognormal-logpdf');
+const logpdfBeta        = require('@stdlib/stats-base-dists-beta-logpdf');
+const logpdfGamma       = require('@stdlib/stats-base-dists-gamma-logpdf');
+const logpdfCauchy      = require('@stdlib/stats-base-dists-cauchy-logpdf');
+const logpdfT           = require('@stdlib/stats-base-dists-t-logpdf');
+const pmfBernoulli      = require('@stdlib/stats-base-dists-bernoulli-pmf');
+const logpmfBinomial    = require('@stdlib/stats-base-dists-binomial-logpmf');
+const logpmfPoisson     = require('@stdlib/stats-base-dists-poisson-logpmf');
+
+// Bernoulli ships pmf only — wrap with Math.log. For two atoms this is
+// numerically fine; if stdlib adds -logpmf-bernoulli in the future we
+// can switch over without touching callers.
+function logpmfBernoulli(x, p) {
+  return Math.log(pmfBernoulli(x, p));
+}
+
 // Per-distribution metadata, including the param translation between
 // FlatPPL spec names (used in surface code and in IR kwargs) and stdlib's
 // constructor argument order.
@@ -107,6 +131,10 @@ const randPoisson     = require('@stdlib/random-base-poisson');
 //              the plot shape.
 // `Ctor`:      stdlib constructor (analytical methods).
 // `randFn`:    stdlib random sampler module (has `.factory(...)`).
+// `logpdfFn`:  log-density / log-mass at a point — `(x, ...params) → number`.
+//              Continuous: log p.d.f. w.r.t. Lebesgue. Discrete: log p.m.f.
+//              w.r.t. counting. Same positional param order as randFn.
+//              Used by traceeval.js to score clamped values at leaf sites.
 const REGISTRY = {
   Normal: {
     params:   ['mu', 'sigma'],
@@ -114,6 +142,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Normal,
     randFn:   randNormal,
+    logpdfFn: logpdfNormal,
   },
   Exponential: {
     // Spec: Exponential(rate). stdlib's positional ctor takes lambda
@@ -123,6 +152,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Exponential,
     randFn:   randExponential,
+    logpdfFn: logpdfExponential,
   },
   LogNormal: {
     params:   ['mu', 'sigma'],
@@ -130,6 +160,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     LogNormal,
     randFn:   randLogNormal,
+    logpdfFn: logpdfLogNormal,
   },
   Beta: {
     params:   ['alpha', 'beta'],
@@ -137,6 +168,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Beta,
     randFn:   randBeta,
+    logpdfFn: logpdfBeta,
   },
   Gamma: {
     // Spec: Gamma(shape, rate). stdlib calls them alpha, beta but they
@@ -147,6 +179,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Gamma,
     randFn:   randGamma,
+    logpdfFn: logpdfGamma,
   },
   Cauchy: {
     // Spec: Cauchy(location, scale). stdlib uses x0, gamma — same things.
@@ -155,6 +188,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Cauchy,
     randFn:   randCauchy,
+    logpdfFn: logpdfCauchy,
   },
   StudentT: {
     // Spec: StudentT(nu). stdlib calls it T with parameter v.
@@ -163,6 +197,7 @@ const REGISTRY = {
     discrete: false,
     Ctor:     StudentT,
     randFn:   randT,
+    logpdfFn: logpdfT,
   },
   Bernoulli: {
     params:   ['p'],
@@ -170,6 +205,7 @@ const REGISTRY = {
     discrete: true,
     Ctor:     Bernoulli,
     randFn:   randBernoulli,
+    logpdfFn: logpmfBernoulli,
   },
   Binomial: {
     params:   ['n', 'p'],
@@ -177,6 +213,7 @@ const REGISTRY = {
     discrete: true,
     Ctor:     Binomial,
     randFn:   randBinomial,
+    logpdfFn: logpmfBinomial,
   },
   Poisson: {
     // Spec: Poisson(rate). stdlib calls it lambda.
@@ -185,6 +222,7 @@ const REGISTRY = {
     discrete: true,
     Ctor:     Poisson,
     randFn:   randPoisson,
+    logpdfFn: logpmfPoisson,
   },
 };
 
@@ -260,6 +298,46 @@ function makeSampler(state, measureIR, env) {
   const sampler = entry.randFn.factory(...params, { prng });
   return {
     draw: sampler,
+    getState: () => prng.getState(),
+  };
+}
+
+/**
+ * Build a sampler whose params are supplied per draw rather than baked
+ * in at factory time. Use this for the per-i-params path: the stdlib
+ * factory closure is built ONCE (with only the prng bound), then each
+ * `drawWith(env)` call resolves the IR's param expressions against the
+ * current env and invokes the closure with those numerics.
+ *
+ * Why this matters: stdlib's distribution `factory(...params, opts)`
+ * does non-trivial setup work — argument validation, internal
+ * lookup-table builds for some discrete dists, etc. When params change
+ * per atom, building a fresh factory per draw makes that setup cost
+ * dominate (commonly ~10× the actual sampling cost). The
+ * `factory(opts)` form returns a closure that accepts params per call,
+ * so the setup happens once and per-draw cost collapses to the inner
+ * transform + a single evaluateExpr per param.
+ *
+ * Generic across the whole REGISTRY — no per-distribution code, since
+ * every stdlib `random-base-*` module exposes the same dual signature.
+ *
+ * Returns:
+ *   {
+ *     drawWith(env): number  — resolve params against `env`, draw one
+ *                              sample. Advances internal prng state.
+ *     getState():    rng.State — current Philox state for handing back
+ *                                to the caller after a batch.
+ *   }
+ */
+function makeParametricSampler(state, measureIR) {
+  const entry = lookupDistribution(measureIR);
+  const prng = makePhiloxPrngAdapter(state);
+  const sampler = entry.randFn.factory({ prng });
+  return {
+    drawWith(env) {
+      const params = resolveParams(measureIR, entry, env);
+      return sampler(...params);
+    },
     getState: () => prng.getState(),
   };
 }
@@ -537,9 +615,16 @@ module.exports = {
   // Primary API
   rand,
   makeSampler,
+  makeParametricSampler,
   density,
   makeAnalytical,
   evaluateExpr,
+
+  // Shared with traceeval.js — both modules need to dispatch on the
+  // distribution registry and resolve param expressions against an env.
+  lookupDistribution,
+  resolveParams,
+  makePhiloxPrngAdapter,
 
   // Introspection
   isKnownDistribution,

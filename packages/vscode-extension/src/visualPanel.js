@@ -1438,6 +1438,98 @@ class FlatPPLPanel {
           measureCache.set(name, m);
           return m;
         });
+      } else if (d.kind === 'bayesupdate') {
+        // Importance reweight the prior by per-atom log-likelihood.
+        // Per spec §sec:bayesupdate / §sec:likelihoodof, with
+        //   posterior = bayesupdate(L, prior),  L = likelihoodof(K, obs)
+        // we have for each prior atom θ_i:
+        //   logw_i = logdensityof(K(θ_i), obs)
+        //          = logdensityof(K_body[θ_i], obs)
+        // where K_body[θ_i] is K's body with the boundaries (θ_i)
+        // already resolved through env. The unified trace walker
+        // (engine/traceeval.js, called via the worker's logDensityN
+        // primitive) handles this in tally='clamped' mode: every
+        // observed leaf contributes logpdf(obs | params), latents
+        // (here, nothing — body is fully observed) contribute
+        // nothing.
+        //
+        // Build:
+        //   1. Expand the body's derivation chain into a self-
+        //      contained measure IR (orchestrator.expandMeasureIR
+        //      walks the kind=record/iid/sample/alias graph).
+        //   2. Collect value refs in the expanded IR (those are the
+        //      per-i parameters: 'a', 'b' in the canonical example).
+        //   3. Materialise prior + each value ref's samples.
+        //   4. Worker logDensityN with refArrays + observed=d.obsValue.
+        //   5. Posterior = prior with logWeights += per-atom logp.
+        //      Atom alignment is preserved (no resampling); this is
+        //      pure reweighting on the shared-N axis.
+        var bodyIR = FlatPPLEngine.orchestrator.expandMeasureIR(
+          d.bodyName, derivationsState.derivations);
+        if (!bodyIR) {
+          promise = Promise.reject(new Error(
+            'bayesupdate: cannot expand body "' + d.bodyName + '" into measure IR'));
+        } else {
+          var valueRefs = [];
+          FlatPPLEngine.orchestrator.collectSelfRefs(bodyIR).forEach(function(n) {
+            valueRefs.push(n);
+          });
+          promise = Promise.all([getMeasure(d.from)].concat(
+            valueRefs.map(getMeasure)
+          )).then(function(arr) {
+            var parent = arr[0];
+            var refMeasures = arr.slice(1);
+            // Each value ref is expected to be scalar (its samples is
+            // a Float64Array). Record-shaped value refs aren't
+            // currently a supported pattern — surface a clear error
+            // rather than silently producing garbage.
+            var refArrays = {};
+            for (var i = 0; i < valueRefs.length; i++) {
+              var rm = refMeasures[i];
+              if (!rm || !rm.samples || !(rm.samples.BYTES_PER_ELEMENT)) {
+                throw new Error('bayesupdate: ref "' + valueRefs[i] +
+                  '" did not materialise to a scalar EmpiricalMeasure');
+              }
+              refArrays[valueRefs[i]] = rm.samples;
+            }
+            return sendWorker({
+              type: 'logDensityN',
+              ir: bodyIR,
+              count: SAMPLE_COUNT,
+              refArrays: refArrays,
+              observed: d.obsValue,
+              tally: 'clamped',
+            }).then(function(reply) {
+              // Combine: parent atoms unchanged; logWeights += per-atom logp.
+              // Record-shaped parents (prior built via lawof(record(...)))
+              // and scalar parents share the same atom-aligned reweight
+              // logic, but their existing logWeights live in different
+              // places: scalar measures keep them at the top level,
+              // record measures keep them at the top level too but the
+              // 'samples' field is absent (sub-measures live in parent.fields).
+              // We compute N from whichever source has it, and treat a
+              // null logWeights as implicit uniform (-log(N)).
+              var N = parent.fields
+                ? (parent.fields[Object.keys(parent.fields)[0]].samples.length)
+                : parent.samples.length;
+              var existingLW = parent.logWeights;
+              var uniformLW = -Math.log(N);
+              var newLW = new Float64Array(N);
+              for (var i = 0; i < N; i++) {
+                var base = existingLW ? existingLW[i] : uniformLW;
+                newLW[i] = base + reply.samples[i];
+              }
+              var m;
+              if (parent.fields) {
+                m = FlatPPLEngine.empirical.recordMeasure(parent.fields, newLW);
+              } else {
+                m = { samples: parent.samples, logWeights: newLW };
+              }
+              measureCache.set(name, m);
+              return m;
+            });
+          });
+        }
       } else {
         return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
       }
@@ -1995,16 +2087,17 @@ class FlatPPLPanel {
      * pane, now living in the plot pane next to the DAG.
      */
     // Persistent per-binding plot state for record-shaped measures:
-    // selected axes (which scalar leaves to plot) and the chosen view
-    // mode ('corner' | 'strips'). Reset when the focused binding
-    // changes; survives re-renders triggered by checkbox / toggle
-    // clicks. Max-axes cap depends on mode — corner plots become
-    // unreadable past 4x4; the density-strips view scales to many
-    // axes since it's just one column per axis.
+    // selected axes (which scalar leaves to plot in correlations
+    // mode) and the chosen view mode ('correlations' | 'marginals').
+    // Reset when the focused binding changes; survives re-renders
+    // triggered by checkbox / toggle clicks.
+    //
+    // Correlations mode (NxN matrix of marginals + joint scatters)
+    // becomes unreadable past 4x4, so we cap selection at 4. Marginals
+    // mode (one density-shaded column per axis) scales linearly to
+    // the full axis count and ignores the selection.
     var recordSelection = null;
-    var CORNER_MAX_AXES = 4;
-    var STRIPS_MAX_AXES = 16;
-    function maxAxesFor(mode) { return mode === 'strips' ? STRIPS_MAX_AXES : CORNER_MAX_AXES; }
+    var CORRELATIONS_MAX_AXES = 4;
 
     /**
      * Enumerate the plottable scalar leaves of a multivariate
@@ -2082,45 +2175,58 @@ class FlatPPLPanel {
       }
 
       // Reset selection when the focused binding changes. Default
-      // mode is 'corner'; default selection is the first
-      // maxAxesFor(mode) axes.
+      // mode is 'correlations'; default selection is the first
+      // CORRELATIONS_MAX_AXES axes.
       if (!recordSelection || recordSelection.bindingName !== bindingName) {
         recordSelection = {
           bindingName: bindingName,
-          mode: 'corner',
-          selected: axes.slice(0, CORNER_MAX_AXES).map(function(a) { return a.key; }),
+          mode: 'correlations',
+          selected: axes.slice(0, CORRELATIONS_MAX_AXES).map(function(a) { return a.key; }),
         };
       } else {
+        // Drop any selections that no longer exist (rare — defensive).
         var present = {}; axes.forEach(function(a) { present[a.key] = true; });
         recordSelection.selected = recordSelection.selected.filter(function(k) { return present[k]; });
       }
 
-      // ---- Layout: toolbar (mode toggle + axis selector) on top, plot below ----
       el.style.display = 'flex';
       el.style.flexDirection = 'column';
       el.style.padding = '10px';
       el.style.boxSizing = 'border-box';
       el.style.gap = '8px';
 
-      function rerender() {
-        if (recordSelection.mode === 'strips') renderDensityStrips(plotHost, measure, bindingName);
-        else                                   renderCornerGrid  (plotHost, measure, bindingName);
-      }
-
-      var toolbar = renderRecordToolbar(axes, rerender);
-      el.appendChild(toolbar);
-
+      // The toolbar is rebuilt on every rerender so the mode buttons'
+      // active styling stays in sync with recordSelection.mode and
+      // the axis selector visibility tracks the mode.
+      var toolbarHost = document.createElement('div');
+      el.appendChild(toolbarHost);
       var plotHost = document.createElement('div');
       plotHost.style.flex = '1';
       plotHost.style.minHeight = '0';
       el.appendChild(plotHost);
+
+      function rerender() {
+        toolbarHost.innerHTML = '';
+        toolbarHost.appendChild(renderRecordToolbar(axes, rerender));
+        if (recordSelection.mode === 'marginals') {
+          // Marginals mode plots every axis (no cap, no selection).
+          renderDensityStrips(plotHost, measure, bindingName, axes);
+        } else {
+          renderCornerGrid(plotHost, measure, bindingName);
+        }
+      }
 
       rerender();
     }
 
     /**
      * Single-row toolbar: view-mode toggle on the left, axis selector
-     * checkboxes on the right. One row keeps the plot area tall.
+     * dropdown on the right (only shown in correlations mode —
+     * marginals plots every axis with no selection).
+     *
+     * The whole toolbar is rebuilt on every rerender (cheap; <100
+     * elements) so mode buttons reflect active state and the
+     * selector visibility tracks the mode.
      */
     function renderRecordToolbar(axes, onChange) {
       var bar = document.createElement('div');
@@ -2159,65 +2265,118 @@ class FlatPPLPanel {
         b.addEventListener('click', function() {
           if (recordSelection.mode === modeKey) return;
           recordSelection.mode = modeKey;
-          var cap = maxAxesFor(modeKey);
-          if (recordSelection.selected.length > cap) {
-            recordSelection.selected = recordSelection.selected.slice(0, cap);
+          // Clip selection to correlations cap when switching back.
+          if (modeKey === 'correlations'
+              && recordSelection.selected.length > CORRELATIONS_MAX_AXES) {
+            recordSelection.selected = recordSelection.selected.slice(0, CORRELATIONS_MAX_AXES);
           }
           onChange();
         });
         return b;
       }
-      modeGroup.appendChild(makeModeBtn('corner', 'Corner',
-        'NxN grid: marginals on the diagonal, joints below'));
-      modeGroup.appendChild(makeModeBtn('strips', '2D',
-        'One column per axis with vertical density shading'));
+      modeGroup.appendChild(makeModeBtn('correlations', 'Correlations',
+        'Pairwise corner plot: marginals on the diagonal, joint scatters below'));
+      modeGroup.appendChild(makeModeBtn('marginals', 'Marginals',
+        'One column per axis with vertical density shading; plots every axis'));
       bar.appendChild(modeGroup);
 
-      // Vertical separator between mode toggle and axis selector.
-      var sep = document.createElement('div');
-      sep.style.width = '1px';
-      sep.style.alignSelf = 'stretch';
-      sep.style.background = 'rgba(255,255,255,0.1)';
-      bar.appendChild(sep);
+      // Axis selector only shows in correlations mode — marginals
+      // plots every axis so the user has nothing to pick.
+      if (recordSelection.mode === 'correlations') {
+        var sep = document.createElement('div');
+        sep.style.width = '1px';
+        sep.style.alignSelf = 'stretch';
+        sep.style.background = 'rgba(255,255,255,0.1)';
+        bar.appendChild(sep);
+        bar.appendChild(renderAxisDropdown(axes, onChange));
+      }
+      return bar;
+    }
 
-      // ---- Axis selector (inline, no nested container) ----
-      var cap = maxAxesFor(recordSelection.mode);
+    /**
+     * Compact dropdown axis selector for correlations mode. Button
+     * shows the count ("Plot axes (3 / 12) ▾"); click opens a
+     * popup-anchored panel with a scrollable checkbox list. Outside
+     * clicks close it. Cap enforcement (max 4) shows an inline red
+     * note in the panel when the user tries to exceed.
+     */
+    function renderAxisDropdown(axes, onChange) {
+      var wrap = document.createElement('div');
+      wrap.style.position = 'relative';
+      wrap.style.display = 'inline-flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '0.4em';
+
       var hint = document.createElement('span');
       hint.textContent = 'Plot axes:';
       hint.style.opacity = '0.6';
-      bar.appendChild(hint);
+      wrap.appendChild(hint);
 
-      // Inline error slot — populated when the cap is hit by an
-      // attempted 6th check (or whatever exceeds the mode's cap).
-      // Cleared automatically on the next successful toggle.
-      var capErr = document.createElement('span');
+      var btn = document.createElement('button');
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '1em';
+      btn.style.padding = '0.2em 0.6em';
+      btn.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+      btn.style.borderRadius = '3px';
+      btn.style.background = 'var(--vscode-button-secondaryBackground, #3a3d41)';
+      btn.style.color = 'var(--vscode-button-secondaryForeground, #ccc)';
+      btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      btn.textContent = recordSelection.selected.length
+        + ' / ' + axes.length + '  ▾';
+      wrap.appendChild(btn);
+
+      // Popup panel — absolutely positioned beneath the button.
+      var panel = document.createElement('div');
+      panel.style.position = 'absolute';
+      panel.style.top = 'calc(100% + 4px)';
+      panel.style.left = '0';
+      panel.style.zIndex = '50';
+      panel.style.minWidth = '14em';
+      panel.style.maxHeight = '20em';
+      panel.style.overflowY = 'auto';
+      panel.style.padding = '0.4em';
+      panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+      panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+      panel.style.borderRadius = '3px';
+      panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+      panel.style.display = 'none';
+      wrap.appendChild(panel);
+
+      // Cap-error slot inside the panel (red note shown briefly when
+      // the user tries to add a 5th).
+      var capErr = document.createElement('div');
       capErr.style.color = '#E57373';
       capErr.style.fontSize = '0.92em';
-      capErr.style.marginLeft = '0.4em';
-      capErr.style.transition = 'opacity 0.2s';
+      capErr.style.padding = '0.3em 0.4em';
       capErr.style.opacity = '0';
+      capErr.style.transition = 'opacity 0.2s';
+      panel.appendChild(capErr);
 
       axes.forEach(function(axis) {
         var label = document.createElement('label');
-        label.style.display = 'inline-flex';
+        label.style.display = 'flex';
         label.style.alignItems = 'center';
-        label.style.gap = '0.3em';
+        label.style.gap = '0.4em';
+        label.style.padding = '0.2em 0.4em';
         label.style.cursor = 'pointer';
         label.style.userSelect = 'none';
+        label.style.borderRadius = '2px';
+        label.addEventListener('mouseenter', function() { label.style.background = 'rgba(255,255,255,0.05)'; });
+        label.addEventListener('mouseleave', function() { label.style.background = ''; });
 
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = recordSelection.selected.indexOf(axis.key) >= 0;
-        cb.addEventListener('change', function() {
+        cb.addEventListener('change', function(ev) {
+          // Don't bubble up to the wrap's outside-click closer.
+          ev.stopPropagation();
           var idx = recordSelection.selected.indexOf(axis.key);
           if (cb.checked) {
             if (idx >= 0) return;
-            if (recordSelection.selected.length >= cap) {
-              // Bounce the check back and surface why.
+            if (recordSelection.selected.length >= CORRELATIONS_MAX_AXES) {
               cb.checked = false;
-              capErr.textContent = 'At most ' + cap + ' axes in '
-                + (recordSelection.mode === 'corner' ? 'corner' : '2D')
-                + ' mode — uncheck one first.';
+              capErr.textContent = 'At most ' + CORRELATIONS_MAX_AXES
+                + ' axes — uncheck one first.';
               capErr.style.opacity = '1';
               return;
             }
@@ -2225,7 +2384,6 @@ class FlatPPLPanel {
           } else {
             if (idx >= 0) recordSelection.selected.splice(idx, 1);
           }
-          // Clear any prior cap error on a successful toggle.
           capErr.style.opacity = '0';
           onChange();
         });
@@ -2235,23 +2393,32 @@ class FlatPPLPanel {
         name.textContent = axis.label;
         name.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
         label.appendChild(name);
-
-        bar.appendChild(label);
+        panel.appendChild(label);
       });
-      bar.appendChild(capErr);
-      return bar;
+
+      // Toggle on button click; close on outside click.
+      btn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        var open = panel.style.display !== 'none';
+        panel.style.display = open ? 'none' : 'block';
+        if (!open) {
+          // One-shot outside-click handler — registers on this open,
+          // tears itself down on close so we don't accumulate handlers.
+          var off = function(ev2) {
+            if (panel.contains(ev2.target) || btn.contains(ev2.target)) return;
+            panel.style.display = 'none';
+            document.removeEventListener('click', off, true);
+          };
+          // capture phase so we close before any inner click is processed
+          setTimeout(function() {
+            document.addEventListener('click', off, true);
+          }, 0);
+        }
+      });
+
+      return wrap;
     }
 
-    /**
-     * Build a horizontal checkbox row for axis selection. Each box
-     * corresponds to a scalar leaf of the record. The first
-     * CORNER_MAX_AXES boxes are checked by default; toggling honors
-     * the cap (a 5th check is rejected with a brief disabled hint —
-     * users uncheck one to check another).
-     *
-     * The onChange callback fires whenever the selection changes,
-     * so the corner plot below can be redrawn.
-     */
     /**
      * Render the selected axes as a 2D density-strip view: one
      * column per axis, where each column shades by the per-axis
@@ -2270,14 +2437,15 @@ class FlatPPLPanel {
      * want each axis's bin grid to align to its own FD-derived
      * edges. Custom render gives that flexibility cheaply.
      */
-    function renderDensityStrips(host, measure, bindingName) {
+    function renderDensityStrips(host, measure, bindingName, axesArg) {
       host.innerHTML = '';
-      var axes = listScalarAxes(measure)
-        .filter(function(a) { return recordSelection.selected.indexOf(a.key) >= 0; });
+      // Marginals mode passes the full axis list (no selection cap); we
+      // fall back to listScalarAxes for legacy callers.
+      var axes = axesArg || listScalarAxes(measure);
       var n = axes.length;
       if (n === 0) {
         var empty = document.createElement('div');
-        empty.textContent = 'Select at least one axis to plot.';
+        empty.textContent = 'No scalar axes to plot.';
         empty.style.opacity = '0.5';
         empty.style.padding = '24px';
         empty.style.textAlign = 'center';
@@ -2556,11 +2724,35 @@ class FlatPPLPanel {
       // ---- Below-diagonal: 2D joint scatters ----------------------
       // Subsample if N is large enough that overplotting kills
       // readability. ECharts handles 50k points fine; 100k starts to
-      // chug. Take an even slice (deterministic) so the visual is
-      // stable across re-renders.
+      // chug.
+      //
+      // Two paths:
+      //   * Unweighted measure: take an even slice (deterministic
+      //     stride) so the visual is stable across re-renders.
+      //   * Weighted measure (e.g. an importance-weighted posterior
+      //     from bayesupdate): plain stride would render the
+      //     *prior's* atom positions with no regard for weights —
+      //     the resulting scatter looks like the prior, even though
+      //     the diagonal histograms (which use logWeights) correctly
+      //     show the posterior. Fix: importance-resample atom
+      //     indices via systematicResample, producing a uniform-
+      //     weight subset that visualises the actual posterior.
+      //     Per-binding seeded PRNG keeps the resample deterministic
+      //     across re-renders.
       var anyN = axes[0].samples.length;
       var maxPoints = 20000;
-      var stride = anyN > maxPoints ? Math.ceil(anyN / maxPoints) : 1;
+      var indices;
+      if (measure.logWeights) {
+        var nOut = Math.min(anyN, maxPoints);
+        var rsPrng = makeMainThreadPrng(nameSeed(bindingName + ':scatter'));
+        indices = FlatPPLEngine.empirical.systematicResample(
+          measure.logWeights, nOut, rsPrng);
+      } else {
+        var stride = anyN > maxPoints ? Math.ceil(anyN / maxPoints) : 1;
+        var len = Math.ceil(anyN / stride);
+        indices = new Int32Array(len);
+        for (var ii = 0, jj = 0; ii < anyN; ii += stride, jj++) indices[jj] = ii;
+      }
       // Pre-build one positional list per axis to avoid repeated
       // .samples lookups in the inner loop below.
       var cols = axes.map(function(a) { return a.samples; });
@@ -2569,9 +2761,10 @@ class FlatPPLPanel {
         for (var col = 0; col < row; col++) {
           var xCol = cols[col], yCol = cols[row];
           var inner2 = makeCell(row, col);
-          var pts = [];
-          for (var p = 0; p < anyN; p += stride) {
-            pts.push([xCol[p], yCol[p]]);
+          var pts = new Array(indices.length);
+          for (var p = 0; p < indices.length; p++) {
+            var idx = indices[p];
+            pts[p] = [xCol[idx], yCol[idx]];
           }
           // Point opacity scales with point count — denser data
           // gets more transparency so clouds don't saturate.

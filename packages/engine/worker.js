@@ -53,6 +53,31 @@
 //        Element-wise deterministic compute. Used for binding RHSs
 //        like 's = mu + 1' where mu's samples are passed as refArrays.mu.
 //
+//   logDensityN { ir, count, refArrays?, observed?, tally?, seed? }
+//        → samples { samples: Float64Array, logWeights: null }
+//        Per-i density evaluation via traceeval.walk. The same trace
+//        walker that sampleN dispatches into for structural cases (joint,
+//        iid, weighted, …) is invoked once per atom with `tally` mode
+//        set ('all' for full joint log-density of a sampled trace,
+//        'clamped' for likelihood / bayesupdate scoring). The reply's
+//        `samples` array carries one log-density per outer atom — we
+//        reuse the 'samples' reply shape so the main-thread cache and
+//        zero-copy transfer logic don't need a new path.
+//
+//        `observed` (optional) is a JSON-encoded value-shape mirroring
+//        the measure IR: a number for a leaf, a plain object keyed by
+//        field name for joint/record, an array for iid. `null` /
+//        `undefined` at any site means "not observed at this site"
+//        (sample fresh; needed only when tally='all'). For uniform
+//        observation across atoms (e.g. bayesupdate with a single obs
+//        record), `observed` is shared across all i. For per-i
+//        observed values, callers should pass them via refArrays and
+//        reference them inside the IR.
+//
+//        Used by the orchestrator's bayesupdate / likelihoodof paths
+//        to construct importance log-weights for posterior samples,
+//        and by future diagnostics that want per-trace joint logp.
+//
 //   init { seed?, env? }                  → ready    (resets state — kept for compat)
 //   setSeed { seed }                      → ok       (resets RNG only)
 //   setEnv  { env, merge? }               → ok       (legacy session env)
@@ -63,6 +88,7 @@
 
 const rngLib = require('./rng');
 const samplerLib = require('./sampler');
+const traceevalLib = require('./traceeval');
 
 function createWorkerHandler(opts = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
@@ -137,11 +163,17 @@ function createWorkerHandler(opts = {}) {
           //     dominant cost.
           //   * per-i-params (refArrays non-empty) — at least one
           //     kwarg references an upstream sample, so params change
-          //     per outer atom. Inner k iid draws share atom i's
-          //     params (each upstream ref resolves to refArrays[k][i]
-          //     for all inner draws), so we still build the sampler
-          //     once per outer i and call .draw() k times — much
-          //     cheaper than k separate worker round-trips.
+          //     per outer atom. We build ONE parametric sampler for
+          //     the whole call (factory closure with prng bound but
+          //     params unbound) and call .drawWith(env) per atom,
+          //     resolving the per-i env into stdlib's params on each
+          //     draw. This is generic across every distribution in
+          //     the registry — the stdlib `factory(opts)` form
+          //     returns a closure that accepts params per call, so
+          //     the expensive factory setup runs once instead of N
+          //     times. For repeat>1, atom i's k inner draws share
+          //     atom i's env so we just call drawWith k times in
+          //     succession with the same env.
           const count  = msg.count  | 0;
           const repeat = (msg.repeat | 0) || 1;
           if (count  <= 0) throw new Error(`sampleN.count must be positive integer (got ${msg.count})`);
@@ -159,26 +191,23 @@ function createWorkerHandler(opts = {}) {
             for (let i = 0; i < total; i++) out[i] = s.draw();
             state = s.getState();
           } else {
-            // Per-i-params path. Atom i's k inner draws share params,
-            // so we rebuild the sampler once per outer atom (not per
-            // inner draw).
+            // Per-i-params path. One parametric sampler for the whole
+            // call; params resolved per draw via drawWith(env).
+            const s = samplerLib.makeParametricSampler(state, msg.ir);
             const drawEnv = {};
             if (repeat === 1) {
               for (let i = 0; i < count; i++) {
                 for (const k of refKeys) drawEnv[k] = refArrays[k][i];
-                const [v, next] = samplerLib.rand(state, msg.ir, drawEnv);
-                state = next;
-                out[i] = v;
+                out[i] = s.drawWith(drawEnv);
               }
             } else {
               for (let i = 0; i < count; i++) {
                 for (const k of refKeys) drawEnv[k] = refArrays[k][i];
-                const s = samplerLib.makeSampler(state, msg.ir, drawEnv);
                 const base = i * repeat;
-                for (let j = 0; j < repeat; j++) out[base + j] = s.draw();
-                state = s.getState();
+                for (let j = 0; j < repeat; j++) out[base + j] = s.drawWith(drawEnv);
               }
             }
+            state = s.getState();
           }
 
           // Only update session RNG if no explicit seed was given. Per-
@@ -206,6 +235,50 @@ function createWorkerHandler(opts = {}) {
           // The main thread is responsible for plumbing the parent's
           // logWeights through; the worker just emits null here and
           // lets that wrap-up happen at the cache boundary.
+          return { type: 'samples', id, samples: out, logWeights: null };
+        }
+        case 'logDensityN': {
+          // Per-i density evaluation via traceeval.walk. The walker is
+          // a single recursion that handles leaf distributions,
+          // joint/record, iid, weighted, logweighted — same code as
+          // sampling, just with `tally` set so log-densities accumulate.
+          //
+          // Two tally modes are useful here:
+          //   'clamped' — only score observed leaves (likelihoodof,
+          //               bayesupdate). Latents either don't appear in
+          //               the IR (already substituted) or are
+          //               re-sampled freely; their logp doesn't enter
+          //               the accumulator.
+          //   'all'     — joint log-density of the whole sampled
+          //               trace, useful for diagnostics.
+          //
+          // For 'clamped' against a single observation shared across
+          // atoms (the typical bayesupdate case: one obs, N priors),
+          // pass `observed` once and we reuse it for every i. For
+          // per-i observations, encode them as refArrays and have the
+          // measure IR reference them.
+          //
+          // Reply uses the 'samples' shape so the main-thread cache
+          // and zero-copy transfer logic don't need a new path; the
+          // numbers are log-densities, not draws.
+          const count = msg.count | 0;
+          if (count <= 0) throw new Error(`logDensityN.count must be positive integer (got ${msg.count})`);
+          const refArrays = msg.refArrays || {};
+          const observed = msg.observed; // may be undefined; null means same
+          const tally = msg.tally || 'clamped';
+          const out = new Float64Array(count);
+          const callEnv = {};
+          // Walker needs a state even when no sampling occurs; reuse
+          // session philox (or a per-call seed if supplied) for any
+          // free latents the caller leaves unobserved.
+          let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
+          for (let i = 0; i < count; i++) {
+            for (const k in refArrays) callEnv[k] = refArrays[k][i];
+            const r = traceevalLib.walk(state, msg.ir, callEnv, observed, { tally });
+            out[i] = r.logp;
+            state = r.state;
+          }
+          if (msg.seed == null) philox = state;
           return { type: 'samples', id, samples: out, logWeights: null };
         }
         case 'dispose': {
