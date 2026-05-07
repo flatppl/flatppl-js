@@ -587,13 +587,123 @@ function liftInlineSubexpressions(bindings) {
 
   function inlineUserCall(astArg) {
     // Iterate to a fixed point — inlined body might itself be (or
-    // contain at its root) another user call (chained: f then g).
+    // contain at its root) another user call (chained: f then g)
+    // or a jointchain that rewrites to a joint of further user calls.
     let prev = null;
     while (astArg !== prev) {
       prev = astArg;
       astArg = inlineOnce(astArg);
+      astArg = inlineChainOps(astArg);
     }
     return astArg;
+  }
+
+  /**
+   * Rewrite `jointchain(P, K)` and `chain(P, K)` at the AST level.
+   *
+   *   jointchain(P, K)  →  joint(P_fields..., K_body_fields...)
+   *   chain(P, K)       →  K_body  (P's fields marginalized away)
+   *
+   * Mechanics: extract P's record-field map; map K's surface kwargs
+   * to P's fields by name; build a synthetic kernel-call AST and
+   * recursively inline it via inlineOnce (which performs the closure
+   * walk + substitution per applyCallable). The result is the
+   * substituted body — typically a ref to a synthesized record
+   * measure. We then extract that body's fields and combine.
+   *
+   * Constraints (Phase 1):
+   *   - P must be a record-shaped measure (lawof(record(...)) or
+   *     joint(...)). Fields extracted from its RHS AST.
+   *   - K must be functionof / kernelof / fn whose body resolves to
+   *     a record-shaped measure (joint, lawof(record), etc.).
+   *   - Surface kwarg names of K must match field names of P.
+   *
+   * Anything outside these shapes returns the input unchanged so the
+   * binding falls through to the generic classifier (and ends up
+   * unsupported, which is the right behaviour for forms we don't yet
+   * structurally handle).
+   */
+  function inlineChainOps(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    const op = astArg.callee.name;
+    if (op !== 'jointchain' && op !== 'chain') return astArg;
+    if (!astArg.args || astArg.args.length !== 2) return astArg;
+    const Parg = astArg.args[0], Karg = astArg.args[1];
+    if (Parg.type !== 'Identifier' || Karg.type !== 'Identifier') return astArg;
+
+    const Pbinding = bindings.get(Parg.name);
+    const Kbinding = bindings.get(Karg.name);
+    if (!Pbinding || !Kbinding) return astArg;
+    if (Kbinding.type !== 'functionof' && Kbinding.type !== 'kernelof'
+        && Kbinding.type !== 'fn') return astArg;
+
+    const Pfields = extractRecordFields(Pbinding.node && Pbinding.node.value);
+    if (!Pfields) return astArg;
+
+    // Map K's surface kwargs to P's field refs by name. K's surface
+    // kwargs are read from K's RHS args (everything after the body).
+    const Kast = Kbinding.node && Kbinding.node.value;
+    if (!Kast || Kast.type !== 'CallExpr' || !Kast.args || Kast.args.length === 0) return astArg;
+    const callKwargs = [];
+    for (let i = 1; i < Kast.args.length; i++) {
+      const a = Kast.args[i];
+      if (a.type !== 'KeywordArg') continue;
+      const fieldRef = Pfields[a.name];
+      if (!fieldRef) return astArg;   // K's param doesn't match a P field
+      callKwargs.push({ type: 'KeywordArg', name: a.name, value: fieldRef, loc: astArg.loc });
+    }
+    // Build a synthetic kernel-call AST and inline it (delegates to
+    // applyCallable's closure walk + synthesis).
+    const synthCall = {
+      type: 'CallExpr', callee: Karg, args: callKwargs, loc: astArg.loc,
+    };
+    const appliedBody = inlineOnce(synthCall);
+    if (!appliedBody || appliedBody.type !== 'Identifier') return astArg;
+
+    // appliedBody is a ref to the synthesized body binding. It should
+    // resolve to a record-shaped measure; extract its fields.
+    const synthBodyBinding = out.get(appliedBody.name);
+    const Kfields = extractRecordFields(synthBodyBinding && synthBodyBinding.node && synthBodyBinding.node.value);
+    if (!Kfields) return astArg;
+
+    // Build the result AST. For jointchain combine; for chain take
+    // only K's fields.
+    const fields = op === 'jointchain' ? { ...Pfields, ...Kfields } : { ...Kfields };
+    const args = Object.keys(fields).map(name => ({
+      type: 'KeywordArg', name, value: fields[name], loc: astArg.loc,
+    }));
+    return {
+      type: 'CallExpr',
+      callee: { type: 'Identifier', name: 'joint', loc: astArg.callee.loc },
+      args,
+      loc: astArg.loc,
+    };
+  }
+
+  /**
+   * Walk a measure-typed AST node back to its record(...) or
+   * joint(...) constructor and return its field map (name → AST
+   * value). Chases `lawof` once if present (per spec, lawof of a
+   * record is the joint measure of those fields). Returns null when
+   * the expression isn't a recognisable record-shaped form.
+   */
+  function extractRecordFields(astNode) {
+    if (!astNode) return null;
+    let v = astNode;
+    if (v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier') {
+      if (v.callee.name === 'lawof' && v.args && v.args.length === 1) {
+        return extractRecordFields(v.args[0]);
+      }
+      if (v.callee.name === 'record' || v.callee.name === 'joint') {
+        const fields = {};
+        for (const a of (v.args || [])) {
+          if (a.type === 'KeywordArg' && a.value) fields[a.name] = a.value;
+        }
+        return fields;
+      }
+    }
+    return null;
   }
 
   function inlineOnce(astArg) {
@@ -690,9 +800,100 @@ function liftInlineSubexpressions(bindings) {
       }
     }
 
+    // Closure walk: find every transitive ancestor of the body that
+    // (1) isn't a boundary itself and (2) isn't fixed-phase (per spec
+    // §sec:functionof line 322-323, fixed ancestors are closed over,
+    // not copied). For each closure binding, allocate a fresh
+    // synthetic name and synthesize a substituted copy of its RHS.
+    // After this, refs to closure bindings inside the body resolve
+    // to the synthesized copies; refs to boundaries resolve to call
+    // args; refs to closed-over fixed bindings resolve to outer-scope
+    // refs unchanged.
+    //
+    // For value functions where boundaries are placeholders that
+    // appear only in the body's direct AST (no transitive refs in
+    // other bindings), the closure is empty and this collapses to a
+    // pure body-level substitution — same as the pre-closure-walk
+    // behaviour.
+    const boundaries = new Set();
+    for (const k in argMap) boundaries.add(k);
+
+    const closure = computeClosure(bodyAst, boundaries);
+
+    // Allocate fresh synthetic names per closure binding and add
+    // them to the substitution map. We use freshName() here so
+    // closure-synthesized bindings share the same monotonically-
+    // increasing __anon counter as inline-lifted anons; this keeps
+    // generated names stable across runs and avoids perturbing other
+    // anons' indices when no synthesis happens (closure empty).
+    for (const origName of closure) {
+      argMap[origName] = makeIdent(freshName(), bodyAst.loc);
+    }
+
+    // Synthesize each closure binding's RHS with substitution applied.
+    // Each synthesized binding's RHS is a clone-with-substitutions of
+    // the original — including refs to other closure members, which
+    // resolve via argMap to their fresh names. So the synthesized
+    // closure forms a self-contained subgraph with the call args at
+    // its leaves.
+    //
+    // The cloned RHS may contain user calls (e.g., `a = f_a(par=beta1)`
+    // clones with substitution to `__anon_a = f_a(par=__anon_beta1)`,
+    // which still has a user call in it) and inline subexpressions
+    // that haven't been lifted to anons. Run the same inline-and-lift
+    // pipeline on each clone — same machinery the main loop applies
+    // to user bindings — so the synthesized closure is fully ready
+    // for classification.
+    for (const origName of closure) {
+      const orig = bindings.get(origName);
+      if (!orig || !orig.node || !orig.node.value) continue;
+      let newRhs = substituteIdents(cloneAst(orig.node.value), argMap);
+      newRhs = inlineUserCall(newRhs);
+      visit(newRhs);
+      const fresh = argMap[origName].name;
+      out.set(fresh, makeSyntheticBinding(fresh, newRhs));
+    }
+
     // Substitute identifiers in a deep-cloned body. Different call
     // sites get independent ASTs.
     return substituteIdents(cloneAst(bodyAst), argMap);
+  }
+
+  /**
+   * Compute the transitive ancestor closure of `bodyAst`'s refs,
+   * stopping at boundary names and at fixed-phase bindings (which
+   * are closed over per spec §sec:functionof). Returns a Set of
+   * binding names that need to be cloned-with-substitution at this
+   * call site.
+   *
+   * Op-agnostic: just follows refs through binding RHS ASTs.
+   * `lawof`, `draw`, `weighted`, `iid`, `record`, etc. all walk
+   * through their operands without special-casing — substitution
+   * propagates through any tree shape.
+   */
+  function computeClosure(bodyAst, boundaries) {
+    const closure = new Set();
+    const visiting = new Set();
+
+    function walk(name) {
+      if (closure.has(name) || visiting.has(name)) return;
+      if (boundaries.has(name)) return;          // boundary, will be substituted
+      const b = bindings.get(name);
+      if (!b) return;                            // unknown name (built-in, etc.)
+      if (b.phase === 'fixed') return;            // closed over per spec
+      visiting.add(name);
+      closure.add(name);
+      collectRefsAst(b.node && b.node.value);
+      visiting.delete(name);
+    }
+    function collectRefsAst(node) {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) collectRefsAst(c); return; }
+      if (node.type === 'Identifier') walk(node.name);
+      for (const k in node) collectRefsAst(node[k]);
+    }
+    collectRefsAst(bodyAst);
+    return Array.from(closure);
   }
 
   function substituteIdents(ast, sub) {

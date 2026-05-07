@@ -1333,16 +1333,22 @@ class FlatPPLPanel {
         // iid(M, n, …): N atoms × k inner draws, packed atom-major
         // into one Float64Array. The worker's sampleN takes an optional
         // repeat=k so this is one round-trip rather than k. We
-        // resolve the leaf distribution IR through the alias chain
-        // so the worker draws from the original distribution call.
+        // resolve the leaf distribution IR through the alias chain so
+        // the worker samples from the original distribution call. If
+        // the leaf IR has self-refs (kernel-applied iid with
+        // substituted boundaries), plumb refArrays through so the
+        // worker resolves them per-i.
         var distIR = FlatPPLEngine.orchestrator.leafSampleIR(d.from, derivationsState.derivations);
         if (!distIR) {
           promise = Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
         } else {
           var k = d.dims.reduce(function(p, n) { return p * n; }, 1);
-          promise = sendWorker({
-            type: 'sampleN', ir: distIR, count: SAMPLE_COUNT, repeat: k,
-            seed: nameSeed(name),
+          promise = collectRefArrays(distIR).then(function(refArrays) {
+            return sendWorker({
+              type: 'sampleN', ir: distIR, count: SAMPLE_COUNT, repeat: k,
+              refArrays: refArrays,
+              seed: nameSeed(name),
+            });
           }).then(function(reply) {
             var m = FlatPPLEngine.empirical.arrayMeasure(reply.samples, d.dims, null);
             measureCache.set(name, m);
