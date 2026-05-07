@@ -392,3 +392,70 @@ test('Poisson uses spec name (rate)', () => {
   const dist = sampler.makeAnalytical(ir, {});
   assert.equal(dist.mean, 4);
 });
+
+// =====================================================================
+// makeParametricSampler — params resolved per draw rather than baked
+// into the factory closure. This is the per-i-params fast path used by
+// the worker for sampleN with refArrays.
+// =====================================================================
+
+test('makeParametricSampler: drawWith resolves params from env', () => {
+  // ref-typed params; params change per drawWith call.
+  const ir = {
+    kind: 'call', op: 'Normal', kwargs: {
+      mu:    { kind: 'ref', ns: 'self', name: 'mu', loc: synthLoc() },
+      sigma: { kind: 'ref', ns: 'self', name: 'sigma', loc: synthLoc() },
+    }, loc: synthLoc(),
+  };
+  const state = rng.stateFromKey(7);
+  const s = sampler.makeParametricSampler(state, ir);
+  // First draw: mu=0, sigma=1.
+  const v0 = s.drawWith({ mu: 0, sigma: 1 });
+  // Second draw: mu=10, sigma=0.001 — should be tightly around 10.
+  const v1 = s.drawWith({ mu: 10, sigma: 0.001 });
+  assert.equal(Number.isFinite(v0), true);
+  assert.ok(Math.abs(v1 - 10) < 0.01,
+    `expected v1 ≈ 10 with tiny sigma, got ${v1}`);
+});
+
+test('makeParametricSampler: matches makeSampler for static params', () => {
+  // For literal-kwarg IR with the same env, drawing K values via the
+  // parametric path should produce the same values as the baked-in
+  // factory path, given the same starting state.
+  const ir = distIR('Exponential', { rate: 2 });
+  const seed = 42, K = 50;
+
+  const a = sampler.makeSampler(rng.stateFromKey(seed), ir, {});
+  const b = sampler.makeParametricSampler(rng.stateFromKey(seed), ir);
+  for (let i = 0; i < K; i++) {
+    const va = a.draw();
+    const vb = b.drawWith({});
+    assert.equal(va, vb, `draw ${i}: ${va} vs ${vb}`);
+  }
+});
+
+test('makeParametricSampler: factory built once across many draws', () => {
+  // Sanity perf check: 50K parametric draws of Normal with per-call
+  // params should be dramatically faster than 50K rand() calls (which
+  // rebuild the factory each time). We don't assert a hard ratio (CI
+  // jitter), just that the parametric path completes well under a
+  // second — the rand() path is the slow baseline in production.
+  const ir = {
+    kind: 'call', op: 'Normal', kwargs: {
+      mu:    { kind: 'ref', ns: 'self', name: 'mu',    loc: synthLoc() },
+      sigma: { kind: 'ref', ns: 'self', name: 'sigma', loc: synthLoc() },
+    }, loc: synthLoc(),
+  };
+  const N = 50_000;
+  const state = rng.stateFromKey(123);
+  const s = sampler.makeParametricSampler(state, ir);
+  const env = {};
+  const t0 = Date.now();
+  for (let i = 0; i < N; i++) {
+    env.mu = i * 0.001;
+    env.sigma = 1 + (i % 10) * 0.01;
+    s.drawWith(env);
+  }
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 2000, `parametric path too slow: ${elapsed}ms for ${N} draws`);
+});

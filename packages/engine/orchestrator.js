@@ -1106,6 +1106,21 @@ function classifyDerivation(binding, bindings) {
     return null;
   }
 
+  // 'bayesupdate' produces an importance-reweighted version of the
+  // prior: posterior atoms ARE the prior atoms, with logWeights
+  // shifted by per-atom log-likelihood. Per spec §sec:bayesupdate,
+  //   bayesupdate(L, prior)  ≡  logweighted(fn(logdensityof(L, _)), prior)
+  // and per spec §sec:likelihoodof,
+  //   logdensityof(likelihoodof(K, obs), theta)  ≡  logdensityof(K(theta), obs)
+  // So per atom i: logw_i = logdensityof(K_body[θ_i], obs), evaluated
+  // by traceeval.walk on K's body with env carrying the prior's atom
+  // and tally='clamped'. We carry that out at materialise time
+  // rather than synthesising an intermediate logweighted IR — the
+  // walker already implements the lowered primitive.
+  if (binding.type === 'bayesupdate') {
+    return classifyBayesupdate(binding, bindings);
+  }
+
   // 'lawof' is the dual of 'draw' for our purposes: lawof(<ref>) is
   // the measure that ref's variate is drawn from, so its samples
   // coincide with the ref's samples. lawof(<complex expr>) (e.g.
@@ -1334,6 +1349,16 @@ function derivationRefsValid(d, derivations, bindings) {
   if (d.kind === 'iid') {
     return Object.prototype.hasOwnProperty.call(derivations, d.from);
   }
+  // Bayesupdate: the prior and the kernel-body measure must both be
+  // derivable. The visualPanel expands d.bodyName into a self-
+  // contained measure IR at materialise time (via expandMeasureIR)
+  // and collects value-ref names from there to populate refArrays
+  // for the per-i density evaluation.
+  if (d.kind === 'bayesupdate') {
+    if (!Object.prototype.hasOwnProperty.call(derivations, d.from)) return false;
+    if (!Object.prototype.hasOwnProperty.call(derivations, d.bodyName)) return false;
+    return true;
+  }
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
@@ -1479,6 +1504,252 @@ function leafSampleIR(name, derivations, visited) {
 }
 
 /**
+ * Expand a binding's derivation into a self-contained measure IR
+ * suitable for traceeval.walk. Walks the derivation graph,
+ * substituting measure refs with their referenced derivations until
+ * every internal ref points at a value (not a measure) — those value
+ * refs are the names callers need to populate refArrays for during
+ * the walk.
+ *
+ * Used by the visualPanel's bayesupdate materialiser: the kernel
+ * body of a likelihood (e.g. `obs_dist`) typically has been lifted
+ * by liftInlineSubexpressions into a chain of anonymous measure
+ * bindings (record → iid → leaf-distribution). For density
+ * evaluation we don't want to materialise samples for each anon —
+ * we want one self-contained IR the walker can recurse into. This
+ * function does that reconstruction by reading the derivation graph
+ * (which already encodes structure of joint/iid/weighted/sample/
+ * alias measures) and emitting the corresponding IR call shape.
+ *
+ * Returns null if the derivation chain hits an unsupported kind
+ * (e.g. evaluate, normalize, superpose) — a measure needs to bottom
+ * out at sample / alias / sample-via-alias for density evaluation
+ * to work today. evaluate-typed bindings are deterministic
+ * transforms (no density without a Jacobian, see project notes).
+ */
+function expandMeasureIR(name, derivations, visited) {
+  visited = visited || new Set();
+  if (visited.has(name)) return null;
+  const next = new Set(visited); next.add(name);
+  const d = derivations[name];
+  if (!d) return null;
+  switch (d.kind) {
+    case 'alias':
+      return expandMeasureIR(d.from, derivations, next);
+    case 'sample':
+      // Leaf distribution call — return the distIR verbatim. Refs
+      // in its kwargs are value refs (per-i params).
+      return d.distIR;
+    case 'iid': {
+      const inner = expandMeasureIR(d.from, derivations, next);
+      if (!inner) return null;
+      // dims is a multi-dim shape; flatten to a single iid count.
+      // The walker's iid case handles the n-shape uniformly via
+      // observed length — multi-dim observations would need to be
+      // flattened to match (1D arrays). For typical bayesupdate the
+      // dims are 1D and obs is a flat array, which already matches.
+      const total = d.dims.reduce((a, b) => a * b, 1);
+      return {
+        kind: 'call', op: 'iid',
+        args: [inner, { kind: 'lit', value: total }],
+      };
+    }
+    case 'record': {
+      const fields = [];
+      for (const k in d.fields) {
+        const inner = expandMeasureIR(d.fields[k], derivations, next);
+        if (!inner) return null;
+        fields.push({ name: k, value: inner });
+      }
+      // Use 'joint' op (the measure form). 'record' and 'joint'
+      // share the IR shape and the walker treats them equivalently.
+      return { kind: 'call', op: 'joint', fields };
+    }
+    case 'weighted': {
+      const inner = expandMeasureIR(d.from, derivations, next);
+      if (!inner) return null;
+      if (d.weightIR) {
+        // Per-i weight expression — the walker resolves its refs
+        // through env at evaluation time.
+        return {
+          kind: 'call',
+          op: d.isLog ? 'logweighted' : 'weighted',
+          args: [d.weightIR, inner],
+        };
+      }
+      // Constant log-shift was pre-computed; surface as logweighted
+      // with a lit weight so the walker just adds it.
+      return {
+        kind: 'call', op: 'logweighted',
+        args: [{ kind: 'lit', value: d.logShift }, inner],
+      };
+    }
+    // evaluate / array / normalize / superpose / iid-of-iid / etc.
+    // are not measures-with-densities we can score today.
+    default:
+      return null;
+  }
+}
+
+// =====================================================================
+// bayesupdate classification + obs-AST resolution
+// =====================================================================
+//
+// bayesupdate(L, prior) is detected at the AST level. We resolve the
+// chain L → likelihoodof(K, obs) → K → functionof(body, kw...) and
+// build a derivation that carries:
+//   - `from`:     prior's binding name (provides the atoms; their
+//                 samples and shape are reused unchanged)
+//   - `bodyName`: name of the kernel body's measure binding. The
+//                 visualPanel uses expandMeasureIR(bodyName) to
+//                 reconstruct a self-contained measure IR by
+//                 walking that binding's derivation chain (record /
+//                 iid / weighted / sample / alias).
+//   - `obsValue`: a JS value structure mirroring the body's variate
+//                 space (number / array / record), built by walking
+//                 the obs argument's AST and resolving identifier
+//                 refs through the bindings map.
+//
+// The visualPanel materialiser uses this to issue one
+// `worker.logDensityN` call: refArrays are populated from the prior's
+// record fields plus any inner-binding samples the body refers to;
+// observed = d.obsValue; tally='clamped'. Per-atom log-likelihoods
+// come back, and the posterior is a copy of the prior's empirical
+// measure with logWeights += those log-likelihoods.
+//
+// Why classify here and not as an AST rewrite to logweighted? The
+// spec lowering `bayesupdate(L, prior) → logweighted(fn(logdensityof(L, _)), prior)`
+// works mathematically, but realising it as an IR would require
+// extending the evaluator to call traceeval.walk for a
+// `logdensityof` op inside a logweighted weightIR. Doing the
+// dispatch at the derivation layer is the same in spirit (one
+// primitive — the trace walker — handles all density evaluation),
+// without introducing a new IR-evaluator call. Future work: lift
+// this into a true AST rewrite once we have a worker primitive that
+// directly evaluates `logdensityof` calls inside arithmetic IR.
+function classifyBayesupdate(binding, bindings) {
+  const ast = binding.node && binding.node.value;
+  if (!ast || ast.type !== 'CallExpr' || !Array.isArray(ast.args) || ast.args.length !== 2) {
+    return null;
+  }
+  const Lref = ast.args[0];
+  const priorRef = ast.args[1];
+  if (Lref.type !== 'Identifier' || priorRef.type !== 'Identifier') return null;
+  if (!bindings.has(priorRef.name)) return null;
+
+  // Resolve L → likelihoodof(K, obs).
+  const Lbinding = bindings.get(Lref.name);
+  if (!Lbinding) return null;
+  const Lev = Lbinding.effectiveValue || (Lbinding.node && Lbinding.node.value);
+  if (!isCallTo(Lev, 'likelihoodof') || Lev.args.length !== 2) return null;
+  const Kref = Lev.args[0];
+  const obsAst = Lev.args[1];
+  if (Kref.type !== 'Identifier') return null;
+
+  // Resolve K → functionof(body, kw=...). We don't currently use the
+  // boundary kwargs here — the body's IR carries refs by name and
+  // refArrays is built from those refs at materialise time, which
+  // covers boundaries (theta1, theta2 in the canonical example) and
+  // inner derived bindings (a, b) uniformly.
+  const Kbinding = bindings.get(Kref.name);
+  if (!Kbinding) return null;
+  const Kev = Kbinding.effectiveValue || (Kbinding.node && Kbinding.node.value);
+  if (!isCallTo(Kev, 'functionof') || !Array.isArray(Kev.args) || Kev.args.length < 1) return null;
+
+  // K's first arg names the body measure. We support the common case
+  // where the body is an Identifier pointing at another measure
+  // binding (e.g. `obs_dist`) — its derivation chain is what drives
+  // the per-i density evaluation. Inline body expressions (rare in
+  // practice) would require synthesising an anonymous binding, which
+  // we defer until a real example needs it.
+  const bodyRef = Kev.args[0];
+  if (bodyRef.type !== 'Identifier' || !bindings.has(bodyRef.name)) return null;
+
+  // Resolve obs to a concrete JS value mirroring the body's variate
+  // shape. The walker takes this `observed` argument and clamps the
+  // matching trace sites; non-clamped sites would sample fresh, but
+  // for likelihood scoring we expect the kernel body's variate space
+  // and obs's shape to coincide (else the user has a model bug).
+  const obsValue = resolveAstToValue(obsAst, bindings, new Set());
+  if (obsValue === RESOLVE_FAIL) return null;
+
+  return {
+    kind: 'bayesupdate',
+    from: priorRef.name,
+    bodyName: bodyRef.name,
+    obsValue,
+  };
+}
+
+function isCallTo(ast, name) {
+  return !!ast && ast.type === 'CallExpr' && ast.callee
+    && ast.callee.type === 'Identifier' && ast.callee.name === name
+    && Array.isArray(ast.args);
+}
+
+const RESOLVE_FAIL = Symbol('orchestrator.resolveAstToValue.FAIL');
+
+/**
+ * Convert an AST expression to a concrete JS value (number, array of
+ * values, plain object) — used to materialise the `observed` argument
+ * for bayesupdate's kernel-body density evaluation. Resolves
+ * identifiers through the bindings map (recursively, with cycle
+ * guard) so a binding like `observed_data = [1.2, 3.4, …]` reduces
+ * to its array.
+ *
+ * Recognised AST shapes:
+ *   - NumberLiteral                 → number
+ *   - ArrayLiteral                  → array of resolved elements
+ *   - Identifier                    → resolve binding's effective AST
+ *   - record(kw=…, …)               → plain object keyed by kw name
+ *   - neg(NumberLiteral)            → negative number
+ *
+ * Anything else returns the RESOLVE_FAIL sentinel; callers must
+ * propagate that as a "no derivation" outcome rather than try to
+ * coerce a partial value.
+ */
+function resolveAstToValue(ast, bindings, seen) {
+  if (!ast || typeof ast !== 'object') return RESOLVE_FAIL;
+  if (ast.type === 'NumberLiteral') return ast.value;
+  if (ast.type === 'ArrayLiteral') {
+    const elems = ast.elements || ast.elems || [];
+    const out = new Array(elems.length);
+    for (let i = 0; i < elems.length; i++) {
+      const v = resolveAstToValue(elems[i], bindings, seen);
+      if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
+      out[i] = v;
+    }
+    return out;
+  }
+  if (ast.type === 'Identifier') {
+    if (seen.has(ast.name)) return RESOLVE_FAIL;
+    const b = bindings.get(ast.name);
+    if (!b || !b.node || !b.node.value) return RESOLVE_FAIL;
+    const next = new Set(seen); next.add(ast.name);
+    const ev = b.effectiveValue || b.node.value;
+    return resolveAstToValue(ev, bindings, next);
+  }
+  if (ast.type === 'CallExpr') {
+    if (ast.callee && ast.callee.name === 'record' && Array.isArray(ast.args)) {
+      const out = {};
+      for (const a of ast.args) {
+        if (a.type !== 'KeywordArg') return RESOLVE_FAIL;
+        const v = resolveAstToValue(a.value, bindings, seen);
+        if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
+        out[a.name] = v;
+      }
+      return out;
+    }
+    if (ast.callee && ast.callee.name === 'neg' && Array.isArray(ast.args) && ast.args.length === 1) {
+      const v = resolveAstToValue(ast.args[0], bindings, seen);
+      if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
+      return -v;
+    }
+  }
+  return RESOLVE_FAIL;
+}
+
+/**
  * Collect the names of every (ref self <name>) inside an IR subtree.
  * Used by the worker / main thread to gather upstream sample arrays
  * before drawing or evaluating. Doesn't follow into reified scopes —
@@ -1494,6 +1765,10 @@ function collectSelfRefs(ir) {
     if (node.kind === 'ref' && node.ns === 'self') seen.add(node.name);
     if (node.args)   for (const a of node.args)            walk(a);
     if (node.kwargs) for (const k in node.kwargs)          walk(node.kwargs[k]);
+    // joint/record IRs use `fields: [{ name, value }, ...]` instead
+    // of args/kwargs. Walk values so refs inside joint fields don't
+    // get missed.
+    if (Array.isArray(node.fields)) for (const f of node.fields) walk(f && f.value);
     if (node.body)                                          walk(node.body);
     // Reified-scope params/paramKwargs are name lists, not IRs.
   }
@@ -1504,6 +1779,7 @@ module.exports = {
   buildDerivations,
   collectSelfRefs,
   leafSampleIR,
+  expandMeasureIR,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.

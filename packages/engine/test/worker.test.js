@@ -466,6 +466,91 @@ test('evaluateN: missing ref array → error from evaluator', () => {
   assert.equal(r.type, 'error');
 });
 
+// =====================================================================
+// logDensityN — per-i scoring via traceeval.walk. Builds on the unit
+// tests in traceeval.test.js; here we verify the worker plumbing
+// (refArrays per-i env, observed sharing across atoms, reply shape).
+// =====================================================================
+
+test('logDensityN: count must be positive', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({ type: 'logDensityN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 0 });
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /count must be positive/);
+});
+
+test('logDensityN: leaf scoring with shared observation across atoms', () => {
+  // Fixed leaf, fixed observation → every atom should produce the
+  // same logpdf value.
+  const w = createWorkerHandler();
+  const ir = distIR('Normal', { mu: 0, sigma: 1 });
+  const r = w.handle({ type: 'logDensityN', ir, count: 5, observed: 0.7, tally: 'clamped' });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.samples.length, 5);
+  const lp = require('@stdlib/stats-base-dists-normal-logpdf');
+  const expected = lp(0.7, 0, 1);
+  for (const v of r.samples) assert.equal(v, expected);
+});
+
+test('logDensityN: refArrays parameterise distribution per atom', () => {
+  // bayesupdate-style use: prior atoms supply mu_i; obs is shared.
+  // Per-atom logp = logpdf(obs | mu_i, 1).
+  const w = createWorkerHandler();
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: {
+      mu:    { kind: 'ref', ns: 'self', name: 'mu', loc: synthLoc() },
+      sigma: { kind: 'lit', value: 1, loc: synthLoc() },
+    },
+    loc: synthLoc(),
+  };
+  const muArr = new Float64Array([0, 1, 2, 3]);
+  const obs = 1.5;
+  const r = w.handle({
+    type: 'logDensityN', ir, count: 4,
+    refArrays: { mu: muArr }, observed: obs, tally: 'clamped',
+  });
+  const lp = require('@stdlib/stats-base-dists-normal-logpdf');
+  for (let i = 0; i < 4; i++) {
+    assert.equal(r.samples[i], lp(obs, muArr[i], 1));
+  }
+});
+
+test('logDensityN: joint observed clamps per-field, sums logpdfs', () => {
+  // Mirrors the bayesupdate end-to-end pattern: kernel body is a
+  // joint over (theta_clamped_only_when_observed, obs); per-i theta
+  // comes from refArrays, obs is shared.
+  const w = createWorkerHandler();
+  const innerNormalRefMu = {
+    kind: 'call', op: 'Normal',
+    kwargs: {
+      mu:    refIR('theta'),
+      sigma: { kind: 'lit', value: 1, loc: synthLoc() },
+    },
+    loc: synthLoc(),
+  };
+  const ir = {
+    kind: 'call', op: 'joint',
+    fields: [
+      { name: 'a', value: innerNormalRefMu },
+      { name: 'b', value: distIR('Normal', { mu: 0, sigma: 1 }) },
+    ],
+    loc: synthLoc(),
+  };
+  const thetaArr = new Float64Array([0, 1, 2]);
+  const r = w.handle({
+    type: 'logDensityN', ir, count: 3,
+    refArrays: { theta: thetaArr },
+    observed: { a: 0.5, b: -0.5 },
+    tally: 'all',
+  });
+  const lp = require('@stdlib/stats-base-dists-normal-logpdf');
+  for (let i = 0; i < 3; i++) {
+    const expected = lp(0.5, thetaArr[i], 1) + lp(-0.5, 0, 1);
+    assert.equal(r.samples[i], expected);
+  }
+});
+
 
 // =====================================================================
 // (continuing the entry-shim end-to-end tests from before)
