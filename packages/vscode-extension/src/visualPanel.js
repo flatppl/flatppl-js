@@ -1475,11 +1475,18 @@ class FlatPPLPanel {
         //   5. Posterior = prior with logWeights += per-atom logp.
         //      Atom alignment is preserved (no resampling); this is
         //      pure reweighting on the shared-N axis.
-        var bodyIR = FlatPPLEngine.orchestrator.expandMeasureIR(
-          d.bodyName, derivationsState.derivations);
+        // Resolve the kernel body into a self-contained measure IR.
+        // Two paths: classifyBayesupdate stores either bodyName (for
+        // an Identifier body that points at another binding) or
+        // bodyIR (for an inline body expression like
+        // record(obs = obs) used directly inside kernelof). Both
+        // cases land on the same fully-expanded IR for the walker.
+        var bodyIR = d.bodyIR
+          ? FlatPPLEngine.orchestrator.expandMeasureRefsInIR(d.bodyIR, derivationsState.derivations)
+          : FlatPPLEngine.orchestrator.expandMeasureIR(d.bodyName, derivationsState.derivations);
         if (!bodyIR) {
           promise = Promise.reject(new Error(
-            'bayesupdate: cannot expand body "' + d.bodyName + '" into measure IR'));
+            'bayesupdate: cannot expand body into measure IR'));
         } else {
           var valueRefs = [];
           FlatPPLEngine.orchestrator.collectSelfRefs(bodyIR).forEach(function(n) {

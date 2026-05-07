@@ -1370,15 +1370,25 @@ function derivationRefsValid(d, derivations, bindings) {
   if (d.kind === 'iid') {
     return Object.prototype.hasOwnProperty.call(derivations, d.from);
   }
-  // Bayesupdate: the prior and the kernel-body measure must both be
-  // derivable. The visualPanel expands d.bodyName into a self-
-  // contained measure IR at materialise time (via expandMeasureIR)
-  // and collects value-ref names from there to populate refArrays
-  // for the per-i density evaluation.
+  // Bayesupdate: the prior must be derivable. The kernel body comes
+  // either as a binding name (bodyName: must also be derivable) or
+  // as an inline IR (bodyIR: every measure ref inside it must point
+  // at a derivable binding). The visualPanel expands the body into a
+  // self-contained measure IR at materialise time and collects value
+  // refs from there to populate refArrays.
   if (d.kind === 'bayesupdate') {
     if (!Object.prototype.hasOwnProperty.call(derivations, d.from)) return false;
-    if (!Object.prototype.hasOwnProperty.call(derivations, d.bodyName)) return false;
-    return true;
+    if (d.bodyName) {
+      if (!Object.prototype.hasOwnProperty.call(derivations, d.bodyName)) return false;
+      return true;
+    }
+    if (d.bodyIR) {
+      for (const r of collectSelfRefs(d.bodyIR)) {
+        if (!Object.prototype.hasOwnProperty.call(derivations, r)) return false;
+      }
+      return true;
+    }
+    return false;
   }
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;
@@ -1612,6 +1622,63 @@ function expandMeasureIR(name, derivations, visited) {
   }
 }
 
+/**
+ * Walk a measure IR and replace every measure-position ref with the
+ * expanded IR of the binding it points to. Value-position refs (the
+ * ones that appear in distribution kwargs as per-i parameters) are
+ * left as-is — the walker resolves them via env / refArrays at
+ * materialise time.
+ *
+ * Used when the kernel body of a bayesupdate is an inline expression
+ * (e.g. `record(obs = obs)` written directly inside `kernelof(...)`),
+ * not a binding name. classifyBayesupdate stores the lowered IR; the
+ * visualPanel calls this at materialise time to inline the measure
+ * refs through the now-built derivation graph, producing the same
+ * fully-self-contained IR shape that expandMeasureIR(name, ...)
+ * would have produced.
+ *
+ * Measure-position slots recognised:
+ *   - joint / record fields' value
+ *   - iid's first arg (the inner measure)
+ *   - weighted / logweighted's second arg (the base measure)
+ */
+function expandMeasureRefsInIR(ir, derivations, visited) {
+  visited = visited || new Set();
+  if (!ir || ir.kind !== 'call') return ir;
+  const out = { ...ir };
+  if (Array.isArray(ir.fields)) {
+    out.fields = ir.fields.map(f => ({
+      ...f,
+      value: expandMeasurePos(f.value, derivations, visited),
+    }));
+  }
+  if (Array.isArray(ir.args)) {
+    if (ir.op === 'iid' && ir.args.length === 2) {
+      out.args = [
+        expandMeasurePos(ir.args[0], derivations, visited),
+        ir.args[1],
+      ];
+    } else if ((ir.op === 'weighted' || ir.op === 'logweighted') && ir.args.length === 2) {
+      out.args = [
+        ir.args[0],
+        expandMeasurePos(ir.args[1], derivations, visited),
+      ];
+    }
+  }
+  return out;
+}
+
+function expandMeasurePos(node, derivations, visited) {
+  if (node && node.kind === 'ref' && node.ns === 'self') {
+    const expanded = expandMeasureIR(node.name, derivations, visited);
+    return expanded || node;
+  }
+  if (node && node.kind === 'call') {
+    return expandMeasureRefsInIR(node, derivations, visited);
+  }
+  return node;
+}
+
 // =====================================================================
 // bayesupdate classification + obs-AST resolution
 // =====================================================================
@@ -1667,24 +1734,38 @@ function classifyBayesupdate(binding, bindings) {
   const obsAst = Lev.args[1];
   if (Kref.type !== 'Identifier') return null;
 
-  // Resolve K → functionof(body, kw=...). We don't currently use the
-  // boundary kwargs here — the body's IR carries refs by name and
-  // refArrays is built from those refs at materialise time, which
-  // covers boundaries (theta1, theta2 in the canonical example) and
-  // inner derived bindings (a, b) uniformly.
+  // Resolve K. Accept two reification shapes a user can write for a
+  // kernel suitable for likelihoodof:
+  //   functionof(body, kw=...)  — body is value-or-measure
+  //   kernelof(body, kw=...)    — body is a value, lifted to a measure
+  //                               (per spec: kernelof ≡ functionof ∘ lawof)
+  // For density-evaluation purposes both produce a measure body; we
+  // treat them uniformly and just carry the body forward.
   const Kbinding = bindings.get(Kref.name);
   if (!Kbinding) return null;
   const Kev = Kbinding.effectiveValue || (Kbinding.node && Kbinding.node.value);
-  if (!isCallTo(Kev, 'functionof') || !Array.isArray(Kev.args) || Kev.args.length < 1) return null;
+  if (!isCallTo(Kev, 'functionof') && !isCallTo(Kev, 'kernelof')) return null;
+  if (!Array.isArray(Kev.args) || Kev.args.length < 1) return null;
 
-  // K's first arg names the body measure. We support the common case
-  // where the body is an Identifier pointing at another measure
-  // binding (e.g. `obs_dist`) — its derivation chain is what drives
-  // the per-i density evaluation. Inline body expressions (rare in
-  // practice) would require synthesising an anonymous binding, which
-  // we defer until a real example needs it.
+  // K's first arg is the body measure. Two shapes:
+  //   - Identifier (e.g. obs_dist) → store as bodyName; visualPanel
+  //     calls expandMeasureIR(bodyName, derivations) at materialise time.
+  //   - Inline expression (e.g. record(obs = obs)) → lower to IR now,
+  //     store as bodyIR; visualPanel walks it and expands measure
+  //     refs via expandMeasureRefsInIR(bodyIR, derivations).
+  // Both paths converge on the same expanded measure IR for the
+  // walker; they differ only in WHERE the body roots in the binding
+  // graph.
   const bodyRef = Kev.args[0];
-  if (bodyRef.type !== 'Identifier' || !bindings.has(bodyRef.name)) return null;
+  let bodyName = null;
+  let bodyIR = null;
+  if (bodyRef.type === 'Identifier') {
+    if (!bindings.has(bodyRef.name)) return null;
+    bodyName = bodyRef.name;
+  } else {
+    try { bodyIR = lowerExpr(bodyRef); } catch (_) { return null; }
+    if (!bodyIR) return null;
+  }
 
   // Resolve obs to a concrete JS value mirroring the body's variate
   // shape. The walker takes this `observed` argument and clamps the
@@ -1697,7 +1778,8 @@ function classifyBayesupdate(binding, bindings) {
   return {
     kind: 'bayesupdate',
     from: priorRef.name,
-    bodyName: bodyRef.name,
+    bodyName,
+    bodyIR,
     obsValue,
   };
 }
@@ -1801,6 +1883,7 @@ module.exports = {
   collectSelfRefs,
   leafSampleIR,
   expandMeasureIR,
+  expandMeasureRefsInIR,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.
