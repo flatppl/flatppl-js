@@ -67,6 +67,20 @@ const SET_VALUE_TYPES = {
   anything: T.any(),
 };
 
+// Op classifications for shape-polymorphic inference. Binary ops
+// take two numeric operands and return a numeric of the broadcast
+// shape (scalar/scalar → scalar; scalar+array → array; array+array
+// of matching shape → array). Unary ops take one numeric and
+// return the same shape. Comparisons take two numerics and return
+// boolean of the broadcast shape (so vec_a < vec_b yields
+// array<bool>; scalar_a < vec_b yields array<bool> too).
+const BINARY_ARITH_OPS = new Set(['add', 'sub', 'mul', 'div', 'mod', 'pow']);
+const UNARY_ARITH_OPS  = new Set([
+  'neg', 'pos', 'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
+  'sin', 'cos', 'tan', 'floor', 'ceil', 'round',
+]);
+const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
+
 // =====================================================================
 // Public entry
 // =====================================================================
@@ -175,11 +189,17 @@ function inferTypes(loweredModule) {
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
+      case 'iid':       return write(inferIid(expr, scopes), expr);
       // kernelof and fn are lowered to functionof by lower.js (per
       // spec §sec:kernelof line 421-422 and §sec:fn line 618-628),
       // so we only see functionof here.
       case 'functionof': return write(inferReification(expr, scopes), expr);
     }
+    // Numeric arithmetic with shape polymorphism: both scalars,
+    // both arrays of matching shape, or scalar/array broadcast.
+    if (BINARY_ARITH_OPS.has(expr.op)) return write(inferArith2(expr, scopes), expr);
+    if (UNARY_ARITH_OPS.has(expr.op))  return write(inferArith1(expr, scopes), expr);
+    if (COMPARISON_OPS.has(expr.op))   return write(inferComparison(expr, scopes), expr);
 
     return write(inferGenericCall(expr, scopes), expr);
   }
@@ -360,6 +380,135 @@ function inferTypes(loweredModule) {
   // structural type — the spec says boundaries are substituted with
   // `elementof(valueset(boundary))` whose value type follows the
   // boundary's domain.
+
+  // ---- Numeric arithmetic with shape polymorphism -------------------
+  //
+  // Binary: scalar+scalar → scalar; matching-shape arrays elementwise;
+  // scalar/array broadcast. Unary: shape-preserving. Comparisons
+  // produce boolean of the broadcast shape.
+
+  function inferArith2(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError(expr.op, 2, args.length, expr.loc);
+    const aT = inferExpr(args[0], scopes);
+    const bT = inferExpr(args[1], scopes);
+    if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    const r = T.unifyArith(aT, bT, new Map());
+    if (r == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: expr.op + ': operand types ' + T.show(aT) + ' and '
+          + T.show(bT) + ' are not numerically compatible',
+        loc: expr.loc,
+      });
+      return T.failed(expr.op + ' shape mismatch');
+    }
+    return r.result;
+  }
+
+  function inferArith1(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);
+    const aT = inferExpr(args[0], scopes);
+    if (aT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    // Scalar in → scalar out; array in → array out (shape preserved).
+    // floor/ceil/round produce integer scalars from real input;
+    // otherwise the result type matches the input. Other unary maths
+    // are real → real for now (spec doesn't require richer overloads).
+    const isIntCast = (expr.op === 'floor' || expr.op === 'ceil' || expr.op === 'round');
+    function liftElemwise(t) {
+      if (t.kind === 'scalar')   return isIntCast ? T.INTEGER : T.REAL;
+      if (t.kind === 'array')    return T.array(t.rank, t.shape.slice(),
+                                                 liftElemwise(t.elem));
+      if (t.kind === 'deferred' || t.kind === 'any') return t;
+      return null;
+    }
+    const out = liftElemwise(aT);
+    if (out == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: expr.op + ': operand must be numeric (scalar or array of scalars), got ' + T.show(aT),
+        loc: args[0].loc,
+      });
+      return T.failed(expr.op + ' bad operand');
+    }
+    return out;
+  }
+
+  function inferComparison(expr, scopes) {
+    // Comparisons unify operand shapes via unifyArith and return
+    // boolean of that shape. `equal(scalar, array)` would broadcast;
+    // `equal(scalar, scalar)` → boolean.
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError(expr.op, 2, args.length, expr.loc);
+    const aT = inferExpr(args[0], scopes);
+    const bT = inferExpr(args[1], scopes);
+    if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    const r = T.unifyArith(aT, bT, new Map());
+    if (r == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: expr.op + ': operand types ' + T.show(aT) + ' and '
+          + T.show(bT) + ' are not comparable',
+        loc: expr.loc,
+      });
+      return T.failed(expr.op + ' shape mismatch');
+    }
+    // Result is boolean with the same shape as r.result.
+    if (r.result.kind === 'array') {
+      return T.array(r.result.rank, r.result.shape.slice(), T.BOOLEAN);
+    }
+    return T.BOOLEAN;
+  }
+
+  // ---- iid: shape-aware `iid(M, n)` ---------------------------------
+  //
+  // Per spec §sec:iid: produces measure<array<1, [n], M.domain>> when
+  // n is statically known; %dynamic otherwise. We resolve n via
+  // literal and binding-ref folding so common cases (`n = 10;
+  // iid(M, n)`) yield concrete shapes for downstream shape checks.
+  function inferIid(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length < 2) return arityError('iid', '≥2', args.length, expr.loc);
+    const measureT = inferExpr(args[0], scopes);
+    if (!T.isMeasure(measureT)) {
+      if (measureT && measureT.kind === 'failed') return T.failed('iid cascade');
+      diagnostics.push({
+        severity: 'error',
+        message: 'iid: arg 1 expects a measure, got ' + T.show(measureT),
+        loc: args[0].loc,
+      });
+      return T.failed('iid bad measure');
+    }
+    // Resolve dimensions: walk each n arg and try to fold to an
+    // integer literal. Refs to integer-typed bindings remain
+    // %dynamic for now (full constant folding via resolveConstant
+    // could be promoted from orchestrator if we want).
+    const dims = [];
+    for (let i = 1; i < args.length; i++) {
+      const dT = inferExpr(args[i], scopes);
+      // Type-check: each dim must be integer-promotable.
+      const s = T.unify(T.INTEGER, dT, new Map());
+      if (s == null) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'iid: dim ' + i + ' expects integer, got ' + T.show(dT),
+          loc: args[i].loc,
+        });
+        return T.failed('iid bad dim');
+      }
+      dims.push(literalIntFromIR(args[i]) != null ? literalIntFromIR(args[i]) : '%dynamic');
+    }
+    const rank = dims.length;
+    return T.measure(T.array(rank, dims, measureT.domain));
+  }
+
+  function literalIntFromIR(ir) {
+    if (!ir) return null;
+    if (ir.kind === 'lit' && ir.numType === 'integer') return ir.value;
+    if (ir.kind === 'lit' && Number.isInteger(ir.value)) return ir.value;
+    return null;
+  }
 
   function inferReification(expr, scopes) {
     // Only `functionof` reaches here — kernelof and fn are lowered

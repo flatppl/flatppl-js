@@ -398,6 +398,74 @@ function isCallable(t) {
   return t != null && (t.kind === 'function' || t.kind === 'kernel');
 }
 
+/**
+ * Unify two types under "numeric" arithmetic rules. Used by binary
+ * arithmetic ops (add, sub, mul, div, comparisons, …) to handle the
+ * three legitimate cases:
+ *
+ *   1. scalar ⊕ scalar           → scalar (with promotion through unify)
+ *   2. array<R,S,T> ⊕ array<R,S,T'> → array<R,S, T⊔T'> (elementwise; shape match)
+ *   3. scalar T ⊕ array<R,S,T'> → array<R,S, T⊔T'>   (broadcast)
+ *      array<R,S,T> ⊕ scalar T'  → array<R,S, T⊔T'>   (broadcast)
+ *
+ * Returns `{ result, subst }` on success or `null` on incompatible
+ * shapes. The caller wraps this in its diagnostic emission. We don't
+ * unify "tuple", "record", "measure" etc. — those aren't numeric.
+ */
+function unifyArith(a, b, subst) {
+  if (!subst) subst = new Map();
+  a = walk(a, subst);
+  b = walk(b, subst);
+  // Lenient on inferenceless types: deferred / any / failed flow
+  // through, matching unify's behaviour for non-arith ops.
+  if (a.kind === 'failed' || b.kind === 'failed') return null;
+  if (a.kind === 'deferred' || a.kind === 'any')  return { result: b, subst };
+  if (b.kind === 'deferred' || b.kind === 'any')  return { result: a, subst };
+
+  // Both scalars — fall through to the numeric-promotion path of unify.
+  if (a.kind === 'scalar' && b.kind === 'scalar') {
+    const s2 = unify(a, b, subst);
+    if (s2 == null) return null;
+    // Pick the "wider" scalar so 1 + 1.0 lands on real.
+    const aRank = SCALAR_RANK[a.prim], bRank = SCALAR_RANK[b.prim];
+    const result = (aRank != null && bRank != null && aRank >= bRank) ? a : b;
+    return { result, subst: s2 };
+  }
+  // Both arrays — shapes must match (with %dynamic flexibility);
+  // element types unify as numerics.
+  if (a.kind === 'array' && b.kind === 'array') {
+    if (a.rank !== b.rank) return null;
+    if (a.shape.length !== b.shape.length) return null;
+    const shape = [];
+    for (let i = 0; i < a.shape.length; i++) {
+      const ai = a.shape[i], bi = b.shape[i];
+      if (ai === '%dynamic' || bi === '%dynamic') {
+        shape.push(ai === '%dynamic' ? bi : ai);
+      } else if (ai !== bi) {
+        return null;
+      } else {
+        shape.push(ai);
+      }
+    }
+    const elemR = unifyArith(a.elem, b.elem, subst);
+    if (elemR == null) return null;
+    return { result: array(a.rank, shape, elemR.result), subst: elemR.subst };
+  }
+  // Broadcast: scalar with array → result is the array with element
+  // type unified with the scalar.
+  if (a.kind === 'scalar' && b.kind === 'array') {
+    const elemR = unifyArith(a, b.elem, subst);
+    if (elemR == null) return null;
+    return { result: array(b.rank, b.shape.slice(), elemR.result), subst: elemR.subst };
+  }
+  if (a.kind === 'array' && b.kind === 'scalar') {
+    const elemR = unifyArith(a.elem, b, subst);
+    if (elemR == null) return null;
+    return { result: array(a.rank, a.shape.slice(), elemR.result), subst: elemR.subst };
+  }
+  return null;
+}
+
 // =====================================================================
 // Built-in signature registry
 //
@@ -604,7 +672,7 @@ module.exports = {
   funcType, kernelType,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING,
   // Operations
-  equal, substitute, unify, show, isMeasure, isValue, isCallable,
+  equal, substitute, unify, unifyArith, show, isMeasure, isValue, isCallable,
   // Signatures
   signatureOf, hasSignature,
 };

@@ -229,6 +229,105 @@ test('elementof(cartpow(S, n, …)): array shape and element type', () => {
   assert.ok(T.equal(typeOf(bindings, 'b'), T.array(2, [2, 4], T.REAL)));
 });
 
+// =====================================================================
+// Polymorphic arithmetic (scalar / array / broadcast)
+// =====================================================================
+
+test('arithmetic: scalar + scalar still works (integer promotes to real)', () => {
+  const { bindings, errors } = infer(`
+    a = 1.0
+    b = 2
+    c = a + b
+  `);
+  assert.equal(errors.length, 0);
+  assert.ok(T.equal(typeOf(bindings, 'c'), T.REAL));
+});
+
+test('arithmetic: array + scalar broadcasts to array', () => {
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    y = 5.0
+    out = xs + y
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'out');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('arithmetic: array + array of matching shape stays array', () => {
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    ys = [4.0, 5.0, 6.0]
+    out = xs * ys
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'out');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+});
+
+test('arithmetic: shape mismatch is a diagnostic', () => {
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    ys = [1.0, 2.0]
+    out = xs + ys
+  `);
+  assert.ok(errors.some(e => /not numerically compatible/.test(e.message)));
+});
+
+test('arithmetic: comparisons return boolean of the broadcast shape', () => {
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = xs < 2.0
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'out');
+  assert.equal(t.kind, 'array');
+  assert.ok(T.equal(t.elem, T.BOOLEAN));
+});
+
+test('arithmetic: unary ops preserve shape', () => {
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = abs(xs)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'out');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+});
+
+test('iid: with literal n produces a measure over a concrete-shape array', () => {
+  const { bindings, errors } = infer(`
+    obs_dist = iid(Normal(mu = 0, sigma = 1), 10)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'obs_dist');
+  assert.equal(t.kind, 'measure');
+  assert.equal(t.domain.kind, 'array');
+  assert.deepEqual(t.domain.shape, [10]);
+  assert.ok(T.equal(t.domain.elem, T.REAL));
+});
+
+test('iid: with non-literal n falls back to %dynamic dim', () => {
+  const { bindings, errors } = infer(`
+    n = 10
+    obs_dist = iid(Normal(mu = 0, sigma = 1), n)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'obs_dist');
+  assert.deepEqual(t.domain.shape, ['%dynamic']);
+});
+
+test('iid: non-measure first arg is a type error', () => {
+  const { errors } = infer(`
+    obs_dist = iid(1.0, 10)
+  `);
+  assert.ok(errors.some(e => /iid: arg 1 expects a measure/.test(e.message)));
+});
+
 test('elementof(cartprod): kwargs form → record', () => {
   const { bindings, errors } = infer(`
     p = elementof(cartprod(x = reals, y = integers))
