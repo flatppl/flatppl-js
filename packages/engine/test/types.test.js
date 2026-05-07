@@ -277,6 +277,54 @@ test('integration: weighted(real, measure<real>) infers result = measure<real>',
   assert.ok(T.equal(result, T.measure(T.REAL)));
 });
 
+// =====================================================================
+// unifyArith — shape-polymorphic arithmetic (scalar/array/broadcast)
+// =====================================================================
+
+test('unifyArith: scalar + scalar (numeric promotion)', () => {
+  const r = T.unifyArith(T.REAL, T.INTEGER, new Map());
+  assert.ok(r);
+  assert.ok(T.equal(r.result, T.REAL));      // wider type wins
+});
+
+test('unifyArith: array + array (matching concrete shape)', () => {
+  const r = T.unifyArith(T.array(1, [3], T.REAL),
+                          T.array(1, [3], T.INTEGER),
+                          new Map());
+  assert.ok(r);
+  assert.equal(r.result.kind, 'array');
+  assert.deepEqual(r.result.shape, [3]);
+  assert.ok(T.equal(r.result.elem, T.REAL));
+});
+
+test('unifyArith: array + array with %dynamic dim resolves to the concrete dim', () => {
+  const r = T.unifyArith(T.array(1, [3], T.REAL),
+                          T.array(1, ['%dynamic'], T.REAL),
+                          new Map());
+  assert.ok(r);
+  assert.deepEqual(r.result.shape, [3]);
+});
+
+test('unifyArith: shape mismatch (different concrete dims)', () => {
+  assert.equal(
+    T.unifyArith(T.array(1, [3], T.REAL), T.array(1, [4], T.REAL), new Map()),
+    null);
+});
+
+test('unifyArith: broadcast — scalar with array', () => {
+  const r1 = T.unifyArith(T.REAL, T.array(1, [3], T.REAL), new Map());
+  assert.ok(r1);
+  assert.deepEqual(r1.result.shape, [3]);
+  // Symmetric.
+  const r2 = T.unifyArith(T.array(1, [3], T.REAL), T.REAL, new Map());
+  assert.ok(r2);
+  assert.deepEqual(r2.result.shape, [3]);
+});
+
+test('unifyArith: measure operands are not numeric', () => {
+  assert.equal(T.unifyArith(T.measure(T.REAL), T.REAL, new Map()), null);
+});
+
 test('integration: weighted(measure<real>, measure<real>) is a type error', () => {
   // Mirrors the failing case the user reported:
   //   invalid1_dist = weighted(theta2_dist, theta1_dist)
