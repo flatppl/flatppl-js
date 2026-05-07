@@ -523,6 +523,31 @@ function computePhases(bindings) {
     return 'fixed';
   }
 
+  // Per spec §sec:lawof line 309-314 ("lawof absorbs stochasticity
+  // into the reified law rather than propagating it outward"), some
+  // ops *absorb* stochastic ancestors — the result is a deterministic
+  // measure / function / kernel whose phase depends only on the
+  // parameterized leaves of its ancestor closure, not on whether
+  // those leaves are reached through a draw. Recursively walks deps,
+  // collapsing 'stochastic' verdicts to 'fixed' along the way and
+  // surfacing only the highest non-stochastic phase.
+  const absorbedCache = new Map();
+  function absorbedPhaseOf(name) {
+    if (absorbedCache.has(name)) return absorbedCache.get(name);
+    const b = bindings.get(name);
+    if (!b)                          { absorbedCache.set(name, 'fixed');         return 'fixed'; }
+    const cn = calleeName(b);
+    if (cn === 'elementof')          { absorbedCache.set(name, 'parameterized'); return 'parameterized'; }
+    if (cn === 'external')           { absorbedCache.set(name, 'fixed');         return 'fixed'; }
+    let phase = 'fixed';
+    for (const dep of b.deps) {
+      phase = maxPhase(phase, absorbedPhaseOf(dep));
+      if (phase === 'parameterized') break;
+    }
+    absorbedCache.set(name, phase);
+    return phase;
+  }
+
   function phaseOf(name) {
     if (phases.has(name)) return phases.get(name);
     if (visiting.has(name)) return 'fixed'; // cycle (shouldn't occur in valid code)
@@ -542,6 +567,22 @@ function computePhases(bindings) {
     } else if (cn === 'elementof') {
       phase = 'parameterized';
     } else if (cn === 'external') {
+      phase = 'fixed';
+    } else if (cn === 'lawof') {
+      // Absorbs stochasticity (spec §sec:lawof). Result is fixed
+      // unless an elementof remains in the ancestor closure.
+      phase = 'fixed';
+      for (const dep of b.deps) {
+        phase = maxPhase(phase, absorbedPhaseOf(dep));
+        if (phase === 'parameterized') break;
+      }
+    } else if (cn === 'functionof' || cn === 'kernelof' || cn === 'fn') {
+      // The function/kernel *value* itself is fixed — the definition
+      // doesn't change with inputs (spec §sec:functionof example
+      // line 492-495: "the function value itself is %fixed"). Its
+      // body's phase, evaluated on per-call inputs, is a separate
+      // computation handled by computePhasesForScope inside the
+      // reification bubble.
       phase = 'fixed';
     } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
       // Hidden draw inside arithmetic / call — e.g. `s = 2 * draw(m)`.

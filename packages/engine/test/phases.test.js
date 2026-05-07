@@ -97,8 +97,12 @@ test('phase: bayesian_inference_2 fixture has correct phases', () => {
   assert.equal(p.b, 'stochastic', "b depends on theta1, theta2 (stochastic)");
   assert.equal(p.obs, 'stochastic');
 
-  // joint_model has stochastic ancestors so its phase is stochastic per spec.
-  assert.equal(p.joint_model, 'stochastic');
+  // joint_model = lawof(record(...)). Per spec §sec:lawof line 309-314,
+  // lawof absorbs stochasticity into the reified measure — the result
+  // is fixed unless an elementof remains in the ancestor closure. Here
+  // theta1/theta2/obs are all draws of literal-kwarg distributions
+  // (no elementof anywhere), so joint_model is fixed.
+  assert.equal(p.joint_model, 'fixed');
 
   // observed_data is a literal
   assert.equal(p.observed_data, 'fixed');

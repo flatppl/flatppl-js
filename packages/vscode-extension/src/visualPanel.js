@@ -2126,9 +2126,19 @@ class FlatPPLPanel {
       // ---- Axis selector (inline, no nested container) ----
       var cap = maxAxesFor(recordSelection.mode);
       var hint = document.createElement('span');
-      hint.textContent = 'Axes (max ' + cap + '):';
+      hint.textContent = 'Plot axes:';
       hint.style.opacity = '0.6';
       bar.appendChild(hint);
+
+      // Inline error slot — populated when the cap is hit by an
+      // attempted 6th check (or whatever exceeds the mode's cap).
+      // Cleared automatically on the next successful toggle.
+      var capErr = document.createElement('span');
+      capErr.style.color = '#E57373';
+      capErr.style.fontSize = '0.92em';
+      capErr.style.marginLeft = '0.4em';
+      capErr.style.transition = 'opacity 0.2s';
+      capErr.style.opacity = '0';
 
       axes.forEach(function(axis) {
         var label = document.createElement('label');
@@ -2146,13 +2156,20 @@ class FlatPPLPanel {
           if (cb.checked) {
             if (idx >= 0) return;
             if (recordSelection.selected.length >= cap) {
+              // Bounce the check back and surface why.
               cb.checked = false;
+              capErr.textContent = 'At most ' + cap + ' axes in '
+                + (recordSelection.mode === 'corner' ? 'corner' : '2D')
+                + ' mode — uncheck one first.';
+              capErr.style.opacity = '1';
               return;
             }
             recordSelection.selected.push(axis.key);
           } else {
             if (idx >= 0) recordSelection.selected.splice(idx, 1);
           }
+          // Clear any prior cap error on a successful toggle.
+          capErr.style.opacity = '0';
           onChange();
         });
         label.appendChild(cb);
@@ -2164,6 +2181,7 @@ class FlatPPLPanel {
 
         bar.appendChild(label);
       });
+      bar.appendChild(capErr);
       return bar;
     }
 
