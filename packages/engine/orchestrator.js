@@ -416,6 +416,13 @@ function inferSyntheticType(astNode) {
  * because every measure-arg position is already a bare Identifier
  * after the first pass.
  */
+// Sentinel prefix for substitution-map keys that target Placeholder
+// nodes (vs. Identifier nodes). When a callable's boundary kwarg is
+// declared as `par = _par_`, the body uses a Placeholder named 'par';
+// substituteIdents reads this prefix to distinguish placeholder
+// substitutions from identifier substitutions of the same name.
+const PLACEHOLDER_SUB_PREFIX = '@placeholder:';
+
 function liftInlineSubexpressions(bindings) {
   const out = new Map(bindings);
   let counter = 0;
@@ -763,10 +770,16 @@ function liftInlineSubexpressions(bindings) {
     // in the body via %local) so we can substitute body identifiers.
     //
     // Surface order is the order of kwargs in the function's
-    // declaration. Internal name is the kwarg's value when it's a
-    // bare Identifier (e.g. `par = _par_` → surface 'par', internal '_par_').
-    // Anything else (boundary that's a complex expression) — skip;
-    // those need real surgery, deferred to a later commit.
+    // declaration. The boundary kwarg's VALUE side determines what
+    // node the body refers to:
+    //   - Identifier (e.g. `theta1 = theta1`)   → body has
+    //     Identifier 'theta1'; substitute by name.
+    //   - Placeholder (e.g. `par = _par_`)      → body has
+    //     Placeholder 'par'; substitute via a sentinel-prefixed key
+    //     so it doesn't collide with same-named Identifiers in the
+    //     body (substituteIdents reads both shapes).
+    //   - anything else (complex boundary expr) → use the surface
+    //     name as a fallback; real boundary surgery deferred.
     const surfaceOrder = [];
     const internalForSurface = {};
     for (let i = 1; i < fnAst.args.length; i++) {
@@ -775,6 +788,8 @@ function liftInlineSubexpressions(bindings) {
       surfaceOrder.push(a.name);
       if (a.value && a.value.type === 'Identifier') {
         internalForSurface[a.name] = a.value.name;
+      } else if (a.value && a.value.type === 'Placeholder') {
+        internalForSurface[a.name] = PLACEHOLDER_SUB_PREFIX + a.value.name;
       } else {
         // Non-trivial boundary (e.g. functionof(body, theta=theta_expr)
         // where theta_expr isn't a bare ref). For now we use the
@@ -903,6 +918,12 @@ function liftInlineSubexpressions(bindings) {
       // Replace with a clone of the substitute so mutations to either
       // side don't bleed across the boundary.
       return cloneAst(sub[ast.name]);
+    }
+    if (ast.type === 'Placeholder' && sub[PLACEHOLDER_SUB_PREFIX + ast.name]) {
+      // Placeholder boundary applied — substitute with the call's arg.
+      // Sentinel-prefixed key avoids collision with same-named
+      // Identifier substitutions when both shapes appear in the body.
+      return cloneAst(sub[PLACEHOLDER_SUB_PREFIX + ast.name]);
     }
     const out = {};
     for (const k in ast) out[k] = substituteIdents(ast[k], sub);
