@@ -314,15 +314,9 @@ class FlatPPLPanel {
     }
     #info .row { display: flex; gap: 0.75em; align-items: baseline; flex-wrap: wrap; }
     #info .name { font-weight: 600; font-size: 1.15em; }
-    #info .type {
-      font-size: 0.92em; opacity: 0.7;
-      padding: 0.05em 0.45em; border-radius: 3px;
-      background: var(--vscode-badge-background, #444);
-      color: var(--vscode-badge-foreground, #fff);
-    }
-    /* The inferred FlatPIR type/shape — sits to the right of name and
-       phase, monospaced so types like "array of real (length 10)"
-       align consistently. */
+    /* The inferred FlatPIR type/shape — sits to the right of the
+       name and phase, monospaced so types like "array of real
+       (length 10)" align consistently. */
     #info .infer {
       font-size: 0.92em; opacity: 0.8;
       font-family: var(--vscode-editor-font-family, monospace);
@@ -584,14 +578,17 @@ class FlatPPLPanel {
           errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
         }
       }
-      // Inferred FlatPIR type/shape — shown only when known.
-      // Renders as a small pill alongside the type and phase tags.
+      // Construction kind (binding.type — draw, lawof, call, …) is
+      // intentionally omitted: the expression always starts with the
+      // operator, and the DAG node's shape + color already encodes
+      // the same axis. The inferred FlatPIR type/shape carries
+      // strictly richer information (structural result type) and
+      // takes that pill's slot.
       var inferTag = d.inferredType
         ? '<span class="infer">' + esc(d.inferredType) + '</span>'
         : '';
       document.getElementById('info').innerHTML =
-        '<div class="row"><span class="name">' + esc(d.label)
-        + '</span><span class="type">' + esc(d.nodeType) + '</span>'
+        '<div class="row"><span class="name">' + esc(d.label) + '</span>'
         + phaseTag
         + inferTag + '</div>'
         + '<div class="expr">' + esc(d.expr) + '</div>'
