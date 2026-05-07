@@ -237,9 +237,9 @@ class FlatPPLPanel {
     }
     #plot-content { width: 100%; height: 100%; }
     #plot-empty {
-      opacity: 0.7; padding: 24px; text-align: center;
-      font-size: 14px; line-height: 1.5;
-      max-width: 600px; margin: 0 auto;
+      opacity: 0.7; padding: 1.6em; text-align: center;
+      font-size: 1.08em; line-height: 1.5;
+      max-width: 45em; margin: 0 auto;
     }
     /* Italics for the placeholder hints ("Click a binding…", "Not
        plottable…") but NOT for type-error messages — those need to
@@ -296,28 +296,43 @@ class FlatPPLPanel {
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: 36px; font-weight: 300; opacity: 0.9;
     }
+    /* All font-sizes in this stylesheet are relative units (em),
+       so the panel scales with VS Code's zoom factor (which adjusts
+       --vscode-font-size at the root). The body sets the base font
+       size from --vscode-font-size; everything else here is a multiple
+       of that. */
     #info {
-      height: 60px;
-      padding: 6px 14px;
+      min-height: 5.5em;
+      padding: 0.6em 1em;
       border-top: 1px solid var(--vscode-panel-border, #444);
-      font-size: 12px;
+      font-size: 1em;
       overflow: hidden;
       display: flex;
       flex-direction: column;
       justify-content: center;
-      gap: 2px;
+      gap: 0.3em;
     }
-    #info .row { display: flex; gap: 8px; align-items: baseline; }
-    #info .name { font-weight: 600; font-size: 13px; }
+    #info .row { display: flex; gap: 0.75em; align-items: baseline; flex-wrap: wrap; }
+    #info .name { font-weight: 600; font-size: 1.15em; }
     #info .type {
-      font-size: 11px; opacity: 0.6;
-      padding: 1px 6px; border-radius: 3px;
+      font-size: 0.92em; opacity: 0.7;
+      padding: 0.05em 0.45em; border-radius: 3px;
       background: var(--vscode-badge-background, #444);
       color: var(--vscode-badge-foreground, #fff);
     }
+    /* The inferred FlatPIR type/shape — sits to the right of name and
+       phase, monospaced so types like "array of real (length 10)"
+       align consistently. */
+    #info .infer {
+      font-size: 0.92em; opacity: 0.8;
+      font-family: var(--vscode-editor-font-family, monospace);
+      padding: 0.05em 0.45em; border-radius: 3px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
     #info .phase {
-      font-size: 11px;
-      padding: 1px 6px; border-radius: 3px;
+      font-size: 0.92em;
+      padding: 0.05em 0.45em; border-radius: 3px;
       color: #fff;
     }
     /* Phase tag colors. CSS custom properties are set at startup from
@@ -327,10 +342,11 @@ class FlatPPLPanel {
     #info .phase-parameterized { background: var(--phase-parameterized); color: #222; }
     #info .phase-stochastic    { background: var(--phase-stochastic);    color: #222; }
     #info .expr {
-      opacity: 0.5; white-space: nowrap;
+      opacity: 0.6; white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis;
+      font-size: 1em;
     }
-    #info .hint { opacity: 0.4; font-style: italic; }
+    #info .hint { opacity: 0.5; font-style: italic; font-size: 1em; }
     #tooltip {
       position: absolute;
       display: none;
@@ -568,10 +584,16 @@ class FlatPPLPanel {
           errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
         }
       }
+      // Inferred FlatPIR type/shape — shown only when known.
+      // Renders as a small pill alongside the type and phase tags.
+      var inferTag = d.inferredType
+        ? '<span class="infer">' + esc(d.inferredType) + '</span>'
+        : '';
       document.getElementById('info').innerHTML =
         '<div class="row"><span class="name">' + esc(d.label)
         + '</span><span class="type">' + esc(d.nodeType) + '</span>'
-        + phaseTag + '</div>'
+        + phaseTag
+        + inferTag + '</div>'
         + '<div class="expr">' + esc(d.expr) + '</div>'
         + unsupportedRow
         + errorRow;
@@ -2931,6 +2953,7 @@ class FlatPPLPanel {
             unsupported: !!node.unsupported,
             unsupportedReason: node.unsupportedReason || '',
             unsupportedDetail: node.unsupportedDetail || '',
+            inferredType: node.inferredType || '',
             hasError: !!(node.errors && node.errors.length > 0),
             width: width,
           },

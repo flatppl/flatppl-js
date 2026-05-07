@@ -303,6 +303,12 @@ function computeSubDAG(bindings, nodeName) {
       unsupportedReason: planUnsupported ? planUnsupported.reason : undefined,
       unsupportedDetail: planUnsupported && planUnsupported.detail ? planUnsupported.detail : undefined,
       errors: (errorDiags && errorDiags.length > 0) ? errorDiags : undefined,
+      // FlatPIR-style inferred type/shape for the info bar. Pre-
+      // rendered with types.show() so the webview doesn't need to
+      // duplicate the rendering logic.
+      inferredType: (b && b.inferredType)
+        ? require('./types').show(b.inferredType)
+        : undefined,
     });
 
     if (isBoundary || !b) return;
