@@ -1162,7 +1162,7 @@ class FlatPPLPanel {
 
     /**
      * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
-     * each binding its own RNG stream for drawN(). Independent of
+     * each binding its own RNG stream for sampleN(). Independent of
      * arrival order — two independent variables stay independent
      * regardless of which one the user clicked first.
      */
@@ -1182,7 +1182,7 @@ class FlatPPLPanel {
      * Used for deterministic main-thread resampling under a
      * per-binding seed (currently: superpose).
      *
-     * Same-engine RNG as the worker's drawN, but instantiated locally
+     * Same-engine RNG as the worker's sampleN, but instantiated locally
      * so empirical.js stays dep-free of rng.js — visualPanel does
      * the wiring at the call site.
      */
@@ -1222,7 +1222,7 @@ class FlatPPLPanel {
       } else if (d.kind === 'sample') {
         promise = collectRefArrays(d.distIR).then(function(refArrays) {
           return sendWorker({
-            type: 'drawN',
+            type: 'sampleN',
             ir: d.distIR,
             count: SAMPLE_COUNT,
             refArrays: refArrays,
@@ -1331,7 +1331,7 @@ class FlatPPLPanel {
         });
       } else if (d.kind === 'iid') {
         // iid(M, n, …): N atoms × k inner draws, packed atom-major
-        // into one Float64Array. The worker's drawN takes an optional
+        // into one Float64Array. The worker's sampleN takes an optional
         // repeat=k so this is one round-trip rather than k. We
         // resolve the leaf distribution IR through the alias chain
         // so the worker draws from the original distribution call.
@@ -1341,7 +1341,7 @@ class FlatPPLPanel {
         } else {
           var k = d.dims.reduce(function(p, n) { return p * n; }, 1);
           promise = sendWorker({
-            type: 'drawN', ir: distIR, count: SAMPLE_COUNT, repeat: k,
+            type: 'sampleN', ir: distIR, count: SAMPLE_COUNT, repeat: k,
             seed: nameSeed(name),
           }).then(function(reply) {
             var m = FlatPPLEngine.empirical.arrayMeasure(reply.samples, d.dims, null);

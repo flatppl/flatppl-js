@@ -327,35 +327,35 @@ test('entry shim: full round-trip via worker_threads (init, sample, density, dis
 });
 
 // =====================================================================
-// drawN — N-sample sampling with per-i ref env. The orchestrator's
+// sampleN — N-sample sampling with per-i ref env. The orchestrator's
 // sample-step IRs go through this primitive on the main thread; tests
 // directly exercise it via the handler.
 // =====================================================================
 
-test('drawN: count must be positive', () => {
+test('sampleN: count must be positive', () => {
   const w = createWorkerHandler();
   w.handle({ type: 'init', seed: 1 });
-  const r = w.handle({ type: 'drawN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 0, seed: 1 });
+  const r = w.handle({ type: 'sampleN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 0, seed: 1 });
   assert.equal(r.type, 'error');
 });
 
-test('drawN: returns Float64Array of requested length', () => {
+test('sampleN: returns Float64Array of requested length', () => {
   const w = createWorkerHandler();
   w.handle({ type: 'init', seed: 1 });
-  const r = w.handle({ type: 'drawN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 100, seed: 1 });
+  const r = w.handle({ type: 'sampleN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 100, seed: 1 });
   assert.equal(r.type, 'samples');
   assert.equal(r.samples.length, 100);
   for (let i = 0; i < 100; i++) assert.ok(Number.isFinite(r.samples[i]));
 });
 
-test('drawN: reply carries the EmpiricalMeasure shape (samples + logWeights)', () => {
+test('sampleN: reply carries the EmpiricalMeasure shape (samples + logWeights)', () => {
   // Variates and i.i.d. draws are unweighted by construction. The
   // worker emits logWeights: null so the main-thread cache wraps it
   // as { samples, logWeights: null } directly. Once weighted ops land
   // this slot will hold an explicit Float64Array for those cases.
   const w = createWorkerHandler();
   w.handle({ type: 'init', seed: 1 });
-  const r = w.handle({ type: 'drawN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 10, seed: 1 });
+  const r = w.handle({ type: 'sampleN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 10, seed: 1 });
   assert.equal(r.type, 'samples');
   assert.ok('logWeights' in r, 'reply must include logWeights field');
   assert.equal(r.logWeights, null, 'unweighted draws → logWeights: null');
@@ -372,23 +372,23 @@ test('evaluateN: reply carries the EmpiricalMeasure shape', () => {
   assert.equal(r.logWeights, null);
 });
 
-test('drawN: same (ir, seed) yields identical samples regardless of session state', () => {
-  // Per-call seeding is the whole point of drawN: the main-thread
+test('sampleN: same (ir, seed) yields identical samples regardless of session state', () => {
+  // Per-call seeding is the whole point of sampleN: the main-thread
   // cache should get deterministic per-binding output, independent
   // of arrival order.
   const a = createWorkerHandler();
   const b = createWorkerHandler();
   a.handle({ type: 'init', seed: 999 });
-  // Burn some session RNG on b — drawN with explicit seed should
+  // Burn some session RNG on b — sampleN with explicit seed should
   // ignore the session state.
   b.handle({ type: 'init', seed: 1 });
   b.handle({ type: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 50 });
-  const ra = a.handle({ type: 'drawN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 50, seed: 7 });
-  const rb = b.handle({ type: 'drawN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 50, seed: 7 });
+  const ra = a.handle({ type: 'sampleN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 50, seed: 7 });
+  const rb = b.handle({ type: 'sampleN', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 50, seed: 7 });
   for (let i = 0; i < 50; i++) assert.equal(ra.samples[i], rb.samples[i]);
 });
 
-test('drawN: refArrays supply per-i values for ref kwargs', () => {
+test('sampleN: refArrays supply per-i values for ref kwargs', () => {
   // A Normal whose mu is bound by a per-i array of values clustered
   // tightly around 100. Result samples should also cluster around 100.
   const w = createWorkerHandler();
@@ -402,7 +402,7 @@ test('drawN: refArrays supply per-i values for ref kwargs', () => {
     },
     loc: synthLoc(),
   };
-  const r = w.handle({ type: 'drawN', ir, count: 200, refArrays: { mu: muArr }, seed: 3 });
+  const r = w.handle({ type: 'sampleN', ir, count: 200, refArrays: { mu: muArr }, seed: 3 });
   assert.equal(r.type, 'samples');
   let mean = 0;
   for (let i = 0; i < 200; i++) mean += r.samples[i];
@@ -410,17 +410,17 @@ test('drawN: refArrays supply per-i values for ref kwargs', () => {
   assert.ok(Math.abs(mean - 100) < 0.01);
 });
 
-test('drawN: without seed, advances session RNG', () => {
+test('sampleN: without seed, advances session RNG', () => {
   // Two calls with no explicit seed should produce different output —
   // the session state advances between them.
   const w = createWorkerHandler();
   w.handle({ type: 'init', seed: 5 });
   const ir = distIR('Normal', { mu: 0, sigma: 1 });
-  const r1 = w.handle({ type: 'drawN', ir, count: 5 });
-  const r2 = w.handle({ type: 'drawN', ir, count: 5 });
+  const r1 = w.handle({ type: 'sampleN', ir, count: 5 });
+  const r2 = w.handle({ type: 'sampleN', ir, count: 5 });
   let same = 0;
   for (let i = 0; i < 5; i++) if (r1.samples[i] === r2.samples[i]) same++;
-  assert.ok(same < 5, 'session RNG did not advance between unseeded drawN calls');
+  assert.ok(same < 5, 'session RNG did not advance between unseeded sampleN calls');
 });
 
 // =====================================================================

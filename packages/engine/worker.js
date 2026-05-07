@@ -41,7 +41,7 @@
 //        → value { value }
 //        Single-shot scalar eval — used by tests.
 //
-//   drawN { distIR, count, refArrays?, seed? }
+//   sampleN { distIR, count, refArrays?, seed? }
 //        → samples { samples: Float64Array }
 //        N-sample draw with per-i env: each row of refArrays supplies
 //        the ref values for one Monte Carlo draw. The orchestrator's
@@ -66,7 +66,7 @@ const samplerLib = require('./sampler');
 
 function createWorkerHandler(opts = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
-  // when no explicit seed is passed. The new drawN path takes a per-
+  // when no explicit seed is passed. The new sampleN path takes a per-
   // call seed and doesn't touch this.
   let philox = rngLib.stateFromKey(opts.seed ?? 0);
   let env = { ...(opts.env ?? {}) };
@@ -110,7 +110,7 @@ function createWorkerHandler(opts = {}) {
           const value = samplerLib.evaluateExpr(msg.ir, callEnv);
           return { type: 'value', id, value };
         }
-        case 'drawN': {
+        case 'sampleN': {
           // Per-binding sampling primitive. distIR may have refs in
           // its kwargs; refArrays maps each ref-name to a pre-computed
           // Float64Array of length `count` holding the upstream's
@@ -144,8 +144,8 @@ function createWorkerHandler(opts = {}) {
           //     cheaper than k separate worker round-trips.
           const count  = msg.count  | 0;
           const repeat = (msg.repeat | 0) || 1;
-          if (count  <= 0) throw new Error(`drawN.count must be positive integer (got ${msg.count})`);
-          if (repeat <= 0) throw new Error(`drawN.repeat must be positive integer (got ${msg.repeat})`);
+          if (count  <= 0) throw new Error(`sampleN.count must be positive integer (got ${msg.count})`);
+          if (repeat <= 0) throw new Error(`sampleN.repeat must be positive integer (got ${msg.repeat})`);
           const refArrays = msg.refArrays || {};
           const refKeys = Object.keys(refArrays);
           let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;

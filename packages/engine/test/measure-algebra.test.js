@@ -105,7 +105,7 @@ function materialise(name, bindings, opts) {
       case 'sample': {
         const refArrays = collectRefArrays(d.distIR);
         const reply = worker.handle({
-          type: 'drawN',
+          type: 'sampleN',
           ir: d.distIR,
           count: sampleCount,
           refArrays,
@@ -193,13 +193,13 @@ function materialise(name, bindings, opts) {
       case 'iid': {
         // iid(M, n, …): draw count*prod(dims) scalars from the inner
         // measure's distIR, layout atom-major (atom i occupies indices
-        // [i*k, (i+1)*k) where k = prod(dims)). The worker's drawN
+        // [i*k, (i+1)*k) where k = prod(dims)). The worker's sampleN
         // takes a `repeat: k` shortcut that does this in one pass.
         const distIR = orchestrator.leafSampleIR(d.from, derivations);
         if (!distIR) throw new Error("iid: can't resolve leaf sample IR for " + d.from);
         const k = d.dims.reduce((p, n) => p * n, 1);
         const reply = worker.handle({
-          type: 'drawN', ir: distIR, count: sampleCount, repeat: k,
+          type: 'sampleN', ir: distIR, count: sampleCount, repeat: k,
           seed: nameSeed(name, rootSeed),
         });
         if (reply.type === 'error') throw new Error(reply.message);
