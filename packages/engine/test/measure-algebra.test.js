@@ -195,11 +195,16 @@ function materialise(name, bindings, opts) {
         // measure's distIR, layout atom-major (atom i occupies indices
         // [i*k, (i+1)*k) where k = prod(dims)). The worker's sampleN
         // takes a `repeat: k` shortcut that does this in one pass.
+        // The distIR may carry self-refs (e.g., kernel-applied iid
+        // whose inner Normal has substituted-boundary refs); pass
+        // refArrays so the worker resolves them per-i.
         const distIR = orchestrator.leafSampleIR(d.from, derivations);
         if (!distIR) throw new Error("iid: can't resolve leaf sample IR for " + d.from);
+        const refArrays = collectRefArrays(distIR);
         const k = d.dims.reduce((p, n) => p * n, 1);
         const reply = worker.handle({
           type: 'sampleN', ir: distIR, count: sampleCount, repeat: k,
+          refArrays,
           seed: nameSeed(name, rootSeed),
         });
         if (reply.type === 'error') throw new Error(reply.message);
@@ -834,6 +839,53 @@ test('iid: marginal distribution at each index matches the inner measure', () =>
     assert.ok(Math.abs(mean - 2) < 0.05, `slot ${j} mean ${mean} not near 2`);
     assert.ok(Math.abs(sd   - 0.5) < 0.05, `slot ${j} sd ${sd} not near 0.5`);
   }
+});
+
+test('kernel application: closure walk produces substituted copies of ancestors', () => {
+  // forward_kernel = functionof(obs_dist, theta1=theta1, theta2=theta2)
+  // applied at the prior's theta values yields a record measure
+  // structurally identical to obs_dist (with renamed synthesized
+  // anons for closure ancestors).
+  const src = `
+    theta1 = draw(Normal(mu = 0, sigma = 1))
+    theta2 = draw(Exponential(rate = 1))
+    a = 5.0 * theta1
+    b = abs(theta1) * theta2
+    obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
+    forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
+    prior = lawof(record(theta1 = theta1, theta2 = theta2))
+    joint_model = jointchain(prior, forward_kernel)
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('joint_model', bindings, { sampleCount: 64 });
+  assert.equal(m.shape, 'record');
+  assert.deepEqual(Object.keys(m.fields).sort(), ['obs', 'theta1', 'theta2']);
+  // theta1 / theta2 are scalar.
+  assert.equal(m.fields.theta1.samples.length, 64);
+  assert.equal(m.fields.theta2.samples.length, 64);
+  // obs is array-shaped (length 10 per atom).
+  assert.equal(m.fields.obs.shape, 'array');
+  assert.deepEqual(m.fields.obs.dims, [10]);
+  assert.equal(m.fields.obs.samples.length, 640);
+});
+
+test('chain: marginalizes prior, keeps only kernel-body fields', () => {
+  // chain(P, K) is jointchain minus the prior fields.
+  const src = `
+    theta1 = draw(Normal(mu = 0, sigma = 1))
+    theta2 = draw(Exponential(rate = 1))
+    a = 5.0 * theta1
+    b = abs(theta1) * theta2
+    obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
+    forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
+    prior = lawof(record(theta1 = theta1, theta2 = theta2))
+    prior_predictive = chain(prior, forward_kernel)
+  `;
+  const { bindings } = processSource(src);
+  const m = materialise('prior_predictive', bindings, { sampleCount: 64 });
+  assert.equal(m.shape, 'record');
+  assert.deepEqual(Object.keys(m.fields), ['obs']);
+  assert.equal(m.fields.obs.shape, 'array');
 });
 
 test('iid: nested inside a joint record produces a record with an array field', () => {
