@@ -26,6 +26,13 @@ function reificationKind(binding, bindings) {
     case 'lawof':     return 'measure';
     case 'kernelof':  return 'kernel';
     case 'fn':        return 'lambda';
+    // bayesupdate(L, prior) produces a measure (the unnormalized
+    // posterior). Surface it as such so the DAG renders it with the
+    // same color/shape as any other measure-producing operation
+    // (e.g. joint_model). bayesupdate isn't a reification — no
+    // bubble is drawn — so the `isReifAnchor` rule keeps it on the
+    // default solid fill, matching joint_model's look.
+    case 'bayesupdate': return 'measure';
     case 'functionof': {
       const firstArg = firstPositionalArg(eff(binding).value);
       return isMeasureExpr(firstArg, bindings) ? 'kernel' : 'function';

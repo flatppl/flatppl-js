@@ -737,11 +737,22 @@ class FlatPPLPanel {
             }
           },
           {
-            // Reification nodes (lawof, functionof, fn): match the surrounding
-            // bubble — translucent fill in the type color, solid border in
-            // the same color at the bubble's stroke width — so they read
-            // as belonging to the bubble rather than floating inside.
-            selector: 'node[nodeType = "lawof"], node[nodeType = "functionof"], node[nodeType = "kernelof"], node[nodeType = "fn"]',
+            // Reification anchor nodes — bindings that head a
+            // reification group (lawof / functionof / kernelof / fn
+            // with internal kernel members). They sit at the entrance
+            // of their bubble; the translucent fill + same-color
+            // border read as belonging to the bubble rather than
+            // floating inside it.
+            //
+            // Selecting on the engine-computed isReifAnchor flag
+            // (rather than nodeType alone) excludes synthesized
+            // measure bindings that happen to have type=lawof but no
+            // visible bubble (e.g. prior2 = lawof(disintegrate(…))
+            // where disintegrate produces a closed-form rewrite, no
+            // new scope to render). Those fall through to the default
+            // solid fill — same visual treatment as joint_model and
+            // other measure-producing operations without a bubble.
+            selector: 'node[?isReifAnchor]',
             style: {
               'background-color': 'data(color)',
               'background-opacity': 0.18,
@@ -3208,6 +3219,20 @@ class FlatPPLPanel {
       shownTypes.clear();
       var elements = [];
 
+      // Reification anchor names — bindings that head a reification
+      // group (i.e. spawn a bubble with internal kernel members).
+      // Used to gate the "hollow fill" cytoscape style: only nodes
+      // that actually anchor a visible bubble get the translucent
+      // treatment, so synthesized bindings like prior2 =
+      // lawof(disintegrate(...)) (no internal scope, no bubble
+      // drawn) render with the default solid measure style.
+      var reifAnchorNames = {};
+      if (data.reifications) {
+        for (var ra = 0; ra < data.reifications.length; ra++) {
+          reifAnchorNames[data.reifications[ra].name] = true;
+        }
+      }
+
       for (var i = 0; i < data.nodes.length; i++) {
         var node = data.nodes[i];
         var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
@@ -3248,6 +3273,7 @@ class FlatPPLPanel {
             unsupportedDetail: node.unsupportedDetail || '',
             inferredType: node.inferredType || '',
             hasError: !!(node.errors && node.errors.length > 0),
+            isReifAnchor: !!reifAnchorNames[node.id],
             width: width,
           },
         });
