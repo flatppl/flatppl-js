@@ -93,6 +93,17 @@ function funcType(inputs, result)   { return { kind: 'function', inputs, result 
  *  collision with the `fn` and `kernelof` built-in surface forms. */
 function kernelType(inputs, result) { return { kind: 'kernel',   inputs, result }; }
 
+/**
+ * Opaque RNG-state type (per spec §sec:random / §03 `rngstates`):
+ *  rng = rnginit(seed)             — produces an rngstate
+ *  value, rng' = rand(rng, m)      — threads rngstate through draws
+ * Equality is structural-by-kind only (no internal shape exposed),
+ * matching the spec's "algorithm-dependent opaque values" guarantee.
+ * Engines back this with their own RNG state representation; the JS
+ * engine uses the Philox state from rng.js.
+ */
+function rngstate() { return { kind: 'rngstate' }; }
+
 // Convenience constants for the most common scalar types. Use these
 // rather than re-allocating scalar('real') everywhere — equality is
 // structural so the savings are micro, but it reads better.
@@ -101,6 +112,7 @@ const INTEGER = scalar('integer');
 const BOOLEAN = scalar('boolean');
 const COMPLEX = scalar('complex');
 const STRING  = scalar('string');
+const RNGSTATE = rngstate();
 
 // =====================================================================
 // Type operations
@@ -143,6 +155,9 @@ function equal(a, b) {
       return true;
     case 'measure':
       return equal(a.domain, b.domain);
+    case 'rngstate':
+      // Opaque — kind match alone is sufficient.
+      return true;
     case 'function':
     case 'kernel': {
       if (a.inputs.length !== b.inputs.length) return false;
@@ -249,6 +264,11 @@ function unify(a, b, subst) {
       }
       return s;
     }
+    case 'rngstate':
+      // Opaque — both sides are rngstate, no further structure to
+      // unify. Same kind already matches above; this case is here for
+      // clarity / future extension.
+      return subst;
   }
   return null;
 }
@@ -324,6 +344,7 @@ function show(t) {
     case 'record':   return showRecord(t);
     case 'tuple':    return 'tuple (' + t.elems.map(show).join(', ') + ')';
     case 'measure':  return showMeasure(t);
+    case 'rngstate': return 'rngstate';
     case 'function': return showCallable('function', t);
     case 'kernel':   return showCallable('kernel',   t);
     case 'var':      return 'any';  // unresolved → user-facing "any"
@@ -606,6 +627,39 @@ const SIGNATURE_FACTORIES = {
   mean:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   prod:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   length: () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
+
+  // ---- RNG (per spec §sec:random) ----------------------------------
+  // rnginit(seed) — seed is a byte-vector; result is an opaque rngstate.
+  rnginit: () => ({ args: [array(1, ['%dynamic'], INTEGER)], kwargs: {}, result: RNGSTATE }),
+  // rand(rstate, m) — draw one sample from m using rstate; returns
+  // (value, new_rstate). The variate type is m's domain — we keep it
+  // as a tvar('T') unified against measure(T)'s argument.
+  rand: () => ({
+    args:   [RNGSTATE, measure(tvar('T'))],
+    kwargs: {},
+    result: tuple([tvar('T'), RNGSTATE]),
+  }),
+  // rngstate(bytes) — reconstructs an rngstate from a byte serialisation.
+  rngstate: () => ({ args: [array(1, ['%dynamic'], INTEGER)], kwargs: {}, result: RNGSTATE }),
+
+  // ---- Density evaluation (per spec §sec:measure-algebra line 87-89,
+  //      §sec:posterior line 433+, §sec:likelihoodof line 340+) -------
+  // logdensityof(M, x) — log-density of M at x w.r.t. the implicit
+  // reference measure. M may be a measure or a likelihood object;
+  // x's type is M's domain.
+  logdensityof: () => ({
+    args: [measure(tvar('T')), tvar('T')],
+    kwargs: {},
+    result: REAL,
+  }),
+  // densityof(M, x) — exp(logdensityof(M, x)). Lowered to that in the
+  // engine; first-class on the surface so spec-level density formulas
+  // read naturally.
+  densityof: () => ({
+    args: [measure(tvar('T')), tvar('T')],
+    kwargs: {},
+    result: REAL,
+  }),
 };
 
 function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }
@@ -668,9 +722,9 @@ function hasSignature(opName) {
 
 module.exports = {
   // Constructors
-  deferred, failed, any, scalar, array, record, tuple, measure, tvar,
+  deferred, failed, any, scalar, array, record, tuple, measure, rngstate, tvar,
   funcType, kernelType,
-  REAL, INTEGER, BOOLEAN, COMPLEX, STRING,
+  REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Operations
   equal, substitute, unify, unifyArith, show, isMeasure, isValue, isCallable,
   // Signatures
