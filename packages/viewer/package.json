@@ -28,7 +28,7 @@
     "cytoscape-dagre": "^2.5.0",
     "cytoscape-bubblesets": "^4.1.0",
     "cytoscape-layers": "^3.1.0",
-    "echarts": "^5.5.1"
+    "echarts": "^6.0.0"
   },
   "engines": {
     "node": ">=18"
