@@ -805,6 +805,23 @@ L = likelihoodof(K, obs_value)
   assert.equal(sig.obsValue, 1.5);
 });
 
+test('signatureOf: functionof with measure body classifies as kernel', () => {
+  // Per spec §sec:functionof-measure: functionof with a measure body
+  // produces a kernel. Even when typeinfer leaves the binding as
+  // 'deferred' (e.g. for disintegrate-derived bindings that the
+  // analyzer rewrites in place), bodyImpliesKernel walks the body to
+  // detect the kind structurally — refs to measure-op bindings are
+  // measure-typed, so the surrounding functionof is a kernel.
+  const sig = sigOf(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+obs    = draw(Normal(mu = theta1, sigma = 1))
+obs_dist = lawof(record(obs = obs))
+fwd_kernel = functionof(obs_dist, theta1 = theta1)
+`, 'fwd_kernel');
+  assert.equal(sig.kind, 'kernel',
+    'functionof whose body is a measure-typed binding should classify as kernel');
+});
+
 test('signatureOf: returns null for non-callable bindings', () => {
   // Sample / measure / literal bindings have no signature.
   assert.equal(sigOf('y = draw(Normal(mu=0, sigma=1))', 'y'), null);

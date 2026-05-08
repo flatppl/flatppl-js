@@ -2372,20 +2372,30 @@ function signatureOf(name, bindings) {
 
   if (b.type === 'likelihood') return signatureOfLikelihood(b, bindings);
 
-  let kind = null;
-  if (b.type === 'functionof' || b.type === 'fn')      kind = 'function';
-  else if (b.type === 'kernelof')                       kind = 'kernel';
-  else                                                  return null;
-
+  if (b.type !== 'functionof' && b.type !== 'fn' && b.type !== 'kernelof') {
+    return null;
+  }
   const ir = b.ir;
-  const t  = b.inferredType;
-  if (!ir || ir.op !== 'functionof' || !t) return null;
-  if (t.kind !== 'function' && t.kind !== 'kernel')   return null;
+  if (!ir || ir.op !== 'functionof') return null;
+
+  // kind comes from inferredType when typeinfer resolved it
+  // (function: value body, kernel: measure body). For bindings whose
+  // inferredType is deferred — disintegrate-derived bindings, synthesised
+  // analyses, etc. — fall back to inspecting the body: a self-ref body
+  // pointing at a measure-typed binding makes this a kernel; same for
+  // a body that's itself a measure-op call. Otherwise (or when the
+  // body resolution fails) default to function.
+  const t = b.inferredType;
+  let kind;
+  if (t && t.kind === 'function')      kind = 'function';
+  else if (t && t.kind === 'kernel')   kind = 'kernel';
+  else if (b.type === 'kernelof')      kind = 'kernel';
+  else                                  kind = bodyImpliesKernel(ir.body, bindings) ? 'kernel' : 'function';
 
   const params      = ir.params      || [];
   const paramKwargs = ir.paramKwargs || [];
   const sources     = ir.paramSources|| [];
-  const inputTypes  = t.inputs       || [];
+  const inputTypes  = (t && t.inputs)|| [];
 
   const inputs = [];
   for (let i = 0; i < params.length; i++) {
@@ -2406,7 +2416,38 @@ function signatureOf(name, bindings) {
       source:    sources[i] || null,
     });
   }
-  return { kind, inputs, output: { type: t.result }, body: ir.body || null };
+  return { kind, inputs, output: { type: t && t.result }, body: ir.body || null };
+}
+
+// Decide if a reified body returns a measure (→ kernel) by walking
+// the body IR. Used as a fallback when typeinfer left the binding
+// type as 'deferred'. Conservative: only returns true when we can
+// see a measure-shaped op or a self-ref to a measure-typed binding.
+const KNOWN_MEASURE_OPS = new Set([
+  'joint', 'record', 'iid', 'weighted', 'logweighted', 'normalize',
+  'superpose', 'lawof', 'pushfwd', 'truncate', 'mixture',
+  // leaf distributions are measures too — we don't enumerate them
+  // here; they'd need the full SAMPLEABLE_DISTRIBUTIONS set, but a
+  // reified callable typically has its leaf wrapped in a record /
+  // joint / lawof anyway.
+]);
+function bodyImpliesKernel(body, bindings) {
+  if (!body) return false;
+  if (body.kind === 'call') {
+    if (KNOWN_MEASURE_OPS.has(body.op))                  return true;
+    if (SAMPLEABLE_DISTRIBUTIONS.has(body.op))           return true;
+  }
+  if (body.kind === 'ref' && body.ns === 'self' && bindings) {
+    const target = bindings.get(body.name);
+    if (target && target.inferredType
+        && target.inferredType.kind === 'measure') {
+      return true;
+    }
+    // Some derived measure bindings have inferredType='deferred' too;
+    // recurse into THEIR body / IR if it's a call we recognise.
+    if (target && target.ir) return bodyImpliesKernel(target.ir, bindings);
+  }
+  return false;
 }
 
 // Resolve a paramSources entry to the value type it references.
