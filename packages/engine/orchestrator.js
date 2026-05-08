@@ -494,6 +494,21 @@ function liftInlineSubexpressions(bindings) {
       effectiveValue: effLifted,
     });
   }
+
+  // Post-pass: cache the lowered IR alongside the AST on every binding
+  // (including the synthesized anonymous bindings inserted during the
+  // user-call / chain-op inlining loop). Classifiers and other
+  // downstream passes read this rather than re-lowering on every
+  // call. The IR comes from the *effective* AST when the analyzer's
+  // rewriter set one (disintegration delegates and synthesized plans),
+  // otherwise from the literal RHS — same precedence the classifier
+  // used to compute on demand.
+  for (const [name, b] of out) {
+    if (!b || !b.node || !b.node.value) continue;
+    let ir = null;
+    try { ir = lowerExpr(b.effectiveValue || b.node.value); } catch (_) { ir = null; }
+    out.set(name, { ...b, ir });
+  }
   return out;
 
   function cloneAst(node) {
@@ -1266,16 +1281,19 @@ function buildDerivations(bindings) {
 function classifyDerivation(binding, bindings) {
   if (!binding || !binding.node || !binding.node.value) return null;
 
-  // Use the analyzer's rewriter-resolved RHS when it's set. This
-  // is the canonical "what does this binding actually compute?" AST:
-  //   - Disintegration delegate plan: the delegate target's RHS.
-  //   - Disintegration synthesized plan: the synthesized rewrite.
-  //   - Otherwise: same as node.value.
-  // Reading it uniformly means the orchestrator classifies all forms
-  // through one path — no per-rewrite-kind special cases.
+  // Read the lowered IR cached by liftInlineSubexpressions. The IR is
+  // the canonical "what does this binding compute?" view — surface
+  // forms like kernelof and fn have already been lowered to
+  // functionof, so the classifier reads one shape per construct
+  // instead of pattern-matching every surface variant.
+  //
+  // The legacy AST is still kept on the binding (binding.node.value
+  // and binding.effectiveValue) for source-located helpers that need
+  // language-level type judgements (isMeasureExpr,
+  // resolveMeasureBaseName) and for things like rename refactoring.
+  const rhsIR = binding.ir;
   const rhsAst = binding.effectiveValue || binding.node.value;
-  let rhsIR;
-  try { rhsIR = lowerExpr(rhsAst); } catch (_) { return null; }
+  if (!rhsIR) return null;
 
   if (binding.type === 'draw') {
     if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'draw') return null;
@@ -1911,63 +1929,58 @@ function expandMeasurePos(node, derivations, visited) {
 // this into a true AST rewrite once we have a worker primitive that
 // directly evaluates `logdensityof` calls inside arithmetic IR.
 function classifyBayesupdate(binding, bindings) {
-  const ast = binding.node && binding.node.value;
-  if (!ast || ast.type !== 'CallExpr' || !Array.isArray(ast.args) || ast.args.length !== 2) {
-    return null;
-  }
-  const Lref = ast.args[0];
-  const priorRef = ast.args[1];
-  if (Lref.type !== 'Identifier' || priorRef.type !== 'Identifier') return null;
+  // Walk the L→K chain through cached IR rather than AST. The lowerer
+  // canonicalises kernelof → functionof and fn → functionof, so we
+  // only need to check for op === 'functionof' here regardless of
+  // which surface keyword the user wrote.
+  const ir = binding.ir;
+  if (!isCallOp(ir, 'bayesupdate', 2)) return null;
+  const Lref = ir.args[0];
+  const priorRef = ir.args[1];
+  if (!isSelfRef(Lref) || !isSelfRef(priorRef)) return null;
   if (!bindings.has(priorRef.name)) return null;
 
-  // Resolve L → likelihoodof(K, obs).
+  // Resolve L → likelihoodof(K, obs) at IR level.
   const Lbinding = bindings.get(Lref.name);
-  if (!Lbinding) return null;
-  const Lev = Lbinding.effectiveValue || (Lbinding.node && Lbinding.node.value);
-  if (!isCallTo(Lev, 'likelihoodof') || Lev.args.length !== 2) return null;
-  const Kref = Lev.args[0];
-  const obsAst = Lev.args[1];
-  if (Kref.type !== 'Identifier') return null;
+  const Lir = Lbinding && Lbinding.ir;
+  if (!isCallOp(Lir, 'likelihoodof', 2)) return null;
+  const Kref = Lir.args[0];
+  const obsIR = Lir.args[1];
+  if (!isSelfRef(Kref)) return null;
 
-  // Resolve K. Accept two reification shapes a user can write for a
-  // kernel suitable for likelihoodof:
-  //   functionof(body, kw=...)  — body is value-or-measure
-  //   kernelof(body, kw=...)    — body is a value, lifted to a measure
-  //                               (per spec: kernelof ≡ functionof ∘ lawof)
-  // For density-evaluation purposes both produce a measure body; we
-  // treat them uniformly and just carry the body forward.
+  // Resolve K → functionof(body, kw=...). Both kernelof and fn lower
+  // to functionof, so the IR shape is uniform.
   const Kbinding = bindings.get(Kref.name);
-  if (!Kbinding) return null;
-  const Kev = Kbinding.effectiveValue || (Kbinding.node && Kbinding.node.value);
-  if (!isCallTo(Kev, 'functionof') && !isCallTo(Kev, 'kernelof')) return null;
-  if (!Array.isArray(Kev.args) || Kev.args.length < 1) return null;
+  const Kir = Kbinding && Kbinding.ir;
+  if (!isCallOp(Kir, 'functionof', null) || !Array.isArray(Kir.args) || Kir.args.length < 1) return null;
 
-  // K's first arg is the body measure. Two shapes:
-  //   - Identifier (e.g. obs_dist) → store as bodyName; visualPanel
-  //     calls expandMeasureIR(bodyName, derivations) at materialise time.
-  //   - Inline expression (e.g. record(obs = obs)) → lower to IR now,
-  //     store as bodyIR; visualPanel walks it and expands measure
-  //     refs via expandMeasureRefsInIR(bodyIR, derivations).
+  // K's first arg is the body. Two shapes:
+  //   - (ref self <name>) → store bodyName, visualPanel expands via
+  //     expandMeasureIR(bodyName, derivations).
+  //   - inline call IR → store as bodyIR, visualPanel expands measure
+  //     refs in it via expandMeasureRefsInIR(bodyIR, derivations).
   // Both paths converge on the same expanded measure IR for the
   // walker; they differ only in WHERE the body roots in the binding
   // graph.
-  const bodyRef = Kev.args[0];
+  const bodyIRArg = Kir.args[0];
   let bodyName = null;
   let bodyIR = null;
-  if (bodyRef.type === 'Identifier') {
-    if (!bindings.has(bodyRef.name)) return null;
-    bodyName = bodyRef.name;
+  if (isSelfRef(bodyIRArg)) {
+    if (!bindings.has(bodyIRArg.name)) return null;
+    bodyName = bodyIRArg.name;
+  } else if (bodyIRArg && bodyIRArg.kind === 'call') {
+    bodyIR = bodyIRArg;
   } else {
-    try { bodyIR = lowerExpr(bodyRef); } catch (_) { return null; }
-    if (!bodyIR) return null;
+    return null;
   }
 
-  // Resolve obs to a concrete JS value mirroring the body's variate
-  // shape. The walker takes this `observed` argument and clamps the
-  // matching trace sites; non-clamped sites would sample fresh, but
-  // for likelihood scoring we expect the kernel body's variate space
-  // and obs's shape to coincide (else the user has a model bug).
-  const obsValue = resolveAstToValue(obsAst, bindings, new Set());
+  // Resolve obs to a concrete JS value. The trace walker clamps the
+  // matching variate sites with this. Translation from IR (literals,
+  // record-of-fields, refs to literal-array bindings, etc.) is done
+  // by resolveIRToValue; for an Identifier-pointing-at-a-literal-array
+  // case we still bottom out via the original binding's AST since the
+  // value lives there as a primitive node tree.
+  const obsValue = resolveIRToValue(obsIR, bindings, new Set());
   if (obsValue === RESOLVE_FAIL) return null;
 
   return {
@@ -1979,67 +1992,69 @@ function classifyBayesupdate(binding, bindings) {
   };
 }
 
-function isCallTo(ast, name) {
-  return !!ast && ast.type === 'CallExpr' && ast.callee
-    && ast.callee.type === 'Identifier' && ast.callee.name === name
-    && Array.isArray(ast.args);
+function isCallOp(ir, op, expectedArgCount) {
+  if (!ir || ir.kind !== 'call' || ir.op !== op || !Array.isArray(ir.args)) return false;
+  if (expectedArgCount !== null && ir.args.length !== expectedArgCount) return false;
+  return true;
 }
 
-const RESOLVE_FAIL = Symbol('orchestrator.resolveAstToValue.FAIL');
+function isSelfRef(ir) {
+  return !!ir && ir.kind === 'ref' && ir.ns === 'self';
+}
+
+const RESOLVE_FAIL = Symbol('orchestrator.resolveIRToValue.FAIL');
 
 /**
- * Convert an AST expression to a concrete JS value (number, array of
- * values, plain object) — used to materialise the `observed` argument
- * for bayesupdate's kernel-body density evaluation. Resolves
- * identifiers through the bindings map (recursively, with cycle
- * guard) so a binding like `observed_data = [1.2, 3.4, …]` reduces
- * to its array.
+ * Convert a lowered IR expression to a concrete JS value (number,
+ * array of values, plain object) — used to materialise the `observed`
+ * argument for bayesupdate's kernel-body density evaluation. Resolves
+ * self-refs through the bindings map (recursively, with cycle guard)
+ * so an IR like `(call vector (lit 1.2) (lit 3.4) ...)` (which is what
+ * `[1.2, 3.4, ...]` lowers to) reduces to a plain JS array.
  *
- * Recognised AST shapes:
- *   - NumberLiteral                 → number
- *   - ArrayLiteral                  → array of resolved elements
- *   - Identifier                    → resolve binding's effective AST
- *   - record(kw=…, …)               → plain object keyed by kw name
- *   - neg(NumberLiteral)            → negative number
+ * Recognised IR shapes:
+ *   - { kind: 'lit', value: <number> }    → number
+ *   - { kind: 'call', op: 'vector', args }→ array of resolved elements
+ *   - { kind: 'call', op: 'record',
+ *       fields: [{name, value}, ...] }    → plain object keyed by field
+ *   - { kind: 'call', op: 'neg', args }   → negative
+ *   - { kind: 'ref', ns: 'self', name }   → resolve through binding.ir
  *
  * Anything else returns the RESOLVE_FAIL sentinel; callers must
  * propagate that as a "no derivation" outcome rather than try to
  * coerce a partial value.
  */
-function resolveAstToValue(ast, bindings, seen) {
-  if (!ast || typeof ast !== 'object') return RESOLVE_FAIL;
-  if (ast.type === 'NumberLiteral') return ast.value;
-  if (ast.type === 'ArrayLiteral') {
-    const elems = ast.elements || ast.elems || [];
-    const out = new Array(elems.length);
-    for (let i = 0; i < elems.length; i++) {
-      const v = resolveAstToValue(elems[i], bindings, seen);
-      if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
-      out[i] = v;
-    }
-    return out;
+function resolveIRToValue(ir, bindings, seen) {
+  if (!ir || typeof ir !== 'object') return RESOLVE_FAIL;
+  if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (seen.has(ir.name)) return RESOLVE_FAIL;
+    const b = bindings.get(ir.name);
+    if (!b || !b.ir) return RESOLVE_FAIL;
+    const next = new Set(seen); next.add(ir.name);
+    return resolveIRToValue(b.ir, bindings, next);
   }
-  if (ast.type === 'Identifier') {
-    if (seen.has(ast.name)) return RESOLVE_FAIL;
-    const b = bindings.get(ast.name);
-    if (!b || !b.node || !b.node.value) return RESOLVE_FAIL;
-    const next = new Set(seen); next.add(ast.name);
-    const ev = b.effectiveValue || b.node.value;
-    return resolveAstToValue(ev, bindings, next);
-  }
-  if (ast.type === 'CallExpr') {
-    if (ast.callee && ast.callee.name === 'record' && Array.isArray(ast.args)) {
-      const out = {};
-      for (const a of ast.args) {
-        if (a.type !== 'KeywordArg') return RESOLVE_FAIL;
-        const v = resolveAstToValue(a.value, bindings, seen);
+  if (ir.kind === 'call') {
+    if (ir.op === 'vector' && Array.isArray(ir.args)) {
+      const out = new Array(ir.args.length);
+      for (let i = 0; i < ir.args.length; i++) {
+        const v = resolveIRToValue(ir.args[i], bindings, seen);
         if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
-        out[a.name] = v;
+        out[i] = v;
       }
       return out;
     }
-    if (ast.callee && ast.callee.name === 'neg' && Array.isArray(ast.args) && ast.args.length === 1) {
-      const v = resolveAstToValue(ast.args[0], bindings, seen);
+    if (ir.op === 'record' && Array.isArray(ir.fields)) {
+      const out = {};
+      for (const f of ir.fields) {
+        const v = resolveIRToValue(f.value, bindings, seen);
+        if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
+        out[f.name] = v;
+      }
+      return out;
+    }
+    if (ir.op === 'neg' && Array.isArray(ir.args) && ir.args.length === 1) {
+      const v = resolveIRToValue(ir.args[0], bindings, seen);
       if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
       return -v;
     }
