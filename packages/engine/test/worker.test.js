@@ -654,6 +654,70 @@ test('eval ops: mod / abs2', () => {
 });
 
 // =====================================================================
+// Reductions over arrays. Runtime ops live in sampler.js; the
+// orchestrator's static gate is conservative (vector isn't on
+// EVALUABLE_OPS) so user-level bindings like `m = mean(arr)` only
+// classify when arr is a kind:'array' derivation. These tests verify
+// the runtime ops themselves — the IR shape they handle, the
+// numerical correctness of var (population), and edge cases.
+// =====================================================================
+
+function vectorOfLits(values) {
+  return {
+    kind: 'call', op: 'vector',
+    args: values.map(v => ({ kind: 'lit', value: v, loc: synthLoc() })),
+    loc: synthLoc(),
+  };
+}
+function reductionIR(op, values) {
+  return {
+    kind: 'call', op,
+    args: [vectorOfLits(values)],
+    loc: synthLoc(),
+  };
+}
+
+test('reductions: sum / mean / prod over a literal array', () => {
+  const w = createWorkerHandler();
+  const xs = [1, 2, 3, 4];
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('sum', xs),  count: 1 }).samples[0], 10);
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('mean', xs), count: 1 }).samples[0], 2.5);
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('prod', xs), count: 1 }).samples[0], 24);
+});
+
+test('reductions: length over a literal array', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({ type: 'evaluateN', ir: reductionIR('length', [10, 20, 30, 40, 50]), count: 1 });
+  assert.equal(r.samples[0], 5);
+});
+
+test('reductions: maximum / minimum over a literal array', () => {
+  const w = createWorkerHandler();
+  const xs = [3, -1, 4, 1, 5, 9, 2, 6];
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('maximum', xs), count: 1 }).samples[0], 9);
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('minimum', xs), count: 1 }).samples[0], -1);
+});
+
+test('reductions: var (population) matches the known formula', () => {
+  // Population variance of [1, 2, 3, 4, 5]: mean = 3, variance = 2.
+  const w = createWorkerHandler();
+  const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', [1, 2, 3, 4, 5]), count: 1 });
+  assert.equal(r.samples[0], 2);
+});
+
+test('reductions: var of empty array → 0 (degenerate)', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', []), count: 1 });
+  assert.equal(r.samples[0], 0);
+});
+
+test('reductions: maximum / minimum of length-1 array → that single value', () => {
+  const w = createWorkerHandler();
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('maximum', [42]), count: 1 }).samples[0], 42);
+  assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('minimum', [42]), count: 1 }).samples[0], 42);
+});
+
+// =====================================================================
 // profileN — sweep one input across [lo, hi], hold others at fixed
 // values. Drives the upcoming profile-plot UI for fn / functionof /
 // kernelof / likelihoodof bindings.

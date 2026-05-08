@@ -534,7 +534,57 @@ const ARITH_OPS = {
   lxor:    (a, b) => a !== b,
   lnot:    a => !a,
   ifelse:  (c, a, b) => c ? a : b,
+  // Vector constructor — turns positional args into a JS array.
+  // Lower than the typed Float64Array path used for materialised
+  // measures: this is for inline `[a, b, c]` literals that surface
+  // as (call vector (lit …) (lit …) …) IR. Reductions below take
+  // these arrays directly.
+  vector: (...xs) => xs,
+  // Reductions over an array. Operate on JS arrays / TypedArrays
+  // alike (both expose .length and indexed access). Spec semantics:
+  //   sum     = Σ x[i]
+  //   mean    = sum / N
+  //   prod    = Π x[i]
+  //   length  = N
+  //   maximum = max x[i]   (Math.max would .apply-blow-stack at length 1e6)
+  //   minimum = min x[i]
+  //   var     = mean( (x - mean)² )  — population variance, divisor N
+  sum:     reduce((acc, v) => acc + v, 0),
+  mean:    arr => reduce((acc, v) => acc + v, 0)(arr) / arr.length,
+  prod:    reduce((acc, v) => acc * v, 1),
+  length:  arr => arr.length,
+  maximum: arr => {
+    let m = -Infinity;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+    return m;
+  },
+  minimum: arr => {
+    let m = Infinity;
+    for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+    return m;
+  },
+  var: arr => {
+    const n = arr.length;
+    if (n === 0) return 0;
+    let s = 0;
+    for (let i = 0; i < n; i++) s += arr[i];
+    const mu = s / n;
+    let v = 0;
+    for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
+    return v / n;
+  },
 };
+
+// Helper: build a one-pass reducer that loops over array indices.
+// Avoids repeated Array.prototype.reduce overhead for tight inner
+// loops on large literal arrays.
+function reduce(step, init) {
+  return arr => {
+    let acc = init;
+    for (let i = 0; i < arr.length; i++) acc = step(acc, arr[i]);
+    return acc;
+  };
+}
 
 function evaluateCall(ir, env) {
   const op = ir.op;
