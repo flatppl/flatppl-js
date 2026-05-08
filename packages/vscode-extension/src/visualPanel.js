@@ -1366,6 +1366,34 @@ class FlatPPLPanel {
             return m;
           });
         }
+      } else if (d.kind === 'tuple') {
+        // Positional analogue of record: an array literal whose
+        // elements are all variate refs (e.g.
+        //   xy_array = [draw(M_a), draw(M_b)]
+        // after liftInlineSubexpressions). Materialise each element
+        // independently; combine into a tuple EmpiricalMeasure
+        // whose component sub-measures live in elems. Top-level
+        // logWeights is the sum of the components' weights, same as
+        // for record (independence makes log-weights additive).
+        promise = Promise.all(d.elems.map(getMeasure)).then(function(subs) {
+          var weighted = [];
+          for (var i = 0; i < subs.length; i++) {
+            if (subs[i].logWeights) weighted.push(subs[i].logWeights);
+          }
+          var lw = null;
+          if (weighted.length > 0) {
+            var N = weighted[0].length;
+            lw = new Float64Array(N);
+            for (var j = 0; j < N; j++) {
+              var s = 0;
+              for (var w = 0; w < weighted.length; w++) s += weighted[w][j];
+              lw[j] = s;
+            }
+          }
+          var m = FlatPPLEngine.empirical.tupleMeasure(subs, lw);
+          measureCache.set(name, m);
+          return m;
+        });
       } else if (d.kind === 'record') {
         // Multivariate (record/joint): each field's source binding
         // gets materialised independently; we assemble them into a
@@ -1885,11 +1913,12 @@ class FlatPPLPanel {
         .then(function() { return getMeasure(planForCall.name); })
         .then(function(measure) {
           if (currentPlotPlan !== planForCall) return null;
-          // Multivariate (record- or array-shaped) measure: route to
-          // the corner / 2D-strip renderer, which uses listScalarAxes
-          // to pull out one selectable axis per scalar leaf (record
-          // fields and 1-indexed array slots alike).
-          if (measure.shape === 'record' || measure.shape === 'array') {
+          // Multivariate measure (record / tuple / array shapes):
+          // route to the corner / 2D-strip renderer, which uses
+          // listScalarAxes to pull out one selectable axis per scalar
+          // leaf (record fields, tuple components with positional
+          // 1-indexed labels, and array slots alike).
+          if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
             renderRecordMarginals(measure, planForCall.name);
             return null;
           }
@@ -2145,6 +2174,15 @@ class FlatPPLPanel {
           }
           return;
         }
+        if (m.shape === 'tuple' && Array.isArray(m.elems)) {
+          // Positional analogue of record. 1-indexed component
+          // labels per FlatPPL convention (xs[1], xs[2], ...).
+          for (var ti = 0; ti < m.elems.length; ti++) {
+            var label = (prefix ? prefix : '') + '[' + (ti + 1) + ']';
+            walk(m.elems[ti], label);
+          }
+          return;
+        }
         if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
           // Total inner stride per atom = prod(dims).
           var k = m.dims.reduce(function(p, n) { return p * n; }, 1);
@@ -2351,13 +2389,15 @@ class FlatPPLPanel {
     }
 
     function measureAtomCount(measure) {
-      // Record-shaped measures (e.g. lawof(record(...)) priors and
-      // bayesupdate posteriors thereof) have no top-level .samples;
-      // pull length from any field's samples — all fields share the
-      // same atom count by construction.
+      // Record / tuple measures have no top-level .samples; pull
+      // length from any sub-measure's samples — all components share
+      // the same atom count by construction.
       if (measure.fields) {
         var anyKey = Object.keys(measure.fields)[0];
-        return anyKey ? measure.fields[anyKey].samples.length : 0;
+        return anyKey ? measureAtomCount(measure.fields[anyKey]) : 0;
+      }
+      if (Array.isArray(measure.elems) && measure.elems.length > 0) {
+        return measureAtomCount(measure.elems[0]);
       }
       if (measure.samples) return measure.samples.length;
       return 0;

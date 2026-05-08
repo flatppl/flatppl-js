@@ -512,6 +512,19 @@ function liftInlineSubexpressions(bindings) {
       astNode.operand = liftValue(astNode.operand);
       return;
     }
+    if (astNode.type === 'ArrayLiteral' || astNode.type === 'TupleLiteral') {
+      // Per spec §03 arrays/tuples hold values, so each element is
+      // value-typed; liftValue knows to lift inline `draw(...)` calls
+      // to anonymous variate bindings while leaving literals and
+      // arithmetic in place. Lifting here means the classifier can
+      // recognise an array of variate refs and emit a tuple-shaped
+      // measure for plotting.
+      const elems = astNode.elements || [];
+      for (let i = 0; i < elems.length; i++) {
+        elems[i] = liftValue(elems[i]);
+      }
+      return;
+    }
     if (astNode.type !== 'CallExpr') return;
     if (!astNode.callee || astNode.callee.type !== 'Identifier') return;
 
@@ -1328,6 +1341,26 @@ function classifyDerivation(binding, bindings) {
         }
       }
       if (allNumericLits) return { kind: 'array', values };
+
+      // Array literal whose elements are all self-refs to other
+      // bindings — typically the result of liftInlineSubexpressions
+      // turning `[draw(M_a), draw(M_b)]` into `[__anon_a, __anon_b]`.
+      // Per spec §03/§06, this represents a value of array type whose
+      // law is the array-shaped joint of the components' measures —
+      // we materialise it as a tuple measure (struct-of-arrays
+      // analogue of recordMeasure, but positional). Each ref must
+      // have a derivation.
+      let allRefs = true;
+      const elems = [];
+      for (const a of rhsIR.args) {
+        if (a && a.kind === 'ref' && a.ns === 'self') {
+          elems.push(a.name);
+        } else {
+          allRefs = false;
+          break;
+        }
+      }
+      if (allRefs && elems.length > 0) return { kind: 'tuple', elems };
     }
     // Deterministic arithmetic on cached samples.
     if (isEvaluable(rhsIR)) {
@@ -1375,6 +1408,13 @@ function derivationRefsValid(d, derivations, bindings) {
   if (d.kind === 'record') {
     for (const k in d.fields) {
       if (!Object.prototype.hasOwnProperty.call(derivations, d.fields[k])) return false;
+    }
+    return true;
+  }
+  // Tuple: every positional element binding must be derivable.
+  if (d.kind === 'tuple') {
+    for (const n of d.elems) {
+      if (!Object.prototype.hasOwnProperty.call(derivations, n)) return false;
     }
     return true;
   }
