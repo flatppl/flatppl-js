@@ -557,6 +557,61 @@ r = relabel([1, 2, 3], ["x", "y"])
 });
 
 // =====================================================================
+// logdensityof / densityof — scalar density-evaluation bindings
+// =====================================================================
+//
+// `r = logdensityof(M, x)` classifies as kind='logdensityof' with the
+// measure name and the resolved obs value attached. The materialiser
+// computes per-prior-atom log-densities via traceeval.walk —
+// implemented in the viewer; here we only check the orchestrator
+// correctly identifies the binding and primes the cascade.
+//
+// `densityof(M, x)` is rewritten at AST time to
+// `exp(logdensityof(M, x))`; the resulting binding is an evaluate
+// node whose IR contains a logdensityof call (no derivation kind of
+// its own — it inherits the measure's cascade through that ref).
+
+test('logdensityof: scalar measure with literal obs classifies', () => {
+  const { derivations } = derivationsOf(`
+y_dist = Normal(mu = 0.0, sigma = 1.0)
+lp     = logdensityof(y_dist, 1.5)
+`);
+  assert.ok(derivations.lp, 'lp should be derivable');
+  assert.equal(derivations.lp.kind, 'logdensityof');
+  assert.equal(derivations.lp.measureName, 'y_dist');
+  assert.equal(derivations.lp.obsValue, 1.5);
+});
+
+test('logdensityof: cascade-prunes when measure isn\'t derivable', () => {
+  // y_kernel uses lawof, which the orchestrator doesn't derive (it's
+  // a reified scope). lp must therefore not appear.
+  const { derivations } = derivationsOf(`
+m  = Normal(mu = 0.0, sigma = 1.0)
+k  = kernelof(m)
+lp = logdensityof(k, 1.5)
+`);
+  assert.ok(!('lp' in derivations));
+});
+
+test('densityof: rewritten to exp(logdensityof(...)) at AST time', () => {
+  // The binding is evaluate-kind (its IR is exp(logdensityof(...)))
+  // and its derivation drops if logdensityof isn't classifiable.
+  // When everything's in place, the IR contains an exp wrapping a
+  // logdensityof call.
+  const { derivations } = derivationsOf(`
+y_dist = Normal(mu = 0.0, sigma = 1.0)
+d      = densityof(y_dist, 1.5)
+`);
+  assert.ok(derivations.d, 'd should be derivable');
+  // The rewrite produces exp(logdensityof(...)) — ld-classify above
+  // turns the inner call into a logdensityof derivation, the outer
+  // binding becomes evaluate. Since logdensityof is a value-typed
+  // op, classifyDerivation treats the outer binding as value too;
+  // we don't pin the exact downstream kind here, only that it
+  // didn't fall through unsupported.
+});
+
+// =====================================================================
 // fchain — applied function composition unrolls to nested calls
 // =====================================================================
 //

@@ -1530,6 +1530,51 @@
             });
           });
         }
+      } else if (d.kind === 'logdensityof') {
+        // Per spec §sec:posterior, broadcast logdensityof over prior
+        // atoms: for each atom i of M, evaluate logp(obs | M_i). We
+        // reuse the same logDensityN worker primitive bayesupdate
+        // drives, just expose the per-atom array as the binding's
+        // samples (no logWeights — this is a value-typed binding).
+        // densityof(M, x) lowers to exp(logdensityof(M, x)) at AST
+        // time, so it doesn't need a separate branch — the inner
+        // logdensityof call lifts to its own anon binding (kind
+        // 'logdensityof') and the outer exp is a normal evaluate.
+        var measureIR = FlatPPLEngine.orchestrator.expandMeasureIR(
+          d.measureName, derivationsState.derivations);
+        if (!measureIR) {
+          promise = Promise.reject(new Error(
+            'logdensityof: cannot expand measure "' + d.measureName +
+            '" into a self-contained IR'));
+        } else {
+          var valueRefs = [];
+          FlatPPLEngine.orchestrator.collectSelfRefs(measureIR).forEach(function(n) {
+            valueRefs.push(n);
+          });
+          promise = Promise.all(valueRefs.map(getMeasure)).then(function(refMeasures) {
+            var refArrays = {};
+            for (var i = 0; i < valueRefs.length; i++) {
+              var rm = refMeasures[i];
+              if (!rm || !rm.samples || !(rm.samples.BYTES_PER_ELEMENT)) {
+                throw new Error('logdensityof: ref "' + valueRefs[i] +
+                  '" did not materialise to a scalar EmpiricalMeasure');
+              }
+              refArrays[valueRefs[i]] = rm.samples;
+            }
+            return sendWorker({
+              type: 'logDensityN',
+              ir: measureIR,
+              count: SAMPLE_COUNT,
+              refArrays: refArrays,
+              observed: d.obsValue,
+              tally: 'clamped',
+            }).then(function(reply) {
+              var m = { samples: reply.samples, logWeights: null };
+              measureCache.set(name, m);
+              return m;
+            });
+          });
+        }
       } else {
         return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
       }

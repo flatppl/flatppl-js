@@ -597,11 +597,16 @@ function liftInlineSubexpressions(bindings) {
     if (!astArg) return astArg;
     astArg = inlineUserCall(astArg);
     visit(astArg);
-    // Only inline `draw(...)` is lifted from a value position — every
-    // other value-typed expression (literals, identifiers, arithmetic)
-    // is evaluable in place.
+    // Two value-position calls produce non-evaluable JS results so
+    // they must be lifted to their own anon bindings:
+    //   - draw(...)        — needs a fresh sample step
+    //   - logdensityof(M,x)— needs traceeval.walk over M's expanded IR
+    // Everything else (literals, identifiers, arithmetic) stays in
+    // place for the IR evaluator.
     if (astArg.type === 'CallExpr' && astArg.callee
-        && astArg.callee.type === 'Identifier' && astArg.callee.name === 'draw') {
+        && astArg.callee.type === 'Identifier'
+        && (astArg.callee.name === 'draw'
+            || astArg.callee.name === 'logdensityof')) {
       const name = freshName();
       out.set(name, makeSyntheticBinding(name, astArg));
       return makeIdent(name, astArg.loc);
@@ -640,8 +645,9 @@ function liftInlineSubexpressions(bindings) {
     // Iterate to a fixed point — inlined body might itself be (or
     // contain at its root) another user call (chained: f then g),
     // a jointchain that rewrites to a joint of further user calls,
-    // a relabel that surfaces a record(...), or an fchain that
-    // unrolls to a tower of nested user calls.
+    // a relabel that surfaces a record(...), an fchain that unrolls
+    // to a tower of nested user calls, or a densityof that lowers
+    // to exp(logdensityof(...)).
     let prev = null;
     while (astArg !== prev) {
       prev = astArg;
@@ -649,8 +655,36 @@ function liftInlineSubexpressions(bindings) {
       astArg = inlineChainOps(astArg);
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
+      astArg = inlineDensityof(astArg);
     }
     return astArg;
+  }
+
+  /**
+   * Lower `densityof(M, x)` to `exp(logdensityof(M, x))` per spec
+   * §sec:posterior — densityof is sugar over logdensityof, and
+   * keeping logdensityof first-class avoids a second density-eval
+   * primitive in the worker. The exp(...) wraps the logdensityof
+   * call as a normal evaluate node, so once logdensityof has a
+   * derivation, densityof inherits the cascade for free.
+   */
+  function inlineDensityof(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'densityof') return astArg;
+    const loc = astArg.loc;
+    const inner = {
+      type: 'CallExpr',
+      callee: { type: 'Identifier', name: 'logdensityof', loc },
+      args: (astArg.args || []).map(cloneAst),
+      loc,
+    };
+    return {
+      type: 'CallExpr',
+      callee: { type: 'Identifier', name: 'exp', loc },
+      args: [inner],
+      loc,
+    };
   }
 
   /**
@@ -1693,14 +1727,42 @@ function classifyIid(rhsIR, ast, bindings) {
   return { kind: 'iid', from: baseName, dims };
 }
 
+// `logdensityof(M, x)` — per spec §sec:posterior, evaluate M's
+// log-density at x. Result is REAL (a value, not a measure), but the
+// classifier dispatch lives here uniformly: the materialiser computes
+// per-prior-atom values via traceeval.walk + tally='clamped', so each
+// prior atom θ_i contributes logp = logdensityof(M[θ_i], x). This is
+// the same primitive that drives bayesupdate's reweight, just exposed
+// as a scalar binding rather than folded into a posterior.
+//
+// Supported shape (Phase 1):
+//   - M is a self-ref to a measure binding (sample / record / iid /
+//     algebraic combinator chain — anything expandMeasureIR handles).
+//   - x is resolvable to a concrete JS value (literal, array binding,
+//     record literal, …) via resolveIRToValue. Variate observations
+//     (x is itself a variate) are deferred — they require encoding
+//     the observation into refArrays per atom, an extra path the
+//     materialiser doesn't yet take.
+function classifyLogdensityof(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const Mref   = rhsIR.args[0];
+  const obsIR  = rhsIR.args[1];
+  if (!isSelfRef(Mref)) return null;
+  if (!bindings.has(Mref.name)) return null;
+  const obsValue = resolveIRToValue(obsIR, bindings, new Set());
+  if (obsValue === RESOLVE_FAIL) return null;
+  return { kind: 'logdensityof', measureName: Mref.name, obsValue };
+}
+
 const MEASURE_OP_CLASSIFIERS = {
-  weighted:    classifyWeighted,
-  logweighted: classifyLogWeighted,
-  normalize:   classifyNormalize,
-  superpose:   classifySuperpose,
-  record:      classifyRecordOrJoint,
-  joint:       classifyRecordOrJoint,
-  iid:         classifyIid,
+  weighted:     classifyWeighted,
+  logweighted:  classifyLogWeighted,
+  normalize:    classifyNormalize,
+  superpose:    classifySuperpose,
+  record:       classifyRecordOrJoint,
+  joint:        classifyRecordOrJoint,
+  iid:          classifyIid,
+  logdensityof: classifyLogdensityof,
 };
 
 /**
@@ -1774,6 +1836,13 @@ function derivationRefsValid(d, derivations, bindings) {
   }
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;
+  // logdensityof: the measure must be derivable. The materialiser
+  // expands it into a self-contained IR at evaluation time, so the
+  // measure's transitive value refs are checked then; the top-level
+  // ref alone is enough for cascade prune.
+  if (d.kind === 'logdensityof') {
+    return Object.prototype.hasOwnProperty.call(derivations, d.measureName);
+  }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
   const refs = collectSelfRefs(ir);
   for (const r of refs) {
