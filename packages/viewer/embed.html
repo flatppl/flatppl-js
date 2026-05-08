@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<!--
+  Standalone embed page for @flatppl/viewer. Demonstrates loading the
+  viewer outside a VS Code webview — used for the rosetta-stone /
+  flatppl-design online site, and as a smoke-test target.
+
+  The page expects sibling vendored dependencies under ./vendor/ —
+  cytoscape / dagre / echarts / engine bundle / sampler-worker / viewer.
+  A small build step (or symlink) pulls them in. For local dev:
+
+      cd packages/viewer
+      mkdir -p vendor
+      cd vendor
+      ln -s ../../vscode-extension/lib/cytoscape.min.js .
+      ln -s ../../vscode-extension/lib/dagre.min.js .
+      ln -s ../../vscode-extension/lib/cytoscape-dagre.js .
+      ln -s ../../vscode-extension/lib/cytoscape-layers.min.js .
+      ln -s ../../vscode-extension/lib/cytoscape-bubblesets.min.js .
+      ln -s ../../vscode-extension/lib/echarts.min.js .
+      ln -s ../../vscode-extension/lib/engine.min.js .
+      ln -s ../../vscode-extension/lib/sampler-worker.min.js .
+      ln -s ../src/viewer.js .
+
+  Then serve packages/viewer/ over HTTP (e.g. `python3 -m http.server`)
+  and open embed.html. The viewer renders a sample FlatPPL module
+  inline; replace the source string in the bootstrap script below to
+  preview your own.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlatPPL viewer (standalone embed)</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      background: #1e1e1e;
+      color: #cccccc;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 100%; height: 100%;
+    }
+    #flatppl-viewer-root { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="flatppl-viewer-root"></div>
+
+  <script src="vendor/cytoscape.min.js"></script>
+  <script src="vendor/dagre.min.js"></script>
+  <script src="vendor/cytoscape-dagre.js"></script>
+  <script src="vendor/cytoscape-layers.min.js"></script>
+  <script src="vendor/cytoscape-bubblesets.min.js"></script>
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/engine.min.js"></script>
+  <script>
+    // Configure the viewer before it loads. Same shape as the VS Code
+    // bootstrap; the only required field today is the URL of the
+    // sampler-worker bundle.
+    window.__FLATPPL_CONFIG__ = {
+      samplerWorkerUrl: new URL('vendor/sampler-worker.min.js', document.baseURI).href,
+    };
+  </script>
+  <script src="vendor/viewer.js"></script>
+  <script>
+    // Standalone embed bootstrap. The auto-mount branch in viewer.js
+    // sees the #flatppl-viewer-root marker and mounts inside it with
+    // an empty host adapter (no IDE, no setTitle / revealSourceLine,
+    // no persisted state). We push an initial source via update() so
+    // the viewer renders something on first load.
+    var SAMPLE_SOURCE = [
+      '# A small Bayesian example for the standalone embed.',
+      'theta1_dist = Normal(mu = 0, sigma = 1)',
+      'theta2_dist = Exponential(rate = 1)',
+      'theta1 = draw(theta1_dist)',
+      'theta2 = draw(theta2_dist)',
+      'a = 2 * theta2',
+      'b = abs(theta1) * theta1',
+      'obs = draw(iid(Normal(mu = a, sigma = b), 10))',
+      'prior = lawof(record(theta1 = theta1, theta2 = theta2))',
+      'forward_kernel = functionof(obs, theta1 = theta1, theta2 = theta2)',
+      'joint_model = jointchain(prior, forward_kernel)',
+      '',
+    ].join('\n');
+
+    // Auto-mount runs at DOMContentLoaded. We use a small timer to
+    // hand the source to the (already-mounted) viewer instance via
+    // postMessage — the same channel VS Code uses, so no extra API
+    // is needed. For a more direct integration, hosts can call
+    // FlatPPLViewer.mount(...) themselves with opts.source set.
+    document.addEventListener('DOMContentLoaded', function() {
+      window.postMessage({
+        type: 'sourceUpdate',
+        source: SAMPLE_SOURCE,
+        targetName: 'joint_model',
+        pushHistory: false,
+      }, '*');
+    });
+  </script>
+</body>
+</html>

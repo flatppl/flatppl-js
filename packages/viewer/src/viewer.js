@@ -312,6 +312,35 @@
       cssInjected = true;
     }
 
+    // Cache acquireVsCodeApi()'s return value: VS Code permits calling
+    // it at most once per webview. If the default host adapter is built
+    // more than once (e.g. by re-mount), we hand out the same underlying
+    // api object instead of throwing.
+    var cachedVscodeApi = null;
+    function getVscodeApi() {
+      if (cachedVscodeApi) return cachedVscodeApi;
+      if (typeof acquireVsCodeApi !== 'function') return null;
+      try { cachedVscodeApi = acquireVsCodeApi(); } catch (_) { cachedVscodeApi = null; }
+      return cachedVscodeApi;
+    }
+
+    // Default host adapter for VS Code webviews. Bridges the four
+    // host-adapter methods to the corresponding postMessage / setState
+    // / getState calls. When NOT inside a VS Code webview
+    // (acquireVsCodeApi missing), returns an empty object — the
+    // viewer's call sites guard each method with `if (host.foo)`, so
+    // missing methods become no-ops cleanly.
+    function defaultVscodeHost() {
+      var api = getVscodeApi();
+      if (!api) return {};
+      return {
+        revealSourceLine: function(line) { api.postMessage({ type: 'navigateTo', line: line }); },
+        setTitle:         function(name) { api.postMessage({ type: 'updateTitle', name: name }); },
+        saveState:        function(state) { api.setState(state); },
+        loadState:        function() { return api.getState(); },
+      };
+    }
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
       // container: the element the viewer renders inside. Defaults to
@@ -324,8 +353,24 @@
       }
       ensureCssInjected();
       container.innerHTML = VIEWER_BODY_HTML;
-      var host = opts.host || {};
-      void host;  // wired in 2c
+      // Host adapter: IDE-only concerns the viewer delegates outward
+      // (cross-pane source navigation, panel-title updates, persistent
+      // UI state). Each method is optional; missing methods become
+      // no-ops, so a standalone embed can pass {} or omit opts.host
+      // entirely and the viewer renders fine — just without the
+      // navigate-to-source / restore-state niceties.
+      //
+      //   revealSourceLine(line)  — host moves its source view's cursor
+      //   setTitle(name)          — host sets the surrounding panel title
+      //   saveState(state)        — host persists viewer state across reloads
+      //   loadState()             — host returns previously-saved state
+      //
+      // Default: when no host is supplied AND acquireVsCodeApi exists
+      // (we're inside a VS Code webview), build a default adapter that
+      // bridges to VS Code's postMessage / setState / getState. This
+      // keeps the existing extension wrapper working without any
+      // host-side changes.
+      var host = opts.host || defaultVscodeHost();
 
       // Host-supplied configuration. The vscode-extension host writes
       // window.__FLATPPL_CONFIG__ via a small inline bootstrap <script>
@@ -335,13 +380,6 @@
       //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
       //                                loaded as a Web Worker.
       var CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
-      // VS Code webviews expose acquireVsCodeApi(); standalone hosts
-      // don't. The viewer functions without it (state persistence and
-      // cross-pane navigation become no-ops); the shim below makes
-      // either case work without further branching downstream.
-      var vscodeApi = (typeof acquireVsCodeApi === 'function')
-        ? acquireVsCodeApi()
-        : { postMessage: function() {}, setState: function() {}, getState: function() { return null; } };
       var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
       // Sampler-worker URL. Used lazily — no worker is spawned until the
       // user picks a binding for which the Plot tab is enabled (a 'draw'
@@ -841,7 +879,7 @@
         if (oe && (oe.ctrlKey || oe.metaKey)) {
           var line = evt.target.data('line');
           if (line >= 0) {
-            vscodeApi.postMessage({ type: 'navigateTo', line: line });
+            if (host.revealSourceLine) host.revealSourceLine(line);
           }
           return;
         }
@@ -871,7 +909,7 @@
         // Don't drill into synthetic nodes (placeholder/hole inputs).
         if (nodeId.indexOf(':') !== -1) return;
         focusNode(nodeId, /* pushHistory */ true);
-        vscodeApi.postMessage({ type: 'updateTitle', name: nodeId });
+        if (host.setTitle) host.setTitle(nodeId);
       });
 
       var tip = document.getElementById('tooltip');
@@ -1700,7 +1738,7 @@
       btn.textContent = 'Plot: ' + (plotEnabled ? 'on' : 'off');
       // Persist across panel reopens. VS Code restores webview state
       // automatically when the panel is shown again.
-      try { vscodeApi.setState({ plotEnabled: plotEnabled }); } catch (_) {}
+      if (host.saveState) { try { host.saveState({ plotEnabled: plotEnabled }); } catch (_) {} }
       if (plotEnabled) {
         // Render whatever the current plan says — including the
         // "not plottable" message if the focused binding isn't
@@ -3496,12 +3534,46 @@
       // generic title rather than the sentinel string.
       if (currentState.targetName === MODULE_TARGET) {
         updatePlotForBinding(null);
-        vscodeApi.postMessage({ type: 'updateTitle', name: 'module' });
+        if (host.setTitle) host.setTitle('module');
       } else {
         updatePlotForBinding(currentState.targetName);
-        vscodeApi.postMessage({ type: 'updateTitle', name: currentState.targetName });
+        if (host.setTitle) host.setTitle(currentState.targetName);
       }
     });
+
+    // Source-update handler shared by:
+    //   - the postMessage listener below (VS Code extension host pushes
+    //     fresh source on cursor moves and edits)
+    //   - the public view.update(source, target?) method (programmatic
+    //     re-render from any host)
+    //   - the initial-source bootstrap (opts.source / opts.target on
+    //     mount)
+    function applySourceUpdate(msg) {
+      if (msg.source !== currentSource) {
+        currentSource = msg.source;
+        try {
+          var result = FlatPPLEngine.processSource(msg.source);
+          currentBindings = result.bindings;
+          // Source change → rebuild derivations and clear sample cache.
+          // The orchestrator's derivations key the cache, so any change
+          // (renamed bindings, edited dist params, new dependencies)
+          // requires a full reset.
+          rebuildDerivations();
+        } catch (e) {
+          // Parse error: keep the previous bindings so the visualizer
+          // stays usable while the user fixes their syntax. The host's
+          // own diagnostics (VS Code editor squiggles, embed page
+          // markers, …) surface the error to the user.
+          console.error('FlatPPL parse error:', e);
+          return;
+        }
+      }
+      if (msg.type === 'showModule') {
+        enterModuleView(msg.pushHistory);
+      } else {
+        focusNode(msg.targetName, msg.pushHistory);
+      }
+    }
 
     window.addEventListener('message', function(event) {
       var msg = event.data;
@@ -3538,44 +3610,48 @@
       }
 
       if (msg.type !== 'sourceUpdate' && msg.type !== 'showModule') return;
-
-      // Only re-parse when source actually changed. Cursor-driven retargets
-      // re-use the cached bindings (saves the parse for typical "click
-      // around" interactions where the user navigates without editing).
-      if (msg.source !== currentSource) {
-        currentSource = msg.source;
-        try {
-          var result = FlatPPLEngine.processSource(msg.source);
-          currentBindings = result.bindings;
-          // Source change → rebuild derivations and clear sample cache.
-          // The orchestrator's derivations key the cache, so any change
-          // (renamed bindings, edited dist params, new dependencies)
-          // requires a full reset.
-          rebuildDerivations();
-        } catch (e) {
-          // Parse error: keep the previous bindings so the visualizer
-          // stays usable while the user fixes their syntax. Errors flow
-          // through VS Code diagnostics in the editor anyway.
-          console.error('FlatPPL parse error:', e);
-          return;
-        }
-      }
-      if (msg.type === 'showModule') {
-        enterModuleView(msg.pushHistory);
-      } else {
-        focusNode(msg.targetName, msg.pushHistory);
-      }
+      applySourceUpdate(msg);
     });
 
     initCy();
 
-    // Restore Plot toggle state from the webview's persistent state so
-    // the user's preference survives panel close/reopen and VS Code
-    // window reloads. Default is OFF for first-time use — the plot
-    // panel is opt-in to keep the initial DAG-only experience clean.
+    // Restore Plot toggle state from the host's persistent state so the
+    // user's preference survives panel close/reopen and reloads. Default
+    // is OFF for first-time use — the plot panel is opt-in to keep the
+    // initial DAG-only experience clean.
     var prevState = null;
-    try { prevState = vscodeApi.getState(); } catch (_) {}
+    if (host.loadState) { try { prevState = host.loadState(); } catch (_) {} }
     setPlotEnabled(prevState && prevState.plotEnabled === true);
+
+    // Initial source bootstrap. When opts.source is supplied, render
+    // immediately. Otherwise the viewer waits for a postMessage
+    // sourceUpdate (the existing VS Code flow) — the message listener
+    // above feeds applySourceUpdate when the host sends one.
+    if (typeof opts.source === 'string') {
+      applySourceUpdate({
+        source: opts.source,
+        targetName: opts.target,
+        type: opts.target ? 'sourceUpdate' : 'showModule',
+        pushHistory: false,
+      });
+    }
+
+    // Public control surface. update(source, target) re-parses and
+    // re-renders; dispose() is a placeholder for now (a full teardown
+    // would dispose cytoscape/echarts instances and remove every
+    // window/document listener; we'll wire that when there's a real
+    // re-mount use case).
+    return {
+      update: function(source, target) {
+        applySourceUpdate({
+          source: source,
+          targetName: target,
+          type: target ? 'sourceUpdate' : 'showModule',
+          pushHistory: false,
+        });
+      },
+      dispose: function() {},
+    };
     };
 
     // Auto-mount when the host provides a marker container in the DOM
