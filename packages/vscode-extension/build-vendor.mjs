@@ -88,22 +88,23 @@ for (const { pkg, src, dst } of COPY_LIBS) {
   console.log(`  copied ${pkg} -> lib/${dst}`);
 }
 
-// Webview viewer JS — extracted from visualPanel.js's inline <script>
-// into its own source file so it can use backticks / \\n / template
-// literals freely without the host's outer template literal eating
-// them. Loaded by the webview as a regular external <script>.
-// Phase 2 will move this into a dedicated `viewer` package; for now
-// it lives under src/webview/ alongside the host module and is
-// copied verbatim into lib/.
+// Webview viewer JS — sourced from the sibling @flatppl/viewer
+// workspace package. The viewer package owns the host-agnostic
+// browser-side rendering code; this extension just bundles it as a
+// vendored asset alongside cytoscape / echarts so the webview can
+// load it via a webview URI. Online embeds (rosetta-stone, etc.)
+// load the same source file directly without going through this
+// copy step.
 {
-  const from = join(here, 'src', 'webview', 'viewer.js');
+  const viewerPkg = join(here, '..', 'viewer');
+  const from = join(viewerPkg, 'src', 'viewer.js');
   const to = join(libDir, 'viewer.js');
   if (!existsSync(from)) {
-    console.error(`  ! missing webview viewer source at ${from}`);
+    console.error(`  ! missing viewer source at ${from}`);
     process.exit(1);
   }
   await copyFile(from, to);
-  console.log('  copied webview viewer -> lib/viewer.js');
+  console.log('  copied @flatppl/viewer -> lib/viewer.js');
 }
 
 // ---------------------------------------------------------------------

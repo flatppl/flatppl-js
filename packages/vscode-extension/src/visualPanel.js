@@ -153,13 +153,13 @@ class FlatPPLPanel {
     const samplerWorkerUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'sampler-worker.min.js')
     );
-    // Webview viewer JS, extracted from this file's inline <script> into
-    // its own source file (src/webview/viewer.js). The build step copies
-    // it to lib/viewer.js. Loading it as a regular external script —
-    // rather than as text spliced into a host template literal — means
-    // the viewer source can use backticks and \n freely without the
-    // host's outer template literal eating them. (See the "webview
-    // escape traps" memory for context.)
+    // Webview viewer JS, sourced from the sibling @flatppl/viewer
+    // workspace package and copied into lib/ by build-vendor.mjs.
+    // Loading it as a regular external script — rather than as text
+    // spliced into a host template literal — means the viewer source
+    // can use backticks and \n freely without the host's outer
+    // template literal eating them. (See the "webview escape traps"
+    // memory for context.)
     const viewerUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'viewer.js')
     );

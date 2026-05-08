@@ -1,0 +1,28 @@
+{
+  "name": "@flatppl/viewer",
+  "version": "0.1.0",
+  "description": "Browser-loadable FlatPPL DAG + plot visualization. Host-agnostic; depends on cytoscape, echarts and the FlatPPL engine bundle. Embedded by the VS Code extension and intended for online docs / standalone web previews.",
+  "license": "MIT",
+  "private": true,
+  "main": "./src/viewer.js",
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flatppl/flatppl-js",
+    "directory": "packages/viewer"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "flatppl",
+    "visualization",
+    "dag",
+    "cytoscape",
+    "echarts"
+  ]
+}
