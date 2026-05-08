@@ -121,6 +121,26 @@
       flex: 0 0 0; min-height: 0; border-top: none;
     }
     #plot-content { width: 100%; height: 100%; }
+    /* Profile-plot controls row (axis selector). Sits above the
+       chart; the chart fills the remaining height via flex. */
+    #plot-content .profile-controls {
+      display: flex; flex-direction: row; gap: 8px;
+      align-items: center; padding: 4px 12px;
+      font-size: 11px;
+    }
+    #plot-content .profile-controls label { opacity: 0.6; }
+    #plot-content .profile-controls select {
+      background: var(--vscode-dropdown-background, #3c3c3c);
+      color: var(--vscode-dropdown-foreground, #cccccc);
+      border: 1px solid var(--vscode-dropdown-border, #555);
+      padding: 2px 4px; font-size: 11px;
+    }
+    #plot-content .profile-chart {
+      flex: 1 1 auto; min-height: 0; width: 100%;
+    }
+    #plot-content.profile-mode {
+      display: flex; flex-direction: column;
+    }
     #plot-empty {
       opacity: 0.7; padding: 1.6em; text-align: center;
       font-size: 1.08em; line-height: 1.5;
@@ -1846,6 +1866,7 @@
       el.style.gap = '';
       el.style.padding = '';
       el.style.boxSizing = '';
+      el.classList.remove('profile-mode');
     }
 
     function showPlotMessage(html, options) {
@@ -3301,6 +3322,38 @@
       resetPlotContentStyle();
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
+      el.classList.add('profile-mode');
+      // Controls row: axis dropdown for the sweep selection. When
+      // there's only one axis, hide the row entirely (no choice to
+      // make). On change, mutate the plan's sweepKey and re-trigger
+      // renderProfilePlotForCurrent — this re-fetches the empirical
+      // range, rebuilds fixedEnv, and re-runs the worker.
+      if (plan.axes && plan.axes.length > 1) {
+        var controls = document.createElement('div');
+        controls.className = 'profile-controls';
+        var label = document.createElement('label');
+        label.textContent = 'Axis:';
+        label.htmlFor = 'profile-axis-select';
+        var select = document.createElement('select');
+        select.id = 'profile-axis-select';
+        for (var ai = 0; ai < plan.axes.length; ai++) {
+          var opt = document.createElement('option');
+          opt.value = plan.axes[ai].key;
+          opt.textContent = plan.axes[ai].label;
+          if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
+          select.appendChild(opt);
+        }
+        select.addEventListener('change', function(e) {
+          plan.sweepKey = e.target.value;
+          renderProfilePlotForCurrent();
+        });
+        controls.appendChild(label);
+        controls.appendChild(select);
+        el.appendChild(controls);
+      }
+      var chartDiv = document.createElement('div');
+      chartDiv.className = 'profile-chart';
+      el.appendChild(chartDiv);
       var fg = getComputedStyle(document.body).color || '#ccc';
       var color = colorForBinding(currentPlotBindingName);
       var n = values.length;
@@ -3316,7 +3369,7 @@
         data[i] = (Number.isFinite(y)) ? [x, y] : [x, null];
       }
       if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-      plotEchart = echarts.init(el);
+      plotEchart = echarts.init(chartDiv);
       var zoomOpts = plotZoomOptions(fg);
       var titleText = (currentPlotBindingName ? esc(currentPlotBindingName) : 'profile')
         + ' — ' + esc(sweepAxis.label);
