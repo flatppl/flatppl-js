@@ -13,6 +13,8 @@ This monorepo contains:
 
 * [The FlatPPL JavaScript reference engine](packages/engine)
 
+* [The FlatPPL viewer](packages/viewer)
+
 * [The FlatPPL Visual Studio Code extension](packages/vscode-extension)
 
 ## Running tests

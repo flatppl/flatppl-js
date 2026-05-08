@@ -1,38 +1,31 @@
-# @flatppl/viewer
+# FlatPPL viewer
 
-Browser-loadable FlatPPL visualisation: an interactive DAG of a model's
-binding graph, plus per-binding histograms, density curves, and corner
-plots driven by a sampler that runs in a Web Worker. Same code that
-powers the VS Code extension's panel — without the VS Code coupling, so
-it can be embedded in online docs, the rosetta-stone site, or any web
-page.
+A web/JS-based viewer for FlatPPL, the Flat Portable Probabilistic Language.
 
-## What's in the package
+The viewer visualizes and allows the user to explore the directed acyclic
+graph (DAG) of FlatPPL modules. The viewer can also show plots of the
+deterministic and stochastic values of graph nodes.
 
-```
-packages/viewer/
-  src/
-    viewer.js           — the viewer source (host-agnostic; mounts inside
-                           a container element and exposes
-                           window.FlatPPLViewer.mount)
-  build.mjs             — vendor build: copies cytoscape / echarts / etc.
-                           from node_modules, bundles the engine and
-                           sampler-worker via esbuild, copies viewer.js,
-                           output goes to ./vendor/
-  serve.mjs             — zero-dependency static file server for local
-                           testing (defaults to embed-test.html)
-  embed-test.html       — reference standalone embed page; loads a
-                           sample FlatPPL module and renders its DAG +
-                           plots
-  vendor/               — populated by `npm run build` (gitignored)
-```
+> Note: The FlatPPL viewer is in early development and may be
+> unstable. It is not yet published to the npm registry; it currently
+> ships only as part of the [`flatppl-js`](https://github.com/flatppl/flatppl-js)
+> monorepo and is consumed via npm workspace symlinks by sibling packages.
 
-## Local testing
+## About FlatPPL
 
-```bash
+FlatPPL is a minimal, inference-agnostic stochastic language for specifying
+probabilistic models.
+
+## Testing
+
+```sh
+# from the flatppl-js workspace root, first time only (or after a clean):
+npm install
+
+# then in this package:
 cd packages/viewer
-npm run build           # populates ./vendor/ with all assets
-npm run serve           # http://localhost:8000/  (defaults to embed-test.html)
+npm run build  # populates ./vendor/ with all assets
+npm run serve  # http://localhost:8000/  (defaults to embed-test.html)
 ```
 
 `npm run watch` keeps esbuild in watch mode for the engine + sampler-

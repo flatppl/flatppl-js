@@ -26,7 +26,7 @@ example suite).
 - [`ast.js`](ast.js) — AST node constructors
 - [`parser.js`](parser.js) — recursive-descent parser → AST + diagnostics
 - [`analyzer.js`](analyzer.js) — scope, classification, dependencies, diagnostics
-- [`dag.js`](dag.js) — ancestor sub-DAG extraction for visualization
+- [`dag.js`](dag.js) — ancestor sub-DAG extraction
 - [`disintegrate.js`](disintegrate.js) — structural disintegration rewriter
 - [`builtins.js`](builtins.js) — catalog of known FlatPPL names
 - [`index.js`](index.js) — public API
