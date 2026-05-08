@@ -486,6 +486,77 @@ theta2 = draw(theta2_dist)
 });
 
 // =====================================================================
+// relabel — AST-level rewrite to record(...)
+// =====================================================================
+//
+// inlineRelabel handles five shapes (spec §sec:design lines 482-507):
+//   1. inline ArrayLiteral
+//   2. inline record(...) call (positional rename)
+//   3. Identifier → array binding (via xs[i] indexing)
+//   4. Identifier → record binding (via xs.<old_field> field access)
+//   5. single-name wrap of an arbitrary scalar
+// Anything else, or a length mismatch, must bail and leave the binding
+// unsupported (so an explicit error surfaces rather than silent garbage).
+
+test('relabel: inline array literal becomes a record derivation', () => {
+  const { derivations } = derivationsOf(`
+r = relabel([1.2, 3.4], ["x", "y"])
+`);
+  assert.ok(derivations.r, 'r should be derivable');
+  assert.equal(derivations.r.kind, 'record');
+  assert.deepEqual(Object.keys(derivations.r.fields), ['x', 'y']);
+});
+
+test('relabel: inline record(...) renames positionally', () => {
+  const { derivations } = derivationsOf(`
+r = relabel(record(a = 1.2, b = 3.4), ["x", "y"])
+`);
+  assert.ok(derivations.r, 'r should be derivable');
+  assert.equal(derivations.r.kind, 'record');
+  assert.deepEqual(Object.keys(derivations.r.fields), ['x', 'y']);
+});
+
+test('relabel: identifier → array binding reuses element exprs', () => {
+  const { derivations } = derivationsOf(`
+xs = [1.2, 3.4]
+r  = relabel(xs, ["x", "y"])
+`);
+  assert.ok(derivations.r, 'r should be derivable');
+  assert.equal(derivations.r.kind, 'record');
+  assert.deepEqual(Object.keys(derivations.r.fields), ['x', 'y']);
+});
+
+test('relabel: identifier → record binding renames by field', () => {
+  const { derivations } = derivationsOf(`
+src = record(a = 1.2, b = 3.4)
+r   = relabel(src, ["x", "y"])
+`);
+  assert.ok(derivations.r, 'r should be derivable');
+  assert.equal(derivations.r.kind, 'record');
+  assert.deepEqual(Object.keys(derivations.r.fields), ['x', 'y']);
+});
+
+test('relabel: single-name wrap of a scalar identifier', () => {
+  const { derivations } = derivationsOf(`
+mu = 1.5
+r  = relabel(mu, ["x"])
+`);
+  assert.ok(derivations.r, 'r should be derivable');
+  assert.equal(derivations.r.kind, 'record');
+  assert.deepEqual(Object.keys(derivations.r.fields), ['x']);
+});
+
+test('relabel: mismatched names/values bails (binding unsupported)', () => {
+  // Three values, two names → no static rewrite possible. The
+  // binding falls through to the generic classifier and stays out
+  // of the derivation map.
+  const { derivations } = derivationsOf(`
+r = relabel([1, 2, 3], ["x", "y"])
+`);
+  assert.ok(!('r' in derivations));
+});
+
+// =====================================================================
 // collectSelfRefs / leafSampleIR
 // =====================================================================
 
