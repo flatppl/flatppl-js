@@ -2096,6 +2096,15 @@ function expandMeasureIR(name, derivations, visited) {
 function expandMeasureRefsInIR(ir, derivations, visited) {
   visited = visited || new Set();
   if (!ir || ir.kind !== 'call') return ir;
+  // `lawof(M)` is a no-op once M is in measure position. The
+  // disintegrate rewriter wraps a kernel body's record/joint output
+  // in lawof to express "the measure of this value", but for density
+  // evaluation by traceeval we want the underlying measure structure
+  // — record / joint / iid / weighted / leaf distribution. Peel it
+  // before recursing so the resulting IR is one of those shapes.
+  if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
+    return expandMeasureRefsInIR(ir.args[0], derivations, visited);
+  }
   const out = { ...ir };
   if (Array.isArray(ir.fields)) {
     out.fields = ir.fields.map(f => ({
