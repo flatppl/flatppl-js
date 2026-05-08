@@ -1350,137 +1350,20 @@ function classifyDerivation(binding, bindings) {
       return { kind: 'sample', distIR: rhsIR };
     }
 
-    // Measure-algebra ops require *measures* as their measure-typed
-    // arguments — passing a value (e.g. `weighted(0.5, theta1)` where
-    // theta1 is a draw) is a type error per spec §sec:measure-algebra.
-    // We use isMeasureExpr on the original AST args (not the lowered
-    // IR) because that helper already encodes all the special cases
-    // (lawof / draw / MEASURE_PRODUCING). The orchestrator's lowered-IR
-    // matching tells us which OP we're looking at; the AST tells us
-    // which OPERANDS are actually measures.
-    const ast = binding.node.value;
-
-    // Density reweighting: weighted(<value-expr>, <measure-expr>).
-    //   - constant value-expr → uniform log-shift, precomputed here.
-    //   - per-atom value-expr → store the IR; evaluate at materialise
-    //                           time and add log(w_i) to logWeights[i].
-    // Per spec §sec:measure-algebra the first argument MUST be a value
-    // (non-negative real). A measure-typed weight is a type error and
-    // gets rejected; a value-typed expression that we can't sample (no
-    // derivation in scope) also gets rejected.
-    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'weighted'
-        && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
-      const weightAst  = ast.args[0];
-      const baseAst    = ast.args[1];
-      // After liftInlineSubexpressions the weight slot's IR is already
-      // either a literal/ref or an evaluable arithmetic tree — any
-      // inline draws have been lifted to synthetic anonymous variates.
-      const weightExpr = rhsIR.args[0];
-      const baseName = resolveMeasureBaseName(baseAst, bindings);
-      if (baseName == null) return null;
-      if (isMeasureExpr(weightAst, bindings)) return null;
-      const w = resolveConstant(weightExpr, bindings, new Set());
-      if (w != null) {
-        if (!(w > 0) || !Number.isFinite(w)) return null;
-        return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
-      }
-      if (isEvaluable(weightExpr)) {
-        return { kind: 'weighted', from: baseName, weightIR: weightExpr, isLog: false };
-      }
-      return null;
-    }
-
-    // Log-density reweighting: logweighted(<value-expr>, <measure-expr>).
-    // Same two paths as weighted, but the user has already supplied
-    // log-weights — we add them in directly with no log() call. Negative
-    // and even -Infinity values are valid (probability 0).
-    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'logweighted'
-        && Array.isArray(rhsIR.args) && rhsIR.args.length === 2) {
-      const weightAst = ast.args[0];
-      const baseAst   = ast.args[1];
-      const lwExpr    = rhsIR.args[0];
-      const baseName = resolveMeasureBaseName(baseAst, bindings);
-      if (baseName == null) return null;
-      if (isMeasureExpr(weightAst, bindings)) return null;
-      const lw = resolveConstant(lwExpr, bindings, new Set());
-      if (lw != null) {
-        if (!Number.isFinite(lw)) return null;
-        return { kind: 'weighted', from: baseName, logShift: lw };
-      }
-      if (isEvaluable(lwExpr)) {
-        return { kind: 'weighted', from: baseName, weightIR: lwExpr, isLog: true };
-      }
-      return null;
-    }
-
-    // Normalisation: normalize(<measure-expr>). Subtracts logSumExp
-    // from each weight so the result is a probability measure.
-    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'normalize'
-        && Array.isArray(rhsIR.args) && rhsIR.args.length === 1) {
-      const baseAst = ast.args[0];
-      const baseName = resolveMeasureBaseName(baseAst, bindings);
-      if (baseName == null) return null;
-      return { kind: 'normalize', from: baseName };
-    }
-
-    // Additive superposition: superpose(<measure-expr>, ...).
-    // Per spec §sec:additive-superposition the result is generally
-    // not normalised — totals add. Components must be measures (a
-    // value summand is a type error).
-    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'superpose'
-        && Array.isArray(rhsIR.args) && rhsIR.args.length >= 1) {
-      const fromNames = [];
-      for (let i = 0; i < rhsIR.args.length; i++) {
-        const argAst = ast.args[i];
-        const baseName = resolveMeasureBaseName(argAst, bindings);
-        if (baseName == null) return null;
-        fromNames.push(baseName);
-      }
-      return { kind: 'superpose', fromNames };
-    }
-    // record(name1=val1, ...) builds a record-typed value at every atom.
-    // joint(name1=M1, ...) builds a measure over a record (joint of
-    // measures). At the EmpiricalMeasure level both produce the same
-    // SoA shape (record fields → per-field sub-measures); the
-    // type-system distinction (value vs measure) is recorded by
-    // typeinfer, not by the derivation kind. We unify them here as
-    // `kind: 'record'` and let the materialiser combine the per-field
-    // sub-measures.
+    // Measure-algebra ops dispatch through MEASURE_OP_CLASSIFIERS
+    // below. Each entry is one tightly-scoped handler that decides the
+    // derivation kind (or returns null). New ops add one entry — no
+    // edits to this dispatch loop.
     //
-    // Spec §03 line 126: `record(t)` ↔ `table(r)` auto-conversion is
-    // free at this layer — both have the same SoA shape.
-    if (rhsIR && rhsIR.kind === 'call' && (rhsIR.op === 'record' || rhsIR.op === 'joint')
-        && rhsIR.fields && rhsIR.fields.length > 0) {
-      const fields = {};
-      for (const f of rhsIR.fields) {
-        // Per-field operand: must be a binding ref after lifting.
-        // `record` accepts value refs; `joint` accepts measure refs.
-        // Either way it's a `(ref self <name>)` to a derivable binding.
-        if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
-        fields[f.name] = f.value.name;
-      }
-      return { kind: 'record', fields };
-    }
-    // iid(M, n, ...): per spec §sec:iid, a measure over arrays of
-    // shape [n, ...] of M-domain values. After lifting, M is a bare
-    // ref to a measure binding; each dim is a literal positive
-    // integer (refs to integer constants are pinned to %dynamic at
-    // type-inference but we need a concrete number to allocate
-    // sample buffers — folding via resolveConstant keeps this
-    // simple). 1-D iid is the common case (`iid(Normal(0,1), 10)`);
-    // higher-rank stays straightforward.
-    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'iid'
-        && Array.isArray(rhsIR.args) && rhsIR.args.length >= 2) {
-      const baseAst = ast.args[0];
-      const baseName = resolveMeasureBaseName(baseAst, bindings);
-      if (baseName == null) return null;
-      const dims = [];
-      for (let i = 1; i < rhsIR.args.length; i++) {
-        const n = resolveConstant(rhsIR.args[i], bindings, new Set());
-        if (n == null || !Number.isInteger(n) || n <= 0) return null;
-        dims.push(n);
-      }
-      return { kind: 'iid', from: baseName, dims };
+    // Operand type-checking still uses the original AST via
+    // isMeasureExpr, since "this expression denotes a measure" isn't
+    // determinable from bare IR shape (lawof / draw / certain
+    // combinators are involved). The lowered IR tells us *which* op
+    // we're matching; the AST tells us which operands are measures.
+    const ast = binding.node.value;
+    if (rhsIR && rhsIR.kind === 'call' && MEASURE_OP_CLASSIFIERS[rhsIR.op]) {
+      const result = MEASURE_OP_CLASSIFIERS[rhsIR.op](rhsIR, ast, bindings);
+      if (result) return result;
     }
     // Numeric array literal: lowered to (call vector lit lit ...).
     // Treated as static data, not samples — the cache stores the
@@ -1533,6 +1416,120 @@ function classifyDerivation(binding, bindings) {
   // Reifications, modules, inputs, joints, likelihoods, bayesupdate: unsupported.
   return null;
 }
+
+// =====================================================================
+// Measure-algebra op classifiers
+// =====================================================================
+//
+// One handler per IR op whose classification is non-trivial (the
+// distribution leaves go through the `sample` shortcut above). Each
+// handler receives:
+//   irCall    — the binding's lowered IR (a call node with the matching op)
+//   ast       — the original RHS AST (for isMeasureExpr operand checks)
+//   bindings  — the post-lift bindings map
+// and returns a derivation record `{ kind, ... }` or `null` for "not
+// classifiable in this shape — fall through to the next attempt".
+//
+// Adding a new measure op (pushfwd, truncate, relabel, …) is one entry
+// in MEASURE_OP_CLASSIFIERS plus the corresponding handler function;
+// no edits to the dispatch loop in classifyDerivation.
+
+function classifyWeighted(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const weightAst = ast.args[0];
+  const baseAst   = ast.args[1];
+  // After liftInlineSubexpressions the weight slot is either a literal,
+  // a ref, or an evaluable arithmetic tree; inline draws have been
+  // lifted to synthetic anonymous variates already.
+  const weightExpr = rhsIR.args[0];
+  const baseName = resolveMeasureBaseName(baseAst, bindings);
+  if (baseName == null) return null;
+  if (isMeasureExpr(weightAst, bindings)) return null;
+  const w = resolveConstant(weightExpr, bindings, new Set());
+  if (w != null) {
+    if (!(w > 0) || !Number.isFinite(w)) return null;
+    return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
+  }
+  if (isEvaluable(weightExpr)) {
+    return { kind: 'weighted', from: baseName, weightIR: weightExpr, isLog: false };
+  }
+  return null;
+}
+
+function classifyLogWeighted(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const weightAst = ast.args[0];
+  const baseAst   = ast.args[1];
+  const lwExpr = rhsIR.args[0];
+  const baseName = resolveMeasureBaseName(baseAst, bindings);
+  if (baseName == null) return null;
+  if (isMeasureExpr(weightAst, bindings)) return null;
+  const lw = resolveConstant(lwExpr, bindings, new Set());
+  if (lw != null) {
+    if (!Number.isFinite(lw)) return null;
+    return { kind: 'weighted', from: baseName, logShift: lw };
+  }
+  if (isEvaluable(lwExpr)) {
+    return { kind: 'weighted', from: baseName, weightIR: lwExpr, isLog: true };
+  }
+  return null;
+}
+
+function classifyNormalize(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
+  const baseAst = ast.args[0];
+  const baseName = resolveMeasureBaseName(baseAst, bindings);
+  if (baseName == null) return null;
+  return { kind: 'normalize', from: baseName };
+}
+
+function classifySuperpose(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
+  const fromNames = [];
+  for (let i = 0; i < rhsIR.args.length; i++) {
+    const baseName = resolveMeasureBaseName(ast.args[i], bindings);
+    if (baseName == null) return null;
+    fromNames.push(baseName);
+  }
+  return { kind: 'superpose', fromNames };
+}
+
+// `record` builds a record-typed value; `joint` builds a measure over
+// a record. Both share IR shape (call with `fields:[{name,value},…]`)
+// and the same SoA empirical-measure layout downstream — typeinfer
+// records the value-vs-measure distinction, the derivation kind unifies.
+function classifyRecordOrJoint(rhsIR /*, ast, bindings */) {
+  if (!Array.isArray(rhsIR.fields) || rhsIR.fields.length === 0) return null;
+  const fields = {};
+  for (const f of rhsIR.fields) {
+    if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
+    fields[f.name] = f.value.name;
+  }
+  return { kind: 'record', fields };
+}
+
+function classifyIid(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
+  const baseName = resolveMeasureBaseName(ast.args[0], bindings);
+  if (baseName == null) return null;
+  const dims = [];
+  for (let i = 1; i < rhsIR.args.length; i++) {
+    const n = resolveConstant(rhsIR.args[i], bindings, new Set());
+    if (n == null || !Number.isInteger(n) || n <= 0) return null;
+    dims.push(n);
+  }
+  return { kind: 'iid', from: baseName, dims };
+}
+
+const MEASURE_OP_CLASSIFIERS = {
+  weighted:    classifyWeighted,
+  logweighted: classifyLogWeighted,
+  normalize:   classifyNormalize,
+  superpose:   classifySuperpose,
+  record:      classifyRecordOrJoint,
+  joint:       classifyRecordOrJoint,
+  iid:         classifyIid,
+};
 
 /**
  * Whether a derivation's outgoing references are satisfiable —

@@ -180,23 +180,16 @@ function walkInner(state, ir, env, observed, ctx) {
     return walkLeaf(state, ir, env, observed, ctx);
   }
 
-  switch (op) {
-    case 'joint':
-    case 'record':
-      return walkJoint(state, ir, env, observed, ctx);
-    case 'iid':
-      return walkIid(state, ir, env, observed, ctx);
-    case 'weighted':
-      return walkWeighted(state, ir, env, observed, ctx);
-    case 'logweighted':
-      return walkLogWeighted(state, ir, env, observed, ctx);
-    default:
-      throw new Error(
-        `traceeval: op '${op}' is not a measure expression we can ` +
-        `sample or score. Known: leaf distributions, joint, record, ` +
-        `iid, weighted, logweighted.`
-      );
-  }
+  // Dispatch through MEASURE_OP_WALKERS. Adding a new measure-algebra
+  // walker (pushfwd, truncate, …) is one entry here plus the handler
+  // function — no edits to walkInner itself.
+  const handler = MEASURE_OP_WALKERS[op];
+  if (handler) return handler(state, ir, env, observed, ctx);
+  throw new Error(
+    `traceeval: op '${op}' is not a measure expression we can ` +
+    `sample or score. Known: leaf distributions, ` +
+    Object.keys(MEASURE_OP_WALKERS).join(', ') + '.'
+  );
 }
 
 function walkLeaf(state, ir, env, observed, ctx) {
@@ -330,5 +323,22 @@ function walkLogWeighted(state, ir, env, observed, ctx) {
   }
   return { value: r.value, logp, state: r.state };
 }
+
+// =====================================================================
+// Measure-op walkers
+// =====================================================================
+//
+// One entry per IR op the walker handles structurally (above and
+// beyond leaf distributions, which dispatch via samplerLib's REGISTRY).
+// Adding a new measure op (pushfwd, truncate, relabel, …) is one
+// entry here + one handler function — no edits to walkInner.
+
+const MEASURE_OP_WALKERS = {
+  joint:       walkJoint,
+  record:      walkJoint,
+  iid:         walkIid,
+  weighted:    walkWeighted,
+  logweighted: walkLogWeighted,
+};
 
 module.exports = { walk };
