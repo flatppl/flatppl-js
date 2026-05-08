@@ -118,6 +118,13 @@
       '# Non-normalized posterior',
       'posterior = bayesupdate(L, prior)',
       '',
+      '# Log-density evaluation as a first-class binding. Per prior atom',
+      '# this gives logp(observed_data | theta1, theta2) — same primitive',
+      '# bayesupdate uses, exposed as a scalar histogram-able binding.',
+      'obs_dist = lawof(record(obs = obs))',
+      'lp_obs = logdensityof(obs_dist, record(obs = observed_data))',
+      'd_obs  = densityof(obs_dist, record(obs = observed_data))',
+      '',
     ].join('\n');
 
     // Auto-mount runs at DOMContentLoaded. We use a small timer to

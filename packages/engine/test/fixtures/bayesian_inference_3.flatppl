@@ -41,3 +41,11 @@ L = likelihoodof(forward_kernel2, record(obs = observed_data))
 
 # Non-normalized posterior
 posterior = bayesupdate(L, prior2)
+
+# Log-density evaluation as a first-class binding. obs_dist depends on
+# theta1 and theta2 via a / b, so per prior atom this gives
+# logp(observed_data | theta1, theta2).
+lp_obs = logdensityof(obs_dist, record(obs = observed_data))
+
+# densityof(M, x) is sugar for exp(logdensityof(M, x)).
+d_obs  = densityof(obs_dist, record(obs = observed_data))

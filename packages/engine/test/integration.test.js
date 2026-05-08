@@ -121,6 +121,31 @@ test('integration: bayesian_inference_3 posterior derivation cascade', () => {
   assert.ok(derivations.posterior.obsValue, 'posterior.obsValue set');
 });
 
+test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () => {
+  // logdensityof binding broadcasts log p(observed_data | theta1, theta2)
+  // over prior atoms (the same primitive as bayesupdate's reweight,
+  // exposed as a scalar binding). densityof rewrites to
+  // exp(logdensityof(...)) at AST time. Both must reach a derivation
+  // when their inputs are derivable.
+  const { buildDerivations } = require('../orchestrator');
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
+  const { bindings } = processSource(src);
+  const { derivations } = buildDerivations(bindings);
+
+  assert.ok(derivations.lp_obs, 'lp_obs should classify');
+  assert.equal(derivations.lp_obs.kind, 'logdensityof');
+  // Measure should resolve to obs_dist (or one of its lifted aliases).
+  assert.ok(derivations.lp_obs.measureName, 'lp_obs.measureName set');
+  assert.ok(derivations.lp_obs.obsValue, 'lp_obs.obsValue set');
+  assert.deepEqual(derivations.lp_obs.obsValue, { obs: [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9] });
+
+  // d_obs lowers to exp(logdensityof(...)). The exp wrapping makes
+  // the *outer* binding evaluate-kind (logdensityof was lifted to a
+  // synthetic anon during liftValue, which itself is kind=logdensityof).
+  assert.ok(derivations.d_obs, 'd_obs should classify');
+  assert.equal(derivations.d_obs.kind, 'evaluate');
+});
+
 test('integration: bayesian_inference_3 posterior view uses the literal source structure', () => {
   // When viewing posterior (transitively reaches prior2 / forward_kernel2),
   // the trace should follow the user's source — not the rewriter's
