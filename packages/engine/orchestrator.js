@@ -85,11 +85,17 @@ const EVALUABLE_OPS = new Set([
   // This list mirrors sampler.js's ARITH_OPS exactly. Extend both
   // sides together when adding ops (the static gate must match the
   // worker's evaluator).
-  'add', 'sub', 'mul', 'div', 'neg', 'pos',
-  'abs', 'exp', 'log', 'log10', 'sqrt',
+  'add', 'sub', 'mul', 'div', 'mod', 'neg', 'pos',
+  'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
   'sin', 'cos', 'tan',
   'floor', 'ceil', 'round',
   'pow',
+  // Comparisons → boolean.
+  'lt', 'le', 'gt', 'ge', 'equal', 'unequal',
+  // Predicates → boolean.
+  'isfinite', 'isinf', 'isnan', 'iszero',
+  // Logic / conditionals.
+  'land', 'lor', 'lxor', 'lnot', 'ifelse',
 ]);
 
 /**

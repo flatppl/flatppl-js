@@ -622,6 +622,16 @@ const SIGNATURE_FACTORIES = {
   isnan:   () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
   iszero:  () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
 
+  // ---- Logic / conditionals ----------------------------------------
+  // Spec §07 — boolean ops. `lnot` is unary; the others are binary.
+  // `ifelse(cond, a, b)` is the conditional expression — both branches
+  // must unify (T, T → T) so the result type is a single T.
+  land:   () => ({ args: [BOOLEAN, BOOLEAN], kwargs: {}, result: BOOLEAN }),
+  lor:    () => ({ args: [BOOLEAN, BOOLEAN], kwargs: {}, result: BOOLEAN }),
+  lxor:   () => ({ args: [BOOLEAN, BOOLEAN], kwargs: {}, result: BOOLEAN }),
+  lnot:   () => ({ args: [BOOLEAN], kwargs: {}, result: BOOLEAN }),
+  ifelse: () => ({ args: [BOOLEAN, tvar('T'), tvar('T')], kwargs: {}, result: tvar('T') }),
+
   // ---- Reductions / norms ------------------------------------------
   sum:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   mean:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),

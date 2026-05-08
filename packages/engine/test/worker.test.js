@@ -553,6 +553,107 @@ test('logDensityN: joint observed clamps per-field, sums logpdfs', () => {
 
 
 // =====================================================================
+// New scalar ops: comparisons, predicates, logic, conditionals.
+// Exercised through evaluateN (the existing per-i evaluator) since
+// the runtime evaluator is shared.
+// =====================================================================
+
+function unaryOpIR(op, x) {
+  return {
+    kind: 'call', op,
+    args: [{ kind: 'lit', value: x, loc: synthLoc() }],
+    loc: synthLoc(),
+  };
+}
+function binaryOpIR(op, a, b) {
+  return {
+    kind: 'call', op,
+    args: [
+      { kind: 'lit', value: a, loc: synthLoc() },
+      { kind: 'lit', value: b, loc: synthLoc() },
+    ],
+    loc: synthLoc(),
+  };
+}
+
+test('eval ops: comparison ops produce booleans cast to numbers', () => {
+  // evaluateN packs everything into a Float64Array, so booleans
+  // round-trip as 0 / 1. The tests check the numerical encoding —
+  // downstream code that uses the value as a boolean (ifelse,
+  // logical ops) does the typecast back implicitly.
+  const w = createWorkerHandler();
+  const cases = [
+    ['lt',      [1, 2], 1],  ['lt',      [2, 1], 0],
+    ['le',      [2, 2], 1],  ['le',      [3, 2], 0],
+    ['gt',      [3, 2], 1],  ['gt',      [2, 3], 0],
+    ['ge',      [2, 2], 1],  ['ge',      [1, 2], 0],
+    ['equal',   [2, 2], 1],  ['equal',   [2, 3], 0],
+    ['unequal', [2, 3], 1],  ['unequal', [2, 2], 0],
+  ];
+  for (const [op, args, expected] of cases) {
+    const r = w.handle({ type: 'evaluateN', ir: binaryOpIR(op, args[0], args[1]), count: 1 });
+    assert.equal(r.samples[0], expected, op + '(' + args.join(',') + ')');
+  }
+});
+
+test('eval ops: logic ops (land / lor / lxor / lnot)', () => {
+  const w = createWorkerHandler();
+  const cases = [
+    ['land', [true,  true ], 1],  ['land', [true,  false], 0],
+    ['land', [false, true ], 0],  ['land', [false, false], 0],
+    ['lor',  [true,  false], 1],  ['lor',  [false, false], 0],
+    ['lxor', [true,  true ], 0],  ['lxor', [true,  false], 1],
+  ];
+  for (const [op, args, expected] of cases) {
+    const r = w.handle({ type: 'evaluateN', ir: binaryOpIR(op, args[0], args[1]), count: 1 });
+    assert.equal(r.samples[0], expected, op);
+  }
+  // Unary lnot.
+  const r1 = w.handle({ type: 'evaluateN', ir: unaryOpIR('lnot', true),  count: 1 });
+  assert.equal(r1.samples[0], 0);
+  const r2 = w.handle({ type: 'evaluateN', ir: unaryOpIR('lnot', false), count: 1 });
+  assert.equal(r2.samples[0], 1);
+});
+
+test('eval ops: ifelse picks the right branch', () => {
+  const w = createWorkerHandler();
+  const ir = (cond, a, b) => ({
+    kind: 'call', op: 'ifelse',
+    args: [
+      { kind: 'lit', value: cond, loc: synthLoc() },
+      { kind: 'lit', value: a, loc: synthLoc() },
+      { kind: 'lit', value: b, loc: synthLoc() },
+    ],
+    loc: synthLoc(),
+  });
+  assert.equal(w.handle({ type: 'evaluateN', ir: ir(true,  3.14, 2.72), count: 1 }).samples[0], 3.14);
+  assert.equal(w.handle({ type: 'evaluateN', ir: ir(false, 3.14, 2.72), count: 1 }).samples[0], 2.72);
+});
+
+test('eval ops: predicates (isfinite / isinf / isnan / iszero)', () => {
+  const w = createWorkerHandler();
+  // isfinite
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isfinite', 1.5), count: 1 }).samples[0], 1);
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isfinite', Infinity), count: 1 }).samples[0], 0);
+  // isinf
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isinf', Infinity), count: 1 }).samples[0], 1);
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isinf', 1.5), count: 1 }).samples[0], 0);
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isinf', NaN), count: 1 }).samples[0], 0);
+  // isnan
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isnan', NaN), count: 1 }).samples[0], 1);
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('isnan', 1.5), count: 1 }).samples[0], 0);
+  // iszero
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('iszero', 0), count: 1 }).samples[0], 1);
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('iszero', 1e-300), count: 1 }).samples[0], 0);
+});
+
+test('eval ops: mod / abs2', () => {
+  const w = createWorkerHandler();
+  assert.equal(w.handle({ type: 'evaluateN', ir: binaryOpIR('mod', 7, 3), count: 1 }).samples[0], 1);
+  assert.equal(w.handle({ type: 'evaluateN', ir: unaryOpIR('abs2', -3), count: 1 }).samples[0], 9);
+});
+
+// =====================================================================
 // profileN — sweep one input across [lo, hi], hold others at fixed
 // values. Drives the upcoming profile-plot UI for fn / functionof /
 // kernelof / likelihoodof bindings.
