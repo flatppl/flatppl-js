@@ -23,6 +23,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
+  signatureOf, distributeAxes,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -719,4 +720,142 @@ test('chain: self-reference detected (defensive — analyzer normally rejects)',
   bindings.set('b', stub('b', ['a']));
   const r = buildSampleChain('a', bindings);
   assert.ok(r.unsupported);
+});
+
+// =====================================================================
+// signatureOf — callable input/output signature for the profile plot
+// =====================================================================
+//
+// Pulls binding.inferredType (typeinfer-side) and binding.ir.paramSources
+// (lower.js-side, F1) together into a single shape the viewer can
+// consume. Covers fn / functionof / kernelof / likelihoodof.
+
+function sigOf(source, name) {
+  // signatureOf reads binding.ir, which is populated by
+  // liftInlineSubexpressions (the lift pass that buildDerivations
+  // runs internally). Mimic that here so tests stay decoupled from
+  // the full derivation builder.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(source);
+  return signatureOf(name, liftInlineSubexpressions(bindings));
+}
+
+test('signatureOf: fn(_) returns one placeholder input, scalar real output', () => {
+  // fn lowers to functionof with a single _arg1_ placeholder param.
+  // The body is `_ + 1` — value-typed, so kind='function'.
+  const sig = sigOf('f = fn(_ + 1)', 'f');
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].kwargName, 'arg1');
+  assert.equal(sig.inputs[0].paramName, '_arg1_');
+  assert.deepEqual(sig.inputs[0].source, { kind: 'placeholder', name: '_arg1_' });
+  assert.equal(sig.output.type.kind, 'scalar');
+});
+
+test('signatureOf: functionof with placeholder boundary', () => {
+  const sig = sigOf('f = functionof(c * _par_, par = _par_)\nc = 2.0', 'f');
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].kwargName, 'par');
+  assert.deepEqual(sig.inputs[0].source, { kind: 'placeholder', name: '_par_' });
+});
+
+test('signatureOf: functionof with identifier boundaries → binding sources', () => {
+  // Two binding boundaries — paramSources records each by name so the
+  // viewer can fetch their empirical samples for auto-range.
+  const sig = sigOf(`
+theta1_dist = Normal(mu = 0, sigma = 1)
+theta2_dist = Exponential(rate = 1)
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+`, 'f');
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.inputs.length, 2);
+  assert.deepEqual(sig.inputs[0].source, { kind: 'binding', name: 'theta1' });
+  assert.deepEqual(sig.inputs[1].source, { kind: 'binding', name: 'theta2' });
+});
+
+test('signatureOf: kernelof produces kind=kernel with measure-typed output', () => {
+  const sig = sigOf(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
+`, 'K');
+  assert.equal(sig.kind, 'kernel');
+  assert.equal(sig.inputs.length, 1);
+  assert.deepEqual(sig.inputs[0].source, { kind: 'binding', name: 'theta1' });
+  assert.equal(sig.output.type.kind, 'measure');
+});
+
+test('signatureOf: likelihood inherits inputs from K, output is REAL', () => {
+  // L = likelihoodof(K, obs); the profile-plot UI evaluates
+  // log-density at obs swept over one of K's inputs. The signature
+  // therefore exposes K's inputs and a real output.
+  const sig = sigOf(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
+obs_value = 1.5
+L = likelihoodof(K, obs_value)
+`, 'L');
+  assert.equal(sig.kind, 'likelihood');
+  assert.equal(sig.inputs.length, 1);
+  assert.deepEqual(sig.inputs[0].source, { kind: 'binding', name: 'theta1' });
+  assert.equal(sig.output.type.kind, 'scalar');
+  assert.equal(sig.kernelName, 'K');
+  assert.equal(sig.obsValue, 1.5);
+});
+
+test('signatureOf: returns null for non-callable bindings', () => {
+  // Sample / measure / literal bindings have no signature.
+  assert.equal(sigOf('y = draw(Normal(mu=0, sigma=1))', 'y'), null);
+  assert.equal(sigOf('m = Normal(mu=0, sigma=1)',       'm'), null);
+  assert.equal(sigOf('c = 5.0',                         'c'), null);
+});
+
+// =====================================================================
+// distributeAxes — flatten input cartprod / cartpow into atomic leaves
+// =====================================================================
+
+test('distributeAxes: scalar input → one axis', () => {
+  // Use a binding-bound input so typeinfer pins the input to a
+  // concrete scalar (theta1 is real). A bare `fn(_ + 1)` infers the
+  // hole to 'any' since placeholders are unrestricted by default —
+  // covered by the separate any/deferred test below.
+  const sig = sigOf(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+f = functionof(theta1 + 1, theta1 = theta1)
+`, 'f');
+  const axes = distributeAxes(sig);
+  assert.equal(axes.length, 1);
+  assert.equal(axes[0].label, 'theta1');
+  assert.deepEqual(axes[0].path, []);
+  assert.equal(axes[0].leafType.kind, 'scalar');
+});
+
+test('distributeAxes: two scalar inputs → two top-level axes', () => {
+  const sig = sigOf(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Normal(mu = 0, sigma = 1))
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+`, 'f');
+  const axes = distributeAxes(sig);
+  assert.equal(axes.length, 2);
+  assert.deepEqual(axes.map(a => a.label).sort(), ['theta1', 'theta2']);
+});
+
+test('distributeAxes: any / deferred placeholder still emits an axis', () => {
+  // Unrestricted placeholders (`fn(_)`, `_par_ = elementof(anything)`)
+  // type to 'any'. The UI still needs an axis to profile-sweep over
+  // — it just falls back to default range / default value rules
+  // since there's no scalar prim to dispatch on.
+  const sig = sigOf('f = fn(_)', 'f');
+  const axes = distributeAxes(sig);
+  assert.equal(axes.length, 1);
+  assert.ok(axes[0].leafType.kind === 'any' || axes[0].leafType.kind === 'scalar');
+});
+
+test('distributeAxes: empty signature → empty axis list', () => {
+  assert.deepEqual(distributeAxes(null), []);
+  assert.deepEqual(distributeAxes({}), []);
+  assert.deepEqual(distributeAxes({ inputs: [] }), []);
 });

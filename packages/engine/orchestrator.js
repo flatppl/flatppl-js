@@ -2337,6 +2337,209 @@ function collectSelfRefs(ir) {
   }
 }
 
+// =====================================================================
+// Callable introspection (for the profile-plot UI)
+// =====================================================================
+//
+// signatureOf(name, bindings) returns the canonical input/output
+// signature of any reified callable — function, kernel, or
+// likelihood — by combining typeinfer's structural types
+// (binding.inferredType) with the lowering's paramSources backrefs
+// (binding.ir.paramSources, populated in lower.js _lowerReification).
+//
+// distributeAxes(signature) flattens the input types into the list
+// of atomic scalar leaves the profile-plot UI uses for its axis
+// dropdown — distributing cartprod (records / tuples) and cartpow
+// (static-shape arrays) recursively.
+//
+// Both return plain JS objects; no mutation, no global state. The
+// viewer treats them as a stable shape contract.
+//
+// Likelihood handling:
+//   L = likelihoodof(K, obs) is treated as a function with K's input
+//   signature and a real-valued output (the log-likelihood at obs).
+//   We dereference to K to get the structural inputs but rewrite the
+//   output type and tag kind='likelihood' so the profile evaluator
+//   uses logDensityN rather than evaluateExpr.
+function signatureOf(name, bindings) {
+  if (!bindings) return null;
+  const b = bindings.get(name);
+  if (!b) return null;
+
+  if (b.type === 'likelihood') return signatureOfLikelihood(b, bindings);
+
+  let kind = null;
+  if (b.type === 'functionof' || b.type === 'fn')      kind = 'function';
+  else if (b.type === 'kernelof')                       kind = 'kernel';
+  else                                                  return null;
+
+  const ir = b.ir;
+  const t  = b.inferredType;
+  if (!ir || ir.op !== 'functionof' || !t) return null;
+  if (t.kind !== 'function' && t.kind !== 'kernel')   return null;
+
+  const params      = ir.params      || [];
+  const paramKwargs = ir.paramKwargs || [];
+  const sources     = ir.paramSources|| [];
+  const inputTypes  = t.inputs       || [];
+
+  const inputs = [];
+  for (let i = 0; i < params.length; i++) {
+    // typeinfer's inferReification stores boundary types via
+    // expr.kwargs lookup, but the lowered functionof IR doesn't carry
+    // the boundary expressions, so all reification params come back
+    // typed 'any'. Recover the actual boundary type from the
+    // paramSources backref: a binding source's type is its
+    // inferredType (e.g. theta1 → real); a placeholder source's
+    // type is the corresponding `<name> = elementof(<set>)`
+    // binding's inferredType.
+    const inferredHere = inputTypes[i] && inputTypes[i].type;
+    const fromSource   = resolveSourceType(sources[i] || null, bindings);
+    inputs.push({
+      paramName: params[i],
+      kwargName: paramKwargs[i],
+      type:      fromSource || inferredHere || null,
+      source:    sources[i] || null,
+    });
+  }
+  return { kind, inputs, output: { type: t.result } };
+}
+
+// Resolve a paramSources entry to the value type it references.
+// Returns null if the source can't be resolved (e.g. placeholder
+// without a corresponding elementof binding) — caller falls back
+// to typeinfer's per-call type (typically 'any').
+function resolveSourceType(source, bindings) {
+  if (!source || !bindings) return null;
+  const target = bindings.get(source.name);
+  if (!target || !target.inferredType) return null;
+  // Both binding-source and placeholder-source ultimately want the
+  // value type of the bound expression — for a placeholder the
+  // typeinfer pass walks elementof's set and tags the binding with
+  // the corresponding value type, so the lookup is uniform.
+  return target.inferredType;
+}
+
+// Likelihood inspection: walk likelihoodof(K, obs) → resolve K to a
+// kernel binding → reuse its signature with the output overridden to
+// REAL (the log-likelihood at obs) and obsValue stored alongside.
+function signatureOfLikelihood(b, bindings) {
+  const ir = b.ir;
+  if (!ir || ir.op !== 'likelihoodof' || !Array.isArray(ir.args) || ir.args.length !== 2) {
+    return null;
+  }
+  const Kref  = ir.args[0];
+  const obsIR = ir.args[1];
+  if (!isSelfRef(Kref) || !bindings.has(Kref.name)) return null;
+  const inner = signatureOf(Kref.name, bindings);
+  if (!inner) return null;
+  const obsValue = resolveIRToValue(obsIR, bindings, new Set());
+  return {
+    kind: 'likelihood',
+    inputs: inner.inputs,
+    output: { type: { kind: 'scalar', prim: 'real' } },
+    obsValue: obsValue === RESOLVE_FAIL ? null : obsValue,
+    kernelName: Kref.name,
+  };
+}
+
+// Distribute a signature's inputs over their structural shape: one
+// axis per scalar leaf. Records emit one axis per field
+// (recursively, dot-separated), tuples per element (1-indexed),
+// static-shape arrays per slot. Dynamic-shape arrays surface as a
+// single non-scalar axis (the UI either rejects them or the user
+// has to constrain shape elsewhere).
+//
+// Each axis carries:
+//   - key:        unique stable id within the signature
+//                 (e.g. "theta", "theta.mu", "obs[1]", "x[2,3].phi")
+//   - label:      same string, used as display
+//   - kwargName:  the input this axis belongs to (for fixed-value
+//                 substitution at evaluation time)
+//   - path:       array of segments — strings for record/tuple-named
+//                 fields, numbers (1-indexed) for tuple/array slots
+//   - leafType:   the scalar / dynamic-array type at the leaf
+//   - source:     paramSources entry for the input (the *whole*
+//                 input — UI may need to drill in for record sources)
+function distributeAxes(signature) {
+  if (!signature || !Array.isArray(signature.inputs)) return [];
+  const out = [];
+  for (const input of signature.inputs) {
+    walkType(input.type || null, [], (path, leafType) => {
+      const label = formatAxisLabel(input.kwargName, path);
+      out.push({
+        key: label,
+        label,
+        kwargName: input.kwargName,
+        path,
+        leafType,
+        source: input.source,
+      });
+    });
+  }
+  return out;
+}
+
+function walkType(type, path, emit) {
+  if (!type) return;
+  if (type.kind === 'scalar') return emit(path, type);
+  // Unrestricted placeholder boundaries (`fn(_)` / `_par_ =
+  // elementof(anything)`) infer to 'any'. From the UI's standpoint
+  // these are unknown scalars — emit a single axis so the user can
+  // still profile-sweep along the input. Defaults fall back to the
+  // generic-real handling.
+  if (type.kind === 'any' || type.kind === 'deferred' || type.kind === 'var') {
+    return emit(path, type);
+  }
+  if (type.kind === 'record' && type.fields) {
+    for (const f in type.fields) walkType(type.fields[f], path.concat([f]), emit);
+    return;
+  }
+  if (type.kind === 'tuple' && Array.isArray(type.elems)) {
+    for (let i = 0; i < type.elems.length; i++) {
+      walkType(type.elems[i], path.concat([i + 1]), emit);
+    }
+    return;
+  }
+  if (type.kind === 'array' && Array.isArray(type.shape)) {
+    if (type.shape.some(d => d === '%dynamic')) {
+      // Dynamic shape: surface a single axis at this level, marked
+      // by leafType so the UI can refuse to plot or ask the user
+      // for a concrete shape via a preset.
+      return emit(path, type);
+    }
+    walkArraySlots(type, path, emit);
+    return;
+  }
+  // function / kernel / measure / failed / set: not axis-emitting
+  // (the UI shouldn't be asked to sweep them).
+}
+
+function walkArraySlots(arrayType, path, emit) {
+  const dims = arrayType.shape;
+  let total = 1;
+  for (const d of dims) total *= d;
+  for (let s = 0; s < total; s++) {
+    let r = s;
+    const idx = new Array(dims.length);
+    for (let d = dims.length - 1; d >= 0; d--) {
+      idx[d] = (r % dims[d]) + 1;  // FlatPPL is 1-indexed
+      r = Math.floor(r / dims[d]);
+    }
+    walkType(arrayType.elem, path.concat([{ idx }]), emit);
+  }
+}
+
+function formatAxisLabel(kwargName, path) {
+  let s = kwargName || '';
+  for (const seg of path) {
+    if (typeof seg === 'string')          s += '.' + seg;
+    else if (typeof seg === 'number')     s += '[' + seg + ']';
+    else if (seg && Array.isArray(seg.idx)) s += '[' + seg.idx.join(',') + ']';
+  }
+  return s;
+}
+
 module.exports = {
   buildSampleChain,
   buildDerivations,
@@ -2345,6 +2548,8 @@ module.exports = {
   leafSampleIR,
   expandMeasureIR,
   expandMeasureRefsInIR,
+  signatureOf,
+  distributeAxes,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.
