@@ -3179,6 +3179,16 @@
         ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
           ir, derivationsState.derivations);
       }
+      // Propagate the swept axis (and other params) through transitive
+      // deterministic deps. Without this, e.g. sweeping `theta1` in a
+      // kernel whose body references `a = c * theta1` leaves `a` at a
+      // single fixed value (collected once by the pre-materialise
+      // step) — the plot is flat because the swept axis never reaches
+      // the leaf. inlineForProfile inlines `a`'s IR into the body and
+      // rewrites self.theta1 → %local.theta1.
+      var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
+      ir = FlatPPLEngine.orchestrator.inlineForProfile(
+        ir, paramNames, derivationsState.bindings, derivationsState.derivations);
       var range = defaultRangeForLeafType(sweepAxis.leafType);
       var POINT_COUNT = 200;
       showPlotMessage('Profiling…', { cancellable: true, hint: true });
