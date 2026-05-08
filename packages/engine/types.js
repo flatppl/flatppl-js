@@ -633,10 +633,16 @@ const SIGNATURE_FACTORIES = {
   ifelse: () => ({ args: [BOOLEAN, tvar('T'), tvar('T')], kwargs: {}, result: tvar('T') }),
 
   // ---- Reductions / norms ------------------------------------------
-  sum:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  mean:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  prod:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  length: () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
+  sum:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  mean:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  prod:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  length:  () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
+  // Population variance (divisor N — not N-1). maximum/minimum on an
+  // array; pluralised to avoid collision with the binary `min` / `max`
+  // built-ins (per spec §07).
+  var:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  maximum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  minimum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
 
   // ---- RNG (per spec §sec:random) ----------------------------------
   // rnginit(seed) — seed is a byte-vector; result is an opaque rngstate.

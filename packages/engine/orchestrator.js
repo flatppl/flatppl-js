@@ -96,6 +96,16 @@ const EVALUABLE_OPS = new Set([
   'isfinite', 'isinf', 'isnan', 'iszero',
   // Logic / conditionals.
   'land', 'lor', 'lxor', 'lnot', 'ifelse',
+  // Reductions over arrays (sampler.js implements the runtime ops). The
+  // static gate for these is conservative: only mark the binding
+  // evaluable when the operand is a static array (kind: 'array'
+  // derivation) — handled by the array-evaluable check downstream.
+  // Generic ref-to-stochastic-array isn't evaluable in the per-i
+  // worker model since each atom's value would itself be an array.
+  // Note: 'vector' deliberately omitted — leaves like `[mu, 1.0]`
+  // (with stochastic refs) must NOT classify as evaluable, so the
+  // existing array-derivation special case keeps owning that path.
+  'sum', 'mean', 'prod', 'length', 'maximum', 'minimum', 'var',
 ]);
 
 /**
