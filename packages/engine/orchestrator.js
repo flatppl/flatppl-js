@@ -1471,7 +1471,11 @@ function buildDerivations(bindings) {
     discrete[name] = isDiscreteAt(name, derivations);
   }
 
-  return { derivations, discrete };
+  // Expose the post-lift bindings alongside derivations so consumers
+  // (the viewer's profile-plot path) can call signatureOf without
+  // re-running the lift pass. Backward-compatible: existing callers
+  // that destructure just { derivations, discrete } are unaffected.
+  return { derivations, discrete, bindings };
 }
 
 /**
@@ -2402,7 +2406,7 @@ function signatureOf(name, bindings) {
       source:    sources[i] || null,
     });
   }
-  return { kind, inputs, output: { type: t.result } };
+  return { kind, inputs, output: { type: t.result }, body: ir.body || null };
 }
 
 // Resolve a paramSources entry to the value type it references.
@@ -2440,6 +2444,11 @@ function signatureOfLikelihood(b, bindings) {
     output: { type: { kind: 'scalar', prim: 'real' } },
     obsValue: obsValue === RESOLVE_FAIL ? null : obsValue,
     kernelName: Kref.name,
+    // Likelihood evaluation reuses the kernel's body (peeled of any
+    // lawof wrapper) at logdensity-mode evaluation time. Carrying the
+    // body here lets the viewer dispatch without re-resolving the
+    // kernel ref.
+    body: inner.body,
   };
 }
 

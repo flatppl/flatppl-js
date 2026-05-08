@@ -1732,6 +1732,31 @@
     function buildPlotPlan(binding /*, bindingsMap */) {
       if (!binding || !derivationsState) return null;
       var name = binding.name;
+
+      // Callable bindings (function / kernel / fn / likelihood) don't
+      // get a derivation kind — they're functions, not random
+      // variables. They take the profile-plot path: sweep one input
+      // axis, hold the rest fixed, evaluate the body per point. The
+      // engine's signatureOf + distributeAxes (orchestrator.js) shape
+      // the input cartprod / cartpow into a flat list of scalar
+      // axes; the UI layer here picks the default sweep axis +
+      // default range and dispatches to worker.profileN.
+      if (binding.type === 'functionof' || binding.type === 'fn'
+          || binding.type === 'kernelof' || binding.type === 'likelihood') {
+        if (!derivationsState.bindings) return null;
+        var sig = FlatPPLEngine.orchestrator.signatureOf(name, derivationsState.bindings);
+        if (!sig || !sig.body) return null;
+        var axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
+        if (axes.length === 0) return null;
+        return {
+          name: name,
+          mode: 'profile',
+          signature: sig,
+          axes: axes,
+          sweepKey: axes[0].key,        // default: sweep first axis
+        };
+      }
+
       var d = derivationsState.derivations[name];
       if (!d) return null;
       var discrete = !!derivationsState.discrete[name];
@@ -1895,6 +1920,13 @@
           return;
         }
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.', { hint: true });
+        return;
+      }
+      // Profile mode (function / kernel / likelihood bindings) dispatches
+      // to its own worker primitive (profileN) and renderer; the rest
+      // of this function handles the sample-mode pipeline.
+      if (currentPlotPlan.mode === 'profile') {
+        renderProfilePlotForCurrent();
         return;
       }
       // Array-mode loads the cached array synchronously (no worker
@@ -3047,6 +3079,215 @@
       }
       // Above-diagonal cells are intentionally left empty (corner-
       // plot convention).
+    }
+
+    // ---- Profile plot ------------------------------------------------
+    //
+    // Type-aware default value for an axis leafType. Used to populate
+    // fixedEnv for non-swept inputs at first plot. Posreals defaults
+    // to 1.0 (avoids degenerate cases like sigma=0); intervals
+    // default to the midpoint; integers default to 0; etc. F4b will
+    // let the user override these via the fixed-values panel.
+    function defaultValueForLeafType(leafType) {
+      if (!leafType) return 0;
+      if (leafType.kind === 'scalar') {
+        if (leafType.prim === 'integer') return 0;
+        if (leafType.prim === 'boolean') return false;
+        return 0;
+      }
+      return 0;
+    }
+
+    // Default sweep range for an axis. Generic real default for now;
+    // F5 refines via paramSources backrefs (prior empirical 4-σ
+    // quantile when the boundary points at a stochastic binding) and
+    // elementof set restrictions (interval bounds when the placeholder
+    // resolves to elementof(interval(a,b))).
+    function defaultRangeForLeafType(leafType) {
+      if (leafType && leafType.kind === 'scalar' && leafType.prim === 'integer') {
+        return [-10, 10];
+      }
+      return [-5, 5];
+    }
+
+    // Render the profile plot for a callable binding. Builds env with
+    // default values for non-swept inputs, picks a default range for
+    // the swept axis, fires worker.profileN, then draws a line plot.
+    //
+    // Limitations (F4a):
+    //   - Top-level scalar inputs only — record / array inputs
+    //     classify a path on each axis, but populating a fixedEnv with
+    //     a record literal is F4b work.
+    //   - Plain kernelof bindings (not wrapped in likelihoodof) need
+    //     an obs value the user has to provide; defer to F4b.
+    function renderProfilePlotForCurrent() {
+      var plan = currentPlotPlan;
+      if (!plan || plan.mode !== 'profile') return;
+      var sig = plan.signature;
+      var axes = plan.axes;
+      var sweepAxis = null;
+      for (var i = 0; i < axes.length; i++) {
+        if (axes[i].key === plan.sweepKey) { sweepAxis = axes[i]; break; }
+      }
+      if (!sweepAxis) {
+        showPlotMessage('Profile plot: no axis selected for <strong>'
+          + esc(plan.name) + '</strong>.', { hint: true });
+        return;
+      }
+      // Mode dispatch + obs handling.
+      var mode = sig.kind === 'function' ? 'function' : 'logdensity';
+      if (sig.kind === 'kernel') {
+        showPlotMessage('Profile plot: bare kernels need an obs value '
+          + '(plot the wrapping likelihoodof binding instead, or wait for F4b).',
+          { hint: true });
+        return;
+      }
+      // Build paramName ↔ kwargName index for env construction.
+      var inputByKwarg = {};
+      for (var k = 0; k < sig.inputs.length; k++) {
+        inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
+      }
+      // Top-level-scalar-only restriction for F4a.
+      for (var a = 0; a < axes.length; a++) {
+        if (axes[a].path && axes[a].path.length > 0) {
+          showPlotMessage('Profile plot: record / array inputs not yet supported — '
+            + 'try a binding with scalar inputs only.',
+            { hint: true });
+          return;
+        }
+      }
+      var fixedEnv = {};
+      for (var a2 = 0; a2 < axes.length; a2++) {
+        if (axes[a2].key === plan.sweepKey) continue;
+        var inp = inputByKwarg[axes[a2].kwargName];
+        if (!inp) continue;
+        fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
+      }
+      var sweepInput = inputByKwarg[sweepAxis.kwargName];
+      var sweepParamName = sweepInput && sweepInput.paramName;
+      if (!sweepParamName) {
+        showPlotMessage('Profile plot: cannot resolve sweep parameter.', { hint: true });
+        return;
+      }
+      // For kernels / likelihoods we walk the kernel body via
+      // traceeval — peel any outer lawof and substitute self-refs to
+      // other measure bindings via expandMeasureRefsInIR (the same
+      // helper bayesupdate uses). Functions evaluate the body
+      // verbatim through evaluateExpr.
+      var ir = sig.body;
+      if (mode === 'logdensity') {
+        ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
+          ir, derivationsState.derivations);
+      }
+      var range = defaultRangeForLeafType(sweepAxis.leafType);
+      var POINT_COUNT = 200;
+      showPlotMessage('Profiling…', { cancellable: true, hint: true });
+      var planForCall = plan;
+      // The body may reference other bindings via (ref self <name>) —
+      // e.g. `f_a = functionof(c * _par_, ...)` where `c` is an outer
+      // literal. Pre-materialise those, take their samples[0] as a
+      // single fixed value, and merge into fixedEnv. F4b will let
+      // the user pick a different atom or override these. For
+      // stochastic self refs this picks the first atom, which is
+      // arbitrary but deterministic — a "good enough" first cut.
+      var selfRefs = [];
+      FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
+        selfRefs.push(n);
+      });
+      Promise.all(selfRefs.map(function(n) { return getMeasure(n); }))
+        .then(function(measures) {
+          for (var i = 0; i < selfRefs.length; i++) {
+            var m = measures[i];
+            if (m && m.samples && m.samples.length > 0) {
+              fixedEnv[selfRefs[i]] = m.samples[0];
+            }
+          }
+          return sendWorker({
+            type: 'profileN',
+            ir: ir,
+            sweepName: sweepParamName,
+            range: range,
+            count: POINT_COUNT,
+            mode: mode,
+            fixedEnv: fixedEnv,
+            observed: sig.obsValue == null ? undefined : sig.obsValue,
+            tally: 'clamped',
+          });
+        }).then(function(reply) {
+          // Stale-reply guard: user may have clicked another binding
+          // while we were waiting.
+          if (currentPlotPlan !== planForCall) return;
+          renderProfileLine(reply.samples, range, plan, sweepAxis);
+        }).catch(function(err) {
+          if (currentPlotPlan !== planForCall) return;
+          showPlotMessage('Profile plot failed: ' + esc(err && err.message || String(err)));
+        });
+    }
+
+    function renderProfileLine(values, range, plan, sweepAxis) {
+      resetPlotContentStyle();
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      var color = colorForBinding(currentPlotBindingName);
+      var n = values.length;
+      var lo = range[0], hi = range[1];
+      // Build (x, y) pairs. NaN entries become null so echarts shows
+      // gaps (domain-of-definition holes) rather than connecting
+      // through them.
+      var data = new Array(n);
+      for (var i = 0; i < n; i++) {
+        var t = n === 1 ? 0 : i / (n - 1);
+        var x = lo + t * (hi - lo);
+        var y = values[i];
+        data[i] = (Number.isFinite(y)) ? [x, y] : [x, null];
+      }
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      plotEchart = echarts.init(el);
+      var zoomOpts = plotZoomOptions(fg);
+      var titleText = (currentPlotBindingName ? esc(currentPlotBindingName) : 'profile')
+        + ' — ' + esc(sweepAxis.label);
+      var legendLabel = plan.signature.kind === 'function' ? 'value' : 'log-density';
+      plotEchart.setOption({
+        animation: false,
+        dataZoom: zoomOpts.dataZoom,
+        toolbox: zoomOpts.toolbox,
+        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+        title: {
+          text: titleText,
+          left: 'center', top: 4,
+          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+        },
+        legend: {
+          data: [legendLabel],
+          top: 4, right: 12,
+          textStyle: { color: fg, fontSize: 11 },
+          itemWidth: 14, itemHeight: 8,
+        },
+        tooltip: { show: false },
+        xAxis: {
+          type: 'value',
+          name: sweepAxis.label, nameLocation: 'center', nameGap: 28,
+          min: lo, max: hi,
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { show: false },
+        },
+        yAxis: {
+          type: 'value',
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+        },
+        series: [{
+          name: legendLabel,
+          type: 'line', data: data, symbol: 'none',
+          lineStyle: { color: color, width: 2 },
+          connectNulls: false,
+        }],
+      });
     }
 
     function renderArrayStepPlot(arr) {
