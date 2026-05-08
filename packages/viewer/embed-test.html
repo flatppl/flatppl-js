@@ -125,6 +125,10 @@
       'lp_obs = logdensityof(obs_dist, record(obs = observed_data))',
       'd_obs  = densityof(obs_dist, record(obs = observed_data))',
       '',
+      '# Deterministic record: every leaf is a literal, so the plot pane',
+      '# renders the surface form as text rather than per-field histograms.',
+      'det_record = record(a = 1.5, b = 2.5, xs = observed_data)',
+      '',
     ].join('\n');
 
     // Auto-mount runs at DOMContentLoaded. We use a small timer to

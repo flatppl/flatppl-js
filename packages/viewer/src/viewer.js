@@ -1918,6 +1918,21 @@
           // leaf (record fields, tuple components with positional
           // 1-indexed labels, and array slots alike).
           if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
+            // Constant short-circuit: a record / tuple measure whose
+            // every scalar leaf is the same across atoms is a literal
+            // value masquerading as a measure (e.g.
+            // record(a = 1.2, b = 3.4) lifted by visit). N copies of
+            // the same point histogram-mash into N tall bars per axis
+            // — uninformative — so render the surface form as text
+            // instead. Top-level array measures stay on the corner-
+            // plot path: even when they're "constant" they're more
+            // useful as per-slot histograms (or could be — a future
+            // refinement could hand them to renderArrayStepPlot).
+            if ((measure.shape === 'record' || measure.shape === 'tuple')
+                && measureIsConstant(measure)) {
+              renderConstantRecord(measure, planForCall.name);
+              return null;
+            }
             renderRecordMarginals(measure, planForCall.name);
             return null;
           }
@@ -2043,6 +2058,102 @@
       if (!Number.isFinite(v)) return String(v);
       if (Number.isInteger(v)) return String(v);
       return String(parseFloat(v.toPrecision(12)));
+    }
+
+    // Format a JS array of numbers with ellipsis when long. The
+    // threshold balances readability against verbosity: 8 fits on
+    // typical screen widths even with ~5-digit values; longer
+    // collapses to "[a, b, c, …, z] (length N)".
+    function formatArrayWithEllipsis(values, maxShown) {
+      var max = maxShown == null ? 8 : maxShown;
+      if (values.length <= max) {
+        var parts = new Array(values.length);
+        for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
+        return '[' + parts.join(', ') + ']';
+      }
+      var headN = 3, tailN = 1;
+      var head = new Array(headN);
+      for (var j = 0; j < headN; j++) head[j] = formatScalar(values[j]);
+      var tail = new Array(tailN);
+      for (var k = 0; k < tailN; k++) tail[k] = formatScalar(values[values.length - tailN + k]);
+      return '[' + head.join(', ') + ', …, ' + tail.join(', ')
+        + '] (length ' + values.length + ')';
+    }
+
+    // True iff every scalar leaf of a record/tuple/array measure has
+    // identical samples across all N atoms. The deterministic
+    // detection drives the constant-as-text rendering for
+    // record-shaped bindings whose value is the same at every atom
+    // (literal records, deterministic arithmetic over literals, etc.)
+    // — same idea as the scalar samplesAreConstant short-circuit, but
+    // walks the SoA tree.
+    function measureIsConstant(m) {
+      if (!m) return false;
+      if (m.fields) {
+        for (var k in m.fields) {
+          if (!measureIsConstant(m.fields[k])) return false;
+        }
+        return true;
+      }
+      if (Array.isArray(m.elems)) {
+        for (var i = 0; i < m.elems.length; i++) {
+          if (!measureIsConstant(m.elems[i])) return false;
+        }
+        return true;
+      }
+      if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
+        // Atom-major SoA: stride k = prod(dims) per atom. The whole
+        // array is constant iff slot s has the same value at every
+        // atom, for every s in [0, k).
+        var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
+        if (stride === 0) return true;
+        var N = m.samples.length / stride;
+        for (var s = 0; s < stride; s++) {
+          var v = m.samples[s];
+          for (var ai = 1; ai < N; ai++) {
+            if (m.samples[ai * stride + s] !== v) return false;
+          }
+        }
+        return true;
+      }
+      if (m.samples instanceof Float64Array) return samplesAreConstant(m.samples);
+      return false;
+    }
+
+    // Render a constant measure as the FlatPPL surface form. Used by
+    // the plot-pane dispatch when measureIsConstant returns true:
+    // record-shaped bindings show "record(a = …, b = …)" text rather
+    // than a corner plot of N copies of the same point. Array leaves
+    // ellipsize past length 8 so a 10-observation literal stays
+    // readable. Walks the SoA tree top-down — same shape conventions
+    // as listScalarAxes.
+    function formatConstantMeasure(m) {
+      if (!m) return '?';
+      if (m.fields) {
+        var ks = Object.keys(m.fields);
+        var fparts = new Array(ks.length);
+        for (var i = 0; i < ks.length; i++) {
+          fparts[i] = ks[i] + ' = ' + formatConstantMeasure(m.fields[ks[i]]);
+        }
+        return 'record(' + fparts.join(', ') + ')';
+      }
+      if (Array.isArray(m.elems)) {
+        var eparts = new Array(m.elems.length);
+        for (var ei = 0; ei < m.elems.length; ei++) {
+          eparts[ei] = formatConstantMeasure(m.elems[ei]);
+        }
+        return '(' + eparts.join(', ') + ')';
+      }
+      if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
+        var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
+        var values = new Array(stride);
+        for (var s = 0; s < stride; s++) values[s] = m.samples[s];
+        return formatArrayWithEllipsis(values);
+      }
+      if (m.samples instanceof Float64Array && m.samples.length > 0) {
+        return formatScalar(m.samples[0]);
+      }
+      return '?';
     }
 
     /**
@@ -2218,6 +2329,27 @@
      * SoA pays off here: marginals are sub.samples; joints are just
      * two columns zipped index-wise — no copy, no projection.
      */
+    // Render a constant record/tuple as plain text — same scalar-display
+    // styling the constant-scalar branch uses, just with the surface
+    // form as the value. We cap font-size when the rendered string is
+    // long so the corner-plot 36px doesn't overflow on a multi-field
+    // record; the simple len-based cutoff is fine here (the value is
+    // either short and reads at 36px or long enough to want 16px).
+    function renderConstantRecord(measure, bindingName) {
+      resetPlotContentStyle();
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      var name = bindingName ? esc(bindingName) : '';
+      var text = formatConstantMeasure(measure);
+      var sizeStyle = text.length > 60 ? ' style="font-size: 16px"' : '';
+      el.innerHTML =
+        '<div class="scalar-display">'
+        + (name ? '<div class="name">' + name + '</div>' : '')
+        + '<div class="value"' + sizeStyle + '>' + esc(text) + '</div>'
+        + '</div>';
+    }
+
     function renderRecordMarginals(measure, bindingName) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
