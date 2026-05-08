@@ -791,12 +791,17 @@ function liftInlineSubexpressions(bindings) {
       } else if (a.value && a.value.type === 'Placeholder') {
         internalForSurface[a.name] = PLACEHOLDER_SUB_PREFIX + a.value.name;
       } else {
-        // Non-trivial boundary (e.g. functionof(body, theta=theta_expr)
-        // where theta_expr isn't a bare ref). For now we use the
-        // surface name as the internal name — body refs to it will
-        // miss the substitution and fall through to outer-scope refs.
-        // Real boundary substitution comes later.
-        internalForSurface[a.name] = a.name;
+        // Boundary kwarg value is a complex expression
+        // (e.g. functionof(body, theta = some_call(x))). The spec's
+        // boundary-substitution semantics replace `theta` in the body
+        // with the *substituted* form of `some_call(x)`, but doing so
+        // correctly requires walking the body for refs to a synthetic
+        // boundary node — work we haven't implemented yet.
+        // Bail out of inlining rather than silently produce a wrong
+        // substitution: leave the user-call as-is so the classifier
+        // surfaces a clean "unsupported" outcome (no derivation)
+        // instead of an IR with unbound %local refs that crash later.
+        return astArg;
       }
     }
 
