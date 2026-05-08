@@ -473,11 +473,20 @@ function liftInlineSubexpressions(bindings) {
     let cloned = cloneAst(binding.node.value);
     cloned = inlineUserCall(cloned);
     visit(cloned);
+    // Re-run user-call / chain-op inlining after visit. visit() lifts
+    // each positional arg to a named anonymous binding, so a top-level
+    // chain op like jointchain(Exp(1), fn(...)) — whose args were
+    // inline expressions before visit — now has Identifier args and
+    // can be rewritten by inlineChainOps. inlineUserCall is idempotent
+    // when no further rewrite applies, so this is a no-op for bindings
+    // that don't benefit from a second pass.
+    cloned = inlineUserCall(cloned);
     let effLifted = binding.effectiveValue;
     if (effLifted) {
       effLifted = cloneAst(effLifted);
       effLifted = inlineUserCall(effLifted);
       visit(effLifted);
+      effLifted = inlineUserCall(effLifted);
     }
     out.set(name, {
       ...binding,
@@ -659,14 +668,65 @@ function liftInlineSubexpressions(bindings) {
     const Parg = astArg.args[0], Karg = astArg.args[1];
     if (Parg.type !== 'Identifier' || Karg.type !== 'Identifier') return astArg;
 
-    const Pbinding = bindings.get(Parg.name);
-    const Kbinding = bindings.get(Karg.name);
+    // Look up via `out`, not the read-only `bindings` input — args
+    // may have been lifted to synthesized anon bindings during the
+    // visit pass and those live in `out`. Originals are present in
+    // both (out is a copy of bindings at function entry).
+    const Pbinding = out.get(Parg.name);
+    const Kbinding = out.get(Karg.name);
     if (!Pbinding || !Kbinding) return astArg;
     if (Kbinding.type !== 'functionof' && Kbinding.type !== 'kernelof'
         && Kbinding.type !== 'fn') return astArg;
 
     const Pfields = extractRecordFields(Pbinding.node && Pbinding.node.value);
-    if (!Pfields) return astArg;
+
+    // Positional non-record case: jointchain(M, K) where M is a
+    // scalar (or array) measure. Per spec §sec:jointchain the
+    // result variate is cat(M_var, K(M_var)_var), so for two
+    // scalar components the output is a 2-element array measure.
+    // Equivalence we lower to:
+    //   _a = draw(P_ref)            (alias-style; reuses P's atoms)
+    //   _b = draw(K_applied_to_a)   (applies K positionally to _a)
+    //   result = [_a, _b]            (ArrayLiteral → tuple kind)
+    // Restricted to two-arg jointchain for now (chain not handled,
+    // since chain marginalises and we don't have that materialiser).
+    if (!Pfields) {
+      if (op !== 'jointchain') return astArg;
+      const aName = freshName();
+      const drawA = {
+        type: 'CallExpr',
+        callee: makeIdent('draw', astArg.loc),
+        args: [makeIdent(Parg.name, astArg.loc)],
+        loc: astArg.loc,
+      };
+      out.set(aName, makeSyntheticBinding(aName, drawA));
+      // Apply K positionally to _a. inlineOnce produces the body's
+      // substituted AST inline (e.g. fn(Normal(1, _)) applied to _a
+      // becomes Normal(1, _a)); lift visits it so any nested inline
+      // measure expressions get their own anons.
+      const kCall = {
+        type: 'CallExpr',
+        callee: makeIdent(Karg.name, astArg.loc),
+        args: [makeIdent(aName, astArg.loc)],
+        loc: astArg.loc,
+      };
+      const appliedK = inlineOnce(kCall);
+      if (!appliedK || appliedK === kCall) return astArg;  // K not inlineable
+      const bName = freshName();
+      const drawB = {
+        type: 'CallExpr',
+        callee: makeIdent('draw', astArg.loc),
+        args: [appliedK],
+        loc: astArg.loc,
+      };
+      visit(drawB);
+      out.set(bName, makeSyntheticBinding(bName, drawB));
+      return {
+        type: 'ArrayLiteral',
+        elements: [makeIdent(aName, astArg.loc), makeIdent(bName, astArg.loc)],
+        loc: astArg.loc,
+      };
+    }
 
     // Map K's surface kwargs to P's field refs by name. K's surface
     // kwargs are read from K's RHS args (everything after the body).
@@ -718,6 +778,16 @@ function liftInlineSubexpressions(bindings) {
   function extractRecordFields(astNode) {
     if (!astNode) return null;
     let v = astNode;
+    // Follow Identifier refs through the lifted bindings map. After
+    // visit() runs, e.g. `lawof(record(...))` may have its inner
+    // record lifted to an anonymous binding, leaving us with
+    // `lawof(__anon_record)`. Dereference through `out` so we can
+    // still see the underlying record/joint shape.
+    if (v.type === 'Identifier') {
+      const inner = out.get(v.name);
+      if (!inner || !inner.node || !inner.node.value) return null;
+      return extractRecordFields(inner.node.value);
+    }
     if (v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier') {
       if (v.callee.name === 'lawof' && v.args && v.args.length === 1) {
         return extractRecordFields(v.args[0]);
@@ -737,7 +807,10 @@ function liftInlineSubexpressions(bindings) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     const fnName = astArg.callee.name;
-    const fnBinding = bindings.get(fnName);
+    // Use `out`, not `bindings`, so synthesized anon bindings created
+    // during the lift pass are visible to inlineOnce too (mirrors the
+    // change in inlineChainOps above).
+    const fnBinding = out.get(fnName);
     if (!fnBinding) return astArg;
     // We only inline real reified callables. fn and kernelof are
     // lowered to functionof in the IR (see lower.js); for AST-level
@@ -1932,6 +2005,7 @@ function collectSelfRefs(ir) {
 module.exports = {
   buildSampleChain,
   buildDerivations,
+  liftInlineSubexpressions,
   collectSelfRefs,
   leafSampleIR,
   expandMeasureIR,
