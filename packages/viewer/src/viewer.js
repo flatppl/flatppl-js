@@ -41,15 +41,289 @@
   (function(global) {
     var FlatPPLViewer = (global.FlatPPLViewer = global.FlatPPLViewer || {});
 
+
+    // Layout markup + stylesheet for the viewer. Phase 2b moves
+    // them out of the host page into here so any container can
+    // host the viewer without the host having to know the
+    // internal DOM shape. The CSS goes once into <head>; the
+    // markup goes into the supplied container.
+    var VIEWER_CSS = `
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--vscode-editor-background);
+      color: var(--vscode-editor-foreground);
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: var(--vscode-font-size, 13px);
+      overflow: hidden;
+    }
+    #header {
+      padding: 5px 14px;
+      border-bottom: 1px solid var(--vscode-panel-border, #444);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 14px);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.8;
+      min-height: 26px;
+      display: flex;
+      align-items: center;
+    }
+    #header .target-name { font-weight: 600; }
+    #header .target-eq { opacity: 0.5; margin: 0 4px; }
+    /* Vertical split layout: graph on top, plot on bottom. The header
+       hosts a Plot on/off toggle (default off). When the toggle is off
+       the plot panel collapses to zero height and the graph fills the
+       content area. When on, the area is split 60/40 between the two
+       panels. The plot panel is always rendered when enabled — even
+       for non-plottable bindings it shows a "Not plottable" message,
+       so users navigating the graph see a stable layout instead of
+       the panel appearing/disappearing.
+
+       Heights subtract header(~32px) + info(60px). */
+    #plot-toggle {
+      margin-left: auto;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 2px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--vscode-font-family, sans-serif);
+      flex-shrink: 0;
+    }
+    #plot-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
+    #plot-toggle.on {
+      background: var(--vscode-button-background, #0e639c);
+      color: var(--vscode-button-foreground, #fff);
+      border-color: var(--vscode-button-border, transparent);
+    }
+    #plot-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+    #main {
+      display: flex; flex-direction: column;
+      width: 100vw; height: calc(100vh - 86px);
+      overflow: hidden;
+    }
+    #graph-panel {
+      flex: 1 1 60%; min-height: 80px;
+      position: relative; overflow: hidden;
+    }
+    #graph-panel.full { flex: 1 1 100%; }
+    #plot-panel {
+      flex: 1 1 40%; min-height: 80px;
+      border-top: 1px solid var(--vscode-panel-border, #444);
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    #plot-panel.hidden {
+      flex: 0 0 0; min-height: 0; border-top: none;
+    }
+    #plot-content { width: 100%; height: 100%; }
+    #plot-empty {
+      opacity: 0.7; padding: 1.6em; text-align: center;
+      font-size: 1.08em; line-height: 1.5;
+      max-width: 45em; margin: 0 auto;
+    }
+    /* Italics for the placeholder hints ("Click a binding…", "Not
+       plottable…") but NOT for type-error messages — those need to
+       read clearly. */
+    #plot-empty.hint { font-style: italic; opacity: 0.5; }
+    #plot-empty ul { text-align: left; display: inline-block; }
+    /* Stop button shown alongside "Sampling…" while a request is in
+       flight. Clicking it terminates the worker (which aborts any
+       running tight loop) and rejects in-flight promises; the cache
+       on the main thread is preserved, so any binding that finished
+       before the cancel stays available. */
+    #plot-content .plot-stop-btn {
+      margin-top: 14px;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 4px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      font-style: normal; opacity: 0.9;
+      font-family: var(--vscode-font-family, sans-serif);
+    }
+    #plot-content .plot-stop-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #505355);
+      opacity: 1;
+    }
+    /* Constant-value display: shown when every sample is the same
+       value (literal binding, deterministic arithmetic of literals,
+       or a degenerate distribution). A histogram of identical values
+       is uninformative, so we render the value as readable text. */
+    #plot-content .scalar-display {
+      width: 100%; height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 6px;
+      font-family: var(--vscode-editor-font-family, monospace);
+    }
+    #plot-content .scalar-display .name {
+      font-size: 13px; opacity: 0.6;
+    }
+    #plot-content .scalar-display .value {
+      font-size: 36px; font-weight: 300;
+    }
+    /* Graph internals fill graph-panel — switched from full-viewport
+       sizing to 100% of the parent so the split-flex layout governs. */
+    #cy { width: 100%; height: 100%; }
+    #dataview {
+      display: none; width: 100%; height: 100%;
+      align-items: center; justify-content: center;
+    }
+    #dataview canvas { display: block; }
+    #dataview .scalar-value {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 36px; font-weight: 300; opacity: 0.9;
+    }
+    /* All font-sizes in this stylesheet are relative units (em),
+       so the panel scales with VS Code's zoom factor (which adjusts
+       --vscode-font-size at the root). The body sets the base font
+       size from --vscode-font-size; everything else here is a multiple
+       of that. */
+    #info {
+      min-height: 5.5em;
+      padding: 0.6em 1em;
+      border-top: 1px solid var(--vscode-panel-border, #444);
+      font-size: 1em;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.3em;
+    }
+    #info .row { display: flex; gap: 0.75em; align-items: baseline; flex-wrap: wrap; }
+    #info .name { font-weight: 600; font-size: 1.15em; }
+    /* The inferred FlatPIR type/shape — sits to the right of the
+       name and phase, monospaced so types like "array of real
+       (length 10)" align consistently. */
+    #info .infer {
+      font-size: 0.92em; opacity: 0.8;
+      font-family: var(--vscode-editor-font-family, monospace);
+      padding: 0.05em 0.45em; border-radius: 3px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    #info .phase {
+      font-size: 0.92em;
+      padding: 0.05em 0.45em; border-radius: 3px;
+      color: #fff;
+    }
+    /* Phase tag colors. CSS custom properties are set at startup from
+       the JS PALETTE so the in-bar tag and the node fill share one
+       source of truth. */
+    #info .phase-fixed         { background: var(--phase-fixed);         color: #222; }
+    #info .phase-parameterized { background: var(--phase-parameterized); color: #222; }
+    #info .phase-stochastic    { background: var(--phase-stochastic);    color: #222; }
+    #info .expr {
+      opacity: 0.6; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+      font-size: 1em;
+    }
+    #info .hint { opacity: 0.5; font-style: italic; font-size: 1em; }
+    #tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      background: var(--vscode-editorHoverWidget-background, #2d2d30);
+      color: var(--vscode-editorHoverWidget-foreground, #ccc);
+      border: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+      border-radius: 3px;
+      padding: 4px 8px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 14px);
+      white-space: pre;
+      max-width: 400px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 100;
+    }
+    #back-btn {
+      display: none;
+      background: var(--vscode-button-secondaryBackground, #3a3d41);
+      color: var(--vscode-button-secondaryForeground, #ccc);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      padding: 2px 8px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--vscode-font-family, sans-serif);
+      flex-shrink: 0;
+      margin-right: 10px;
+    }
+    #back-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, #505355);
+    }
+    #legend {
+      position: absolute; top: 8px; right: 8px;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border, #444);
+      border-radius: 4px; padding: 6px 10px;
+      font-size: 11px; opacity: 0.85;
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    #legend .section {
+      font-weight: 600; opacity: 0.55; font-size: 10px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-top: 6px;
+    }
+    #legend .section:first-child { margin-top: 0; }
+    #legend .item { display: flex; align-items: center; gap: 6px; }
+    #legend .swatch {
+      width: 14px; height: 14px; border-radius: 3px;
+      border: 1px solid #888; flex-shrink: 0;
+    }
+`;
+
+    var VIEWER_BODY_HTML = `
+  <div id="header">
+    <button id="back-btn">&larr; Back</button>
+    <span id="header-expr"></span>
+    <button id="plot-toggle" title="Toggle the plot panel">Plot: off</button>
+  </div>
+  <div id="main">
+    <div id="graph-panel" class="full">
+      <div id="cy"></div>
+      <div id="dataview"></div>
+      <div id="legend"></div>
+    </div>
+    <div id="plot-panel" class="hidden">
+      <div id="plot-content"></div>
+    </div>
+  </div>
+  <div id="tooltip"></div>
+  <div id="info">
+    <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source</span>
+  </div>
+`;
+
+    var cssInjected = false;
+    function ensureCssInjected() {
+      if (cssInjected) return;
+      var styleEl = document.createElement('style');
+      styleEl.setAttribute('data-flatppl-viewer-css', '');
+      styleEl.textContent = VIEWER_CSS;
+      document.head.appendChild(styleEl);
+      cssInjected = true;
+    }
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
-      // container: where the viewer's layout lives. Currently the host
-      // (vscode-extension's _getHtml) injects the DOM into document.body
-      // and calls mount() with no container; we accept that. Phase 2b
-      // moves the DOM injection here so any container works.
-      // (Reserved for future use — keep the parameter slot for
-      // consistency with the public API contract.)
-      void container;
+      // container: the element the viewer renders inside. Defaults to
+      // document.body for backward-compat with the existing VS Code
+      // wrapper. The viewer injects its layout markup as innerHTML and
+      // ensures its stylesheet is present on the page once.
+      container = container || (typeof document !== 'undefined' ? document.body : null);
+      if (!container) {
+        throw new Error('FlatPPLViewer.mount: no container available (document missing?)');
+      }
+      ensureCssInjected();
+      container.innerHTML = VIEWER_BODY_HTML;
       var host = opts.host || {};
       void host;  // wired in 2c
 
@@ -3304,17 +3578,23 @@
     setPlotEnabled(prevState && prevState.plotEnabled === true);
     };
 
-    // Auto-mount on script load for the existing VS Code wrapper.
-    // Phase 2c will replace this with an explicit bootstrap-side
-    // FlatPPLViewer.mount(...) call from the host (vscode-extension or
-    // standalone embed page). For now we keep the auto-mount so this
-    // commit is purely additive — the same script-load behaviour
-    // continues to drive existing webview hosts.
+    // Auto-mount when the host provides a marker container in the DOM
+    // (id="flatppl-viewer-root"). Hosts that want explicit control over
+    // mount timing or args (e.g. standalone embed pages that wait for
+    // user input) can omit the marker and call FlatPPLViewer.mount(...)
+    // themselves. The vscode-extension's _getHtml() includes the marker,
+    // so existing webview behaviour is preserved.
+    function autoMountIfMarkerPresent() {
+      var marker = (typeof document !== 'undefined')
+        ? document.getElementById('flatppl-viewer-root')
+        : null;
+      if (marker) FlatPPLViewer.mount(marker);
+    }
     if (typeof document !== 'undefined') {
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() { FlatPPLViewer.mount(); });
+        document.addEventListener('DOMContentLoaded', autoMountIfMarkerPresent);
       } else {
-        FlatPPLViewer.mount();
+        autoMountIfMarkerPresent();
       }
     }
   })(typeof window !== 'undefined' ? window : globalThis);
