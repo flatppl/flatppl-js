@@ -52,6 +52,7 @@
 
 const { lowerExpr } = require('./lower');
 const { isMeasureExpr } = require('./analyzer');
+const { quantileSorted } = require('./histogram');
 
 // Distributions the worker's REGISTRY currently implements. Hardcoded
 // here to avoid pulling sampler.js (and stdlib) into the main bundle.
@@ -2607,6 +2608,112 @@ function formatAxisLabel(kwargName, path) {
 }
 
 /**
+ * Resolve the value-set of a paramSources entry to a structural
+ * descriptor the profile-plot UI can use to pick an axis range.
+ *
+ * Returns one of:
+ *
+ *   { kind: 'interval', lo, hi }   — bounded set; viewer uses [lo, hi]
+ *   { kind: 'reals' / 'posreals' / 'nonnegreals' / 'unitinterval' }
+ *   { kind: 'integers' / 'posintegers' / 'nonnegintegers' / 'booleans' }
+ *   { kind: 'empirical', name }    — binding ref; viewer materialises
+ *                                    the binding and computes a 4-σ
+ *                                    quantile range
+ *   null                           — couldn't resolve; UI falls back
+ *                                    to default range for the leaf type
+ */
+function resolveAxisBaseSet(source, bindings) {
+  if (!source) return null;
+  // Anonymous placeholder boundaries (`par = _par_`) aren't bound to
+  // any elementof — per spec they're equivalent to
+  // elementof(anything), so we have no set restriction to surface.
+  // The viewer falls back to its leaf-type-based default range.
+  if (source.kind === 'placeholder') return null;
+  if (source.kind === 'binding') {
+    if (!bindings) return { kind: 'empirical', name: source.name };
+    const target = bindings.get(source.name);
+    if (!target) return { kind: 'empirical', name: source.name };
+    // elementof bindings (`x_set = elementof(reals)` /
+    // `x_set = elementof(interval(0, 1))`) carry a structural set
+    // restriction; surface it so the viewer can use the bounds
+    // directly. The analyzer marks these as type='input'.
+    if (target.type === 'input') {
+      const ir = target.ir
+        || (target.effectiveValue && lowerSafe(target.effectiveValue))
+        || (target.node && target.node.value && lowerSafe(target.node.value));
+      if (ir && ir.kind === 'call' && ir.op === 'elementof'
+          && Array.isArray(ir.args) && ir.args.length === 1) {
+        const setDescr = parseSetIR(ir.args[0]);
+        if (setDescr) return setDescr;
+      }
+    }
+    // Anything else (variates, derived deterministic bindings):
+    // there's no static set, but the binding has empirical samples
+    // we can quantile-clip into a range at materialise time.
+    return { kind: 'empirical', name: source.name };
+  }
+  return null;
+}
+
+function lowerSafe(ast) {
+  try { return lowerExpr(ast); } catch (_) { return null; }
+}
+
+const NAMED_SETS = {
+  reals:           { kind: 'reals' },
+  posreals:        { kind: 'posreals' },
+  nonnegreals:     { kind: 'nonnegreals' },
+  unitinterval:    { kind: 'interval', lo: 0, hi: 1 },
+  integers:        { kind: 'integers' },
+  posintegers:     { kind: 'posintegers' },
+  nonnegintegers:  { kind: 'nonnegintegers' },
+  booleans:        { kind: 'booleans' },
+};
+
+function parseSetIR(setIR) {
+  if (!setIR) return null;
+  if (setIR.kind === 'const' && NAMED_SETS[setIR.name])
+    return NAMED_SETS[setIR.name];
+  if (setIR.kind === 'ref' && setIR.ns === 'self' && NAMED_SETS[setIR.name])
+    return NAMED_SETS[setIR.name];
+  if (setIR.kind === 'call' && setIR.op === 'interval'
+      && Array.isArray(setIR.args) && setIR.args.length === 2) {
+    const lo = setIR.args[0], hi = setIR.args[1];
+    if (lo && lo.kind === 'lit' && typeof lo.value === 'number'
+        && hi && hi.kind === 'lit' && typeof hi.value === 'number') {
+      return { kind: 'interval', lo: lo.value, hi: hi.value };
+    }
+  }
+  return null;
+}
+
+/**
+ * Compute a 4-σ-equivalent central quantile range from a sample
+ * array. Returns [lo, hi] or null for an empty input.
+ *
+ * 4-σ on a unit Gaussian covers central probability erf(4/√2) ≈
+ * 0.999937, leaving a tail of ~3.17e-5 per side. With sample sizes
+ * typical of the visualizer (5000 / 100000) this is essentially
+ * min/max; under heavy-tailed empirical distributions it drops the
+ * thinnest tails. Used by the profile-plot UI to set an axis range
+ * from a binding-source backref's empirical samples.
+ */
+function fourSigmaQuantileRange(samples) {
+  if (!samples || samples.length === 0) return null;
+  if (samples.length === 1) return [samples[0], samples[0]];
+  const sorted = Float64Array.from(samples);
+  sorted.sort();
+  // Two-sided tail mass for ±4σ on a unit Normal: (1 - erf(4/√2)) / 2
+  // ≈ 3.1671241833e-5. We use the exact constant rather than
+  // computing it inline — it's spec-stable per our docs.
+  const ALPHA = 3.1671241833e-5;
+  return [
+    quantileSorted(sorted, ALPHA),
+    quantileSorted(sorted, 1 - ALPHA),
+  ];
+}
+
+/**
  * Substitute IR for the profile-plot evaluator. Two transformations:
  *
  *   1. (ref self <name>) where <name> is a swept input parameter →
@@ -2685,6 +2792,8 @@ module.exports = {
   signatureOf,
   distributeAxes,
   inlineForProfile,
+  resolveAxisBaseSet,
+  fourSigmaQuantileRange,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.

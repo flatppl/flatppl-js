@@ -24,6 +24,7 @@ const { processSource } = require('..');
 const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
   signatureOf, distributeAxes, inlineForProfile,
+  resolveAxisBaseSet, fourSigmaQuantileRange,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -979,4 +980,102 @@ test('inlineForProfile: walks call args / kwargs / fields recursively', () => {
   };
   const out = inlineForProfile(ir, ['theta1'], new Map(), {});
   assert.equal(out.kwargs.mu.ns, '%local');
+});
+
+// =====================================================================
+// resolveAxisBaseSet — backref → set descriptor (for auto-range)
+// =====================================================================
+
+test('resolveAxisBaseSet: identifier-bound elementof(reals) → reals descriptor', () => {
+  // x_set = elementof(reals); used as Identifier boundary. The
+  // boundary source is { kind: 'binding', name: 'x_set' } and the
+  // resolver surfaces the set restriction (rather than treating
+  // x_set as a stochastic binding for empirical-range computation).
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+x_set = elementof(reals)
+f = functionof(x_set * 2, x = x_set)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const base = resolveAxisBaseSet(sig.inputs[0].source, lifted);
+  assert.deepEqual(base, { kind: 'reals' });
+});
+
+test('resolveAxisBaseSet: identifier-bound elementof(interval(0,1))', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+p_set = elementof(interval(0, 1))
+f = functionof(p_set * 2, p = p_set)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const base = resolveAxisBaseSet(sig.inputs[0].source, lifted);
+  assert.deepEqual(base, { kind: 'interval', lo: 0, hi: 1 });
+});
+
+test('resolveAxisBaseSet: identifier-bound elementof(unitinterval) → [0, 1]', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+p_set = elementof(unitinterval)
+f = functionof(p_set * 2, p = p_set)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const base = resolveAxisBaseSet(sig.inputs[0].source, lifted);
+  assert.deepEqual(base, { kind: 'interval', lo: 0, hi: 1 });
+});
+
+test('resolveAxisBaseSet: anonymous placeholder boundary → null', () => {
+  // `par = _par_` boundary is not bound to any elementof; treated
+  // as elementof(anything). No set restriction to surface — the
+  // viewer falls back to its leaf-type-based default range.
+  const base = resolveAxisBaseSet({ kind: 'placeholder', name: '_par_' }, new Map());
+  assert.equal(base, null);
+});
+
+test('resolveAxisBaseSet: stochastic binding source → empirical descriptor', () => {
+  // theta1 boundary points at a non-elementof binding; the UI is
+  // expected to materialise it and compute a quantile range.
+  const source = { kind: 'binding', name: 'theta1' };
+  const base = resolveAxisBaseSet(source, new Map());
+  assert.deepEqual(base, { kind: 'empirical', name: 'theta1' });
+});
+
+test('resolveAxisBaseSet: null / unrecognised source → null', () => {
+  assert.equal(resolveAxisBaseSet(null, new Map()), null);
+  assert.equal(resolveAxisBaseSet({ kind: 'unknown' }, new Map()), null);
+});
+
+// =====================================================================
+// fourSigmaQuantileRange — 4-σ central quantile of an empirical sample
+// =====================================================================
+
+test('fourSigmaQuantileRange: empty / single → null / [v, v]', () => {
+  assert.equal(fourSigmaQuantileRange(null), null);
+  assert.equal(fourSigmaQuantileRange([]), null);
+  assert.deepEqual(fourSigmaQuantileRange([3.14]), [3.14, 3.14]);
+});
+
+test('fourSigmaQuantileRange: monotone array → near-min / near-max', () => {
+  // 1000 evenly-spaced values in [0, 1]. 4-σ tail is ~3.17e-5 — we
+  // expect the lo/hi to land essentially at the endpoints (interp
+  // pulls them very slightly inward from 0 / 1).
+  const xs = new Float64Array(1000);
+  for (let i = 0; i < 1000; i++) xs[i] = i / 999;
+  const [lo, hi] = fourSigmaQuantileRange(xs);
+  assert.ok(lo >= 0 && lo < 0.01, 'lo near 0 (got ' + lo + ')');
+  assert.ok(hi <= 1 && hi > 0.99, 'hi near 1 (got ' + hi + ')');
+});
+
+test('fourSigmaQuantileRange: clipping at high N drops thinnest tails', () => {
+  // 1e6 normal-like samples — extreme atoms get clipped. We don't
+  // construct true normals (that needs the sampler); just check that
+  // a single big-outlier injected into a tight bulk gets dropped.
+  const N = 1000000;
+  const xs = new Float64Array(N);
+  for (let i = 0; i < N; i++) xs[i] = (i / N) * 2 - 1;  // [-1, 1]
+  xs[N - 1] = 1e9;  // single outlier
+  const [, hi] = fourSigmaQuantileRange(xs);
+  assert.ok(hi < 100, 'outlier clipped (hi = ' + hi + ')');
 });
