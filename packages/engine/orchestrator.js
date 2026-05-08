@@ -640,15 +640,77 @@ function liftInlineSubexpressions(bindings) {
     // Iterate to a fixed point — inlined body might itself be (or
     // contain at its root) another user call (chained: f then g),
     // a jointchain that rewrites to a joint of further user calls,
-    // or a relabel that surfaces a record(...).
+    // a relabel that surfaces a record(...), or an fchain that
+    // unrolls to a tower of nested user calls.
     let prev = null;
     while (astArg !== prev) {
       prev = astArg;
       astArg = inlineOnce(astArg);
       astArg = inlineChainOps(astArg);
       astArg = inlineRelabel(astArg);
+      astArg = inlineFchain(astArg);
     }
     return astArg;
+  }
+
+  /**
+   * Rewrite an applied fchain — `fchain(f1, …, fN)(args)` or
+   * `pipeline(args)` where `pipeline = fchain(…)` — to the equivalent
+   * tower `fN(… f2(f1(args)))`, per spec §sec:design line 526-532.
+   *
+   * We only resolve fchain when its components are Identifier refs to
+   * function bindings; inline `fn(…)` / `functionof(…)` components
+   * would produce a CallExpr-on-CallExpr application that inlineOnce
+   * doesn't handle. Those bindings are lifted to anons by the visit
+   * pass before fchain is reached, so this is the common path.
+   *
+   * Returns the input unchanged when the call isn't an applied fchain
+   * (so the binding falls through, and a real fchain that isn't
+   * applied just classifies as unsupported — fchain bindings are
+   * function values, not measures).
+   */
+  function inlineFchain(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee) return astArg;
+    let fchainCall = null;
+    if (astArg.callee.type === 'CallExpr'
+        && astArg.callee.callee
+        && astArg.callee.callee.type === 'Identifier'
+        && astArg.callee.callee.name === 'fchain') {
+      fchainCall = astArg.callee;
+    } else if (astArg.callee.type === 'Identifier') {
+      const target = out.get(astArg.callee.name);
+      const targetAst = target && (target.effectiveValue || (target.node && target.node.value));
+      if (targetAst && targetAst.type === 'CallExpr' && targetAst.callee
+          && targetAst.callee.type === 'Identifier'
+          && targetAst.callee.name === 'fchain') {
+        fchainCall = targetAst;
+      }
+    }
+    if (!fchainCall) return astArg;
+    const fns = (fchainCall.args || []).filter(a => a && a.type !== 'KeywordArg');
+    if (fns.length === 0) return astArg;
+    // Build f1(args), then f2(f1(args)), …, fN(…). Each fn[i] becomes
+    // a callee — must be an Identifier so inlineOnce can substitute.
+    for (const f of fns) {
+      if (!f || f.type !== 'Identifier') return astArg;
+    }
+    const callerArgs = (astArg.args || []).map(cloneAst);
+    let result = {
+      type: 'CallExpr',
+      callee: cloneAst(fns[0]),
+      args: callerArgs,
+      loc: astArg.loc,
+    };
+    for (let i = 1; i < fns.length; i++) {
+      result = {
+        type: 'CallExpr',
+        callee: cloneAst(fns[i]),
+        args: [result],
+        loc: astArg.loc,
+      };
+    }
+    return result;
   }
 
   /**

@@ -557,6 +557,66 @@ r = relabel([1, 2, 3], ["x", "y"])
 });
 
 // =====================================================================
+// fchain — applied function composition unrolls to nested calls
+// =====================================================================
+//
+// Per spec §sec:design line 526-532, fchain(f1, …, fN)(x) ≡
+// fN(… f2(f1(x))). The orchestrator unrolls applied fchains at AST
+// time so the inliner can substitute each component's body
+// uniformly. Standalone (unapplied) fchain bindings stay unsupported
+// — they're function values, not measures.
+
+test('fchain: pipeline binding applied positionally unrolls to nested calls', () => {
+  const { derivations } = derivationsOf(`
+y_dist = Normal(mu = 0.0, sigma = 1.0)
+y      = draw(y_dist)
+f1     = fn(_ + 1.0)
+f2     = fn(_ * 2.0)
+pipe   = fchain(f1, f2)
+z      = pipe(y)
+`);
+  assert.ok(derivations.z, 'z should be derivable');
+  assert.equal(derivations.z.kind, 'evaluate');
+  // The unrolled body computes (y + 1) * 2. We don't pin the IR
+  // shape exactly (fn-substitution may go through anons), only that
+  // the binding got classified.
+});
+
+test('fchain: inline fchain(...)(x) form works', () => {
+  const { derivations } = derivationsOf(`
+y_dist = Normal(mu = 0.0, sigma = 1.0)
+y      = draw(y_dist)
+f1     = fn(_ + 1.0)
+f2     = fn(_ * 2.0)
+z      = fchain(f1, f2)(y)
+`);
+  assert.ok(derivations.z, 'z should be derivable');
+  assert.equal(derivations.z.kind, 'evaluate');
+});
+
+test('fchain: single-component fchain is identity composition', () => {
+  const { derivations } = derivationsOf(`
+y_dist = Normal(mu = 0.0, sigma = 1.0)
+y      = draw(y_dist)
+f1     = fn(_ + 1.0)
+z      = fchain(f1)(y)
+`);
+  assert.ok(derivations.z, 'z should be derivable');
+  assert.equal(derivations.z.kind, 'evaluate');
+});
+
+test('fchain: standalone (unapplied) fchain binding is not a measure derivation', () => {
+  // pipe is a function value, not a variate. It should not appear
+  // in the derivations map (no kind for "function value").
+  const { derivations } = derivationsOf(`
+f1   = fn(_ + 1.0)
+f2   = fn(_ * 2.0)
+pipe = fchain(f1, f2)
+`);
+  assert.ok(!('pipe' in derivations));
+});
+
+// =====================================================================
 // collectSelfRefs / leafSampleIR
 // =====================================================================
 
