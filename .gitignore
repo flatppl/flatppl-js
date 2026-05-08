@@ -9,3 +9,9 @@ node_modules/
 packages/vscode-extension/lib/
 packages/vscode-extension/grammars/
 packages/vscode-extension/THIRD-PARTY-LICENSES.md
+
+# Local symlinks created for the embed-test page (see
+# packages/viewer/embed-test.html for the recipe). Source of truth
+# is whatever the extension's lib/ currently builds — re-symlink
+# after a `build:vendor` if needed.
+packages/viewer/vendor/
