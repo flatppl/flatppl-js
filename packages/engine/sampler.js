@@ -493,11 +493,13 @@ const ARITH_OPS = {
   sub: (a, b) => a - b,
   mul: (a, b) => a * b,
   div: (a, b) => a / b,
+  mod: (a, b) => a % b,
   neg: a => -a,
   pos: a => +a,
   // Common unary maths — extend EVALUABLE_OPS in orchestrator.js
   // alongside any addition here so the static gate matches.
   abs:   a => Math.abs(a),
+  abs2:  a => a * a,
   exp:   a => Math.exp(a),
   log:   a => Math.log(a),
   log10: a => Math.log10(a),
@@ -509,6 +511,29 @@ const ARITH_OPS = {
   ceil:  a => Math.ceil(a),
   round: a => Math.round(a),
   pow:   (a, b) => Math.pow(a, b),
+  // Comparison ops produce booleans (per spec §07). Spec preserves
+  // strict typing — no implicit numeric→boolean cast — so the
+  // operands are treated as reals and the result is JS boolean.
+  lt:      (a, b) => a < b,
+  le:      (a, b) => a <= b,
+  gt:      (a, b) => a > b,
+  ge:      (a, b) => a >= b,
+  equal:   (a, b) => a === b,
+  unequal: (a, b) => a !== b,
+  // Predicates over reals.
+  isfinite: a => Number.isFinite(a),
+  isinf:    a => !Number.isNaN(a) && !Number.isFinite(a),
+  isnan:    a => Number.isNaN(a),
+  iszero:   a => a === 0,
+  // Logic / conditionals (spec §07). FlatPPL booleans are strict — we
+  // don't coerce truthy values, the typeinfer pass already requires
+  // boolean operands. lxor is exclusive-or; ifelse is the conditional
+  // expression returning the first or second branch by cond.
+  land:    (a, b) => a && b,
+  lor:     (a, b) => a || b,
+  lxor:    (a, b) => a !== b,
+  lnot:    a => !a,
+  ifelse:  (c, a, b) => c ? a : b,
 };
 
 function evaluateCall(ir, env) {
