@@ -2590,6 +2590,74 @@ function formatAxisLabel(kwargName, path) {
   return s;
 }
 
+/**
+ * Substitute IR for the profile-plot evaluator. Two transformations:
+ *
+ *   1. (ref self <name>) where <name> is a swept input parameter →
+ *      (ref %local <name>). The body uses %local refs for its own
+ *      params; transitive deps that surface a self-ref to the same
+ *      param need to be rewritten so they pick up the swept value
+ *      from the worker's env.
+ *
+ *   2. (ref self <name>) where <name>'s derivation is evaluate-kind
+ *      → substitute the binding's lowered IR inline (recursively
+ *      processed). Pulls deterministic transforms (e.g. `a = c *
+ *      theta1` or `b = abs(theta1) * theta2`) into the body so the
+ *      swept axis propagates through them. Constants and other
+ *      truly-self-referential bindings (literals, prior atoms) are
+ *      left as-is for the viewer's pre-materialise step to bind via
+ *      fixedEnv.
+ *
+ * Used by the profile-plot UI before sending IR to worker.profileN.
+ * Without this pass, sweeping `theta1` through a kernel body whose
+ * `mu = a` (with `a = c * theta1`) leaves `a` materialised at a
+ * single fixed value — the plot shows a flat line because the swept
+ * axis doesn't reach the leaf distributions.
+ */
+function inlineForProfile(ir, paramNames, bindings, derivations) {
+  if (!ir) return ir;
+  const paramSet = new Set(paramNames || []);
+  const visiting = new Set();
+  return walk(ir);
+
+  function walk(node) {
+    if (node == null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(walk);
+    if (node.kind === 'ref' && node.ns === 'self') {
+      // Swept input → %local rewrite.
+      if (paramSet.has(node.name)) {
+        return { ...node, ns: '%local' };
+      }
+      // Evaluable binding → inline. Cycle guard: if we're already
+      // expanding this name, leave the ref intact (the cycle would
+      // be the analyzer's bug, not ours to mask).
+      if (derivations && Object.prototype.hasOwnProperty.call(derivations, node.name)
+          && derivations[node.name].kind === 'evaluate'
+          && !visiting.has(node.name)) {
+        const target = bindings && bindings.get(node.name);
+        if (target && target.ir) {
+          visiting.add(node.name);
+          const expanded = walk(target.ir);
+          visiting.delete(node.name);
+          return expanded;
+        }
+      }
+      // Constant / stochastic / opaque ref — leave for fixedEnv.
+      return node;
+    }
+    // Recurse into structural children: args, fields, kwargs, body.
+    const out = { ...node };
+    if (Array.isArray(node.args))   out.args   = node.args.map(walk);
+    if (Array.isArray(node.fields)) out.fields = node.fields.map(f => ({ ...f, value: walk(f.value) }));
+    if (node.kwargs && typeof node.kwargs === 'object') {
+      out.kwargs = {};
+      for (const k in node.kwargs) out.kwargs[k] = walk(node.kwargs[k]);
+    }
+    if (node.body) out.body = walk(node.body);
+    return out;
+  }
+}
+
 module.exports = {
   buildSampleChain,
   buildDerivations,
@@ -2600,6 +2668,7 @@ module.exports = {
   expandMeasureRefsInIR,
   signatureOf,
   distributeAxes,
+  inlineForProfile,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.

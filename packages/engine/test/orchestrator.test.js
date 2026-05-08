@@ -23,7 +23,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
-  signatureOf, distributeAxes,
+  signatureOf, distributeAxes, inlineForProfile,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -875,4 +875,108 @@ test('distributeAxes: empty signature → empty axis list', () => {
   assert.deepEqual(distributeAxes(null), []);
   assert.deepEqual(distributeAxes({}), []);
   assert.deepEqual(distributeAxes({ inputs: [] }), []);
+});
+
+// =====================================================================
+// inlineForProfile — propagate swept axis through deterministic deps
+// =====================================================================
+
+test('inlineForProfile: param self-ref rewrites to %local', () => {
+  // (ref self theta1) where theta1 is a swept input becomes
+  // (ref %local theta1). The body's evaluator picks the swept value
+  // out of env keyed by paramName.
+  const ir = { kind: 'ref', ns: 'self', name: 'theta1' };
+  const out = inlineForProfile(ir, ['theta1'], new Map(), {});
+  assert.equal(out.ns, '%local');
+  assert.equal(out.name, 'theta1');
+});
+
+test('inlineForProfile: non-param ref left intact when binding non-evaluable', () => {
+  // Constants (sample / iid / etc.) stay as self-refs for the
+  // viewer's pre-materialise step to bind via fixedEnv.
+  const ir = { kind: 'ref', ns: 'self', name: 'c' };
+  const bindings = new Map([['c', { ir: { kind: 'lit', value: 5 } }]]);
+  const derivations = { c: { kind: 'sample' } }; // non-evaluate
+  const out = inlineForProfile(ir, [], bindings, derivations);
+  assert.equal(out.ns, 'self');
+  assert.equal(out.name, 'c');
+});
+
+test('inlineForProfile: evaluate-kind binding inlines its IR', () => {
+  // a = c * theta1 (deterministic). When sweeping theta1 we want the
+  // evaluator to see (mul <c-inlined> %local.theta1) — `a`'s body
+  // gets inlined recursively (c is also evaluate-kind, so its lit IR
+  // takes the place of self.c), and theta1 rewrites to %local.
+  const aIR = {
+    kind: 'call', op: 'mul',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'c' },
+      { kind: 'ref', ns: 'self', name: 'theta1' },
+    ],
+  };
+  const bindings = new Map([
+    ['a', { ir: aIR }],
+    ['c', { ir: { kind: 'lit', value: 5 } }],
+    ['theta1', { ir: { kind: 'call', op: 'Normal', kwargs: {} } }],
+  ]);
+  const derivations = {
+    a: { kind: 'evaluate' },
+    c: { kind: 'evaluate' },
+    theta1: { kind: 'sample' },
+  };
+  const body = { kind: 'ref', ns: 'self', name: 'a' };
+  const out = inlineForProfile(body, ['theta1'], bindings, derivations);
+  assert.equal(out.kind, 'call');
+  assert.equal(out.op, 'mul');
+  // c inlined as the literal 5 (its full ir).
+  assert.equal(out.args[0].kind, 'lit');
+  assert.equal(out.args[0].value, 5);
+  // theta1 rewritten to %local (it's the swept param).
+  assert.equal(out.args[1].ns, '%local');
+  assert.equal(out.args[1].name, 'theta1');
+});
+
+test('inlineForProfile: stochastic dep stays as self-ref (only evaluable inlined)', () => {
+  // theta1 is sampled (kind: 'sample'); even when not the swept
+  // param, we leave it as a self-ref so the viewer's pre-materialise
+  // step picks one atom's value via fixedEnv. Inlining a stochastic
+  // body would substitute the sampling IR, which the per-point
+  // evaluator can't run.
+  const ir = { kind: 'ref', ns: 'self', name: 'theta1' };
+  const bindings = new Map([
+    ['theta1', { ir: { kind: 'call', op: 'Normal', kwargs: {} } }],
+  ]);
+  const derivations = { theta1: { kind: 'sample' } };
+  const out = inlineForProfile(ir, [], bindings, derivations);
+  assert.equal(out.ns, 'self');
+  assert.equal(out.name, 'theta1');
+});
+
+test('inlineForProfile: cycle guard — does not loop on self-cycle', () => {
+  // Pathological case: a binding whose evaluable derivation refers
+  // back to itself. The cycle guard leaves the second-encounter ref
+  // intact rather than infinite-recursing.
+  const aIR = { kind: 'ref', ns: 'self', name: 'a' };
+  const bindings = new Map([['a', { ir: aIR }]]);
+  const derivations = { a: { kind: 'evaluate' } };
+  const out = inlineForProfile(
+    { kind: 'ref', ns: 'self', name: 'a' }, [], bindings, derivations);
+  // First lookup expands to aIR, then the cycle guard activates;
+  // resulting IR is a self-ref to 'a' (unchanged), no exception.
+  assert.equal(out.kind, 'ref');
+  assert.equal(out.ns, 'self');
+  assert.equal(out.name, 'a');
+});
+
+test('inlineForProfile: walks call args / kwargs / fields recursively', () => {
+  // Coverage: substitution must reach into all structural slots.
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: {
+      mu:    { kind: 'ref', ns: 'self', name: 'theta1' },
+      sigma: { kind: 'lit', value: 1 },
+    },
+  };
+  const out = inlineForProfile(ir, ['theta1'], new Map(), {});
+  assert.equal(out.kwargs.mu.ns, '%local');
 });
