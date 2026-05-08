@@ -665,6 +665,76 @@ function liftInlineSubexpressions(bindings) {
     const op = astArg.callee.name;
     if (op !== 'jointchain' && op !== 'chain') return astArg;
     if (!astArg.args || astArg.args.length !== 2) return astArg;
+
+    // Keyword-shorthand jointchain: jointchain(a = M, b = K) per spec
+    // §sec:jointchain is equivalent to
+    //   jointchain(relabel(M, ["a"]), relabel(K, ["b"]))
+    // i.e. each kwarg names a component output. We lower to the same
+    // stochastic-node form as the positional case, but emit a
+    // record(...) so the kind='record' classifier picks it up.
+    //
+    //   jointchain(a = M, b = K)  ≡  record(a = draw(M), b = draw(K(_a)))
+    //
+    // chain (which marginalises) doesn't fit cleanly into the kwarg
+    // shorthand and isn't covered by this branch.
+    if (op === 'jointchain'
+        && astArg.args[0].type === 'KeywordArg'
+        && astArg.args[1].type === 'KeywordArg') {
+      const fieldA = astArg.args[0];
+      const fieldB = astArg.args[1];
+      const Mexpr = fieldA.value;
+      const Kexpr = fieldB.value;
+      // Lift inline M and K to anon bindings (they may already be
+      // Identifiers if visit() got there first).
+      const Mref = Mexpr.type === 'Identifier' ? Mexpr : (function() {
+        const n = freshName();
+        out.set(n, makeSyntheticBinding(n, Mexpr));
+        return makeIdent(n, astArg.loc);
+      }());
+      const Kref = Kexpr.type === 'Identifier' ? Kexpr : (function() {
+        const n = freshName();
+        out.set(n, makeSyntheticBinding(n, Kexpr));
+        return makeIdent(n, astArg.loc);
+      }());
+      // Synthesise _a = draw(M).
+      const aName = freshName();
+      out.set(aName, makeSyntheticBinding(aName, {
+        type: 'CallExpr',
+        callee: makeIdent('draw', astArg.loc),
+        args: [Mref],
+        loc: astArg.loc,
+      }));
+      // Apply K positionally to _a (inlineOnce handles fn / functionof
+      // / kernelof bodies).
+      const kCall = {
+        type: 'CallExpr',
+        callee: Kref,
+        args: [makeIdent(aName, astArg.loc)],
+        loc: astArg.loc,
+      };
+      const appliedK = inlineOnce(kCall);
+      if (!appliedK || appliedK === kCall) return astArg;
+      const bName = freshName();
+      const drawB = {
+        type: 'CallExpr',
+        callee: makeIdent('draw', astArg.loc),
+        args: [appliedK],
+        loc: astArg.loc,
+      };
+      visit(drawB);
+      out.set(bName, makeSyntheticBinding(bName, drawB));
+      // record(a = _a, b = _b).
+      return {
+        type: 'CallExpr',
+        callee: makeIdent('record', astArg.loc),
+        args: [
+          { type: 'KeywordArg', name: fieldA.name, value: makeIdent(aName, astArg.loc), loc: astArg.loc },
+          { type: 'KeywordArg', name: fieldB.name, value: makeIdent(bName, astArg.loc), loc: astArg.loc },
+        ],
+        loc: astArg.loc,
+      };
+    }
+
     const Parg = astArg.args[0], Karg = astArg.args[1];
     if (Parg.type !== 'Identifier' || Karg.type !== 'Identifier') return astArg;
 
