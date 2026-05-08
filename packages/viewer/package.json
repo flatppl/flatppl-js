@@ -22,7 +22,7 @@
   },
   "devDependencies": {
     "@flatppl/engine": "*",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.0",
     "cytoscape": "^3.30.4",
     "@dagrejs/dagre": "^3.0.0",
     "cytoscape-dagre": "^2.5.0",
