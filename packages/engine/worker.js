@@ -281,6 +281,65 @@ function createWorkerHandler(opts = {}) {
           if (msg.seed == null) philox = state;
           return { type: 'samples', id, samples: out, logWeights: null };
         }
+        case 'profileN': {
+          // Profile-plot evaluator. Sweeps a single scalar input over
+          // a [lo, hi] range at N evenly-spaced points, with all other
+          // inputs held at their fixed values. Two evaluation modes:
+          //
+          //   'function'   — out[i] = evaluateExpr(ir, env_i)
+          //                  for fn / functionof bindings. ir is the
+          //                  reified body. env_i = fixedEnv with the
+          //                  swept axis name set to the i-th sample.
+          //   'logdensity' — out[i] = traceeval.walk(...).logp
+          //                  for kernelof / likelihoodof bindings. ir
+          //                  is the expanded measure IR; observed is
+          //                  the obs value (constant across i for
+          //                  likelihoods).
+          //
+          // Domain-of-definition errors (log of negative, division
+          // by zero, etc.) become NaN entries — the plot pane shows
+          // them as gaps rather than aborting the whole sweep.
+          //
+          // Note: %local refs in reified bodies look up via the same
+          // env as 'self' refs (sampler.evaluateExpr handles both
+          // namespaces uniformly), so we can populate env keyed by
+          // param name and the body's lookups Just Work.
+          const count = msg.count | 0;
+          if (count <= 0) throw new Error(`profileN.count must be positive integer (got ${msg.count})`);
+          const range = msg.range || [0, 1];
+          const lo = +range[0], hi = +range[1];
+          if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+            throw new Error(`profileN.range must be finite numbers, got [${range[0]}, ${range[1]}]`);
+          }
+          const sweepName = msg.sweepName;
+          if (!sweepName) throw new Error('profileN.sweepName is required');
+          const fixedEnv = msg.fixedEnv || {};
+          const mode     = msg.mode     || 'function';
+          const observed = msg.observed;
+          const tally    = msg.tally || 'clamped';
+          const out      = new Float64Array(count);
+          const env      = Object.assign({}, fixedEnv);
+          let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
+          for (let i = 0; i < count; i++) {
+            const t = count === 1 ? 0 : i / (count - 1);
+            env[sweepName] = lo + t * (hi - lo);
+            try {
+              if (mode === 'function') {
+                out[i] = samplerLib.evaluateExpr(msg.ir, env);
+              } else if (mode === 'logdensity') {
+                const r = traceevalLib.walk(state, msg.ir, env, observed, { tally });
+                out[i] = r.logp;
+                state = r.state;
+              } else {
+                throw new Error(`profileN.mode must be 'function' or 'logdensity' (got '${mode}')`);
+              }
+            } catch (_) {
+              out[i] = NaN;
+            }
+          }
+          if (msg.seed == null) philox = state;
+          return { type: 'samples', id, samples: out, logWeights: null };
+        }
         case 'dispose': {
           philox = null;
           env = null;

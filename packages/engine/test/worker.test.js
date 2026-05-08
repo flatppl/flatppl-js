@@ -553,6 +553,145 @@ test('logDensityN: joint observed clamps per-field, sums logpdfs', () => {
 
 
 // =====================================================================
+// profileN — sweep one input across [lo, hi], hold others at fixed
+// values. Drives the upcoming profile-plot UI for fn / functionof /
+// kernelof / likelihoodof bindings.
+// =====================================================================
+
+test('profileN: count must be positive', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({
+    type: 'profileN', count: 0,
+    ir: { kind: 'lit', value: 1, loc: synthLoc() },
+    sweepName: 'x', range: [0, 1],
+  });
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /count must be positive/);
+});
+
+test('profileN: range must be finite', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({
+    type: 'profileN', count: 5,
+    ir: { kind: 'lit', value: 1, loc: synthLoc() },
+    sweepName: 'x', range: [0, NaN],
+  });
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /finite/);
+});
+
+test('profileN: sweepName is required', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({
+    type: 'profileN', count: 5,
+    ir: { kind: 'lit', value: 1, loc: synthLoc() },
+    range: [0, 1],
+  });
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /sweepName/);
+});
+
+test('profileN: function f(x) = x evaluates evenly across range', () => {
+  // Identity body — output equals the swept input value at each i.
+  // Verifies the linear-spacing and env injection path.
+  const w = createWorkerHandler();
+  const ir = { kind: 'ref', ns: '%local', name: 'x', loc: synthLoc() };
+  const r = w.handle({
+    type: 'profileN', count: 5,
+    ir, sweepName: 'x', range: [0, 4], mode: 'function',
+  });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.samples.length, 5);
+  for (let i = 0; i < 5; i++) assert.equal(r.samples[i], i);
+});
+
+test('profileN: function f(x) = x*x produces the quadratic', () => {
+  // (mul x x) — sanity check that arithmetic IR works through
+  // evaluateExpr with a swept env.
+  const w = createWorkerHandler();
+  const xRef = () => ({ kind: 'ref', ns: '%local', name: 'x', loc: synthLoc() });
+  const ir = { kind: 'call', op: 'mul', args: [xRef(), xRef()], loc: synthLoc() };
+  const r = w.handle({
+    type: 'profileN', count: 5,
+    ir, sweepName: 'x', range: [-2, 2], mode: 'function',
+  });
+  // x runs over [-2, -1, 0, 1, 2]; output is [4, 1, 0, 1, 4].
+  assert.deepEqual(Array.from(r.samples), [4, 1, 0, 1, 4]);
+});
+
+test('profileN: function honours fixedEnv for non-swept inputs', () => {
+  // f(x, c) = x + c, sweep x, hold c at 100.
+  const w = createWorkerHandler();
+  const ir = {
+    kind: 'call', op: 'add',
+    args: [
+      { kind: 'ref', ns: '%local', name: 'x', loc: synthLoc() },
+      { kind: 'ref', ns: '%local', name: 'c', loc: synthLoc() },
+    ],
+    loc: synthLoc(),
+  };
+  const r = w.handle({
+    type: 'profileN', count: 4,
+    ir, sweepName: 'x', range: [0, 3], mode: 'function',
+    fixedEnv: { c: 100 },
+  });
+  assert.deepEqual(Array.from(r.samples), [100, 101, 102, 103]);
+});
+
+test('profileN: domain-of-definition error becomes NaN, not abort', () => {
+  // log(x) is undefined for x ≤ 0. Sweep over [-1, 1] across 5 points
+  // (so x = -1, -0.5, 0, 0.5, 1). The first three should be NaN /
+  // -Infinity, the last two finite.
+  const w = createWorkerHandler();
+  const ir = {
+    kind: 'call', op: 'log',
+    args: [{ kind: 'ref', ns: '%local', name: 'x', loc: synthLoc() }],
+    loc: synthLoc(),
+  };
+  const r = w.handle({
+    type: 'profileN', count: 5,
+    ir, sweepName: 'x', range: [-1, 1], mode: 'function',
+  });
+  assert.equal(r.type, 'samples');
+  // log(-1), log(-0.5) → NaN; log(0) → -Infinity; log(0.5), log(1) → finite.
+  assert.ok(Number.isNaN(r.samples[0]));
+  assert.ok(Number.isNaN(r.samples[1]));
+  assert.equal(r.samples[2], -Infinity);
+  assert.ok(Number.isFinite(r.samples[3]));
+  assert.equal(r.samples[4], 0); // log(1) = 0
+});
+
+test('profileN: logdensity mode evaluates Normal logpdf along mu axis', () => {
+  // Sweep mu over [-2, 2] for a Normal(mu, 1) at observed = 0. Per
+  // point the log-density is the Gaussian logpdf — peak at mu = 0,
+  // symmetric. Verifies the traceeval.walk wiring + observed plumbing.
+  const w = createWorkerHandler();
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: {
+      mu:    { kind: 'ref', ns: '%local', name: 'mu', loc: synthLoc() },
+      sigma: { kind: 'lit', value: 1, loc: synthLoc() },
+    },
+    loc: synthLoc(),
+  };
+  const r = w.handle({
+    type: 'profileN', count: 5,
+    ir, sweepName: 'mu', range: [-2, 2], mode: 'logdensity',
+    observed: 0, tally: 'clamped',
+  });
+  const lp = require('@stdlib/stats-base-dists-normal-logpdf');
+  // mu runs over [-2, -1, 0, 1, 2].
+  for (let i = 0; i < 5; i++) {
+    const mu = -2 + i;
+    assert.ok(Math.abs(r.samples[i] - lp(0, mu, 1)) < 1e-12);
+  }
+  // Symmetric around mu = 0 (the peak).
+  assert.equal(r.samples[1], r.samples[3]);
+  assert.equal(r.samples[0], r.samples[4]);
+  assert.ok(r.samples[2] > r.samples[1]);
+});
+
+// =====================================================================
 // (continuing the entry-shim end-to-end tests from before)
 // =====================================================================
 
