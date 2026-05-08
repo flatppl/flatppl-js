@@ -3098,16 +3098,71 @@
       return 0;
     }
 
-    // Default sweep range for an axis. Generic real default for now;
-    // F5 refines via paramSources backrefs (prior empirical 4-σ
-    // quantile when the boundary points at a stochastic binding) and
-    // elementof set restrictions (interval bounds when the placeholder
-    // resolves to elementof(interval(a,b))).
+    // Default sweep range for an axis from leaf-type alone. Used as
+    // the final fallback after the axis-set descriptor and empirical
+    // backref both fail to give a range.
     function defaultRangeForLeafType(leafType) {
       if (leafType && leafType.kind === 'scalar' && leafType.prim === 'integer') {
         return [-10, 10];
       }
       return [-5, 5];
+    }
+
+    // Map a structural set descriptor (from
+    // orchestrator.resolveAxisBaseSet) to a concrete sweep range.
+    // Empirical sets defer to the caller (the viewer materialises
+    // the source binding and computes a 4-σ quantile range).
+    //   reals          → [-5, 5]            (Gaussian-like default)
+    //   posreals       → [eps, 5]           (avoid 0 boundary for log etc.)
+    //   nonnegreals    → [0, 5]
+    //   integers       → [-10, 10]
+    //   posintegers    → [1, 20]
+    //   nonnegintegers → [0, 20]
+    //   booleans       → [0, 1]
+    //   interval(a, b) → [a, b]
+    function rangeFromSetDescriptor(descriptor) {
+      if (!descriptor) return null;
+      switch (descriptor.kind) {
+        case 'interval':       return [descriptor.lo, descriptor.hi];
+        case 'reals':          return [-5, 5];
+        case 'posreals':       return [0.01, 5];
+        case 'nonnegreals':    return [0, 5];
+        case 'unitinterval':   return [0, 1];
+        case 'integers':       return [-10, 10];
+        case 'posintegers':    return [1, 20];
+        case 'nonnegintegers': return [0, 20];
+        case 'booleans':       return [0, 1];
+        default:               return null;
+      }
+    }
+
+    // Resolve the auto-range for a swept axis. Three-tier fallback:
+    //   1. Set descriptor (interval / reals / posreals / …) from
+    //      resolveAxisBaseSet — covers identifier-bound elementof
+    //      bindings.
+    //   2. Empirical 4-σ quantile from the source binding's samples
+    //      — covers identifier boundaries pointing at stochastic /
+    //      derived bindings.
+    //   3. Leaf-type default — placeholders, anything unresolved.
+    // Returns a Promise<[lo, hi]> since step 2 may need to await
+    // getMeasure(...).
+    function resolveSweepRange(axis) {
+      var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
+        axis.source, derivationsState && derivationsState.bindings);
+      if (descriptor && descriptor.kind === 'empirical') {
+        return getMeasure(descriptor.name).then(function(m) {
+          if (m && m.samples && m.samples.length > 0) {
+            var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
+            if (range && range[0] < range[1]) return range;
+          }
+          return defaultRangeForLeafType(axis.leafType);
+        }, function() {
+          return defaultRangeForLeafType(axis.leafType);
+        });
+      }
+      var fromDescriptor = rangeFromSetDescriptor(descriptor);
+      if (fromDescriptor) return Promise.resolve(fromDescriptor);
+      return Promise.resolve(defaultRangeForLeafType(axis.leafType));
     }
 
     // Render the profile plot for a callable binding. Builds env with
@@ -3189,7 +3244,6 @@
       var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
       ir = FlatPPLEngine.orchestrator.inlineForProfile(
         ir, paramNames, derivationsState.bindings, derivationsState.derivations);
-      var range = defaultRangeForLeafType(sweepAxis.leafType);
       var POINT_COUNT = 200;
       showPlotMessage('Profiling…', { cancellable: true, hint: true });
       var planForCall = plan;
@@ -3204,34 +3258,43 @@
       FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
         selfRefs.push(n);
       });
-      Promise.all(selfRefs.map(function(n) { return getMeasure(n); }))
-        .then(function(measures) {
-          for (var i = 0; i < selfRefs.length; i++) {
-            var m = measures[i];
-            if (m && m.samples && m.samples.length > 0) {
-              fixedEnv[selfRefs[i]] = m.samples[0];
-            }
+      // Range comes from resolveSweepRange (set descriptor → empirical
+      // 4-σ quantile → leaf-type fallback); self-refs come from
+      // pre-materialising the binding refs that survived
+      // inlineForProfile (constants, stochastic atoms held at index
+      // 0). Both queries can run in parallel.
+      var rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
+      Promise.all([
+        resolveSweepRange(sweepAxis),
+        Promise.all(selfRefs.map(function(n) { return getMeasure(n); })),
+      ]).then(function(arr) {
+        rangeRef[0] = arr[0];
+        var measures = arr[1];
+        for (var i = 0; i < selfRefs.length; i++) {
+          var m = measures[i];
+          if (m && m.samples && m.samples.length > 0) {
+            fixedEnv[selfRefs[i]] = m.samples[0];
           }
-          return sendWorker({
-            type: 'profileN',
-            ir: ir,
-            sweepName: sweepParamName,
-            range: range,
-            count: POINT_COUNT,
-            mode: mode,
-            fixedEnv: fixedEnv,
-            observed: sig.obsValue == null ? undefined : sig.obsValue,
-            tally: 'clamped',
-          });
-        }).then(function(reply) {
-          // Stale-reply guard: user may have clicked another binding
-          // while we were waiting.
-          if (currentPlotPlan !== planForCall) return;
-          renderProfileLine(reply.samples, range, plan, sweepAxis);
-        }).catch(function(err) {
-          if (currentPlotPlan !== planForCall) return;
-          showPlotMessage('Profile plot failed: ' + esc(err && err.message || String(err)));
+        }
+        return sendWorker({
+          type: 'profileN',
+          ir: ir,
+          sweepName: sweepParamName,
+          range: rangeRef[0],
+          count: POINT_COUNT,
+          mode: mode,
+          fixedEnv: fixedEnv,
+          observed: sig.obsValue == null ? undefined : sig.obsValue,
+          tally: 'clamped',
         });
+      }).then(function(reply) {
+        if (!reply) return;
+        if (currentPlotPlan !== planForCall) return;
+        renderProfileLine(reply.samples, rangeRef[0], plan, sweepAxis);
+      }).catch(function(err) {
+        if (currentPlotPlan !== planForCall) return;
+        showPlotMessage('Profile plot failed: ' + esc(err && err.message || String(err)));
+      });
     }
 
     function renderProfileLine(values, range, plan, sweepAxis) {
