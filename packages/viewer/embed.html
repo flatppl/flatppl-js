@@ -67,6 +67,12 @@
     // an empty host adapter (no IDE, no setTitle / revealSourceLine,
     // no persisted state). We push an initial source via update() so
     // the viewer renders something on first load.
+    // Mirror bayesian_inference_3.flatppl's prior/kernel pattern.
+    // forward_kernel needs a record-shaped measure as its body so the
+    // orchestrator's inlineChainOps can rewrite jointchain(prior, K)
+    // into the joint(...) form that classifies as a record measure;
+    // hence the explicit obs_dist binding rather than reifying off
+    // the obs variate directly.
     var SAMPLE_SOURCE = [
       '# A small Bayesian example for the standalone embed.',
       'theta1_dist = Normal(mu = 0, sigma = 1)',
@@ -75,9 +81,10 @@
       'theta2 = draw(theta2_dist)',
       'a = 2 * theta2',
       'b = abs(theta1) * theta1',
-      'obs = draw(iid(Normal(mu = a, sigma = b), 10))',
+      'obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))',
+      'obs = draw(obs_dist)',
       'prior = lawof(record(theta1 = theta1, theta2 = theta2))',
-      'forward_kernel = functionof(obs, theta1 = theta1, theta2 = theta2)',
+      'forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)',
       'joint_model = jointchain(prior, forward_kernel)',
       '',
     ].join('\n');
