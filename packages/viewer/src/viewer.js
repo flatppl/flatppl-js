@@ -1,24 +1,78 @@
-  (function() {
-    // Host-supplied configuration. The vscode-extension host writes
-    // window.__FLATPPL_CONFIG__ via a small inline bootstrap <script>
-    // before this file loads. For a standalone embed (no VS Code), an
-    // online host can do the same — set the config object before
-    // including viewer.js. Currently expected fields:
-    //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
-    //                                loaded as a Web Worker.
-    var CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
-    // VS Code webviews expose acquireVsCodeApi(); standalone hosts
-    // don't. The viewer functions without it (state persistence and
-    // cross-pane navigation become no-ops); the shim below makes
-    // either case work without further branching downstream.
-    var vscodeApi = (typeof acquireVsCodeApi === 'function')
-      ? acquireVsCodeApi()
-      : { postMessage: function() {}, setState: function() {}, getState: function() { return null; } };
-    var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
-    // Sampler-worker URL. Used lazily — no worker is spawned until the
-    // user picks a binding for which the Plot tab is enabled (a 'draw'
-    // of a known distribution with literal params).
-    var SAMPLER_WORKER_URL = CONFIG.samplerWorkerUrl || '';
+  // =====================================================================
+  // FlatPPL viewer — browser-side DAG + plot rendering for FlatPPL source.
+  //
+  // Public API (window.FlatPPLViewer.mount):
+  //
+  //   FlatPPLViewer.mount(container, opts)
+  //
+  //     container  (Element, optional)  the DOM element this viewer
+  //                                      attaches to. The viewer expects
+  //                                      to find its layout (#cy,
+  //                                      #plot-panel, #info, …) somewhere
+  //                                      inside container or its
+  //                                      ancestor document. Defaults to
+  //                                      document.body. Phase 2b will
+  //                                      flip this so mount injects the
+  //                                      DOM into container itself.
+  //
+  //     opts       (object, optional)
+  //       host       — host adapter. See below. Defaults to a no-op
+  //                    shim layered on top of acquireVsCodeApi() when
+  //                    available, so the existing VS Code webview wiring
+  //                    keeps working without per-call branching.
+  //       (other opts will land in 2c — initial source/target, etc.)
+  //
+  //   Returns nothing currently. Phase 2c adds an update() / dispose()
+  //   control surface.
+  //
+  // Host adapter (opts.host) — defines the IDE-only concerns the viewer
+  // delegates outward (cross-pane navigation, panel-title updates,
+  // persistent UI state). All methods are optional; missing methods are
+  // treated as no-ops. Standalone embeds typically pass {} or omit
+  // opts.host entirely.
+  //   revealSourceLine?(line)  — reveal/scroll-to a source line
+  //   setTitle?(name)          — update the host-managed panel title
+  //   saveState?(state)        — persist webview state across reloads
+  //   loadState?()             — load previously-persisted state
+  //
+  // Standalone (online) embedding will land in 2c+: the same mount
+  // entry point, no host adapter required.
+  // =====================================================================
+  (function(global) {
+    var FlatPPLViewer = (global.FlatPPLViewer = global.FlatPPLViewer || {});
+
+    FlatPPLViewer.mount = function mount(container, opts) {
+      opts = opts || {};
+      // container: where the viewer's layout lives. Currently the host
+      // (vscode-extension's _getHtml) injects the DOM into document.body
+      // and calls mount() with no container; we accept that. Phase 2b
+      // moves the DOM injection here so any container works.
+      // (Reserved for future use — keep the parameter slot for
+      // consistency with the public API contract.)
+      void container;
+      var host = opts.host || {};
+      void host;  // wired in 2c
+
+      // Host-supplied configuration. The vscode-extension host writes
+      // window.__FLATPPL_CONFIG__ via a small inline bootstrap <script>
+      // before this file loads. For a standalone embed (no VS Code), an
+      // online host can do the same — set the config object before
+      // including viewer.js. Currently expected fields:
+      //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
+      //                                loaded as a Web Worker.
+      var CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
+      // VS Code webviews expose acquireVsCodeApi(); standalone hosts
+      // don't. The viewer functions without it (state persistence and
+      // cross-pane navigation become no-ops); the shim below makes
+      // either case work without further branching downstream.
+      var vscodeApi = (typeof acquireVsCodeApi === 'function')
+        ? acquireVsCodeApi()
+        : { postMessage: function() {}, setState: function() {}, getState: function() { return null; } };
+      var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
+      // Sampler-worker URL. Used lazily — no worker is spawned until the
+      // user picks a binding for which the Plot tab is enabled (a 'draw'
+      // of a known distribution with literal params).
+      var SAMPLER_WORKER_URL = CONFIG.samplerWorkerUrl || '';
 
     // ---- Palette ----
     //
@@ -3248,4 +3302,19 @@
     var prevState = null;
     try { prevState = vscodeApi.getState(); } catch (_) {}
     setPlotEnabled(prevState && prevState.plotEnabled === true);
-  })();
+    };
+
+    // Auto-mount on script load for the existing VS Code wrapper.
+    // Phase 2c will replace this with an explicit bootstrap-side
+    // FlatPPLViewer.mount(...) call from the host (vscode-extension or
+    // standalone embed page). For now we keep the auto-mount so this
+    // commit is purely additive — the same script-load behaviour
+    // continues to drive existing webview hosts.
+    if (typeof document !== 'undefined') {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() { FlatPPLViewer.mount(); });
+      } else {
+        FlatPPLViewer.mount();
+      }
+    }
+  })(typeof window !== 'undefined' ? window : globalThis);
