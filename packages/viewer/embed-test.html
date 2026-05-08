@@ -1,8 +1,11 @@
 <!DOCTYPE html>
 <!--
-  Standalone embed page for @flatppl/viewer. Demonstrates loading the
-  viewer outside a VS Code webview — used for the rosetta-stone /
-  flatppl-design online site, and as a smoke-test target.
+  Test embed page for @flatppl/viewer — local smoke test that the
+  viewer loads and renders correctly outside a VS Code webview, and
+  reference template for online embedders (rosetta-stone, the
+  flatppl-design site, …) to copy from. Not part of any published
+  artifact; lives in the repo so changes to the viewer can be
+  verified end-to-end without an extension reload.
 
   The page expects sibling vendored dependencies under ./vendor/ —
   cytoscape / dagre / echarts / engine bundle / sampler-worker / viewer.
@@ -22,15 +25,16 @@
       ln -s ../src/viewer.js .
 
   Then serve packages/viewer/ over HTTP (e.g. `python3 -m http.server`)
-  and open embed.html. The viewer renders a sample FlatPPL module
-  inline; replace the source string in the bootstrap script below to
-  preview your own.
+  and open embed-test.html. The page renders a sample FlatPPL module
+  inline; the source mirrors flatppl-examples/bayesian_inference_2,
+  exercising the full classifier pipeline (disintegrate → likelihood
+  → bayesupdate posterior).
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FlatPPL viewer (standalone embed)</title>
+  <title>FlatPPL viewer (embed test)</title>
   <style>
     html, body {
       margin: 0; padding: 0;
@@ -67,25 +71,52 @@
     // an empty host adapter (no IDE, no setTitle / revealSourceLine,
     // no persisted state). We push an initial source via update() so
     // the viewer renders something on first load.
-    // Mirror bayesian_inference_3.flatppl's prior/kernel pattern.
-    // forward_kernel needs a record-shaped measure as its body so the
-    // orchestrator's inlineChainOps can rewrite jointchain(prior, K)
-    // into the joint(...) form that classifies as a record measure;
-    // hence the explicit obs_dist binding rather than reifying off
-    // the obs variate directly.
+    // Sample source: bayesian_inference_2 from flatppl-examples,
+    // verbatim. Builds a joint model, disintegrates it into a
+    // forward kernel and prior, evaluates a likelihood at observed
+    // data, and constructs the unnormalised posterior. Exercises the
+    // full classifier pipeline (lawof / functionof / disintegrate /
+    // likelihoodof / bayesupdate) — a good smoke test that the
+    // standalone embed flow matches the VS Code wrapper.
     var SAMPLE_SOURCE = [
-      '# A small Bayesian example for the standalone embed.',
-      'theta1_dist = Normal(mu = 0, sigma = 1)',
-      'theta2_dist = Exponential(rate = 1)',
+      '# A simple Bayesian example using structural disintegration: build',
+      '# the joint distribution first, then disintegrate to extract the',
+      '# forward kernel and prior.',
+      '',
+      '# Prior distributions',
+      'theta1_dist = Normal(mu = 0.0, sigma = 1.0)',
+      'theta2_dist = Exponential(rate = 1.0)',
+      '',
+      '# Prior variates',
       'theta1 = draw(theta1_dist)',
       'theta2 = draw(theta2_dist)',
-      'a = 2 * theta2',
-      'b = abs(theta1) * theta1',
-      'obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))',
-      'obs = draw(obs_dist)',
-      'prior = lawof(record(theta1 = theta1, theta2 = theta2))',
-      'forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)',
-      'joint_model = jointchain(prior, forward_kernel)',
+      '',
+      'c = 5.0',
+      '',
+      'f_a = functionof(c * _par_, par = _par_)',
+      'f_b = fn(abs(_) * _)',
+      '',
+      '# Deterministic transform',
+      'a = f_a(par = theta1)',
+      'b = f_b(theta1, theta2)',
+      '',
+      '# IID observations from the forward model',
+      'obs = draw(iid(Normal(mu = a, sigma = b), 10))',
+      '',
+      '# Joint distribution over parameters and observations',
+      'joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))',
+      '',
+      '# Structural disintegration',
+      'forward_kernel, prior = disintegrate(["obs"], joint_model)',
+      '',
+      '# Observed data',
+      'observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]',
+      '',
+      '# Likelihood',
+      'L = likelihoodof(forward_kernel, record(obs = observed_data))',
+      '',
+      '# Non-normalized posterior',
+      'posterior = bayesupdate(L, prior)',
       '',
     ].join('\n');
 
@@ -93,12 +124,14 @@
     // hand the source to the (already-mounted) viewer instance via
     // postMessage — the same channel VS Code uses, so no extra API
     // is needed. For a more direct integration, hosts can call
-    // FlatPPLViewer.mount(...) themselves with opts.source set.
+    // FlatPPLViewer.mount(...) themselves with opts.source set. The
+    // initial target is `posterior` so the embed lands on the most
+    // interesting node out of the box.
     document.addEventListener('DOMContentLoaded', function() {
       window.postMessage({
         type: 'sourceUpdate',
         source: SAMPLE_SOURCE,
-        targetName: 'joint_model',
+        targetName: 'posterior',
         pushHistory: false,
       }, '*');
     });
