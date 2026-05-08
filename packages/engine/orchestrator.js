@@ -362,6 +362,13 @@ function argSignature(op, numArgs) {
     for (let i = 1; i < numArgs; i++) sig.push('value');
     return sig;
   }
+  if (op === 'jointchain' || op === 'chain') {
+    // jointchain(M, K1, K2, ...) / chain(M, K1, K2, ...): every
+    // positional arg is measure-typed (the first a base measure or
+    // closed kernel; the rest non-nullary kernels). Lifting them lets
+    // inlineChainOps find them as named bindings to walk.
+    return Array(numArgs).fill('measure');
+  }
   if (SAMPLEABLE_DISTRIBUTIONS.has(op))           return Array(numArgs).fill('value');
   if (EVALUABLE_OPS.has(op))                      return Array(numArgs).fill('value');
   return null;
