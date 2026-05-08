@@ -428,16 +428,28 @@ function _lowerReification(op, node, ctx) {
 
   const params = [];
   const paramKwargs = [];
+  // paramSources records the structural origin of each boundary kwarg
+  // so downstream UI (profile-plot auto-range) can resolve it to an
+  // empirical range or a set restriction *retroactively* — at plot
+  // time we don't have samples; here we do have the boundary's
+  // surface form (Identifier vs Placeholder). The viewer fetches
+  // getMeasure(name) for 'binding' sources to compute a 4-σ-quantile
+  // range; for 'placeholder' sources it consults the corresponding
+  // elementof binding's set restriction.
+  const paramSources = [];
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg.type !== 'KeywordArg') {
       throw new Error(`lower: ${op} parameters must be keyword args (got ${arg.type})`);
     }
     let paramName;
+    let source;
     if (arg.value.type === 'Identifier') {
       paramName = arg.value.name;
+      source = { kind: 'binding', name: arg.value.name };
     } else if (arg.value.type === 'Placeholder') {
       paramName = '_' + arg.value.name + '_';
+      source = { kind: 'placeholder', name: paramName };
     } else {
       throw new Error(
         `lower: ${op} parameter '${arg.name}' must be bound to an identifier ` +
@@ -446,6 +458,7 @@ function _lowerReification(op, node, ctx) {
     }
     params.push(paramName);
     paramKwargs.push(arg.name);
+    paramSources.push(source);
   }
 
   // Inner scope: existing %local plus the new params. Used for the body.
@@ -472,6 +485,7 @@ function _lowerReification(op, node, ctx) {
     op:          outOp,
     params,
     paramKwargs,
+    paramSources,
     body,
     loc:         node.loc,
   };

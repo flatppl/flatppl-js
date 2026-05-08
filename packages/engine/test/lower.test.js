@@ -376,6 +376,74 @@ test('lower: fn(_) lowers to functionof with auto-named placeholders', () => {
 });
 
 // =====================================================================
+// Reification: paramSources backrefs (drive UI auto-range at plot time)
+// =====================================================================
+//
+// Each functionof-shaped IR carries paramSources[] — one entry per
+// param — capturing the *structural origin* of the boundary kwarg's
+// value at lowering time. We can't compute empirical ranges yet (no
+// samples), but recording the source lets the profile-plot UI
+// resolve to a 4-σ-quantile range (binding kind) or an elementof set
+// restriction (placeholder kind) retroactively at plot time.
+
+test('lower: paramSources for Identifier boundaries → kind=binding', () => {
+  // theta1 / theta2 are bound bindings in the surrounding scope; the
+  // function's params reference them by name. paramSources records
+  // those names so the viewer can fetch their empirical samples.
+  const ir = lowerOne('f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)');
+  assert.deepEqual(ir.paramSources, [
+    { kind: 'binding', name: 'theta1' },
+    { kind: 'binding', name: 'theta2' },
+  ]);
+});
+
+test('lower: paramSources for Placeholder boundaries → kind=placeholder', () => {
+  // Placeholder boundaries don't link to a binding; the source is
+  // self-referential (the placeholder's own name). The viewer
+  // dereferences via the corresponding elementof binding to discover
+  // the set restriction.
+  const ir = lowerOne('f = functionof(c * _par_, par = _par_)');
+  assert.deepEqual(ir.paramSources, [
+    { kind: 'placeholder', name: '_par_' },
+  ]);
+});
+
+test('lower: paramSources for mixed Identifier + Placeholder boundaries', () => {
+  const ir = lowerOne(`
+    k = functionof(_x_ + theta1, x = _x_, theta1 = theta1)
+  `);
+  assert.deepEqual(ir.paramSources, [
+    { kind: 'placeholder', name: '_x_' },
+    { kind: 'binding',     name: 'theta1' },
+  ]);
+});
+
+test('lower: kernelof gets the same paramSources as the equivalent functionof', () => {
+  // kernelof(x, kw) ≡ functionof(lawof(x), kw); the param set is
+  // identical, so paramSources flows through the same lowering.
+  const ir = lowerOne(`
+    k = kernelof(Normal(mu = theta1, sigma = _spread_),
+                 theta1 = theta1, spread = _spread_)
+  `);
+  assert.deepEqual(ir.paramSources, [
+    { kind: 'binding',     name: 'theta1' },
+    { kind: 'placeholder', name: '_spread_' },
+  ]);
+});
+
+test('lower: fn(_) paramSources are placeholders for synthetic _argN_', () => {
+  // fn() lowers to functionof with auto-named Placeholder boundaries
+  // arg1=_arg1_, arg2=_arg2_, …; paramSources mirrors that. No
+  // boundary-binding link to fetch a range from — the viewer falls
+  // back to default range or peak-find for these.
+  const ir = lowerOne('g = fn(_ + _)');
+  assert.deepEqual(ir.paramSources, [
+    { kind: 'placeholder', name: '_arg1_' },
+    { kind: 'placeholder', name: '_arg2_' },
+  ]);
+});
+
+// =====================================================================
 // Module loads
 // =====================================================================
 
