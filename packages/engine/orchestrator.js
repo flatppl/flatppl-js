@@ -638,14 +638,124 @@ function liftInlineSubexpressions(bindings) {
 
   function inlineUserCall(astArg) {
     // Iterate to a fixed point — inlined body might itself be (or
-    // contain at its root) another user call (chained: f then g)
-    // or a jointchain that rewrites to a joint of further user calls.
+    // contain at its root) another user call (chained: f then g),
+    // a jointchain that rewrites to a joint of further user calls,
+    // or a relabel that surfaces a record(...).
     let prev = null;
     while (astArg !== prev) {
       prev = astArg;
       astArg = inlineOnce(astArg);
       astArg = inlineChainOps(astArg);
+      astArg = inlineRelabel(astArg);
     }
+    return astArg;
+  }
+
+  /**
+   * Rewrite `relabel(value, names)` per spec §sec:design line 482-507
+   * to its equivalent `record(name1=val1, ...)` construction. Three
+   * value shapes:
+   *
+   *   relabel(<scalar-or-non-record>, [n])     → record(n = arg)
+   *   relabel(<array-typed>, [n1, n2, ...])    → record(n1 = arg[1], ...)
+   *   relabel(<record-typed>, [n1, n2, ...])   → record(n1 = old_v1, ...)
+   *
+   * The names array must be a literal `[StringLiteral, ...]` so we can
+   * resolve them statically. The arg may be inline (ArrayLiteral,
+   * record(...) call, scalar literal) or an Identifier pointing at
+   * another binding — for binding refs we synthesise indexed/field
+   * access (arg[i] / arg.<old_field>) and let the lowerer + classifier
+   * handle the resulting record uniformly.
+   *
+   * Anything else returns the input unchanged so the binding falls
+   * through (and ends up "not derivable" if no other classifier handles
+   * it).
+   */
+  function inlineRelabel(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'relabel') return astArg;
+    if (!Array.isArray(astArg.args) || astArg.args.length !== 2) return astArg;
+    const argExpr = astArg.args[0];
+    const namesExpr = astArg.args[1];
+    if (!argExpr || !namesExpr) return astArg;
+
+    // Names must be a literal [StringLiteral, ...] — anything dynamic
+    // doesn't admit a static rewrite.
+    if (namesExpr.type !== 'ArrayLiteral') return astArg;
+    const elems = namesExpr.elements || namesExpr.elems || [];
+    const names = [];
+    for (const el of elems) {
+      if (!el || el.type !== 'StringLiteral') return astArg;
+      names.push(el.value);
+    }
+    if (names.length === 0) return astArg;
+
+    const loc = astArg.loc;
+    const kw = (name, value) => ({ type: 'KeywordArg', name, value, loc });
+    const recordCall = (kwargs) => ({
+      type: 'CallExpr',
+      callee: { type: 'Identifier', name: 'record', loc },
+      args: kwargs, loc,
+    });
+
+    // Inline ArrayLiteral source: `relabel([a, b, c], ["x", "y", "z"])`
+    // → `record(x = a, y = b, z = c)`.
+    if (argExpr.type === 'ArrayLiteral') {
+      const argElems = argExpr.elements || argExpr.elems || [];
+      if (argElems.length !== names.length) return astArg;
+      return recordCall(names.map((n, i) => kw(n, argElems[i])));
+    }
+
+    // Inline record(...) source: rename by position.
+    if (argExpr.type === 'CallExpr' && argExpr.callee
+        && argExpr.callee.type === 'Identifier' && argExpr.callee.name === 'record'
+        && Array.isArray(argExpr.args)) {
+      const recArgs = argExpr.args.filter(a => a && a.type === 'KeywordArg');
+      if (recArgs.length !== names.length) return astArg;
+      return recordCall(names.map((n, i) => kw(n, recArgs[i].value)));
+    }
+
+    // Identifier pointing at another binding. Look up the binding's
+    // RHS to determine its structural kind:
+    //   - inline ArrayLiteral RHS  → reuse element exprs directly.
+    //   - inline record(...) RHS   → reuse kwarg-value exprs directly.
+    //   - anything else            → bail out (not statically rewritable).
+    //
+    // We *don't* synthesise IndexExpr / FieldAccess on the binding name
+    // — those lower to (get …) / (get_field …) calls that no measure-op
+    // classifier handles, which would cascade-prune the relabel binding.
+    // Reading the source RHS directly keeps the result in record-of-refs
+    // shape, the only form classifyRecordOrJoint accepts.
+    if (argExpr.type === 'Identifier') {
+      const target = out.get(argExpr.name);
+      const targetAst = target && (target.effectiveValue || (target.node && target.node.value));
+      if (targetAst && targetAst.type === 'ArrayLiteral') {
+        const targetElems = targetAst.elements || targetAst.elems || [];
+        if (targetElems.length !== names.length) return astArg;
+        return recordCall(names.map((n, i) => kw(n, targetElems[i])));
+      }
+      if (targetAst && targetAst.type === 'CallExpr' && targetAst.callee
+          && targetAst.callee.type === 'Identifier' && targetAst.callee.name === 'record'
+          && Array.isArray(targetAst.args)) {
+        const targetKwargs = targetAst.args.filter(a => a && a.type === 'KeywordArg');
+        if (targetKwargs.length !== names.length) return astArg;
+        // Reuse the source record's kwarg VALUES verbatim (they're
+        // already lifted to Identifier refs after the source binding
+        // was visited, or are inline exprs ready to be lifted by the
+        // outer visit pass). Synthesising FieldAccess (src.a) instead
+        // would force the lowerer to introduce get_field nodes that
+        // no measure-op classifier handles, breaking the cascade.
+        return recordCall(names.map((n, i) => kw(n, targetKwargs[i].value)));
+      }
+      // Identifier pointing at neither — fall through.
+    }
+
+    // Single-name scalar wrap: relabel(<anything>, [name]) → record(name = arg)
+    if (names.length === 1) {
+      return recordCall([kw(names[0], argExpr)]);
+    }
+
     return astArg;
   }
 
