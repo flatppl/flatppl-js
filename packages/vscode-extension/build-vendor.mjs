@@ -88,6 +88,24 @@ for (const { pkg, src, dst } of COPY_LIBS) {
   console.log(`  copied ${pkg} -> lib/${dst}`);
 }
 
+// Webview viewer JS — extracted from visualPanel.js's inline <script>
+// into its own source file so it can use backticks / \\n / template
+// literals freely without the host's outer template literal eating
+// them. Loaded by the webview as a regular external <script>.
+// Phase 2 will move this into a dedicated `viewer` package; for now
+// it lives under src/webview/ alongside the host module and is
+// copied verbatim into lib/.
+{
+  const from = join(here, 'src', 'webview', 'viewer.js');
+  const to = join(libDir, 'viewer.js');
+  if (!existsSync(from)) {
+    console.error(`  ! missing webview viewer source at ${from}`);
+    process.exit(1);
+  }
+  await copyFile(from, to);
+  console.log('  copied webview viewer -> lib/viewer.js');
+}
+
 // ---------------------------------------------------------------------
 // 2. Sync grammars from flatppl-grammars (host-neutral artifact repo).
 //    Sibling-clone first (fastest dev loop), GitHub fetch otherwise.
