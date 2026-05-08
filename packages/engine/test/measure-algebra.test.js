@@ -238,6 +238,28 @@ function materialise(name, bindings, opts) {
         m = empirical.recordMeasure(fields, logWeights);
         break;
       }
+      case 'tuple': {
+        // Positional analogue of record (kind='tuple'). Build a
+        // tupleMeasure from each elem's materialised sub-measure.
+        // Same independent-component log-weight join as record.
+        const elemMeasures = d.elems.map(go);
+        const componentArrays = [];
+        for (const sub of elemMeasures) {
+          if (sub.logWeights) componentArrays.push(sub.logWeights);
+        }
+        let logWeights = null;
+        if (componentArrays.length > 0) {
+          const N = componentArrays[0].length;
+          logWeights = new Float64Array(N);
+          for (let i = 0; i < N; i++) {
+            let s = 0;
+            for (const arr of componentArrays) s += arr[i];
+            logWeights[i] = s;
+          }
+        }
+        m = empirical.tupleMeasure(elemMeasures, logWeights);
+        break;
+      }
       default:
         throw new Error(`unsupported derivation kind '${d.kind}' in materialise()`);
     }
