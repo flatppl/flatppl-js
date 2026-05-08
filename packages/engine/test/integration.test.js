@@ -102,6 +102,25 @@ test('integration: bayesian_inference_3 forward_kernel2 sub-DAG mirrors forward_
   assert.deepEqual(fk2Boundaries, fkBoundaries);
 });
 
+test('integration: bayesian_inference_3 posterior derivation cascade', () => {
+  // Regression guard: bayesupdate(L, prior2) with L = likelihoodof(K, obs)
+  // and K = functionof(body, …) must classify into a 'bayesupdate'
+  // derivation. The functionof IR shape is { op: 'functionof',
+  // params, paramKwargs, body } — NOT { op, args } — so the
+  // classifier must read the body via Kir.body, not Kir.args[0]. The
+  // A1 IR-migration originally read .args[0], silently nulling the
+  // posterior derivation and breaking the visualization.
+  const { buildDerivations } = require('../orchestrator');
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
+  const { bindings } = processSource(src);
+  const { derivations } = buildDerivations(bindings);
+
+  assert.ok(derivations.posterior, 'posterior should classify');
+  assert.equal(derivations.posterior.kind, 'bayesupdate');
+  assert.ok(derivations.posterior.from, 'posterior.from set');
+  assert.ok(derivations.posterior.obsValue, 'posterior.obsValue set');
+});
+
 test('integration: bayesian_inference_3 posterior view uses the literal source structure', () => {
   // When viewing posterior (transitively reaches prior2 / forward_kernel2),
   // the trace should follow the user's source — not the rewriter's

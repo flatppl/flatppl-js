@@ -2187,12 +2187,15 @@ function classifyBayesupdate(binding, bindings) {
   if (!isSelfRef(Kref)) return null;
 
   // Resolve K → functionof(body, kw=...). Both kernelof and fn lower
-  // to functionof, so the IR shape is uniform.
+  // to functionof, so the IR shape is uniform. The lowerer's
+  // _lowerReification stores the body as `Kir.body` (NOT `args[0]`;
+  // see lower.js _lowerReification — params/paramKwargs/body sit at
+  // the top of the IR node, no `args` array).
   const Kbinding = bindings.get(Kref.name);
   const Kir = Kbinding && Kbinding.ir;
-  if (!isCallOp(Kir, 'functionof', null) || !Array.isArray(Kir.args) || Kir.args.length < 1) return null;
+  if (!Kir || Kir.kind !== 'call' || Kir.op !== 'functionof' || !Kir.body) return null;
 
-  // K's first arg is the body. Two shapes:
+  // The body has two shapes:
   //   - (ref self <name>) → store bodyName, visualPanel expands via
   //     expandMeasureIR(bodyName, derivations).
   //   - inline call IR → store as bodyIR, visualPanel expands measure
@@ -2200,7 +2203,7 @@ function classifyBayesupdate(binding, bindings) {
   // Both paths converge on the same expanded measure IR for the
   // walker; they differ only in WHERE the body roots in the binding
   // graph.
-  const bodyIRArg = Kir.args[0];
+  const bodyIRArg = Kir.body;
   let bodyName = null;
   let bodyIR = null;
   if (isSelfRef(bodyIRArg)) {
