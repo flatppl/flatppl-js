@@ -1536,3 +1536,27 @@ f_demo = fn(record(a = _, b = 2 * _))
   const sig = require('../orchestrator').signatureOf('f_demo', r.bindings);
   assert.equal(sig.inputs.length, 2);
 });
+
+test('jointchain: positional form lifts inline M and K, classifies as tuple', () => {
+  // Pre-existing gap in inlineChainOps: only handled positional
+  // jointchain when both args were already Identifiers. Inline
+  // expressions like jointchain(Exponential(1), fn(Normal(1, _)))
+  // bailed at the type check and the binding stayed unsupported.
+  // Now lifts inline expressions to anon bindings before lookup.
+  const { bindings } = processSource(`
+funnel = jointchain(Exponential(rate = 1), fn(Normal(mu = 1, sigma = _)))
+`);
+  const r = buildDerivations(bindings);
+  assert.ok(r.derivations.funnel, 'funnel derivable');
+  assert.equal(r.derivations.funnel.kind, 'tuple');
+  assert.equal(r.derivations.funnel.elems.length, 2);
+  // The b component should resolve to a Normal draw whose sigma
+  // is the a-variate ref (conditional dependence preserved). The
+  // draw of an inline measure ref takes the engine's lighter
+  // 'alias' classification — same downstream behaviour as 'sample'
+  // since getMeasure chases the alias to the Normal sample step.
+  const bAnon = r.derivations.funnel.elems[1];
+  const bDeriv = r.derivations[bAnon];
+  assert.ok(bDeriv && (bDeriv.kind === 'sample' || bDeriv.kind === 'alias'),
+    'b component should be sample- or alias-classified');
+});

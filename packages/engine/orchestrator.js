@@ -1111,8 +1111,23 @@ function liftInlineSubexpressions(bindings) {
       };
     }
 
-    const Parg = astArg.args[0], Karg = astArg.args[1];
-    if (Parg.type !== 'Identifier' || Karg.type !== 'Identifier') return astArg;
+    // Lift inline P / K expressions to anon bindings so the lookup
+    // below finds them in `out`. The kwarg branch above does the
+    // same for its M/K — without lifting here, positional
+    // jointchain(Exp(1), fn(Normal(1, _))) would fail the
+    // Identifier check and fall through to "unsupported", leaving
+    // the binding unplottable.
+    let Parg = astArg.args[0], Karg = astArg.args[1];
+    if (Parg.type !== 'Identifier') {
+      const n = freshName();
+      out.set(n, makeSyntheticBinding(n, Parg));
+      Parg = makeIdent(n, astArg.loc);
+    }
+    if (Karg.type !== 'Identifier') {
+      const n = freshName();
+      out.set(n, makeSyntheticBinding(n, Karg));
+      Karg = makeIdent(n, astArg.loc);
+    }
 
     // Look up via `out`, not the read-only `bindings` input — args
     // may have been lifted to synthesized anon bindings during the
