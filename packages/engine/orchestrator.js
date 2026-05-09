@@ -1375,11 +1375,54 @@ function liftInlineSubexpressions(bindings) {
       }
     }
 
+    // Auto-splatting (spec §sec:calling-convention lines 99-102):
+    // `f(record(a=x, b=y))` and `f(some_record_value)` are
+    // equivalent to `f(a=x, b=y)`. We detect two splat sources:
+    //   - inline `record(...)` / `preset(...)` calls — splat their
+    //     KeywordArg children directly.
+    //   - Identifier ref to a record-typed binding — synthesize a
+    //     FieldAccess per surface kwarg name.
+    // Splat fires only when the call has exactly one positional arg,
+    // surfaceOrder has more than one slot, and the arg's record fields
+    // cover those slots (otherwise leave the call alone — the type
+    // checker already raised "missing argument" or arg-mismatch).
+    let callArgs = astArg.args || [];
+    if (callArgs.length === 1
+        && callArgs[0].type !== 'KeywordArg'
+        && surfaceOrder.length >= 1) {
+      const arg0 = callArgs[0];
+      let splatted = null;
+      if (arg0.type === 'CallExpr' && arg0.callee
+          && arg0.callee.type === 'Identifier'
+          && (arg0.callee.name === 'record' || arg0.callee.name === 'preset')) {
+        const fieldNames = new Set();
+        for (const f of (arg0.args || [])) {
+          if (f.type === 'KeywordArg') fieldNames.add(f.name);
+        }
+        if (surfaceOrder.every(n => fieldNames.has(n))) {
+          splatted = (arg0.args || []).filter(f => f.type === 'KeywordArg');
+        }
+      } else if (arg0.type === 'Identifier') {
+        const recBinding = out.get(arg0.name);
+        const t = recBinding && recBinding.inferredType;
+        if (t && t.kind === 'record' && t.fields
+            && surfaceOrder.every(n => n in t.fields)) {
+          splatted = surfaceOrder.map(name => ({
+            type: 'KeywordArg',
+            name,
+            value: { type: 'FieldAccess', object: cloneAst(arg0), field: name, loc: arg0.loc },
+            loc: arg0.loc,
+          }));
+        }
+      }
+      if (splatted) callArgs = splatted;
+    }
+
     // Walk the call's args. KeywordArg → match by surface name;
     // positional → match by surfaceOrder.
     const argMap = Object.create(null);
     let posIdx = 0;
-    for (const a of (astArg.args || [])) {
+    for (const a of callArgs) {
       if (a.type === 'KeywordArg') {
         const internal = internalForSurface[a.name];
         if (internal) argMap[internal] = a.value;
@@ -1435,7 +1478,11 @@ function liftInlineSubexpressions(bindings) {
     // to user bindings — so the synthesized closure is fully ready
     // for classification.
     for (const origName of closure) {
-      const orig = bindings.get(origName);
+      // Mirror computeClosure: prefer the post-lift form. A lifted
+      // anon (e.g. __anon3 = Normal(mu=theta1, sigma=theta2)) only
+      // lives in `out`, and skipping it leaves the body referencing
+      // the fresh closure name with no binding behind it.
+      const orig = out.get(origName) || bindings.get(origName);
       if (!orig || !orig.node || !orig.node.value) continue;
       let newRhs = substituteIdents(cloneAst(orig.node.value), argMap);
       newRhs = inlineUserCall(newRhs);
@@ -1468,7 +1515,15 @@ function liftInlineSubexpressions(bindings) {
     function walk(name) {
       if (closure.has(name) || visiting.has(name)) return;
       if (boundaries.has(name)) return;          // boundary, will be substituted
-      const b = bindings.get(name);
+      // Look up in the post-lift map first so lift-introduced anons
+      // (the Normal / iid extracted from a functionof body) are seen
+      // by the walk too — without this, refs inside such an anon
+      // back to a boundary name like `theta1` aren't reached by
+      // substituteIdents and stay as the outer stochastic ref. Fall
+      // back to the analyzer's pre-lift bindings for any names the
+      // lift hasn't processed yet (the loop is in source order, so
+      // earlier-defined bindings are always in `out`).
+      const b = out.get(name) || bindings.get(name);
       if (!b) return;                            // unknown name (built-in, etc.)
       if (b.phase === 'fixed') return;            // closed over per spec
       visiting.add(name);
@@ -1713,43 +1768,36 @@ function buildDerivations(bindings) {
     return (b && b.ir) || null;
   }
 
-  // Walk only the value-typed refs in an IR — i.e. skip the measure
-  // argument of rand and the measure-typed positions of any other op
-  // that consumes a measure as an opaque IR rather than a value. We
-  // need this distinction during pre-eval: value-refs require their
-  // target's value in `env`, while measure-refs are resolved at
-  // runtime by traceeval via the resolveMeasureRef closure above.
-  function collectValueRefs(ir) {
-    const out = new Set();
-    walk(ir, false);
-    return out;
-    function walk(node, asMeasure) {
-      if (!node || typeof node !== 'object') return;
-      if (node.kind === 'ref' && node.ns === 'self' && !asMeasure) {
-        out.add(node.name);
-        return;
-      }
-      if (node.kind !== 'call') return;
-      // Per-op argument-position metadata: for `rand`, slot 1 is a
-      // measure IR (opaque). For everything else, all positional and
-      // kwarg children are value-typed expressions whose refs we
-      // resolve via env. (iid / joint / weighted etc. only appear
-      // *inside* a measure subtree — once we've descended via rand's
-      // measure-arg, the asMeasure flag is true and we stop adding
-      // refs from there.)
-      const args = node.args || [];
-      if (node.op === 'rand') {
-        if (args[0]) walk(args[0], false);     // state arg = value
-        if (args[1]) walk(args[1], true);      // measure arg = opaque
-        return;
-      }
-      for (const a of args)              walk(a, asMeasure);
-      if (node.kwargs)
-        for (const k in node.kwargs)     walk(node.kwargs[k], asMeasure);
-      if (Array.isArray(node.fields))
-        for (const f of node.fields)     walk(f && f.value, asMeasure);
-      if (node.body)                     walk(node.body, asMeasure);
-    }
+  // Collect every self-ref in an IR. Pre-eval downstream filters by
+  // binding type: refs to value-typed bindings need an env entry from
+  // fixedValues, refs to measure-typed bindings are resolved at
+  // runtime by traceeval via the resolveMeasureRef closure. Walking
+  // the full tree (rather than skipping rand's measure arg) is the
+  // right call: distribution params nested deep inside a measure
+  // subtree (e.g. `iid(Normal(mu=ref(rp_field)), n)`) are themselves
+  // value refs, and the leaf-distribution evaluator needs them in
+  // env at runtime.
+  function collectAllSelfRefs(ir) {
+    return collectSelfRefs(ir);
+  }
+  // True when a binding's value is a measure (so it doesn't need an
+  // env entry — it's resolved as an IR via resolveMeasureRef instead).
+  // Uses the analyzer's classification (`type`) plus type inference
+  // when present, so reified callables / measure derivations / iid
+  // bindings are all treated uniformly.
+  function isMeasureBinding(b) {
+    if (!b) return false;
+    const t = b.inferredType;
+    if (t && (t.kind === 'measure' || t.kind === 'function' || t.kind === 'kernel')) return true;
+    // Lift-introduced anonymous bindings carry a measure-construction
+    // call as their value (Normal, iid, joint, etc.); treat them as
+    // measure bindings so pre-eval doesn't expect a fixedValues entry.
+    if (b.synthetic && b.ir && b.ir.kind === 'call'
+        && (b.ir.op === 'iid' || b.ir.op === 'joint' || b.ir.op === 'weighted'
+            || b.ir.op === 'logweighted' || b.ir.op === 'normalize')) return true;
+    if (b.synthetic && b.ir && b.ir.kind === 'call' && b.ir.op
+        && SAMPLEABLE_DISTRIBUTIONS.has(b.ir.op)) return true;
+    return false;
   }
 
   let progress = true;
@@ -1776,15 +1824,53 @@ function buildDerivations(bindings) {
         })();
       if (!ir) continue;
 
-      // Walk only value-position self-refs to discover env keys we
-      // need. Measure refs (lifted Normal etc.) are NOT required to
-      // be in fixedValues — traceeval walks them on demand via
-      // resolveMeasureRef. Cross-namespace refs (modules) are ignored.
-      const refs = collectValueRefs(ir);
+      // Collect every self-ref in the IR transitively through measure
+      // bindings: value-typed refs nested inside a measure subtree
+      // (e.g. distribution params like `Normal(mu=ref(rp_field))`)
+      // need env entries because traceeval calls evaluateExpr on
+      // them at sample time. Measure-typed refs themselves are
+      // skipped here — they're resolved via resolveMeasureRef.
       const env = { __resolveMeasureRef: resolveMeasureRef };
       let depsReady = true;
-      for (const r of refs) {
-        if (!bindings.has(r)) continue;
+      const seenMeasure = new Set();
+      const valueRefs = new Set();
+
+      function collectFor(walkIr) {
+        const refs = collectAllSelfRefs(walkIr);
+        for (const r of refs) {
+          if (!bindings.has(r)) continue;
+          const dep = bindings.get(r);
+          // A binding the orchestrator has classified as a measure
+          // derivation: recurse through the canonical sampleable
+          // expansion (what traceeval actually walks at runtime).
+          // expandMeasureIR resolves variate aliases to their
+          // distribution and rewrites lawof(record(...)) → joint(...).
+          // The resulting tree contains exactly the value refs
+          // traceeval will look up in env at sample time.
+          if (derivations[r]) {
+            if (seenMeasure.has(r)) continue;
+            seenMeasure.add(r);
+            const expanded = expandMeasureIR(r, derivations);
+            if (expanded) { collectFor(expanded); continue; }
+            // Not a sample-shape derivation — fall through to
+            // value-binding treatment below.
+          }
+          if (isMeasureBinding(dep)) {
+            // Synthetic anon with measure-construction IR but no
+            // derivation entry (e.g. dropped during cascade-prune):
+            // recurse through the raw IR and hope distribution
+            // params reach value bindings we can resolve.
+            if (seenMeasure.has(r)) continue;
+            seenMeasure.add(r);
+            if (dep.ir) collectFor(dep.ir);
+            continue;
+          }
+          valueRefs.add(r);
+        }
+      }
+      collectFor(ir);
+
+      for (const r of valueRefs) {
         const dep = bindings.get(r);
         if (dep.phase != null && dep.phase !== 'fixed') { depsReady = false; break; }
         if (!fixedValues.has(r))                         { depsReady = false; break; }

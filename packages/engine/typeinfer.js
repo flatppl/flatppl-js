@@ -672,8 +672,36 @@ function createInferenceContext(loweredModule) {
     // We DO type-check the call args against the callee's input
     // types — that catches passing wrong-typed values to functions.
     const inputs = calleeType.inputs;
-    const args   = expr.args   || [];
-    const kwargs = expr.kwargs || {};
+    let args   = expr.args   || [];
+    let kwargs = expr.kwargs || {};
+
+    // Auto-splatting (spec §sec:calling-convention lines 99-102):
+    // a single positional record argument is equivalent to passing
+    // each field as a kwarg. We detect this when the call has
+    // exactly one positional arg of record type whose field names
+    // are a subset of the callee's input names; the splat replaces
+    // the positional list with a kwarg map for the type-check below.
+    // This lets the spec's `f(record(a=x, b=y))` and `f(some_record_
+    // value)` typecheck against `f` declared with a/b kwargs.
+    if (args.length === 1 && Object.keys(kwargs).length === 0 && inputs.length > 0) {
+      const splatType = inferExpr(args[0], scopes);
+      if (splatType && splatType.kind === 'record' && splatType.fields) {
+        const inputNames = new Set(inputs.map(i => i.name));
+        let allMatch = true;
+        for (const k in splatType.fields) {
+          if (!inputNames.has(k)) { allMatch = false; break; }
+        }
+        if (allMatch) {
+          // Synthesize per-field exprs by typing through `splatType`
+          // — no AST rewrite here, just record the per-field types
+          // for the unify loop. We re-key the call by field name.
+          const splatKwargs = {};
+          for (const k in splatType.fields) splatKwargs[k] = { __splatType: splatType.fields[k] };
+          args = [];
+          kwargs = splatKwargs;
+        }
+      }
+    }
 
     // Positional first, then keyword. Spec allows both calling
     // conventions for user-defined callables with explicit boundaries.
@@ -684,8 +712,15 @@ function createInferenceContext(loweredModule) {
         actual = inferExpr(args[i], scopes);
         actualLoc = args[i].loc;
       } else if (inp.name in kwargs) {
-        actual = inferExpr(kwargs[inp.name], scopes);
-        actualLoc = kwargs[inp.name].loc;
+        const kw = kwargs[inp.name];
+        if (kw && kw.__splatType) {
+          // Came from auto-splat — type already resolved against the
+          // record's field. No AST node to re-infer / locate.
+          actual = kw.__splatType;
+        } else {
+          actual = inferExpr(kw, scopes);
+          actualLoc = kw.loc;
+        }
       } else {
         // Missing argument. Diagnostic but don't bail — the result
         // type doesn't depend on which inputs were supplied (we use
