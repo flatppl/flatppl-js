@@ -92,12 +92,50 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
  * point at the source AST positions captured during lowering.
  */
 function inferTypes(loweredModule) {
+  const ctx = createInferenceContext(loweredModule);
+  for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
+  return ctx.diagnostics;
+}
+
+/**
+ * On-demand inference at a synthetic call site: given a body
+ * expression and a scope binding param names to concrete input
+ * types, return the inferred result type. Used for plot-time
+ * specialization of polymorphic functions — the module-level
+ * inference produces a best-effort type with `any` inputs, but
+ * when we plot we have specific input types and can specialize
+ * exactly, the same way a real call site would.
+ *
+ * Assumes the module has already been processed by inferTypes
+ * (each binding has its inferredType set). Lazy inferBinding
+ * still works if not — it'll walk on demand.
+ *
+ * @param loweredModule  the module produced by `lower(ast)`
+ * @param expr           an IR expression (typically the body of a
+ *                        functionof / kernelof)
+ * @param paramTypes     Map<paramName, type>; each %local-ref
+ *                        inside `expr` resolves through this.
+ * @returns inferred type of `expr` in that scope
+ */
+function inferExprInScope(loweredModule, expr, paramTypes) {
+  const ctx = createInferenceContext(loweredModule);
+  const scopes = paramTypes ? [paramTypes] : [];
+  return ctx.inferExpr(expr, scopes);
+}
+
+/**
+ * Build a fresh inference context bound to a LoweredModule. Returns
+ * the `diagnostics` accumulator and the same `inferBinding` /
+ * `inferExpr` helpers that drive the module-level pass — exposing
+ * them lets external callers run inference on synthetic
+ * expressions (call sites, sub-bodies) reusing exactly the same
+ * rules. Cycle detection (visiting/visited) is per-context, so
+ * separate contexts don't interfere.
+ */
+function createInferenceContext(loweredModule) {
   const diagnostics = [];
   const visiting = new Set();
   const visited  = new Set();
-
-  for (const [name] of loweredModule.bindings) inferBinding(name);
-  return diagnostics;
 
   function inferBinding(name) {
     const b = loweredModule.bindings.get(name);
@@ -714,9 +752,11 @@ function inferTypes(loweredModule) {
     });
     return T.failed(op + ' kwarg type');
   }
+
+  return { diagnostics, inferBinding, inferExpr };
 }
 
 // Internal "set" marker — not a user-facing type. elementof handles it.
 function setMarker(name) { return { kind: 'set', name }; }
 
-module.exports = { inferTypes };
+module.exports = { inferTypes, inferExprInScope };

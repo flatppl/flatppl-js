@@ -338,3 +338,75 @@ test('elementof(cartprod): kwargs form → record', () => {
   assert.ok(T.equal(t.fields.x, T.REAL));
   assert.ok(T.equal(t.fields.y, T.INTEGER));
 });
+
+// =====================================================================
+// inferExprInScope — on-demand call-site specialization
+// =====================================================================
+//
+// Polymorphic function bodies (`fn(2 * _)` etc.) get a best-effort
+// type at module-load time with `any` inputs. inferExprInScope lets
+// downstream consumers (the viewer's plot dispatch, primarily)
+// re-infer with concrete input types — same rules as a real call
+// site, just specialized to the chosen inputs.
+
+const { inferExprInScope } = require('../typeinfer');
+
+test('inferExprInScope: polymorphic body specializes by input type', () => {
+  const { loweredModule } = processSource(`
+    f = fn(2 * _)
+  `);
+  const fb = loweredModule.bindings.get('f');
+  const body = fb.rhs.body;
+  // Module-level inference saw `_` as `any` and produced a result
+  // type of integer (because 2 is integer). On-demand inference
+  // with `_arg1_` = real yields real; with integer yields integer.
+  const tReal = inferExprInScope(loweredModule, body,
+    new Map([[fb.rhs.params[0], T.REAL]]));
+  const tInt  = inferExprInScope(loweredModule, body,
+    new Map([[fb.rhs.params[0], T.INTEGER]]));
+  assert.ok(T.equal(tReal, T.REAL));
+  assert.ok(T.equal(tInt,  T.INTEGER));
+});
+
+test('inferExprInScope: record body specializes per-field', () => {
+  const { loweredModule } = processSource(`
+    f = fn(record(a = _, b = 2 * _))
+  `);
+  const fb = loweredModule.bindings.get('f');
+  const body = fb.rhs.body;
+  const params = fb.rhs.params;
+  // Two holes → two params (_arg1_, _arg2_). Bind both to real.
+  const t = inferExprInScope(loweredModule, body,
+    new Map([[params[0], T.REAL], [params[1], T.REAL]]));
+  assert.equal(t.kind, 'record');
+  assert.ok(T.equal(t.fields.a, T.REAL));
+  assert.ok(T.equal(t.fields.b, T.REAL));
+});
+
+test('inferExprInScope: tuple body yields tuple result', () => {
+  const { loweredModule } = processSource(`
+    f = fn((_ * 2, _ + 1))
+  `);
+  const fb = loweredModule.bindings.get('f');
+  const body = fb.rhs.body;
+  const params = fb.rhs.params;
+  const t = inferExprInScope(loweredModule, body,
+    new Map([[params[0], T.REAL], [params[1], T.REAL]]));
+  assert.equal(t.kind, 'tuple');
+  assert.equal(t.elems.length, 2);
+});
+
+test('inferExprInScope: refs to module bindings resolve via b.inferredType', () => {
+  // The body references a module-level binding `c`; on-demand
+  // inference should look up c's already-set inferredType rather
+  // than re-walking.
+  const { loweredModule } = processSource(`
+    c = 3.14
+    f = fn(c * _)
+  `);
+  const fb = loweredModule.bindings.get('f');
+  const body = fb.rhs.body;
+  const t = inferExprInScope(loweredModule, body,
+    new Map([[fb.rhs.params[0], T.REAL]]));
+  assert.ok(T.equal(t, T.REAL));
+});
