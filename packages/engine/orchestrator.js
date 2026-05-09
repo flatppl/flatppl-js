@@ -2255,7 +2255,19 @@ function expandMeasureIR(name, derivations, visited) {
  */
 function expandMeasureRefsInIR(ir, derivations, visited) {
   visited = visited || new Set();
-  if (!ir || ir.kind !== 'call') return ir;
+  if (!ir) return ir;
+  // Top-level ref to a measure binding: expand via the same
+  // measure-IR reconstructor used for refs in measure-arg positions.
+  // Without this branch, a body that's just `(ref self some_dist)` —
+  // typical for `forward_kernel = functionof(obs_dist, …)` where
+  // obs_dist is a measure binding — falls through unchanged and
+  // downstream consumers (materialiseConcreteMeasure, traceeval.walk)
+  // reject the bare ref.
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    const expanded = expandMeasureIR(ir.name, derivations, visited);
+    return expanded || ir;
+  }
+  if (ir.kind !== 'call') return ir;
   // `lawof(M)` is a no-op once M is in measure position. The
   // disintegrate rewriter wraps a kernel body's record/joint output
   // in lawof to express "the measure of this value", but for density
