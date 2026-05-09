@@ -2907,13 +2907,23 @@
         nLabel.title = 'Total atom count in the empirical measure';
         wrap.appendChild(nLabel);
 
+        // Effectively-uniform measures (no logWeights, or logWeights
+        // all-equal-within-epsilon) carry no IS-quality information:
+        // every atom has equal weight by construction, so PSIS k̂
+        // doesn't apply and the ESS readout would just say "100%".
+        // The engine signals this via kHat NaN — we skip the
+        // diagnostic span and show the bare count. The diagnostic
+        // only appears when it actually carries information
+        // (importance-reweighted measures: bayesupdate / weighted /
+        // logweighted / posterior outputs).
+        if (!Number.isFinite(q.kHat)) return wrap;
+
         var diag = document.createElement('span');
         diag.className = 'is-quality is-' + q.label;
         var ratioPct = (q.ratio * 100);
         var ratioStr = ratioPct >= 10 ? ratioPct.toFixed(0)
                                       : ratioPct.toFixed(1);
-        var kStr = Number.isFinite(q.kHat) ? q.kHat.toFixed(2) : '—';
-        diag.textContent = '(' + q.label + ': ESS ' + ratioStr + '%, PSIS k̂ ' + kStr + ')';
+        diag.textContent = '(' + q.label + ': ESS ' + ratioStr + '%, PSIS k̂ ' + q.kHat.toFixed(2) + ')';
         diag.title = qualityTooltip(q);
         wrap.appendChild(diag);
       } catch (err) {

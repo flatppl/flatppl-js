@@ -474,7 +474,9 @@ function importanceSamplingQuality(measure, dof) {
   // Unweighted measure: weights are uniform by construction, k̂ is
   // not meaningful (and the GPD fit on a constant-weight tail is
   // degenerate). Always 'good' for an unweighted measure of any
-  // reasonable size.
+  // reasonable size. kHat NaN signals "uniform / not applicable" to
+  // the viewer; downstream readout drops the diagnostic span entirely
+  // for such measures.
   if (!measure.logWeights) {
     if (N < 20) {
       return { label: 'unusable', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
@@ -482,20 +484,39 @@ function importanceSamplingQuality(measure, dof) {
     return { label: 'good', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
   }
 
-  // Normalise weights for max-weight check. Keep work in log-space
-  // to avoid underflow in the tail.
+  // Walk logWeights once: max for normalisation, min/max range for
+  // uniform-detection, non-finite check.
   const logW = measure.logWeights;
-  const lse = logSumExp(logW);
-  let wmax = 0;
+  let lwMin = Infinity, lwMax = -Infinity;
   let nonFinite = false;
   for (let i = 0; i < N; i++) {
     const lw = logW[i];
     if (!Number.isFinite(lw) && lw !== -Infinity) { nonFinite = true; break; }
-    const w = Math.exp(lw - lse);
-    if (w > wmax) wmax = w;
+    if (lw < lwMin) lwMin = lw;
+    if (lw > lwMax) lwMax = lw;
   }
   if (nonFinite) {
     return { label: 'unusable', ess, ratio, kHat: NaN, wmax: 1, dof: D, N };
+  }
+  // Uniform-within-epsilon: even with explicit logWeights, if every
+  // entry equals every other (within float tolerance), the measure
+  // is effectively unweighted. Skip the k̂ fit — there's no tail to
+  // characterise — and report identically to the no-logWeights case.
+  // Common when materialiseUniform set logW = -log(N) preemptively
+  // before any reweighting op was actually applied.
+  if (lwMax - lwMin < 1e-12) {
+    if (N < 20) {
+      return { label: 'unusable', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+    }
+    return { label: 'good', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+  }
+  // Normalise weights for max-weight check. Keep work in log-space
+  // to avoid underflow in the tail.
+  const lse = logSumExp(logW);
+  let wmax = 0;
+  for (let i = 0; i < N; i++) {
+    const w = Math.exp(logW[i] - lse);
+    if (w > wmax) wmax = w;
   }
 
   // PSIS k̂: linearise weights then fit. We pass exp(logW - lse) so

@@ -340,13 +340,35 @@ test('importanceSamplingQuality: single-particle dominance → unusable', () => 
   assert.ok(q.wmax > 0.5);
 });
 
-test('importanceSamplingQuality: small N caps at ok', () => {
+test('importanceSamplingQuality: small N caps at ok for non-uniform weights', () => {
+  // N=50 with mildly non-uniform weights (a real reweighting, not
+  // a uniform fill). The small-N cap should prevent green even when
+  // ratio looks fine — PSIS k̂ is itself noisy at N<100.
   const N = 50;
-  const samples = new Float64Array(N).fill(1);
-  const logW = new Float64Array(N).fill(-Math.log(N));
-  // ESS = 50, ratio = 1, but N < 100 caps at ok.
+  const samples = new Float64Array(N);
+  const logW = new Float64Array(N);
+  let s = 0xdeadbeef;
+  for (let i = 0; i < N; i++) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    samples[i] = i;
+    logW[i] = -Math.log(N) + (s / 0x100000000 - 0.5) * 0.5;
+  }
   const q = importanceSamplingQuality({ samples, logWeights: logW }, 1);
   assert.notEqual(q.label, 'good');
+});
+
+test('importanceSamplingQuality: uniform-within-epsilon weights → unweighted-style result', () => {
+  // Even with explicit logWeights, all-equal entries should classify
+  // as if logWeights were null: kHat NaN, label 'good', ratio 1.
+  // Common when materialiseUniform set logW = -log(N) before any
+  // reweighting op was applied.
+  const N = 1000;
+  const samples = new Float64Array(N);
+  const logW = new Float64Array(N).fill(-Math.log(N));
+  const q = importanceSamplingQuality({ samples, logWeights: logW }, 1);
+  assert.equal(q.label, 'good');
+  assert.ok(!Number.isFinite(q.kHat), 'kHat NaN signals uniform/non-applicable');
+  assert.equal(q.ratio, 1);
 });
 
 test('estimateDof: scalar measure → 1', () => {
