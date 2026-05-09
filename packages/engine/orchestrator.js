@@ -115,6 +115,13 @@ const EVALUABLE_OPS = new Set([
   // (with stochastic refs) must NOT classify as evaluable, so the
   // existing array-derivation special case keeps owning that path.
   'sum', 'mean', 'prod', 'length', 'maximum', 'minimum', 'var',
+  // Engine-internal projection emitted by the analyzer's multi-LHS
+  // rewriter (`a, b = rand(...)`). sampler.evaluateCall handles it.
+  'tuple_get', 'tuple',
+  // Random-number primitives (spec §sec:random). All three are
+  // ordinary value-typed functions whose phase propagates from
+  // their inputs. sampler.evaluateCall dispatches each.
+  'rnginit', 'rngstate', 'rand',
 ]);
 
 /**
@@ -165,10 +172,15 @@ function buildSampleChain(targetName, bindings) {
     for (const dep of binding.deps) visit(dep);
     if (unsupported) return;
 
-    // Lower this binding's RHS expression.
+    // Lower this binding's RHS expression. Bindings the analyzer has
+    // rewritten (multi-LHS, disintegrate) carry an `effectiveValue`
+    // AST that's the per-name view; lower that when present so the
+    // chain sees `tuple_get(...)` for `random_data, rstate2 = rand(...)`
+    // and the synthesised kernel/prior for disintegrate, not the raw
+    // user-written RHS shared across the group.
     let rhsIR;
     try {
-      rhsIR = lowerExpr(binding.node.value);
+      rhsIR = lowerExpr(binding.effectiveValue || binding.node.value);
     } catch (e) {
       unsupported = { reason: `cannot lower '${name}': ${e.message}` };
       return;
@@ -1537,6 +1549,17 @@ function isEvaluable(ir) {
                         return true;
     case 'call':
       if (!ir.op || !EVALUABLE_OPS.has(ir.op)) return false;
+      // rand(state, measure) — the measure arg is a measure IR passed
+      // verbatim to the trace evaluator, NOT a value expression. So we
+      // only require the state (first) arg to be evaluable; whether
+      // the measure is sampleable is the trace evaluator's call. Same
+      // logic for any future state-threaded primitive that takes a
+      // measure literal (none today besides rand).
+      if (ir.op === 'rand') {
+        const args = ir.args || [];
+        if (args.length !== 2) return false;
+        return isEvaluable(args[0]);
+      }
       // All args / kwargs must themselves be evaluable.
       if (ir.args) {
         for (const a of ir.args) if (!isEvaluable(a)) return false;
