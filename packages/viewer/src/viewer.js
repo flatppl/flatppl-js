@@ -2551,9 +2551,13 @@
       plotHost.style.minHeight = '0';
       el.appendChild(plotHost);
 
-      function rerender() {
-        toolbarHost.innerHTML = '';
-        toolbarHost.appendChild(renderRecordToolbar(axes, rerender, measure, extraToolbarControls));
+      // Two-tier re-render. Toolbar rebuilds blow away the axis
+      // dropdown's open state (it's a transient DOM child of the
+      // toolbar), so we ONLY rebuild the toolbar when the mode
+      // toggle actually changes mode-button styling. Axis-selection
+      // tweaks just redraw the chart — the dropdown stays open
+      // until the user clicks outside it.
+      function rerenderChart() {
         if (recordSelection.mode === 'marginals') {
           // Marginals mode plots every axis (no cap, no selection).
           renderDensityStrips(plotHost, measure, bindingName, axes);
@@ -2561,8 +2565,14 @@
           renderCornerGrid(plotHost, measure, bindingName);
         }
       }
+      function rerenderAll() {
+        toolbarHost.innerHTML = '';
+        toolbarHost.appendChild(renderRecordToolbar(
+          axes, rerenderAll, rerenderChart, measure, extraToolbarControls));
+        rerenderChart();
+      }
 
-      rerender();
+      rerenderAll();
     }
 
     /**
@@ -2574,7 +2584,7 @@
      * elements) so mode buttons reflect active state and the
      * selector visibility tracks the mode.
      */
-    function renderRecordToolbar(axes, onChange, measure, extraToolbarControls) {
+    function renderRecordToolbar(axes, onModeChange, onSelectionChange, measure, extraToolbarControls) {
       var bar = document.createElement('div');
       bar.style.display = 'flex';
       bar.style.flexWrap = 'wrap';
@@ -2620,7 +2630,8 @@
               && recordSelection.selected.length > CORRELATIONS_MAX_AXES) {
             recordSelection.selected = recordSelection.selected.slice(0, CORRELATIONS_MAX_AXES);
           }
-          onChange();
+          // Mode toggle changes button styling → full toolbar rebuild.
+          onModeChange();
         });
         return b;
       }
@@ -2638,7 +2649,11 @@
         sep.style.alignSelf = 'stretch';
         sep.style.background = 'rgba(255,255,255,0.1)';
         bar.appendChild(sep);
-        bar.appendChild(renderAxisDropdown(axes, onChange));
+        // Axis-checkbox toggles only need to redraw the chart (the
+        // toolbar's button styling is unaffected) — pass the
+        // chart-only callback so the dropdown doesn't get rebuilt
+        // out from under its open popup.
+        bar.appendChild(renderAxisDropdown(axes, onSelectionChange));
       }
 
       // Sample-quality readout pinned to the right edge.
@@ -2794,6 +2809,12 @@
             if (idx >= 0) recordSelection.selected.splice(idx, 1);
           }
           capErr.style.opacity = '0';
+          // Update the count on the button without rebuilding the
+          // toolbar (which would tear down this dropdown's open
+          // panel). The axis-dropdown stays open until the user
+          // clicks outside.
+          btn.textContent = recordSelection.selected.length
+            + ' / ' + axes.length + '  ▾';
           onChange();
         });
         label.appendChild(cb);
