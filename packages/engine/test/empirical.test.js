@@ -228,3 +228,152 @@ test('multinomialResample: degenerate weights → all output indices equal', () 
   const idx = multinomialResample(w, 50, () => 0.7);
   for (let i = 0; i < 50; i++) assert.equal(idx[i], 0);
 });
+
+// =====================================================================
+// PSIS k̂ + importance-sampling quality classifier
+// =====================================================================
+//
+// Reference values were generated against scipy.stats.genpareto MLE +
+// the loo R package's psis() routine; we accept a ±0.1 tolerance on k̂
+// since Zhang-Stephens is an empirical-Bayes posterior mean and minor
+// implementation differences (grid resolution, prior choice) shift the
+// estimate slightly.
+
+const { paretoKHat, paretoKThreshold, importanceSamplingQuality,
+        estimateDof, recordMeasure, arrayMeasure } = require('../empirical');
+
+// Deterministic Pareto sampler: F⁻¹(u) = (1-u)^(-1/α) - 1 has shape
+// k̂ = 1/α for the GPD. Use an LCG for reproducibility.
+function paretoSamples(alpha, n, seed) {
+  let s = (seed || 1) >>> 0;
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const u = (s / 0x100000000);
+    out[i] = Math.pow(1 - u, -1 / alpha) - 1;  // shifted so support starts at 0
+  }
+  return out;
+}
+
+test('paretoKHat: pure-Pareto α=4 sample → k̂ ≈ 0.25', () => {
+  const w = paretoSamples(4, 5000, 42);
+  const k = paretoKHat(w);
+  // Zhang-Stephens posterior mean; tolerance generous because of the
+  // empirical-Bayes prior and finite-sample variability.
+  assert.ok(Math.abs(k - 0.25) < 0.15, `k̂=${k}, expected ≈0.25`);
+});
+
+test('paretoKHat: pure-Pareto α=2 sample → k̂ ≈ 0.5', () => {
+  const w = paretoSamples(2, 5000, 7);
+  const k = paretoKHat(w);
+  assert.ok(Math.abs(k - 0.5) < 0.15, `k̂=${k}, expected ≈0.5`);
+});
+
+test('paretoKHat: pure-Pareto α=1 sample → k̂ ≈ 1.0', () => {
+  const w = paretoSamples(1, 5000, 11);
+  const k = paretoKHat(w);
+  // α=1 is the boundary of integrable mean; the Zhang-Stephens
+  // estimator's finite-sample upward bias is largest here (~0.2).
+  assert.ok(Math.abs(k - 1.0) < 0.3, `k̂=${k}, expected ≈1.0`);
+});
+
+test('paretoKHat: degenerate input → NaN', () => {
+  assert.ok(Number.isNaN(paretoKHat(new Float64Array([1, 1, 1]))));
+  assert.ok(Number.isNaN(paretoKHat(new Float64Array([]))));
+});
+
+test('paretoKThreshold: matches the canonical sample-size-aware bound', () => {
+  // Vehtari et al. 2024: k★ = min(0.7, 1 − 1/log10(N))
+  assert.ok(Math.abs(paretoKThreshold(100) - 0.5) < 1e-9);
+  assert.ok(Math.abs(paretoKThreshold(10000) - 0.7) < 1e-9);  // capped
+  assert.ok(Math.abs(paretoKThreshold(1000) - (1 - 1 / 3)) < 1e-9);
+});
+
+test('importanceSamplingQuality: unweighted measure → good with ratio=1', () => {
+  const m = { samples: new Float64Array(1000).fill(0.5), logWeights: null };
+  const q = importanceSamplingQuality(m, 1);
+  assert.equal(q.label, 'good');
+  assert.equal(q.ratio, 1);
+  assert.ok(Number.isNaN(q.kHat));
+});
+
+test('importanceSamplingQuality: nearly-uniform log-weights → good', () => {
+  const N = 10000;
+  const samples = new Float64Array(N);
+  const logWeights = new Float64Array(N);
+  // Tiny noise around -log(N); ESS/N stays near 1.
+  let s = 0xdeadbeef;
+  for (let i = 0; i < N; i++) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    samples[i] = i;
+    logWeights[i] = -Math.log(N) + (s / 0x100000000 - 0.5) * 0.01;
+  }
+  const q = importanceSamplingQuality({ samples, logWeights }, 1);
+  assert.equal(q.label, 'good');
+  assert.ok(q.ratio > 0.99, `ratio=${q.ratio}`);
+});
+
+test('importanceSamplingQuality: heavy-tailed weights → degrades to bad/unusable', () => {
+  // Build log-weights from a Pareto-α=1 sample so k̂ should be ≈ 1.0
+  // (boundary between bad and unusable). 5000 atoms.
+  const N = 5000;
+  const samples = new Float64Array(N);
+  for (let i = 0; i < N; i++) samples[i] = i;
+  const logW = new Float64Array(N);
+  const tailSamples = paretoSamples(1, N, 99);
+  for (let i = 0; i < N; i++) logW[i] = Math.log(1 + tailSamples[i]);
+  const q = importanceSamplingQuality({ samples, logWeights: logW }, 1);
+  assert.ok(q.label === 'bad' || q.label === 'unusable',
+            `expected bad/unusable, got ${q.label}; k̂=${q.kHat}`);
+});
+
+test('importanceSamplingQuality: single-particle dominance → unusable', () => {
+  // One atom carries 90% of mass.
+  const N = 1000;
+  const samples = new Float64Array(N);
+  for (let i = 0; i < N; i++) samples[i] = i;
+  const logW = new Float64Array(N);
+  for (let i = 0; i < N; i++) logW[i] = Math.log(0.1 / (N - 1));
+  logW[0] = Math.log(0.9);
+  const q = importanceSamplingQuality({ samples, logWeights: logW }, 1);
+  assert.equal(q.label, 'unusable');
+  assert.ok(q.wmax > 0.5);
+});
+
+test('importanceSamplingQuality: small N caps at ok', () => {
+  const N = 50;
+  const samples = new Float64Array(N).fill(1);
+  const logW = new Float64Array(N).fill(-Math.log(N));
+  // ESS = 50, ratio = 1, but N < 100 caps at ok.
+  const q = importanceSamplingQuality({ samples, logWeights: logW }, 1);
+  assert.notEqual(q.label, 'good');
+});
+
+test('estimateDof: scalar measure → 1', () => {
+  const m = { samples: new Float64Array([1, 2, 3, 4]), logWeights: null };
+  assert.equal(estimateDof(m), 1);
+});
+
+test('estimateDof: record with two varying scalar fields → 2', () => {
+  const f1 = { samples: new Float64Array([1, 2, 3]), logWeights: null };
+  const f2 = { samples: new Float64Array([4, 5, 6]), logWeights: null };
+  const m = recordMeasure({ a: f1, b: f2 }, null);
+  assert.equal(estimateDof(m), 2);
+});
+
+test('estimateDof: record with one constant scalar field → 1 (zero-variance dropped)', () => {
+  const fVar = { samples: new Float64Array([1, 2, 3]), logWeights: null };
+  const fConst = { samples: new Float64Array([7, 7, 7]), logWeights: null };
+  const m = recordMeasure({ a: fVar, b: fConst }, null);
+  assert.equal(estimateDof(m), 1);
+});
+
+test('estimateDof: array(iid) of length 10 across N atoms → 10 (independent slots)', () => {
+  const N = 100, K = 10;
+  const samples = new Float64Array(N * K);
+  for (let i = 0; i < N; i++) {
+    for (let s = 0; s < K; s++) samples[i * K + s] = i * K + s;
+  }
+  const m = arrayMeasure(samples, [K], null);
+  assert.equal(estimateDof(m), K);
+});

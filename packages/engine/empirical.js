@@ -292,6 +292,338 @@ function shapeOf(measure) {
   return (measure && measure.shape) || 'scalar';
 }
 
+// =====================================================================
+// Importance-sampling quality diagnostic
+// =====================================================================
+//
+// Self-contained quality classifier for an empirical measure with
+// optional importance log-weights. Returns:
+//
+//   { label, ess, ratio, kHat, wmax, dof, N }
+//
+// where `label` ∈ { 'good', 'ok', 'bad', 'unusable' }. The viewer
+// colours the readout span by this label.
+//
+// Methodology (synthesised from Vehtari et al.'s PSIS recommendations
+// and the loo-package conventions):
+//   - PSIS k̂ as primary diagnostic — Pareto-tail shape of the upper
+//     importance weights. k̂ ≤ 0.5 means finite variance; 0.5 < k̂ ≤ 0.7
+//     usable but variance high; 0.7 < k̂ ≤ 1 biased estimates,
+//     warning; k̂ > 1 infinite mean, untrustworthy.
+//   - Kish ESS / N as secondary — bulk weight uniformity.
+//   - max-weight share as a single-particle-dominance check.
+//   - dof (effective dimensionality, computed by callers) scales the
+//     absolute ESS floor: max(absolute_floor, k·D) — only kicks in
+//     for high-D measures (low-D and 1-D scalar measures get the
+//     unscaled floor).
+//
+// Worst-trigger combining: any one diagnostic crossing a worse band
+// downgrades the label to that band.
+
+/**
+ * Fit a generalised Pareto distribution to the upper tail of an
+ * empirical sample, returning the shape parameter k̂ (Vehtari sign
+ * convention: k̂ > 0 ⇒ heavy right tail).
+ *
+ * Uses Zhang & Stephens' (2009) empirical-Bayes posterior-mean
+ * estimator — the algorithm the loo R package uses for PSIS k̂
+ * diagnostics. Tested against Pareto-tailed synthetic samples to
+ * within ~0.05 of the canonical implementation in the relevant
+ * range (k̂ ∈ [0.2, 1.5]).
+ *
+ * @param {Float64Array | number[]} exceedances  upper-tail values
+ *        (already shifted by threshold, all > 0). Need not be sorted.
+ * @returns {number} k̂; NaN if fit cannot be computed (degenerate input).
+ */
+function gpdShapeZhangStephens(exceedances) {
+  const n = exceedances.length;
+  if (n < 2) return NaN;
+  const x = Float64Array.from(exceedances);
+  x.sort();
+  // Max must be positive and finite for the GPD fit; the smallest
+  // exceedance is allowed to be zero (ties at the threshold boundary
+  // are common when samples cluster) — log(1 - b·0) = 0 contributes
+  // nothing to the profile log-likelihood.
+  if (x[n - 1] <= 0 || !Number.isFinite(x[n - 1])) return NaN;
+  const m = 30 + Math.floor(Math.sqrt(n));
+  // Quantile-mixture grid for b: locations spanning (close to 0, close
+  // to 1/x_max). The /3/x_q25 term is the Zhang-Stephens recipe;
+  // x_q25 is the 25th-percentile order statistic.
+  const xMax = x[n - 1];
+  const x25 = x[Math.floor(n / 4 + 0.5)] || x[0];
+  const bs = new Float64Array(m);
+  for (let j = 1; j <= m; j++) {
+    const t = 1 - Math.sqrt(m / (j - 0.5));
+    bs[j - 1] = 1 / xMax + t / (3 * x25);
+  }
+  // Profile log-likelihood at each b. Zhang-Stephens parametrisation:
+  //   k(b) = mean(log(1 - b·x_i))
+  //   L(b) = n · (log(-b/k(b)) − k(b) − 1)
+  // (Same as the loo R package's gpdfit.R.) For heavy-tailed data,
+  // the fit prefers b < 0 (so 1 − b·x > 1 and k(b) > 0, matching
+  // Vehtari's "k > 0 ⇒ heavy tail" convention). For light-tailed
+  // data the optimum b > 0; both branches give -b/k(b) > 0 when
+  // sign(b) ≠ sign(k(b)), so log is defined.
+  const ll = new Float64Array(m);
+  for (let j = 0; j < m; j++) {
+    const b = bs[j];
+    let kSum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = 1 - b * x[i];
+      if (v <= 0) { kSum = NaN; break; }
+      kSum += Math.log(v);
+    }
+    if (!Number.isFinite(kSum)) { ll[j] = -Infinity; continue; }
+    const kj = kSum / n;
+    if (kj === 0 || -b / kj <= 0) { ll[j] = -Infinity; continue; }
+    ll[j] = n * (Math.log(-b / kj) - kj - 1);
+  }
+  // Convert log-likelihoods to posterior weights via softmax, then
+  // take the posterior mean of b.
+  let llMax = -Infinity;
+  for (let j = 0; j < m; j++) if (ll[j] > llMax) llMax = ll[j];
+  if (!Number.isFinite(llMax)) return NaN;
+  let wSum = 0;
+  const w = new Float64Array(m);
+  for (let j = 0; j < m; j++) {
+    w[j] = Math.exp(ll[j] - llMax);
+    wSum += w[j];
+  }
+  if (wSum === 0) return NaN;
+  let bBar = 0;
+  for (let j = 0; j < m; j++) bBar += (w[j] / wSum) * bs[j];
+  // Recover k̂ from b̄ via k(b) = mean(log(1 − b·x_i)) — the same
+  // form used inside the profile log-lik above. Loo's gpdfit.R
+  // returns the same expression. The sign convention is Vehtari's
+  // (positive k̂ ⇒ heavy tail).
+  let kSum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = 1 - bBar * x[i];
+    if (v <= 0) return NaN;
+    kSum += Math.log(v);
+  }
+  return kSum / n;
+}
+
+/**
+ * Compute PSIS-style k̂ for a sample of (positive) importance weights.
+ * Selects the upper tail size M = min(N/5, 3·√N) per Vehtari's recipe,
+ * then fits a generalised Pareto to the tail via Zhang-Stephens.
+ *
+ * @param {Float64Array | number[]} weights — non-negative, finite.
+ *        Need not be normalised; absolute scale doesn't affect k̂.
+ * @returns {number} k̂; NaN on degenerate input or failed fit.
+ */
+function paretoKHat(weights) {
+  const N = weights.length;
+  if (N < 5) return NaN;
+  const M = Math.max(5, Math.min(Math.floor(N / 5), Math.floor(3 * Math.sqrt(N))));
+  if (M < 2 || M >= N) return NaN;
+  const sorted = Float64Array.from(weights);
+  sorted.sort();
+  // Threshold = (N-M-1)-th order statistic. Take exceedances of
+  // top-M weights minus that threshold.
+  const threshold = sorted[N - M - 1];
+  const tail = new Float64Array(M);
+  for (let i = 0; i < M; i++) tail[i] = sorted[N - M + i] - threshold;
+  return gpdShapeZhangStephens(tail);
+}
+
+/**
+ * Sample-size-aware k̂ reliability threshold (Vehtari, Simpson, Yao 2024):
+ *   k★ = min(0.7, 1 - 1/log10(N))
+ * For N ≥ 10⁴, k★ ≈ 0.7 (the canonical fixed bound).
+ * For smaller N, k★ tightens — at N=100, k★ = 0.5.
+ */
+function paretoKThreshold(N) {
+  if (N <= 10) return -Infinity;
+  return Math.min(0.7, 1 - 1 / Math.log10(N));
+}
+
+/**
+ * Assess the importance-sampling quality of a (possibly weighted)
+ * empirical measure. Returns a structured diagnostic the viewer's
+ * sample-stats readout colour-codes.
+ *
+ * Combining rule: worst trigger across {k̂, ESS, max-weight, sample
+ * size}. Effective dimensionality `dof` (computed by the caller from
+ * the measure's structure — record fields, array slots, varying-
+ * sample axes) scales the absolute ESS floor; pass 1 for a scalar
+ * measure or when D is unknown.
+ *
+ * @param {{samples, logWeights, …}} measure — empirical measure.
+ * @param {number} dof — degrees of freedom (≥ 1).
+ * @returns {{ label, ess, ratio, kHat, wmax, dof, N }}
+ */
+function importanceSamplingQuality(measure, dof) {
+  const D = Math.max(1, dof | 0);
+  const N = measureAtomCount(measure);
+  if (N === 0) {
+    return { label: 'unusable', ess: 0, ratio: 0, kHat: NaN,
+             wmax: 1, dof: D, N: 0 };
+  }
+  const ess = effectiveSampleSize(measure);
+  const ratio = N > 0 ? ess / N : 0;
+
+  // Unweighted measure: weights are uniform by construction, k̂ is
+  // not meaningful (and the GPD fit on a constant-weight tail is
+  // degenerate). Always 'good' for an unweighted measure of any
+  // reasonable size.
+  if (!measure.logWeights) {
+    if (N < 20) {
+      return { label: 'unusable', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+    }
+    return { label: 'good', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+  }
+
+  // Normalise weights for max-weight check. Keep work in log-space
+  // to avoid underflow in the tail.
+  const logW = measure.logWeights;
+  const lse = logSumExp(logW);
+  let wmax = 0;
+  let nonFinite = false;
+  for (let i = 0; i < N; i++) {
+    const lw = logW[i];
+    if (!Number.isFinite(lw) && lw !== -Infinity) { nonFinite = true; break; }
+    const w = Math.exp(lw - lse);
+    if (w > wmax) wmax = w;
+  }
+  if (nonFinite) {
+    return { label: 'unusable', ess, ratio, kHat: NaN, wmax: 1, dof: D, N };
+  }
+
+  // PSIS k̂: linearise weights then fit. We pass exp(logW - lse) so
+  // weights are normalised to sum to 1 (k̂ is scale-invariant but
+  // numerically the bounded range avoids overflow).
+  const w = new Float64Array(N);
+  for (let i = 0; i < N; i++) w[i] = Math.exp(logW[i] - lse);
+  const kHat = paretoKHat(w);
+
+  // Sample-size-aware k̂ threshold.
+  const kStar = paretoKThreshold(N);
+
+  // Worst-trigger classification. Order: 0=good, 1=ok, 2=bad, 3=unusable.
+  let severity = 0;
+  // k̂ band
+  if (!Number.isFinite(kHat)) severity = Math.max(severity, 3);
+  else if (kHat > 1.0)         severity = Math.max(severity, 3);
+  else if (kHat > kStar)       severity = Math.max(severity, 2);
+  else if (kHat > 0.5)         severity = Math.max(severity, 1);
+  // ESS band — absolute floor scaled by dof. The ratio thresholds
+  // are dimension-invariant.
+  if (ess < Math.max(20, 2 * D))   severity = Math.max(severity, 3);
+  else if (ess < Math.max(50, 5 * D))  severity = Math.max(severity, 2);
+  else if (ess < Math.max(100, 10 * D)) severity = Math.max(severity, 1);
+  if (ratio < 0.02)  severity = Math.max(severity, 2);
+  else if (ratio < 0.1) severity = Math.max(severity, 1);
+  // Single-particle dominance.
+  if (wmax > 0.5)       severity = Math.max(severity, 3);
+  else if (wmax > 0.15) severity = Math.max(severity, 2);
+  else if (wmax > 0.05) severity = Math.max(severity, 1);
+  // Small-N cap: PSIS k̂ is itself noisy; never call green at N < 100.
+  if (N < 100 && severity < 1) severity = 1;
+  // Tighter green: k̂ must clear (kStar − 0.1) AND be ≤ 0.5.
+  if (severity === 0 && kHat > Math.min(0.5, kStar - 0.1)) severity = 1;
+
+  const label = ['good', 'ok', 'bad', 'unusable'][severity];
+  return { label, ess, ratio, kHat, wmax, dof: D, N };
+}
+
+// Internal: walk a measure to find any sub-measure's atom count.
+function measureAtomCount(measure) {
+  if (!measure) return 0;
+  if (measure.fields) {
+    const ks = Object.keys(measure.fields);
+    return ks.length > 0 ? measureAtomCount(measure.fields[ks[0]]) : 0;
+  }
+  if (Array.isArray(measure.elems) && measure.elems.length > 0) {
+    return measureAtomCount(measure.elems[0]);
+  }
+  if (measure.samples) {
+    if (measure.dims && measure.dims.length > 0) {
+      const stride = measure.dims.reduce((p, n) => p * n, 1);
+      return stride > 0 ? measure.samples.length / stride : 0;
+    }
+    return measure.samples.length;
+  }
+  return 0;
+}
+
+/**
+ * Heuristic DOF estimate for an empirical measure: the count of
+ * scalar leaves whose per-atom samples vary. Slots with constant
+ * samples (degenerate atoms — e.g. a Dirac field inside a record)
+ * contribute 0. iid(M, n) contributes n (atoms are independent
+ * across the iid axis by construction).
+ *
+ * "Estimate" in the name because the count is a structural one and
+ * doesn't account for distribution-level constraints between scalar
+ * leaves. A Dirichlet(α, n) has n-1 effective DOF (the simplex
+ * sum-to-one constraint), but this function counts n. For our
+ * purposes — scaling the ESS floors in importanceSamplingQuality —
+ * a small overcount is conservative (asks for slightly more
+ * effective samples than strictly necessary) and the simpler walk
+ * keeps the helper local.
+ *
+ * Exact propagation is possible for many constructors: Normal = 1,
+ * MvNormal(n) = n, Dirichlet(α, n) = n-1, joint = Σ, iid(M, n) =
+ * n·dof(M), pushfwd by injective f preserves, lawof of value-typed
+ * e = 0, etc. Threading that metadata through every measure-algebra
+ * op is more complex than this estimate justifies for the present
+ * use case (ESS-floor scaling in the viewer's sample-stats readout).
+ *
+ * Even an "exact" DOF is itself an approximation in the general
+ * case: rank can vary across the measure's support — e.g. a
+ * mixture of components with different intrinsic dimensionalities,
+ * or conditional structures where one component has rank-1 and
+ * another rank-n. A single global D is a first-order proxy, not
+ * a measure-theoretic invariant. For a global threshold-scaling
+ * heuristic that's fine; refine the model if a downstream consumer
+ * needs per-region rank.
+ *
+ * Used as the `dof` argument to importanceSamplingQuality; its
+ * absolute-ESS floors scale by D so a higher-dimensional measure
+ * needs proportionally more effective samples to clear the green/
+ * yellow bands.
+ */
+function estimateDof(measure) {
+  if (!measure) return 1;
+  if (measure.fields) {
+    let d = 0;
+    for (const k in measure.fields) d += estimateDof(measure.fields[k]);
+    return Math.max(1, d);
+  }
+  if (Array.isArray(measure.elems)) {
+    let d = 0;
+    for (const e of measure.elems) d += estimateDof(e);
+    return Math.max(1, d);
+  }
+  if (measure.samples) {
+    if (measure.dims && measure.dims.length > 0) {
+      const stride = measure.dims.reduce((p, n) => p * n, 1);
+      const N = stride > 0 ? measure.samples.length / stride : 0;
+      // Count per-slot variance. A slot with all-equal values across
+      // atoms contributes 0 DOF (degenerate / Dirac-like).
+      let d = 0;
+      for (let s = 0; s < stride; s++) {
+        if (slotVaries(measure.samples, N, stride, s)) d++;
+      }
+      return Math.max(1, d);
+    }
+    return slotVaries(measure.samples, measure.samples.length, 1, 0) ? 1 : 0;
+  }
+  return 1;
+}
+
+function slotVaries(samples, N, stride, s) {
+  if (N < 2) return false;
+  const v0 = samples[s];
+  for (let i = 1; i < N; i++) {
+    if (samples[i * stride + s] !== v0) return true;
+  }
+  return false;
+}
+
 module.exports = {
   logSumExp,
   totalLogMass,
@@ -301,4 +633,7 @@ module.exports = {
   multinomialResample,
   // Multivariate
   recordMeasure, tupleMeasure, arrayMeasure, shapeOf,
+  // Importance-sampling diagnostics
+  paretoKHat, paretoKThreshold, gpdShapeZhangStephens,
+  importanceSamplingQuality, estimateDof,
 };

@@ -183,6 +183,15 @@
     #plot-content .scalar-display .value.composite {
       font-size: 16px; font-weight: normal; line-height: 1.4;
     }
+    /* Importance-sampling quality readout in the toolbar.
+       The base layout is set inline by renderSampleStats; this
+       block only carries the colour by quality band. The same
+       palette as the phase tags (with green added) so the visual
+       vocabulary is consistent across phase / type / quality. */
+    .is-quality.is-good     { color: #66BB6A; }   /* green     */
+    .is-quality.is-ok       { color: #FFD54F; }   /* yellow    */
+    .is-quality.is-bad      { color: #FFB300; }   /* orange    */
+    .is-quality.is-unusable { color: #E57373; }   /* red       */
     /* Graph internals fill graph-panel — switched from full-viewport
        sizing to 100% of the parent so the split-flex layout governs. */
     #cy { width: 100%; height: 100%; }
@@ -2859,38 +2868,72 @@
 
     /**
      * Compact "N: ...  ESS: ..." readout for the toolbar's right
-     * edge. Always shows both — for an uniformly-weighted measure
-     * ESS = N = 100%, which makes the "this measure is unweighted"
-     * fact visible at a glance rather than implicit in the absence
-     * of an ESS tag. (Asymmetric "show ESS only when weighted" was
-     * the original design but read inconsistently across bindings:
-     * posterior had ESS, joint_model didn't, even though both are
-     * empirical measures.)
+     * edge. Format:
+     *   "<N> samples (<label>: ESS <ratio>%, PSIS k̂ <value>)"
+     * where <label> ∈ {good, ok, bad, unusable} colours the
+     * parenthesised diagnostic span. Quality is computed by
+     * FlatPPLEngine.empirical.importanceSamplingQuality, which
+     * combines PSIS k̂ (Vehtari et al.; Pareto-tail shape of the
+     * upper importance weights) with Kish ESS, max-weight share,
+     * and a sample-size-aware k̂ threshold. See empirical.js for
+     * the threshold table; the worst trigger across diagnostics
+     * sets the label.
+     *
+     * Unweighted measures (logWeights == null) always read 'good'
+     * with ratio 100% and k̂ shown as "—" (not meaningful for
+     * uniform weights).
      */
     function renderSampleStats(measure) {
       var wrap = document.createElement('span');
       wrap.style.display = 'inline-flex';
       wrap.style.alignItems = 'center';
-      wrap.style.gap = '0.6em';
+      wrap.style.gap = '0.4em';
       wrap.style.opacity = '0.85';
       wrap.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       wrap.style.fontSize = '0.92em';
 
-      var N = measureAtomCount(measure);
+      var dof = FlatPPLEngine.empirical.estimateDof(measure);
+      var q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
+
       var nLabel = document.createElement('span');
-      nLabel.textContent = 'N: ' + formatCount(N);
+      nLabel.textContent = formatCount(q.N) + ' samples';
       nLabel.title = 'Total atom count in the empirical measure';
       wrap.appendChild(nLabel);
 
-      var ess = measure.logWeights
-        ? FlatPPLEngine.empirical.effectiveSampleSize(measure)
-        : N;
-      var pct = N > 0 ? (ess / N * 100) : 0;
-      var essLabel = document.createElement('span');
-      essLabel.textContent = 'ESS: ' + formatCount(Math.round(ess)) + ' (' + pct.toFixed(1) + '%)';
-      essLabel.title = 'Kish effective sample size: atoms-equivalent count after importance reweighting. Equals N (100%) for uniform-weighted measures.';
-      wrap.appendChild(essLabel);
-      return wrap;
+      var diag = document.createElement('span');
+      diag.className = 'is-quality is-' + q.label;
+      var ratioPct = (q.ratio * 100);
+      var ratioStr = ratioPct >= 10 ? ratioPct.toFixed(0)
+                                    : ratioPct.toFixed(1);
+      var kStr = Number.isFinite(q.kHat) ? q.kHat.toFixed(2) : '—';
+      diag.textContent = '(' + q.label + ': ESS ' + ratioStr + '%, PSIS k̂ ' + kStr + ')';
+      diag.title = qualityTooltip(q);
+      wrap.appendChild(diag);
+      // Return early — we've replaced the old N + ESS dual-span
+      // layout with the unified diagnostic readout.
+    }
+
+    /**
+     * Tooltip text for the quality-readout span. Spells out the
+     * diagnostic ingredients so a hover gives the full picture.
+     */
+    function qualityTooltip(q) {
+      var parts = [
+        'Importance-sampling quality: ' + q.label,
+        '',
+        'Kish ESS: ' + Math.round(q.ess).toLocaleString('en-US')
+          + ' / ' + q.N.toLocaleString('en-US')
+          + ' (' + (q.ratio * 100).toFixed(1) + '%)',
+      ];
+      if (Number.isFinite(q.kHat)) {
+        parts.push('PSIS k̂: ' + q.kHat.toFixed(3)
+          + '  (≤0.5 finite variance · ≤0.7 usable · >1 untrustworthy)');
+      } else {
+        parts.push('PSIS k̂: not applicable (unweighted measure)');
+      }
+      parts.push('Max single-atom weight: ' + (q.wmax * 100).toFixed(2) + '%');
+      parts.push('Effective DOF (estimate): ' + q.dof);
+      return parts.join('\n');
     }
 
     function measureAtomCount(measure) {
