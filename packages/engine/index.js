@@ -31,11 +31,18 @@ const pir = require('./pir');
 function processSource(source) {
   const { tokens, diagnostics: tokenDiags } = tokenize(source);
   const { ast, diagnostics: parseDiags } = parse(tokens);
-  const { bindings, diagnostics: analyzeDiags, symbols } = analyze(ast, source);
+  const { bindings, loweredModule, diagnostics: analyzeDiags, symbols }
+    = analyze(ast, source);
 
   const diagnostics = [...tokenDiags, ...parseDiags, ...analyzeDiags];
 
-  return { ast, bindings, symbols, diagnostics };
+  // loweredModule is forwarded for downstream consumers that need
+  // on-demand type specialization (e.g. typeinfer.inferExprInScope
+  // used by the plot dispatcher to compute the output shape of a
+  // polymorphic function at a specific call site — module-level
+  // inference produces best-effort with `any` inputs, which under-
+  // specifies in general).
+  return { ast, bindings, loweredModule, symbols, diagnostics };
 }
 
 module.exports = {
