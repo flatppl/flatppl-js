@@ -3438,27 +3438,67 @@
       // make). On change, mutate the plan's sweepKey and re-trigger
       // renderProfilePlotForCurrent — this re-fetches the empirical
       // range, rebuilds fixedEnv, and re-runs the worker.
-      if (plan.axes && plan.axes.length > 1) {
+      // Controls row holds:
+      //   - axis dropdown (only when there's a choice)
+      //   - log-density / log-likelihood mode: a y-axis cutoff
+      //     dropdown so the plot doesn't compress the interesting
+      //     region under a -∞ singularity. The cutoff caps the
+      //     visible y-range to [max - cutoff, max]; values below
+      //     get clamped to the cutoff line so the curve stays
+      //     interpretable.
+      var isLogDensity = plan.signature.kind === 'kernel'
+                      || plan.signature.kind === 'likelihood';
+      var hasAxes = plan.axes && plan.axes.length > 1;
+      if (hasAxes || isLogDensity) {
         var controls = document.createElement('div');
         controls.className = 'profile-controls';
-        var label = document.createElement('label');
-        label.textContent = 'Axis:';
-        label.htmlFor = 'profile-axis-select';
-        var select = document.createElement('select');
-        select.id = 'profile-axis-select';
-        for (var ai = 0; ai < plan.axes.length; ai++) {
-          var opt = document.createElement('option');
-          opt.value = plan.axes[ai].key;
-          opt.textContent = plan.axes[ai].label;
-          if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
-          select.appendChild(opt);
+        if (hasAxes) {
+          var label = document.createElement('label');
+          label.textContent = 'Axis:';
+          label.htmlFor = 'profile-axis-select';
+          var select = document.createElement('select');
+          select.id = 'profile-axis-select';
+          for (var ai = 0; ai < plan.axes.length; ai++) {
+            var opt = document.createElement('option');
+            opt.value = plan.axes[ai].key;
+            opt.textContent = plan.axes[ai].label;
+            if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
+            select.appendChild(opt);
+          }
+          select.addEventListener('change', function(e) {
+            plan.sweepKey = e.target.value;
+            renderProfilePlotForCurrent();
+          });
+          controls.appendChild(label);
+          controls.appendChild(select);
         }
-        select.addEventListener('change', function(e) {
-          plan.sweepKey = e.target.value;
-          renderProfilePlotForCurrent();
-        });
-        controls.appendChild(label);
-        controls.appendChild(select);
+        if (isLogDensity) {
+          if (plan.yCutoff == null) plan.yCutoff = 100;
+          var cutLabel = document.createElement('label');
+          cutLabel.textContent = 'Cut-off:';
+          cutLabel.htmlFor = 'profile-cutoff-select';
+          var cutSel = document.createElement('select');
+          cutSel.id = 'profile-cutoff-select';
+          var cutoffs = [10, 100, 1000, 10000];
+          for (var ci = 0; ci < cutoffs.length; ci++) {
+            var copt = document.createElement('option');
+            copt.value = cutoffs[ci];
+            copt.textContent = '−' + cutoffs[ci];
+            if (cutoffs[ci] === plan.yCutoff) copt.selected = true;
+            cutSel.appendChild(copt);
+          }
+          cutSel.addEventListener('change', function(e) {
+            plan.yCutoff = parseInt(e.target.value, 10);
+            // Re-render only the chart — sweep range / fixedEnv /
+            // worker call all stay valid; we already have `values`
+            // in the closure of the parent render. Easiest is to
+            // re-trigger the whole pipeline; cheap because measure
+            // cache + worker reply caches mean it's near-instant.
+            renderProfilePlotForCurrent();
+          });
+          controls.appendChild(cutLabel);
+          controls.appendChild(cutSel);
+        }
         el.appendChild(controls);
       }
       var chartDiv = document.createElement('div');
@@ -3468,22 +3508,58 @@
       var color = colorForBinding(currentPlotBindingName);
       var n = values.length;
       var lo = range[0], hi = range[1];
-      // Build (x, y) pairs. NaN entries become null so echarts shows
-      // gaps (domain-of-definition holes) rather than connecting
-      // through them.
+      // For log-density / log-likelihood, find the maximum finite
+      // value across the sweep and clamp the y-axis to
+      // [yMax − cutoff, yMax]. Below that we show no-man's-land —
+      // values get clamped to the cutoff line so the curve stays
+      // visible rather than disappearing under a -∞ singularity.
+      var yMax = -Infinity, yMin = Infinity;
+      for (var yi = 0; yi < n; yi++) {
+        var v = values[yi];
+        if (Number.isFinite(v)) {
+          if (v > yMax) yMax = v;
+          if (v < yMin) yMin = v;
+        }
+      }
+      var yClipMin = null, yClipMax = null;
+      if ((plan.signature.kind === 'kernel' || plan.signature.kind === 'likelihood')
+          && Number.isFinite(yMax)) {
+        var cut = (plan.yCutoff != null) ? plan.yCutoff : 100;
+        yClipMin = yMax - cut;
+        // Add a small upper headroom (~5% of the cutoff) so the peak
+        // doesn't sit on the chart's top edge.
+        yClipMax = yMax + 0.05 * cut;
+      }
+      // Build (x, y) pairs. NaN / -∞ entries become null so echarts
+      // shows gaps (domain-of-definition holes) rather than connecting
+      // through them. Finite values below the cutoff get clamped to
+      // yClipMin so the curve "lays down" on the floor instead of
+      // dragging the y-range to ridiculous lows.
       var data = new Array(n);
       for (var i = 0; i < n; i++) {
         var t = n === 1 ? 0 : i / (n - 1);
         var x = lo + t * (hi - lo);
         var y = values[i];
-        data[i] = (Number.isFinite(y)) ? [x, y] : [x, null];
+        if (!Number.isFinite(y)) {
+          data[i] = [x, null];
+        } else if (yClipMin != null && y < yClipMin) {
+          data[i] = [x, yClipMin];
+        } else {
+          data[i] = [x, y];
+        }
       }
       if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
       plotEchart = echarts.init(chartDiv);
       var zoomOpts = plotZoomOptions(fg);
       var titleText = (currentPlotBindingName ? esc(currentPlotBindingName) : 'profile')
         + ' — ' + esc(sweepAxis.label);
-      var legendLabel = plan.signature.kind === 'function' ? 'value' : 'log-density';
+      // Per spec / convention: a kernel with obs fixed (likelihoodof)
+      // computes the log-LIKELIHOOD; a bare kernel (or any other
+      // measure-bodied callable) computes the log-DENSITY at obs.
+      // Functions evaluate to a value.
+      var legendLabel = plan.signature.kind === 'function'   ? 'value'
+                       : plan.signature.kind === 'likelihood' ? 'log-likelihood'
+                       :                                        'log-density';
       plotEchart.setOption({
         animation: false,
         dataZoom: zoomOpts.dataZoom,
@@ -3510,13 +3586,13 @@
           axisLabel: { color: fg, opacity: 0.6 },
           splitLine: { show: false },
         },
-        yAxis: {
+        yAxis: Object.assign({
           type: 'value',
           axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
           axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
           axisLabel: { color: fg, opacity: 0.6 },
           splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
-        },
+        }, yClipMin != null ? { min: yClipMin, max: yClipMax } : {}),
         series: [{
           name: legendLabel,
           type: 'line', data: data, symbol: 'none',
