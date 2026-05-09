@@ -50,6 +50,13 @@ const SPECIAL_OPERATIONS = new Set([
   'checked',
   // Tuple/record/table constructors with structural meaning
   'record', 'table', 'tuple', 'vector', 'preset', 'fixed',
+  // Engine-internal: tuple_get(tuple_expr, slot_lit) — projects the
+  // i-th element of a tuple-typed expression. Emitted by the analyzer's
+  // multi-LHS rewriter (`a, b = rand(s, m)` → each name becomes a
+  // tuple_get call) and never appears in user source. Listed here so
+  // the lowerer treats it as a built-in op rather than routing through
+  // the user-defined-function path.
+  'tuple_get',
 ]);
 
 // Built-in functions (with defined argument order — positional calling allowed)

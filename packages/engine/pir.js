@@ -114,9 +114,16 @@ function lowerToModule(parsedBindings) {
   const m = loweredModule({ source: parsedBindings });
   for (const [name, binding] of parsedBindings) {
     if (!binding.node || !binding.node.value) continue;
+    // Multi-LHS bindings (`a, b = rand(...)`) and disintegrate-rewritten
+    // bindings expose an `effectiveValue` AST that's the per-name
+    // projection — the analyzer attaches it during the multi-LHS pass.
+    // Lowering uses effectiveValue when present so each name's IR is
+    // its own projection, not a shared tuple call. Falls back to
+    // node.value for ordinary single-LHS bindings.
+    const sourceAst = binding.effectiveValue || binding.node.value;
     let rhs;
     try {
-      rhs = lower.lowerExpr(binding.node.value);
+      rhs = lower.lowerExpr(sourceAst);
     } catch (err) {
       // Lowering failure (malformed AST) — record a placeholder
       // synthetic literal so downstream passes don't crash. The
@@ -125,9 +132,12 @@ function lowerToModule(parsedBindings) {
     }
     m.bindings.set(name, loweredBinding(name, rhs, {
       originLoc: binding.node.loc,
+      synthetic: !!binding.synthetic,
     }));
-    // Public-by-default: any name not starting with underscore.
-    if (!name.startsWith('_')) m.publicSet.add(name);
+    // Public-by-default: any name not starting with underscore. The
+    // analyzer marks engine-internal multi-LHS shared bindings with
+    // a `%mlhs:` prefix to keep them out of the public set.
+    if (!name.startsWith('_') && !name.startsWith('%')) m.publicSet.add(name);
   }
   return m;
 }
