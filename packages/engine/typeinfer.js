@@ -230,6 +230,12 @@ function createInferenceContext(loweredModule) {
       case 'preset':    return write(inferRecord(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
+      // tuple_get(<tuple-expr>, <slot lit>) — internal IR op emitted by
+      // pir.lowerToModule for multi-LHS bindings (`a, b = rand(...)`).
+      // Result type is the tuple's i-th element. Special-cased because
+      // the result depends on the literal slot value, which the generic
+      // signature table can't express.
+      case 'tuple_get': return write(inferTupleGet(expr, scopes), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
       // kernelof and fn are lowered to functionof by lower.js (per
@@ -372,6 +378,38 @@ function createInferenceContext(loweredModule) {
   function inferTuple(expr, scopes) {
     const args = expr.args || [];
     return T.tuple(args.map(a => inferExpr(a, scopes)));
+  }
+
+  function inferTupleGet(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 2) {
+      return arityError('tuple_get', 2, args.length, expr.loc);
+    }
+    const tupleT = inferExpr(args[0], scopes);
+    if (tupleT && tupleT.kind === 'failed') return T.failed('tuple_get cascade');
+    if (!tupleT || tupleT.kind !== 'tuple') {
+      diagnostics.push({
+        severity: 'error',
+        message: 'tuple_get expects a tuple-typed expression; got ' + T.show(tupleT),
+        loc: args[0].loc || expr.loc,
+      });
+      return T.failed('tuple_get bad arg');
+    }
+    // Slot must be a literal int — the lowering pass always emits one.
+    const slotIR = args[1];
+    if (!slotIR || slotIR.kind !== 'lit' || typeof slotIR.value !== 'number') {
+      return T.failed('tuple_get slot must be a literal index');
+    }
+    const i = slotIR.value | 0;
+    if (i < 0 || i >= tupleT.elems.length) {
+      diagnostics.push({
+        severity: 'error',
+        message: `tuple_get index ${i} out of range for ${T.show(tupleT)}`,
+        loc: expr.loc,
+      });
+      return T.failed('tuple_get out of range');
+    }
+    return tupleT.elems[i];
   }
 
   function inferVector(expr, scopes) {

@@ -410,3 +410,109 @@ test('inferExprInScope: refs to module bindings resolve via b.inferredType', () 
     new Map([[fb.rhs.params[0], T.REAL]]));
   assert.ok(T.equal(t, T.REAL));
 });
+
+// =====================================================================
+// Multi-LHS rewriter + rnginit / rand types (spec §sec:random)
+// =====================================================================
+
+test('multi-LHS rand: each name gets the projected element type', () => {
+  const { bindings, loweredModule, diagnostics } = processSource(`
+    rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
+    rstate = rnginit(rngseed)
+    random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
+  `);
+  // Type errors break the whole spec example, so guard hard.
+  const errors = diagnostics.filter(d => d.severity === 'error');
+  assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
+
+  const rstate = loweredModule.bindings.get('rstate');
+  assert.equal(rstate.inferredType.kind, 'rngstate');
+
+  // First LHS: array of reals (the iid(Normal,10) variate).
+  const rd = loweredModule.bindings.get('random_data');
+  assert.equal(rd.inferredType.kind, 'array',
+    `random_data type: ${T.show(rd.inferredType)}`);
+
+  // Second LHS: rngstate.
+  const rs2 = loweredModule.bindings.get('rstate2');
+  assert.equal(rs2.inferredType.kind, 'rngstate',
+    `rstate2 type: ${T.show(rs2.inferredType)}`);
+
+  // Synthetic shared binding exists and holds the tuple type.
+  let synName = null;
+  for (const k of loweredModule.bindings.keys()) {
+    if (k.startsWith('%mlhs:')) { synName = k; break; }
+  }
+  assert.ok(synName, 'synthetic %mlhs binding inserted');
+  const syn = loweredModule.bindings.get(synName);
+  assert.equal(syn.inferredType.kind, 'tuple');
+  assert.equal(syn.inferredType.elems.length, 2);
+  assert.equal(syn.inferredType.elems[1].kind, 'rngstate');
+
+  // Multi-LHS bindings carry deps on the synthetic, not on the raw
+  // rand call's argument names — phase analysis depends on this.
+  assert.deepEqual(bindings.get('random_data').effectiveDeps, [synName]);
+  assert.deepEqual(bindings.get('rstate2').effectiveDeps, [synName]);
+});
+
+test('multi-LHS rand: chained rand calls keep type+phase consistent', () => {
+  const { bindings, loweredModule, diagnostics } = processSource(`
+    rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
+    rstate = rnginit(rngseed)
+    random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
+    more_random_data, rstate3 = rand(rstate2, iid(Exponential(1), 5))
+  `);
+  const errors = diagnostics.filter(d => d.severity === 'error');
+  assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
+
+  // All bindings fixed-phase per spec: "If their inputs have fixed
+  // phase, their outputs have fixed phase as well."
+  for (const name of ['rstate', 'random_data', 'rstate2', 'more_random_data', 'rstate3']) {
+    assert.equal(bindings.get(name).phase, 'fixed', `${name} should be fixed-phase`);
+  }
+  assert.equal(loweredModule.bindings.get('more_random_data').inferredType.kind, 'array');
+  assert.equal(loweredModule.bindings.get('rstate3').inferredType.kind, 'rngstate');
+});
+
+test('multi-LHS tuple literal: each name gets the element type', () => {
+  const { loweredModule, diagnostics } = processSource(`
+    a, b = (1, 2.5)
+  `);
+  const errors = diagnostics.filter(d => d.severity === 'error');
+  assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
+
+  const a = loweredModule.bindings.get('a');
+  const b = loweredModule.bindings.get('b');
+  // 1 is parsed as a numeric literal — types.js scalar('integer') in
+  // the integer-literal case, scalar('real') in the float case. Both
+  // are scalar kinds; we just check the shape.
+  assert.equal(a.inferredType.kind, 'scalar');
+  assert.equal(b.inferredType.kind, 'scalar');
+});
+
+test('multi-LHS preserves disintegrate semantics (no tuple_get rewrite)', () => {
+  // Smoke test: the disintegrate path must not be replaced by the
+  // multi-LHS tuple_get rewriter — kernel/prior keep their per-name
+  // synthesized RHS instead.
+  const { bindings, diagnostics } = processSource(`
+    obs = elementof(reals)
+    theta = elementof(reals)
+    joint_model = lawof(record(theta = Normal(0, 1), obs = Normal(theta, 1)))
+    forward_kernel, theta_prior = disintegrate("obs", joint_model)
+  `);
+  // No type-system errors involving tuple_get — the multi-LHS
+  // rewriter must NOT touch disintegrate result bindings.
+  const tupleGetErrs = diagnostics.filter(d =>
+    d.severity === 'error' && /tuple_get/.test(d.message));
+  assert.deepEqual(tupleGetErrs, [], 'disintegrate must not be rewritten as tuple_get');
+  // Disintegrate bindings should not carry a tuple_get effectiveValue
+  // (whether the disintegrate plan resolved is independent of this).
+  for (const name of ['forward_kernel', 'theta_prior']) {
+    const b = bindings.get(name);
+    if (!b || !b.effectiveValue) continue;
+    const cv = b.effectiveValue;
+    assert.notEqual(
+      cv.callee && cv.callee.name, 'tuple_get',
+      `${name}: effectiveValue must not be tuple_get`);
+  }
+});

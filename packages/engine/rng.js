@@ -286,6 +286,78 @@ function nextUniform(state) {
   return [u / 0x100000000, s];
 }
 
+// =====================================================================
+// State serialization (per spec §sec:random `rngstate(bytes)`)
+// =====================================================================
+//
+// Serialize a Philox state to a byte vector and back, with a header that
+// lets us reject incompatible states (different RNG algorithm, different
+// engine, …) on deserialization. Layout (24 bytes total):
+//
+//   bytes 0..3   "PX10" magic — Philox-4×32-10 marker
+//   bytes 4..7   key[0]      (uint32, big-endian)
+//   bytes 8..11  key[1]
+//   bytes 12..15 counter[0]
+//   bytes 16..19 counter[1]
+//   bytes 20..23 counter[2]
+//
+// counter[3] is omitted: the cipher only ever increments counter[0..2]
+// in our usage (4×32-bit block per increment of counter[0..3] but we
+// don't span 2⁹⁶ blocks in any realistic run). `block` and `blockIdx`
+// are NOT serialized — round-tripping through bytes resets the cache,
+// which costs at most one cipher call on next read.
+//
+// Engines with a different cipher should use a different magic; loading
+// a state whose magic doesn't match this implementation throws.
+
+const PHILOX_MAGIC = [0x50, 0x58, 0x31, 0x30]; // "PX10"
+
+function bytesFromState(state) {
+  const out = new Array(24);
+  for (let i = 0; i < 4; i++) out[i] = PHILOX_MAGIC[i];
+  writeU32BE(out, 4,  state.key[0]);
+  writeU32BE(out, 8,  state.key[1]);
+  writeU32BE(out, 12, state.counter[0]);
+  writeU32BE(out, 16, state.counter[1]);
+  writeU32BE(out, 20, state.counter[2]);
+  return out;
+}
+
+function stateFromBytes(bytes) {
+  const arr = Array.from(bytes, b => b & 0xff);
+  if (arr.length < 24) {
+    throw new Error(
+      `rng.stateFromBytes: need ≥24 bytes, got ${arr.length}`
+    );
+  }
+  for (let i = 0; i < 4; i++) {
+    if (arr[i] !== PHILOX_MAGIC[i]) {
+      throw new Error(
+        `rng.stateFromBytes: magic mismatch — bytes do not encode a ` +
+        `Philox-4×32-10 state (this engine only accepts its own format)`
+      );
+    }
+  }
+  return {
+    key:      [readU32BE(arr, 4),  readU32BE(arr, 8)],
+    counter:  [readU32BE(arr, 12), readU32BE(arr, 16), readU32BE(arr, 20), 0],
+    block:    null,
+    blockIdx: 4,
+  };
+}
+
+function writeU32BE(out, off, v) {
+  out[off    ] = (v >>> 24) & 0xff;
+  out[off + 1] = (v >>> 16) & 0xff;
+  out[off + 2] = (v >>>  8) & 0xff;
+  out[off + 3] = (v       ) & 0xff;
+}
+
+function readU32BE(arr, off) {
+  return (((arr[off] << 24) | (arr[off + 1] << 16)
+        | (arr[off + 2] << 8) |  arr[off + 3]) >>> 0);
+}
+
 module.exports = {
   // Core cipher
   philox4x32_10,
@@ -296,6 +368,10 @@ module.exports = {
   nextUint32,
   nextUniform,
   incrementCounter,
+
+  // Serialization (per spec §sec:random)
+  bytesFromState,
+  stateFromBytes,
 
   // Internal — exported for tests; not part of the public surface.
   _internal: { mulhilo32, philox4x32Round, PHILOX_M_4x32_0, PHILOX_M_4x32_1 },

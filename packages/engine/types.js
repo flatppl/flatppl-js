@@ -569,6 +569,13 @@ const SIGNATURE_FACTORIES = {
   // not a typed expression).
   elementof: () => ({ args: [any()], kwargs: {}, result: any(), special: 'elementof' }),
 
+  // tuple_get(tuple_expr, slot_lit) — engine-internal projection emitted
+  // by the analyzer's multi-LHS rewriter. Result type depends on the
+  // literal slot value, so the static result is `any()` here and the
+  // real work is in typeinfer.inferTupleGet (which reads the slot
+  // literal and projects the tuple's element type).
+  tuple_get: () => ({ args: [any(), INTEGER], kwargs: {}, result: any(), special: 'tuple_get' }),
+
   // ---- Composition (variadic) --------------------------------------
   // joint takes a kwargs-record of measures and produces a measure of
   // records; iid takes a measure and a count and produces a measure of

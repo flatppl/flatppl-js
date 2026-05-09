@@ -1,6 +1,7 @@
 'use strict';
 
 const { isKnownName, MEASURE_PRODUCING } = require('./builtins');
+const AST = require('./ast');
 // Lazy require to avoid a circular load (disintegrate requires analyzer).
 let _disintegratePlan = null;
 function disintegratePlan(...args) {
@@ -1189,6 +1190,89 @@ function analyze(ast, source) {
       // binding's type — fall back to plain dep trace.
       if (kernel) kernel.disintegratePlan = plan;
       if (prior)  prior.disintegratePlan  = plan;
+    }
+  }
+
+  // Multi-LHS pass: rewrite `a, b, ... = <call returning tuple>` so each
+  // named binding's effective RHS is `tuple_get(<shared-call>, <slot>)`,
+  // backed by one synthetic shared binding that holds the original
+  // call. Per spec §sec:random's `rand(rstate, m)` returns a tuple
+  // `(value, new_rstate)`; this generalises to any tuple-returning
+  // RHS so multi-LHS is a uniform feature.
+  //
+  // We skip groups already claimed by the disintegrate pass (those
+  // bindings carry a `disintegrateRole` and a per-name effectiveValue
+  // synthesised from the disintegration plan — overwriting that would
+  // lose the kernelof / lawof structure that downstream rendering and
+  // sampling depend on). All other multi-LHS groups go through this
+  // rewrite; the resulting tuple_get IR is recognised as evaluable by
+  // sampler.evaluateExpr and the orchestrator's chain classifier.
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement') continue;
+    if (!stmt.names || stmt.names.length < 2) continue;
+    const groupBindings = stmt.names.map(n => bindings.get(n.name)).filter(Boolean);
+    if (groupBindings.length === 0) continue;
+    // Skip disintegrate. The disintegrate pass owns those LHS names —
+    // for resolved plans it attaches per-name effectiveValue (kernel /
+    // prior); for unsupported plans they fall back to plain dep-trace
+    // through the disintegrate call. Either way, rewriting them as
+    // tuple_get over the disintegrate call would lose that semantics
+    // (and tuple_get over a non-tuple-typed call type-errors anyway).
+    const rhs = stmt.value;
+    const isDisintegrate = rhs && rhs.type === 'CallExpr'
+      && rhs.callee && rhs.callee.type === 'Identifier'
+      && rhs.callee.name === 'disintegrate';
+    if (isDisintegrate) continue;
+
+    const sloc = stmt.loc && stmt.loc.start
+      ? `${stmt.loc.start.line + 1}:${stmt.loc.start.col + 1}`
+      : 'anon';
+    const synName = `%mlhs:${sloc}`;
+    const synLoc = AST.synthLoc('multi-LHS');
+
+    // Insert the synthetic shared binding holding the original RHS.
+    // It needs to look enough like a regular analyzer binding that
+    // phase computation, lowering, and the orchestrator pick it up.
+    // Type is read from the original RHS via classifyStatement so
+    // e.g. a `rand(...)` call still classifies as 'call'.
+    const synStmtType = classifyStatement(stmt.value);
+    const synStmt = {
+      type:  'AssignStatement',
+      names: [AST.Identifier(synName, synLoc)],
+      value: stmt.value,
+      loc:   stmt.loc,
+    };
+    const synDeps = collectDeps(stmt.value, definedNames);
+    const synBinding = {
+      name:     synName,
+      names:    [synName],
+      line:     stmt.loc.start.line,
+      type:     synStmtType,
+      deps:     [...synDeps.deps],
+      callDeps: [...synDeps.callDeps],
+      node:     synStmt,
+      nameLoc:  synLoc,
+      synthetic: true,
+    };
+    bindings.set(synName, synBinding);
+    definedNames.add(synName);
+
+    // For each named LHS, replace its effectiveValue with a tuple_get
+    // call referring to the synthetic. attachEffectiveRhs recomputes
+    // deps so the named binding now depends only on the synthetic.
+    for (let i = 0; i < stmt.names.length; i++) {
+      const nameNode = stmt.names[i];
+      const b = bindings.get(nameNode.name);
+      if (!b) continue;
+      const tupleGetCall = AST.CallExpr(
+        AST.Identifier('tuple_get', synLoc),
+        [
+          AST.Identifier(synName, synLoc),
+          AST.NumberLiteral(i, String(i), synLoc),
+        ],
+        synLoc,
+      );
+      attachEffectiveRhs(b, tupleGetCall, definedNames);
     }
   }
 

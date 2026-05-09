@@ -459,3 +459,155 @@ test('makeParametricSampler: factory built once across many draws', () => {
   const elapsed = Date.now() - t0;
   assert.ok(elapsed < 2000, `parametric path too slow: ${elapsed}ms for ${N} draws`);
 });
+
+// =====================================================================
+// FlatPPL primitives: rnginit, rand, rngstate, tuple_get
+// =====================================================================
+//
+// Covers spec §sec:random end-to-end via sampler.evaluateExpr — the
+// entry point the orchestrator and worker dispatch to. tuple_get is the
+// internal IR op emitted by the analyzer's multi-LHS rewriter; rnginit
+// builds an opaque rngstate from a byte seed; rand threads state
+// through measure draws via traceeval.
+
+function lit(v)   { return { kind: 'lit', value: v, loc: synthLoc() }; }
+function call(op, args, kwargs) {
+  const out = { kind: 'call', op, loc: synthLoc() };
+  if (args && args.length)             out.args   = args;
+  if (kwargs && Object.keys(kwargs).length) out.kwargs = kwargs;
+  return out;
+}
+
+test('rnginit: produces a Philox state from a byte seed', () => {
+  const ir = call('rnginit', [call('vector', [lit(0xb2), lit(0x51), lit(0xa4), lit(0x93)])]);
+  const state = sampler.evaluateExpr(ir, {});
+  assert.ok(state && Array.isArray(state.key) && state.key.length === 2,
+    'rnginit returns a Philox state object');
+  assert.ok(Array.isArray(state.counter) && state.counter.length === 4);
+});
+
+test('rnginit: rejects non-byte vectors', () => {
+  // 256 is out of byte range.
+  const ir = call('rnginit', [call('vector', [lit(0), lit(256)])]);
+  assert.throws(() => sampler.evaluateExpr(ir, {}), /byte vector/);
+});
+
+test('rngstate <-> bytes round-trip (rng.bytesFromState ∘ rng.stateFromBytes)', () => {
+  const original = rng.seedFromBytes([1, 2, 3, 4]);
+  const bytes = rng.bytesFromState(original);
+  const restored = rng.stateFromBytes(bytes);
+  assert.deepEqual(restored.key, original.key);
+  assert.deepEqual(restored.counter, original.counter);
+});
+
+test('rngstate: rejects bytes lacking the engine magic', () => {
+  // 24 zero bytes: magic mismatch.
+  const bad = new Array(24).fill(0);
+  assert.throws(() => rng.stateFromBytes(bad), /magic mismatch/);
+});
+
+test('rand on Normal: returns (value, new_state) tuple, threads state', () => {
+  const init = sampler.evaluateExpr(
+    call('rnginit', [call('vector', [lit(7), lit(0), lit(0), lit(0)])]),
+    {});
+  const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
+  const tuple = sampler.evaluateExpr(
+    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, measureIR]),
+    { rs: init });
+  assert.ok(Array.isArray(tuple) && tuple.length === 2);
+  const [value, newState] = tuple;
+  assert.equal(typeof value, 'number');
+  assert.ok(newState && newState.key, 'second slot is a state');
+  assert.notDeepEqual(newState.counter, init.counter, 'state advanced');
+});
+
+test('rand on iid(Normal, n): returns array of n + new state', () => {
+  const init = rng.seedFromBytes([42]);
+  const iidIR = call('iid', [
+    call('Normal', [], { mu: lit(0), sigma: lit(1) }),
+    lit(10),
+  ]);
+  const tuple = sampler.evaluateExpr(
+    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, iidIR]),
+    { rs: init });
+  const [arr, newState] = tuple;
+  assert.ok(Array.isArray(arr) && arr.length === 10);
+  for (const v of arr) assert.equal(typeof v, 'number');
+  assert.ok(newState && newState.key);
+});
+
+test('rand: chained calls thread state through (deterministic)', () => {
+  // (random_data, rstate2) = rand(rstate, iid(Normal,5))
+  // (more,        rstate3) = rand(rstate2, iid(Exponential,3))
+  // Compute twice with same seed; results identical.
+  function run() {
+    const rs1 = sampler.evaluateExpr(
+      call('rnginit', [call('vector', [lit(0xb2), lit(0x51), lit(0xa4), lit(0x93)])]),
+      {});
+    const t1 = sampler.evaluateExpr(
+      call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() },
+                    call('iid', [call('Normal', [], { mu: lit(0), sigma: lit(1) }), lit(5)])]),
+      { rs: rs1 });
+    const t2 = sampler.evaluateExpr(
+      call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() },
+                    call('iid', [call('Exponential', [], { rate: lit(1) }), lit(3)])]),
+      { rs: t1[1] });
+    return [t1[0], t2[0]];
+  }
+  const a = run();
+  const b = run();
+  assert.deepEqual(a, b, 'same seed → same outputs across runs');
+});
+
+test('rand on joint(record): returns record + new state', () => {
+  const init = rng.seedFromBytes([5]);
+  const jointIR = {
+    kind: 'call', op: 'joint',
+    fields: [
+      { name: 'x', value: call('Normal',      [], { mu: lit(0), sigma: lit(1) }) },
+      { name: 'y', value: call('Exponential', [], { rate: lit(1) }) },
+    ],
+    loc: synthLoc(),
+  };
+  const tuple = sampler.evaluateExpr(
+    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, jointIR]),
+    { rs: init });
+  const [rec, newState] = tuple;
+  assert.equal(typeof rec, 'object');
+  assert.equal(typeof rec.x, 'number');
+  assert.equal(typeof rec.y, 'number');
+  assert.ok(newState && newState.key);
+});
+
+test('rand: refuses a non-state first arg with a clear error', () => {
+  const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
+  assert.throws(
+    () => sampler.evaluateExpr(call('rand', [lit(42), measureIR]), {}),
+    /must be an rngstate/);
+});
+
+test('tuple_get: projects an evaluated tuple by literal slot', () => {
+  // tuple_get over an inline tuple call.
+  const ir = call('tuple_get', [
+    call('tuple', [lit(10), lit(20), lit(30)]),
+    lit(1),
+  ]);
+  assert.equal(sampler.evaluateExpr(ir, {}), 20);
+});
+
+test('tuple_get: applied to a rand result extracts the value slot', () => {
+  const init = rng.seedFromBytes([99]);
+  const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
+  const randCall = call('rand', [
+    { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, measureIR]);
+  const valueSlot = call('tuple_get', [randCall, lit(0)]);
+  const stateSlot = call('tuple_get', [randCall, lit(1)]);
+  const env = { rs: init };
+  // Independent calls to rand both start from `rs` so the sample
+  // values match — same seed, same draw — and the trailing state
+  // matches too.
+  const v = sampler.evaluateExpr(valueSlot, env);
+  const s = sampler.evaluateExpr(stateSlot, env);
+  assert.equal(typeof v, 'number');
+  assert.ok(s && s.key);
+});

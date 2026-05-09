@@ -663,6 +663,65 @@ function evaluateCall(ir, env) {
     const args = (ir.args || []).map(a => evaluateExpr(a, env));
     return ARITH_OPS[op](...args);
   }
+  // tuple_get(<tuple-expr>, <slot lit>) — engine-internal projection
+  // emitted by the analyzer's multi-LHS rewriter. Evaluates the tuple
+  // child to a JS array and indexes by the literal slot. The slot is
+  // always a numeric literal at IR-construction time.
+  if (op === 'tuple_get') {
+    const args = ir.args || [];
+    if (args.length !== 2) {
+      throw new Error(`evaluateExpr: tuple_get expects 2 args, got ${args.length}`);
+    }
+    const t = evaluateExpr(args[0], env);
+    const i = evaluateExpr(args[1], env) | 0;
+    if (!Array.isArray(t)) {
+      throw new Error(`evaluateExpr: tuple_get target is not an array (got ${typeof t})`);
+    }
+    return t[i];
+  }
+  // tuple(...) — JS array of evaluated args. Used for surface
+  // `(a, b, ...)` literals and as an intermediate value when downstream
+  // code projects via tuple_get.
+  if (op === 'tuple') {
+    return (ir.args || []).map(a => evaluateExpr(a, env));
+  }
+  // rnginit(<bytes>) — produces a fresh Philox state from a byte vector
+  // via FNV-1a-based key derivation (rng.seedFromBytes).
+  if (op === 'rnginit') {
+    const args = ir.args || [];
+    if (args.length !== 1) {
+      throw new Error(`evaluateExpr: rnginit expects 1 arg, got ${args.length}`);
+    }
+    const seed = evaluateExpr(args[0], env);
+    if (!isByteVector(seed)) {
+      throw new Error(`evaluateExpr: rnginit seed must be a byte vector (array of integers in 0..255)`);
+    }
+    return rng.seedFromBytes(seed);
+  }
+  // rngstate(<bytes>) — round-trip an externally-serialized state.
+  // Round-trip semantics: rngstate(bytesFromState(s)) ≡ s.
+  if (op === 'rngstate') {
+    const args = ir.args || [];
+    if (args.length !== 1) {
+      throw new Error(`evaluateExpr: rngstate expects 1 arg, got ${args.length}`);
+    }
+    const bytes = evaluateExpr(args[0], env);
+    if (!isByteVector(bytes)) {
+      throw new Error(`evaluateExpr: rngstate bytes must be a byte vector (array of integers in 0..255)`);
+    }
+    return rng.stateFromBytes(bytes);
+  }
+  // rand(<state>, <measure-IR>) — generate a sample from a closed
+  // measure with explicit state threading. Per spec §sec:random rand
+  // returns a tuple (value, new_state). The measure arg is NOT
+  // evaluated as a value — it's passed verbatim to traceeval.walk
+  // which handles iid / joint / record / leaf-distribution recursion
+  // and threads the rng state. Refused for measures rand can't sample
+  // (weighted, logweighted, bayesupdate, multivariate truncation) by
+  // traceeval's dispatch — those throw with a clear message.
+  if (op === 'rand') {
+    return evaluateRand(ir, env);
+  }
   // Calls to other built-ins, user-defined functions, etc. aren't expected
   // inside distribution parameters in the visualizer's scope. The
   // orchestrator should pre-evaluate those and supply concrete numbers
@@ -671,6 +730,50 @@ function evaluateCall(ir, env) {
     `evaluateExpr: call op '${op}' not evaluable in sampler context — ` +
     `the orchestrator should pre-resolve this`
   );
+}
+
+// Predicate guarding rnginit / rngstate: argument must be an iterable of
+// integers in [0, 255]. Float64Arrays whose entries happen to be small
+// integers are also accepted.
+function isByteVector(x) {
+  if (!x || typeof x !== 'object' || typeof x.length !== 'number') return false;
+  for (let i = 0; i < x.length; i++) {
+    const v = x[i];
+    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
+    if (v < 0 || v > 255 || Math.floor(v) !== v) return false;
+  }
+  return true;
+}
+
+// Local require to break the cyclic dependency (traceeval.js requires
+// sampler.js for the leaf-distribution machinery; we lazy-import here so
+// the back-reference doesn't blow up module loading).
+let _traceeval = null;
+function getTraceeval() {
+  if (!_traceeval) _traceeval = require('./traceeval');
+  return _traceeval;
+}
+
+function evaluateRand(ir, env) {
+  const args = ir.args || [];
+  if (args.length !== 2) {
+    throw new Error(`evaluateExpr: rand expects 2 args (state, measure), got ${args.length}`);
+  }
+  const state = evaluateExpr(args[0], env);
+  if (!state || typeof state !== 'object' || !state.key || !state.counter) {
+    throw new Error(`evaluateExpr: rand's first arg must be an rngstate (got ${typeof state})`);
+  }
+  // resolveMeasureRef: when the measure arg is a self-ref to another
+  // binding (e.g. `m_alias`), traceeval needs an IR for that binding.
+  // The orchestrator supplies a closure when calling us; the bare-
+  // sampler path resolves only literal measure calls inline. If a ref
+  // shows up without resolveMeasureRef, traceeval throws a clear error.
+  const opts = { tally: 'none' };
+  if (env && typeof env.__resolveMeasureRef === 'function') {
+    opts.resolveMeasureRef = env.__resolveMeasureRef;
+  }
+  const r = getTraceeval().walk(state, args[1], env, undefined, opts);
+  return [r.value, r.state];
 }
 
 function lookupDistribution(measureIR) {
