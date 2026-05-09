@@ -4243,12 +4243,32 @@
             fixedEnv[nonSweptBindingSources[k].paramName] = sm.samples[0];
           }
         }
+        // Integer-typed sweep axis (e.g. a count parameter, a
+        // Bernoulli k, a Poisson observation): only integer x values
+        // are mathematically meaningful. Snap the range to integer
+        // bounds and pick a sweep count so profileN's evenly-spaced
+        // grid x_i = lo + (hi−lo)·i/(n−1) lands on integers exactly
+        // (n = hi−lo+1 with integer lo, hi). Cap at POINT_COUNT for
+        // very wide ranges; renderProfileLine then draws a step
+        // plot rather than smoothing between integer values.
+        var pointCount = POINT_COUNT;
+        var isIntegerAxis = sweepAxis.leafType
+          && sweepAxis.leafType.kind === 'scalar'
+          && sweepAxis.leafType.prim === 'integer';
+        if (isIntegerAxis) {
+          var ilo = Math.ceil(rangeRef[0][0]);
+          var ihi = Math.floor(rangeRef[0][1]);
+          if (ihi >= ilo) {
+            rangeRef[0] = [ilo, ihi];
+            pointCount = Math.min(ihi - ilo + 1, POINT_COUNT);
+          }
+        }
         return sendWorker({
           type: 'profileN',
           ir: ir,
           sweepName: sweepParamName,
           range: rangeRef[0],
-          count: POINT_COUNT,
+          count: pointCount,
           mode: mode,
           fixedEnv: fixedEnv,
           observed: sig.obsValue == null ? undefined : sig.obsValue,
@@ -4392,6 +4412,15 @@
       var color = colorForBinding(currentPlotBindingName);
       var n = values.length;
       var lo = range[0], hi = range[1];
+      // Integer-typed sweep axis: only integer x values are
+      // mathematically meaningful, so render as a step plot
+      // (piecewise-constant between adjacent integers) plus a dot at
+      // each evaluated point. Echarts' step:'middle' on a line series
+      // gives the right shape — the value at integer k extends to
+      // (k − 0.5, k + 0.5).
+      var isIntegerAxis = sweepAxis.leafType
+        && sweepAxis.leafType.kind === 'scalar'
+        && sweepAxis.leafType.prim === 'integer';
       // For log-density / log-likelihood, find the maximum finite
       // value across the sweep and clamp the y-axis to
       // [yMax − cutoff, yMax]. Below that we show no-man's-land —
@@ -4486,8 +4515,16 @@
             }, yClipMin != null ? { min: yClipMin, max: yClipMax } : {}),
             series: [{
               name: legendLabel,
-              type: 'line', data: data, symbol: 'none',
+              type: 'line', data: data,
+              // Integer-axis profile: piecewise-constant 'middle' step
+              // (value at integer k extends to k±0.5) with dots at
+              // each evaluated point so the discrete grid is visible.
+              // Continuous axis: smooth line, no markers.
+              step: isIntegerAxis ? 'middle' : false,
+              symbol: isIntegerAxis ? 'circle' : 'none',
+              symbolSize: 5,
               lineStyle: { color: color, width: 2 },
+              itemStyle: isIntegerAxis ? { color: color } : undefined,
               connectNulls: false,
             }],
           });
