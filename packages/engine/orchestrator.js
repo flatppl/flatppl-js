@@ -2782,6 +2782,100 @@ function formatAxisLabel(kwargName, path) {
 }
 
 /**
+ * Enumerate the scalar leaves of an output type. Mirrors
+ * distributeAxes but for the OUTPUT side of a callable: each
+ * leaf is a scalar component the viewer's profile plot can
+ * select as its evaluated y-value.
+ *
+ * For a scalar output type returns a single entry with empty path;
+ * the caller reads it as "there's only one output, no Output:
+ * dropdown needed".
+ *
+ *   record { a: real, b: integer }   → [{path:['a'], label:'a',  leafType:real},
+ *                                       {path:['b'], label:'b',  leafType:integer}]
+ *   tuple (real, real)               → [{path:[1],  label:'[1]', leafType:real},
+ *                                       {path:[2],  label:'[2]', leafType:real}]
+ *   array<real, [3]>                  → [{path:[{idx:[1]}], label:'[1]', …}, …]
+ *   real                              → [{path:[], label:'', leafType:real}]
+ *
+ * Path segments use the same shape as distributeAxes' input paths
+ * — string field name, integer (1-indexed) tuple/array slot, or
+ * `{idx:[…]}` for multi-dim array indices. extractOutputIR
+ * consumes the same path shape to pull the matching sub-IR out
+ * of the body.
+ */
+function enumerateOutputLeaves(outputType) {
+  if (!outputType) return [];
+  const out = [];
+  walkType(outputType, [], (path, leafType) => {
+    out.push({
+      key: formatAxisLabel('', path) || '<scalar>',
+      label: formatAxisLabel('', path),
+      path: path.slice(),
+      leafType,
+    });
+  });
+  return out;
+}
+
+/**
+ * Extract the sub-IR of a body expression at the given output
+ * path. Reverses the path navigation enumerateOutputLeaves built:
+ * record path segments (field names) descend through `body.fields`,
+ * tuple / array integer indices descend through `body.args`,
+ * array `{idx:[…]}` segments traverse `body.args` flattened in
+ * row-major order.
+ *
+ *   body = record(a = X, b = Y)        → path ['a']  →  X
+ *   body = (call tuple X Y)             → path [1]    →  X
+ *   body = (call vector X Y Z)          → path [2]    →  Y  (1-indexed)
+ *
+ * Returns the original body when path is empty (scalar output).
+ * Returns null if the path can't be resolved (e.g. body shape
+ * doesn't match the type's shape — should never happen on a
+ * type-checked module, but defensive).
+ */
+function extractOutputIR(bodyIR, path) {
+  if (!path || path.length === 0) return bodyIR || null;
+  let cur = bodyIR;
+  for (const seg of path) {
+    if (!cur) return null;
+    if (typeof seg === 'string') {
+      // Record field. body.fields = [{name, value}, …]
+      if (!Array.isArray(cur.fields)) return null;
+      const f = cur.fields.find(x => x && x.name === seg);
+      if (!f) return null;
+      cur = f.value;
+      continue;
+    }
+    if (typeof seg === 'number') {
+      // Tuple / 1-D array slot, 1-indexed.
+      if (!Array.isArray(cur.args)) return null;
+      cur = cur.args[seg - 1];
+      continue;
+    }
+    if (seg && Array.isArray(seg.idx)) {
+      // Multi-dim array. Flatten the index in row-major order
+      // matching walkArraySlots' (FlatPPL 1-indexed) traversal.
+      // Without the array's static shape here we can't fully
+      // generalise, but the common case is a single positional
+      // index into a 1-D vector body.
+      if (!Array.isArray(cur.args)) return null;
+      if (seg.idx.length === 1) {
+        cur = cur.args[seg.idx[0] - 1];
+        continue;
+      }
+      // For multi-dim arrays we'd need the shape from the type to
+      // do the same row-major flatten as walkArraySlots; defer
+      // until a concrete model exercises this.
+      return null;
+    }
+    return null;
+  }
+  return cur || null;
+}
+
+/**
  * Resolve the value-set of a paramSources entry to a structural
  * descriptor the profile-plot UI can use to pick an axis range.
  *
@@ -3017,6 +3111,8 @@ module.exports = {
   expandMeasureRefsInIR,
   signatureOf,
   distributeAxes,
+  enumerateOutputLeaves,
+  extractOutputIR,
   inlineForProfile,
   substituteLocals,
   resolveAxisBaseSet,

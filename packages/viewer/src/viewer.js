@@ -1735,6 +1735,35 @@
         if (axes.length === 0) return null;
         var presets = FlatPPLEngine.orchestrator.findMatchingPresets(
           sig, derivationsState.bindings);
+        // On-demand specialize the output type at this synthetic call
+        // site: scope = {paramName → input type}. typeinfer's
+        // inferExprInScope handles polymorphic bodies — module-level
+        // inference saw inputs as `any`, but here we have concrete
+        // types from sig.inputs[i].type (which signatureOf already
+        // resolved through paramSources). For multi-output bodies
+        // (record/tuple/array of scalars), enumerateOutputLeaves
+        // gives one entry per scalar leaf the user can pick from.
+        var outputs = [];
+        try {
+          var paramTypes = new Map();
+          for (var ii = 0; ii < sig.inputs.length; ii++) {
+            paramTypes.set(sig.inputs[ii].paramName,
+                           sig.inputs[ii].type || { kind: 'any' });
+          }
+          var specOutType = sig.body && currentLoweredModule
+            ? FlatPPLEngine.typeinfer.inferExprInScope(
+                currentLoweredModule, sig.body, paramTypes)
+            : (sig.output && sig.output.type) || null;
+          outputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(specOutType);
+        } catch (_) {
+          // Fall back to module-level type if specialization fails.
+          outputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(
+            sig.output && sig.output.type);
+        }
+        // Default to the first leaf — single entry with empty path
+        // for scalar outputs, so the existing pipeline works
+        // unchanged.
+        var outputKey = outputs.length > 0 ? outputs[0].key : null;
         // Kernels (sig.kind === 'kernel') don't get a swept-axis
         // profile plot — there's nothing to "sweep" without an
         // observation. Instead we treat them like other measure
@@ -1759,6 +1788,8 @@
           sweepKey: axes[0].key,         // default: sweep first axis
           matchedPresets: presets,       // [{name, values}, ...]
           presetName: null,              // null = "auto" (default)
+          outputs: outputs,              // [{key, label, path, leafType}, ...]
+          outputKey: outputKey,          // null when scalar output (only one leaf)
         };
       }
 
@@ -4176,6 +4207,23 @@
       // helper bayesupdate uses). Functions evaluate the body
       // verbatim through evaluateExpr.
       var ir = sig.body;
+      // Multi-output: extract the sub-IR for the currently-selected
+      // output leaf. For scalar outputs (single leaf, empty path)
+      // this is a no-op pass-through.
+      if (plan.outputs && plan.outputs.length > 1 && plan.outputKey) {
+        var selectedOut = null;
+        for (var oj = 0; oj < plan.outputs.length; oj++) {
+          if (plan.outputs[oj].key === plan.outputKey) {
+            selectedOut = plan.outputs[oj];
+            break;
+          }
+        }
+        if (selectedOut) {
+          var extracted = FlatPPLEngine.orchestrator.extractOutputIR(
+            ir, selectedOut.path);
+          if (extracted) ir = extracted;
+        }
+      }
       if (mode === 'logdensity') {
         ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
           ir, derivationsState.derivations);
@@ -4297,6 +4345,38 @@
                       || plan.signature.kind === 'likelihood';
       var hasAxes = plan.axes && plan.axes.length > 1;
       var hasPresets = plan.matchedPresets && plan.matchedPresets.length > 0;
+      var hasMultiOutput = plan.outputs && plan.outputs.length > 1;
+      // Output selector — appears for callables whose specialized
+      // output is multi-leaf (record / tuple / array). Single-leaf
+      // outputs (scalar functions) skip this control. Picking a
+      // leaf rewrites the IR sent to profileN to the matching
+      // sub-expression of the body, so the sweep evaluates that
+      // specific scalar component along the chosen input axis.
+      if (hasMultiOutput) {
+        var outLabel = document.createElement('label');
+        outLabel.textContent = 'Output:';
+        outLabel.style.opacity = '0.6';
+        outLabel.style.marginRight = '0.25em';
+        var outSelect = document.createElement('select');
+        outSelect.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+        outSelect.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+        outSelect.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+        outSelect.style.padding = '2px 4px';
+        outSelect.style.fontSize = '1em';
+        for (var oi = 0; oi < plan.outputs.length; oi++) {
+          var oOpt = document.createElement('option');
+          oOpt.value = plan.outputs[oi].key;
+          oOpt.textContent = plan.outputs[oi].label || '<scalar>';
+          if (plan.outputs[oi].key === plan.outputKey) oOpt.selected = true;
+          outSelect.appendChild(oOpt);
+        }
+        outSelect.addEventListener('change', function(e) {
+          plan.outputKey = e.target.value;
+          renderProfilePlotForCurrent();
+        });
+        frag.appendChild(outLabel);
+        frag.appendChild(outSelect);
+      }
       if (hasAxes) {
         var label = document.createElement('label');
         label.textContent = 'Axis:';
@@ -5205,6 +5285,10 @@
     // ---------------------------------------------------------------
     var currentSource = null;
     var currentBindings = null;
+    // The lowered module forwarded by processSource — used by
+    // typeinfer.inferExprInScope for on-demand call-site
+    // specialization (multi-output Output: selector, etc.).
+    var currentLoweredModule = null;
 
     /**
      * Re-render the DAG focused on targetName using the cached bindings.
@@ -5315,6 +5399,7 @@
         try {
           var result = FlatPPLEngine.processSource(msg.source);
           currentBindings = result.bindings;
+          currentLoweredModule = result.loweredModule;
           // Source change → rebuild derivations and clear sample cache.
           // The orchestrator's derivations key the cache, so any change
           // (renamed bindings, edited dist params, new dependencies)

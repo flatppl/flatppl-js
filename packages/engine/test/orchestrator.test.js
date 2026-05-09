@@ -1421,3 +1421,101 @@ real = draw(Normal(mu = 0, sigma = 1))
   assert.equal(phases.get('y4'), 'fixed', 'draw(inline Dirac) → fixed');
   assert.equal(phases.get('real'), 'stochastic', 'real Normal draw stays stochastic');
 });
+
+// =====================================================================
+// enumerateOutputLeaves + extractOutputIR
+// =====================================================================
+//
+// Output-side counterpart to distributeAxes / collectSelfRefs:
+// walks a callable's specialized output type to enumerate its
+// scalar leaves, then extracts the corresponding sub-IR from the
+// body for any chosen leaf. Used by the viewer to expose an
+// "Output:" dropdown for multi-output functions and route the
+// profile-plot evaluation to the chosen scalar leaf.
+
+const T = require('../types');
+const {
+  enumerateOutputLeaves, extractOutputIR,
+} = require('../orchestrator');
+
+test('enumerateOutputLeaves: scalar output → single empty-path entry', () => {
+  const leaves = enumerateOutputLeaves(T.REAL);
+  assert.equal(leaves.length, 1);
+  assert.deepEqual(leaves[0].path, []);
+  assert.equal(leaves[0].label, '');
+  assert.ok(T.equal(leaves[0].leafType, T.REAL));
+});
+
+test('enumerateOutputLeaves: record output → one entry per field', () => {
+  const t = { kind: 'record', fields: { a: T.REAL, b: T.INTEGER } };
+  const leaves = enumerateOutputLeaves(t);
+  assert.equal(leaves.length, 2);
+  const byPath = {};
+  for (const L of leaves) byPath[L.path.join('.')] = L;
+  assert.ok(byPath['a'] && T.equal(byPath['a'].leafType, T.REAL));
+  assert.ok(byPath['b'] && T.equal(byPath['b'].leafType, T.INTEGER));
+  assert.equal(byPath['a'].label, '.a');
+  assert.equal(byPath['b'].label, '.b');
+});
+
+test('enumerateOutputLeaves: tuple output → 1-indexed positional leaves', () => {
+  const t = { kind: 'tuple', elems: [T.REAL, T.INTEGER] };
+  const leaves = enumerateOutputLeaves(t);
+  assert.equal(leaves.length, 2);
+  assert.deepEqual(leaves[0].path, [1]);
+  assert.equal(leaves[0].label, '[1]');
+  assert.deepEqual(leaves[1].path, [2]);
+  assert.equal(leaves[1].label, '[2]');
+});
+
+test('enumerateOutputLeaves: nested record-in-record', () => {
+  const t = { kind: 'record', fields: {
+    inner: { kind: 'record', fields: { x: T.REAL, y: T.REAL } },
+    flag:  T.BOOLEAN,
+  }};
+  const leaves = enumerateOutputLeaves(t);
+  // inner.x, inner.y, flag — three scalar leaves total.
+  assert.equal(leaves.length, 3);
+  const labels = leaves.map(L => L.label).sort();
+  assert.deepEqual(labels, ['.flag', '.inner.x', '.inner.y']);
+});
+
+test('extractOutputIR: scalar output → returns body unchanged', () => {
+  const body = { kind: 'call', op: 'mul', args: [{ kind: 'lit', value: 2 }] };
+  assert.deepEqual(extractOutputIR(body, []), body);
+});
+
+test('extractOutputIR: record body, field path → field value IR', () => {
+  const body = {
+    kind: 'call', op: 'record',
+    fields: [
+      { name: 'a', value: { kind: 'lit', value: 1 } },
+      { name: 'b', value: { kind: 'lit', value: 2 } },
+    ],
+  };
+  const a = extractOutputIR(body, ['a']);
+  assert.equal(a && a.value, 1);
+  const b = extractOutputIR(body, ['b']);
+  assert.equal(b && b.value, 2);
+});
+
+test('extractOutputIR: tuple body, 1-indexed slot → arg IR', () => {
+  const body = {
+    kind: 'call', op: 'tuple',
+    args: [
+      { kind: 'lit', value: 'first' },
+      { kind: 'lit', value: 'second' },
+    ],
+  };
+  assert.equal(extractOutputIR(body, [1]).value, 'first');
+  assert.equal(extractOutputIR(body, [2]).value, 'second');
+});
+
+test('extractOutputIR: missing field / out-of-range slot → null', () => {
+  const body = { kind: 'call', op: 'record', fields: [
+    { name: 'a', value: { kind: 'lit', value: 1 } },
+  ]};
+  assert.equal(extractOutputIR(body, ['nonexistent']), null);
+  // Not a record/tuple/array op — path with segment unresolvable.
+  assert.equal(extractOutputIR({ kind: 'lit', value: 42 }, ['x']), null);
+});
