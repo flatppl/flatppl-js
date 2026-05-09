@@ -4773,6 +4773,34 @@
 
     initCy();
 
+    // Resize every echart instance inside #plot-content whenever the
+    // plot pane changes size. Multi-chart layouts (corner plot,
+    // density strips) hold many echart instances we don't track in
+    // a single global; a ResizeObserver on plot-content lets us
+    // resize them uniformly without needing each renderer to wire
+    // up its own listener. Falls back to window.resize where
+    // ResizeObserver isn't available (older webview hosts).
+    function resizeAllEchartsInPlot() {
+      var root = document.getElementById('plot-content');
+      if (!root) return;
+      var nodes = root.querySelectorAll('div');
+      for (var i = 0; i < nodes.length; i++) {
+        var inst = echarts.getInstanceByDom(nodes[i]);
+        if (inst) try { inst.resize(); } catch (_) {}
+      }
+      // The root itself may host a single chart (samples / array /
+      // profile single-line modes) — resize that too.
+      var rootInst = echarts.getInstanceByDom(root);
+      if (rootInst) try { rootInst.resize(); } catch (_) {}
+    }
+    if (typeof ResizeObserver === 'function') {
+      var plotResizeObserver = new ResizeObserver(resizeAllEchartsInPlot);
+      var plotRoot = document.getElementById('plot-content');
+      if (plotRoot) plotResizeObserver.observe(plotRoot);
+    } else {
+      window.addEventListener('resize', resizeAllEchartsInPlot);
+    }
+
     // Restore Plot toggle state from the host's persistent state so the
     // user's preference survives panel close/reopen and reloads. Default
     // is OFF for first-time use — the plot panel is opt-in to keep the
