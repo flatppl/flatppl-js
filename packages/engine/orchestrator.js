@@ -1652,6 +1652,166 @@ function buildDerivations(bindings) {
     }
   }
 
+  // Fixed-phase pre-evaluation. Walk fixed-phase bindings in topo
+  // order and try to compute each one's value end-to-end via the
+  // sampler's evaluator (which now handles rnginit / rand / rngstate
+  // / tuple_get on top of the existing arithmetic). Two outputs:
+  //
+  //   - fixedValues: name → JS value. Exposed so consumers (worker,
+  //     viewer) can resolve refs to fixed bindings as global env
+  //     entries rather than as per-atom slices, which is the only
+  //     correct semantics for non-scalar fixed values (e.g. a
+  //     length-10 array from `rand(rstate, iid(Normal, 10))`).
+  //
+  //   - derivation overrides:
+  //       * numeric JS array → reclassify as { kind: 'array', values }
+  //         so the existing array-plot path renders it (mirrors
+  //         the treatment of literal arrays like `[1, 2, 3]`).
+  //       * opaque values (rngstate, plain JS objects, non-numeric
+  //         arrays) → drop the derivation so the viewer reports
+  //         "not plottable" cleanly. The value remains in
+  //         fixedValues so downstream evaluators can resolve refs.
+  //       * scalar numbers → keep the existing 'evaluate' kind. The
+  //         worker's evaluateN runs N iterations with the scalar in
+  //         env, producing a Float64Array(N) of the same scalar —
+  //         the right shape for a fixed-phase scalar plotted as a
+  //         delta. (No reclassification needed: existing path works.)
+  //
+  // The pass is iterative: each round evaluates any binding whose
+  // deps are already in fixedValues, until no progress. Bindings
+  // we can't evaluate (refs to non-fixed names, ops outside the
+  // evaluator) silently stay at their original classification.
+  const fixedValues = new Map();
+  const samplerLib = require('./sampler');
+  // resolveMeasureRef closure threaded through evaluateExpr → evaluateRand
+  // → traceeval. When traceeval hits a `(ref self <name>)` for a
+  // measure operand (the lift pass produced these by extracting inline
+  // Normal/iid/joint/etc. into anonymous bindings), it consults this to
+  // recover the measure IR. Built once over the lifted bindings map.
+  function resolveMeasureRef(refName) {
+    const b = bindings.get(refName);
+    return (b && b.ir) || null;
+  }
+
+  // Walk only the value-typed refs in an IR — i.e. skip the measure
+  // argument of rand and the measure-typed positions of any other op
+  // that consumes a measure as an opaque IR rather than a value. We
+  // need this distinction during pre-eval: value-refs require their
+  // target's value in `env`, while measure-refs are resolved at
+  // runtime by traceeval via the resolveMeasureRef closure above.
+  function collectValueRefs(ir) {
+    const out = new Set();
+    walk(ir, false);
+    return out;
+    function walk(node, asMeasure) {
+      if (!node || typeof node !== 'object') return;
+      if (node.kind === 'ref' && node.ns === 'self' && !asMeasure) {
+        out.add(node.name);
+        return;
+      }
+      if (node.kind !== 'call') return;
+      // Per-op argument-position metadata: for `rand`, slot 1 is a
+      // measure IR (opaque). For everything else, all positional and
+      // kwarg children are value-typed expressions whose refs we
+      // resolve via env. (iid / joint / weighted etc. only appear
+      // *inside* a measure subtree — once we've descended via rand's
+      // measure-arg, the asMeasure flag is true and we stop adding
+      // refs from there.)
+      const args = node.args || [];
+      if (node.op === 'rand') {
+        if (args[0]) walk(args[0], false);     // state arg = value
+        if (args[1]) walk(args[1], true);      // measure arg = opaque
+        return;
+      }
+      for (const a of args)              walk(a, asMeasure);
+      if (node.kwargs)
+        for (const k in node.kwargs)     walk(node.kwargs[k], asMeasure);
+      if (Array.isArray(node.fields))
+        for (const f of node.fields)     walk(f && f.value, asMeasure);
+      if (node.body)                     walk(node.body, asMeasure);
+    }
+  }
+
+  let progress = true;
+  while (progress) {
+    progress = false;
+    for (const [name, binding] of bindings) {
+      if (fixedValues.has(name)) continue;
+      // Pre-eval is restricted to fixed-phase bindings. Lift-
+      // synthesised anonymous bindings have phase=undefined; we
+      // include them so anonymous *value* bindings (a lifted scalar
+      // expression) are computed too. Anonymous *measure* bindings
+      // (Normal, iid, ...) will be tried but evaluateExpr will throw
+      // on them and we'll silently skip; that's fine — they're
+      // resolved later via resolveMeasureRef.
+      if (binding.phase != null && binding.phase !== 'fixed') continue;
+
+      // Use the post-lift cached IR if present (set by the lift
+      // pass at the bottom of liftInlineSubexpressions); fall back
+      // to lowering on demand for bindings the lift never touched.
+      const ir = binding.ir
+        || (function () {
+          try { return lowerExpr(binding.effectiveValue || binding.node.value); }
+          catch (_) { return null; }
+        })();
+      if (!ir) continue;
+
+      // Walk only value-position self-refs to discover env keys we
+      // need. Measure refs (lifted Normal etc.) are NOT required to
+      // be in fixedValues — traceeval walks them on demand via
+      // resolveMeasureRef. Cross-namespace refs (modules) are ignored.
+      const refs = collectValueRefs(ir);
+      const env = { __resolveMeasureRef: resolveMeasureRef };
+      let depsReady = true;
+      for (const r of refs) {
+        if (!bindings.has(r)) continue;
+        const dep = bindings.get(r);
+        if (dep.phase != null && dep.phase !== 'fixed') { depsReady = false; break; }
+        if (!fixedValues.has(r))                         { depsReady = false; break; }
+        env[r] = fixedValues.get(r);
+      }
+      if (!depsReady) continue;
+
+      // The synthesised disintegrate effectiveValue can be a measure
+      // expression (e.g. `lawof(...)`); evaluating that as a value is
+      // a category error. Skip cleanly — sampler.evaluateExpr would
+      // throw, but iterating across all bindings per analyze means
+      // catching cheaply is easier than detecting up front. Same for
+      // anonymous bindings whose lifted IR is a measure construction
+      // (Normal, etc.).
+      let value;
+      try {
+        value = samplerLib.evaluateExpr(ir, env);
+      } catch (_) { continue; }
+      fixedValues.set(name, value);
+      progress = true;
+
+      // Reclassify based on the value shape.
+      const isPlottableArray = isFiniteNumericArray(value);
+      if (isPlottableArray) {
+        // Array literals carry their values directly; no chain step.
+        // Array.from copies into a plain Array — the materialiser
+        // wraps it in Float64Array as needed.
+        derivations[name] = { kind: 'array', values: Array.from(value) };
+      } else if (typeof value === 'number' && Number.isFinite(value)) {
+        // Scalar fixed value: leave the existing 'evaluate' classification
+        // alone if present; the per-atom evaluator handles it. If the
+        // binding wasn't classified (e.g. no derivation reached it),
+        // synthesize one from the lit so the chain has something.
+        if (!derivations[name]) {
+          derivations[name] = { kind: 'evaluate', ir: { kind: 'lit', value, loc: ir.loc } };
+        }
+      } else {
+        // Opaque value (rngstate, JS object, non-numeric array). Drop
+        // any plot derivation; the value is still in fixedValues so
+        // downstream evaluators can resolve refs to it. The viewer
+        // sees the absence as "not plottable" via the same path as
+        // reified callables.
+        if (derivations[name]) delete derivations[name];
+      }
+    }
+  }
+
   // Discrete map: walk through aliases to find each binding's leaf
   // sample step. evaluate-only bindings inherit the discreteness of
   // their inputs naively, but we treat them as continuous — arithmetic
@@ -1668,7 +1828,22 @@ function buildDerivations(bindings) {
   // (the viewer's profile-plot path) can call signatureOf without
   // re-running the lift pass. Backward-compatible: existing callers
   // that destructure just { derivations, discrete } are unaffected.
-  return { derivations, discrete, bindings };
+  return { derivations, discrete, bindings, fixedValues };
+}
+
+/**
+ * True if `v` is an array (Array, Float64Array, etc.) of finite numbers
+ * with at least one entry. Used to decide whether a fixed-phase value
+ * should expose itself as a plot-renderable kind:'array' derivation.
+ */
+function isFiniteNumericArray(v) {
+  if (!v || typeof v !== 'object' || typeof v.length !== 'number') return false;
+  if (v.length === 0) return false;
+  for (let i = 0; i < v.length; i++) {
+    const x = v[i];
+    if (typeof x !== 'number' || !Number.isFinite(x)) return false;
+  }
+  return true;
 }
 
 /**

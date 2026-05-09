@@ -1560,3 +1560,104 @@ funnel = jointchain(Exponential(rate = 1), fn(Normal(mu = 1, sigma = _)))
   assert.ok(bDeriv && (bDeriv.kind === 'sample' || bDeriv.kind === 'alias'),
     'b component should be sample- or alias-classified');
 });
+
+// =====================================================================
+// Fixed-phase pre-evaluation (spec §sec:random end-to-end)
+// =====================================================================
+//
+// buildDerivations runs a fixed-phase pre-eval pass after the main
+// classifier. For each fixed-phase binding it tries to compute the
+// value end-to-end via sampler.evaluateExpr, exposes them as a
+// `fixedValues` Map, and reclassifies based on the result shape.
+
+test('pre-eval: spec example computes random_data + threads state', () => {
+  const { bindings } = processSource(`
+    rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
+    rstate = rnginit(rngseed)
+    random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
+    more_random_data, rstate3 = rand(rstate2, iid(Exponential(1), 5))
+  `);
+  const { derivations, fixedValues } = buildDerivations(bindings);
+
+  // Every named binding has a value in fixedValues.
+  for (const name of ['rngseed', 'rstate', 'random_data', 'rstate2',
+                      'more_random_data', 'rstate3']) {
+    assert.ok(fixedValues.has(name), `missing ${name} in fixedValues`);
+  }
+
+  // random_data is a length-10 array of finite reals.
+  const rd = fixedValues.get('random_data');
+  assert.equal(rd.length, 10);
+  for (const v of rd) assert.ok(Number.isFinite(v));
+
+  // more_random_data is length 5; Exponential samples are positive.
+  const md = fixedValues.get('more_random_data');
+  assert.equal(md.length, 5);
+  for (const v of md) assert.ok(v >= 0, 'exponential is non-negative');
+
+  // States are opaque objects, not numbers.
+  assert.equal(typeof fixedValues.get('rstate'),  'object');
+  assert.equal(typeof fixedValues.get('rstate2'), 'object');
+  assert.equal(typeof fixedValues.get('rstate3'), 'object');
+
+  // Plottable arrays got reclassified to kind:'array'.
+  assert.equal(derivations.random_data.kind, 'array');
+  assert.deepEqual(derivations.random_data.values, Array.from(rd));
+  assert.equal(derivations.more_random_data.kind, 'array');
+
+  // Opaque-state bindings dropped from derivations (not plottable).
+  assert.equal(derivations.rstate,  undefined);
+  assert.equal(derivations.rstate2, undefined);
+  assert.equal(derivations.rstate3, undefined);
+});
+
+test('pre-eval: deterministic across calls (same seed → same values)', () => {
+  const src = `
+    seed = [1, 2, 3, 4, 5, 6, 7, 8]
+    s = rnginit(seed)
+    x, s2 = rand(s, iid(Normal(0, 1), 10))
+  `;
+  const r1 = buildDerivations(processSource(src).bindings);
+  const r2 = buildDerivations(processSource(src).bindings);
+  assert.deepEqual(
+    Array.from(r1.fixedValues.get('x')),
+    Array.from(r2.fixedValues.get('x')),
+    'rand(rnginit(...), ...) is deterministic w.r.t. seed');
+});
+
+test('pre-eval: downstream scalars consume fixed arrays', () => {
+  const { bindings } = processSource(`
+    seed = [9, 9, 9, 9]
+    s = rnginit(seed)
+    samples, s2 = rand(s, iid(Normal(0, 1), 100))
+    s_max = maximum(samples)
+    s_min = minimum(samples)
+  `);
+  const { fixedValues } = buildDerivations(bindings);
+  const samples = fixedValues.get('samples');
+  assert.equal(samples.length, 100);
+  // The reduction values should exist and match Math.{max,min} of the
+  // 100-sample array, since maximum / minimum are evaluable and their
+  // operand is a fixed-phase array.
+  assert.ok(fixedValues.has('s_max'));
+  assert.ok(fixedValues.has('s_min'));
+  const expectedMax = Math.max(...samples);
+  const expectedMin = Math.min(...samples);
+  assert.equal(fixedValues.get('s_max'), expectedMax);
+  assert.equal(fixedValues.get('s_min'), expectedMin);
+});
+
+test('pre-eval: stops at parameterized boundary (no infinite loop)', () => {
+  const { bindings } = processSource(`
+    a = elementof(reals)
+    b = a + 1
+    c = b * 2
+  `);
+  const { fixedValues } = buildDerivations(bindings);
+  // a / b / c are parameterized, NOT fixed-phase. Pre-eval must skip
+  // them and the iteration must terminate (this test would hang if
+  // the loop didn't quit cleanly on a non-fixed phase).
+  assert.equal(fixedValues.has('a'), false);
+  assert.equal(fixedValues.has('b'), false);
+  assert.equal(fixedValues.has('c'), false);
+});

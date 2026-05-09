@@ -186,15 +186,21 @@ function createWorkerHandler(opts = {}) {
 
           if (refKeys.length === 0) {
             // Static-params fast path: one sampler instance for the
-            // whole call, regardless of repeat.
-            const s = samplerLib.makeSampler(state, msg.ir, {});
+            // whole call, regardless of repeat. Pass session env so
+            // measures whose params reference fixed-phase bindings
+            // (e.g. `Normal(mean(random_data), 1)`) resolve at
+            // factory-build time rather than failing as unbound.
+            const s = samplerLib.makeSampler(state, msg.ir, env);
             for (let i = 0; i < total; i++) out[i] = s.draw();
             state = s.getState();
           } else {
             // Per-i-params path. One parametric sampler for the whole
             // call; params resolved per draw via drawWith(env).
+            // drawEnv merges session env (fixed-phase bindings) with
+            // the per-atom refArrays slice — same precedence as
+            // evaluateN above.
             const s = samplerLib.makeParametricSampler(state, msg.ir);
-            const drawEnv = {};
+            const drawEnv = { ...env };
             if (repeat === 1) {
               for (let i = 0; i < count; i++) {
                 for (const k of refKeys) drawEnv[k] = refArrays[k][i];
@@ -226,7 +232,18 @@ function createWorkerHandler(opts = {}) {
           if (count <= 0) throw new Error(`evaluateN.count must be positive integer (got ${msg.count})`);
           const refArrays = msg.refArrays || {};
           const out = new Float64Array(count);
-          const callEnv = {};
+          // callEnv merges three layers in priority order:
+          //   1. session env (fixed-phase bindings the orchestrator
+          //      pre-evaluated and pushed via setEnv — full values,
+          //      not per-atom)
+          //   2. refArrays per-atom slice (stochastic deps)
+          // Per-atom keys take precedence so a stochastic ref of the
+          // same name as a fixed binding (shouldn't happen in practice)
+          // wouldn't collide silently. The session-env layer lets
+          // expressions like `mean(random_data)` resolve `random_data`
+          // to its full fixed array rather than the per-i undefined
+          // slice that refArrays would produce.
+          const callEnv = { ...env };
           for (let i = 0; i < count; i++) {
             for (const k in refArrays) callEnv[k] = refArrays[k][i];
             out[i] = samplerLib.evaluateExpr(msg.ir, callEnv);
@@ -267,7 +284,9 @@ function createWorkerHandler(opts = {}) {
           const observed = msg.observed; // may be undefined; null means same
           const tally = msg.tally || 'clamped';
           const out = new Float64Array(count);
-          const callEnv = {};
+          // Layer session env (fixed-phase bindings pushed via setEnv)
+          // under the per-atom refArrays. Same precedence as evaluateN.
+          const callEnv = { ...env };
           // Walker needs a state even when no sampling occurs; reuse
           // session philox (or a per-call seed if supplied) for any
           // free latents the caller leaves unobserved.
@@ -318,16 +337,20 @@ function createWorkerHandler(opts = {}) {
           const observed = msg.observed;
           const tally    = msg.tally || 'clamped';
           const out      = new Float64Array(count);
-          const env      = Object.assign({}, fixedEnv);
+          // Layer the message's per-call fixedEnv over the session env
+          // (fixed-phase module bindings pushed via setEnv). Per-call
+          // values win, so a sweep can locally override a module
+          // binding without mutating session state.
+          const evalEnv  = Object.assign({}, env, fixedEnv);
           let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
           for (let i = 0; i < count; i++) {
             const t = count === 1 ? 0 : i / (count - 1);
-            env[sweepName] = lo + t * (hi - lo);
+            evalEnv[sweepName] = lo + t * (hi - lo);
             try {
               if (mode === 'function') {
-                out[i] = samplerLib.evaluateExpr(msg.ir, env);
+                out[i] = samplerLib.evaluateExpr(msg.ir, evalEnv);
               } else if (mode === 'logdensity') {
-                const r = traceevalLib.walk(state, msg.ir, env, observed, { tally });
+                const r = traceevalLib.walk(state, msg.ir, evalEnv, observed, { tally });
                 out[i] = r.logp;
                 state = r.state;
               } else {

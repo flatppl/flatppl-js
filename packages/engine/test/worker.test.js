@@ -905,3 +905,42 @@ test('entry shim: error replies survive postMessage', async () => {
     await worker.terminate();
   }
 });
+
+// =====================================================================
+// Session env merging into per-call paths (fixed-phase bindings)
+// =====================================================================
+
+test('evaluateN: session env (setEnv) flows into per-atom callEnv', () => {
+  // Push a fixed-phase array into session env. evaluateN's IR
+  // references it; the reduction (mean) operates on the full array,
+  // not on per-i slices.
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const arr = [1, 2, 3, 4, 5];
+  w.handle({ type: 'setEnv', env: { random_data: arr } });
+  // ir = mean(ref(random_data))
+  const ir = {
+    kind: 'call', op: 'mean',
+    args: [{ kind: 'ref', ns: 'self', name: 'random_data' }],
+  };
+  const reply = w.handle({ type: 'evaluateN', ir, count: 4 });
+  assert.equal(reply.type, 'samples');
+  assert.equal(reply.samples.length, 4);
+  // Every per-atom out is the same scalar mean of arr.
+  const expected = arr.reduce((s, v) => s + v, 0) / arr.length;
+  for (let i = 0; i < reply.samples.length; i++) {
+    assert.equal(reply.samples[i], expected);
+  }
+});
+
+test('evaluateN: per-atom refArrays override session env', () => {
+  // If a name is both in session env AND in per-atom refArrays, the
+  // per-atom value wins — it's the more specific layer.
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  w.handle({ type: 'setEnv', env: { x: 999 } });
+  const refArrays = { x: new Float64Array([10, 20, 30]) };
+  const ir = { kind: 'ref', ns: 'self', name: 'x' };
+  const reply = w.handle({ type: 'evaluateN', ir, count: 3, refArrays });
+  assert.deepEqual(Array.from(reply.samples), [10, 20, 30]);
+});
