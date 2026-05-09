@@ -121,34 +121,10 @@
       flex: 0 0 0; min-height: 0; border-top: none;
     }
     #plot-content { width: 100%; height: 100%; }
-    /* Profile-plot controls row (axis selector). Sits above the
-       chart; the chart fills the remaining height via flex. */
-    #plot-content .profile-controls {
-      display: flex; flex-direction: row; gap: 8px;
-      align-items: center; padding: 4px 12px;
-      font-size: 11px;
-    }
-    #plot-content .profile-controls label { opacity: 0.6; }
-    #plot-content .profile-controls select {
-      background: var(--vscode-dropdown-background, #3c3c3c);
-      color: var(--vscode-dropdown-foreground, #cccccc);
-      border: 1px solid var(--vscode-dropdown-border, #555);
-      padding: 2px 4px; font-size: 11px;
-    }
-    #plot-content .profile-controls input.profile-xrange {
-      background: var(--vscode-input-background, #3c3c3c);
-      color: var(--vscode-input-foreground, #cccccc);
-      border: 1px solid var(--vscode-input-border, #555);
-      padding: 2px 4px; font-size: 11px;
-      width: 6.5em;
-      font-family: var(--vscode-editor-font-family, monospace);
-    }
-    #plot-content .profile-chart {
-      flex: 1 1 auto; min-height: 0; width: 100%;
-    }
-    #plot-content.profile-mode {
-      display: flex; flex-direction: column;
-    }
+    /* Plot pane layout, controls, and chart host are styled inline by
+       renderPlotFrame — no CSS rules needed here for the per-renderer
+       layout. The constant-value / message blocks below still rely on
+       global rules. */
     #plot-empty {
       opacity: 0.7; padding: 1.6em; text-align: center;
       font-size: 1.08em; line-height: 1.5;
@@ -196,19 +172,20 @@
     }
     #plot-content .scalar-display .value {
       font-size: 36px; font-weight: 300;
+      max-width: 100%; box-sizing: border-box; padding: 0 16px;
+      overflow-wrap: anywhere; text-align: center;
+    }
+    /* Composite values (records, arrays, Dirac wrappers around
+       non-trivial bodies, …) drop to a comfortable monospace size
+       so long surface forms don't overflow the pane. The class is
+       applied by renderTextValue when the text contains structural
+       punctuation. */
+    #plot-content .scalar-display .value.composite {
+      font-size: 16px; font-weight: normal; line-height: 1.4;
     }
     /* Graph internals fill graph-panel — switched from full-viewport
        sizing to 100% of the parent so the split-flex layout governs. */
     #cy { width: 100%; height: 100%; }
-    #dataview {
-      display: none; width: 100%; height: 100%;
-      align-items: center; justify-content: center;
-    }
-    #dataview canvas { display: block; }
-    #dataview .scalar-value {
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 36px; font-weight: 300; opacity: 0.9;
-    }
     /* All font-sizes in this stylesheet are relative units (em),
        so the panel scales with VS Code's zoom factor (which adjusts
        --vscode-font-size at the root). The body sets the base font
@@ -317,7 +294,6 @@
   <div id="main">
     <div id="graph-panel" class="full">
       <div id="cy"></div>
-      <div id="dataview"></div>
       <div id="legend"></div>
     </div>
     <div id="plot-panel" class="hidden">
@@ -444,7 +420,13 @@
       measure:            '#42A5F5',  // bright blue
       kernel:             '#26A69A',  // teal-green
       fn:                 '#66BB6A',  // green
-      literal:            '#F48FB1',  // pink
+      // Note: no `literal` entry — literal bindings are just fixed-
+      // phase values, semantically the same kind as `call` bindings,
+      // and reuse `phaseFixed` for color. Shape (rectangle vs
+      // round-rectangle) carries the surface-form distinction.
+      // Using a dedicated red/pink for literals overstated their
+      // status and conflicted with red's conventional warning role
+      // in dev UIs.
       likelihood:         '#EF9A9A',  // light red
       bayesupdate:        '#FFAB91',  // light orange
       module:             '#80CBC4',  // teal-green (lighter)
@@ -488,7 +470,7 @@
       kernelof:    { color: PALETTE.kernel,             shape: 'round-hexagon',   label: 'kernelof (kernel)' },
       functionof:  { color: PALETTE.fn,                 shape: 'hexagon',         label: 'functionof' },
       fn:          { color: PALETTE.fn,                 shape: 'hexagon',         label: 'fn' },
-      literal:     { color: PALETTE.literal,            shape: 'rectangle',       label: 'literal' },
+      literal:     { color: PALETTE.phaseFixed,         shape: 'rectangle',       label: 'literal' },
       likelihood:  { color: PALETTE.likelihood,         shape: 'octagon',         label: 'likelihood' },
       bayesupdate: { color: PALETTE.bayesupdate,        shape: 'octagon',         label: 'bayesupdate' },
       module:      { color: PALETTE.module,             shape: 'round-rectangle', label: 'module' },
@@ -962,96 +944,6 @@
       cy.on('viewport', function() {
         tip.style.display = 'none';
       });
-    }
-
-    // --- Data visualization ---
-
-    var echart = null;
-
-    function parseValues(expr) {
-      if (!expr) return null;
-      if (/^[+\\-]?[0-9]+\\.?[0-9]*(?:[eE][+\\-]?[0-9]+)?$/.test(expr))
-        return { type: 'scalar', value: parseFloat(expr) };
-      var m = expr.match(/^\\[(.+)\\]$/);
-      if (m) {
-        var parts = m[1].split(/\\s*,\\s*/), nums = [];
-        for (var i = 0; i < parts.length; i++) {
-          var v = parseFloat(parts[i]);
-          if (isNaN(v)) return null;
-          nums.push(v);
-        }
-        return { type: 'array', values: nums };
-      }
-      return null;
-    }
-
-    function showDataView(data) {
-      var target = null;
-      for (var i = 0; i < data.nodes.length; i++)
-        if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
-      if (!target || target.type !== 'literal') return false;
-      var parsed = parseValues(target.expr);
-      if (!parsed) return false;
-
-      var dv = document.getElementById('dataview');
-      document.getElementById('cy').style.display = 'none';
-      document.getElementById('legend').style.display = 'none';
-      if (echart) { echart.dispose(); echart = null; }
-      dv.innerHTML = '';
-
-      if (parsed.type === 'scalar') {
-        dv.style.display = 'flex';
-        dv.innerHTML = '<span class="scalar-value">' + esc(String(parsed.value)) + '</span>';
-      } else if (parsed.type === 'array' && parsed.values.length > 0) {
-        dv.style.display = 'block';
-        var fg = getComputedStyle(document.body).color || '#ccc';
-        var vals = parsed.values;
-        var n = vals.length;
-        var stepData = [];
-        for (var si = 0; si < n; si++) {
-          stepData.push([si, vals[si]]);
-          stepData.push([si + 1, vals[si]]);
-        }
-        echart = echarts.init(dv);
-        echart.setOption({
-          animation: false,
-          grid: { left: 55, right: 20, top: 15, bottom: 40, containLabel: false },
-          xAxis: {
-            type: 'value', name: 'index', nameLocation: 'center', nameGap: 25,
-            min: 0, max: n,
-            axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
-            axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
-            axisLabel: { color: fg, opacity: 0.6 },
-            splitLine: { show: false },
-            minInterval: 1,
-          },
-          yAxis: {
-            type: 'value',
-            axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
-            axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
-            axisLabel: { color: fg, opacity: 0.6 },
-            splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
-          },
-          series: [{
-            type: 'line', data: stepData, symbol: 'none',
-            lineStyle: { color: TYPE_STYLE.literal.color, width: 2 },
-          }],
-        });
-      } else {
-        dv.style.display = 'none';
-        document.getElementById('cy').style.display = 'block';
-        document.getElementById('legend').style.display = '';
-        return false;
-      }
-      return true;
-    }
-
-    function hideDataView() {
-      if (echart) { echart.dispose(); echart = null; }
-      document.getElementById('dataview').style.display = 'none';
-      document.getElementById('dataview').innerHTML = '';
-      document.getElementById('cy').style.display = 'block';
-      document.getElementById('legend').style.display = '';
     }
 
     // ---------------------------------------------------------------
@@ -1769,6 +1661,50 @@
      *   { chain, discrete, analyticalIR? }   — plottable
      *   null                                 — not plottable
      */
+    /**
+     * Walk the derivation chain for a measure binding to find the
+     * value-typed binding it's mathematically equivalent to (if any).
+     * Two equivalence forms after engine canonicalisation:
+     *
+     *   m = lawof(observed_data)   → derivation 'alias' to observed_data
+     *   m = Dirac(observed_data)   → derivation 'sample' on Dirac IR
+     *                                whose kwargs.value is a ref to
+     *                                observed_data
+     *
+     * Both routes resolve to 'observed_data' here. Composes through
+     * multiple alias hops; cycle-guarded.
+     *
+     * Returns null when the chain doesn't bottom out on a single
+     * named value-typed source binding (e.g. Dirac(value = literal),
+     * Dirac(value = inline-call), or a non-degenerate sample step).
+     * The caller then falls through to the existing dispatch.
+     */
+    function resolveMeasureAlias(name, derivations, bindings) {
+      if (!derivations || !bindings) return null;
+      var seen = new Set();
+      var cur = name;
+      while (cur && !seen.has(cur)) {
+        seen.add(cur);
+        var d = derivations[cur];
+        if (!d) return null;
+        if (d.kind === 'alias') { cur = d.from; continue; }
+        // Engine-canonicalised Dirac with a ref to a known binding
+        // → follow the ref. Anything else (literal value, inline
+        // expression, non-Dirac sample) terminates the resolution.
+        if (d.kind === 'sample' && d.distIR
+            && d.distIR.kind === 'call' && d.distIR.op === 'Dirac'
+            && d.distIR.kwargs && d.distIR.kwargs.value) {
+          var v = d.distIR.kwargs.value;
+          if (v.kind === 'ref' && v.ns === 'self' && bindings.has(v.name)) {
+            cur = v.name;
+            continue;
+          }
+        }
+        break;
+      }
+      return cur === name ? null : cur;
+    }
+
     function buildPlotPlan(binding /*, bindingsMap */) {
       if (!binding || !derivationsState) return null;
       var name = binding.name;
@@ -1839,6 +1775,41 @@
       var phase = binding.phase;
       var inferredType = binding.inferredType;
       var typeKind = inferredType && inferredType.kind;
+
+      // Resolve through measure-equivalence aliases — applies
+      // regardless of phase. The principle is "plot by what the
+      // binding IS, not how it was constructed":
+      //
+      //   m = lawof(observed_data)         → alias to observed_data
+      //   m = Dirac(observed_data)         → alias to observed_data
+      //                                       (engine promotes Dirac-
+      //                                        of-ref to alias kind)
+      //   y = draw(m)  for any of the above → alias to m → … →
+      //                                        observed_data
+      //
+      // All produce per-atom values identical to observed_data's,
+      // so all should render identically. Use the source binding's
+      // plan, but tag it with the original name so colorForBinding
+      // picks up the alias's own binding-type color (lawof-blue,
+      // measure-grey, draw-purple, …) instead of the underlying
+      // value's color (literal pink, etc.). For non-aliased
+      // bindings (the common case — Normal samples, posterior,
+      // function bindings, etc.) resolveMeasureAlias returns null
+      // and we fall through to the regular dispatch below.
+      var sourceName = resolveMeasureAlias(name, derivationsState.derivations,
+                                           currentBindings);
+      if (sourceName && sourceName !== name) {
+        var sourceBinding = currentBindings.get(sourceName);
+        if (sourceBinding) {
+          var sourcePlan = buildPlotPlan(sourceBinding);
+          if (sourcePlan) {
+            var aliased = Object.assign({}, sourcePlan);
+            aliased.name = name;
+            return aliased;
+          }
+        }
+      }
+
       if (phase === 'fixed') {
         if (typeKind === 'record' || typeKind === 'tuple') {
           return { name: name, mode: 'fixed-record' };
@@ -1937,7 +1908,7 @@
       el.style.gap = '';
       el.style.padding = '';
       el.style.boxSizing = '';
-      el.classList.remove('profile-mode');
+      el.style.flexDirection = '';
     }
 
     function showPlotMessage(html, options) {
@@ -1980,6 +1951,117 @@
       }
     }
 
+    /**
+     * Single entry-point for laying out a plot. Owns:
+     *   - the flex-column structure of #plot-content
+     *   - an optional toolbar row (controls on the left, sample-stats
+     *     readout pinned right when `measure` is supplied)
+     *   - the chart host that fills the remaining vertical space
+     *   - disposal of any prior `plotEchart` and reset of inline styles
+     *
+     * Every measure-backed renderer (samples / corner / strips / kernel-
+     * sample / profile / array-step) goes through here so the visual
+     * framing is consistent across binding kinds. Plain text views
+     * (constant scalars / records) use `renderTextValue` instead.
+     *
+     * opts:
+     *   measure          — optional EmpiricalMeasure; drives N+ESS
+     *                      readout (always shown when given, including
+     *                      for unweighted measures where ESS = N).
+     *   toolbarControls  — optional Element (or DocumentFragment)
+     *                      appended to the LEFT of the toolbar. The
+     *                      sample-stats readout (if `measure`) sits to
+     *                      the RIGHT via `margin-left: auto`.
+     *   chartCallback    — function(chartHost) called once the layout
+     *                      is in place. The host is a div that fills
+     *                      the remaining vertical space; the callback
+     *                      writes its chart DOM (echarts.init,
+     *                      grid layout, etc.) directly into it.
+     */
+    function renderPlotFrame(opts) {
+      resetPlotContentStyle();
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      el.style.display = 'flex';
+      el.style.flexDirection = 'column';
+      el.style.padding = '10px';
+      el.style.boxSizing = 'border-box';
+      el.style.gap = '8px';
+
+      var hasToolbarLeft = opts.toolbarControls != null;
+      var hasMeasureStats = opts.measure != null;
+      if (hasToolbarLeft || hasMeasureStats) {
+        var bar = document.createElement('div');
+        bar.className = 'plot-frame-toolbar';
+        bar.style.display = 'flex';
+        bar.style.flexWrap = 'wrap';
+        bar.style.gap = '0.75em';
+        bar.style.alignItems = 'center';
+        bar.style.padding = '0.4em 0.6em';
+        bar.style.background = 'rgba(255,255,255,0.02)';
+        bar.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
+        bar.style.borderRadius = '3px';
+        bar.style.fontSize = '0.92em';
+        bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+        bar.style.flexShrink = '0';
+        if (hasToolbarLeft) bar.appendChild(opts.toolbarControls);
+        if (hasMeasureStats) {
+          // margin-left:auto on the spacer pushes the stats readout
+          // to the right edge regardless of how many controls are
+          // on the left.
+          var spacer = document.createElement('div');
+          spacer.style.marginLeft = 'auto';
+          bar.appendChild(spacer);
+          bar.appendChild(renderSampleStats(opts.measure));
+        }
+        el.appendChild(bar);
+      }
+
+      var chartHost = document.createElement('div');
+      chartHost.style.flex = '1 1 auto';
+      chartHost.style.minHeight = '0';
+      chartHost.style.minWidth = '0';
+      chartHost.style.position = 'relative';
+      el.appendChild(chartHost);
+
+      opts.chartCallback(chartHost);
+    }
+
+    /**
+     * Render a constant value (literal, deterministic arithmetic of
+     * literals, or a degenerate distribution) as plain text in the
+     * scalar-display block. Used by:
+     *   - constant scalar bindings (samplesAreConstant short-circuit)
+     *   - phase=fixed records / tuples (renderConstantRecord)
+     *   - kernel-sample bindings whose substituted body collapses to
+     *     a single value
+     * The font-size auto-shrinks for long renderings (record(...) with
+     * many fields) so the value still fits within the pane.
+     */
+    function renderTextValue(bindingName, text) {
+      resetPlotContentStyle();
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      var el = document.getElementById('plot-content');
+      var name = bindingName ? esc(bindingName) : '';
+      // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero
+      // 36px treatment so the value pops as the answer. Composite
+      // values (records, multi-element arrays, Dirac wrappers around
+      // structured bodies) fall back to a comfortable monospace
+      // size — the .composite class flip is enough; the threshold
+      // is "contains structural punctuation AND non-trivial length",
+      // which catches both "record(a = 1.5, …)" (long) and
+      // "[1.2, 3.4, 5.1, …, 3.9]" (medium). Short Dirac wraps like
+      // "Dirac(5)" stay big.
+      var composite = text.length > 16 && /[(\[]/.test(text);
+      var valueClass = composite ? 'value composite' : 'value';
+      el.innerHTML =
+        '<div class="scalar-display">'
+        + (name ? '<div class="name">' + name + '</div>' : '')
+        + '<div class="' + valueClass + '">' + esc(text) + '</div>'
+        + '</div>';
+    }
+
     function renderPlotForCurrent() {
       // The plot panel stays mounted whenever plotEnabled is true. When
       // the focused binding isn't plottable (lawof, modules, etc.) we
@@ -2009,6 +2091,17 @@
       if (!currentPlotPlan) {
         if (currentState && currentState.targetName === MODULE_TARGET) {
           showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
+          return;
+        }
+        // Synthetic / internal nodes (anonymous lifted subexpressions,
+        // placeholders, holes, lawof / kernelof / draw bridge nodes,
+        // disintegration outputs that don't carry a user binding name)
+        // fail the binding lookup in updatePlotForBinding, which sets
+        // currentPlotBindingName=null. Surface a generic message here
+        // — there's nothing user-meaningful to plot, and pointing at
+        // a different binding would be guesswork.
+        if (currentPlotBindingName == null) {
+          showPlotMessage('Internal nodes are not plottable.', { hint: true });
           return;
         }
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.', { hint: true });
@@ -2057,88 +2150,14 @@
         .then(function() { return getMeasure(planForCall.name); })
         .then(function(measure) {
           if (currentPlotPlan !== planForCall) return null;
-          // Multivariate measure (record / tuple / array shapes):
-          // route to the corner / 2D-strip renderer, which uses
-          // listScalarAxes to pull out one selectable axis per scalar
-          // leaf (record fields, tuple components with positional
-          // 1-indexed labels, and array slots alike).
-          if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
-            // Constant short-circuit: a record / tuple measure whose
-            // every scalar leaf is the same across atoms is a literal
-            // value masquerading as a measure (e.g.
-            // record(a = 1.2, b = 3.4) lifted by visit). N copies of
-            // the same point histogram-mash into N tall bars per axis
-            // — uninformative — so render the surface form as text
-            // instead. Top-level array measures stay on the corner-
-            // plot path: even when they're "constant" they're more
-            // useful as per-slot histograms (or could be — a future
-            // refinement could hand them to renderArrayStepPlot).
-            if ((measure.shape === 'record' || measure.shape === 'tuple')
-                && measureIsConstant(measure)) {
-              renderConstantRecord(measure, planForCall.name);
-              return null;
-            }
-            renderRecordMarginals(measure, planForCall.name);
-            return null;
-          }
-          var samples = measure.samples;
-          // Array-mode: skip histogram + density entirely; the data
-          // is a fixed-length sequence to plot as index→value, not
-          // a sample of a distribution.
-          if (planForCall.mode === 'array') {
-            return { samples: samples, mode: 'array' };
-          }
-          // Histogram lives on the main thread now — no round-trip.
-          // Cache by (name, discrete) so that click-flipping back to a
-          // previously-rendered binding is instant. Cache lives only
-          // as long as the underlying measure: rebuildDerivations and
-          // configUpdate (sampleCount change) clear both. Discreteness
-          // is folded into the key because the orchestrator's discrete
-          // flag could in principle change between rebuilds (it can't
-          // today, but future spec features might add knobs).
-          var histKey = planForCall.name + '|' + (planForCall.discrete ? 'd' : 'c');
-          var hist = histogramCache.get(histKey);
-          if (!hist) {
-            // Pass logWeights through to the histogram so weighted
-            // measures (post weighted/bayesupdate/normalize) render
-            // their bars correctly. For unweighted measures this is
-            // null and the histogram takes its fast count/N path.
-            var histOpts = measure.logWeights ? { logWeights: measure.logWeights } : {};
-            hist = planForCall.discrete
-              ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
-              : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
-            histogramCache.set(histKey, hist);
-          }
-          // Only fetch analytical density when applicable. This is
-          // the only worker round-trip per plot for measure bindings,
-          // and it's skipped entirely for variates and chain-mode
-          // (stochastic-parent) measures.
-          if (planForCall.analyticalIR) {
-            // Anchor the density curve's x-range to the histogram's
-            // first/last bin edges. Otherwise the curve uses its own
-            // quantile-derived grid which can extend past the bars
-            // (and into impossible regions, e.g. x<0 for Exponential).
-            // Discrete histograms expose [lo, hi] integer atoms in
-            // their support field; FD histograms expose binEdges[0]
-            // through binEdges[N].
-            var range;
-            if (hist.binEdges && hist.binEdges.length > 1) {
-              range = [hist.binEdges[0], hist.binEdges[hist.binEdges.length - 1]];
-            } else if (hist.support) {
-              range = [hist.support[0], hist.support[1]];
-            }
-            var densOpts = { gridPoints: 256 };
-            if (range) densOpts.range = range;
-            return sendWorker({ type: 'density', ir: planForCall.analyticalIR, opts: densOpts })
-              .then(function(densReply) {
-                return { samples: samples, histogram: hist, density: densReply, measure: measure };
-              });
-          }
-          return { samples: samples, histogram: hist, density: null, measure: measure };
-        })
-        .then(function(reply) {
-          if (!reply || currentPlotPlan !== planForCall) return;
-          renderSamplesAndDensity(reply, planForCall);
+          return renderEmpiricalMeasure(measure, {
+            name: planForCall.name,
+            mode: planForCall.mode,
+            discrete: planForCall.discrete,
+            analyticalIR: planForCall.analyticalIR,
+            toolbarControls: null,
+            staleGuard: function() { return currentPlotPlan === planForCall; },
+          });
         })
         .catch(function(err) {
           if (currentPlotPlan !== planForCall) return;
@@ -2199,10 +2218,19 @@
      * so 5.0 reads "5", 3.14159 stays "3.14159", and noisy
      * float-arithmetic results like 0.30000000000000004 become "0.3".
      */
+    // Compact UI rendering of a numeric value. Truncates to 4
+    // significant digits — enough to distinguish typical
+    // posterior-style values (e.g. -0.1930 vs 0.2998) without the
+    // false-precision look of floats printed at full Float64 width.
+    // Used by inline labels (preset dropdowns, x-range inputs),
+    // value-as-text displays, and as the echarts axisLabel formatter
+    // so chart ticks match the same convention. Integers pass through
+    // unchanged (Number.isInteger short-circuit) so axis ticks at
+    // whole numbers stay readable as "1", "2", … rather than "1.000".
     function formatScalar(v) {
       if (!Number.isFinite(v)) return String(v);
       if (Number.isInteger(v)) return String(v);
-      return String(parseFloat(v.toPrecision(12)));
+      return String(parseFloat(v.toPrecision(4)));
     }
 
     // Compose pre-formatted element strings into "[a, b, c]" or
@@ -2217,8 +2245,9 @@
       var headN = 3, tailN = 1;
       var head = parts.slice(0, headN);
       var tail = parts.slice(n - tailN, n);
-      return '[' + head.join(', ') + ', …, ' + tail.join(', ')
-        + '] (length ' + fullLength + ')';
+      // No "(length N)" suffix — see formatValue array branch for
+      // rationale. Keeping both array-formatters in sync.
+      return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
     }
 
     // Back-compat shim: takes a numeric array, formats each element
@@ -2236,6 +2265,60 @@
     // pretty-printer that Julia's Base.show pairs with each value
     // type. Used for preset value display in the toolbar dropdown
     // and as the leaf-formatter for constant-measure rendering.
+    /**
+     * Pretty-print a FlatPIR IR node as canonical FlatPPL surface
+     * syntax. Used by the fixed-Dirac viewer path to render the
+     * value argument of `Dirac(value = ...)` without evaluating it
+     * (since the value may be non-scalar — record, array — that
+     * the engine's main-thread evaluator can't materialise without
+     * running the worker).
+     *
+     * Handles the IR shapes the value-position of a fixed binding
+     * can plausibly take: literals, named constants (pi, inf),
+     * binding refs, unary neg of literals, vector / record literals.
+     * Anything more exotic (calls into transcendental ops, etc.)
+     * gets a placeholder "<op>(…)" so the surface form stays
+     * legible without claiming false precision.
+     */
+    function formatIRValue(ir) {
+      if (!ir) return '?';
+      if (ir.kind === 'lit')   return formatScalar(ir.value);
+      if (ir.kind === 'const') return ir.name; // pi / e / inf / true / false
+      if (ir.kind === 'ref') {
+        return (ir.ns && ir.ns !== 'self' ? ir.ns + '.' : '') + ir.name;
+      }
+      if (ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args.length === 1) {
+        return '-' + formatIRValue(ir.args[0]);
+      }
+      if (ir.kind === 'call' && ir.op === 'vector' && Array.isArray(ir.args)) {
+        return '[' + ir.args.map(formatIRValue).join(', ') + ']';
+      }
+      if (ir.kind === 'call' && ir.op === 'record') {
+        var entries = [];
+        var kwargs = ir.kwargs || {};
+        for (var k in kwargs) {
+          entries.push(k + ' = ' + formatIRValue(kwargs[k]));
+        }
+        return 'record(' + entries.join(', ') + ')';
+      }
+      if (ir.kind === 'call' && ir.op === 'tuple' && Array.isArray(ir.args)) {
+        return '(' + ir.args.map(formatIRValue).join(', ') + ')';
+      }
+      if (ir.kind === 'call' && ir.op) {
+        // Generic call: op(arg1, arg2, k=v) — useful for
+        // fchain-style nestings without committing to a precise
+        // pretty-print of unknown ops.
+        var parts = [];
+        if (Array.isArray(ir.args)) {
+          for (var i = 0; i < ir.args.length; i++) parts.push(formatIRValue(ir.args[i]));
+        }
+        var kw = ir.kwargs || {};
+        for (var k2 in kw) parts.push(k2 + ' = ' + formatIRValue(kw[k2]));
+        return ir.op + '(' + parts.join(', ') + ')';
+      }
+      return '?';
+    }
+
     function formatValue(v, opts) {
       if (typeof v === 'number')  return formatScalar(v);
       if (typeof v === 'boolean') return String(v);
@@ -2257,8 +2340,12 @@
         for (var ti = 0; ti < tailN; ti++) {
           tail[ti] = formatValue(v[len - tailN + ti], opts);
         }
-        return '[' + head.join(', ') + ', …, ' + tail.join(', ')
-          + '] (length ' + len + ')';
+        // Ellipsis form drops the explicit "(length N)" suffix —
+        // panes are often narrow and the elided "…" already signals
+        // the array continues. Callers that need the count can
+        // surface it separately (the corner-plot axis labels and
+        // the info panel both already do).
+        return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
       }
       if (typeof v === 'object') {
         var keys = Object.keys(v);
@@ -2332,15 +2419,21 @@
     // ellipsize past length 8 so a 10-observation literal stays
     // readable. Walks the SoA tree top-down — same shape conventions
     // as listScalarAxes.
-    function formatConstantMeasure(m) {
+    function formatConstantMeasure(m, wrapperOp) {
       if (!m) return '?';
       if (m.fields) {
         var ks = Object.keys(m.fields);
         var fparts = new Array(ks.length);
         for (var i = 0; i < ks.length; i++) {
+          // Sub-fields don't inherit the top-level wrapper choice;
+          // nested record-shape measures always render as 'record(…)'.
+          // Only the outermost call honours the caller's wrapper hint
+          // — for `pars1 = preset(theta1=1.4, theta2=1.0)` the
+          // top-level renders as preset(...) but any sub-field that
+          // happens to be record-typed stays record(...).
           fparts[i] = ks[i] + ' = ' + formatConstantMeasure(m.fields[ks[i]]);
         }
-        return 'record(' + fparts.join(', ') + ')';
+        return (wrapperOp || 'record') + '(' + fparts.join(', ') + ')';
       }
       if (Array.isArray(m.elems)) {
         var eparts = new Array(m.elems.length);
@@ -2547,25 +2640,30 @@
     // record; the simple len-based cutoff is fine here (the value is
     // either short and reads at 36px or long enough to want 16px).
     function renderConstantRecord(measure, bindingName) {
-      resetPlotContentStyle();
-      var el = document.getElementById('plot-content');
-      el.innerHTML = '';
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-      var name = bindingName ? esc(bindingName) : '';
-      var text = formatConstantMeasure(measure);
-      var sizeStyle = text.length > 60 ? ' style="font-size: 16px"' : '';
-      el.innerHTML =
-        '<div class="scalar-display">'
-        + (name ? '<div class="name">' + name + '</div>' : '')
-        + '<div class="value"' + sizeStyle + '>' + esc(text) + '</div>'
-        + '</div>';
+      // Surface-form wrapper: most record-shape bindings render as
+      // 'record(…)'; preset bindings keep their 'preset(…)' wrapper
+      // so the type-level distinction (this is a preset, not a
+      // generic record) survives into the plot pane. Per spec
+      // §sec:valuetypes presets are semantically equivalent to
+      // records — but the surface label still reads better as
+      // preset(…) for user-authored preset bindings, since that's
+      // what's in their source. Any other ops that share the
+      // record-shape derivation (jointchain, cartprod, …) could
+      // be added here in future; default is 'record'.
+      // currentBindings is the pre-lift binding map from processSource;
+      // its entries don't carry b.ir (that's populated only on the
+      // post-lift bindings buildDerivations returns). The source-level
+      // AST callee is available on b.node.value though, so read the
+      // wrapper-op from there.
+      var wrapper = null;
+      var b = currentBindings && currentBindings.get(bindingName);
+      var calleeName = b && b.node && b.node.value
+                    && b.node.value.callee && b.node.value.callee.name;
+      if (calleeName === 'preset') wrapper = 'preset';
+      renderTextValue(bindingName, formatConstantMeasure(measure, wrapper));
     }
 
     function renderRecordMarginals(measure, bindingName, extraToolbarControls) {
-      var el = document.getElementById('plot-content');
-      el.innerHTML = '';
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-
       var axes = listScalarAxes(measure);
       if (axes.length === 0) {
         showPlotMessage('No scalar fields to plot for <strong>' + esc(bindingName) + '</strong>.', { hint: true });
@@ -2613,29 +2711,25 @@
         }
       }
 
-      el.style.display = 'flex';
-      el.style.flexDirection = 'column';
-      el.style.padding = '10px';
-      el.style.boxSizing = 'border-box';
-      el.style.gap = '8px';
+      // chartHostRef captures the chart-area div from the frame, so
+      // rerenderChart can clear and repopulate it without rebuilding
+      // the toolbar (which would close any open dropdown).
+      var chartHostRef = null;
 
-      // The toolbar is rebuilt on every rerender so the mode buttons'
-      // active styling stays in sync with recordSelection.mode and
-      // the axis selector visibility tracks the mode.
-      var toolbarHost = document.createElement('div');
-      el.appendChild(toolbarHost);
-      var plotHost = document.createElement('div');
-      plotHost.style.flex = '1';
-      plotHost.style.minHeight = '0';
-      el.appendChild(plotHost);
-
-      // Two-tier re-render. Toolbar rebuilds blow away the axis
-      // dropdown's open state (it's a transient DOM child of the
-      // toolbar), so we ONLY rebuild the toolbar when the mode
-      // toggle actually changes mode-button styling. Axis-selection
-      // tweaks just redraw the chart — the dropdown stays open
-      // until the user clicks outside it.
+      // Two-tier re-render. rerenderAll rebuilds the entire frame
+      // (including the toolbar) — used when mode-button styling
+      // changes. rerenderChart only repaints the chart host —
+      // used by axis-selection toggles so the open dropdown survives.
       function rerenderChart() {
+        if (!chartHostRef) return;
+        chartHostRef.innerHTML = '';
+        // Reset inline styles the strip / grid renderer may have set
+        // on a previous pass (display:grid for cornerGrid; flex for
+        // strips). We re-establish from scratch each draw.
+        chartHostRef.style.display = '';
+        chartHostRef.style.gridTemplateColumns = '';
+        chartHostRef.style.gridTemplateRows = '';
+        chartHostRef.style.gap = '';
         if (recordSelection.mode === 'marginals') {
           // Marginals mode: filter axes by selected groups (group =
           // axis label's prefix before any "[k]"). Default is all
@@ -2645,46 +2739,51 @@
             selSet[g] = true;
           });
           var picked = axes.filter(function(a) { return selSet[axisGroupKey(a.label)]; });
-          renderDensityStrips(plotHost, measure, bindingName, picked);
+          renderDensityStrips(chartHostRef, measure, bindingName, picked);
         } else {
-          renderCornerGrid(plotHost, measure, bindingName);
+          renderCornerGrid(chartHostRef, measure, bindingName);
         }
       }
       function rerenderAll() {
-        toolbarHost.innerHTML = '';
-        toolbarHost.appendChild(renderRecordToolbar(
-          axes, allGroups, rerenderAll, rerenderChart, measure, extraToolbarControls));
-        rerenderChart();
+        // extraToolbarControls is a builder thunk (or null) — resolve
+        // to a fresh Element/Fragment each rebuild. A static Element
+        // captured once gets emptied on the first appendChild (for
+        // DocumentFragments) or destroyed by renderPlotFrame's
+        // innerHTML='' before the next rebuild can re-use it.
+        var extra = typeof extraToolbarControls === 'function'
+          ? extraToolbarControls()
+          : extraToolbarControls;
+        var toolbarControls = renderRecordToolbar(
+          axes, allGroups, rerenderAll, rerenderChart, extra);
+        renderPlotFrame({
+          measure: measure,
+          toolbarControls: toolbarControls,
+          chartCallback: function(chartHost) {
+            chartHostRef = chartHost;
+            rerenderChart();
+          },
+        });
       }
 
       rerenderAll();
     }
 
     /**
-     * Single-row toolbar: view-mode toggle on the left, axis selector
-     * dropdown on the right (only shown in correlations mode —
-     * marginals plots every axis with no selection).
+     * Build the inner controls of the corner-plot toolbar: view-mode
+     * toggle on the left, axis (or group) selector to its right, and
+     * the kernel-sample preset dropdown (when supplied) further right.
      *
-     * The whole toolbar is rebuilt on every rerender (cheap; <100
-     * elements) so mode buttons reflect active state and the
-     * selector visibility tracks the mode.
+     * Returns a DocumentFragment that the caller hands to
+     * renderPlotFrame as `toolbarControls`. The frame owns the
+     * outer toolbar styling and pins the N+ESS readout to the right
+     * — this builder no longer touches sample-stats.
+     *
+     * Rebuilt on every full rerender (cheap; <100 elements) so the
+     * mode buttons reflect active state and the selector visibility
+     * tracks the mode.
      */
-    function renderRecordToolbar(axes, groups, onModeChange, onSelectionChange, measure, extraToolbarControls) {
-      var bar = document.createElement('div');
-      bar.style.display = 'flex';
-      bar.style.flexWrap = 'wrap';
-      bar.style.gap = '0.75em';
-      bar.style.alignItems = 'center';
-      bar.style.padding = '0.4em 0.6em';
-      bar.style.background = 'rgba(255,255,255,0.02)';
-      bar.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
-      bar.style.borderRadius = '3px';
-      bar.style.fontSize = '0.92em';
-      bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-      // (Caller-supplied controls — currently the kernel-sample
-      // preset dropdown — are appended below, AFTER mode toggle and
-      // axis selector. See bar.appendChild(extraToolbarControls)
-      // farther down.)
+    function renderRecordToolbar(axes, groups, onModeChange, onSelectionChange, extraToolbarControls) {
+      var bar = document.createDocumentFragment();
 
       // ---- Mode toggle group ----
       var modeGroup = document.createElement('div');
@@ -2753,16 +2852,8 @@
       // Caller-supplied controls (currently: the kernel-sample
       // preset dropdown) sit after the axis selector so the
       // toolbar reads left-to-right as
-      //   [plot style] [axes] [preset] [...sample-quality readout]
+      //   [plot style] [axes] [preset] [...N + ESS pinned right by frame]
       if (extraToolbarControls) bar.appendChild(extraToolbarControls);
-
-      // Sample-quality readout pinned to the right edge.
-      if (measure) {
-        var spacer = document.createElement('div');
-        spacer.style.marginLeft = 'auto';
-        bar.appendChild(spacer);
-        bar.appendChild(renderSampleStats(measure));
-      }
       return bar;
     }
 
@@ -2796,7 +2887,7 @@
         : N;
       var pct = N > 0 ? (ess / N * 100) : 0;
       var essLabel = document.createElement('span');
-      essLabel.textContent = 'ESS: ' + formatCount(ess) + ' (' + pct.toFixed(1) + '%)';
+      essLabel.textContent = 'ESS: ' + formatCount(Math.round(ess)) + ' (' + pct.toFixed(1) + '%)';
       essLabel.title = 'Kish effective sample size: atoms-equivalent count after importance reweighting. Equals N (100%) for uniform-weighted measures.';
       wrap.appendChild(essLabel);
       return wrap;
@@ -2813,7 +2904,18 @@
       if (Array.isArray(measure.elems) && measure.elems.length > 0) {
         return measureAtomCount(measure.elems[0]);
       }
-      if (measure.samples) return measure.samples.length;
+      // Array-shape measure: samples is a flat atom-major buffer of
+      // length N × stride (e.g. iid(Normal, 10) at N=100k → buffer
+      // length 1M, dims=[10]). Divide out the stride so N reads as
+      // 100,000, not 1,000,000. Scalar measures have no dims (or
+      // dims=[]) and pass through unchanged.
+      if (measure.samples) {
+        if (measure.dims && measure.dims.length > 0) {
+          var stride = measure.dims.reduce(function(p, n) { return p * n; }, 1);
+          return stride > 0 ? measure.samples.length / stride : 0;
+        }
+        return measure.samples.length;
+      }
       return 0;
     }
 
@@ -3201,7 +3303,7 @@
           min: yMin, max: yMax,
           axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
           axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6, fontSize: 11 },
+          axisLabel: { color: fg, opacity: 0.6, fontSize: 11, formatter: formatScalar },
           splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
         },
         series: [{
@@ -3351,6 +3453,52 @@
       }
 
       // ---- Diagonals: 1D marginals --------------------------------
+      // Each cell delegates to a helper so the renderItem closure
+      // captures *that call's* `rects` / `color` parameters by name
+      // — not a `var`-hoisted loop variable that gets overwritten on
+      // the next iteration. (The bug: var seriesRects/seriesColor
+      // are function-scoped, so all closures end up reading the LAST
+      // iteration's values; the first paint looks correct because
+      // setOption renders synchronously, but resize-triggered
+      // re-renders pick up the wrong data and the upper cells go
+      // blank.)
+      function renderDiagonalCell(inner, rects, color) {
+        var ec1 = echarts.init(inner);
+        ec1.setOption({
+          backgroundColor: 'transparent',
+          animation: false,
+          grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
+          xAxis: {
+            type: 'value', scale: true,
+            axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisLabel: { color: fg, opacity: 0.6, fontSize: 10, formatter: formatScalar },
+            splitLine: { show: false },
+          },
+          yAxis: {
+            type: 'value', scale: true,
+            axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+            axisLabel: { color: fg, opacity: 0.5, fontSize: 10, formatter: formatScalar },
+            splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
+          },
+          series: [{
+            type: 'custom',
+            data: rects,
+            renderItem: function(_p, api) {
+              var d = rects[_p.dataIndex];
+              var lt = api.coord([d.x0, d.value[1]]);
+              var rb = api.coord([d.x1, 0]);
+              return {
+                type: 'rect',
+                shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
+                style: api.style({ fill: color, opacity: 0.55, stroke: color, lineWidth: 0.5 }),
+              };
+            },
+            encode: { x: 0, y: 1 },
+          }],
+        });
+      }
       for (var i = 0; i < n; i++) {
         var samples = axes[i].samples;
         var inner = makeCell(i, i);
@@ -3363,43 +3511,7 @@
             x1: hist.binEdges[k + 1],
           });
         }
-        var seriesColor = color;
-        var seriesRects = rects;
-        var ec1 = echarts.init(inner);
-        ec1.setOption({
-          backgroundColor: 'transparent',
-          animation: false,
-          grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
-          xAxis: {
-            type: 'value', scale: true,
-            axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-            axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-            axisLabel: { color: fg, opacity: 0.6, fontSize: 10 },
-            splitLine: { show: false },
-          },
-          yAxis: {
-            type: 'value', scale: true,
-            axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-            axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-            axisLabel: { color: fg, opacity: 0.5, fontSize: 10 },
-            splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
-          },
-          series: [{
-            type: 'custom',
-            data: seriesRects,
-            renderItem: function(_p, api) {
-              var d = seriesRects[_p.dataIndex];
-              var lt = api.coord([d.x0, d.value[1]]);
-              var rb = api.coord([d.x1, 0]);
-              return {
-                type: 'rect',
-                shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
-                style: api.style({ fill: seriesColor, opacity: 0.55, stroke: seriesColor, lineWidth: 0.5 }),
-              };
-            },
-            encode: { x: 0, y: 1 },
-          }],
-        });
+        renderDiagonalCell(inner, rects, color);
       }
 
       if (n < 2) return;   // single-field record: only the diagonal
@@ -3461,14 +3573,14 @@
               type: 'value', scale: true,
               axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
               axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-              axisLabel: { color: fg, opacity: 0.6, fontSize: 10 },
+              axisLabel: { color: fg, opacity: 0.6, fontSize: 10, formatter: formatScalar },
               splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
             },
             yAxis: {
               type: 'value', scale: true,
               axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
               axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-              axisLabel: { color: fg, opacity: 0.5, fontSize: 10 },
+              axisLabel: { color: fg, opacity: 0.5, fontSize: 10, formatter: formatScalar },
               splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
             },
             series: [{
@@ -3708,80 +3820,39 @@
     // text-render path. This avoids wrapping the existing renderers
     // in a flex-column container that compressed the corner-plot
     // cells under a layout race.
+    // Kernel sampling produces an empirical measure exactly like any
+    // other measure binding — semantically a kernel IS a nullary
+    // kernel once its inputs are bound. So the entire shape dispatch
+    // (constant text / record-marginals / scalar histogram) is shared
+    // with the standard measure path via renderEmpiricalMeasure; the
+    // only kernel-specific bit is the preset selector in the toolbar.
+    // Discreteness defaults to false: kernel bodies don't go through
+    // orchestrator typing, so we don't have a discrete flag to plumb.
+    // (No analytical density either — kernel bodies are empirical.)
+    //
+    // toolbarControls is passed as a *builder thunk*, not a static
+    // Element / DocumentFragment. The corner-plot rerender path
+    // (mode toggle, axis selection) blows away and rebuilds the
+    // toolbar; appendChild on a DocumentFragment moves its children
+    // out and leaves it empty, so a static fragment would render
+    // once and disappear on every subsequent rebuild. The thunk
+    // produces fresh DOM each call.
     function renderKernelSampleMeasure(measure, plan) {
-      var rerender = function() { renderKernelSampleForCurrent(); };
-      if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
-        if ((measure.shape === 'record' || measure.shape === 'tuple')
-            && measureIsConstant(measure)) {
-          // Constant record: text-render. Preset dropdown isn't
-          // useful when the result is degenerate, but the binding
-          // navigation still applies — the text page is sufficient.
-          renderConstantRecord(measure, plan.name);
-          return;
-        }
-        renderRecordMarginals(measure, plan.name, buildPresetControl(plan, rerender));
-        return;
-      }
-      // Scalar measure path.
-      resetPlotContentStyle();
-      var el = document.getElementById('plot-content');
-      if (measure.samples && samplesAreConstant(measure.samples)) {
-        el.innerHTML =
-          '<div class="scalar-display">'
-          + '<div class="name">' + esc(plan.name) + '</div>'
-          + '<div class="value">' + esc(formatScalar(measure.samples[0])) + '</div>'
-          + '</div>';
-        return;
-      }
-      // For scalar histograms there's no built-in toolbar; fall back
-      // to the inline profile-mode wrapper with the preset dropdown
-      // above the chart.
-      el.innerHTML = '';
-      el.classList.add('profile-mode');
-      if (plan.matchedPresets && plan.matchedPresets.length > 0) {
-        var controls = document.createElement('div');
-        controls.className = 'profile-controls';
-        controls.appendChild(buildPresetControl(plan, rerender));
-        el.appendChild(controls);
-      }
-      var chartDiv = document.createElement('div');
-      chartDiv.className = 'profile-chart';
-      el.appendChild(chartDiv);
-      var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(
-        measure.samples,
-        measure.logWeights ? { logWeights: measure.logWeights } : {});
-      var fg = getComputedStyle(document.body).color || '#ccc';
-      var color = colorForBinding(plan.name);
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-      plotEchart = echarts.init(chartDiv);
-      var pairs = new Array(hist.xs.length);
-      for (var i = 0; i < hist.xs.length; i++) pairs[i] = [hist.xs[i], hist.ys[i]];
-      plotEchart.setOption({
-        animation: false,
-        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
-        title: {
-          text: esc(plan.name),
-          left: 'center', top: 4,
-          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
-        },
-        xAxis: {
-          type: 'value',
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-        },
-        yAxis: {
-          type: 'value',
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
-        },
-        series: [{
-          type: 'bar', data: pairs,
-          itemStyle: { color: color, opacity: 0.6 },
-          barCategoryGap: 0,
-        }],
+      var hasPresets = plan.matchedPresets && plan.matchedPresets.length > 0;
+      var toolbarBuilder = hasPresets
+        ? function() {
+            return buildPresetControl(plan, function() {
+              renderKernelSampleForCurrent();
+            });
+          }
+        : null;
+      renderEmpiricalMeasure(measure, {
+        name: plan.name,
+        mode: 'samples',
+        discrete: false,
+        analyticalIR: null,
+        toolbarControls: toolbarBuilder,
       });
-      requestAnimationFrame(function() { try { plotEchart.resize(); } catch (_) {} });
     }
 
     // Recursively materialise a self-contained measure IR (no
@@ -4106,130 +4177,130 @@
       });
     }
 
-    function renderProfileLine(values, range, plan, sweepAxis) {
-      resetPlotContentStyle();
-      var el = document.getElementById('plot-content');
-      el.innerHTML = '';
-      el.classList.add('profile-mode');
-      // Controls row: axis dropdown for the sweep selection. When
-      // there's only one axis, hide the row entirely (no choice to
-      // make). On change, mutate the plan's sweepKey and re-trigger
-      // renderProfilePlotForCurrent — this re-fetches the empirical
-      // range, rebuilds fixedEnv, and re-runs the worker.
-      // Controls row holds:
-      //   - axis dropdown (only when there's a choice)
-      //   - preset dropdown (only when matching presets exist) —
-      //     "auto" first (the type-aware / source-empirical default),
-      //     then one entry per matched preset binding.
-      //   - log-density / log-likelihood mode: a y-axis cutoff
-      //     dropdown so the plot doesn't compress the interesting
-      //     region under a -∞ singularity. The cutoff caps the
-      //     visible y-range to [max - cutoff, max]; values below
-      //     get clamped to the cutoff line so the curve stays
-      //     interpretable.
+    /**
+     * Build the profile-plot toolbar controls (axis dropdown, preset
+     * dropdown, y-cutoff selector, x-range inputs). Returns a
+     * DocumentFragment that the caller hands to renderPlotFrame as
+     * `toolbarControls`. Logic mirrors the original inline build; only
+     * the styling host moved.
+     */
+    function buildProfileControls(plan, range) {
+      var frag = document.createDocumentFragment();
       var isLogDensity = plan.signature.kind === 'kernel'
                       || plan.signature.kind === 'likelihood';
       var hasAxes = plan.axes && plan.axes.length > 1;
       var hasPresets = plan.matchedPresets && plan.matchedPresets.length > 0;
-      if (hasAxes || hasPresets || isLogDensity) {
-        var controls = document.createElement('div');
-        controls.className = 'profile-controls';
-        if (hasAxes) {
-          var label = document.createElement('label');
-          label.textContent = 'Axis:';
-          label.htmlFor = 'profile-axis-select';
-          var select = document.createElement('select');
-          select.id = 'profile-axis-select';
-          for (var ai = 0; ai < plan.axes.length; ai++) {
-            var opt = document.createElement('option');
-            opt.value = plan.axes[ai].key;
-            opt.textContent = plan.axes[ai].label;
-            if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
-            select.appendChild(opt);
-          }
-          select.addEventListener('change', function(e) {
-            plan.sweepKey = e.target.value;
-            renderProfilePlotForCurrent();
-          });
-          controls.appendChild(label);
-          controls.appendChild(select);
+      if (hasAxes) {
+        var label = document.createElement('label');
+        label.textContent = 'Axis:';
+        label.style.opacity = '0.6';
+        label.style.marginRight = '0.25em';
+        var select = document.createElement('select');
+        select.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+        select.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+        select.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+        select.style.padding = '2px 4px';
+        select.style.fontSize = '1em';
+        for (var ai = 0; ai < plan.axes.length; ai++) {
+          var opt = document.createElement('option');
+          opt.value = plan.axes[ai].key;
+          opt.textContent = plan.axes[ai].label;
+          if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
+          select.appendChild(opt);
         }
-        if (hasPresets) {
-          // Reuse buildPresetControl so the option text (name +
-          // value record) and styling stay consistent with the
-          // kernel-sample path.
-          controls.appendChild(buildPresetControl(plan, function() {
-            renderProfilePlotForCurrent();
-          }));
-        }
-        if (isLogDensity) {
-          if (plan.yCutoff == null) plan.yCutoff = 100;
-          var cutLabel = document.createElement('label');
-          cutLabel.textContent = 'Rel. cut-off:';
-          cutLabel.htmlFor = 'profile-cutoff-select';
-          var cutSel = document.createElement('select');
-          cutSel.id = 'profile-cutoff-select';
-          var cutoffs = [10, 100, 1000, 10000];
-          for (var ci = 0; ci < cutoffs.length; ci++) {
-            var copt = document.createElement('option');
-            copt.value = cutoffs[ci];
-            copt.textContent = '−' + cutoffs[ci];
-            if (cutoffs[ci] === plan.yCutoff) copt.selected = true;
-            cutSel.appendChild(copt);
-          }
-          cutSel.addEventListener('change', function(e) {
-            plan.yCutoff = parseInt(e.target.value, 10);
-            // Re-render only the chart — sweep range / fixedEnv /
-            // worker call all stay valid; we already have `values`
-            // in the closure of the parent render. Easiest is to
-            // re-trigger the whole pipeline; cheap because measure
-            // cache + worker reply caches mean it's near-instant.
-            renderProfilePlotForCurrent();
-          });
-          controls.appendChild(cutLabel);
-          controls.appendChild(cutSel);
-        }
-        // x-axis range text inputs (always shown for profile plots).
-        // Editing either commits to profileRangeCache (fromAuto=false)
-        // and re-renders. Cache keyed by (binding, sweepKey, preset)
-        // so the user's edits stick when switching presets / axes
-        // and across binding navigation.
-        var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
-        var xLabel = document.createElement('label');
-        xLabel.textContent = 'x-range:';
-        var xLoInput = document.createElement('input');
-        xLoInput.type = 'number'; xLoInput.step = 'any';
-        xLoInput.className = 'profile-xrange';
-        xLoInput.value = formatScalar(range[0]);
-        xLoInput.title = 'x-axis lower limit';
-        var xHiInput = document.createElement('input');
-        xHiInput.type = 'number'; xHiInput.step = 'any';
-        xHiInput.className = 'profile-xrange';
-        xHiInput.value = formatScalar(range[1]);
-        xHiInput.title = 'x-axis upper limit';
-        var commitRange = function() {
-          var newLo = parseFloat(xLoInput.value);
-          var newHi = parseFloat(xHiInput.value);
-          if (!Number.isFinite(newLo) || !Number.isFinite(newHi) || newLo >= newHi) {
-            // Reject invalid edits — restore the input boxes from the
-            // cache rather than blindly re-rendering with broken values.
-            xLoInput.value = formatScalar(range[0]);
-            xHiInput.value = formatScalar(range[1]);
-            return;
-          }
-          profileRangeCache.set(rangeKey, { lo: newLo, hi: newHi, fromAuto: false });
+        select.addEventListener('change', function(e) {
+          plan.sweepKey = e.target.value;
           renderProfilePlotForCurrent();
-        };
-        xLoInput.addEventListener('change', commitRange);
-        xHiInput.addEventListener('change', commitRange);
-        controls.appendChild(xLabel);
-        controls.appendChild(xLoInput);
-        controls.appendChild(xHiInput);
-        el.appendChild(controls);
+        });
+        frag.appendChild(label);
+        frag.appendChild(select);
       }
-      var chartDiv = document.createElement('div');
-      chartDiv.className = 'profile-chart';
-      el.appendChild(chartDiv);
+      if (hasPresets) {
+        // Reuse buildPresetControl so the option text (name + value
+        // record) and styling stay consistent with the kernel-sample
+        // path.
+        frag.appendChild(buildPresetControl(plan, function() {
+          renderProfilePlotForCurrent();
+        }));
+      }
+      if (isLogDensity) {
+        if (plan.yCutoff == null) plan.yCutoff = 100;
+        var cutLabel = document.createElement('label');
+        cutLabel.textContent = 'Rel. cut-off:';
+        cutLabel.style.opacity = '0.6';
+        cutLabel.style.marginRight = '0.25em';
+        var cutSel = document.createElement('select');
+        cutSel.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+        cutSel.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+        cutSel.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+        cutSel.style.padding = '2px 4px';
+        cutSel.style.fontSize = '1em';
+        var cutoffs = [10, 100, 1000, 10000];
+        for (var ci = 0; ci < cutoffs.length; ci++) {
+          var copt = document.createElement('option');
+          copt.value = cutoffs[ci];
+          copt.textContent = '−' + cutoffs[ci];
+          if (cutoffs[ci] === plan.yCutoff) copt.selected = true;
+          cutSel.appendChild(copt);
+        }
+        cutSel.addEventListener('change', function(e) {
+          plan.yCutoff = parseInt(e.target.value, 10);
+          renderProfilePlotForCurrent();
+        });
+        frag.appendChild(cutLabel);
+        frag.appendChild(cutSel);
+      }
+      // x-axis range text inputs (always shown for profile plots).
+      // Editing either commits to profileRangeCache (fromAuto=false)
+      // and re-renders. Cache keyed by (binding, sweepKey, preset)
+      // so the user's edits stick when switching presets / axes
+      // and across binding navigation.
+      var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+      var xLabel = document.createElement('label');
+      xLabel.textContent = 'x-range:';
+      xLabel.style.opacity = '0.6';
+      xLabel.style.marginRight = '0.25em';
+      var xLoInput = document.createElement('input');
+      xLoInput.type = 'number'; xLoInput.step = 'any';
+      xLoInput.value = formatScalar(range[0]);
+      xLoInput.title = 'x-axis lower limit';
+      var xHiInput = document.createElement('input');
+      xHiInput.type = 'number'; xHiInput.step = 'any';
+      xHiInput.value = formatScalar(range[1]);
+      xHiInput.title = 'x-axis upper limit';
+      // Inline styling so these inputs match the dropdowns; no
+      // longer rely on the dropped .profile-xrange class.
+      [xLoInput, xHiInput].forEach(function(inp) {
+        inp.style.background = 'var(--vscode-input-background, #3c3c3c)';
+        inp.style.color = 'var(--vscode-input-foreground, #cccccc)';
+        inp.style.border = '1px solid var(--vscode-input-border, #555)';
+        inp.style.padding = '2px 4px';
+        inp.style.fontSize = '1em';
+        inp.style.width = '6.5em';
+        inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+      });
+      var commitRange = function() {
+        var newLo = parseFloat(xLoInput.value);
+        var newHi = parseFloat(xHiInput.value);
+        if (!Number.isFinite(newLo) || !Number.isFinite(newHi) || newLo >= newHi) {
+          // Reject invalid edits — restore the input boxes from the
+          // cache rather than blindly re-rendering with broken values.
+          xLoInput.value = formatScalar(range[0]);
+          xHiInput.value = formatScalar(range[1]);
+          return;
+        }
+        profileRangeCache.set(rangeKey, { lo: newLo, hi: newHi, fromAuto: false });
+        renderProfilePlotForCurrent();
+      };
+      xLoInput.addEventListener('change', commitRange);
+      xHiInput.addEventListener('change', commitRange);
+      frag.appendChild(xLabel);
+      frag.appendChild(xLoInput);
+      frag.appendChild(xHiInput);
+      return frag;
+    }
+
+    function renderProfileLine(values, range, plan, sweepAxis) {
       var fg = getComputedStyle(document.body).color || '#ccc';
       var color = colorForBinding(currentPlotBindingName);
       var n = values.length;
@@ -4276,9 +4347,6 @@
           data[i] = [x, y];
         }
       }
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-      plotEchart = echarts.init(chartDiv);
-      var zoomOpts = plotZoomOptions(fg);
       var titleText = (currentPlotBindingName ? esc(currentPlotBindingName) : 'profile')
         + ' — ' + esc(sweepAxis.label);
       // Per spec / convention: a kernel with obs fixed (likelihoodof)
@@ -4288,52 +4356,59 @@
       var legendLabel = plan.signature.kind === 'function'   ? 'value'
                        : plan.signature.kind === 'likelihood' ? 'log-likelihood'
                        :                                        'log-density';
-      plotEchart.setOption({
-        animation: false,
-        dataZoom: zoomOpts.dataZoom,
-        toolbox: zoomOpts.toolbox,
-        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
-        title: {
-          text: titleText,
-          left: 'center', top: 4,
-          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+      // Profile plots evaluate a function/kernel at a grid of points;
+      // they aren't sampled empirical measures, so no measure / N+ESS
+      // readout. The toolbar carries the controls only.
+      renderPlotFrame({
+        toolbarControls: buildProfileControls(plan, range),
+        chartCallback: function(chartHost) {
+          plotEchart = echarts.init(chartHost);
+          var zoomOpts = plotZoomOptions(fg);
+          plotEchart.setOption({
+            animation: false,
+            dataZoom: zoomOpts.dataZoom,
+            toolbox: zoomOpts.toolbox,
+            grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+            title: {
+              text: titleText,
+              left: 'center', top: 4,
+              textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+            },
+            legend: {
+              data: [legendLabel],
+              top: 4, right: 12,
+              textStyle: { color: fg, fontSize: 11 },
+              itemWidth: 14, itemHeight: 8,
+            },
+            tooltip: { show: false },
+            xAxis: {
+              type: 'value',
+              name: sweepAxis.label, nameLocation: 'center', nameGap: 28,
+              min: lo, max: hi,
+              axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
+              splitLine: { show: false },
+            },
+            yAxis: Object.assign({
+              type: 'value',
+              axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
+              splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+            }, yClipMin != null ? { min: yClipMin, max: yClipMax } : {}),
+            series: [{
+              name: legendLabel,
+              type: 'line', data: data, symbol: 'none',
+              lineStyle: { color: color, width: 2 },
+              connectNulls: false,
+            }],
+          });
         },
-        legend: {
-          data: [legendLabel],
-          top: 4, right: 12,
-          textStyle: { color: fg, fontSize: 11 },
-          itemWidth: 14, itemHeight: 8,
-        },
-        tooltip: { show: false },
-        xAxis: {
-          type: 'value',
-          name: sweepAxis.label, nameLocation: 'center', nameGap: 28,
-          min: lo, max: hi,
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { show: false },
-        },
-        yAxis: Object.assign({
-          type: 'value',
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
-        }, yClipMin != null ? { min: yClipMin, max: yClipMax } : {}),
-        series: [{
-          name: legendLabel,
-          type: 'line', data: data, symbol: 'none',
-          lineStyle: { color: color, width: 2 },
-          connectNulls: false,
-        }],
       });
     }
 
     function renderArrayStepPlot(arr) {
-      resetPlotContentStyle();
-      var el = document.getElementById('plot-content');
-      el.innerHTML = '';
       var fg = getComputedStyle(document.body).color || '#ccc';
       var n = arr.length;
       // Build piecewise-constant step data: each value v at index i
@@ -4344,92 +4419,221 @@
         stepData[2 * i]     = [i, arr[i]];
         stepData[2 * i + 1] = [i + 1, arr[i]];
       }
-      // Same DAG-aligned color resolution the histogram path uses.
-      // For a literal-array node this normally lands on TYPE_STYLE.literal
-      // (pink), but going via colorForBinding picks up any future
-      // node.kind overrides automatically.
+      // Same DAG-aligned color resolution the histogram path uses —
+      // colorForBinding maps the binding's type/kind to the same
+      // palette the DAG view paints. For literal arrays that's the
+      // shared phaseFixed grey (post the literal-color unification);
+      // for other shapes it picks up the node.kind overrides.
       var color = colorForBinding(currentPlotBindingName);
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'array';
-
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-      plotEchart = echarts.init(el);
-      var zoomOpts = plotZoomOptions(fg);
       var arrayLegendLabel = n + ' values';
-      plotEchart.setOption({
-        animation: false,
-        dataZoom: zoomOpts.dataZoom,
-        toolbox: zoomOpts.toolbox,
-        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
-        title: {
-          text: distLabel,
-          left: 'center', top: 4,
-          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+      // No measure passed — fixed array data isn't a sampled empirical
+      // measure, so the frame skips the N+ESS readout. (A future
+      // refinement could surface "length: n" in the toolbar instead.)
+      renderPlotFrame({
+        chartCallback: function(chartHost) {
+          plotEchart = echarts.init(chartHost);
+          var zoomOpts = plotZoomOptions(fg);
+          plotEchart.setOption({
+            animation: false,
+            dataZoom: zoomOpts.dataZoom,
+            toolbox: zoomOpts.toolbox,
+            grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+            title: {
+              text: distLabel,
+              left: 'center', top: 4,
+              textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+            },
+            legend: {
+              data: [arrayLegendLabel],
+              top: 4, right: 12,
+              textStyle: { color: fg, fontSize: 11 },
+              itemWidth: 14, itemHeight: 8,
+            },
+            tooltip: { show: false },
+            xAxis: {
+              type: 'value',
+              name: 'index', nameLocation: 'center', nameGap: 28,
+              min: 0, max: n,
+              minInterval: 1,
+              axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
+              splitLine: { show: false },
+            },
+            yAxis: {
+              type: 'value',
+              axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
+              splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+            },
+            series: [{
+              name: arrayLegendLabel,
+              type: 'line', data: stepData, symbol: 'none',
+              lineStyle: { color: color, width: 2 },
+            }],
+          });
         },
-        legend: {
-          data: [arrayLegendLabel],
-          top: 4, right: 12,
-          textStyle: { color: fg, fontSize: 11 },
-          itemWidth: 14, itemHeight: 8,
-        },
-        // No tooltip / axisPointer — the user doesn't need to read off
-        // exact values from a hover crosshair, and the moving lines
-        // are visually noisy. Re-enable here if a future plot view
-        // (e.g. trace diagnostics) actually needs precise readouts.
-        tooltip: { show: false },
-        xAxis: {
-          type: 'value',
-          name: 'index', nameLocation: 'center', nameGap: 28,
-          min: 0, max: n,
-          minInterval: 1,
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { show: false },
-        },
-        yAxis: {
-          type: 'value',
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
-        },
-        series: [{
-          name: arrayLegendLabel,
-          type: 'line', data: stepData, symbol: 'none',
-          lineStyle: { color: color, width: 2 },
-        }],
       });
     }
 
-    function renderSamplesAndDensity(reply, plan) {
-      resetPlotContentStyle();
-      var el = document.getElementById('plot-content');
-      el.innerHTML = '';
-      var fg = getComputedStyle(document.body).color || '#ccc';
+    /**
+     * Single dispatch entry point for all empirical-measure plots.
+     * A measure is just a nullary kernel — so kernel-sample bindings
+     * (with substituted inputs) and ordinary measure bindings render
+     * through exactly the same path; the only difference is whether
+     * the toolbar carries a preset selector. Higher up, this is
+     * called by:
+     *
+     *   - renderPlotForCurrent's measure path → opts.toolbarControls
+     *     is null; opts.analyticalIR drives the optional density
+     *     overlay.
+     *   - renderKernelSampleMeasure → opts.toolbarControls is the
+     *     preset dropdown; opts.analyticalIR is null (kernel bodies
+     *     aren't closed-form).
+     *
+     * Dispatch:
+     *   - record / tuple / array shape  → corner / marginals view
+     *     (constant short-circuit → renderConstantRecord)
+     *   - mode === 'array' (fixed array) → step plot
+     *   - constant scalar samples         → renderTextValue
+     *   - otherwise scalar              → bar histogram (+ optional
+     *                                       analytical density curve)
+     *
+     * opts:
+     *   name             — binding name (display + cache key seed)
+     *   mode             — plan.mode (only 'array' is read here)
+     *   discrete         — drives integerHistogram vs FD
+     *   analyticalIR     — optional IR to send to the density worker
+     *   toolbarControls  — optional builder THUNK () → Element|Fragment
+     *                      that produces fresh toolbar DOM each call.
+     *                      Must be a thunk (not a static Element /
+     *                      Fragment) because the corner-plot rerender
+     *                      path rebuilds the toolbar repeatedly, and
+     *                      appendChild on a DocumentFragment empties
+     *                      it after the first append. Static Elements
+     *                      get destroyed by renderPlotFrame's
+     *                      innerHTML='' on the next frame rebuild.
+     *                      Pass null when no extra controls are needed.
+     *   staleGuard       — optional () → bool; when supplied and false,
+     *                      the async density round-trip's reply is
+     *                      ignored. Lets the caller cancel via plan
+     *                      identity comparison without leaking a
+     *                      stale plot across binding navigation.
+     */
+    function renderEmpiricalMeasure(measure, opts) {
+      var name = opts.name;
+      // Multivariate measure (record / tuple / array shapes): route
+      // to the corner / 2D-strip renderer.
+      if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
+        // Constant short-circuit: a record / tuple measure whose
+        // every scalar leaf is the same across atoms is a literal
+        // value masquerading as a measure. N copies of the same
+        // point histogram-mash into N tall bars per axis —
+        // uninformative — so render the surface form as text instead.
+        // Top-level array measures stay on the corner-plot path:
+        // even when "constant" they're more useful as per-slot
+        // histograms.
+        if ((measure.shape === 'record' || measure.shape === 'tuple')
+            && measureIsConstant(measure)) {
+          renderConstantRecord(measure, name);
+          return;
+        }
+        renderRecordMarginals(measure, name, opts.toolbarControls);
+        return;
+      }
+      var samples = measure.samples;
+      // Array-mode: skip histogram + density entirely; the data
+      // is a fixed-length sequence to plot as index→value, not
+      // a sample of a distribution.
+      if (opts.mode === 'array') {
+        renderArrayStepPlot(samples);
+        return;
+      }
+      // Constant scalar samples: render as text (same path as
+      // phase=fixed scalars and degenerate distributions).
+      if (samplesAreConstant(samples)) {
+        renderTextValue(name, formatScalar(samples[0]));
+        return;
+      }
+      // Histogram lives on the main thread now — no round-trip.
+      // Cache by (name, discrete) so click-flipping a binding is
+      // instant. Cache lives only as long as the underlying measure:
+      // rebuildDerivations and configUpdate (sampleCount change)
+      // clear it.
+      var histKey = name + '|' + (opts.discrete ? 'd' : 'c');
+      var hist = histogramCache.get(histKey);
+      if (!hist) {
+        // Pass logWeights through so weighted measures (post
+        // weighted/bayesupdate/normalize) render their bars
+        // correctly. For unweighted measures this is null and the
+        // histogram takes its fast count/N path.
+        var histOpts = measure.logWeights ? { logWeights: measure.logWeights } : {};
+        hist = opts.discrete
+          ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
+          : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
+        histogramCache.set(histKey, hist);
+      }
+      var staleGuard = opts.staleGuard || function() { return true; };
+      // Scalar histogram path renders once (no internal rerenders), so
+      // we resolve the toolbar thunk to a static Element here. The
+      // record-marginals path above keeps the thunk so each rebuild
+      // produces fresh DOM.
+      var resolvedToolbar = typeof opts.toolbarControls === 'function'
+        ? opts.toolbarControls()
+        : opts.toolbarControls;
+      // Only fetch analytical density when applicable. This is the
+      // only worker round-trip per plot for measure bindings, and
+      // it's skipped entirely for variates and chain-mode (stochastic-
+      // parent) measures.
+      if (opts.analyticalIR) {
+        // Anchor the density curve's x-range to the histogram's
+        // first/last bin edges. Otherwise the curve uses its own
+        // quantile-derived grid which can extend past the bars
+        // (and into impossible regions, e.g. x<0 for Exponential).
+        var range;
+        if (hist.binEdges && hist.binEdges.length > 1) {
+          range = [hist.binEdges[0], hist.binEdges[hist.binEdges.length - 1]];
+        } else if (hist.support) {
+          range = [hist.support[0], hist.support[1]];
+        }
+        var densOpts = { gridPoints: 256 };
+        if (range) densOpts.range = range;
+        return sendWorker({ type: 'density', ir: opts.analyticalIR, opts: densOpts })
+          .then(function(densReply) {
+            if (!staleGuard()) return;
+            renderSamplesAndDensity(
+              { samples: samples, histogram: hist, density: densReply, measure: measure },
+              { mode: opts.mode, toolbarControls: resolvedToolbar });
+          });
+      }
+      renderSamplesAndDensity(
+        { samples: samples, histogram: hist, density: null, measure: measure },
+        { mode: opts.mode, toolbarControls: resolvedToolbar });
+    }
 
+    function renderSamplesAndDensity(reply, plan) {
       // Array-data short-circuit: render an index→value step plot.
       // Skips the constant check below — a five-element array of all
       // 1s is a legitimate data sequence, not a scalar to be displayed
-      // as text.
+      // as text. (Reachable only when callers bypass
+      // renderEmpiricalMeasure, which already handles the array
+      // short-circuit.)
       if (plan && plan.mode === 'array') {
         renderArrayStepPlot(reply.samples);
         return;
       }
 
-      // Constant-value short-circuit: dispose any stale echart and
-      // render a simple "name = value" block. Doing this *before*
-      // looking up colors / building series so we don't waste any
-      // setup work that the bars/density branches would do.
+      // Constant-value short-circuit: render the value as text.
+      // (Same defensive duplicate of the renderEmpiricalMeasure
+      // short-circuit — keeps direct callers safe.)
       if (samplesAreConstant(reply.samples)) {
-        if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
-        var name = currentPlotBindingName ? esc(currentPlotBindingName) : '';
-        el.innerHTML =
-          '<div class="scalar-display">'
-          + (name ? '<div class="name">' + name + '</div>' : '')
-          + '<div class="value">' + esc(formatScalar(reply.samples[0])) + '</div>'
-          + '</div>';
+        renderTextValue(currentPlotBindingName, formatScalar(reply.samples[0]));
         return;
       }
+
+      var fg = getComputedStyle(document.body).color || '#ccc';
 
       // Look up the binding's DAG-view color so the plot reads as
       // belonging to the same node the user is hovering on the graph.
@@ -4534,81 +4738,63 @@
 
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
 
-      // Sample-stats subtitle: "N: <count>  ESS: <count> (<pct>%)".
-      // Always shown — for uniform measures ESS = N = 100% and the
-      // readout still tells the user "this is unweighted" at a
-      // glance, instead of asymmetrically appearing only on
-      // posterior-style importance-weighted plots. Same readout
-      // shape as the corner-plot toolbar's renderSampleStats.
-      //
-      // Color thresholds when weighted (per the design discussion):
-      //   ESS/N ≥ 0.5  → neutral   (weights nearly uniform)
-      //   0.1 ≤ <0.5   → amber     (noticeably non-uniform)
-      //   < 0.1        → red       (degenerate; viz may mislead)
-      var essColor = fg;
-      var measure = reply.measure;
-      var essN = measure && measure.samples ? measure.samples.length : SAMPLE_COUNT;
-      var ess = (measure && measure.logWeights)
-        ? FlatPPLEngine.empirical.effectiveSampleSize(measure)
-        : essN;
-      var essRatio = essN > 0 ? ess / essN : 0;
-      if (measure && measure.logWeights) {
-        if      (essRatio >= 0.5) essColor = fg;
-        else if (essRatio >= 0.1) essColor = '#FFB300';
-        else                       essColor = '#E57373';
-      }
-      var essSubtitle = 'N: ' + formatCount(essN)
-        + '   ESS: ' + formatCount(Math.round(ess))
-        + ' (' + (essRatio * 100).toFixed(1) + '%)';
-
-      plotEchart = echarts.init(el);
-      var zoomOpts2 = plotZoomOptions(fg);
-      plotEchart.setOption({
-        animation: false,
-        dataZoom: zoomOpts2.dataZoom,
-        toolbox: zoomOpts2.toolbox,
-        grid: { left: 60, right: 25, top: 46, bottom: 50, containLabel: false },
-        title: {
-          text: distLabel,
-          subtext: essSubtitle,
-          left: 'center', top: 4,
-          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
-          subtextStyle: { color: essColor, fontSize: 11, opacity: 0.9 },
+      // Frame owns the N + ESS readout (in the toolbar above the
+      // chart). Pass reply.measure so the frame can compute it; the
+      // chart itself only carries the binding-name title.
+      // toolbarControls (e.g. kernel-sample preset selector) are
+      // appended to the LEFT of the toolbar; N+ESS sits on the right.
+      renderPlotFrame({
+        measure: reply.measure,
+        toolbarControls: plan && plan.toolbarControls ? plan.toolbarControls : null,
+        chartCallback: function(chartHost) {
+          plotEchart = echarts.init(chartHost);
+          var zoomOpts2 = plotZoomOptions(fg);
+          plotEchart.setOption({
+            animation: false,
+            dataZoom: zoomOpts2.dataZoom,
+            toolbox: zoomOpts2.toolbox,
+            grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+            title: {
+              text: distLabel,
+              left: 'center', top: 4,
+              textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+            },
+            legend: {
+              data: legendData,
+              top: 4, right: 12,
+              textStyle: { color: fg, fontSize: 11 },
+              itemWidth: 14, itemHeight: 8,
+            },
+            // No tooltip / axisPointer — the user doesn't need to read off
+            // exact values from a hover crosshair, and the moving lines
+            // are visually noisy. Re-enable here if a future plot view
+            // (e.g. trace diagnostics) actually needs precise readouts.
+            tooltip: { show: false },
+            xAxis: {
+              type: 'value',
+              name: 'x', nameLocation: 'center', nameGap: 28,
+              axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
+              splitLine: { show: false },
+              minInterval: discrete ? 1 : null,
+              // Anchor the visible range to the histogram support — the
+              // density curve, computed on a wider quantile-padded grid,
+              // can extend a bit beyond; let echarts auto-fit so both fit.
+            },
+            yAxis: {
+              type: 'value',
+              name: discrete ? 'P(X=x)' : 'p(x)',
+              nameLocation: 'center', nameGap: 45,
+              axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+              axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+              axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
+              splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+              min: 0,
+            },
+            series: series,
+          });
         },
-        legend: {
-          data: legendData,
-          top: 4, right: 12,
-          textStyle: { color: fg, fontSize: 11 },
-          itemWidth: 14, itemHeight: 8,
-        },
-        // No tooltip / axisPointer — the user doesn't need to read off
-        // exact values from a hover crosshair, and the moving lines
-        // are visually noisy. Re-enable here if a future plot view
-        // (e.g. trace diagnostics) actually needs precise readouts.
-        tooltip: { show: false },
-        xAxis: {
-          type: 'value',
-          name: 'x', nameLocation: 'center', nameGap: 28,
-          axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { show: false },
-          minInterval: discrete ? 1 : null,
-          // Anchor the visible range to the histogram support — the
-          // density curve, computed on a wider quantile-padded grid,
-          // can extend a bit beyond; let echarts auto-fit so both fit.
-        },
-        yAxis: {
-          type: 'value',
-          name: discrete ? 'P(X=x)' : 'p(x)',
-          nameLocation: 'center', nameGap: 45,
-          axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6 },
-          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
-          min: 0,
-        },
-        series: series,
       });
     }
 
@@ -4725,14 +4911,6 @@
       if (!cy) initCy();
       updateHeader(data);
 
-      // Note: the legacy dataview-swap (which replaced cytoscape with a
-      // floating "5" / step-line array view when the DAG had a single
-      // literal node) used to fire here. We removed it because the Plot
-      // panel now owns scalar / value rendering — keeping the graph
-      // pane always graphical means clicking around the DAG never
-      // surprises the user with a different layout in the same area.
-      // showDataView / hideDataView remain defined above in case we
-      // want to repurpose them for array-data preview later.
       shownTypes.clear();
       var elements = [];
 
