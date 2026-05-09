@@ -131,18 +131,21 @@
       '',
     ].join('\n');
 
-    // Auto-mount runs at DOMContentLoaded. We use a small timer to
-    // hand the source to the (already-mounted) viewer instance via
-    // postMessage — the same channel VS Code uses, so no extra API
-    // is needed. For a more direct integration, hosts can call
-    // FlatPPLViewer.mount(...) themselves with opts.source set. The
-    // initial target is `posterior` so the embed lands on the most
-    // interesting node out of the box.
+    // Auto-mount runs at DOMContentLoaded. We hand the source to the
+    // (already-mounted) viewer instance via postMessage — the same
+    // channel VS Code uses, so no extra API is needed. For a more
+    // direct integration, hosts can call FlatPPLViewer.mount(...)
+    // themselves with opts.source set.
+    //
+    // Use 'showModule' (rather than 'sourceUpdate' with a single
+    // target) so the DAG renders the WHOLE module — sibling bindings
+    // like det_record / lp_obs / d_obs that aren't ancestors of any
+    // particular target stay visible. The user can click any node
+    // to drill into a sub-DAG view.
     document.addEventListener('DOMContentLoaded', function() {
       window.postMessage({
-        type: 'sourceUpdate',
+        type: 'showModule',
         source: SAMPLE_SOURCE,
-        targetName: 'posterior',
         pushHistory: false,
       }, '*');
     });
