@@ -2982,15 +2982,48 @@
       chartDiv.style.height = '100%';
       host.appendChild(chartDiv);
 
+      // Group adjacent axes that belong to the same parent (an iid
+      // array's slots all share the prefix before "[k]"). We render
+      // edge-to-edge within a group (so obs[1]..obs[10] reads as a
+      // continuous shaded sequence) and insert a single empty
+      // category slot between groups (so obs[…] and aux[…] are
+      // visibly separated). axisGroup extracts the prefix before
+      // any trailing "[…]" — same-group axes share that prefix.
+      function axisGroup(label) {
+        var i = label.lastIndexOf('[');
+        return i >= 0 ? label.slice(0, i) : label;
+      }
+      // categories: array entries paired with either { axisIdx } (for
+      // a real axis) or null (for a spacer). axisIdxToCat translates
+      // hists/axes index → category index for the rect data.
+      var categories = [];
+      var catLabels = [];
+      var axisIdxToCat = new Array(axes.length);
+      var prevGroup = null;
+      for (var ai = 0; ai < axes.length; ai++) {
+        var grp = axisGroup(axes[ai].label);
+        if (prevGroup !== null && grp !== prevGroup) {
+          categories.push({ spacer: true });
+          catLabels.push('');
+        }
+        axisIdxToCat[ai] = categories.length;
+        categories.push({ axisIdx: ai });
+        catLabels.push(axes[ai].label);
+        prevGroup = grp;
+      }
+
       // Build the rect data: one entry per (axis_idx, bin) pair.
-      // Each entry carries [axis_idx, bin_y_center, density] plus
-      // the bin's [lo, hi] for the rendered rect height.
+      // Each entry carries [cat_idx, bin_y_center, density] plus
+      // the bin's [lo, hi] for the rendered rect height. cat_idx is
+      // the index into the category axis (with spacer entries
+      // accounted for).
       var data = [];
-      for (var ai = 0; ai < hists.length; ai++) {
-        var hh = hists[ai];
+      for (var ai2 = 0; ai2 < hists.length; ai2++) {
+        var hh = hists[ai2];
+        var cidx = axisIdxToCat[ai2];
         for (var bi = 0; bi < hh.ys.length; bi++) {
           data.push({
-            value: [ai, hh.xs[bi], hh.ys[bi]],
+            value: [cidx, hh.xs[bi], hh.ys[bi]],
             edges: [hh.binEdges[bi], hh.binEdges[bi + 1]],
           });
         }
@@ -3003,7 +3036,7 @@
         grid: { left: 60, right: 25, top: 10, bottom: 60, containLabel: false },
         xAxis: {
           type: 'category',
-          data: axes.map(function(a) { return a.label; }),
+          data: catLabels,
           axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
           axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
           axisLabel: {
