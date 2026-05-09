@@ -2768,8 +2768,13 @@
 
     /**
      * Compact "N: ...  ESS: ..." readout for the toolbar's right
-     * edge. ESS is appended only for weighted measures; for an
-     * unweighted measure (logWeights=null) ESS == N is uninformative.
+     * edge. Always shows both — for an uniformly-weighted measure
+     * ESS = N = 100%, which makes the "this measure is unweighted"
+     * fact visible at a glance rather than implicit in the absence
+     * of an ESS tag. (Asymmetric "show ESS only when weighted" was
+     * the original design but read inconsistently across bindings:
+     * posterior had ESS, joint_model didn't, even though both are
+     * empirical measures.)
      */
     function renderSampleStats(measure) {
       var wrap = document.createElement('span');
@@ -2780,20 +2785,20 @@
       wrap.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       wrap.style.fontSize = '0.92em';
 
+      var N = measureAtomCount(measure);
       var nLabel = document.createElement('span');
-      nLabel.textContent = 'N: ' + formatCount(measureAtomCount(measure));
+      nLabel.textContent = 'N: ' + formatCount(N);
       nLabel.title = 'Total atom count in the empirical measure';
       wrap.appendChild(nLabel);
 
-      if (measure.logWeights) {
-        var N = measureAtomCount(measure);
-        var ess = FlatPPLEngine.empirical.effectiveSampleSize(measure);
-        var pct = N > 0 ? (ess / N * 100) : 0;
-        var essLabel = document.createElement('span');
-        essLabel.textContent = 'ESS: ' + formatCount(ess) + ' (' + pct.toFixed(1) + '%)';
-        essLabel.title = 'Kish effective sample size: atoms-equivalent count after importance reweighting (sufficiency depends on the question being asked).';
-        wrap.appendChild(essLabel);
-      }
+      var ess = measure.logWeights
+        ? FlatPPLEngine.empirical.effectiveSampleSize(measure)
+        : N;
+      var pct = N > 0 ? (ess / N * 100) : 0;
+      var essLabel = document.createElement('span');
+      essLabel.textContent = 'ESS: ' + formatCount(ess) + ' (' + pct.toFixed(1) + '%)';
+      essLabel.title = 'Kish effective sample size: atoms-equivalent count after importance reweighting. Equals N (100%) for uniform-weighted measures.';
+      wrap.appendChild(essLabel);
       return wrap;
     }
 
