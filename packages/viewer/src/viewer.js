@@ -4527,38 +4527,39 @@
       // Density overlay is only ever the analytical PDF/pmf — there's
       // no smoothed-from-samples curve. (KDE was tried but dropped: it
       // smears mass past the support, which mis-suggests density where
-      // there is none. See worker.js.) The samples-series legend label
-      // doubles as the sample count display so we don't burn vertical
-      // space on a subtitle.
-      var samplesLabel = SAMPLE_COUNT + ' samples';
-      samplesSeries.name = samplesLabel;
+      // there is none. See worker.js.)
+      samplesSeries.name = 'samples';
       var series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
-      var legendData = densitySeries ? [samplesLabel, 'density'] : [samplesLabel];
+      var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
 
       var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
 
-      // ESS readout: only meaningful for weighted measures. Uniform-
-      // weight measures have ESS = N exactly, which is uninformative
-      // chrome. The Kish-style ESS already lives in empirical.js.
+      // Sample-stats subtitle: "N: <count>  ESS: <count> (<pct>%)".
+      // Always shown — for uniform measures ESS = N = 100% and the
+      // readout still tells the user "this is unweighted" at a
+      // glance, instead of asymmetrically appearing only on
+      // posterior-style importance-weighted plots. Same readout
+      // shape as the corner-plot toolbar's renderSampleStats.
       //
-      // Color thresholds (per the design discussion):
+      // Color thresholds when weighted (per the design discussion):
       //   ESS/N ≥ 0.5  → neutral   (weights nearly uniform)
       //   0.1 ≤ <0.5   → amber     (noticeably non-uniform)
       //   < 0.1        → red       (degenerate; viz may mislead)
-      var essSubtitle = '';
       var essColor = fg;
       var measure = reply.measure;
+      var essN = measure && measure.samples ? measure.samples.length : SAMPLE_COUNT;
+      var ess = (measure && measure.logWeights)
+        ? FlatPPLEngine.empirical.effectiveSampleSize(measure)
+        : essN;
+      var essRatio = essN > 0 ? ess / essN : 0;
       if (measure && measure.logWeights) {
-        var ess = FlatPPLEngine.empirical.effectiveSampleSize(measure);
-        var N = measure.samples.length;
-        var ratio = N > 0 ? ess / N : 0;
-        // Round ESS to an integer for display — the fractional part is
-        // numerical noise from the log-space computation.
-        essSubtitle = 'ESS: ' + Math.round(ess) + ' / ' + N;
-        if      (ratio >= 0.5) essColor = fg;
-        else if (ratio >= 0.1) essColor = '#FFB300';
-        else                   essColor = '#E57373';
+        if      (essRatio >= 0.5) essColor = fg;
+        else if (essRatio >= 0.1) essColor = '#FFB300';
+        else                       essColor = '#E57373';
       }
+      var essSubtitle = 'N: ' + formatCount(essN)
+        + '   ESS: ' + formatCount(Math.round(ess))
+        + ' (' + (essRatio * 100).toFixed(1) + '%)';
 
       plotEchart = echarts.init(el);
       var zoomOpts2 = plotZoomOptions(fg);
@@ -4566,7 +4567,7 @@
         animation: false,
         dataZoom: zoomOpts2.dataZoom,
         toolbox: zoomOpts2.toolbox,
-        grid: { left: 60, right: 25, top: essSubtitle ? 46 : 30, bottom: 50, containLabel: false },
+        grid: { left: 60, right: 25, top: 46, bottom: 50, containLabel: false },
         title: {
           text: distLabel,
           subtext: essSubtitle,
