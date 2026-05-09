@@ -2572,19 +2572,45 @@
         return;
       }
 
-      // Reset selection when the focused binding changes. Default
-      // mode is 'correlations'; default selection is the first
-      // CORRELATIONS_MAX_AXES axes.
+      // Group prefix per axis (drop any trailing "[k]"). Used by
+      // marginals view's group-level selector and (separately) by
+      // its boundary insets between groups. Same definition both
+      // places — kept here so selection state and rendering stay in
+      // sync via a single source of truth.
+      function axisGroupKey(label) {
+        var i = label.lastIndexOf('[');
+        return i >= 0 ? label.slice(0, i) : label;
+      }
+      var allGroups = [];
+      var seenGroup = {};
+      for (var gi = 0; gi < axes.length; gi++) {
+        var g = axisGroupKey(axes[gi].label);
+        if (!seenGroup[g]) { seenGroup[g] = true; allGroups.push(g); }
+      }
+
+      // Reset selection when the focused binding changes. Defaults:
+      //   mode='correlations'; selected = first CORRELATIONS_MAX_AXES
+      //                                    axes (per-axis selection)
+      //   marginalGroups = all groups (group-level selection used in
+      //                                marginals mode)
       if (!recordSelection || recordSelection.bindingName !== bindingName) {
         recordSelection = {
           bindingName: bindingName,
           mode: 'correlations',
           selected: axes.slice(0, CORRELATIONS_MAX_AXES).map(function(a) { return a.key; }),
+          marginalGroups: allGroups.slice(),
         };
       } else {
         // Drop any selections that no longer exist (rare — defensive).
         var present = {}; axes.forEach(function(a) { present[a.key] = true; });
         recordSelection.selected = recordSelection.selected.filter(function(k) { return present[k]; });
+        if (!recordSelection.marginalGroups) recordSelection.marginalGroups = allGroups.slice();
+        else {
+          var presentGroups = {}; allGroups.forEach(function(g) { presentGroups[g] = true; });
+          recordSelection.marginalGroups = recordSelection.marginalGroups.filter(
+            function(g) { return presentGroups[g]; });
+          if (recordSelection.marginalGroups.length === 0) recordSelection.marginalGroups = allGroups.slice();
+        }
       }
 
       el.style.display = 'flex';
@@ -2611,8 +2637,15 @@
       // until the user clicks outside it.
       function rerenderChart() {
         if (recordSelection.mode === 'marginals') {
-          // Marginals mode plots every axis (no cap, no selection).
-          renderDensityStrips(plotHost, measure, bindingName, axes);
+          // Marginals mode: filter axes by selected groups (group =
+          // axis label's prefix before any "[k]"). Default is all
+          // groups → full axis list; users uncheck to narrow.
+          var selSet = {};
+          (recordSelection.marginalGroups || allGroups).forEach(function(g) {
+            selSet[g] = true;
+          });
+          var picked = axes.filter(function(a) { return selSet[axisGroupKey(a.label)]; });
+          renderDensityStrips(plotHost, measure, bindingName, picked);
         } else {
           renderCornerGrid(plotHost, measure, bindingName);
         }
@@ -2620,7 +2653,7 @@
       function rerenderAll() {
         toolbarHost.innerHTML = '';
         toolbarHost.appendChild(renderRecordToolbar(
-          axes, rerenderAll, rerenderChart, measure, extraToolbarControls));
+          axes, allGroups, rerenderAll, rerenderChart, measure, extraToolbarControls));
         rerenderChart();
       }
 
@@ -2636,7 +2669,7 @@
      * elements) so mode buttons reflect active state and the
      * selector visibility tracks the mode.
      */
-    function renderRecordToolbar(axes, onModeChange, onSelectionChange, measure, extraToolbarControls) {
+    function renderRecordToolbar(axes, groups, onModeChange, onSelectionChange, measure, extraToolbarControls) {
       var bar = document.createElement('div');
       bar.style.display = 'flex';
       bar.style.flexWrap = 'wrap';
@@ -2693,8 +2726,10 @@
         'One column per axis with vertical density shading; plots every axis'));
       bar.appendChild(modeGroup);
 
-      // Axis selector only shows in correlations mode — marginals
-      // plots every axis so the user has nothing to pick.
+      // Axis-level selector in correlations mode (per-leaf
+      // checkboxes, capped at CORRELATIONS_MAX_AXES); group-level
+      // selector in marginals mode (one entry per name-prefix —
+      // obs[1]…obs[10] collapse into a single "obs" toggle).
       if (recordSelection.mode === 'correlations') {
         var sep = document.createElement('div');
         sep.style.width = '1px';
@@ -2706,6 +2741,13 @@
         // chart-only callback so the dropdown doesn't get rebuilt
         // out from under its open popup.
         bar.appendChild(renderAxisDropdown(axes, onSelectionChange));
+      } else if (recordSelection.mode === 'marginals' && groups && groups.length > 1) {
+        var sep2 = document.createElement('div');
+        sep2.style.width = '1px';
+        sep2.style.alignSelf = 'stretch';
+        sep2.style.background = 'rgba(255,255,255,0.1)';
+        bar.appendChild(sep2);
+        bar.appendChild(renderGroupDropdown(groups, onSelectionChange));
       }
 
       // Caller-supplied controls (currently: the kernel-sample
@@ -2908,6 +2950,110 @@
     }
 
     /**
+     * Group-level checkbox dropdown for marginals view. Same shape
+     * as renderAxisDropdown but operates on group prefixes (obs[1]
+     * …obs[10] collapse to a single "obs" entry) and has no
+     * selection cap. State lives in recordSelection.marginalGroups.
+     */
+    function renderGroupDropdown(groups, onChange) {
+      var wrap = document.createElement('div');
+      wrap.style.position = 'relative';
+      wrap.style.display = 'inline-flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '0.4em';
+
+      var hint = document.createElement('span');
+      hint.textContent = 'Plot fields:';
+      hint.style.opacity = '0.6';
+      wrap.appendChild(hint);
+
+      var btn = document.createElement('button');
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '1em';
+      btn.style.padding = '0.2em 0.6em';
+      btn.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+      btn.style.borderRadius = '3px';
+      btn.style.background = 'var(--vscode-button-secondaryBackground, #3a3d41)';
+      btn.style.color = 'var(--vscode-button-secondaryForeground, #ccc)';
+      btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      function updateBtn() {
+        btn.textContent = recordSelection.marginalGroups.length
+          + ' / ' + groups.length + '  ▾';
+      }
+      updateBtn();
+      wrap.appendChild(btn);
+
+      var panel = document.createElement('div');
+      panel.style.position = 'absolute';
+      panel.style.top = 'calc(100% + 4px)';
+      panel.style.left = '0';
+      panel.style.zIndex = '50';
+      panel.style.minWidth = '12em';
+      panel.style.maxHeight = '20em';
+      panel.style.overflowY = 'auto';
+      panel.style.padding = '0.4em';
+      panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+      panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+      panel.style.borderRadius = '3px';
+      panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+      panel.style.display = 'none';
+      wrap.appendChild(panel);
+
+      groups.forEach(function(g) {
+        var label = document.createElement('label');
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
+        label.style.gap = '0.4em';
+        label.style.padding = '0.2em 0.4em';
+        label.style.cursor = 'pointer';
+        label.style.userSelect = 'none';
+        label.style.borderRadius = '2px';
+        label.addEventListener('mouseenter', function() { label.style.background = 'rgba(255,255,255,0.05)'; });
+        label.addEventListener('mouseleave', function() { label.style.background = ''; });
+
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = recordSelection.marginalGroups.indexOf(g) >= 0;
+        cb.addEventListener('change', function(ev) {
+          ev.stopPropagation();
+          var idx = recordSelection.marginalGroups.indexOf(g);
+          if (cb.checked) {
+            if (idx < 0) recordSelection.marginalGroups.push(g);
+          } else {
+            if (idx >= 0) recordSelection.marginalGroups.splice(idx, 1);
+          }
+          updateBtn();
+          onChange();
+        });
+        label.appendChild(cb);
+
+        var name = document.createElement('span');
+        name.textContent = g;
+        name.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        label.appendChild(name);
+        panel.appendChild(label);
+      });
+
+      btn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        var open = panel.style.display !== 'none';
+        panel.style.display = open ? 'none' : 'block';
+        if (!open) {
+          var off = function(ev2) {
+            if (panel.contains(ev2.target) || btn.contains(ev2.target)) return;
+            panel.style.display = 'none';
+            document.removeEventListener('click', off, true);
+          };
+          setTimeout(function() {
+            document.addEventListener('click', off, true);
+          }, 0);
+        }
+      });
+
+      return wrap;
+    }
+
+    /**
      * Render the selected axes as a 2D density-strip view: one
      * column per axis, where each column shades by the per-axis
      * marginal density along y. Useful for array-shaped data where
@@ -2950,14 +3096,21 @@
       var hists = axes.map(function(a) {
         return FlatPPLEngine.histogram.freedmanDiaconisHistogram(a.samples, histOptsBase);
       });
-      var yMin = Infinity, yMax = -Infinity, peakDensity = 0;
+      // Per-axis peak densities: a tightly-concentrated marginal has
+      // a much higher per-bin density than a broad one (Σ density ×
+      // binwidth ≈ 1 in either case), so a single global peak makes
+      // broad columns look near-empty. Normalising each column to
+      // its own peak keeps every column's shape readable.
+      var yMin = Infinity, yMax = -Infinity;
+      var peakDensities = new Array(hists.length);
       for (var i = 0; i < hists.length; i++) {
         var h = hists[i];
+        peakDensities[i] = 0;
         if (!h.binEdges || h.binEdges.length === 0) continue;
         if (h.binEdges[0] < yMin) yMin = h.binEdges[0];
         if (h.binEdges[h.binEdges.length - 1] > yMax) yMax = h.binEdges[h.binEdges.length - 1];
         for (var j = 0; j < h.ys.length; j++) {
-          if (h.ys[j] > peakDensity) peakDensity = h.ys[j];
+          if (h.ys[j] > peakDensities[i]) peakDensities[i] = h.ys[j];
         }
       }
       if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
@@ -3070,9 +3223,12 @@
             var rightEdge = cx[0] + bandSize * 0.5
                           - (d.gapRight ? bandSize * GAP_FRACTION : 0);
             // Opacity scales linearly with density relative to the
-            // peak across all axes — keeps bright cells comparable.
-            var opacity = peakDensity > 0
-              ? Math.max(0.04, 0.85 * density / peakDensity)
+            // PER-AXIS peak — concentrated and broad marginals both
+            // read at full intensity at their mode rather than the
+            // broad ones fading under a tightly-concentrated peer.
+            var axisPeak = peakDensities[d.value[0]];
+            var opacity = axisPeak > 0
+              ? Math.max(0.04, 0.85 * density / axisPeak)
               : 0;
             return {
               type: 'rect',
