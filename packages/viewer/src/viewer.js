@@ -3026,7 +3026,7 @@
       wrap.style.gap = '0.4em';
 
       var hint = document.createElement('span');
-      hint.textContent = 'Plot axes:';
+      hint.textContent = 'Variates:';
       hint.style.opacity = '0.6';
       wrap.appendChild(hint);
 
@@ -3157,7 +3157,7 @@
       wrap.style.gap = '0.4em';
 
       var hint = document.createElement('span');
-      hint.textContent = 'Plot fields:';
+      hint.textContent = 'Variates:';
       hint.style.opacity = '0.6';
       wrap.appendChild(hint);
 
