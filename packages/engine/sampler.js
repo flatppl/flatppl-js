@@ -685,6 +685,28 @@ function evaluateCall(ir, env) {
   if (op === 'tuple') {
     return (ir.args || []).map(a => evaluateExpr(a, env));
   }
+  // get_field(obj, "name") — record / preset field access. Lowered
+  // from surface `obj.field`. Second arg is always a literal string.
+  if (op === 'get_field') {
+    const args = ir.args || [];
+    if (args.length !== 2) {
+      throw new Error(`evaluateExpr: get_field expects 2 args, got ${args.length}`);
+    }
+    const obj = evaluateExpr(args[0], env);
+    const key = args[1] && args[1].kind === 'lit' ? args[1].value : evaluateExpr(args[1], env);
+    if (obj == null || typeof obj !== 'object') {
+      throw new Error(`evaluateExpr: get_field target is not a record (got ${typeof obj})`);
+    }
+    return obj[key];
+  }
+  // record(...) — build a JS object from the call's `fields` array
+  // (lowered from surface `record(a=x, b=y)`). Field values are
+  // evaluated; keys are static names from the fields array.
+  if (op === 'record' && Array.isArray(ir.fields)) {
+    const out = {};
+    for (const f of ir.fields) out[f.name] = evaluateExpr(f.value, env);
+    return out;
+  }
   // rnginit(<bytes>) — produces a fresh Philox state from a byte vector
   // via FNV-1a-based key derivation (rng.seedFromBytes).
   if (op === 'rnginit') {
