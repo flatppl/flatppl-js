@@ -1781,13 +1781,44 @@
       if (!d) return null;
       var discrete = !!derivationsState.discrete[name];
 
-      // Render mode dispatches the plot path:
-      //   'array'   — static fixed-length sequence, plotted as
-      //               index/value step line (legacy data preview).
-      //   'samples' — Monte-Carlo samples, plotted as histogram + an
-      //               optional analytical density overlay.
-      if (d.kind === 'array') {
-        return { name: name, mode: 'array' };
+      // Phase-driven dispatch (per spec §sec:phases):
+      //   'stochastic'   → atoms vary across i; histogram / corner plot.
+      //   'fixed'        → compile-time-determinate object. Sub-cases by
+      //                    inferredType.kind:
+      //                      value type (scalar/record/tuple/array)
+      //                        → render the value as text. Scalars
+      //                          additionally fall through to histogram
+      //                          when the per-atom samples differ
+      //                          (engine-side broadcast, e.g. lp_obs).
+      //                      measure type → atoms come from sampling the
+      //                        fixed measure; histogram still applies.
+      //   'parameterized' → handled via callable / input bindings above.
+      // Records/tuples with phase='fixed' get text directly (no
+      // measureIsConstant walk — phase has already classified them as
+      // deterministic).
+      var phase = binding.phase;
+      var inferredType = binding.inferredType;
+      var typeKind = inferredType && inferredType.kind;
+      if (phase === 'fixed') {
+        if (typeKind === 'record' || typeKind === 'tuple') {
+          return { name: name, mode: 'fixed-record' };
+        }
+        // Static numeric arrays still take the dedicated step-plot
+        // path. (kind:'array' derivation also implies phase='fixed'
+        // and inferredType=array.)
+        if (d.kind === 'array' || typeKind === 'array') {
+          return { name: name, mode: 'array' };
+        }
+        if (typeKind === 'scalar') {
+          return { name: name, mode: 'fixed-scalar', discrete: discrete };
+        }
+        // Falls through (typeKind === 'measure' / 'any' / 'deferred'):
+        // sample-driven render below.
+      } else {
+        // phase='stochastic' (or unknown) — keep the sample path.
+        if (d.kind === 'array') {
+          return { name: name, mode: 'array' };
+        }
       }
 
       // Variates never get a density overlay — see rule 1 above.
@@ -1950,6 +1981,20 @@
         renderProfilePlotForCurrent();
         return;
       }
+      // Phase=fixed value-typed bindings: render the surface form
+      // directly (text for scalars/records/tuples; existing step plot
+      // for arrays). Scalars whose per-atom samples differ (engine
+      // broadcast) fall through to the sample histogram path.
+      if (currentPlotPlan.mode === 'fixed-record') {
+        renderFixedRecord(currentPlotPlan);
+        return;
+      }
+      // mode='fixed-scalar' falls through to the sample pipeline
+      // below. renderSamplesAndDensity already short-circuits to
+      // scalar-text when samplesAreConstant — phase=fixed bindings
+      // whose samples are uniform get the text rendering, while
+      // engine-broadcast cases (lp_obs, where phase says fixed but
+      // each atom's logp differs) keep the histogram.
       // Array-mode loads the cached array synchronously (no worker
       // round-trip), so a Stop button is pointless for it. Sampling
       // mode shows the Stop button so the user can abort long
@@ -2140,6 +2185,14 @@
     // (literal records, deterministic arithmetic over literals, etc.)
     // — same idea as the scalar samplesAreConstant short-circuit, but
     // walks the SoA tree.
+    //
+    // Special case for literal-array fields: a `kind: 'array'`
+    // derivation materialises as { samples: Float64Array(K), ... }
+    // where K is the array length (NOT SAMPLE_COUNT). Per-atom these
+    // are deterministic — all atoms see the same array — so we treat
+    // them as "constant" even though the array's values differ from
+    // each other. We detect this via samples.length !== SAMPLE_COUNT;
+    // a per-atom scalar measure has length === SAMPLE_COUNT.
     function measureIsConstant(m) {
       if (!m) return false;
       if (m.fields) {
@@ -2169,7 +2222,13 @@
         }
         return true;
       }
-      if (m.samples instanceof Float64Array) return samplesAreConstant(m.samples);
+      if (m.samples instanceof Float64Array) {
+        // Length-mismatch with SAMPLE_COUNT identifies a literal-array
+        // measure (kind: 'array' derivation): per-atom these are
+        // deterministic, even though the array's own elements differ.
+        if (m.samples.length !== SAMPLE_COUNT) return true;
+        return samplesAreConstant(m.samples);
+      }
       return false;
     }
 
@@ -3102,6 +3161,32 @@
       // plot convention).
     }
 
+    // ---- Fixed-value plot --------------------------------------------
+    //
+    // Phase-driven dispatch for compile-time-determinate bindings.
+    // Records / tuples render the FlatPPL surface form as text;
+    // scalars render the value as a single number when the per-atom
+    // samples are constant, otherwise fall through to the histogram
+    // path (engine-broadcast cases like lp_obs).
+    function renderFixedRecord(plan) {
+      showPlotMessage('Loading…', { hint: true });
+      var planForCall = plan;
+      getMeasure(plan.name).then(function(measure) {
+        if (currentPlotPlan !== planForCall) return;
+        renderConstantRecord(measure, plan.name);
+      }).catch(function(err) {
+        if (currentPlotPlan !== planForCall) return;
+        showPlotMessage('Failed to load <strong>' + esc(plan.name) + '</strong>: '
+          + esc(err && err.message || String(err)));
+      });
+    }
+
+    // No separate renderFixedScalar — the existing
+    // renderSamplesAndDensity already short-circuits to scalar-text
+    // when samplesAreConstant. We keep mode='fixed-scalar' as the
+    // plan label (so the source intent is visible in plan dumps /
+    // logs) but route it through the same sample pipeline.
+
     // ---- Profile plot ------------------------------------------------
     //
     // Type-aware default value for an axis leafType. Used to populate
@@ -3232,12 +3317,25 @@
           return;
         }
       }
+      // Initial fixedEnv: type-aware defaults for non-swept axes.
+      // For axes whose source is a binding (e.g. theta2 → stochastic
+      // Exponential(1)), the type default of 0 can be degenerate
+      // (sigma=0 makes Normal log-density -∞). We override below
+      // after materialising the source bindings; the type default
+      // remains as a safety fallback for placeholder sources.
       var fixedEnv = {};
+      var nonSweptBindingSources = [];   // [{paramName, sourceName}, ...]
       for (var a2 = 0; a2 < axes.length; a2++) {
         if (axes[a2].key === plan.sweepKey) continue;
         var inp = inputByKwarg[axes[a2].kwargName];
         if (!inp) continue;
         fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
+        if (axes[a2].source && axes[a2].source.kind === 'binding') {
+          nonSweptBindingSources.push({
+            paramName: inp.paramName,
+            sourceName: axes[a2].source.name,
+          });
+        }
       }
       var sweepInput = inputByKwarg[sweepAxis.kwargName];
       var sweepParamName = sweepInput && sweepInput.paramName;
@@ -3283,11 +3381,16 @@
       // 4-σ quantile → leaf-type fallback); self-refs come from
       // pre-materialising the binding refs that survived
       // inlineForProfile (constants, stochastic atoms held at index
-      // 0). Both queries can run in parallel.
+      // 0); non-swept binding-sourced axes (e.g. theta2 in L's
+      // theta1-sweep) get samples[0] as their fixed value, replacing
+      // the type default. All three queries run in parallel.
       var rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
       Promise.all([
         resolveSweepRange(sweepAxis),
         Promise.all(selfRefs.map(function(n) { return getMeasure(n); })),
+        Promise.all(nonSweptBindingSources.map(function(s) {
+          return getMeasure(s.sourceName);
+        })),
       ]).then(function(arr) {
         rangeRef[0] = arr[0];
         var measures = arr[1];
@@ -3295,6 +3398,13 @@
           var m = measures[i];
           if (m && m.samples && m.samples.length > 0) {
             fixedEnv[selfRefs[i]] = m.samples[0];
+          }
+        }
+        var srcMeasures = arr[2];
+        for (var k = 0; k < nonSweptBindingSources.length; k++) {
+          var sm = srcMeasures[k];
+          if (sm && sm.samples && sm.samples.length > 0) {
+            fixedEnv[nonSweptBindingSources[k].paramName] = sm.samples[0];
           }
         }
         return sendWorker({
