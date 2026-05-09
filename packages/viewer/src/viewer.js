@@ -3432,7 +3432,7 @@
       var frag = document.createDocumentFragment();
       if (!plan.matchedPresets || plan.matchedPresets.length === 0) return frag;
       var lbl = document.createElement('label');
-      lbl.textContent = 'Preset:';
+      lbl.textContent = 'Inputs:';
       lbl.style.opacity = '0.6';
       lbl.style.marginRight = '0.25em';
       var sel = document.createElement('select');
@@ -3442,25 +3442,25 @@
       sel.style.padding = '2px 4px';
       sel.style.fontSize = '1em';
       sel.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+
+      // Auto values: type-aware default for each axis, overridden
+      // with samples[0] from the source binding when available in
+      // the measure cache (so the actual fixed value the renderer
+      // will use is visible). Sources whose binding hasn't been
+      // materialised yet show the type default, which is what the
+      // renderer's pre-cache fallback would also use.
+      var autoValues = computeAutoValues(plan);
       var autoOpt = document.createElement('option');
-      autoOpt.value = ''; autoOpt.textContent = 'auto';
+      autoOpt.value = '';
+      autoOpt.textContent = 'auto: ' + presetValuesText(autoValues);
       if (plan.presetName == null) autoOpt.selected = true;
       sel.appendChild(autoOpt);
       for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
         var p = plan.matchedPresets[ppi];
         var pOpt = document.createElement('option');
         pOpt.value = p.name;
-        // Show the preset's name AND its values inline:
-        //   pars1 — theta1 = 1.4, theta2 = 1.0
-        // The values come from formatValue on the preset's record;
-        // we strip the outer "record(...)" wrapper since the parens
-        // are noise inside a dropdown option.
-        var valuesText = formatValue(p.values);
-        if (valuesText.indexOf('record(') === 0
-            && valuesText.charAt(valuesText.length - 1) === ')') {
-          valuesText = valuesText.slice('record('.length, -1);
-        }
-        pOpt.textContent = p.name + ' — ' + valuesText;
+        // "name: theta1 = 1.4, theta2 = 1.0".
+        pOpt.textContent = p.name + ': ' + presetValuesText(p.values);
         if (plan.presetName === p.name) pOpt.selected = true;
         sel.appendChild(pOpt);
       }
@@ -3471,6 +3471,38 @@
       frag.appendChild(lbl);
       frag.appendChild(sel);
       return frag;
+    }
+
+    // Strip the outer "record(...)" wrapper from formatValue's
+    // output so the dropdown reads cleanly:
+    //   record(theta1 = 1.4, theta2 = 1.0)  →  theta1 = 1.4, theta2 = 1.0
+    function presetValuesText(values) {
+      var text = formatValue(values);
+      if (text.indexOf('record(') === 0 && text.charAt(text.length - 1) === ')') {
+        return text.slice('record('.length, -1);
+      }
+      return text;
+    }
+
+    // Synthesise the auto-mode fixed-input values for a profile /
+    // kernel-sample plan, matching the renderer's fallback
+    // behaviour: source-binding axes use the cached samples[0] (or
+    // type default if not yet cached); placeholder/other axes use
+    // the type default. Returned as { kwargName: value }.
+    function computeAutoValues(plan) {
+      var out = {};
+      var axes = plan.axes || [];
+      for (var i = 0; i < axes.length; i++) {
+        var ax = axes[i];
+        var def = defaultValueForLeafType(ax.leafType);
+        if (ax.source && ax.source.kind === 'binding'
+            && measureCache && measureCache.has(ax.source.name)) {
+          var m = measureCache.get(ax.source.name);
+          if (m && m.samples && m.samples.length > 0) def = m.samples[0];
+        }
+        out[ax.kwargName] = def;
+      }
+      return out;
     }
 
     // Render a kernel-sampled empirical measure. Record / tuple /
