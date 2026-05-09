@@ -1703,20 +1703,6 @@ function buildDerivations(bindings) {
     if (d) derivations[name] = d;
   }
 
-  // Drop derivations whose refs point to unsatisfiable names. Iterate
-  // until stable; one pass isn't enough because removing A might leave
-  // B's refs stranded, and so on.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const name of Object.keys(derivations)) {
-      if (!derivationRefsValid(derivations[name], derivations, bindings)) {
-        delete derivations[name];
-        changed = true;
-      }
-    }
-  }
-
   // Fixed-phase pre-evaluation. Walk fixed-phase bindings in topo
   // order and try to compute each one's value end-to-end via the
   // sampler's evaluator (which now handles rnginit / rand / rngstate
@@ -1924,6 +1910,23 @@ function buildDerivations(bindings) {
         // it. The viewer sees the absence as "not plottable" via the
         // same path as reified callables.
         if (existing) delete derivations[name];
+      }
+    }
+  }
+
+  // Cascade-prune: drop any derivation whose refs aren't satisfiable.
+  // Runs AFTER pre-eval so refs to fixed-phase value bindings (whose
+  // derivations were dropped because the value is opaque / a record)
+  // count as resolvable through fixedValues — without this, a
+  // sample derivation like `Normal(mu=get_field(ref(rp), "theta1"))`
+  // gets pruned the moment pre-eval drops rp's derivation.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const name of Object.keys(derivations)) {
+      if (!derivationRefsValid(derivations[name], derivations, bindings, fixedValues)) {
+        delete derivations[name];
+        changed = true;
       }
     }
   }
@@ -2286,64 +2289,71 @@ const MEASURE_OP_CLASSIFIERS = {
  * has a derivation. Aliases / weighted / normalize just check the
  * target.
  */
-function derivationRefsValid(d, derivations, bindings) {
+function derivationRefsValid(d, derivations, bindings, fixedValues) {
+  // A name is "resolvable downstream" if there's a derivation for it
+  // (the materialiser knows how to compute samples) OR it has a
+  // fixed-phase value the worker resolves through its session env.
+  // The viewer's collectRefArrays already drops fixed-phase refs from
+  // refArrays, so a binding whose only deps are fixed values can
+  // still sample correctly via session env. Without this, a Normal(
+  // mu=get_field(ref(rp), "theta1"), …) classified as 'sample' would
+  // cascade-prune the moment the orchestrator dropped rp's
+  // derivation (it's a record, not numeric — pre-eval drops those).
+  function resolvable(name) {
+    if (Object.prototype.hasOwnProperty.call(derivations, name)) return true;
+    if (fixedValues && fixedValues.has(name)) return true;
+    return false;
+  }
+
   if (d.kind === 'alias' || d.kind === 'normalize') {
-    return Object.prototype.hasOwnProperty.call(derivations, d.from);
+    return resolvable(d.from);
   }
   if (d.kind === 'weighted') {
-    if (!Object.prototype.hasOwnProperty.call(derivations, d.from)) return false;
+    if (!resolvable(d.from)) return false;
     // Per-atom path also depends on every binding referenced by its
     // weight expression — those need derivations of their own so the
     // visualPanel can build refArrays for evaluateN.
     if (d.weightIR) {
       for (const r of collectSelfRefs(d.weightIR)) {
-        if (!Object.prototype.hasOwnProperty.call(derivations, r)) return false;
+        if (!resolvable(r)) return false;
       }
     }
     return true;
   }
-  // Superpose: every component must be derivable. Empty/missing
-  // components were already rejected by classifyDerivation, so we
-  // only need the recursive check here.
+  // Superpose: every component must be resolvable.
   if (d.kind === 'superpose') {
     for (const n of d.fromNames) {
-      if (!Object.prototype.hasOwnProperty.call(derivations, n)) return false;
+      if (!resolvable(n)) return false;
     }
     return true;
   }
-  // Record: every field's source binding must be derivable.
+  // Record: every field's source binding must be resolvable.
   if (d.kind === 'record') {
     for (const k in d.fields) {
-      if (!Object.prototype.hasOwnProperty.call(derivations, d.fields[k])) return false;
+      if (!resolvable(d.fields[k])) return false;
     }
     return true;
   }
-  // Tuple: every positional element binding must be derivable.
+  // Tuple: every positional element binding must be resolvable.
   if (d.kind === 'tuple') {
     for (const n of d.elems) {
-      if (!Object.prototype.hasOwnProperty.call(derivations, n)) return false;
+      if (!resolvable(n)) return false;
     }
     return true;
   }
-  // iid: the inner measure must be derivable.
+  // iid: the inner measure must be resolvable.
   if (d.kind === 'iid') {
-    return Object.prototype.hasOwnProperty.call(derivations, d.from);
+    return resolvable(d.from);
   }
-  // Bayesupdate: the prior must be derivable. The kernel body comes
-  // either as a binding name (bodyName: must also be derivable) or
-  // as an inline IR (bodyIR: every measure ref inside it must point
-  // at a derivable binding). The visualPanel expands the body into a
-  // self-contained measure IR at materialise time and collects value
-  // refs from there to populate refArrays.
   if (d.kind === 'bayesupdate') {
-    if (!Object.prototype.hasOwnProperty.call(derivations, d.from)) return false;
+    if (!resolvable(d.from)) return false;
     if (d.bodyName) {
-      if (!Object.prototype.hasOwnProperty.call(derivations, d.bodyName)) return false;
+      if (!resolvable(d.bodyName)) return false;
       return true;
     }
     if (d.bodyIR) {
       for (const r of collectSelfRefs(d.bodyIR)) {
-        if (!Object.prototype.hasOwnProperty.call(derivations, r)) return false;
+        if (!resolvable(r)) return false;
       }
       return true;
     }
@@ -2351,17 +2361,13 @@ function derivationRefsValid(d, derivations, bindings) {
   }
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;
-  // logdensityof: the measure must be derivable. The materialiser
-  // expands it into a self-contained IR at evaluation time, so the
-  // measure's transitive value refs are checked then; the top-level
-  // ref alone is enough for cascade prune.
   if (d.kind === 'logdensityof') {
-    return Object.prototype.hasOwnProperty.call(derivations, d.measureName);
+    return resolvable(d.measureName);
   }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
   const refs = collectSelfRefs(ir);
   for (const r of refs) {
-    if (!Object.prototype.hasOwnProperty.call(derivations, r)) return false;
+    if (!resolvable(r)) return false;
   }
   return true;
 }
