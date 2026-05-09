@@ -2903,8 +2903,11 @@
         var q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
 
         var nLabel = document.createElement('span');
-        nLabel.textContent = formatCount(q.N) + ' samples';
-        nLabel.title = 'Total atom count in the empirical measure';
+        nLabel.textContent = formatSampleCount(q.N) + ' samples';
+        nLabel.title = 'Total atom count in the empirical measure'
+                     + (q.N >= 100 && Math.log10(q.N) === Math.floor(Math.log10(q.N))
+                        ? ' (' + formatCount(q.N) + ')'
+                        : '');
         wrap.appendChild(nLabel);
 
         // Effectively-uniform measures (no logWeights, or logWeights
@@ -2985,6 +2988,27 @@
     function formatCount(n) {
       // Integer-formatted count with thousands separators.
       return Math.round(n).toLocaleString('en-US');
+    }
+
+    // Compact sample-count rendering: powers of 10 collapse to
+    // superscript form ("10⁵" instead of "100,000") to save toolbar
+    // width — typical default sample sizes (10⁴, 10⁵, 10⁶) all win.
+    // Anything else falls back to the comma-grouped count. Only
+    // exact powers ≥ 10² qualify; "10" itself stays "10" and small
+    // counts read better verbatim.
+    function formatSampleCount(n) {
+      if (n > 0 && Math.floor(n) === n) {
+        var lg = Math.log10(n);
+        if (lg >= 2 && Number.isInteger(lg)) {
+          var sup = '';
+          var s = String(lg);
+          for (var i = 0; i < s.length; i++) {
+            sup += '⁰¹²³⁴⁵⁶⁷⁸⁹'[+s[i]];
+          }
+          return '10' + sup;
+        }
+      }
+      return formatCount(n);
     }
 
     /**
