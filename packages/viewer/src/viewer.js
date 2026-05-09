@@ -3033,8 +3033,13 @@
             var top = api.coord([d.value[0], d.edges[1]]);
             var bot = api.coord([d.value[0], d.edges[0]]);
             // ECharts category axes give bandWidth via api.size.
+            // Use the full band width so adjacent columns share their
+            // edges — the marginal strips read as a continuous
+            // shaded sequence (e.g. obs[1]…obs[10] looks like a
+            // smoothed version of the observed_data step plot)
+            // rather than separated columns.
             var bandSize = api.size([1, 0])[0];
-            var halfWidth = bandSize * 0.35;
+            var halfWidth = bandSize * 0.5;
             // Opacity scales linearly with density relative to the
             // peak across all axes — keeps bright cells comparable.
             var opacity = peakDensity > 0
