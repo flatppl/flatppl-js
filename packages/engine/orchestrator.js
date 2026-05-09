@@ -712,11 +712,35 @@ function liftInlineSubexpressions(bindings) {
     }
   }
 
+  // True iff `astNode` (or a descendant) is a Hole (`_`) or Placeholder
+  // (`_name_`). Lifting an expression containing such a marker into a
+  // module-level anon binding would be invalid: holes / placeholders
+  // are local to the enclosing fn / functionof / kernelof scope and
+  // can't be referenced from outside it. The lifter therefore bails
+  // on any expression carrying one. Common case: `fn(record(a = _,
+  // b = 2 * _))` — without this guard, the record's kwarg lifting
+  // would pull each hole-containing kwarg into a separate anon
+  // binding and clear the function's parameter list.
+  function containsHoleOrPlaceholder(astNode) {
+    if (!astNode || typeof astNode !== 'object') return false;
+    if (astNode.type === 'Hole' || astNode.type === 'Placeholder') return true;
+    for (const k of Object.keys(astNode)) {
+      const c = astNode[k];
+      if (Array.isArray(c)) {
+        for (const x of c) if (containsHoleOrPlaceholder(x)) return true;
+      } else if (c && typeof c === 'object' && k !== 'loc') {
+        if (containsHoleOrPlaceholder(c)) return true;
+      }
+    }
+    return false;
+  }
+
   function liftMeasure(astArg) {
     if (!astArg) return astArg;
     astArg = inlineUserCall(astArg);
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
+    if (containsHoleOrPlaceholder(astArg)) return astArg;
     const name = freshName();
     out.set(name, makeSyntheticBinding(name, astArg));
     return makeIdent(name, astArg.loc);
@@ -736,6 +760,7 @@ function liftInlineSubexpressions(bindings) {
         && astArg.callee.type === 'Identifier'
         && (astArg.callee.name === 'draw'
             || astArg.callee.name === 'logdensityof')) {
+      if (containsHoleOrPlaceholder(astArg)) return astArg;
       const name = freshName();
       out.set(name, makeSyntheticBinding(name, astArg));
       return makeIdent(name, astArg.loc);
@@ -751,6 +776,7 @@ function liftInlineSubexpressions(bindings) {
     astArg = inlineUserCall(astArg);
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
+    if (containsHoleOrPlaceholder(astArg)) return astArg;
     const name = freshName();
     out.set(name, makeSyntheticBinding(name, astArg));
     return makeIdent(name, astArg.loc);
