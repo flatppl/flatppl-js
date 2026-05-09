@@ -3530,20 +3530,22 @@
         // doesn't sit on the chart's top edge.
         yClipMax = yMax + 0.05 * cut;
       }
-      // Build (x, y) pairs. NaN / -∞ entries become null so echarts
-      // shows gaps (domain-of-definition holes) rather than connecting
-      // through them. Finite values below the cutoff get clamped to
-      // yClipMin so the curve "lays down" on the floor instead of
-      // dragging the y-range to ridiculous lows.
+      // Build (x, y) pairs. Three cases produce gaps (null) so the
+      // line renders as broken segments rather than misleading
+      // connections:
+      //   1. NaN / ±∞                        — domain-of-definition holes.
+      //   2. y < yClipMin (below the cutoff) — same conceptual gap:
+      //      "no useful information here". Drawing them at the floor
+      //      would suggest the curve sits at the cutoff value there,
+      //      which it doesn't. echarts honours { connectNulls: false }
+      //      and stops the line at each null.
       var data = new Array(n);
       for (var i = 0; i < n; i++) {
         var t = n === 1 ? 0 : i / (n - 1);
         var x = lo + t * (hi - lo);
         var y = values[i];
-        if (!Number.isFinite(y)) {
+        if (!Number.isFinite(y) || (yClipMin != null && y < yClipMin)) {
           data[i] = [x, null];
-        } else if (yClipMin != null && y < yClipMin) {
-          data[i] = [x, yClipMin];
         } else {
           data[i] = [x, y];
         }
