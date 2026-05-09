@@ -2205,24 +2205,70 @@
       return String(parseFloat(v.toPrecision(12)));
     }
 
-    // Format a JS array of numbers with ellipsis when long. The
-    // threshold balances readability against verbosity: 8 fits on
-    // typical screen widths even with ~5-digit values; longer
-    // collapses to "[a, b, c, …, z] (length N)".
-    function formatArrayWithEllipsis(values, maxShown) {
+    // Compose pre-formatted element strings into "[a, b, c]" or
+    // "[a, b, c, …, z] (length N)" for long arrays. The threshold
+    // balances readability against verbosity: 8 fits on typical
+    // screen widths even with ~5-digit values.
+    function formatArrayParts(parts, fullLength, maxShown) {
       var max = maxShown == null ? 8 : maxShown;
-      if (values.length <= max) {
-        var parts = new Array(values.length);
-        for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
-        return '[' + parts.join(', ') + ']';
-      }
+      var n = parts.length;
+      if (fullLength == null) fullLength = n;
+      if (n <= max) return '[' + parts.join(', ') + ']';
       var headN = 3, tailN = 1;
-      var head = new Array(headN);
-      for (var j = 0; j < headN; j++) head[j] = formatScalar(values[j]);
-      var tail = new Array(tailN);
-      for (var k = 0; k < tailN; k++) tail[k] = formatScalar(values[values.length - tailN + k]);
+      var head = parts.slice(0, headN);
+      var tail = parts.slice(n - tailN, n);
       return '[' + head.join(', ') + ', …, ' + tail.join(', ')
-        + '] (length ' + values.length + ')';
+        + '] (length ' + fullLength + ')';
+    }
+
+    // Back-compat shim: takes a numeric array, formats each element
+    // via formatScalar, then composes with formatArrayParts.
+    function formatArrayWithEllipsis(values, maxShown) {
+      var parts = new Array(values.length);
+      for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
+      return formatArrayParts(parts, values.length, maxShown);
+    }
+
+    // Composable value-to-string for plain JS values — numbers,
+    // booleans, strings, arrays, plain objects. Mirrors the
+    // FlatPPL surface form (record(k = v, …) for objects, [v, …]
+    // for arrays, ellipsised when long). The kind of light-weight
+    // pretty-printer that Julia's Base.show pairs with each value
+    // type. Used for preset value display in the toolbar dropdown
+    // and as the leaf-formatter for constant-measure rendering.
+    function formatValue(v, opts) {
+      if (typeof v === 'number')  return formatScalar(v);
+      if (typeof v === 'boolean') return String(v);
+      if (typeof v === 'string')  return JSON.stringify(v);
+      if (v == null)              return 'null';
+      var isArrayLike = Array.isArray(v) || ArrayBuffer.isView(v);
+      if (isArrayLike) {
+        var len = v.length;
+        var max = (opts && opts.maxArray) || 8;
+        if (len <= max) {
+          var parts = new Array(len);
+          for (var i = 0; i < len; i++) parts[i] = formatValue(v[i], opts);
+          return '[' + parts.join(', ') + ']';
+        }
+        var headN = 3, tailN = 1;
+        var head = new Array(headN);
+        for (var hi = 0; hi < headN; hi++) head[hi] = formatValue(v[hi], opts);
+        var tail = new Array(tailN);
+        for (var ti = 0; ti < tailN; ti++) {
+          tail[ti] = formatValue(v[len - tailN + ti], opts);
+        }
+        return '[' + head.join(', ') + ', …, ' + tail.join(', ')
+          + '] (length ' + len + ')';
+      }
+      if (typeof v === 'object') {
+        var keys = Object.keys(v);
+        var entries = new Array(keys.length);
+        for (var k = 0; k < keys.length; k++) {
+          entries[k] = keys[k] + ' = ' + formatValue(v[keys[k]], opts);
+        }
+        return 'record(' + entries.join(', ') + ')';
+      }
+      return String(v);
     }
 
     // True iff every scalar leaf of a record/tuple/array measure has
@@ -2305,12 +2351,18 @@
       }
       if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
         var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
-        var values = new Array(stride);
-        for (var s = 0; s < stride; s++) values[s] = m.samples[s];
-        return formatArrayWithEllipsis(values);
+        return formatValue(m.samples.subarray(0, stride));
       }
       if (m.samples instanceof Float64Array && m.samples.length > 0) {
-        return formatScalar(m.samples[0]);
+        // Two cases distinguished by sample length:
+        //   - length === SAMPLE_COUNT: a per-atom scalar measure
+        //     (caller verified samples are constant across atoms);
+        //     surface a single number.
+        //   - length !== SAMPLE_COUNT: a literal-data array
+        //     (kind:'array' derivation surfaced as a record field);
+        //     surface every element with array ellipsis.
+        if (m.samples.length === SAMPLE_COUNT) return formatScalar(m.samples[0]);
+        return formatValue(m.samples);
       }
       return '?';
     }
@@ -2596,10 +2648,10 @@
       bar.style.borderRadius = '3px';
       bar.style.fontSize = '0.92em';
       bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-      // Caller-supplied controls (e.g. the kernel-sample preset
-      // dropdown) sit before the mode toggle so they read as
-      // upstream of the plot-style choice.
-      if (extraToolbarControls) bar.appendChild(extraToolbarControls);
+      // (Caller-supplied controls — currently the kernel-sample
+      // preset dropdown — are appended below, AFTER mode toggle and
+      // axis selector. See bar.appendChild(extraToolbarControls)
+      // farther down.)
 
       // ---- Mode toggle group ----
       var modeGroup = document.createElement('div');
@@ -2655,6 +2707,12 @@
         // out from under its open popup.
         bar.appendChild(renderAxisDropdown(axes, onSelectionChange));
       }
+
+      // Caller-supplied controls (currently: the kernel-sample
+      // preset dropdown) sit after the axis selector so the
+      // toolbar reads left-to-right as
+      //   [plot style] [axes] [preset] [...sample-quality readout]
+      if (extraToolbarControls) bar.appendChild(extraToolbarControls);
 
       // Sample-quality readout pinned to the right edge.
       if (measure) {
@@ -3389,10 +3447,21 @@
       if (plan.presetName == null) autoOpt.selected = true;
       sel.appendChild(autoOpt);
       for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
+        var p = plan.matchedPresets[ppi];
         var pOpt = document.createElement('option');
-        pOpt.value = plan.matchedPresets[ppi].name;
-        pOpt.textContent = plan.matchedPresets[ppi].name;
-        if (plan.presetName === plan.matchedPresets[ppi].name) pOpt.selected = true;
+        pOpt.value = p.name;
+        // Show the preset's name AND its values inline:
+        //   pars1 — theta1 = 1.4, theta2 = 1.0
+        // The values come from formatValue on the preset's record;
+        // we strip the outer "record(...)" wrapper since the parens
+        // are noise inside a dropdown option.
+        var valuesText = formatValue(p.values);
+        if (valuesText.indexOf('record(') === 0
+            && valuesText.charAt(valuesText.length - 1) === ')') {
+          valuesText = valuesText.slice('record('.length, -1);
+        }
+        pOpt.textContent = p.name + ' — ' + valuesText;
+        if (plan.presetName === p.name) pOpt.selected = true;
         sel.appendChild(pOpt);
       }
       sel.addEventListener('change', function(e) {
@@ -3859,29 +3928,12 @@
           controls.appendChild(select);
         }
         if (hasPresets) {
-          var presetLabel = document.createElement('label');
-          presetLabel.textContent = 'Preset:';
-          presetLabel.htmlFor = 'profile-preset-select';
-          var presetSel = document.createElement('select');
-          presetSel.id = 'profile-preset-select';
-          var autoOpt = document.createElement('option');
-          autoOpt.value = '';   // empty value → "auto" sentinel
-          autoOpt.textContent = 'auto';
-          if (plan.presetName == null) autoOpt.selected = true;
-          presetSel.appendChild(autoOpt);
-          for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
-            var pOpt = document.createElement('option');
-            pOpt.value = plan.matchedPresets[ppi].name;
-            pOpt.textContent = plan.matchedPresets[ppi].name;
-            if (plan.presetName === plan.matchedPresets[ppi].name) pOpt.selected = true;
-            presetSel.appendChild(pOpt);
-          }
-          presetSel.addEventListener('change', function(e) {
-            plan.presetName = e.target.value || null;
+          // Reuse buildPresetControl so the option text (name +
+          // value record) and styling stay consistent with the
+          // kernel-sample path.
+          controls.appendChild(buildPresetControl(plan, function() {
             renderProfilePlotForCurrent();
-          });
-          controls.appendChild(presetLabel);
-          controls.appendChild(presetSel);
+          }));
         }
         if (isLogDensity) {
           if (plan.yCutoff == null) plan.yCutoff = 100;
