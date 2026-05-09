@@ -2597,6 +2597,29 @@ function walkArraySlots(arrayType, path, emit) {
   }
 }
 
+/**
+ * Walk an IR replacing every (ref %local <name>) with a literal of
+ * env[name] when env contains a value for that name. Used by the
+ * kernel-plot path to substitute preset parameter values into a
+ * kernel body before sampling it as a concrete measure.
+ *
+ * Leaves self-refs intact (those go through the normal materialiser
+ * path via expandMeasureRefsInIR + the binding's derivation) and
+ * leaves %local refs not in env intact too (defensive — caller
+ * should populate env for every param before calling this).
+ */
+function substituteLocals(ir, env) {
+  if (ir == null || typeof ir !== 'object') return ir;
+  if (Array.isArray(ir)) return ir.map(function(x) { return substituteLocals(x, env); });
+  if (ir.kind === 'ref' && ir.ns === '%local'
+      && Object.prototype.hasOwnProperty.call(env, ir.name)) {
+    return { kind: 'lit', value: env[ir.name], numType: 'real', loc: ir.loc };
+  }
+  const out = {};
+  for (const k in ir) out[k] = substituteLocals(ir[k], env);
+  return out;
+}
+
 function formatAxisLabel(kwargName, path) {
   let s = kwargName || '';
   for (const seg of path) {
@@ -2840,6 +2863,7 @@ module.exports = {
   signatureOf,
   distributeAxes,
   inlineForProfile,
+  substituteLocals,
   resolveAxisBaseSet,
   fourSigmaQuantileRange,
   findMatchingPresets,

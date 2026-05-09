@@ -23,7 +23,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
-  signatureOf, distributeAxes, inlineForProfile,
+  signatureOf, distributeAxes, inlineForProfile, substituteLocals,
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets,
   _internal: { isEvaluable, classifyForChain },
@@ -1172,4 +1172,55 @@ some_args = preset(arg1 = 2.0, arg2 = -3.5)
   const presets = findMatchingPresets(sig, lifted);
   assert.equal(presets.length, 1);
   assert.deepEqual(presets[0].values, { arg1: 2.0, arg2: -3.5 });
+});
+
+// =====================================================================
+// substituteLocals — replace %local refs with literals from an env
+// =====================================================================
+
+test('substituteLocals: replaces %local refs with lit values', () => {
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: {
+      mu:    { kind: 'ref', ns: '%local', name: 'theta1' },
+      sigma: { kind: 'ref', ns: '%local', name: 'theta2' },
+    },
+  };
+  const out = substituteLocals(ir, { theta1: 1.4, theta2: 1.0 });
+  assert.equal(out.kwargs.mu.kind,    'lit');
+  assert.equal(out.kwargs.mu.value,    1.4);
+  assert.equal(out.kwargs.sigma.kind, 'lit');
+  assert.equal(out.kwargs.sigma.value, 1.0);
+});
+
+test('substituteLocals: leaves self-refs intact', () => {
+  const ir = { kind: 'ref', ns: 'self', name: 'c' };
+  const out = substituteLocals(ir, { c: 5 });
+  assert.equal(out.ns, 'self');
+});
+
+test('substituteLocals: leaves %local refs not in env intact', () => {
+  const ir = { kind: 'ref', ns: '%local', name: 'theta1' };
+  const out = substituteLocals(ir, { /* theta1 absent */ });
+  assert.equal(out.ns, '%local');
+});
+
+test('substituteLocals: walks nested args / fields', () => {
+  const ir = {
+    kind: 'call', op: 'joint',
+    fields: [
+      { name: 'obs', value: {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'call', op: 'Normal', kwargs: {
+            mu:    { kind: 'ref', ns: '%local', name: 't' },
+            sigma: { kind: 'lit', value: 1 },
+          }},
+          { kind: 'lit', value: 10 },
+        ],
+      }},
+    ],
+  };
+  const out = substituteLocals(ir, { t: 2.5 });
+  assert.equal(out.fields[0].value.args[0].kwargs.mu.value, 2.5);
 });

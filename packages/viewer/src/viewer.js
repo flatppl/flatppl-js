@@ -1788,12 +1788,24 @@
         if (!sig || !sig.body) return null;
         var axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
         if (axes.length === 0) return null;
-        // Find preset bindings whose kwargs structurally match this
-        // callable's input signature. Selecting one in the UI fills
-        // the non-swept fixedEnv from its values (overriding the
-        // type-aware defaults / source-binding samples[0]).
         var presets = FlatPPLEngine.orchestrator.findMatchingPresets(
           sig, derivationsState.bindings);
+        // Kernels (sig.kind === 'kernel') don't get a swept-axis
+        // profile plot — there's nothing to "sweep" without an
+        // observation. Instead we treat them like other measure
+        // bindings: pick a preset (or auto-defaults), substitute
+        // those into the kernel body, sample N times, and show the
+        // resulting empirical measure as a histogram / corner plot.
+        if (sig.kind === 'kernel') {
+          return {
+            name: name,
+            mode: 'kernel-sample',
+            signature: sig,
+            axes: axes,
+            matchedPresets: presets,
+            presetName: null,            // null = "auto" defaults
+          };
+        }
         return {
           name: name,
           mode: 'profile',
@@ -2002,11 +2014,18 @@
         showPlotMessage('Not plottable for <strong>' + name + '</strong>.', { hint: true });
         return;
       }
-      // Profile mode (function / kernel / likelihood bindings) dispatches
-      // to its own worker primitive (profileN) and renderer; the rest
+      // Profile mode (function / likelihood bindings) dispatches to
+      // its own worker primitive (profileN) and renderer; the rest
       // of this function handles the sample-mode pipeline.
       if (currentPlotPlan.mode === 'profile') {
         renderProfilePlotForCurrent();
+        return;
+      }
+      // Kernel-sample mode: kernel binding rendered like any
+      // sampled measure, with a preset dropdown selecting the
+      // kernel's input parameters before sampling.
+      if (currentPlotPlan.mode === 'kernel-sample') {
+        renderKernelSampleForCurrent();
         return;
       }
       // Phase=fixed value-typed bindings: render the surface form
@@ -3215,6 +3234,257 @@
     // plan label (so the source intent is visible in plan dumps /
     // logs) but route it through the same sample pipeline.
 
+    // ---- Kernel sample plot ------------------------------------------
+    //
+    // Kernels (kernelof / functionof returning a measure) are plotted
+    // by picking concrete values for their inputs (a preset, or
+    // type-aware / source-empirical defaults), substituting those
+    // into the kernel body, and sampling N atoms from the resulting
+    // self-contained measure. The samples render via the existing
+    // histogram / corner-plot pipeline in renderSamplesAndDensity.
+    //
+    // Cache: kernel-sample measures are stored in measureCache under
+    // a synthetic key "<kernelName>|kernel-sample|<presetName>" so
+    // switching presets doesn't re-sample, and switching back to a
+    // previously-rendered kernel is instant.
+    function renderKernelSampleForCurrent() {
+      var plan = currentPlotPlan;
+      if (!plan || plan.mode !== 'kernel-sample') return;
+      var sig = plan.signature;
+      var inputByKwarg = {};
+      for (var k = 0; k < sig.inputs.length; k++) {
+        inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
+      }
+      // Restrict (for now) to top-level scalar inputs — same limit
+      // as the function/likelihood profile path.
+      for (var ai = 0; ai < plan.axes.length; ai++) {
+        if (plan.axes[ai].path && plan.axes[ai].path.length > 0) {
+          showPlotMessage('Kernel plot: record / array inputs not yet supported '
+            + '— try a kernel with scalar inputs only.',
+            { hint: true });
+          return;
+        }
+      }
+      var selectedPreset = null;
+      if (plan.presetName && plan.matchedPresets) {
+        for (var pi = 0; pi < plan.matchedPresets.length; pi++) {
+          if (plan.matchedPresets[pi].name === plan.presetName) {
+            selectedPreset = plan.matchedPresets[pi];
+            break;
+          }
+        }
+      }
+      var cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '');
+      // Build the input env (paramName → number). Auto values for
+      // axes not covered by the preset come from source-binding
+      // samples[0] (or type-aware defaults for placeholder sources).
+      var env = {};
+      var bindingSourceLookups = [];   // [{paramName, sourceName}, ...]
+      for (var a = 0; a < plan.axes.length; a++) {
+        var ax = plan.axes[a];
+        var inp = inputByKwarg[ax.kwargName];
+        if (!inp) continue;
+        if (selectedPreset && selectedPreset.values
+            && Object.prototype.hasOwnProperty.call(selectedPreset.values, ax.kwargName)) {
+          env[inp.paramName] = selectedPreset.values[ax.kwargName];
+          continue;
+        }
+        env[inp.paramName] = defaultValueForLeafType(ax.leafType);
+        if (ax.source && ax.source.kind === 'binding') {
+          bindingSourceLookups.push({
+            paramName: inp.paramName,
+            sourceName: ax.source.name,
+          });
+        }
+      }
+      // Build the substituted measure IR. expandMeasureRefsInIR peels
+      // any outer lawof and inlines measure-typed self-refs;
+      // inlineForProfile (with all params named) inlines value-position
+      // deterministic deps and rewrites self.<param> → %local.<param>;
+      // substituteLocals replaces %local refs with their concrete env
+      // values. Result: a self-contained measure IR with no refs.
+      var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
+      // We can do most of the IR work synchronously, but we need
+      // the binding-source samples first to fill env entries.
+      showPlotMessage('Sampling…', { cancellable: true, hint: true });
+      var planForCall = plan;
+      // Cache hit: use previously-sampled measure directly.
+      if (measureCache.has(cacheKey)) {
+        return Promise.resolve(measureCache.get(cacheKey)).then(function(m) {
+          if (currentPlotPlan !== planForCall) return;
+          renderKernelSampleMeasure(m, plan);
+        });
+      }
+      Promise.all(bindingSourceLookups.map(function(s) {
+        return getMeasure(s.sourceName);
+      })).then(function(srcMeasures) {
+        for (var i = 0; i < bindingSourceLookups.length; i++) {
+          var sm = srcMeasures[i];
+          if (sm && sm.samples && sm.samples.length > 0) {
+            env[bindingSourceLookups[i].paramName] = sm.samples[0];
+          }
+        }
+        var ir = sig.body;
+        ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
+          ir, derivationsState.derivations);
+        ir = FlatPPLEngine.orchestrator.inlineForProfile(
+          ir, paramNames, derivationsState.bindings, derivationsState.derivations);
+        ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
+        return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
+      }).then(function(measure) {
+        if (currentPlotPlan !== planForCall) return;
+        measureCache.set(cacheKey, measure);
+        renderKernelSampleMeasure(measure, plan);
+      }).catch(function(err) {
+        if (currentPlotPlan !== planForCall) return;
+        showPlotMessage('Kernel plot failed: ' + esc(err && err.message || String(err)));
+      });
+    }
+
+    // Render a kernel-sampled empirical measure: build the controls
+    // row (preset dropdown), then dispatch the measure through the
+    // existing record / scalar / array rendering paths.
+    function renderKernelSampleMeasure(measure, plan) {
+      resetPlotContentStyle();
+      var el = document.getElementById('plot-content');
+      el.innerHTML = '';
+      el.classList.add('profile-mode');
+      // Controls: preset dropdown only (no axis sweep, no cutoff —
+      // we're plotting a real distribution, not a parametric line).
+      if (plan.matchedPresets && plan.matchedPresets.length > 0) {
+        var controls = document.createElement('div');
+        controls.className = 'profile-controls';
+        var presetLabel = document.createElement('label');
+        presetLabel.textContent = 'Preset:';
+        presetLabel.htmlFor = 'kernel-preset-select';
+        var presetSel = document.createElement('select');
+        presetSel.id = 'kernel-preset-select';
+        var autoOpt = document.createElement('option');
+        autoOpt.value = ''; autoOpt.textContent = 'auto';
+        if (plan.presetName == null) autoOpt.selected = true;
+        presetSel.appendChild(autoOpt);
+        for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
+          var pOpt = document.createElement('option');
+          pOpt.value = plan.matchedPresets[ppi].name;
+          pOpt.textContent = plan.matchedPresets[ppi].name;
+          if (plan.presetName === plan.matchedPresets[ppi].name) pOpt.selected = true;
+          presetSel.appendChild(pOpt);
+        }
+        presetSel.addEventListener('change', function(e) {
+          plan.presetName = e.target.value || null;
+          renderKernelSampleForCurrent();
+        });
+        controls.appendChild(presetLabel);
+        controls.appendChild(presetSel);
+        el.appendChild(controls);
+      }
+      var chartDiv = document.createElement('div');
+      chartDiv.className = 'profile-chart';
+      el.appendChild(chartDiv);
+      // Multivariate / scalar dispatch: same as the standard sampled
+      // measure rendering. We temporarily move plot-content to the
+      // chartDiv inside it via a small adapter — rendering helpers
+      // expect to write into '#plot-content'. Easiest is to mount
+      // chartDiv as the plot-content body for those helpers'
+      // duration; we're already inside the profile-mode flex so the
+      // chart fills the remaining height.
+      var prevId = chartDiv.id;
+      chartDiv.id = 'plot-content';
+      el.id = 'plot-content-outer';
+      try {
+        if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
+          if ((measure.shape === 'record' || measure.shape === 'tuple')
+              && measureIsConstant(measure)) {
+            renderConstantRecord(measure, plan.name);
+          } else {
+            renderRecordMarginals(measure, plan.name);
+          }
+        } else if (measure.samples && samplesAreConstant(measure.samples)) {
+          // Single-value scalar measure (degenerate).
+          chartDiv.innerHTML =
+            '<div class="scalar-display">'
+            + '<div class="name">' + esc(plan.name) + '</div>'
+            + '<div class="value">' + esc(formatScalar(measure.samples[0])) + '</div>'
+            + '</div>';
+        } else {
+          // Scalar sampled measure → histogram via the existing path.
+          // Build a synthetic plan + reply shape that renderSamplesAndDensity
+          // accepts.
+          var fauxPlan = { name: plan.name, mode: 'samples', discrete: false, analyticalIR: null };
+          var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(
+            measure.samples,
+            measure.logWeights ? { logWeights: measure.logWeights } : {});
+          renderSamplesAndDensity({
+            samples: measure.samples,
+            histogram: hist,
+            logWeights: measure.logWeights || null,
+          }, fauxPlan);
+        }
+      } finally {
+        chartDiv.id = prevId;
+        el.id = 'plot-content';
+      }
+    }
+
+    // Recursively materialise a self-contained measure IR (no
+    // measure-position self-refs; %local refs already substituted to
+    // literals) into an EmpiricalMeasure. Used by the kernel-sample
+    // path to draw N atoms from a kernel body at fixed parameter
+    // values.
+    //
+    // Cases:
+    //   leaf distribution (Normal, Exp, …)  → worker.sampleN
+    //   joint(field=M, …) / record(…)       → recordMeasure(materialise(field), …)
+    //   iid(M, dim, …)                      → arrayMeasure(materialise(M, count×∏dims))
+    //   lawof(M)                            → recurse into M (lawof is a no-op on measures)
+    //
+    // weighted / normalize / superpose / kernels-applied-to-iid
+    // surface as a clear error rather than a silent broken plot.
+    function materialiseConcreteMeasure(ir, count, seed) {
+      if (!ir) return Promise.reject(new Error('materialiseConcreteMeasure: null IR'));
+      if (ir.kind !== 'call') {
+        return Promise.reject(new Error(
+          "materialiseConcreteMeasure: non-call IR (kind '" + ir.kind + "')"));
+      }
+      if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
+        return materialiseConcreteMeasure(ir.args[0], count, seed);
+      }
+      if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
+        var inner = ir.args[0];
+        var dims = [];
+        for (var di = 1; di < ir.args.length; di++) {
+          var d = ir.args[di];
+          if (!d || d.kind !== 'lit' || !Number.isInteger(d.value)) {
+            return Promise.reject(new Error('materialiseConcreteMeasure: iid dim must be integer literal'));
+          }
+          dims.push(d.value);
+        }
+        var k = dims.reduce(function(p, n) { return p * n; }, 1);
+        return materialiseConcreteMeasure(inner, count * k, seed).then(function(innerM) {
+          return FlatPPLEngine.empirical.arrayMeasure(innerM.samples, dims, null);
+        });
+      }
+      if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {
+        var fieldNames = ir.fields.map(function(f) { return f.name; });
+        var fieldIRs = ir.fields.map(function(f) { return f.value; });
+        return Promise.all(fieldIRs.map(function(v, i) {
+          return materialiseConcreteMeasure(v, count,
+            seed != null ? (seed ^ (i + 1) * 0x9e3779b1) : null);
+        })).then(function(subs) {
+          var fields = {};
+          for (var i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
+          return FlatPPLEngine.empirical.recordMeasure(fields, null);
+        });
+      }
+      // Leaf distribution (or unrecognised op — sampleN throws if
+      // it's not in the registry).
+      return sendWorker({
+        type: 'sampleN', ir: ir, count: count, seed: seed,
+      }).then(function(reply) {
+        return { samples: reply.samples, logWeights: null };
+      });
+    }
+
     // ---- Profile plot ------------------------------------------------
     //
     // Type-aware default value for an axis leafType. Used to populate
@@ -3323,14 +3593,10 @@
           + esc(plan.name) + '</strong>.', { hint: true });
         return;
       }
-      // Mode dispatch + obs handling.
+      // Mode dispatch. Kernels are routed to renderKernelSampleForCurrent
+      // by buildPlotPlan; profile mode here only sees function /
+      // likelihood bindings.
       var mode = sig.kind === 'function' ? 'function' : 'logdensity';
-      if (sig.kind === 'kernel') {
-        showPlotMessage('Profile plot: bare kernels need an obs value '
-          + '(plot the wrapping likelihoodof binding instead, or wait for F4b).',
-          { hint: true });
-        return;
-      }
       // Build paramName ↔ kwargName index for env construction.
       var inputByKwarg = {};
       for (var k = 0; k < sig.inputs.length; k++) {
