@@ -1127,11 +1127,69 @@
      * and its measure is free. With null-uniform logWeights the cache
      * is purely additive over today's behaviour — no extra allocation.
      */
+    /**
+     * Convert a JS value (from the orchestrator's fixedValues map) to
+     * the SoA empirical-measure shape getMeasure normally produces.
+     * Records → { fields: { name: <recursive>, … } }, tuples →
+     * { elems: [<recursive>, …] }, scalars → Float64Array(N).fill(v),
+     * numeric arrays → Float64Array literal. Returns null for values
+     * we don't know how to surface (rngstate, opaque objects).
+     */
+    function fixedValueToMeasure(v) {
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        var arr = new Float64Array(SAMPLE_COUNT);
+        arr.fill(v);
+        return { samples: arr, logWeights: null };
+      }
+      if (Array.isArray(v) || v instanceof Float64Array
+          || v instanceof Int32Array || v instanceof Uint8Array) {
+        // Numeric literal array — same shape as kind:'array' takes.
+        var allNum = true;
+        for (var i = 0; i < v.length; i++) {
+          if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) { allNum = false; break; }
+        }
+        if (!allNum) return null;
+        return { samples: Float64Array.from(v), logWeights: null };
+      }
+      if (v && typeof v === 'object') {
+        // rngstate / opaque objects carry an internal `key` array we
+        // don't surface. Plain JS records map to the SoA `fields` form.
+        if (v.key && Array.isArray(v.key) && v.counter) return null;   // rngstate
+        var fields = {};
+        var anyOk = false;
+        for (var k in v) {
+          if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+          var sub = fixedValueToMeasure(v[k]);
+          if (sub) { fields[k] = sub; anyOk = true; }
+        }
+        if (anyOk) return { fields: fields };
+      }
+      return null;
+    }
+
     function getMeasure(name) {
       if (measureCache.has(name)) return Promise.resolve(measureCache.get(name));
       if (!derivationsState) return Promise.reject(new Error('no model loaded'));
       var d = derivationsState.derivations[name];
-      if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
+      // No derivation but a fixedValues entry: pre-evaluated fixed-
+      // phase value. Synthesise the SoA shape the renderers expect so
+      // the existing record / scalar / array text-rendering paths work
+      // unchanged. Records and tuples get per-field/per-elem entries
+      // with N copies of the scalar so formatConstantMeasure's
+      // SAMPLE_COUNT path triggers the single-number short-circuit;
+      // length-1 arrays would render as "[v]" rather than "v".
+      if (!d) {
+        var fv = derivationsState.fixedValues;
+        if (!(fv && fv.has(name))) {
+          return Promise.reject(new Error("no derivation for '" + name + "'"));
+        }
+        var m = fixedValueToMeasure(fv.get(name));
+        if (!m) {
+          return Promise.reject(new Error("'" + name + "' has no plottable value"));
+        }
+        measureCache.set(name, m);
+        return Promise.resolve(m);
+      }
 
       var promise;
       if (d.kind === 'alias') {
@@ -1820,7 +1878,16 @@
       }
 
       var d = derivationsState.derivations[name];
-      if (!d) return null;
+      var fixedValues = derivationsState.fixedValues;
+      // A binding with no derivation but a fixedValues entry is a
+      // pre-evaluated fixed-phase value the orchestrator dropped
+      // from derivations because the JS shape didn't fit any
+      // existing derivation kind (typically a record / tuple from
+      // rand). The phase-driven dispatch below still knows how to
+      // route these — scalars, records, tuples — based on
+      // inferredType alone. We only bail when there's no derivation
+      // AND no fixed value (truly nothing to plot).
+      if (!d && !(fixedValues && fixedValues.has(name))) return null;
       var discrete = !!derivationsState.discrete[name];
 
       // Phase-driven dispatch (per spec §sec:phases):
@@ -1883,7 +1950,7 @@
         // Static numeric arrays still take the dedicated step-plot
         // path. (kind:'array' derivation also implies phase='fixed'
         // and inferredType=array.)
-        if (d.kind === 'array' || typeKind === 'array') {
+        if ((d && d.kind === 'array') || typeKind === 'array') {
           return { name: name, mode: 'array' };
         }
         if (typeKind === 'scalar') {
@@ -1893,7 +1960,7 @@
         // sample-driven render below.
       } else {
         // phase='stochastic' (or unknown) — keep the sample path.
-        if (d.kind === 'array') {
+        if (d && d.kind === 'array') {
           return { name: name, mode: 'array' };
         }
       }
