@@ -3475,7 +3475,7 @@
         if (isLogDensity) {
           if (plan.yCutoff == null) plan.yCutoff = 100;
           var cutLabel = document.createElement('label');
-          cutLabel.textContent = 'rel. cut-off:';
+          cutLabel.textContent = 'Rel. cut-off:';
           cutLabel.htmlFor = 'profile-cutoff-select';
           var cutSel = document.createElement('select');
           cutSel.id = 'profile-cutoff-select';
