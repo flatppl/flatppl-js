@@ -1661,3 +1661,53 @@ test('pre-eval: stops at parameterized boundary (no infinite loop)', () => {
   assert.equal(fixedValues.has('b'), false);
   assert.equal(fixedValues.has('c'), false);
 });
+
+// =====================================================================
+// Auto-splat (spec §sec:calling-convention) for user-defined callables
+// =====================================================================
+//
+// `f(record(a=x, b=y))` and `f(some_record_value)` are equivalent to
+// `f(a=x, b=y)`. Tested here at the orchestrator level: the user-call
+// inliner splats the record, the closure walk sees the substituted
+// boundaries, and pre-eval evaluates the result.
+
+test('auto-splat: forward_kernel(rand_pars) drives end-to-end rand chain', () => {
+  // The spec example pattern: prior-as-lawof(record(...)), draw a
+  // record-of-parameters, splat into the forward kernel, then sample
+  // the resulting measure. Pre-eval should compute every step.
+  const { bindings, diagnostics } = processSource(`
+    theta1 = draw(Normal(0, 1))
+    theta2 = draw(Exponential(1))
+    forward_kernel = functionof(joint(obs = iid(Normal(mu = theta1, sigma = theta2), 10)), theta1 = theta1, theta2 = theta2)
+    prior = lawof(record(theta1 = theta1, theta2 = theta2))
+    rs = rnginit([1,2,3,4])
+    rp, rs2 = rand(rs, prior)
+    ro, _ = rand(rs2, forward_kernel(rp))
+  `);
+  const errs = diagnostics.filter(d => d.severity === 'error');
+  assert.deepEqual(errs, [], `unexpected errors: ${JSON.stringify(errs)}`);
+
+  const { fixedValues } = buildDerivations(bindings);
+  // rp is a record with both fields populated.
+  const rp = fixedValues.get('rp');
+  assert.equal(typeof rp, 'object');
+  assert.equal(typeof rp.theta1, 'number');
+  assert.equal(typeof rp.theta2, 'number');
+  // ro is the sampled record-shaped measure: { obs: array(10) }.
+  const ro = fixedValues.get('ro');
+  assert.ok(ro && typeof ro === 'object', 'ro should be a record');
+  assert.ok(Array.isArray(ro.obs), 'ro.obs should be an array');
+  assert.equal(ro.obs.length, 10);
+  for (const v of ro.obs) assert.ok(Number.isFinite(v), 'finite obs sample');
+});
+
+test('auto-splat: inline record(...) call splats fields', () => {
+  const { bindings, diagnostics } = processSource(`
+    f = functionof(a + b, a = c, b = d)
+    c = elementof(reals)
+    d = elementof(reals)
+    y = f(record(a = 3, b = 4))
+  `);
+  const errs = diagnostics.filter(d => d.severity === 'error');
+  assert.deepEqual(errs, [], `unexpected errors: ${JSON.stringify(errs)}`);
+});
