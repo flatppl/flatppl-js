@@ -1519,3 +1519,20 @@ test('extractOutputIR: missing field / out-of-range slot → null', () => {
   // Not a record/tuple/array op — path with segment unresolvable.
   assert.equal(extractOutputIR({ kind: 'lit', value: 42 }, ['x']), null);
 });
+
+test('lift: fn(record(a=_, b=2*_)) keeps both holes as function params', () => {
+  // Regression for an aliasing-machinery bug: liftInlineSubexpressions
+  // visited record kwargs and lifted each kwarg value (including the
+  // raw `_` Hole node) into a separate anon binding, clearing the
+  // function's params. After the fix, lift bails on any expression
+  // containing a Hole or Placeholder marker.
+  const { bindings } = processSource(`
+f_demo = fn(record(a = _, b = 2 * _))
+`);
+  const r = buildDerivations(bindings);
+  const fb = r.bindings.get('f_demo');
+  assert.deepEqual(fb.ir.params, ['_arg1_', '_arg2_']);
+  // signatureOf should expose both params as inputs.
+  const sig = require('../orchestrator').signatureOf('f_demo', r.bindings);
+  assert.equal(sig.inputs.length, 2);
+});
