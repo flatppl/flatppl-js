@@ -505,6 +505,104 @@ function kernelTypeForPlan(plan, bindings) {
  * @param {Map} bindings
  * @returns {Map<string, 'fixed' | 'parameterized' | 'stochastic'>}
  */
+/**
+ * Phase of a degenerate (zero-entropy) draw, or null if the draw
+ * isn't degenerate. Implements two spec identities:
+ *
+ *   draw(Dirac(value = e))    ≡ e         → phase(e)
+ *   draw(lawof(e))            ≡ e         → phase(e)   (when e is
+ *                                            value-typed; lawof of
+ *                                            value-typed e is
+ *                                            Dirac(value=e), so the
+ *                                            outer draw extracts e)
+ *
+ * Walks at most one binding hop: if the draw's argument is a
+ * reference to a binding whose RHS is a Dirac/lawof call, that
+ * binding's value-arg phase is returned. Doesn't chase longer alias
+ * chains — keeps the logic local and predictable. Multi-hop cases
+ * (rare in practice) fall back to the structural 'stochastic'.
+ *
+ * Phase of the value AST is computed by walking refs (an Identifier
+ * resolves to its binding's phase via the supplied phaseOf, anything
+ * else falls back to 'fixed' for literals or recurses for nested
+ * calls). This stays inside the analyzer's existing phase machinery
+ * — no separate "alias-chasing" infrastructure.
+ */
+function phaseOfDegenerateDraw(drawArg, bindings, phaseOf) {
+  if (!drawArg) return null;
+  // Inline form: draw(Dirac(...)) or draw(lawof(...)).
+  const inlinePhase = degenerateMeasurePhase(drawArg, bindings, phaseOf);
+  if (inlinePhase != null) return inlinePhase;
+  // One-hop alias form: draw(<measure-binding-name>).
+  if (drawArg.type === 'Identifier' && bindings.has(drawArg.name)) {
+    const target = bindings.get(drawArg.name);
+    if (target && target.node && target.node.value) {
+      return degenerateMeasurePhase(target.node.value, bindings, phaseOf);
+    }
+  }
+  return null;
+}
+
+// Returns the phase of the value wrapped by a Dirac / lawof
+// expression, or null if the expression isn't a recognised
+// degenerate measure form. Internal helper for phaseOfDegenerateDraw.
+function degenerateMeasurePhase(ast, bindings, phaseOf) {
+  if (!ast || ast.type !== 'CallExpr' || !ast.callee
+      || ast.callee.type !== 'Identifier') return null;
+  const op = ast.callee.name;
+  if (op === 'Dirac') {
+    let valueAst = null;
+    if (Array.isArray(ast.args)) {
+      for (const a of ast.args) {
+        if (a && a.type === 'KeywordArg' && a.name === 'value') {
+          valueAst = a.value; break;
+        }
+      }
+      if (!valueAst) {
+        for (const a of ast.args) {
+          if (a && a.type !== 'KeywordArg') { valueAst = a; break; }
+        }
+      }
+    }
+    return valueAst ? phaseOfAstExpr(valueAst, bindings, phaseOf) : null;
+  }
+  if (op === 'lawof' && Array.isArray(ast.args) && ast.args.length === 1) {
+    // lawof(e) ≡ Dirac(value=e) only when e is value-typed and
+    // non-stochastic (for stochastic e the spec identity is
+    // lawof(draw(m)) ≡ m, which is *not* a Dirac and shouldn't
+    // be sharpened here). Compute e's phase; if it's stochastic,
+    // signal "not a degenerate Dirac form" so the caller falls
+    // back to the structural rule.
+    const ePhase = phaseOfAstExpr(ast.args[0], bindings, phaseOf);
+    return ePhase === 'stochastic' ? null : ePhase;
+  }
+  return null;
+}
+
+// Phase of an arbitrary AST expression. Identifiers resolve to
+// their binding's phase via phaseOf; literals are fixed; calls
+// take the max over their args. Used by the degenerate-draw
+// sharpening — kept tiny and local since the analysis is best-
+// effort (returning a too-conservative phase is safe).
+function phaseOfAstExpr(ast, bindings, phaseOf) {
+  if (!ast) return 'fixed';
+  if (ast.type === 'Identifier') {
+    return bindings.has(ast.name) ? phaseOf(ast.name) : 'fixed';
+  }
+  if (ast.type === 'CallExpr' && Array.isArray(ast.args)) {
+    let phase = 'fixed';
+    for (const a of ast.args) {
+      const argAst = (a && a.type === 'KeywordArg') ? a.value : a;
+      const argPhase = phaseOfAstExpr(argAst, bindings, phaseOf);
+      if (argPhase === 'stochastic') return 'stochastic';
+      if (argPhase === 'parameterized') phase = 'parameterized';
+    }
+    return phase;
+  }
+  // Literals (NumberLit, BoolLit, StringLit, ArrayLit, …) → fixed.
+  return 'fixed';
+}
+
 function computePhases(bindings) {
   const phases = new Map();
   const visiting = new Set();
@@ -563,7 +661,15 @@ function computePhases(bindings) {
     const cn = calleeName(b);
     let phase;
     if (cn === 'draw') {
-      phase = 'stochastic';
+      // Spec identities: draw(Dirac(value=e)) ≡ e, and lawof of a
+      // value-typed e is Dirac(value=e), so draw(lawof(e)) ≡ e too.
+      // For a degenerate (zero-entropy) draw, phase inherits e's
+      // phase rather than the structural-stochastic default.
+      // Non-degenerate draws (Normal, Exp, …) fall back to stochastic.
+      const drawArg = b.node.value && b.node.value.args
+                      && b.node.value.args[0];
+      const sharpened = phaseOfDegenerateDraw(drawArg, bindings, phaseOf);
+      phase = sharpened != null ? sharpened : 'stochastic';
     } else if (cn === 'elementof') {
       phase = 'parameterized';
     } else if (cn === 'external') {
@@ -717,7 +823,12 @@ function computePhasesForScope(bindings, boundaryNames) {
     const cn = calleeName(b);
     let phase;
     if (cn === 'draw') {
-      phase = 'stochastic';
+      // Same degenerate-draw sharpening as in computePhases — see
+      // its comment for the rationale (draw(Dirac(value=e)) ≡ e).
+      const drawArg = b.node.value && b.node.value.args
+                      && b.node.value.args[0];
+      const sharpened = phaseOfDegenerateDraw(drawArg, bindings, phaseOf);
+      phase = sharpened != null ? sharpened : 'stochastic';
     } else if (cn === 'elementof') {
       phase = 'parameterized';
     } else if (cn === 'external') {

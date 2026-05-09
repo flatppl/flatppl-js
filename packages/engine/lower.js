@@ -170,6 +170,12 @@ const FIELD_FORMS = new Set([
   'jointchain',
   'cartprod',
   'table',
+  // `preset` is semantically equivalent to a record (spec §sec:valuetypes:
+  // "a preset object is semantically equivalent to a record, and converts
+  // to a record in any context that expects a record"), so its IR uses
+  // the same fields-array shape — no separate handling needed in
+  // classifyRecordOrJoint or the viewer's record-rendering path.
+  'preset',
 ]);
 
 // Reified callables — introduce `%local` parameter scope.

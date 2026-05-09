@@ -63,6 +63,14 @@ const { quantileSorted } = require('./histogram');
 const SAMPLEABLE_DISTRIBUTIONS = new Set([
   'Normal', 'Exponential', 'LogNormal', 'Beta', 'Gamma',
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
+  // Dirac is degenerate (zero entropy): the sampler emits the
+  // 'value' kwarg verbatim N times. Listed here so measure-alias
+  // bindings like `m = Dirac(value = 5)` get classified 'skip' and
+  // resolved to a sample step at the target rather than failing
+  // SAMPLEABLE_DISTRIBUTIONS gate. Identity rewrite for
+  // `draw(Dirac(value=e))` lives in classifyForChain — at the
+  // draw site we re-route to evaluate(e) rather than sampling.
+  'Dirac',
 ]);
 
 // Subset of the above whose density is over the counting reference (a
@@ -187,7 +195,10 @@ function buildSampleChain(targetName, bindings) {
     if (stepKind.kind === 'sample') {
       order.push({ name, kind: 'sample', ir: stepKind.distIR });
     } else if (stepKind.kind === 'evaluate') {
-      order.push({ name, kind: 'evaluate', ir: rhsIR });
+      // irOverride lets a classifier (e.g. the draw(Dirac) identity
+      // rewrite) substitute a different IR than the binding's
+      // literal RHS. Default: use rhsIR verbatim.
+      order.push({ name, kind: 'evaluate', ir: stepKind.irOverride || rhsIR });
     }
     // 'skip' contributes nothing to the chain — its deps were already
     // walked above. This is the alias case.
@@ -212,6 +223,11 @@ function buildSampleChain(targetName, bindings) {
     if (targetBinding && targetBinding.node && targetBinding.node.value) {
       let targetIR;
       try { targetIR = lowerExpr(targetBinding.node.value); } catch (_) { targetIR = null; }
+      // Same canonicalisation as resolveMeasure / classifyForChain,
+      // so a target like `m = lawof(observed_data)` (where
+      // observed_data is fixed-phase) promotes to a sample step on
+      // Dirac(value=observed_data).
+      targetIR = normalizeMeasureIR(targetIR, bindings);
       if (targetIR && targetIR.kind === 'call' && targetIR.op
           && SAMPLEABLE_DISTRIBUTIONS.has(targetIR.op)) {
         order.push({ name: targetName, kind: 'sample', ir: targetIR });
@@ -233,6 +249,70 @@ function buildSampleChain(targetName, bindings) {
 }
 
 /**
+ * Canonicalise measure-construction IRs so downstream classification,
+ * sampling, and the viewer's plot dispatch all see a single normalized
+ * shape per equivalence class. Pure: input IR is not mutated.
+ *
+ *   lawof(e)              ≡ Dirac(value = e)   ONLY when e is fixed-phase.
+ *      (For deterministic e the law is a point mass at e. For
+ *      stochastic e — e.g. `lawof(draw(m))` — the spec identity is
+ *      lawof(draw(m)) ≡ m, NOT Dirac(value=draw_result), so we skip
+ *      the rewrite. Spec §sec:variate-measure + §sec:lawof.)
+ *
+ *   Dirac(e)              ≡ Dirac(value = e)
+ *      (Positional argument bound to the kwarg name per spec
+ *      §sec:calling-convention: built-in callables accept both
+ *      positional and keyword forms, with identical semantics.
+ *      Purely syntactic — no phase check needed.)
+ *
+ * Applied at every entry point that classifies measure IRs
+ * (classifyForChain, resolveMeasure, target-promotion,
+ * classifyDerivation). After this point, fixed-phase lawof and
+ * positional-Dirac don't appear as distinct measure surface forms —
+ * only Dirac(value=...) remains, and the Dirac sampler / viewer text
+ * path handles it uniformly.
+ *
+ * @param ir       IR node to (possibly) rewrite.
+ * @param bindings Optional bindings map. When supplied, enables the
+ *                 lawof rewrite by letting us check the phase of a
+ *                 ref-arg. Without it, lawof passes through unchanged.
+ */
+function normalizeMeasureIR(ir, bindings) {
+  if (!ir || ir.kind !== 'call') return ir;
+  if (ir.op === 'lawof'
+      && Array.isArray(ir.args) && ir.args.length === 1
+      && (!ir.kwargs || Object.keys(ir.kwargs).length === 0)) {
+    if (isFixedPhaseValueIR(ir.args[0], bindings)) {
+      return { kind: 'call', op: 'Dirac',
+               kwargs: { value: ir.args[0] }, loc: ir.loc };
+    }
+  }
+  if (ir.op === 'Dirac'
+      && (!ir.kwargs || !Object.prototype.hasOwnProperty.call(ir.kwargs, 'value'))
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    return { kind: 'call', op: 'Dirac',
+             kwargs: { value: ir.args[0] }, loc: ir.loc };
+  }
+  return ir;
+}
+
+// Conservative "this IR denotes a deterministic value" predicate used
+// by normalizeMeasureIR's lawof rewrite. Literals and named constants
+// are always fixed; refs are fixed iff they point at a binding with
+// phase='fixed'. Anything else (calls, missing bindings) returns
+// false — the rewrite skips them and the lawof stays in its original
+// form for downstream phase-aware dispatch.
+function isFixedPhaseValueIR(ir, bindings) {
+  if (!ir) return false;
+  if (ir.kind === 'lit' || ir.kind === 'const') return true;
+  if (ir.kind === 'ref' && ir.ns === 'self' && bindings) {
+    const b = bindings.get(ir.name);
+    return !!(b && b.phase === 'fixed');
+  }
+  return false;
+}
+
+/**
  * Decide how a single binding contributes to the chain.
  * Returns null if not chainable, otherwise one of:
  *   { kind: 'sample',   distIR }  — sample from distIR per draw
@@ -241,6 +321,9 @@ function buildSampleChain(targetName, bindings) {
  *                                    chain step produced for this name
  */
 function classifyForChain(binding, rhsIR, bindings) {
+  // Canonicalise lawof / positional-Dirac into Dirac(value=...) so
+  // every branch below can reason in a single normalized form.
+  rhsIR = normalizeMeasureIR(rhsIR, bindings);
   // Stochastic binding: `y = draw(...)`. The lowered RHS is a
   // (call draw <args>); we want the args[0] (the dist-call IR) for
   // the sample step so the worker doesn't have to special-case 'draw'.
@@ -256,6 +339,21 @@ function classifyForChain(binding, rhsIR, bindings) {
     if (!inner) return null;
     const distIR = resolveMeasure(inner, bindings, new Set());
     if (!distIR) return null;
+    // Identity rewrite for degenerate (zero-entropy) measures:
+    //   draw(Dirac(value = e)) ≡ e
+    // (lawof / positional-Dirac forms are already canonicalised to
+    // Dirac(value=...) by resolveMeasure → normalizeMeasureIR.)
+    // Re-route the binding from a sample step on a degenerate measure
+    // to an evaluate step on the value IR; the worker evaluates e
+    // (per atom, with refs from upstream) rather than spinning up a
+    // degenerate sampler. Phase analysis still classifies the binding
+    // 'stochastic' by the strict structural rule (any draw ancestor →
+    // stochastic), but the runtime values are correct and downstream
+    // rendering treats it equivalently to e.
+    if (distIR.kind === 'call' && distIR.op === 'Dirac'
+        && distIR.kwargs && distIR.kwargs.value) {
+      return { kind: 'evaluate', irOverride: distIR.kwargs.value };
+    }
     return { kind: 'sample', distIR };
   }
 
@@ -267,7 +365,12 @@ function classifyForChain(binding, rhsIR, bindings) {
   // Detection: the lowered RHS is a (call <DistName> ...) with
   // DistName in SAMPLEABLE_DISTRIBUTIONS. Anything else under
   // type='call' falls through to the deterministic-arithmetic path.
-  if (binding.type === 'call' && rhsIR && rhsIR.kind === 'call' && rhsIR.op
+  //
+  // type='lawof' is admitted alongside type='call' here, since after
+  // normalizeMeasureIR a `lawof(e)` binding is shaped exactly like
+  // `Dirac(value=e)` — same skip-then-promote-on-target flow.
+  if ((binding.type === 'call' || binding.type === 'lawof')
+      && rhsIR && rhsIR.kind === 'call' && rhsIR.op
       && SAMPLEABLE_DISTRIBUTIONS.has(rhsIR.op)) {
     return { kind: 'skip' };
   }
@@ -309,6 +412,11 @@ function classifyForChain(binding, rhsIR, bindings) {
  */
 function resolveMeasure(ir, bindings, seen) {
   if (!ir) return null;
+  // Canonicalise on the way in: lawof of fixed-phase value and
+  // positional-Dirac become Dirac(value=...) so the SAMPLEABLE check
+  // below — and every downstream consumer of the returned IR — sees
+  // a single shape per measure-equivalence class.
+  ir = normalizeMeasureIR(ir, bindings);
   if (ir.kind === 'call' && ir.op && SAMPLEABLE_DISTRIBUTIONS.has(ir.op)) {
     return ir;
   }
@@ -573,13 +681,17 @@ function liftInlineSubexpressions(bindings) {
     const numArgs = astNode.args ? astNode.args.length : 0;
     const sig = argSignature(op, numArgs);
 
-    // record/joint/jointchain fields: each kwarg value gets lifted to
-    // a synthetic binding so the classifier can read them as bare
-    // refs. record/jointchain fields are values; joint fields are
-    // measures. Both pass through liftMeasure (= "lift non-trivial
-    // expression to anon binding") — the distinction lives at type
-    // inference, not at lifting.
-    const isRecordLike = op === 'record' || op === 'joint' || op === 'jointchain';
+    // record/joint/jointchain/preset fields: each kwarg value gets
+    // lifted to a synthetic binding so the classifier can read them
+    // as bare refs. record/jointchain/preset fields are values; joint
+    // fields are measures. All pass through liftMeasure (= "lift any
+    // non-trivial expression to an anon binding") — the value/measure
+    // distinction lives at type inference, not at lifting. preset
+    // is grouped here per spec §sec:valuetypes ("a preset object is
+    // semantically equivalent to a record"), so it shares the same
+    // lifting rule and downstream record-shape derivation path.
+    const isRecordLike = op === 'record' || op === 'joint'
+                       || op === 'jointchain' || op === 'preset';
 
     if (astNode.args) {
       for (let i = 0; i < astNode.args.length; i++) {
@@ -1571,10 +1683,32 @@ function classifyDerivation(binding, bindings) {
   }
 
   if (binding.type === 'call' || binding.type === 'literal') {
+    // Canonicalise lawof / positional-Dirac before the SAMPLEABLE
+    // check, so e.g. `m = Dirac(observed_data)` (positional) and
+    // `m = lawof(some_value_binding)` (with value_binding fixed)
+    // both classify on Dirac(value=...) — the engine's single
+    // canonical form for point-mass measures.
+    const normalizedRhsIR = normalizeMeasureIR(rhsIR, bindings);
     // Measure construction: call to a sampleable distribution.
-    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op
-        && SAMPLEABLE_DISTRIBUTIONS.has(rhsIR.op)) {
-      return { kind: 'sample', distIR: rhsIR };
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call' && normalizedRhsIR.op
+        && SAMPLEABLE_DISTRIBUTIONS.has(normalizedRhsIR.op)) {
+      // Dirac(value = ref-to-binding) is mathematically a plain
+      // alias — same equivalence class as lawof(ref-to-binding) —
+      // so classify as 'alias' for the lighter, sampler-free path.
+      // getMeasure recursively follows the alias chain to the
+      // source binding's measure object; sampling never runs and
+      // the Dirac REGISTRY's scalar-only limitation is sidestepped.
+      // (Without this, `m = Dirac(observed_data)` would hit the
+      // sample path with refArrays missing per-atom values for the
+      // literal-array source, producing garbage samples.)
+      if (normalizedRhsIR.op === 'Dirac'
+          && normalizedRhsIR.kwargs && normalizedRhsIR.kwargs.value
+          && normalizedRhsIR.kwargs.value.kind === 'ref'
+          && normalizedRhsIR.kwargs.value.ns === 'self'
+          && bindings.has(normalizedRhsIR.kwargs.value.name)) {
+        return { kind: 'alias', from: normalizedRhsIR.kwargs.value.name };
+      }
+      return { kind: 'sample', distIR: normalizedRhsIR };
     }
 
     // Measure-algebra ops dispatch through MEASURE_OP_CLASSIFIERS
@@ -1782,6 +1916,11 @@ const MEASURE_OP_CLASSIFIERS = {
   superpose:    classifySuperpose,
   record:       classifyRecordOrJoint,
   joint:        classifyRecordOrJoint,
+  // preset is semantically equivalent to a record (spec
+  // §sec:valuetypes); classify identically so preset bindings
+  // surface as record-shape derivations and the viewer can
+  // render them with the existing fixed-record plot path.
+  preset:       classifyRecordOrJoint,
   iid:          classifyIid,
   logdensityof: classifyLogdensityof,
 };
@@ -2741,16 +2880,20 @@ function findMatchingPresets(signature, bindings) {
   const out = [];
   for (const [name, b] of bindings) {
     if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'preset') continue;
-    const kwargs = b.ir.kwargs || {};
-    const kwargNames = Object.keys(kwargs);
-    if (kwargNames.length !== expected.size) continue;
+    // preset is a FIELD_FORM (lower.js) and its IR carries fields,
+    // not kwargs — same shape as record. Each field's value is
+    // typically a ref to an anon-lifted binding (the lift pre-pass
+    // moves literals into __anon* bindings); resolveConstant chases
+    // refs through the bindings map to recover the underlying value.
+    const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
+    if (fields.length !== expected.size) continue;
     let allMatch = true;
     const values = {};
-    for (const k of kwargNames) {
-      if (!expected.has(k)) { allMatch = false; break; }
-      const v = resolveConstant(kwargs[k], bindings, new Set());
+    for (const f of fields) {
+      if (!expected.has(f.name)) { allMatch = false; break; }
+      const v = resolveConstant(f.value, bindings, new Set());
       if (v == null) { allMatch = false; break; }
-      values[k] = v;
+      values[f.name] = v;
     }
     if (!allMatch) continue;
     out.push({ name, values });

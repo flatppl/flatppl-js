@@ -186,6 +186,10 @@ function inferTypes(loweredModule) {
       case 'elementof': return write(inferElementof(expr, scopes), expr);
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);
+      // preset is semantically equivalent to a record (spec
+      // §sec:valuetypes); type-infer it identically so the result
+      // type is record-shape.
+      case 'preset':    return write(inferRecord(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);

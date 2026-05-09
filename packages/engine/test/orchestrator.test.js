@@ -1224,3 +1224,200 @@ test('substituteLocals: walks nested args / fields', () => {
   const out = substituteLocals(ir, { t: 2.5 });
   assert.equal(out.fields[0].value.args[0].kwargs.mu.value, 2.5);
 });
+
+// =====================================================================
+// Dirac — point-mass measure
+// =====================================================================
+//
+// Spec §sec:measure-algebra: `Dirac(value = v)` concentrates mass 1 at v.
+// The engine handles it on three fronts:
+//   1. As a measure binding (`m = Dirac(value = 5)`) — sample step on
+//      the Dirac IR, the worker's REGISTRY entry emits N copies.
+//   2. As a draw (`y = draw(Dirac(value = e))`) — identity rewrite in
+//      classifyForChain folds the draw away, the chain step is an
+//      `evaluate` on the value IR.
+//   3. As a downstream dep — the alias / measure-algebra path keeps
+//      working because Dirac is in SAMPLEABLE_DISTRIBUTIONS.
+
+test('Dirac: measure binding produces a sample step on the Dirac IR', () => {
+  const r = chainOf('m = Dirac(value = 5.0)', 'm');
+  assert.equal(r.unsupported, undefined);
+  assert.equal(r.chain.length, 1);
+  assert.equal(r.chain[0].name, 'm');
+  assert.equal(r.chain[0].kind, 'sample');
+  assert.equal(r.chain[0].ir.op, 'Dirac');
+  assert.equal(r.chain[0].ir.kwargs.value.value, 5.0);
+});
+
+test('Dirac: draw(Dirac(value = lit)) becomes an evaluate step on the value', () => {
+  // Identity rewrite: y = draw(Dirac(value = 5)) ≡ y = 5.
+  // Worker side, this evaluates the literal IR rather than spinning
+  // up a degenerate sampler.
+  const r = chainOf('y = draw(Dirac(value = 5.0))', 'y');
+  assert.equal(r.unsupported, undefined);
+  assert.equal(r.chain.length, 1);
+  assert.equal(r.chain[0].name, 'y');
+  assert.equal(r.chain[0].kind, 'evaluate');
+  // The override IR is the value arg, not the wrapping draw call.
+  assert.equal(r.chain[0].ir.kind, 'lit');
+  assert.equal(r.chain[0].ir.value, 5.0);
+});
+
+test('Dirac: draw(Dirac(value = ref)) evaluates the ref through the chain', () => {
+  // The value arg can reference an upstream binding. The rewrite
+  // preserves the ref; the worker's evaluator resolves it from the
+  // refArrays env at draw time.
+  const r = chainOf(`
+mu = 3.14
+y  = draw(Dirac(value = mu))
+`, 'y');
+  assert.equal(r.unsupported, undefined);
+  // Two steps: mu (evaluate) and y (evaluate via the rewrite).
+  assert.deepEqual(r.chain.map(s => s.name), ['mu', 'y']);
+  assert.equal(r.chain[1].kind, 'evaluate');
+  // The override IR is the ref to mu.
+  assert.equal(r.chain[1].ir.kind, 'ref');
+  assert.equal(r.chain[1].ir.name, 'mu');
+});
+
+test('Dirac: stochastic value flows through the rewrite normally', () => {
+  // y = draw(Dirac(value = stochastic_x)) ≡ y = stochastic_x.
+  // The chain has the upstream Normal sample, then y as evaluate via
+  // the rewrite — same pattern as `y = stochastic_x` directly.
+  const r = chainOf(`
+x = draw(Normal(mu = 0, sigma = 1))
+y = draw(Dirac(value = x))
+`, 'y');
+  assert.equal(r.unsupported, undefined);
+  assert.deepEqual(r.chain.map(s => s.name), ['x', 'y']);
+  assert.equal(r.chain[0].kind, 'sample');
+  assert.equal(r.chain[1].kind, 'evaluate');
+  assert.equal(r.chain[1].ir.kind, 'ref');
+  assert.equal(r.chain[1].ir.name, 'x');
+});
+
+test('Dirac: leafSampleIR returns the Dirac IR for measure-alias bindings', () => {
+  // Viewer's fixed-Dirac path uses leafSampleIR to pluck the Dirac
+  // IR (incl. the value sub-IR) for surface-form text rendering.
+  const { bindings } = processSource('m = Dirac(value = 5.0)');
+  const { derivations } = buildDerivations(bindings);
+  const ir = leafSampleIR('m', derivations);
+  assert.ok(ir, 'leafSampleIR returns non-null');
+  assert.equal(ir.op, 'Dirac');
+  assert.equal(ir.kwargs.value.kind, 'lit');
+  assert.equal(ir.kwargs.value.value, 5.0);
+});
+
+// =====================================================================
+// Measure-form canonicalisation: lawof and positional Dirac normalize
+// to Dirac(value = …)
+// =====================================================================
+//
+// Per spec §sec:variate-measure + §sec:lawof, lawof of a value-typed e
+// is the probability measure that a draw of e is governed by — for a
+// deterministic e that's a Dirac at e. And per §sec:calling-convention,
+// positional and keyword forms of built-in distribution calls are
+// semantically identical. The orchestrator canonicalises both into
+// Dirac(value = e) so downstream consumers see one shape per
+// equivalence class.
+
+test('Dirac canonicalisation: positional Dirac with binding ref classifies as alias', () => {
+  // m = Dirac(some_lit) — positional. classifyDerivation
+  // canonicalises to Dirac(value = some_lit), then promotes the
+  // ref-to-binding case to 'alias' (same equivalence class as
+  // lawof(ref) — the binding's per-atom value is the ref's
+  // per-atom value, so getMeasure can short-circuit through the
+  // alias chain without invoking the sampler).
+  const { bindings } = processSource(`
+some_lit = 5.0
+m = Dirac(some_lit)
+`);
+  const { derivations } = buildDerivations(bindings);
+  assert.ok(derivations.m, 'm derivable');
+  assert.equal(derivations.m.kind, 'alias');
+  assert.equal(derivations.m.from, 'some_lit');
+});
+
+test('Dirac canonicalisation: positional Dirac with literal value stays a sample step', () => {
+  // m = Dirac(5.0) — value is a literal, not a ref. There's no
+  // binding to alias to, so the sample path is taken (Dirac with
+  // kwarg-form distIR) and the sampler emits N copies of the value.
+  const { bindings } = processSource('m = Dirac(5.0)');
+  const { derivations } = buildDerivations(bindings);
+  assert.equal(derivations.m && derivations.m.kind, 'sample');
+  assert.equal(derivations.m.distIR.op, 'Dirac');
+  // After canonicalisation the value kwarg is present (was positional).
+  assert.ok(derivations.m.distIR.kwargs && derivations.m.distIR.kwargs.value);
+  assert.equal(derivations.m.distIR.kwargs.value.kind, 'lit');
+});
+
+test('lawof canonicalisation: lawof(value-binding-ref) classifies as alias', () => {
+  // m = lawof(some_lit). The engine routes refs through 'alias'
+  // (lighter than synthesising a Dirac sample step + sampler).
+  // Viewer follows the alias chain to render m exactly like some_lit.
+  const { bindings } = processSource(`
+some_lit = 5.0
+m = lawof(some_lit)
+`);
+  const { derivations } = buildDerivations(bindings);
+  assert.ok(derivations.m, 'm derivable');
+  assert.equal(derivations.m.kind, 'alias');
+  assert.equal(derivations.m.from, 'some_lit');
+});
+
+test('draw(Dirac(positional)) ≡ e: identity rewrite via canonicalisation', () => {
+  // Per-atom: y = draw(Dirac(some_lit)) ≡ y = some_lit.
+  // After resolveMeasure normalises Dirac(positional) → Dirac(value=…),
+  // the existing draw(Dirac) rewrite folds y to an evaluate step.
+  const r = chainOf(`
+some_lit = 5.0
+y = draw(Dirac(some_lit))
+`, 'y');
+  assert.equal(r.unsupported, undefined);
+  const yStep = r.chain.find(s => s.name === 'y');
+  assert.ok(yStep);
+  assert.equal(yStep.kind, 'evaluate');
+});
+
+test('draw(lawof(ref)) ≡ ref: identity rewrite via canonicalisation', () => {
+  // resolveMeasure recursively resolves lawof(ref-to-binding) by
+  // chasing the ref → binding's lowered RHS, applying the lawof
+  // canonicalisation along the way; the outer draw then sees
+  // Dirac(value=…) and rewrites to an evaluate step.
+  const r = chainOf(`
+some_lit = 5.0
+m = lawof(some_lit)
+y = draw(m)
+`, 'y');
+  assert.equal(r.unsupported, undefined);
+  const yStep = r.chain.find(s => s.name === 'y');
+  assert.ok(yStep);
+  assert.equal(yStep.kind, 'evaluate');
+});
+
+test('phase sharpening: degenerate draws inherit value phase', () => {
+  // Spec identity: draw(Dirac(value=e)) ≡ e and draw(lawof(e)) ≡ e
+  // for value-typed e. Phase sharpening makes degenerate draws
+  // inherit the value's phase rather than the structural-stochastic
+  // default. Non-degenerate draws (Normal, …) keep structural rule.
+  const { computePhases } = require('../analyzer');
+  const { bindings } = processSource(`
+some_lit = 5.0
+some_arr = [1.2, 3.4]
+m1 = lawof(some_lit)
+m2 = Dirac(some_lit)
+y1 = draw(m1)
+y2 = draw(m2)
+y3 = draw(lawof(some_arr))
+y4 = draw(Dirac(some_arr))
+real = draw(Normal(mu = 0, sigma = 1))
+`);
+  const phases = computePhases(bindings);
+  assert.equal(phases.get('m1'), 'fixed');
+  assert.equal(phases.get('m2'), 'fixed');
+  assert.equal(phases.get('y1'), 'fixed', 'draw(lawof(value-binding)) → fixed');
+  assert.equal(phases.get('y2'), 'fixed', 'draw(Dirac(value-binding)) → fixed');
+  assert.equal(phases.get('y3'), 'fixed', 'draw(inline lawof) → fixed');
+  assert.equal(phases.get('y4'), 'fixed', 'draw(inline Dirac) → fixed');
+  assert.equal(phases.get('real'), 'stochastic', 'real Normal draw stays stochastic');
+});

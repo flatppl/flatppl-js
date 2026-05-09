@@ -116,6 +116,64 @@ function logpmfBernoulli(x, p) {
   return Math.log(pmfBernoulli(x, p));
 }
 
+// Dirac point-mass measure. Spec §sec:measure-algebra: `Dirac(value=v)`
+// concentrates probability 1 at v. There's no stdlib distribution to
+// wrap, so we synthesise the same shape (Ctor + factory + logpdf) the
+// rest of the registry uses, so makeSampler / makeParametricSampler /
+// makeAnalytical / density all dispatch generically without
+// special-casing Dirac at the call sites.
+//
+// Identity rewrite for `draw(Dirac(value=e))` happens earlier in
+// orchestrator.classifyForChain — that path never reaches the sampler.
+// What does reach here: `m = Dirac(value = v)` measure-alias bindings
+// and any nested Dirac inside a measure-algebra expression we haven't
+// rewritten yet (e.g. weighted, joint).
+//
+// Restriction: scalar-value Diracs only. Sampling produces a
+// Float64Array, so the value coerces to a number. Record / array /
+// tuple-valued Diracs would need a structured EmpiricalMeasure path
+// analogous to joint / iid; deferred.
+const randDirac = {
+  // stdlib's dual-mode factory:
+  //   factory(p, opts)  → returns no-arg closure (params baked in)
+  //   factory(opts)     → returns closure that takes (p) per call
+  // Detect parametric form by the single object-with-prng arg shape;
+  // anything else is the static form.
+  factory: function() {
+    const args = Array.prototype.slice.call(arguments);
+    if (args.length === 1 && args[0] && typeof args[0] === 'object'
+        && ('prng' in args[0] || 'seed' in args[0])) {
+      // Parametric: per-call (value).
+      return function parametricDiracSampler(value) { return +value; };
+    }
+    // Static: factory(value, opts) — closure returns value.
+    const value = +args[0];
+    return function staticDiracSampler() { return value; };
+  },
+};
+
+// Synthetic stdlib-shaped Ctor. Only the methods the engine's
+// makeAnalytical / density / quantile paths actually call are
+// implemented. A Dirac has no Lebesgue density (singular w.r.t.
+// Lebesgue); pdf returns 1/0 indicator so density-overlay calls
+// don't crash, but viewer-side fixed-Dirac rendering bypasses this
+// and renders the surface form as text.
+function DiracCtor(value) {
+  this.value = +value;
+  this.mean = +value;
+  this.variance = 0;
+  this.stdev = 0;
+  this.support = [+value, +value];
+}
+DiracCtor.prototype.pdf      = function(x) { return x === this.value ? 1 : 0; };
+DiracCtor.prototype.logpdf   = function(x) { return x === this.value ? 0 : -Infinity; };
+DiracCtor.prototype.cdf      = function(x) { return x < this.value ? 0 : 1; };
+DiracCtor.prototype.quantile = function(_p) { return this.value; };
+
+function logpdfDirac(x, value) {
+  return x === value ? 0 : -Infinity;
+}
+
 // Per-distribution metadata, including the param translation between
 // FlatPPL spec names (used in surface code and in IR kwargs) and stdlib's
 // constructor argument order.
@@ -223,6 +281,19 @@ const REGISTRY = {
     Ctor:     Poisson,
     randFn:   randPoisson,
     logpdfFn: logpmfPoisson,
+  },
+  Dirac: {
+    // Degenerate point-mass measure. The 'value' kwarg may be of any
+    // scalar type (real / integer / bool); 'discrete' is left false
+    // because the engine has no consistent way to tell from the IR
+    // alone. Affects only density-curve overlay, which the viewer
+    // skips for fixed Diracs anyway.
+    params:   ['value'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     DiracCtor,
+    randFn:   randDirac,
+    logpdfFn: logpdfDirac,
   },
 };
 

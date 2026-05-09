@@ -345,13 +345,31 @@ function computeSubDAG(bindings, nodeName) {
         const argResult = collectDeps(firstArg, definedNames);
         inlineExprDeps = argResult.deps;
         inlineExprId = name + ':target';
+        // The inline expression's phase is the MAX of its own deps,
+        // not b.phase. The wrapping binding (lawof / functionof /
+        // kernelof) has its phase computed under absorption rules —
+        // lawof reports 'fixed' precisely because it absorbs the
+        // stochasticity of its body. The inline body itself is still
+        // stochastic per the structural rule (its value depends on
+        // stochastic ancestors before lawof absorbs them). Painting
+        // the synthetic node with b.phase would mis-classify it as
+        // fixed and render it in the fixed-grey style, hiding the
+        // stochastic-purple flow into the lawof bubble. Compute
+        // from deps instead.
+        let inlinePhase = 'fixed';
+        for (const dep of inlineExprDeps) {
+          const depB = bindings.get(dep);
+          const dp = depB && depB.phase;
+          if (dp === 'stochastic') { inlinePhase = 'stochastic'; break; }
+          if (dp === 'parameterized') inlinePhase = 'parameterized';
+        }
         visited.set(inlineExprId, {
           id: inlineExprId,
           // Empty label — anonymous bridge node, identifies itself via
           // hover (rendered first-arg expression).
           label: '',
           type: 'call',
-          phase: b.phase,
+          phase: inlinePhase,
           expr: renderExprShort(firstArg, 200),
           line: b.line,
           isBoundary: false,

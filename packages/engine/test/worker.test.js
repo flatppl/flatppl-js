@@ -388,6 +388,35 @@ test('sampleN: same (ir, seed) yields identical samples regardless of session st
   for (let i = 0; i < 50; i++) assert.equal(ra.samples[i], rb.samples[i]);
 });
 
+test('sampleN: Dirac emits N copies of the value (static path)', () => {
+  // Dirac is a degenerate distribution: every "draw" returns the
+  // value parameter. The worker's static-params fast path builds
+  // one sampler instance and calls it count times; for Dirac that
+  // closure just returns the baked-in value.
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const r = w.handle({ type: 'sampleN', ir: distIR('Dirac', { value: 7.5 }), count: 64, seed: 1 });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.samples.length, 64);
+  for (let i = 0; i < 64; i++) assert.equal(r.samples[i], 7.5);
+});
+
+test('sampleN: Dirac with refArrays evaluates the value per atom', () => {
+  // The per-i-params path: the value kwarg is a ref, refArrays
+  // supplies a per-atom Float64Array. The Dirac sampler's parametric
+  // factory returns each atom's value verbatim.
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 1 });
+  const xs = new Float64Array([1.5, 2.5, 3.5, 4.5]);
+  const ir = { kind: 'call', op: 'Dirac', kwargs: {
+    value: refIR('x'),
+  }, loc: synthLoc() };
+  const r = w.handle({ type: 'sampleN', ir, count: 4, seed: 1, refArrays: { x: xs } });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.samples.length, 4);
+  for (let i = 0; i < 4; i++) assert.equal(r.samples[i], xs[i]);
+});
+
 test('sampleN: refArrays supply per-i values for ref kwargs', () => {
   // A Normal whose mu is bound by a per-i array of values clustered
   // tightly around 100. Result samples should also cluster around 100.
