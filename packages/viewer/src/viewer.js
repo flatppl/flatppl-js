@@ -2509,7 +2509,7 @@
         + '</div>';
     }
 
-    function renderRecordMarginals(measure, bindingName) {
+    function renderRecordMarginals(measure, bindingName, extraToolbarControls) {
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
@@ -2553,7 +2553,7 @@
 
       function rerender() {
         toolbarHost.innerHTML = '';
-        toolbarHost.appendChild(renderRecordToolbar(axes, rerender, measure));
+        toolbarHost.appendChild(renderRecordToolbar(axes, rerender, measure, extraToolbarControls));
         if (recordSelection.mode === 'marginals') {
           // Marginals mode plots every axis (no cap, no selection).
           renderDensityStrips(plotHost, measure, bindingName, axes);
@@ -2574,7 +2574,7 @@
      * elements) so mode buttons reflect active state and the
      * selector visibility tracks the mode.
      */
-    function renderRecordToolbar(axes, onChange, measure) {
+    function renderRecordToolbar(axes, onChange, measure, extraToolbarControls) {
       var bar = document.createElement('div');
       bar.style.display = 'flex';
       bar.style.flexWrap = 'wrap';
@@ -2586,6 +2586,10 @@
       bar.style.borderRadius = '3px';
       bar.style.fontSize = '0.92em';
       bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      // Caller-supplied controls (e.g. the kernel-sample preset
+      // dropdown) sit before the mode toggle so they read as
+      // upstream of the plot-style choice.
+      if (extraToolbarControls) bar.appendChild(extraToolbarControls);
 
       // ---- Mode toggle group ----
       var modeGroup = document.createElement('div');
@@ -3341,89 +3345,126 @@
       });
     }
 
-    // Render a kernel-sampled empirical measure: build the controls
-    // row (preset dropdown), then dispatch the measure through the
-    // existing record / scalar / array rendering paths.
+    // Build a "Preset: [auto / pars1 / …]" control fragment we can
+    // hand to renderRecordMarginals (via extraToolbarControls) so
+    // the dropdown sits inline with the existing plot-style buttons
+    // instead of taking its own row.
+    function buildPresetControl(plan, onChange) {
+      var frag = document.createDocumentFragment();
+      if (!plan.matchedPresets || plan.matchedPresets.length === 0) return frag;
+      var lbl = document.createElement('label');
+      lbl.textContent = 'Preset:';
+      lbl.style.opacity = '0.6';
+      lbl.style.marginRight = '0.25em';
+      var sel = document.createElement('select');
+      sel.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+      sel.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+      sel.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+      sel.style.padding = '2px 4px';
+      sel.style.fontSize = '1em';
+      sel.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      var autoOpt = document.createElement('option');
+      autoOpt.value = ''; autoOpt.textContent = 'auto';
+      if (plan.presetName == null) autoOpt.selected = true;
+      sel.appendChild(autoOpt);
+      for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
+        var pOpt = document.createElement('option');
+        pOpt.value = plan.matchedPresets[ppi].name;
+        pOpt.textContent = plan.matchedPresets[ppi].name;
+        if (plan.presetName === plan.matchedPresets[ppi].name) pOpt.selected = true;
+        sel.appendChild(pOpt);
+      }
+      sel.addEventListener('change', function(e) {
+        plan.presetName = e.target.value || null;
+        onChange();
+      });
+      frag.appendChild(lbl);
+      frag.appendChild(sel);
+      return frag;
+    }
+
+    // Render a kernel-sampled empirical measure. Record / tuple /
+    // array measures route through renderRecordMarginals with the
+    // preset dropdown injected into its toolbar (no extra row).
+    // Scalar sampled measures use a simple histogram via
+    // renderSamplesAndDensity; constant scalars / records get the
+    // text-render path. This avoids wrapping the existing renderers
+    // in a flex-column container that compressed the corner-plot
+    // cells under a layout race.
     function renderKernelSampleMeasure(measure, plan) {
+      var rerender = function() { renderKernelSampleForCurrent(); };
+      if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
+        if ((measure.shape === 'record' || measure.shape === 'tuple')
+            && measureIsConstant(measure)) {
+          // Constant record: text-render. Preset dropdown isn't
+          // useful when the result is degenerate, but the binding
+          // navigation still applies — the text page is sufficient.
+          renderConstantRecord(measure, plan.name);
+          return;
+        }
+        renderRecordMarginals(measure, plan.name, buildPresetControl(plan, rerender));
+        return;
+      }
+      // Scalar measure path.
       resetPlotContentStyle();
       var el = document.getElementById('plot-content');
+      if (measure.samples && samplesAreConstant(measure.samples)) {
+        el.innerHTML =
+          '<div class="scalar-display">'
+          + '<div class="name">' + esc(plan.name) + '</div>'
+          + '<div class="value">' + esc(formatScalar(measure.samples[0])) + '</div>'
+          + '</div>';
+        return;
+      }
+      // For scalar histograms there's no built-in toolbar; fall back
+      // to the inline profile-mode wrapper with the preset dropdown
+      // above the chart.
       el.innerHTML = '';
       el.classList.add('profile-mode');
-      // Controls: preset dropdown only (no axis sweep, no cutoff —
-      // we're plotting a real distribution, not a parametric line).
       if (plan.matchedPresets && plan.matchedPresets.length > 0) {
         var controls = document.createElement('div');
         controls.className = 'profile-controls';
-        var presetLabel = document.createElement('label');
-        presetLabel.textContent = 'Preset:';
-        presetLabel.htmlFor = 'kernel-preset-select';
-        var presetSel = document.createElement('select');
-        presetSel.id = 'kernel-preset-select';
-        var autoOpt = document.createElement('option');
-        autoOpt.value = ''; autoOpt.textContent = 'auto';
-        if (plan.presetName == null) autoOpt.selected = true;
-        presetSel.appendChild(autoOpt);
-        for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
-          var pOpt = document.createElement('option');
-          pOpt.value = plan.matchedPresets[ppi].name;
-          pOpt.textContent = plan.matchedPresets[ppi].name;
-          if (plan.presetName === plan.matchedPresets[ppi].name) pOpt.selected = true;
-          presetSel.appendChild(pOpt);
-        }
-        presetSel.addEventListener('change', function(e) {
-          plan.presetName = e.target.value || null;
-          renderKernelSampleForCurrent();
-        });
-        controls.appendChild(presetLabel);
-        controls.appendChild(presetSel);
+        controls.appendChild(buildPresetControl(plan, rerender));
         el.appendChild(controls);
       }
       var chartDiv = document.createElement('div');
       chartDiv.className = 'profile-chart';
       el.appendChild(chartDiv);
-      // Multivariate / scalar dispatch: same as the standard sampled
-      // measure rendering. We temporarily move plot-content to the
-      // chartDiv inside it via a small adapter — rendering helpers
-      // expect to write into '#plot-content'. Easiest is to mount
-      // chartDiv as the plot-content body for those helpers'
-      // duration; we're already inside the profile-mode flex so the
-      // chart fills the remaining height.
-      var prevId = chartDiv.id;
-      chartDiv.id = 'plot-content';
-      el.id = 'plot-content-outer';
-      try {
-        if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
-          if ((measure.shape === 'record' || measure.shape === 'tuple')
-              && measureIsConstant(measure)) {
-            renderConstantRecord(measure, plan.name);
-          } else {
-            renderRecordMarginals(measure, plan.name);
-          }
-        } else if (measure.samples && samplesAreConstant(measure.samples)) {
-          // Single-value scalar measure (degenerate).
-          chartDiv.innerHTML =
-            '<div class="scalar-display">'
-            + '<div class="name">' + esc(plan.name) + '</div>'
-            + '<div class="value">' + esc(formatScalar(measure.samples[0])) + '</div>'
-            + '</div>';
-        } else {
-          // Scalar sampled measure → histogram via the existing path.
-          // Build a synthetic plan + reply shape that renderSamplesAndDensity
-          // accepts.
-          var fauxPlan = { name: plan.name, mode: 'samples', discrete: false, analyticalIR: null };
-          var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(
-            measure.samples,
-            measure.logWeights ? { logWeights: measure.logWeights } : {});
-          renderSamplesAndDensity({
-            samples: measure.samples,
-            histogram: hist,
-            logWeights: measure.logWeights || null,
-          }, fauxPlan);
-        }
-      } finally {
-        chartDiv.id = prevId;
-        el.id = 'plot-content';
-      }
+      var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(
+        measure.samples,
+        measure.logWeights ? { logWeights: measure.logWeights } : {});
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      var color = colorForBinding(plan.name);
+      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      plotEchart = echarts.init(chartDiv);
+      var pairs = new Array(hist.xs.length);
+      for (var i = 0; i < hist.xs.length; i++) pairs[i] = [hist.xs[i], hist.ys[i]];
+      plotEchart.setOption({
+        animation: false,
+        grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+        title: {
+          text: esc(plan.name),
+          left: 'center', top: 4,
+          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+        },
+        xAxis: {
+          type: 'value',
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+        },
+        yAxis: {
+          type: 'value',
+          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
+          axisLabel: { color: fg, opacity: 0.6 },
+          splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+        },
+        series: [{
+          type: 'bar', data: pairs,
+          itemStyle: { color: color, opacity: 0.6 },
+          barCategoryGap: 0,
+        }],
+      });
+      requestAnimationFrame(function() { try { plotEchart.resize(); } catch (_) {} });
     }
 
     // Recursively materialise a self-contained measure IR (no
