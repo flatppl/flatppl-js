@@ -2688,6 +2688,54 @@ function parseSetIR(setIR) {
 }
 
 /**
+ * Find preset bindings whose kwarg shape matches a callable's input
+ * signature. The profile-plot UI uses this to populate its "Preset"
+ * dropdown — selecting a preset fills fixedEnv with its values for
+ * non-swept axes.
+ *
+ * Match rule (Phase 1 — strict, top-level scalars only):
+ *   - preset.ir.op === 'preset'
+ *   - the set of preset kwarg names equals the set of signature
+ *     input kwargNames (no missing inputs, no extra preset fields)
+ *   - every value is constant-resolvable to a finite number via
+ *     resolveConstant (literal, named constant, or simple
+ *     arithmetic over constants — `-3.5` lowers to `neg(lit 3.5)`
+ *     so a bare literal-only check would falsely reject negatives)
+ *
+ * Returns an array of { name, values } where `values` maps the
+ * input's kwargName → JS number. Empty array when no presets match.
+ *
+ * Future work (deferred): unify nested record / array preset
+ * shapes against record-input signatures.
+ */
+function findMatchingPresets(signature, bindings) {
+  if (!signature || !bindings || !Array.isArray(signature.inputs)) return [];
+  const expected = new Set();
+  for (const inp of signature.inputs) {
+    if (inp.kwargName) expected.add(inp.kwargName);
+  }
+  if (expected.size === 0) return [];
+  const out = [];
+  for (const [name, b] of bindings) {
+    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'preset') continue;
+    const kwargs = b.ir.kwargs || {};
+    const kwargNames = Object.keys(kwargs);
+    if (kwargNames.length !== expected.size) continue;
+    let allMatch = true;
+    const values = {};
+    for (const k of kwargNames) {
+      if (!expected.has(k)) { allMatch = false; break; }
+      const v = resolveConstant(kwargs[k], bindings, new Set());
+      if (v == null) { allMatch = false; break; }
+      values[k] = v;
+    }
+    if (!allMatch) continue;
+    out.push({ name, values });
+  }
+  return out;
+}
+
+/**
  * Compute a 4-σ-equivalent central quantile range from a sample
  * array. Returns [lo, hi] or null for an empty input.
  *
@@ -2794,6 +2842,7 @@ module.exports = {
   inlineForProfile,
   resolveAxisBaseSet,
   fourSigmaQuantileRange,
+  findMatchingPresets,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.

@@ -1768,12 +1768,20 @@
         if (!sig || !sig.body) return null;
         var axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
         if (axes.length === 0) return null;
+        // Find preset bindings whose kwargs structurally match this
+        // callable's input signature. Selecting one in the UI fills
+        // the non-swept fixedEnv from its values (overriding the
+        // type-aware defaults / source-binding samples[0]).
+        var presets = FlatPPLEngine.orchestrator.findMatchingPresets(
+          sig, derivationsState.bindings);
         return {
           name: name,
           mode: 'profile',
           signature: sig,
           axes: axes,
-          sweepKey: axes[0].key,        // default: sweep first axis
+          sweepKey: axes[0].key,         // default: sweep first axis
+          matchedPresets: presets,       // [{name, values}, ...]
+          presetName: null,              // null = "auto" (default)
         };
       }
 
@@ -3317,18 +3325,35 @@
           return;
         }
       }
-      // Initial fixedEnv: type-aware defaults for non-swept axes.
-      // For axes whose source is a binding (e.g. theta2 → stochastic
-      // Exponential(1)), the type default of 0 can be degenerate
-      // (sigma=0 makes Normal log-density -∞). We override below
-      // after materialising the source bindings; the type default
-      // remains as a safety fallback for placeholder sources.
+      // Build fixedEnv with three-tier precedence:
+      //   1. Selected preset's value for the kwarg (highest).
+      //   2. Source binding's samples[0] for binding-source axes
+      //      (resolved later, after materialisation).
+      //   3. Type-aware default for the leaf type (lowest).
+      // The selectedPreset lookup short-circuits the materialise path
+      // for any axis whose kwarg the preset covers — so when the
+      // user picks a preset, we don't even fetch the source binding.
+      var selectedPreset = null;
+      if (plan.presetName && plan.matchedPresets) {
+        for (var pi = 0; pi < plan.matchedPresets.length; pi++) {
+          if (plan.matchedPresets[pi].name === plan.presetName) {
+            selectedPreset = plan.matchedPresets[pi];
+            break;
+          }
+        }
+      }
       var fixedEnv = {};
       var nonSweptBindingSources = [];   // [{paramName, sourceName}, ...]
       for (var a2 = 0; a2 < axes.length; a2++) {
         if (axes[a2].key === plan.sweepKey) continue;
         var inp = inputByKwarg[axes[a2].kwargName];
         if (!inp) continue;
+        if (selectedPreset && selectedPreset.values
+            && Object.prototype.hasOwnProperty.call(selectedPreset.values, axes[a2].kwargName)) {
+          // Preset wins. No need to materialise the source binding.
+          fixedEnv[inp.paramName] = selectedPreset.values[axes[a2].kwargName];
+          continue;
+        }
         fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
         if (axes[a2].source && axes[a2].source.kind === 'binding') {
           nonSweptBindingSources.push({
@@ -3440,6 +3465,9 @@
       // range, rebuilds fixedEnv, and re-runs the worker.
       // Controls row holds:
       //   - axis dropdown (only when there's a choice)
+      //   - preset dropdown (only when matching presets exist) —
+      //     "auto" first (the type-aware / source-empirical default),
+      //     then one entry per matched preset binding.
       //   - log-density / log-likelihood mode: a y-axis cutoff
       //     dropdown so the plot doesn't compress the interesting
       //     region under a -∞ singularity. The cutoff caps the
@@ -3449,7 +3477,8 @@
       var isLogDensity = plan.signature.kind === 'kernel'
                       || plan.signature.kind === 'likelihood';
       var hasAxes = plan.axes && plan.axes.length > 1;
-      if (hasAxes || isLogDensity) {
+      var hasPresets = plan.matchedPresets && plan.matchedPresets.length > 0;
+      if (hasAxes || hasPresets || isLogDensity) {
         var controls = document.createElement('div');
         controls.className = 'profile-controls';
         if (hasAxes) {
@@ -3471,6 +3500,31 @@
           });
           controls.appendChild(label);
           controls.appendChild(select);
+        }
+        if (hasPresets) {
+          var presetLabel = document.createElement('label');
+          presetLabel.textContent = 'Preset:';
+          presetLabel.htmlFor = 'profile-preset-select';
+          var presetSel = document.createElement('select');
+          presetSel.id = 'profile-preset-select';
+          var autoOpt = document.createElement('option');
+          autoOpt.value = '';   // empty value → "auto" sentinel
+          autoOpt.textContent = 'auto';
+          if (plan.presetName == null) autoOpt.selected = true;
+          presetSel.appendChild(autoOpt);
+          for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
+            var pOpt = document.createElement('option');
+            pOpt.value = plan.matchedPresets[ppi].name;
+            pOpt.textContent = plan.matchedPresets[ppi].name;
+            if (plan.presetName === plan.matchedPresets[ppi].name) pOpt.selected = true;
+            presetSel.appendChild(pOpt);
+          }
+          presetSel.addEventListener('change', function(e) {
+            plan.presetName = e.target.value || null;
+            renderProfilePlotForCurrent();
+          });
+          controls.appendChild(presetLabel);
+          controls.appendChild(presetSel);
         }
         if (isLogDensity) {
           if (plan.yCutoff == null) plan.yCutoff = 100;

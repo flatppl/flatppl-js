@@ -25,6 +25,7 @@ const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
   signatureOf, distributeAxes, inlineForProfile,
   resolveAxisBaseSet, fourSigmaQuantileRange,
+  findMatchingPresets,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -1078,4 +1079,97 @@ test('fourSigmaQuantileRange: clipping at high N drops thinnest tails', () => {
   xs[N - 1] = 1e9;  // single outlier
   const [, hi] = fourSigmaQuantileRange(xs);
   assert.ok(hi < 100, 'outlier clipped (hi = ' + hi + ')');
+});
+
+// =====================================================================
+// findMatchingPresets — preset bindings whose kwargs match a callable
+// =====================================================================
+
+test('findMatchingPresets: matches preset whose kwargs equal the input set', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Exponential(rate = 1))
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+pars1 = preset(theta1 = 1.4, theta2 = 1.0)
+pars2 = preset(theta1 = 0.5, theta2 = 2.0)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const presets = findMatchingPresets(sig, lifted);
+  assert.equal(presets.length, 2);
+  const byName = {};
+  for (const p of presets) byName[p.name] = p;
+  assert.deepEqual(byName.pars1.values, { theta1: 1.4, theta2: 1.0 });
+  assert.deepEqual(byName.pars2.values, { theta1: 0.5, theta2: 2.0 });
+});
+
+test('findMatchingPresets: rejects presets with extra or missing kwargs', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Exponential(rate = 1))
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+extra_field   = preset(theta1 = 1, theta2 = 2, theta3 = 3)
+missing_field = preset(theta1 = 1)
+wrong_name    = preset(theta1 = 1, mu = 2)
+correct       = preset(theta1 = 1, theta2 = 2)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const presets = findMatchingPresets(sig, lifted);
+  assert.deepEqual(presets.map(p => p.name).sort(), ['correct']);
+});
+
+test('findMatchingPresets: accepts constant-foldable values, rejects non-constant', () => {
+  // resolveConstant folds:
+  //   - bare literals
+  //   - refs to literal bindings
+  //   - simple arithmetic (neg / add / sub / mul, including the
+  //     `-3.5` → neg(lit 3.5) lowering for negative numbers).
+  // It rejects refs to stochastic bindings, since their value isn't
+  // statically determinate.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+c = 5.0
+mu = draw(Normal(mu = 0, sigma = 1))
+f = functionof(mu, mu = mu)
+named_const  = preset(mu = c)
+lit_value    = preset(mu = 1.5)
+neg_lit      = preset(mu = -2.5)
+arith        = preset(mu = c + 1)
+stochastic   = preset(mu = mu)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const presets = findMatchingPresets(sig, lifted);
+  const names = presets.map(p => p.name).sort();
+  assert.deepEqual(names, ['arith', 'lit_value', 'named_const', 'neg_lit']);
+  const byName = {};
+  for (const p of presets) byName[p.name] = p;
+  assert.equal(byName.named_const.values.mu,  5.0);
+  assert.equal(byName.lit_value.values.mu,    1.5);
+  assert.equal(byName.neg_lit.values.mu,     -2.5);
+  assert.equal(byName.arith.values.mu,        6.0);
+});
+
+test('findMatchingPresets: empty / null sig → empty list', () => {
+  assert.deepEqual(findMatchingPresets(null,            new Map()), []);
+  assert.deepEqual(findMatchingPresets({},              new Map()), []);
+  assert.deepEqual(findMatchingPresets({ inputs: [] },  new Map()), []);
+});
+
+test('findMatchingPresets: preset matches fn-derived auto-named arg axes', () => {
+  // fn(_ + _) → functionof with paramKwargs ['arg1', 'arg2']. A
+  // preset(arg1=…, arg2=…) should match.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+g = fn(_ + _)
+some_args = preset(arg1 = 2.0, arg2 = -3.5)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('g', lifted);
+  const presets = findMatchingPresets(sig, lifted);
+  assert.equal(presets.length, 1);
+  assert.deepEqual(presets[0].values, { arg1: 2.0, arg2: -3.5 });
 });
