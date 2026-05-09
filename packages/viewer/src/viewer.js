@@ -2983,51 +2983,42 @@
       host.appendChild(chartDiv);
 
       // Group adjacent axes that belong to the same parent (an iid
-      // array's slots all share the prefix before "[k]"). We render
-      // edge-to-edge within a group (so obs[1]..obs[10] reads as a
-      // continuous shaded sequence) and insert a single empty
-      // category slot between groups (so obs[…] and aux[…] are
-      // visibly separated). axisGroup extracts the prefix before
-      // any trailing "[…]" — same-group axes share that prefix.
+      // array's slots all share the prefix before "[k]"). Within a
+      // group, columns render edge-to-edge so obs[1]..obs[10] reads
+      // as a continuous shaded sequence. Between groups, the
+      // boundary cells get an inset on the gap side so a small
+      // visible gap separates groups (a full empty slot was too
+      // wide). axisGroup extracts the prefix before any trailing
+      // "[…]" — same-group axes share that prefix.
       function axisGroup(label) {
         var i = label.lastIndexOf('[');
         return i >= 0 ? label.slice(0, i) : label;
       }
-      // categories: array entries paired with either { axisIdx } (for
-      // a real axis) or null (for a spacer). axisIdxToCat translates
-      // hists/axes index → category index for the rect data.
-      var categories = [];
-      var catLabels = [];
-      var axisIdxToCat = new Array(axes.length);
-      var prevGroup = null;
-      for (var ai = 0; ai < axes.length; ai++) {
-        var grp = axisGroup(axes[ai].label);
-        if (prevGroup !== null && grp !== prevGroup) {
-          categories.push({ spacer: true });
-          catLabels.push('');
-        }
-        axisIdxToCat[ai] = categories.length;
-        categories.push({ axisIdx: ai });
-        catLabels.push(axes[ai].label);
-        prevGroup = grp;
-      }
-
+      var groups = axes.map(function(a) { return axisGroup(a.label); });
+      // Per-axis gap flags. Boundary cells (group differs from
+      // neighbour) shrink on the gap side; the renderer reads these
+      // off the rect data. GAP_FRACTION is the inset depth as a
+      // fraction of bandSize — 0.18 gives a ~36% combined visible
+      // gap between groups (much tighter than a full empty slot)
+      // while still leaving the bulk of the column for the data.
+      var GAP_FRACTION = 0.18;
       // Build the rect data: one entry per (axis_idx, bin) pair.
-      // Each entry carries [cat_idx, bin_y_center, density] plus
-      // the bin's [lo, hi] for the rendered rect height. cat_idx is
-      // the index into the category axis (with spacer entries
-      // accounted for).
+      // Each entry carries [axis_idx, bin_y_center, density] plus
+      // the bin's [lo, hi] and per-side gap insets.
       var data = [];
       for (var ai2 = 0; ai2 < hists.length; ai2++) {
         var hh = hists[ai2];
-        var cidx = axisIdxToCat[ai2];
+        var gapLeft  = (ai2 > 0)             && groups[ai2] !== groups[ai2 - 1];
+        var gapRight = (ai2 < axes.length-1) && groups[ai2] !== groups[ai2 + 1];
         for (var bi = 0; bi < hh.ys.length; bi++) {
           data.push({
-            value: [cidx, hh.xs[bi], hh.ys[bi]],
+            value: [ai2, hh.xs[bi], hh.ys[bi]],
             edges: [hh.binEdges[bi], hh.binEdges[bi + 1]],
+            gapLeft: gapLeft, gapRight: gapRight,
           });
         }
       }
+      var catLabels = axes.map(function(a) { return a.label; });
       var seriesColor = color;
       var ec = echarts.init(chartDiv);
       ec.setOption({
@@ -3066,13 +3057,18 @@
             var top = api.coord([d.value[0], d.edges[1]]);
             var bot = api.coord([d.value[0], d.edges[0]]);
             // ECharts category axes give bandWidth via api.size.
-            // Use the full band width so adjacent columns share their
-            // edges — the marginal strips read as a continuous
-            // shaded sequence (e.g. obs[1]…obs[10] looks like a
-            // smoothed version of the observed_data step plot)
-            // rather than separated columns.
+            // Use the full band width so adjacent columns share
+            // their edges — the marginal strips read as a continuous
+            // shaded sequence within a group. At group boundaries
+            // (gapLeft / gapRight set on the rect data) we inset the
+            // boundary cell by GAP_FRACTION of bandSize on the gap
+            // side, so different-prefix axes get a small visible
+            // separator without a full empty column.
             var bandSize = api.size([1, 0])[0];
-            var halfWidth = bandSize * 0.5;
+            var leftEdge  = cx[0] - bandSize * 0.5
+                          + (d.gapLeft  ? bandSize * GAP_FRACTION : 0);
+            var rightEdge = cx[0] + bandSize * 0.5
+                          - (d.gapRight ? bandSize * GAP_FRACTION : 0);
             // Opacity scales linearly with density relative to the
             // peak across all axes — keeps bright cells comparable.
             var opacity = peakDensity > 0
@@ -3081,9 +3077,9 @@
             return {
               type: 'rect',
               shape: {
-                x: cx[0] - halfWidth,
+                x: leftEdge,
                 y: top[1],
-                width: halfWidth * 2,
+                width: rightEdge - leftEdge,
                 height: bot[1] - top[1],
               },
               style: api.style({ fill: seriesColor, opacity: opacity, stroke: 'none' }),
