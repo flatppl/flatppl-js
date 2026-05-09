@@ -2892,25 +2892,35 @@
       wrap.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       wrap.style.fontSize = '0.92em';
 
-      var dof = FlatPPLEngine.empirical.estimateDof(measure);
-      var q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
+      // Defensive try/catch: a thrown error here would propagate up
+      // through renderPlotFrame → renderRecordMarginals' rerenderAll,
+      // poisoning the entire plot render. Diagnostic-readout failure
+      // is non-fatal — fall back to a count-only display so the chart
+      // still draws. console.error surfaces real bugs in the quality
+      // classifier without breaking user-facing rendering.
+      try {
+        var dof = FlatPPLEngine.empirical.estimateDof(measure);
+        var q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
 
-      var nLabel = document.createElement('span');
-      nLabel.textContent = formatCount(q.N) + ' samples';
-      nLabel.title = 'Total atom count in the empirical measure';
-      wrap.appendChild(nLabel);
+        var nLabel = document.createElement('span');
+        nLabel.textContent = formatCount(q.N) + ' samples';
+        nLabel.title = 'Total atom count in the empirical measure';
+        wrap.appendChild(nLabel);
 
-      var diag = document.createElement('span');
-      diag.className = 'is-quality is-' + q.label;
-      var ratioPct = (q.ratio * 100);
-      var ratioStr = ratioPct >= 10 ? ratioPct.toFixed(0)
-                                    : ratioPct.toFixed(1);
-      var kStr = Number.isFinite(q.kHat) ? q.kHat.toFixed(2) : '—';
-      diag.textContent = '(' + q.label + ': ESS ' + ratioStr + '%, PSIS k̂ ' + kStr + ')';
-      diag.title = qualityTooltip(q);
-      wrap.appendChild(diag);
-      // Return early — we've replaced the old N + ESS dual-span
-      // layout with the unified diagnostic readout.
+        var diag = document.createElement('span');
+        diag.className = 'is-quality is-' + q.label;
+        var ratioPct = (q.ratio * 100);
+        var ratioStr = ratioPct >= 10 ? ratioPct.toFixed(0)
+                                      : ratioPct.toFixed(1);
+        var kStr = Number.isFinite(q.kHat) ? q.kHat.toFixed(2) : '—';
+        diag.textContent = '(' + q.label + ': ESS ' + ratioStr + '%, PSIS k̂ ' + kStr + ')';
+        diag.title = qualityTooltip(q);
+        wrap.appendChild(diag);
+      } catch (err) {
+        try { console.error('IS-quality classifier failed:', err); } catch (_) {}
+        wrap.textContent = '— samples';
+      }
+      return wrap;
     }
 
     /**

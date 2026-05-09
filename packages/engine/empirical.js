@@ -462,7 +462,13 @@ function importanceSamplingQuality(measure, dof) {
     return { label: 'unusable', ess: 0, ratio: 0, kHat: NaN,
              wmax: 1, dof: D, N: 0 };
   }
-  const ess = effectiveSampleSize(measure);
+  // ESS only matters when weights are present — and effectiveSampleSize
+  // (designed for scalar measures) reads measure.samples.length, which
+  // doesn't exist on record/tuple shapes. Short-circuit unweighted
+  // measures to ESS=N rather than calling through.
+  const ess = measure.logWeights
+    ? effectiveSampleSize(measure)
+    : N;
   const ratio = N > 0 ? ess / N : 0;
 
   // Unweighted measure: weights are uniform by construction, k̂ is
