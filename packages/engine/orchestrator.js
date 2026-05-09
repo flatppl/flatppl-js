@@ -118,6 +118,10 @@ const EVALUABLE_OPS = new Set([
   // Engine-internal projection emitted by the analyzer's multi-LHS
   // rewriter (`a, b = rand(...)`). sampler.evaluateCall handles it.
   'tuple_get', 'tuple',
+  // Field access: lowered from surface `obj.field` and from `record(
+  // a=x, b=y)` constructors. Both are pure value computations the
+  // evaluator handles.
+  'get_field', 'record',
   // Random-number primitives (spec §sec:random). All three are
   // ordinary value-typed functions whose phase propagates from
   // their inputs. sampler.evaluateCall dispatches each.
@@ -1560,12 +1564,18 @@ function isEvaluable(ir) {
         if (args.length !== 2) return false;
         return isEvaluable(args[0]);
       }
-      // All args / kwargs must themselves be evaluable.
+      // All args / kwargs / fields must themselves be evaluable.
+      // record IR uses `fields: [{name, value}, ...]` instead of args,
+      // so we walk that shape too — a record(a=x, b=y) is evaluable
+      // only if every field value is.
       if (ir.args) {
         for (const a of ir.args) if (!isEvaluable(a)) return false;
       }
       if (ir.kwargs) {
         for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k])) return false;
+      }
+      if (Array.isArray(ir.fields)) {
+        for (const f of ir.fields) if (!isEvaluable(f && f.value)) return false;
       }
       return true;
     default:
@@ -1685,10 +1695,20 @@ function buildDerivations(bindings) {
   const samplerLib = require('./sampler');
   // resolveMeasureRef closure threaded through evaluateExpr → evaluateRand
   // → traceeval. When traceeval hits a `(ref self <name>)` for a
-  // measure operand (the lift pass produced these by extracting inline
-  // Normal/iid/joint/etc. into anonymous bindings), it consults this to
-  // recover the measure IR. Built once over the lifted bindings map.
+  // measure operand it consults this to recover the measure IR.
+  //
+  // Two paths here. For named bindings that classify as a measure
+  // derivation (sample / record / iid / weighted / alias), use
+  // expandMeasureIR — this canonicalises through the derivation
+  // graph, turning e.g. `prior = lawof(record(theta1=draw(M1),
+  // theta2=draw(M2)))` into the sampleable `joint(theta1=M1,
+  // theta2=M2)` shape that traceeval can walk directly. For
+  // anonymous lift-introduced bindings or any case expandMeasureIR
+  // can't resolve, fall back to the raw lowered IR — those tend to
+  // already be primitive distribution calls that traceeval handles.
   function resolveMeasureRef(refName) {
+    const expanded = expandMeasureIR(refName, derivations);
+    if (expanded) return expanded;
     const b = bindings.get(refName);
     return (b && b.ir) || null;
   }
@@ -1786,7 +1806,17 @@ function buildDerivations(bindings) {
       fixedValues.set(name, value);
       progress = true;
 
-      // Reclassify based on the value shape.
+      // Reclassify only when the existing classification is the
+      // generic 'evaluate' (per-atom Float64Array path). Other kinds
+      // (record / sample / iid / weighted / array / alias / …) are
+      // domain-specific shapes the viewer renders; keeping them lets
+      // e.g. relabel still produce a record derivation even though
+      // pre-eval can compute the inline value too. We only step in
+      // when 'evaluate' would mis-handle the value's shape.
+      const existing = derivations[name];
+      const isOverridable = !existing || existing.kind === 'evaluate';
+      if (!isOverridable) continue;
+
       const isPlottableArray = isFiniteNumericArray(value);
       if (isPlottableArray) {
         // Array literals carry their values directly; no chain step.
@@ -1803,11 +1833,11 @@ function buildDerivations(bindings) {
         }
       } else {
         // Opaque value (rngstate, JS object, non-numeric array). Drop
-        // any plot derivation; the value is still in fixedValues so
-        // downstream evaluators can resolve refs to it. The viewer
-        // sees the absence as "not plottable" via the same path as
-        // reified callables.
-        if (derivations[name]) delete derivations[name];
+        // any 'evaluate' plot derivation; the value is still in
+        // fixedValues so downstream evaluators can resolve refs to
+        // it. The viewer sees the absence as "not plottable" via the
+        // same path as reified callables.
+        if (existing) delete derivations[name];
       }
     }
   }
