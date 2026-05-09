@@ -135,6 +135,14 @@
       border: 1px solid var(--vscode-dropdown-border, #555);
       padding: 2px 4px; font-size: 11px;
     }
+    #plot-content .profile-controls input.profile-xrange {
+      background: var(--vscode-input-background, #3c3c3c);
+      color: var(--vscode-input-foreground, #cccccc);
+      border: 1px solid var(--vscode-input-border, #555);
+      padding: 2px 4px; font-size: 11px;
+      width: 6.5em;
+      font-family: var(--vscode-editor-font-family, monospace);
+    }
     #plot-content .profile-chart {
       flex: 1 1 auto; min-height: 0; width: 100%;
     }
@@ -1113,6 +1121,16 @@
     // gets distinct cache entries (defensive — discreteness is fixed
     // per binding today but the door's open for future modes).
     var histogramCache = new Map();    // Map<"name|d"|"name|c", histogram>
+    // Profile-plot per-axis range cache. Keyed by
+    // "binding|sweepKey|presetName" so each (function, axis,
+    // preset) combination remembers the user's x-axis edits across
+    // navigation. Invalidated alongside measureCache /
+    // histogramCache on source / sample-count changes.
+    //   Map<key, { lo, hi, fromAuto: boolean }>
+    // fromAuto distinguishes ranges initially populated by
+    // resolveSweepRange (auto) vs. user-edited (override) — used
+    // for tooltip / debug; the renderer treats both the same.
+    var profileRangeCache = new Map();
     var rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
@@ -1129,6 +1147,7 @@
         derivationsState = null;
         measureCache = new Map();
         histogramCache = new Map();
+        profileRangeCache = new Map();
         return;
       }
       try {
@@ -1143,6 +1162,7 @@
       // measures.
       measureCache = new Map();
       histogramCache = new Map();
+      profileRangeCache = new Map();
     }
 
     /**
@@ -3402,16 +3422,25 @@
       FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
         selfRefs.push(n);
       });
-      // Range comes from resolveSweepRange (set descriptor → empirical
-      // 4-σ quantile → leaf-type fallback); self-refs come from
-      // pre-materialising the binding refs that survived
-      // inlineForProfile (constants, stochastic atoms held at index
-      // 0); non-swept binding-sourced axes (e.g. theta2 in L's
-      // theta1-sweep) get samples[0] as their fixed value, replacing
-      // the type default. All three queries run in parallel.
+      // Range resolution per (binding, axis, preset):
+      //   1. profileRangeCache hit → use cached value directly (user
+      //      may have edited it; or auto from a previous render).
+      //   2. Otherwise compute via resolveSweepRange, store as
+      //      fromAuto=true so we know it can be replaced.
+      // The cache key includes presetName because some presets sit
+      // in different regions of the input space and want different
+      // sweep windows.
+      var cacheKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+      var cached = profileRangeCache.get(cacheKey);
+      var rangePromise = cached
+        ? Promise.resolve([cached.lo, cached.hi])
+        : resolveSweepRange(sweepAxis).then(function(r) {
+            profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
+            return r;
+          });
       var rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
       Promise.all([
-        resolveSweepRange(sweepAxis),
+        rangePromise,
         Promise.all(selfRefs.map(function(n) { return getMeasure(n); })),
         Promise.all(nonSweptBindingSources.map(function(s) {
           return getMeasure(s.sourceName);
@@ -3553,6 +3582,42 @@
           controls.appendChild(cutLabel);
           controls.appendChild(cutSel);
         }
+        // x-axis range text inputs (always shown for profile plots).
+        // Editing either commits to profileRangeCache (fromAuto=false)
+        // and re-renders. Cache keyed by (binding, sweepKey, preset)
+        // so the user's edits stick when switching presets / axes
+        // and across binding navigation.
+        var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+        var xLabel = document.createElement('label');
+        xLabel.textContent = 'x-range:';
+        var xLoInput = document.createElement('input');
+        xLoInput.type = 'number'; xLoInput.step = 'any';
+        xLoInput.className = 'profile-xrange';
+        xLoInput.value = formatScalar(range[0]);
+        xLoInput.title = 'x-axis lower limit';
+        var xHiInput = document.createElement('input');
+        xHiInput.type = 'number'; xHiInput.step = 'any';
+        xHiInput.className = 'profile-xrange';
+        xHiInput.value = formatScalar(range[1]);
+        xHiInput.title = 'x-axis upper limit';
+        var commitRange = function() {
+          var newLo = parseFloat(xLoInput.value);
+          var newHi = parseFloat(xHiInput.value);
+          if (!Number.isFinite(newLo) || !Number.isFinite(newHi) || newLo >= newHi) {
+            // Reject invalid edits — restore the input boxes from the
+            // cache rather than blindly re-rendering with broken values.
+            xLoInput.value = formatScalar(range[0]);
+            xHiInput.value = formatScalar(range[1]);
+            return;
+          }
+          profileRangeCache.set(rangeKey, { lo: newLo, hi: newHi, fromAuto: false });
+          renderProfilePlotForCurrent();
+        };
+        xLoInput.addEventListener('change', commitRange);
+        xHiInput.addEventListener('change', commitRange);
+        controls.appendChild(xLabel);
+        controls.appendChild(xLoInput);
+        controls.appendChild(xHiInput);
         el.appendChild(controls);
       }
       var chartDiv = document.createElement('div');
