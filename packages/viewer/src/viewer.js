@@ -1064,6 +1064,22 @@
       measureCache = new Map();
       histogramCache = new Map();
       profileRangeCache = new Map();
+
+      // Push fixed-phase pre-evaluated values into the worker's
+      // session env. The orchestrator computed these once at module-
+      // build time (rnginit / rand results, fixed scalar reductions,
+      // etc.); the worker resolves refs to them via env rather than
+      // through per-atom refArrays — the only correct semantics for
+      // non-scalar fixed values like a length-10 `random_data` array.
+      // setEnv with merge=false replaces (so a stale fixedValues map
+      // from the previous source can't leak into the new one).
+      if (derivationsState && derivationsState.fixedValues) {
+        var envObj = {};
+        derivationsState.fixedValues.forEach(function(v, k) { envObj[k] = v; });
+        getSamplerWorker().then(function(w) {
+          sendWorkerNow(w, { type: 'setEnv', env: envObj, merge: false });
+        }).catch(function() { /* worker init error already logged */ });
+      }
     }
 
     /**
@@ -1525,8 +1541,18 @@
     /** Walk an IR for all (ref self <name>) and return a refName→Float64Array map. */
     function collectRefArrays(ir) {
       var refs = FlatPPLEngine.orchestrator.collectSelfRefs(ir);
+      // Drop refs whose target is a fixed-phase binding the
+      // orchestrator pre-evaluated — those flow through the worker's
+      // session env (set up in rebuildDerivations), and adding them
+      // to refArrays would cause per-atom indexing to override the
+      // full value with an undefined slice. The fixedValues map IS
+      // the contract.
+      var fixedValues = derivationsState && derivationsState.fixedValues;
       var names = [];
-      refs.forEach(function(n) { names.push(n); });
+      refs.forEach(function(n) {
+        if (fixedValues && fixedValues.has(n)) return;
+        names.push(n);
+      });
       return Promise.all(names.map(function(n) { return getMeasure(n); }))
         .then(function(measures) {
           // The worker primitives still consume bare Float64Arrays per
