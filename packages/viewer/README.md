@@ -122,10 +122,6 @@ view.update(newSource, newTarget);  // re-parse and re-render
 view.dispose();                      // teardown placeholder (currently a no-op)
 ```
 
-## Status
+## License
 
-Functional but young — the package is private (not published to npm)
-and ships as workspace-internal source. The VS Code extension consumes
-`viewer.js` directly via its own build step; an online publishing
-story (CDN bundle, npm-published assets) is left for whenever it's
-needed.
+[MIT](LICENSE)
