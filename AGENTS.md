@@ -163,12 +163,22 @@ items below are larger structural work or open feature gaps.
 - **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and
   5 683 lines). Be aware before opening them; both have natural decomposition
   seams documented in `ARCHITECTURE.md`.
-- **A planning document at `flatppl-js/TODO.md`** (when present) tracks the
-  remaining work toward complete spec coverage. Check it before starting
-  larger feature work.
+- **The planning document `flatppl-todo/todo-flatppl-js.md`** (in the
+  sibling `flatppl-todo` repo, resolved the same way as `flatppl-design`)
+  tracks the remaining work toward complete spec coverage. **Check it
+  before starting feature work** — it lists what's open, what's in progress,
+  and what's blocked. The file is the lightweight coordination surface for
+  multiple contributors (humans and AI agents) until we move to GitHub
+  issues, so:
+    - Pull `flatppl-todo` at session start.
+    - Mark items `[in-progress: <handle>]` when you start them so others
+      don't pick them up too.
+    - Remove or check off items when you commit the engine change that
+      closes them; commit the TODO update either in the same session or
+      as a separate commit in `flatppl-todo`.
 
 If you spot a new bug or gap during a task, surface it in the commit message
-or, when it's larger than a one-liner, add it to `TODO.md`.
+or, when it's larger than a one-liner, add it to `todo-flatppl-js.md`.
 
 **The orientation docs are living documents.** When you make a non-trivial
 change — new feature, new invariant, fixing one of the known issues, a
