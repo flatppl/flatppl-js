@@ -1145,15 +1145,26 @@
         arr.fill(v);
         return { samples: arr, logWeights: null };
       }
-      if (Array.isArray(v) || v instanceof Float64Array
-          || v instanceof Int32Array || v instanceof Uint8Array) {
-        // Numeric literal array — same shape as kind:'array' takes.
-        var allNum = true;
-        for (var i = 0; i < v.length; i++) {
-          if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) { allNum = false; break; }
-        }
-        if (!allNum) return null;
+      if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
         return { samples: Float64Array.from(v), logWeights: null };
+      }
+      if (Array.isArray(v)) {
+        // A plain JS array is either a flat numeric vector (data
+        // literal) or a tuple of mixed-shape elements (single-LHS
+        // rand returns `(value, new_state)`). Distinguish by checking
+        // whether every element is a finite number.
+        var allNum = v.length > 0;
+        for (var i = 0; allNum && i < v.length; i++) {
+          if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) allNum = false;
+        }
+        if (allNum) return { samples: Float64Array.from(v), logWeights: null };
+        // Tuple: per-element recursive measure. Opaque elements
+        // (rngstate) become null entries; formatConstantMeasure
+        // renders those as a placeholder so a tuple containing a
+        // state still surfaces its other elements as text.
+        var elems = new Array(v.length);
+        for (var ei = 0; ei < v.length; ei++) elems[ei] = fixedValueToMeasure(v[ei]);
+        return { elems: elems };
       }
       if (v && typeof v === 'object') {
         // rngstate / opaque objects carry an internal `key` array we
@@ -2577,7 +2588,12 @@
       if (Array.isArray(m.elems)) {
         var eparts = new Array(m.elems.length);
         for (var ei = 0; ei < m.elems.length; ei++) {
-          eparts[ei] = formatConstantMeasure(m.elems[ei]);
+          // Tuple element may be null when fixedValueToMeasure
+          // couldn't represent it (an rngstate, typically). Surface
+          // a placeholder so the rest of the tuple's structure stays
+          // visible — e.g. `(record(obs = […]), <rngstate>)` for a
+          // single-LHS `rand(rs, m)` result.
+          eparts[ei] = m.elems[ei] ? formatConstantMeasure(m.elems[ei]) : '<rngstate>';
         }
         return '(' + eparts.join(', ') + ')';
       }
