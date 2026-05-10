@@ -27,7 +27,7 @@ the file numbers tell you where to go.
 
 ## Repo layout
 
-This is an npm workspace monorepo with three packages:
+This is an npm workspace monorepo with four packages:
 
 ```
 flatppl-js/
@@ -38,14 +38,23 @@ flatppl-js/
 │   │   └── *.js                         ← ~13 KLOC
 │   ├── viewer/                          ← browser-side DAG + plot rendering
 │   │   └── src/viewer.js                ← single-file IIFE, ~5.7 KLOC
-│   └── vscode-extension/                ← thin VS Code wrapper
-│       ├── extension.js                 ← extension host
-│       └── src/visualPanel.js           ← webview panel singleton
+│   ├── vscode-extension/                ← thin VS Code wrapper
+│   │   ├── extension.js                 ← extension host
+│   │   └── src/visualPanel.js           ← webview panel singleton
+│   └── web/                             ← standalone gallery shell for static hosts
+│       ├── src/                         ← page entry, app, resolver, router,
+│       │                                  manifest loader, syntax highlighter
+│       └── demo/                        ← in-package demo .flatppl programs
 └── package.json                         ← workspace root
 ```
 
 **Engine is the bulk of the work.** Viewer is one large IIFE (no internal modules
-yet); vscode-extension is a thin wrapper around the engine + viewer.
+yet); vscode-extension is a thin wrapper around the engine + viewer; web is a
+gallery shell built on top of viewer for non-VS-Code hosts (GitHub Pages, docs
+sites, web app deploys). The viewer and web hosts are independent surfaces —
+viewer's `embed-test.html` is for embedding only the DAG/plot panes inside a
+larger page; `packages/web` adds the file tree, source pane, hash routing, and
+manifest-driven model discovery on top.
 
 ## Engine pipeline (one-paragraph version)
 
@@ -176,7 +185,16 @@ CI on this repo is GitHub Actions; see `.github/workflows/`.
 
 The user runs the VS Code extension via the standard "Launch Extension" debug
 profile or by installing the built `.vsix`. The viewer can also be served
-standalone (`npm run --workspace=packages/viewer serve` → http://localhost:8000/).
+standalone (`npm run --workspace=packages/viewer serve` → http://localhost:8000/),
+and the web gallery host has its own dev server
+(`npm run --workspace=packages/web build && npm run --workspace=packages/web serve`
+→ http://localhost:8001/). The two web servers target different concerns —
+viewer is the DAG/plot viewer in isolation; `packages/web` is the full
+three-pane gallery shell with file tree, source view, syntax highlighting,
+and source ↔ DAG cross-pane navigation. CI deploys
+`packages/web/dist/` to GitHub Pages on push to main (see
+`.github/workflows/pages.yml` — needs the one-time repo setting Pages →
+Source: GitHub Actions before its first run takes effect).
 
 ## Known issues
 

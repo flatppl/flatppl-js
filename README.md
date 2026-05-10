@@ -17,6 +17,8 @@ This monorepo contains:
 
 * [The FlatPPL Visual Studio Code extension](packages/vscode-extension)
 
+* [The FlatPPL web gallery host](packages/web)
+
 ## Running tests
 
 To run all workspace test suites, run
