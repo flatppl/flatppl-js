@@ -83,6 +83,27 @@ html, body {
 
 #file-tree { padding: 0.5em 0; }
 
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-list-item {
+  padding: 0.4em 1em;
+  cursor: pointer;
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+.file-list-item:hover    { background: #2a2d2e; }
+.file-list-item.selected {
+  background: #094771;
+  color: #ffffff;
+}
+
 #source-view {
   margin: 0;
   padding: 1em;
