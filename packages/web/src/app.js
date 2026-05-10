@@ -1,26 +1,25 @@
 // @flatppl/web — gallery shell entry point.
 //
-// Step 1.3: hash-driven model selection. On boot the router parses
-// `location.hash`; if `model=...` is present, the resolver fetches
-// that .flatppl source and the viewer renders it. Otherwise the
-// shell falls back to the inline smoke-test source from step 1.2 so
-// `index.html` still renders on its own. On hashchange (file-tree
-// click in step 1.4, URL edit, back/forward) the resolver re-fetches
-// and the viewer re-renders without a page reload.
+// Step 1.4: manifest-driven file tree. On boot the manifest loader
+// fetches `models.json`; entries populate the left-pane file tree.
+// Clicking an entry sets the URL hash via the router, which fires
+// the existing applyState path — selection, source pane, viewer all
+// stay in sync with `#model=...`. The current selection is
+// highlighted in the tree.
 //
-// Subsequent steps add the manifest-driven file tree (1.4), syntax
-// highlighting (1.5), source ↔ DAG cross-pane navigation (1.6, 1.7),
-// and a real web host adapter that bridges revealSourceLine into a
-// source-pane scroll.
+// If `models.json` is absent (404), the manifest loader fails
+// gracefully: the file tree shows a "no manifest" placeholder, and
+// the inline-fallback source from earlier steps still works for
+// hash-less / arbitrary paths. This keeps the gallery functional
+// before step 1.8 ships demo content + a real manifest.
+//
+// Subsequent steps add syntax highlighting (1.5), source ↔ DAG
+// cross-pane navigation (1.6, 1.7), demo content (1.8), and the
+// Pages deploy workflow (1.9).
 
 'use strict';
 
 (function () {
-  // Inline fallback used when no `#model=...` is present in the URL.
-  // Kept tiny and only exercising a handful of constructs — its job
-  // is to confirm the viewer renders when the user opens index.html
-  // raw. The manifest-driven tree (step 1.4) will pick a real demo
-  // model as the default selection and this fallback retires.
   var FALLBACK_SOURCE = [
     '# @flatppl/web — open with #model=path/to/file.flatppl to load a real model.',
     'mu = elementof(reals)',
@@ -32,7 +31,10 @@
 
   var sourceView   = null;
   var sourceHeader = null;
+  var fileTree     = null;
+  var headerEl     = null;
   var viewer       = null;
+  var manifest     = null;
 
   function showSource(text, label) {
     if (sourceView)   sourceView.textContent = text;
@@ -42,20 +44,46 @@
   function showError(label, err) {
     var msg = '# Error\n# ' + (err && err.message || String(err));
     showSource(msg, label || 'error');
-    if (viewer && typeof viewer.update === 'function') {
-      // Surface the error in the viewer too so the right pane isn't
-      // stuck on stale content. The viewer will report a parse error
-      // for the leading '#' line followed by free text, which is the
-      // closest "render an error message" we have without a dedicated
-      // error path. Acceptable for now; refine later if it confuses.
-      viewer.update(msg);
+    if (viewer && typeof viewer.update === 'function') viewer.update(msg);
+  }
+
+  /** Render the manifest entries as a clickable list in the left pane. */
+  function renderTree(currentModel) {
+    if (!fileTree) return;
+    fileTree.innerHTML = '';
+    if (!manifest || manifest.entries.length === 0) {
+      var p = document.createElement('div');
+      p.className = 'pane-placeholder';
+      p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
+      fileTree.appendChild(p);
+      return;
     }
+    var ul = document.createElement('ul');
+    ul.className = 'file-list';
+    for (var i = 0; i < manifest.entries.length; i++) {
+      var entry = manifest.entries[i];
+      var li = document.createElement('li');
+      li.className = 'file-list-item';
+      if (entry.path === currentModel) li.classList.add('selected');
+      li.textContent = entry.title;
+      li.title = entry.path;
+      li.dataset.path = entry.path;
+      li.addEventListener('click', onTreeClick);
+      ul.appendChild(li);
+    }
+    fileTree.appendChild(ul);
+  }
+
+  function onTreeClick(ev) {
+    var path = ev.currentTarget.dataset.path;
+    if (path) window.FlatPPLWebRouter.navigateTo({ model: path });
   }
 
   async function applyState(state) {
+    // Repaint tree highlight even before the fetch completes.
+    renderTree(state.model);
+
     if (!state.model) {
-      // No `model=` in hash — render the inline fallback so the page
-      // still shows something useful.
       showSource(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
       if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
@@ -74,29 +102,53 @@
     }
   }
 
-  function boot() {
+  async function boot() {
     sourceView   = document.getElementById('source-view');
     sourceHeader = document.getElementById('source-header');
+    fileTree     = document.getElementById('file-tree');
+    headerEl     = document.getElementById('app-header');
 
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;
     }
-    if (!window.FlatPPLWebResolver || !window.FlatPPLWebRouter) {
-      console.error('[@flatppl/web] resolver or router missing — check script tags in index.html');
+    var missing = [];
+    if (!window.FlatPPLWebResolver) missing.push('resolver');
+    if (!window.FlatPPLWebRouter)   missing.push('router');
+    if (!window.FlatPPLWebManifest) missing.push('manifest');
+    if (missing.length) {
+      console.error('[@flatppl/web] missing modules:', missing.join(', '));
       return;
     }
 
-    // Mount the viewer with no initial source. applyState below
-    // pushes the first source through viewer.update either from the
-    // hash or from the fallback.
     var viewerRoot = document.getElementById('flatppl-viewer-root');
     viewer = window.FlatPPLViewer.mount(viewerRoot, { host: {} });
 
-    window.FlatPPLWebRouter.onChange(applyState);
-    window.FlatPPLWebRouter.emitInitial();
+    // Manifest is non-fatal: a missing/broken models.json leaves the
+    // tree empty and the gallery still works for hash-driven navigation.
+    try {
+      manifest = await window.FlatPPLWebManifest.load();
+      if (headerEl && manifest.title) {
+        headerEl.textContent = manifest.title;
+      }
+    } catch (err) {
+      console.warn('[@flatppl/web] manifest load failed (non-fatal):', err.message);
+      manifest = null;
+    }
 
-    window.FlatPPLWeb = { viewer: viewer };
+    window.FlatPPLWebRouter.onChange(applyState);
+
+    // First render: if the URL specifies a model, that wins. Otherwise
+    // pick the first manifest entry as the default selection so the
+    // gallery shows something real on a bare visit.
+    var initial = window.FlatPPLWebRouter.parseHash();
+    if (!initial.model && manifest && manifest.entries.length > 0) {
+      window.FlatPPLWebRouter.navigateTo({ model: manifest.entries[0].path });
+    } else {
+      window.FlatPPLWebRouter.emitInitial();
+    }
+
+    window.FlatPPLWeb = { viewer: viewer, manifest: manifest };
   }
 
   if (document.readyState === 'loading') {
