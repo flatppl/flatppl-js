@@ -208,6 +208,13 @@ html, body {
    right pane's body must not introduce a second scrollbar. */
 #viewer-pane > .pane-body { overflow: hidden; }
 
+/* Playground mode (CodeMirror editor mounted in the source pane).
+   The editor handles its own scrolling, so the pane-body shouldn't
+   add another scrollbar of its own. */
+#source-pane.playground > .pane-body { overflow: hidden; }
+#source-editor { width: 100%; height: 100%; }
+.cm-editor { height: 100%; }
+
 #flatppl-viewer-root {
   width: 100%;
   height: 100%;

@@ -27,7 +27,11 @@
     "cytoscape-dagre": "^2.5.0",
     "cytoscape-bubblesets": "^4.1.0",
     "cytoscape-layers": "^3.1.0",
-    "echarts": "^6.0.0"
+    "echarts": "^6.0.0",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.30.0",
+    "@codemirror/commands": "^6.7.0",
+    "@codemirror/search": "^6.5.0"
   },
   "engines": {
     "node": ">=18"

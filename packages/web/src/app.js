@@ -36,6 +36,12 @@
   var viewer       = null;
   var manifest     = null;
 
+  // Playground state. `playgroundEditor` is the EditorHandle returned
+  // by FlatPPLWebEditor.mountEditor, present only in playground mode.
+  // showSource / showSourceIfChanged switch their write path through
+  // this when set.
+  var playgroundEditor = null;
+
   // The source string currently rendered in the source pane. Used by
   // showSourceIfChanged to skip the full innerHTML rewrite (and the
   // CSS / repaint flash that comes with it) when the user is only
@@ -52,6 +58,16 @@
    */
   function showSource(text, label) {
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
+    // Playground mode: write through the CodeMirror editor instead
+    // of the read-only <pre>. The editor's setSource is silent (no
+    // onChange fires), so we don't trigger a redundant viewer.update —
+    // applyState already calls viewer.update directly with the right
+    // target after this returns.
+    if (playgroundEditor) {
+      playgroundEditor.setSource(text);
+      lastRenderedSource = text;
+      return;
+    }
     if (!sourceView) return;
     var FE = window.FlatPPLEngine;
     var bindings = null;
@@ -73,6 +89,65 @@
       sourceView.textContent = text;
     }
     lastRenderedSource = text;
+  }
+
+  /** Tiny debounce: collapse rapid calls into one delayed call.
+      Used by the playground's onChange path so the viewer re-renders
+      after the user pauses typing rather than on every keystroke. */
+  function debounce(fn, ms) {
+    var t = null;
+    return function () {
+      var args = arguments;
+      if (t) clearTimeout(t);
+      t = setTimeout(function () { t = null; fn.apply(null, args); }, ms);
+    };
+  }
+
+  /** When playground mode is enabled, load CodeMirror and swap the
+      source pane's read-only <pre> for an editable view. Bails
+      silently (read-only stays) if the bundle fails to load. */
+  async function maybeInitPlayground() {
+    var cfg = window.__FLATPPL_CONFIG__ || {};
+    if (!cfg.playground) return;
+    if (!window.FlatPPLWebEditor) {
+      console.warn('[@flatppl/web] playground enabled but FlatPPLWebEditor missing — staying read-only');
+      return;
+    }
+    try {
+      await window.FlatPPLWebEditor.loadBundle();
+    } catch (e) {
+      console.warn('[@flatppl/web] CodeMirror load failed — staying read-only:', e && e.message);
+      return;
+    }
+    if (!sourceView) return;
+    var paneBody = sourceView.parentNode;
+    var sourcePane = document.getElementById('source-pane');
+    var editorContainer = document.createElement('div');
+    editorContainer.id = 'source-editor';
+    paneBody.appendChild(editorContainer);
+    sourceView.style.display = 'none';
+    if (sourcePane) sourcePane.classList.add('playground');
+
+    playgroundEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
+      initialSource: '',
+      onChange: debounce(function (text) {
+        // User typed: re-render the visualization. Keep the current
+        // focused target (if any) by reading the router's view of
+        // the URL hash. No router-navigate here — typing isn't a
+        // navigation event; it just refreshes the existing target.
+        if (!viewer) return;
+        var cur = window.FlatPPLWebRouter.parseHash();
+        viewer.update(text, cur.target || null);
+      }, 250),
+      onNavigate: function (name) {
+        // Ctrl/Cmd+click on a binding identifier in the editor —
+        // route through the same hash-navigation flow the
+        // read-only pane uses. Keeps URL state coherent and
+        // browser back/forward working.
+        var cur = window.FlatPPLWebRouter.parseHash();
+        window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
+      },
+    });
   }
 
   /** Cheap variant of showSource: skip the full re-highlight when the
@@ -200,6 +275,11 @@
         toggleButton: document.getElementById('toggle-files'),
       });
     }
+
+    // Initialize playground mode (lazy-load CodeMirror, swap source
+    // pane to editor) before manifest+router so the first applyState
+    // writes into the editor rather than the now-hidden <pre>.
+    await maybeInitPlayground();
 
     var viewerRoot = document.getElementById('flatppl-viewer-root');
 
