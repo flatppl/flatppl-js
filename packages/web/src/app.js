@@ -36,6 +36,12 @@
   var viewer       = null;
   var manifest     = null;
 
+  // The source string currently rendered in the source pane. Used by
+  // showSourceIfChanged to skip the full innerHTML rewrite (and the
+  // CSS / repaint flash that comes with it) when the user is only
+  // navigating between bindings inside the same file.
+  var lastRenderedSource = null;
+
   /**
    * Push text into the source pane. When the engine is available
    * we run it through the FlatPPL-aware syntax highlighter, which
@@ -66,6 +72,19 @@
     } else {
       sourceView.textContent = text;
     }
+    lastRenderedSource = text;
+  }
+
+  /** Cheap variant of showSource: skip the full re-highlight when the
+      content didn't change. Lets binding-click navigation (which only
+      changes the focused target, not the source) avoid an innerHTML
+      rewrite and the brief flicker that would come with it. */
+  function showSourceIfChanged(text, label) {
+    if (text === lastRenderedSource) {
+      if (sourceHeader) sourceHeader.textContent = label || 'Source';
+      return;
+    }
+    showSource(text, label);
   }
 
   function showError(label, err) {
@@ -111,21 +130,45 @@
     renderTree(state.model);
 
     if (!state.model) {
-      showSource(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
+      showSourceIfChanged(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
       if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
       return;
     }
-    showSource('# Loading ' + state.model + ' …', state.model);
+    showSourceIfChanged('# Loading ' + state.model + ' …', state.model);
     try {
       var bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
-      showSource(bundle.primarySource, state.model);
+      showSourceIfChanged(bundle.primarySource, state.model);
       if (viewer) viewer.update(bundle.primarySource, state.target || null);
-      document.title = 'FlatPPL: ' + state.model;
+      document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
     } catch (err) {
       console.error('[@flatppl/web] resolveBundle failed:', err);
       showError(state.model, err);
       document.title = 'FlatPPL: ' + state.model + ' (error)';
+    }
+  }
+
+  /** Source-pane click handler: when the user clicks on an identifier
+      span carrying `data-binding`, focus that binding in the DAG view
+      via a router navigation. Routing through the hash means browser
+      back/forward and bookmarkable URLs stay coherent (the hash now
+      encodes both the model and the focused binding). Walks up from
+      ev.target so clicks on the text inside a span hit the same
+      handler as clicks on the span itself. */
+  function onSourceClick(ev) {
+    var el = ev.target;
+    while (el && el !== sourceView) {
+      if (el.dataset && el.dataset.binding) {
+        var name = el.dataset.binding;
+        var cur = window.FlatPPLWebRouter.parseHash();
+        window.FlatPPLWebRouter.navigateTo({
+          model: cur.model,
+          target: name,
+        });
+        ev.preventDefault();
+        return;
+      }
+      el = el.parentNode;
     }
   }
 
@@ -150,6 +193,12 @@
 
     var viewerRoot = document.getElementById('flatppl-viewer-root');
     viewer = window.FlatPPLViewer.mount(viewerRoot, { host: {} });
+
+    // Delegated click handler: turns a click on a binding identifier
+    // in the source pane into a router navigation that focuses the
+    // corresponding DAG node. Lives on the source-view root so it
+    // survives every innerHTML rewrite the highlighter does.
+    sourceView.addEventListener('click', onSourceClick);
 
     // Manifest is non-fatal: a missing/broken models.json leaves the
     // tree empty and the gallery still works for hash-driven navigation.
