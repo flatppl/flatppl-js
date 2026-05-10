@@ -63,18 +63,23 @@ table: see [`packages/engine/ARCHITECTURE.md`](packages/engine/ARCHITECTURE.md).
 
 These are the things that catch out first-time contributors. Read each one.
 
+- **Read [`flatppl-dev/CONVENTIONS.md`](../flatppl-dev/CONVENTIONS.md)** —
+  ecosystem-wide invariants and conventions every contributor should know
+  (version state, examples-and-test-fixtures pattern, no-AI-model-identification
+  policy). Resolves the same way as `flatppl-design`: workspace folder /
+  filesystem sibling / GitHub. Apply unconditionally; the items below are
+  flatppl-js-specific additions.
+
 - **FlatPPL is a different language from JavaScript.** It uses JS/Python-compatible
   syntax for cheap parsing, but the semantics are entirely separate. Don't import
   JS reasoning for FlatPPL constructs (no mutation, no loops, no implicit
   elementwise ops, no truthiness coercion).
 
-- **FlatPPL is 1-indexed.** The engine uses 0-based JS internally; translate at
-  FlatPPL `get`/indexing/decomposition boundaries and at display labels (`obs[1]`,
-  not `obs[0]`).
-
-- **FlatPPL is at v0.1, pre-release.** No backward-compat engineering is needed
-  yet. The engine, the spec, and standard modules all stay at
-  `flatppl_compat = "0.1"` through breaking changes until the first real release.
+- **FlatPPL is 1-indexed; this engine stores 0-indexed.** The engine uses
+  0-based JS internally for performance; translate at FlatPPL
+  `get`/indexing/decomposition boundaries and at display labels (`obs[1]`,
+  not `obs[0]`). Other engines (Julia, …) may store 1-indexed natively;
+  the spec is 1-indexed regardless.
 
 - **Idiomatic JavaScript, prototype/closure-based.** The codebase is intentionally
   not class-OO. Type representations are `{kind, ...}` plain objects with a
@@ -112,16 +117,38 @@ These are the things that catch out first-time contributors. Read each one.
   `npm run --workspace=packages/vscode-extension build:vendor`). Don't assume
   the user is testing one or the other — rebuild both.
 
-- **Webview escape traps in `vscode-extension/src/visualPanel.js`.** The webview
-  HTML lives inside an outer template literal; backticks AND backslash escapes
-  (`\n`, `\t`, …) get interpreted by the host parser before the inner JS sees
-  them, breaking the rendered HTML. The viewer was moved out of the inline HTML
-  into a separately-loaded script for this reason. If you must add inline JS
-  back, beware.
+- **Webview escape traps in `vscode-extension/src/visualPanel.js`.** The
+  webview HTML lives inside the outer template literal returned by
+  `_getHtml()`. The bulk of inline JS is now gone (viewer loaded as a
+  separate script), but `${nonce}` / `${...Uri}` interpolations and any
+  small inline content remain at risk. Two specific failure modes:
 
-- **Examples live in a separate repo.** The `.flatppl` example files belong in
-  the **flatppl-examples** repo, not here. The engine's
-  `test/fixtures/*.flatppl` are *copies* — update both when an example changes.
+  1. **Backticks anywhere inside the template literal.** A JSDoc-style
+     reference like `` `prior2` `` closes the outer template literal
+     mid-document. Use apostrophes or plain text in any prose inside
+     `_getHtml`'s template.
+  2. **Backslash escapes in inner string literals** (if you ever add
+     inline JS back). `essLabel.title = 'foo\nbar';` looks like a
+     string with `\n`, but the outer template literal interprets `\n`
+     as a real newline first, leaving an unterminated string in the
+     rendered HTML. Write `\\n` in source for a literal `\n` in the
+     rendered JS, or avoid multi-line strings entirely.
+
+  **Detection:** `node --check src/visualPanel.js` catches case (1)
+  (backticks close the host template literal, leaving syntactically
+  invalid JS host-side). It does NOT catch case (2) — that breakage
+  manifests only in the rendered HTML the webview iframe parses.
+
+  Failure signature is webviews that go silently empty with
+  `Uncaught SyntaxError: Invalid or unexpected token` in the iframe,
+  with line numbers pointing at innocuous-looking comment lines. Easy
+  to lose hours debugging — beware.
+
+- **Test fixtures are at `packages/engine/test/fixtures/`.** Per the
+  examples-and-test-fixtures convention in `flatppl-dev/CONVENTIONS.md`,
+  fixtures here are *copies* of the upstream `.flatppl` files in the
+  sibling `flatppl-examples` repo. When upstream changes, refresh the
+  copy and mention the upstream commit in the engine commit message.
 
 - **One commit per significant step.** The user prefers focused per-topic commits
   as steps finish (matching the existing git history). Don't accumulate multiple
