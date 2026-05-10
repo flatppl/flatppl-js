@@ -121,6 +121,30 @@
       flex: 0 0 0; min-height: 0; border-top: none;
     }
     #plot-content { width: 100%; height: 100%; }
+    /* Drag handle between #graph-panel and #plot-panel. Lets the user
+       redistribute vertical space between the DAG view and the plot
+       pane. Hidden when the plot panel itself is hidden; the existing
+       border-top on #plot-panel doubles as the handle's visible band
+       while in resting state, so the divider only adds the
+       interactive hover affordance. */
+    #plot-divider {
+      flex: 0 0 5px;
+      cursor: row-resize;
+      user-select: none;
+      position: relative;
+      background: transparent;
+    }
+    #plot-divider::before {
+      content: '';
+      position: absolute;
+      left: 0; right: 0; top: 2px; bottom: 2px;
+      background: transparent;
+      transition: background 0.15s ease;
+    }
+    #plot-divider:hover::before {
+      background: var(--vscode-button-background, #0e639c);
+    }
+    #plot-divider.hidden { display: none; }
     /* Plot pane layout, controls, and chart host are styled inline by
        renderPlotFrame — no CSS rules needed here for the per-renderer
        layout. The constant-value / message blocks below still rely on
@@ -273,25 +297,6 @@
     #back-btn:hover {
       background: var(--vscode-button-secondaryHoverBackground, #505355);
     }
-    #legend {
-      position: absolute; top: 8px; right: 8px;
-      background: var(--vscode-editor-background);
-      border: 1px solid var(--vscode-panel-border, #444);
-      border-radius: 4px; padding: 6px 10px;
-      font-size: 11px; opacity: 0.85;
-      display: flex; flex-direction: column; gap: 3px;
-    }
-    #legend .section {
-      font-weight: 600; opacity: 0.55; font-size: 10px;
-      text-transform: uppercase; letter-spacing: 0.5px;
-      margin-top: 6px;
-    }
-    #legend .section:first-child { margin-top: 0; }
-    #legend .item { display: flex; align-items: center; gap: 6px; }
-    #legend .swatch {
-      width: 14px; height: 14px; border-radius: 3px;
-      border: 1px solid #888; flex-shrink: 0;
-    }
 `;
 
     var VIEWER_BODY_HTML = `
@@ -303,8 +308,8 @@
   <div id="main">
     <div id="graph-panel" class="full">
       <div id="cy"></div>
-      <div id="legend"></div>
     </div>
+    <div id="plot-divider" class="hidden" title="Drag to resize"></div>
     <div id="plot-panel" class="hidden">
       <div id="plot-content"></div>
     </div>
@@ -516,7 +521,6 @@
 
     var cy = null;
     var bb = null;
-    var shownTypes = new Set();
     var history = [];
     var currentState = null;
     // Bound on the DAG-navigation history (back-button stack). Cheap
@@ -616,78 +620,6 @@
 
     function updateBackBtn() {
       document.getElementById('back-btn').style.display = history.length > 0 ? 'block' : 'none';
-    }
-
-    /**
-     * Two-section legend: Phase (color axis) and Type (color axis for
-     * structural nodes). Only shows entries actually present in the
-     * current view, so the legend stays compact for small models.
-     *
-     * Phase entries appear when value-producing nodes ('draw', 'call')
-     * are visible — those are the ones that get phase-colored. Type
-     * entries appear for any structural type whose nodes are present
-     * (lawof, kernelof, functionof, fn, literal, input, likelihood,
-     * bayesupdate, module, table). draw / call don't appear in the
-     * Type list because their color comes from Phase, not Type.
-     */
-    function buildLegend() {
-      var el = document.getElementById('legend');
-
-      // Walk the current sub-DAG to find which phases and types are
-      // actually visible. shownTypes from the renderer covers types;
-      // we collect phases here directly.
-      var phasesShown = new Set();
-      var typesShown = new Set(shownTypes);
-      if (currentState && currentState.data) {
-        for (var i = 0; i < currentState.data.nodes.length; i++) {
-          var n = currentState.data.nodes[i];
-          if ((n.type === 'draw' || n.type === 'call') && n.phase) {
-            phasesShown.add(n.phase);
-          }
-        }
-      }
-
-      var html = '';
-
-      // Phase section — fixed display order matching the conceptual
-      // axis (most uncertainty → least).
-      var orderedPhases = [
-        ['stochastic',    'stochastic'],
-        ['parameterized', 'parameterized'],
-        ['fixed',         'fixed'],
-      ];
-      var phaseEntries = orderedPhases.filter(function(p) { return phasesShown.has(p[0]); });
-      if (phaseEntries.length > 0) {
-        html += '<div class="section">phase</div>';
-        for (var i = 0; i < phaseEntries.length; i++) {
-          var p = phaseEntries[i];
-          html += '<div class="item">'
-            + '<span class="swatch" style="background:' + PHASE_COLORS[p[0]] + '"></span>'
-            + '<span>' + esc(p[1]) + '</span></div>';
-        }
-      }
-
-      // Type section — structural-only types whose color is type-driven
-      // (not phase-driven). draw and call are intentionally excluded:
-      // the user already sees them via the Phase section above.
-      var orderedTypes = [
-        'lawof', 'kernelof', 'functionof', 'fn',
-        'literal', 'input',
-        'likelihood', 'bayesupdate',
-        'module', 'table',
-      ];
-      var typeEntries = orderedTypes.filter(function(t) { return typesShown.has(t); });
-      if (typeEntries.length > 0) {
-        html += '<div class="section">type</div>';
-        for (var j = 0; j < typeEntries.length; j++) {
-          var s = TYPE_STYLE[typeEntries[j]];
-          html += '<div class="item">'
-            + '<span class="swatch" style="background:' + s.color + '"></span>'
-            + '<span>' + esc(s.label) + '</span></div>';
-        }
-      }
-
-      el.innerHTML = html;
     }
 
     function initCy() {
@@ -2019,13 +1951,23 @@
 
     function setPlotEnabled(enabled) {
       plotEnabled = !!enabled;
-      var plot = document.getElementById('plot-panel');
-      var graph = document.getElementById('graph-panel');
-      var btn  = document.getElementById('plot-toggle');
+      var plot    = document.getElementById('plot-panel');
+      var graph   = document.getElementById('graph-panel');
+      var divider = document.getElementById('plot-divider');
+      var btn     = document.getElementById('plot-toggle');
       plot.classList.toggle('hidden', !plotEnabled);
       graph.classList.toggle('full',  !plotEnabled);
+      divider.classList.toggle('hidden', !plotEnabled);
       btn.classList.toggle('on', plotEnabled);
       btn.textContent = 'Plot: ' + (plotEnabled ? 'on' : 'off');
+      // Drop any user-dragged inline flex so the class-based defaults
+      // (flex: 1 1 100% on graph-full, flex: 0 0 0 on plot-hidden, or
+      // the regular 60/40 split when both are showing) take effect.
+      // Inline-style takes precedence over our class rules; clearing
+      // it here means a toggle-off-then-on resets the split rather
+      // than holding the previous drag position into the hidden state.
+      graph.style.flex = '';
+      plot.style.flex = '';
       // Persist across panel reopens. VS Code restores webview state
       // automatically when the panel is shown again.
       if (host.saveState) { try { host.saveState({ plotEnabled: plotEnabled }); } catch (_) {} }
@@ -5149,6 +5091,47 @@
       setPlotEnabled(!plotEnabled);
     });
 
+    // Drag handle between the DAG and plot panes. Lets the user
+    // redistribute vertical space; both panes have a min-height clamp
+    // so neither can be dragged into invisibility. The DAG and plot
+    // ResizeObservers (set up further below) pick up the resulting
+    // size change and refit cytoscape / echarts automatically — no
+    // explicit resize / fit calls needed here.
+    document.getElementById('plot-divider').addEventListener('mousedown', function (ev) {
+      if (!plotEnabled) return;
+      ev.preventDefault();
+      var graph = document.getElementById('graph-panel');
+      var plot  = document.getElementById('plot-panel');
+      var startY = ev.clientY;
+      var startGraphPx = graph.getBoundingClientRect().height;
+      var startPlotPx  = plot.getBoundingClientRect().height;
+      var combinedPx = startGraphPx + startPlotPx;
+      var MIN_PX = 80;
+      function onMove(mv) {
+        var dy = mv.clientY - startY;
+        var newGraph = startGraphPx + dy;
+        var newPlot  = startPlotPx  - dy;
+        if (newGraph < MIN_PX) { newGraph = MIN_PX; newPlot = combinedPx - MIN_PX; }
+        if (newPlot  < MIN_PX) { newPlot  = MIN_PX; newGraph = combinedPx - MIN_PX; }
+        // Use flex-basis in px so the two panes' relative split is
+        // exactly what the user dragged to. flex-grow stays 1 on
+        // both so subsequent host-pane resizes redistribute the
+        // delta proportionally rather than parking it on one side.
+        graph.style.flex = '1 1 ' + newGraph + 'px';
+        plot.style.flex  = '1 1 ' + newPlot  + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
     // --- DAG rendering ---
 
     // Tear down all bubble paths and clear leftover scratch. Two bubblesets-js
@@ -5238,7 +5221,6 @@
       if (!cy) initCy();
       updateHeader(data);
 
-      shownTypes.clear();
       var elements = [];
 
       // Reification anchor names — bindings that head a reification
@@ -5258,7 +5240,6 @@
       for (var i = 0; i < data.nodes.length; i++) {
         var node = data.nodes[i];
         var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
-        shownTypes.add(node.type);
 
         // Shape: type-driven (carries the structural info — what *kind*
         // of binding this is). The engine-computed reification kind
@@ -5375,7 +5356,6 @@
 
       cy.fit(undefined, 40);
       drawReificationLassos(data);
-      buildLegend();
 
       // Show details for the target node automatically (the cursor is already
       // on it in the source). Falls back to the hint if no target is present.
