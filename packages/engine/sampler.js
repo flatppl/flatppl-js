@@ -904,6 +904,7 @@ module.exports = {
   // Internal — exported for tests.
   _internal: {
     REGISTRY,
+    ARITH_OPS,
     makePhiloxPrngAdapter,
     resolveParams,
     lookupDistribution,
