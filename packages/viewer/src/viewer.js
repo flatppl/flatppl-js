@@ -6141,6 +6141,18 @@
       renderDAG(dagData);
       updateBackBtn();
       updatePlotForBinding(targetName);
+      // Notify the host so any URL / panel state stays in sync with
+      // the viewer's actual focus. Internal navigations (DAG node
+      // clicks, double-clicks, "show whole module" toolbar) used to
+      // diverge from the host's recorded target, which then leaked
+      // back into the viewer when the host pushed a fresh
+      // sourceUpdate carrying its (stale) target — e.g. typing in
+      // an editor triggered a debounced update that yanked focus
+      // back to a previous binding. With this call, host and viewer
+      // share one target.
+      if (host && typeof host.setTarget === 'function') {
+        try { host.setTarget(targetName); } catch (_) {}
+      }
     }
 
     /**
@@ -6162,6 +6174,10 @@
       currentState = { data: dagData, targetName: MODULE_TARGET };
       renderDAG(dagData);
       updateBackBtn();
+      // Mirror module-view focus to the host (null = whole module).
+      if (host && typeof host.setTarget === 'function') {
+        try { host.setTarget(null); } catch (_) {}
+      }
       // No specific binding to plot in module view. Pass null so the
       // Plot panel renders its placeholder; renderPlotForCurrent
       // recognizes module mode and tailors the message.

@@ -359,27 +359,16 @@
     if (fwdBtn)  fwdBtn.addEventListener('click',  function () { window.history.forward(); });
 
     // "Visualize whole module" button in the source-pane header.
-    // Drops the focused target so the DAG renders every binding;
-    // routes through the hash so the action is part of navigation
-    // history (browser back restores the previously focused target).
-    //
-    // The explicit viewer.update(text, null) below covers the case
-    // where the URL already shows target=null but the viewer is
-    // internally focused on a node from a DAG-side double-click
-    // (which doesn't sync back to the URL). Without it, the router
-    // dedup would see an identical hash and bail, leaving the
-    // viewer's internal state untouched.
+    // Drops the focused target so the DAG renders every binding.
+    // Routes purely through the hash router — the viewer's
+    // host.setTarget hook keeps URL = viewer focus in sync, so
+    // there's no longer a divergent-state case that needed an
+    // explicit viewer.update fallback.
     var showModuleBtn = document.getElementById('show-module-btn');
     if (showModuleBtn) {
       showModuleBtn.addEventListener('click', function () {
         var cur = window.FlatPPLWebRouter.parseHash();
         window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: null });
-        if (viewer) {
-          var liveText = playgroundEditor
-            ? playgroundEditor.getSource()
-            : (lastRenderedSource || '');
-          viewer.update(liveText, null);
-        }
       });
     }
 
@@ -467,6 +456,21 @@
         var cur = window.FlatPPLWebRouter.parseHash();
         var modelLabel = cur.model ? ('FlatPPL: ' + cur.model) : 'FlatPPL';
         document.title = name ? (modelLabel + ' / ' + name) : modelLabel;
+      },
+      /** Mirror the viewer's internal focus into the URL so the
+          hash always reflects the actual current target. DAG-side
+          navigations (node clicks, double-clicks, the whole-module
+          toolbar) call this; without it those internal moves
+          diverged from the URL and the next source-update read a
+          stale target out of the hash. The router de-dupes
+          identical hashes, so the call is a no-op when no state
+          change is needed. */
+      setTarget: function (name) {
+        var cur = window.FlatPPLWebRouter.parseHash();
+        window.FlatPPLWebRouter.navigateTo({
+          model: cur.model,
+          target: name || null,
+        });
       },
       /** Whether the gallery can write to source right now. True
           when an editor is mounted (playground edit mode); false
