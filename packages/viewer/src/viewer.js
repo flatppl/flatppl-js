@@ -965,6 +965,22 @@
     // resolveSweepRange (auto) vs. user-edited (override) — used
     // for tooltip / debug; the renderer treats both the same.
     var profileRangeCache = new Map();
+    // Module-wide overrides on named preset bindings. Persists across
+    // binding navigation, so tuning pars1 on a likelihood plot
+    // applies the same overrides when the user visits a forward
+    // kernel that shares those kwarg names. Reconciled on every
+    // source change via value comparison against the freshly parsed
+    // base values (see rebuildDerivations); a kwarg whose source
+    // value now matches the override drops from the override
+    // automatically.
+    //   Map<presetName, { values, limits, limitsKwarg }>
+    // values:      { kwargName → number }   user-set overrides
+    // limits:      { lo, hi } | null        x-range override
+    // limitsKwarg: string | null            sweep axis the limits
+    //                                       describe (so we can
+    //                                       prune them when that
+    //                                       kwarg disappears)
+    var presetOverrides = new Map();
     var rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
@@ -997,6 +1013,60 @@
       measureCache = new Map();
       histogramCache = new Map();
       profileRangeCache = new Map();
+
+      // Reconcile module-wide preset overrides against the new
+      // source. For each existing override:
+      //   - If the preset binding is gone, drop the override.
+      //   - For each kwarg in override.values, if the new source
+      //     value matches the override (or the kwarg is gone),
+      //     drop it from the override (matched → redundant,
+      //     gone → not applicable). Persist-button writes lean on
+      //     this — after writing the override into the source,
+      //     the next rebuildDerivations finds equal values and
+      //     prunes the override automatically.
+      //   - If the limits' sweep kwarg is gone, drop the limits.
+      //   - If the override is empty after pruning, retire it.
+      presetOverrides.forEach(function(entry, name) {
+        var b = currentBindings.get(name);
+        var curValues = null;
+        if (b && b.type === 'literal' && b.node && b.node.value
+            && b.node.value.type === 'CallExpr' && b.node.value.callee
+            && b.node.value.callee.name === 'preset') {
+          // Best-effort literal extraction; bail to no-match if
+          // anything looks non-trivial (which falls into the
+          // "kwarg unknown" branch below).
+          curValues = {};
+          var args = b.node.value.args || [];
+          for (var ai = 0; ai < args.length; ai++) {
+            var arg = args[ai];
+            if (arg.type === 'KeywordArg' && arg.value
+                && arg.value.type === 'NumberLiteral') {
+              curValues[arg.name] = arg.value.value;
+            }
+          }
+        }
+        if (!curValues) {
+          presetOverrides.delete(name);
+          return;
+        }
+        var vs = entry.values || {};
+        for (var k in vs) {
+          if (!Object.prototype.hasOwnProperty.call(vs, k)) continue;
+          if (!Object.prototype.hasOwnProperty.call(curValues, k)) {
+            delete vs[k];                          // kwarg gone
+          } else if (vs[k] === curValues[k]) {
+            delete vs[k];                          // override matches source
+          }
+        }
+        if (entry.limitsKwarg
+            && !Object.prototype.hasOwnProperty.call(curValues, entry.limitsKwarg)) {
+          entry.limits = null;
+          entry.limitsKwarg = null;
+        }
+        if (Object.keys(vs).length === 0 && !entry.limits) {
+          presetOverrides.delete(name);
+        }
+      });
 
       // Push fixed-phase pre-evaluated values into the worker's
       // session env. The orchestrator computed these once at module-
@@ -1813,17 +1883,17 @@
             signature: sig,
             axes: axes,
             matchedPresets: presets,
-            presetName: null,            // null = "auto" defaults
-            // Per-binding store for "(modified)" presets — user
-            // overrides that build on top of a base preset. Empty
-            // on plan creation, populated when the user edits
-            // limits in the under-plot row or (later) clicks the
-            // plot to slice the sweep axis. Re-built per binding
-            // visit (so navigation away discards prior modifieds).
-            // Keyed by baseName: the matched preset's name, or
-            // '__auto__' for the auto pseudo-preset.
-            modifiedPresets: new Map(),
-            modified: false,             // is active selection the modified variant?
+            presetName: null,            // null = "auto", string = named preset
+            // Per-binding override for the auto pseudo-preset.
+            // Auto's "values" depend on the binding's signature
+            // (type defaults / cached source samples), so they
+            // can't be shared module-wide. Reset when the user
+            // navigates to a different binding (the plan is
+            // rebuilt). Named-preset overrides live in the
+            // module-wide presetOverrides map instead.
+            //   null | { values: {kwarg: val}, limits: {lo,hi}|null,
+            //            limitsKwarg: string|null }
+            autoOverride: null,
           };
         }
         return {
@@ -1831,14 +1901,12 @@
           mode: 'profile',
           signature: sig,
           axes: axes,
-          sweepKey: axes[0].key,         // default: sweep first axis
-          matchedPresets: presets,       // [{name, values}, ...]
-          presetName: null,              // null = "auto" (default)
-          outputs: outputs,              // [{key, label, path, leafType}, ...]
-          outputKey: outputKey,          // null when scalar output (only one leaf)
-          // See kernel-sample plan comment above.
-          modifiedPresets: new Map(),
-          modified: false,
+          sweepKey: axes[0].key,
+          matchedPresets: presets,
+          presetName: null,
+          outputs: outputs,
+          outputKey: outputKey,
+          autoOverride: null,
         };
       }
 
@@ -3864,11 +3932,12 @@
         }
       }
       var active = activePresetFor(plan);
-      // Cache key includes the modified marker: a base preset and
-      // its (modified) variant have different effective values, so
-      // they need their own cached samples.
+      // Cache key embeds the active preset's values directly so two
+      // states of the same preset (with vs. without overrides, or
+      // two different override sets) don't collide on cached
+      // samples. Stable JSON suffices for our short kwarg lists.
       var cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '')
-        + (plan.modified ? ':mod' : '');
+        + '|' + JSON.stringify(active.values || {});
       // Build the input env (paramName → number). Auto values for
       // axes not covered by the active preset (incl. modified
       // overrides) come from source-binding samples[0] (or type-
@@ -3935,41 +4004,74 @@
       });
     }
 
-    // Internal key for the auto pseudo-preset in plan.modifiedPresets.
-    // Picked so it can't collide with a user-defined preset name
-    // (FlatPPL identifiers can't start with `__`).
-    var AUTO_PRESET_KEY = '__auto__';
-
-    /** Base-preset key for the active selection. '__auto__' if the
-        user is on the auto pseudo-preset, otherwise the matched
-        preset's name. The modifiedPresets map is keyed by this. */
-    function baseKeyOf(plan) {
-      return plan.presetName == null ? AUTO_PRESET_KEY : plan.presetName;
+    /** The override entry for the active selection — auto's lives
+        on the plan (per-binding), named presets live in the
+        module-wide presetOverrides map. Returns null if none. */
+    function overrideEntryFor(plan) {
+      if (plan.presetName == null) return plan.autoOverride;
+      return presetOverrides.get(plan.presetName) || null;
     }
 
-    /** Effective preset {values, limits?} for a plan, accounting for
-        any (modified) overrides on top of the base. The merge order
-        is base ← overrides, so a kwarg the user changed via click-to-
-        slice (step 3) wins over the base value. When the plan is on
-        a base (not modified), returns the base values verbatim with
-        no limits override. */
+    /** Whether the active selection currently has any overrides
+        (values or limits). Drives the "(modified)" tag and the
+        reset/persist button visibility. */
+    function hasOverrides(plan) {
+      var e = overrideEntryFor(plan);
+      if (!e) return false;
+      var v = e.values || {};
+      for (var k in v) {
+        if (Object.prototype.hasOwnProperty.call(v, k)) return true;
+      }
+      return !!e.limits;
+    }
+
+    /** Write back an override entry for the active selection.
+        Routes auto entries to the plan (per-binding), named
+        entries to the module-wide store. Pass null to clear. */
+    function setOverrideFor(plan, entry) {
+      if (plan.presetName == null) {
+        plan.autoOverride = entry;
+        return;
+      }
+      if (entry) {
+        presetOverrides.set(plan.presetName, entry);
+      } else {
+        presetOverrides.delete(plan.presetName);
+      }
+    }
+
+    /** Get-or-create a fresh override entry for the active
+        selection (caller will mutate it and call setOverrideFor
+        to commit). */
+    function ensureOverrideFor(plan) {
+      var existing = overrideEntryFor(plan);
+      if (existing) {
+        existing.values = Object.assign({}, existing.values || {});
+        return existing;
+      }
+      return { values: {}, limits: null, limitsKwarg: null };
+    }
+
+    /** Effective {values, limits} for a plan, merging base preset
+        values with any override on top. Base values for named
+        presets come from matchedPresets[i].values; for auto, base
+        is an empty object (the dropdown "auto: …" label uses
+        computeAutoValues separately, but env-substitution falls
+        through to type defaults + source-sample materialisation
+        when no explicit value is present). */
     function activePresetFor(plan) {
       var baseValues = baseValuesFor(plan);
-      if (!plan.modified) return { values: baseValues, limits: null };
-      var entry = plan.modifiedPresets.get(baseKeyOf(plan));
+      var entry = overrideEntryFor(plan);
       if (!entry) return { values: baseValues, limits: null };
-      var merged = Object.assign({}, baseValues, entry.values || {});
-      return { values: merged, limits: entry.limits || null };
+      return {
+        values: Object.assign({}, baseValues, entry.values || {}),
+        limits: entry.limits || null,
+      };
     }
 
-    /** Just the base preset's *user-set* values (no auto-computed
-        defaults, no modified overrides). For named bases this is
-        matchedPresets[i].values; for auto, an empty object — auto
-        has no user-set values, only display defaults, so callers
-        substituting environment fall through to their normal type-
-        default + source-sample materialisation path. The display-
-        side dropdown calls computeAutoValues separately for the
-        "auto: theta1 = X" label. */
+    /** Source-declared base values for the active preset (no
+        overrides applied). For named presets this is
+        matchedPresets[i].values; for auto, an empty object. */
     function baseValuesFor(plan) {
       if (plan.presetName != null && plan.matchedPresets) {
         for (var i = 0; i < plan.matchedPresets.length; i++) {
@@ -3994,53 +4096,38 @@
       var frag = document.createDocumentFragment();
       if (!plan.axes || plan.axes.length === 0) return frag;
 
-      // Materialise every entry the dropdown should show. Each entry
-      // carries both display forms — `shortLabel` for the button
-      // text, `longLabel` for the popup row — plus the (name,
-      // modified) tuple that lands on the plan on selection.
+      // One row per preset name (auto plus each named preset). The
+      // "(modified)" tag is appended to the label when the active
+      // override entry has values or limits — there's no separate
+      // "<name> (modified)" row anymore. Switching presets just
+      // changes plan.presetName; the override store decides whether
+      // the row reads as modified.
       var entries = [];
       var presets = plan.matchedPresets || [];
       var autoValues = computeAutoValues(plan);
 
-      entries.push({
-        name: null,
-        modified: false,
-        shortLabel: 'auto',
-        longLabel: 'auto: ' + presetValuesText(autoValues),
-      });
-      if (plan.modifiedPresets.has(AUTO_PRESET_KEY)) {
-        var amod = plan.modifiedPresets.get(AUTO_PRESET_KEY);
-        var combinedAuto = Object.assign({}, autoValues, amod.values || {});
-        entries.push({
-          name: null,
-          modified: true,
-          shortLabel: 'auto (modified)',
-          longLabel: 'auto (modified): ' + presetValuesText(combinedAuto),
-        });
-      }
-      for (var pi = 0; pi < presets.length; pi++) {
-        var p = presets[pi];
-        entries.push({
-          name: p.name,
-          modified: false,
-          shortLabel: p.name,
-          longLabel: p.name + ': ' + presetValuesText(p.values),
-        });
-        if (plan.modifiedPresets.has(p.name)) {
-          var pmod = plan.modifiedPresets.get(p.name);
-          var combined = Object.assign({}, p.values || {}, pmod.values || {});
-          entries.push({
-            name: p.name,
-            modified: true,
-            shortLabel: p.name + ' (modified)',
-            longLabel: p.name + ' (modified): ' + presetValuesText(combined),
-          });
-        }
+      function buildEntry(name, baseValues, isAuto) {
+        var entryOverride = (name == null) ? plan.autoOverride : presetOverrides.get(name);
+        var modified = !!(entryOverride
+          && ((entryOverride.values && Object.keys(entryOverride.values).length > 0)
+              || entryOverride.limits));
+        var combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
+        var displayName = isAuto ? 'auto' : name;
+        var tag = modified ? ' (modified)' : '';
+        return {
+          name: name,
+          modified: modified,
+          shortLabel: displayName + tag,
+          longLabel: displayName + tag + ': ' + presetValuesText(combined),
+        };
       }
 
-      function isActive(entry) {
-        return entry.name === plan.presetName && !!entry.modified === !!plan.modified;
+      entries.push(buildEntry(null, autoValues, true));
+      for (var pi = 0; pi < presets.length; pi++) {
+        entries.push(buildEntry(presets[pi].name, presets[pi].values || {}, false));
       }
+
+      function isActive(entry) { return entry.name === plan.presetName; }
       var activeEntry = null;
       for (var k = 0; k < entries.length; k++) {
         if (isActive(entries[k])) { activeEntry = entries[k]; break; }
@@ -4131,7 +4218,6 @@
         row.addEventListener('click', function(ev) {
           ev.stopPropagation();
           plan.presetName = entry.name;
-          plan.modified = !!entry.modified;
           closePanel();
           onChange();
         });
@@ -4768,14 +4854,12 @@
         inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       });
 
-      // Limit edits commit through the modified-preset machinery:
-      //  - From base preset: replace any prior modified entry for
-      //    this base entirely (limits = new, values = {}). The
-      //    active selection promotes to the modified variant.
-      //  - From the modified variant: update its limits in place;
-      //    value overrides on the same entry are preserved.
-      // Matches the user-stated rule: editing while on base
-      // "overwrites" the modified copy.
+      // Limit edits commit into the active selection's override
+      // entry (auto-on-plan for the auto pseudo-preset, module-wide
+      // presetOverrides for named presets). limitsKwarg records
+      // which sweep axis these limits describe so the reconciler
+      // in rebuildDerivations can prune them when that kwarg is
+      // gone from the preset signature.
       var commitRange = function() {
         var newLo = parseFloat(xLoInput.value);
         var newHi = parseFloat(xHiInput.value);
@@ -4784,16 +4868,10 @@
           xHiInput.value = formatScalar(range[1]);
           return;
         }
-        var baseKey = baseKeyOf(plan);
-        var entry;
-        if (plan.modified && plan.modifiedPresets.has(baseKey)) {
-          entry = plan.modifiedPresets.get(baseKey);
-        } else {
-          entry = { limits: null, values: {} };
-        }
+        var entry = ensureOverrideFor(plan);
         entry.limits = { lo: newLo, hi: newHi };
-        plan.modifiedPresets.set(baseKey, entry);
-        plan.modified = true;
+        entry.limitsKwarg = plan.sweepKey || null;
+        setOverrideFor(plan, entry);
         renderProfilePlotForCurrent();
       };
       xLoInput.addEventListener('change', commitRange);
@@ -5024,14 +5102,9 @@
       });
     }
 
-    /**
-     * Commit a clicked x value as the sweep-axis value of the
-     * active preset. Follows the same overwrite rule as limit
-     * edits: from the base, replace any prior modified entry
-     * with a fresh one carrying just this one override; from
-     * the modified variant, update the value in place so other
-     * overrides on the same entry are preserved.
-     */
+    /** Commit a clicked x value as the sweep-axis value of the
+        active preset. Writes through the unified override store
+        (autoOverride for auto, presetOverrides for named). */
     function commitSliceX(plan, x) {
       if (!plan || !plan.axes) return;
       var kwarg = null;
@@ -5042,17 +5115,9 @@
         }
       }
       if (!kwarg) return;
-      var baseKey = baseKeyOf(plan);
-      var entry;
-      if (plan.modified && plan.modifiedPresets.has(baseKey)) {
-        entry = plan.modifiedPresets.get(baseKey);
-        entry.values = Object.assign({}, entry.values || {});
-      } else {
-        entry = { limits: null, values: {} };
-      }
+      var entry = ensureOverrideFor(plan);
       entry.values[kwarg] = x;
-      plan.modifiedPresets.set(baseKey, entry);
-      plan.modified = true;
+      setOverrideFor(plan, entry);
     }
 
     function renderArrayStepPlot(arr) {
