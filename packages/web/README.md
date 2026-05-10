@@ -1,0 +1,157 @@
+# `@flatppl/web`
+
+Standalone web host for the FlatPPL viewer. A three-pane gallery
+shell — file tree on the left, syntax-highlighted source view in the
+middle, [DAG + plot viewer](../viewer/README.md) on the right —
+targeting GitHub Pages and other static-host deployments.
+
+Different from the viewer's own embedding path (see
+[`packages/viewer/README.md`](../viewer/README.md)): that surface is
+for embedding only the DAG/plot viewer inside a larger page (docs
+sites, blog posts, single-model pages). This package is the gallery
+that wraps it for multi-model browsing — file selection, hash-routed
+navigation, manifest-driven discovery.
+
+> Status: early. Not yet published to npm; consumed only inside the
+> `flatppl-js` workspace.
+
+## Local development
+
+```sh
+# from the flatppl-js workspace root, first time only (or after a clean):
+npm install
+
+# then in this package:
+cd packages/web
+npm run build   # produces dist/ with vendor + page sources + demo
+npm run serve   # http://localhost:8001/
+```
+
+`npm run watch` keeps esbuild in watch mode for the engine and
+sampler-worker bundles, so edits to `packages/engine/` re-bundle
+automatically.
+
+The viewer's local-development server lives separately at
+`packages/viewer/serve.mjs` (port 8000). The two test surfaces
+target different concerns:
+
+- The viewer's `embed-test.html` exercises the DAG/plot viewer in
+  isolation against a single inline source.
+- This package's `serve.mjs` exercises the full integration —
+  manifest loading, file-tree clicks, hash routing, syntax
+  highlighting, source ↔ DAG cross-pane navigation — over real
+  model files.
+
+## Page layout
+
+The shell is a single CSS-Grid page:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  FlatPPL                                                         │  header
+├──────────┬─────────────────────────┬─────────────────────────────┤
+│ FILES    │ SOURCE                  │ VISUALIZATION               │
+│          │                         │                             │
+│ - file1  │  theta1 = Normal(...)   │   [DAG render]              │
+│ - file2  │  obs    = draw(...)     │                             │
+│ - …      │  ...                    │                             │
+│          │                         │                             │
+└──────────┴─────────────────────────┴─────────────────────────────┘
+```
+
+- **Files**: populated from `models.json`. Click an entry → URL
+  hash updates → corresponding model loads.
+- **Source**: read-only, FlatPPL-aware syntax highlighting.
+  Identifiers that resolve to a defined binding are clickable and
+  focus the corresponding node in the DAG view.
+- **Visualization**: the [`@flatppl/viewer`](../viewer/) DAG + plot
+  panes mounted via the documented `FlatPPLViewer.mount(container,
+  opts)` API.
+
+## URL hash format
+
+```
+#model=<path-to-flatppl-file>           # focus the whole module
+#model=<path-to-flatppl-file>&target=<binding-name>   # focus a binding
+```
+
+Hash routing rather than query-string routing because static hosts
+don't rewrite paths server-side and hash navigation never reloads the
+page. Browser back/forward, copy-paste, and bookmarking all work
+naturally.
+
+## Manifest format (`models.json`)
+
+The gallery fetches `models.json` at startup to populate the file
+tree. Format is forward-compatible — new top-level fields land
+additively without breaking existing manifests.
+
+```json
+{
+  "title": "FlatPPL examples",
+  "entries": [
+    { "path": "demo/foo.flatppl", "title": "Optional display name" },
+    { "path": "demo/bar.flatppl" }
+  ]
+}
+```
+
+`path` is required (URL the resolver fetches, relative to the
+deployed root). `title` is optional — falls back to the file basename
+if omitted. Top-level `title` becomes the page header.
+
+A CI step on push can regenerate the manifest from the demo
+directory:
+
+```sh
+find demo -name '*.flatppl' -printf '%P\n' \
+  | jq -R '{path: .}' | jq -s '{title: "FlatPPL examples", entries: .}' \
+  > models.json
+```
+
+## Cross-pane navigation
+
+The gallery wires both directions of source ↔ DAG navigation:
+
+- **Source → DAG**: click on an identifier in the source pane that
+  resolves to a defined binding (rendered with the binding-color
+  hover affordance) → URL hash gains `target=<name>` → DAG view
+  focuses that binding. Browser back/forward steps through focus
+  history.
+- **DAG → Source**: Ctrl-click a DAG node → the viewer's
+  `revealSourceLine` host-adapter callback fires → the source pane
+  scrolls to the binding's definition line and flashes a brief
+  yellow highlight.
+
+Both directions are implemented by walking the engine tokenizer's
+output, so they stay in sync with the parser automatically — no
+separate grammar to maintain.
+
+## Deploy
+
+The repo's `.github/workflows/pages.yml` workflow builds
+`packages/web/dist/` on every push to `main` (and on
+`workflow_dispatch`) and deploys it to GitHub Pages. The deployed
+URL is `https://<owner>.github.io/<repo>/`.
+
+**One-time repo setting** required: Settings → Pages → Build and
+deployment → Source: GitHub Actions. After that the workflow owns
+the deploy end-to-end.
+
+The deployed bundle is fully self-contained (vendor scripts, engine
++ sampler-worker bundles, viewer, gallery sources, demo `.flatppl`
+files, manifest); the deploy directory can be hosted anywhere
+serving static files.
+
+## Standalone embeds (single-model)
+
+If you want a single-model page rather than the gallery — e.g. a
+blog post that embeds one specific FlatPPL model — use the viewer's
+own embedding path documented in
+[`packages/viewer/README.md`](../viewer/README.md). It's narrower,
+ships fewer assets, and doesn't need a manifest. The two paths
+coexist and target different host needs.
+
+## License
+
+MIT, copyright Oliver Schulz. See [`LICENSE`](LICENSE).
