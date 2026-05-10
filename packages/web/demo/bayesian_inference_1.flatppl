@@ -1,0 +1,41 @@
+# Bayesian inference — joint model
+#
+# Two fit parameters with independent priors and a deterministic
+# forward model followed by IID normal observations. The prior is
+# reified separately from the forward kernel via lawof / kernelof,
+# letting the same source serve both generative and scoring modes.
+
+# Prior distributions
+theta1_dist = Normal(mu = 0.0, sigma = 1.0)
+theta2_dist = Exponential(rate = 1.0)
+
+# Prior variates
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+
+c = 5.0
+
+f_a = functionof(c * _par_, par = _par_)
+f_b = fn(abs(_) * _)
+
+# Deterministic transform
+a = f_a(theta1)
+b = f_b(theta1, theta2)
+
+# IID observations from the forward model
+obs = draw(iid(Normal(mu = a, sigma = b), 10))
+
+# Reify prior and forward-model kernel as separate sub-DAGs
+prior = lawof(record(theta1 = theta1, theta2 = theta2))
+forward_kernel = kernelof(record(obs = obs), theta1 = theta1, theta2 = theta2)
+
+# Observed data
+observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]
+
+# Likelihood evaluated at the observed data
+L = likelihoodof(forward_kernel, record(obs = observed_data))
+
+# Non-normalized posterior — the bayesupdate combines the likelihood
+# with the prior into a single (unnormalized) measure on the parameter
+# space.
+posterior = bayesupdate(L, prior)

@@ -1,0 +1,13 @@
+{
+  "title": "FlatPPL examples",
+  "entries": [
+    {
+      "path": "demo/bayesian_inference_1.flatppl",
+      "title": "Bayesian inference — joint model"
+    },
+    {
+      "path": "demo/bayesian_inference_2.flatppl",
+      "title": "Bayesian inference — disintegrated"
+    }
+  ]
+}

@@ -85,6 +85,27 @@ for (const name of SRC_FILES) {
   console.log(`  copied src/${name} -> dist/${name}`);
 }
 
+// Copy the gallery's hand-curated assets — the manifest the file tree
+// loads at boot and the demo .flatppl programs the manifest points
+// at. The CI workflow can replace this with auto-generated content
+// later (e.g. find demo/ -name '*.flatppl' | jq -s into models.json),
+// but having the in-package set lets the deploy stay self-contained.
+
+if (existsSync(join(here, 'models.json'))) {
+  await copyFile(join(here, 'models.json'), join(distDir, 'models.json'));
+  console.log('  copied models.json -> dist/models.json');
+}
+
+if (existsSync(join(here, 'demo'))) {
+  const demoFiles = await readdir(join(here, 'demo'));
+  await mkdir(join(distDir, 'demo'), { recursive: true });
+  for (const name of demoFiles) {
+    if (!/\.(flatppl|json|csv|wsv)$/.test(name)) continue;
+    await copyFile(join(here, 'demo', name), join(distDir, 'demo', name));
+    console.log(`  copied demo/${name} -> dist/demo/${name}`);
+  }
+}
+
 // ---------------------------------------------------------------------
 // 4. Bundle the FlatPPL engine and sampler-worker for browser loading.
 //    Same esbuild config the viewer uses — IIFE, minified, browser
