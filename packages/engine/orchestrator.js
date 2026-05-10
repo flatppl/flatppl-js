@@ -52,6 +52,7 @@
 
 const { lowerExpr } = require('./lower');
 const { isMeasureExpr } = require('./analyzer');
+const { MEASURE_PRODUCING } = require('./builtins');
 const { quantileSorted } = require('./histogram');
 
 // Distributions the worker's REGISTRY currently implements. Hardcoded
@@ -1754,35 +1755,18 @@ function buildDerivations(bindings) {
     return (b && b.ir) || null;
   }
 
-  // Collect every self-ref in an IR. Pre-eval downstream filters by
-  // binding type: refs to value-typed bindings need an env entry from
-  // fixedValues, refs to measure-typed bindings are resolved at
-  // runtime by traceeval via the resolveMeasureRef closure. Walking
-  // the full tree (rather than skipping rand's measure arg) is the
-  // right call: distribution params nested deep inside a measure
-  // subtree (e.g. `iid(Normal(mu=ref(rp_field)), n)`) are themselves
-  // value refs, and the leaf-distribution evaluator needs them in
-  // env at runtime.
-  function collectAllSelfRefs(ir) {
-    return collectSelfRefs(ir);
-  }
-  // True when a binding's value is a measure (so it doesn't need an
-  // env entry — it's resolved as an IR via resolveMeasureRef instead).
-  // Uses the analyzer's classification (`type`) plus type inference
-  // when present, so reified callables / measure derivations / iid
-  // bindings are all treated uniformly.
+  // True when a binding's value is a measure. Two ways to know:
+  //   1. typeinfer: inferredType.kind in {measure, function, kernel}.
+  //   2. lift-introduced synthetic anons that don't carry inferredType
+  //      yet but whose IR head is a measure-producing op — exactly
+  //      the `MEASURE_PRODUCING` set the surface analyzer uses, so we
+  //      reuse it rather than maintaining a parallel list.
   function isMeasureBinding(b) {
     if (!b) return false;
     const t = b.inferredType;
     if (t && (t.kind === 'measure' || t.kind === 'function' || t.kind === 'kernel')) return true;
-    // Lift-introduced anonymous bindings carry a measure-construction
-    // call as their value (Normal, iid, joint, etc.); treat them as
-    // measure bindings so pre-eval doesn't expect a fixedValues entry.
-    if (b.synthetic && b.ir && b.ir.kind === 'call'
-        && (b.ir.op === 'iid' || b.ir.op === 'joint' || b.ir.op === 'weighted'
-            || b.ir.op === 'logweighted' || b.ir.op === 'normalize')) return true;
     if (b.synthetic && b.ir && b.ir.kind === 'call' && b.ir.op
-        && SAMPLEABLE_DISTRIBUTIONS.has(b.ir.op)) return true;
+        && MEASURE_PRODUCING.has(b.ir.op)) return true;
     return false;
   }
 
@@ -1822,7 +1806,7 @@ function buildDerivations(bindings) {
       const valueRefs = new Set();
 
       function collectFor(walkIr) {
-        const refs = collectAllSelfRefs(walkIr);
+        const refs = collectSelfRefs(walkIr);
         for (const r of refs) {
           if (!bindings.has(r)) continue;
           const dep = bindings.get(r);
@@ -1877,40 +1861,15 @@ function buildDerivations(bindings) {
       } catch (_) { continue; }
       fixedValues.set(name, value);
       progress = true;
-
-      // Reclassify only when the existing classification is the
-      // generic 'evaluate' (per-atom Float64Array path). Other kinds
-      // (record / sample / iid / weighted / array / alias / …) are
-      // domain-specific shapes the viewer renders; keeping them lets
-      // e.g. relabel still produce a record derivation even though
-      // pre-eval can compute the inline value too. We only step in
-      // when 'evaluate' would mis-handle the value's shape.
-      const existing = derivations[name];
-      const isOverridable = !existing || existing.kind === 'evaluate';
-      if (!isOverridable) continue;
-
-      const isPlottableArray = isFiniteNumericArray(value);
-      if (isPlottableArray) {
-        // Array literals carry their values directly; no chain step.
-        // Array.from copies into a plain Array — the materialiser
-        // wraps it in Float64Array as needed.
-        derivations[name] = { kind: 'array', values: Array.from(value) };
-      } else if (typeof value === 'number' && Number.isFinite(value)) {
-        // Scalar fixed value: leave the existing 'evaluate' classification
-        // alone if present; the per-atom evaluator handles it. If the
-        // binding wasn't classified (e.g. no derivation reached it),
-        // synthesize one from the lit so the chain has something.
-        if (!derivations[name]) {
-          derivations[name] = { kind: 'evaluate', ir: { kind: 'lit', value, loc: ir.loc } };
-        }
-      } else {
-        // Opaque value (rngstate, JS object, non-numeric array). Drop
-        // any 'evaluate' plot derivation; the value is still in
-        // fixedValues so downstream evaluators can resolve refs to
-        // it. The viewer sees the absence as "not plottable" via the
-        // same path as reified callables.
-        if (existing) delete derivations[name];
-      }
+      // No derivation reclassification here — fixedValues IS the
+      // source of truth for the binding's value. The viewer's
+      // getMeasure short-circuits any binding present in fixedValues
+      // to the appropriate measure shape (Float64Array for numeric
+      // arrays / scalars, fields-SoA for records, null for opaque
+      // rngstate). Existing derivation kinds set by classifyDerivation
+      // (sample / iid / record / weighted / alias / array / …) stay
+      // unchanged — the viewer's per-kind paths still apply for
+      // bindings without fixedValues entries.
     }
   }
 
@@ -1948,21 +1907,6 @@ function buildDerivations(bindings) {
   // re-running the lift pass. Backward-compatible: existing callers
   // that destructure just { derivations, discrete } are unaffected.
   return { derivations, discrete, bindings, fixedValues };
-}
-
-/**
- * True if `v` is an array (Array, Float64Array, etc.) of finite numbers
- * with at least one entry. Used to decide whether a fixed-phase value
- * should expose itself as a plot-renderable kind:'array' derivation.
- */
-function isFiniteNumericArray(v) {
-  if (!v || typeof v !== 'object' || typeof v.length !== 'number') return false;
-  if (v.length === 0) return false;
-  for (let i = 0; i < v.length; i++) {
-    const x = v[i];
-    if (typeof x !== 'number' || !Number.isFinite(x)) return false;
-  }
-  return true;
 }
 
 /**

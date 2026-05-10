@@ -1170,25 +1170,30 @@
     function getMeasure(name) {
       if (measureCache.has(name)) return Promise.resolve(measureCache.get(name));
       if (!derivationsState) return Promise.reject(new Error('no model loaded'));
+      // Fixed-phase short-circuit: if the orchestrator's pre-eval
+      // computed a value for this binding, synthesize the measure
+      // shape directly. Same path for every binding kind — numeric
+      // arrays from rand, records from rand, scalars from a
+      // reduction over a fixed array, literal arrays — they all
+      // route through fixedValueToMeasure. The viewer never needs
+      // to ask the worker for a binding it already knows the value
+      // of, and the per-atom evaluateN / sampleN paths never see
+      // fixed-phase values they can't represent (a length-10 array
+      // would otherwise mis-broadcast into Float64Array(N)).
+      var fv = derivationsState.fixedValues;
+      if (fv && fv.has(name)) {
+        var fxm = fixedValueToMeasure(fv.get(name));
+        if (fxm) {
+          measureCache.set(name, fxm);
+          return Promise.resolve(fxm);
+        }
+        // Opaque fixed value (rngstate) — fall through to normal
+        // dispatch, which will fail loudly if the binding has no
+        // derivation either.
+      }
       var d = derivationsState.derivations[name];
-      // No derivation but a fixedValues entry: pre-evaluated fixed-
-      // phase value. Synthesise the SoA shape the renderers expect so
-      // the existing record / scalar / array text-rendering paths work
-      // unchanged. Records and tuples get per-field/per-elem entries
-      // with N copies of the scalar so formatConstantMeasure's
-      // SAMPLE_COUNT path triggers the single-number short-circuit;
-      // length-1 arrays would render as "[v]" rather than "v".
       if (!d) {
-        var fv = derivationsState.fixedValues;
-        if (!(fv && fv.has(name))) {
-          return Promise.reject(new Error("no derivation for '" + name + "'"));
-        }
-        var m = fixedValueToMeasure(fv.get(name));
-        if (!m) {
-          return Promise.reject(new Error("'" + name + "' has no plottable value"));
-        }
-        measureCache.set(name, m);
-        return Promise.resolve(m);
+        return Promise.reject(new Error("no derivation for '" + name + "'"));
       }
 
       var promise;
@@ -1878,15 +1883,12 @@
       }
 
       var d = derivationsState.derivations[name];
+      // A binding with no derivation can still be plottable when the
+      // orchestrator's pre-eval pass put a value in fixedValues
+      // (typically a record / array from rand). The phase-driven
+      // dispatch below routes those by inferredType alone. We only
+      // bail when there's no derivation AND no fixed value.
       var fixedValues = derivationsState.fixedValues;
-      // A binding with no derivation but a fixedValues entry is a
-      // pre-evaluated fixed-phase value the orchestrator dropped
-      // from derivations because the JS shape didn't fit any
-      // existing derivation kind (typically a record / tuple from
-      // rand). The phase-driven dispatch below still knows how to
-      // route these — scalars, records, tuples — based on
-      // inferredType alone. We only bail when there's no derivation
-      // AND no fixed value (truly nothing to plot).
       if (!d && !(fixedValues && fixedValues.has(name))) return null;
       var discrete = !!derivationsState.discrete[name];
 

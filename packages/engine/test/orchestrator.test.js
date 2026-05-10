@@ -1600,15 +1600,14 @@ test('pre-eval: spec example computes random_data + threads state', () => {
   assert.equal(typeof fixedValues.get('rstate2'), 'object');
   assert.equal(typeof fixedValues.get('rstate3'), 'object');
 
-  // Plottable arrays got reclassified to kind:'array'.
-  assert.equal(derivations.random_data.kind, 'array');
-  assert.deepEqual(derivations.random_data.values, Array.from(rd));
-  assert.equal(derivations.more_random_data.kind, 'array');
-
-  // Opaque-state bindings dropped from derivations (not plottable).
-  assert.equal(derivations.rstate,  undefined);
-  assert.equal(derivations.rstate2, undefined);
-  assert.equal(derivations.rstate3, undefined);
+  // Plottable arrays live in fixedValues — the viewer's getMeasure
+  // short-circuits any binding present there to a Float64Array,
+  // bypassing the per-atom evaluate path that would mis-broadcast
+  // a length-10 array. The derivation kind stays whatever the
+  // classifier produced (typically 'evaluate' for tuple_get) — it's
+  // unused once fixedValues claims the binding.
+  assert.deepEqual(Array.from(fixedValues.get('random_data')), Array.from(rd));
+  assert.equal(fixedValues.get('more_random_data').length, 5);
 });
 
 test('pre-eval: deterministic across calls (same seed → same values)', () => {

@@ -1212,17 +1212,15 @@ function analyze(ast, source) {
     if (!stmt.names || stmt.names.length < 2) continue;
     const groupBindings = stmt.names.map(n => bindings.get(n.name)).filter(Boolean);
     if (groupBindings.length === 0) continue;
-    // Skip disintegrate. The disintegrate pass owns those LHS names —
-    // for resolved plans it attaches per-name effectiveValue (kernel /
-    // prior); for unsupported plans they fall back to plain dep-trace
-    // through the disintegrate call. Either way, rewriting them as
-    // tuple_get over the disintegrate call would lose that semantics
-    // (and tuple_get over a non-tuple-typed call type-errors anyway).
-    const rhs = stmt.value;
-    const isDisintegrate = rhs && rhs.type === 'CallExpr'
-      && rhs.callee && rhs.callee.type === 'Identifier'
-      && rhs.callee.name === 'disintegrate';
-    if (isDisintegrate) continue;
+    // Skip groups owned by another pass. Two markers cover the cases:
+    //   - effectiveValue set: a prior rewrite (resolved disintegrate)
+    //     has already attached the per-name view we'd be clobbering.
+    //   - disintegratePlan set: the disintegrate pass detected the
+    //     call shape and recorded a Plan (resolved or Unsupported);
+    //     either way the binding's RHS is a `disintegrate(...)` call
+    //     that isn't tuple-typed, so a tuple_get rewrite would just
+    //     produce a type error.
+    if (groupBindings.some(b => b.effectiveValue || b.disintegratePlan)) continue;
 
     const sloc = stmt.loc && stmt.loc.start
       ? `${stmt.loc.start.line + 1}:${stmt.loc.start.col + 1}`
