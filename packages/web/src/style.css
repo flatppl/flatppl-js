@@ -115,6 +115,22 @@ html, body {
   color: var(--fg);
 }
 
+/* Per-line wrapper emitted by the syntax highlighter — addressable
+   target for the DAG → source flash + scroll path (host adapter
+   revealSourceLine). Inline by default so the wrapper itself adds
+   nothing visual; the .src-line-flash class drives a brief background
+   flash via CSS animation. The trailing newline lives outside the
+   wrapper so copy-paste preserves it under <pre>. */
+.src-line { display: inline; }
+.src-line.src-line-flash {
+  animation: src-line-flash 1.5s ease-out;
+  border-radius: 2px;
+}
+@keyframes src-line-flash {
+  0%   { background: rgba(255, 235, 100, 0.45); }
+  100% { background: transparent; }
+}
+
 /* Token palette. Roughly tracks VS Code's Dark+ for familiarity, with
    one FlatPPL-specific addition — `tok-ident-binding` (identifiers
    that resolve to a binding in the current module) is rendered with

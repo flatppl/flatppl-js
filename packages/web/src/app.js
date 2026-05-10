@@ -192,7 +192,55 @@
     }
 
     var viewerRoot = document.getElementById('flatppl-viewer-root');
-    viewer = window.FlatPPLViewer.mount(viewerRoot, { host: {} });
+
+    // Web host adapter for the viewer. The viewer calls these
+    // host-side hooks for IDE-only concerns it can't perform itself
+    // (cross-pane source navigation, panel-title updates, persisted
+    // UI state). Each method is optional from the viewer's
+    // standpoint; we implement only what makes sense for a web
+    // gallery.
+    //
+    //   revealSourceLine(line) — Ctrl+click on a DAG node fires this
+    //                            with the binding's source line. We
+    //                            scroll the source pane to that line
+    //                            and flash-highlight it. The line is
+    //                            zero-indexed, matching the tokenizer
+    //                            (and the data-line attributes the
+    //                            highlighter writes).
+    //   setTitle(name)         — viewer requests a panel-title
+    //                            update; we mirror it into the
+    //                            document.title so the browser-tab
+    //                            label reflects the focused binding.
+    //
+    // saveState / loadState are intentionally omitted — the URL hash
+    // is the source of truth for navigation state, no per-tab storage
+    // needed yet.
+    var webHost = {
+      revealSourceLine: function (line) {
+        if (!sourceView) return;
+        var sel = '.src-line[data-line="' + line + '"]';
+        var el = sourceView.querySelector(sel);
+        if (!el) return;
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        // Re-trigger the CSS animation by toggling the class with a
+        // forced reflow in between, so two consecutive Ctrl-clicks
+        // on the same line both flash.
+        el.classList.remove('src-line-flash');
+        // Force reflow.
+        // eslint-disable-next-line no-unused-expressions
+        el.offsetWidth;
+        el.classList.add('src-line-flash');
+      },
+      setTitle: function (name) {
+        // Reflect the focused binding in the browser tab; the model
+        // name still leads the title.
+        var cur = window.FlatPPLWebRouter.parseHash();
+        var modelLabel = cur.model ? ('FlatPPL: ' + cur.model) : 'FlatPPL';
+        document.title = name ? (modelLabel + ' / ' + name) : modelLabel;
+      },
+    };
+
+    viewer = window.FlatPPLViewer.mount(viewerRoot, { host: webHost });
 
     // Delegated click handler: turns a click on a binding identifier
     // in the source pane into a router navigation that focuses the

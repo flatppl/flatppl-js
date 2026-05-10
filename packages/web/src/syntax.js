@@ -104,30 +104,26 @@
       return (typeof ls === 'number' ? ls : 0) + col;
     }
 
-    var out = [];
-    var pos = 0;
-    for (var i = 0; i < tokens.length; i++) {
-      var tok = tokens[i];
-      // EOF and NEWLINE tokens have zero width or carry only '\n' —
-      // we keep them out of the span loop and let the inter-token
-      // gap path emit the actual whitespace verbatim.
-      if (tok.type === 'EOF') continue;
+    // Group tokens by start line. Tokens are single-line by tokenizer
+    // construction (strings end at \n, comments end at \n, numbers
+    // never contain whitespace), so a single map keyed by start.line
+    // is enough to drive a per-line wrapper layer.
+    var tokensByLine = new Map();
+    for (var t = 0; t < tokens.length; t++) {
+      var tk = tokens[t];
+      if (tk.type === 'EOF' || tk.type === 'NEWLINE') continue;
+      var ln = tk.loc.start.line;
+      if (!tokensByLine.has(ln)) tokensByLine.set(ln, []);
+      tokensByLine.get(ln).push(tk);
+    }
 
+    // Render token at index `tk` into its classified span. Returns the
+    // HTML string; uses `bindings` to decide which idents get the
+    // data-binding hook for cross-pane navigation.
+    function renderToken(tok) {
       var start = offsetOf(tok.loc.start.line, tok.loc.start.col);
       var end   = offsetOf(tok.loc.end.line,   tok.loc.end.col);
-
-      if (start > pos) out.push(escape(source.slice(pos, start)));
-
-      if (tok.type === 'NEWLINE') {
-        // Render the newline character as itself. Wrapping it in a
-        // span would still work but bloats the markup for no gain.
-        out.push(escape(source.slice(start, end)));
-        pos = end;
-        continue;
-      }
-
-      var cls;
-      var extraAttr = '';
+      var cls, extraAttr = '';
       if (tok.type === 'IDENT') {
         cls = classifyIdentifier(tok.value, bindings, B);
         if (bindings && bindings.has(tok.value)) {
@@ -136,15 +132,52 @@
       } else {
         cls = classifyToken(tok);
       }
-      out.push('<span class="' + cls + '"'
+      return '<span class="' + cls + '"'
         + ' data-line="' + tok.loc.start.line + '"'
         + ' data-col="'  + tok.loc.start.col  + '"'
         + extraAttr + '>'
         + escape(source.slice(start, end))
-        + '</span>');
-      pos = end;
+        + '</span>';
     }
-    if (pos < source.length) out.push(escape(source.slice(pos)));
+
+    // Compute the total line count. lineStarts has one entry per line;
+    // a trailing newline produces an empty final line which we still
+    // wrap so its `data-line` attribute exists for scroll lookups.
+    var totalLines = lineStarts.length;
+    if (source.length === 0) totalLines = 1;
+
+    var out = [];
+    for (var line = 0; line < totalLines; line++) {
+      var lineStart = lineStarts[line];
+      // Position of the trailing \n, or source.length for the last line.
+      var nextLineStart = (line + 1 < lineStarts.length) ? lineStarts[line + 1] : source.length + 1;
+      var lineContentEnd = (nextLineStart > source.length) ? source.length : nextLineStart - 1;
+
+      out.push('<span class="src-line" data-line="' + line + '">');
+
+      var pos = lineStart;
+      var lineTokens = tokensByLine.get(line) || [];
+      for (var j = 0; j < lineTokens.length; j++) {
+        var tok = lineTokens[j];
+        var ts = offsetOf(tok.loc.start.line, tok.loc.start.col);
+        var te = offsetOf(tok.loc.end.line,   tok.loc.end.col);
+        if (ts > pos) out.push(escape(source.slice(pos, ts)));
+        out.push(renderToken(tok));
+        pos = te;
+      }
+      // Trailing whitespace within the line (rare, but possible: e.g.
+      // a line with only spaces).
+      if (pos < lineContentEnd) out.push(escape(source.slice(pos, lineContentEnd)));
+
+      out.push('</span>');
+
+      // Emit the line-terminating newline outside the wrapper so the
+      // pre's `white-space: pre` does the line break and copy-paste
+      // preserves newlines.
+      if (lineContentEnd < source.length) {
+        out.push('\n');
+      }
+    }
     return out.join('');
   }
 
