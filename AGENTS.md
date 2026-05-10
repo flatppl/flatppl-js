@@ -10,10 +10,11 @@ Almost every non-trivial task in this repo requires the FlatPPL language
 specification. **Read it before making semantic changes.** The spec lives in the
 sibling repo **flatppl-design**; resolve in this order:
 
-1. **A directory accessible in your current session** — VS Code workspace folders,
-   Claude Code "additional working directories", Cursor open folders, etc. If
-   `flatppl-design` is mounted, use it from there. The user often edits the spec
-   alongside the engine, so a local copy may be ahead of the published version.
+1. **A directory accessible in your current session** — your AI tool's
+   mechanism for session-wide directory access (workspace folders,
+   additional-directory grants, or equivalent). If `flatppl-design` is mounted,
+   use it from there. The user often edits the spec alongside the engine, so a
+   local copy may be ahead of the published version.
 2. **Filesystem sibling** — `../flatppl-design/docs/` from this repo, when both
    are checked out under one parent.
 3. **GitHub** — https://github.com/flatppl/flatppl-design — fetch read-only as a
