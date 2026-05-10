@@ -4459,16 +4459,13 @@
         frag.appendChild(outLabel);
         frag.appendChild(outSelect);
       }
-      if (hasInputs) {
-        // Reuse buildPresetControl so the option text (name + value
-        // record) and styling stay consistent with the kernel-sample
-        // path. Always shown when there are input axes — the "auto"
-        // option carries the default values even without user-
-        // declared presets.
-        frag.appendChild(buildPresetControl(plan, function() {
-          renderProfilePlotForCurrent();
-        }));
-      }
+      // Output-side controls go LEFT of Inputs in the toolbar.
+      // Rel. cut-off is a y-axis (output) display filter for
+      // log-density / log-likelihood plots, so it belongs with the
+      // Output: selector rather than between Inputs: and the
+      // x-Axis block. The order ends up reading:
+      //   [Output:] [Rel. cut-off:] [Inputs:] [x-Axis: lo ≤ axis ≤ hi]
+      // — output-related ←left, input-related→right.
       if (isLogDensity) {
         if (plan.yCutoff == null) plan.yCutoff = 100;
         var cutLabel = document.createElement('label');
@@ -4495,6 +4492,16 @@
         });
         frag.appendChild(cutLabel);
         frag.appendChild(cutSel);
+      }
+      if (hasInputs) {
+        // Reuse buildPresetControl so the option text (name + value
+        // record) and styling stay consistent with the kernel-sample
+        // path. Always shown when there are input axes — the "auto"
+        // option carries the default values even without user-
+        // declared presets.
+        frag.appendChild(buildPresetControl(plan, function() {
+          renderProfilePlotForCurrent();
+        }));
       }
       // Unified x-axis block — reads as a math inequality:
       //   x-Axis:  [lo input]  ≤  [axis selector | static name]  ≤  [hi input]
