@@ -3981,97 +3981,167 @@
       return {};
     }
 
-    // Build a "Preset: [auto / pars1 / …]" control fragment we can
-    // hand to renderRecordMarginals (via extraToolbarControls) so
-    // the dropdown sits inline with the existing plot-style buttons
-    // instead of taking its own row.
+    // Build a "Inputs: [auto / pars1 / …]" control fragment for the
+    // profile / kernel-sample plot toolbar.
+    //
+    // We use a custom button-plus-popup instead of <select> so the
+    // collapsed control can show just the short label
+    // ("auto (modified)") while the open dropdown shows the longer
+    // "name: theta1 = X, theta2 = Y" form. <select> doesn't support
+    // different text in collapsed vs. open states across browsers
+    // (the `label` attribute is spec but Chromium ignores it).
     function buildPresetControl(plan, onChange) {
       var frag = document.createDocumentFragment();
-      // Show the input selector whenever the plan has axes to vary
-      // (i.e., the kernel/function has inputs at all). Even when no
-      // user-declared preset bindings match, the "auto" option still
-      // gives users a visible read-out of which input values the
-      // renderer is using — and the control stays in place for
-      // consistency with kernels/functions that do have presets,
-      // rather than appearing/disappearing per binding.
       if (!plan.axes || plan.axes.length === 0) return frag;
+
+      // Materialise every entry the dropdown should show. Each entry
+      // carries both display forms — `shortLabel` for the button
+      // text, `longLabel` for the popup row — plus the (name,
+      // modified) tuple that lands on the plan on selection.
+      var entries = [];
       var presets = plan.matchedPresets || [];
-      var lbl = document.createElement('label');
-      lbl.textContent = 'Inputs:';
-      lbl.style.opacity = '0.6';
-      lbl.style.marginRight = '0.25em';
-      var sel = document.createElement('select');
-      sel.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
-      sel.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
-      sel.style.border = '1px solid var(--vscode-dropdown-border, #555)';
-      sel.style.padding = '2px 4px';
-      sel.style.fontSize = '1em';
-      sel.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-
-      // Each base entry may be followed by its (modified) sibling.
-      // option.value encodes the active selection:
-      //   ""              → auto (base)
-      //   ":mod"          → auto (modified)
-      //   "<name>"        → named preset (base)
-      //   "<name>:mod"    → named preset (modified)
-      // The change handler parses these back into plan.presetName +
-      // plan.modified.
-      function appendOption(value, text, selected) {
-        var opt = document.createElement('option');
-        opt.value = value;
-        opt.textContent = text;
-        if (selected) opt.selected = true;
-        sel.appendChild(opt);
-      }
-
-      function isSelected(presetName, modified) {
-        return (presetName === plan.presetName) && (!!modified === !!plan.modified);
-      }
-
-      // Auto entry + its modified twin (if any). The auto entry
-      // shows the resolved auto values (type defaults / sampled[0]);
-      // the modified twin shows the user-overridden combined values.
       var autoValues = computeAutoValues(plan);
-      appendOption('', 'auto: ' + presetValuesText(autoValues), isSelected(null, false));
+
+      entries.push({
+        name: null,
+        modified: false,
+        shortLabel: 'auto',
+        longLabel: 'auto: ' + presetValuesText(autoValues),
+      });
       if (plan.modifiedPresets.has(AUTO_PRESET_KEY)) {
-        var mod = plan.modifiedPresets.get(AUTO_PRESET_KEY);
-        var combinedAuto = Object.assign({}, autoValues, mod.values || {});
-        appendOption(':mod',
-          'auto (modified): ' + presetValuesText(combinedAuto),
-          isSelected(null, true));
+        var amod = plan.modifiedPresets.get(AUTO_PRESET_KEY);
+        var combinedAuto = Object.assign({}, autoValues, amod.values || {});
+        entries.push({
+          name: null,
+          modified: true,
+          shortLabel: 'auto (modified)',
+          longLabel: 'auto (modified): ' + presetValuesText(combinedAuto),
+        });
       }
-      for (var ppi = 0; ppi < presets.length; ppi++) {
-        var p = presets[ppi];
-        appendOption(p.name,
-          p.name + ': ' + presetValuesText(p.values),
-          isSelected(p.name, false));
+      for (var pi = 0; pi < presets.length; pi++) {
+        var p = presets[pi];
+        entries.push({
+          name: p.name,
+          modified: false,
+          shortLabel: p.name,
+          longLabel: p.name + ': ' + presetValuesText(p.values),
+        });
         if (plan.modifiedPresets.has(p.name)) {
           var pmod = plan.modifiedPresets.get(p.name);
           var combined = Object.assign({}, p.values || {}, pmod.values || {});
-          appendOption(p.name + ':mod',
-            p.name + ' (modified): ' + presetValuesText(combined),
-            isSelected(p.name, true));
+          entries.push({
+            name: p.name,
+            modified: true,
+            shortLabel: p.name + ' (modified)',
+            longLabel: p.name + ' (modified): ' + presetValuesText(combined),
+          });
         }
       }
 
-      sel.addEventListener('change', function(e) {
-        var v = e.target.value;
-        var modified = false;
-        var name = null;
-        if (v === '') { name = null; }
-        else if (v === ':mod') { name = null; modified = true; }
-        else if (v.slice(-4) === ':mod') {
-          name = v.slice(0, -4);
-          modified = true;
-        } else {
-          name = v;
+      function isActive(entry) {
+        return entry.name === plan.presetName && !!entry.modified === !!plan.modified;
+      }
+      var activeEntry = null;
+      for (var k = 0; k < entries.length; k++) {
+        if (isActive(entries[k])) { activeEntry = entries[k]; break; }
+      }
+      if (!activeEntry) activeEntry = entries[0];
+
+      var wrap = document.createElement('span');
+      wrap.style.position = 'relative';
+      wrap.style.display = 'inline-flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '0.3em';
+
+      var lbl = document.createElement('label');
+      lbl.textContent = 'Inputs:';
+      lbl.style.opacity = '0.6';
+
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+      btn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+      btn.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+      btn.style.padding = '2px 6px';
+      btn.style.fontSize = '1em';
+      btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      btn.style.cursor = 'pointer';
+      btn.style.borderRadius = '2px';
+      btn.textContent = activeEntry.shortLabel + '  ▾';
+      btn.title = activeEntry.longLabel;
+
+      var panel = document.createElement('div');
+      panel.style.position = 'absolute';
+      panel.style.top = 'calc(100% + 4px)';
+      panel.style.left = '0';
+      panel.style.zIndex = '50';
+      panel.style.minWidth = '100%';
+      panel.style.maxHeight = '20em';
+      panel.style.overflowY = 'auto';
+      panel.style.padding = '0.2em';
+      panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+      panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+      panel.style.borderRadius = '3px';
+      panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+      panel.style.display = 'none';
+      panel.style.whiteSpace = 'nowrap';
+
+      var outsideClickHandler = null;
+      function closePanel() {
+        panel.style.display = 'none';
+        if (outsideClickHandler) {
+          document.removeEventListener('mousedown', outsideClickHandler);
+          outsideClickHandler = null;
         }
-        plan.presetName = name;
-        plan.modified = modified;
-        onChange();
+      }
+      function openPanel() {
+        panel.style.display = 'block';
+        // Defer the outside-click attach so the same click that
+        // opened the panel doesn't immediately close it.
+        setTimeout(function() {
+          outsideClickHandler = function(ev) {
+            if (!wrap.contains(ev.target)) closePanel();
+          };
+          document.addEventListener('mousedown', outsideClickHandler);
+        }, 0);
+      }
+
+      btn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (panel.style.display === 'none') openPanel(); else closePanel();
       });
-      frag.appendChild(lbl);
-      frag.appendChild(sel);
+
+      entries.forEach(function(entry) {
+        var row = document.createElement('div');
+        row.textContent = entry.longLabel;
+        row.style.padding = '0.25em 0.6em';
+        row.style.cursor = 'pointer';
+        row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+        row.style.borderRadius = '2px';
+        if (isActive(entry)) {
+          row.style.background = 'rgba(13, 113, 199, 0.45)';
+          row.style.color = '#fff';
+        }
+        row.addEventListener('mouseenter', function() {
+          if (!isActive(entry)) row.style.background = 'rgba(255,255,255,0.06)';
+        });
+        row.addEventListener('mouseleave', function() {
+          if (!isActive(entry)) row.style.background = '';
+        });
+        row.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+          plan.presetName = entry.name;
+          plan.modified = !!entry.modified;
+          closePanel();
+          onChange();
+        });
+        panel.appendChild(row);
+      });
+
+      wrap.appendChild(lbl);
+      wrap.appendChild(btn);
+      wrap.appendChild(panel);
+      frag.appendChild(wrap);
       return frag;
     }
 
