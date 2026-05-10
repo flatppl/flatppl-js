@@ -4227,6 +4227,37 @@
       wrap.appendChild(lbl);
       wrap.appendChild(btn);
       wrap.appendChild(panel);
+
+      // Reset button — visible only when the active selection has
+      // overrides. Clears the override entry (auto → plan.autoOverride
+      // = null; named → presetOverrides.delete(name)) and re-renders
+      // through onChange. The dropdown row's "(modified)" tag then
+      // disappears with no further user action.
+      if (hasOverrides(plan)) {
+        var resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.title = 'Reset preset to source values';
+        resetBtn.style.background = 'transparent';
+        resetBtn.style.color = 'var(--vscode-foreground, #cccccc)';
+        resetBtn.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+        resetBtn.style.borderRadius = '3px';
+        resetBtn.style.padding = '2px 8px';
+        resetBtn.style.fontSize = '0.92em';
+        resetBtn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+        resetBtn.style.cursor = 'pointer';
+        resetBtn.style.opacity = '0.75';
+        resetBtn.textContent = 'Reset';
+        resetBtn.addEventListener('mouseenter', function() { resetBtn.style.opacity = '1'; });
+        resetBtn.addEventListener('mouseleave', function() { resetBtn.style.opacity = '0.75'; });
+        resetBtn.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+          setOverrideFor(plan, null);
+          onChange();
+        });
+        frag.appendChild(wrap);
+        frag.appendChild(resetBtn);
+        return frag;
+      }
       frag.appendChild(wrap);
       return frag;
     }
