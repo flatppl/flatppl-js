@@ -4459,31 +4459,6 @@
         frag.appendChild(outLabel);
         frag.appendChild(outSelect);
       }
-      if (hasAxes) {
-        var label = document.createElement('label');
-        label.textContent = 'Axis:';
-        label.style.opacity = '0.6';
-        label.style.marginRight = '0.25em';
-        var select = document.createElement('select');
-        select.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
-        select.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
-        select.style.border = '1px solid var(--vscode-dropdown-border, #555)';
-        select.style.padding = '2px 4px';
-        select.style.fontSize = '1em';
-        for (var ai = 0; ai < plan.axes.length; ai++) {
-          var opt = document.createElement('option');
-          opt.value = plan.axes[ai].key;
-          opt.textContent = plan.axes[ai].label;
-          if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
-          select.appendChild(opt);
-        }
-        select.addEventListener('change', function(e) {
-          plan.sweepKey = e.target.value;
-          renderProfilePlotForCurrent();
-        });
-        frag.appendChild(label);
-        frag.appendChild(select);
-      }
       if (hasInputs) {
         // Reuse buildPresetControl so the option text (name + value
         // record) and styling stay consistent with the kernel-sample
@@ -4521,16 +4496,24 @@
         frag.appendChild(cutLabel);
         frag.appendChild(cutSel);
       }
-      // x-axis range text inputs (always shown for profile plots).
-      // Editing either commits to profileRangeCache (fromAuto=false)
-      // and re-renders. Cache keyed by (binding, sweepKey, preset)
-      // so the user's edits stick when switching presets / axes
-      // and across binding navigation.
+      // Unified x-axis block — reads as a math inequality:
+      //   x-Axis:  [lo input]  ≤  [axis selector | static name]  ≤  [hi input]
+      // The axis selector (when there are multiple input axes)
+      // picks which axis is on the x-axis; with a single axis it
+      // collapses to plain text so the layout still parses as the
+      // same inequality. Range edits commit to profileRangeCache
+      // keyed by (binding, sweepKey, preset) so the user's chosen
+      // limits stick when switching presets / axes / bindings.
       var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+      var xBlock = document.createElement('span');
+      xBlock.style.display = 'inline-flex';
+      xBlock.style.alignItems = 'center';
+      xBlock.style.gap = '0.35em';
+
       var xLabel = document.createElement('label');
-      xLabel.textContent = 'x-range:';
+      xLabel.textContent = 'x-Axis:';
       xLabel.style.opacity = '0.6';
-      xLabel.style.marginRight = '0.25em';
+
       var xLoInput = document.createElement('input');
       xLoInput.type = 'number'; xLoInput.step = 'any';
       xLoInput.value = formatScalar(range[0]);
@@ -4539,8 +4522,6 @@
       xHiInput.type = 'number'; xHiInput.step = 'any';
       xHiInput.value = formatScalar(range[1]);
       xHiInput.title = 'x-axis upper limit';
-      // Inline styling so these inputs match the dropdowns; no
-      // longer rely on the dropped .profile-xrange class.
       [xLoInput, xHiInput].forEach(function(inp) {
         inp.style.background = 'var(--vscode-input-background, #3c3c3c)';
         inp.style.color = 'var(--vscode-input-foreground, #cccccc)';
@@ -4550,12 +4531,49 @@
         inp.style.width = '6.5em';
         inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       });
+
+      // The axis element sits between the two ≤. Multi-axis →
+      // dropdown; single-axis → plain text label so the block
+      // still reads as a single block / inequality.
+      var axisEl;
+      if (hasAxes) {
+        axisEl = document.createElement('select');
+        axisEl.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+        axisEl.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+        axisEl.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+        axisEl.style.padding = '2px 4px';
+        axisEl.style.fontSize = '1em';
+        axisEl.title = 'Axis to sweep';
+        for (var ai = 0; ai < plan.axes.length; ai++) {
+          var opt = document.createElement('option');
+          opt.value = plan.axes[ai].key;
+          opt.textContent = plan.axes[ai].label;
+          if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
+          axisEl.appendChild(opt);
+        }
+        axisEl.addEventListener('change', function(e) {
+          plan.sweepKey = e.target.value;
+          renderProfilePlotForCurrent();
+        });
+      } else if (plan.axes && plan.axes.length === 1) {
+        axisEl = document.createElement('span');
+        axisEl.textContent = plan.axes[0].label;
+        axisEl.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+        axisEl.style.padding = '2px 4px';
+        axisEl.style.opacity = '0.85';
+      }
+
+      function leqGlyph() {
+        var s = document.createElement('span');
+        s.textContent = '≤';        // ≤
+        s.style.opacity = '0.55';
+        return s;
+      }
+
       var commitRange = function() {
         var newLo = parseFloat(xLoInput.value);
         var newHi = parseFloat(xHiInput.value);
         if (!Number.isFinite(newLo) || !Number.isFinite(newHi) || newLo >= newHi) {
-          // Reject invalid edits — restore the input boxes from the
-          // cache rather than blindly re-rendering with broken values.
           xLoInput.value = formatScalar(range[0]);
           xHiInput.value = formatScalar(range[1]);
           return;
@@ -4565,9 +4583,14 @@
       };
       xLoInput.addEventListener('change', commitRange);
       xHiInput.addEventListener('change', commitRange);
-      frag.appendChild(xLabel);
-      frag.appendChild(xLoInput);
-      frag.appendChild(xHiInput);
+
+      xBlock.appendChild(xLabel);
+      xBlock.appendChild(xLoInput);
+      xBlock.appendChild(leqGlyph());
+      if (axisEl) xBlock.appendChild(axisEl);
+      xBlock.appendChild(leqGlyph());
+      xBlock.appendChild(xHiInput);
+      frag.appendChild(xBlock);
       return frag;
     }
 
