@@ -1814,6 +1814,16 @@
             axes: axes,
             matchedPresets: presets,
             presetName: null,            // null = "auto" defaults
+            // Per-binding store for "(modified)" presets — user
+            // overrides that build on top of a base preset. Empty
+            // on plan creation, populated when the user edits
+            // limits in the under-plot row or (later) clicks the
+            // plot to slice the sweep axis. Re-built per binding
+            // visit (so navigation away discards prior modifieds).
+            // Keyed by baseName: the matched preset's name, or
+            // '__auto__' for the auto pseudo-preset.
+            modifiedPresets: new Map(),
+            modified: false,             // is active selection the modified variant?
           };
         }
         return {
@@ -1826,6 +1836,9 @@
           presetName: null,              // null = "auto" (default)
           outputs: outputs,              // [{key, label, path, leafType}, ...]
           outputKey: outputKey,          // null when scalar output (only one leaf)
+          // See kernel-sample plan comment above.
+          modifiedPresets: new Map(),
+          modified: false,
         };
       }
 
@@ -3850,28 +3863,24 @@
           return;
         }
       }
-      var selectedPreset = null;
-      if (plan.presetName && plan.matchedPresets) {
-        for (var pi = 0; pi < plan.matchedPresets.length; pi++) {
-          if (plan.matchedPresets[pi].name === plan.presetName) {
-            selectedPreset = plan.matchedPresets[pi];
-            break;
-          }
-        }
-      }
-      var cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '');
+      var active = activePresetFor(plan);
+      // Cache key includes the modified marker: a base preset and
+      // its (modified) variant have different effective values, so
+      // they need their own cached samples.
+      var cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '')
+        + (plan.modified ? ':mod' : '');
       // Build the input env (paramName → number). Auto values for
-      // axes not covered by the preset come from source-binding
-      // samples[0] (or type-aware defaults for placeholder sources).
+      // axes not covered by the active preset (incl. modified
+      // overrides) come from source-binding samples[0] (or type-
+      // aware defaults for placeholder sources).
       var env = {};
       var bindingSourceLookups = [];   // [{paramName, sourceName}, ...]
       for (var a = 0; a < plan.axes.length; a++) {
         var ax = plan.axes[a];
         var inp = inputByKwarg[ax.kwargName];
         if (!inp) continue;
-        if (selectedPreset && selectedPreset.values
-            && Object.prototype.hasOwnProperty.call(selectedPreset.values, ax.kwargName)) {
-          env[inp.paramName] = selectedPreset.values[ax.kwargName];
+        if (active.values && Object.prototype.hasOwnProperty.call(active.values, ax.kwargName)) {
+          env[inp.paramName] = active.values[ax.kwargName];
           continue;
         }
         env[inp.paramName] = defaultValueForLeafType(ax.leafType);
@@ -3926,6 +3935,47 @@
       });
     }
 
+    // Internal key for the auto pseudo-preset in plan.modifiedPresets.
+    // Picked so it can't collide with a user-defined preset name
+    // (FlatPPL identifiers can't start with `__`).
+    var AUTO_PRESET_KEY = '__auto__';
+
+    /** Base-preset key for the active selection. '__auto__' if the
+        user is on the auto pseudo-preset, otherwise the matched
+        preset's name. The modifiedPresets map is keyed by this. */
+    function baseKeyOf(plan) {
+      return plan.presetName == null ? AUTO_PRESET_KEY : plan.presetName;
+    }
+
+    /** Effective preset {values, limits?} for a plan, accounting for
+        any (modified) overrides on top of the base. The merge order
+        is base ← overrides, so a kwarg the user changed via click-to-
+        slice (step 3) wins over the base value. When the plan is on
+        a base (not modified), returns the base values verbatim with
+        no limits override. */
+    function activePresetFor(plan) {
+      var baseValues = baseValuesFor(plan);
+      if (!plan.modified) return { values: baseValues, limits: null };
+      var entry = plan.modifiedPresets.get(baseKeyOf(plan));
+      if (!entry) return { values: baseValues, limits: null };
+      var merged = Object.assign({}, baseValues, entry.values || {});
+      return { values: merged, limits: entry.limits || null };
+    }
+
+    /** Just the base preset's values (no modified-overrides applied).
+        For named bases this is matchedPresets[i].values; for auto
+        it's the type-default-plus-cached-source-sample computation. */
+    function baseValuesFor(plan) {
+      if (plan.presetName != null && plan.matchedPresets) {
+        for (var i = 0; i < plan.matchedPresets.length; i++) {
+          if (plan.matchedPresets[i].name === plan.presetName) {
+            return plan.matchedPresets[i].values || {};
+          }
+        }
+      }
+      return computeAutoValues(plan);
+    }
+
     // Build a "Preset: [auto / pars1 / …]" control fragment we can
     // hand to renderRecordMarginals (via extraToolbarControls) so
     // the dropdown sits inline with the existing plot-style buttons
@@ -3953,29 +4003,66 @@
       sel.style.fontSize = '1em';
       sel.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
 
-      // Auto values: type-aware default for each axis, overridden
-      // with samples[0] from the source binding when available in
-      // the measure cache (so the actual fixed value the renderer
-      // will use is visible). Sources whose binding hasn't been
-      // materialised yet show the type default, which is what the
-      // renderer's pre-cache fallback would also use.
+      // Each base entry may be followed by its (modified) sibling.
+      // option.value encodes the active selection:
+      //   ""              → auto (base)
+      //   ":mod"          → auto (modified)
+      //   "<name>"        → named preset (base)
+      //   "<name>:mod"    → named preset (modified)
+      // The change handler parses these back into plan.presetName +
+      // plan.modified.
+      function appendOption(value, text, selected) {
+        var opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = text;
+        if (selected) opt.selected = true;
+        sel.appendChild(opt);
+      }
+
+      function isSelected(presetName, modified) {
+        return (presetName === plan.presetName) && (!!modified === !!plan.modified);
+      }
+
+      // Auto entry + its modified twin (if any). The auto entry
+      // shows the resolved auto values (type defaults / sampled[0]);
+      // the modified twin shows the user-overridden combined values.
       var autoValues = computeAutoValues(plan);
-      var autoOpt = document.createElement('option');
-      autoOpt.value = '';
-      autoOpt.textContent = 'auto: ' + presetValuesText(autoValues);
-      if (plan.presetName == null) autoOpt.selected = true;
-      sel.appendChild(autoOpt);
+      appendOption('', 'auto: ' + presetValuesText(autoValues), isSelected(null, false));
+      if (plan.modifiedPresets.has(AUTO_PRESET_KEY)) {
+        var mod = plan.modifiedPresets.get(AUTO_PRESET_KEY);
+        var combinedAuto = Object.assign({}, autoValues, mod.values || {});
+        appendOption(':mod',
+          'auto (modified): ' + presetValuesText(combinedAuto),
+          isSelected(null, true));
+      }
       for (var ppi = 0; ppi < presets.length; ppi++) {
         var p = presets[ppi];
-        var pOpt = document.createElement('option');
-        pOpt.value = p.name;
-        // "name: theta1 = 1.4, theta2 = 1.0".
-        pOpt.textContent = p.name + ': ' + presetValuesText(p.values);
-        if (plan.presetName === p.name) pOpt.selected = true;
-        sel.appendChild(pOpt);
+        appendOption(p.name,
+          p.name + ': ' + presetValuesText(p.values),
+          isSelected(p.name, false));
+        if (plan.modifiedPresets.has(p.name)) {
+          var pmod = plan.modifiedPresets.get(p.name);
+          var combined = Object.assign({}, p.values || {}, pmod.values || {});
+          appendOption(p.name + ':mod',
+            p.name + ' (modified): ' + presetValuesText(combined),
+            isSelected(p.name, true));
+        }
       }
+
       sel.addEventListener('change', function(e) {
-        plan.presetName = e.target.value || null;
+        var v = e.target.value;
+        var modified = false;
+        var name = null;
+        if (v === '') { name = null; }
+        else if (v === ':mod') { name = null; modified = true; }
+        else if (v.slice(-4) === ':mod') {
+          name = v.slice(0, -4);
+          modified = true;
+        } else {
+          name = v;
+        }
+        plan.presetName = name;
+        plan.modified = modified;
         onChange();
       });
       frag.appendChild(lbl);
@@ -4248,32 +4335,24 @@
         }
       }
       // Build fixedEnv with three-tier precedence:
-      //   1. Selected preset's value for the kwarg (highest).
+      //   1. Active preset's value for the kwarg (highest) — base
+      //      preset values overridden by (modified) overrides.
       //   2. Source binding's samples[0] for binding-source axes
       //      (resolved later, after materialisation).
       //   3. Type-aware default for the leaf type (lowest).
-      // The selectedPreset lookup short-circuits the materialise path
-      // for any axis whose kwarg the preset covers — so when the
-      // user picks a preset, we don't even fetch the source binding.
-      var selectedPreset = null;
-      if (plan.presetName && plan.matchedPresets) {
-        for (var pi = 0; pi < plan.matchedPresets.length; pi++) {
-          if (plan.matchedPresets[pi].name === plan.presetName) {
-            selectedPreset = plan.matchedPresets[pi];
-            break;
-          }
-        }
-      }
+      // The activePreset lookup short-circuits the materialise path
+      // for any axis whose kwarg the preset (incl. modified
+      // overrides) covers — so when the user picks a preset, we
+      // don't even fetch the source binding.
+      var active = activePresetFor(plan);
       var fixedEnv = {};
       var nonSweptBindingSources = [];   // [{paramName, sourceName}, ...]
       for (var a2 = 0; a2 < axes.length; a2++) {
         if (axes[a2].key === plan.sweepKey) continue;
         var inp = inputByKwarg[axes[a2].kwargName];
         if (!inp) continue;
-        if (selectedPreset && selectedPreset.values
-            && Object.prototype.hasOwnProperty.call(selectedPreset.values, axes[a2].kwargName)) {
-          // Preset wins. No need to materialise the source binding.
-          fixedEnv[inp.paramName] = selectedPreset.values[axes[a2].kwargName];
+        if (active.values && Object.prototype.hasOwnProperty.call(active.values, axes[a2].kwargName)) {
+          fixedEnv[inp.paramName] = active.values[axes[a2].kwargName];
           continue;
         }
         fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
@@ -4341,22 +4420,28 @@
       FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
         selfRefs.push(n);
       });
-      // Range resolution per (binding, axis, preset):
-      //   1. profileRangeCache hit → use cached value directly (user
-      //      may have edited it; or auto from a previous render).
-      //   2. Otherwise compute via resolveSweepRange, store as
-      //      fromAuto=true so we know it can be replaced.
-      // The cache key includes presetName because some presets sit
-      // in different regions of the input space and want different
-      // sweep windows.
+      // Range resolution per (binding, axis, preset, modified?):
+      //   1. When the active selection is a (modified) variant and
+      //      its entry has explicit limits → use those (user
+      //      committed them via the under-plot inputs).
+      //   2. profileRangeCache hit for the auto-fit of this
+      //      (binding, axis, presetName) → reuse.
+      //   3. Otherwise compute via resolveSweepRange and cache the
+      //      auto-fit. The cache stores auto-fits only; user limit
+      //      edits live in plan.modifiedPresets.
       var cacheKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
-      var cached = profileRangeCache.get(cacheKey);
-      var rangePromise = cached
-        ? Promise.resolve([cached.lo, cached.hi])
-        : resolveSweepRange(sweepAxis).then(function(r) {
-            profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
-            return r;
-          });
+      var rangePromise;
+      if (active.limits) {
+        rangePromise = Promise.resolve([active.limits.lo, active.limits.hi]);
+      } else {
+        var cached = profileRangeCache.get(cacheKey);
+        rangePromise = cached
+          ? Promise.resolve([cached.lo, cached.hi])
+          : resolveSweepRange(sweepAxis).then(function(r) {
+              profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
+              return r;
+            });
+      }
       var rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
       Promise.all([
         rangePromise,
@@ -4590,8 +4675,6 @@
       row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
       row.style.fontSize = '0.92em';
 
-      var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
-
       var xLoInput = document.createElement('input');
       xLoInput.type = 'number'; xLoInput.step = 'any';
       xLoInput.value = formatScalar(range[0]);
@@ -4610,6 +4693,14 @@
         inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       });
 
+      // Limit edits commit through the modified-preset machinery:
+      //  - From base preset: replace any prior modified entry for
+      //    this base entirely (limits = new, values = {}). The
+      //    active selection promotes to the modified variant.
+      //  - From the modified variant: update its limits in place;
+      //    value overrides on the same entry are preserved.
+      // Matches the user-stated rule: editing while on base
+      // "overwrites" the modified copy.
       var commitRange = function() {
         var newLo = parseFloat(xLoInput.value);
         var newHi = parseFloat(xHiInput.value);
@@ -4618,7 +4709,16 @@
           xHiInput.value = formatScalar(range[1]);
           return;
         }
-        profileRangeCache.set(rangeKey, { lo: newLo, hi: newHi, fromAuto: false });
+        var baseKey = baseKeyOf(plan);
+        var entry;
+        if (plan.modified && plan.modifiedPresets.has(baseKey)) {
+          entry = plan.modifiedPresets.get(baseKey);
+        } else {
+          entry = { limits: null, values: {} };
+        }
+        entry.limits = { lo: newLo, hi: newHi };
+        plan.modifiedPresets.set(baseKey, entry);
+        plan.modified = true;
         renderProfilePlotForCurrent();
       };
       xLoInput.addEventListener('change', commitRange);
