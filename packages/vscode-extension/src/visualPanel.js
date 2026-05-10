@@ -1,5 +1,10 @@
 'use strict';
 const vscode = require('vscode');
+// isValidBindingName is shared with the web host via @flatppl/engine
+// so the rules don't drift between deploy surfaces. Other extension
+// machinery already requires the engine module; the panel just picks
+// up the helper it needs.
+const { isValidBindingName } = require('@flatppl/engine');
 
 class FlatPPLPanel {
   static currentPanel = undefined;
@@ -73,23 +78,36 @@ class FlatPPLPanel {
       if (msg.type === 'updateTitle') {
         this._panel.title = `FlatPPL: ${msg.name}`;
       }
-      // Replace a named preset binding's source range with new
-      // text from the viewer. After applyEdit we push a fresh
-      // sourceUpdate back to the webview directly — the workspace
-      // changeListener gates on activeTextEditor.document and
-      // can miss the change when the webview has focus, so relying
-      // on it leaves the webview's (modified) tag stale.
-      if (msg.type === 'persistPreset' && this._sourceUri != null) {
+      // Two persist primitives matching the viewer's host-adapter
+      // contract:
+      //   editSource(args)    — apply a WorkspaceEdit; replace
+      //                         args.range or append at end when
+      //                         args.range == null.
+      //   promptForName(args) — collect a binding name via
+      //                         vscode.window.showInputBox (the
+      //                         webview's window.prompt is blocked).
+      // After applyEdit we push a fresh sourceUpdate directly. The
+      // workspace changeListener gates on activeTextEditor.document
+      // and can miss the change when the webview has focus, so
+      // relying on it would leave the viewer with stale source.
+      if (msg.type === 'editSource' && this._sourceUri != null) {
         const uri = this._sourceUri;
         vscode.workspace.openTextDocument(uri).then(doc => {
           const edit = new vscode.WorkspaceEdit();
-          const range = new vscode.Range(
-            new vscode.Position(msg.range.start.line, msg.range.start.col),
-            new vscode.Position(msg.range.end.line,   msg.range.end.col)
-          );
-          edit.replace(uri, range, msg.newText);
+          if (msg.range) {
+            const range = new vscode.Range(
+              new vscode.Position(msg.range.start.line, msg.range.start.col),
+              new vscode.Position(msg.range.end.line,   msg.range.end.col)
+            );
+            edit.replace(uri, range, msg.newText);
+          } else {
+            const text = doc.getText();
+            const endPos = doc.positionAt(text.length);
+            const sep = text.length === 0 || text.endsWith('\n') ? '' : '\n';
+            edit.insert(uri, endPos, sep + msg.newText + '\n');
+          }
           return vscode.workspace.applyEdit(edit).then(success => {
-            if (!success) return;
+            if (!success) return null;
             return vscode.workspace.openTextDocument(uri);
           });
         }).then(doc => {
@@ -97,21 +115,12 @@ class FlatPPLPanel {
           this.updateSource(doc.getText(), null, this._sourceUri, false);
         });
       }
-      // Auto-persist: viewer-side delegated the name prompt to us
-      // because window.prompt is unsupported in webviews. We use
-      // showInputBox to collect the name (with validation), append
-      // a new preset binding at end-of-source, push the chosen name
-      // back to the webview (so the viewer's pendingPresetName picks
-      // it up before the sourceUpdate triggers the plan rebuild),
-      // and then push the new source.
-      if (msg.type === 'persistNewPreset' && this._sourceUri != null) {
-        const uri = this._sourceUri;
-        const nonce = msg.nonce;
+      if (msg.type === 'promptForName') {
         const existing = new Set(msg.existingNames || []);
         const validate = (raw) => {
           const trimmed = (raw || '').trim();
           if (!trimmed) return 'Name required';
-          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+          if (!isValidBindingName(trimmed)) {
             return 'Use letters, digits, underscores; start with a letter or underscore';
           }
           if (existing.has(trimmed)) return `"${trimmed}" already exists in this module`;
@@ -119,31 +128,11 @@ class FlatPPLPanel {
         };
         vscode.window.showInputBox({
           prompt: 'Save current values as a new preset',
-          value: msg.suggestedName || 'preset',
+          value: msg.suggested || 'preset',
           validateInput: validate,
-        }).then(rawName => {
-          if (!rawName) return;
-          const name = rawName.trim();
-          const newLine = `${name} = preset(${msg.pairsText || ''})`;
-          return vscode.workspace.openTextDocument(uri).then(doc => {
-            const edit = new vscode.WorkspaceEdit();
-            const text = doc.getText();
-            const endPos = doc.positionAt(text.length);
-            const sep = text.length === 0 || text.endsWith('\n') ? '' : '\n';
-            edit.insert(uri, endPos, sep + newLine + '\n');
-            return vscode.workspace.applyEdit(edit).then(success => {
-              if (!success) return null;
-              return vscode.workspace.openTextDocument(uri).then(doc2 => {
-                // Order matters: post the response BEFORE the
-                // sourceUpdate so the viewer's pendingPresetName is
-                // set by the time applySourceUpdate triggers the
-                // plan rebuild.
-                this._post({ type: 'persistNewPresetResponse', nonce: nonce, name: name });
-                this.updateSource(doc2.getText(), null, uri, false);
-                return name;
-              });
-            });
-          });
+        }).then(raw => {
+          const name = raw ? raw.trim() : null;
+          this._post({ type: 'promptForNameResponse', nonce: msg.nonce, name: name || null });
         });
       }
     });
