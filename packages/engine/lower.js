@@ -150,8 +150,8 @@ const BIN_OP_MAP = {
   '<=': 'le',
   '>':  'gt',
   '>=': 'ge',
-  '==': 'eq',
-  '!=': 'ne',
+  '==': 'equal',
+  '!=': 'unequal',
   'in': 'in',
 };
 

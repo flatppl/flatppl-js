@@ -139,8 +139,8 @@ test('lower: full set of binary operators desugar', () => {
     { src: 'a <= b', op: 'le' },
     { src: 'a > b',  op: 'gt' },
     { src: 'a >= b', op: 'ge' },
-    { src: 'a == b', op: 'eq' },
-    { src: 'a != b', op: 'ne' },
+    { src: 'a == b', op: 'equal' },
+    { src: 'a != b', op: 'unequal' },
   ];
   for (const { src, op } of cases) {
     const ir = lowerOne(`x = ${src}`);
@@ -525,4 +525,16 @@ test('lower: pure determinism — same source twice yields equal IR', () => {
   // loc fields will have same content but might differ object-identity-wise.
   // Use deepEqual which compares by value.
   assert.deepEqual(a, b);
+});
+
+// Regression for the ==/!= → eq/ne lowering bug: surface == / != lower to
+// `equal` / `unequal`, matching the spec §07 operator-equivalent function
+// names. Earlier the engine lowered to `eq` / `ne` for which no signature,
+// no ARITH_OPS handler, and no EVALUABLE_OPS entry existed — surface `==`
+// hit "call op 'eq' not evaluable" at runtime.
+test('lower: == / != lower to equal / unequal (matches spec)', () => {
+  const eq = lowerOne('x = a == b');
+  assert.equal(eq.op, 'equal');
+  const ne = lowerOne('x = a != b');
+  assert.equal(ne.op, 'unequal');
 });
