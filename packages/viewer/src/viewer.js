@@ -3962,9 +3962,14 @@
       return { values: merged, limits: entry.limits || null };
     }
 
-    /** Just the base preset's values (no modified-overrides applied).
-        For named bases this is matchedPresets[i].values; for auto
-        it's the type-default-plus-cached-source-sample computation. */
+    /** Just the base preset's *user-set* values (no auto-computed
+        defaults, no modified overrides). For named bases this is
+        matchedPresets[i].values; for auto, an empty object — auto
+        has no user-set values, only display defaults, so callers
+        substituting environment fall through to their normal type-
+        default + source-sample materialisation path. The display-
+        side dropdown calls computeAutoValues separately for the
+        "auto: theta1 = X" label. */
     function baseValuesFor(plan) {
       if (plan.presetName != null && plan.matchedPresets) {
         for (var i = 0; i < plan.matchedPresets.length; i++) {
@@ -3973,7 +3978,7 @@
           }
         }
       }
-      return computeAutoValues(plan);
+      return {};
     }
 
     // Build a "Preset: [auto / pars1 / …]" control fragment we can
