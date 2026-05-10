@@ -109,51 +109,115 @@
     };
   }
 
-  /** When playground mode is enabled, load CodeMirror and swap the
-      source pane's read-only <pre> for an editable view. Bails
-      silently (read-only stays) if the bundle fails to load. */
-  async function maybeInitPlayground() {
-    var cfg = window.__FLATPPL_CONFIG__ || {};
-    if (!cfg.playground) return;
-    if (!window.FlatPPLWebEditor) {
-      console.warn('[@flatppl/web] playground enabled but FlatPPLWebEditor missing — staying read-only');
-      return;
-    }
-    try {
-      await window.FlatPPLWebEditor.loadBundle();
-    } catch (e) {
-      console.warn('[@flatppl/web] CodeMirror load failed — staying read-only:', e && e.message);
-      return;
-    }
-    if (!sourceView) return;
-    var paneBody = sourceView.parentNode;
-    var sourcePane = document.getElementById('source-pane');
-    var editorContainer = document.createElement('div');
-    editorContainer.id = 'source-editor';
-    paneBody.appendChild(editorContainer);
-    sourceView.style.display = 'none';
-    if (sourcePane) sourcePane.classList.add('playground');
+  // Edit-mode state, persisted across reloads (only when the deploy
+  // allows editing in the first place — see EDIT_STORAGE_KEY).
+  var EDIT_STORAGE_KEY = 'flatppl-web-edit-on';
+  function readEditPref() {
+    try { return window.localStorage && window.localStorage.getItem(EDIT_STORAGE_KEY) === '1'; }
+    catch (_) { return false; }
+  }
+  function writeEditPref(on) {
+    try { if (window.localStorage) window.localStorage.setItem(EDIT_STORAGE_KEY, on ? '1' : '0'); }
+    catch (_) {}
+  }
 
-    playgroundEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
-      initialSource: '',
-      onChange: debounce(function (text) {
-        // User typed: re-render the visualization. Keep the current
-        // focused target (if any) by reading the router's view of
-        // the URL hash. No router-navigate here — typing isn't a
-        // navigation event; it just refreshes the existing target.
-        if (!viewer) return;
-        var cur = window.FlatPPLWebRouter.parseHash();
-        viewer.update(text, cur.target || null);
-      }, 250),
-      onNavigate: function (name) {
-        // Ctrl/Cmd+click on a binding identifier in the editor —
-        // route through the same hash-navigation flow the
-        // read-only pane uses. Keeps URL state coherent and
-        // browser back/forward working.
-        var cur = window.FlatPPLWebRouter.parseHash();
-        window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
-      },
+  /** Wire the edit toggle. Called once at boot. When the deploy
+      config has allowEdit=true, the toggle button becomes visible
+      and clickable; otherwise it stays hidden and edit mode is
+      unreachable. Restoring the user's last choice from
+      localStorage on boot keeps their preference across reloads.
+      Returns a promise the caller can await so the first
+      applyState writes into the editor (when restored to "on")
+      rather than briefly flashing the read-only <pre>. */
+  function setupEditToggle() {
+    var cfg = window.__FLATPPL_CONFIG__ || {};
+    var toggleBtn = document.getElementById('edit-toggle');
+    if (!toggleBtn) return Promise.resolve();
+    if (!cfg.allowEdit) {
+      // Stays `hidden`; never appears in the toolbar. The CodeMirror
+      // bundle is never fetched.
+      return Promise.resolve();
+    }
+    toggleBtn.hidden = false;
+    toggleBtn.addEventListener('click', function () {
+      setEditMode(!playgroundEditor);
     });
+    if (readEditPref()) {
+      return setEditMode(true);
+    }
+    return Promise.resolve();
+  }
+
+  /** Switch the source pane between read-only and editor mode.
+      Lazy-loads the CodeMirror bundle on first enable, mounts the
+      editor with the current pane content; disable disposes the
+      editor and restores the read-only <pre> in place with whatever
+      text was in the editor (so user edits survive a toggle off+on
+      within the same session). */
+  async function setEditMode(on) {
+    var toggleBtn = document.getElementById('edit-toggle');
+    var sourcePane = document.getElementById('source-pane');
+    if (on === !!playgroundEditor) {
+      // Already in the requested state; sync the button visuals
+      // just in case (e.g. on first boot when persisted state is
+      // already off).
+      if (toggleBtn) toggleBtn.setAttribute('aria-pressed', playgroundEditor ? 'true' : 'false');
+      return;
+    }
+    if (on) {
+      if (!window.FlatPPLWebEditor) {
+        console.warn('[@flatppl/web] edit requested but FlatPPLWebEditor missing — staying read-only');
+        return;
+      }
+      try {
+        await window.FlatPPLWebEditor.loadBundle();
+      } catch (e) {
+        console.warn('[@flatppl/web] CodeMirror load failed — staying read-only:', e && e.message);
+        return;
+      }
+      if (!sourceView) return;
+      var paneBody = sourceView.parentNode;
+      var editorContainer = document.getElementById('source-editor');
+      if (!editorContainer) {
+        editorContainer = document.createElement('div');
+        editorContainer.id = 'source-editor';
+        paneBody.appendChild(editorContainer);
+      }
+      sourceView.style.display = 'none';
+      if (sourcePane) sourcePane.classList.add('playground');
+      var initial = lastRenderedSource != null ? lastRenderedSource : '';
+      playgroundEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
+        initialSource: initial,
+        onChange: debounce(function (text) {
+          if (!viewer) return;
+          var cur = window.FlatPPLWebRouter.parseHash();
+          viewer.update(text, cur.target || null);
+        }, 250),
+        onNavigate: function (name) {
+          var cur = window.FlatPPLWebRouter.parseHash();
+          window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
+        },
+      });
+      lastRenderedSource = initial;
+      if (toggleBtn) toggleBtn.setAttribute('aria-pressed', 'true');
+      writeEditPref(true);
+    } else {
+      // Disable: pull current text out of the editor, dispose, show
+      // the <pre> again. The <pre> picks up whatever the user typed
+      // — read-only mode preserves the last state, no edits are
+      // discarded by the toggle alone.
+      var currentText = playgroundEditor.getSource();
+      try { playgroundEditor.destroy(); } catch (_) {}
+      playgroundEditor = null;
+      var ed = document.getElementById('source-editor');
+      if (ed && ed.parentNode) ed.parentNode.removeChild(ed);
+      if (sourcePane) sourcePane.classList.remove('playground');
+      if (sourceView) sourceView.style.display = '';
+      lastRenderedSource = null;  // force a fresh highlight pass
+      showSource(currentText, (sourceHeader && sourceHeader.textContent) || 'Source');
+      if (toggleBtn) toggleBtn.setAttribute('aria-pressed', 'false');
+      writeEditPref(false);
+    }
   }
 
   /** Cheap variant of showSource: skip the full re-highlight when the
@@ -342,10 +406,13 @@
       });
     }
 
-    // Initialize playground mode (lazy-load CodeMirror, swap source
-    // pane to editor) before manifest+router so the first applyState
-    // writes into the editor rather than the now-hidden <pre>.
-    await maybeInitPlayground();
+    // Wire the edit-toggle button (visible only when allowEdit is
+    // true) and restore the user's last edit-mode preference. We
+    // await it so the editor (if restored to "on") is already
+    // mounted by the time the first applyState fires — that way
+    // the initial render lands in the editor, not in a briefly-
+    // visible <pre>.
+    await setupEditToggle();
 
     var viewerRoot = document.getElementById('flatppl-viewer-root');
 

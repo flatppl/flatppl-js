@@ -46,6 +46,13 @@
     <section class="pane" id="source-pane">
       <div class="pane-header pane-header--row">
         <span id="source-header" class="pane-header-text">Source</span>
+        <button id="edit-toggle" type="button"
+                title="Toggle edit mode"
+                aria-label="Toggle edit mode"
+                aria-pressed="false"
+                hidden>
+          <span aria-hidden="true">&#9998;</span>
+        </button>
         <button id="show-module-btn" type="button"
                 title="Visualize whole module"
                 aria-label="Visualize whole module">
@@ -78,15 +85,23 @@
     // the VS Code bootstrap; only the sampler-worker URL is required.
     window.__FLATPPL_CONFIG__ = {
       samplerWorkerUrl: new URL('vendor/sampler-worker.min.js', document.baseURI).href,
-      // Playground mode: when true, the source pane becomes a
-      // CodeMirror editor (lazy-loaded from vendor/codemirror.min.js
-      // on demand). Edits trigger a debounced viewer.update so the
-      // DAG and plots refresh as the user types. Set false to ship
-      // a pure read-only gallery — no CodeMirror bytes are then
-      // requested by the page. Enabled by default for the demo
-      // deploy of @flatppl/web; reusers of the package can flip
-      // this to false in their own index.html bootstrap.
-      playground: true,
+      // allowEdit: when true, the gallery exposes an edit-mode
+      // toggle in the source-pane header. The user can flip it on
+      // to turn the source pane into a CodeMirror editor (lazy-
+      // loaded from vendor/codemirror.min.js the first time it's
+      // needed) and type freely — viewer + plots refresh with a
+      // debounced re-render. Edits are session-only; nothing is
+      // persisted. With allowEdit false the toggle button is
+      // hidden entirely and the page never requests the CodeMirror
+      // bundle, matching the original read-only deploy.
+      //
+      // Default mode within a deploy is still read-only — the user
+      // opts into editing via the toggle. The user's last choice is
+      // remembered in localStorage so it survives reloads.
+      //
+      // Reusers of @flatppl/web flip allowEdit to false in their
+      // own bootstrap to ship a strictly read-only gallery.
+      allowEdit: true,
     };
   </script>
   <script src="vendor/viewer.js"></script>
