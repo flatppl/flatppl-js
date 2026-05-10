@@ -2125,6 +2125,18 @@
       chartHost.style.position = 'relative';
       el.appendChild(chartHost);
 
+      // Optional row beneath the chart. Used by the profile-plot path
+      // to surface the lo/hi x-axis limit inputs alongside the axis
+      // name, vertically aligned with where echarts' axis-name would
+      // otherwise sit. Other plot types pass nothing and get the
+      // previous layout (chart fills remaining height).
+      if (opts.bottomRow) {
+        var bottom = document.createElement('div');
+        bottom.style.flexShrink = '0';
+        bottom.appendChild(opts.bottomRow);
+        el.appendChild(bottom);
+      }
+
       opts.chartCallback(chartHost);
     }
 
@@ -4503,15 +4515,10 @@
           renderProfilePlotForCurrent();
         }));
       }
-      // Unified x-axis block — reads as a math inequality:
-      //   x-Axis:  [lo input]  ≤  [axis selector | static name]  ≤  [hi input]
-      // The axis selector (when there are multiple input axes)
-      // picks which axis is on the x-axis; with a single axis it
-      // collapses to plain text so the layout still parses as the
-      // same inequality. Range edits commit to profileRangeCache
-      // keyed by (binding, sweepKey, preset) so the user's chosen
-      // limits stick when switching presets / axes / bindings.
-      var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+      // The lo/hi limit inputs live under the plot now (see
+      // buildProfileBottomRow). The toolbar carries only the axis
+      // selector (or static label for single-axis), as
+      //   x-Axis: <axis selector | static name>
       var xBlock = document.createElement('span');
       xBlock.style.display = 'inline-flex';
       xBlock.style.alignItems = 'center';
@@ -4521,27 +4528,6 @@
       xLabel.textContent = 'x-Axis:';
       xLabel.style.opacity = '0.6';
 
-      var xLoInput = document.createElement('input');
-      xLoInput.type = 'number'; xLoInput.step = 'any';
-      xLoInput.value = formatScalar(range[0]);
-      xLoInput.title = 'x-axis lower limit';
-      var xHiInput = document.createElement('input');
-      xHiInput.type = 'number'; xHiInput.step = 'any';
-      xHiInput.value = formatScalar(range[1]);
-      xHiInput.title = 'x-axis upper limit';
-      [xLoInput, xHiInput].forEach(function(inp) {
-        inp.style.background = 'var(--vscode-input-background, #3c3c3c)';
-        inp.style.color = 'var(--vscode-input-foreground, #cccccc)';
-        inp.style.border = '1px solid var(--vscode-input-border, #555)';
-        inp.style.padding = '2px 4px';
-        inp.style.fontSize = '1em';
-        inp.style.width = '6.5em';
-        inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-      });
-
-      // The axis element sits between the two ≤. Multi-axis →
-      // dropdown; single-axis → plain text label so the block
-      // still reads as a single block / inequality.
       var axisEl;
       if (hasAxes) {
         axisEl = document.createElement('select');
@@ -4570,12 +4556,53 @@
         axisEl.style.opacity = '0.85';
       }
 
-      function leqGlyph() {
-        var s = document.createElement('span');
-        s.textContent = '≤';        // ≤
-        s.style.opacity = '0.55';
-        return s;
-      }
+      xBlock.appendChild(xLabel);
+      if (axisEl) xBlock.appendChild(axisEl);
+      frag.appendChild(xBlock);
+      return frag;
+    }
+
+    /**
+     * Row that sits under the echarts plot in profile mode:
+     *
+     *   [lo input]    <axis name>    [hi input]
+     *
+     * Wrapper-edge-aligned (lo pinned left, hi pinned right; axis
+     * name centred). The axis name comes from plan.axes[…].label;
+     * the (default = V) decoration is added in a later step.
+     * Range edits commit to profileRangeCache keyed by
+     * (binding, sweepKey, preset) — same store as before, same
+     * effect on the re-render path.
+     */
+    function buildProfileBottomRow(plan, range) {
+      var fg = getComputedStyle(document.body).color || '#ccc';
+      var row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.alignItems = 'baseline';
+      row.style.gap = '0.6em';
+      row.style.padding = '0.2em 0.4em 0.4em';
+      row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      row.style.fontSize = '0.92em';
+
+      var rangeKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+
+      var xLoInput = document.createElement('input');
+      xLoInput.type = 'number'; xLoInput.step = 'any';
+      xLoInput.value = formatScalar(range[0]);
+      xLoInput.title = 'x-axis lower limit';
+      var xHiInput = document.createElement('input');
+      xHiInput.type = 'number'; xHiInput.step = 'any';
+      xHiInput.value = formatScalar(range[1]);
+      xHiInput.title = 'x-axis upper limit';
+      [xLoInput, xHiInput].forEach(function(inp) {
+        inp.style.background = 'var(--vscode-input-background, #3c3c3c)';
+        inp.style.color = 'var(--vscode-input-foreground, #cccccc)';
+        inp.style.border = '1px solid var(--vscode-input-border, #555)';
+        inp.style.padding = '2px 4px';
+        inp.style.fontSize = '1em';
+        inp.style.width = '6.5em';
+        inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+      });
 
       var commitRange = function() {
         var newLo = parseFloat(xLoInput.value);
@@ -4591,14 +4618,31 @@
       xLoInput.addEventListener('change', commitRange);
       xHiInput.addEventListener('change', commitRange);
 
-      xBlock.appendChild(xLabel);
-      xBlock.appendChild(xLoInput);
-      xBlock.appendChild(leqGlyph());
-      if (axisEl) xBlock.appendChild(axisEl);
-      xBlock.appendChild(leqGlyph());
-      xBlock.appendChild(xHiInput);
-      frag.appendChild(xBlock);
-      return frag;
+      // Centred axis name. plan.axes is built by distributeAxes;
+      // pick the entry matching the active sweep so the label
+      // matches what the plot is actually showing. Falls back to
+      // sweepKey if no label found.
+      var axisName = plan.sweepKey;
+      if (plan.axes) {
+        for (var i = 0; i < plan.axes.length; i++) {
+          if (plan.axes[i].key === plan.sweepKey) {
+            axisName = plan.axes[i].label;
+            break;
+          }
+        }
+      }
+      var nameSpan = document.createElement('span');
+      nameSpan.textContent = axisName;
+      nameSpan.style.flex = '1';
+      nameSpan.style.textAlign = 'center';
+      nameSpan.style.color = fg;
+      nameSpan.style.opacity = '0.75';
+      nameSpan.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+
+      row.appendChild(xLoInput);
+      row.appendChild(nameSpan);
+      row.appendChild(xHiInput);
+      return row;
     }
 
     function renderProfileLine(values, range, plan, sweepAxis) {
@@ -4671,6 +4715,7 @@
       // readout. The toolbar carries the controls only.
       renderPlotFrame({
         toolbarControls: buildProfileControls(plan, range),
+        bottomRow:       buildProfileBottomRow(plan, range),
         chartCallback: function(chartHost) {
           plotEchart = echarts.init(chartHost);
           var zoomOpts = plotZoomOptions(fg);
@@ -4678,7 +4723,12 @@
             animation: false,
             dataZoom: zoomOpts.dataZoom,
             toolbox: zoomOpts.toolbox,
-            grid: { left: 60, right: 25, top: 30, bottom: 50, containLabel: false },
+            // The axis-name is rendered by the bottom-row instead of
+            // echarts (so the lo/hi limit inputs can sit beside it,
+            // wrapper-edge aligned). bottom can shrink because
+            // there's no axis-name eating vertical space inside the
+            // grid.
+            grid: { left: 60, right: 25, top: 30, bottom: 25, containLabel: false },
             title: {
               text: titleText,
               left: 'center', top: 4,
@@ -4693,7 +4743,7 @@
             tooltip: { show: false },
             xAxis: {
               type: 'value',
-              name: sweepAxis.label, nameLocation: 'center', nameGap: 28,
+              name: '',
               min: lo, max: hi,
               axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
               axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
