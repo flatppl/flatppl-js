@@ -36,6 +36,15 @@ html, body {
   height: 100vh;
 }
 
+/* Pin every pane and handle to an explicit grid column so that
+   `display: none` on the file pane (collapse) doesn't auto-shift
+   the remaining items into the now-empty cells. */
+#files-pane                                 { grid-column: 1; grid-row: 2; }
+.resize-handle[data-resize="files-source"]  { grid-column: 2; grid-row: 2; }
+#source-pane                                { grid-column: 3; grid-row: 2; }
+.resize-handle[data-resize="source-viewer"] { grid-column: 4; grid-row: 2; }
+#viewer-pane                                { grid-column: 5; grid-row: 2; }
+
 #app-header {
   grid-column: 1 / -1;
   background: var(--bg-header);
