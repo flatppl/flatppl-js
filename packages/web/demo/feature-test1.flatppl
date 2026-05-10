@@ -1,0 +1,99 @@
+# A simple Bayesian example using structural disintegration: build the joint
+# distribution first, then disintegrate to extract the forward kernel and prior.
+# Same model as bayesian_inference.flatppl, expressed by disintegration of the
+# joint instead of separate prior/model reifications.
+
+# Prior distributions
+theta1_dist = Normal(mu = 0, sigma = 1)
+theta2_dist = Exponential(rate = 1)
+
+# Prior variates
+theta1 = draw(theta1_dist)
+theta2 = draw(theta2_dist)
+
+c = 2.5
+_par = elementof(reals)
+
+f_a = functionof(c * _par, par = _par)
+f_b = fn(abs(_) * _)
+
+# Deterministic transform
+a = f_a(par = beta1)
+b = f_b(theta1, theta2)
+
+# IID observations from the forward model
+obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
+
+# prior and forward model
+prior = lawof(record(theta1 = theta1, theta2 = theta2))
+forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
+
+theta = draw(prior)
+
+# Joint distribution over parameters and observations
+joint_model = jointchain(prior, forward_kernel)
+
+# Structural disintegration, should be eqivalent to forward_kernel and prior
+forward_kernel2, prior2 = disintegrate(["obs"], joint_model)
+
+rstate1 = rnginit([1,2,3,4])
+rand_pars, rstate2 = rand(rstate1, prior)
+expected_obs = forward_kernel(rand_pars)
+rand_obs_data, _ = rand(rstate2, expected_obs)
+rand_obs_values = rand_obs_data.obs
+
+# Observed data
+observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]
+obs_data_dist = lawof(observed_data)
+obs_data_dist2 = Dirac(observed_data)
+observed_data2 = draw(obs_data_dist)
+
+# Likelihood
+L = likelihoodof(forward_kernel2, record(obs = observed_data))
+
+# Non-normalized posterior
+posterior = bayesupdate(L, prior2)
+
+# For testing
+
+theta3_dist = weighted(theta2, theta1_dist)
+theta4_dist = weighted(draw(theta2_dist), theta1_dist)
+theta4 = draw(weighted(draw(theta2_dist), theta1_dist))
+theta5 = draw(weighted(pow(draw(theta2_dist), 2), theta1_dist))
+
+invalid1_dist = weighted(theta2_dist, theta1_dist)
+invalid2_dist = weighted(theta2, theta1)
+invalid4_dist = draw(weighted(exp(draw(theta2_dist), 2), theta1_dist))
+
+stochastic_dist = Normal(theta1, theta2)
+
+beta1 = 2 * theta2
+beta1_dist = lawof(beta1)
+
+foo = theta1 * theta2
+
+xy_record = record(a = draw(Exponential(1)), b = draw(Exponential(1)))
+xy_array = [draw(Exponential(1)), draw(Exponential(1))]
+funnel_record = jointchain(a = Exponential(1), b = fn(Normal(1, _)))
+funnel_array = jointchain(Exponential(1), fn(Normal(1, _)))
+
+
+foo_dist = lawof(foo)
+
+#w1 = weighted(0.5, theta1)
+#w2 = weighted(0.5, theta1_dist)
+#w3 = weighted(0.5, lawof(theta1))
+
+#beta2 = pow(beta1, 2)
+
+lp_obs = logdensityof(obs_dist, record(obs = observed_data))
+d_obs  = densityof(obs_dist, record(obs = observed_data))
+
+pars1 = preset(theta1 = 1.4, theta2 = 1.0)
+pars2 = preset(theta1 = 0.5, theta2 = 2.0)
+
+some_args1 = preset(arg1 = 2.0, arg2 = 1.5)
+some_args2 = preset(arg1 = -1.0, arg2 = 0.5)
+
+f_demo = fn(record(a = _, b = 2 * _))
+y = f_demo(1, 2)
