@@ -357,6 +357,18 @@
         saveState:        function(state) { api.setState(state); },
         loadState:        function() { return api.getState(); },
         signalReady:      function() { api.postMessage({ type: 'webviewReady' }); },
+        // VS Code can always edit the source file. The extension
+        // host applies the actual WorkspaceEdit on receipt of the
+        // persistPreset message.
+        canPersist: function() { return true; },
+        persistPreset: function(args) {
+          api.postMessage({
+            type: 'persistPreset',
+            name:    args.name,
+            newText: args.newText,
+            range:   args.range,         // null → host appends to end-of-file
+          });
+        },
       };
     }
 
@@ -4282,23 +4294,23 @@
       return frag;
     }
 
-    /** Persist is supported when:
-        - The active selection is a named preset (auto can't be
-          persisted — it isn't a binding).
-        - There's actually an override to write.
-        - The host adapter exposes a persistPreset function and
-          (when defined) host.canPersist returns true.
-        - The preset binding in source is a literal-friendly
-          `preset(<kwarg> = <number/bool>, …)`. Non-literal RHS
-          would lose authored expressions if overwritten with
-          numbers, so we just hide the button — Reset is still
-          available. */
+    /** Persist is supported when there's an override AND the host
+        adapter can write AND (for named presets) the source RHS is
+        literal-friendly. Two cases:
+
+        - Named preset: the source RHS must be
+          `preset(<kwarg> = <number/bool>, …)` — non-literal RHS
+          would lose authored expressions if overwritten, so we
+          just hide the button (Reset is still available).
+        - Auto preset: persist creates a NEW preset binding at
+          end-of-source under a user-prompted name. Always allowed
+          when the host can write. */
     function canPersistActive(plan) {
-      if (plan.presetName == null) return false;
       if (!hasOverrides(plan)) return false;
       if (!host || typeof host.persistPreset !== 'function') return false;
       if (typeof host.canPersist === 'function' && !host.canPersist()) return false;
       if (host.canPersist === false) return false;
+      if (plan.presetName == null) return true;       // auto → create new binding
       if (!currentBindings) return false;
       var b = currentBindings.get(plan.presetName);
       if (!b || !b.node || !b.node.value
@@ -4343,12 +4355,22 @@
       return plan.presetName + ' = preset(' + parts.join(', ') + ')';
     }
 
-    /** Invoke host.persistPreset with the binding name, replacement
-        text, and source range. Host applies the edit; the next
-        source-update cycle reconciles the override away because
-        the source values now match. */
+    /** Invoke host.persistPreset for the active selection. Routes
+        to "replace existing binding" or "append new binding"
+        depending on whether the active selection is a named
+        preset or auto. Host applies the edit; the next source-
+        update cycle reconciles the override away because the
+        source values now match. */
     function persistActive(plan) {
       if (!canPersistActive(plan)) return;
+      if (plan.presetName == null) {
+        persistAutoAsNewBinding(plan);
+      } else {
+        persistNamedPreset(plan);
+      }
+    }
+
+    function persistNamedPreset(plan) {
       var b = currentBindings.get(plan.presetName);
       var newText = buildPersistedPresetLine(plan);
       try {
@@ -4362,6 +4384,54 @@
         });
       } catch (err) {
         console.error('[viewer] persistPreset failed:', err);
+      }
+    }
+
+    /** Prompt the user for a name, then ask the host to append a
+        new preset binding at end-of-source carrying the auto-
+        modified values. Validates the name as a FlatPPL identifier
+        and rejects collisions with existing bindings. */
+    function persistAutoAsNewBinding(plan) {
+      var name = window.prompt('Save current values as a new preset. Name:');
+      if (name == null) return;        // user dismissed
+      name = name.trim();
+      if (name === '') return;
+      if (!FlatPPLEngine.isValidBindingName
+          || !FlatPPLEngine.isValidBindingName(name)) {
+        window.alert('Invalid binding name. Use letters, digits, and underscores; must start with a letter or underscore.');
+        return;
+      }
+      if (currentBindings && currentBindings.has(name)) {
+        window.alert('"' + name + '" is already a binding in this module.');
+        return;
+      }
+      // Capture the full combined state: auto-computed defaults
+      // + user overrides. Plain numeric values only — auto's
+      // values come from computeAutoValues (samples[0] / type
+      // defaults) which already filters to numeric.
+      var autoValues = computeAutoValues(plan);
+      var override = plan.autoOverride;
+      var combined = Object.assign({}, autoValues, (override && override.values) || {});
+      var entries = [];
+      for (var k in combined) {
+        if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
+        var v = combined[k];
+        if (!Number.isFinite(v)) continue;     // skip non-finite (e.g. NaN placeholders)
+        entries.push(k + ' = ' + formatScalarForSource(v));
+      }
+      if (entries.length === 0) {
+        window.alert('No values to persist.');
+        return;
+      }
+      var newLine = name + ' = preset(' + entries.join(', ') + ')';
+      try {
+        host.persistPreset({
+          name: name,
+          newText: newLine,
+          range: null,                          // null → host appends
+        });
+      } catch (err) {
+        console.error('[viewer] persistPreset (auto → new binding) failed:', err);
       }
     }
 

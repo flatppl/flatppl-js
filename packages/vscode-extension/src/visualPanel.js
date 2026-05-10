@@ -73,6 +73,40 @@ class FlatPPLPanel {
       if (msg.type === 'updateTitle') {
         this._panel.title = `FlatPPL: ${msg.name}`;
       }
+      // Persist a modified preset back to the source file. Two
+      // shapes:
+      //   - msg.range = { start: {line, col}, end: {line, col} }
+      //     → replace that range with msg.newText. Used when the
+      //       user has overridden a named preset binding's values.
+      //   - msg.range = null
+      //     → append msg.newText as a new line at end-of-file.
+      //       Used when "persisting" an auto-modified state — the
+      //       viewer prompted the user for a binding name and is
+      //       creating a new preset binding.
+      // After applyEdit, VS Code's onDidChangeTextDocument fires
+      // and the existing extension-side change listener pushes a
+      // fresh sourceUpdate to the webview. The viewer's
+      // rebuildDerivations runs reconciliation, the override
+      // matches source, and the (modified) tag disappears.
+      if (msg.type === 'persistPreset' && this._sourceUri != null) {
+        const uri = this._sourceUri;
+        vscode.workspace.openTextDocument(uri).then(doc => {
+          const edit = new vscode.WorkspaceEdit();
+          if (msg.range) {
+            const range = new vscode.Range(
+              new vscode.Position(msg.range.start.line, msg.range.start.col),
+              new vscode.Position(msg.range.end.line,   msg.range.end.col)
+            );
+            edit.replace(uri, range, msg.newText);
+          } else {
+            const text = doc.getText();
+            const endPos = doc.positionAt(text.length);
+            const sep = text.length === 0 || text.endsWith('\n') ? '' : '\n';
+            edit.insert(uri, endPos, sep + msg.newText + '\n');
+          }
+          vscode.workspace.applyEdit(edit);
+        });
+      }
     });
   }
 

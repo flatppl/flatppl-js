@@ -472,26 +472,39 @@
           when an editor is mounted (playground edit mode); false
           when the source pane is read-only or no source is loaded. */
       canPersist: function () { return !!playgroundEditor; },
-      /** Replace a source range with new text, triggering the
-          editor's onChange path which then re-renders the viewer
-          through the debounced refresh. The args.range comes from
-          the viewer as zero-indexed (line, col) coords matching the
-          engine's tokenizer; we convert to character offsets here
-          using the editor's current document text. */
+      /** Persist a modified preset to source. Two shapes, matching
+          the host-adapter contract:
+            - args.range = { start: {line, col}, end: {line, col} }
+              → replace that range with args.newText. Used for
+                overriding a named preset binding's values.
+            - args.range = null
+              → append args.newText as a new line at end-of-file.
+                Used when persisting an auto-modified state under
+                a new binding name.
+          Either way the editor's docChanged fires onChange, which
+          re-renders the viewer via the debounced refresh; the
+          rebuildDerivations reconciliation drops the override on
+          the next pass. */
       persistPreset: function (args) {
         if (!playgroundEditor) return false;
         var src = playgroundEditor.getSource();
-        var lineStarts = [0];
-        for (var i = 0; i < src.length; i++) {
-          if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
+        if (args.range) {
+          var lineStarts = [0];
+          for (var i = 0; i < src.length; i++) {
+            if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
+          }
+          function offsetOf(loc) {
+            var ls = lineStarts[loc.line];
+            return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
+          }
+          var from = offsetOf(args.range.start);
+          var to   = offsetOf(args.range.end);
+          playgroundEditor.replaceRange(from, to, args.newText);
+        } else {
+          var sep = src.length === 0 || src.charAt(src.length - 1) === '\n' ? '' : '\n';
+          playgroundEditor.replaceRange(src.length, src.length,
+            sep + args.newText + '\n');
         }
-        function offsetOf(loc) {
-          var ls = lineStarts[loc.line];
-          return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
-        }
-        var from = offsetOf(args.range.start);
-        var to   = offsetOf(args.range.end);
-        playgroundEditor.replaceRange(from, to, args.newText);
         return true;
       },
     };
