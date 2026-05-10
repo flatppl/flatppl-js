@@ -351,6 +351,7 @@
         setTitle:         function(name) { api.postMessage({ type: 'updateTitle', name: name }); },
         saveState:        function(state) { api.setState(state); },
         loadState:        function() { return api.getState(); },
+        signalReady:      function() { api.postMessage({ type: 'webviewReady' }); },
       };
     }
 
@@ -1073,12 +1074,15 @@
       // non-scalar fixed values like a length-10 `random_data` array.
       // setEnv with merge=false replaces (so a stale fixedValues map
       // from the previous source can't leak into the new one).
-      if (derivationsState && derivationsState.fixedValues) {
+      if (derivationsState && derivationsState.fixedValues
+          && derivationsState.fixedValues.size > 0) {
         var envObj = {};
         derivationsState.fixedValues.forEach(function(v, k) { envObj[k] = v; });
-        getSamplerWorker().then(function(w) {
+        ensureSamplerWorker().then(function(w) {
           sendWorkerNow(w, { type: 'setEnv', env: envObj, merge: false });
-        }).catch(function() { /* worker init error already logged */ });
+        }).catch(function(err) {
+          console.error('FlatPPL: setEnv push failed:', err);
+        });
       }
     }
 
@@ -5555,6 +5559,16 @@
     });
 
     initCy();
+
+    // Tell the host the message listener is attached. VS Code's
+    // webview.postMessage doesn't reliably buffer pre-load — messages
+    // sent before this point can be lost, which produced the
+    // "empty panel on first Visualize" issue. The host buffers
+    // sourceUpdate / showModule / configUpdate until it sees this
+    // 'webviewReady' and then flushes in order.
+    if (host && host.signalReady) {
+      try { host.signalReady(); } catch (_) {}
+    }
 
     // Resize every echart instance inside #plot-content whenever the
     // plot pane changes size. Multi-chart layouts (corner plot,

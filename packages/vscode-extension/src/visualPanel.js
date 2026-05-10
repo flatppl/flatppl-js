@@ -31,11 +31,25 @@ class FlatPPLPanel {
     this._panel = panel;
     this._context = context;
     this._sourceUri = null;
+    // Webview-ready handshake: messages posted before the webview's
+    // script attaches its `message` listener are dropped silently
+    // (VS Code's webview.postMessage doesn't buffer reliably). The
+    // viewer signals 'webviewReady' once its listener is in place;
+    // until then we queue. After ready, we flush in FIFO order and
+    // every subsequent post bypasses the queue.
+    this._webviewReady = false;
+    this._pendingMessages = [];
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
       FlatPPLPanel.currentPanel = undefined;
     });
     this._panel.webview.onDidReceiveMessage(msg => {
+      if (msg.type === 'webviewReady') {
+        this._webviewReady = true;
+        for (const m of this._pendingMessages) this._panel.webview.postMessage(m);
+        this._pendingMessages = [];
+        return;
+      }
       // Editor-navigation request from a webview node click. The webview
       // owns its own DAG state now (parses source locally, handles zoom-
       // into events without a host round-trip), so the only remaining
@@ -62,6 +76,14 @@ class FlatPPLPanel {
     });
   }
 
+  _post(msg) {
+    if (this._webviewReady) {
+      this._panel.webview.postMessage(msg);
+    } else {
+      this._pendingMessages.push(msg);
+    }
+  }
+
   /**
    * Push a fresh source text to the webview, optionally with a target
    * binding name to focus on. The webview parses the source via its own
@@ -76,7 +98,7 @@ class FlatPPLPanel {
   updateSource(source, targetName, sourceUri, pushHistory) {
     if (sourceUri) this._sourceUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
-    this._panel.webview.postMessage({
+    this._post({
       type: 'sourceUpdate',
       source,
       targetName: targetName || null,
@@ -92,8 +114,10 @@ class FlatPPLPanel {
    * arrays were sized to the old count and can't be reused.
    */
   updateConfig(config) {
-    this._panel.webview.postMessage({ type: 'configUpdate', config });
+    this._post({ type: 'configUpdate', config });
   }
+
+
 
   /**
    * Render the module-level (multi-root) DAG. Distinct from
@@ -106,7 +130,7 @@ class FlatPPLPanel {
   showModule(source, sourceUri, pushHistory) {
     if (sourceUri) this._sourceUri = sourceUri;
     this._panel.title = 'FlatPPL: module';
-    this._panel.webview.postMessage({
+    this._post({
       type: 'showModule',
       source,
       pushHistory: !!pushHistory,
