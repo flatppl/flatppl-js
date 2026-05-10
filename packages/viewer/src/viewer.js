@@ -4580,7 +4580,13 @@
       row.style.display = 'flex';
       row.style.alignItems = 'baseline';
       row.style.gap = '0.6em';
-      row.style.padding = '0.2em 0.4em 0.4em';
+      // Horizontal padding matches the echarts grid insets used by
+      // renderProfileLine (grid.left:60, grid.right:25). With this
+      // padding the lo input's left edge aligns with the chart's
+      // leftmost data extent and the hi input's right edge with the
+      // rightmost — so the values read as labels of the extents
+      // rather than floating off in the pane margins.
+      row.style.padding = '0.2em 25px 0.4em 60px';
       row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
       row.style.fontSize = '0.92em';
 
