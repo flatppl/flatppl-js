@@ -186,8 +186,8 @@
         borderRight: '1px solid #3c3c3c',
         color: '#858585',
       },
-      '.cm-activeLine':       { backgroundColor: 'rgba(255,255,255,0.03)' },
-      '.cm-activeLineGutter': { backgroundColor: 'rgba(255,255,255,0.04)' },
+      '.cm-activeLine':       { backgroundColor: 'rgba(255,255,255,0.06)' },
+      '.cm-activeLineGutter': { backgroundColor: 'rgba(255,255,255,0.08)' },
       '&.cm-focused .cm-cursor': { borderLeftColor: '#cccccc' },
       '&.cm-focused .cm-selectionBackground, ::selection': {
         backgroundColor: '#264f78',
@@ -338,9 +338,14 @@
           selection: { anchor: info.from },
           effects: bundle.EditorView.scrollIntoView(info.from, { y: 'center' }),
         });
-        // Don't focus()-steal — the user's Ctrl-click was on the DAG
-        // pane; pulling focus to the editor would close any
-        // tooltip/menu they were interacting with there.
+        // Focus the editor so the cursor is visible. Without this
+        // the editor only renders the cursor when focused, and a
+        // Ctrl-click on a DAG node (which kept focus on the DAG
+        // pane) leaves the user with no visual indication that the
+        // editor cursor moved at all. The active-line highlight
+        // (theme rule) is a secondary cue but is too subtle on
+        // its own to substitute for a visible cursor.
+        view.focus();
       },
       destroy: function () { try { view.destroy(); } catch (_) {} },
     };

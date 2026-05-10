@@ -47,6 +47,12 @@
   // CSS / repaint flash that comes with it) when the user is only
   // navigating between bindings inside the same file.
   var lastRenderedSource = null;
+  // The currently loaded model path, so we can short-circuit when a
+  // navigation event only changes the focus target. Critical in
+  // playground mode: rewriting the editor's content on every target-
+  // change would wipe user edits and reset the cursor to the start
+  // of the file.
+  var lastModel = null;
 
   /**
    * Push text into the source pane. When the engine is available
@@ -204,10 +210,30 @@
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
 
+    // Same model, target-only change: skip the fetch and the source-
+    // pane rewrite entirely. In playground mode the editor IS the
+    // source of truth — rewriting it with the cached original would
+    // wipe user edits and reset the cursor. Read the live text out
+    // of the editor when one is mounted; fall back to the last
+    // rendered text otherwise.
+    if (state.model === lastModel) {
+      if (viewer) {
+        var liveText = playgroundEditor
+          ? playgroundEditor.getSource()
+          : (lastRenderedSource || '');
+        viewer.update(liveText, state.target || null);
+      }
+      document.title = state.model
+        ? ('FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : ''))
+        : 'FlatPPL';
+      return;
+    }
+
     if (!state.model) {
       showSourceIfChanged(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
       if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
+      lastModel = null;
       return;
     }
     showSourceIfChanged('# Loading ' + state.model + ' …', state.model);
@@ -216,10 +242,13 @@
       showSourceIfChanged(bundle.primarySource, state.model);
       if (viewer) viewer.update(bundle.primarySource, state.target || null);
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
+      lastModel = state.model;
     } catch (err) {
       console.error('[@flatppl/web] resolveBundle failed:', err);
       showError(state.model, err);
       document.title = 'FlatPPL: ' + state.model + ' (error)';
+      // Leave lastModel unchanged so a successful retry triggers the
+      // full fetch + source-rewrite path.
     }
   }
 
