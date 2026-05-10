@@ -355,7 +355,9 @@ checks fire correctly.
 - `buildSampleChain(target, bindings)` — topological list of sample/evaluate
   steps for the worker.
 - `buildDerivations(bindings)` — measure-algebra "derivations" for the DAG view's
-  measure-detail panels.
+  measure-detail panels. Returns `{ derivations, discrete, bindings, fixedValues }`.
+  The `fixedValues` map holds pre-evaluated values for fixed-phase bindings (see
+  "Fixed-phase pre-eval" below).
 - `signatureOf(name, bindings)` and `signatureOfLikelihood(b, bindings)` —
   call-site signature reconstruction for the plot UI.
 - Profile-plot range derivation (`fourSigmaQuantileRange`, `findMatchingPresets`,
@@ -608,6 +610,73 @@ via the `phases` and `absorbedCache` Maps; cycle-guarded.
 
 ---
 
+## Fixed-phase pre-eval and `fixedValues`
+
+Per spec §04, fixed-phase bindings are compile-time-determinate. The orchestrator
+exploits this: `buildDerivations` runs an iterative pre-evaluation pass that
+walks fixed-phase bindings in topological order and computes each one's JS value
+via `sampler.evaluateExpr`. The result is exposed as `fixedValues: Map<name,
+JSValue>` alongside the derivation map.
+
+This matters whenever a fixed-phase value isn't representable as a per-atom
+`Float64Array` slice — typically:
+
+- **Numeric arrays of compile-time-known length** (e.g. `random_data` from
+  `rand(rstate, iid(Normal, 10))`): the array has length 10, not `SAMPLE_COUNT`.
+  The per-atom evaluator would try to broadcast it into `Float64Array(N)` and
+  produce undefined slices for `i ≥ 10`.
+- **Records / tuples** (e.g. `rand_pars` from `rp, rs2 = rand(rs, prior)` where
+  `prior = lawof(record(...))`): the value is a JS object with named fields,
+  not a flat scalar.
+- **Opaque values** (rngstate): no useful per-atom representation.
+
+**Pre-eval semantics.** For each fixed-phase binding:
+
+1. Walk all self-refs in the IR (recursing through measure-typed bindings via
+   `expandMeasureIR`, which produces the canonical sampleable form traceeval
+   would walk). This finds value refs nested inside measure subtrees — e.g.
+   distribution params like `Normal(mu = ref(rp_field))`.
+2. Skip refs to measure-typed bindings (resolved by traceeval at runtime via a
+   `resolveMeasureRef` closure) and to bindings already classified as measure
+   derivations.
+3. For value refs, require the target to be in `fixedValues` (else defer to a
+   later iteration). Build an `env` map of resolved values plus the
+   `__resolveMeasureRef` callback.
+4. Call `samplerLib.evaluateExpr(ir, env)`. Catch any throw and skip — the
+   binding will be retried in a subsequent iteration if its deps fill in.
+5. Iterate until no progress (fixed point).
+
+**Cascade-prune compatibility.** The validity-cascade pass that drops
+derivations with unresolved refs (`derivationRefsValid`) accepts refs that
+resolve through `fixedValues`, not just refs that have their own derivations.
+This is essential for chains like
+`__anon = Normal(mu = get_field(ref(rp), "theta1"), …)`: `rp` doesn't have a
+plot-derivation (it's a fixed record, not a numeric measure), but it IS in
+`fixedValues` and the worker resolves the ref through session env at sample
+time. Cascade-prune runs **after** pre-eval so the `fixedValues` map is
+populated when the validity check fires.
+
+**Viewer integration.** The viewer pushes `fixedValues` to the sampler worker
+via `setEnv` on every `rebuildDerivations` (worker session env), so the per-
+atom paths can resolve refs to fixed bindings naturally — `evaluateN` /
+`sampleN` / `logDensityN` / `profileN` all merge session env underneath the
+per-atom refArrays. The viewer's `collectRefArrays` drops refs to fixed-phase
+bindings so the per-atom path doesn't shadow the session value with an
+undefined slice. The viewer's `getMeasure` short-circuits any binding present
+in `fixedValues` — synthesizing the SoA measure shape directly (records →
+fields-of-Float64Array, scalars → fill, numeric arrays → literal).
+
+**Opaque values are not plottable.** `buildPlotPlan` returns null when
+`inferredType.kind === 'rngstate'`. Same convention applies if other opaque
+value types arrive in future.
+
+**Source.** `orchestrator.js:1750-1915` (resolveMeasureRef closure, isMeasureBinding,
+the iterative loop). `viewer/src/viewer.js`: `fixedValueToMeasure`,
+`rebuildDerivations`'s setEnv push, `collectRefArrays`'s skip, `getMeasure`'s
+short-circuit.
+
+---
+
 ## Type inference details
 
 Per spec §11 (FlatPIR). Implemented in `typeinfer.js`. Operates on a
@@ -699,17 +768,48 @@ The companion review at `REVIEW-flatppl-js.md` (in this repo's parent
 `flatppl-design/` repo, if available) lists current correctness bugs and
 architectural concerns. Highlights:
 
-- `==`/`!=` lower to `eq`/`ne`, but the rest of the engine looks for
-  `equal`/`unequal`. Surface `==` will throw at runtime in the worker.
-- Distribution parameter names diverge across `types.js`, `sampler.js`, and the
-  spec for several distributions (Cauchy, Gamma, Uniform, …). Always
-  cross-check both files when touching distributions.
-- The static type system covers ~50 ops; many spec ops fall through to
-  `deferred()` silently.
-- `Lebesgue`/`Counting` signatures drop the `support` kwarg; result is always
-  scalar.
-- `orchestrator.js` and `viewer/src/viewer.js` are oversized; they have natural
-  decomposition seams but haven't been split yet.
+- **`==`/`!=` lower to `eq`/`ne`**, but `typeinfer`, `types`, `orchestrator.
+  EVALUABLE_OPS`, and `sampler.ARITH_OPS` all use `equal`/`unequal`. Surface
+  `==` therefore skips type-check (no signature for `eq`) and would throw at
+  runtime. One-line fix in `lower.js BIN_OP_MAP`.
+- **Distribution parameter names diverge** between the three sources of truth:
+    | Distribution | `types.js` | `sampler.js` | Spec §08 |
+    |---|---|---|---|
+    | Cauchy | `loc, scale` | `location, scale` | `location, scale` |
+    | Logistic | `loc, scale` | (not registered) | `mu, s` |
+    | Gamma | `alpha, theta` | `shape, rate` | `shape, rate` |
+    | InverseGamma | `alpha, theta` | (not registered) | `shape, scale` |
+    | Weibull | `alpha, theta` | (not registered) | `shape, scale` |
+    | Uniform | `min, max` | (not registered) | `support = S` |
+    | Categorical | `probs` | (not registered) | `p` |
+    | GeneralizedNormal | `mu, alpha, beta` | (not registered) | `mean, alpha, beta` |
+  Doesn't blow up today only because the runtime registry covers a different
+  subset than the type system. The fix path is the `aliases: {}` field on each
+  `sampler.REGISTRY` entry — populate it with the spec name → stdlib name
+  mapping and route both spec-canonical and alternate names through it. The
+  type-system signatures should then move to spec-canonical names.
+- **Static type system covers ~50 ops.** Many spec ops fall through to
+  `deferred()` silently — most multivariate distributions, the entire
+  array/table-generation suite (`array`, `fill`, `zeros`, `linspace`, `cat`,
+  `partition`, …), linear algebra, approximation functions, and several
+  measure-algebra ops (`truncate`, `pushfwd`, `chain`, `relabel`, `bijection`,
+  …). When you add a new distribution, also add its signature.
+- **`Lebesgue`/`Counting` signatures drop the `support` kwarg.** Per spec §06,
+  `Lebesgue(support = S)` and `Counting(support = S)` parameterize on the
+  support set; the current types.js entries are `args: [], kwargs: {}` so
+  result type is always scalar regardless of what was passed.
+- **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and 5 683
+  lines respectively). Both have natural decomposition seams documented in this
+  file ("Internal subdivision" in the orchestrator section) and in
+  `REVIEW-flatppl-js.md`. They haven't been split yet because the inline
+  comments are dense enough that intra-file navigation is workable; future
+  contributors looking to split should start with the seams flagged there.
+
+`bayesupdate`, `logdensityof`, `densityof` are wired through the orchestrator
+(`classifyBayesupdate`, `classifyLogdensityof`, and the densityof →
+`exp(logdensityof(...))` rewrite) and have type-system signatures. They were
+called out as "partially wired" in the review; the gap was inaccurate at
+review time. They're real, working derivations.
 
 When making changes, check the review document if it's accessible — some of
 those bugs may still be open.
