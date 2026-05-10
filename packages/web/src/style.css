@@ -115,6 +115,33 @@ html, body {
   color: var(--fg);
 }
 
+/* Token palette. Roughly tracks VS Code's Dark+ for familiarity, with
+   one FlatPPL-specific addition — `tok-ident-binding` (identifiers
+   that resolve to a binding in the current module) is rendered with
+   its own colour and a hover affordance, so users can tell which
+   names in the source map to nodes in the DAG view. The click handler
+   that turns this into actual cross-pane navigation lands in step 1.6. */
+.tok-comment        { color: #6a9955; font-style: italic; }
+.tok-string         { color: #ce9178; }
+.tok-number         { color: #b5cea8; }
+.tok-op             { color: #d4d4d4; }
+.tok-punct          { color: #d4d4d4; }
+.tok-placeholder    { color: #9cdcfe; }
+.tok-hole           { color: #9cdcfe; }
+.tok-ident          { color: #9cdcfe; }
+.tok-ident-binding  { color: #4ec9b0; }
+.tok-ident-binding:hover {
+  text-decoration: underline;
+  cursor: pointer;
+}
+.tok-special   { color: #c586c0; }   /* draw, lawof, fn, …  */
+.tok-mop       { color: #c586c0; }   /* weighted, joint, … */
+.tok-dist      { color: #4fc1ff; }   /* Normal, Poisson, … */
+.tok-set       { color: #569cd6; }   /* reals, interval,    */
+.tok-const     { color: #569cd6; }   /* true, pi, inf, im   */
+.tok-func      { color: #dcdcaa; }   /* exp, log, sum, …    */
+.tok-reserved  { color: #c586c0; }   /* self, base, flatppl_compat */
+
 /* The viewer manages its own internal scroll and resize, so the
    right pane's body must not introduce a second scrollbar. */
 #viewer-pane > .pane-body { overflow: hidden; }
