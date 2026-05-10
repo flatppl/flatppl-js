@@ -1,0 +1,68 @@
+name: Deploy web gallery to GitHub Pages
+
+# Builds packages/web/dist/ on every push to main and deploys it to
+# GitHub Pages. The deployed URL is
+#   https://<owner>.github.io/<repo>/
+# Local-relative URLs in the gallery (`fetch('models.json')`,
+# `<script src="vendor/...">`, `#model=demo/...`) work transparently
+# under that base path — nothing in the page hard-codes an origin.
+#
+# One-time repo setup (not automated here): the repository's Pages
+# settings must select "GitHub Actions" as the deploy source rather
+# than "Deploy from a branch". Settings → Pages → Build and
+# deployment → Source: GitHub Actions. After that, this workflow
+# fully owns the deploy.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The GITHUB_TOKEN needs `pages: write` to publish and `id-token: write`
+# to authenticate with the Pages OIDC trust relationship. `contents: read`
+# is the default everything else needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent deploy. cancel-in-progress: false because a
+# half-rolled-out deploy is worse than waiting for the previous one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build web package
+        run: npm run build --workspace=packages/web
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
