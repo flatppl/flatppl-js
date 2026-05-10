@@ -472,39 +472,60 @@
           when an editor is mounted (playground edit mode); false
           when the source pane is read-only or no source is loaded. */
       canPersist: function () { return !!playgroundEditor; },
-      /** Persist a modified preset to source. Two shapes, matching
-          the host-adapter contract:
-            - args.range = { start: {line, col}, end: {line, col} }
-              → replace that range with args.newText. Used for
-                overriding a named preset binding's values.
-            - args.range = null
-              → append args.newText as a new line at end-of-file.
-                Used when persisting an auto-modified state under
-                a new binding name.
-          Either way the editor's docChanged fires onChange, which
-          re-renders the viewer via the debounced refresh; the
-          rebuildDerivations reconciliation drops the override on
-          the next pass. */
+      /** Persist a named preset's overrides: replace the binding's
+          source range with the new text. The editor's docChanged
+          fires onChange, which re-renders the viewer via the
+          debounced refresh; the rebuildDerivations reconciliation
+          drops the override on the next pass. */
       persistPreset: function (args) {
         if (!playgroundEditor) return false;
         var src = playgroundEditor.getSource();
-        if (args.range) {
-          var lineStarts = [0];
-          for (var i = 0; i < src.length; i++) {
-            if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
-          }
-          function offsetOf(loc) {
-            var ls = lineStarts[loc.line];
-            return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
-          }
-          var from = offsetOf(args.range.start);
-          var to   = offsetOf(args.range.end);
-          playgroundEditor.replaceRange(from, to, args.newText);
-        } else {
-          var sep = src.length === 0 || src.charAt(src.length - 1) === '\n' ? '' : '\n';
-          playgroundEditor.replaceRange(src.length, src.length,
-            sep + args.newText + '\n');
+        var lineStarts = [0];
+        for (var i = 0; i < src.length; i++) {
+          if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
         }
+        function offsetOf(loc) {
+          var ls = lineStarts[loc.line];
+          return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
+        }
+        var from = offsetOf(args.range.start);
+        var to   = offsetOf(args.range.end);
+        playgroundEditor.replaceRange(from, to, args.newText);
+        return true;
+      },
+      /** Auto-persist: prompt the user for a name, validate via
+          the engine, and append a new preset binding at end-of-
+          source. Calls args.onPersisted(name) before writing so
+          the viewer can queue the name as the next plan's preset
+          selection — by the time the debounced viewer.update
+          fires from the resulting docChanged, the queue is set. */
+      persistNewPreset: function (args) {
+        if (!playgroundEditor) return false;
+        var FE = window.FlatPPLEngine;
+        var name = window.prompt('Save current values as a new preset. Name:',
+          args.suggestedName || 'preset');
+        if (name == null) return false;
+        name = name.trim();
+        if (name === '') return false;
+        if (FE && typeof FE.isValidBindingName === 'function'
+            && !FE.isValidBindingName(name)) {
+          window.alert('Invalid binding name: ' + name);
+          return false;
+        }
+        var existing = args.existingNames || [];
+        if (existing.indexOf(name) >= 0) {
+          window.alert('"' + name + '" is already a binding in this module.');
+          return false;
+        }
+        // Queue first, then write — the docChanged from the write
+        // is debounced 250ms; by the time the viewer rebuilds the
+        // plan, onPersisted has long since run.
+        if (typeof args.onPersisted === 'function') args.onPersisted(name);
+        var newLine = name + ' = preset(' + (args.pairsText || '') + ')';
+        var src = playgroundEditor.getSource();
+        var sep = src.length === 0 || src.charAt(src.length - 1) === '\n' ? '' : '\n';
+        playgroundEditor.replaceRange(src.length, src.length,
+          sep + newLine + '\n');
         return true;
       },
     };

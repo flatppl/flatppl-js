@@ -366,7 +366,30 @@
             type: 'persistPreset',
             name:    args.name,
             newText: args.newText,
-            range:   args.range,         // null → host appends to end-of-file
+            range:   args.range,
+          });
+        },
+        // Auto-persist routes through the extension which prompts
+        // via vscode.window.showInputBox (window.prompt is unsupported
+        // in VS Code webviews). The nonce + listener pair lets us
+        // bridge args.onPersisted across the postMessage boundary.
+        persistNewPreset: function(args) {
+          var nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+          function listener(event) {
+            var m = event.data;
+            if (!m || m.type !== 'persistNewPresetResponse' || m.nonce !== nonce) return;
+            window.removeEventListener('message', listener);
+            if (m.name && typeof args.onPersisted === 'function') {
+              args.onPersisted(m.name);
+            }
+          }
+          window.addEventListener('message', listener);
+          api.postMessage({
+            type: 'persistNewPreset',
+            suggestedName: args.suggestedName,
+            pairsText:     args.pairsText,
+            existingNames: args.existingNames || [],
+            nonce: nonce,
           });
         },
       };
@@ -4387,51 +4410,42 @@
       }
     }
 
-    /** Prompt the user for a name, then ask the host to append a
-        new preset binding at end-of-source carrying the auto-
-        modified values. Validates the name as a FlatPPL identifier
-        and rejects collisions with existing bindings. */
+    /** Delegate the auto-persist flow to host.persistNewPreset.
+        The host prompts the user for a name (because window.prompt
+        is unavailable inside VS Code webviews; each host knows
+        what's available), validates, builds the new binding line
+        from the supplied pairsText, writes it to source, and
+        invokes onPersisted(name) so the viewer queues that name
+        as the next plan's preset selection. */
     function persistAutoAsNewBinding(plan) {
-      var name = window.prompt('Save current values as a new preset. Name:');
-      if (name == null) return;        // user dismissed
-      name = name.trim();
-      if (name === '') return;
-      if (!FlatPPLEngine.isValidBindingName
-          || !FlatPPLEngine.isValidBindingName(name)) {
-        window.alert('Invalid binding name. Use letters, digits, and underscores; must start with a letter or underscore.');
+      if (typeof host.persistNewPreset !== 'function') {
+        console.warn('[viewer] persist auto: host has no persistNewPreset');
         return;
       }
-      if (currentBindings && currentBindings.has(name)) {
-        window.alert('"' + name + '" is already a binding in this module.');
-        return;
-      }
-      // Capture the full combined state: auto-computed defaults
-      // + user overrides. Plain numeric values only — auto's
-      // values come from computeAutoValues (samples[0] / type
-      // defaults) which already filters to numeric.
       var autoValues = computeAutoValues(plan);
       var override = plan.autoOverride;
       var combined = Object.assign({}, autoValues, (override && override.values) || {});
-      var entries = [];
+      var parts = [];
       for (var k in combined) {
         if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
         var v = combined[k];
-        if (!Number.isFinite(v)) continue;     // skip non-finite (e.g. NaN placeholders)
-        entries.push(k + ' = ' + formatScalarForSource(v));
+        if (!Number.isFinite(v)) continue;
+        parts.push(k + ' = ' + formatScalarForSource(v));
       }
-      if (entries.length === 0) {
-        window.alert('No values to persist.');
-        return;
-      }
-      var newLine = name + ' = preset(' + entries.join(', ') + ')';
+      if (parts.length === 0) return;
+      var existingNames = [];
+      if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       try {
-        host.persistPreset({
-          name: name,
-          newText: newLine,
-          range: null,                          // null → host appends
+        host.persistNewPreset({
+          suggestedName: (plan.name || 'preset') + '_modified',
+          pairsText: parts.join(', '),
+          existingNames: existingNames,
+          onPersisted: function(name) {
+            pendingPresetName = name;
+          },
         });
       } catch (err) {
-        console.error('[viewer] persistPreset (auto → new binding) failed:', err);
+        console.error('[viewer] persistNewPreset failed:', err);
       }
     }
 
@@ -5714,11 +5728,39 @@
       });
     }
 
+    // Set by persistAutoAsNewBinding (auto-persist flow) — the
+    // freshly-coined preset name we want the rebuilt plan to land
+    // on as its initial selection. Consumed once by the next
+    // updatePlotForBinding call (then cleared).
+    var pendingPresetName = null;
+
     // Call after every focusNode() to update the Plot tab's enabled
     // state and (if visible) re-render its content.
     function updatePlotForBinding(bindingName) {
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
+      var prevPlan = currentPlotPlan;
       var plan = buildPlotPlan(binding, currentBindings);
+      // Carry the preset selection (and per-binding auto override)
+      // forward across plan rebuilds for the same binding so that
+      // source-change → rebuild doesn't reset the user's selection
+      // back to auto. pendingPresetName (set by auto-persist)
+      // overrides any carried selection so the user lands on the
+      // newly-coined preset.
+      if (plan) {
+        var targetName = null;
+        if (pendingPresetName != null) {
+          targetName = pendingPresetName;
+          pendingPresetName = null;
+        } else if (prevPlan && prevPlan.name === plan.name) {
+          targetName = prevPlan.presetName;
+          plan.autoOverride = prevPlan.autoOverride;
+        }
+        if (targetName != null) {
+          var found = plan.matchedPresets
+            && plan.matchedPresets.some(function(p) { return p.name === targetName; });
+          if (found) plan.presetName = targetName;
+        }
+      }
       currentPlotPlan = plan;
       // Only surface the clicked name in the plot UI when it actually
       // names a binding. Synthetic nodes (anonymous inline expressions,
