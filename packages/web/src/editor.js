@@ -202,11 +202,42 @@
       throw new Error('FlatPPLEditorBundle missing — call loadBundle() first');
     }
 
-    // Click navigation: Ctrl/Cmd-click on a [data-binding] span
-    // routes through opts.onNavigate(name); plain click stays the
-    // editor's cursor placement. Symmetric to today's source-pane
-    // behaviour minus the "plain click navigates" path (which is
-    // taken by the editor cursor in playground mode).
+    // Click navigation:
+    //
+    // - Plain click: CodeMirror handles cursor placement (default).
+    //   The selectionSet path below fires onNavigate if the new
+    //   cursor lands on a defined binding's identifier, so the DAG
+    //   tracks the cursor without any custom click logic.
+    //
+    // - Ctrl/Cmd-click on a [data-binding] span: jump-to-definition.
+    //   Look up the binding's LHS position via the engine's binding
+    //   table, dispatch a selection move to that offset, and focus
+    //   the editor. The resulting selectionSet fires onNavigate so
+    //   the URL hash + DAG focus update automatically. We also call
+    //   onNavigate explicitly here so the URL still updates when
+    //   the cursor was already at the definition (cursor jump is a
+    //   no-op then; selectionSet wouldn't fire). Works equally for
+    //   LHS and RHS binding spans — the destination is the LHS in
+    //   both cases.
+    function jumpToBindingDefinition(name) {
+      var FE = globalScope.FlatPPLEngine;
+      if (!FE) return;
+      var doc = view.state.doc.toString();
+      var processed;
+      try { processed = FE.processSource(doc); } catch (_) { return; }
+      if (!processed || !processed.bindings || !processed.bindings.has(name)) return;
+      var b = processed.bindings.get(name);
+      var nameLoc = b && b.nameLoc && b.nameLoc.start;
+      if (!nameLoc) return;
+      var lineStarts = computeLineStarts(doc);
+      var pos = (lineStarts[nameLoc.line] || 0) + (nameLoc.col || 0);
+      view.dispatch({
+        selection: { anchor: pos },
+        effects: bundle.EditorView.scrollIntoView(pos, { y: 'center' }),
+      });
+      view.focus();
+    }
+
     var domEventHandlers = {
       mousedown: function (ev) {
         if (!(ev.ctrlKey || ev.metaKey)) return false;
@@ -216,12 +247,13 @@
           if (t.dataset && t.dataset.binding) { name = t.dataset.binding; break; }
           t = t.parentNode;
         }
-        if (name && typeof opts.onNavigate === 'function') {
-          ev.preventDefault();
+        if (!name) return false;
+        ev.preventDefault();
+        jumpToBindingDefinition(name);
+        if (typeof opts.onNavigate === 'function') {
           opts.onNavigate(name);
-          return true;
         }
-        return false;
+        return true;
       },
     };
 

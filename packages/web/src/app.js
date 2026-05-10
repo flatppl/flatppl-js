@@ -282,6 +282,18 @@
     fileTree     = document.getElementById('file-tree');
     titleEl      = document.getElementById('app-title');
 
+    // Back / forward navigate through the browser's URL-hash
+    // history. Hash navigation pushes entries automatically on every
+    // router.navigateTo, so binding clicks, cursor moves onto a
+    // binding, file-tree clicks, and DAG node selections all
+    // become history entries the user can walk through. The
+    // browser controls the history cap (~50 entries on most
+    // browsers); we don't try to override it.
+    var backBtn = document.getElementById('nav-back');
+    var fwdBtn  = document.getElementById('nav-forward');
+    if (backBtn) backBtn.addEventListener('click', function () { window.history.back(); });
+    if (fwdBtn)  fwdBtn.addEventListener('click',  function () { window.history.forward(); });
+
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;
