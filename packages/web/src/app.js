@@ -307,6 +307,13 @@
     // needed yet.
     var webHost = {
       revealSourceLine: function (line) {
+        // Playground mode: scroll the CodeMirror editor and place
+        // the cursor at the start of the target line.
+        if (playgroundEditor && typeof playgroundEditor.revealLine === 'function') {
+          playgroundEditor.revealLine(line);
+          return;
+        }
+        // Read-only mode: scroll + flash the pre-rendered .src-line.
         if (!sourceView) return;
         var sel = '.src-line[data-line="' + line + '"]';
         var el = sourceView.querySelector(sel);

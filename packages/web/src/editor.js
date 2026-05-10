@@ -232,10 +232,58 @@
     // typed changes still fire normally because suppressOnChange is
     // only set during dispatch and restored immediately after.
     var suppressOnChange = false;
+    // Last reported binding name from cursor-driven navigation. We
+    // suppress repeats so the router doesn't see a flood of
+    // identical navigateTo calls when the cursor sits on a single
+    // identifier across multiple updates.
+    var lastCursorBinding = null;
+
+    function bindingAtCursor() {
+      var FE = globalScope.FlatPPLEngine;
+      if (!FE) return null;
+      var head = view.state.selection.main.head;
+      var doc = view.state.doc.toString();
+      var bindings = null;
+      try {
+        var processed = FE.processSource(doc);
+        if (processed && processed.bindings) {
+          bindings = new Set(processed.bindings.keys());
+        }
+      } catch (_) { return null; }
+      if (!bindings) return null;
+      var tokens = FE.tokenize(doc).tokens || [];
+      var lineStarts = computeLineStarts(doc);
+      for (var i = 0; i < tokens.length; i++) {
+        var tok = tokens[i];
+        if (tok.type !== 'IDENT') continue;
+        var from = offsetOf(tok.loc.start, lineStarts);
+        var to   = offsetOf(tok.loc.end,   lineStarts);
+        if (head >= from && head <= to && bindings.has(tok.value)) {
+          return tok.value;
+        }
+      }
+      return null;
+    }
+
     var docChangeListener = bundle.EditorView.updateListener.of(function (u) {
       if (suppressOnChange) return;
       if (u.docChanged && typeof opts.onChange === 'function') {
         opts.onChange(u.state.doc.toString());
+      }
+      // Cursor-driven navigation: when the main cursor lands on an
+      // identifier that resolves to a defined binding, fire
+      // onNavigate. This subsumes the read-only pane's
+      // "click-a-binding-to-focus" UX (a click both moves the
+      // cursor and triggers selectionSet) plus keyboard cursor
+      // movement, both of which feel natural in a code editor.
+      // The router de-dupes identical states so repeated calls
+      // with the same target are cheap.
+      if ((u.selectionSet || u.docChanged) && typeof opts.onNavigate === 'function') {
+        var binding = bindingAtCursor();
+        if (binding !== lastCursorBinding) {
+          lastCursorBinding = binding;
+          if (binding) opts.onNavigate(binding);
+        }
       }
     });
 
@@ -274,6 +322,26 @@
         }
       },
       getSource: function () { return view.state.doc.toString(); },
+      /** Scroll the editor to the given source line (zero-indexed,
+          matching the engine's tokenizer + the read-only pane's
+          data-line attributes) and place the cursor at that
+          line's start. The DAG → source flow (host.revealSourceLine
+          on Ctrl-click of a DAG node) lands here in playground
+          mode. */
+      revealLine: function (line) {
+        var totalLines = view.state.doc.lines;
+        // CodeMirror's doc.line() is 1-indexed; the engine and our
+        // read-only pane are 0-indexed. Translate + clamp.
+        var n = Math.max(1, Math.min(((line | 0) + 1), totalLines));
+        var info = view.state.doc.line(n);
+        view.dispatch({
+          selection: { anchor: info.from },
+          effects: bundle.EditorView.scrollIntoView(info.from, { y: 'center' }),
+        });
+        // Don't focus()-steal — the user's Ctrl-click was on the DAG
+        // pane; pulling focus to the editor would close any
+        // tooltip/menu they were interacting with there.
+      },
       destroy: function () { try { view.destroy(); } catch (_) {} },
     };
   }
