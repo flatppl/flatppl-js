@@ -57,7 +57,9 @@ html, body {
   letter-spacing: 0.02em;
 }
 
-#toggle-files {
+#toggle-files,
+#nav-back,
+#nav-forward {
   background: transparent;
   color: var(--fg-muted);
   border: none;
@@ -67,8 +69,13 @@ html, body {
   cursor: pointer;
   border-radius: 3px;
 }
-#toggle-files:hover { color: var(--fg); background: rgba(255,255,255,0.05); }
-#toggle-files:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+#toggle-files:hover,
+#nav-back:hover,
+#nav-forward:hover { color: var(--fg); background: rgba(255,255,255,0.05); }
+#toggle-files:focus,
+#nav-back:focus,
+#nav-forward:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+#nav-back, #nav-forward { font-size: 1.3em; padding: 0 0.35em; }
 
 /* Drag handles between adjacent panes. Thin column inside the grid;
    colour-shift on hover so the user can see they're interactive. */
