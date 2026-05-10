@@ -121,6 +121,40 @@ html, body {
   text-overflow: ellipsis;
 }
 
+/* Variant of .pane-header that holds inline children (currently the
+   source pane's title + right-aligned toolbar buttons). The plain
+   text-style rules above still apply; the flex layout governs the
+   horizontal distribution of the children. */
+.pane-header--row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.2em 1em;
+}
+.pane-header-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Buttons inside a pane header (e.g. the "Visualize whole module"
+   action). Visual style matches the header chrome — quiet by
+   default, lights up on hover. */
+.pane-header button {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+}
+.pane-header button:hover { opacity: 1; background: rgba(255,255,255,0.07); }
+.pane-header button:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+.pane-header button img { display: block; }
+
 .pane-body {
   flex: 1 1 auto;
   overflow: auto;

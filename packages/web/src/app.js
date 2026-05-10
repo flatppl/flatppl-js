@@ -294,6 +294,18 @@
     if (backBtn) backBtn.addEventListener('click', function () { window.history.back(); });
     if (fwdBtn)  fwdBtn.addEventListener('click',  function () { window.history.forward(); });
 
+    // "Visualize whole module" button in the source-pane header.
+    // Drops the focused target so the DAG renders every binding;
+    // routes through the hash so the action is part of navigation
+    // history (browser back restores the previously focused target).
+    var showModuleBtn = document.getElementById('show-module-btn');
+    if (showModuleBtn) {
+      showModuleBtn.addEventListener('click', function () {
+        var cur = window.FlatPPLWebRouter.parseHash();
+        window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: null });
+      });
+    }
+
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;

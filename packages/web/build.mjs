@@ -90,6 +90,24 @@ for (const { pkg, src, dst } of COPY_LIBS) {
 await copyFile(join(viewerPkg, 'src', 'viewer.js'), join(vendorDir, 'viewer.js'));
 console.log('  copied @flatppl/viewer source -> dist/vendor/viewer.js');
 
+// Toolbar icons. We pull from packages/vscode-extension/media/ so the
+// gallery and the VS Code extension stay visually consistent — same
+// icon set, single source of truth. Update the extension's SVG and
+// the next gallery build picks it up.
+const extMedia = join(repoRoot, 'packages', 'vscode-extension', 'media');
+const mediaDst = join(distDir, 'media');
+await mkdir(mediaDst, { recursive: true });
+const SHARED_ICONS = ['visualize-module-dark.svg'];
+for (const name of SHARED_ICONS) {
+  const from = join(extMedia, name);
+  if (!existsSync(from)) {
+    console.error(`  ! missing shared icon: ${name} (looked under ${extMedia})`);
+    process.exit(1);
+  }
+  await copyFile(from, join(mediaDst, name));
+  console.log(`  copied ${name} -> dist/media/${name}`);
+}
+
 // ---------------------------------------------------------------------
 // 3. Copy the page entry-point and app sources from src/ to dist/.
 
