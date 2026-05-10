@@ -18,7 +18,16 @@ import { fileURLToPath } from 'node:url';
 
 const here   = dirname(fileURLToPath(import.meta.url));   // packages/web/
 const root   = join(here, 'dist');                        // packages/web/dist/
-const PORT   = Number(process.env.PORT || 8001);
+
+// Port selection: if PORT is set explicitly, honour exactly that one
+// (a single attempt; the user picked it deliberately). Otherwise
+// start at the documented default 8001 and auto-bump within a small
+// range when the port is busy — covers the common case of the
+// viewer's serve.mjs running on 8000 while iterating, or a previous
+// `npm run serve` that didn't exit cleanly.
+const EXPLICIT_PORT = process.env.PORT ? Number(process.env.PORT) : null;
+const START_PORT    = EXPLICIT_PORT != null ? EXPLICIT_PORT : 8001;
+const MAX_PORT      = EXPLICIT_PORT != null ? EXPLICIT_PORT : START_PORT + 15;
 
 const MIME = {
   '.html':    'text/html; charset=utf-8',
@@ -65,8 +74,36 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`@flatppl/web dev server: http://localhost:${PORT}/`);
+// On EADDRINUSE: when the user didn't pin a specific port, walk up to
+// the next one. When they did, exit cleanly with a hint (no Node stack
+// trace).
+let attempt = START_PORT;
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    if (attempt < MAX_PORT) {
+      attempt++;
+      setImmediate(() => server.listen(attempt));
+      return;
+    }
+    if (EXPLICIT_PORT != null) {
+      console.error(`@flatppl/web dev server: port ${EXPLICIT_PORT} is already in use.`);
+      console.error('  Pick a different port with: PORT=<n> npm run serve, or unset PORT to auto-select.');
+    } else {
+      console.error(`@flatppl/web dev server: no free port in [${START_PORT}, ${MAX_PORT}].`);
+      console.error('  Pick one explicitly with: PORT=<n> npm run serve');
+    }
+    process.exit(1);
+  }
+  throw err;
+});
+
+server.on('listening', () => {
+  console.log(`@flatppl/web dev server: http://localhost:${attempt}/`);
+  if (attempt !== START_PORT) {
+    console.log(`  (port ${START_PORT} was busy; auto-picked ${attempt})`);
+  }
   console.log(`  serving: ${root}`);
   console.log('  (run "npm run build" or "npm run watch" first; Ctrl+C to stop)');
 });
+
+server.listen(attempt);

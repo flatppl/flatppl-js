@@ -28,6 +28,10 @@ npm run build  # populates ./vendor/ with all assets
 npm run serve  # http://localhost:8000/  (defaults to embed-test.html)
 ```
 
+If 8000 is busy the server auto-bumps to the next free port and
+prints the URL it actually picked. Pin a specific port with
+`PORT=<n> npm run serve` (single attempt; clean error if busy).
+
 `npm run watch` keeps esbuild in watch mode for the engine + sampler-
 worker bundles, so edits to `packages/engine/` re-bundle automatically.
 
