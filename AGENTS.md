@@ -150,33 +150,25 @@ The user runs the VS Code extension via the standard "Launch Extension" debug
 profile or by installing the built `.vsix`. The viewer can also be served
 standalone (`npm run --workspace=packages/viewer serve` → http://localhost:8000/).
 
-## Known issues and a review document
+## Known issues
 
-The companion review document `REVIEW-flatppl-js.md` (in the
-**flatppl-design** repo if you have it accessible) lists current correctness
-bugs and architectural concerns at the time of writing. Highlights worth
-knowing:
+A point-in-time architectural review (May 2026) flagged a number of bugs and
+gaps. Most of the small consistency bugs have since been fixed; the remaining
+items below are larger structural work or open feature gaps.
 
-- **`==`/`!=` lower to `eq`/`ne`** but the rest of the engine looks for
-  `equal`/`unequal`. Surface `==` will throw at runtime. Don't add tests that
-  rely on `==` working until this is fixed. One-line fix in `lower.js BIN_OP_MAP`.
-- **Distribution parameter names diverge** across `types.js`, `sampler.js`,
-  and the spec for several distributions (Cauchy, Logistic, Gamma,
-  InverseGamma, Weibull, Uniform, Categorical, GeneralizedNormal). Always
-  cross-check both files when touching distributions. The `aliases` field on
-  each `sampler.REGISTRY` entry is the documented fix path — populate it with
-  spec-name → alternate-name mappings. See ARCHITECTURE.md "Known issues" for
-  the full table.
 - **Type system covers ~50 ops.** Many spec ops fall through to `deferred()`
-  silently. If you add a new distribution or built-in, also add its signature.
-- **`Lebesgue`/`Counting` signatures drop the `support` kwarg.** Per spec §06
-  they take `support = S`; the type-system entries are currently empty-kwargs.
+  silently — most multivariate distributions, the array/table-generation
+  suite, linear algebra, several measure-algebra ops. If you add a new
+  distribution or built-in, also add its signature in `types.js`.
 - **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and
   5 683 lines). Be aware before opening them; both have natural decomposition
-  seams documented in `ARCHITECTURE.md` and the review.
+  seams documented in `ARCHITECTURE.md`.
+- **A planning document at `flatppl-js/TODO.md`** (when present) tracks the
+  remaining work toward complete spec coverage. Check it before starting
+  larger feature work.
 
-When you fix an issue listed there, mention it in your commit message so the
-review can be kept current.
+If you spot a new bug or gap during a task, surface it in the commit message
+or, when it's larger than a one-liner, add it to `TODO.md`.
 
 **The orientation docs are living documents.** When you make a non-trivial
 change — new feature, new invariant, fixing one of the known issues, a

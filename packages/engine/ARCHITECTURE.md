@@ -247,10 +247,6 @@ keyword-form `joint(...)`, and `jointchain(...)` shapes.
   `/` → `div`, comparisons → `lt`/`le`/`gt`/`ge`/`eq`/`ne`, etc.
   See `BIN_OP_MAP` and `UN_OP_MAP`.
 
-> **Known consistency bug:** `==` / `!=` lower to `eq` / `ne`, but `typeinfer.js`,
-> `types.js`, `orchestrator.EVALUABLE_OPS`, and `sampler.ARITH_OPS` all use
-> `equal` / `unequal`. See `REVIEW-flatppl-js.md` issue #1.
-
 ### `pir.js` (190 lines)
 
 **Responsibility.** Module-level container (`LoweredModule`) and lowering driver
@@ -320,7 +316,7 @@ site gets fresh type variables.
 > the entire array/table generation suite, linear algebra, and measure-algebra
 > ops outside `weighted`/`normalize`/`superpose`/`joint`/`iid` are missing.
 > Unknown ops fall through to `inferGenericCall` → `signatureOf` returns null →
-> result is `deferred()`. See `REVIEW-flatppl-js.md` issue #3.
+> result is `deferred()`. See `TODO.md` for the planned coverage roadmap.
 
 ### `typeinfer.js` (870 lines)
 
@@ -505,8 +501,9 @@ test — drift produces silent runtime failures. Watch for them when extending.
 | `test/sampler.test.js` and friends | regression tests | catch param-name drift |
 
 The kwargs in `types.js` MUST equal the `params` array entries in
-`sampler.REGISTRY[Foo]` (and both should match the spec). Currently several
-distributions diverge — see `REVIEW-flatppl-js.md` issue #2.
+`sampler.REGISTRY[Foo]` (and both should match the spec). The cross-file
+invariant test `test/invariants.test.js` enforces this — if you add a
+distribution with mismatched param names it'll fail loudly.
 
 ### Adding a new evaluable built-in function (e.g. `bar`)
 
@@ -764,52 +761,31 @@ in ~3.5 s as of writing.
 
 ## Known issues and gaps
 
-The companion review at `REVIEW-flatppl-js.md` (in this repo's parent
-`flatppl-design/` repo, if available) lists current correctness bugs and
-architectural concerns. Highlights:
+A point-in-time architectural review (May 2026) flagged a number of bugs
+and gaps. Most of the small consistency bugs have since been fixed (the
+`==`/`!=` lowering, the Cauchy/Logistic/Gamma/InverseGamma/Weibull/Uniform/
+Categorical/GeneralizedNormal parameter-name divergences, the `Lebesgue`/
+`Counting` `support` kwarg, the non-spec `tan` builtin). The remaining
+items are larger:
 
-- **`==`/`!=` lower to `eq`/`ne`**, but `typeinfer`, `types`, `orchestrator.
-  EVALUABLE_OPS`, and `sampler.ARITH_OPS` all use `equal`/`unequal`. Surface
-  `==` therefore skips type-check (no signature for `eq`) and would throw at
-  runtime. One-line fix in `lower.js BIN_OP_MAP`.
-- **Distribution parameter names diverge** between the three sources of truth:
-    | Distribution | `types.js` | `sampler.js` | Spec §08 |
-    |---|---|---|---|
-    | Cauchy | `loc, scale` | `location, scale` | `location, scale` |
-    | Logistic | `loc, scale` | (not registered) | `mu, s` |
-    | Gamma | `alpha, theta` | `shape, rate` | `shape, rate` |
-    | InverseGamma | `alpha, theta` | (not registered) | `shape, scale` |
-    | Weibull | `alpha, theta` | (not registered) | `shape, scale` |
-    | Uniform | `min, max` | (not registered) | `support = S` |
-    | Categorical | `probs` | (not registered) | `p` |
-    | GeneralizedNormal | `mu, alpha, beta` | (not registered) | `mean, alpha, beta` |
-  Doesn't blow up today only because the runtime registry covers a different
-  subset than the type system. The fix path is the `aliases: {}` field on each
-  `sampler.REGISTRY` entry — populate it with the spec name → stdlib name
-  mapping and route both spec-canonical and alternate names through it. The
-  type-system signatures should then move to spec-canonical names.
 - **Static type system covers ~50 ops.** Many spec ops fall through to
   `deferred()` silently — most multivariate distributions, the entire
   array/table-generation suite (`array`, `fill`, `zeros`, `linspace`, `cat`,
   `partition`, …), linear algebra, approximation functions, and several
   measure-algebra ops (`truncate`, `pushfwd`, `chain`, `relabel`, `bijection`,
-  …). When you add a new distribution, also add its signature.
-- **`Lebesgue`/`Counting` signatures drop the `support` kwarg.** Per spec §06,
-  `Lebesgue(support = S)` and `Counting(support = S)` parameterize on the
-  support set; the current types.js entries are `args: [], kwargs: {}` so
-  result type is always scalar regardless of what was passed.
+  …). When you add a new distribution, also add its signature. See `TODO.md`
+  for the planned coverage roadmap.
 - **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and 5 683
-  lines respectively). Both have natural decomposition seams documented in this
-  file ("Internal subdivision" in the orchestrator section) and in
-  `REVIEW-flatppl-js.md`. They haven't been split yet because the inline
-  comments are dense enough that intra-file navigation is workable; future
-  contributors looking to split should start with the seams flagged there.
-
-`bayesupdate`, `logdensityof`, `densityof` are wired through the orchestrator
-(`classifyBayesupdate`, `classifyLogdensityof`, and the densityof →
-`exp(logdensityof(...))` rewrite) and have type-system signatures. They were
-called out as "partially wired" in the review; the gap was inaccurate at
-review time. They're real, working derivations.
+  lines respectively). Both have natural decomposition seams documented in
+  this file ("Internal subdivision" in the orchestrator section). They
+  haven't been split yet because the inline comments are dense enough that
+  intra-file navigation is workable; future contributors looking to split
+  should start with the seams flagged in this doc.
+- **The cross-file invariants table at the top of this section is enforced
+  by `test/invariants.test.js`** for the SAMPLEABLE↔REGISTRY, EVALUABLE↔ARITH_OPS,
+  DISCRETE-flag-consistency, BIN_OP_MAP-has-signature, and REGISTRY-params-↔-
+  types-kwargs invariants. Adding a new catalog or a new "must-agree" link
+  should come with a test in that file.
 
 When making changes, check the review document if it's accessible — some of
 those bugs may still be open.
