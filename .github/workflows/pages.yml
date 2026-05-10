@@ -26,11 +26,14 @@ permissions:
   pages: write
   id-token: write
 
-# Only one concurrent deploy. cancel-in-progress: false because a
-# half-rolled-out deploy is worse than waiting for the previous one.
+# Only one concurrent deploy. cancel-in-progress: true so that a
+# rapid succession of pushes deploys the latest commit immediately
+# rather than queueing — Pages deploys are atomic (the artifact
+# upload + deploy step replace the served content as a unit), so a
+# cancelled in-progress run can't leave the live site half-updated.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
