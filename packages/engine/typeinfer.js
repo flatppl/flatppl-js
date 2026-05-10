@@ -236,6 +236,11 @@ function createInferenceContext(loweredModule) {
       // the result depends on the literal slot value, which the generic
       // signature table can't express.
       case 'tuple_get': return write(inferTupleGet(expr, scopes), expr);
+      // get_field(<record-expr>, <name lit>) — record / preset field
+      // access lowered from surface `obj.field`. Same kind of special
+      // case as tuple_get: the result type depends on the literal
+      // field-name argument.
+      case 'get_field': return write(inferGetField(expr, scopes), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
       // kernelof and fn are lowered to functionof by lower.js (per
@@ -378,6 +383,36 @@ function createInferenceContext(loweredModule) {
   function inferTuple(expr, scopes) {
     const args = expr.args || [];
     return T.tuple(args.map(a => inferExpr(a, scopes)));
+  }
+
+  function inferGetField(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 2) {
+      return arityError('get_field', 2, args.length, expr.loc);
+    }
+    const recT = inferExpr(args[0], scopes);
+    if (recT && recT.kind === 'failed') return T.failed('get_field cascade');
+    if (!recT || recT.kind !== 'record' || !recT.fields) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'get_field expects a record-typed expression; got ' + T.show(recT),
+        loc: args[0].loc || expr.loc,
+      });
+      return T.failed('get_field bad arg');
+    }
+    const nameIR = args[1];
+    if (!nameIR || nameIR.kind !== 'lit' || typeof nameIR.value !== 'string') {
+      return T.failed('get_field name must be a literal string');
+    }
+    if (!(nameIR.value in recT.fields)) {
+      diagnostics.push({
+        severity: 'error',
+        message: `get_field: '${nameIR.value}' is not a field of ${T.show(recT)}`,
+        loc: expr.loc,
+      });
+      return T.failed('get_field unknown field');
+    }
+    return recT.fields[nameIR.value];
   }
 
   function inferTupleGet(expr, scopes) {
