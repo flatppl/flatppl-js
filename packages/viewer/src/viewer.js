@@ -4962,7 +4962,7 @@
               formatter: function(params) {
                 if (!params || !params.length) return '';
                 var x = params[0].axisValue;
-                return 'x = ' + formatScalar(x);
+                return sweepAxis.label + ' = ' + formatScalar(x);
               },
             },
             xAxis: {
@@ -5011,9 +5011,11 @@
           plotEchart.getZr().on('click', function(ev) {
             var pt = [ev.offsetX, ev.offsetY];
             if (!plotEchart.containPixel('grid', pt)) return;
-            var coords = plotEchart.convertFromPixel({ xAxisIndex: 0 }, pt);
-            if (!coords || coords.length < 1) return;
-            var clickedX = coords[0];
+            // xAxisIndex finder takes a scalar pixel and returns a
+            // scalar data value (echarts API quirk — only the grid/
+            // series finders take arrays). Passing the [x,y] array
+            // here returns NaN.
+            var clickedX = plotEchart.convertFromPixel({ xAxisIndex: 0 }, ev.offsetX);
             if (!Number.isFinite(clickedX)) return;
             commitSliceX(plan, clickedX);
             renderProfilePlotForCurrent();
