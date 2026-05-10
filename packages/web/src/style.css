@@ -211,4 +211,28 @@ html, body {
 #flatppl-viewer-root {
   width: 100%;
   height: 100%;
+  /* The viewer was originally written for the VS Code webview, where
+     it occupies the full panel — its outermost #main child uses
+     viewport units (100vw, calc(100vh - 86px)) to size itself.
+     Embedded inside the gallery's right pane, those viewport values
+     overflow the column, pushing the DAG and plot content off to the
+     right. The rules below override the viewer's outer layout
+     (#header / #main / #info) into a flex column that fills
+     #flatppl-viewer-root instead of the viewport. Selector
+     specificity (0,2,0,0 vs the viewer's 0,1,0,0) makes the override
+     win without !important. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#flatppl-viewer-root > #header,
+#flatppl-viewer-root > #info {
+  flex: 0 0 auto;
+}
+#flatppl-viewer-root > #main {
+  flex: 1 1 auto;
+  width: 100%;     /* override viewer's 100vw */
+  height: auto;    /* override viewer's calc(100vh - 86px) */
+  min-height: 0;
+  min-width: 0;
 }
