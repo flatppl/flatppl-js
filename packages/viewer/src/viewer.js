@@ -3920,7 +3920,15 @@
     // instead of taking its own row.
     function buildPresetControl(plan, onChange) {
       var frag = document.createDocumentFragment();
-      if (!plan.matchedPresets || plan.matchedPresets.length === 0) return frag;
+      // Show the input selector whenever the plan has axes to vary
+      // (i.e., the kernel/function has inputs at all). Even when no
+      // user-declared preset bindings match, the "auto" option still
+      // gives users a visible read-out of which input values the
+      // renderer is using — and the control stays in place for
+      // consistency with kernels/functions that do have presets,
+      // rather than appearing/disappearing per binding.
+      if (!plan.axes || plan.axes.length === 0) return frag;
+      var presets = plan.matchedPresets || [];
       var lbl = document.createElement('label');
       lbl.textContent = 'Inputs:';
       lbl.style.opacity = '0.6';
@@ -3945,8 +3953,8 @@
       autoOpt.textContent = 'auto: ' + presetValuesText(autoValues);
       if (plan.presetName == null) autoOpt.selected = true;
       sel.appendChild(autoOpt);
-      for (var ppi = 0; ppi < plan.matchedPresets.length; ppi++) {
-        var p = plan.matchedPresets[ppi];
+      for (var ppi = 0; ppi < presets.length; ppi++) {
+        var p = presets[ppi];
         var pOpt = document.createElement('option');
         pOpt.value = p.name;
         // "name: theta1 = 1.4, theta2 = 1.0".
@@ -4021,8 +4029,12 @@
     // once and disappear on every subsequent rebuild. The thunk
     // produces fresh DOM each call.
     function renderKernelSampleMeasure(measure, plan) {
-      var hasPresets = plan.matchedPresets && plan.matchedPresets.length > 0;
-      var toolbarBuilder = hasPresets
+      // Always wire the input-selection toolbar when the plan has
+      // axes — the "auto" option still carries useful information
+      // even without user-declared presets, and the control stays
+      // visible across bindings for consistency.
+      var hasAxes = plan.axes && plan.axes.length > 0;
+      var toolbarBuilder = hasAxes
         ? function() {
             return buildPresetControl(plan, function() {
               renderKernelSampleForCurrent();
@@ -4409,7 +4421,12 @@
       var isLogDensity = plan.signature.kind === 'kernel'
                       || plan.signature.kind === 'likelihood';
       var hasAxes = plan.axes && plan.axes.length > 1;
-      var hasPresets = plan.matchedPresets && plan.matchedPresets.length > 0;
+      // "hasInputs" tells whether the plan has any input axes at all
+      // (single or multiple). The input/preset dropdown is shown
+      // whenever the callable has inputs, even with no user-declared
+      // presets — the "auto" option in buildPresetControl still
+      // surfaces the values being used.
+      var hasInputs = plan.axes && plan.axes.length > 0;
       var hasMultiOutput = plan.outputs && plan.outputs.length > 1;
       // Output selector — appears for callables whose specialized
       // output is multi-leaf (record / tuple / array). Single-leaf
@@ -4467,10 +4484,12 @@
         frag.appendChild(label);
         frag.appendChild(select);
       }
-      if (hasPresets) {
+      if (hasInputs) {
         // Reuse buildPresetControl so the option text (name + value
         // record) and styling stay consistent with the kernel-sample
-        // path.
+        // path. Always shown when there are input axes — the "auto"
+        // option carries the default values even without user-
+        // declared presets.
         frag.appendChild(buildPresetControl(plan, function() {
           renderProfilePlotForCurrent();
         }));
