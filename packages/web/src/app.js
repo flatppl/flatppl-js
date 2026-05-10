@@ -468,6 +468,32 @@
         var modelLabel = cur.model ? ('FlatPPL: ' + cur.model) : 'FlatPPL';
         document.title = name ? (modelLabel + ' / ' + name) : modelLabel;
       },
+      /** Whether the gallery can write to source right now. True
+          when an editor is mounted (playground edit mode); false
+          when the source pane is read-only or no source is loaded. */
+      canPersist: function () { return !!playgroundEditor; },
+      /** Replace a source range with new text, triggering the
+          editor's onChange path which then re-renders the viewer
+          through the debounced refresh. The args.range comes from
+          the viewer as zero-indexed (line, col) coords matching the
+          engine's tokenizer; we convert to character offsets here
+          using the editor's current document text. */
+      persistPreset: function (args) {
+        if (!playgroundEditor) return false;
+        var src = playgroundEditor.getSource();
+        var lineStarts = [0];
+        for (var i = 0; i < src.length; i++) {
+          if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
+        }
+        function offsetOf(loc) {
+          var ls = lineStarts[loc.line];
+          return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
+        }
+        var from = offsetOf(args.range.start);
+        var to   = offsetOf(args.range.end);
+        playgroundEditor.replaceRange(from, to, args.newText);
+        return true;
+      },
     };
 
     viewer = window.FlatPPLViewer.mount(viewerRoot, { host: webHost });

@@ -379,6 +379,17 @@
         // its own to substitute for a visible cursor.
         view.focus();
       },
+      /** Replace a byte range in the document with new text. Unlike
+          setSource, this allows onChange to fire — the dispatch
+          changes the doc and the gallery's viewer.update path then
+          re-renders through the standard debounced refresh. Used
+          by host.persistPreset to write a modified preset's values
+          back into source. */
+      replaceRange: function (from, to, text) {
+        view.dispatch({
+          changes: { from: from, to: to, insert: text },
+        });
+      },
       destroy: function () { try { view.destroy(); } catch (_) {} },
     };
   }

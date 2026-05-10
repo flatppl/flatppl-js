@@ -4228,38 +4228,141 @@
       wrap.appendChild(btn);
       wrap.appendChild(panel);
 
+      // Helper used by both reset and persist buttons.
+      function makeActionButton(text, title) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.title = title;
+        b.style.background = 'transparent';
+        b.style.color = 'var(--vscode-foreground, #cccccc)';
+        b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+        b.style.borderRadius = '3px';
+        b.style.padding = '2px 8px';
+        b.style.fontSize = '0.92em';
+        b.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+        b.style.cursor = 'pointer';
+        b.style.opacity = '0.75';
+        b.textContent = text;
+        b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
+        b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
+        return b;
+      }
+
+      frag.appendChild(wrap);
+
       // Reset button — visible only when the active selection has
       // overrides. Clears the override entry (auto → plan.autoOverride
       // = null; named → presetOverrides.delete(name)) and re-renders
       // through onChange. The dropdown row's "(modified)" tag then
       // disappears with no further user action.
       if (hasOverrides(plan)) {
-        var resetBtn = document.createElement('button');
-        resetBtn.type = 'button';
-        resetBtn.title = 'Reset preset to source values';
-        resetBtn.style.background = 'transparent';
-        resetBtn.style.color = 'var(--vscode-foreground, #cccccc)';
-        resetBtn.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
-        resetBtn.style.borderRadius = '3px';
-        resetBtn.style.padding = '2px 8px';
-        resetBtn.style.fontSize = '0.92em';
-        resetBtn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-        resetBtn.style.cursor = 'pointer';
-        resetBtn.style.opacity = '0.75';
-        resetBtn.textContent = 'Reset';
-        resetBtn.addEventListener('mouseenter', function() { resetBtn.style.opacity = '1'; });
-        resetBtn.addEventListener('mouseleave', function() { resetBtn.style.opacity = '0.75'; });
+        var resetBtn = makeActionButton('Reset', 'Reset preset to source values');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
           setOverrideFor(plan, null);
           onChange();
         });
-        frag.appendChild(wrap);
         frag.appendChild(resetBtn);
-        return frag;
+
+        // Persist button — visible when the active selection is a
+        // named preset with overrides AND the host supports
+        // writing (web edit-mode on, or VS Code) AND the source RHS
+        // is preset(<kwarg>=<literal>, …) with no non-literal
+        // values. Hidden otherwise so the user never sees a
+        // disabled-looking button.
+        if (canPersistActive(plan)) {
+          var persistBtn = makeActionButton('Persist', 'Write overrides into source');
+          persistBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            persistActive(plan);
+          });
+          frag.appendChild(persistBtn);
+        }
       }
-      frag.appendChild(wrap);
       return frag;
+    }
+
+    /** Persist is supported when:
+        - The active selection is a named preset (auto can't be
+          persisted — it isn't a binding).
+        - There's actually an override to write.
+        - The host adapter exposes a persistPreset function and
+          (when defined) host.canPersist returns true.
+        - The preset binding in source is a literal-friendly
+          `preset(<kwarg> = <number/bool>, …)`. Non-literal RHS
+          would lose authored expressions if overwritten with
+          numbers, so we just hide the button — Reset is still
+          available. */
+    function canPersistActive(plan) {
+      if (plan.presetName == null) return false;
+      if (!hasOverrides(plan)) return false;
+      if (!host || typeof host.persistPreset !== 'function') return false;
+      if (typeof host.canPersist === 'function' && !host.canPersist()) return false;
+      if (host.canPersist === false) return false;
+      if (!currentBindings) return false;
+      var b = currentBindings.get(plan.presetName);
+      if (!b || !b.node || !b.node.value
+          || b.node.value.type !== 'CallExpr'
+          || !b.node.value.callee
+          || b.node.value.callee.name !== 'preset') return false;
+      var args = b.node.value.args || [];
+      for (var i = 0; i < args.length; i++) {
+        var a = args[i];
+        if (a.type !== 'KeywordArg' || !a.value) return false;
+        if (a.value.type !== 'NumberLiteral'
+            && a.value.type !== 'BoolLiteral') return false;
+      }
+      return true;
+    }
+
+    /** Format a JS number for source emission. We use String(v)
+        rather than formatScalar because formatScalar rounds to 4
+        significant figures for display; source needs full
+        precision. */
+    function formatScalarForSource(v) {
+      if (typeof v === 'boolean') return v ? 'true' : 'false';
+      if (!Number.isFinite(v)) return String(v);
+      return String(v);
+    }
+
+    /** Build the replacement source text for a named preset binding,
+        merging the current source RHS kwargs with the active
+        override values. Preserves source kwarg order. */
+    function buildPersistedPresetLine(plan) {
+      var active = activePresetFor(plan);
+      var b = currentBindings.get(plan.presetName);
+      var srcArgs = b.node.value.args || [];
+      var parts = [];
+      for (var i = 0; i < srcArgs.length; i++) {
+        var sa = srcArgs[i];
+        var kwarg = sa.name;
+        var v = (active.values && Object.prototype.hasOwnProperty.call(active.values, kwarg))
+          ? active.values[kwarg] : sa.value.value;
+        parts.push(kwarg + ' = ' + formatScalarForSource(v));
+      }
+      return plan.presetName + ' = preset(' + parts.join(', ') + ')';
+    }
+
+    /** Invoke host.persistPreset with the binding name, replacement
+        text, and source range. Host applies the edit; the next
+        source-update cycle reconciles the override away because
+        the source values now match. */
+    function persistActive(plan) {
+      if (!canPersistActive(plan)) return;
+      var b = currentBindings.get(plan.presetName);
+      var newText = buildPersistedPresetLine(plan);
+      try {
+        host.persistPreset({
+          name: plan.presetName,
+          newText: newText,
+          range: {
+            start: { line: b.node.loc.start.line, col: b.node.loc.start.col },
+            end:   { line: b.node.loc.end.line,   col: b.node.loc.end.col },
+          },
+        });
+      } catch (err) {
+        console.error('[viewer] persistPreset failed:', err);
+      }
     }
 
     // Strip the outer "record(...)" wrapper from formatValue's
