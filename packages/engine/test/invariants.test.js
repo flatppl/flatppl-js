@@ -138,13 +138,7 @@ test('invariant: every BIN_OP_MAP target has a type signature', () => {
 // translate). Otherwise a binding that typechecks won't sample.
 // ---------------------------------------------------------------------
 
-// Currently broken: types.js declares `Cauchy(loc, scale)` while the runtime
-// REGISTRY expects `(location, scale)`; similar mismatches for Gamma,
-// Logistic, InverseGamma, Weibull, Uniform, Categorical, GeneralizedNormal.
-// Tracked as the next cleanup item — un-skip when the param names are
-// reconciled (either by switching types.js to spec-canonical names or by
-// populating each REGISTRY entry's `aliases` map with the legacy names).
-test.skip('invariant: REGISTRY params (incl. aliases) covered by types.js kwargs', () => {
+test('invariant: REGISTRY params (incl. aliases) covered by types.js kwargs', () => {
   for (const name of sampler.listDistributions()) {
     const sig = types.signatureOf(name);
     if (!sig) continue;   // distribution untyped today; separate gap

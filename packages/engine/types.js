@@ -525,27 +525,36 @@ const SIGNATURE_FACTORIES = {
   // Scalar continuous: kwargs all real-typed, result is measure<real>.
   Normal:            () => realDistKwargs({ mu: REAL, sigma: REAL }),
   LogNormal:         () => realDistKwargs({ mu: REAL, sigma: REAL }),
-  Cauchy:            () => realDistKwargs({ loc: REAL, scale: REAL }),
+  // Spec-canonical kwarg names per §08-distributions.md. The runtime
+  // `sampler.REGISTRY` may use stdlib's internal names; its `aliases` map
+  // bridges spec names back to stdlib names. Adding a distribution: take
+  // the spec kwarg names verbatim here, and translate to stdlib in
+  // sampler.js's REGISTRY entry.
+  Cauchy:            () => realDistKwargs({ location: REAL, scale: REAL }),
   StudentT:          () => realDistKwargs({ nu: REAL }),
-  Logistic:          () => realDistKwargs({ loc: REAL, scale: REAL }),
+  Logistic:          () => realDistKwargs({ mu: REAL, s: REAL }),
   Exponential:       () => realDistKwargs({ rate: REAL }),
-  Gamma:             () => realDistKwargs({ alpha: REAL, theta: REAL }),
-  InverseGamma:      () => realDistKwargs({ alpha: REAL, theta: REAL }),
-  Weibull:           () => realDistKwargs({ alpha: REAL, theta: REAL }),
+  Gamma:             () => realDistKwargs({ shape: REAL, rate: REAL }),
+  InverseGamma:      () => realDistKwargs({ shape: REAL, scale: REAL }),
+  Weibull:           () => realDistKwargs({ shape: REAL, scale: REAL }),
   Beta:              () => realDistKwargs({ alpha: REAL, beta: REAL }),
-  Uniform:           () => realDistKwargs({ min: REAL, max: REAL }),
-  GeneralizedNormal: () => realDistKwargs({ mu: REAL, alpha: REAL, beta: REAL }),
+  Uniform:           () => realDistKwargs({ support: any() }),
+  GeneralizedNormal: () => realDistKwargs({ mean: REAL, alpha: REAL, beta: REAL }),
   // Scalar discrete.
   Bernoulli: () => boolDistKwargs({ p: REAL }),
   Binomial:  () => intDistKwargs({ n: INTEGER, p: REAL }),
   Poisson:   () => intDistKwargs({ rate: REAL }),
   // Categorical is over integer atoms (categories indexed 1..K).
-  Categorical: () => intDistKwargs({ probs: array(1, ['%dynamic'], REAL) }),
+  Categorical: () => intDistKwargs({ p: array(1, ['%dynamic'], REAL) }),
   // Fundamental measures over reals/integers — argument-less in the
   // common form; support sets are advisory and don't affect type.
   Lebesgue:  () => ({ args: [], kwargs: {}, result: measure(REAL) }),
   Counting:  () => ({ args: [], kwargs: {}, result: measure(INTEGER) }),
-  Dirac:     () => ({ args: [tvar('T')], kwargs: {}, result: measure(tvar('T')) }),
+  // Dirac accepts either `Dirac(x)` or `Dirac(value = x)` per spec §04
+  // (built-ins admit both positional and keyword forms with identical
+  // semantics). Same shape as the other distributions: `args: null`
+  // skips the positional arity check (kwargs path is the typed contract).
+  Dirac:     () => ({ args: null, kwargs: { value: tvar('T') }, result: measure(tvar('T')) }),
 
   // ---- Measure algebra ---------------------------------------------
   weighted:    () => ({ args: [REAL,    measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
