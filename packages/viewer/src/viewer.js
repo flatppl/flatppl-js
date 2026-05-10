@@ -5622,6 +5622,32 @@
       window.addEventListener('resize', resizeAllEchartsInPlot);
     }
 
+    // Resize the cytoscape DAG when its container changes size. Without
+    // this, hosts that mount the viewer inside a flex/grid layout that
+    // hasn't fully settled at mount time end up with a DAG sized to
+    // whatever the container was at first paint — typically too small,
+    // with the layout fit-zoomed and panned for the wrong dimensions, so
+    // the visible nodes appear off-center against the post-settle pane.
+    // The VS Code webview avoids this because the panel resizes through
+    // window.resize, which cytoscape already handles internally; the
+    // standalone web host (CSS Grid + flex) needs the explicit observer.
+    function resizeAndFitCy() {
+      if (!cy) return;
+      // requestAnimationFrame so the layout pass that triggered the
+      // resize has settled before we ask cytoscape for the new size.
+      requestAnimationFrame(function () {
+        try { cy.resize(); cy.fit(undefined, 40); }
+        catch (_) {}
+      });
+    }
+    if (typeof ResizeObserver === 'function') {
+      var cyResizeObserver = new ResizeObserver(resizeAndFitCy);
+      var cyRoot = document.getElementById('cy');
+      if (cyRoot) cyResizeObserver.observe(cyRoot);
+    } else {
+      window.addEventListener('resize', resizeAndFitCy);
+    }
+
     // Restore Plot toggle state from the host's persistent state so the
     // user's preference survives panel close/reopen and reloads. Default
     // is OFF for first-time use — the plot panel is opt-in to keep the
