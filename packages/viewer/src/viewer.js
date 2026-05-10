@@ -1961,6 +1961,14 @@
       }
 
       if (phase === 'fixed') {
+        // Opaque value-typed bindings — rngstate today, future
+        // engine-internal types in the same vein — have no useful
+        // visual representation. Drop them out of the plot pipeline
+        // here (the alternative — falling through to samples mode —
+        // produced an empty histogram of NaN values when the
+        // per-atom evaluator coerced the opaque object to a Float64
+        // entry).
+        if (typeKind === 'rngstate') return null;
         if (typeKind === 'record' || typeKind === 'tuple') {
           return { name: name, mode: 'fixed-record' };
         }
