@@ -36,9 +36,36 @@
   var viewer       = null;
   var manifest     = null;
 
+  /**
+   * Push text into the source pane. When the engine is available
+   * we run it through the FlatPPL-aware syntax highlighter, which
+   * also stamps `data-binding` attributes on identifier spans that
+   * match defined binding names (used by the cross-pane click flows
+   * landing in subsequent steps). If the engine isn't ready yet, we
+   * fall back to plain text so the pane stays useful.
+   */
   function showSource(text, label) {
-    if (sourceView)   sourceView.textContent = text;
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
+    if (!sourceView) return;
+    var FE = window.FlatPPLEngine;
+    var bindings = null;
+    if (FE && typeof FE.processSource === 'function') {
+      try {
+        var processed = FE.processSource(text);
+        if (processed && processed.bindings) {
+          bindings = new Set(processed.bindings.keys());
+        }
+      } catch (e) {
+        // Parse / analyzer error — fall through to highlighter
+        // without binding info; the source still renders.
+        bindings = null;
+      }
+    }
+    if (window.FlatPPLWebSyntax && typeof window.FlatPPLWebSyntax.highlight === 'function') {
+      sourceView.innerHTML = window.FlatPPLWebSyntax.highlight(text, bindings);
+    } else {
+      sourceView.textContent = text;
+    }
   }
 
   function showError(label, err) {
