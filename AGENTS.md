@@ -95,6 +95,15 @@ These are the things that catch out first-time contributors. Read each one.
   See "Cross-file invariants" in `packages/engine/ARCHITECTURE.md` before
   adding distributions, built-in functions, or measure-algebra ops.
 
+- **Fixed-phase bindings flow through `fixedValues`, not refArrays.** The
+  orchestrator pre-evaluates fixed-phase bindings and exposes the values via
+  `buildDerivations(...).fixedValues`. The viewer pushes that map to the
+  worker as session env on every rebuild; per-atom evaluators layer session
+  env underneath refArrays. When you touch the chain / derivation / refArrays
+  machinery, remember that fixed-phase refs are env-resolved, not slice-
+  indexed — see ARCHITECTURE.md's "Fixed-phase pre-eval and fixedValues"
+  section.
+
 - **Two webview deployments.** The viewer's bundled output lives in BOTH
   `packages/viewer/vendor/` (standalone embed) AND
   `packages/vscode-extension/lib/` (extension webview). Engine and viewer
@@ -150,18 +159,31 @@ knowing:
 
 - **`==`/`!=` lower to `eq`/`ne`** but the rest of the engine looks for
   `equal`/`unequal`. Surface `==` will throw at runtime. Don't add tests that
-  rely on `==` working until this is fixed.
-- **Distribution parameter names diverge** across `types.js`, `sampler.js`, and
-  the spec for several distributions (Cauchy, Gamma, Uniform, …). Always
-  cross-check both files when touching distributions.
+  rely on `==` working until this is fixed. One-line fix in `lower.js BIN_OP_MAP`.
+- **Distribution parameter names diverge** across `types.js`, `sampler.js`,
+  and the spec for several distributions (Cauchy, Logistic, Gamma,
+  InverseGamma, Weibull, Uniform, Categorical, GeneralizedNormal). Always
+  cross-check both files when touching distributions. The `aliases` field on
+  each `sampler.REGISTRY` entry is the documented fix path — populate it with
+  spec-name → alternate-name mappings. See ARCHITECTURE.md "Known issues" for
+  the full table.
 - **Type system covers ~50 ops.** Many spec ops fall through to `deferred()`
   silently. If you add a new distribution or built-in, also add its signature.
-- **`orchestrator.js` and `viewer/src/viewer.js` are oversized.** Be aware
-  before opening them; both have natural decomposition seams documented in
-  the review and in `ARCHITECTURE.md`.
+- **`Lebesgue`/`Counting` signatures drop the `support` kwarg.** Per spec §06
+  they take `support = S`; the type-system entries are currently empty-kwargs.
+- **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and
+  5 683 lines). Be aware before opening them; both have natural decomposition
+  seams documented in `ARCHITECTURE.md` and the review.
 
 When you fix an issue listed there, mention it in your commit message so the
 review can be kept current.
+
+**The orientation docs are living documents.** When you make a non-trivial
+change — new feature, new invariant, fixing one of the known issues, a
+structural refactor — update the affected sections of `AGENTS.md` and/or
+`packages/engine/ARCHITECTURE.md` in the same or a follow-up commit. Stale
+orientation docs teach future cold-session AI agents to expect things that
+aren't there.
 
 ## Style and process
 
