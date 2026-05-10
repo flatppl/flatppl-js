@@ -298,11 +298,24 @@
     // Drops the focused target so the DAG renders every binding;
     // routes through the hash so the action is part of navigation
     // history (browser back restores the previously focused target).
+    //
+    // The explicit viewer.update(text, null) below covers the case
+    // where the URL already shows target=null but the viewer is
+    // internally focused on a node from a DAG-side double-click
+    // (which doesn't sync back to the URL). Without it, the router
+    // dedup would see an identical hash and bail, leaving the
+    // viewer's internal state untouched.
     var showModuleBtn = document.getElementById('show-module-btn');
     if (showModuleBtn) {
       showModuleBtn.addEventListener('click', function () {
         var cur = window.FlatPPLWebRouter.parseHash();
         window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: null });
+        if (viewer) {
+          var liveText = playgroundEditor
+            ? playgroundEditor.getSource()
+            : (lastRenderedSource || '');
+          viewer.update(liveText, null);
+        }
       });
     }
 
