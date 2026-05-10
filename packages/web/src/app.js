@@ -32,7 +32,7 @@
   var sourceView   = null;
   var sourceHeader = null;
   var fileTree     = null;
-  var headerEl     = null;
+  var titleEl      = null;
   var viewer       = null;
   var manifest     = null;
 
@@ -176,7 +176,7 @@
     sourceView   = document.getElementById('source-view');
     sourceHeader = document.getElementById('source-header');
     fileTree     = document.getElementById('file-tree');
-    headerEl     = document.getElementById('app-header');
+    titleEl      = document.getElementById('app-title');
 
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
@@ -189,6 +189,16 @@
     if (missing.length) {
       console.error('[@flatppl/web] missing modules:', missing.join(', '));
       return;
+    }
+
+    // Install the layout manager (collapsible file pane + drag-to-
+    // resize handles between every pair of adjacent panes). The
+    // manager owns #app's grid-template-columns and persists the
+    // user's chosen widths + collapse state in localStorage.
+    if (window.FlatPPLWebLayout) {
+      window.FlatPPLWebLayout.install({
+        toggleButton: document.getElementById('toggle-files'),
+      });
     }
 
     var viewerRoot = document.getElementById('flatppl-viewer-root');
@@ -252,8 +262,8 @@
     // tree empty and the gallery still works for hash-driven navigation.
     try {
       manifest = await window.FlatPPLWebManifest.load();
-      if (headerEl && manifest.title) {
-        headerEl.textContent = manifest.title;
+      if (titleEl && manifest.title) {
+        titleEl.textContent = manifest.title;
       }
     } catch (err) {
       console.warn('[@flatppl/web] manifest load failed (non-fatal):', err.message);

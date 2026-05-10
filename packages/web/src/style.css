@@ -22,14 +22,16 @@ html, body {
 }
 
 /* Three-pane shell: header bar across the top, then file tree /
-   source view / viewer side-by-side. The narrow file tree gets a
-   fixed pixel width; source and viewer share the remaining space
-   with the viewer slightly wider, matching how most users want their
-   visual real estate distributed. */
+   source view / viewer side-by-side, separated by drag handles.
+   The grid-template-columns starting value is overridden by
+   layout.js once it loads (which restores the user's persisted
+   widths from localStorage) — the value here is the bootstrap
+   default that applies during the brief window before layout.js
+   runs, plus a no-JS fallback. */
 #app {
   display: grid;
   grid-template-rows: 36px 1fr;
-  grid-template-columns: 240px 1fr 1.5fr;
+  grid-template-columns: 240px 5px 1fr 5px 1.5fr;
   width: 100vw;
   height: 100vh;
 }
@@ -40,9 +42,44 @@ html, body {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
+  gap: 0.6em;
   padding: 0 1em;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+#toggle-files {
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  font-size: 1.1em;
+  line-height: 1;
+  padding: 0.2em 0.4em;
+  cursor: pointer;
+  border-radius: 3px;
+}
+#toggle-files:hover { color: var(--fg); background: rgba(255,255,255,0.05); }
+#toggle-files:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* Drag handles between adjacent panes. Thin column inside the grid;
+   colour-shift on hover so the user can see they're interactive. */
+.resize-handle {
+  background: var(--bg-pane);
+  cursor: col-resize;
+  user-select: none;
+  /* Keep the visible band narrower than the actual hit-target so
+     the user can grab without pixel-perfect aiming. */
+  position: relative;
+}
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  transition: background 0.15s ease;
+}
+.resize-handle:hover::before {
+  background: var(--accent);
 }
 
 .pane {
