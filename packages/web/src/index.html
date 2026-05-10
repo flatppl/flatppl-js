@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<!--
+  @flatppl/web — gallery shell entry point.
+  Skeleton placeholder. Subsequent steps replace the body with the
+  three-pane layout (file tree, source view, viewer) and wire up the
+  fetch-based async resolver, hash routing, manifest loader, and
+  syntax-highlighted source pane.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlatPPL</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      background: #1e1e1e;
+      color: #cccccc;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 100%; height: 100%;
+    }
+    #boot {
+      padding: 2em;
+      max-width: 40em;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+    code { color: #9cdcfe; }
+  </style>
+</head>
+<body>
+  <div id="boot">
+    <h1>FlatPPL</h1>
+    <p>Web host package skeleton. The gallery shell lands in subsequent
+    steps. Open the browser console to confirm <code>app.js</code>
+    loaded.</p>
+  </div>
+
+  <script src="vendor/cytoscape.min.js"></script>
+  <script src="vendor/dagre.min.js"></script>
+  <script src="vendor/cytoscape-dagre.js"></script>
+  <script src="vendor/cytoscape-layers.min.js"></script>
+  <script src="vendor/cytoscape-bubblesets.min.js"></script>
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/engine.min.js"></script>
+  <script>
+    // Host config consumed by the viewer when it loads. Same shape as
+    // the VS Code bootstrap; only the sampler-worker URL is required.
+    window.__FLATPPL_CONFIG__ = {
+      samplerWorkerUrl: new URL('vendor/sampler-worker.min.js', document.baseURI).href,
+    };
+  </script>
+  <script src="vendor/viewer.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

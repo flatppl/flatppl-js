@@ -1,0 +1,41 @@
+{
+  "name": "@flatppl/web",
+  "version": "0.1.0",
+  "description": "Standalone web host for the FlatPPL viewer. Three-pane gallery shell (file tree, source view, viewer) targeting GitHub Pages and other static deployments. Embeds @flatppl/viewer with a fetch-based async resolver and a host adapter that bridges the viewer's revealSourceLine / setTitle / state-persistence callbacks.",
+  "license": "MIT",
+  "private": true,
+  "files": [
+    "src/",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flatppl/flatppl-js",
+    "directory": "packages/web"
+  },
+  "scripts": {
+    "build": "node ./build.mjs",
+    "watch": "node ./build.mjs --watch",
+    "serve": "node ./serve.mjs"
+  },
+  "devDependencies": {
+    "@flatppl/engine": "*",
+    "@flatppl/viewer": "*",
+    "esbuild": "^0.28.0",
+    "cytoscape": "^3.30.4",
+    "@dagrejs/dagre": "^3.0.0",
+    "cytoscape-dagre": "^2.5.0",
+    "cytoscape-bubblesets": "^4.1.0",
+    "cytoscape-layers": "^3.1.0",
+    "echarts": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "flatppl",
+    "visualization",
+    "gallery",
+    "github-pages"
+  ]
+}
