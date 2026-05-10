@@ -4799,21 +4799,43 @@
       xLoInput.addEventListener('change', commitRange);
       xHiInput.addEventListener('change', commitRange);
 
-      // Centred axis name. plan.axes is built by distributeAxes;
-      // pick the entry matching the active sweep so the label
-      // matches what the plot is actually showing. Falls back to
-      // sweepKey if no label found.
+      // Centred axis name, with a "(default = V)" suffix showing
+      // the value this axis is pinned at when another axis is the
+      // sweep. V comes from the active preset's user-set values
+      // when present (named preset value, or click-set override
+      // on a modified entry); otherwise from the same auto
+      // computation the dropdown's "auto: …" label uses (type
+      // default, or samples[0] from a source binding when cached).
+      // Lets the user read the current slice and "navigate" through
+      // axes by clicking + switching the sweep direction.
       var axisName = plan.sweepKey;
+      var sweepKwarg = plan.sweepKey;
       if (plan.axes) {
         for (var i = 0; i < plan.axes.length; i++) {
           if (plan.axes[i].key === plan.sweepKey) {
             axisName = plan.axes[i].label;
+            sweepKwarg = plan.axes[i].kwargName;
             break;
           }
         }
       }
+      var defaultText = '';
+      if (sweepKwarg) {
+        var activeForLabel = activePresetFor(plan);
+        var v;
+        if (activeForLabel.values
+            && Object.prototype.hasOwnProperty.call(activeForLabel.values, sweepKwarg)) {
+          v = activeForLabel.values[sweepKwarg];
+        } else {
+          var av = computeAutoValues(plan);
+          v = av[sweepKwarg];
+        }
+        if (v !== undefined && v !== null) {
+          defaultText = '  (default = ' + formatScalar(v) + ')';
+        }
+      }
       var nameSpan = document.createElement('span');
-      nameSpan.textContent = axisName;
+      nameSpan.textContent = axisName + defaultText;
       nameSpan.style.flex = '1';
       nameSpan.style.textAlign = 'center';
       nameSpan.style.color = fg;
@@ -4921,7 +4943,28 @@
               textStyle: { color: fg, fontSize: 11 },
               itemWidth: 14, itemHeight: 8,
             },
-            tooltip: { show: false },
+            // Vertical-only crosshair on hover. Communicates "click to
+            // slice on this x-axis value" — y is irrelevant, so no
+            // horizontal indicator. Keep the tooltip text minimal:
+            // just the rounded x value, so users can read off the
+            // value they're about to commit before clicking.
+            tooltip: {
+              show: true,
+              trigger: 'axis',
+              triggerOn: 'mousemove',
+              axisPointer: { type: 'line', snap: false, animation: false,
+                             label: { show: false } },
+              backgroundColor: 'rgba(40, 40, 40, 0.92)',
+              borderColor: 'rgba(120, 120, 120, 0.6)',
+              borderWidth: 1,
+              padding: [3, 6],
+              textStyle: { color: fg, fontSize: 11 },
+              formatter: function(params) {
+                if (!params || !params.length) return '';
+                var x = params[0].axisValue;
+                return 'x = ' + formatScalar(x);
+              },
+            },
             xAxis: {
               type: 'value',
               name: '',
@@ -4937,6 +4980,9 @@
               axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
               axisLabel: { color: fg, opacity: 0.6, formatter: formatScalar },
               splitLine: { lineStyle: { color: fg, opacity: 0.15 } },
+              // No y-axis pointer — only the x-axis crosshair is
+              // meaningful for click-to-slice.
+              axisPointer: { show: false },
             }, yClipMin != null ? { min: yClipMin, max: yClipMax } : {}),
             series: [{
               name: legendLabel,
@@ -4953,8 +4999,58 @@
               connectNulls: false,
             }],
           });
+
+          // Click-to-slice. The click lands at some x in the chart's
+          // grid; we convert pixel → data, then commit that x as the
+          // sweep-axis value in a modified preset (creating one if
+          // we were on the base). The plot itself doesn't change
+          // (the sweep axis still spans lo..hi) but the user has
+          // pinned this axis's value for when they switch the
+          // sweep direction to another axis. The under-plot axis
+          // name picks up `(default = V)` immediately.
+          plotEchart.getZr().on('click', function(ev) {
+            var pt = [ev.offsetX, ev.offsetY];
+            if (!plotEchart.containPixel('grid', pt)) return;
+            var coords = plotEchart.convertFromPixel({ xAxisIndex: 0 }, pt);
+            if (!coords || coords.length < 1) return;
+            var clickedX = coords[0];
+            if (!Number.isFinite(clickedX)) return;
+            commitSliceX(plan, clickedX);
+            renderProfilePlotForCurrent();
+          });
         },
       });
+    }
+
+    /**
+     * Commit a clicked x value as the sweep-axis value of the
+     * active preset. Follows the same overwrite rule as limit
+     * edits: from the base, replace any prior modified entry
+     * with a fresh one carrying just this one override; from
+     * the modified variant, update the value in place so other
+     * overrides on the same entry are preserved.
+     */
+    function commitSliceX(plan, x) {
+      if (!plan || !plan.axes) return;
+      var kwarg = null;
+      for (var i = 0; i < plan.axes.length; i++) {
+        if (plan.axes[i].key === plan.sweepKey) {
+          kwarg = plan.axes[i].kwargName;
+          break;
+        }
+      }
+      if (!kwarg) return;
+      var baseKey = baseKeyOf(plan);
+      var entry;
+      if (plan.modified && plan.modifiedPresets.has(baseKey)) {
+        entry = plan.modifiedPresets.get(baseKey);
+        entry.values = Object.assign({}, entry.values || {});
+      } else {
+        entry = { limits: null, values: {} };
+      }
+      entry.values[kwarg] = x;
+      plan.modifiedPresets.set(baseKey, entry);
+      plan.modified = true;
     }
 
     function renderArrayStepPlot(arr) {
