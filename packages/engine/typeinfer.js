@@ -77,7 +77,7 @@ const SET_VALUE_TYPES = {
 const BINARY_ARITH_OPS = new Set(['add', 'sub', 'mul', 'div', 'mod', 'pow']);
 const UNARY_ARITH_OPS  = new Set([
   'neg', 'pos', 'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
-  'sin', 'cos', 'tan', 'floor', 'ceil', 'round',
+  'sin', 'cos', 'floor', 'ceil', 'round',
 ]);
 const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
 
@@ -241,6 +241,11 @@ function createInferenceContext(loweredModule) {
       // case as tuple_get: the result type depends on the literal
       // field-name argument.
       case 'get_field': return write(inferGetField(expr, scopes), expr);
+      // Lebesgue / Counting parametrise on a support set (spec §06).
+      // The measure's domain mirrors the support's value-type, so
+      // Lebesgue(support = cartpow(reals, n)) is measure(array<real,n>).
+      case 'Lebesgue':  return write(inferReferenceMeasure(expr, scopes, T.REAL), expr);
+      case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
       // kernelof and fn are lowered to functionof by lower.js (per
@@ -383,6 +388,25 @@ function createInferenceContext(loweredModule) {
   function inferTuple(expr, scopes) {
     const args = expr.args || [];
     return T.tuple(args.map(a => inferExpr(a, scopes)));
+  }
+
+  // Lebesgue(support = S) / Counting(support = S). The support kwarg is
+  // optional; missing → use the default scalar. When present, the support
+  // is a set expression whose value-type drives the result's measure-domain
+  // (cartpow → array, cartprod → record/tuple, stdsimplex → array<real,n>).
+  // Falls back to the default scalar when the support shape can't be
+  // statically resolved (e.g. the support is itself a binding ref).
+  function inferReferenceMeasure(expr, scopes, defaultElem) {
+    const args   = expr.args || [];
+    const kwargs = expr.kwargs || {};
+    let support = null;
+    // Spec §06 form is `Lebesgue(support = S)`, but keep accepting a
+    // single positional support per the calling-convention rule.
+    if ('support' in kwargs)        support = kwargs.support;
+    else if (args.length === 1)     support = args[0];
+    if (!support) return T.measure(defaultElem);
+    const t = setValueType(support, scopes);
+    return T.measure(t || defaultElem);
   }
 
   function inferGetField(expr, scopes) {

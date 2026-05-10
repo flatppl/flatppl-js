@@ -72,7 +72,7 @@ const BUILTIN_FUNCTIONS = new Set([
   'boolean', 'integer', 'real', 'complex', 'string', 'imag',
   // Elementary math
   'exp', 'log', 'log10', 'pow', 'sqrt', 'abs', 'abs2',
-  'sin', 'cos', 'tan',
+  'sin', 'cos',
   'min', 'max', 'floor', 'ceil', 'round',
   'div', 'mod',
   'conj', 'cis',

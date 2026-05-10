@@ -577,7 +577,6 @@ const ARITH_OPS = {
   sqrt:  a => Math.sqrt(a),
   sin:   a => Math.sin(a),
   cos:   a => Math.cos(a),
-  tan:   a => Math.tan(a),
   floor: a => Math.floor(a),
   ceil:  a => Math.ceil(a),
   round: a => Math.round(a),

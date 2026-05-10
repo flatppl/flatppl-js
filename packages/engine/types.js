@@ -546,10 +546,14 @@ const SIGNATURE_FACTORIES = {
   Poisson:   () => intDistKwargs({ rate: REAL }),
   // Categorical is over integer atoms (categories indexed 1..K).
   Categorical: () => intDistKwargs({ p: array(1, ['%dynamic'], REAL) }),
-  // Fundamental measures over reals/integers — argument-less in the
-  // common form; support sets are advisory and don't affect type.
-  Lebesgue:  () => ({ args: [], kwargs: {}, result: measure(REAL) }),
-  Counting:  () => ({ args: [], kwargs: {}, result: measure(INTEGER) }),
+  // Fundamental reference measures (spec §06). The optional `support = S`
+  // kwarg parameterises on the set the measure lives on; default is `reals`
+  // for Lebesgue and `integers` for Counting. The result's measure-domain
+  // tracks the support's value-type — `Lebesgue(support = cartpow(reals,
+  // n))` is `measure(array(real, n))`. Resolved by the `lebesgue` /
+  // `counting` special handlers in typeinfer.js.
+  Lebesgue:  () => ({ args: null, kwargs: { support: any() }, result: measure(REAL),    special: 'lebesgue' }),
+  Counting:  () => ({ args: null, kwargs: { support: any() }, result: measure(INTEGER), special: 'counting' }),
   // Dirac accepts either `Dirac(x)` or `Dirac(value = x)` per spec §04
   // (built-ins admit both positional and keyword forms with identical
   // semantics). Same shape as the other distributions: `args: null`
@@ -632,7 +636,6 @@ const SIGNATURE_FACTORIES = {
   sqrt:   () => ({ args: [REAL], kwargs: {}, result: REAL }),
   sin:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   cos:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
-  tan:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   floor:  () => ({ args: [REAL], kwargs: {}, result: INTEGER }),
   ceil:   () => ({ args: [REAL], kwargs: {}, result: INTEGER }),
   round:  () => ({ args: [REAL], kwargs: {}, result: INTEGER }),

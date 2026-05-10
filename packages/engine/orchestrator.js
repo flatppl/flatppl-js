@@ -97,7 +97,7 @@ const EVALUABLE_OPS = new Set([
   // worker's evaluator).
   'add', 'sub', 'mul', 'div', 'mod', 'neg', 'pos',
   'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
-  'sin', 'cos', 'tan',
+  'sin', 'cos',
   'floor', 'ceil', 'round',
   'pow',
   // Comparisons → boolean.
