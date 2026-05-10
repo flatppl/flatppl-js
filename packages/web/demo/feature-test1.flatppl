@@ -1,7 +1,4 @@
-# A simple Bayesian example using structural disintegration: build the joint
-# distribution first, then disintegrate to extract the forward kernel and prior.
-# Same model as bayesian_inference.flatppl, expressed by disintegration of the
-# joint instead of separate prior/model reifications.
+# Test of various FlatPPL features
 
 # Prior distributions
 theta1_dist = Normal(mu = 0, sigma = 1)
