@@ -2069,6 +2069,18 @@ function classifyDerivation(binding, bindings) {
       }
       if (allRefs && elems.length > 0) return { kind: 'tuple', elems };
     }
+    // Bare ref to another binding: alias. Common after liftInline
+    // hoists a measure-typed RHS into an anon and the user binding
+    // becomes `name = ref(__anonN)` (e.g. `expected_obs =
+    // forward_kernel(rand_pars)` lifts the substituted joint body
+    // out, leaving expected_obs as a bare ref to the joint anon).
+    // Without this, the evaluable fallthrough below mis-classifies it
+    // as kind:'evaluate' and the per-atom evaluator chokes when the
+    // ref target is a measure rather than a value.
+    if (rhsIR && rhsIR.kind === 'ref' && rhsIR.ns === 'self'
+        && bindings.has(rhsIR.name)) {
+      return { kind: 'alias', from: rhsIR.name };
+    }
     // Deterministic arithmetic on cached samples.
     if (isEvaluable(rhsIR)) {
       return { kind: 'evaluate', ir: rhsIR };
