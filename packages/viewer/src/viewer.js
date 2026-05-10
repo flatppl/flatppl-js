@@ -361,36 +361,43 @@
         // host applies the actual WorkspaceEdit on receipt of the
         // persistPreset message.
         canPersist: function() { return true; },
-        persistPreset: function(args) {
-          api.postMessage({
-            type: 'persistPreset',
-            name:    args.name,
-            newText: args.newText,
-            range:   args.range,
+        // Both persist paths use a two-primitive host contract:
+        //   promptForName(args) → Promise<string|null>   (UI prompt)
+        //   editSource(args)    → Promise<boolean>       (apply edit)
+        // The viewer composes them; the host adapter just bridges
+        // the primitives to the host's native APIs. For VS Code
+        // both round-trip through the extension via postMessage —
+        // window.prompt is unavailable in webviews, and edits go
+        // through vscode.workspace.applyEdit.
+        promptForName: function(args) {
+          var nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+          return new Promise(function(resolve) {
+            function listener(event) {
+              var m = event.data;
+              if (!m || m.type !== 'promptForNameResponse' || m.nonce !== nonce) return;
+              window.removeEventListener('message', listener);
+              resolve(m.name || null);
+            }
+            window.addEventListener('message', listener);
+            api.postMessage({
+              type: 'promptForName',
+              suggested:     args.suggested,
+              existingNames: args.existingNames || [],
+              nonce: nonce,
+            });
           });
         },
-        // Auto-persist routes through the extension which prompts
-        // via vscode.window.showInputBox (window.prompt is unsupported
-        // in VS Code webviews). The nonce + listener pair lets us
-        // bridge args.onPersisted across the postMessage boundary.
-        persistNewPreset: function(args) {
-          var nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-          function listener(event) {
-            var m = event.data;
-            if (!m || m.type !== 'persistNewPresetResponse' || m.nonce !== nonce) return;
-            window.removeEventListener('message', listener);
-            if (m.name && typeof args.onPersisted === 'function') {
-              args.onPersisted(m.name);
-            }
-          }
-          window.addEventListener('message', listener);
+        editSource: function(args) {
           api.postMessage({
-            type: 'persistNewPreset',
-            suggestedName: args.suggestedName,
-            pairsText:     args.pairsText,
-            existingNames: args.existingNames || [],
-            nonce: nonce,
+            type: 'editSource',
+            range:   args.range || null,
+            newText: args.newText,
           });
+          // Fire-and-forget; the extension applies the edit and
+          // pushes a fresh sourceUpdate. Resolving truthy lets the
+          // viewer's promise chain proceed without awaiting an
+          // explicit ack across the boundary.
+          return Promise.resolve(true);
         },
       };
     }
@@ -4318,22 +4325,19 @@
     }
 
     /** Persist is supported when there's an override AND the host
-        adapter can write AND (for named presets) the source RHS is
-        literal-friendly. Two cases:
-
-        - Named preset: the source RHS must be
-          `preset(<kwarg> = <number/bool>, …)` — non-literal RHS
-          would lose authored expressions if overwritten, so we
-          just hide the button (Reset is still available).
-        - Auto preset: persist creates a NEW preset binding at
-          end-of-source under a user-prompted name. Always allowed
-          when the host can write. */
+        adapter can write (host.editSource defined and host.canPersist
+        returns true). For named presets the source RHS also has to
+        be literal-friendly; for auto we additionally need
+        host.promptForName for the new-binding name. Hidden
+        otherwise so the user never sees a disabled-looking button. */
     function canPersistActive(plan) {
       if (!hasOverrides(plan)) return false;
-      if (!host || typeof host.persistPreset !== 'function') return false;
+      if (!host || typeof host.editSource !== 'function') return false;
       if (typeof host.canPersist === 'function' && !host.canPersist()) return false;
       if (host.canPersist === false) return false;
-      if (plan.presetName == null) return true;       // auto → create new binding
+      if (plan.presetName == null) {
+        return typeof host.promptForName === 'function';
+      }
       if (!currentBindings) return false;
       var b = currentBindings.get(plan.presetName);
       if (!b || !b.node || !b.node.value
@@ -4397,29 +4401,28 @@
       var b = currentBindings.get(plan.presetName);
       var newText = buildPersistedPresetLine(plan);
       try {
-        host.persistPreset({
-          name: plan.presetName,
-          newText: newText,
+        host.editSource({
           range: {
             start: { line: b.node.loc.start.line, col: b.node.loc.start.col },
             end:   { line: b.node.loc.end.line,   col: b.node.loc.end.col },
           },
+          newText: newText,
         });
       } catch (err) {
-        console.error('[viewer] persistPreset failed:', err);
+        console.error('[viewer] editSource (named persist) failed:', err);
       }
     }
 
-    /** Delegate the auto-persist flow to host.persistNewPreset.
-        The host prompts the user for a name (because window.prompt
-        is unavailable inside VS Code webviews; each host knows
-        what's available), validates, builds the new binding line
-        from the supplied pairsText, writes it to source, and
-        invokes onPersisted(name) so the viewer queues that name
-        as the next plan's preset selection. */
+    /** Auto persist: ask the host to prompt for a binding name,
+        then ask it to append the new preset binding at end-of-
+        source. The two-step contract keeps line/text construction
+        and queuing the next-active-preset hint in the viewer
+        (single source of truth); each host implements only the
+        primitives (UI prompt + edit application). */
     function persistAutoAsNewBinding(plan) {
-      if (typeof host.persistNewPreset !== 'function') {
-        console.warn('[viewer] persist auto: host has no persistNewPreset');
+      if (typeof host.promptForName !== 'function'
+          || typeof host.editSource !== 'function') {
+        console.warn('[viewer] persist auto: host missing promptForName / editSource');
         return;
       }
       var autoValues = computeAutoValues(plan);
@@ -4435,18 +4438,21 @@
       if (parts.length === 0) return;
       var existingNames = [];
       if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
-      try {
-        host.persistNewPreset({
-          suggestedName: (plan.name || 'preset') + '_default_input',
-          pairsText: parts.join(', '),
-          existingNames: existingNames,
-          onPersisted: function(name) {
-            pendingPresetName = name;
-          },
+      var pairsText = parts.join(', ');
+      var suggested = (plan.name || 'preset') + '_default_input';
+      Promise.resolve(host.promptForName({
+        suggested: suggested,
+        existingNames: existingNames,
+      })).then(function(name) {
+        if (!name) return;
+        pendingPresetName = name;
+        host.editSource({
+          range: null,
+          newText: name + ' = preset(' + pairsText + ')',
         });
-      } catch (err) {
-        console.error('[viewer] persistNewPreset failed:', err);
-      }
+      }).catch(function(err) {
+        console.error('[viewer] persistAutoAsNewBinding failed:', err);
+      });
     }
 
     // Strip the outer "record(...)" wrapper from formatValue's
