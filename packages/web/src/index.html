@@ -64,6 +64,15 @@
     // the VS Code bootstrap; only the sampler-worker URL is required.
     window.__FLATPPL_CONFIG__ = {
       samplerWorkerUrl: new URL('vendor/sampler-worker.min.js', document.baseURI).href,
+      // Playground mode: when true, the source pane becomes a
+      // CodeMirror editor (lazy-loaded from vendor/codemirror.min.js
+      // on demand). Edits trigger a debounced viewer.update so the
+      // DAG and plots refresh as the user types. Set false to ship
+      // a pure read-only gallery — no CodeMirror bytes are then
+      // requested by the page. Enabled by default for the demo
+      // deploy of @flatppl/web; reusers of the package can flip
+      // this to false in their own index.html bootstrap.
+      playground: true,
     };
   </script>
   <script src="vendor/viewer.js"></script>
@@ -72,6 +81,7 @@
   <script src="manifest.js"></script>
   <script src="syntax.js"></script>
   <script src="layout.js"></script>
+  <script src="editor.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -93,8 +93,15 @@ console.log('  copied @flatppl/viewer source -> dist/vendor/viewer.js');
 // ---------------------------------------------------------------------
 // 3. Copy the page entry-point and app sources from src/ to dist/.
 
+// Files in src/ that are esbuild entry points (bundled into
+// dist/vendor/...) rather than served as-is. Skip them in the
+// flat copy to keep dist/ tidy and avoid serving ES-module
+// source the page would never actually load.
+const SRC_BUNDLE_ENTRIES = new Set(['codemirror-bundle-entry.js']);
+
 const SRC_FILES = await readdir(join(here, 'src'));
 for (const name of SRC_FILES) {
+  if (SRC_BUNDLE_ENTRIES.has(name)) continue;
   await copyFile(join(here, 'src', name), join(distDir, name));
   console.log(`  copied src/${name} -> dist/${name}`);
 }
@@ -157,21 +164,41 @@ const samplerWorkerBuildOpts = {
   legalComments: 'inline',
 };
 
+// CodeMirror 6 bundle for the playground editor. Loaded LAZILY by
+// the gallery (only when __FLATPPL_CONFIG__.playground is true), so
+// non-playground deploys never request it. We still always emit
+// it — the flag flips at runtime, and a static-host deploy can't
+// know in advance which deploys want the playground.
+const codemirrorBuildOpts = {
+  entryPoints: [join(here, 'src', 'codemirror-bundle-entry.js')],
+  outfile: join(vendorDir, 'codemirror.min.js'),
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  platform: 'browser',
+  target: ['es2020'],
+  legalComments: 'inline',
+};
+
 if (WATCH) {
-  const engineCtx = await esbuild.context(engineBuildOpts);
-  const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
-  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild()]);
+  const engineCtx     = await esbuild.context(engineBuildOpts);
+  const workerCtx     = await esbuild.context(samplerWorkerBuildOpts);
+  const codemirrorCtx = await esbuild.context(codemirrorBuildOpts);
+  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(), codemirrorCtx.rebuild()]);
   console.log('  bundled engine        -> dist/vendor/engine.min.js');
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
-  await Promise.all([engineCtx.watch(), workerCtx.watch()]);
-  console.log('  watching packages/engine/ for changes (Ctrl+C to exit)…');
+  console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
+  await Promise.all([engineCtx.watch(), workerCtx.watch(), codemirrorCtx.watch()]);
+  console.log('  watching for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
+    esbuild.build(codemirrorBuildOpts),
   ]);
   console.log('  bundled engine        -> dist/vendor/engine.min.js');
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
+  console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
 }
 
 // ---------------------------------------------------------------------
