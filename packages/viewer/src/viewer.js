@@ -4437,7 +4437,7 @@
       if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       try {
         host.persistNewPreset({
-          suggestedName: (plan.name || 'preset') + '_modified',
+          suggestedName: (plan.name || 'preset') + '_default_input',
           pairsText: parts.join(', '),
           existingNames: existingNames,
           onPersisted: function(name) {
@@ -5740,12 +5740,25 @@
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
       var prevPlan = currentPlotPlan;
       var plan = buildPlotPlan(binding, currentBindings);
-      // Carry the preset selection (and per-binding auto override)
-      // forward across plan rebuilds for the same binding so that
-      // source-change → rebuild doesn't reset the user's selection
-      // back to auto. pendingPresetName (set by auto-persist)
-      // overrides any carried selection so the user lands on the
-      // newly-coined preset.
+      // Carry user-driven plan state forward across rebuilds for
+      // the same binding so source-change → rebuild doesn't reset
+      // the user's view (sweep axis, selected preset, multi-output
+      // leaf, per-binding auto override). pendingPresetName (set
+      // by auto-persist) overrides any carried preset so the user
+      // lands on the newly-coined name.
+      if (plan && prevPlan && prevPlan.name === plan.name) {
+        if (prevPlan.sweepKey
+            && plan.axes
+            && plan.axes.some(function(a) { return a.key === prevPlan.sweepKey; })) {
+          plan.sweepKey = prevPlan.sweepKey;
+        }
+        if (prevPlan.outputKey
+            && plan.outputs
+            && plan.outputs.some(function(o) { return o.key === prevPlan.outputKey; })) {
+          plan.outputKey = prevPlan.outputKey;
+        }
+        plan.autoOverride = prevPlan.autoOverride;
+      }
       if (plan) {
         var targetName = null;
         if (pendingPresetName != null) {
@@ -5753,7 +5766,6 @@
           pendingPresetName = null;
         } else if (prevPlan && prevPlan.name === plan.name) {
           targetName = prevPlan.presetName;
-          plan.autoOverride = prevPlan.autoOverride;
         }
         if (targetName != null) {
           var found = plan.matchedPresets
