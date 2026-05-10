@@ -264,6 +264,16 @@
     // typed changes still fire normally because suppressOnChange is
     // only set during dispatch and restored immediately after.
     var suppressOnChange = false;
+    // Suppress cursor-driven navigation specifically. Used by
+    // replaceRange (host.editSource on the persist path): the doc
+    // changed but no user cursor movement happened — the cursor
+    // lingering somewhere from an earlier click would otherwise
+    // trigger a spurious onNavigate to that stale position. Note
+    // this is separate from suppressOnChange: replaceRange DOES
+    // want onChange to fire (so the viewer re-renders with the
+    // new source), it just doesn't want to be misread as user
+    // cursor navigation.
+    var suppressNavigate = false;
     // Last reported binding name from cursor-driven navigation. We
     // suppress repeats so the router doesn't see a flood of
     // identical navigateTo calls when the cursor sits on a single
@@ -310,7 +320,9 @@
       // movement, both of which feel natural in a code editor.
       // The router de-dupes identical states so repeated calls
       // with the same target are cheap.
-      if ((u.selectionSet || u.docChanged) && typeof opts.onNavigate === 'function') {
+      if ((u.selectionSet || u.docChanged)
+          && !suppressNavigate
+          && typeof opts.onNavigate === 'function') {
         var binding = bindingAtCursor();
         if (binding !== lastCursorBinding) {
           lastCursorBinding = binding;
@@ -383,12 +395,22 @@
           setSource, this allows onChange to fire — the dispatch
           changes the doc and the gallery's viewer.update path then
           re-renders through the standard debounced refresh. Used
-          by host.persistPreset to write a modified preset's values
-          back into source. */
+          by host.editSource to write a modified preset's values
+          back into source. The cursor-driven onNavigate is
+          suppressed during dispatch because the doc-changed event
+          would otherwise read the cursor's stale position (from
+          wherever the user last clicked in the editor) and
+          synchronously route a navigateTo to that binding,
+          overriding whatever node the viewer actually has focus on. */
       replaceRange: function (from, to, text) {
-        view.dispatch({
-          changes: { from: from, to: to, insert: text },
-        });
+        suppressNavigate = true;
+        try {
+          view.dispatch({
+            changes: { from: from, to: to, insert: text },
+          });
+        } finally {
+          suppressNavigate = false;
+        }
       },
       destroy: function () { try { view.destroy(); } catch (_) {} },
     };
