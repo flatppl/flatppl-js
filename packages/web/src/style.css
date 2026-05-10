@@ -1,0 +1,104 @@
+/* @flatppl/web — gallery shell layout + theming. */
+
+:root {
+  --bg:        #1e1e1e;
+  --bg-pane:   #252526;
+  --bg-header: #2d2d30;
+  --fg:        #cccccc;
+  --fg-muted:  #858585;
+  --border:    #3c3c3c;
+  --accent:    #007acc;
+  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'Source Code Pro',
+          Menlo, Consolas, monospace;
+}
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  width: 100%; height: 100%;
+  overflow: hidden;
+}
+
+/* Three-pane shell: header bar across the top, then file tree /
+   source view / viewer side-by-side. The narrow file tree gets a
+   fixed pixel width; source and viewer share the remaining space
+   with the viewer slightly wider, matching how most users want their
+   visual real estate distributed. */
+#app {
+  display: grid;
+  grid-template-rows: 36px 1fr;
+  grid-template-columns: 240px 1fr 1.5fr;
+  width: 100vw;
+  height: 100vh;
+}
+
+#app-header {
+  grid-column: 1 / -1;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 1em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-pane);
+  border-right: 1px solid var(--border);
+}
+.pane:last-child { border-right: none; }
+
+.pane-header {
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  padding: 0.4em 1em;
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  position: relative;
+}
+
+.pane-placeholder {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 0.9em;
+  padding: 0.8em;
+}
+
+#file-tree { padding: 0.5em 0; }
+
+#source-view {
+  margin: 0;
+  padding: 1em;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--fg);
+}
+
+/* The viewer manages its own internal scroll and resize, so the
+   right pane's body must not introduce a second scrollbar. */
+#viewer-pane > .pane-body { overflow: hidden; }
+
+#flatppl-viewer-root {
+  width: 100%;
+  height: 100%;
+}

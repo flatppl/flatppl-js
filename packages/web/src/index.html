@@ -1,39 +1,49 @@
 <!DOCTYPE html>
 <!--
   @flatppl/web — gallery shell entry point.
-  Skeleton placeholder. Subsequent steps replace the body with the
-  three-pane layout (file tree, source view, viewer) and wire up the
-  fetch-based async resolver, hash routing, manifest loader, and
-  syntax-highlighted source pane.
+
+  Three-pane layout:
+    - left:   file tree (populated from a manifest fetched at startup,
+              wired in step 1.4)
+    - middle: source view (read-only; syntax highlighting added in
+              step 1.5)
+    - right:  the FlatPPL DAG / plot viewer
+
+  This step (1.2) wires the layout itself and mounts the viewer
+  against an inline source string so the integration works end-to-end
+  before fetch and the manifest land.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FlatPPL</title>
-  <style>
-    html, body {
-      margin: 0; padding: 0;
-      background: #1e1e1e;
-      color: #cccccc;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      width: 100%; height: 100%;
-    }
-    #boot {
-      padding: 2em;
-      max-width: 40em;
-      margin: 0 auto;
-      line-height: 1.5;
-    }
-    code { color: #9cdcfe; }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="boot">
-    <h1>FlatPPL</h1>
-    <p>Web host package skeleton. The gallery shell lands in subsequent
-    steps. Open the browser console to confirm <code>app.js</code>
-    loaded.</p>
+  <div id="app">
+    <header id="app-header">FlatPPL</header>
+
+    <aside class="pane" id="files-pane">
+      <div class="pane-header">Files</div>
+      <div class="pane-body" id="file-tree">
+        <div class="pane-placeholder">File tree appears here once a manifest is loaded.</div>
+      </div>
+    </aside>
+
+    <section class="pane" id="source-pane">
+      <div class="pane-header" id="source-header">Source</div>
+      <div class="pane-body">
+        <pre id="source-view"></pre>
+      </div>
+    </section>
+
+    <section class="pane" id="viewer-pane">
+      <div class="pane-header">Visualization</div>
+      <div class="pane-body">
+        <div id="flatppl-viewer-root"></div>
+      </div>
+    </section>
   </div>
 
   <script src="vendor/cytoscape.min.js"></script>
