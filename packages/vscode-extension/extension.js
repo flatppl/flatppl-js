@@ -169,6 +169,19 @@ function activate(context) {
     if (!FlatPPLPanel.currentPanel) return;
     if (e.textEditor.document.languageId !== 'flatppl') return;
 
+    // Only react to user-driven cursor moves (Keyboard / Mouse).
+    // Programmatic edits — including the WorkspaceEdit applied by
+    // the panel's persistPreset handler — emit selection-change
+    // events with kind=Command or kind=undefined. Treating those
+    // as cursor navigation here would push the cursor's current
+    // binding back to the webview, overriding whatever node the
+    // user was focused on in the visualizer (e.g. they clicked
+    // Persist while viewing forward_kernel; without this gate,
+    // focus jumps to wherever the editor cursor happened to be).
+    const k = e.kind;
+    const KIND = vscode.TextEditorSelectionChangeKind;
+    if (k !== KIND.Keyboard && k !== KIND.Mouse) return;
+
     clearTimeout(updateTimeout);
     updateTimeout = setTimeout(() => {
       const { bindings } = getParsed(e.textEditor.document);
