@@ -3353,27 +3353,37 @@ function findMatchingPresets(signature, bindings) {
  * binding like `some_name = cartprod(name1=some_set, ...)` can be
  * interpreted as a possibly suitable domain"). The viewer uses
  * this to populate a "Domain" dropdown — selecting one sets the
- * x-axis limits per kwarg from each interval's [lo, hi].
+ * x-axis range per kwarg, or falls back to the per-binding auto-
+ * fit for kwargs whose field is a bare set name rather than a
+ * bounded interval.
  *
- * Match rule (Phase 1 — top-level interval(numLit, numLit) only):
+ * Match rule:
  *   - b.ir.op === 'cartprod'
  *   - the set of cartprod kwarg names equals the set of signature
  *     input kwargNames
- *   - every field is an `interval(lo, hi)` call with numeric-literal
- *     bounds (constant-resolvable, including bare literals, refs to
- *     literal bindings, or simple arithmetic — same fold rule as
- *     findMatchingPresets).
+ *   - every field is one of
+ *       (a) `interval(lo, hi)` with constant-resolvable numeric
+ *           bounds (lo < hi), OR
+ *       (b) a bare named-set reference: `reals`, `posreals`,
+ *           `nonnegreals`, `unitinterval`, `integers`,
+ *           `posintegers`, `nonnegintegers`, `booleans`.
+ *     (a) contributes a {lo, hi} entry to `ranges`; (b) does not —
+ *     the named set is recorded in `setNames` so tooling can display
+ *     it, but it's unbounded for axis-fit purposes, and the viewer
+ *     uses the per-axis auto-fit instead.
  *
- * Returns an array of { name, ranges } where `ranges` maps the
- * input's kwargName → { lo: number, hi: number }. Empty array when
- * no domains match.
+ * Returns an array of { name, ranges, setNames } where:
+ *   - ranges:   kwargName → { lo, hi }       (interval bounds only)
+ *   - setNames: kwargName → 'reals' | …      (named-set fields only)
  *
- * Future work (deferred): wider set primitives (cartpow, named
- * sets like `reals`), and unwrapping fixed(interval(...)) once we
- * decide whether "fixed bounds" carries useful semantics for a
- * domain (vs. a preset point where it means "hold constant during
- * optimisation").
+ * Future work (deferred): cartpow for vector inputs; unwrapping
+ * fixed(...) wrappers around set fields.
  */
+const NAMED_SET_NAMES = new Set([
+  'reals', 'posreals', 'nonnegreals', 'unitinterval',
+  'integers', 'posintegers', 'nonnegintegers', 'booleans',
+]);
+
 function findMatchingDomains(signature, bindings) {
   if (!signature || !bindings || !Array.isArray(signature.inputs)) return [];
   const expected = new Set();
@@ -3388,26 +3398,38 @@ function findMatchingDomains(signature, bindings) {
     if (fields.length !== expected.size) continue;
     let allMatch = true;
     const ranges = {};
+    const setNames = {};
     for (const f of fields) {
       if (!expected.has(f.name)) { allMatch = false; break; }
-      // The field value may have been lifted to a __anon binding — chase
-      // refs to find the underlying interval(...) call.
+      // Chase a single ref through lifted __anon bindings so the
+      // surface form `cartprod(x = reals)` matches whether the lift
+      // pass moved the value out or not.
       let inner = f.value;
       if (inner && inner.kind === 'ref' && inner.ns === 'self') {
         const refTarget = bindings.get(inner.name);
         if (refTarget && refTarget.ir) inner = refTarget.ir;
       }
-      if (!inner || inner.kind !== 'call' || inner.op !== 'interval'
-          || !Array.isArray(inner.args) || inner.args.length !== 2) {
-        allMatch = false; break;
+      // (a) interval(lo, hi) with literal-resolvable bounds.
+      if (inner && inner.kind === 'call' && inner.op === 'interval'
+          && Array.isArray(inner.args) && inner.args.length === 2) {
+        const lo = resolveConstant(inner.args[0], bindings, new Set());
+        const hi = resolveConstant(inner.args[1], bindings, new Set());
+        if (lo == null || hi == null || !(lo < hi)) { allMatch = false; break; }
+        ranges[f.name] = { lo, hi };
+        continue;
       }
-      const lo = resolveConstant(inner.args[0], bindings, new Set());
-      const hi = resolveConstant(inner.args[1], bindings, new Set());
-      if (lo == null || hi == null || !(lo < hi)) { allMatch = false; break; }
-      ranges[f.name] = { lo, hi };
+      // (b) bare named-set reference (parser emits these as const
+      // refs in the IR — see builtins.SETS).
+      const setName = inner && (inner.kind === 'const' || inner.kind === 'ref')
+        ? inner.name : null;
+      if (setName && NAMED_SET_NAMES.has(setName)) {
+        setNames[f.name] = setName;
+        continue;
+      }
+      allMatch = false; break;
     }
     if (!allMatch) continue;
-    out.push({ name, ranges });
+    out.push({ name, ranges, setNames });
   }
   return out;
 }
