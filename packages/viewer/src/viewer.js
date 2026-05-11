@@ -5081,7 +5081,7 @@
       var existingNames = [];
       if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       var pairsText = parts.join(', ');
-      var suggested = (plan.name || 'domain') + '_range';
+      var suggested = (plan.name || 'domain') + '_domain';
       Promise.resolve(host.promptForName({
         suggested: suggested,
         existingNames: existingNames,
