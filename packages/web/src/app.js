@@ -285,7 +285,16 @@
         var liveText = playgroundEditor
           ? playgroundEditor.getSource()
           : (lastRenderedSource || '');
-        viewer.update(liveText, state.target || null);
+        // pushHistory: true — target-only navigation within one model
+        // (source-pane click, cursor-driven onNavigate from the
+        // editor, file-tree re-click on the current entry). Treat it
+        // as a user-initiated step so the viewer's in-pane back button
+        // becomes useful for "where was I before I jumped to X". Has
+        // the side-effect that browser back/forward through the same
+        // model will also grow the viewer history; that's acceptable
+        // (history is capped, and the viewer's back-btn just walks
+        // whatever's on the stack).
+        viewer.update(liveText, state.target || null, { pushHistory: true });
       }
       document.title = state.model
         ? ('FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : ''))

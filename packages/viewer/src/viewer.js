@@ -6399,18 +6399,22 @@
       });
     }
 
-    // Public control surface. update(source, target) re-parses and
-    // re-renders; dispose() is a placeholder for now (a full teardown
-    // would dispose cytoscape/echarts instances and remove every
-    // window/document listener; we'll wire that when there's a real
-    // re-mount use case).
+    // Public control surface. update(source, target, opts?) re-parses
+    // and re-renders. opts.pushHistory: when true (default false),
+    // treat the update as a user-initiated navigation and grow the
+    // viewer's internal back-button stack (matching how DAG dbltap
+    // pushes). Hosts that route through the browser's URL history
+    // (e.g. the gallery's hash-based router) set this on user-driven
+    // navigations so the in-viewer back button stays usable for
+    // target-only steps within one model.
+    // dispose() is a placeholder for now.
     return {
-      update: function(source, target) {
+      update: function(source, target, opts) {
         applySourceUpdate({
           source: source,
           targetName: target,
           type: target ? 'sourceUpdate' : 'showModule',
-          pushHistory: false,
+          pushHistory: !!(opts && opts.pushHistory),
         });
       },
       dispose: function() {},
