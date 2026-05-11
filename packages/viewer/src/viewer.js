@@ -5093,7 +5093,7 @@
         existingNames: existingNames,
       })).then(function(name) {
         if (!name) return;
-        pendingPresetName = name;  // reuse the same hand-off for focus restoration
+        pendingDomainName = name;
         host.editSource({
           range: null,
           newText: name + ' = cartprod(' + pairsText + ')',
@@ -6413,11 +6413,14 @@
       });
     }
 
-    // Set by persistAutoAsNewBinding (auto-persist flow) — the
-    // freshly-coined preset name we want the rebuilt plan to land
-    // on as its initial selection. Consumed once by the next
-    // updatePlotForBinding call (then cleared).
+    // Set by persistAutoAsNewBinding / persistAutoDomainAsNewBinding
+    // — the freshly-coined preset / domain name the rebuilt plan
+    // should land on as its initial selection. Consumed once by the
+    // next updatePlotForBinding call (then cleared). Two separate
+    // slots so a domain save-as can't accidentally knock the user
+    // off a selected preset and vice-versa.
     var pendingPresetName = null;
+    var pendingDomainName = null;
 
     // Call after every focusNode() to update the Plot tab's enabled
     // state and (if visible) re-render its content.
@@ -6425,12 +6428,16 @@
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
       var prevPlan = currentPlotPlan;
       var plan = buildPlotPlan(binding, currentBindings);
-      // Carry user-driven plan state forward across rebuilds for
-      // the same binding so source-change → rebuild doesn't reset
-      // the user's view (sweep axis, selected preset, multi-output
-      // leaf, per-binding auto override). pendingPresetName (set
-      // by auto-persist) overrides any carried preset so the user
-      // lands on the newly-coined name.
+      // Carry user-driven plan state forward across rebuilds for the
+      // same binding so source-change → rebuild doesn't reset the
+      // user's view (sweep axis, selected preset / domain, multi-
+      // output leaf, per-binding auto-overrides for both inputs and
+      // domain). pendingPresetName / pendingDomainName (set by
+      // auto-save-as) override the carried selection only when the
+      // freshly-coined name actually matches one of the new plan's
+      // matchedPresets / matchedDomains — otherwise we fall back to
+      // the previous selection, so a domain save-as doesn't quietly
+      // throw the inputs dropdown back to auto.
       if (plan && prevPlan && prevPlan.name === plan.name) {
         if (prevPlan.sweepKey
             && plan.axes
@@ -6443,19 +6450,47 @@
           plan.outputKey = prevPlan.outputKey;
         }
         plan.autoOverride = prevPlan.autoOverride;
+        plan.domainAutoOverride = prevPlan.domainAutoOverride;
       }
       if (plan) {
-        var targetName = null;
+        // Resolve preset selection: try pending (from save-as) first;
+        // if it matches a current preset, use it. Otherwise fall back
+        // to the previous selection.
+        var presetTarget = null;
         if (pendingPresetName != null) {
-          targetName = pendingPresetName;
+          var pn = pendingPresetName;
           pendingPresetName = null;
-        } else if (prevPlan && prevPlan.name === plan.name) {
-          targetName = prevPlan.presetName;
+          if (plan.matchedPresets
+              && plan.matchedPresets.some(function(p) { return p.name === pn; })) {
+            presetTarget = pn;
+          }
         }
-        if (targetName != null) {
-          var found = plan.matchedPresets
-            && plan.matchedPresets.some(function(p) { return p.name === targetName; });
-          if (found) plan.presetName = targetName;
+        if (presetTarget == null && prevPlan && prevPlan.name === plan.name) {
+          presetTarget = prevPlan.presetName;
+        }
+        if (presetTarget != null
+            && plan.matchedPresets
+            && plan.matchedPresets.some(function(p) { return p.name === presetTarget; })) {
+          plan.presetName = presetTarget;
+        }
+
+        // Same shape for domain selection.
+        var domainTarget = null;
+        if (pendingDomainName != null) {
+          var dn = pendingDomainName;
+          pendingDomainName = null;
+          if (plan.matchedDomains
+              && plan.matchedDomains.some(function(d) { return d.name === dn; })) {
+            domainTarget = dn;
+          }
+        }
+        if (domainTarget == null && prevPlan && prevPlan.name === plan.name) {
+          domainTarget = prevPlan.domainName;
+        }
+        if (domainTarget != null
+            && plan.matchedDomains
+            && plan.matchedDomains.some(function(d) { return d.name === domainTarget; })) {
+          plan.domainName = domainTarget;
         }
       }
       currentPlotPlan = plan;
