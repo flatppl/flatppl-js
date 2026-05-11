@@ -4479,19 +4479,25 @@
 
       frag.appendChild(wrap);
 
+      // Reset / save action buttons live in a tight inline-flex group
+      // so the two icons read as a single control rather than each
+      // inheriting the toolbar's wider gap.
       // Reset button — visible only when the active selection has
       // overrides. Clears the override entry (auto → plan.autoOverride
       // = null; named → presetOverrides.delete(name)) and re-renders
       // through onChange. The dropdown row's "(modified)" tag then
       // disappears with no further user action.
       if (hasOverrides(plan)) {
+        var actionGroup = document.createElement('span');
+        actionGroup.style.display = 'inline-flex';
+        actionGroup.style.gap = '2px';
         var resetBtn = makeActionButton('discard', 'Reset preset to source values');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
           setOverrideFor(plan, null);
           onChange();
         });
-        frag.appendChild(resetBtn);
+        actionGroup.appendChild(resetBtn);
 
         // Persist button — visible when the active selection is a
         // named preset with overrides AND the host supports
@@ -4516,8 +4522,9 @@
             ev.stopPropagation();
             persistActive(plan);
           });
-          frag.appendChild(persistBtn);
+          actionGroup.appendChild(persistBtn);
         }
+        frag.appendChild(actionGroup);
       }
       return frag;
     }
@@ -4698,16 +4705,20 @@
       wrap.appendChild(panel);
       frag.appendChild(wrap);
 
-      // Reset / save / save-as icons mirror the Inputs control.
-      // Visible only when the active domain has overrides.
+      // Reset / save / save-as icons mirror the Inputs control,
+      // grouped in a tight inline-flex span so they read as one
+      // pair rather than picking up the toolbar's wider gap.
       if (hasDomainOverrides(plan)) {
+        var actionGroup = document.createElement('span');
+        actionGroup.style.display = 'inline-flex';
+        actionGroup.style.gap = '2px';
         var resetBtn = makeActionButton('discard', 'Reset domain to source ranges');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
           setDomainOverrideFor(plan, null);
           onChange();
         });
-        frag.appendChild(resetBtn);
+        actionGroup.appendChild(resetBtn);
 
         if (canPersistDomain(plan)) {
           var isSaveAs = (plan.domainName == null);
@@ -4721,8 +4732,9 @@
             ev.stopPropagation();
             persistDomain(plan);
           });
-          frag.appendChild(persistBtn);
+          actionGroup.appendChild(persistBtn);
         }
+        frag.appendChild(actionGroup);
       }
 
       return frag;
@@ -5058,24 +5070,37 @@
       var override = plan.domainAutoOverride;
       var ranges = (override && override.ranges) || {};
       // Enumerate every signature input so the resulting cartprod has
-      // full shape coverage.
+      // full shape coverage. Per-kwarg precedence:
+      //   1. user override range          → interval(lo, hi)
+      //   2. auto-fit cached for this kwarg in profileRangeCache
+      //      (the plot engine populated it when the user previously
+      //      had this kwarg selected as sweep axis) → interval(lo, hi)
+      //   3. natural base set from the input's source descriptor
+      //      → bare named set (reals / posreals / …)
+      // Step 2 means an axis the user looked at but never edited
+      // still persists with its observed bounds rather than being
+      // weakened to the natural set.
       var inputs = (plan.signature && plan.signature.inputs) || [];
       var parts = [];
       for (var i = 0; i < inputs.length; i++) {
         var kw = inputs[i].kwargName;
         if (!kw) continue;
-        if (Object.prototype.hasOwnProperty.call(ranges, kw)) {
-          var r = ranges[kw];
-          if (!r || !Number.isFinite(r.lo) || !Number.isFinite(r.hi)) {
-            parts.push(kw + ' = ' + defaultSetSourceForKwarg(plan, kw));
-            continue;
-          }
+        var r = Object.prototype.hasOwnProperty.call(ranges, kw) ? ranges[kw] : null;
+        if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
           parts.push(kw + ' = interval('
             + formatScalarForSource(r.lo) + ', '
             + formatScalarForSource(r.hi) + ')');
-        } else {
-          parts.push(kw + ' = ' + defaultSetSourceForKwarg(plan, kw));
+          continue;
         }
+        var cached = profileRangeCache.get(
+          plan.name + '|' + kw + '|D=' + (plan.domainName || ''));
+        if (cached && Number.isFinite(cached.lo) && Number.isFinite(cached.hi)) {
+          parts.push(kw + ' = interval('
+            + formatScalarForSource(cached.lo) + ', '
+            + formatScalarForSource(cached.hi) + ')');
+          continue;
+        }
+        parts.push(kw + ' = ' + defaultSetSourceForKwarg(plan, kw));
       }
       if (parts.length === 0) return;
       var existingNames = [];
