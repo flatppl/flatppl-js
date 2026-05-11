@@ -133,13 +133,13 @@
       '# plot UI offers in its preset dropdown for L / forward_kernel.',
       '# pars1 sits near the MLE region (peak of the log-likelihood);',
       '# pars2 picks a different point so the user can compare.',
-      'pars1 = preset(theta1 = 1.4, theta2 = 1.0)',
-      'pars2 = preset(theta1 = 0.5, theta2 = 2.0)',
+      'pars1 = record(theta1 = 1.4, theta2 = 1.0)',
+      'pars2 = record(theta1 = 0.5, theta2 = 2.0)',
       '',
       '# Preset bindings for f_b = fn(abs(_) * _) — the arg1/arg2 holes',
       '# get auto-named after fn lowering. Two arbitrary value pairs.',
-      'some_args1 = preset(arg1 = 2.0, arg2 = 1.5)',
-      'some_args2 = preset(arg1 = -1.0, arg2 = 0.5)',
+      'some_args1 = record(arg1 = 2.0, arg2 = 1.5)',
+      'some_args2 = record(arg1 = -1.0, arg2 = 0.5)',
       '',
     ].join('\n');
 

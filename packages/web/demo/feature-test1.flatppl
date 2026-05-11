@@ -86,11 +86,11 @@ foo_dist = lawof(foo)
 lp_obs = logdensityof(obs_dist, record(obs = observed_data))
 d_obs  = densityof(obs_dist, record(obs = observed_data))
 
-pars1 = preset(theta1 = 1.4, theta2 = 1.0)
-pars2 = preset(theta1 = 0.5, theta2 = 2.0)
+pars1 = record(theta1 = 1.4, theta2 = 1.0)
+pars2 = record(theta1 = 0.5, theta2 = 2.0)
 
-some_args1 = preset(arg1 = 2.0, arg2 = 1.5)
-some_args2 = preset(arg1 = -1.0, arg2 = 0.5)
+some_args1 = record(arg1 = 2.0, arg2 = 1.5)
+some_args2 = record(arg1 = -1.0, arg2 = 0.5)
 
 f_demo = fn(record(a = _, b = 2 * _))
 y = f_demo(1, 2)

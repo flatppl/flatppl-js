@@ -1088,17 +1088,27 @@
         var curValues = null;
         if (b && b.type === 'literal' && b.node && b.node.value
             && b.node.value.type === 'CallExpr' && b.node.value.callee
-            && b.node.value.callee.name === 'preset') {
+            && b.node.value.callee.name === 'record') {
           // Best-effort literal extraction; bail to no-match if
           // anything looks non-trivial (which falls into the
-          // "kwarg unknown" branch below).
+          // "kwarg unknown" branch below). A NumberLiteral wrapped
+          // in fixed(...) (spec §03: "held constant during
+          // optimization" hint) is identity at runtime, so we look
+          // through the wrapper to read the underlying number —
+          // otherwise persist-time reconciliation would not see the
+          // override's value matching source and would fail to prune.
           curValues = {};
           var args = b.node.value.args || [];
           for (var ai = 0; ai < args.length; ai++) {
             var arg = args[ai];
-            if (arg.type === 'KeywordArg' && arg.value
-                && arg.value.type === 'NumberLiteral') {
-              curValues[arg.name] = arg.value.value;
+            if (arg.type !== 'KeywordArg' || !arg.value) continue;
+            var v = arg.value;
+            if (v.type === 'CallExpr' && v.callee && v.callee.name === 'fixed'
+                && Array.isArray(v.args) && v.args.length === 1) {
+              v = v.args[0];
+            }
+            if (v && v.type === 'NumberLiteral') {
+              curValues[arg.name] = v.value;
             }
           }
         }
@@ -2675,14 +2685,14 @@
         var ks = Object.keys(m.fields);
         var fparts = new Array(ks.length);
         for (var i = 0; i < ks.length; i++) {
-          // Sub-fields don't inherit the top-level wrapper choice;
-          // nested record-shape measures always render as 'record(…)'.
-          // Only the outermost call honours the caller's wrapper hint
-          // — for `pars1 = preset(theta1=1.4, theta2=1.0)` the
-          // top-level renders as preset(...) but any sub-field that
-          // happens to be record-typed stays record(...).
           fparts[i] = ks[i] + ' = ' + formatConstantMeasure(m.fields[ks[i]]);
         }
+        // wrapperOp was historically used to surface `preset(...)` for
+        // user-authored preset bindings — spec §03 removed preset() as
+        // a callable, so every record-shape measure now renders as
+        // record(...). The parameter is kept for one release in case
+        // other callsites still pass it; null falls through to the
+        // default.
         return (wrapperOp || 'record') + '(' + fparts.join(', ') + ')';
       }
       if (Array.isArray(m.elems)) {
@@ -2895,27 +2905,13 @@
     // record; the simple len-based cutoff is fine here (the value is
     // either short and reads at 36px or long enough to want 16px).
     function renderConstantRecord(measure, bindingName) {
-      // Surface-form wrapper: most record-shape bindings render as
-      // 'record(…)'; preset bindings keep their 'preset(…)' wrapper
-      // so the type-level distinction (this is a preset, not a
-      // generic record) survives into the plot pane. Per spec
-      // §sec:valuetypes presets are semantically equivalent to
-      // records — but the surface label still reads better as
-      // preset(…) for user-authored preset bindings, since that's
-      // what's in their source. Any other ops that share the
-      // record-shape derivation (jointchain, cartprod, …) could
-      // be added here in future; default is 'record'.
-      // currentBindings is the pre-lift binding map from processSource;
-      // its entries don't carry b.ir (that's populated only on the
-      // post-lift bindings buildDerivations returns). The source-level
-      // AST callee is available on b.node.value though, so read the
-      // wrapper-op from there.
-      var wrapper = null;
-      var b = currentBindings && currentBindings.get(bindingName);
-      var calleeName = b && b.node && b.node.value
-                    && b.node.value.callee && b.node.value.callee.name;
-      if (calleeName === 'preset') wrapper = 'preset';
-      renderTextValue(bindingName, formatConstantMeasure(measure, wrapper));
+      // Surface form: every record-shape binding now reads as
+      // 'record(…)' in the plot pane (spec §03 removed `preset(...)`
+      // entirely — preset points are now just record(...) bindings
+      // matched contextually). Any other ops that share the record-
+      // shape derivation (jointchain, cartprod, …) could be added
+      // here in future; default is 'record'.
+      renderTextValue(bindingName, formatConstantMeasure(measure, null));
     }
 
     function renderRecordMarginals(measure, bindingName, extraToolbarControls) {
@@ -4140,6 +4136,23 @@
       return {};
     }
 
+    /** Held-constant kwargs for the active preset. Drawn from the
+        engine's findMatchingPresets `fixedNames` (kwargs whose source
+        value was wrapped in `fixed(...)` — spec §03's "hold constant
+        during optimization" hint). For the auto preset no fixed-hint
+        exists, so the set is always empty. Returns a Set so callers
+        can do .has(name) directly. */
+    function activeFixedNamesFor(plan) {
+      if (plan.presetName != null && plan.matchedPresets) {
+        for (var i = 0; i < plan.matchedPresets.length; i++) {
+          if (plan.matchedPresets[i].name === plan.presetName) {
+            return plan.matchedPresets[i].fixedNames || new Set();
+          }
+        }
+      }
+      return new Set();
+    }
+
     // Build a "Inputs: [auto / pars1 / …]" control fragment for the
     // profile / kernel-sample plot toolbar.
     //
@@ -4379,13 +4392,24 @@
       if (!b || !b.node || !b.node.value
           || b.node.value.type !== 'CallExpr'
           || !b.node.value.callee
-          || b.node.value.callee.name !== 'preset') return false;
+          || b.node.value.callee.name !== 'record') return false;
+      // Persist only when every field is a literal — possibly wrapped
+      // in fixed(...) which is identity at runtime (spec §03) and just
+      // a "hold constant" hint we preserve when rewriting. Anything
+      // more structural (refs, nested calls) means the source isn't
+      // edit-in-place writable; canPersist returns false so the
+      // toolbar hides the button rather than offering a broken
+      // write-back.
       var args = b.node.value.args || [];
       for (var i = 0; i < args.length; i++) {
         var a = args[i];
         if (a.type !== 'KeywordArg' || !a.value) return false;
-        if (a.value.type !== 'NumberLiteral'
-            && a.value.type !== 'BoolLiteral') return false;
+        var v = a.value;
+        if (v.type === 'CallExpr' && v.callee && v.callee.name === 'fixed'
+            && Array.isArray(v.args) && v.args.length === 1) {
+          v = v.args[0];
+        }
+        if (v.type !== 'NumberLiteral' && v.type !== 'BoolLiteral') return false;
       }
       return true;
     }
@@ -4400,9 +4424,14 @@
       return String(v);
     }
 
-    /** Build the replacement source text for a named preset binding,
-        merging the current source RHS kwargs with the active
-        override values. Preserves source kwarg order. */
+    /** Build the replacement source text for a named preset-point
+        record binding, merging the current source RHS kwargs with the
+        active override values. Preserves source kwarg order and
+        re-wraps overridden values in `fixed(...)` when the original
+        source did so — the spec's "held constant" hint must survive
+        the round-trip, otherwise persisting a tweak to an
+        optimization starting point would silently strip the
+        hold-constant annotation. */
     function buildPersistedPresetLine(plan) {
       var active = activePresetFor(plan);
       var b = currentBindings.get(plan.presetName);
@@ -4411,11 +4440,19 @@
       for (var i = 0; i < srcArgs.length; i++) {
         var sa = srcArgs[i];
         var kwarg = sa.name;
-        var v = (active.values && Object.prototype.hasOwnProperty.call(active.values, kwarg))
-          ? active.values[kwarg] : sa.value.value;
-        parts.push(kwarg + ' = ' + formatScalarForSource(v));
+        var srcVal = sa.value;
+        var wasFixed = srcVal && srcVal.type === 'CallExpr'
+                     && srcVal.callee && srcVal.callee.name === 'fixed';
+        var innerSrc = wasFixed ? srcVal.args[0] : srcVal;
+        var override = active.values
+                    && Object.prototype.hasOwnProperty.call(active.values, kwarg);
+        var v = override ? active.values[kwarg]
+                         : (innerSrc && innerSrc.value);
+        var text = formatScalarForSource(v);
+        if (wasFixed) text = 'fixed(' + text + ')';
+        parts.push(kwarg + ' = ' + text);
       }
-      return plan.presetName + ' = preset(' + parts.join(', ') + ')';
+      return plan.presetName + ' = record(' + parts.join(', ') + ')';
     }
 
     /** Invoke host.persistPreset for the active selection. Routes
@@ -4475,7 +4512,7 @@
       var existingNames = [];
       if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       var pairsText = parts.join(', ');
-      var suggested = (plan.name || 'preset') + '_default_input';
+      var suggested = (plan.name || 'inputs') + '_default';
       Promise.resolve(host.promptForName({
         suggested: suggested,
         existingNames: existingNames,
@@ -4484,7 +4521,7 @@
         pendingPresetName = name;
         host.editSource({
           range: null,
-          newText: name + ' = preset(' + pairsText + ')',
+          newText: name + ' = record(' + pairsText + ')',
         });
       }).catch(function(err) {
         console.error('[viewer] persistAutoAsNewBinding failed:', err);
@@ -5034,6 +5071,22 @@
       xLabel.textContent = 'x-Axis:';
       xLabel.style.opacity = '0.6';
 
+      // Hide kwargs the active preset wrapped in `fixed(...)` —
+      // spec §03 marks those as "held constant during optimization",
+      // so offering them as a sweep axis contradicts the annotation.
+      // Edge case: if filtering removes every option (every kwarg was
+      // marked fixed), fall back to the unfiltered list so the user
+      // can still pick something; the absence of any sweepable axis
+      // is a model-authoring decision, not a viewer constraint.
+      var fixedNames = activeFixedNamesFor(plan);
+      var visibleAxes = plan.axes;
+      if (fixedNames && fixedNames.size > 0) {
+        var kept = plan.axes.filter(function(a) {
+          return !fixedNames.has(a.key) || a.key === plan.sweepKey;
+        });
+        if (kept.length > 0) visibleAxes = kept;
+      }
+
       var axisEl;
       if (hasAxes) {
         axisEl = document.createElement('select');
@@ -5043,11 +5096,11 @@
         axisEl.style.padding = '2px 4px';
         axisEl.style.fontSize = '1em';
         axisEl.title = 'Axis to sweep';
-        for (var ai = 0; ai < plan.axes.length; ai++) {
+        for (var ai = 0; ai < visibleAxes.length; ai++) {
           var opt = document.createElement('option');
-          opt.value = plan.axes[ai].key;
-          opt.textContent = plan.axes[ai].label;
-          if (plan.axes[ai].key === plan.sweepKey) opt.selected = true;
+          opt.value = visibleAxes[ai].key;
+          opt.textContent = visibleAxes[ai].label;
+          if (visibleAxes[ai].key === plan.sweepKey) opt.selected = true;
           axisEl.appendChild(opt);
         }
         axisEl.addEventListener('change', function(e) {
