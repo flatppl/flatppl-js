@@ -1087,7 +1087,11 @@
       presetOverrides.forEach(function(entry, name) {
         var b = currentBindings.get(name);
         var curValues = null;
-        if (b && b.type === 'literal' && b.node && b.node.value
+        // analyzer.classifyStatement only returns 'literal' for
+        // primitive literal RHS (NumberLiteral etc.); record(...)
+        // binds with type='call'. So gate on the AST callee name
+        // alone — that's the structural property we actually need.
+        if (b && b.node && b.node.value
             && b.node.value.type === 'CallExpr' && b.node.value.callee
             && b.node.value.callee.name === 'record') {
           // Best-effort literal extraction; bail to no-match if
@@ -1149,7 +1153,7 @@
         var b = currentBindings.get(name);
         var sourceKwargs = null;
         var sourceIntervals = null;
-        if (b && b.type === 'literal' && b.node && b.node.value
+        if (b && b.node && b.node.value
             && b.node.value.type === 'CallExpr' && b.node.value.callee
             && b.node.value.callee.name === 'cartprod') {
           sourceKwargs = new Set();
