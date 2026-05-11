@@ -1038,6 +1038,14 @@
     //                                       prune them when that
     //                                       kwarg disappears)
     var presetOverrides = new Map();
+    // Module-wide overrides on named preset-domain bindings (cartprod
+    // forms). Same lifetime/reconciliation pattern as presetOverrides:
+    // persists across binding navigation, prunes per kwarg against
+    // current source values, drops the entry when the source binding
+    // is gone.
+    //   Map<domainName, { ranges }>
+    // ranges: { kwargName → { lo, hi } }   user-set range overrides
+    var domainOverrides = new Map();
     var rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
@@ -1125,13 +1133,56 @@
             delete vs[k];                          // override matches source
           }
         }
-        if (entry.limitsKwarg
-            && !Object.prototype.hasOwnProperty.call(curValues, entry.limitsKwarg)) {
-          entry.limits = null;
-          entry.limitsKwarg = null;
-        }
-        if (Object.keys(vs).length === 0 && !entry.limits) {
+        if (Object.keys(vs).length === 0) {
           presetOverrides.delete(name);
+        }
+      });
+
+      // Reconcile module-wide domain overrides against the new
+      // source. Mirrors the preset-override loop above:
+      //   - If the cartprod binding is gone, drop the override.
+      //   - For each kwarg in override.ranges, if the source interval
+      //     literals match (lo and hi equal) drop it as redundant;
+      //     if the kwarg is gone from the source, drop it as
+      //     not applicable.
+      //   - If the override is empty after pruning, retire it.
+      domainOverrides.forEach(function(entry, name) {
+        var b = currentBindings.get(name);
+        var curRanges = null;
+        if (b && b.type === 'literal' && b.node && b.node.value
+            && b.node.value.type === 'CallExpr' && b.node.value.callee
+            && b.node.value.callee.name === 'cartprod') {
+          curRanges = {};
+          var args = b.node.value.args || [];
+          for (var ai = 0; ai < args.length; ai++) {
+            var arg = args[ai];
+            if (arg.type !== 'KeywordArg' || !arg.value) continue;
+            var ic = arg.value;
+            if (ic.type !== 'CallExpr' || !ic.callee
+                || ic.callee.name !== 'interval'
+                || !Array.isArray(ic.args) || ic.args.length !== 2) continue;
+            if (ic.args[0].type === 'NumberLiteral'
+                && ic.args[1].type === 'NumberLiteral') {
+              curRanges[arg.name] = { lo: ic.args[0].value, hi: ic.args[1].value };
+            }
+          }
+        }
+        if (!curRanges) {
+          domainOverrides.delete(name);
+          return;
+        }
+        var rs = entry.ranges || {};
+        for (var k in rs) {
+          if (!Object.prototype.hasOwnProperty.call(rs, k)) continue;
+          if (!Object.prototype.hasOwnProperty.call(curRanges, k)) {
+            delete rs[k];                                // kwarg gone
+          } else if (rs[k].lo === curRanges[k].lo
+                     && rs[k].hi === curRanges[k].hi) {
+            delete rs[k];                                // matches source
+          }
+        }
+        if (Object.keys(rs).length === 0) {
+          domainOverrides.delete(name);
         }
       });
 
@@ -1908,6 +1959,8 @@
         if (axes.length === 0) return null;
         var presets = FlatPPLEngine.orchestrator.findMatchingPresets(
           sig, derivationsState.bindings);
+        var domains = FlatPPLEngine.orchestrator.findMatchingDomains(
+          sig, derivationsState.bindings);
         // On-demand specialize the output type at this synthetic call
         // site: scope = {paramName → input type}. typeinfer's
         // inferExprInScope handles polymorphic bodies — module-level
@@ -1958,9 +2011,17 @@
             // navigates to a different binding (the plan is
             // rebuilt). Named-preset overrides live in the
             // module-wide presetOverrides map instead.
-            //   null | { values: {kwarg: val}, limits: {lo,hi}|null,
-            //            limitsKwarg: string|null }
+            //   null | { values: {kwarg: val} }
             autoOverride: null,
+            // Domain selector state: same shape as the inputs side,
+            // but driving x-axis range per kwarg from cartprod(...)
+            // bindings. domainAutoOverride is the per-binding override
+            // for the auto pseudo-domain (same lifetime as
+            // autoOverride). Named domain overrides live module-wide
+            // in domainOverrides.
+            matchedDomains: domains,
+            domainName: null,
+            domainAutoOverride: null,
           };
         }
         return {
@@ -1974,6 +2035,9 @@
           outputs: outputs,
           outputKey: outputKey,
           autoOverride: null,
+          matchedDomains: domains,
+          domainName: null,
+          domainAutoOverride: null,
         };
       }
 
@@ -4065,9 +4129,10 @@
       return presetOverrides.get(plan.presetName) || null;
     }
 
-    /** Whether the active selection currently has any overrides
-        (values or limits). Drives the "(modified)" tag and the
-        reset/persist button visibility. */
+    /** Whether the active preset selection currently has any value
+        overrides. Drives the "(modified)" tag and the reset/persist
+        button visibility on the Inputs control. Axis-range overrides
+        moved to the Domain control's hasDomainOverrides(plan). */
     function hasOverrides(plan) {
       var e = overrideEntryFor(plan);
       if (!e) return false;
@@ -4075,7 +4140,7 @@
       for (var k in v) {
         if (Object.prototype.hasOwnProperty.call(v, k)) return true;
       }
-      return !!e.limits;
+      return false;
     }
 
     /** Write back an override entry for the active selection.
@@ -4102,7 +4167,7 @@
         existing.values = Object.assign({}, existing.values || {});
         return existing;
       }
-      return { values: {}, limits: null, limitsKwarg: null };
+      return { values: {} };
     }
 
     /** Effective {values, limits} for a plan, merging base preset
@@ -4115,10 +4180,9 @@
     function activePresetFor(plan) {
       var baseValues = baseValuesFor(plan);
       var entry = overrideEntryFor(plan);
-      if (!entry) return { values: baseValues, limits: null };
+      if (!entry) return { values: baseValues };
       return {
         values: Object.assign({}, baseValues, entry.values || {}),
-        limits: entry.limits || null,
       };
     }
 
@@ -4136,6 +4200,78 @@
       return {};
     }
 
+    // ===================================================================
+    // Domain (cartprod) override plumbing — mirrors the preset path
+    // above, but stores per-kwarg [lo, hi] ranges instead of per-kwarg
+    // values. Domains drive the x-axis range; presets drive the
+    // non-swept input values.
+    // ===================================================================
+
+    /** Override entry for the active domain, or null when none. Auto
+        domain's entry lives on plan.domainAutoOverride; named ones in
+        domainOverrides keyed by name. */
+    function domainOverrideEntryFor(plan) {
+      if (plan.domainName == null) return plan.domainAutoOverride || null;
+      return domainOverrides.get(plan.domainName) || null;
+    }
+
+    /** Get-or-create a domain override entry for the active selection.
+        Caller mutates entry.ranges and commits via setDomainOverrideFor. */
+    function ensureDomainOverrideFor(plan) {
+      var existing = domainOverrideEntryFor(plan);
+      if (existing) {
+        existing.ranges = Object.assign({}, existing.ranges || {});
+        return existing;
+      }
+      return { ranges: {} };
+    }
+
+    /** Commit (or clear, with null) a domain override entry. */
+    function setDomainOverrideFor(plan, entry) {
+      if (plan.domainName == null) {
+        plan.domainAutoOverride = entry;
+        return;
+      }
+      if (entry) {
+        domainOverrides.set(plan.domainName, entry);
+      } else {
+        domainOverrides.delete(plan.domainName);
+      }
+    }
+
+    /** True when the active domain has at least one ranged kwarg in
+        its override entry. Used to gate visibility of the reset /
+        save buttons. */
+    function hasDomainOverrides(plan) {
+      var e = domainOverrideEntryFor(plan);
+      if (!e || !e.ranges) return false;
+      return Object.keys(e.ranges).length > 0;
+    }
+
+    /** Source-declared base ranges for the active domain (no overrides
+        applied). For named domains this is matchedDomains[i].ranges;
+        for auto, an empty object (the auto domain has no source-side
+        ranges — the per-axis auto-fit code computes them on demand). */
+    function baseRangesFor(plan) {
+      if (plan.domainName != null && plan.matchedDomains) {
+        for (var i = 0; i < plan.matchedDomains.length; i++) {
+          if (plan.matchedDomains[i].name === plan.domainName) {
+            return plan.matchedDomains[i].ranges || {};
+          }
+        }
+      }
+      return {};
+    }
+
+    /** Effective ranges for the active domain — base merged with any
+        override entry's ranges on top. Returns { kwarg: {lo, hi} }. */
+    function activeDomainRangesFor(plan) {
+      var base = baseRangesFor(plan);
+      var entry = domainOverrideEntryFor(plan);
+      if (!entry || !entry.ranges) return Object.assign({}, base);
+      return Object.assign({}, base, entry.ranges);
+    }
+
     /** Held-constant kwargs for the active preset. Drawn from the
         engine's findMatchingPresets `fixedNames` (kwargs whose source
         value was wrapped in `fixed(...)` — spec §03's "hold constant
@@ -4151,6 +4287,36 @@
         }
       }
       return new Set();
+    }
+
+    // Shared icon-button helper used by the Inputs and Domain
+    // toolbars' reset / save / save-as buttons. iconKey picks a
+    // codicon (see CODICON_PATHS); title is the hover tooltip and the
+    // accessible name. Buttons are icon-only — the toolbar already
+    // shows the action verb implicitly via context, and dropping the
+    // text labels frees the horizontal space the dropdown needs to
+    // breathe.
+    function makeActionButton(iconKey, title) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.style.background = 'transparent';
+      b.style.color = 'var(--vscode-foreground, #cccccc)';
+      b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+      b.style.borderRadius = '3px';
+      b.style.padding = '2px 4px';
+      b.style.display = 'inline-flex';
+      b.style.alignItems = 'center';
+      b.style.justifyContent = 'center';
+      b.style.cursor = 'pointer';
+      b.style.opacity = '0.75';
+      b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
+        + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
+        + 'aria-hidden="true"><path d="' + CODICON_PATHS[iconKey] + '"/></svg>';
+      b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
+      b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
+      return b;
     }
 
     // Build a "Inputs: [auto / pars1 / …]" control fragment for the
@@ -4178,9 +4344,8 @@
 
       function buildEntry(name, baseValues, isAuto) {
         var entryOverride = (name == null) ? plan.autoOverride : presetOverrides.get(name);
-        var modified = !!(entryOverride
-          && ((entryOverride.values && Object.keys(entryOverride.values).length > 0)
-              || entryOverride.limits));
+        var modified = !!(entryOverride && entryOverride.values
+          && Object.keys(entryOverride.values).length > 0);
         var combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
         var displayName = isAuto ? 'auto' : name;
         var tag = modified ? ' (modified)' : '';
@@ -4298,36 +4463,6 @@
       wrap.appendChild(btn);
       wrap.appendChild(panel);
 
-      // Helper used by both reset and persist buttons. iconKey picks
-      // a codicon (see CODICON_PATHS); title is the hover tooltip
-      // and the accessible name. Buttons are icon-only — the
-      // toolbar already shows the action verb implicitly via
-      // context (Reset clears modifications, Save writes them), and
-      // dropping the text labels frees ~80 px we needed for the
-      // preset selector to breathe.
-      function makeActionButton(iconKey, title) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.title = title;
-        b.setAttribute('aria-label', title);
-        b.style.background = 'transparent';
-        b.style.color = 'var(--vscode-foreground, #cccccc)';
-        b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
-        b.style.borderRadius = '3px';
-        b.style.padding = '2px 4px';
-        b.style.display = 'inline-flex';
-        b.style.alignItems = 'center';
-        b.style.justifyContent = 'center';
-        b.style.cursor = 'pointer';
-        b.style.opacity = '0.75';
-        b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
-          + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
-          + 'aria-hidden="true"><path d="' + CODICON_PATHS[iconKey] + '"/></svg>';
-        b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
-        b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
-        return b;
-      }
-
       frag.appendChild(wrap);
 
       // Reset button — visible only when the active selection has
@@ -4370,6 +4505,180 @@
           frag.appendChild(persistBtn);
         }
       }
+      return frag;
+    }
+
+    // ----- Domain control: parallel of buildPresetControl, but for
+    // cartprod(...) preset domains. Drives x-axis range per kwarg
+    // rather than non-swept input values.
+    function domainRangesText(ranges) {
+      var parts = [];
+      for (var k in ranges) {
+        if (!Object.prototype.hasOwnProperty.call(ranges, k)) continue;
+        var r = ranges[k];
+        if (!r) continue;
+        parts.push(k + ' ∈ [' + formatScalar(r.lo) + ', ' + formatScalar(r.hi) + ']');
+      }
+      return parts.length ? parts.join(', ') : '(no range)';
+    }
+
+    function buildDomainControl(plan, onChange) {
+      var frag = document.createDocumentFragment();
+      if (!plan.axes || plan.axes.length === 0) return frag;
+
+      var domains = plan.matchedDomains || [];
+
+      function buildEntry(name, baseRanges, isAuto) {
+        var entryOverride = (name == null)
+          ? plan.domainAutoOverride
+          : domainOverrides.get(name);
+        var modified = !!(entryOverride && entryOverride.ranges
+          && Object.keys(entryOverride.ranges).length > 0);
+        var combined = Object.assign({}, baseRanges,
+          (entryOverride && entryOverride.ranges) || {});
+        var displayName = isAuto ? 'auto' : name;
+        var tag = modified ? ' (modified)' : '';
+        return {
+          name: name,
+          modified: modified,
+          shortLabel: displayName + tag,
+          longLabel: displayName + tag + ': ' + domainRangesText(combined),
+        };
+      }
+
+      var entries = [];
+      entries.push(buildEntry(null, {}, true));
+      for (var di = 0; di < domains.length; di++) {
+        entries.push(buildEntry(domains[di].name, domains[di].ranges || {}, false));
+      }
+
+      function isActive(entry) { return entry.name === plan.domainName; }
+      var activeEntry = null;
+      for (var k = 0; k < entries.length; k++) {
+        if (isActive(entries[k])) { activeEntry = entries[k]; break; }
+      }
+      if (!activeEntry) activeEntry = entries[0];
+
+      var wrap = document.createElement('span');
+      wrap.style.position = 'relative';
+      wrap.style.display = 'inline-flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '0.3em';
+
+      var lbl = document.createElement('label');
+      lbl.textContent = 'Domain:';
+      lbl.style.opacity = '0.6';
+
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+      btn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+      btn.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+      btn.style.padding = '2px 6px';
+      btn.style.fontSize = '1em';
+      btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+      btn.style.cursor = 'pointer';
+      btn.style.borderRadius = '2px';
+      btn.textContent = activeEntry.shortLabel + '  ▾';
+      btn.title = activeEntry.longLabel;
+
+      var panel = document.createElement('div');
+      panel.style.position = 'absolute';
+      panel.style.top = 'calc(100% + 4px)';
+      panel.style.left = '0';
+      panel.style.zIndex = '50';
+      panel.style.minWidth = '100%';
+      panel.style.maxHeight = '20em';
+      panel.style.overflowY = 'auto';
+      panel.style.padding = '0.2em';
+      panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+      panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+      panel.style.borderRadius = '3px';
+      panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+      panel.style.display = 'none';
+      panel.style.whiteSpace = 'nowrap';
+
+      var outsideClickHandler = null;
+      function closePanel() {
+        panel.style.display = 'none';
+        if (outsideClickHandler) {
+          document.removeEventListener('mousedown', outsideClickHandler);
+          outsideClickHandler = null;
+        }
+      }
+      function openPanel() {
+        panel.style.display = 'block';
+        setTimeout(function() {
+          outsideClickHandler = function(ev) {
+            if (!wrap.contains(ev.target)) closePanel();
+          };
+          document.addEventListener('mousedown', outsideClickHandler);
+        }, 0);
+      }
+
+      btn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (panel.style.display === 'none') openPanel(); else closePanel();
+      });
+
+      entries.forEach(function(entry) {
+        var row = document.createElement('div');
+        row.textContent = entry.longLabel;
+        row.style.padding = '0.25em 0.6em';
+        row.style.cursor = 'pointer';
+        row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+        row.style.borderRadius = '2px';
+        if (isActive(entry)) {
+          row.style.background = 'rgba(13, 113, 199, 0.45)';
+          row.style.color = '#fff';
+        }
+        row.addEventListener('mouseenter', function() {
+          if (!isActive(entry)) row.style.background = 'rgba(255,255,255,0.06)';
+        });
+        row.addEventListener('mouseleave', function() {
+          if (!isActive(entry)) row.style.background = '';
+        });
+        row.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+          plan.domainName = entry.name;
+          closePanel();
+          onChange();
+        });
+        panel.appendChild(row);
+      });
+
+      wrap.appendChild(lbl);
+      wrap.appendChild(btn);
+      wrap.appendChild(panel);
+      frag.appendChild(wrap);
+
+      // Reset / save / save-as icons mirror the Inputs control.
+      // Visible only when the active domain has overrides.
+      if (hasDomainOverrides(plan)) {
+        var resetBtn = makeActionButton('discard', 'Reset domain to source ranges');
+        resetBtn.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+          setDomainOverrideFor(plan, null);
+          onChange();
+        });
+        frag.appendChild(resetBtn);
+
+        if (canPersistDomain(plan)) {
+          var isSaveAs = (plan.domainName == null);
+          var persistBtn = makeActionButton(
+            isSaveAs ? 'save-as' : 'save',
+            isSaveAs
+              ? 'Save as new cartprod domain binding'
+              : 'Save range overrides into cartprod'
+          );
+          persistBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            persistDomain(plan);
+          });
+          frag.appendChild(persistBtn);
+        }
+      }
+
       return frag;
     }
 
@@ -4528,6 +4837,138 @@
       });
     }
 
+    // ===================================================================
+    // Domain persist — parallel of canPersistActive / persistActive
+    // ===================================================================
+
+    /** Persist is supported when there's an override AND the host
+        adapter can write. For named domains the source RHS also has
+        to be a cartprod of literal-bounded intervals; for auto we
+        additionally need host.promptForName for the new-binding name. */
+    function canPersistDomain(plan) {
+      if (!hasDomainOverrides(plan)) return false;
+      if (!host || typeof host.editSource !== 'function') return false;
+      if (typeof host.canPersist === 'function' && !host.canPersist()) return false;
+      if (host.canPersist === false) return false;
+      if (plan.domainName == null) {
+        return typeof host.promptForName === 'function';
+      }
+      if (!currentBindings) return false;
+      var b = currentBindings.get(plan.domainName);
+      if (!b || !b.node || !b.node.value
+          || b.node.value.type !== 'CallExpr'
+          || !b.node.value.callee
+          || b.node.value.callee.name !== 'cartprod') return false;
+      var args = b.node.value.args || [];
+      for (var i = 0; i < args.length; i++) {
+        var a = args[i];
+        if (a.type !== 'KeywordArg' || !a.value) return false;
+        var v = a.value;
+        if (v.type !== 'CallExpr' || !v.callee || v.callee.name !== 'interval'
+            || !Array.isArray(v.args) || v.args.length !== 2) return false;
+        if (v.args[0].type !== 'NumberLiteral'
+            || v.args[1].type !== 'NumberLiteral') return false;
+      }
+      return true;
+    }
+
+    function persistDomain(plan) {
+      if (!canPersistDomain(plan)) return;
+      if (plan.domainName == null) {
+        persistAutoDomainAsNewBinding(plan);
+      } else {
+        persistNamedDomain(plan);
+      }
+    }
+
+    /** Build the replacement source text for a named cartprod domain,
+        merging source-declared intervals with overridden ranges.
+        Preserves source kwarg order. */
+    function buildPersistedDomainLine(plan) {
+      var b = currentBindings.get(plan.domainName);
+      var srcArgs = b.node.value.args || [];
+      var override = domainOverrideEntryFor(plan);
+      var or = (override && override.ranges) || {};
+      var parts = [];
+      for (var i = 0; i < srcArgs.length; i++) {
+        var sa = srcArgs[i];
+        var kwarg = sa.name;
+        var lo, hi;
+        if (Object.prototype.hasOwnProperty.call(or, kwarg)) {
+          lo = or[kwarg].lo; hi = or[kwarg].hi;
+        } else {
+          lo = sa.value.args[0].value;
+          hi = sa.value.args[1].value;
+        }
+        parts.push(kwarg + ' = interval('
+          + formatScalarForSource(lo) + ', '
+          + formatScalarForSource(hi) + ')');
+      }
+      return plan.domainName + ' = cartprod(' + parts.join(', ') + ')';
+    }
+
+    function persistNamedDomain(plan) {
+      var b = currentBindings.get(plan.domainName);
+      var newText = buildPersistedDomainLine(plan);
+      try {
+        host.editSource({
+          range: {
+            start: { line: b.node.loc.start.line - 1, col: 0 },
+            end:   { line: b.node.loc.end.line   - 1, col: 1000000 },
+          },
+          newText: newText,
+        });
+      } catch (err) {
+        console.error('[viewer] persistNamedDomain failed:', err);
+      }
+    }
+
+    /** Append a fresh cartprod(...) binding capturing the current
+        domain override. Asks the host for a name via promptForName.
+        Only kwargs explicitly set in the override are written —
+        partial domains are valid source but won't match the input
+        signature in findMatchingDomains (so they won't appear in the
+        dropdown). Tooling could fill in remaining kwargs from
+        profileRangeCache in a later iteration; for now we keep
+        the write minimal and let the user round-trip if they want
+        a full domain. */
+    function persistAutoDomainAsNewBinding(plan) {
+      if (typeof host.promptForName !== 'function'
+          || typeof host.editSource !== 'function') {
+        console.warn('[viewer] persist domain auto: host missing promptForName / editSource');
+        return;
+      }
+      var override = plan.domainAutoOverride;
+      var ranges = (override && override.ranges) || {};
+      var parts = [];
+      for (var k in ranges) {
+        if (!Object.prototype.hasOwnProperty.call(ranges, k)) continue;
+        var r = ranges[k];
+        if (!r || !Number.isFinite(r.lo) || !Number.isFinite(r.hi)) continue;
+        parts.push(k + ' = interval('
+          + formatScalarForSource(r.lo) + ', '
+          + formatScalarForSource(r.hi) + ')');
+      }
+      if (parts.length === 0) return;
+      var existingNames = [];
+      if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
+      var pairsText = parts.join(', ');
+      var suggested = (plan.name || 'domain') + '_range';
+      Promise.resolve(host.promptForName({
+        suggested: suggested,
+        existingNames: existingNames,
+      })).then(function(name) {
+        if (!name) return;
+        pendingPresetName = name;  // reuse the same hand-off for focus restoration
+        host.editSource({
+          range: null,
+          newText: name + ' = cartprod(' + pairsText + ')',
+        });
+      }).catch(function(err) {
+        console.error('[viewer] persistAutoDomainAsNewBinding failed:', err);
+      });
+    }
+
     // Strip the outer "record(...)" wrapper from formatValue's
     // output so the dropdown reads cleanly:
     //   record(theta1 = 1.4, theta2 = 1.0)  →  theta1 = 1.4, theta2 = 1.0
@@ -4591,6 +5032,10 @@
       // even without user-declared presets, and the control stays
       // visible across bindings for consistency.
       var hasAxes = plan.axes && plan.axes.length > 0;
+      // Kernel-sample renders a histogram of empirical draws with an
+      // auto-fit x-axis range — the Domain selector (which drives a
+      // swept x-axis range) doesn't apply here, so we only mount the
+      // Inputs control.
       var toolbarBuilder = hasAxes
         ? function() {
             return buildPresetControl(plan, function() {
@@ -4878,19 +5323,25 @@
       FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
         selfRefs.push(n);
       });
-      // Range resolution per (binding, axis, preset, modified?):
-      //   1. When the active selection is a (modified) variant and
-      //      its entry has explicit limits → use those (user
-      //      committed them via the under-plot inputs).
+      // Range resolution per (binding, axis, domain):
+      //   1. Active domain has a range for the sweep kwarg (named
+      //      source binding, override, or both) → use it.
       //   2. profileRangeCache hit for the auto-fit of this
-      //      (binding, axis, presetName) → reuse.
+      //      (binding, axis, domainName) → reuse.
       //   3. Otherwise compute via resolveSweepRange and cache the
-      //      auto-fit. The cache stores auto-fits only; user limit
-      //      edits live in plan.modifiedPresets.
-      var cacheKey = plan.name + '|' + plan.sweepKey + '|' + (plan.presetName || '');
+      //      auto-fit. The cache stores auto-fits only.
+      // Note: presetOverrides are orthogonal — they drive non-swept
+      // input values, not x-axis ranges. The legacy
+      // active.limits/limitsKwarg fields are no longer written or
+      // read; they live in old override entries until the next
+      // reconciliation pass prunes them.
+      var domainRanges = activeDomainRangesFor(plan);
+      var domainRangeForSweep = domainRanges[plan.sweepKey];
+      var cacheKey = plan.name + '|' + plan.sweepKey + '|D=' + (plan.domainName || '');
       var rangePromise;
-      if (active.limits) {
-        rangePromise = Promise.resolve([active.limits.lo, active.limits.hi]);
+      if (domainRangeForSweep) {
+        rangePromise = Promise.resolve(
+          [domainRangeForSweep.lo, domainRangeForSweep.hi]);
       } else {
         var cached = profileRangeCache.get(cacheKey);
         rangePromise = cached
@@ -5057,6 +5508,12 @@
         frag.appendChild(buildPresetControl(plan, function() {
           renderProfilePlotForCurrent();
         }));
+        // Domain selector — same row, drives x-axis ranges from
+        // cartprod(...) bindings. Falls back to a no-op fragment when
+        // the binding has no axes; we already returned early for that.
+        frag.appendChild(buildDomainControl(plan, function() {
+          renderProfilePlotForCurrent();
+        }));
       }
       // The lo/hi limit inputs live under the plot now (see
       // buildProfileBottomRow). The toolbar carries only the axis
@@ -5167,12 +5624,12 @@
         inp.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       });
 
-      // Limit edits commit into the active selection's override
-      // entry (auto-on-plan for the auto pseudo-preset, module-wide
-      // presetOverrides for named presets). limitsKwarg records
-      // which sweep axis these limits describe so the reconciler
-      // in rebuildDerivations can prune them when that kwarg is
-      // gone from the preset signature.
+      // Limit edits commit into the active *domain* override (auto
+      // pseudo-domain on plan.domainAutoOverride, named domains in
+      // module-wide domainOverrides). Per-kwarg ranges live here
+      // because a cartprod(...) source binding spans every input
+      // axis; rebuildDerivations reconciles each kwarg independently
+      // against the source intervals on the next refresh.
       var commitRange = function() {
         var newLo = parseFloat(xLoInput.value);
         var newHi = parseFloat(xHiInput.value);
@@ -5181,10 +5638,12 @@
           xHiInput.value = formatScalar(range[1]);
           return;
         }
-        var entry = ensureOverrideFor(plan);
-        entry.limits = { lo: newLo, hi: newHi };
-        entry.limitsKwarg = plan.sweepKey || null;
-        setOverrideFor(plan, entry);
+        var key = plan.sweepKey;
+        if (!key) return;
+        var entry = ensureDomainOverrideFor(plan);
+        entry.ranges = entry.ranges || {};
+        entry.ranges[key] = { lo: newLo, hi: newHi };
+        setDomainOverrideFor(plan, entry);
         renderProfilePlotForCurrent();
       };
       xLoInput.addEventListener('change', commitRange);
