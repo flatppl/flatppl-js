@@ -6220,7 +6220,8 @@
     //   - the initial-source bootstrap (opts.source / opts.target on
     //     mount)
     function applySourceUpdate(msg) {
-      if (msg.source !== currentSource) {
+      var sourceChanged = (msg.source !== currentSource);
+      if (sourceChanged) {
         currentSource = msg.source;
         try {
           var result = FlatPPLEngine.processSource(msg.source);
@@ -6242,8 +6243,34 @@
       }
       if (msg.type === 'showModule') {
         enterModuleView(msg.pushHistory);
-      } else {
-        focusNode(msg.targetName, msg.pushHistory);
+        return;
+      }
+      // The DAG view tracks two distinct foci:
+      //   currentState.targetName   — sub-DAG root (set by initial
+      //                                nav and DAG dbltap; mirrored
+      //                                to URL via host.setTarget).
+      //   currentPlotBindingName    — node whose plot is rendered in
+      //                                the right pane (set additionally
+      //                                by single-tap on a DAG node).
+      // On a source-only refresh (persist's debounced re-render) we
+      // want to KEEP whatever the user was looking at. focusNode
+      // already preserves currentState.targetName when msg.targetName
+      // is null, and re-renders the same sub-DAG. But its
+      // updatePlotForBinding call resets the plot pane back to the
+      // sub-DAG root, losing any divergent single-tap selection.
+      // Capture currentPlotBindingName here and restore it after
+      // focusNode finishes.
+      var preservedPlotBinding = null;
+      if (sourceChanged && currentPlotBindingName
+          && currentState
+          && currentPlotBindingName !== currentState.targetName) {
+        preservedPlotBinding = currentPlotBindingName;
+      }
+      focusNode(msg.targetName, msg.pushHistory);
+      if (preservedPlotBinding
+          && currentBindings && currentBindings.has(preservedPlotBinding)
+          && currentPlotBindingName !== preservedPlotBinding) {
+        updatePlotForBinding(preservedPlotBinding);
       }
     }
 
