@@ -3346,6 +3346,73 @@ function findMatchingPresets(signature, bindings) {
 }
 
 /**
+ * Find cartprod bindings that look like preset domains for a
+ * callable's input signature. A "preset domain" is any global
+ * cartprod(...) binding whose kwarg shape matches the callable's
+ * input kwargs (spec §03 value types: "Any literal/fixed global
+ * binding like `some_name = cartprod(name1=some_set, ...)` can be
+ * interpreted as a possibly suitable domain"). The viewer uses
+ * this to populate a "Domain" dropdown — selecting one sets the
+ * x-axis limits per kwarg from each interval's [lo, hi].
+ *
+ * Match rule (Phase 1 — top-level interval(numLit, numLit) only):
+ *   - b.ir.op === 'cartprod'
+ *   - the set of cartprod kwarg names equals the set of signature
+ *     input kwargNames
+ *   - every field is an `interval(lo, hi)` call with numeric-literal
+ *     bounds (constant-resolvable, including bare literals, refs to
+ *     literal bindings, or simple arithmetic — same fold rule as
+ *     findMatchingPresets).
+ *
+ * Returns an array of { name, ranges } where `ranges` maps the
+ * input's kwargName → { lo: number, hi: number }. Empty array when
+ * no domains match.
+ *
+ * Future work (deferred): wider set primitives (cartpow, named
+ * sets like `reals`), and unwrapping fixed(interval(...)) once we
+ * decide whether "fixed bounds" carries useful semantics for a
+ * domain (vs. a preset point where it means "hold constant during
+ * optimisation").
+ */
+function findMatchingDomains(signature, bindings) {
+  if (!signature || !bindings || !Array.isArray(signature.inputs)) return [];
+  const expected = new Set();
+  for (const inp of signature.inputs) {
+    if (inp.kwargName) expected.add(inp.kwargName);
+  }
+  if (expected.size === 0) return [];
+  const out = [];
+  for (const [name, b] of bindings) {
+    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'cartprod') continue;
+    const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
+    if (fields.length !== expected.size) continue;
+    let allMatch = true;
+    const ranges = {};
+    for (const f of fields) {
+      if (!expected.has(f.name)) { allMatch = false; break; }
+      // The field value may have been lifted to a __anon binding — chase
+      // refs to find the underlying interval(...) call.
+      let inner = f.value;
+      if (inner && inner.kind === 'ref' && inner.ns === 'self') {
+        const refTarget = bindings.get(inner.name);
+        if (refTarget && refTarget.ir) inner = refTarget.ir;
+      }
+      if (!inner || inner.kind !== 'call' || inner.op !== 'interval'
+          || !Array.isArray(inner.args) || inner.args.length !== 2) {
+        allMatch = false; break;
+      }
+      const lo = resolveConstant(inner.args[0], bindings, new Set());
+      const hi = resolveConstant(inner.args[1], bindings, new Set());
+      if (lo == null || hi == null || !(lo < hi)) { allMatch = false; break; }
+      ranges[f.name] = { lo, hi };
+    }
+    if (!allMatch) continue;
+    out.push({ name, ranges });
+  }
+  return out;
+}
+
+/**
  * Compute a 4-σ-equivalent central quantile range from a sample
  * array. Returns [lo, hi] or null for an empty input.
  *
@@ -3456,6 +3523,7 @@ module.exports = {
   resolveAxisBaseSet,
   fourSigmaQuantileRange,
   findMatchingPresets,
+  findMatchingDomains,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.

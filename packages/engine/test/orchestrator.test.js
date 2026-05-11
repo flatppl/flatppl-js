@@ -25,7 +25,7 @@ const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
   signatureOf, distributeAxes, inlineForProfile, substituteLocals,
   resolveAxisBaseSet, fourSigmaQuantileRange,
-  findMatchingPresets,
+  findMatchingPresets, findMatchingDomains,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -1193,6 +1193,68 @@ some_args = record(arg1 = 2.0, arg2 = -3.5)
   const presets = findMatchingPresets(sig, lifted);
   assert.equal(presets.length, 1);
   assert.deepEqual(presets[0].values, { arg1: 2.0, arg2: -3.5 });
+});
+
+// =====================================================================
+// findMatchingDomains — cartprod bindings whose kwargs match a callable
+// =====================================================================
+
+test('findMatchingDomains: matches cartprod whose kwargs equal the input set', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Exponential(rate = 1))
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+search = cartprod(theta1 = interval(-3, 3), theta2 = interval(0, 5))
+wider  = cartprod(theta1 = interval(-10, 10), theta2 = interval(0, 20))
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const doms = findMatchingDomains(sig, lifted);
+  assert.equal(doms.length, 2);
+  const byName = {};
+  for (const d of doms) byName[d.name] = d;
+  assert.deepEqual(byName.search.ranges,
+    { theta1: { lo: -3, hi: 3 }, theta2: { lo: 0, hi: 5 } });
+  assert.deepEqual(byName.wider.ranges,
+    { theta1: { lo: -10, hi: 10 }, theta2: { lo: 0, hi: 20 } });
+});
+
+test('findMatchingDomains: rejects cartprod with extra / missing kwargs', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Exponential(rate = 1))
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+extra   = cartprod(theta1 = interval(-1, 1), theta2 = interval(0, 1), theta3 = interval(0, 1))
+missing = cartprod(theta1 = interval(-1, 1))
+correct = cartprod(theta1 = interval(-1, 1), theta2 = interval(0, 1))
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const doms = findMatchingDomains(sig, lifted);
+  assert.deepEqual(doms.map(d => d.name).sort(), ['correct']);
+});
+
+test('findMatchingDomains: rejects degenerate / non-literal intervals', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta = draw(Normal(mu = 0, sigma = 1))
+f = functionof(theta, theta = theta)
+ok       = cartprod(theta = interval(-1, 1))
+degenerate = cartprod(theta = interval(1, 1))
+ref_bound  = cartprod(theta = interval(theta, 1))
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const doms = findMatchingDomains(sig, lifted);
+  assert.deepEqual(doms.map(d => d.name).sort(), ['ok']);
+});
+
+test('findMatchingDomains: empty / null sig → empty list', () => {
+  assert.deepEqual(findMatchingDomains(null,           new Map()), []);
+  assert.deepEqual(findMatchingDomains({},             new Map()), []);
+  assert.deepEqual(findMatchingDomains({ inputs: [] }, new Map()), []);
 });
 
 // =====================================================================
