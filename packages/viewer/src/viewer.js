@@ -1022,21 +1022,15 @@
     // resolveSweepRange (auto) vs. user-edited (override) — used
     // for tooltip / debug; the renderer treats both the same.
     var profileRangeCache = new Map();
-    // Module-wide overrides on named preset bindings. Persists across
-    // binding navigation, so tuning pars1 on a likelihood plot
-    // applies the same overrides when the user visits a forward
-    // kernel that shares those kwarg names. Reconciled on every
-    // source change via value comparison against the freshly parsed
-    // base values (see rebuildDerivations); a kwarg whose source
-    // value now matches the override drops from the override
+    // Module-wide overrides on named preset (record-point) bindings.
+    // Persists across binding navigation, so tuning pars1 on a
+    // likelihood plot applies the same overrides when the user visits
+    // a forward kernel that shares those kwarg names. Reconciled on
+    // every source change via value comparison against the freshly
+    // parsed base values (see rebuildDerivations); a kwarg whose
+    // source value now matches the override drops from the override
     // automatically.
-    //   Map<presetName, { values, limits, limitsKwarg }>
-    // values:      { kwargName → number }   user-set overrides
-    // limits:      { lo, hi } | null        x-range override
-    // limitsKwarg: string | null            sweep axis the limits
-    //                                       describe (so we can
-    //                                       prune them when that
-    //                                       kwarg disappears)
+    //   Map<presetName, { values: { kwargName → number } }>
     var presetOverrides = new Map();
     // Module-wide overrides on named preset-domain bindings (cartprod
     // forms). Same lifetime/reconciliation pattern as presetOverrides:
@@ -1089,7 +1083,6 @@
       //     this — after writing the override into the source,
       //     the next rebuildDerivations finds equal values and
       //     prunes the override automatically.
-      //   - If the limits' sweep kwarg is gone, drop the limits.
       //   - If the override is empty after pruning, retire it.
       presetOverrides.forEach(function(entry, name) {
         var b = currentBindings.get(name);
@@ -2757,7 +2750,7 @@
     // ellipsize past length 8 so a 10-observation literal stays
     // readable. Walks the SoA tree top-down — same shape conventions
     // as listScalarAxes.
-    function formatConstantMeasure(m, wrapperOp) {
+    function formatConstantMeasure(m) {
       if (!m) return '?';
       if (m.fields) {
         var ks = Object.keys(m.fields);
@@ -2765,13 +2758,7 @@
         for (var i = 0; i < ks.length; i++) {
           fparts[i] = ks[i] + ' = ' + formatConstantMeasure(m.fields[ks[i]]);
         }
-        // wrapperOp was historically used to surface `preset(...)` for
-        // user-authored preset bindings — spec §03 removed preset() as
-        // a callable, so every record-shape measure now renders as
-        // record(...). The parameter is kept for one release in case
-        // other callsites still pass it; null falls through to the
-        // default.
-        return (wrapperOp || 'record') + '(' + fparts.join(', ') + ')';
+        return 'record(' + fparts.join(', ') + ')';
       }
       if (Array.isArray(m.elems)) {
         var eparts = new Array(m.elems.length);
@@ -2983,13 +2970,7 @@
     // record; the simple len-based cutoff is fine here (the value is
     // either short and reads at 36px or long enough to want 16px).
     function renderConstantRecord(measure, bindingName) {
-      // Surface form: every record-shape binding now reads as
-      // 'record(…)' in the plot pane (spec §03 removed `preset(...)`
-      // entirely — preset points are now just record(...) bindings
-      // matched contextually). Any other ops that share the record-
-      // shape derivation (jointchain, cartprod, …) could be added
-      // here in future; default is 'record'.
-      renderTextValue(bindingName, formatConstantMeasure(measure, null));
+      renderTextValue(bindingName, formatConstantMeasure(measure));
     }
 
     function renderRecordMarginals(measure, bindingName, extraToolbarControls) {
@@ -4184,13 +4165,13 @@
       return { values: {} };
     }
 
-    /** Effective {values, limits} for a plan, merging base preset
-        values with any override on top. Base values for named
-        presets come from matchedPresets[i].values; for auto, base
-        is an empty object (the dropdown "auto: …" label uses
-        computeAutoValues separately, but env-substitution falls
-        through to type defaults + source-sample materialisation
-        when no explicit value is present). */
+    /** Effective {values} for a plan, merging base preset values
+        with any override on top. Base values for named presets come
+        from matchedPresets[i].values; for auto, base is an empty
+        object (the dropdown "auto: …" label uses computeAutoValues
+        separately, but env-substitution falls through to type
+        defaults + source-sample materialisation when no explicit
+        value is present). */
     function activePresetFor(plan) {
       var baseValues = baseValuesFor(plan);
       var entry = overrideEntryFor(plan);
@@ -4348,7 +4329,7 @@
 
       // One row per preset name (auto plus each named preset). The
       // "(modified)" tag is appended to the label when the active
-      // override entry has values or limits — there's no separate
+      // override entry has values — there's no separate
       // "<name> (modified)" row anymore. Switching presets just
       // changes plan.presetName; the override store decides whether
       // the row reads as modified.
@@ -5484,10 +5465,7 @@
       //   3. Otherwise compute via resolveSweepRange and cache the
       //      auto-fit. The cache stores auto-fits only.
       // Note: presetOverrides are orthogonal — they drive non-swept
-      // input values, not x-axis ranges. The legacy
-      // active.limits/limitsKwarg fields are no longer written or
-      // read; they live in old override entries until the next
-      // reconciliation pass prunes them.
+      // input values, not x-axis ranges.
       var domainRanges = activeDomainRangesFor(plan);
       var domainRangeForSweep = domainRanges[plan.sweepKey];
       var cacheKey = plan.name + '|' + plan.sweepKey + '|D=' + (plan.domainName || '');
