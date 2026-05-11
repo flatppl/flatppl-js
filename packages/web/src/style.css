@@ -149,14 +149,14 @@ html, body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.7;
+  color: var(--fg);
+  opacity: 1;
 }
-.pane-header button:hover { opacity: 1; background: rgba(255,255,255,0.07); }
+.pane-header button:hover { background: rgba(255,255,255,0.07); }
 .pane-header button:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
 .pane-header button img { display: block; }
 .pane-header button[aria-pressed="true"] {
-  opacity: 1;
-  background: rgba(13, 113, 199, 0.45);
+  background: rgba(13, 113, 199, 0.55);
   color: #fff;
 }
 .pane-header button[hidden] { display: none; }
