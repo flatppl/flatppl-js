@@ -574,6 +574,21 @@
     // value via configUpdate alongside sampleCount.
     var HISTORY_CAP = 1000;
 
+    // VS Code codicons — `discard`, `save`, `save-as` paths copied
+    // verbatim from microsoft/vscode-codicons (src/icons/*.svg) so the
+    // viewer's reset/persist buttons match VS Code's own toolbar
+    // language without pulling in a font dependency. SVGs use
+    // fill="currentColor" so they inherit the button's text color.
+    //
+    // © Microsoft Corporation. Licensed under CC BY 4.0
+    // (https://creativecommons.org/licenses/by/4.0/). See
+    // packages/viewer/NOTICE.md for full attribution.
+    var CODICON_PATHS = {
+      discard: 'M3.00098 2.5C3.00098 2.22386 3.22483 2 3.50098 2C3.77712 2 4.00098 2.22386 4.00098 2.5V6.34262L7.17202 3.17157C8.73412 1.60948 11.2668 1.60948 12.8289 3.17157C14.391 4.73367 14.391 7.26633 12.8289 8.82843L7.80375 13.8536C7.60849 14.0488 7.2919 14.0488 7.09664 13.8536C6.90138 13.6583 6.90138 13.3417 7.09664 13.1464L12.1218 8.12132C13.2933 6.94975 13.2933 5.05025 12.1218 3.87868C10.9502 2.70711 9.0507 2.70711 7.87913 3.87868L4.75781 7H8.50098C8.77712 7 9.00098 7.22386 9.00098 7.5C9.00098 7.77614 8.77712 8 8.50098 8H3.60098C3.26961 8 3.00098 7.73137 3.00098 7.4V2.5Z',
+      save: 'M14.414 3.207L12.793 1.586C12.421 1.213 11.905 1 11.379 1H3C1.897 1 1 1.897 1 3V13C1 14.103 1.897 15 3 15H13C14.103 15 15 14.103 15 13V4.621C15 4.095 14.787 3.579 14.414 3.207ZM9 2V3.5C9 3.776 8.776 4 8.5 4H6.5C6.224 4 6 3.776 6 3.5V2H9ZM5 14V9.5C5 9.224 5.224 9 5.5 9H10.5C10.776 9 11 9.224 11 9.5V14H5ZM14 13C14 13.551 13.551 14 13 14H12V9.5C12 8.673 11.327 8 10.5 8H5.5C4.673 8 4 8.673 4 9.5V14H3C2.449 14 2 13.551 2 13V3C2 2.449 2.449 2 3 2H5V3.5C5 4.327 5.673 5 6.5 5H8.5C9.327 5 10 4.327 10 3.5V2H11.379C11.642 2 11.9 2.107 12.086 2.293L13.707 3.914C13.893 4.1 14 4.358 14 4.621V13Z',
+      'save-as': 'M5 9.5C5 9.224 5.224 9 5.5 9H10.5C10.738 9 10.929 9.171 10.979 9.394L11.729 8.644C11.458 8.256 11.009 8 10.5 8H5.5C4.673 8 4 8.673 4 9.5V14H3C2.449 14 2 13.551 2 13V3C2 2.449 2.449 2 3 2H5V3.5C5 4.327 5.673 5 6.5 5H8.5C9.327 5 10 4.327 10 3.5V2H11.379C11.642 2 11.9 2.107 12.086 2.293L13.707 3.914C13.893 4.1 14 4.358 14 4.621V7.04C14.143 7.015 14.289 6.997 14.437 6.997C14.629 6.997 14.817 7.023 15 7.064V4.62C15 4.094 14.787 3.578 14.414 3.206L12.793 1.585C12.421 1.212 11.905 0.999001 11.379 0.999001H3C1.897 1 1 1.897 1 3V13C1 14.103 1.897 15 3 15H7.045L7.293 14H5V9.5ZM6 2H9V3.5C9 3.776 8.776 4 8.5 4H6.5C6.224 4 6 3.776 6 3.5V2ZM16 9.559C16 9.764 15.96 9.967 15.882 10.157C15.803 10.346 15.688 10.519 15.543 10.664L11.254 14.951C10.898 15.307 10.452 15.56 9.964 15.682L8.753 15.982C8.651 16.008 8.544 16.006 8.443 15.978C8.342 15.95 8.249 15.896 8.175 15.822C8.101 15.748 8.047 15.655 8.019 15.554C7.991 15.453 7.99 15.346 8.015 15.244L8.315 14.033C8.437 13.544 8.689 13.098 9.045 12.742L13.333 8.455C13.626 8.162 14.023 7.998 14.437 7.998C14.851 7.998 15.248 8.163 15.541 8.455C15.687 8.599 15.802 8.772 15.881 8.961C15.96 9.151 16 9.354 16 9.559Z',
+    };
+
     function esc(s) {
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
@@ -4270,21 +4285,31 @@
       wrap.appendChild(btn);
       wrap.appendChild(panel);
 
-      // Helper used by both reset and persist buttons.
-      function makeActionButton(text, title) {
+      // Helper used by both reset and persist buttons. iconKey picks
+      // a codicon (see CODICON_PATHS); title is the hover tooltip
+      // and the accessible name. Buttons are icon-only — the
+      // toolbar already shows the action verb implicitly via
+      // context (Reset clears modifications, Save writes them), and
+      // dropping the text labels frees ~80 px we needed for the
+      // preset selector to breathe.
+      function makeActionButton(iconKey, title) {
         var b = document.createElement('button');
         b.type = 'button';
         b.title = title;
+        b.setAttribute('aria-label', title);
         b.style.background = 'transparent';
         b.style.color = 'var(--vscode-foreground, #cccccc)';
         b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
         b.style.borderRadius = '3px';
-        b.style.padding = '2px 8px';
-        b.style.fontSize = '0.92em';
-        b.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+        b.style.padding = '2px 4px';
+        b.style.display = 'inline-flex';
+        b.style.alignItems = 'center';
+        b.style.justifyContent = 'center';
         b.style.cursor = 'pointer';
         b.style.opacity = '0.75';
-        b.textContent = text;
+        b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
+          + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
+          + 'aria-hidden="true"><path d="' + CODICON_PATHS[iconKey] + '"/></svg>';
         b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
         b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
         return b;
@@ -4298,7 +4323,7 @@
       // through onChange. The dropdown row's "(modified)" tag then
       // disappears with no further user action.
       if (hasOverrides(plan)) {
-        var resetBtn = makeActionButton('Reset', 'Reset preset to source values');
+        var resetBtn = makeActionButton('discard', 'Reset preset to source values');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
           setOverrideFor(plan, null);
@@ -4312,8 +4337,19 @@
         // is preset(<kwarg>=<literal>, …) with no non-literal
         // values. Hidden otherwise so the user never sees a
         // disabled-looking button.
+        //   - named preset + overrides → 'save'    (overwrite RHS)
+        //   - auto + overrides         → 'save-as' (append new binding)
+        // canPersistActive enforces the host-capability split: 'save'
+        // needs host.editSource; 'save-as' additionally needs
+        // host.promptForName.
         if (canPersistActive(plan)) {
-          var persistBtn = makeActionButton('Persist', 'Write overrides into source');
+          var isSaveAs = (plan.presetName == null);
+          var persistBtn = makeActionButton(
+            isSaveAs ? 'save-as' : 'save',
+            isSaveAs
+              ? 'Save as new preset binding'
+              : 'Save overrides into preset'
+          );
           persistBtn.addEventListener('click', function(ev) {
             ev.stopPropagation();
             persistActive(plan);
