@@ -603,16 +603,13 @@ const SIGNATURE_FACTORIES = {
   vector: () => ({ args: [tvar('T')], kwargs: {}, result: array(1, ['%dynamic'], tvar('T')),
                    variadic: 'positional' }),
   tuple:  () => ({ args: [], kwargs: {}, result: deferred(), special: 'tuple' }),
-  // preset is semantically a record with metadata (spec §sec:valuetypes:
-  // "a `preset` object is semantically equivalent to a record, and
-  // converts to a record in any context that expects a record"). For
-  // typing purposes we treat it identically to `record` so downstream
-  // dispatch (typing, classification, viewer plot mode selection)
-  // sees the same record-shape result. The 'preset' tag survives in
-  // the IR's `op` field for surface-form purposes (e.g. preset
-  // matching against function signatures), but the result-type
-  // shape is record's.
-  preset: () => ({ args: [], kwargs: {}, result: deferred(), special: 'record' }),
+  // fixed(x) — identity-typed marker (spec §03 value types). Carries
+  // no runtime semantics beyond passing the wrapped value through; the
+  // 'fixed' op survives in the IR so tooling can recognize it as a
+  // "held constant" hint (e.g. preset-point UI excludes fixed kwargs
+  // from the x-axis sweep selector). Single distinguished input;
+  // result type equals the input's type.
+  fixed:  () => ({ args: [tvar('T')], kwargs: {}, result: tvar('T') }),
 
   // ---- Arithmetic & predicates -------------------------------------
   // For now we treat arithmetic as 'real-or-integer' polymorphic over

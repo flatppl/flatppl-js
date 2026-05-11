@@ -698,17 +698,14 @@ function liftInlineSubexpressions(bindings) {
     const numArgs = astNode.args ? astNode.args.length : 0;
     const sig = argSignature(op, numArgs);
 
-    // record/joint/jointchain/preset fields: each kwarg value gets
-    // lifted to a synthetic binding so the classifier can read them
-    // as bare refs. record/jointchain/preset fields are values; joint
-    // fields are measures. All pass through liftMeasure (= "lift any
-    // non-trivial expression to an anon binding") — the value/measure
-    // distinction lives at type inference, not at lifting. preset
-    // is grouped here per spec §sec:valuetypes ("a preset object is
-    // semantically equivalent to a record"), so it shares the same
-    // lifting rule and downstream record-shape derivation path.
+    // record/joint/jointchain fields: each kwarg value gets lifted
+    // to a synthetic binding so the classifier can read them as bare
+    // refs. record/jointchain fields are values; joint fields are
+    // measures. All pass through liftMeasure (= "lift any non-
+    // trivial expression to an anon binding") — the value/measure
+    // distinction lives at type inference, not at lifting.
     const isRecordLike = op === 'record' || op === 'joint'
-                       || op === 'jointchain' || op === 'preset';
+                       || op === 'jointchain';
 
     if (astNode.args) {
       for (let i = 0; i < astNode.args.length; i++) {
@@ -1379,8 +1376,8 @@ function liftInlineSubexpressions(bindings) {
     // Auto-splatting (spec §sec:calling-convention lines 99-102):
     // `f(record(a=x, b=y))` and `f(some_record_value)` are
     // equivalent to `f(a=x, b=y)`. We detect two splat sources:
-    //   - inline `record(...)` / `preset(...)` calls — splat their
-    //     KeywordArg children directly.
+    //   - inline `record(...)` calls — splat their KeywordArg
+    //     children directly.
     //   - Identifier ref to a record-typed binding — synthesize a
     //     FieldAccess per surface kwarg name.
     // Splat fires only when the call has exactly one positional arg,
@@ -1395,7 +1392,7 @@ function liftInlineSubexpressions(bindings) {
       let splatted = null;
       if (arg0.type === 'CallExpr' && arg0.callee
           && arg0.callee.type === 'Identifier'
-          && (arg0.callee.name === 'record' || arg0.callee.name === 'preset')) {
+          && arg0.callee.name === 'record') {
         const fieldNames = new Set();
         for (const f of (arg0.args || [])) {
           if (f.type === 'KeywordArg') fieldNames.add(f.name);
@@ -2230,11 +2227,6 @@ const MEASURE_OP_CLASSIFIERS = {
   superpose:    classifySuperpose,
   record:       classifyRecordOrJoint,
   joint:        classifyRecordOrJoint,
-  // preset is semantically equivalent to a record (spec
-  // §sec:valuetypes); classify identically so preset bindings
-  // surface as record-shape derivations and the viewer can
-  // render them with the existing fixed-record plot path.
-  preset:       classifyRecordOrJoint,
   iid:          classifyIid,
   logdensityof: classifyLogdensityof,
 };
@@ -3273,22 +3265,30 @@ function parseSetIR(setIR) {
 }
 
 /**
- * Find preset bindings whose kwarg shape matches a callable's input
- * signature. The profile-plot UI uses this to populate its "Preset"
- * dropdown — selecting a preset fills fixedEnv with its values for
- * non-swept axes.
+ * Find record bindings that look like preset points for a callable's
+ * input signature. A "preset point" is any global record(...) binding
+ * whose kwarg shape matches the callable's input kwargs (spec §03
+ * value types: "Any literal (or fixed, in general) global binding
+ * `some_name = record(name1=val1, ...)` can be interpreted as a
+ * possibly suitable input"). The profile-plot UI uses this to
+ * populate its preset-point dropdown — selecting one fills fixedEnv
+ * with its values for non-swept axes.
  *
  * Match rule (Phase 1 — strict, top-level scalars only):
- *   - preset.ir.op === 'preset'
- *   - the set of preset kwarg names equals the set of signature
- *     input kwargNames (no missing inputs, no extra preset fields)
+ *   - b.ir.op === 'record'
+ *   - the set of record kwarg names equals the set of signature
+ *     input kwargNames (no missing inputs, no extra record fields)
  *   - every value is constant-resolvable to a finite number via
- *     resolveConstant (literal, named constant, or simple
- *     arithmetic over constants — `-3.5` lowers to `neg(lit 3.5)`
- *     so a bare literal-only check would falsely reject negatives)
+ *     resolveConstant, after first unwrapping any fixed(...) marker.
+ *     resolveConstant folds literals, named constants, and simple
+ *     arithmetic (e.g. `-3.5` lowers to `neg(lit 3.5)`).
  *
- * Returns an array of { name, values } where `values` maps the
- * input's kwargName → JS number. Empty array when no presets match.
+ * Returns an array of { name, values, fixedNames } where:
+ *   - values    : kwargName → JS number (held-constant + sweepable)
+ *   - fixedNames: Set<kwargName> for kwargs wrapped in `fixed(...)` —
+ *                 the spec's "hold constant during optimization" hint.
+ *                 Tooling uses this to e.g. exclude these kwargs from
+ *                 the x-axis sweep selector.
  *
  * Future work (deferred): unify nested record / array preset
  * shapes against record-input signatures.
@@ -3302,24 +3302,45 @@ function findMatchingPresets(signature, bindings) {
   if (expected.size === 0) return [];
   const out = [];
   for (const [name, b] of bindings) {
-    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'preset') continue;
-    // preset is a FIELD_FORM (lower.js) and its IR carries fields,
-    // not kwargs — same shape as record. Each field's value is
-    // typically a ref to an anon-lifted binding (the lift pre-pass
-    // moves literals into __anon* bindings); resolveConstant chases
-    // refs through the bindings map to recover the underlying value.
+    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'record') continue;
+    // record's IR carries fields (FIELD_FORM in lower.js), not kwargs.
+    // Each field's value is typically a ref to an anon-lifted binding
+    // (the lift pre-pass moves literals into __anon* bindings);
+    // resolveConstant chases refs through the bindings map to recover
+    // the underlying value. Before constant-folding, peek through any
+    // `fixed(...)` wrapper so the hint doesn't block the match.
     const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
     if (fields.length !== expected.size) continue;
     let allMatch = true;
     const values = {};
+    const fixedNames = new Set();
     for (const f of fields) {
       if (!expected.has(f.name)) { allMatch = false; break; }
-      const v = resolveConstant(f.value, bindings, new Set());
+      let inner = f.value;
+      // Unwrap fixed(...) at the top of the field value. The wrapper
+      // may be a direct call or a ref to a lifted __anon binding
+      // whose IR is the fixed() call. resolveConstantInner handles
+      // both because the IR-level resolveConstant chases refs.
+      if (inner && inner.kind === 'call' && inner.op === 'fixed'
+          && Array.isArray(inner.args) && inner.args.length === 1) {
+        fixedNames.add(f.name);
+        inner = inner.args[0];
+      } else if (inner && inner.kind === 'ref' && inner.ns === 'self') {
+        const refTarget = bindings.get(inner.name);
+        if (refTarget && refTarget.ir && refTarget.ir.kind === 'call'
+            && refTarget.ir.op === 'fixed'
+            && Array.isArray(refTarget.ir.args)
+            && refTarget.ir.args.length === 1) {
+          fixedNames.add(f.name);
+          inner = refTarget.ir.args[0];
+        }
+      }
+      const v = resolveConstant(inner, bindings, new Set());
       if (v == null) { allMatch = false; break; }
       values[f.name] = v;
     }
     if (!allMatch) continue;
-    out.push({ name, values });
+    out.push({ name, values, fixedNames });
   }
   return out;
 }

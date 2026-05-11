@@ -224,10 +224,6 @@ function createInferenceContext(loweredModule) {
       case 'elementof': return write(inferElementof(expr, scopes), expr);
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);
-      // preset is semantically equivalent to a record (spec
-      // §sec:valuetypes); type-infer it identically so the result
-      // type is record-shape.
-      case 'preset':    return write(inferRecord(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
       // tuple_get(<tuple-expr>, <slot lit>) — internal IR op emitted by
@@ -236,10 +232,10 @@ function createInferenceContext(loweredModule) {
       // the result depends on the literal slot value, which the generic
       // signature table can't express.
       case 'tuple_get': return write(inferTupleGet(expr, scopes), expr);
-      // get_field(<record-expr>, <name lit>) — record / preset field
-      // access lowered from surface `obj.field`. Same kind of special
-      // case as tuple_get: the result type depends on the literal
-      // field-name argument.
+      // get_field(<record-expr>, <name lit>) — record field access
+      // lowered from surface `obj.field`. Same kind of special case as
+      // tuple_get: the result type depends on the literal field-name
+      // argument.
       case 'get_field': return write(inferGetField(expr, scopes), expr);
       // Lebesgue / Counting parametrise on a support set (spec §06).
       // The measure's domain mirrors the support's value-type, so

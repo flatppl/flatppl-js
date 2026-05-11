@@ -684,8 +684,20 @@ function evaluateCall(ir, env) {
   if (op === 'tuple') {
     return (ir.args || []).map(a => evaluateExpr(a, env));
   }
-  // get_field(obj, "name") — record / preset field access. Lowered
-  // from surface `obj.field`. Second arg is always a literal string.
+  // fixed(x) — identity at runtime. Spec §03 value types: "fixed(x)
+  // is semantically identical to identity(x) during FlatPPL code
+  // evaluation, it is merely a hint to tooling." Tools (e.g. the
+  // viewer's preset-point recognition) inspect the IR's op === 'fixed'
+  // tag to honor the hint; the evaluator just unwraps.
+  if (op === 'fixed') {
+    const args = ir.args || [];
+    if (args.length !== 1) {
+      throw new Error(`evaluateExpr: fixed expects 1 arg, got ${args.length}`);
+    }
+    return evaluateExpr(args[0], env);
+  }
+  // get_field(obj, "name") — record field access. Lowered from
+  // surface `obj.field`. Second arg is always a literal string.
   if (op === 'get_field') {
     const args = ir.args || [];
     if (args.length !== 2) {

@@ -49,7 +49,7 @@ const SPECIAL_OPERATIONS = new Set([
   // Assertions
   'checked',
   // Tuple/record/table constructors with structural meaning
-  'record', 'table', 'tuple', 'vector', 'preset', 'fixed',
+  'record', 'table', 'tuple', 'vector', 'fixed',
   // Engine-internal: tuple_get(tuple_expr, slot_lit) — projects the
   // i-th element of a tuple-typed expression. Emitted by the analyzer's
   // multi-LHS rewriter (`a, b = rand(s, m)` → each name becomes a
