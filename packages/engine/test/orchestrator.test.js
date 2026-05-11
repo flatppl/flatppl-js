@@ -1251,6 +1251,30 @@ ref_bound  = cartprod(theta = interval(theta, 1))
   assert.deepEqual(doms.map(d => d.name).sort(), ['ok']);
 });
 
+test('findMatchingDomains: accepts named-set fields as unbounded factors', () => {
+  // A cartprod field can be a named set (`reals` etc.) instead of an
+  // interval, marking that kwarg as unbounded — the viewer will fall
+  // back to the per-axis auto-fit there but still match the domain.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+theta2 = draw(Exponential(rate = 1))
+f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
+mixed = cartprod(theta1 = interval(-4, 4), theta2 = reals)
+fully_open = cartprod(theta1 = reals, theta2 = posreals)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f', lifted);
+  const doms = findMatchingDomains(sig, lifted);
+  const byName = {};
+  for (const d of doms) byName[d.name] = d;
+  assert.deepEqual(byName.mixed.ranges,   { theta1: { lo: -4, hi: 4 } });
+  assert.deepEqual(byName.mixed.setNames, { theta2: 'reals' });
+  assert.deepEqual(byName.fully_open.ranges, {});
+  assert.deepEqual(byName.fully_open.setNames,
+    { theta1: 'reals', theta2: 'posreals' });
+});
+
 test('findMatchingDomains: empty / null sig → empty list', () => {
   assert.deepEqual(findMatchingDomains(null,           new Map()), []);
   assert.deepEqual(findMatchingDomains({},             new Map()), []);

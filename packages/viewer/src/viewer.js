@@ -1141,45 +1141,59 @@
       // Reconcile module-wide domain overrides against the new
       // source. Mirrors the preset-override loop above:
       //   - If the cartprod binding is gone, drop the override.
-      //   - For each kwarg in override.ranges, if the source interval
-      //     literals match (lo and hi equal) drop it as redundant;
-      //     if the kwarg is gone from the source, drop it as
-      //     not applicable.
+      //   - sourceKwargs tracks every kwarg the source's cartprod
+      //     mentions, regardless of whether its value is an interval
+      //     or a bare named set; an override on a kwarg the source
+      //     doesn't mention at all is "kwarg gone" → drop it.
+      //   - sourceIntervals[k] is set only when the source field is
+      //     interval(lit, lit). When set and the override's [lo,hi]
+      //     equals it, the override is redundant → drop it. When the
+      //     source field is a bare named set (no bounds) we leave
+      //     the override in place: the user's range overrides the
+      //     unbounded source.
       //   - If the override is empty after pruning, retire it.
       domainOverrides.forEach(function(entry, name) {
         var b = currentBindings.get(name);
-        var curRanges = null;
+        var sourceKwargs = null;
+        var sourceIntervals = null;
         if (b && b.type === 'literal' && b.node && b.node.value
             && b.node.value.type === 'CallExpr' && b.node.value.callee
             && b.node.value.callee.name === 'cartprod') {
-          curRanges = {};
+          sourceKwargs = new Set();
+          sourceIntervals = {};
           var args = b.node.value.args || [];
           for (var ai = 0; ai < args.length; ai++) {
             var arg = args[ai];
             if (arg.type !== 'KeywordArg' || !arg.value) continue;
+            sourceKwargs.add(arg.name);
             var ic = arg.value;
-            if (ic.type !== 'CallExpr' || !ic.callee
-                || ic.callee.name !== 'interval'
-                || !Array.isArray(ic.args) || ic.args.length !== 2) continue;
-            if (ic.args[0].type === 'NumberLiteral'
+            if (ic.type === 'CallExpr' && ic.callee
+                && ic.callee.name === 'interval'
+                && Array.isArray(ic.args) && ic.args.length === 2
+                && ic.args[0].type === 'NumberLiteral'
                 && ic.args[1].type === 'NumberLiteral') {
-              curRanges[arg.name] = { lo: ic.args[0].value, hi: ic.args[1].value };
+              sourceIntervals[arg.name] = {
+                lo: ic.args[0].value, hi: ic.args[1].value,
+              };
             }
           }
         }
-        if (!curRanges) {
+        if (!sourceKwargs) {
           domainOverrides.delete(name);
           return;
         }
         var rs = entry.ranges || {};
         for (var k in rs) {
           if (!Object.prototype.hasOwnProperty.call(rs, k)) continue;
-          if (!Object.prototype.hasOwnProperty.call(curRanges, k)) {
+          if (!sourceKwargs.has(k)) {
             delete rs[k];                                // kwarg gone
-          } else if (rs[k].lo === curRanges[k].lo
-                     && rs[k].hi === curRanges[k].hi) {
-            delete rs[k];                                // matches source
+          } else if (Object.prototype.hasOwnProperty.call(sourceIntervals, k)
+                     && rs[k].lo === sourceIntervals[k].lo
+                     && rs[k].hi === sourceIntervals[k].hi) {
+            delete rs[k];                                // matches source interval
           }
+          // Otherwise: source uses a bare named set, the override's
+          // explicit range still adds information — keep it.
         }
         if (Object.keys(rs).length === 0) {
           domainOverrides.delete(name);
@@ -4511,13 +4525,22 @@
     // ----- Domain control: parallel of buildPresetControl, but for
     // cartprod(...) preset domains. Drives x-axis range per kwarg
     // rather than non-swept input values.
-    function domainRangesText(ranges) {
+
+    /** Compose a human-readable summary of a domain's effective
+        bounds, one entry per kwarg in `kwargOrder`. Reads bounded
+        kwargs from `ranges` (lo/hi pairs from interval(...) fields
+        or user overrides) and unbounded kwargs from `setNames`
+        (bare `reals` / `posreals` / … fields). */
+    function domainBoundsText(kwargOrder, ranges, setNames) {
       var parts = [];
-      for (var k in ranges) {
-        if (!Object.prototype.hasOwnProperty.call(ranges, k)) continue;
-        var r = ranges[k];
-        if (!r) continue;
-        parts.push(k + ' ∈ [' + formatScalar(r.lo) + ', ' + formatScalar(r.hi) + ']');
+      for (var i = 0; i < kwargOrder.length; i++) {
+        var k = kwargOrder[i];
+        var r = ranges && ranges[k];
+        if (r) {
+          parts.push(k + ' ∈ [' + formatScalar(r.lo) + ', ' + formatScalar(r.hi) + ']');
+        } else if (setNames && setNames[k]) {
+          parts.push(k + ' ∈ ' + setNames[k]);
+        }
       }
       return parts.length ? parts.join(', ') : '(no range)';
     }
@@ -4527,29 +4550,52 @@
       if (!plan.axes || plan.axes.length === 0) return frag;
 
       var domains = plan.matchedDomains || [];
+      // kwarg display order: take it from plan.signature.inputs so
+      // every entry — including modifications — reads in the same
+      // order as the source signature, regardless of which kwargs
+      // got user overrides.
+      var inputs = (plan.signature && plan.signature.inputs) || [];
+      var kwargOrder = [];
+      for (var ki = 0; ki < inputs.length; ki++) {
+        if (inputs[ki].kwargName) kwargOrder.push(inputs[ki].kwargName);
+      }
 
-      function buildEntry(name, baseRanges, isAuto) {
+      function buildEntry(name, baseRanges, baseSetNames, isAuto) {
         var entryOverride = (name == null)
           ? plan.domainAutoOverride
           : domainOverrides.get(name);
         var modified = !!(entryOverride && entryOverride.ranges
           && Object.keys(entryOverride.ranges).length > 0);
-        var combined = Object.assign({}, baseRanges,
+        var combinedRanges = Object.assign({}, baseRanges,
           (entryOverride && entryOverride.ranges) || {});
+        // User overrides shadow source named-set fields: drop those
+        // entries from setNames so the kwarg renders with the
+        // bounded interval rather than both.
+        var combinedSetNames = Object.assign({}, baseSetNames);
+        for (var k in combinedRanges) {
+          if (Object.prototype.hasOwnProperty.call(combinedRanges, k)) {
+            delete combinedSetNames[k];
+          }
+        }
         var displayName = isAuto ? 'auto' : name;
         var tag = modified ? ' (modified)' : '';
         return {
           name: name,
           modified: modified,
           shortLabel: displayName + tag,
-          longLabel: displayName + tag + ': ' + domainRangesText(combined),
+          longLabel: displayName + tag + ': '
+            + domainBoundsText(kwargOrder, combinedRanges, combinedSetNames),
         };
       }
 
       var entries = [];
-      entries.push(buildEntry(null, {}, true));
+      entries.push(buildEntry(null, {}, {}, true));
       for (var di = 0; di < domains.length; di++) {
-        entries.push(buildEntry(domains[di].name, domains[di].ranges || {}, false));
+        entries.push(buildEntry(
+          domains[di].name,
+          domains[di].ranges || {},
+          domains[di].setNames || {},
+          false));
       }
 
       function isActive(entry) { return entry.name === plan.domainName; }
@@ -4841,9 +4887,83 @@
     // Domain persist — parallel of canPersistActive / persistActive
     // ===================================================================
 
+    var KNOWN_NAMED_SETS = {
+      reals: 1, posreals: 1, nonnegreals: 1, unitinterval: 1,
+      integers: 1, posintegers: 1, nonnegintegers: 1, booleans: 1,
+    };
+
+    /** Whether an AST node is a recognized cartprod field value:
+        either `interval(NumberLiteral, NumberLiteral)` or a bare
+        named-set reference. Used by canPersistDomain to gate the
+        save button. */
+    function isPersistableSetField(v) {
+      if (!v) return false;
+      if (v.type === 'CallExpr' && v.callee && v.callee.name === 'interval'
+          && Array.isArray(v.args) && v.args.length === 2
+          && v.args[0].type === 'NumberLiteral'
+          && v.args[1].type === 'NumberLiteral') return true;
+      if (v.type === 'Identifier' && KNOWN_NAMED_SETS[v.name]) return true;
+      return false;
+    }
+
+    /** Serialize a recognized cartprod field value back to source
+        text. Mirrors isPersistableSetField — caller has already
+        gated. */
+    function setFieldToSource(v) {
+      if (v.type === 'Identifier') return v.name;
+      // interval(NumLit, NumLit)
+      return 'interval('
+        + formatScalarForSource(v.args[0].value) + ', '
+        + formatScalarForSource(v.args[1].value) + ')';
+    }
+
+    /** Pick a "natural" set-source-text for one of a plan's input
+        kwargs — used when the user persists a partial domain and we
+        want to fill the unset kwargs with something matchable rather
+        than dropping them (which would make the resulting cartprod
+        fail findMatchingDomains' shape check). Strategy: ask the
+        engine for the axis's base set descriptor; map known kinds to
+        their source names; fall back to 'reals' for empirical /
+        unresolved descriptors.
+
+        For multi-axis kwargs (vector / record-typed inputs) the
+        simple per-axis mapping is wrong (we'd need cartpow /
+        cartprod), so we surface 'reals' there too — the user can
+        edit the source by hand if they want a tighter set. */
+    function defaultSetSourceForKwarg(plan, kwargName) {
+      if (!plan.axes) return 'reals';
+      var matching = [];
+      for (var i = 0; i < plan.axes.length; i++) {
+        if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
+      }
+      if (matching.length !== 1) return 'reals';  // non-scalar — defer
+      var bindings = derivationsState && derivationsState.bindings;
+      var d = null;
+      try {
+        d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(matching[0].source, bindings);
+      } catch (_) { d = null; }
+      if (!d) return 'reals';
+      switch (d.kind) {
+        case 'reals':           return 'reals';
+        case 'posreals':        return 'posreals';
+        case 'nonnegreals':     return 'nonnegreals';
+        case 'integers':        return 'integers';
+        case 'posintegers':     return 'posintegers';
+        case 'nonnegintegers':  return 'nonnegintegers';
+        case 'booleans':        return 'booleans';
+        case 'interval':
+          if (d.lo === 0 && d.hi === 1) return 'unitinterval';
+          return 'interval('
+            + formatScalarForSource(d.lo) + ', '
+            + formatScalarForSource(d.hi) + ')';
+        default:                return 'reals';  // empirical / unknown
+      }
+    }
+
     /** Persist is supported when there's an override AND the host
-        adapter can write. For named domains the source RHS also has
-        to be a cartprod of literal-bounded intervals; for auto we
+        adapter can write. For named domains every source field has
+        to be a recognized set form (interval-with-literal-bounds OR
+        a named set like `reals` / `posreals` / …). For auto we
         additionally need host.promptForName for the new-binding name. */
     function canPersistDomain(plan) {
       if (!hasDomainOverrides(plan)) return false;
@@ -4863,11 +4983,7 @@
       for (var i = 0; i < args.length; i++) {
         var a = args[i];
         if (a.type !== 'KeywordArg' || !a.value) return false;
-        var v = a.value;
-        if (v.type !== 'CallExpr' || !v.callee || v.callee.name !== 'interval'
-            || !Array.isArray(v.args) || v.args.length !== 2) return false;
-        if (v.args[0].type !== 'NumberLiteral'
-            || v.args[1].type !== 'NumberLiteral') return false;
+        if (!isPersistableSetField(a.value)) return false;
       }
       return true;
     }
@@ -4882,7 +4998,11 @@
     }
 
     /** Build the replacement source text for a named cartprod domain,
-        merging source-declared intervals with overridden ranges.
+        merging source-declared field values with overridden ranges.
+        For each kwarg:
+          - if the override has a range → emit interval(lo, hi)
+          - else → preserve the source field as-is (interval(...)
+            with original bounds, or the bare named-set reference)
         Preserves source kwarg order. */
     function buildPersistedDomainLine(plan) {
       var b = currentBindings.get(plan.domainName);
@@ -4893,16 +5013,13 @@
       for (var i = 0; i < srcArgs.length; i++) {
         var sa = srcArgs[i];
         var kwarg = sa.name;
-        var lo, hi;
         if (Object.prototype.hasOwnProperty.call(or, kwarg)) {
-          lo = or[kwarg].lo; hi = or[kwarg].hi;
+          parts.push(kwarg + ' = interval('
+            + formatScalarForSource(or[kwarg].lo) + ', '
+            + formatScalarForSource(or[kwarg].hi) + ')');
         } else {
-          lo = sa.value.args[0].value;
-          hi = sa.value.args[1].value;
+          parts.push(kwarg + ' = ' + setFieldToSource(sa.value));
         }
-        parts.push(kwarg + ' = interval('
-          + formatScalarForSource(lo) + ', '
-          + formatScalarForSource(hi) + ')');
       }
       return plan.domainName + ' = cartprod(' + parts.join(', ') + ')';
     }
@@ -4925,13 +5042,13 @@
 
     /** Append a fresh cartprod(...) binding capturing the current
         domain override. Asks the host for a name via promptForName.
-        Only kwargs explicitly set in the override are written —
-        partial domains are valid source but won't match the input
-        signature in findMatchingDomains (so they won't appear in the
-        dropdown). Tooling could fill in remaining kwargs from
-        profileRangeCache in a later iteration; for now we keep
-        the write minimal and let the user round-trip if they want
-        a full domain. */
+        Fills *every* input kwarg in the signature: overridden ones
+        get `interval(lo, hi)`, the rest get their natural base set
+        (`reals` / `posreals` / …) via defaultSetSourceForKwarg.
+        Filling in the unset kwargs keeps the new cartprod matchable
+        in findMatchingDomains' shape check — otherwise a partial
+        domain like `cartprod(theta1 = interval(-4, 4))` wouldn't
+        appear in the Domain dropdown after persist. */
     function persistAutoDomainAsNewBinding(plan) {
       if (typeof host.promptForName !== 'function'
           || typeof host.editSource !== 'function') {
@@ -4940,14 +5057,25 @@
       }
       var override = plan.domainAutoOverride;
       var ranges = (override && override.ranges) || {};
+      // Enumerate every signature input so the resulting cartprod has
+      // full shape coverage.
+      var inputs = (plan.signature && plan.signature.inputs) || [];
       var parts = [];
-      for (var k in ranges) {
-        if (!Object.prototype.hasOwnProperty.call(ranges, k)) continue;
-        var r = ranges[k];
-        if (!r || !Number.isFinite(r.lo) || !Number.isFinite(r.hi)) continue;
-        parts.push(k + ' = interval('
-          + formatScalarForSource(r.lo) + ', '
-          + formatScalarForSource(r.hi) + ')');
+      for (var i = 0; i < inputs.length; i++) {
+        var kw = inputs[i].kwargName;
+        if (!kw) continue;
+        if (Object.prototype.hasOwnProperty.call(ranges, kw)) {
+          var r = ranges[kw];
+          if (!r || !Number.isFinite(r.lo) || !Number.isFinite(r.hi)) {
+            parts.push(kw + ' = ' + defaultSetSourceForKwarg(plan, kw));
+            continue;
+          }
+          parts.push(kw + ' = interval('
+            + formatScalarForSource(r.lo) + ', '
+            + formatScalarForSource(r.hi) + ')');
+        } else {
+          parts.push(kw + ' = ' + defaultSetSourceForKwarg(plan, kw));
+        }
       }
       if (parts.length === 0) return;
       var existingNames = [];
