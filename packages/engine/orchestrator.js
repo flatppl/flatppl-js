@@ -3654,11 +3654,27 @@ function inlineForProfile(ir, paramNames, bindings, derivations) {
       // Evaluable binding → inline. Cycle guard: if we're already
       // expanding this name, leave the ref intact (the cycle would
       // be the analyzer's bug, not ours to mask).
-      if (derivations && Object.prototype.hasOwnProperty.call(derivations, node.name)
-          && derivations[node.name].kind === 'evaluate'
-          && !visiting.has(node.name)) {
+      //
+      // Two routes to "evaluable":
+      //   1. The derivation table tags this binding as evaluate-kind
+      //      (the common case for non-parameterized chains).
+      //   2. buildDerivations pruned the binding because it transitively
+      //      depends on a parameterized (elementof) ancestor — exactly
+      //      the situation profile-plotting is here to handle. Fall
+      //      back on the binding's static shape: type='call' with a
+      //      lowered IR is evaluable. Without this fallback, sweeping
+      //      `f_mu2 = functionof(mu2)` (mu2 = mu^2) leaves the body as
+      //      `ref self mu2` and the profile evaluator never reaches
+      //      `ref self mu` to rewrite it as `ref %local mu`, producing
+      //      an empty line plot.
+      if (!visiting.has(node.name)) {
         const target = bindings && bindings.get(node.name);
-        if (target && target.ir) {
+        const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, node.name)
+          ? derivations[node.name] : null;
+        const isEvaluate =
+          (drv && drv.kind === 'evaluate')
+          || (!drv && target && target.type === 'call' && target.ir);
+        if (isEvaluate && target && target.ir) {
           visiting.add(node.name);
           const expanded = walk(target.ir);
           visiting.delete(node.name);
