@@ -19,12 +19,19 @@ const PARSE_FIXTURES = [
   'flatppl-uncorrelated_background-ma-priors.flatppl',
   'flatppl-uncorrelated_background-draws-auxm.flatppl',
   'flatppl-uncorrelated_background-draws-priors.flatppl',
+  'minimal.flatppl',
+  'minimal.flatppy',
+  'minimal.flatppj',
 ];
 
 for (const name of PARSE_FIXTURES) {
   test(`integration: ${name} parses without errors`, () => {
     const src = fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8');
-    const { diagnostics } = processSource(src);
+    // Pass `path` so processSource picks the right variant from the
+    // file extension (.flatppl / .flatppy / .flatppj). Without this,
+    // .flatppy / .flatppj files would be parsed under canonical
+    // FlatPPL rules and report spurious syntax errors.
+    const { diagnostics } = processSource(src, { path: name });
     const errors = diagnostics.filter(d => d.severity === 'error');
     if (errors.length > 0) {
       for (const e of errors) {
@@ -144,6 +151,186 @@ test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () 
   // synthetic anon during liftValue, which itself is kind=logdensityof).
   assert.ok(derivations.d_obs, 'd_obs should classify');
   assert.equal(derivations.d_obs.kind, 'evaluate');
+});
+
+// =====================================================================
+// minimal.flatppl / .flatppy / .flatppj — small fixture that exercises a
+// pile of recently-added engine features in one ~12-line model:
+//
+//   - elementof leaves (a, mu)
+//   - functionof with NO boundary kwargs → auto-promote of `a` via
+//     canonicalizeImplicitBoundaries (f_sqrt = functionof(b))
+//   - function call site with implicit boundary substitution
+//     (sigma = f_sqrt(sigma2))
+//   - tilde-binding lowering (sigma2 ~ Exp; x ~ iid(...))
+//   - kernelof with explicit boundary (kernel = kernelof(x, mu = mu))
+//   - record auto-splat at the kernel call site (dist = kernel(kernel_input))
+//
+// The .flatppy variant exercises the no-`~` / no-`^` Python form
+// (`draw(...)`, `pow(a, 0.5)`). The .flatppj variant exercises the
+// Julia `;` separator AND deliberately mixes it with `=`-only kwargs
+// (Normal(mu = ..., sigma = ...) and kernelof(x; mu = mu) live in the
+// same file). All three must produce the same bindings / phases / types.
+// =====================================================================
+
+const MINIMAL_VARIANTS = ['minimal.flatppl', 'minimal.flatppy', 'minimal.flatppj'];
+
+function loadMinimal(file) {
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, file), 'utf8');
+  // Variant is detected from the path; processSource handles dispatch.
+  return processSource(src, { path: file });
+}
+
+function userBindings(parsed) {
+  // Skip anonymous lift-introduced names; we care about user bindings.
+  const out = {};
+  for (const [n, b] of parsed.bindings) {
+    if (n.startsWith('__anon')) continue;
+    out[n] = { type: b.type, phase: b.phase,
+               inferredType: b.inferredType && b.inferredType.kind };
+  }
+  return out;
+}
+
+test('integration: minimal — all three variants parse without errors', () => {
+  for (const file of MINIMAL_VARIANTS) {
+    const { diagnostics } = loadMinimal(file);
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    assert.equal(errors.length, 0,
+      `${file}: ${errors.length} errors (${errors.map((e) => e.message).join('; ')})`);
+  }
+});
+
+test('integration: minimal — FlatPPY and FlatPPJ produce the same bindings / phases / types as FlatPPL', () => {
+  // Spec invariant: the three surface syntaxes encode the same model.
+  // Equivalent name set, equivalent classification, equivalent phases.
+  // This is the single best smoke test that a parser/lowerer change
+  // didn't drift one variant from the others.
+  const ref = userBindings(loadMinimal('minimal.flatppl'));
+  for (const file of ['minimal.flatppy', 'minimal.flatppj']) {
+    const actual = userBindings(loadMinimal(file));
+    assert.deepEqual(actual, ref,
+      `${file} disagrees with minimal.flatppl on user-binding shape`);
+  }
+});
+
+test('integration: minimal — f_sqrt auto-promotes `a` as its single input', () => {
+  // `functionof(b)` with no boundary kwargs invokes
+  // canonicalizeImplicitBoundaries to add `a = a` from b's transitive
+  // ancestor walk. signatureOf then reads ir.params verbatim.
+  const { signatureOf, liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = loadMinimal('minimal.flatppl');
+  const lifted = liftInlineSubexpressions(bindings);
+  const sig = signatureOf('f_sqrt', lifted);
+  assert.ok(sig);
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'a');
+});
+
+test('integration: minimal — sigma is computed via implicit boundary substitution', () => {
+  // `sigma = f_sqrt(sigma2)` exercises inlineOnce's positional-arg
+  // path against the implicit boundary added by canonicalize. After
+  // lift, sigma should compute pow(sigma2, 0.5) — NOT contain an
+  // unbound ref to the elementof leaf `a`.
+  const { buildDerivations } = require('../orchestrator');
+  const { bindings } = loadMinimal('minimal.flatppl');
+  const ds = buildDerivations(bindings);
+  // Walk sigma's transitive closure for any lingering 'a' refs.
+  function walk(name, seen) {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const b = ds.bindings.get(name);
+    if (!b || !b.ir) return;
+    const refs = new Set();
+    (function collect(ir) {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'ref' && ir.ns === 'self') refs.add(ir.name);
+      if (ir.args) for (const a of ir.args) collect(a);
+      if (ir.kwargs) for (const k in ir.kwargs) collect(ir.kwargs[k]);
+    })(b.ir);
+    for (const r of refs) walk(r, seen);
+  }
+  const seen = new Set();
+  walk('sigma', seen);
+  assert.ok(!seen.has('a'),
+    "sigma's closure must not reference elementof leaf 'a' — implicit substitution regressed");
+  // sigma2 should be reached (the substituted call arg).
+  assert.ok(seen.has('sigma2'),
+    "sigma's closure should reach sigma2 via the call substitution");
+});
+
+test('integration: minimal — kernel applied to kernel_input record auto-splats', () => {
+  // `dist = kernel(kernel_input)` with `kernel_input = record(mu = 1.5)`
+  // and `kernel = kernelof(x, mu = mu)` exercises the splat path in
+  // inlineOnce: single positional record arg with field names covering
+  // the kernel's surface kwargs.
+  const { buildDerivations } = require('../orchestrator');
+  const { bindings } = loadMinimal('minimal.flatppl');
+  const ds = buildDerivations(bindings);
+  // dist should classify successfully (no derivation gap from a
+  // failed splat).
+  assert.ok(ds.bindings.has('dist'));
+  // After splat + inline, dist's transitive closure should reference
+  // the literal 1.5 somewhere (the substituted mu value).
+  let sawLit = false;
+  const seen = new Set();
+  const stack = ['dist'];
+  while (stack.length > 0) {
+    const n = stack.pop();
+    if (seen.has(n)) continue;
+    seen.add(n);
+    const b = ds.bindings.get(n);
+    if (!b || !b.ir) continue;
+    (function walk(ir) {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'lit' && ir.value === 1.5) { sawLit = true; return; }
+      if (ir.kind === 'ref' && ir.ns === 'self') { stack.push(ir.name); return; }
+      if (ir.args) for (const a of ir.args) walk(a);
+      if (ir.kwargs) for (const k in ir.kwargs) walk(ir.kwargs[k]);
+      // record / joint IRs carry their kids under `fields: [{name, value}]`;
+      // 1.5 lives inside kernel_input's record() field, so we walk this too.
+      if (Array.isArray(ir.fields)) for (const f of ir.fields) walk(f && f.value);
+    })(b.ir);
+  }
+  assert.ok(sawLit,
+    "dist's closure should contain the literal 1.5 after record-splat substitution");
+});
+
+test('integration: minimal.flatppj — both `;`-kwargs and `=`-only kwargs parse in the same file', () => {
+  // The .flatppj fixture deliberately mixes calling conventions:
+  //   Normal(mu = mu, sigma = sigma)   — no ; (kwargs after no positional)
+  //   kernelof(x; mu = mu)             — ; separator
+  //   record(;mu = 1.5)                — ; as first character
+  // All three must parse without diagnostics in a single source.
+  const { diagnostics } = loadMinimal('minimal.flatppj');
+  const errors = diagnostics.filter((d) => d.severity === 'error');
+  assert.equal(errors.length, 0,
+    `mixed-convention .flatppj had ${errors.length} errors`);
+});
+
+test('integration: minimal — phases line up with what the model semantics imply', () => {
+  // Lock the phase classification in as a regression guard: this
+  // exact set is what every downstream pass (canonicalize,
+  // signatureOf, the viewer's implicit-kernel/-function dispatch)
+  // relies on for this fixture. If a future analyzer change shifts
+  // any of these, the rest of the engine cascade breaks silently.
+  const { bindings } = loadMinimal('minimal.flatppl');
+  const expected = {
+    a:            'parameterized',
+    b:            'parameterized',
+    f_sqrt:       'fixed',
+    mu:           'parameterized',
+    sigma2:       'stochastic',
+    sigma:        'stochastic',
+    x:            'stochastic',
+    kernel:       'fixed',
+    kernel_input: 'fixed',
+    dist:         'fixed',
+  };
+  const actual = {};
+  for (const k in expected) actual[k] = bindings.get(k) && bindings.get(k).phase;
+  assert.deepEqual(actual, expected);
 });
 
 test('integration: bayesian_inference_3 posterior view uses the literal source structure', () => {
