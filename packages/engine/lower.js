@@ -307,10 +307,11 @@ function _lowerIdentifier(node, ctx) {
     return { kind: 'ref', ns: '%local', name, loc };
   }
 
-  // 2. Boolean literals (`true` / `false` are parsed as Identifiers in
-  // some FlatPPL fronts, by name — check defensively).
+  // 2. Boolean literals — defensive path for any Identifier-typed
+  // name that happens to spell a boolean across any variant. The
+  // canonical path is the parser emitting AST.BoolLiteral directly.
   if (BOOL_LITERALS.has(name)) {
-    return { kind: 'lit', value: name === 'true', loc };
+    return { kind: 'lit', value: (name === 'true' || name === 'True'), loc };
   }
 
   // 3. Built-in constants (pi, inf, im) and sets (reals, posreals, …).

@@ -3,12 +3,20 @@
 // Catalogs of known FlatPPL names: constants, sets, functions, distributions,
 // special operations, and measure algebra operations.
 
-// Predefined constants (scalar values)
+// Predefined constants (scalar values). `true`/`false` are handled by
+// the parser as BoolLiteral AST nodes (variant-aware: `true`/`false`
+// in FlatPPL/FlatPPJ; `True`/`False` in FlatPPY), so they don't sit
+// in CONSTANTS — keeping them out also means a FlatPPY source that
+// types bare `true` gets the right "Undefined variable" hint rather
+// than being silently classified as a ConstantRef.
 const CONSTANTS = new Set([
-  'true', 'false', 'pi', 'inf', 'im',
+  'pi', 'inf', 'im',
 ]);
 
-const BOOL_LITERALS = new Set(['true', 'false']);
+// Spellings of boolean literals across all variants — useful as a
+// "would this name spell a boolean somewhere" check. The parser
+// decides which spelling is active for a given variant.
+const BOOL_LITERALS = new Set(['true', 'false', 'True', 'False']);
 
 // Predefined sets
 const SETS = new Set([

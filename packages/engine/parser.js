@@ -310,11 +310,19 @@ function parse(tokens, variant) {
       return AST.Hole(tok.loc);
     }
 
-    // Identifier (may be bool/constant/set)
+    // Identifier (may be bool/constant/set). Boolean spelling is
+    // variant-specific (`true`/`false` in FlatPPL/FlatPPJ;
+    // `True`/`False` in FlatPPY); the AST normalizes to a
+    // BoolLiteral with a JS boolean value regardless of spelling.
     if (at(T.IDENT)) {
       advance();
-      const { isBoolLiteral, isConstant, isSet } = require('./builtins');
-      if (isBoolLiteral(tok.value)) return AST.BoolLiteral(tok.value === 'true', tok.loc);
+      const { isConstant, isSet } = require('./builtins');
+      if (v.booleanLiterals && v.booleanLiterals[0] === tok.value) {
+        return AST.BoolLiteral(true, tok.loc);
+      }
+      if (v.booleanLiterals && v.booleanLiterals[1] === tok.value) {
+        return AST.BoolLiteral(false, tok.loc);
+      }
       if (isConstant(tok.value)) return AST.ConstantRef(tok.value, tok.loc);
       if (isSet(tok.value)) return AST.SetRef(tok.value, tok.loc);
       return AST.Identifier(tok.value, tok.loc);
@@ -507,14 +515,35 @@ function parse(tokens, variant) {
       return AST.ErrorStatement(startTok.value, startTok.loc);
     }
 
-    // Collect LHS names: name1, name2, ... = rhs
+    // Collect LHS names: name1, name2, ... = rhs. Reserved names
+    // (variant-specific: spec §04 lists `and`/`or`/`not`/`True`/`False`
+    // as reserved at the module level; FlatPPY additionally treats
+    // `true`/`false` as reserved since they're shadowable but
+    // round-tripping to FlatPPL would surprise readers) are rejected
+    // with a clear diagnostic. Bare `_` is always allowed (discard
+    // pattern; lowers to a private anon name).
+    function checkReservedName(nameTok) {
+      const isHole = nameTok.type === T.HOLE;
+      if (isHole) return;  // `_` is always OK
+      if (v.reservedAtBinding && v.reservedAtBinding.has(nameTok.value)) {
+        diagnostics.push({
+          severity: 'error',
+          message: `'${nameTok.value}' is a reserved name in ${v.id} `
+            + 'and cannot be bound',
+          loc: nameTok.loc,
+        });
+      }
+    }
+
     const names = [];
+    checkReservedName(peek());
     names.push(AST.Identifier(peek().value, peek().loc));
     advance();
 
     while (at(T.COMMA)) {
       advance(); // ,
       if (isLhsName()) {
+        checkReservedName(peek());
         names.push(AST.Identifier(peek().value, peek().loc));
         advance();
       } else {
