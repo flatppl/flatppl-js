@@ -93,7 +93,35 @@ function parse(tokens, variant) {
       return AST.UnaryExpr('-', operand,
         AST.loc(opTok.loc.start.line, opTok.loc.start.col, operand.loc.end.line, operand.loc.end.col));
     }
-    return parsePostfix();
+    return parseExponential();
+  }
+
+  // Exponential (spec §05): `Postfix ('^' Unary)?` — right-
+  // associative because the right operand is a Unary that recurses
+  // back into parseExponential. Binds tighter than unary `-` (so
+  // `-x ^ 2` parses as `-(x ^ 2)`). Lowers to `pow(base, exponent)`.
+  // FlatPPL/FlatPPJ accept `^`; FlatPPY does not (use `pow()`).
+  function parseExponential() {
+    const base = parsePostfix();
+    if (!at(T.CARET)) return base;
+    const caretTok = peek();
+    if (!v.exponentOp) {
+      diagnostics.push({
+        severity: 'error',
+        message: `'^' is not an operator in ${v.id} `
+          + '(use `pow(base, exponent)` instead)',
+        loc: caretTok.loc,
+      });
+      advance();
+      parseUnary();  // consume the would-be exponent to avoid cascades
+      return base;
+    }
+    advance();  // ^
+    const exponent = parseUnary();
+    const callee = AST.Identifier('pow', caretTok.loc);
+    return AST.CallExpr(callee, [base, exponent],
+      AST.loc(base.loc.start.line, base.loc.start.col,
+              exponent.loc.end.line, exponent.loc.end.col));
   }
 
   function parsePostfix() {
