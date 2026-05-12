@@ -702,6 +702,182 @@ pipe = fchain(f1, f2)
 });
 
 // =====================================================================
+// inlineUserCall: implicit-boundary functionof
+//
+// Per spec §04 sec:functionof, a functionof declared with no
+// boundary kwargs has its parametric (elementof) ancestors as
+// implicit inputs. signatureOf already auto-promotes those leaves;
+// these tests cover the call-site side — inlineOnce must substitute
+// positional args for the same implicit leaves so the resulting IR
+// has no unbound elementof refs.
+// =====================================================================
+
+test('inline: f(arg) with no-kwargs functionof binds the elementof leaf', () => {
+  // The motivating shape from minimal.flatppl:
+  //   f_sqrt = functionof(b)
+  //   b      = a^0.5
+  //   a      = elementof(nonnegreals)
+  //   sigma  = f_sqrt(sigma2)
+  // After inlining, sigma's chain must compute sigma2^0.5 — NOT
+  // contain a lingering ref to the elementof leaf `a`.
+  const { bindings } = derivationsOf(`
+a = elementof(nonnegreals)
+b = a^0.5
+f_sqrt = functionof(b)
+sigma2 ~ Exponential(rate = 1.0)
+sigma = f_sqrt(sigma2)
+`);
+  // Sigma's lifted IR is an alias chain leading to a pow(sigma2, 0.5)
+  // anon. Walk through to verify the substitution happened.
+  const sigma = bindings.get('sigma');
+  // sigma.ir is a self-ref to the lifted pow call.
+  assert.equal(sigma.ir.kind, 'ref');
+  const powAnon = bindings.get(sigma.ir.name);
+  assert.equal(powAnon.ir.op, 'pow');
+  // The first arg should now reference `sigma2`, NOT `a` (the
+  // unsubstituted elementof leaf).
+  const firstArg = powAnon.ir.args[0];
+  assert.equal(firstArg.kind, 'ref');
+  assert.equal(firstArg.name, 'sigma2',
+    `expected first arg of pow to ref 'sigma2', got '${firstArg.name}' — ` +
+    'implicit elementof boundary substitution regressed');
+});
+
+test('inline: implicit boundary works with multiple elementof leaves', () => {
+  // Two parametric leaves reached through a chained body. Implicit
+  // boundary order = BFS visit order of self-refs; both must be
+  // substituted from positional call args in matching order.
+  const { bindings } = derivationsOf(`
+a = elementof(reals)
+b = elementof(reals)
+s = a + b
+f = functionof(s)
+x = 3.0
+y = 4.0
+z = f(x, y)
+`);
+  // z's chain should compute x + y (3 + 4 = 7 if evaluated).
+  // Structurally: the lifted form should reference x and y, not a / b.
+  const z = bindings.get('z');
+  assert.equal(z.ir.kind, 'ref');
+  const addAnon = bindings.get(z.ir.name);
+  assert.equal(addAnon.ir.op, 'add');
+  const names = addAnon.ir.args.map((arg) => arg.kind === 'ref' ? arg.name : null);
+  // Both elementof leaves were substituted — no lingering 'a' or 'b'.
+  assert.ok(!names.includes('a') && !names.includes('b'),
+    `add args still reference unsubstituted elementof leaves: ${names.join(', ')}`);
+  // x and y appear (in some order, depending on BFS).
+  assert.ok(names.includes('x') && names.includes('y'),
+    `add args should reference x and y; got: ${names.join(', ')}`);
+});
+
+test('inline: explicit-kwargs functionof still works unchanged', () => {
+  // Regression guard: the implicit-boundary path runs only when
+  // surfaceOrder is empty. Functions with explicit boundary kwargs
+  // must continue to substitute through the original code path.
+  const { bindings } = derivationsOf(`
+c = 2.0
+f = functionof(c * _par_, par = _par_)
+g = f(5)
+`);
+  // g should inline to c * 5.
+  const g = bindings.get('g');
+  assert.equal(g.ir.kind, 'call');
+  assert.equal(g.ir.op, 'mul');
+  // arg[1] is the substituted literal 5.
+  const argLit = g.ir.args.find((a) => a.kind === 'lit');
+  assert.ok(argLit, 'expected a literal arg after substitution');
+  assert.equal(argLit.value, 5);
+});
+
+test('inline: implicit-boundary call chained through a deeper body', () => {
+  // The elementof leaf is two hops back through evaluable
+  // intermediates. The closure walk + substitution must reach
+  // through inner = 2.5 + 0.3 * mu, with mu replaced by the call arg.
+  const { bindings } = derivationsOf(`
+mu = elementof(reals)
+inner = 2.5 + 0.3 * mu
+outer = inner * inner
+f = functionof(outer)
+v = 10.0
+result = f(v)
+`);
+  // We don't pin the exact tree (closure-naming can shuffle anons),
+  // but we DO assert there are no lingering refs to `mu` in any
+  // of result's transitive closure anons — that would mean the
+  // substitution missed a path.
+  function walkRefs(ir, out) {
+    if (!ir || typeof ir !== 'object') return;
+    if (ir.kind === 'ref' && ir.ns === 'self') out.add(ir.name);
+    if (ir.args) for (const a of ir.args) walkRefs(a, out);
+    if (ir.kwargs) for (const k in ir.kwargs) walkRefs(ir.kwargs[k], out);
+  }
+  const seen = new Set();
+  const stack = ['result'];
+  while (stack.length > 0) {
+    const n = stack.pop();
+    if (seen.has(n)) continue;
+    seen.add(n);
+    const b = bindings.get(n);
+    if (!b || !b.ir) continue;
+    const refs = new Set();
+    walkRefs(b.ir, refs);
+    for (const r of refs) {
+      // Implicit substitution should have replaced `mu` everywhere
+      // in the result's closure. `v` is the substitute.
+      assert.notEqual(r, 'mu',
+        `binding '${n}' still references unsubstituted elementof 'mu'`);
+      stack.push(r);
+    }
+  }
+});
+
+test('inline: implicit boundary excludes external() (fixed phase)', () => {
+  // external(...) is fixed-phase and per spec is closed over —
+  // not promoted as an implicit input. The call positional arg
+  // therefore binds to the elementof leaf only; the external
+  // ref stays in the synthesized body.
+  const { bindings } = derivationsOf(`
+a = elementof(reals)
+ext = external("data.dat")
+combo = a * ext
+f = functionof(combo)
+x = 7.0
+y = f(x)
+`);
+  // Walk y's closure: every ref should be either a substituted leaf
+  // (x), the external ref (ext), or an internal anon. NO refs to `a`.
+  function walkRefs(ir, out) {
+    if (!ir || typeof ir !== 'object') return;
+    if (ir.kind === 'ref' && ir.ns === 'self') out.add(ir.name);
+    if (ir.args) for (const a of ir.args) walkRefs(a, out);
+    if (ir.kwargs) for (const k in ir.kwargs) walkRefs(ir.kwargs[k], out);
+  }
+  const seen = new Set();
+  const stack = ['y'];
+  let sawExt = false, sawX = false;
+  while (stack.length > 0) {
+    const n = stack.pop();
+    if (seen.has(n)) continue;
+    seen.add(n);
+    const b = bindings.get(n);
+    if (!b || !b.ir) continue;
+    const refs = new Set();
+    walkRefs(b.ir, refs);
+    for (const r of refs) {
+      assert.notEqual(r, 'a',
+        `binding '${n}' still references the elementof leaf 'a' — ` +
+        'implicit substitution missed it');
+      if (r === 'ext') sawExt = true;
+      if (r === 'x')   sawX = true;
+      stack.push(r);
+    }
+  }
+  assert.ok(sawX, 'expected the substituted call arg "x" to appear');
+  assert.ok(sawExt, 'expected the closed-over "ext" ref to appear unchanged');
+});
+
+// =====================================================================
 // collectSelfRefs / leafSampleIR
 // =====================================================================
 
