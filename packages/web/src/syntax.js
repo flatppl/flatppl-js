@@ -26,7 +26,18 @@
   // catalogue and aren't bindings — typically nothing, since every
   // user-introduced name should be a binding, but the parser
   // tolerates references to undefined names with a warning).
+  // Names that act as keywords / operators at the surface level
+  // across variants. `and`/`or`/`not` are FlatPPY logical keywords;
+  // `in` is the membership comparison operator in all three variants;
+  // `true`/`false`/`True`/`False` are boolean keywords (variant-
+  // specific spelling, but treated uniformly by the highlighter).
+  var KEYWORD_NAMES = new Set([
+    'and', 'or', 'not', 'in',
+    'true', 'false', 'True', 'False',
+  ]);
+
   function classifyIdentifier(name, bindings, B) {
+    if (KEYWORD_NAMES.has(name))        return 'tok-keyword';
     if (bindings && bindings.has(name)) return 'tok-ident-binding';
     if (B.isSpecialOperation(name))     return 'tok-special';
     if (B.MEASURE_OPS.has(name))        return 'tok-mop';
@@ -40,6 +51,16 @@
     return 'tok-ident';
   }
 
+  // Token types that map to the generic operator class. Includes the
+  // new variant operators: TILDE (`~`), CARET (`^`), AMPAMP (`&&`),
+  // PIPEPIPE (`||`), BANG (`!`). SEMI (`;`) is treated as punctuation.
+  var OP_TOKEN_TYPES = new Set([
+    'EQUALS', 'EQEQ', 'NEQ',
+    'LT', 'GT', 'LTE', 'GTE',
+    'PLUS', 'MINUS', 'STAR', 'SLASH',
+    'TILDE', 'CARET', 'AMPAMP', 'PIPEPIPE', 'BANG',
+  ]);
+
   function classifyToken(tok) {
     var t = tok.type;
     if (t === 'COMMENT')     return 'tok-comment';
@@ -47,11 +68,7 @@
     if (t === 'NUMBER')      return 'tok-number';
     if (t === 'PLACEHOLDER') return 'tok-placeholder';
     if (t === 'HOLE')        return 'tok-hole';
-    if (t === 'EQUALS' || t === 'EQEQ' || t === 'NEQ' ||
-        t === 'LT' || t === 'GT' || t === 'LTE' || t === 'GTE' ||
-        t === 'PLUS' || t === 'MINUS' || t === 'STAR' || t === 'SLASH') {
-      return 'tok-op';
-    }
+    if (OP_TOKEN_TYPES.has(t)) return 'tok-op';
     return 'tok-punct';
   }
 
@@ -87,15 +104,21 @@
    *        can target them without re-tokenizing on click.
    * @returns {string} HTML safe to insert via innerHTML
    */
-  function highlight(source, bindings) {
+  function highlight(source, bindings, opts) {
     var FE = globalScope.FlatPPLEngine;
     if (!FE || typeof FE.tokenize !== 'function') {
       // Engine missing — degrade gracefully to escaped raw text so
       // the pane still shows something useful.
       return escape(source);
     }
+    // Resolve the variant the tokenizer should use. The tokenizer
+    // itself is variant-agnostic for the operator set we currently
+    // care about (it always emits TILDE / AMPAMP / etc), but passing
+    // the variant keeps the public API future-proof.
+    var variant = FE.variants && FE.variants.resolveVariant
+      ? FE.variants.resolveVariant(opts) : undefined;
     var B = FE.builtins;
-    var tokenizeResult = FE.tokenize(source);
+    var tokenizeResult = FE.tokenize(source, variant);
     var tokens = tokenizeResult.tokens || [];
     var lineStarts = computeLineStarts(source);
 

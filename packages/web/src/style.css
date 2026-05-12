@@ -243,6 +243,7 @@ html, body {
   text-decoration: underline;
   cursor: pointer;
 }
+.tok-keyword   { color: #c586c0; }   /* and, or, not, in, true/false (variant kwds) */
 .tok-special   { color: #c586c0; }   /* draw, lawof, fn, …  */
 .tok-mop       { color: #c586c0; }   /* weighted, joint, … */
 .tok-dist      { color: #4fc1ff; }   /* Normal, Poisson, … */

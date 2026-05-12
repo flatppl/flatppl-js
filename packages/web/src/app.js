@@ -88,10 +88,13 @@
     }
     if (!sourceView) return;
     var FE = window.FlatPPLEngine;
+    var cur = window.FlatPPLWebRouter
+      ? window.FlatPPLWebRouter.parseHash() : { model: null };
+    var variantId = variantIdForPath(cur.model);
     var bindings = null;
     if (FE && typeof FE.processSource === 'function') {
       try {
-        var processed = FE.processSource(text);
+        var processed = FE.processSource(text, { variant: variantId });
         if (processed && processed.bindings) {
           bindings = new Set(processed.bindings.keys());
         }
@@ -102,7 +105,8 @@
       }
     }
     if (window.FlatPPLWebSyntax && typeof window.FlatPPLWebSyntax.highlight === 'function') {
-      sourceView.innerHTML = window.FlatPPLWebSyntax.highlight(text, bindings);
+      sourceView.innerHTML = window.FlatPPLWebSyntax.highlight(text, bindings,
+        { variant: variantId });
     } else {
       sourceView.textContent = text;
     }
