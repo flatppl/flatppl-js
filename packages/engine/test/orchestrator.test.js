@@ -824,6 +824,72 @@ fwd_kernel = functionof(obs_dist, theta1 = theta1)
     'functionof whose body is a measure-typed binding should classify as kernel');
 });
 
+test('signatureOf: functionof with no kwargs auto-promotes elementof ancestors', () => {
+  // Per spec §04 (sec:functionof): a single-argument functionof
+  // traces the body's ancestor subgraph back to parametric leaves
+  // (elementof bindings) and promotes them as inputs. The lowerer
+  // doesn't record those leaves in ir.params (it only stores
+  // user-written kwargs), so signatureOf must recover them by
+  // walking the body through bindings.
+  const sig = sigOf(`
+mu = elementof(reals)
+mu2 = mu^2
+f = functionof(mu2)
+`, 'f');
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'mu');
+  assert.equal(sig.inputs[0].kwargName, 'mu');
+  assert.deepEqual(sig.inputs[0].source, { kind: 'binding', name: 'mu' });
+  assert.equal(sig.inputs[0].type.kind, 'scalar');
+});
+
+test('signatureOf: auto-promote collects multiple elementof leaves through chains', () => {
+  // Two parametric leaves reached via different chain paths. Both
+  // should surface as inputs in the trace order they're encountered.
+  const sig = sigOf(`
+a = elementof(reals)
+b = elementof(reals)
+s = a + b
+f = functionof(s)
+`, 'f');
+  assert.equal(sig.inputs.length, 2);
+  const names = sig.inputs.map((inp) => inp.paramName).sort();
+  assert.deepEqual(names, ['a', 'b']);
+});
+
+test('signatureOf: auto-promote stops at non-input ancestors (constants, draws)', () => {
+  // Fixed ancestors (constants / external) are closed over per spec,
+  // and stochastic ancestors aren't elementof leaves either —
+  // neither should surface as implicit inputs. Result: no inputs.
+  const sig = sigOf(`
+c = 2.0
+y = draw(Normal(mu = 0, sigma = 1))
+z = c * y
+f = functionof(z)
+`, 'f');
+  // Auto-promote walks self-refs; it only adds entries for
+  // type='input' bindings (elementof). Neither c (literal) nor y
+  // (draw) qualifies, so inputs stays empty.
+  assert.equal(sig.inputs.length, 0);
+});
+
+test('signatureOf: explicit boundary kwargs disable auto-promotion', () => {
+  // When the user writes `functionof(z, a = a)`, the trace stops at
+  // `a` and `a` is the sole input — additional elementof ancestors
+  // beyond the boundary are NOT silently promoted. Otherwise a
+  // user-declared signature could grow surprise inputs every time
+  // an upstream derived binding picked up a new parametric ancestor.
+  const sig = sigOf(`
+a = elementof(reals)
+b = elementof(reals)
+s = a + b
+f = functionof(s, a = a)
+`, 'f');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'a');
+});
+
 test('signatureOf: returns null for non-callable bindings', () => {
   // Sample / measure / literal bindings have no signature.
   assert.equal(sigOf('y = draw(Normal(mu=0, sigma=1))', 'y'), null);
@@ -968,6 +1034,38 @@ test('inlineForProfile: cycle guard — does not loop on self-cycle', () => {
   assert.equal(out.kind, 'ref');
   assert.equal(out.ns, 'self');
   assert.equal(out.name, 'a');
+});
+
+test('inlineForProfile: inlines pruned-but-evaluable call binding', () => {
+  // The scenario that motivates the bindings-fallback in
+  // inlineForProfile: buildDerivations prunes mu2's derivation
+  // because mu2 transitively depends on a parameterized ancestor
+  // (mu = elementof). The profile-plot pipeline still needs to
+  // inline mu2's body so the swept `ref self mu` reaches the
+  // %local rewrite. Without the fallback the body stays at
+  // `ref self mu2` and profileN evaluates to NaN every point.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+mu = elementof(reals)
+mu2 = mu^2
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const ds = buildDerivations(lifted);
+  // Pre-condition: mu2's derivation was pruned (sanity-check that
+  // we're exercising the fallback rather than the happy path).
+  assert.ok(!ds.derivations['mu2'],
+    'expected buildDerivations to prune mu2 (depends on parameterized mu)');
+
+  const body = { kind: 'ref', ns: 'self', name: 'mu2' };
+  const out = inlineForProfile(body, ['mu'], ds.bindings, ds.derivations);
+  // mu2's IR (pow(mu, 2)) inlined, with self.mu rewritten to %local.mu.
+  assert.equal(out.kind, 'call');
+  assert.equal(out.op, 'pow');
+  assert.equal(out.args[0].kind, 'ref');
+  assert.equal(out.args[0].ns, '%local');
+  assert.equal(out.args[0].name, 'mu');
+  assert.equal(out.args[1].kind, 'lit');
+  assert.equal(out.args[1].value, 2);
 });
 
 test('inlineForProfile: walks call args / kwargs / fields recursively', () => {
