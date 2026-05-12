@@ -3096,6 +3096,84 @@ function substituteLocals(ir, env) {
  * with an "unbound self reference" error — surface it loudly so we
  * fix the missing case rather than silently emit wrong samples.
  */
+/**
+ * Structural variant of expandMeasureIR that recovers a measure IR
+ * from a binding's lifted IR even when buildDerivations has pruned
+ * the derivation. The pruner drops any derivation whose distIR
+ * references a parameterized binding (e.g. `Normal(mu = mu, …)` where
+ * `mu = elementof(reals)`), because top-level plotting can't
+ * materialise an unbound parameter. The kernel-sample path
+ * substitutes those parameters via env at materialise time, so it
+ * needs the structural shape regardless of derivation status.
+ *
+ * Walk:
+ *   - alias-like: `draw(ref X)` → recurse into X
+ *                 `ref X`       → recurse into X
+ *   - iid(ref M, n)              → iid(expand(M), n)
+ *   - call to a sampleable dist  → return as-is
+ *   - call to lawof              → strip and recurse on the arg
+ *   - call to other measure ops  → return as-is (caller is
+ *                                  responsible for any deeper
+ *                                  substitution work)
+ *
+ * Returns the structural measure IR or null when the binding chain
+ * can't be reduced (e.g. it bottoms out at something that isn't a
+ * measure — analyzer should have caught that, this is defensive).
+ */
+function expandMeasureIRStructural(name, bindings, visited) {
+  visited = visited || new Set();
+  if (!bindings || visited.has(name)) return null;
+  const next = new Set(visited); next.add(name);
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  return _walkStructural(b.ir, bindings, next);
+}
+
+function _walkStructural(ir, bindings, visited) {
+  if (!ir) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    return expandMeasureIRStructural(ir.name, bindings, visited);
+  }
+  if (ir.kind !== 'call') return ir;
+  // draw(<measure>) — strip the draw wrapper.
+  if (ir.op === 'draw' && Array.isArray(ir.args) && ir.args.length === 1) {
+    return _walkStructural(ir.args[0], bindings, visited);
+  }
+  // lawof(<measure>) — peel for the same reason expandMeasureRefsInIR does.
+  if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
+    return _walkStructural(ir.args[0], bindings, visited);
+  }
+  // iid(measure-ref, n, ...) — recurse into the measure-position arg.
+  if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
+    const inner = _walkStructural(ir.args[0], bindings, visited);
+    if (!inner) return null;
+    return { kind: 'call', op: 'iid', args: [inner].concat(ir.args.slice(1)), loc: ir.loc };
+  }
+  // record/joint/jointchain/cartprod: recurse into each field.
+  if ((ir.op === 'record' || ir.op === 'joint' || ir.op === 'jointchain')
+      && Array.isArray(ir.fields)) {
+    const fields = ir.fields.map(f => ({ ...f, value: _walkStructural(f.value, bindings, visited) }));
+    return { kind: 'call', op: ir.op, fields, loc: ir.loc };
+  }
+  // Sampleable distribution call — return as-is. The caller (viewer
+  // kernel-sample path) will substitute self-refs in kwargs via
+  // substituteSelfRefs + substituteLocals before materialising.
+  if (SAMPLEABLE_DISTRIBUTIONS.has(ir.op)) return ir;
+  // weighted / logweighted / normalize / superpose / truncate /
+  // pushfwd: leave the outer call but recurse on the measure-position
+  // operand. Different ops carry the measure in different slots; we
+  // mirror expandMeasureRefsInIR's special cases conservatively.
+  if ((ir.op === 'weighted' || ir.op === 'logweighted')
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    const inner = _walkStructural(ir.args[1], bindings, visited);
+    if (!inner) return null;
+    return { kind: 'call', op: ir.op, args: [ir.args[0], inner], loc: ir.loc };
+  }
+  // Anything else: return as-is. Downstream materialise may fail; an
+  // explicit error there is clearer than silently dropping the IR.
+  return ir;
+}
+
 function substituteSelfRefs(ir, env) {
   if (ir == null || typeof ir !== 'object') return ir;
   if (Array.isArray(ir)) return ir.map(function(x) { return substituteSelfRefs(x, env); });
@@ -3571,6 +3649,7 @@ module.exports = {
   inlineForProfile,
   substituteLocals,
   substituteSelfRefs,
+  expandMeasureIRStructural,
   resolveAxisBaseSet,
   fourSigmaQuantileRange,
   findMatchingPresets,

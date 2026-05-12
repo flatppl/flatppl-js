@@ -4134,6 +4134,19 @@
         var ir = sig.body;
         ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
           ir, derivationsState.derivations);
+        // Structural fallback for the case where buildDerivations
+        // pruned a measure-ref's derivation because its distIR
+        // depends on a parameterized binding (the very thing this
+        // kernel will substitute via env at materialise time). The
+        // ref leaks through expandMeasureRefsInIR as a bare
+        // (ref self <name>); walk binding.ir directly to reconstruct
+        // the measure shape so substituteLocals can then bind the
+        // captured parameters.
+        if (ir && ir.kind === 'ref' && ir.ns === 'self') {
+          var expanded = FlatPPLEngine.orchestrator.expandMeasureIRStructural(
+            ir.name, derivationsState.bindings);
+          if (expanded) ir = expanded;
+        }
         ir = FlatPPLEngine.orchestrator.inlineForProfile(
           ir, paramNames, derivationsState.bindings, derivationsState.derivations);
         ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
