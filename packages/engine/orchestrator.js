@@ -576,7 +576,124 @@ function inferSyntheticType(astNode) {
 // substitutions from identifier substitutions of the same name.
 const PLACEHOLDER_SUB_PREFIX = '@placeholder:';
 
+/**
+ * Canonicalise no-kwargs functionof / kernelof to explicit-kwargs
+ * form before any downstream consumer touches the AST or its
+ * lowered IR.
+ *
+ * Per spec §04 sec:functionof: a single-argument functionof traces
+ * its body's ancestor subgraph back to all parametric-phase leaves
+ * (elementof bindings); those leaves become the inputs of the
+ * reified callable. This pass realises that as an AST rewrite —
+ * `f = functionof(body)` becomes `f = functionof(body, leaf=leaf, ...)`
+ * for every elementof leaf found by transitive walk.
+ *
+ * One canonical place keeps three consumers in lockstep:
+ *   1. lower._lowerReification    → reads the AST kwargs into ir.params.
+ *   2. orchestrator.signatureOf   → reads ir.params verbatim.
+ *   3. orchestrator.inlineOnce    → reads fnAst's KeywordArgs to build
+ *                                   the substitution map.
+ *
+ * Before this pass existed, each of (2) and (3) had to re-derive the
+ * implicit boundaries independently — see git history for the bugs
+ * that came from the views drifting.
+ *
+ * Untouched cases:
+ *   - functionof / kernelof with at least one boundary kwarg: the
+ *     user has declared the signature; we don't bolt on extras.
+ *   - fn(...): uses placeholder holes, not elementof refs, so the
+ *     spec rule doesn't apply.
+ *   - bindings without a parseable CallExpr AST.
+ *   - bodies with no reachable elementof leaves (the function is
+ *     truly parameterless; signatureOf still produces inputs:[]).
+ *
+ * Returns a fresh Map. The original bindings are not mutated; for
+ * affected bindings, we deep-clone the node so the original AST stays
+ * pristine for editor diagnostics and round-trip rendering.
+ */
+function canonicalizeImplicitBoundaries(bindings) {
+  if (!bindings || bindings.size === 0) return bindings;
+  const out = new Map(bindings);
+
+  for (const [name, b] of bindings) {
+    if (b.type !== 'functionof' && b.type !== 'kernelof') continue;
+    if (!b.node || !b.node.value) continue;
+    const callExpr = b.node.value;
+    if (callExpr.type !== 'CallExpr') continue;
+    const args = callExpr.args || [];
+    if (args.length === 0) continue;
+    // Already has explicit boundary kwargs → don't auto-promote.
+    if (args.slice(1).some((a) => a && a.type === 'KeywordArg')) continue;
+
+    const bodyAst = args[0];
+    if (!bodyAst) continue;
+    const leaves = bfsImplicitElementofLeavesAst(bodyAst, bindings);
+    if (leaves.length === 0) continue;
+
+    // Synthesize KeywordArgs for each parametric leaf. Both surface
+    // name and value Identifier are the leaf's own binding name —
+    // body refs to that name resolve normally through self-scope,
+    // and the boundary kwarg's surface name matches the spec's
+    // "leaf nodes become the inputs of the reified callable" wording.
+    const newKwargs = leaves.map((leafName) => ({
+      type: 'KeywordArg',
+      name: leafName,
+      value: { type: 'Identifier', name: leafName, loc: bodyAst.loc || null },
+      loc: bodyAst.loc || null,
+    }));
+
+    const newCallExpr = { ...callExpr, args: [args[0], ...newKwargs] };
+    out.set(name, {
+      ...b,
+      // Mark the rewrite so downstream tooling (diagnostics, round-
+      // trip) can distinguish it from a user-authored kwarg list.
+      implicitBoundaries: leaves.slice(),
+      node: { ...b.node, value: newCallExpr },
+    });
+  }
+  return out;
+}
+
+/**
+ * BFS the AST `bodyAst` through binding refs, collecting parametric-
+ * phase elementof leaves in visit order. Same traversal shape as
+ * signatureOf used to do internally; centralised here so the
+ * canonicalize pass is the single source of truth.
+ */
+function bfsImplicitElementofLeavesAst(bodyAst, bindings) {
+  const seen = new Set();
+  const leaves = [];
+  const queue = [];
+  collectIds(bodyAst, queue);
+  while (queue.length > 0) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const b = bindings.get(name);
+    if (!b) continue;
+    if (b.type === 'input' && b.phase === 'parameterized') {
+      leaves.push(name);
+      continue;
+    }
+    if (b.phase === 'fixed') continue;  // closed over per spec
+    if (b.node && b.node.value) collectIds(b.node.value, queue);
+  }
+  return leaves;
+  function collectIds(node, into) {
+    if (node == null || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const c of node) collectIds(c, into); return; }
+    if (node.type === 'Identifier') into.push(node.name);
+    for (const k in node) collectIds(node[k], into);
+  }
+}
+
 function liftInlineSubexpressions(bindings) {
+  // Canonicalise implicit-boundary functionof / kernelof first.
+  // After this, the lifted IR carries explicit ir.params, so every
+  // downstream consumer (signatureOf, inlineOnce, _lowerReification)
+  // sees a uniform shape regardless of whether the user wrote
+  // explicit kwargs.
+  bindings = canonicalizeImplicitBoundaries(bindings);
   const out = new Map(bindings);
   let counter = 0;
   function freshName() {
@@ -1377,28 +1494,13 @@ function liftInlineSubexpressions(bindings) {
       }
     }
 
-    // Implicit boundaries (spec §04 sec:functionof): when the
-    // function was declared with no boundary kwargs, the parametric-
-    // phase leaves (elementof bindings) in the body's transitive
-    // ancestor subgraph become inputs implicitly, in the order the
-    // BFS walk reaches them. This mirrors signatureOf's auto-promote
-    // path so call-site inlining matches the synthesized signature.
-    // Without this, `f = functionof(b); g = f(x)` would leave the
-    // body's clone referencing the original elementof leaf instead
-    // of substituting `x` for it — producing IRs with unbound
-    // elementof refs and "Not plottable" downstream.
-    if (surfaceOrder.length === 0 && (astArg.args || []).length > 0) {
-      const leafNames = findImplicitElementofLeaves(bodyAst);
-      for (const leafName of leafNames) {
-        // Use the binding's own name on both sides — body refers to
-        // it via Identifier(leafName), and the call positional arg
-        // maps to that same name. Placeholder-prefix isn't needed
-        // because elementof bindings are real top-level names, not
-        // placeholders.
-        surfaceOrder.push(leafName);
-        internalForSurface[leafName] = leafName;
-      }
-    }
+    // Implicit boundaries (spec §04 sec:functionof) are already
+    // materialised by canonicalizeImplicitBoundaries (called at the
+    // top of liftInlineSubexpressions). That pass rewrites the
+    // function's AST so args[1+] carries explicit KeywordArgs for
+    // every parametric leaf, and the loop above picks them up. So
+    // surfaceOrder is correctly populated here regardless of whether
+    // the user wrote kwargs or relied on the implicit form.
 
     // Auto-splatting (spec §sec:calling-convention lines 99-102):
     // `f(record(a=x, b=y))` and `f(some_record_value)` are
@@ -1564,48 +1666,6 @@ function liftInlineSubexpressions(bindings) {
     }
     collectRefsAst(bodyAst);
     return Array.from(closure);
-  }
-
-  /**
-   * BFS through `bodyAst`'s Identifier refs, recursing through
-   * binding RHSes, to find parametric-phase elementof leaves
-   * (type='input', phase='parameterized'). The traversal matches
-   * the signatureOf auto-promote path so call-site inlining lines
-   * up with the synthesized signature.
-   *
-   * Returns binding names in BFS visit order (deterministic across
-   * calls so positional arg matching is stable).
-   */
-  function findImplicitElementofLeaves(bodyAst) {
-    const seen = new Set();
-    const leaves = [];
-    // Seed queue with the body's directly-referenced names.
-    const queue = [];
-    collectIds(bodyAst, queue);
-    while (queue.length > 0) {
-      const name = queue.shift();
-      if (seen.has(name)) continue;
-      seen.add(name);
-      const b = out.get(name) || bindings.get(name);
-      if (!b) continue;
-      // Parametric leaf — record it and stop the trace here.
-      if (b.type === 'input' && b.phase === 'parameterized') {
-        leaves.push(name);
-        continue;
-      }
-      // Anything else: keep walking. Stop at fixed-phase bindings
-      // (external / load_data / literals / fixed-phase derived)
-      // since they're closed over per spec, not implicit inputs.
-      if (b.phase === 'fixed') continue;
-      if (b.node && b.node.value) collectIds(b.node.value, queue);
-    }
-    return leaves;
-    function collectIds(node, into) {
-      if (node == null || typeof node !== 'object') return;
-      if (Array.isArray(node)) { for (const c of node) collectIds(c, into); return; }
-      if (node.type === 'Identifier') into.push(node.name);
-      for (const k in node) collectIds(node[k], into);
-    }
   }
 
   function substituteIdents(ast, sub) {
@@ -3191,59 +3251,11 @@ function signatureOf(name, bindings) {
       source:    sources[i] || null,
     });
   }
-  // Per spec §04 (sec:functionof): "When called with a single
-  // argument (without boundary specifications), `functionof` traces
-  // the ancestor subgraph of its argument back to all leaves of
-  // parametric phase — that is, all `elementof` leaves. These leaf
-  // nodes become the inputs of the reified callable."
-  //
-  // The lowerer doesn't promote those leaves into ir.params (it
-  // only records what the user wrote literally), so signatureOf
-  // recovers them here when no explicit boundaries were declared.
-  // With explicit boundaries the trace stops at them and the user-
-  // declared signature is taken as authoritative — we don't bolt
-  // on extra implicit inputs in that case.
-  if (inputs.length === 0 && ir.body) {
-    const seen = new Set();
-    const queue = [ir.body];
-    const elementofRefs = [];
-    while (queue.length > 0) {
-      const node = queue.shift();
-      if (!node || typeof node !== 'object') continue;
-      if (node.kind === 'ref' && node.ns === 'self') {
-        if (seen.has(node.name)) continue;
-        seen.add(node.name);
-        const target = bindings.get(node.name);
-        if (!target) continue;
-        // Per spec §04 sec:functionof: only PARAMETRIC-phase leaves
-        // (elementof) become inputs. external(...) and load_data(...)
-        // also have binding.type='input' but phase='fixed' — they're
-        // closed over, not promoted.
-        if (target.type === 'input' && target.phase === 'parameterized') {
-          elementofRefs.push(node.name); continue;
-        }
-        // Non-input bindings: descend into their IR so the trace
-        // reaches the parametric leaves transitively. Fixed-phase
-        // input bindings (external / load_data) are leaves with no
-        // .ir to walk further, so we just stop on them silently.
-        if (target.ir) queue.push(target.ir);
-        continue;
-      }
-      if (Array.isArray(node.args))   for (const a of node.args)   queue.push(a);
-      if (node.kwargs) for (const k in node.kwargs)                queue.push(node.kwargs[k]);
-      if (Array.isArray(node.fields)) for (const f of node.fields) queue.push(f && f.value);
-      if (node.body)                                               queue.push(node.body);
-    }
-    for (const refName of elementofRefs) {
-      const target = bindings.get(refName);
-      inputs.push({
-        paramName: refName,
-        kwargName: refName,
-        type: (target && target.inferredType) || null,
-        source: { kind: 'binding', name: refName },
-      });
-    }
-  }
+  // Per spec §04 (sec:functionof), no-kwargs functionof / kernelof
+  // auto-promotes elementof ancestors as inputs. That rewrite now
+  // happens once in canonicalizeImplicitBoundaries (called from
+  // liftInlineSubexpressions before lowering), so ir.params here is
+  // already complete — no second auto-promote pass needed.
   return { kind, inputs, output: { type: t && t.result }, body: ir.body || null };
 }
 
@@ -3900,6 +3912,7 @@ module.exports = {
   buildSampleChain,
   buildDerivations,
   liftInlineSubexpressions,
+  canonicalizeImplicitBoundaries,
   collectSelfRefs,
   leafSampleIR,
   expandMeasureIR,

@@ -27,6 +27,7 @@ const {
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets, findMatchingDomains,
   expandMeasureIR, implicitKernelSignature, implicitFunctionSignature,
+  canonicalizeImplicitBoundaries,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -699,6 +700,122 @@ f2   = fn(_ * 2.0)
 pipe = fchain(f1, f2)
 `);
   assert.ok(!('pipe' in derivations));
+});
+
+// =====================================================================
+// canonicalizeImplicitBoundaries — AST rewrite that turns no-kwargs
+// functionof / kernelof into explicit-kwargs form, so a single
+// canonical IR shape feeds every downstream consumer (the lowerer,
+// signatureOf, inlineOnce).
+// =====================================================================
+
+test('canonicalize: no-kwargs functionof gets implicit kwargs from elementof leaves', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+mu2 = mu^2
+f = functionof(mu2)
+`);
+  const rewritten = canonicalizeImplicitBoundaries(bindings);
+  const fNode = rewritten.get('f').node.value;
+  // After canonicalize: functionof(mu2, mu = mu) — args[0] is the
+  // body, args[1+] are the synthesized KeywordArgs.
+  assert.equal(fNode.args.length, 2);
+  assert.equal(fNode.args[0].type, 'Identifier');
+  assert.equal(fNode.args[0].name, 'mu2');
+  assert.equal(fNode.args[1].type, 'KeywordArg');
+  assert.equal(fNode.args[1].name, 'mu');
+  assert.equal(fNode.args[1].value.name, 'mu');
+  // A tag flags the rewrite for downstream tooling.
+  assert.deepEqual(rewritten.get('f').implicitBoundaries, ['mu']);
+});
+
+test('canonicalize: explicit-kwargs functionof is left alone', () => {
+  // The user has declared the signature; canonicalize must not add
+  // extra inputs even if more elementof leaves exist further upstream.
+  const { bindings } = processSource(`
+a = elementof(reals)
+b = elementof(reals)
+combined = a * b
+f = functionof(combined, a = a)
+`);
+  const rewritten = canonicalizeImplicitBoundaries(bindings);
+  const fNode = rewritten.get('f').node.value;
+  // One explicit kwarg, NOT two (no extra promotion of b).
+  const kwargs = fNode.args.slice(1).filter((a) => a.type === 'KeywordArg');
+  assert.equal(kwargs.length, 1);
+  assert.equal(kwargs[0].name, 'a');
+  // No implicitBoundaries tag — the rewrite didn't fire.
+  assert.equal(rewritten.get('f').implicitBoundaries, undefined);
+});
+
+test('canonicalize: kernelof handled the same as functionof', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+y = draw(Normal(mu = mu, sigma = 1))
+K = kernelof(y)
+`);
+  const rewritten = canonicalizeImplicitBoundaries(bindings);
+  const kNode = rewritten.get('K').node.value;
+  // K's body refs y → mu, so mu is the implicit boundary.
+  const kwargs = kNode.args.slice(1).filter((a) => a.type === 'KeywordArg');
+  assert.equal(kwargs.length, 1);
+  assert.equal(kwargs[0].name, 'mu');
+});
+
+test('canonicalize: body with no elementof leaves stays unchanged', () => {
+  // f = functionof(2.0) — fully closed. No leaves → no rewrite.
+  const { bindings } = processSource(`
+f = functionof(2.0)
+`);
+  const rewritten = canonicalizeImplicitBoundaries(bindings);
+  const fNode = rewritten.get('f').node.value;
+  assert.equal(fNode.args.length, 1);
+  assert.equal(rewritten.get('f').implicitBoundaries, undefined);
+});
+
+test('canonicalize: external() / load_data() (fixed phase) are NOT promoted', () => {
+  // Symmetric with the other helpers' phase filter: only parametric
+  // leaves become inputs; fixed-phase boundary bindings are closed over.
+  const { bindings } = processSource(`
+mu = elementof(reals)
+ext = external("data.dat")
+combo = mu * ext
+f = functionof(combo)
+`);
+  const rewritten = canonicalizeImplicitBoundaries(bindings);
+  const fNode = rewritten.get('f').node.value;
+  const kwargs = fNode.args.slice(1).filter((a) => a.type === 'KeywordArg');
+  // Only `mu` — `ext` is fixed-phase, must not appear.
+  assert.equal(kwargs.length, 1);
+  assert.equal(kwargs[0].name, 'mu');
+});
+
+test('canonicalize: fn(...) is left alone (uses placeholders, not refs)', () => {
+  // fn lowers to functionof with placeholder params on its own;
+  // canonicalize's auto-promote rule applies only to functionof /
+  // kernelof at the AST level, before lowering.
+  const { bindings } = processSource(`
+f = fn(_ + 1.0)
+`);
+  const rewritten = canonicalizeImplicitBoundaries(bindings);
+  const fNode = rewritten.get('f').node.value;
+  // fn(...) AST shape is preserved verbatim — no rewrite.
+  assert.equal(fNode.callee.name, 'fn');
+  assert.equal(rewritten.get('f').implicitBoundaries, undefined);
+});
+
+test('canonicalize: original bindings are not mutated', () => {
+  // The pass returns a fresh Map and deep-clones modified nodes;
+  // the caller's bindings stay pristine for editor diagnostics.
+  const { bindings } = processSource(`
+mu = elementof(reals)
+f = functionof(mu^2)
+`);
+  const before = bindings.get('f').node.value;
+  const beforeArgsCount = before.args.length;
+  canonicalizeImplicitBoundaries(bindings);
+  assert.equal(bindings.get('f').node.value.args.length, beforeArgsCount,
+    'canonicalize must not mutate the original bindings AST');
 });
 
 // =====================================================================
