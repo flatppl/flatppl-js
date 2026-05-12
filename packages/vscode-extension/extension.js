@@ -14,8 +14,22 @@ const vscode = require('vscode');
 // loaded and tested.
 const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges } = require('@flatppl/engine');
+  findEnclosingRanges, variants } = require('@flatppl/engine');
 const { FlatPPLPanel } = require('./src/visualPanel');
+
+// Surface-syntax variants this extension handles. Per-document
+// variant detection uses the document's languageId (set by VS Code
+// from the file extension via package.json's `languages`
+// contribution). The three IDs share grammar / configuration —
+// what differs is which surface syntax the engine parses.
+const FLATPPL_LANGS = new Set(['flatppl', 'flatppy', 'flatppj']);
+function isFlatPPLDoc(document) {
+  return document != null && FLATPPL_LANGS.has(document.languageId);
+}
+function variantIdForDoc(document) {
+  if (!isFlatPPLDoc(document)) return 'flatppl';
+  return document.languageId;
+}
 
 function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
@@ -32,7 +46,8 @@ function activate(context) {
     if (uri === cachedUri && document.version === cachedVersion) return cachedResult;
 
     const source = document.getText();
-    const { ast, bindings, symbols, diagnostics } = processSource(source);
+    const { ast, bindings, symbols, diagnostics } = processSource(source,
+      { variant: variantIdForDoc(document) });
     cachedResult = { ast, bindings, symbols, diagnostics };
     cachedVersion = document.version;
     cachedUri = uri;
@@ -69,7 +84,7 @@ function activate(context) {
   // so passing true here is safe even when the cursor lands on the
   // same binding.
   function showDAGForCursor(editor, pushHistory) {
-    if (!editor || editor.document.languageId !== 'flatppl') return false;
+    if (!editor || !isFlatPPLDoc(editor.document)) return false;
 
     const { bindings } = getParsed(editor.document);
     const pos = editor.selection.active;
@@ -111,7 +126,7 @@ function activate(context) {
   // renders every binding linked by its dependencies, the user clicks
   // around to drill into a single binding view.
   function showModuleForCurrent(editor) {
-    if (!editor || editor.document.languageId !== 'flatppl') return false;
+    if (!editor || !isFlatPPLDoc(editor.document)) return false;
     const { bindings } = getParsed(editor.document);
     if (bindings.size === 0) return false;
     const source = editor.document.getText();
@@ -140,7 +155,7 @@ function activate(context) {
 
   const showDagCmd = vscode.commands.registerCommand('flatppl.visualize', () => {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'flatppl') {
+    if (!editor || !isFlatPPLDoc(editor.document)) {
       vscode.window.showErrorMessage('Place cursor in a FlatPPL file');
       return;
     }
@@ -151,7 +166,7 @@ function activate(context) {
 
   const showModuleCmd = vscode.commands.registerCommand('flatppl.visualizeModule', () => {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'flatppl') {
+    if (!editor || !isFlatPPLDoc(editor.document)) {
       vscode.window.showErrorMessage('Place cursor in a FlatPPL file');
       return;
     }
@@ -167,7 +182,7 @@ function activate(context) {
 
   const selectionListener = vscode.window.onDidChangeTextEditorSelection(e => {
     if (!FlatPPLPanel.currentPanel) return;
-    if (e.textEditor.document.languageId !== 'flatppl') return;
+    if (!isFlatPPLDoc(e.textEditor.document)) return;
 
     // Only react to user-driven cursor moves (Keyboard / Mouse).
     // Programmatic edits — including the WorkspaceEdit applied by
@@ -201,7 +216,7 @@ function activate(context) {
   let changePushTimeout;
 
   const changeListener = vscode.workspace.onDidChangeTextDocument(e => {
-    if (e.document.languageId !== 'flatppl') return;
+    if (!isFlatPPLDoc(e.document)) return;
     getParsed(e.document);
 
     // Also push the updated source to the visualizer if it's open.
@@ -224,14 +239,14 @@ function activate(context) {
   // --- Parse on open ---
 
   const openListener = vscode.workspace.onDidOpenTextDocument(doc => {
-    if (doc.languageId === 'flatppl') {
+    if (isFlatPPLDoc(doc)) {
       getParsed(doc);
     }
   });
 
   // --- Go-to-definition ---
 
-  const defProvider = vscode.languages.registerDefinitionProvider('flatppl', {
+  const defProvider = vscode.languages.registerDefinitionProvider([...FLATPPL_LANGS], {
     provideDefinition(document, position) {
       const { bindings } = getParsed(document);
       const wordRange = document.getWordRangeAtPosition(position);
@@ -246,7 +261,7 @@ function activate(context) {
 
   // --- Hover ---
 
-  const hoverProvider = vscode.languages.registerHoverProvider('flatppl', {
+  const hoverProvider = vscode.languages.registerHoverProvider([...FLATPPL_LANGS], {
     provideHover(document, position) {
       const { bindings } = getParsed(document);
       const wordRange = document.getWordRangeAtPosition(position);
@@ -273,7 +288,7 @@ function activate(context) {
 
   // --- Document symbols (outline) ---
 
-  const symbolProvider = vscode.languages.registerDocumentSymbolProvider('flatppl', {
+  const symbolProvider = vscode.languages.registerDocumentSymbolProvider([...FLATPPL_LANGS], {
     provideDocumentSymbols(document) {
       const { symbols } = getParsed(document);
       const kindMap = {
@@ -415,7 +430,7 @@ function activate(context) {
 
   const builtinCompletions = makeBuiltinCompletions();
 
-  const completionProvider = vscode.languages.registerCompletionItemProvider('flatppl', {
+  const completionProvider = vscode.languages.registerCompletionItemProvider([...FLATPPL_LANGS], {
     provideCompletionItems(document, position) {
       const { bindings } = getParsed(document);
       const items = [...builtinCompletions];
@@ -443,7 +458,7 @@ function activate(context) {
     );
   }
 
-  const renameProvider = vscode.languages.registerRenameProvider('flatppl', {
+  const renameProvider = vscode.languages.registerRenameProvider([...FLATPPL_LANGS], {
     prepareRename(document, position) {
       const { ast, bindings } = getParsed(document);
       const plan = planRename(ast, bindings, position.line, position.character);
@@ -492,7 +507,7 @@ function activate(context) {
 
   // --- Find All References (Shift+F12) ---
 
-  const referenceProvider = vscode.languages.registerReferenceProvider('flatppl', {
+  const referenceProvider = vscode.languages.registerReferenceProvider([...FLATPPL_LANGS], {
     provideReferences(document, position, refContext) {
       const { ast, bindings } = getParsed(document);
       const plan = planRename(ast, bindings, position.line, position.character);
@@ -509,7 +524,7 @@ function activate(context) {
 
   // --- Document Highlight (auto, when cursor is on an identifier) ---
 
-  const highlightProvider = vscode.languages.registerDocumentHighlightProvider('flatppl', {
+  const highlightProvider = vscode.languages.registerDocumentHighlightProvider([...FLATPPL_LANGS], {
     provideDocumentHighlights(document, position) {
       const { ast, bindings } = getParsed(document);
       const plan = planRename(ast, bindings, position.line, position.character);
@@ -530,7 +545,7 @@ function activate(context) {
 
   // --- Selection Range (Shift+Alt+→ to expand selection) ---
 
-  const selectionRangeProvider = vscode.languages.registerSelectionRangeProvider('flatppl', {
+  const selectionRangeProvider = vscode.languages.registerSelectionRangeProvider([...FLATPPL_LANGS], {
     provideSelectionRanges(document, positions) {
       const { ast } = getParsed(document);
       return positions.map(pos => {
@@ -558,7 +573,7 @@ function activate(context) {
 
   // Parse any already-open FlatPPL documents
   for (const doc of vscode.workspace.textDocuments) {
-    if (doc.languageId === 'flatppl') getParsed(doc);
+    if (isFlatPPLDoc(doc)) getParsed(doc);
   }
 
   // Push configuration changes to a live panel. Filter to our own

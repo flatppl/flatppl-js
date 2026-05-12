@@ -3,8 +3,23 @@ const vscode = require('vscode');
 // isValidBindingName is shared with the web host via @flatppl/engine
 // so the rules don't drift between deploy surfaces. Other extension
 // machinery already requires the engine module; the panel just picks
-// up the helper it needs.
-const { isValidBindingName } = require('@flatppl/engine');
+// up the helper it needs. variants is used to map a source-file URI
+// to its surface-syntax id ('flatppl' / 'flatppy' / 'flatppj') so the
+// webview can pick the right grammar and persist write-back can pick
+// the right spelling.
+const { isValidBindingName, variants } = require('@flatppl/engine');
+
+/** Derive the surface-syntax variant id from a vscode.Uri (or null).
+    Returns an id string the engine recognizes, or 'flatppl' as the
+    canonical fallback when the URI isn't one of the three known
+    extensions. */
+function variantIdFromUri(uri) {
+  if (uri && typeof uri.path === 'string') {
+    const v = variants.variantForPath(uri.path);
+    if (v) return v.id;
+  }
+  return 'flatppl';
+}
 
 class FlatPPLPanel {
   static currentPanel = undefined;
@@ -165,6 +180,7 @@ class FlatPPLPanel {
       source,
       targetName: targetName || null,
       pushHistory: !!pushHistory,
+      variant: variantIdFromUri(this._sourceUri),
     });
   }
 
@@ -196,6 +212,7 @@ class FlatPPLPanel {
       type: 'showModule',
       source,
       pushHistory: !!pushHistory,
+      variant: variantIdFromUri(this._sourceUri),
     });
   }
 
