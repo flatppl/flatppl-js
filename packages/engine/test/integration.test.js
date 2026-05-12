@@ -125,7 +125,7 @@ test('integration: bayesian_inference_3 posterior derivation cascade', () => {
   assert.ok(derivations.posterior, 'posterior should classify');
   assert.equal(derivations.posterior.kind, 'bayesupdate');
   assert.ok(derivations.posterior.from, 'posterior.from set');
-  assert.ok(derivations.posterior.obsValue, 'posterior.obsValue set');
+  assert.ok(derivations.posterior.obsIR, 'posterior.obsIR set');
 });
 
 test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () => {
@@ -134,17 +134,22 @@ test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () 
   // exposed as a scalar binding). densityof rewrites to
   // exp(logdensityof(...)) at AST time. Both must reach a derivation
   // when their inputs are derivable.
-  const { buildDerivations } = require('../orchestrator');
+  const { buildDerivations, resolveIRToValue } = require('../orchestrator');
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
   const { bindings } = processSource(src);
-  const { derivations } = buildDerivations(bindings);
+  const ds = buildDerivations(bindings);
+  const { derivations } = ds;
 
   assert.ok(derivations.lp_obs, 'lp_obs should classify');
   assert.equal(derivations.lp_obs.kind, 'logdensityof');
   // Measure should resolve to obs_dist (or one of its lifted aliases).
   assert.ok(derivations.lp_obs.measureName, 'lp_obs.measureName set');
-  assert.ok(derivations.lp_obs.obsValue, 'lp_obs.obsValue set');
-  assert.deepEqual(derivations.lp_obs.obsValue, { obs: [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9] });
+  assert.ok(derivations.lp_obs.obsIR, 'lp_obs.obsIR set');
+  // Resolution lives at the materialiser layer — same code path the
+  // viewer takes. The literal observation matches the fixture.
+  assert.deepEqual(
+    resolveIRToValue(derivations.lp_obs.obsIR, ds.bindings, ds.fixedValues),
+    { obs: [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9] });
 
   // d_obs lowers to exp(logdensityof(...)). The exp wrapping makes
   // the *outer* binding evaluate-kind (logdensityof was lifted to a
