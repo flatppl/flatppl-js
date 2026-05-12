@@ -131,3 +131,61 @@ test('tokenizer: location after newline', () => {
   assert.equal(bcTok.loc.start.line, 1);
   assert.equal(bcTok.loc.start.col, 0);
 });
+
+// ---------------------------------------------------------------------
+// Operators added for the FlatPPL/FlatPPY/FlatPPJ surface variants
+// (spec §05). The tokenizer is variant-agnostic: it always emits the
+// new tokens; per-variant rejection lives in the parser.
+// ---------------------------------------------------------------------
+
+test('tokenizer: ~ emits TILDE', () => {
+  assert.deepEqual(tokenTypes('x ~ M'), [T.IDENT, T.TILDE, T.IDENT]);
+});
+
+test('tokenizer: ^ emits CARET', () => {
+  assert.deepEqual(tokenTypes('a ^ b'), [T.IDENT, T.CARET, T.IDENT]);
+});
+
+test('tokenizer: && emits AMPAMP, || emits PIPEPIPE', () => {
+  assert.deepEqual(tokenTypes('a && b || c'),
+    [T.IDENT, T.AMPAMP, T.IDENT, T.PIPEPIPE, T.IDENT]);
+});
+
+test('tokenizer: ! emits BANG, distinguished from !=', () => {
+  assert.deepEqual(tokenTypes('!a'),     [T.BANG, T.IDENT]);
+  assert.deepEqual(tokenTypes('a != b'), [T.IDENT, T.NEQ, T.IDENT]);
+  // !! parses as two separate BANG tokens (double negation).
+  assert.deepEqual(tokenTypes('!!a'),    [T.BANG, T.BANG, T.IDENT]);
+});
+
+test('tokenizer: ; emits SEMI', () => {
+  assert.deepEqual(tokenTypes('f(x; a = 1)'),
+    [T.IDENT, T.LPAREN, T.IDENT, T.SEMI, T.IDENT, T.EQUALS, T.NUMBER, T.RPAREN]);
+});
+
+test('tokenizer: tilde decomposition stream', () => {
+  assert.deepEqual(tokenTypes('a, b ~ M'),
+    [T.IDENT, T.COMMA, T.IDENT, T.TILDE, T.IDENT]);
+});
+
+test('tokenizer: chained operators (mixed)', () => {
+  assert.deepEqual(tokenTypes('a < b <= c && d != e || !f'),
+    [T.IDENT, T.LT, T.IDENT, T.LTE, T.IDENT, T.AMPAMP,
+     T.IDENT, T.NEQ, T.IDENT, T.PIPEPIPE, T.BANG, T.IDENT]);
+});
+
+test('tokenizer: single | and & are still unknown', () => {
+  const { diagnostics } = tokenize('a & b');
+  assert.ok(diagnostics.length >= 1);
+  assert.match(diagnostics[0].message, /Unexpected character/);
+});
+
+test('tokenizer: variant argument is accepted (no-op for now)', () => {
+  const { FLATPPY } = require('../variants');
+  const { tokens } = tokenize('x ~ M', FLATPPY);
+  // FlatPPY doesn't use `~` — the parser will reject it later. The
+  // tokenizer still emits TILDE so the parser can produce a clear
+  // location-bearing diagnostic.
+  const types = tokens.filter(t => t.type !== T.EOF).map(t => t.type);
+  assert.deepEqual(types, [T.IDENT, T.TILDE, T.IDENT]);
+});

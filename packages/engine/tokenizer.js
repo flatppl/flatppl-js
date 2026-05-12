@@ -11,15 +11,21 @@ const T = {
   LPAREN: 'LPAREN', RPAREN: 'RPAREN',
   LBRACKET: 'LBRACKET', RBRACKET: 'RBRACKET',
   COMMA: 'COMMA',
+  SEMI: 'SEMI',         // ;  (FlatPPJ semicolon kwargs)
   DOT: 'DOT',
   COLON: 'COLON',
   EQUALS: 'EQUALS',     // =
+  TILDE: 'TILDE',       // ~  (FlatPPL/FlatPPJ tilde bindings)
   EQEQ: 'EQEQ',        // ==
   NEQ: 'NEQ',           // !=
   LT: 'LT', GT: 'GT',
   LTE: 'LTE', GTE: 'GTE',
   PLUS: 'PLUS', MINUS: 'MINUS',
   STAR: 'STAR', SLASH: 'SLASH',
+  CARET: 'CARET',       // ^  (FlatPPL/FlatPPJ exponentiation)
+  AMPAMP: 'AMPAMP',     // && (FlatPPL/FlatPPJ logical AND)
+  PIPEPIPE: 'PIPEPIPE', // || (FlatPPL/FlatPPJ logical OR)
+  BANG: 'BANG',         // !  (FlatPPL/FlatPPJ logical NOT)
 
   NEWLINE: 'NEWLINE',
   COMMENT: 'COMMENT',
@@ -198,7 +204,10 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
       continue;
     }
 
-    // Two-character operators
+    // Two-character operators. Order matters: check `==` before `=`,
+    // `!=` before `!`, `<=` before `<`, `>=` before `>`, `&&` before
+    // any bitwise-and (which FlatPPL doesn't have but we'd want to
+    // reject cleanly), and `||` before any bitwise-or.
     if (ch === '=' && at(1) === '=') {
       advance(); advance();
       tokens.push(token(T.EQEQ, '==', startLine, startCol, line, col));
@@ -219,16 +228,28 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
       tokens.push(token(T.GTE, '>=', startLine, startCol, line, col));
       continue;
     }
+    if (ch === '&' && at(1) === '&') {
+      advance(); advance();
+      tokens.push(token(T.AMPAMP, '&&', startLine, startCol, line, col));
+      continue;
+    }
+    if (ch === '|' && at(1) === '|') {
+      advance(); advance();
+      tokens.push(token(T.PIPEPIPE, '||', startLine, startCol, line, col));
+      continue;
+    }
 
     // Single-character tokens
     const singleMap = {
       '(': T.LPAREN, ')': T.RPAREN,
       '[': T.LBRACKET, ']': T.RBRACKET,
-      ',': T.COMMA, '.': T.DOT, ':': T.COLON,
-      '=': T.EQUALS,
+      ',': T.COMMA, ';': T.SEMI,
+      '.': T.DOT, ':': T.COLON,
+      '=': T.EQUALS, '~': T.TILDE,
       '<': T.LT, '>': T.GT,
       '+': T.PLUS, '-': T.MINUS,
       '*': T.STAR, '/': T.SLASH,
+      '^': T.CARET, '!': T.BANG,
     };
     if (singleMap[ch]) {
       const tt = singleMap[ch];
