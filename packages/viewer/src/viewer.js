@@ -2081,8 +2081,12 @@
       // the same Inputs dropdown they'd see on an explicit
       // `kernel = kernelof(x, mu = mu)` binding.
       if (!d && !(fixedValues && fixedValues.has(name))) {
+        // Pass the LIFTED bindings (derivationsState.bindings, populated
+        // by buildDerivations → liftInlineSubexpressions). The unlifted
+        // currentBindings don't carry `.ir`, so the structural fallback
+        // in expandMeasureIR can't walk them.
         var implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
-          name, currentBindings, derivationsState.derivations);
+          name, derivationsState.bindings, derivationsState.derivations);
         if (implicitSig && implicitSig.inputs.length > 0) {
           var iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
           if (iAxes.length > 0) {
