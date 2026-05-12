@@ -4105,6 +4105,23 @@
           renderKernelSampleMeasure(m, plan);
         });
       }
+      // Two-phase pre-materialise:
+      //   (1) binding-typed input sources we already know about (for
+      //       a kernel with input `mu` whose source is `mu` in scope,
+      //       we want samples[0] of that binding to seed the env);
+      //   (2) self-refs captured from the outer scope by the kernel
+      //       body (e.g. `sigma` referenced inside `iid(Normal(mu=0,
+      //       sigma=sigma), 3)` even though `sigma` isn't a kernel
+      //       input). These appear as (ref self sigma) after
+      //       inlineForProfile because sigma is stochastic and so
+      //       isn't inlined as a deterministic dep. substituteLocals
+      //       only touches %local refs, so the materialise would
+      //       otherwise fail with "unbound self reference".
+      //
+      // The actual captured self-refs are collected *after*
+      // inlineForProfile because that pass inlines deterministic
+      // deps. Anything still self-ref'd is genuinely a captured
+      // stochastic/fixed dep from the outer scope.
       Promise.all(bindingSourceLookups.map(function(s) {
         return getMeasure(s.sourceName);
       })).then(function(srcMeasures) {
@@ -4120,7 +4137,33 @@
         ir = FlatPPLEngine.orchestrator.inlineForProfile(
           ir, paramNames, derivationsState.bindings, derivationsState.derivations);
         ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
-        return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
+
+        // Collect any remaining self-refs (captured outer-scope
+        // bindings). Filter out elementof inputs — they have no
+        // samples and the user is expected to substitute them via
+        // the Inputs dropdown (or accept the leaf-type default).
+        var capturedRefs = [];
+        FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
+          var b = currentBindings && currentBindings.get(n);
+          if (b && b.type === 'input') return;  // pure input, no samples
+          capturedRefs.push(n);
+        });
+        if (capturedRefs.length === 0) {
+          return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
+        }
+        return Promise.all(capturedRefs.map(function(n) {
+          return getMeasure(n);
+        })).then(function(capturedMeasures) {
+          var selfEnv = {};
+          for (var i = 0; i < capturedRefs.length; i++) {
+            var m = capturedMeasures[i];
+            if (m && m.samples && m.samples.length > 0) {
+              selfEnv[capturedRefs[i]] = m.samples[0];
+            }
+          }
+          var substIR = FlatPPLEngine.orchestrator.substituteSelfRefs(ir, selfEnv);
+          return materialiseConcreteMeasure(substIR, SAMPLE_COUNT, nameSeed(plan.name));
+        });
       }).then(function(measure) {
         if (currentPlotPlan !== planForCall) return;
         measureCache.set(cacheKey, measure);
