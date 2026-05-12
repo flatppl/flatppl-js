@@ -12,7 +12,11 @@ const AST = require('./ast');
  * later commits in this series. `variant` is accepted (and ignored)
  * starting now so call sites can pass it without churn.
  */
-function parse(tokens, variant) {  // eslint-disable-line no-unused-vars
+function parse(tokens, variant) {
+  // Fall back to canonical FlatPPL when no variant supplied — keeps
+  // existing call sites that pass only `tokens` working.
+  const v = variant || require('./variants').FLATPPL;
+
   const diagnostics = [];
   let pos = 0;
 
@@ -321,14 +325,39 @@ function parse(tokens, variant) {  // eslint-disable-line no-unused-vars
       }
     }
 
-    // Expect =
-    if (!expect(T.EQUALS)) {
+    // Expect = or ~ (tilde for FlatPPL/FlatPPJ; spec §05). `x ~ M`
+    // and `a, b ~ M` lower transparently to `x = draw(M)` and
+    // `a, b = draw(M)` at parse time, so downstream passes see only
+    // AssignStatement nodes.
+    let isTilde = false;
+    if (at(T.TILDE)) {
+      if (!v.tildeBindings) {
+        diagnostics.push({
+          severity: 'error',
+          message: `Tilde binding '~' is not allowed in ${v.id} `
+            + '(use `name = draw(M)` instead)',
+          loc: peek().loc,
+        });
+        skipToNewline();
+        return AST.ErrorStatement(names.map(n => n.name).join(', '), startTok.loc);
+      }
+      advance(); // ~
+      isTilde = true;
+    } else if (!expect(T.EQUALS)) {
       skipToNewline();
       return AST.ErrorStatement(names.map(n => n.name).join(', '), startTok.loc);
     }
 
     // Parse RHS expression
-    const value = parseExpr();
+    let value = parseExpr();
+
+    if (isTilde) {
+      // Wrap in draw(...). The synthetic CallExpr inherits the RHS's
+      // location so error messages and source ranges point back at
+      // the original expression.
+      const callee = AST.Identifier('draw', value.loc);
+      value = AST.CallExpr(callee, [value], value.loc);
+    }
 
     const endLoc = value.loc;
     return AST.AssignStatement(names, value,
