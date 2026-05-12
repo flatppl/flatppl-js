@@ -858,6 +858,98 @@ f = functionof(s)
   assert.deepEqual(names, ['a', 'b']);
 });
 
+test('signatureOf: auto-promote walks deep / branching chains, carries types', () => {
+  // Stress the trace: three elementof leaves reached through DIFFERENT
+  // intermediate chains, each with their own set restriction. Verifies
+  // we recurse through every binding (not just the body's direct refs)
+  // and surface the correct per-leaf type from the elementof binding.
+  //
+  //   a  (reals)    → a_sq      = a^2
+  //   b  (posreals) → b_log     = log(b)
+  //   k  (integers) → k_doubled = k * 2
+  //   combined = a_sq + b_log + k_doubled
+  //   f        = functionof(combined)
+  const sig = sigOf(`
+a = elementof(reals)
+b = elementof(posreals)
+k = elementof(integers)
+a_sq      = a^2
+b_log     = log(b)
+k_doubled = k * 2
+combined  = a_sq + b_log + k_doubled
+f = functionof(combined)
+`, 'f');
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.inputs.length, 3);
+
+  const byName = {};
+  for (const inp of sig.inputs) byName[inp.paramName] = inp;
+  assert.ok(byName.a && byName.b && byName.k,
+    'expected a, b, k all surfaced as inputs (got: '
+    + Object.keys(byName).join(', ') + ')');
+
+  // Each input's type comes from resolveSourceType walking the
+  // elementof binding's inferredType — verify the set restriction
+  // was preserved per leaf rather than collapsed to a single shape.
+  assert.equal(byName.a.type.kind, 'scalar');
+  assert.equal(byName.a.type.prim, 'real');
+  assert.equal(byName.b.type.kind, 'scalar');
+  assert.equal(byName.b.type.prim, 'real');
+  assert.equal(byName.k.type.kind, 'scalar');
+  assert.equal(byName.k.type.prim, 'integer');
+
+  // Each source backref points at its own elementof binding —
+  // distributeAxes / resolveAxisBaseSet rely on this for auto-range.
+  assert.deepEqual(byName.a.source, { kind: 'binding', name: 'a' });
+  assert.deepEqual(byName.b.source, { kind: 'binding', name: 'b' });
+  assert.deepEqual(byName.k.source, { kind: 'binding', name: 'k' });
+});
+
+test('signatureOf: auto-promote dedupes leaves reached by multiple paths', () => {
+  // Diamond shape: `a` appears in two branches of the body. The
+  // trace must visit each binding name at most once — otherwise
+  // `a` would surface twice and the profile-plot UI would render
+  // two identical axis entries.
+  const sig = sigOf(`
+a = elementof(reals)
+left  = a + 1
+right = a * 2
+combined = left + right
+f = functionof(combined)
+`, 'f');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'a');
+});
+
+test('inlineForProfile: multi-input auto-promoted functionof rewrites every ref', () => {
+  // End-to-end on the no-kwarg multi-input shape that signatureOf
+  // synthesizes: a single inlineForProfile call must rewrite every
+  // ref-to-input as %local. The profile evaluator can then sweep one
+  // axis while binding the others via fixedEnv.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+a = elementof(reals)
+b = elementof(reals)
+s = a + b
+f = functionof(s)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const ds = buildDerivations(lifted);
+  const sig = signatureOf('f', lifted);
+  const paramNames = sig.inputs.map((inp) => inp.paramName);
+  assert.deepEqual(paramNames.sort(), ['a', 'b']);
+
+  const out = inlineForProfile(sig.body, paramNames, ds.bindings, ds.derivations);
+  // After inlining, the body is (add %local.a %local.b) — both
+  // refs rewritten, no stray (ref self ...) left.
+  assert.equal(out.kind, 'call');
+  assert.equal(out.op, 'add');
+  assert.equal(out.args[0].ns, '%local');
+  assert.equal(out.args[1].ns, '%local');
+  const localNames = [out.args[0].name, out.args[1].name].sort();
+  assert.deepEqual(localNames, ['a', 'b']);
+});
+
 test('signatureOf: auto-promote stops at non-input ancestors (constants, draws)', () => {
   // Fixed ancestors (constants / external) are closed over per spec,
   // and stochastic ancestors aren't elementof leaves either —
