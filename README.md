@@ -19,6 +19,10 @@ This monorepo contains:
 
 * [The FlatPPL web gallery host](packages/web)
 
+## Live demos
+
+* [Live demo of the FlatPPL web gallery](https://flatppl.github.io/flatppl-js/)
+
 ## Running tests
 
 To run all workspace test suites, run
