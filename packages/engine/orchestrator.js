@@ -3003,6 +3003,49 @@ function signatureOf(name, bindings) {
       source:    sources[i] || null,
     });
   }
+  // Per spec §04 (sec:functionof): "When called with a single
+  // argument (without boundary specifications), `functionof` traces
+  // the ancestor subgraph of its argument back to all leaves of
+  // parametric phase — that is, all `elementof` leaves. These leaf
+  // nodes become the inputs of the reified callable."
+  //
+  // The lowerer doesn't promote those leaves into ir.params (it
+  // only records what the user wrote literally), so signatureOf
+  // recovers them here when no explicit boundaries were declared.
+  // With explicit boundaries the trace stops at them and the user-
+  // declared signature is taken as authoritative — we don't bolt
+  // on extra implicit inputs in that case.
+  if (inputs.length === 0 && ir.body) {
+    const seen = new Set();
+    const queue = [ir.body];
+    const elementofRefs = [];
+    while (queue.length > 0) {
+      const node = queue.shift();
+      if (!node || typeof node !== 'object') continue;
+      if (node.kind === 'ref' && node.ns === 'self') {
+        if (seen.has(node.name)) continue;
+        seen.add(node.name);
+        const target = bindings.get(node.name);
+        if (!target) continue;
+        if (target.type === 'input') { elementofRefs.push(node.name); continue; }
+        if (target.ir) queue.push(target.ir);
+        continue;
+      }
+      if (Array.isArray(node.args))   for (const a of node.args)   queue.push(a);
+      if (node.kwargs) for (const k in node.kwargs)                queue.push(node.kwargs[k]);
+      if (Array.isArray(node.fields)) for (const f of node.fields) queue.push(f && f.value);
+      if (node.body)                                               queue.push(node.body);
+    }
+    for (const refName of elementofRefs) {
+      const target = bindings.get(refName);
+      inputs.push({
+        paramName: refName,
+        kwargName: refName,
+        type: (target && target.inferredType) || null,
+        source: { kind: 'binding', name: refName },
+      });
+    }
+  }
   return { kind, inputs, output: { type: t && t.result }, body: ir.body || null };
 }
 
