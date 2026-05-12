@@ -6562,78 +6562,127 @@
     var pendingPresetName = null;
     var pendingDomainName = null;
 
+    // Per-binding memory of the user's plan-level selections (sweep
+    // axis, output leaf, preset / domain name, auto-overrides for
+    // both inputs and domain). Keyed by binding name. Repopulated
+    // after every plan build, consulted at the start of the next
+    // build so navigating away and back restores the prior view.
+    // No clear-on-source-change: stale entries are filtered by the
+    // matchedPresets / matchedDomains / axes existence checks in
+    // applyRememberedSelections, so a renamed-then-restored binding
+    // re-applies its memory rather than discarding it.
+    var planMemoryByName = new Map();
+
+    // Drop override values for kwargs the rebuilt plan no longer has
+    // (e.g. the source was edited so an input went away). Without
+    // this, navigating back later would re-apply a value to a kwarg
+    // that no longer exists, leaking stale state into the override
+    // map.
+    function filterOverrideToAxes(override, axisKwargs, key) {
+      if (!override) return null;
+      var src = override[key] || {};
+      var dst = {};
+      var kept = false;
+      for (var k in src) {
+        if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+        if (!axisKwargs.has(k)) continue;
+        dst[k] = src[k];
+        kept = true;
+      }
+      if (!kept) return null;
+      var out = Object.assign({}, override);
+      out[key] = dst;
+      return out;
+    }
+
+    function applyRememberedSelections(plan) {
+      if (!plan) return;
+      var mem = planMemoryByName.get(plan.name);
+      if (!mem) return;
+      var axisKwargs = new Set();
+      if (plan.axes) {
+        for (var i = 0; i < plan.axes.length; i++) {
+          if (plan.axes[i].kwargName) axisKwargs.add(plan.axes[i].kwargName);
+        }
+      }
+      if (mem.sweepKey
+          && plan.axes
+          && plan.axes.some(function(a) { return a.key === mem.sweepKey; })) {
+        plan.sweepKey = mem.sweepKey;
+      }
+      if (mem.outputKey
+          && plan.outputs
+          && plan.outputs.some(function(o) { return o.key === mem.outputKey; })) {
+        plan.outputKey = mem.outputKey;
+      }
+      plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
+      plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
+      if (mem.presetName != null
+          && plan.matchedPresets
+          && plan.matchedPresets.some(function(p) { return p.name === mem.presetName; })) {
+        plan.presetName = mem.presetName;
+      }
+      if (mem.domainName != null
+          && plan.matchedDomains
+          && plan.matchedDomains.some(function(d) { return d.name === mem.domainName; })) {
+        plan.domainName = mem.domainName;
+      }
+    }
+
+    function rememberPlanSelections(plan) {
+      if (!plan || !plan.name) return;
+      planMemoryByName.set(plan.name, {
+        sweepKey: plan.sweepKey || null,
+        outputKey: plan.outputKey || null,
+        presetName: plan.presetName || null,
+        domainName: plan.domainName || null,
+        autoOverride: plan.autoOverride || null,
+        domainAutoOverride: plan.domainAutoOverride || null,
+      });
+    }
+
     // Call after every focusNode() to update the Plot tab's enabled
     // state and (if visible) re-render its content.
     function updatePlotForBinding(bindingName) {
+      // Snapshot the outgoing plan first — the user may have
+      // mutated it since it was first built (selected a different
+      // preset, edited an override value, picked a sweep axis).
+      // rememberPlanSelections re-keys on plan.name, so this also
+      // captures same-binding edits in time for applyRemembered…
+      // to restore them onto the rebuilt plan below.
+      rememberPlanSelections(currentPlotPlan);
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
-      var prevPlan = currentPlotPlan;
       var plan = buildPlotPlan(binding, currentBindings);
-      // Carry user-driven plan state forward across rebuilds for the
-      // same binding so source-change → rebuild doesn't reset the
-      // user's view (sweep axis, selected preset / domain, multi-
-      // output leaf, per-binding auto-overrides for both inputs and
-      // domain). pendingPresetName / pendingDomainName (set by
-      // auto-save-as) override the carried selection only when the
-      // freshly-coined name actually matches one of the new plan's
-      // matchedPresets / matchedDomains — otherwise we fall back to
-      // the previous selection, so a domain save-as doesn't quietly
-      // throw the inputs dropdown back to auto.
-      if (plan && prevPlan && prevPlan.name === plan.name) {
-        if (prevPlan.sweepKey
-            && plan.axes
-            && plan.axes.some(function(a) { return a.key === prevPlan.sweepKey; })) {
-          plan.sweepKey = prevPlan.sweepKey;
-        }
-        if (prevPlan.outputKey
-            && plan.outputs
-            && plan.outputs.some(function(o) { return o.key === prevPlan.outputKey; })) {
-          plan.outputKey = prevPlan.outputKey;
-        }
-        plan.autoOverride = prevPlan.autoOverride;
-        plan.domainAutoOverride = prevPlan.domainAutoOverride;
-      }
+      // Restore user-driven plan state across rebuilds — both same-
+      // binding rebuilds (source edit) and cross-binding navigation
+      // (click away and back). pendingPresetName / pendingDomainName
+      // (set by auto-save-as) take precedence over remembered
+      // selection so a freshly-coined name lands selected.
+      applyRememberedSelections(plan);
       if (plan) {
-        // Resolve preset selection: try pending (from save-as) first;
-        // if it matches a current preset, use it. Otherwise fall back
-        // to the previous selection.
-        var presetTarget = null;
         if (pendingPresetName != null) {
           var pn = pendingPresetName;
           pendingPresetName = null;
           if (plan.matchedPresets
               && plan.matchedPresets.some(function(p) { return p.name === pn; })) {
-            presetTarget = pn;
+            plan.presetName = pn;
           }
         }
-        if (presetTarget == null && prevPlan && prevPlan.name === plan.name) {
-          presetTarget = prevPlan.presetName;
-        }
-        if (presetTarget != null
-            && plan.matchedPresets
-            && plan.matchedPresets.some(function(p) { return p.name === presetTarget; })) {
-          plan.presetName = presetTarget;
-        }
-
-        // Same shape for domain selection.
-        var domainTarget = null;
         if (pendingDomainName != null) {
           var dn = pendingDomainName;
           pendingDomainName = null;
           if (plan.matchedDomains
               && plan.matchedDomains.some(function(d) { return d.name === dn; })) {
-            domainTarget = dn;
+            plan.domainName = dn;
           }
-        }
-        if (domainTarget == null && prevPlan && prevPlan.name === plan.name) {
-          domainTarget = prevPlan.domainName;
-        }
-        if (domainTarget != null
-            && plan.matchedDomains
-            && plan.matchedDomains.some(function(d) { return d.name === domainTarget; })) {
-          plan.domainName = domainTarget;
         }
       }
       currentPlotPlan = plan;
+      // Save the freshly-hydrated plan too so a save-as pending name
+      // or applyRemembered's filter decisions are reflected in memory
+      // before the next mutation. The matching outgoing snapshot at
+      // the top of this function captures user edits between calls.
+      rememberPlanSelections(plan);
       // Only surface the clicked name in the plot UI when it actually
       // names a binding. Synthetic nodes (anonymous inline expressions,
       // placeholders, holes) carry IDs like 'prior:target' that aren't
