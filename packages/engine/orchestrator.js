@@ -2554,6 +2554,60 @@ function expandMeasureIR(name, derivations, visited, bindings) {
   return null;
 }
 
+/**
+ * Synthesize a kernel signature for a stochastic binding whose
+ * derivation was pruned because it depends on parameterized
+ * (elementof) ancestors. Conceptually: treat the user clicking on
+ * `x` (a stochastic node with open inputs) as if they'd written
+ * `kernelof(x)` with no boundary kwargs — per spec §04, that
+ * reifies x as a kernel whose inputs are x's elementof leaves.
+ *
+ * Used by the viewer to surface an Inputs dropdown directly on a
+ * stochastic binding rather than the current "Not plottable"
+ * dead-end. The binding's type stays whatever it was (draw, …),
+ * so colorForBinding keeps painting the node in its original
+ * binding-type color.
+ *
+ * Returns a signature in the same shape as signatureOf would produce
+ * for an explicit `kernelof` binding, or `null` when there are no
+ * parameterized ancestors (the regular plot path handles those).
+ *
+ * The body IR is recovered via expandMeasureIR with the bindings
+ * fallback so it works even when the orchestrator pruned the chain.
+ * Inputs are derived by walking the body's self-refs and keeping
+ * the ones whose target binding has type='input' (elementof /
+ * external).
+ */
+function implicitKernelSignature(name, bindings, derivations) {
+  if (!bindings) return null;
+  const body = expandMeasureIR(name, derivations, undefined, bindings);
+  if (!body) return null;
+
+  const refNames = collectSelfRefs(body);
+  const inputs = [];
+  for (const refName of refNames) {
+    const b = bindings.get(refName);
+    if (!b || b.type !== 'input') continue;  // skip stochastic / derived refs
+    inputs.push({
+      paramName: refName,
+      kwargName: refName,
+      type: (b.inferredType) || null,
+      source: { kind: 'binding', name: refName },
+    });
+  }
+  if (inputs.length === 0) return null;
+
+  return {
+    kind: 'kernel',
+    inputs,
+    output: { type: null },
+    body,
+    // Tag for callers that want to render slightly differently
+    // (current viewer doesn't — same kernel-sample render path).
+    implicit: true,
+  };
+}
+
 function _expandMeasureIRStructural(ir, derivations, visited, bindings) {
   if (!ir) return null;
   if (ir.kind === 'ref' && ir.ns === 'self') {
@@ -3592,6 +3646,7 @@ module.exports = {
   leafSampleIR,
   expandMeasureIR,
   expandMeasureRefsInIR,
+  implicitKernelSignature,
   signatureOf,
   distributeAxes,
   enumerateOutputLeaves,

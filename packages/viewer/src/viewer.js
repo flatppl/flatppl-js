@@ -2069,10 +2069,43 @@
       // A binding with no derivation can still be plottable when the
       // orchestrator's pre-eval pass put a value in fixedValues
       // (typically a record / array from rand). The phase-driven
-      // dispatch below routes those by inferredType alone. We only
-      // bail when there's no derivation AND no fixed value.
+      // dispatch below routes those by inferredType alone.
       var fixedValues = derivationsState.fixedValues;
-      if (!d && !(fixedValues && fixedValues.has(name))) return null;
+      // Or — and this is the implicit-kernelof escape hatch — a
+      // stochastic binding can have its derivation pruned because
+      // its distIR depends on a parameterized (elementof) ancestor.
+      // Per spec §04, clicking on `x` is equivalent to plotting
+      // `kernelof(x)` with no boundary kwargs: a kernel whose inputs
+      // are x's elementof leaves. We synthesise that signature and
+      // route through the kernel-sample plan shape — the user gets
+      // the same Inputs dropdown they'd see on an explicit
+      // `kernel = kernelof(x, mu = mu)` binding.
+      if (!d && !(fixedValues && fixedValues.has(name))) {
+        var implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
+          name, currentBindings, derivationsState.derivations);
+        if (implicitSig && implicitSig.inputs.length > 0) {
+          var iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
+          if (iAxes.length > 0) {
+            var iPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
+              implicitSig, derivationsState.bindings);
+            var iDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
+              implicitSig, derivationsState.bindings);
+            return {
+              name: name,
+              mode: 'kernel-sample',
+              signature: implicitSig,
+              axes: iAxes,
+              matchedPresets: iPresets,
+              presetName: null,
+              autoOverride: null,
+              matchedDomains: iDomains,
+              domainName: null,
+              domainAutoOverride: null,
+            };
+          }
+        }
+        return null;
+      }
       var discrete = !!derivationsState.discrete[name];
 
       // Phase-driven dispatch (per spec §sec:phases):
