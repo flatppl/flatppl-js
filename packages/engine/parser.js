@@ -47,8 +47,85 @@ function parse(tokens, variant) {
   }
 
   // --- Expression parsing (precedence climbing) ---
-
+  //
+  // Grammar (spec §05), variant-parametric:
+  //
+  //   Expression  ::= Or
+  //   Or          ::= And  (Or-sym  And)*
+  //   And         ::= Cmp* (And-sym Cmp*)*       (Cmp* = Not for FlatPPY)
+  //   Comparison  ::= Additive (CompOp Additive)?
+  //   Additive    ::= Multiplicative ((+|-) Multiplicative)*
+  //   Multiplicative ::= Unary ((*|/) Unary)*
+  //   Unary       ::= ('-' | '!') Unary | Exponential   (! only when v.logicalSyms.not === '!')
+  //   Exponential ::= Postfix ('^' Unary)?              (only when v.exponentOp)
+  //   Postfix     ::= Primary (FieldAccess | Indexing | Call)*
+  //
+  // FlatPPY-only twist: `not` is a keyword whose precedence sits
+  // above Comparison (so `not a < b` ≡ `not (a < b)`, per Python).
+  // Logical ops lower to land / lor / lnot calls regardless of
+  // variant.
   function parseExpr() {
+    return parseOr();
+  }
+
+  function logicalSym(kind) {
+    return (v.logicalSyms && v.logicalSyms[kind]) || null;
+  }
+
+  // True when the next token matches the variant's logical operator
+  // for `kind` (one of 'and' / 'or' / 'not'). FlatPPL/FlatPPJ use the
+  // dedicated AMPAMP / PIPEPIPE / BANG tokens; FlatPPY uses IDENT
+  // tokens with values 'and'/'or'/'not'.
+  function atLogicalSym(kind) {
+    const sym = logicalSym(kind);
+    if (sym === '&&') return at(T.AMPAMP);
+    if (sym === '||') return at(T.PIPEPIPE);
+    if (sym === '!')  return at(T.BANG);
+    if (sym) return atValue(T.IDENT, sym);
+    return false;
+  }
+
+  function parseOr() {
+    let left = parseAnd();
+    while (atLogicalSym('or')) {
+      const opTok = advance();
+      const right = parseAnd();
+      const callee = AST.Identifier('lor', opTok.loc);
+      left = AST.CallExpr(callee, [left, right],
+        AST.loc(left.loc.start.line, left.loc.start.col,
+                right.loc.end.line, right.loc.end.col));
+    }
+    return left;
+  }
+
+  function parseAnd() {
+    // FlatPPY: between And and Comparison sits the `not` level. This
+    // gives Python's `not a < b` ≡ `not (a < b)` precedence. FlatPPL
+    // / FlatPPJ keep `!` at the Unary level (lower than Comparison),
+    // so they call parseComparison directly here.
+    const child = (v.id === 'flatppy') ? parseNot : parseComparison;
+    let left = child();
+    while (atLogicalSym('and')) {
+      const opTok = advance();
+      const right = child();
+      const callee = AST.Identifier('land', opTok.loc);
+      left = AST.CallExpr(callee, [left, right],
+        AST.loc(left.loc.start.line, left.loc.start.col,
+                right.loc.end.line, right.loc.end.col));
+    }
+    return left;
+  }
+
+  // FlatPPY-only level: `not` above Comparison.
+  function parseNot() {
+    if (atLogicalSym('not')) {
+      const opTok = advance();
+      const operand = parseNot();
+      const callee = AST.Identifier('lnot', opTok.loc);
+      return AST.CallExpr(callee, [operand],
+        AST.loc(opTok.loc.start.line, opTok.loc.start.col,
+                operand.loc.end.line, operand.loc.end.col));
+    }
     return parseComparison();
   }
 
@@ -92,6 +169,17 @@ function parse(tokens, variant) {
       const operand = parseUnary();
       return AST.UnaryExpr('-', operand,
         AST.loc(opTok.loc.start.line, opTok.loc.start.col, operand.loc.end.line, operand.loc.end.col));
+    }
+    // FlatPPL/FlatPPJ: `!` lives at the Unary level (binds tighter
+    // than Comparison, so `!a < b` ≡ `(!a) < b`). FlatPPY's `not`
+    // sits above Comparison and is handled by parseNot.
+    if (at(T.BANG) && logicalSym('not') === '!') {
+      const opTok = advance();
+      const operand = parseUnary();
+      const callee = AST.Identifier('lnot', opTok.loc);
+      return AST.CallExpr(callee, [operand],
+        AST.loc(opTok.loc.start.line, opTok.loc.start.col,
+                operand.loc.end.line, operand.loc.end.col));
     }
     return parseExponential();
   }
