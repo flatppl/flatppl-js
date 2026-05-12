@@ -801,9 +801,19 @@ function evaluateRand(ir, env) {
   // The orchestrator supplies a closure when calling us; the bare-
   // sampler path resolves only literal measure calls inline. If a ref
   // shows up without resolveMeasureRef, traceeval throws a clear error.
+  //
+  // resolveValueRef: parallel hook for value-position refs inside the
+  // measure's distribution params (e.g. `Normal(mu = ref a)` where `a`
+  // is a stochastic ancestor). When env doesn't pre-carry the value
+  // the resolver samples it on demand, threading state. Same passthrough
+  // pattern: the orchestrator builds the closure, evaluateRand just
+  // forwards what's been parked on env.
   const opts = { tally: 'none' };
   if (env && typeof env.__resolveMeasureRef === 'function') {
     opts.resolveMeasureRef = env.__resolveMeasureRef;
+  }
+  if (env && typeof env.__resolveValueRef === 'function') {
+    opts.resolveValueRef = env.__resolveValueRef;
   }
   const r = getTraceeval().walk(state, args[1], env, undefined, opts);
   return [r.value, r.state];

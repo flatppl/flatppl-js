@@ -1920,18 +1920,28 @@ function buildDerivations(bindings) {
         })();
       if (!ir) continue;
 
-      // Collect every self-ref in the IR transitively through measure
-      // bindings: value-typed refs nested inside a measure subtree
-      // (e.g. distribution params like `Normal(mu=ref(rp_field))`)
-      // need env entries because traceeval calls evaluateExpr on
-      // them at sample time. Measure-typed refs themselves are
-      // skipped here — they're resolved via resolveMeasureRef.
+      // Collect self-refs into TWO buckets based on where they're
+      // reached: "value-context" refs that must be in fixedValues
+      // before we can evaluate (the classic gate), and "measure-
+      // context" refs reached through a measure subtree (e.g.
+      // `rand(rstate, ref d)` where d's expansion has
+      // `Normal(mu = ref a, sigma = ref b)`). The latter never block
+      // pre-eval — they're resolved lazily at evaluation time via
+      // __resolveValueRef, which threads rng state through any
+      // stochastic ancestor sampling. This is what makes
+      //   data, _ = rand(rstate, lawof(obs))
+      // pre-eval successfully even when obs's distribution params
+      // depend on stochastic ancestors (theta1, theta2): rand owns
+      // the state thread, and the resolver hands it the values it
+      // needs by walking back through the binding graph the same
+      // way traceeval would.
       const env = { __resolveMeasureRef: resolveMeasureRef };
       let depsReady = true;
       const seenMeasure = new Set();
       const valueRefs = new Set();
+      const deferredRefs = new Set();
 
-      function collectFor(walkIr) {
+      function collectFor(walkIr, inMeasureContext) {
         const refs = collectSelfRefs(walkIr);
         for (const r of refs) {
           if (!bindings.has(r)) continue;
@@ -1942,12 +1952,13 @@ function buildDerivations(bindings) {
           // expandMeasureIR resolves variate aliases to their
           // distribution and rewrites lawof(record(...)) → joint(...).
           // The resulting tree contains exactly the value refs
-          // traceeval will look up in env at sample time.
+          // traceeval will look up in env at sample time — and we
+          // mark anything beyond this point as measure-context.
           if (derivations[r]) {
             if (seenMeasure.has(r)) continue;
             seenMeasure.add(r);
             const expanded = expandMeasureIR(r, derivations);
-            if (expanded) { collectFor(expanded); continue; }
+            if (expanded) { collectFor(expanded, true); continue; }
             // Not a sample-shape derivation — fall through to
             // value-binding treatment below.
           }
@@ -1958,13 +1969,14 @@ function buildDerivations(bindings) {
             // params reach value bindings we can resolve.
             if (seenMeasure.has(r)) continue;
             seenMeasure.add(r);
-            if (dep.ir) collectFor(dep.ir);
+            if (dep.ir) collectFor(dep.ir, true);
             continue;
           }
-          valueRefs.add(r);
+          if (inMeasureContext) deferredRefs.add(r);
+          else                  valueRefs.add(r);
         }
       }
-      collectFor(ir);
+      collectFor(ir, false);
 
       for (const r of valueRefs) {
         const dep = bindings.get(r);
@@ -1973,6 +1985,63 @@ function buildDerivations(bindings) {
         env[r] = fixedValues.get(r);
       }
       if (!depsReady) continue;
+
+      // Build a state-threading resolver closed over the local env
+      // and the binding graph. Called from traceeval (via
+      // evaluateRand → opts.resolveValueRef) whenever a measure-
+      // context ref isn't already in env. Two cases:
+      //   - measure-shaped derivation (a draw, an iid, an alias, …):
+      //     expandMeasureIR + traceeval.walk samples it through the
+      //     same recursive walker. State threads through.
+      //   - deterministic derivation (a = c * theta1, etc.): inline
+      //     the binding's IR, recursively pre-fill its own refs
+      //     through this same resolver, then evaluateExpr.
+      // env is the SAME object the outer evaluateExpr will consult,
+      // so resolved values are cached implicitly — two refs to the
+      // same name share one draw.
+      const traceeval = require('./traceeval');
+      function localResolveValueRef(refName, state) {
+        if (env[refName] !== undefined) return [env[refName], state];
+        if (fixedValues.has(refName)) {
+          env[refName] = fixedValues.get(refName);
+          return [env[refName], state];
+        }
+        const dep = bindings.get(refName);
+        if (!dep) throw new Error(`resolveValueRef: unknown binding '${refName}'`);
+        const d = derivations[refName];
+        if (d && (d.kind === 'sample' || d.kind === 'alias'
+                  || d.kind === 'iid' || d.kind === 'record'
+                  || d.kind === 'weighted')) {
+          const measureIR = expandMeasureIR(refName, derivations);
+          if (!measureIR) {
+            throw new Error(`resolveValueRef: cannot expand measure for '${refName}'`);
+          }
+          const r = traceeval.walk(state, measureIR, env, undefined, {
+            tally: 'none',
+            resolveMeasureRef,
+            resolveValueRef: localResolveValueRef,
+          });
+          env[refName] = r.value;
+          return [r.value, r.state];
+        }
+        // Deterministic binding (evaluate-kind, lifted anon, …):
+        // walk its own refs through this resolver first, then evaluate.
+        const innerIR = (d && d.kind === 'evaluate' && d.ir) || dep.ir;
+        if (!innerIR) {
+          throw new Error(`resolveValueRef: no IR for '${refName}'`);
+        }
+        // Pre-fill nested refs depth-first by calling ourselves.
+        const inner = collectSelfRefs(innerIR);
+        for (const n of inner) {
+          if (env[n] !== undefined) continue;
+          const sub = localResolveValueRef(n, state);
+          state = sub[1];
+        }
+        const v = samplerLib.evaluateExpr(innerIR, env);
+        env[refName] = v;
+        return [v, state];
+      }
+      env.__resolveValueRef = localResolveValueRef;
 
       // The synthesised disintegrate effectiveValue can be a measure
       // expression (e.g. `lawof(...)`); evaluating that as a value is
