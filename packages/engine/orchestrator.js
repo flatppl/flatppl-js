@@ -2068,23 +2068,6 @@ function buildDerivations(bindings) {
     }
   }
 
-  // Retry classification with fixedValues available. The initial
-  // classifyDerivation pass runs before pre-eval, so any classifier
-  // that needs to resolve a ref to a concrete JS value (today:
-  // classifyBayesupdate and classifyLogdensityof, both via
-  // resolveIRToValue → obsValue) can only see literals / inline
-  // records / vector-of-lits. Bindings whose observation is a draw,
-  // a rand() result, or any other dynamically-computed value were
-  // silently rejected. resolveIRToValue now consults fixedValues
-  // for the ref shortcut, so re-running classification here picks
-  // them up. Only bindings that DIDN'T classify the first time get
-  // retried — already-derived bindings keep their classification.
-  for (const [name, binding] of bindings) {
-    if (derivations[name]) continue;
-    const d = classifyDerivation(binding, bindings, fixedValues);
-    if (d) derivations[name] = d;
-  }
-
   // Cascade-prune: drop any derivation whose refs aren't satisfiable.
   // Runs AFTER pre-eval so refs to fixed-phase value bindings (whose
   // derivations were dropped because the value is opaque / a record)
@@ -2131,7 +2114,7 @@ function buildDerivations(bindings) {
  * NOT a sample. This is what gives variates and their measures the
  * same cached samples.
  */
-function classifyDerivation(binding, bindings, fixedValues) {
+function classifyDerivation(binding, bindings) {
   if (!binding || !binding.node || !binding.node.value) return null;
 
   // Read the lowered IR cached by liftInlineSubexpressions. The IR is
@@ -2178,7 +2161,7 @@ function classifyDerivation(binding, bindings, fixedValues) {
   // rather than synthesising an intermediate logweighted IR — the
   // walker already implements the lowered primitive.
   if (binding.type === 'bayesupdate') {
-    return classifyBayesupdate(binding, bindings, fixedValues);
+    return classifyBayesupdate(binding, bindings);
   }
 
   // 'lawof' is the dual of 'draw' for our purposes: lawof(<ref>) is
@@ -2237,7 +2220,7 @@ function classifyDerivation(binding, bindings, fixedValues) {
     // we're matching; the AST tells us which operands are measures.
     const ast = binding.node.value;
     if (rhsIR && rhsIR.kind === 'call' && MEASURE_OP_CLASSIFIERS[rhsIR.op]) {
-      const result = MEASURE_OP_CLASSIFIERS[rhsIR.op](rhsIR, ast, bindings, fixedValues);
+      const result = MEASURE_OP_CLASSIFIERS[rhsIR.op](rhsIR, ast, bindings);
       if (result) return result;
     }
     // Numeric array literal: lowered to (call vector lit lit ...).
@@ -2424,15 +2407,19 @@ function classifyIid(rhsIR, ast, bindings) {
 //     (x is itself a variate) are deferred — they require encoding
 //     the observation into refArrays per atom, an extra path the
 //     materialiser doesn't yet take.
-function classifyLogdensityof(rhsIR, ast, bindings, fixedValues) {
+function classifyLogdensityof(rhsIR, ast, bindings) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const Mref   = rhsIR.args[0];
   const obsIR  = rhsIR.args[1];
   if (!isSelfRef(Mref)) return null;
   if (!bindings.has(Mref.name)) return null;
-  const obsValue = resolveIRToValue(obsIR, bindings, new Set(), fixedValues);
-  if (obsValue === RESOLVE_FAIL) return null;
-  return { kind: 'logdensityof', measureName: Mref.name, obsValue };
+  // Hold the obs IR — the materialiser resolves it to a concrete JS
+  // value at sample time, consulting fixedValues for any binding
+  // refs. Classification cares only that an obs argument exists in
+  // a recognisable shape; eager value resolution at classify time
+  // forces a pre-eval-vs-classify ordering dance that we no longer
+  // need.
+  return { kind: 'logdensityof', measureName: Mref.name, obsIR };
 }
 
 const MEASURE_OP_CLASSIFIERS = {
@@ -3078,15 +3065,17 @@ function expandMeasurePos(node, derivations, visited) {
 //                 reconstruct a self-contained measure IR by
 //                 walking that binding's derivation chain (record /
 //                 iid / weighted / sample / alias).
-//   - `obsValue`: a JS value structure mirroring the body's variate
-//                 space (number / array / record), built by walking
-//                 the obs argument's AST and resolving identifier
-//                 refs through the bindings map.
+//   - `obsIR`:    the obs argument's lowered IR. The viewer resolves
+//                 it to a concrete JS value at materialise time via
+//                 resolveIRToValue + fixedValues — same lookup the
+//                 rest of the viewer uses for any binding ref, no
+//                 separate eager-materialisation pass at classify
+//                 time.
 //
 // The visualPanel materialiser uses this to issue one
 // `worker.logDensityN` call: refArrays are populated from the prior's
 // record fields plus any inner-binding samples the body refers to;
-// observed = d.obsValue; tally='clamped'. Per-atom log-likelihoods
+// observed comes from resolveIRToValue(d.obsIR, …); tally='clamped'. Per-atom log-likelihoods
 // come back, and the posterior is a copy of the prior's empirical
 // measure with logWeights += those log-likelihoods.
 //
@@ -3100,7 +3089,7 @@ function expandMeasurePos(node, derivations, visited) {
 // without introducing a new IR-evaluator call. Future work: lift
 // this into a true AST rewrite once we have a worker primitive that
 // directly evaluates `logdensityof` calls inside arithmetic IR.
-function classifyBayesupdate(binding, bindings, fixedValues) {
+function classifyBayesupdate(binding, bindings) {
   // Walk the L→K chain through cached IR rather than AST. The lowerer
   // canonicalises kernelof → functionof and fn → functionof, so we
   // only need to check for op === 'functionof' here regardless of
@@ -3149,21 +3138,17 @@ function classifyBayesupdate(binding, bindings, fixedValues) {
     return null;
   }
 
-  // Resolve obs to a concrete JS value. The trace walker clamps the
-  // matching variate sites with this. Translation from IR (literals,
-  // record-of-fields, refs to literal-array bindings, etc.) is done
-  // by resolveIRToValue; for an Identifier-pointing-at-a-literal-array
-  // case we still bottom out via the original binding's AST since the
-  // value lives there as a primitive node tree.
-  const obsValue = resolveIRToValue(obsIR, bindings, new Set(), fixedValues);
-  if (obsValue === RESOLVE_FAIL) return null;
-
+  // Hold the obs IR; resolution to a JS value happens at materialise
+  // time via resolveIRToValue + fixedValues. The classifier cares
+  // only about the structural shape — does this binding look like a
+  // bayesupdate over a likelihood of a kernel? — not about WHAT the
+  // observation is.
   return {
     kind: 'bayesupdate',
     from: priorRef.name,
     bodyName,
     bodyIR,
-    obsValue,
+    obsIR,
   };
 }
 
@@ -3177,15 +3162,18 @@ function isSelfRef(ir) {
   return !!ir && ir.kind === 'ref' && ir.ns === 'self';
 }
 
-const RESOLVE_FAIL = Symbol('orchestrator.resolveIRToValue.FAIL');
-
 /**
  * Convert a lowered IR expression to a concrete JS value (number,
- * array of values, plain object) — used to materialise the `observed`
- * argument for bayesupdate's kernel-body density evaluation. Resolves
- * self-refs through the bindings map (recursively, with cycle guard)
- * so an IR like `(call vector (lit 1.2) (lit 3.4) ...)` (which is what
- * `[1.2, 3.4, ...]` lowers to) reduces to a plain JS array.
+ * array of values, plain object). Used by the viewer's bayesupdate /
+ * logdensityof / likelihood materialisers to translate a recorded
+ * `obsIR` (the AST shape of `observed_data` or `record(obs = ...)`,
+ * etc.) into the JS value traceeval clamps against at sample time.
+ *
+ * Resolution order on `ref self <name>`:
+ *   1. fixedValues, if supplied — pre-eval may have materialised a
+ *      dynamically-computed value (rand result, tuple_get, etc.) we
+ *      cannot reach through static IR recursion.
+ *   2. Recursive walk into the referenced binding's lowered IR.
  *
  * Recognised IR shapes:
  *   - { kind: 'lit', value: <number> }    → number
@@ -3193,55 +3181,49 @@ const RESOLVE_FAIL = Symbol('orchestrator.resolveIRToValue.FAIL');
  *   - { kind: 'call', op: 'record',
  *       fields: [{name, value}, ...] }    → plain object keyed by field
  *   - { kind: 'call', op: 'neg', args }   → negative
- *   - { kind: 'ref', ns: 'self', name }   → resolve through binding.ir
+ *   - { kind: 'ref', ns: 'self', name }   → resolve as above
  *
- * Anything else returns the RESOLVE_FAIL sentinel; callers must
- * propagate that as a "no derivation" outcome rather than try to
- * coerce a partial value.
+ * Throws on anything else, including cycles. The thrown message
+ * names the IR shape so the viewer can surface it directly as a
+ * plot-time error rather than a silent failure.
  */
-function resolveIRToValue(ir, bindings, seen, fixedValues) {
-  if (!ir || typeof ir !== 'object') return RESOLVE_FAIL;
-  if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
-  if (ir.kind === 'ref' && ir.ns === 'self') {
-    // Pre-eval may have computed a value for this binding (e.g. it's
-    // a `rand(...)` result, a destructured `tuple_get`, or any other
-    // shape we can't resolve through static IR recursion). Use that
-    // directly rather than trying to walk the IR — that path only
-    // handles a narrow set of pure-literal shapes (vector, record,
-    // neg) and would RESOLVE_FAIL on anything else.
-    if (fixedValues && fixedValues.has(ir.name)) return fixedValues.get(ir.name);
-    if (seen.has(ir.name)) return RESOLVE_FAIL;
-    const b = bindings.get(ir.name);
-    if (!b || !b.ir) return RESOLVE_FAIL;
-    const next = new Set(seen); next.add(ir.name);
-    return resolveIRToValue(b.ir, bindings, next, fixedValues);
-  }
-  if (ir.kind === 'call') {
-    if (ir.op === 'vector' && Array.isArray(ir.args)) {
-      const out = new Array(ir.args.length);
-      for (let i = 0; i < ir.args.length; i++) {
-        const v = resolveIRToValue(ir.args[i], bindings, seen, fixedValues);
-        if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
-        out[i] = v;
+function resolveIRToValue(ir, bindings, fixedValues) {
+  return walk(ir, new Set());
+  function walk(ir, seen) {
+    if (!ir || typeof ir !== 'object') {
+      throw new Error('resolveIRToValue: not an IR node');
+    }
+    if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
+    if (ir.kind === 'ref' && ir.ns === 'self') {
+      if (fixedValues && fixedValues.has(ir.name)) return fixedValues.get(ir.name);
+      if (seen.has(ir.name)) {
+        throw new Error(`resolveIRToValue: cycle through '${ir.name}'`);
       }
-      return out;
-    }
-    if (ir.op === 'record' && Array.isArray(ir.fields)) {
-      const out = {};
-      for (const f of ir.fields) {
-        const v = resolveIRToValue(f.value, bindings, seen, fixedValues);
-        if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
-        out[f.name] = v;
+      const b = bindings && bindings.get(ir.name);
+      if (!b || !b.ir) {
+        throw new Error(`resolveIRToValue: no IR for '${ir.name}'`);
       }
-      return out;
+      const next = new Set(seen); next.add(ir.name);
+      return walk(b.ir, next);
     }
-    if (ir.op === 'neg' && Array.isArray(ir.args) && ir.args.length === 1) {
-      const v = resolveIRToValue(ir.args[0], bindings, seen, fixedValues);
-      if (v === RESOLVE_FAIL) return RESOLVE_FAIL;
-      return -v;
+    if (ir.kind === 'call') {
+      if (ir.op === 'vector' && Array.isArray(ir.args)) {
+        const out = new Array(ir.args.length);
+        for (let i = 0; i < ir.args.length; i++) out[i] = walk(ir.args[i], seen);
+        return out;
+      }
+      if (ir.op === 'record' && Array.isArray(ir.fields)) {
+        const out = {};
+        for (const f of ir.fields) out[f.name] = walk(f.value, seen);
+        return out;
+      }
+      if (ir.op === 'neg' && Array.isArray(ir.args) && ir.args.length === 1) {
+        return -walk(ir.args[0], seen);
+      }
+      throw new Error(`resolveIRToValue: unsupported op '${ir.op}'`);
     }
+    throw new Error(`resolveIRToValue: unsupported kind '${ir.kind}'`);
   }
-  return RESOLVE_FAIL;
 }
 
 /**
@@ -3400,7 +3382,11 @@ function resolveSourceType(source, bindings) {
 
 // Likelihood inspection: walk likelihoodof(K, obs) → resolve K to a
 // kernel binding → reuse its signature with the output overridden to
-// REAL (the log-likelihood at obs) and obsValue stored alongside.
+// REAL (the log-likelihood at obs) and the obs IR stored alongside.
+// The viewer calls resolveIRToValue at materialise time, after pre-
+// eval has populated fixedValues, so an observation that's a draw
+// / rand result / any other dynamically-computed value works the
+// same as an inline literal.
 function signatureOfLikelihood(b, bindings) {
   const ir = b.ir;
   if (!ir || ir.op !== 'likelihoodof' || !Array.isArray(ir.args) || ir.args.length !== 2) {
@@ -3411,20 +3397,11 @@ function signatureOfLikelihood(b, bindings) {
   if (!isSelfRef(Kref) || !bindings.has(Kref.name)) return null;
   const inner = signatureOf(Kref.name, bindings);
   if (!inner) return null;
-  // No fixedValues threaded here — signatureOfLikelihood is called
-  // from signatureOf (the viewer-facing entry), which doesn't know
-  // about pre-eval's fixedValues. Pass undefined; resolveIRToValue
-  // falls back to the IR-walk path. If a likelihood's observation
-  // is dynamically computed (a draw, a rand result), obsValue stays
-  // null and the viewer surfaces "not plottable" cleanly, same as
-  // before. Lifting this restriction would need signatureOf to take
-  // fixedValues — bigger surgery, deferred until a use case demands it.
-  const obsValue = resolveIRToValue(obsIR, bindings, new Set(), undefined);
   return {
     kind: 'likelihood',
     inputs: inner.inputs,
     output: { type: { kind: 'scalar', prim: 'real' } },
-    obsValue: obsValue === RESOLVE_FAIL ? null : obsValue,
+    obsIR,
     kernelName: Kref.name,
     // Likelihood evaluation reuses the kernel's body (peeled of any
     // lawof wrapper) at logdensity-mode evaluation time. Carrying the
@@ -4018,6 +3995,7 @@ module.exports = {
   leafSampleIR,
   expandMeasureIR,
   expandMeasureRefsInIR,
+  resolveIRToValue,
   implicitKernelSignature,
   implicitFunctionSignature,
   signatureOf,

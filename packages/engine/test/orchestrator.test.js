@@ -603,14 +603,17 @@ r = relabel([1, 2, 3], ["x", "y"])
 // its own — it inherits the measure's cascade through that ref).
 
 test('logdensityof: scalar measure with literal obs classifies', () => {
-  const { derivations } = derivationsOf(`
+  const { resolveIRToValue } = require('../orchestrator');
+  const { derivations, bindings, fixedValues } = derivationsOf(`
 y_dist = Normal(mu = 0.0, sigma = 1.0)
 lp     = logdensityof(y_dist, 1.5)
 `);
   assert.ok(derivations.lp, 'lp should be derivable');
   assert.equal(derivations.lp.kind, 'logdensityof');
   assert.equal(derivations.lp.measureName, 'y_dist');
-  assert.equal(derivations.lp.obsValue, 1.5);
+  // The derivation holds the obs IR; the materialiser resolves it
+  // to a JS value via resolveIRToValue + fixedValues at sample time.
+  assert.equal(resolveIRToValue(derivations.lp.obsIR, bindings, fixedValues), 1.5);
 });
 
 test('logdensityof: cascade-prunes when measure isn\'t derivable', () => {
@@ -1124,7 +1127,17 @@ L = likelihoodof(K, obs_value)
   assert.deepEqual(sig.inputs[0].source, { kind: 'binding', name: 'theta1' });
   assert.equal(sig.output.type.kind, 'scalar');
   assert.equal(sig.kernelName, 'K');
-  assert.equal(sig.obsValue, 1.5);
+  // The signature carries the obs IR; the viewer's profile-plot
+  // path resolves it via resolveIRToValue at sample time.
+  const { resolveIRToValue } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+theta1 = draw(Normal(mu = 0, sigma = 1))
+K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
+obs_value = 1.5
+L = likelihoodof(K, obs_value)
+`);
+  assert.equal(resolveIRToValue(sig.obsIR, liftInlineSubexpressions(bindings), undefined), 1.5);
 });
 
 test('signatureOf: functionof with measure body classifies as kernel', () => {
@@ -2905,21 +2918,13 @@ test('pre-eval: rand(state, lawof(...)) reachable through a multi-LHS rewrite', 
     'rstate2 should be an rngstate object with a key field');
 });
 
-test('classify: bayesupdate retries after pre-eval so rand-result observations work', () => {
-  // bayesupdate's classifier resolves the obs argument to a JS value
-  // via resolveIRToValue. With a literal observation (\`observed_data =
-  // [1.2, 3.4, ...]\`) that always succeeded — the IR is a flat
-  // vector-of-lits. With a dynamically-computed observation
-  // (\`observed_data, _ = rand(rstate, lawof(obs))\`), the IR walks
-  // through a tuple_get on the synthetic %mlhs binding and
-  // resolveIRToValue used to give up. Two coordinated fixes are
-  // covered here:
-  //   1. resolveIRToValue checks fixedValues for ref shortcuts.
-  //   2. classifyDerivation re-runs after pre-eval so bindings whose
-  //      classification depended on a not-yet-populated fixedValues
-  //      entry get a second chance.
-  // The integration test guards both pieces — strip either and
-  // posterior reverts to "Not plottable".
+test('classify: bayesupdate observation can be a dynamically-computed value', () => {
+  // Observation = rand-result (or any other dynamically-computed
+  // binding). Classification doesn't materialise the obs to a JS
+  // value — it stores the IR and the materialiser resolves at
+  // sample time via resolveIRToValue + fixedValues. Same code path
+  // for literal vs. rand-result observations; no special retry.
+  const { resolveIRToValue } = require('../orchestrator');
   const { bindings } = processSource(`
     theta1_dist = Normal(mu = 0, sigma = 1)
     theta1      = draw(theta1_dist)
@@ -2932,19 +2937,20 @@ test('classify: bayesupdate retries after pre-eval so rand-result observations w
     L              = likelihoodof(forward_kernel, record(obs = observed_data))
     posterior      = bayesupdate(L, prior)
   `);
-  const { derivations, fixedValues } = buildDerivations(bindings);
-  assert.ok(fixedValues.has('observed_data'),
-    'pre-eval must populate observed_data first — otherwise retry has nothing to find');
-  assert.ok(derivations.posterior,
-    'posterior should classify after the retry pass picks up fixedValues');
-  assert.equal(derivations.posterior.kind, 'bayesupdate');
-  assert.equal(derivations.posterior.from, 'prior');
-  // The obs value carried into the derivation is the array drawn
-  // by rand (not the original [obs] AST), now resolved through
-  // fixedValues rather than IR walking.
-  assert.ok(derivations.posterior.obsValue && derivations.posterior.obsValue.obs,
-    'obsValue should be a record with the obs field');
-  assert.equal(derivations.posterior.obsValue.obs.length, 4);
+  const ds = buildDerivations(bindings);
+  assert.ok(ds.fixedValues.has('observed_data'),
+    'pre-eval still populates observed_data — only the classify-time materialisation moved');
+  assert.ok(ds.derivations.posterior,
+    'posterior classifies on the structural shape alone, no obs-resolution gate');
+  assert.equal(ds.derivations.posterior.kind, 'bayesupdate');
+  assert.equal(ds.derivations.posterior.from, 'prior');
+  // The derivation holds the obs IR; resolving it at sample time
+  // yields the rand result via fixedValues.
+  const obsValue = resolveIRToValue(
+    ds.derivations.posterior.obsIR, ds.bindings, ds.fixedValues);
+  assert.ok(obsValue && obsValue.obs,
+    'resolved obsValue should be a record with the obs field');
+  assert.equal(obsValue.obs.length, 4);
 });
 
 test('pre-eval: stops at parameterized boundary (no infinite loop)', () => {

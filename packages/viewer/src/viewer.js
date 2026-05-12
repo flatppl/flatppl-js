@@ -1632,7 +1632,8 @@
         //   2. Collect value refs in the expanded IR (those are the
         //      per-i parameters: 'a', 'b' in the canonical example).
         //   3. Materialise prior + each value ref's samples.
-        //   4. Worker logDensityN with refArrays + observed=d.obsValue.
+        //   4. Worker logDensityN with refArrays + observed resolved
+        //      from d.obsIR via fixedValues at materialise time.
         //   5. Posterior = prior with logWeights += per-atom logp.
         //      Atom alignment is preserved (no resampling); this is
         //      pure reweighting on the shared-N axis.
@@ -1671,12 +1672,22 @@
               }
               refArrays[valueRefs[i]] = rm.samples;
             }
+            // Resolve the obs IR to a JS value now. The orchestrator
+            // stores `d.obsIR` (an AST node) rather than a baked-in
+            // value: an observation that's a draw, a rand result, or
+            // any other dynamically-computed binding is resolved here
+            // via fixedValues, the same lookup the viewer uses
+            // everywhere else for ref values. Failures surface as a
+            // clear plot-time error rather than silent missing-
+            // derivation behaviour.
+            var observed = FlatPPLEngine.orchestrator.resolveIRToValue(
+              d.obsIR, derivationsState.bindings, derivationsState.fixedValues);
             return sendWorker({
               type: 'logDensityN',
               ir: bodyIR,
               count: SAMPLE_COUNT,
               refArrays: refArrays,
-              observed: d.obsValue,
+              observed: observed,
               tally: 'clamped',
             }).then(function(reply) {
               // Combine: parent atoms unchanged; logWeights += per-atom logp.
@@ -1740,12 +1751,15 @@
               }
               refArrays[valueRefs[i]] = rm.samples;
             }
+            // Same obs-resolution pattern as bayesupdate above.
+            var observed = FlatPPLEngine.orchestrator.resolveIRToValue(
+              d.obsIR, derivationsState.bindings, derivationsState.fixedValues);
             return sendWorker({
               type: 'logDensityN',
               ir: measureIR,
               count: SAMPLE_COUNT,
               refArrays: refArrays,
-              observed: d.obsValue,
+              observed: observed,
               tally: 'clamped',
             }).then(function(reply) {
               var m = { samples: reply.samples, logWeights: null };
@@ -5715,6 +5729,17 @@
             pointCount = Math.min(ihi - ilo + 1, POINT_COUNT);
           }
         }
+        // For likelihood profile plots, resolve the obs IR to a JS
+        // value at sample time. sig.obsIR is set by
+        // signatureOfLikelihood; non-likelihood signatures don't
+        // carry one. Resolution failures (e.g. an observation we
+        // can't materialise) propagate as a clean plot-time error,
+        // same as the bayesupdate path.
+        var observed;
+        if (sig.obsIR != null) {
+          observed = FlatPPLEngine.orchestrator.resolveIRToValue(
+            sig.obsIR, derivationsState.bindings, derivationsState.fixedValues);
+        }
         return sendWorker({
           type: 'profileN',
           ir: ir,
@@ -5723,7 +5748,7 @@
           count: pointCount,
           mode: mode,
           fixedEnv: fixedEnv,
-          observed: sig.obsValue == null ? undefined : sig.obsValue,
+          observed: observed,
           tally: 'clamped',
         });
       }).then(function(reply) {
