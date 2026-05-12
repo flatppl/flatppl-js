@@ -66,8 +66,11 @@ const BUILTIN_FUNCTIONS = new Set([
   // Array/table generation
   'array', 'fill', 'zeros', 'ones', 'eye', 'onehot',
   'linspace', 'extlinspace',
-  // Access and reshaping
-  'get', 'cat', 'rowstack', 'colstack', 'partition', 'reverse', 'relabel',
+  // Access and reshaping. `get` is FlatPPL/FlatPPJ's 1-based
+  // indexing op; `get0` is FlatPPY's 0-based variant emitted by
+  // the parser when xs[i] is lowered under the FlatPPY surface.
+  // Semantically `get0(xs, i)` ≡ `get(xs, i + 1)`.
+  'get', 'get0', 'cat', 'rowstack', 'colstack', 'partition', 'reverse', 'relabel',
   // Scalar restrictions/constructors
   'boolean', 'integer', 'real', 'complex', 'string', 'imag',
   // Elementary math

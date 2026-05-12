@@ -258,13 +258,16 @@ function parse(tokens, variant) {
         expr = AST.CallExpr(expr, args,
           AST.loc(expr.loc.start.line, expr.loc.start.col, endLoc.end.line, endLoc.end.col));
       } else if (at(T.LBRACKET)) {
-        // Index: expr[indices]
+        // Index: expr[indices]. The lowering target (`get` for 1-
+        // based / `get0` for 0-based) is fixed at parse time from
+        // the variant — FlatPPY uses get0; FlatPPL/FlatPPJ use get.
         advance(); // [
         const indices = parseIndexList();
         const rbracket = expect(T.RBRACKET);
         const endLoc = rbracket ? rbracket.loc : expr.loc;
         expr = AST.IndexExpr(expr, indices,
-          AST.loc(expr.loc.start.line, expr.loc.start.col, endLoc.end.line, endLoc.end.col));
+          AST.loc(expr.loc.start.line, expr.loc.start.col, endLoc.end.line, endLoc.end.col),
+          v.indexingLowersTo);
       } else if (at(T.DOT)) {
         // Field access: expr.field
         advance(); // .
