@@ -5290,6 +5290,28 @@
           dims.push(d.value);
         }
         var k = dims.reduce(function(p, n) { return p * n; }, 1);
+        // Leaf-distribution inner: use sampleN's `repeat` so the per-
+        // atom refArrays line up — atom i gets refArrays[i], then k
+        // independent draws share it. Mirrors getMeasure's iid path.
+        // Naive recursion with count*k would mis-index refArrays
+        // (only `count` entries available, repeated k times by the
+        // atom index — out-of-bounds for i >= count).
+        var SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
+        if (inner.kind === 'call' && SAMPLEABLE && SAMPLEABLE.has(inner.op)) {
+          return collectRefArrays(inner).then(function(refArrays) {
+            return sendWorker({
+              type: 'sampleN', ir: inner, count: count, repeat: k,
+              refArrays: refArrays, seed: seed,
+            });
+          }).then(function(reply) {
+            return FlatPPLEngine.empirical.arrayMeasure(reply.samples, dims, null);
+          });
+        }
+        // Non-leaf inner (nested iid / record / joint inside iid).
+        // The recursive form keeps the structure but doesn't handle
+        // captured refs correctly under expansion — flag if we ever
+        // hit it in practice. Today's kernel-sample bodies all
+        // bottom out at leaf distributions after the IR pipeline.
         return materialiseConcreteMeasure(inner, count * k, seed).then(function(innerM) {
           return FlatPPLEngine.empirical.arrayMeasure(innerM.samples, dims, null);
         });
