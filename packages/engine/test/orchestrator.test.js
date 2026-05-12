@@ -26,6 +26,7 @@ const {
   signatureOf, distributeAxes, inlineForProfile, substituteLocals,
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets, findMatchingDomains,
+  expandMeasureIR, implicitKernelSignature,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -961,9 +962,25 @@ z = c * y
 f = functionof(z)
 `, 'f');
   // Auto-promote walks self-refs; it only adds entries for
-  // type='input' bindings (elementof). Neither c (literal) nor y
+  // parameterized-phase elementof leaves. Neither c (literal) nor y
   // (draw) qualifies, so inputs stays empty.
   assert.equal(sig.inputs.length, 0);
+});
+
+test('signatureOf: auto-promote excludes external() and load_data() (fixed phase)', () => {
+  // Per spec §04 sec:functionof: external(...) and load_data(...)
+  // share binding.type='input' with elementof (both are surface
+  // "inputs" to the module) but their phase is 'fixed' — they're
+  // closed over by the reified callable, not promoted as inputs.
+  // Only the elementof leaf `mu` should surface here.
+  const sig = sigOf(`
+mu = elementof(reals)
+ext_const = external("hyperparams.json")
+combined = mu + ext_const
+f = functionof(combined)
+`, 'f');
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'mu');
 });
 
 test('signatureOf: explicit boundary kwargs disable auto-promotion', () => {
@@ -1520,6 +1537,366 @@ test('substituteLocals: walks nested args / fields', () => {
   };
   const out = substituteLocals(ir, { t: 2.5 });
   assert.equal(out.fields[0].value.args[0].kwargs.mu.value, 2.5);
+});
+
+// =====================================================================
+// implicitKernelSignature — synthesise a kernel signature for a
+// stochastic binding whose distIR transitively depends on elementof
+// ancestors. Per spec §04 (sec:kernelof, sec:functionof), this is
+// the natural "kernelof(x) with no boundary kwargs" semantics: trace
+// back to parametric leaves and promote them as inputs.
+// =====================================================================
+
+// Helper: process source through processSource + buildDerivations,
+// return both the lifted bindings and the derivations table —
+// implicitKernelSignature needs the lifted form so its expandMeasureIR
+// structural fallback can walk binding.ir.
+function bindingsAndDerivationsFor(source) {
+  const { bindings } = processSource(source);
+  const ds = buildDerivations(bindings);
+  return { bindings: ds.bindings, derivations: ds.derivations };
+}
+
+test('implicitKernelSignature: single elementof ancestor → one input', () => {
+  // The canonical case: a draw whose distIR references a
+  // parameterized leaf. buildDerivations prunes x's derivation
+  // (parameterized ancestor), so implicitKernelSignature is the
+  // only way to surface a plottable signature.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+x = draw(Normal(mu = mu, sigma = 1))
+`);
+  // Sanity: x's derivation got pruned, otherwise we'd be testing
+  // the wrong path.
+  assert.ok(!derivations['x'],
+    'expected buildDerivations to prune x (parameterized ancestor)');
+  const sig = implicitKernelSignature('x', bindings, derivations);
+  assert.ok(sig, 'expected a synthesised kernel signature');
+  assert.equal(sig.kind, 'kernel');
+  assert.equal(sig.implicit, true);
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'mu');
+  assert.equal(sig.inputs[0].kwargName, 'mu');
+  assert.deepEqual(sig.inputs[0].source, { kind: 'binding', name: 'mu' });
+  // The body should be the structurally-expanded measure IR — for
+  // a leaf distribution Normal(...) that's the call itself.
+  assert.equal(sig.body.kind, 'call');
+  assert.equal(sig.body.op, 'Normal');
+});
+
+test('implicitKernelSignature: multiple elementof ancestors → all promoted', () => {
+  // Two parametric leaves both reached from the same draw — both
+  // surface as inputs (deduped if they appear multiple times).
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+sigma = elementof(posreals)
+x = draw(Normal(mu = mu, sigma = sigma))
+`);
+  const sig = implicitKernelSignature('x', bindings, derivations);
+  assert.ok(sig);
+  assert.equal(sig.inputs.length, 2);
+  const names = sig.inputs.map((i) => i.paramName).sort();
+  assert.deepEqual(names, ['mu', 'sigma']);
+});
+
+test('implicitKernelSignature: excludes external() (fixed phase)', () => {
+  // Per spec, fixed-phase leaves are closed over — not promoted
+  // as kernel inputs. external() / load_data() bindings have
+  // type='input' but phase='fixed', so they must be filtered out.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+ext = external("data.dat")
+x = draw(Normal(mu = mu, sigma = ext))
+`);
+  const sig = implicitKernelSignature('x', bindings, derivations);
+  assert.ok(sig);
+  // Only mu — ext is fixed-phase and must NOT be an input.
+  const names = sig.inputs.map((i) => i.paramName);
+  assert.deepEqual(names, ['mu']);
+});
+
+test('implicitKernelSignature: no elementof ancestors → null', () => {
+  // A stochastic binding with no parametric ancestors has a
+  // perfectly good derivation already; there's nothing for an
+  // implicit kernel to reify. Return null so callers fall back
+  // to the regular plot path.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+x = draw(Normal(mu = 0, sigma = 1))
+`);
+  const sig = implicitKernelSignature('x', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitKernelSignature: walks through transitive deterministic deps', () => {
+  // The parametric leaf is two hops back through evaluable
+  // intermediates. expandMeasureIR's structural fallback walks the
+  // chain so collectSelfRefs on the body still surfaces `mu` —
+  // promoted as the input.
+  //
+  //   mu = elementof(reals)
+  //   resolution = 2.5 + 0.3 * mu      (call, parameterized)
+  //   x = draw(Normal(mu = 0, sigma = resolution))
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+resolution = 2.5 + 0.3 * mu
+x = draw(Normal(mu = 0, sigma = resolution))
+`);
+  const sig = implicitKernelSignature('x', bindings, derivations);
+  assert.ok(sig, 'expected a kernel signature even with derived intermediates');
+  const names = sig.inputs.map((i) => i.paramName);
+  assert.ok(names.includes('mu'),
+    `expected 'mu' among inputs; got ${names.join(', ')}`);
+});
+
+test('implicitKernelSignature: bindings=null → null', () => {
+  // No bindings → no way to walk ancestors; bail cleanly.
+  const sig = implicitKernelSignature('x', null, {});
+  assert.equal(sig, null);
+});
+
+test('implicitKernelSignature: unknown binding name → null', () => {
+  // expandMeasureIR with bindings fallback returns null for an
+  // unknown name; the signature is null in turn.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+x = draw(Normal(mu = mu, sigma = 1))
+`);
+  const sig = implicitKernelSignature('nope', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitKernelSignature: iid draw — body retains the iid wrapper', () => {
+  // `x ~ iid(M, n)` lifts to a separate binding for the underlying
+  // measure plus the iid call. expandMeasureIR's structural
+  // fallback should preserve the iid shape so the kernel-sample
+  // path can broadcast properly. (This is the minimal.flatppl
+  // shape that motivated the feature.)
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+x = iid(Normal(mu = mu, sigma = 1), 3)
+`);
+  const sig = implicitKernelSignature('x', bindings, derivations);
+  assert.ok(sig);
+  assert.equal(sig.body.kind, 'call');
+  assert.equal(sig.body.op, 'iid');
+  assert.equal(sig.body.args[0].op, 'Normal');
+  // The iid count is preserved as the second positional.
+  assert.equal(sig.body.args[1].kind, 'lit');
+  assert.equal(sig.body.args[1].value, 3);
+});
+
+// =====================================================================
+// expandMeasureIR — structural fallback via the `bindings` parameter
+// =====================================================================
+//
+// When buildDerivations prunes a derivation (parameterized ancestor),
+// the derivation-based path of expandMeasureIR returns nothing and the
+// caller wants the lifted binding.ir walked directly. The structural
+// helper handles each measure-shape op per spec §06 / §sec:kernelof.
+//
+// We drive these via expandMeasureIR(name, derivations, undefined,
+// bindings) with a bindings Map carrying hand-built `.ir` shapes, and
+// a derivations table empty for `name` so the primary path falls
+// through to the structural fallback.
+
+// Helper: build a bindings Map from { name → ir } and an empty
+// derivations table. Returns the result of expandMeasureIR walking
+// the named binding's .ir structurally.
+function expandStructural(name, bindingMap) {
+  const bindings = new Map();
+  for (const k in bindingMap) bindings.set(k, { ir: bindingMap[k] });
+  return expandMeasureIR(name, {}, undefined, bindings);
+}
+
+test('expandMeasureIR structural: draw(M) unwraps to M', () => {
+  // Per spec: `lawof(draw(M)) ≡ M`. The structural walker pre-
+  // strips the draw / lawof wrapper so the caller gets a measure
+  // shape regardless of whether the binding was written as
+  // `m = M` vs `y = draw(M)` vs `m = lawof(y)`.
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'draw', args: [innerNormal] },
+  });
+  assert.equal(out.op, 'Normal');
+});
+
+test('expandMeasureIR structural: lawof(M) unwraps to M', () => {
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'lawof', args: [innerNormal] },
+  });
+  assert.equal(out.op, 'Normal');
+});
+
+test('expandMeasureIR structural: leaf distribution returned as-is', () => {
+  // SAMPLEABLE_DISTRIBUTIONS short-circuit: the leaf call is its
+  // own measure IR. Refs inside its kwargs stay intact — the
+  // sampler resolves them per-atom via refArrays / env.
+  const irNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'ref', ns: 'self', name: 'mu' },
+    sigma: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', { x: irNormal });
+  // Exact same node back (structural is a pass-through here).
+  assert.equal(out, irNormal);
+});
+
+test('expandMeasureIR structural: iid(M, n) recurses on the measure arg', () => {
+  // The iid count and other dims are preserved positionally; only
+  // arg[0] (the measure) is expanded structurally. This is the
+  // shape behind `x = iid(Normal(...), 3)`.
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'iid', args: [
+      { kind: 'call', op: 'draw', args: [innerNormal] },  // draw wrapper
+      { kind: 'lit', value: 3 },
+    ]},
+  });
+  assert.equal(out.op, 'iid');
+  // arg[0] structurally expanded (draw unwrapped → Normal).
+  assert.equal(out.args[0].op, 'Normal');
+  // arg[1] preserved verbatim.
+  assert.equal(out.args[1].kind, 'lit');
+  assert.equal(out.args[1].value, 3);
+});
+
+test('expandMeasureIR structural: nested iid(iid(M, n), m) recurses through', () => {
+  // The recursion preserves the outer iid; the inner iid is
+  // expanded recursively (its own arg[0] gets walked too).
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'iid', args: [
+      { kind: 'call', op: 'iid', args: [innerNormal, { kind: 'lit', value: 3 }] },
+      { kind: 'lit', value: 2 },
+    ]},
+  });
+  assert.equal(out.op, 'iid');
+  assert.equal(out.args[0].op, 'iid');
+  assert.equal(out.args[0].args[0].op, 'Normal');
+});
+
+test('expandMeasureIR structural: joint(...) recurses on each field', () => {
+  // record-style measure with named fields: each field.value is a
+  // measure that needs to be structurally expanded so embedded
+  // draws/lawofs get unwrapped uniformly.
+  const m1 = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const m2 = { kind: 'call', op: 'Exponential', kwargs: {
+    rate: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'joint', fields: [
+      { name: 'a', value: { kind: 'call', op: 'draw', args: [m1] } },
+      { name: 'b', value: m2 },
+    ]},
+  });
+  assert.equal(out.op, 'joint');
+  assert.equal(out.fields.length, 2);
+  assert.equal(out.fields[0].name, 'a');
+  assert.equal(out.fields[0].value.op, 'Normal');  // draw unwrapped
+  assert.equal(out.fields[1].name, 'b');
+  assert.equal(out.fields[1].value.op, 'Exponential');
+});
+
+test('expandMeasureIR structural: weighted(w, M) recurses on the measure arg', () => {
+  // weighted is positional: arg[0] is the weight (scalar or
+  // function-of-variate), arg[1] is the measure. Only the
+  // measure gets expanded; the weight stays as-is for the
+  // walker to evaluate per-atom.
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const weight = { kind: 'ref', ns: 'self', name: 'w' };
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'weighted', args: [
+      weight,
+      { kind: 'call', op: 'draw', args: [innerNormal] },
+    ]},
+  });
+  assert.equal(out.op, 'weighted');
+  // arg[0] left intact for per-atom evaluation.
+  assert.equal(out.args[0], weight);
+  // arg[1] (the measure) structurally expanded.
+  assert.equal(out.args[1].op, 'Normal');
+});
+
+test('expandMeasureIR structural: logweighted(lw, M) same shape as weighted', () => {
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const out = expandStructural('x', {
+    x: { kind: 'call', op: 'logweighted', args: [
+      { kind: 'lit', value: -1.5 },
+      { kind: 'call', op: 'lawof', args: [innerNormal] },
+    ]},
+  });
+  assert.equal(out.op, 'logweighted');
+  assert.equal(out.args[1].op, 'Normal');
+});
+
+test('expandMeasureIR structural: unknown op is passed through unchanged', () => {
+  // normalize / superpose / truncate / pushfwd aren't density-
+  // scoreable today, but the structural walker should still
+  // return the IR so downstream code can inspect / sample-plan it
+  // (the materialiser will surface a precise error if needed).
+  const inner = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const irNormalize = { kind: 'call', op: 'normalize', args: [inner] };
+  const out = expandStructural('x', { x: irNormalize });
+  // Returned as-is, not null, not unwrapped — the inner Normal
+  // is NOT structurally walked here (only the documented measure-
+  // combinator shapes recurse). The walker stops at the unknown op
+  // so the caller decides how to handle it.
+  assert.equal(out, irNormalize);
+});
+
+test('expandMeasureIR structural: ref self <name> follows through bindings', () => {
+  // A self-ref inside a measure binding's IR delegates back to
+  // expandMeasureIR(refName), which falls through to the
+  // structural walker for the referenced binding's .ir. This is
+  // how the orchestrator chains through lifted-subexpression
+  // anonymous bindings.
+  const innerNormal = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 },
+  }};
+  const bindings = new Map([
+    ['x', { ir: { kind: 'call', op: 'iid', args: [
+      { kind: 'ref', ns: 'self', name: '__anon0' },
+      { kind: 'lit', value: 5 },
+    ]}}],
+    ['__anon0', { ir: innerNormal }],
+  ]);
+  const out = expandMeasureIR('x', {}, undefined, bindings);
+  assert.equal(out.op, 'iid');
+  assert.equal(out.args[0].op, 'Normal');
+  assert.equal(out.args[1].value, 5);
+});
+
+test('expandMeasureIR structural: missing binding name → null', () => {
+  // Symmetric with the derivation-path: caller asks for a binding
+  // that doesn't exist; structural walker returns null cleanly.
+  const out = expandMeasureIR('nope', {}, undefined, new Map());
+  assert.equal(out, null);
+});
+
+test('expandMeasureIR structural: binding without .ir → null', () => {
+  // type='input' bindings (elementof / external) have no .ir to
+  // walk — they're leaves of the value graph. Asking for one as a
+  // measure is a caller bug, but we return null rather than
+  // throw, matching the derivation-path's behavior.
+  const bindings = new Map([['x', { type: 'input' /* no ir */ }]]);
+  const out = expandMeasureIR('x', {}, undefined, bindings);
+  assert.equal(out, null);
 });
 
 // =====================================================================

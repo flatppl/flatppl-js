@@ -2583,15 +2583,40 @@ function implicitKernelSignature(name, bindings, derivations) {
   const body = expandMeasureIR(name, derivations, undefined, bindings);
   if (!body) return null;
 
-  const refNames = collectSelfRefs(body);
+  // BFS through the body's self-refs to find PARAMETRIC-phase leaves.
+  // Per spec §04 sec:functionof: only elementof leaves (parameterized
+  // phase) become kernel inputs. external(...) / load_data(...) are
+  // closed over despite sharing binding.type='input' with elementof.
+  // We walk transitively because the body may refer to evaluable
+  // intermediates (e.g. `resolution = 2.5 + 0.3 * mu`) that hide the
+  // actual parametric leaf — same logic as signatureOf's auto-promote.
+  const seen = new Set();
+  const queue = Array.from(collectSelfRefs(body));
+  const elementofRefs = [];
+  while (queue.length > 0) {
+    const refName = queue.shift();
+    if (seen.has(refName)) continue;
+    seen.add(refName);
+    const target = bindings.get(refName);
+    if (!target) continue;
+    if (target.type === 'input' && target.phase === 'parameterized') {
+      elementofRefs.push(refName);
+      continue;
+    }
+    // Non-leaf: descend into its IR. Fixed-phase input bindings
+    // (external / load_data) have no .ir to walk, so they drop out
+    // here silently — exactly the spec's "closed over" semantics.
+    if (target.ir) {
+      for (const inner of collectSelfRefs(target.ir)) queue.push(inner);
+    }
+  }
   const inputs = [];
-  for (const refName of refNames) {
-    const b = bindings.get(refName);
-    if (!b || b.type !== 'input') continue;  // skip stochastic / derived refs
+  for (const refName of elementofRefs) {
+    const target = bindings.get(refName);
     inputs.push({
       paramName: refName,
       kwargName: refName,
-      type: (b.inferredType) || null,
+      type: (target && target.inferredType) || null,
       source: { kind: 'binding', name: refName },
     });
   }
@@ -3027,7 +3052,17 @@ function signatureOf(name, bindings) {
         seen.add(node.name);
         const target = bindings.get(node.name);
         if (!target) continue;
-        if (target.type === 'input') { elementofRefs.push(node.name); continue; }
+        // Per spec §04 sec:functionof: only PARAMETRIC-phase leaves
+        // (elementof) become inputs. external(...) and load_data(...)
+        // also have binding.type='input' but phase='fixed' — they're
+        // closed over, not promoted.
+        if (target.type === 'input' && target.phase === 'parameterized') {
+          elementofRefs.push(node.name); continue;
+        }
+        // Non-input bindings: descend into their IR so the trace
+        // reaches the parametric leaves transitively. Fixed-phase
+        // input bindings (external / load_data) are leaves with no
+        // .ir to walk further, so we just stop on them silently.
         if (target.ir) queue.push(target.ir);
         continue;
       }
