@@ -1,0 +1,59 @@
+name: Test
+
+# Runs the engine unit tests on every push and pull request, plus a
+# smoke build of the web and vscode-extension packages so a regression
+# that breaks bundling (missing export, ESM/CJS mistake, vendored-lib
+# path drift) shows up before it hits a release or a Pages deploy.
+#
+# Fast and standalone: skips the VSIX packaging and Pages deploy
+# (those live in build.yml and pages.yml respectively, gated to
+# main). This workflow exists to give developers running on any
+# branch the same green / red signal.
+
+on:
+  push:
+  pull_request:
+
+# Cancel an in-flight run when a new commit lands on the same ref —
+# the previous result is uninteresting.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Run engine tests
+        # npm test at the root delegates to every workspace's `test`
+        # script via --workspaces --if-present. Today only
+        # packages/engine has tests; new packages with test scripts
+        # are picked up automatically.
+        run: npm test
+
+      - name: Build web package
+        # End-to-end smoke: confirms the resolver, bundler, and
+        # vendored-asset paths all line up. No tests here yet —
+        # add them under packages/web/test when they land.
+        run: npm run build --workspace=packages/web
+
+      - name: Build vscode-extension lib (vendor + engine bundle)
+        # Same smoke for the extension's lib/ output. Verifies the
+        # esbuild bundle resolves every engine import and the
+        # third-party-licenses generator finds every dep.
+        run: npm run build:vendor
