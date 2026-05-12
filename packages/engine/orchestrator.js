@@ -1377,6 +1377,29 @@ function liftInlineSubexpressions(bindings) {
       }
     }
 
+    // Implicit boundaries (spec §04 sec:functionof): when the
+    // function was declared with no boundary kwargs, the parametric-
+    // phase leaves (elementof bindings) in the body's transitive
+    // ancestor subgraph become inputs implicitly, in the order the
+    // BFS walk reaches them. This mirrors signatureOf's auto-promote
+    // path so call-site inlining matches the synthesized signature.
+    // Without this, `f = functionof(b); g = f(x)` would leave the
+    // body's clone referencing the original elementof leaf instead
+    // of substituting `x` for it — producing IRs with unbound
+    // elementof refs and "Not plottable" downstream.
+    if (surfaceOrder.length === 0 && (astArg.args || []).length > 0) {
+      const leafNames = findImplicitElementofLeaves(bodyAst);
+      for (const leafName of leafNames) {
+        // Use the binding's own name on both sides — body refers to
+        // it via Identifier(leafName), and the call positional arg
+        // maps to that same name. Placeholder-prefix isn't needed
+        // because elementof bindings are real top-level names, not
+        // placeholders.
+        surfaceOrder.push(leafName);
+        internalForSurface[leafName] = leafName;
+      }
+    }
+
     // Auto-splatting (spec §sec:calling-convention lines 99-102):
     // `f(record(a=x, b=y))` and `f(some_record_value)` are
     // equivalent to `f(a=x, b=y)`. We detect two splat sources:
@@ -1541,6 +1564,48 @@ function liftInlineSubexpressions(bindings) {
     }
     collectRefsAst(bodyAst);
     return Array.from(closure);
+  }
+
+  /**
+   * BFS through `bodyAst`'s Identifier refs, recursing through
+   * binding RHSes, to find parametric-phase elementof leaves
+   * (type='input', phase='parameterized'). The traversal matches
+   * the signatureOf auto-promote path so call-site inlining lines
+   * up with the synthesized signature.
+   *
+   * Returns binding names in BFS visit order (deterministic across
+   * calls so positional arg matching is stable).
+   */
+  function findImplicitElementofLeaves(bodyAst) {
+    const seen = new Set();
+    const leaves = [];
+    // Seed queue with the body's directly-referenced names.
+    const queue = [];
+    collectIds(bodyAst, queue);
+    while (queue.length > 0) {
+      const name = queue.shift();
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const b = out.get(name) || bindings.get(name);
+      if (!b) continue;
+      // Parametric leaf — record it and stop the trace here.
+      if (b.type === 'input' && b.phase === 'parameterized') {
+        leaves.push(name);
+        continue;
+      }
+      // Anything else: keep walking. Stop at fixed-phase bindings
+      // (external / load_data / literals / fixed-phase derived)
+      // since they're closed over per spec, not implicit inputs.
+      if (b.phase === 'fixed') continue;
+      if (b.node && b.node.value) collectIds(b.node.value, queue);
+    }
+    return leaves;
+    function collectIds(node, into) {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) collectIds(c, into); return; }
+      if (node.type === 'Identifier') into.push(node.name);
+      for (const k in node) collectIds(node[k], into);
+    }
   }
 
   function substituteIdents(ast, sub) {
