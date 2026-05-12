@@ -379,12 +379,62 @@ function parse(tokens, variant) {
     const args = [];
     if (at(T.RPAREN)) return args;
 
-    args.push(parseArg());
-    while (at(T.COMMA)) {
-      advance();
-      if (at(T.RPAREN)) break; // trailing comma
+    // FlatPPJ allows a Julia-style semicolon separator that switches
+    // the arg list from positional to keyword: `f(x, y; a = 1, b = 2)`
+    // is equivalent to `f(x, y, a = 1, b = 2)`. Outside FlatPPJ the
+    // semicolon is a parse error (caught below).
+
+    // A leading `;` (e.g. `f(; a = 1)`) is allowed in FlatPPJ for
+    // pure-kwargs calls. In FlatPPL/FlatPPY we fall through to the
+    // semicolon-rejection branch.
+    if (!at(T.SEMI)) {
       args.push(parseArg());
+      while (at(T.COMMA)) {
+        advance();
+        if (at(T.RPAREN) || at(T.SEMI)) break; // trailing comma
+        args.push(parseArg());
+      }
     }
+    if (at(T.SEMI)) {
+      const semiTok = peek();
+      if (!v.semiKwargs) {
+        diagnostics.push({
+          severity: 'error',
+          message: `';' is not allowed in ${v.id} call argument lists `
+            + '(use `,` to separate kwargs)',
+          loc: semiTok.loc,
+        });
+        // Recover by consuming the semicolon and continuing as if it
+        // were a comma.
+      }
+      advance();  // consume ;
+      // Everything after the semicolon must be a keyword arg.
+      if (!at(T.RPAREN)) {
+        const firstKw = parseArg();
+        if (firstKw.type !== 'KeywordArg') {
+          diagnostics.push({
+            severity: 'error',
+            message: 'Expected keyword argument after `;`',
+            loc: firstKw.loc,
+          });
+        }
+        args.push(firstKw);
+        while (at(T.COMMA)) {
+          advance();
+          if (at(T.RPAREN)) break;
+          const kw = parseArg();
+          if (kw.type !== 'KeywordArg') {
+            diagnostics.push({
+              severity: 'error',
+              message: 'Expected keyword argument after `;`',
+              loc: kw.loc,
+            });
+          }
+          args.push(kw);
+        }
+      }
+    }
+
     // Enforce: positional args must come before keyword args
     let seenKwarg = false;
     for (const a of args) {
