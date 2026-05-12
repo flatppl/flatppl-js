@@ -859,22 +859,29 @@ function computePhasesForScope(bindings, boundaryNames) {
 }
 
 /**
- * Validate that all literal integer indices in `IndexExpr` nodes are >= 1.
- * FlatPPL uses 1-based indexing throughout (arrays, tables, tuples), so a
- * literal `x[0]` or `x[-1]` is always invalid regardless of the container's
- * type. Runtime expressions are not checked.
+ * Validate that literal integer indices in `IndexExpr` nodes obey the
+ * surface variant's indexing convention:
+ *   - `get`  (FlatPPL/FlatPPJ, 1-based): reject `xs[0]` and `xs[-N]`.
+ *   - `get0` (FlatPPY,         0-based): reject `xs[-N]` only.
+ * Runtime expressions are not checked. The lowering target lives on
+ * the IndexExpr node (set at parse time from variant.indexingLowersTo),
+ * so this pass remains variant-agnostic.
  *
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
 function validateIndexing(node, diagnostics) {
-  function checkIndex(idx) {
+  function checkIndex(idx, indexOp) {
+    const minIdx = (indexOp === 'get0') ? 0 : 1;
+    const baseLabel = (indexOp === 'get0')
+      ? 'FlatPPY uses 0-based indexing (indices start at 0)'
+      : 'FlatPPL uses 1-based indexing (indices start at 1)';
     // Direct integer literal: x[0], x[2.5] (non-integer is a type error elsewhere)
     if (idx.type === 'NumberLiteral'
-        && Number.isInteger(idx.value) && idx.value <= 0) {
+        && Number.isInteger(idx.value) && idx.value < minIdx) {
       diagnostics.push({
         severity: 'error',
-        message: `Invalid index ${idx.value}: FlatPPL uses 1-based indexing (indices start at 1)`,
+        message: `Invalid index ${idx.value}: ${baseLabel}`,
         loc: idx.loc,
       });
       return;
@@ -885,7 +892,7 @@ function validateIndexing(node, diagnostics) {
         && Number.isInteger(idx.operand.value) && idx.operand.value > 0) {
       diagnostics.push({
         severity: 'error',
-        message: `Invalid index -${idx.operand.value}: FlatPPL uses 1-based indexing (indices start at 1)`,
+        message: `Invalid index -${idx.operand.value}: ${baseLabel}`,
         loc: idx.loc,
       });
     }
@@ -895,8 +902,9 @@ function validateIndexing(node, diagnostics) {
     if (!node) return;
     if (node.type === 'IndexExpr') {
       walk(node.object);
+      const op = node.indexOp || 'get';
       for (const i of node.indices) {
-        checkIndex(i);
+        checkIndex(i, op);
         walk(i);
       }
       return;

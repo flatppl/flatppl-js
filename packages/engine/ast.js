@@ -94,8 +94,12 @@ function CallExpr(callee, args, loc) {
   return { type: 'CallExpr', callee, args, loc };
 }
 
-function IndexExpr(object, indices, loc) {
-  return { type: 'IndexExpr', object, indices, loc };
+function IndexExpr(object, indices, loc, indexOp) {
+  // indexOp picks the lowering target for `xs[i]`. FlatPPL/FlatPPJ
+  // use 'get' (1-based); FlatPPY uses 'get0' (0-based). Defaults to
+  // 'get' so any code constructing an IndexExpr without specifying
+  // continues to lower as before.
+  return { type: 'IndexExpr', object, indices, loc, indexOp: indexOp || 'get' };
 }
 
 function FieldAccess(object, field, loc) {

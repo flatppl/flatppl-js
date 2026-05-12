@@ -265,10 +265,13 @@ function _lowerExpr(node, ctx) {
       return _lowerUnaryExpr(node, ctx);
 
     case 'IndexExpr':
-      // a[i, j, …] → (get a i j …)
+      // a[i, j, …] → (get a i j …) for FlatPPL/FlatPPJ (1-based),
+      // (get0 a i j …) for FlatPPY (0-based). The lowering op was
+      // chosen at parse time and stored on the node so this code
+      // path stays variant-agnostic.
       return {
         kind: 'call',
-        op:   'get',
+        op:   node.indexOp || 'get',
         args: [
           _lowerExpr(node.object, ctx),
           ...node.indices.map(i => _lowerExpr(i, ctx)),
