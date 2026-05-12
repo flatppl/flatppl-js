@@ -2085,27 +2085,68 @@
         // by buildDerivations → liftInlineSubexpressions). The unlifted
         // currentBindings don't carry `.ir`, so the structural fallback
         // in expandMeasureIR can't walk them.
-        var implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
-          name, derivationsState.bindings, derivationsState.derivations);
-        if (implicitSig && implicitSig.inputs.length > 0) {
-          var iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
-          if (iAxes.length > 0) {
-            var iPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
-              implicitSig, derivationsState.bindings);
-            var iDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
-              implicitSig, derivationsState.bindings);
-            return {
-              name: name,
-              mode: 'kernel-sample',
-              signature: implicitSig,
-              axes: iAxes,
-              matchedPresets: iPresets,
-              presetName: null,
-              autoOverride: null,
-              matchedDomains: iDomains,
-              domainName: null,
-              domainAutoOverride: null,
-            };
+        //
+        // Dispatch by phase:
+        //   stochastic   → implicit kernel (synthesise `kernelof(x)` with
+        //                  parametric leaves as inputs; kernel-sample plan).
+        //   parameterized → implicit function (synthesise `functionof(x)`
+        //                  with parametric leaves as inputs; profile plan).
+        // Fixed-phase bindings with no fixedValue entry shouldn't reach
+        // here (they'd be in fixedValues or have a derivation); fall
+        // through to "Not plottable".
+        if (binding.phase === 'stochastic') {
+          var implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
+            name, derivationsState.bindings, derivationsState.derivations);
+          if (implicitSig && implicitSig.inputs.length > 0) {
+            var iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
+            if (iAxes.length > 0) {
+              var iPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
+                implicitSig, derivationsState.bindings);
+              var iDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
+                implicitSig, derivationsState.bindings);
+              return {
+                name: name,
+                mode: 'kernel-sample',
+                signature: implicitSig,
+                axes: iAxes,
+                matchedPresets: iPresets,
+                presetName: null,
+                autoOverride: null,
+                matchedDomains: iDomains,
+                domainName: null,
+                domainAutoOverride: null,
+              };
+            }
+          }
+        } else if (binding.phase === 'parameterized') {
+          var implicitFnSig = FlatPPLEngine.orchestrator.implicitFunctionSignature(
+            name, derivationsState.bindings, derivationsState.derivations);
+          if (implicitFnSig && implicitFnSig.inputs.length > 0) {
+            var fAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitFnSig);
+            if (fAxes.length > 0) {
+              var fPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
+                implicitFnSig, derivationsState.bindings);
+              var fDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
+                implicitFnSig, derivationsState.bindings);
+              var fOutputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(
+                implicitFnSig.output && implicitFnSig.output.type);
+              var fOutputKey = fOutputs.length > 0 ? fOutputs[0].key : null;
+              return {
+                name: name,
+                mode: 'profile',
+                signature: implicitFnSig,
+                axes: fAxes,
+                sweepKey: fAxes[0].key,
+                matchedPresets: fPresets,
+                presetName: null,
+                outputs: fOutputs,
+                outputKey: fOutputKey,
+                autoOverride: null,
+                matchedDomains: fDomains,
+                domainName: null,
+                domainAutoOverride: null,
+              };
+            }
           }
         }
         return null;

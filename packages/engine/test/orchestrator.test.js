@@ -26,7 +26,7 @@ const {
   signatureOf, distributeAxes, inlineForProfile, substituteLocals,
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets, findMatchingDomains,
-  expandMeasureIR, implicitKernelSignature,
+  expandMeasureIR, implicitKernelSignature, implicitFunctionSignature,
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator');
 
@@ -1665,12 +1665,28 @@ x = draw(Normal(mu = mu, sigma = 1))
   assert.equal(sig, null);
 });
 
-test('implicitKernelSignature: iid draw — body retains the iid wrapper', () => {
-  // `x ~ iid(M, n)` lifts to a separate binding for the underlying
-  // measure plus the iid call. expandMeasureIR's structural
-  // fallback should preserve the iid shape so the kernel-sample
-  // path can broadcast properly. (This is the minimal.flatppl
-  // shape that motivated the feature.)
+test('implicitKernelSignature: non-stochastic subject → null', () => {
+  // Per the phase-based dispatch contract: only stochastic
+  // bindings get a kernel interpretation. A deterministic
+  // parametric-phase binding (mu2 = mu^2) must return null so
+  // callers route to implicitFunctionSignature instead. Without
+  // this gate, the helper would produce a "kernel" with body
+  // pow(mu, 2) and the kernel-sample sampler would error
+  // because pow isn't a distribution.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+mu2 = mu^2
+`);
+  const sig = implicitKernelSignature('mu2', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitKernelSignature: parameterized measure binding → kernel sig', () => {
+  // `m = iid(Normal(mu, 1), 3)` has phase='parameterized' (no draw
+  // anywhere) but inferredType.kind='measure'. The dispatch gate
+  // must accept measure-typed bindings even when phase isn't
+  // strictly stochastic — otherwise plotting a measure with open
+  // parameters would dead-end at "Not plottable".
   const { bindings, derivations } = bindingsAndDerivationsFor(`
 mu = elementof(reals)
 x = iid(Normal(mu = mu, sigma = 1), 3)
@@ -1683,6 +1699,135 @@ x = iid(Normal(mu = mu, sigma = 1), 3)
   // The iid count is preserved as the second positional.
   assert.equal(sig.body.args[1].kind, 'lit');
   assert.equal(sig.body.args[1].value, 3);
+});
+
+// =====================================================================
+// implicitFunctionSignature — symmetric counterpart to
+// implicitKernelSignature for parametric-phase deterministic
+// bindings. Clicking on `mu2 = mu^2` (with mu = elementof(reals))
+// is equivalent to plotting `functionof(mu2)`: a function of mu,
+// evaluated through the profile-plot path.
+// =====================================================================
+
+test('implicitFunctionSignature: deterministic parametric binding → function sig', () => {
+  // The motivating case: mu2 = mu^2 with mu = elementof. The
+  // resulting sig has mu as input, kind='function', body is the
+  // value-position pow IR. The viewer routes this to profile mode.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+mu2 = mu^2
+`);
+  const sig = implicitFunctionSignature('mu2', bindings, derivations);
+  assert.ok(sig);
+  assert.equal(sig.kind, 'function');
+  assert.equal(sig.implicit, true);
+  assert.equal(sig.inputs.length, 1);
+  assert.equal(sig.inputs[0].paramName, 'mu');
+  // Body is the binding's lowered IR — pow(mu, 2). We do NOT
+  // expand through expandMeasureIR here (the body is value-
+  // typed, not a measure).
+  assert.equal(sig.body.kind, 'call');
+  assert.equal(sig.body.op, 'pow');
+  // Output type carried from the binding's inferredType so
+  // enumerateOutputLeaves / domain-fitting work.
+  assert.equal(sig.output.type.kind, 'scalar');
+});
+
+test('implicitFunctionSignature: multiple parametric leaves → all promoted', () => {
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+a = elementof(reals)
+b = elementof(reals)
+combo = a^2 + b^2
+`);
+  const sig = implicitFunctionSignature('combo', bindings, derivations);
+  assert.ok(sig);
+  assert.equal(sig.inputs.length, 2);
+  const names = sig.inputs.map((i) => i.paramName).sort();
+  assert.deepEqual(names, ['a', 'b']);
+});
+
+test('implicitFunctionSignature: stochastic subject → null', () => {
+  // A draw / iid binding is the kernel-side's job; this helper
+  // returns null so the viewer's dispatch doesn't double-handle it.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+x = draw(Normal(mu = mu, sigma = 1))
+`);
+  const sig = implicitFunctionSignature('x', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitFunctionSignature: fixed-phase binding → null', () => {
+  // Closed-form computable bindings have no profile to plot —
+  // they're a single value. The viewer renders them via the
+  // fixed-scalar / fixed-record path; this helper returns null.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+ext = external("data.dat")
+shifted = ext + 1
+`);
+  const sig = implicitFunctionSignature('shifted', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitFunctionSignature: callable bindings → null', () => {
+  // functionof / kernelof / fn / likelihood already have a real
+  // signature via signatureOf; implicit should NOT shadow that.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+f = functionof(mu^2, x = mu)
+`);
+  const sig = implicitFunctionSignature('f', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitFunctionSignature: elementof binding itself → null', () => {
+  // The leaf elementof binding plots via its axis / set
+  // descriptor, not as a parametric function of itself.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+`);
+  const sig = implicitFunctionSignature('mu', bindings, derivations);
+  assert.equal(sig, null);
+});
+
+test('implicitFunctionSignature: walks through transitive evaluables', () => {
+  // Elementof leaf two hops back. Same BFS shape as the kernel
+  // case — without it, only `inner` would be in the body's direct
+  // refs and no inputs would surface.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+inner = 2.5 + 0.3 * mu
+outer = inner * inner
+`);
+  const sig = implicitFunctionSignature('outer', bindings, derivations);
+  assert.ok(sig);
+  const names = sig.inputs.map((i) => i.paramName);
+  assert.deepEqual(names, ['mu']);
+});
+
+test('implicitFunctionSignature: excludes external() (fixed phase)', () => {
+  // Same spec rule as everywhere else: external / load_data are
+  // closed over, not promoted.
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+ext = external("data.dat")
+combo = mu * ext
+`);
+  const sig = implicitFunctionSignature('combo', bindings, derivations);
+  assert.ok(sig);
+  assert.deepEqual(sig.inputs.map((i) => i.paramName), ['mu']);
+});
+
+test('implicitFunctionSignature: bindings=null → null', () => {
+  assert.equal(implicitFunctionSignature('x', null, {}), null);
+});
+
+test('implicitFunctionSignature: unknown binding name → null', () => {
+  const { bindings, derivations } = bindingsAndDerivationsFor(`
+mu = elementof(reals)
+mu2 = mu^2
+`);
+  assert.equal(implicitFunctionSignature('nope', bindings, derivations), null);
 });
 
 // =====================================================================

@@ -2580,6 +2580,20 @@ function expandMeasureIR(name, derivations, visited, bindings) {
  */
 function implicitKernelSignature(name, bindings, derivations) {
   if (!bindings) return null;
+  // Fire for anything that produces samples or measures: either
+  // stochastic phase (a draw / iid draw whose value varies) or a
+  // measure-typed binding with open parametric inputs (e.g.
+  // `m = iid(Normal(mu, 1), 3)` — phase=parameterized but the
+  // binding itself IS a measure). Deterministic value bindings
+  // (mu2 = mu^2) take the symmetric implicitFunctionSignature
+  // path; without this gate, this helper would build a "kernel"
+  // whose body is pow(mu, 2) and the kernel-sample sampler then
+  // errors because pow isn't a distribution.
+  const subject = bindings.get(name);
+  if (!subject) return null;
+  const isMeasureLike = subject.phase === 'stochastic'
+    || (subject.inferredType && subject.inferredType.kind === 'measure');
+  if (!isMeasureLike) return null;
   const body = expandMeasureIR(name, derivations, undefined, bindings);
   if (!body) return null;
 
@@ -2629,6 +2643,88 @@ function implicitKernelSignature(name, bindings, derivations) {
     body,
     // Tag for callers that want to render slightly differently
     // (current viewer doesn't — same kernel-sample render path).
+    implicit: true,
+  };
+}
+
+/**
+ * Synthesize a function signature for a deterministic (parametric-
+ * phase) binding whose derivation was pruned by buildDerivations.
+ * The symmetric counterpart to implicitKernelSignature: that helper
+ * reifies a stochastic binding as `kernelof(x)` with no boundary
+ * kwargs (parametric leaves as inputs); this one reifies a value
+ * binding as `functionof(v)` with the same auto-boundary semantics.
+ *
+ * Conceptually: clicking on `mu2 = mu^2` (with mu = elementof(reals))
+ * is equivalent to plotting `functionof(mu2)` — a function whose
+ * single input is the elementof leaf and whose body computes mu^2.
+ * The viewer's profile-plot pipeline then evaluates the body at a
+ * range of mu values.
+ *
+ * Returns null when the binding isn't a parametric-phase value
+ * binding, has no .ir, or has no parametric ancestors (the regular
+ * fixed-value or function-binding path handles those).
+ */
+function implicitFunctionSignature(name, bindings, derivations) {
+  if (!bindings) return null;
+  const subject = bindings.get(name);
+  if (!subject || subject.phase !== 'parameterized' || !subject.ir) return null;
+  // Measure-typed parameterized bindings go through implicitKernel
+  // (they sample, not evaluate). This branch is only for value-
+  // typed (scalar / array / record) bindings.
+  if (subject.inferredType && subject.inferredType.kind === 'measure') return null;
+  // Skip callable bindings (functionof / kernelof / fn / likelihood)
+  // — they have their own real signature via signatureOf. Same for
+  // type='input' bindings (elementof itself); those plot via
+  // distributeAxes on their inferred set, not as a profile.
+  if (subject.type === 'functionof' || subject.type === 'fn'
+      || subject.type === 'kernelof' || subject.type === 'likelihood'
+      || subject.type === 'input') {
+    return null;
+  }
+
+  // Body is the binding's lowered IR. Unlike the kernel path, we
+  // don't call expandMeasureIR — value bindings aren't measure
+  // expressions, and the profile evaluator walks the IR via
+  // evaluateExpr (after inlineForProfile rewrites `ref self <input>`
+  // → `ref %local <input>`).
+  const body = subject.ir;
+
+  // BFS for parametric leaves, same shape as implicitKernelSignature.
+  const seen = new Set();
+  const queue = Array.from(collectSelfRefs(body));
+  const elementofRefs = [];
+  while (queue.length > 0) {
+    const refName = queue.shift();
+    if (seen.has(refName)) continue;
+    seen.add(refName);
+    const target = bindings.get(refName);
+    if (!target) continue;
+    if (target.type === 'input' && target.phase === 'parameterized') {
+      elementofRefs.push(refName);
+      continue;
+    }
+    if (target.ir) {
+      for (const inner of collectSelfRefs(target.ir)) queue.push(inner);
+    }
+  }
+  const inputs = [];
+  for (const refName of elementofRefs) {
+    const target = bindings.get(refName);
+    inputs.push({
+      paramName: refName,
+      kwargName: refName,
+      type: (target && target.inferredType) || null,
+      source: { kind: 'binding', name: refName },
+    });
+  }
+  if (inputs.length === 0) return null;
+
+  return {
+    kind: 'function',
+    inputs,
+    output: { type: subject.inferredType || null },
+    body,
     implicit: true,
   };
 }
@@ -3741,6 +3837,7 @@ module.exports = {
   expandMeasureIR,
   expandMeasureRefsInIR,
   implicitKernelSignature,
+  implicitFunctionSignature,
   signatureOf,
   distributeAxes,
   enumerateOutputLeaves,
