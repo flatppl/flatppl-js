@@ -191,10 +191,16 @@ test('parser: comparison (single)', () => {
   assert.equal(v.op, '<');
 });
 
-test('parser: chained comparison rejected', () => {
-  // grammar disallows a < b < c
-  const { diagnostics } = parseSrc('x = a < b < c');
-  assert.ok(diagnostics.length > 0);
+test('parser: chained comparison lowers to land(...) in FlatPPL', () => {
+  // Updated for spec §05: `a < b < c` now chains, lowering to
+  // `land(a < b, b < c)`. The detailed behavior across variants is
+  // covered in test/chained-comparisons.test.js — here we just
+  // confirm parsing succeeds and produces a land call.
+  const { ast, diagnostics } = parseSrc('x = a < b < c');
+  assert.equal(diagnostics.length, 0);
+  const rhs = ast.body[0].value;
+  assert.equal(rhs.type, 'CallExpr');
+  assert.equal(rhs.callee.name, 'land');
 });
 
 test('parser: hole and placeholder in expression', () => {

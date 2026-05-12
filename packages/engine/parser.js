@@ -130,15 +130,48 @@ function parse(tokens, variant) {
   }
 
   function parseComparison() {
-    let left = parseAddition();
-    const ops = [T.EQEQ, T.NEQ, T.LT, T.GT, T.LTE, T.GTE];
-    if (ops.includes(peek().type) || atValue(T.IDENT, 'in')) {
-      const opTok = advance();
-      const right = parseAddition();
-      left = AST.BinaryExpr(opTok.value, left, right,
-        AST.loc(left.loc.start.line, left.loc.start.col, right.loc.end.line, right.loc.end.col));
+    const compOpTypes = [T.EQEQ, T.NEQ, T.LT, T.GT, T.LTE, T.GTE];
+    function isCompOp() {
+      return compOpTypes.includes(peek().type)
+        || (v.membershipOp && atValue(T.IDENT, 'in'));
     }
-    return left;
+    function mergeLoc(a, b) {
+      return AST.loc(a.loc.start.line, a.loc.start.col,
+                     b.loc.end.line,   b.loc.end.col);
+    }
+
+    let left = parseAddition();
+    if (!isCompOp()) return left;
+
+    // First comparison — always emitted as a plain BinaryExpr to keep
+    // the simple `a == b` case identical to the pre-chain shape.
+    let opTok = advance();
+    let right = parseAddition();
+    let chain = AST.BinaryExpr(opTok.value, left, right, mergeLoc(left, right));
+    let lastRight = right;
+
+    // Without chained comparison, a second operator at this level is
+    // a parse error caught downstream (a stray token after the
+    // expression).
+    if (!v.chainedComparison) return chain;
+
+    // Chained: `a < b <= c` lowers to `land(a < b, b <= c)`. Each
+    // additional comparison's left operand is the previous
+    // comparison's right operand, and the cascade is left-
+    // associative. Note: `b` appears twice in the source-form
+    // lowering — for complex middle terms with stochastic content,
+    // hoist to a binding before chaining (each occurrence is its own
+    // DAG node).
+    while (isCompOp()) {
+      opTok = advance();
+      right = parseAddition();
+      const cmp = AST.BinaryExpr(opTok.value, lastRight, right,
+                                 mergeLoc(lastRight, right));
+      const callee = AST.Identifier('land', opTok.loc);
+      chain = AST.CallExpr(callee, [chain, cmp], mergeLoc(chain, cmp));
+      lastRight = right;
+    }
+    return chain;
   }
 
   function parseAddition() {
