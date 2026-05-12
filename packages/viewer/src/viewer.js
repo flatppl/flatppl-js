@@ -4070,10 +4070,21 @@
         }
         env[inp.paramName] = defaultValueForLeafType(ax.leafType);
         if (ax.source && ax.source.kind === 'binding') {
-          bindingSourceLookups.push({
-            paramName: inp.paramName,
-            sourceName: ax.source.name,
-          });
+          // Only chase empirical samples when the source binding can
+          // produce them — i.e. it's a variate or a derived value.
+          // `elementof(S)` (analyzer marks them type='input') is a
+          // pure input: it has no derivation and no samples, so
+          // getMeasure would reject with "no derivation for '<name>'"
+          // and the whole kernel plot fails. Keep the leaf-type
+          // default in env in that case; the user can override via
+          // the preset / inputs dropdown.
+          var srcBinding = currentBindings && currentBindings.get(ax.source.name);
+          if (!srcBinding || srcBinding.type !== 'input') {
+            bindingSourceLookups.push({
+              paramName: inp.paramName,
+              sourceName: ax.source.name,
+            });
+          }
         }
       }
       // Build the substituted measure IR. expandMeasureRefsInIR peels
@@ -5404,10 +5415,18 @@
         }
         fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
         if (axes[a2].source && axes[a2].source.kind === 'binding') {
-          nonSweptBindingSources.push({
-            paramName: inp.paramName,
-            sourceName: axes[a2].source.name,
-          });
+          // Skip elementof / external input bindings: they have no
+          // derivation and getMeasure would reject. The leaf-type
+          // default stays in fixedEnv; the user can override via
+          // the inputs preset dropdown. See the parallel guard in
+          // renderKernelSampleForCurrent for the kernel-sample path.
+          var srcBinding = currentBindings && currentBindings.get(axes[a2].source.name);
+          if (!srcBinding || srcBinding.type !== 'input') {
+            nonSweptBindingSources.push({
+              paramName: inp.paramName,
+              sourceName: axes[a2].source.name,
+            });
+          }
         }
       }
       var sweepInput = inputByKwarg[sweepAxis.kwargName];
