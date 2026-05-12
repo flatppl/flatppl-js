@@ -176,3 +176,106 @@ fk     = functionof(obs, theta1 = theta1, theta2 = theta2)
   assert.equal(global.get('theta2'), 'stochastic');
   assert.equal(global.get('beta1'),  'stochastic');
 });
+
+// --- Phase-check on reified-callable boundary kwargs ---
+// Per spec §04 sec:functionof: "Boundary inputs themselves may be of
+// parametric or stochastic phase, but not fixed phase." A fixed-phase
+// boundary is closed over by the reified callable, not lifted into
+// its signature — the user's intent is malformed. The analyzer emits
+// an error so the silent-wrong-result path is short-circuited.
+
+function diagsFor(src) {
+  const { diagnostics } = processSource(src);
+  return diagnostics.filter((d) => /Boundary input/.test(d.message));
+}
+
+test('boundary-phase: literal binding as boundary kwarg → error', () => {
+  // Without this diagnostic, inlineUserCall silently produces a wrong
+  // substitution because `c`'s value is already baked into the body's
+  // lifted form, so the call-arg replacement reaches no live ref.
+  const diags = diagsFor(`
+c = 2.0
+f = functionof(c + 1, theta = c)
+`);
+  assert.equal(diags.length, 1);
+  assert.equal(diags[0].severity, 'error');
+  assert.match(diags[0].message, /references 'c'/);
+  assert.match(diags[0].message, /fixed phase/);
+});
+
+test('boundary-phase: external() as boundary kwarg → error (also fixed)', () => {
+  const diags = diagsFor(`
+ext = external("data.dat")
+f = functionof(ext + 1, theta = ext)
+`);
+  assert.equal(diags.length, 1);
+  assert.match(diags[0].message, /references 'ext'/);
+});
+
+test('boundary-phase: parameterized binding (elementof) → no error', () => {
+  const diags = diagsFor(`
+mu = elementof(reals)
+f = functionof(mu + 1, theta = mu)
+`);
+  assert.equal(diags.length, 0);
+});
+
+test('boundary-phase: stochastic binding (draw) → no error', () => {
+  const diags = diagsFor(`
+y = draw(Normal(mu = 0, sigma = 1))
+f = functionof(y + 1, theta = y)
+`);
+  assert.equal(diags.length, 0);
+});
+
+test('boundary-phase: kernelof obeys the same rule', () => {
+  // kernelof shares the boundary-kwarg semantics — the spec rule
+  // applies uniformly. Catches the parallel mistake on the kernel side.
+  const diags = diagsFor(`
+c = 2.0
+K = kernelof(Normal(mu = c, sigma = 1), theta = c)
+`);
+  assert.equal(diags.length, 1);
+  assert.match(diags[0].message, /of kernelof/);
+});
+
+test('boundary-phase: placeholder boundary is unchecked (always parametric)', () => {
+  // `par = _par_` synthesizes the boundary as elementof(valueset(par))
+  // at lower time, so placeholders are inherently parametric. The
+  // diagnostic only inspects Identifier-form values; placeholders
+  // skip the check cleanly.
+  const diags = diagsFor(`
+c = 2.0
+f = functionof(c + _par_, par = _par_)
+`);
+  assert.equal(diags.length, 0);
+});
+
+test('boundary-phase: multiple kwargs reported independently', () => {
+  // Each fixed boundary is its own error so the user can see all of
+  // them at once instead of fixing one and re-running.
+  const diags = diagsFor(`
+c1 = 1.0
+c2 = 2.0
+mu = elementof(reals)
+f = functionof(c1 + c2 + mu, a = c1, b = c2, m = mu)
+`);
+  // Two errors: on c1 and c2. mu is parametric, no error.
+  assert.equal(diags.length, 2);
+  const targets = diags.map((d) => d.message.match(/references '(\w+)'/)[1]).sort();
+  assert.deepEqual(targets, ['c1', 'c2']);
+});
+
+test('boundary-phase: no-kwargs functionof (auto-promote) is unchecked', () => {
+  // canonicalizeImplicitBoundaries synthesizes kwargs whose values are
+  // already parametric elementof leaves (it explicitly filters fixed-
+  // phase out at promote time), so the diagnostic finds nothing to
+  // complain about on auto-promoted bindings — and it shouldn't run
+  // against synthesized AST anyway. Smoke-test: the canonical case
+  // emits no boundary-phase errors.
+  const diags = diagsFor(`
+mu = elementof(reals)
+f = functionof(mu * 2)
+`);
+  assert.equal(diags.length, 0);
+});

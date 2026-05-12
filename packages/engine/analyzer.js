@@ -1290,6 +1290,44 @@ function analyze(ast, source) {
     if (b) b.phase = phase;
   }
 
+  // Phase check: per spec §04 sec:functionof, "Boundary inputs themselves
+  // may be of parametric or stochastic phase, but not fixed phase."
+  // The rule says a closed-form constant can't be lifted into a
+  // function/kernel input — it's already a value, there's nothing to
+  // parameterise over. Without this diagnostic, the engine silently
+  // produces wrong substitutions: `f = functionof(d, theta = c)` with
+  // `c = 2.0` and `d = c + 1` leaves d's body unsubstituted (no 'c' in
+  // it after lift), so `f(5)` evaluates to `c + 1 = 3` and ignores the
+  // user's 5 entirely.
+  //
+  // We only check Identifier-form boundary values (the common surface
+  // syntax). Placeholders are inherently parametric per spec; complex
+  // expression boundaries are rejected at lower-time.
+  for (const [, b] of bindings) {
+    if (b.type !== 'functionof' && b.type !== 'kernelof') continue;
+    const callExpr = b.node && b.node.value;
+    if (!callExpr || callExpr.type !== 'CallExpr') continue;
+    const args = callExpr.args || [];
+    for (let i = 1; i < args.length; i++) {
+      const arg = args[i];
+      if (!arg || arg.type !== 'KeywordArg') continue;
+      if (!arg.value || arg.value.type !== 'Identifier') continue;
+      const refName = arg.value.name;
+      const target = bindings.get(refName);
+      if (!target) continue;  // unbound identifier is caught elsewhere
+      if (target.phase === 'fixed') {
+        diagnostics.push({
+          severity: 'error',
+          message: `Boundary input '${arg.name}' of ${b.type} references '${refName}', `
+            + `which has fixed phase. Spec §04 (sec:functionof) requires boundary `
+            + `inputs to be of parametric or stochastic phase — fixed values are `
+            + `closed over by the reified callable, not lifted into its signature.`,
+          loc: arg.loc || arg.value.loc,
+        });
+      }
+    }
+  }
+
   // Lower to FlatPIR-aligned in-memory module. The LoweredModule is
   // the single source of truth for the program's executable form;
   // all subsequent passes (type inference now, derivation building
