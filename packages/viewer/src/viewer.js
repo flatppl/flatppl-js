@@ -4771,7 +4771,13 @@
         significant figures for display; source needs full
         precision. */
     function formatScalarForSource(v) {
-      if (typeof v === 'boolean') return v ? 'true' : 'false';
+      if (typeof v === 'boolean') {
+        // Boolean spelling follows the source-file variant: FlatPPL
+        // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
+        // capitalized `True`/`False`.
+        if (currentVariantId === 'flatppy') return v ? 'True' : 'False';
+        return v ? 'true' : 'false';
+      }
       if (!Number.isFinite(v)) return String(v);
       return String(v);
     }
@@ -6812,6 +6818,11 @@
     // into) reuses currentBindings and just recomputes the sub-DAG.
     // ---------------------------------------------------------------
     var currentSource = null;
+    // Active surface-syntax variant id for the in-memory source —
+    // drives both processSource grammar selection and persist write-
+    // back syntax. Updated whenever a sourceUpdate carries a
+    // variant; defaults to 'flatppl'.
+    var currentVariantId = 'flatppl';
     var currentBindings = null;
     // The lowered module forwarded by processSource — used by
     // typeinfer.inferExprInScope for on-demand call-site
@@ -6939,10 +6950,18 @@
     //     mount)
     function applySourceUpdate(msg) {
       var sourceChanged = (msg.source !== currentSource);
+      // Track the surface-syntax variant of the in-memory source so
+      // (a) processSource picks the right grammar and (b) persist
+      // write-back chooses matching syntax (e.g. `True` vs `true`).
+      // Variant comes from the host as an id string ('flatppl' /
+      // 'flatppy' / 'flatppj') in msg.variant; if absent, falls back
+      // to canonical FlatPPL.
+      if (msg.variant) currentVariantId = msg.variant;
       if (sourceChanged) {
         currentSource = msg.source;
         try {
-          var result = FlatPPLEngine.processSource(msg.source);
+          var result = FlatPPLEngine.processSource(msg.source,
+            { variant: currentVariantId });
           currentBindings = result.bindings;
           currentLoweredModule = result.loweredModule;
           // Source change → rebuild derivations and clear sample cache.
@@ -7114,6 +7133,7 @@
         targetName: opts.target,
         type: opts.target ? 'sourceUpdate' : 'showModule',
         pushHistory: false,
+        variant: opts.variant,
       });
     }
 
@@ -7133,6 +7153,7 @@
           targetName: target,
           type: target ? 'sourceUpdate' : 'showModule',
           pushHistory: !!(opts && opts.pushHistory),
+          variant: opts && opts.variant,
         });
       },
       dispose: function() {},

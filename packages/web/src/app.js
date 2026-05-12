@@ -47,6 +47,18 @@
   // CSS / repaint flash that comes with it) when the user is only
   // navigating between bindings inside the same file.
   var lastRenderedSource = null;
+
+  /** Map a model path's extension to a surface-syntax variant id
+      ('flatppl' / 'flatppy' / 'flatppj'). Returns undefined for an
+      unrecognized extension or missing path; the viewer treats
+      undefined as "fall back to FlatPPL". Wraps the engine's
+      variantForPath helper so any future detection rules land in
+      one place. */
+  function variantIdForPath(path) {
+    if (!window.FlatPPLEngine || !window.FlatPPLEngine.variants) return undefined;
+    var v = window.FlatPPLEngine.variants.variantForPath(path);
+    return v ? v.id : undefined;
+  }
   // The currently loaded model path, so we can short-circuit when a
   // navigation event only changes the focus target. Critical in
   // playground mode: rewriting the editor's content on every target-
@@ -191,7 +203,8 @@
         onChange: debounce(function (text) {
           if (!viewer) return;
           var cur = window.FlatPPLWebRouter.parseHash();
-          viewer.update(text, cur.target || null);
+          viewer.update(text, cur.target || null,
+            { variant: variantIdForPath(cur.model) });
         }, 250),
         onNavigate: function (name) {
           var cur = window.FlatPPLWebRouter.parseHash();
@@ -280,6 +293,11 @@
     // wipe user edits and reset the cursor. Read the live text out
     // of the editor when one is mounted; fall back to the last
     // rendered text otherwise.
+    // The surface-syntax variant follows the model path's extension
+    // (.flatppl / .flatppy / .flatppj). The viewer reads this on
+    // every update so persist write-back emits matching syntax.
+    var variantId = variantIdForPath(state.model);
+
     if (state.model === lastModel) {
       if (viewer) {
         var liveText = playgroundEditor
@@ -294,7 +312,8 @@
         // model will also grow the viewer history; that's acceptable
         // (history is capped, and the viewer's back-btn just walks
         // whatever's on the stack).
-        viewer.update(liveText, state.target || null, { pushHistory: true });
+        viewer.update(liveText, state.target || null,
+          { pushHistory: true, variant: variantId });
       }
       document.title = state.model
         ? ('FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : ''))
@@ -304,7 +323,8 @@
 
     if (!state.model) {
       showSourceIfChanged(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
-      if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
+      if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null,
+        { variant: 'flatppl' });
       document.title = 'FlatPPL';
       lastModel = null;
       return;
@@ -313,7 +333,8 @@
     try {
       var bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
       showSourceIfChanged(bundle.primarySource, state.model);
-      if (viewer) viewer.update(bundle.primarySource, state.target || null);
+      if (viewer) viewer.update(bundle.primarySource, state.target || null,
+        { variant: variantId });
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
       lastModel = state.model;
     } catch (err) {
