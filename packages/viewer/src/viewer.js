@@ -1313,6 +1313,19 @@
       return null;
     }
 
+    /** Soft-fail variant of getMeasure: resolves to null instead of
+        rejecting when the binding can't produce a measure (no
+        derivation, no fixed value — typically pure inputs like
+        `elementof(reals)`). Used by plot paths that want to chase
+        sample-derived defaults for every source-binding axis but
+        shouldn't blow up on the ones that genuinely have no samples
+        to chase. */
+    function tryGetMeasure(name) {
+      return getMeasure(name).then(
+        function(m) { return m; },
+        function(_err) { return null; });
+    }
+
     function getMeasure(name) {
       if (measureCache.has(name)) return Promise.resolve(measureCache.get(name));
       if (!derivationsState) return Promise.reject(new Error('no model loaded'));
@@ -4070,21 +4083,14 @@
         }
         env[inp.paramName] = defaultValueForLeafType(ax.leafType);
         if (ax.source && ax.source.kind === 'binding') {
-          // Only chase empirical samples when the source binding can
-          // produce them — i.e. it's a variate or a derived value.
-          // `elementof(S)` (analyzer marks them type='input') is a
-          // pure input: it has no derivation and no samples, so
-          // getMeasure would reject with "no derivation for '<name>'"
-          // and the whole kernel plot fails. Keep the leaf-type
-          // default in env in that case; the user can override via
-          // the preset / inputs dropdown.
-          var srcBinding = currentBindings && currentBindings.get(ax.source.name);
-          if (!srcBinding || srcBinding.type !== 'input') {
-            bindingSourceLookups.push({
-              paramName: inp.paramName,
-              sourceName: ax.source.name,
-            });
-          }
+          // Queue an empirical-sample lookup unconditionally —
+          // tryGetMeasure soft-fails to null for sources that can't
+          // produce samples (pure inputs like elementof). The
+          // leaf-type default stays in env in that case.
+          bindingSourceLookups.push({
+            paramName: inp.paramName,
+            sourceName: ax.source.name,
+          });
         }
       }
       // Build the substituted measure IR. expandMeasureRefsInIR peels
@@ -4123,7 +4129,7 @@
       // deps. Anything still self-ref'd is genuinely a captured
       // stochastic/fixed dep from the outer scope.
       Promise.all(bindingSourceLookups.map(function(s) {
-        return getMeasure(s.sourceName);
+        return tryGetMeasure(s.sourceName);
       })).then(function(srcMeasures) {
         for (var i = 0; i < bindingSourceLookups.length; i++) {
           var sm = srcMeasures[i];
@@ -4134,17 +4140,16 @@
         var ir = sig.body;
         ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
           ir, derivationsState.derivations);
-        // Structural fallback for the case where buildDerivations
-        // pruned a measure-ref's derivation because its distIR
-        // depends on a parameterized binding (the very thing this
-        // kernel will substitute via env at materialise time). The
-        // ref leaks through expandMeasureRefsInIR as a bare
-        // (ref self <name>); walk binding.ir directly to reconstruct
-        // the measure shape so substituteLocals can then bind the
-        // captured parameters.
+        // expandMeasureRefsInIR fails closed for refs whose derivation
+        // was pruned by buildDerivations (e.g. `x` here, because its
+        // distIR depends on the parameterized `mu`). The kernel-sample
+        // path substitutes that parameter via env at materialise time,
+        // so it still needs the structural shape. Re-run with the
+        // bindings fallback to recover from binding.ir directly.
         if (ir && ir.kind === 'ref' && ir.ns === 'self') {
-          var expanded = FlatPPLEngine.orchestrator.expandMeasureIRStructural(
-            ir.name, derivationsState.bindings);
+          var expanded = FlatPPLEngine.orchestrator.expandMeasureIR(
+            ir.name, derivationsState.derivations,
+            undefined, derivationsState.bindings);
           if (expanded) ir = expanded;
         }
         ir = FlatPPLEngine.orchestrator.inlineForProfile(
@@ -4152,20 +4157,18 @@
         ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
 
         // Collect any remaining self-refs (captured outer-scope
-        // bindings). Filter out elementof inputs — they have no
-        // samples and the user is expected to substitute them via
-        // the Inputs dropdown (or accept the leaf-type default).
-        var capturedRefs = [];
-        FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
-          var b = currentBindings && currentBindings.get(n);
-          if (b && b.type === 'input') return;  // pure input, no samples
-          capturedRefs.push(n);
-        });
+        // bindings) and try to resolve each to a fixed-shape value.
+        // tryGetMeasure soft-fails on bindings that can't produce a
+        // sample (inputs, opaque bindings); those stay as self-refs
+        // and the worker will surface a clean "unbound self
+        // reference" if they were genuinely required.
+        var capturedRefs = Array.from(
+          FlatPPLEngine.orchestrator.collectSelfRefs(ir));
         if (capturedRefs.length === 0) {
           return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
         }
         return Promise.all(capturedRefs.map(function(n) {
-          return getMeasure(n);
+          return tryGetMeasure(n);
         })).then(function(capturedMeasures) {
           var selfEnv = {};
           for (var i = 0; i < capturedRefs.length; i++) {
@@ -5471,18 +5474,13 @@
         }
         fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
         if (axes[a2].source && axes[a2].source.kind === 'binding') {
-          // Skip elementof / external input bindings: they have no
-          // derivation and getMeasure would reject. The leaf-type
-          // default stays in fixedEnv; the user can override via
-          // the inputs preset dropdown. See the parallel guard in
-          // renderKernelSampleForCurrent for the kernel-sample path.
-          var srcBinding = currentBindings && currentBindings.get(axes[a2].source.name);
-          if (!srcBinding || srcBinding.type !== 'input') {
-            nonSweptBindingSources.push({
-              paramName: inp.paramName,
-              sourceName: axes[a2].source.name,
-            });
-          }
+          // tryGetMeasure (below) soft-fails to null for inputs and
+          // any other source that has no samples — the leaf-type
+          // default then stays in fixedEnv.
+          nonSweptBindingSources.push({
+            paramName: inp.paramName,
+            sourceName: axes[a2].source.name,
+          });
         }
       }
       var sweepInput = inputByKwarg[sweepAxis.kwargName];
@@ -5570,9 +5568,9 @@
       var rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
       Promise.all([
         rangePromise,
-        Promise.all(selfRefs.map(function(n) { return getMeasure(n); })),
+        Promise.all(selfRefs.map(function(n) { return tryGetMeasure(n); })),
         Promise.all(nonSweptBindingSources.map(function(s) {
-          return getMeasure(s.sourceName);
+          return tryGetMeasure(s.sourceName);
         })),
       ]).then(function(arr) {
         rangeRef[0] = arr[0];
