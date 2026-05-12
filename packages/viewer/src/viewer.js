@@ -4156,30 +4156,15 @@
           ir, paramNames, derivationsState.bindings, derivationsState.derivations);
         ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
 
-        // Collect any remaining self-refs (captured outer-scope
-        // bindings) and try to resolve each to a fixed-shape value.
-        // tryGetMeasure soft-fails on bindings that can't produce a
-        // sample (inputs, opaque bindings); those stay as self-refs
-        // and the worker will surface a clean "unbound self
-        // reference" if they were genuinely required.
-        var capturedRefs = Array.from(
-          FlatPPLEngine.orchestrator.collectSelfRefs(ir));
-        if (capturedRefs.length === 0) {
-          return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
-        }
-        return Promise.all(capturedRefs.map(function(n) {
-          return tryGetMeasure(n);
-        })).then(function(capturedMeasures) {
-          var selfEnv = {};
-          for (var i = 0; i < capturedRefs.length; i++) {
-            var m = capturedMeasures[i];
-            if (m && m.samples && m.samples.length > 0) {
-              selfEnv[capturedRefs[i]] = m.samples[0];
-            }
-          }
-          var substIR = FlatPPLEngine.orchestrator.substituteSelfRefs(ir, selfEnv);
-          return materialiseConcreteMeasure(substIR, SAMPLE_COUNT, nameSeed(plan.name));
-        });
+        // Captured self-refs (outer-scope stochastic / fixed bindings
+        // that aren't kernel inputs) are no longer collapsed to
+        // samples[0] here. materialiseConcreteMeasure threads
+        // refArrays through to the worker's sampleN — atom i of the
+        // kernel sample uses atom i of every captured ref, matching
+        // the per-atom semantics of the closed-measure getMeasure
+        // path. Per spec §04, stochastic ancestors that aren't
+        // boundary inputs participate in the kernel's randomness.
+        return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
       }).then(function(measure) {
         if (currentPlotPlan !== planForCall) return;
         measureCache.set(cacheKey, measure);
@@ -5273,7 +5258,12 @@
     // values.
     //
     // Cases:
-    //   leaf distribution (Normal, Exp, …)  → worker.sampleN
+    //   leaf distribution (Normal, Exp, …)  → worker.sampleN with
+    //                                         refArrays for captured
+    //                                         self-refs (per-atom
+    //                                         semantics matching the
+    //                                         closed-measure getMeasure
+    //                                         path)
     //   joint(field=M, …) / record(…)       → recordMeasure(materialise(field), …)
     //   iid(M, dim, …)                      → arrayMeasure(materialise(M, count×∏dims))
     //   lawof(M)                            → recurse into M (lawof is a no-op on measures)
@@ -5317,9 +5307,17 @@
         });
       }
       // Leaf distribution (or unrecognised op — sampleN throws if
-      // it's not in the registry).
-      return sendWorker({
-        type: 'sampleN', ir: ir, count: count, seed: seed,
+      // it's not in the registry). Captured self-refs in the dist's
+      // kwargs (e.g. `Normal(mu = lit, sigma = pow(ref self sqrt_sigma, 2))`
+      // after substituteLocals) are resolved per-atom via refArrays
+      // — same mechanism getMeasure uses for closed-measure
+      // sampling. Fixed-phase refs flow through the worker's session
+      // env, so collectRefArrays drops them.
+      return collectRefArrays(ir).then(function(refArrays) {
+        return sendWorker({
+          type: 'sampleN', ir: ir, count: count, seed: seed,
+          refArrays: refArrays,
+        });
       }).then(function(reply) {
         return { samples: reply.samples, logWeights: null };
       });
