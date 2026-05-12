@@ -39,12 +39,27 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
-      - name: Run engine tests
-        # npm test at the root delegates to every workspace's `test`
-        # script via --workspaces --if-present. Today only
-        # packages/engine has tests; new packages with test scripts
-        # are picked up automatically.
-        run: npm test
+      - name: Run engine tests with coverage
+        # npm run test:coverage at the root delegates to every
+        # workspace's `test:coverage` script via --workspaces
+        # --if-present. Each workspace's script writes an LCOV
+        # report to packages/<name>/coverage/lcov.info; the
+        # Codecov upload step below picks all of them up via glob.
+        # Today only packages/engine has tests; new packages with
+        # test:coverage scripts are picked up automatically.
+        run: npm run test:coverage
+
+      - name: Upload coverage to Codecov
+        # Codecov auto-detects LCOV files; we point it at the
+        # per-workspace outputs explicitly so a missing report in a
+        # less-tested workspace doesn't get silently skipped. For
+        # public repos the upload works without CODECOV_TOKEN; set
+        # the secret if rate-limited or for a private fork.
+        uses: codecov/codecov-action@v4
+        with:
+          files: packages/engine/coverage/lcov.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Build web package
         # End-to-end smoke: confirms the resolver, bundler, and

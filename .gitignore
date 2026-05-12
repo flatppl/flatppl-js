@@ -20,3 +20,8 @@ packages/viewer/vendor/
 # directory deployed to GitHub Pages by the Pages workflow. Re-run
 # `npm run build` (or `npm run watch`) under packages/web/ to refresh.
 packages/web/dist/
+
+# Coverage reports from `npm run test:coverage` (Node's built-in
+# --experimental-test-coverage with the lcov reporter). Uploaded to
+# Codecov by the CI workflow; not committed.
+packages/*/coverage/
