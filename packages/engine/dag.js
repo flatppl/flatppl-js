@@ -501,7 +501,66 @@ function computeSubDAG(bindings, nodeName) {
 
   const reifications = computeReifications(bindings, visited, nodeName);
   applyScopeLocalPhases(visited, reifications, bindings);
-  return { nodes: [...visited.values()], edges, reifications };
+  return { nodes: dissolveInternalIntermediates([...visited.values()], edges),
+           edges,
+           reifications };
+}
+
+/**
+ * Multi-LHS rewrites (`a, b = call(...)`) and other analyzer
+ * internals introduce synthetic `%`-prefixed intermediates into the
+ * binding graph — they're real bindings with real derivations, but
+ * they aren't user-meaningful and shouldn't show up in the DAG
+ * view. Dissolve them: for every `%`-prefixed node, fan its
+ * incoming edges directly into its outgoing edges (so a parent that
+ * fed into M now feeds into each of M's consumers), then drop M
+ * itself.
+ *
+ * Idempotent and edge-set-only. Synthetic-boundary nodes
+ * (placeholder / hole IDs with `:` from reification scopes) keep
+ * their bubbles — those are a different category.
+ */
+function dissolveInternalIntermediates(nodes, edges) {
+  const internal = new Set();
+  for (const n of nodes) {
+    if (n.id && n.id.charAt(0) === '%') internal.add(n.id);
+  }
+  if (internal.size === 0) return nodes;
+  // Bucket edges by their internal-node endpoint.
+  const incoming = new Map(); // M -> [edges where target === M]
+  const outgoing = new Map(); // M -> [edges where source === M]
+  for (const e of edges) {
+    if (internal.has(e.target)) {
+      if (!incoming.has(e.target)) incoming.set(e.target, []);
+      incoming.get(e.target).push(e);
+    }
+    if (internal.has(e.source)) {
+      if (!outgoing.has(e.source)) outgoing.set(e.source, []);
+      outgoing.get(e.source).push(e);
+    }
+  }
+  // Splice in→out edges for each internal node, preserving the
+  // outgoing edge's edgeType (the consumer's "kind of use" is what
+  // matters at the user-facing endpoint; the incoming edge's type
+  // is an engine-internal detail).
+  for (const M of internal) {
+    const ins  = incoming.get(M) || [];
+    const outs = outgoing.get(M) || [];
+    for (const ie of ins) {
+      for (const oe of outs) {
+        edges.push({ source: ie.source, target: oe.target,
+                     edgeType: oe.edgeType || ie.edgeType });
+      }
+    }
+  }
+  // Drop edges touching internal nodes, and drop the nodes themselves.
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const e = edges[i];
+    if (internal.has(e.source) || internal.has(e.target)) {
+      edges.splice(i, 1);
+    }
+  }
+  return nodes.filter((n) => !internal.has(n.id));
 }
 
 /**

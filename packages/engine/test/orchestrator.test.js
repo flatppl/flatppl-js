@@ -2905,6 +2905,48 @@ test('pre-eval: rand(state, lawof(...)) reachable through a multi-LHS rewrite', 
     'rstate2 should be an rngstate object with a key field');
 });
 
+test('classify: bayesupdate retries after pre-eval so rand-result observations work', () => {
+  // bayesupdate's classifier resolves the obs argument to a JS value
+  // via resolveIRToValue. With a literal observation (\`observed_data =
+  // [1.2, 3.4, ...]\`) that always succeeded — the IR is a flat
+  // vector-of-lits. With a dynamically-computed observation
+  // (\`observed_data, _ = rand(rstate, lawof(obs))\`), the IR walks
+  // through a tuple_get on the synthetic %mlhs binding and
+  // resolveIRToValue used to give up. Two coordinated fixes are
+  // covered here:
+  //   1. resolveIRToValue checks fixedValues for ref shortcuts.
+  //   2. classifyDerivation re-runs after pre-eval so bindings whose
+  //      classification depended on a not-yet-populated fixedValues
+  //      entry get a second chance.
+  // The integration test guards both pieces — strip either and
+  // posterior reverts to "Not plottable".
+  const { bindings } = processSource(`
+    theta1_dist = Normal(mu = 0, sigma = 1)
+    theta1      = draw(theta1_dist)
+    a           = 5.0 * theta1
+    obs         = draw(iid(Normal(mu = a, sigma = 1), 4))
+    rstate      = rnginit([1, 2, 3, 4])
+    observed_data, _ = rand(rstate, lawof(obs))
+    forward_kernel = kernelof(record(obs = obs), theta1 = theta1)
+    prior          = lawof(record(theta1 = theta1))
+    L              = likelihoodof(forward_kernel, record(obs = observed_data))
+    posterior      = bayesupdate(L, prior)
+  `);
+  const { derivations, fixedValues } = buildDerivations(bindings);
+  assert.ok(fixedValues.has('observed_data'),
+    'pre-eval must populate observed_data first — otherwise retry has nothing to find');
+  assert.ok(derivations.posterior,
+    'posterior should classify after the retry pass picks up fixedValues');
+  assert.equal(derivations.posterior.kind, 'bayesupdate');
+  assert.equal(derivations.posterior.from, 'prior');
+  // The obs value carried into the derivation is the array drawn
+  // by rand (not the original [obs] AST), now resolved through
+  // fixedValues rather than IR walking.
+  assert.ok(derivations.posterior.obsValue && derivations.posterior.obsValue.obs,
+    'obsValue should be a record with the obs field');
+  assert.equal(derivations.posterior.obsValue.obs.length, 4);
+});
+
 test('pre-eval: stops at parameterized boundary (no infinite loop)', () => {
   const { bindings } = processSource(`
     a = elementof(reals)

@@ -155,3 +155,42 @@ test('dag: findBindingAtLine col falls back to first binding when col is off-nam
   const { bindings } = processSource(src);
   assert.equal(findBindingAtLine(bindings, 0, 10).name, 'a');
 });
+
+// --- Internal-intermediate dissolution ---
+//
+// Multi-LHS rewrites (`a, b = call(...)`) introduce synthetic
+// `%`-prefixed bindings into the analyzer's binding graph. They
+// carry real data dependencies but aren't user-meaningful; the DAG
+// view should fan their incoming edges into their consumers and
+// drop the node itself.
+
+test('dag: multi-LHS %mlhs nodes are dissolved from the rendered DAG', () => {
+  // `data, _ = rand(rstate, M)` produces a synthetic %mlhs binding.
+  // Without the dissolution pass, the user would see a "%mlhs:..."
+  // node sitting between rstate / M and data.
+  const dag = dagOf(`
+rstate = rnginit([1, 2, 3, 4])
+data, _ = rand(rstate, Normal(mu = 0, sigma = 1))
+`, 'data');
+  const ids = dag.nodes.map((n) => n.id);
+  assert.ok(!ids.some((id) => id && id.charAt(0) === '%'),
+    `expected no %-prefixed nodes in the DAG; got: ${ids.join(', ')}`);
+  // data should reach rstate directly — the synthetic intermediate's
+  // incoming edge fans through.
+  const hasRstateEdge = dag.edges.some(
+    (e) => e.source === 'rstate' && e.target === 'data');
+  assert.ok(hasRstateEdge,
+    'dissolved %mlhs should produce a direct edge from rstate to data');
+});
+
+test('dag: dissolution is idempotent on graphs without internal intermediates', () => {
+  // A plain DAG with no multi-LHS or other %-prefixed bindings
+  // round-trips through the dissolution pass unchanged.
+  const dag = dagOf(`
+a = elementof(reals)
+b = a + 1
+c = b * 2
+`, 'c');
+  const ids = dag.nodes.map((n) => n.id).sort();
+  assert.deepEqual(ids, ['a', 'b', 'c']);
+});
