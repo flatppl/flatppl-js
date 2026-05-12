@@ -2589,7 +2589,8 @@ function _expandMeasureIRStructural(ir, derivations, visited, bindings) {
   }
   // Sampleable distribution call — return as-is. Refs inside the
   // kwargs are value-position refs to per-atom parameters; caller
-  // resolves them via substituteLocals / substituteSelfRefs.
+  // resolves them via substituteLocals; refArrays handles captured
+  // self-refs per-atom at sampleN time.
   if (SAMPLEABLE_DISTRIBUTIONS.has(ir.op)) return ir;
   // Anything else (normalize / superpose / truncate / pushfwd /
   // unknown ops): return as-is. Downstream materialise will report
@@ -3135,34 +3136,6 @@ function substituteLocals(ir, env) {
   return out;
 }
 
-/**
- * Sibling of substituteLocals for `(ref self <name>)` references.
- * Used by the kernel-sample plot path: after inlineForProfile pulls
- * in deterministic deps and rewrites the kernel's input parameters
- * to %local refs, any remaining self-refs name *captured stochastic
- * or fixed bindings from the outer scope* (e.g. a `sigma ~ Exp(1)`
- * referenced inside the reified kernel body). Those don't get
- * inlined because they aren't deterministic; the caller materializes
- * each captured binding via getMeasure and feeds samples[0] (or the
- * fixed value) in here as `env[<name>] = <scalar>`.
- *
- * Leaves self-refs not in env intact. Any binding still self-ref'd
- * after this call will be the next thing the worker complains about
- * with an "unbound self reference" error — surface it loudly so we
- * fix the missing case rather than silently emit wrong samples.
- */
-function substituteSelfRefs(ir, env) {
-  if (ir == null || typeof ir !== 'object') return ir;
-  if (Array.isArray(ir)) return ir.map(function(x) { return substituteSelfRefs(x, env); });
-  if (ir.kind === 'ref' && ir.ns === 'self'
-      && Object.prototype.hasOwnProperty.call(env, ir.name)) {
-    return { kind: 'lit', value: env[ir.name], numType: 'real', loc: ir.loc };
-  }
-  const out = {};
-  for (const k in ir) out[k] = substituteSelfRefs(ir[k], env);
-  return out;
-}
-
 function formatAxisLabel(kwargName, path) {
   let s = kwargName || '';
   for (const seg of path) {
@@ -3625,7 +3598,6 @@ module.exports = {
   extractOutputIR,
   inlineForProfile,
   substituteLocals,
-  substituteSelfRefs,
   resolveAxisBaseSet,
   fourSigmaQuantileRange,
   findMatchingPresets,
