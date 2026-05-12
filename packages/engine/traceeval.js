@@ -66,6 +66,26 @@
 //                              measure bindings rather than inline
 //                              calls. The orchestrator supplies a
 //                              closure over its bindings map.
+//     opts.resolveValueRef   - optional `(name, state) → [value, newState]`.
+//                              Lazy on-demand resolution of value-
+//                              position self-refs the env doesn't
+//                              already carry. The walker calls this
+//                              whenever a leaf-distribution kwarg /
+//                              iid count / weighted weight refers to
+//                              a binding by name and env is empty for
+//                              that name — typical of rand(state, M)
+//                              where M's distribution params depend on
+//                              stochastic ancestors the env hasn't
+//                              been pre-populated with. The resolver
+//                              is expected to thread state through
+//                              any recursive sampling it does, and to
+//                              cache its result via env so two refs to
+//                              the same name share one draw. The
+//                              orchestrator supplies a closure that
+//                              knows how to sample stochastic
+//                              bindings (recursively, through this
+//                              same walker) and inline deterministic
+//                              ones.
 //   → { value, logp, state }
 //     value - the trace value (matches the IR's variate shape, with
 //             clamped sites filled with the observed value, unclamped
@@ -137,6 +157,7 @@ function walk(state, ir, env, observed, opts) {
   const ctx = {
     tally,
     resolveRef: opts.resolveMeasureRef || null,
+    resolveValueRef: opts.resolveValueRef || null,
   };
   const r = walkInner(state, ir, env, observed, ctx);
   if (Number.isNaN(r.logp)) {
@@ -193,6 +214,13 @@ function walkInner(state, ir, env, observed, ctx) {
 }
 
 function walkLeaf(state, ir, env, observed, ctx) {
+  // Pre-fill env with any value-position refs in the kwargs that
+  // aren't already known. The leaf's distribution params (`mu = ref a`,
+  // `sigma = ref b`, …) may reference bindings the caller hasn't
+  // materialised yet — typical of rand(state, M) where M's params
+  // depend on stochastic ancestors. fillEnvFromRefs threads state
+  // through any recursive sampling the resolver does.
+  state = fillEnvFromRefs(state, ir, env, ctx);
   const entry = samplerLib.lookupDistribution(ir);
   const params = samplerLib.resolveParams(ir, entry, env);
 
@@ -251,6 +279,9 @@ function walkIid(state, ir, env, observed, ctx) {
     throw new Error(`traceeval: iid expected 2 args (measure, count), got ${args.length}`);
   }
   const M = args[0];
+  // iid count may reference bindings (e.g. `iid(M, n)` where n is a
+  // fixed-phase value binding) — pre-fill before evaluating.
+  state = fillEnvFromRefs(state, args[1], env, ctx);
   const n = samplerLib.evaluateExpr(args[1], env) | 0;
   if (n < 0) throw new Error(`traceeval: iid count must be non-negative, got ${n}`);
 
@@ -288,7 +319,10 @@ function walkWeighted(state, ir, env, observed, ctx) {
   }
   const r = walkInner(state, args[1], env, observed, ctx);
   let logp = r.logp;
+  let st = r.state;
   if (ctx.tally !== 'none') {
+    // Pre-fill env so refs inside the weight expression resolve.
+    st = fillEnvFromRefs(st, args[0], env, ctx);
     const w = samplerLib.evaluateExpr(args[0], env);
     if (Number.isNaN(w)) {
       throw new Error('traceeval: weighted weight evaluated to NaN');
@@ -302,7 +336,7 @@ function walkWeighted(state, ir, env, observed, ctx) {
       logp += Math.log(w);
     }
   }
-  return { value: r.value, logp, state: r.state };
+  return { value: r.value, logp, state: st };
 }
 
 function walkLogWeighted(state, ir, env, observed, ctx) {
@@ -314,14 +348,54 @@ function walkLogWeighted(state, ir, env, observed, ctx) {
   }
   const r = walkInner(state, args[1], env, observed, ctx);
   let logp = r.logp;
+  let st = r.state;
   if (ctx.tally !== 'none') {
+    st = fillEnvFromRefs(st, args[0], env, ctx);
     const g = samplerLib.evaluateExpr(args[0], env);
     if (Number.isNaN(g)) {
       throw new Error('traceeval: logweighted weight evaluated to NaN');
     }
     logp += g;
   }
-  return { value: r.value, logp, state: r.state };
+  return { value: r.value, logp, state: st };
+}
+
+/**
+ * Walk a value-position IR expression collecting every `(ref self <name>)`
+ * the env doesn't already know. For each, invoke ctx.resolveValueRef
+ * (if supplied) to compute the value, threading state through. Mutates
+ * `env` in place so callers can subsequently call evaluateExpr against
+ * a fully-populated environment.
+ *
+ * Skips structural recursion into measure-position children: this
+ * helper handles value-position IR only (distribution kwargs, iid
+ * counts, weighted weights, …). Refs to measure bindings are resolved
+ * separately via ctx.resolveRef.
+ *
+ * Returns the (possibly advanced) state. Idempotent when env already
+ * has every referenced name.
+ */
+function fillEnvFromRefs(state, ir, env, ctx) {
+  if (!ctx || !ctx.resolveValueRef) return state;
+  const refs = new Set();
+  collectValueRefs(ir, refs);
+  for (const name of refs) {
+    if (env && env[name] !== undefined) continue;
+    const r = ctx.resolveValueRef(name, state);
+    if (!r) continue;
+    env[name] = r[0];
+    state = r[1];
+  }
+  return state;
+}
+
+function collectValueRefs(ir, out) {
+  if (ir == null || typeof ir !== 'object') return;
+  if (ir.kind === 'ref' && ir.ns === 'self') { out.add(ir.name); return; }
+  if (Array.isArray(ir.args)) for (const a of ir.args) collectValueRefs(a, out);
+  if (ir.kwargs) for (const k in ir.kwargs) collectValueRefs(ir.kwargs[k], out);
+  // Don't descend into `fields` / `body` — those are measure / scope
+  // boundaries handled by the surrounding walker's recursion.
 }
 
 // =====================================================================
@@ -333,12 +407,53 @@ function walkLogWeighted(state, ir, env, observed, ctx) {
 // Adding a new measure op (pushfwd, truncate, relabel, …) is one
 // entry here + one handler function — no edits to walkInner.
 
+/**
+ * lawof(M): per spec §sec:lawof, the law of a variate equals the
+ * measure it was drawn from — `lawof(draw(M)) ≡ M`. From the walker's
+ * perspective lawof is a pass-through wrapper: sampling from
+ * `lawof(X)` is the same as sampling from X (after any self-ref
+ * inside resolves through the orchestrator's measure resolver).
+ *
+ * This lets inline forms like `rand(rstate, lawof(obs))` walk
+ * without first being canonicalised to the corresponding measure
+ * binding — the named form `d = lawof(obs); rand(rstate, d)` worked
+ * already because expandMeasureIR resolves d's alias derivation
+ * before traceeval sees the IR; the inline form needs the walker
+ * to do the same unwrapping itself.
+ */
+function walkLawof(state, ir, env, observed, ctx) {
+  const args = ir.args || [];
+  if (args.length !== 1) {
+    throw new Error(`traceeval: lawof expected 1 arg, got ${args.length}`);
+  }
+  return walkInner(state, args[0], env, observed, ctx);
+}
+
+/**
+ * draw(M): unlike lawof, draw is value-position — its result is a
+ * variate, not a measure. The walker doesn't normally encounter
+ * draw at measure-position; when it does (e.g. an inlined `draw(M)`
+ * surfacing in a kernel body the orchestrator hasn't canonicalised),
+ * fall back to the spec identity `lawof(draw(M)) ≡ M` and treat draw
+ * as a pass-through to its inner measure. Same handler shape as
+ * walkLawof for symmetry.
+ */
+function walkDraw(state, ir, env, observed, ctx) {
+  const args = ir.args || [];
+  if (args.length !== 1) {
+    throw new Error(`traceeval: draw expected 1 arg, got ${args.length}`);
+  }
+  return walkInner(state, args[0], env, observed, ctx);
+}
+
 const MEASURE_OP_WALKERS = {
   joint:       walkJoint,
   record:      walkJoint,
   iid:         walkIid,
   weighted:    walkWeighted,
   logweighted: walkLogWeighted,
+  lawof:       walkLawof,
+  draw:        walkDraw,
 };
 
 module.exports = { walk };

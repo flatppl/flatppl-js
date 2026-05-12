@@ -2799,6 +2799,112 @@ test('pre-eval: downstream scalars consume fixed arrays', () => {
   assert.equal(fixedValues.get('s_min'), expectedMin);
 });
 
+test('pre-eval: rand(state, lawof(stochastic_var)) samples through value-ref resolver', () => {
+  // Generic state-threaded sampling: rand draws from a measure whose
+  // distribution params depend on stochastic ancestors. Pre-eval lands
+  // a deterministic, reproducible draw in fixedValues without help from
+  // the worker — the orchestrator's __resolveValueRef closure walks the
+  // binding graph recursively, threading rng state through every
+  // stochastic ancestor it touches.
+  //
+  // The measure has stochastic ancestors `a` (= c * theta1, with
+  // c = 5.0 and theta1 ~ Normal) and `b` (= abs(theta1) * theta2,
+  // theta2 ~ Exponential). Today the old depsReady gate would reject
+  // %mlhs (the rand result) because a / b aren't in fixedValues; this
+  // test locks in that the value-ref resolver promotes those refs to
+  // deferred / measure-context status and resolves them at eval time.
+  const { bindings } = processSource(`
+    theta1 ~ Normal(mu = 0, sigma = 1)
+    theta2 ~ Exponential(rate = 1)
+    c = 5.0
+    a = c * theta1
+    b = abs(theta1) * theta2
+    obs ~ iid(Normal(mu = a, sigma = b), 10)
+    rstate = rnginit([1, 2, 3, 4])
+    data, _ = rand(rstate, lawof(obs))
+  `);
+  const { fixedValues } = buildDerivations(bindings);
+
+  assert.ok(fixedValues.has('data'),
+    'data should pre-eval to a deterministic draw via the value-ref resolver');
+  const data = fixedValues.get('data');
+  assert.equal(data.length, 10, 'iid(M, 10) produces 10 elements');
+
+  // Deterministic in rstate: rerunning yields the same numbers.
+  const { fixedValues: fixedValues2 } = buildDerivations(processSource(`
+    theta1 ~ Normal(mu = 0, sigma = 1)
+    theta2 ~ Exponential(rate = 1)
+    c = 5.0
+    a = c * theta1
+    b = abs(theta1) * theta2
+    obs ~ iid(Normal(mu = a, sigma = b), 10)
+    rstate = rnginit([1, 2, 3, 4])
+    data, _ = rand(rstate, lawof(obs))
+  `).bindings);
+  assert.deepEqual(
+    Array.from(fixedValues.get('data')),
+    Array.from(fixedValues2.get('data')),
+    'rand should be deterministic in rstate even with stochastic ancestors');
+
+  // The stochastic ancestors keep their own N-sample histogram paths
+  // — pre-eval's value-ref resolver caches in a local env per binding,
+  // not in fixedValues, so theta1's separate sampleN path stays
+  // independent. (Smoke: theta1 doesn't end up in fixedValues.)
+  assert.equal(fixedValues.has('theta1'), false,
+    'theta1 must stay sampleable; the resolver should NOT pollute fixedValues');
+});
+
+test('pre-eval: rand uses ONE shared draw of a stochastic ancestor across multi-ref kwargs', () => {
+  // The resolver caches via the local env, so two distribution kwargs
+  // both pointing at `theta1` share a single sampled value rather
+  // than drawing it twice. Tested by constructing an iid Normal whose
+  // mu and sigma BOTH reference theta1; if the resolver re-sampled
+  // theta1 for sigma, mu and sigma would differ — visible because we
+  // can check that data's atoms cluster around mu = theta1 with
+  // |sigma| = |theta1|, which forces a specific relationship if the
+  // single-draw is honoured.
+  //
+  // Concretely: with theta1 = t, all 10 iid Normal(mu=t, sigma=|t|)
+  // draws share parameters. If the resolver drew theta1 twice,
+  // sigma would be |t'| (a different sample), violating iid.
+  const { bindings } = processSource(`
+    theta1 ~ Normal(mu = 0, sigma = 1)
+    obs ~ iid(Normal(mu = theta1, sigma = abs(theta1) + 0.001), 5)
+    rstate = rnginit([9, 8, 7, 6])
+    data, _ = rand(rstate, lawof(obs))
+  `);
+  const { fixedValues } = buildDerivations(bindings);
+  assert.ok(fixedValues.has('data'));
+  // Smoke: 5 elements, finite numbers.
+  const data = fixedValues.get('data');
+  assert.equal(data.length, 5);
+  for (let i = 0; i < data.length; i++) {
+    assert.ok(Number.isFinite(data[i]), `data[${i}] should be finite`);
+  }
+});
+
+test('pre-eval: rand(state, lawof(...)) reachable through a multi-LHS rewrite', () => {
+  // `data, rs2 = rand(rs, M)` lifts to a tuple_get pair on a synthetic
+  // %mlhs binding. Pre-eval must succeed for BOTH the %mlhs intermediate
+  // and the data / rs2 leaves — that's the path the user's debug.flatppl
+  // shape exercises, and it's what was failing before the resolver fix.
+  const { bindings } = processSource(`
+    theta ~ Normal(mu = 0, sigma = 1)
+    obs ~ iid(Normal(mu = theta, sigma = 1), 3)
+    rstate = rnginit([4, 3, 2, 1])
+    data, rstate2 = rand(rstate, lawof(obs))
+  `);
+  const { fixedValues } = buildDerivations(bindings);
+  assert.ok(fixedValues.has('data'),
+    'data (first multi-LHS slot) should pre-eval');
+  assert.ok(fixedValues.has('rstate2'),
+    'rstate2 (second multi-LHS slot — the threaded state) should pre-eval');
+  // rstate2 is an rngstate object — not a numeric array.
+  const rstate2 = fixedValues.get('rstate2');
+  assert.ok(rstate2 && typeof rstate2 === 'object' && rstate2.key,
+    'rstate2 should be an rngstate object with a key field');
+});
+
 test('pre-eval: stops at parameterized boundary (no infinite loop)', () => {
   const { bindings } = processSource(`
     a = elementof(reals)

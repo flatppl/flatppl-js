@@ -675,9 +675,13 @@ function computePhases(bindings) {
       phase = 'parameterized';
     } else if (cn === 'external') {
       phase = 'fixed';
-    } else if (cn === 'lawof') {
-      // Absorbs stochasticity (spec §sec:lawof). Result is fixed
-      // unless an elementof remains in the ancestor closure.
+    } else if (cn === 'lawof' || cn === 'rand') {
+      // Absorbs stochasticity. `lawof` reifies the ancestor sub-DAG
+      // as a measure (spec §sec:lawof); `rand(state, M)` collapses
+      // a measure into one threaded draw, owning the state across
+      // every stochastic ancestor of M. In both cases the result is
+      // fixed UNLESS an elementof remains in the ancestor closure
+      // — then it propagates as parameterized.
       phase = 'fixed';
       for (const dep of b.deps) {
         phase = maxPhase(phase, absorbedPhaseOf(dep));
