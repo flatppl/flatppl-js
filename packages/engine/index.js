@@ -1,5 +1,6 @@
 'use strict';
 
+const variants = require('./variants');
 const { tokenize, T } = require('./tokenizer');
 const { parse } = require('./parser');
 const { analyze, collectIdentRefs, sliceSource,
@@ -26,11 +27,20 @@ const pir = require('./pir');
 
 /**
  * Parse and analyze a FlatPPL source text in one call.
- * Returns { ast, bindings, symbols, diagnostics }.
+ *
+ * @param {string} source — surface source
+ * @param {object} [opts]
+ *   - opts.variant — variant id string ('flatppl' | 'flatppy' | 'flatppj')
+ *                    or a variant object from ./variants. Wins over path.
+ *   - opts.path    — source path; the extension picks the variant when
+ *                    opts.variant is absent. Defaults to FlatPPL when
+ *                    nothing else is supplied.
+ * Returns { ast, bindings, symbols, diagnostics, variant }.
  */
-function processSource(source) {
-  const { tokens, diagnostics: tokenDiags } = tokenize(source);
-  const { ast, diagnostics: parseDiags } = parse(tokens);
+function processSource(source, opts) {
+  const variant = variants.resolveVariant(opts);
+  const { tokens, diagnostics: tokenDiags } = tokenize(source, variant);
+  const { ast, diagnostics: parseDiags } = parse(tokens, variant);
   const { bindings, loweredModule, diagnostics: analyzeDiags, symbols }
     = analyze(ast, source);
 
@@ -42,12 +52,13 @@ function processSource(source) {
   // polymorphic function at a specific call site — module-level
   // inference produces best-effort with `any` inputs, which under-
   // specifies in general).
-  return { ast, bindings, loweredModule, symbols, diagnostics };
+  return { ast, bindings, loweredModule, symbols, diagnostics, variant };
 }
 
 module.exports = {
   // High-level
   processSource,
+  variants,
   // Components
   tokenize, T,
   parse,

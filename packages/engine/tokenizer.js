@@ -44,8 +44,13 @@ function isWhitespace(ch) { return ch === ' ' || ch === '\t' || ch === '\r'; }
 /**
  * Tokenize FlatPPL source text into an array of tokens.
  * Returns { tokens: Token[], diagnostics: Diagnostic[] }.
+ *
+ * `variant` is the surface-syntax variant (see ./variants). The base
+ * tokenizer is variant-agnostic; per-variant token additions live in
+ * later commits in this series. `variant` is accepted (and ignored)
+ * starting now so call sites can pass it without churn.
  */
-function tokenize(source) {
+function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
   const tokens = [];
   const diagnostics = [];
   let pos = 0;

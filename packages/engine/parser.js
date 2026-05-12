@@ -6,8 +6,13 @@ const AST = require('./ast');
 /**
  * Parse a token stream into a FlatPPL AST.
  * Returns { ast: Program, diagnostics: Diagnostic[] }.
+ *
+ * `variant` is the surface-syntax variant (see ./variants). The base
+ * parser is variant-agnostic; per-variant grammar branches land in
+ * later commits in this series. `variant` is accepted (and ignored)
+ * starting now so call sites can pass it without churn.
  */
-function parse(tokens) {
+function parse(tokens, variant) {  // eslint-disable-line no-unused-vars
   const diagnostics = [];
   let pos = 0;
 
