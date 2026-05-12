@@ -401,11 +401,15 @@ function classifyForChain(binding, rhsIR, bindings) {
     return null;
   }
 
-  // Inputs (elementof) are external boundary values — they MUST be
-  // supplied via the env passed alongside the chain. The chain itself
-  // doesn't need a step for them.
+  // type='input' covers both phases of boundary value:
+  //   - parameterized (elementof): supplied via env at chain-eval time.
+  //   - fixed (external / load_data): supplied at module-init time.
+  // In neither case does the chain need a step — the value is
+  // pre-bound by the caller. Phase doesn't matter for this decision,
+  // only that the binding is a boundary input rather than a value
+  // we have to compute.
   if (binding.type === 'input') {
-    return null; // handled by caller via env, not a chain step
+    return null;
   }
 
   // Reifications, modules, joints, likelihoods, bayesupdate, … all
@@ -2673,15 +2677,13 @@ function implicitFunctionSignature(name, bindings, derivations) {
   // (they sample, not evaluate). This branch is only for value-
   // typed (scalar / array / record) bindings.
   if (subject.inferredType && subject.inferredType.kind === 'measure') return null;
-  // Skip callable bindings (functionof / kernelof / fn / likelihood)
-  // — they have their own real signature via signatureOf. Same for
-  // type='input' bindings (elementof itself); those plot via
-  // distributeAxes on their inferred set, not as a profile.
-  if (subject.type === 'functionof' || subject.type === 'fn'
-      || subject.type === 'kernelof' || subject.type === 'likelihood'
-      || subject.type === 'input') {
-    return null;
-  }
+  // No need to filter callables / elementof here:
+  //   - Callables (functionof / kernelof / fn / likelihood) have
+  //     phase='fixed', already excluded by the early phase check.
+  //   - An elementof leaf (subject is `mu = elementof(reals)`) has
+  //     phase='parameterized' but its body has no parametric self-
+  //     refs to surface, so the BFS below produces inputs.length===0
+  //     and we return null naturally.
 
   // Body is the binding's lowered IR. Unlike the kernel path, we
   // don't call expandMeasureIR — value bindings aren't measure
@@ -3497,16 +3499,17 @@ function resolveAxisBaseSet(source, bindings) {
     // elementof bindings (`x_set = elementof(reals)` /
     // `x_set = elementof(interval(0, 1))`) carry a structural set
     // restriction; surface it so the viewer can use the bounds
-    // directly. The analyzer marks these as type='input'.
-    if (target.type === 'input') {
-      const ir = target.ir
-        || (target.effectiveValue && lowerSafe(target.effectiveValue))
-        || (target.node && target.node.value && lowerSafe(target.node.value));
-      if (ir && ir.kind === 'call' && ir.op === 'elementof'
-          && Array.isArray(ir.args) && ir.args.length === 1) {
-        const setDescr = parseSetIR(ir.args[0]);
-        if (setDescr) return setDescr;
-      }
+    // directly. The `ir.op === 'elementof'` check below is the
+    // real discriminator — external / load_data bindings also
+    // share binding.type='input' but their RHS op isn't elementof,
+    // so they fall through to the empirical fallback below.
+    const ir = target.ir
+      || (target.effectiveValue && lowerSafe(target.effectiveValue))
+      || (target.node && target.node.value && lowerSafe(target.node.value));
+    if (ir && ir.kind === 'call' && ir.op === 'elementof'
+        && Array.isArray(ir.args) && ir.args.length === 1) {
+      const setDescr = parseSetIR(ir.args[0]);
+      if (setDescr) return setDescr;
     }
     // Anything else (variates, derived deterministic bindings):
     // there's no static set, but the binding has empirical samples

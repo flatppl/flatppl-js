@@ -2239,8 +2239,17 @@
       // Variates never get a density overlay — see rule 1 above.
       // For measures, the overlay is the analytical PDF/PMF when the
       // resolved leaf has all-literal kwargs (closed-form marginal).
+      //
+      // "Is this a variate?" semantically = stochastic phase. Today
+      // only `draw(...)` / `~` produce stochastic-phase value
+      // bindings, so binding.type === 'draw' happens to match — but
+      // phase is the spec-grounded discriminator and protects against
+      // any future syntactic form that also yields a variate. (A
+      // measure with stochastic ancestors will still reach this
+      // branch and be filtered by the all-literal-kwargs gate below,
+      // not the phase check; that's intentional.)
       var analyticalIR = null;
-      if (binding.type !== 'draw') {
+      if (binding.phase !== 'stochastic') {
         var leafIR = FlatPPLEngine.orchestrator.leafSampleIR(name, derivationsState.derivations);
         if (leafIR && leafIR.kind === 'call' && leafIR.op
             && (!leafIR.args || leafIR.args.length === 0)) {

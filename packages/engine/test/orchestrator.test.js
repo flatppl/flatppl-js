@@ -50,6 +50,32 @@ test('chain: single draw of Normal with literal params', () => {
   assert.equal(r.discrete, false);
 });
 
+test('classifyForChain: both elementof and external skip (boundary inputs)', () => {
+  // Per orchestrator's contract, type='input' bindings get no chain
+  // step regardless of phase: parameterized-phase elementof is
+  // supplied via env at chain-eval time, fixed-phase external /
+  // load_data is supplied at module-init time. Either way the caller
+  // pre-binds the value, so the chain doesn't compute it.
+  //
+  // Directly drives classifyForChain so the assertion isn't muddled
+  // by downstream chain-promotion logic.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+mu = elementof(reals)
+ext = external("data.dat")
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const muBinding = lifted.get('mu');
+  const extBinding = lifted.get('ext');
+  assert.equal(muBinding.phase, 'parameterized');
+  assert.equal(extBinding.phase, 'fixed');
+  // Both classify to null (no chain step).
+  assert.equal(classifyForChain(muBinding, muBinding.ir, lifted), null,
+    'elementof must skip the chain step');
+  assert.equal(classifyForChain(extBinding, extBinding.ir, lifted), null,
+    'external must skip the chain step too — same input-boundary path');
+});
+
 test('chain: measure-alias as target → single sample step on resolved IR', () => {
   // theta1_dist is a measure construction (analyzer type='call'). When
   // it's a transitive dep, classifyForChain marks it 'skip'; when it's
@@ -1253,6 +1279,21 @@ test('resolveAxisBaseSet: stochastic binding source → empirical descriptor', (
 test('resolveAxisBaseSet: null / unrecognised source → null', () => {
   assert.equal(resolveAxisBaseSet(null, new Map()), null);
   assert.equal(resolveAxisBaseSet({ kind: 'unknown' }, new Map()), null);
+});
+
+test('resolveAxisBaseSet: external() source → empirical (not a set restriction)', () => {
+  // external(...) and load_data(...) share binding.type='input' with
+  // elementof but their RHS op is 'external' / 'load_data', not
+  // 'elementof'. The IR-op check (ir.op === 'elementof') correctly
+  // skips them so they fall through to the empirical fallback —
+  // there's no structural set restriction to surface.
+  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { bindings } = processSource(`
+ext = external("data.dat")
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'ext' }, lifted);
+  assert.deepEqual(base, { kind: 'empirical', name: 'ext' });
 });
 
 // =====================================================================
