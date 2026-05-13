@@ -1,13 +1,12 @@
 'use strict';
 const vscode = require('vscode');
-// isValidBindingName is shared with the web host via @flatppl/engine
-// so the rules don't drift between deploy surfaces. Other extension
-// machinery already requires the engine module; the panel just picks
-// up the helper it needs. variants is used to map a source-file URI
-// to its surface-syntax id ('flatppl' / 'flatppy' / 'flatppj') so the
-// webview can pick the right grammar and persist write-back can pick
-// the right spelling.
-const { isValidBindingName, variants } = require('@flatppl/engine');
+// Same vendored-bundle require pattern as extension.js — the
+// installed VSIX doesn't ship node_modules/, so the path goes
+// through the build-vendor output instead of the workspace
+// `@flatppl/engine` symlink. isValidBindingName and variants are
+// re-exported by engine/index.js, the IIFE wraps that, and the
+// bundle's footer exposes the same shape to CommonJS require.
+const { isValidBindingName, variants } = require('../lib/engine.min.js');
 
 /** Derive the surface-syntax variant id from a vscode.Uri (or null).
     Returns an id string the engine recognizes, or 'flatppl' as the

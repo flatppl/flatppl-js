@@ -8,13 +8,18 @@ const vscode = require('vscode');
 // computeSubDAG is therefore no longer used here — kept the import out
 // to make the change explicit if anyone ever adds it back.
 //
-// `@flatppl/engine` resolves via the npm workspace symlink to the sibling
-// `packages/engine/` directory; in CI / installed builds it resolves to the
-// hoisted `node_modules/@flatppl/engine`. Either way, the same source is
-// loaded and tested.
+// Load the engine from the vendored bundle (build-vendor.mjs produces it
+// from packages/engine/index.js). The installed VSIX ships `lib/` but
+// NOT `node_modules/` — `.vscodeignore` excludes hoisted workspace deps
+// — so `require('@flatppl/engine')` would fail there with "Cannot find
+// module '@flatppl/engine'". The IIFE bundle's footer wires
+// `module.exports = FlatPPLEngine`, so this require returns the same
+// shape as the source module's exports. Dev workflow: `npm run
+// build:vendor` once after install (and after engine changes); the
+// watch task keeps it fresh.
 const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges, variants } = require('@flatppl/engine');
+  findEnclosingRanges, variants } = require('./lib/engine.min.js');
 const { FlatPPLPanel } = require('./src/visualPanel');
 
 // Surface-syntax variants this extension handles. Per-document
