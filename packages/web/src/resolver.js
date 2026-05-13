@@ -61,6 +61,22 @@
    * `.flatppl` deps).
    */
   async function resolveBundle(primaryPath) {
+    // Ephemeral (unsaved) sources live in an in-memory store the
+    // user populates via the gallery's "+ New file" button. Consult
+    // it before the network so an ephemeral path resolves without
+    // ever 404'ing against the server. The store keeps the path
+    // shape compatible with everything else (variantForPath picks
+    // the right syntax, the router round-trips it through the
+    // URL hash, the editor mounts on it).
+    var eph = globalScope.FlatPPLWebEphemeral;
+    if (eph && eph.has && eph.has(primaryPath)) {
+      return {
+        primaryPath: primaryPath,
+        primaryUrl: primaryPath,
+        primarySource: eph.get(primaryPath),
+        sources: Object.create(null),
+      };
+    }
     var url = new URL(primaryPath, document.baseURI).href;
     var primarySource = await fetchSource(url);
     return {

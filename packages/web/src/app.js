@@ -207,6 +207,13 @@
         onChange: debounce(function (text) {
           if (!viewer) return;
           var cur = window.FlatPPLWebRouter.parseHash();
+          // Push edits back into the ephemeral store so they survive
+          // navigation away and back to the same path. update() is a
+          // no-op for paths not in the store, so this is safe for
+          // manifest entries the user is editing in playground mode.
+          if (window.FlatPPLWebEphemeral) {
+            window.FlatPPLWebEphemeral.update(cur.model, text);
+          }
           viewer.update(text, cur.target || null,
             { variant: variantIdForPath(cur.model) });
         }, 250),
@@ -255,31 +262,107 @@
     if (viewer && typeof viewer.update === 'function') viewer.update(msg);
   }
 
-  /** Render the manifest entries as a clickable list in the left pane. */
+  /** Render the manifest + ephemeral entries as clickable lists in
+      the left pane. Ephemeral entries (created via "+ New file") get
+      their own section above the manifest so the unsaved files are
+      easy to find regardless of how many manifest entries there are. */
   function renderTree(currentModel) {
     if (!fileTree) return;
     fileTree.innerHTML = '';
+
+    var eph = window.FlatPPLWebEphemeral;
+    var ephEntries = (eph && eph.list) ? eph.list() : [];
+    if (ephEntries.length > 0) {
+      var ephHeader = document.createElement('div');
+      ephHeader.className = 'file-list-header';
+      ephHeader.textContent = 'Unsaved';
+      fileTree.appendChild(ephHeader);
+      var ephUl = document.createElement('ul');
+      ephUl.className = 'file-list';
+      for (var i = 0; i < ephEntries.length; i++) {
+        var ent = ephEntries[i];
+        var li = document.createElement('li');
+        li.className = 'file-list-item file-list-item--ephemeral';
+        if (ent.path === currentModel) li.classList.add('selected');
+        li.textContent = ent.path.replace(/^new\//, '');
+        li.title = ent.path + ' (session-only)';
+        li.dataset.path = ent.path;
+        li.addEventListener('click', onTreeClick);
+        ephUl.appendChild(li);
+      }
+      fileTree.appendChild(ephUl);
+    }
+
     if (!manifest || manifest.entries.length === 0) {
-      var p = document.createElement('div');
-      p.className = 'pane-placeholder';
-      p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
-      fileTree.appendChild(p);
+      if (ephEntries.length === 0) {
+        var p = document.createElement('div');
+        p.className = 'pane-placeholder';
+        p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
+        fileTree.appendChild(p);
+      }
       return;
     }
     var ul = document.createElement('ul');
     ul.className = 'file-list';
-    for (var i = 0; i < manifest.entries.length; i++) {
-      var entry = manifest.entries[i];
-      var li = document.createElement('li');
-      li.className = 'file-list-item';
-      if (entry.path === currentModel) li.classList.add('selected');
-      li.textContent = entry.title;
-      li.title = entry.path;
-      li.dataset.path = entry.path;
-      li.addEventListener('click', onTreeClick);
-      ul.appendChild(li);
+    for (var j = 0; j < manifest.entries.length; j++) {
+      var entry = manifest.entries[j];
+      var li2 = document.createElement('li');
+      li2.className = 'file-list-item';
+      if (entry.path === currentModel) li2.classList.add('selected');
+      li2.textContent = entry.title;
+      li2.title = entry.path;
+      li2.dataset.path = entry.path;
+      li2.addEventListener('click', onTreeClick);
+      ul.appendChild(li2);
     }
     fileTree.appendChild(ul);
+  }
+
+  /** Build the default starter source for a new ephemeral file.
+      A one-line comment is friendlier than an empty buffer — the
+      user can delete it or build from it. The variant comes from
+      the file extension; the engine handles the rest. */
+  function starterSourceFor(path) {
+    return '# ' + path + ' — new ephemeral file (session-only, not saved to disk).\n';
+  }
+
+  /** Sanitize a user-supplied filename into a path the rest of the
+      gallery accepts: strip surrounding whitespace, prepend `new/`
+      if missing, append a default extension when none of the three
+      known surface-variant extensions are present. */
+  function normalizeEphemeralPath(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return null;
+    if (s.indexOf('/') === -1) s = 'new/' + s;
+    if (!/\.(flatppl|flatppy|flatppj)$/i.test(s)) s = s + '.flatppl';
+    return s;
+  }
+
+  /** "+ New file" handler. Prompt for a name (default = next
+      auto-numerated untitled), stash a starter source in the
+      ephemeral store, and navigate to the new path. Auto-enables
+      edit mode so the user can start typing immediately. */
+  async function onNewFileClick() {
+    var eph = window.FlatPPLWebEphemeral;
+    if (!eph) return;
+    var defaultPath = eph.nextUntitled('.flatppl');
+    var raw = window.prompt(
+      'New ephemeral file (session-only). Path:', defaultPath);
+    if (raw == null) return;
+    var path = normalizeEphemeralPath(raw);
+    if (!path) return;
+    // Collision check across both the manifest and the ephemeral store.
+    var collidesWithManifest = manifest && manifest.entries
+      && manifest.entries.some(function (e) { return e.path === path; });
+    if (eph.has(path) || collidesWithManifest) {
+      window.alert('Path already exists: ' + path);
+      return;
+    }
+    eph.add(path, starterSourceFor(path));
+    if (!playgroundEditor && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
+      await setEditMode(true);
+    }
+    window.FlatPPLWebRouter.navigateTo({ model: path });
   }
 
   function onTreeClick(ev) {
@@ -290,6 +373,17 @@
   async function applyState(state) {
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
+
+    // Ephemeral files have no on-disk source — they're meaningless
+    // outside edit mode. Auto-enable edit mode when navigating to
+    // one (gated by allowEdit so a strictly read-only deploy still
+    // can't unlock editing through a hash-link).
+    var ephRef = window.FlatPPLWebEphemeral;
+    if (ephRef && state.model && ephRef.has(state.model)
+        && !playgroundEditor
+        && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
+      await setEditMode(true);
+    }
 
     // Same model, target-only change: skip the fetch and the source-
     // pane rewrite entirely. In playground mode the editor IS the
@@ -436,6 +530,22 @@
     // the initial render lands in the editor, not in a briefly-
     // visible <pre>.
     await setupEditToggle();
+
+    // "+ New file" button: only visible when allowEdit is on. Same
+    // gate as edit mode, since creating a file is meaningless when
+    // editing is disabled. Subscribing to ephemeral changes here
+    // keeps the file tree in sync as entries get added.
+    var newFileBtn = document.getElementById('new-file-btn');
+    if (newFileBtn && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
+      newFileBtn.hidden = false;
+      newFileBtn.addEventListener('click', onNewFileClick);
+    }
+    if (window.FlatPPLWebEphemeral && window.FlatPPLWebEphemeral.subscribe) {
+      window.FlatPPLWebEphemeral.subscribe(function () {
+        var cur = window.FlatPPLWebRouter.parseHash();
+        renderTree(cur.model);
+      });
+    }
 
     var viewerRoot = document.getElementById('flatppl-viewer-root');
 
