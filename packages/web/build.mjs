@@ -304,9 +304,13 @@ async function fetchAndExtractExamples(url, dstDir) {
   }
 }
 
-/** Recursively list .flatppl files under rootDir, sorted alphabetically.
-    Paths are relative to rootDir (forward slashes). */
-async function listFlatpplFiles(rootDir) {
+/** Recursively list FlatPPL surface-variant files under rootDir,
+    sorted alphabetically. Paths are relative to rootDir (forward
+    slashes). Matches all three of the spec's surface variants —
+    .flatppl (canonical), .flatppy (Python-AST), .flatppj (Julia-AST)
+    — so a gallery deploy surfaces every source the engine can parse. */
+async function listFlatpplLikeFiles(rootDir) {
+  const VARIANT_EXTENSIONS = ['.flatppl', '.flatppy', '.flatppj'];
   const out = [];
   async function walk(dir, prefix) {
     if (!existsSync(dir)) return;
@@ -315,7 +319,8 @@ async function listFlatpplFiles(rootDir) {
       const childRelPath = prefix ? prefix + '/' + ent.name : ent.name;
       if (ent.isDirectory()) {
         await walk(join(dir, ent.name), childRelPath);
-      } else if (ent.isFile() && ent.name.endsWith('.flatppl')) {
+      } else if (ent.isFile()
+                 && VARIANT_EXTENSIONS.some((x) => ent.name.endsWith(x))) {
         out.push(childRelPath);
       }
     }
@@ -325,15 +330,18 @@ async function listFlatpplFiles(rootDir) {
   return out;
 }
 
+// Keep the extension in the gallery title — the variant is part of
+// what users want to identify the file by ("minimal.flatppl" vs
+// "minimal.flatppy" vs "minimal.flatppj" all live side-by-side, and
+// the extension is the only thing distinguishing them).
 function basenameTitle(path) {
   const i = path.lastIndexOf('/');
-  const name = i < 0 ? path : path.slice(i + 1);
-  return name.replace(/\.flatppl$/, '');
+  return i < 0 ? path : path.slice(i + 1);
 }
 
 async function generateManifest() {
-  const demoFiles     = await listFlatpplFiles(join(distDir, 'demo'));
-  const exampleFiles  = await listFlatpplFiles(join(distDir, 'examples'));
+  const demoFiles     = await listFlatpplLikeFiles(join(distDir, 'demo'));
+  const exampleFiles  = await listFlatpplLikeFiles(join(distDir, 'examples'));
 
   const entries = [];
   for (const path of demoFiles) {

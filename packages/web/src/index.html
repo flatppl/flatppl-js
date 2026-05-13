@@ -37,7 +37,15 @@
     </header>
 
     <aside class="pane" id="files-pane">
-      <div class="pane-header">Files</div>
+      <div class="pane-header pane-header--row">
+        <span class="pane-header-text">Files</span>
+        <button id="new-file-btn" type="button"
+                title="New ephemeral file (session-only, not saved to disk)"
+                aria-label="New file"
+                hidden>
+          <span aria-hidden="true">+</span>
+        </button>
+      </div>
       <div class="pane-body" id="file-tree">
         <div class="pane-placeholder">File tree appears here once a manifest is loaded.</div>
       </div>
@@ -105,6 +113,7 @@
     };
   </script>
   <script src="vendor/viewer.js"></script>
+  <script src="ephemeral.js"></script>
   <script src="resolver.js"></script>
   <script src="router.js"></script>
   <script src="manifest.js"></script>
