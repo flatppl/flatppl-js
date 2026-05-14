@@ -677,6 +677,47 @@ z = totalmass(k)
 });
 
 // =====================================================================
+// truncate — measure support restriction
+// =====================================================================
+//
+// `t = truncate(M, S)` classifies as kind='truncate' with the measure
+// name + a parsed set descriptor. Only literal-bound sets pass the
+// classifier in Phase 1: interval(<num>, <num>) and the named real
+// sets (reals / posreals / nonnegreals / unitinterval).
+
+test('truncate: classifies with literal interval bounds', () => {
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0.0, sigma = 1.0)
+t = truncate(m, interval(-2.0, 2.0))
+`);
+  assert.ok(derivations.t, 't should be derivable');
+  assert.equal(derivations.t.kind, 'truncate');
+  assert.equal(derivations.t.from, 'm');
+  assert.equal(derivations.t.setDescr.kind, 'interval');
+  assert.equal(derivations.t.setDescr.lo, -2);
+  assert.equal(derivations.t.setDescr.hi, 2);
+});
+
+test('truncate: classifies with named set (posreals)', () => {
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0.0, sigma = 1.0)
+t = truncate(m, posreals)
+`);
+  assert.ok(derivations.t, 't should be derivable');
+  assert.equal(derivations.t.kind, 'truncate');
+  assert.equal(derivations.t.setDescr.kind, 'posreals');
+});
+
+test('truncate: cascade-prunes when measure isn\'t derivable', () => {
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0.0, sigma = 1.0)
+k = kernelof(m)
+t = truncate(k, posreals)
+`);
+  assert.ok(!('t' in derivations));
+});
+
+// =====================================================================
 // fchain — applied function composition unrolls to nested calls
 // =====================================================================
 //

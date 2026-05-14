@@ -300,6 +300,115 @@ function createWorkerHandler(opts = {}) {
           if (msg.seed == null) philox = state;
           return { type: 'samples', id, samples: out, logWeights: null };
         }
+        case 'truncateSampleN': {
+          // Truncated-distribution sampling primitive for matTruncate
+          // (spec §06). Two modes:
+          //
+          //   'cdf'       — inverse-CDF sampling against an interval set.
+          //                 Draws u ~ U(0,1), maps to F^{-1}(F(lo) + u·(F(hi)−F(lo))).
+          //                 Exact, uniform-weight output. Requires the
+          //                 measure IR to be a known stdlib distribution
+          //                 with finite-or-resolved bounds; no NaN slots.
+          //                 logShift = log(F(hi) − F(lo)) — caller adds
+          //                 this to the parent's logTotalmass.
+          //
+          //   'rejection' — per-atom rejection-redraw, configurable per-
+          //                 atom budget. Draws from the distribution
+          //                 until the value falls inside `setDescr`, or
+          //                 the budget runs out; budget-exhausted atoms
+          //                 become NaN. Generic over any sampleable IR
+          //                 + any set descriptor with a numeric-bounds
+          //                 surface. logShift = log(n_eff / totalDraws)
+          //                 — empirical acceptance probability.
+          //
+          // setDescr is the structural set descriptor from orchestrator's
+          // parseSetIR (`{ kind: 'interval', lo, hi }` etc.). Anything
+          // we can't map to numeric (lo, hi) bounds becomes a worker
+          // error — the materialiser handles fallback decisions.
+          const count   = msg.count   | 0;
+          const seed    = msg.seed;
+          const setDescr = msg.setDescr || null;
+          const mode    = msg.mode    || 'rejection';
+          if (count <= 0) throw new Error(`truncateSampleN.count must be positive integer (got ${msg.count})`);
+          if (!setDescr) throw new Error('truncateSampleN.setDescr is required');
+          const [lo, hi] = setBoundsFor(setDescr);
+          if (!(hi >= lo)) {
+            throw new Error('truncateSampleN: degenerate set bounds [' + lo + ', ' + hi + ']');
+          }
+          let state = seed != null ? rngLib.stateFromKey(seed) : philox;
+          const out = new Float64Array(count);
+
+          if (mode === 'cdf') {
+            // Inverse-CDF path. Build the analytical distribution once
+            // (static params required — refArrays not supported here),
+            // pre-compute F(lo) and F(hi), then per-atom Q(F(lo) + u·Δ).
+            const callEnv = msg.env ? { ...env, ...msg.env } : env;
+            const dist = samplerLib.makeAnalytical(msg.ir, callEnv);
+            const Flo = isFinite(lo) ? dist.cdf(lo) : 0;
+            const Fhi = isFinite(hi) ? dist.cdf(hi) : 1;
+            const dF = Fhi - Flo;
+            if (!(dF > 0)) {
+              // Empty intersection M ∩ S: every atom NaN, mass shift = -Inf.
+              for (let i = 0; i < count; i++) out[i] = NaN;
+              if (seed == null) philox = state;
+              return { type: 'samples', id, samples: out, logWeights: null,
+                       logShift: -Infinity, n_eff: 0 };
+            }
+            for (let i = 0; i < count; i++) {
+              const pair = rngLib.nextUniform(state);
+              state = pair[1];
+              out[i] = dist.quantile(Flo + pair[0] * dF);
+            }
+            if (seed == null) philox = state;
+            return { type: 'samples', id, samples: out, logWeights: null,
+                     logShift: Math.log(dF), n_eff: count };
+          }
+
+          // Rejection-redraw path. Build one sampler (static or
+          // per-i parametric) and loop per atom, redrawing until the
+          // value lands in [lo, hi] or the per-atom budget is spent.
+          const budget = Math.max(1, msg.budget | 0);
+          const refArrays = msg.refArrays || {};
+          const refKeys = Object.keys(refArrays);
+          let totalDraws = 0;
+          let n_eff = 0;
+          if (refKeys.length === 0) {
+            const s = samplerLib.makeSampler(state, msg.ir, env);
+            for (let i = 0; i < count; i++) {
+              let v = NaN;
+              for (let t = 0; t < budget; t++) {
+                const draw = s.draw();
+                totalDraws++;
+                if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+              }
+              out[i] = v;
+            }
+            state = s.getState();
+          } else {
+            const s = samplerLib.makeParametricSampler(state, msg.ir);
+            const drawEnv = { ...env };
+            for (let i = 0; i < count; i++) {
+              for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+              let v = NaN;
+              for (let t = 0; t < budget; t++) {
+                const draw = s.drawWith(drawEnv);
+                totalDraws++;
+                if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+              }
+              out[i] = v;
+            }
+            state = s.getState();
+          }
+          if (seed == null) philox = state;
+          // Empirical acceptance probability → log-mass shift. When no
+          // atom accepted (n_eff == 0), report -Infinity so downstream
+          // sees zero truncated mass cleanly.
+          const logShift = n_eff > 0
+            ? Math.log(n_eff / totalDraws)
+            : -Infinity;
+          return { type: 'samples', id, samples: out, logWeights: null,
+                   logShift, n_eff };
+        }
         case 'profileN': {
           // Profile-plot evaluator. Sweeps a single scalar input over
           // a [lo, hi] range at N evenly-spaced points, with all other
@@ -387,6 +496,25 @@ function createWorkerHandler(opts = {}) {
   }
 
   return { handle, _inspect };
+}
+
+// Map a structural set descriptor (orchestrator.parseSetIR shape) to
+// numeric [lo, hi] bounds suitable for interval membership tests and
+// CDF clipping. ±Infinity is allowed for half-open / unbounded sets.
+// Throws on shapes that don't reduce to an interval surface (e.g.
+// integer / boolean sets — those defer to a discrete-aware path).
+function setBoundsFor(setDescr) {
+  if (!setDescr || typeof setDescr !== 'object') {
+    throw new Error('setBoundsFor: missing set descriptor');
+  }
+  switch (setDescr.kind) {
+    case 'interval':    return [+setDescr.lo, +setDescr.hi];
+    case 'reals':       return [-Infinity, Infinity];
+    case 'posreals':    return [0, Infinity];
+    case 'nonnegreals': return [0, Infinity];
+    default:
+      throw new Error('setBoundsFor: unsupported set kind \'' + setDescr.kind + '\'');
+  }
 }
 
 // Helper: collect transferable buffers in a reply. The browser shim

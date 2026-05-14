@@ -712,6 +712,17 @@ const SIGNATURE_FACTORIES = {
     kwargs: {},
     result: REAL,
   }),
+  // truncate(M, S) — restricts the support of measure M to set S.
+  // Per spec §06: ν(A) = M(A ∩ S). Does NOT normalize, so the
+  // resulting measure's totalmass shrinks to M(S). The set argument
+  // is a bare set expression (built-in name like `posreals`, or a
+  // call like `interval(0, inf)`); typed loosely here and validated
+  // structurally by the orchestrator's classifier.
+  truncate: () => ({
+    args: [measure(tvar('T')), any()],
+    kwargs: {},
+    result: measure(tvar('T')),
+  }),
 };
 
 function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }

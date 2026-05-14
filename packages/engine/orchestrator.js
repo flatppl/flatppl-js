@@ -508,6 +508,21 @@ function argSignature(op, numArgs) {
     for (let i = 1; i < numArgs; i++) sig.push('value');
     return sig;
   }
+  if (op === 'truncate') {
+    // truncate(<measure>, <set>): first arg measure-typed; second is a
+    // set expression (named set / interval call) that we don't lift
+    // — the classifier reads it raw via parseSetIR.
+    return ['measure', 'value'];
+  }
+  if (op === 'totalmass' || op === 'logdensityof') {
+    // totalmass(<measure>) / logdensityof(<measure>, <obs>): first arg
+    // measure-typed so a bare inline distribution gets lifted to a
+    // named binding. logdensityof's obs is value-typed (already lifted
+    // when it's a draw / logdensityof itself by liftValue's rules).
+    const sig = ['measure'];
+    for (let i = 1; i < numArgs; i++) sig.push('value');
+    return sig;
+  }
   if (op === 'jointchain' || op === 'chain') {
     // jointchain(M, K1, K2, ...) / chain(M, K1, K2, ...): every
     // positional arg is measure-typed (the first a base measure or
@@ -2437,6 +2452,29 @@ function classifyTotalmass(rhsIR, ast, bindings) {
   return { kind: 'totalmass', measureName: Mref.name };
 }
 
+/**
+ * Classify `truncate(M, S)` (spec §06): restricts the support of
+ * measure M to set S, with ν(A) = M(A ∩ S). Per spec, truncate does
+ * NOT normalize — the resulting measure carries M(S) as its
+ * totalmass, which the materialiser surfaces via logTotalmass.
+ *
+ * Supported shape (Phase 1):
+ *   - M is a self-ref to a measure binding (anything resolveMeasureBaseName
+ *     accepts; the materialiser walks the parent measure for samples).
+ *   - S is a literal set expression parseSetIR can lift to a structural
+ *     descriptor: interval(lo, hi) with literal bounds, or one of the
+ *     named real / integer / boolean sets. Dynamic sets defer to a
+ *     future pass — they'd require per-atom set membership evaluation.
+ */
+function classifyTruncate(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const baseName = resolveMeasureBaseName(ast.args[0], bindings);
+  if (baseName == null) return null;
+  const setDescr = parseSetIR(rhsIR.args[1], bindings);
+  if (setDescr == null) return null;
+  return { kind: 'truncate', from: baseName, setDescr };
+}
+
 const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
@@ -2447,6 +2485,7 @@ const MEASURE_OP_CLASSIFIERS = {
   iid:          classifyIid,
   logdensityof: classifyLogdensityof,
   totalmass:    classifyTotalmass,
+  truncate:     classifyTruncate,
 };
 
 /**
@@ -2532,6 +2571,9 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   }
   if (d.kind === 'totalmass') {
     return resolvable(d.measureName);
+  }
+  if (d.kind === 'truncate') {
+    return resolvable(d.from);
   }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
   const refs = collectSelfRefs(ir);
@@ -3708,7 +3750,7 @@ const NAMED_SETS = {
   booleans:        { kind: 'booleans' },
 };
 
-function parseSetIR(setIR) {
+function parseSetIR(setIR, bindings) {
   if (!setIR) return null;
   if (setIR.kind === 'const' && NAMED_SETS[setIR.name])
     return NAMED_SETS[setIR.name];
@@ -3716,10 +3758,15 @@ function parseSetIR(setIR) {
     return NAMED_SETS[setIR.name];
   if (setIR.kind === 'call' && setIR.op === 'interval'
       && Array.isArray(setIR.args) && setIR.args.length === 2) {
-    const lo = setIR.args[0], hi = setIR.args[1];
-    if (lo && lo.kind === 'lit' && typeof lo.value === 'number'
-        && hi && hi.kind === 'lit' && typeof hi.value === 'number') {
-      return { kind: 'interval', lo: lo.value, hi: hi.value };
+    // Bounds resolve via the same constant-folder used elsewhere — so
+    // `interval(-2.0, 2.0)` (which lowers `-2.0` to `(neg (lit 2.0))`),
+    // `interval(0, inf)`, and `interval(LO, HI)` with constant-bound
+    // refs all reduce to numeric bounds.
+    const seen = new Set();
+    const lo = resolveConstant(setIR.args[0], bindings || new Map(), seen);
+    const hi = resolveConstant(setIR.args[1], bindings || new Map(), new Set());
+    if (typeof lo === 'number' && typeof hi === 'number') {
+      return { kind: 'interval', lo, hi };
     }
   }
   return null;
@@ -4024,6 +4071,7 @@ module.exports = {
   inlineForProfile,
   substituteLocals,
   resolveAxisBaseSet,
+  parseSetIR,
   fourSigmaQuantileRange,
   findMatchingPresets,
   findMatchingDomains,

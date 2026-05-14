@@ -502,6 +502,198 @@ function matBayesupdate(d, ctx) {
     });
 }
 
+/**
+ * Map a structural set descriptor (orchestrator.parseSetIR shape) to
+ * numeric [lo, hi] bounds. Mirrors worker.setBoundsFor for the
+ * materialiser's filter-only fallback path; returns null for set
+ * kinds the materialiser doesn't yet support (integers / booleans).
+ */
+function setBoundsForMat(setDescr) {
+  if (!setDescr) return null;
+  switch (setDescr.kind) {
+    case 'interval':    return [+setDescr.lo, +setDescr.hi];
+    case 'reals':       return [-Infinity, Infinity];
+    case 'posreals':    return [0, Infinity];
+    case 'nonnegreals': return [0, Infinity];
+    case 'unitinterval': return [0, 1];
+    default:            return null;
+  }
+}
+
+/**
+ * truncate(M, S) — restrict M's support to S per spec §06.
+ *
+ * Three paths, chosen at materialise time:
+ *
+ *   (A) CDF-inverse — when the parent expands to a self-contained
+ *       call IR for a known stdlib distribution with static params
+ *       (no value-refs in kwargs) and the set descriptor maps to
+ *       numeric [lo, hi] bounds. Worker computes Q(F(lo)+u·ΔF) per
+ *       atom. Exact; no NaNs; uniform weights. logTotalmass shifts
+ *       by log(ΔF).
+ *
+ *   (B) Rejection-redraw — when the parent expands to a sampleable
+ *       IR but isn't (or isn't suitable as) a built-in CDF target.
+ *       Worker draws from the expanded IR up to ctx.rejectionBudget
+ *       times per atom; budget-exhausted atoms become NaN. n_eff
+ *       drops to the count of valid atoms; logTotalmass shifts by
+ *       log(empirical-acceptance-probability).
+ *
+ *   (C) Filter-only fallback — when expandMeasureIR returns null
+ *       (the parent's derivation chain hits a kind we can't lift to a
+ *       self-contained IR, e.g. a chain through `normalize` or
+ *       `superpose`). We keep the parent's atoms that lie in S and
+ *       NaN the rest, with a matching -inf log-weight on those
+ *       slots. No redraws, so N_valid may be substantially below the
+ *       requested sample count.
+ *
+ * Per-atom rejection budget reads from ctx.rejectionBudget (defaults
+ * to 1000). Configurable per host: the VS Code extension exposes it
+ * as a setting; the web gallery uses the default.
+ */
+function matTruncate(d, ctx) {
+  return ctx.getMeasure(d.from).then((parent) => {
+    const N = ctx.sampleCount;
+    const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+    const bounds = setBoundsForMat(d.setDescr);
+    if (!bounds) {
+      return Promise.reject(new Error(
+        'truncate: unsupported set kind \'' + (d.setDescr && d.setDescr.kind) + '\''));
+    }
+    const [lo, hi] = bounds;
+
+    // Try to lift the parent to a self-contained sample IR. If that
+    // succeeds, we can take the worker-mediated paths (A or B).
+    const expanded = orchestrator.expandMeasureIR(d.from, ctx.derivations);
+    const parentUniform = !parent.logWeights;
+    if (expanded && expanded.kind === 'call' && parentUniform) {
+      const valueRefs = orchestrator.collectSelfRefs(expanded);
+      const hasRefs = valueRefs.size > 0 || (Array.isArray(valueRefs) && valueRefs.length > 0);
+      const cdfEligible = !hasRefs && orchestrator.SAMPLEABLE_DISTRIBUTIONS
+        && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(expanded.op);
+      const seed = nameSeed(d.from + '|truncate', ctx.rootSeed);
+
+      if (cdfEligible) {
+        return ctx.sendWorker({
+          type: 'truncateSampleN',
+          ir: expanded,
+          setDescr: d.setDescr,
+          count: N,
+          mode: 'cdf',
+          seed: seed,
+        }).then((reply) => ({
+          samples: reply.samples,
+          logWeights: null,
+          logTotalmass: parentLTM + reply.logShift,
+          n_eff: reply.n_eff,
+        }));
+      }
+
+      // Rejection-redraw. Need refArrays for parametric params.
+      return collectRefArrays(expanded, ctx.fixedValues, ctx.getMeasure)
+        .then((refArrays) => ctx.sendWorker({
+          type: 'truncateSampleN',
+          ir: expanded,
+          setDescr: d.setDescr,
+          count: N,
+          mode: 'rejection',
+          budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
+          refArrays: refArrays,
+          seed: seed,
+        }))
+        .then((reply) => {
+          // Map budget-exhausted NaN slots to -inf log-weights so
+          // downstream evaluateN propagation can mask them out
+          // mass-correctly. Successful atoms keep uniform weight
+          // (logWeights = null on the result is fine when there were
+          // no NaNs; otherwise we attach a 0/-inf mask).
+          const samples = reply.samples;
+          let anyNaN = false;
+          for (let i = 0; i < samples.length; i++) {
+            if (Number.isNaN(samples[i])) { anyNaN = true; break; }
+          }
+          let logWeights = null;
+          if (anyNaN) {
+            logWeights = new Float64Array(samples.length);
+            for (let i = 0; i < samples.length; i++) {
+              logWeights[i] = Number.isNaN(samples[i]) ? -Infinity : 0;
+            }
+          }
+          return {
+            samples: samples,
+            logWeights: logWeights,
+            logTotalmass: parentLTM + reply.logShift,
+            n_eff: reply.n_eff,
+          };
+        });
+    }
+
+    // Filter-only fallback. We have parent.samples (possibly weighted)
+    // — keep atoms in S, NaN the rest. logTotalmass tracks the
+    // empirical M(S) using the parent's weights.
+    const parentSamples = parent.samples;
+    const out = new Float64Array(parentSamples.length);
+    const outW = parent.logWeights
+      ? new Float64Array(parentSamples.length)
+      : null;
+    let n_eff = 0;
+    if (parent.logWeights) {
+      // Accumulate logSumExp of accepted weights for the truncated mass.
+      let acceptedWeights = [];
+      let totalWeights = [];
+      for (let i = 0; i < parentSamples.length; i++) {
+        const x = parentSamples[i];
+        totalWeights.push(parent.logWeights[i]);
+        if (x >= lo && x <= hi) {
+          out[i] = x;
+          outW[i] = parent.logWeights[i];
+          acceptedWeights.push(parent.logWeights[i]);
+          n_eff++;
+        } else {
+          out[i] = NaN;
+          outW[i] = -Infinity;
+        }
+      }
+      const lseA = acceptedWeights.length
+        ? empirical.logSumExp(Float64Array.from(acceptedWeights))
+        : -Infinity;
+      const lseT = empirical.logSumExp(Float64Array.from(totalWeights));
+      // log(M(S)/M(R)) — caller already has parent.logTotalmass; we
+      // add the empirical conditional log-probability.
+      const logShift = isFinite(lseA) && isFinite(lseT) ? (lseA - lseT) : -Infinity;
+      return {
+        samples: out,
+        logWeights: outW,
+        logTotalmass: parentLTM + logShift,
+        n_eff: n_eff,
+      };
+    }
+    // Uniform parent: simple count-based shift.
+    let anyNaN = false;
+    for (let i = 0; i < parentSamples.length; i++) {
+      const x = parentSamples[i];
+      if (x >= lo && x <= hi) { out[i] = x; n_eff++; }
+      else { out[i] = NaN; anyNaN = true; }
+    }
+    let logWeights = null;
+    if (anyNaN) {
+      logWeights = new Float64Array(parentSamples.length);
+      for (let i = 0; i < parentSamples.length; i++) {
+        logWeights[i] = Number.isNaN(out[i]) ? -Infinity : 0;
+      }
+    }
+    const logShift = n_eff > 0
+      ? Math.log(n_eff / parentSamples.length)
+      : -Infinity;
+    return {
+      samples: out,
+      logWeights: logWeights,
+      logTotalmass: parentLTM + logShift,
+      n_eff: n_eff,
+    };
+  });
+}
+
 function matTotalmass(d, ctx) {
   // totalmass(M): per spec §06, scalar mass of a (possibly
   // unnormalized) measure. The orchestrator tracks each measure's
@@ -582,6 +774,7 @@ const KIND_HANDLERS = {
   bayesupdate:  (name, d, ctx) => matBayesupdate(d, ctx),
   logdensityof: (name, d, ctx) => matLogdensityof(d, ctx),
   totalmass:    (name, d, ctx) => matTotalmass(d, ctx),
+  truncate:     (name, d, ctx) => matTruncate(d, ctx),
 };
 
 /**
