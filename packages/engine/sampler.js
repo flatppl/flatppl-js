@@ -1758,6 +1758,27 @@ function regionBoundsFromIR(ir, env) {
     + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');
 }
 
+// Resolve a function-positional argument used by higher-order ops
+// (filter, reduce, scan) into { body, params } regardless of whether
+// the IR is an inline `functionof(...)` call or a self-ref to a named
+// fn / functionof / kernelof binding. The orchestrator's pre-eval
+// attaches env.__resolveFnBody for the ref path; the inline path
+// reads `body` / `params` directly off the functionof IR.
+function _resolveFn(fnIR, env) {
+  if (!fnIR) return null;
+  if (fnIR.kind === 'ref' && fnIR.ns === 'self') {
+    if (typeof env.__resolveFnBody !== 'function') return null;
+    const fn = env.__resolveFnBody(fnIR.name);
+    if (!fn) return null;
+    return fn;
+  }
+  if (fnIR.kind === 'call' && fnIR.op === 'functionof'
+      && Array.isArray(fnIR.params) && fnIR.body) {
+    return { body: fnIR.body, params: fnIR.params, paramName: fnIR.params[0] };
+  }
+  return null;
+}
+
 function evaluateCall(ir, env) {
   const op = ir.op;
   if (op in ARITH_OPS) {
@@ -1888,29 +1909,75 @@ function evaluateCall(ir, env) {
     }
     return out;
   }
+  if (op === 'reduce') {
+    // reduce(f, xs) per spec §07. f is a binary function; xs is a
+    // non-empty vector. Computes f(...f(f(xs[0], xs[1]), xs[2])..., xs[n-1]).
+    // The first element of xs is the initial accumulator (no separate
+    // init arg, unlike scan).
+    const args = ir.args || [];
+    if (args.length !== 2) {
+      throw new Error('reduce: expected 2 args (function, xs), got ' + args.length);
+    }
+    const fn = _resolveFn(args[0], env);
+    if (!fn || fn.params.length !== 2) {
+      throw new Error('reduce: function arg must be a binary function');
+    }
+    const xs = evaluateExpr(args[1], env);
+    if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
+      throw new Error('reduce: xs must be a vector');
+    }
+    if (xs.length === 0) {
+      throw new Error('reduce: empty vector has no initial value');
+    }
+    const elemEnv = Object.assign({}, env);
+    let acc = xs[0];
+    for (let i = 1; i < xs.length; i++) {
+      elemEnv[fn.params[0]] = acc;
+      elemEnv[fn.params[1]] = xs[i];
+      acc = evaluateExpr(fn.body, elemEnv);
+    }
+    return acc;
+  }
+  if (op === 'scan') {
+    // scan(f, init, xs) per spec §07. Left scan: produces a vector of
+    // intermediate accumulator values, one per element of xs.
+    //   out[i] = f(out[i-1], xs[i])   with out[-1] = init
+    // Result has the same length as xs.
+    const args = ir.args || [];
+    if (args.length !== 3) {
+      throw new Error('scan: expected 3 args (function, init, xs), got ' + args.length);
+    }
+    const fn = _resolveFn(args[0], env);
+    if (!fn || fn.params.length !== 2) {
+      throw new Error('scan: function arg must be a binary function');
+    }
+    const init = evaluateExpr(args[1], env);
+    const xs   = evaluateExpr(args[2], env);
+    if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
+      throw new Error('scan: xs must be a vector');
+    }
+    const out = new Array(xs.length);
+    const elemEnv = Object.assign({}, env);
+    let acc = init;
+    for (let i = 0; i < xs.length; i++) {
+      elemEnv[fn.params[0]] = acc;
+      elemEnv[fn.params[1]] = xs[i];
+      acc = evaluateExpr(fn.body, elemEnv);
+      out[i] = acc;
+    }
+    return out;
+  }
   if (op === 'filter') {
-    // filter(pred_ref, data) per spec §07. pred must be a unary
-    // function (fn / functionof / kernelof) binding; we resolve its
-    // body IR + parameter name via the env's __resolveFnBody hook
-    // that the orchestrator's pre-eval pass attaches. Per-element
-    // application: bind paramName → element in a shadowed env, eval
-    // body, keep when truthy.
+    // filter(pred, data) per spec §07. pred can be a named function
+    // binding (orchestrator.inlineFilterLift lifts inline fn(...) to
+    // anon) OR an inline functionof call IR. _resolveFn handles both.
     const args = ir.args || [];
     if (args.length !== 2) {
       throw new Error('filter: expected 2 args (predicate, data), got ' + args.length);
     }
-    const predIR = args[0];
-    if (!predIR || predIR.kind !== 'ref' || predIR.ns !== 'self') {
-      throw new Error('filter: predicate must be a named function binding (got '
-        + (predIR && predIR.kind) + ')');
-    }
-    if (typeof env.__resolveFnBody !== 'function') {
-      throw new Error('filter: env missing __resolveFnBody hook — filter is only '
-        + 'evaluable in contexts where the orchestrator wires in the bindings map');
-    }
-    const fn = env.__resolveFnBody(predIR.name);
-    if (!fn) {
-      throw new Error("filter: predicate '" + predIR.name + "' is not a unary function binding");
+    const fn = _resolveFn(args[0], env);
+    if (!fn || fn.params.length !== 1) {
+      throw new Error('filter: predicate must be a unary function');
     }
     const data = evaluateExpr(args[1], env);
     if (!Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
@@ -1920,7 +1987,7 @@ function evaluateCall(ir, env) {
     const elemEnv = Object.assign({}, env);
     const out = [];
     for (let i = 0; i < data.length; i++) {
-      elemEnv[fn.paramName] = data[i];
+      elemEnv[fn.params[0]] = data[i];
       const keep = evaluateExpr(fn.body, elemEnv);
       if (keep) out.push(data[i]);
     }

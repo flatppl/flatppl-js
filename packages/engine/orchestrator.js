@@ -155,10 +155,11 @@ const EVALUABLE_OPS = new Set([
   'linspace', 'extlinspace', 'partition', 'reverse',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
   'rowstack', 'colstack',
-  // filter is dispatched via a dedicated case in sampler.evaluateCall
-  // (not in ARITH_OPS) because it needs per-element evaluation of an
-  // embedded body IR rather than the positional-spread shape.
-  'filter',
+  // Higher-order ops (spec §07). Dispatched via dedicated cases in
+  // sampler.evaluateCall (not ARITH_OPS) because they evaluate a
+  // referenced function's body per element. filter takes a unary
+  // predicate; reduce / scan take binary accumulators.
+  'filter', 'reduce', 'scan',
   // Scalar restrictors (spec §07).
   'boolean', 'integer',
   // Linear algebra (spec §07). All pure value ops on matrices /
@@ -2359,11 +2360,18 @@ function buildDerivations(bindings) {
         }
         const fIR = fb.ir;
         if (!fIR || fIR.kind !== 'call' || fIR.op !== 'functionof'
-            || !Array.isArray(fIR.params) || !fIR.body
-            || fIR.params.length !== 1) {
+            || !Array.isArray(fIR.params) || !fIR.body) {
           return null;
         }
-        return { body: fIR.body, paramName: fIR.params[0] };
+        // Return all params so binary higher-order callers
+        // (reduce / scan) can name both slots. Unary callers
+        // (filter) look at params[0] / paramName.
+        return {
+          body:       fIR.body,
+          params:     fIR.params,
+          // Convenience alias for the common unary case.
+          paramName:  fIR.params[0],
+        };
       };
 
       // The synthesised disintegrate effectiveValue can be a measure

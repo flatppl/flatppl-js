@@ -106,6 +106,62 @@ result = filter(fn(_ > threshold), data)
 // Chaining with other value ops
 // =====================================================================
 
+// =====================================================================
+// reduce / scan — binary higher-order ops sharing the filter machinery
+// =====================================================================
+
+test('reduce(fn(_ + _), [1, 2, 3, 4]) ⇒ 10', () => {
+  const r = buildFixed(`
+data = [1.0, 2.0, 3.0, 4.0]
+total = reduce(fn(_ + _), data)
+`);
+  assert.equal(r.fixedValues.get('total'), 10);
+});
+
+test('reduce closes over fixed-phase bindings', () => {
+  const r = buildFixed(`
+factor = 2.0
+data = [1.0, 2.0, 3.0]
+weighted_sum = reduce(fn(_ + factor * _), data)
+`);
+  // 1 + 2 * 2 = 5; 5 + 2 * 3 = 11
+  assert.equal(r.fixedValues.get('weighted_sum'), 11);
+});
+
+test('reduce: empty vector ⇒ runtime error', () => {
+  // No initial accumulator and no elements to fold — undefined fold.
+  const r = buildFixed(`
+data = []
+total = reduce(fn(_ + _), data)
+`);
+  // pre-eval silently skips on throws — total stays unevaluated.
+  assert.equal(r.fixedValues.get('total'), undefined);
+});
+
+test('scan(fn(_ + _), 0, [1, 2, 3, 4]) ⇒ [1, 3, 6, 10]', () => {
+  const r = buildFixed(`
+data = [1.0, 2.0, 3.0, 4.0]
+cumsum = scan(fn(_ + _), 0.0, data)
+`);
+  assert.deepEqual(r.fixedValues.get('cumsum'), [1, 3, 6, 10]);
+});
+
+test('scan: empty data ⇒ empty result', () => {
+  const r = buildFixed(`
+data = []
+cumsum = scan(fn(_ + _), 0.0, data)
+`);
+  assert.deepEqual(r.fixedValues.get('cumsum'), []);
+});
+
+test('scan: cumulative max (max(acc, x))', () => {
+  const r = buildFixed(`
+data = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0]
+running_max = scan(fn(max(_, _)), 0.0, data)
+`);
+  assert.deepEqual(r.fixedValues.get('running_max'), [3, 3, 4, 4, 5, 9, 9]);
+});
+
 test('filter: integrates with bincounts (region-restricted observation)', () => {
   const r = buildFixed(`
 in_region = functionof(land(_x_ >= 2.0, _x_ <= 5.0), x = _x_)

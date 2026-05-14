@@ -753,6 +753,15 @@ const SIGNATURE_FACTORIES = {
   extlinspace: () => ({ args: [REAL, REAL, INTEGER], kwargs: {
                           from: REAL, to: REAL, n: INTEGER },
                         result: array(1, ['%dynamic'], REAL) }),
+  // reduce(f, xs) — left fold over xs with binary f. First element of
+  // xs is the initial accumulator; result type follows xs's element.
+  reduce: () => ({ args: [any(), array(1, ['%dynamic'], tvar('T'))],
+                   kwargs: {}, result: tvar('T') }),
+  // scan(f, init, xs) — left scan; produces a vector of intermediate
+  // accumulator values, one per element of xs.
+  scan:   () => ({ args: [any(), tvar('T'), array(1, ['%dynamic'], tvar('T'))],
+                   kwargs: {},
+                   result: array(1, ['%dynamic'], tvar('T')) }),
   // filter(predicate, data) — keep elements satisfying predicate.
   // The orchestrator rewrites this at lift time into a 3-arg shape
   // with the predicate's body embedded, so type-checking sees the
