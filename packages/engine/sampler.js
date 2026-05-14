@@ -1282,6 +1282,50 @@ function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
     for (let i = 0; i < N; i++) arr[i] = +out[i];
     return arr;
   }
+  // Phase 7c: per-atom uniform-length numeric array outputs (e.g.
+  // softmax / l1unit / l2unit / logsoftmax on per-atom inputs) pack
+  // atom-major into a Value shape=[N, k]. Detect uniform shape across
+  // atoms; non-uniform results stay as a JS array of per-atom values
+  // (the caller chooses how to surface them).
+  let allUniformArrays = true;
+  const sample0 = out[0];
+  let k0 = 0;
+  if (Array.isArray(sample0) || (sample0 && sample0.BYTES_PER_ELEMENT !== undefined)) {
+    k0 = sample0.length;
+  } else if (valueLib.isValue(sample0) && sample0.shape.length === 1) {
+    k0 = sample0.shape[0];
+  } else {
+    allUniformArrays = false;
+  }
+  for (let i = 0; allUniformArrays && i < N; i++) {
+    const s = out[i];
+    let len;
+    if (Array.isArray(s) || (s && s.BYTES_PER_ELEMENT !== undefined)) {
+      len = s.length;
+    } else if (valueLib.isValue(s) && s.shape.length === 1) {
+      len = s.shape[0];
+    } else {
+      allUniformArrays = false; break;
+    }
+    if (len !== k0) { allUniformArrays = false; break; }
+    // Also require numeric entries throughout.
+    for (let j = 0; allUniformArrays && j < k0; j++) {
+      const e = valueLib.isValue(s) ? s.data[j] : s[j];
+      if (typeof e !== 'number' && typeof e !== 'boolean') {
+        allUniformArrays = false; break;
+      }
+    }
+  }
+  if (allUniformArrays && k0 > 0) {
+    const data = new Float64Array(N * k0);
+    for (let i = 0; i < N; i++) {
+      const s = out[i];
+      const src = valueLib.isValue(s) ? s.data : s;
+      const base = i * k0;
+      for (let j = 0; j < k0; j++) data[base + j] = +src[j];
+    }
+    return { shape: [N, k0], data };
+  }
   return out;
 }
 

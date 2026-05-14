@@ -124,16 +124,20 @@ test('evaluateExprN: overlay applies only to its names; other refs honour refArr
 // Non-scalar-op fallback
 // =====================================================================
 
-test('evaluateExprN: vector(...) of scalar refs returns per-atom array', () => {
+test('evaluateExprN: vector(...) of scalar refs returns Value shape=[N, 2]', () => {
   // vector(a, b) where a, b are per-atom. Falls back to per-atom
-  // dispatch — result is Array(N) of [a[i], b[i]].
+  // dispatch — Phase 7c packs the uniform-length array results into
+  // a Value with shape=[N, k] (atom-major flat layout). The legacy
+  // JS-Array-of-arrays form is no longer produced; the Value is the
+  // single representation for vector-atom data.
   const a = new Float64Array([1, 2, 3]);
   const b = new Float64Array([10, 20, 30]);
   const r = sampler.evaluateExprN(call('vector', ref('a'), ref('b')),
     { a, b }, 3, {});
-  // Non-numeric inner → JS Array result.
-  assert.ok(Array.isArray(r));
-  assert.deepEqual(r, [[1, 10], [2, 20], [3, 30]]);
+  // Phase 7c: Value shape=[N=3, k=2], atom-major flat data.
+  assert.ok(r && r.shape && r.data);
+  assert.deepEqual(r.shape, [3, 2]);
+  assert.deepEqual(Array.from(r.data), [1, 10, 2, 20, 3, 30]);
 });
 
 test('evaluateExprN: vector(...) of atom-indep inputs returns one shared array', () => {

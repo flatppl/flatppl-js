@@ -240,7 +240,7 @@ function createWorkerHandler(opts = {}) {
           if (count <= 0) throw new Error(`evaluateN.count must be positive integer (got ${msg.count})`);
           const refArrays = msg.refArrays || null;
           const result = samplerLib.evaluateExprN(msg.ir, refArrays, count, env);
-          let out;
+          let out, dims;
           if (result && result.BYTES_PER_ELEMENT !== undefined
               && result.length === count) {
             out = result;  // Float64Array(count) — happy path
@@ -248,6 +248,22 @@ function createWorkerHandler(opts = {}) {
             // Atom-independent scalar — broadcast to the batch.
             out = new Float64Array(count);
             out.fill(+result);
+          } else if (result && Array.isArray(result.shape) && result.data
+                     && result.data.BYTES_PER_ELEMENT !== undefined) {
+            // Phase 7c: Value result (shape-tagged). Atom-batched
+            // scalar (shape=[N]) returns the data buffer; vector-atom
+            // (shape=[N, k]) returns the flat data + dims so the
+            // materialiser can mark the resulting Measure as
+            // vector-atom (matEvaluate threads dims into arrayMeasure).
+            if (result.shape.length === 1 && result.shape[0] === count) {
+              out = result.data;
+            } else if (result.shape.length >= 2 && result.shape[0] === count) {
+              out = result.data;
+              dims = result.shape.slice(1);
+            } else {
+              throw new Error('evaluateN: Value result has unexpected shape ['
+                + result.shape.join(',') + '] for count=' + count);
+            }
           } else {
             throw new Error('evaluateN: expression produced non-scalar per-atom '
               + 'result (got ' + (typeof result) + '); only scalar exprs are '
@@ -257,7 +273,9 @@ function createWorkerHandler(opts = {}) {
           // The main thread is responsible for plumbing the parent's
           // logWeights through; the worker just emits null here and
           // lets that wrap-up happen at the cache boundary.
-          return { type: 'samples', id, samples: out, logWeights: null };
+          const reply = { type: 'samples', id, samples: out, logWeights: null };
+          if (dims) reply.dims = dims;
+          return reply;
         }
         case 'logDensityN': {
           // Batched density evaluation — thin shell around

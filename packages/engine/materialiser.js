@@ -337,6 +337,19 @@ function matEvaluate(d, ctx) {
       // right answer for a deterministic transform of normalized
       // probability variates; weighted inputs propagate their mass.
       const logTotalmass = lw ? empirical.logSumExp(lw) : 0;
+      // Phase 7c: vector-output ops (softmax / l1unit / l2unit /
+      // logsoftmax over per-atom inputs) produce a flat Float64Array
+      // with reply.dims describing the per-atom shape. Build a
+      // vector-atom Value and route through measureFromValue.
+      if (reply.dims) {
+        const N = ctx.sampleCount;
+        const value = { shape: [N | 0].concat(reply.dims), data: reply.samples };
+        return measureFromValue(value, {
+          logWeights: lw,
+          logTotalmass: logTotalmass,
+          n_eff: n_eff,
+        });
+      }
       return scalarMeasureN(reply.samples, {
         logWeights: lw,
         logTotalmass: logTotalmass,
