@@ -896,6 +896,93 @@ function matTotalmass(d, ctx) {
   });
 }
 
+function matMvNormal(name, d, ctx) {
+  // Phase 6 of the shape-explicit refactor.
+  //
+  // MvNormal(mu, cov) — per spec §08, samples are n-vectors with
+  // x ~ Normal_n(mu, cov). Implementation routes through the spec
+  // equivalence  pushfwd(fn(mu + L*_), iid(Normal(0,1), n))  but
+  // without the AST rewrite — we do the matvec / vector-add directly
+  // via value-ops so the per-atom batched form short-circuits.
+  //
+  // Pipeline:
+  //   1. Resolve mu (atom-indep vector, shape=[n]) and cov (shape=[n, n]).
+  //   2. L = lower_cholesky(cov)         — one O(n³) call.
+  //   3. Draw N atoms of n standard normals → shape=[N, n].
+  //   4. result = mu + L * z (value-ops.mulN + addN)  → shape=[N, n].
+  //
+  // logTotalmass = 0 (normalized probability measure); n_eff = N
+  // (independent atoms). The output Measure is vector-atom shape
+  // (samples + dims=[n]) via measureFromValue.
+  const valueOps = require('./value-ops');
+  const sampler  = require('./sampler');
+  const distIR = d.distIR;
+  if (!distIR || !distIR.kwargs || !distIR.kwargs.mu || !distIR.kwargs.cov) {
+    return Promise.reject(new Error('MvNormal: requires mu and cov kwargs'));
+  }
+  // Evaluate mu / cov: atom-indep right now (per-atom params deferred).
+  // We use the orchestrator's resolveIRToValue helper which threads
+  // through fixedValues + bindings.
+  const muVal = orchestrator.resolveIRToValue(
+    distIR.kwargs.mu, ctx.bindings, ctx.fixedValues);
+  const covVal = orchestrator.resolveIRToValue(
+    distIR.kwargs.cov, ctx.bindings, ctx.fixedValues);
+  if (muVal == null) {
+    return Promise.reject(new Error('MvNormal: cannot resolve mu (per-atom params deferred)'));
+  }
+  if (covVal == null) {
+    return Promise.reject(new Error('MvNormal: cannot resolve cov (per-atom params deferred)'));
+  }
+  // mu may arrive as nested JS array / flat array / Value. Normalise
+  // to a Value with shape=[n].
+  const muValue = valueLib.asValue(muVal);
+  if (muValue.shape.length !== 1) {
+    return Promise.reject(new Error(
+      'MvNormal: mu must be a vector, got shape=' + JSON.stringify(muValue.shape)));
+  }
+  const n = muValue.shape[0];
+  // cov: accept nested JS array or shape=[n, n] Value.
+  const covValue = Array.isArray(covVal) && covVal.length > 0 && Array.isArray(covVal[0])
+    ? valueOps._nestedToValue(covVal)
+    : valueLib.asValue(covVal);
+  if (covValue.shape.length !== 2 || covValue.shape[0] !== n || covValue.shape[1] !== n) {
+    return Promise.reject(new Error(
+      'MvNormal: cov must be ' + n + 'x' + n + ', got shape='
+      + JSON.stringify(covValue.shape)));
+  }
+  // Cholesky factor (Value shape=[n, n]).
+  let L;
+  try {
+    L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
+  } catch (err) {
+    return Promise.reject(new Error('MvNormal: ' + err.message));
+  }
+  // Draw N × n standard normals. Use the worker to get a Float64Array
+  // of length N*n; we treat it as the atom-major shape=[N, n] buffer.
+  const N = ctx.sampleCount;
+  const stdNormalIR = {
+    kind: 'call', op: 'Normal',
+    kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
+  };
+  return ctx.sendWorker({
+    type: 'sampleN', ir: stdNormalIR, count: N, repeat: n,
+    refArrays: {},
+    seed: nameSeed(name, ctx.rootSeed),
+  }).then((reply) => {
+    // z is shape=[N, n] atom-major. Build the Value.
+    const z = { shape: [N, n], data: reply.samples };
+    // L * z: shape=[N, n] (per-atom matvec via mulN). Then add mu
+    // (atom-indep vector) via addN.
+    const Lz = valueOps.mulN(L, z, N);
+    const result = valueOps.addN(muValue, Lz, N);
+    return measureFromValue(result, {
+      logWeights: null,
+      logTotalmass: 0,
+      n_eff: N,
+    });
+  });
+}
+
 function matLogdensityof(d, ctx) {
   // Per spec §sec:posterior: broadcast logdensityof over prior atoms.
   // For each atom i of M, evaluate logp(obs | M_i). Produces a per-i
@@ -925,8 +1012,18 @@ function matLogdensityof(d, ctx) {
       + d.measureName + '" into a self-contained IR'));
   }
   const valueRefs = [];
+  const fixedRefs = [];
   orchestrator.collectSelfRefs(measureIR).forEach((n) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
+    // Fixed-phase refs (literal values, arrays/matrices, etc.) flow
+    // through the worker's session env via setEnv — they're atom-
+    // independent, so the density walker resolves them once per call
+    // rather than once per atom. valueRefs holds only the per-atom
+    // refs that need materialised refArrays.
+    if (ctx.fixedValues && ctx.fixedValues.has(n)) {
+      fixedRefs.push(n);
+      return;
+    }
     valueRefs.push(n);
   });
   return Promise.all(valueRefs.map(ctx.getMeasure)).then((refMeasures) => {
@@ -941,14 +1038,24 @@ function matLogdensityof(d, ctx) {
     }
     const observed = orchestrator.resolveIRToValue(
       d.obsIR, ctx.bindings, ctx.fixedValues);
-    return ctx.sendWorker({
+    // Push fixed-phase refs to the worker session env so the density
+    // walker (which evaluates leaf params against baseEnv) can resolve
+    // them. setEnv with merge=true so we don't clobber any
+    // host-provided session env.
+    let setEnvP = Promise.resolve();
+    if (fixedRefs.length > 0) {
+      const fixedEnv = {};
+      for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
+      setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+    }
+    return setEnvP.then(() => ctx.sendWorker({
       type: 'logDensityN',
       ir: measureIR,
       count: ctx.sampleCount,
       refArrays: refArrays,
       observed: observed,
       tally: 'clamped',
-    }).then((reply) => {
+    })).then((reply) => {
       if (!isChain) {
         return scalarMeasureN(reply.samples, {
           logWeights: null,
@@ -991,6 +1098,7 @@ const KIND_HANDLERS = {
   totalmass:    (name, d, ctx) => matTotalmass(d, ctx),
   truncate:     (name, d, ctx) => matTruncate(d, ctx),
   pushfwd:      (name, d, ctx) => matPushfwd(name, d, ctx),
+  mvnormal:     (name, d, ctx) => matMvNormal(name, d, ctx),
 };
 
 /**

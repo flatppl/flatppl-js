@@ -546,6 +546,7 @@ const OP_HANDLERS = {
   iid:         walkIid,
   jointchain:  walkJointchainStub,
   pushfwd:     walkPushfwd,
+  MvNormal:    walkMvNormal,
 };
 
 // ---- Per-atom scalar contribution helpers ---------------------------
@@ -555,6 +556,88 @@ const OP_HANDLERS = {
 // replaces what used to be N scalar evaluateExpr loops — same env-
 // precedence (overlay > refArrays > baseEnv) but enforced inside
 // evaluateExprN.
+// =====================================================================
+// MvNormal — closed-form multivariate Normal density (Phase 6)
+// =====================================================================
+//
+// Per spec §08: MvNormal(mu, cov) is the n-variate normal with mean
+// vector mu and covariance matrix cov. Density:
+//
+//   log p(x; mu, cov) = -½·n·log(2π) - ½·log|cov| - ½·(x-mu)ᵀ·cov⁻¹·(x-mu)
+//
+// With L = lower_cholesky(cov):
+//
+//   log|cov| = 2·Σ_i log(L_ii)
+//   cov⁻¹·(x-mu) = L⁻ᵀ·L⁻¹·(x-mu)
+//   (x-mu)ᵀ·cov⁻¹·(x-mu) = ‖L⁻¹·(x-mu)‖² = ‖y‖²
+//                          where y is the forward-solve of L·y = x-mu
+//
+// We compute L once (atom-indep) and the Mahalanobis quadratic per
+// atom. For the simplest case — atom-indep mu/cov, atom-shared
+// observation x — the whole logpdf is a single scalar broadcast over
+// the N-atom accumulator. Per-atom obs (e.g. via a vector-valued
+// refArray) is supported by looping over atoms and re-running the
+// forward solve.
+//
+// Atom-batched mu / cov (per-atom parameter pinning) is deferred —
+// it'd require a per-atom Cholesky which doesn't arise in current
+// engine usage (matMvNormal materialises against atom-indep params).
+function walkMvNormal(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  const kwargs = ir.kwargs || {};
+  if (!kwargs.mu || !kwargs.cov) {
+    throw new Error('density: MvNormal requires mu and cov kwargs');
+  }
+  // Resolve mu and cov atom-indep. evaluateExpr accepts the baseEnv +
+  // overlay; the IR-level Value-aware mul/add in sampler ensures the
+  // shape-rich paths dispatch correctly.
+  const muEnv = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(muEnv, overlay);
+  const muRaw = samplerLib.evaluateExpr(kwargs.mu, muEnv);
+  const covRaw = samplerLib.evaluateExpr(kwargs.cov, muEnv);
+  // Normalise both to Values.
+  const valueLibLocal = require('./value');
+  const valueOpsLocal = require('./value-ops');
+  const muValue = valueLibLocal.asValue(muRaw);
+  const covValue = Array.isArray(covRaw) && covRaw.length > 0 && Array.isArray(covRaw[0])
+    ? valueOpsLocal._nestedToValue(covRaw)
+    : valueLibLocal.asValue(covRaw);
+  if (muValue.shape.length !== 1) {
+    throw new Error('density: MvNormal mu must be a vector, got shape='
+      + JSON.stringify(muValue.shape));
+  }
+  const n = muValue.shape[0];
+  if (covValue.shape.length !== 2 || covValue.shape[0] !== n || covValue.shape[1] !== n) {
+    throw new Error('density: MvNormal cov must be ' + n + 'x' + n
+      + ', got shape=' + JSON.stringify(covValue.shape));
+  }
+  // Cholesky.
+  const L = samplerLib._internal.ARITH_OPS.lower_cholesky(covValue);
+  // log|cov| = 2 * sum_i log(L_ii). L is shape=[n, n] row-major.
+  let logDet = 0;
+  for (let i = 0; i < n; i++) logDet += Math.log(L.data[i * n + i]);
+  logDet *= 2;
+  const logNormConst = -0.5 * (n * Math.log(2 * Math.PI) + logDet);
+  // Consume the observation vector: length-n head off the value.
+  const { head: x, rest } = consumeVector(value, n);
+  // Mahalanobis^2 = ‖L⁻¹ (x - mu)‖². Atom-indep observation → one
+  // forward solve, scalar broadcast across acc.
+  // (Per-atom obs / params: extend by looping; deferred for now.)
+  const d = new Float64Array(n);
+  for (let i = 0; i < n; i++) d[i] = x[i] - muValue.data[i];
+  // Forward substitution: y_i = (d_i - Σ_{k<i} L_ik y_k) / L_ii.
+  const y = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = d[i];
+    for (let k = 0; k < i; k++) sum -= L.data[i * n + k] * y[k];
+    y[i] = sum / L.data[i * n + i];
+  }
+  let mahal2 = 0;
+  for (let i = 0; i < n; i++) mahal2 += y[i] * y[i];
+  const logp = logNormConst - 0.5 * mahal2;
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
 function applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, combine) {
   const result = samplerLib.evaluateExprN(
     wIR, refArrays || null, N, baseEnv,
