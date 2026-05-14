@@ -1160,9 +1160,25 @@ function _isShapeRich(v, N) {
   return true;
 }
 
+// Phase 2c: shape-aware add/sub/neg dispatcher (used inline in the
+// ARITH_OPS table below). Same logic as the mul dispatcher: if either
+// operand carries an intrinsic vector/matrix shape, route to
+// value-ops; otherwise stay on the scalar JS fast path.
+function _shapeAwareBinop(opName, scalarFn, a, b) {
+  if (valueLib.isValue(a) || valueLib.isValue(b)) {
+    if (_isShapeRich(a) || _isShapeRich(b)) {
+      return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
+    }
+    const av = valueLib.isValue(a) ? a.data[0] : a;
+    const bv = valueLib.isValue(b) ? b.data[0] : b;
+    return scalarFn(av, bv);
+  }
+  return scalarFn(a, b);
+}
+
 const ARITH_OPS = {
-  add: (a, b) => a + b,
-  sub: (a, b) => a - b,
+  add: (a, b) => _shapeAwareBinop('add', (x, y) => x + y, a, b),
+  sub: (a, b) => _shapeAwareBinop('sub', (x, y) => x - y, a, b),
   // mul: shape-dispatched. Bare scalars stay on the JS-multiply fast
   // path; Value inputs with rank ≥ 1 (vectors / matrices, with
   // Klein-4 transpose tag respected) route to value-ops.mul. The
@@ -1195,7 +1211,13 @@ const ARITH_OPS = {
   },
   div: (a, b) => a / b,
   mod: (a, b) => a % b,
-  neg: a => -a,
+  neg: a => {
+    if (valueLib.isValue(a)) {
+      if (_isShapeRich(a)) return valueOps.neg(a);
+      return -a.data[0];
+    }
+    return -a;
+  },
   pos: a => +a,
   // Common unary maths — extend EVALUABLE_OPS in orchestrator.js
   // alongside any addition here so the static gate matches.
@@ -1950,17 +1972,29 @@ for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
   else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
 }
 
-// Phase 2b: shape-aware mul takes precedence over the broadcast2-based
-// dispatch when either operand carries an intrinsic vector/matrix
-// shape (Value with rank ≥ 1 whose leading dim isn't the atom count).
-// Bare scalars and batched scalars stay on the scalar broadcast path.
-const _mulBroadcast = ARITH_OPS_N.mul;
-ARITH_OPS_N.mul = (args, N) => {
-  const a = args[0], b = args[1];
-  if (_isShapeRich(a, N) || _isShapeRich(b, N)) {
-    return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
-  }
-  return _mulBroadcast(args, N);
+// Phase 2b/2c: shape-aware mul / add / sub / neg take precedence over
+// the broadcast{1,2}-based dispatch when any operand carries an
+// intrinsic vector/matrix shape (Value with rank ≥ 1 whose leading
+// dim isn't the atom count). Bare scalars and batched scalars
+// (shape=[N]) stay on the scalar broadcast path.
+function _wrapShapeAwareBinopN(opName) {
+  const fallback = ARITH_OPS_N[opName];
+  return (args, N) => {
+    const a = args[0], b = args[1];
+    if (_isShapeRich(a, N) || _isShapeRich(b, N)) {
+      return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
+    }
+    return fallback(args, N);
+  };
+}
+ARITH_OPS_N.mul = _wrapShapeAwareBinopN('mul');
+ARITH_OPS_N.add = _wrapShapeAwareBinopN('add');
+ARITH_OPS_N.sub = _wrapShapeAwareBinopN('sub');
+const _negBroadcast = ARITH_OPS_N.neg;
+ARITH_OPS_N.neg = (args, N) => {
+  const a = args[0];
+  if (_isShapeRich(a, N)) return valueOps.neg(valueLib.asValue(a));
+  return _negBroadcast(args, N);
 };
 
 // =====================================================================

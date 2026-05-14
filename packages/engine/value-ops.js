@@ -265,16 +265,120 @@ function _matMatMul(A, B) {
   return { shape: [m, p], data: out };
 }
 
+// =====================================================================
+// add / sub — shape-dispatched elementwise addition / subtraction
+// =====================================================================
+//
+// Spec §07: `add` and `sub` operate on "scalars or arrays of same
+// shape". Both operands must share LOGICAL shape AND the swapped bit
+// of their tag (a column vector and a row vector of the same length
+// are NOT compatible — they have the same `shape` field but differ in
+// orientation, and elementwise data-level addition would be a category
+// error). The conjugate bit can differ for real-valued data without
+// observational effect; once complex dtypes arrive, conjugation
+// differences will need explicit handling at the per-cell level.
+//
+// Scalar broadcast is allowed in either direction (scalar + array
+// scales the scalar over every cell, tag preserved).
+
+// Build the elementwise binary op from a scalar primitive. Used to
+// generate `add` and `sub` from `(a,b) => a+b` and `(a,b) => a-b`.
+function _makeElementwiseBinop(scalarFn, opName) {
+  return function elementwiseBinop(a, b) {
+    if (!isValue(a) || !isValue(b)) {
+      throw new Error('value-ops.' + opName + ': both operands must be Values');
+    }
+    const sa = a.shape, sb = b.shape;
+    // scalar × anything → broadcast (preserve tag of the non-scalar)
+    if (sa.length === 0 && sb.length === 0) {
+      return scalar(scalarFn(a.data[0], b.data[0]));
+    }
+    if (sa.length === 0) return _scalarBroadcastBinop(scalarFn, a.data[0], b, true);
+    if (sb.length === 0) return _scalarBroadcastBinop(scalarFn, b.data[0], a, false);
+    // Both have shape. Shapes must match length-by-length.
+    if (sa.length !== sb.length) {
+      throw new Error(
+        opName + ': rank mismatch (' + JSON.stringify(sa) +
+        ' vs ' + JSON.stringify(sb) + ')');
+    }
+    for (let i = 0; i < sa.length; i++) {
+      if (sa[i] !== sb[i]) {
+        throw new Error(
+          opName + ': shape mismatch (' + JSON.stringify(sa) +
+          ' vs ' + JSON.stringify(sb) + ')');
+      }
+    }
+    // Orientation (swapped bit) must agree.
+    if (isTransposeView(a) !== isTransposeView(b)) {
+      throw new Error(
+        opName + ': cannot combine values of opposite orientation ' +
+        '(one is transposed). Apply transpose to align them first.');
+    }
+    // Elementwise on the underlying buffers — since shape and swapped
+    // bit agree, the data is laid out identically.
+    const out = new Float64Array(a.data.length);
+    for (let i = 0; i < a.data.length; i++) {
+      out[i] = scalarFn(a.data[i], b.data[i]);
+    }
+    const r = { shape: a.shape.slice(), data: out };
+    // Preserve tag — both operands share the swapped bit; for the
+    // conjugate bit (real-valued: no-op) prefer the LHS's tag.
+    if (a.t && a.t !== 'N') r.t = a.t;
+    if (a.dtype) r.dtype = a.dtype;
+    return r;
+  };
+}
+
+// scalar (JS number) + Value (any shape) → Value, with elementwise
+// broadcast. `scalarLeft` is true iff the scalar was the LHS operand
+// (important for non-commutative `sub`).
+function _scalarBroadcastBinop(scalarFn, s, v, scalarLeft) {
+  const out = new Float64Array(v.data.length);
+  if (scalarLeft) {
+    for (let i = 0; i < v.data.length; i++) out[i] = scalarFn(s, v.data[i]);
+  } else {
+    for (let i = 0; i < v.data.length; i++) out[i] = scalarFn(v.data[i], s);
+  }
+  const r = { shape: v.shape.slice(), data: out };
+  if (v.t && v.t !== 'N') r.t = v.t;
+  if (v.dtype) r.dtype = v.dtype;
+  return r;
+}
+
+const add = _makeElementwiseBinop((a, b) => a + b, 'add');
+const sub = _makeElementwiseBinop((a, b) => a - b, 'sub');
+
+// =====================================================================
+// neg — pointwise negation
+// =====================================================================
+//
+// Tag and shape are preserved; data is allocated fresh (caller may
+// mutate the input independently after this returns).
+
+function neg(a) {
+  if (!isValue(a)) throw new Error('value-ops.neg: argument must be a Value');
+  const out = new Float64Array(a.data.length);
+  for (let i = 0; i < a.data.length; i++) out[i] = -a.data[i];
+  const r = { shape: a.shape.slice(), data: out };
+  if (a.t && a.t !== 'N') r.t = a.t;
+  if (a.dtype) r.dtype = a.dtype;
+  return r;
+}
+
 module.exports = {
   mul,
-  // Exposed for direct use / test access; the public `mul` already
-  // covers every dispatch path.
+  add,
+  sub,
+  neg,
+  // Exposed for direct use / test access; the public functions cover
+  // every dispatch path.
   _innerProduct,
   _outerProduct,
   _matVecMul,
   _vecMatMul,
   _matMatMul,
   _scalarBroadcastMul,
+  _scalarBroadcastBinop,
   _matIdxN,
   _matIdxT,
 };
