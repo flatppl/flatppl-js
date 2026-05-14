@@ -271,7 +271,16 @@ function measureFromValue(v, extras) {
     logTotalmass: extras.logTotalmass != null ? extras.logTotalmass : 0,
     n_eff:        extras.n_eff != null ? extras.n_eff : N,
   };
-  if (dims) m.dims = dims;
+  // Vector-atom measures carry the legacy `dims` + `shape: 'array'`
+  // discriminator so downstream consumers (viewer plot dispatcher,
+  // empirical.shapeOf, joint diagnostics) classify them uniformly with
+  // matIid-produced array-shape measures. Without the `shape: 'array'`
+  // marker, the viewer treats vector-atom data as scalar atoms and
+  // mis-plots the result.
+  if (dims) {
+    m.dims = dims;
+    m.shape = 'array';
+  }
   return m;
 }
 
