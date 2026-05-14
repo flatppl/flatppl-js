@@ -646,6 +646,37 @@ d      = densityof(y_dist, 1.5)
 });
 
 // =====================================================================
+// totalmass — scalar mass-of-measure binding
+// =====================================================================
+//
+// `r = totalmass(M)` classifies as kind='totalmass' with the measure
+// name attached. The materialiser broadcasts exp(M.logTotalmass) over
+// the global sample count; here we only check the orchestrator
+// correctly identifies the binding and cascade-prunes when M isn't
+// derivable.
+
+test('totalmass: classifies with measure name', () => {
+  const { derivations } = derivationsOf(`
+m = weighted(0.5, Normal(mu = 0.0, sigma = 1.0))
+z = totalmass(m)
+`);
+  assert.ok(derivations.z, 'z should be derivable');
+  assert.equal(derivations.z.kind, 'totalmass');
+  assert.equal(derivations.z.measureName, 'm');
+});
+
+test('totalmass: cascade-prunes when measure isn\'t derivable', () => {
+  // Same pruning story as logdensityof: a kernel isn't a measure-
+  // graph derivation, so totalmass(k) must not appear.
+  const { derivations } = derivationsOf(`
+m = Normal(mu = 0.0, sigma = 1.0)
+k = kernelof(m)
+z = totalmass(k)
+`);
+  assert.ok(!('z' in derivations));
+});
+
+// =====================================================================
 // fchain — applied function composition unrolls to nested calls
 // =====================================================================
 //

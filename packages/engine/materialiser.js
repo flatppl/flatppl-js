@@ -502,6 +502,29 @@ function matBayesupdate(d, ctx) {
     });
 }
 
+function matTotalmass(d, ctx) {
+  // totalmass(M): per spec §06, scalar mass of a (possibly
+  // unnormalized) measure. The orchestrator tracks each measure's
+  // logTotalmass through every materialisation step (algebraic
+  // propagation for joint / iid / weighted / superpose / normalize,
+  // empirical logSumExp for reweighted measures). totalmass(M)
+  // exposes that as a per-atom scalar value — broadcast since we
+  // track a single ensemble logTotalmass per measure today; per-atom
+  // tracking is a separate refinement.
+  return ctx.getMeasure(d.measureName).then((m) => {
+    const N = ctx.sampleCount;
+    const tm = Math.exp(typeof m.logTotalmass === 'number' ? m.logTotalmass : 0);
+    const samples = new Float64Array(N);
+    samples.fill(tm);
+    return {
+      samples: samples,
+      logWeights: null,
+      logTotalmass: 0,
+      n_eff: N,
+    };
+  });
+}
+
 function matLogdensityof(d, ctx) {
   // Per spec §sec:posterior: broadcast logdensityof over prior atoms.
   // For each atom i of M, evaluate logp(obs | M_i). Produces a per-i
@@ -558,6 +581,7 @@ const KIND_HANDLERS = {
   superpose:    (name, d, ctx) => matSuperpose(name, d, ctx),
   bayesupdate:  (name, d, ctx) => matBayesupdate(d, ctx),
   logdensityof: (name, d, ctx) => matLogdensityof(d, ctx),
+  totalmass:    (name, d, ctx) => matTotalmass(d, ctx),
 };
 
 /**

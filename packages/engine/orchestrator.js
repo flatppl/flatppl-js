@@ -2422,6 +2422,21 @@ function classifyLogdensityof(rhsIR, ast, bindings) {
   return { kind: 'logdensityof', measureName: Mref.name, obsIR };
 }
 
+/**
+ * Classify `totalmass(M)` (spec §06) as a derivation that surfaces
+ * the measure's tracked totalmass as a per-atom scalar value. The
+ * materialiser reads M's `logTotalmass` and broadcasts `exp(...)` to
+ * N atoms. Supported when M is a self-ref to a measure binding the
+ * orchestrator can materialise (anything expandMeasureIR handles).
+ */
+function classifyTotalmass(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
+  const Mref = rhsIR.args[0];
+  if (!isSelfRef(Mref)) return null;
+  if (!bindings.has(Mref.name)) return null;
+  return { kind: 'totalmass', measureName: Mref.name };
+}
+
 const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
@@ -2431,6 +2446,7 @@ const MEASURE_OP_CLASSIFIERS = {
   joint:        classifyRecordOrJoint,
   iid:          classifyIid,
   logdensityof: classifyLogdensityof,
+  totalmass:    classifyTotalmass,
 };
 
 /**
@@ -2512,6 +2528,9 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   // Static array literals carry no refs by construction.
   if (d.kind === 'array') return true;
   if (d.kind === 'logdensityof') {
+    return resolvable(d.measureName);
+  }
+  if (d.kind === 'totalmass') {
     return resolvable(d.measureName);
   }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;

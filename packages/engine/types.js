@@ -702,6 +702,16 @@ const SIGNATURE_FACTORIES = {
     kwargs: {},
     result: REAL,
   }),
+  // totalmass(M) — scalar mass of a (possibly unnormalized) measure.
+  // For closed-form M, this is a deterministic scalar; for measures
+  // with parameterized weights it varies with the parameters. The
+  // engine materialises it from each measure's tracked logTotalmass
+  // (real-scale via exp) at sample time.
+  totalmass: () => ({
+    args: [measure(tvar('T'))],
+    kwargs: {},
+    result: REAL,
+  }),
 };
 
 function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }
