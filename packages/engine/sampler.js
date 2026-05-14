@@ -1101,6 +1101,46 @@ const ARITH_OPS = {
   // as (call vector (lit …) (lit …) …) IR. Reductions below take
   // these arrays directly.
   vector: (...xs) => xs,
+  // cat(...) — structural concatenation per spec §07. Three shape
+  // classes; mixing is a runtime error (the type checker rejects
+  // most mixes statically but the runtime check guards programmatic
+  // cases). Like `vector`, cat lives in ARITH_OPS so fixed-phase
+  // pre-eval and fn-body evaluations can compute it, but it is NOT
+  // listed in EVALUABLE_OPS — cat of stochastic refs produces a
+  // per-atom vector, which doesn't fit the scalar-per-atom worker
+  // contract. Vector-valued stochastic bindings have their own
+  // tuple / array materialiser paths.
+  cat: (...xs) => {
+    if (xs.length === 0) return [];
+    const first = xs[0];
+    if (typeof first === 'number') {
+      return xs.slice();
+    }
+    if (Array.isArray(first) || (first && first.BYTES_PER_ELEMENT)) {
+      const out = [];
+      for (let j = 0; j < xs.length; j++) {
+        const v = xs[j];
+        for (let i = 0; i < v.length; i++) out.push(v[i]);
+      }
+      return out;
+    }
+    if (first && typeof first === 'object') {
+      const out = {};
+      for (let j = 0; j < xs.length; j++) {
+        const r = xs[j];
+        for (const k in r) {
+          if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+          if (k in out) {
+            throw new Error("cat: duplicate field '" + k + "'");
+          }
+          out[k] = r[k];
+        }
+      }
+      return out;
+    }
+    throw new Error('cat: unsupported argument shape (got '
+      + (typeof first) + ')');
+  },
   // Reductions over an array. Operate on JS arrays / TypedArrays
   // alike (both expose .length and indexed access). Spec semantics:
   //   sum     = Σ x[i]

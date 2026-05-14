@@ -106,7 +106,14 @@ test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () =
 // deliberately NOT in EVALUABLE_OPS — per the comment in orchestrator.js,
 // stochastic-element arrays like `[mu, 1.0]` must NOT classify as evaluable;
 // the kind:'array' / kind:'tuple' derivations own that path.
-const EVALUABLE_OPS_EXEMPTIONS = new Set(['vector']);
+const EVALUABLE_OPS_EXEMPTIONS = new Set([
+  'vector',
+  // `cat` deliberately NOT in EVALUABLE_OPS — same reasoning as
+  // `vector`: cat of stochastic refs would produce per-atom vectors,
+  // which the scalar-per-atom worker can't handle. cat lives in
+  // ARITH_OPS so it works inside fn bodies and fixed-phase pre-eval.
+  'cat',
+]);
 
 test('invariant: every ARITH_OPS key is in EVALUABLE_OPS (or exempt)', () => {
   for (const op of Object.keys(sampler._internal.ARITH_OPS)) {
