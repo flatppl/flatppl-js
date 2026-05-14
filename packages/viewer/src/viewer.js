@@ -2908,14 +2908,16 @@
             + 'Wrap in normalize(...) to rescale.';
           massSpan.style.opacity = '0.9';
           wrap.appendChild(massSpan);
-          // Visual separator between badges. flexbox `gap` adds space
-          // but no glyph — without a separator the readout reads as
-          // "total mass: <X> 10⁵ samples" run-on. A subdued middle dot
-          // is the conventional badge separator and stays readable
-          // against dark backgrounds.
+          // Visual separator between badges. A middle dot collides
+          // with the math context here — `exp(-20.564) · 10⁵` reads as
+          // a product. A pipe stays neutral and is the conventional
+          // "and now a different stat" separator in technical UIs.
+          // We also bump the surrounding gap so the boundary is
+          // visually distinct without needing a heavy glyph.
           var sep = document.createElement('span');
-          sep.textContent = '·';
-          sep.style.opacity = '0.5';
+          sep.textContent = '│';   // U+2502 BOX DRAWINGS LIGHT VERTICAL
+          sep.style.opacity = '0.35';
+          sep.style.margin = '0 0.25em';
           wrap.appendChild(sep);
         }
       }
