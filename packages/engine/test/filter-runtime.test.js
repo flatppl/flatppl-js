@@ -200,6 +200,28 @@ ys = broadcast(fn(_ + 1.0), xs)
   assert.deepEqual(r.fixedValues.get('ys'), []);
 });
 
+test('broadcasted(f): direct application becomes broadcast', () => {
+  const r = buildFixed(`
+xs = [1.0, 2.0, 3.0]
+ys = [10.0, 20.0, 30.0]
+sums = broadcasted(add)(xs, ys)
+`);
+  assert.deepEqual(r.fixedValues.get('sums'), [11, 22, 33]);
+});
+
+test('broadcasted(f): via named binding (HEP-style bcadd / bcmul)', () => {
+  const r = buildFixed(`
+bcadd = broadcasted(add)
+bcmul = broadcasted(mul)
+mu = 2.0
+sig = [1.0, 2.0, 3.0]
+bkg = [10.0, 20.0, 30.0]
+expected = bcadd(bcmul([mu, mu, mu], sig), bkg)
+`);
+  // bcmul([2,2,2], [1,2,3]) = [2, 4, 6]; bcadd with [10, 20, 30] = [12, 24, 36]
+  assert.deepEqual(r.fixedValues.get('expected'), [12, 24, 36]);
+});
+
 test('broadcast: length mismatch ⇒ pre-eval silently skips on throw', () => {
   const r = buildFixed(`
 xs = [1.0, 2.0, 3.0]
