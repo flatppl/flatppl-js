@@ -90,6 +90,41 @@ const rngLib = require('./rng');
 const samplerLib = require('./sampler');
 const densityLib = require('./density');
 
+// Phase 8: refArrays now uniformly carry Values (post-Phase-7b/8
+// unification). Worker handlers like sampleN / truncateSampleN read
+// refArrays per-atom via `refArrays[k][i]` and only need the scalar
+// per-atom value, not shape metadata. Unwrap Values to their data
+// buffer (the Float64Array of the leading-N axis) at handler entry
+// so the existing hot-loop indexing keeps working unchanged.
+//
+// shape=[N] Values reduce to a Float64Array(N) — the legacy form.
+// shape=[N, k] vector-atom Values are NOT a valid sampleN input
+// (kwarg expressions expect scalar refs); we leave them as-is and
+// any downstream `[i]` indexing will surface a clear error.
+function _unwrapRefArrays(refArrays) {
+  if (!refArrays) return refArrays;
+  let needsCopy = false;
+  for (const k in refArrays) {
+    const v = refArrays[k];
+    if (v && Array.isArray(v.shape)
+        && v.data && v.data.BYTES_PER_ELEMENT !== undefined) {
+      needsCopy = true;
+      break;
+    }
+  }
+  if (!needsCopy) return refArrays;
+  const out = {};
+  for (const k in refArrays) {
+    const v = refArrays[k];
+    out[k] = (v && Array.isArray(v.shape)
+              && v.data && v.data.BYTES_PER_ELEMENT !== undefined
+              && v.shape.length === 1)
+      ? v.data
+      : v;
+  }
+  return out;
+}
+
 function createWorkerHandler(opts = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
   // when no explicit seed is passed. The new sampleN path takes a per-
@@ -99,6 +134,11 @@ function createWorkerHandler(opts = {}) {
 
   function handle(msg) {
     const id = msg.id;
+    // Normalise refArrays at the worker boundary: shape=[N] Values
+    // unwrap to bare Float64Arrays so handler hot loops stay simple.
+    // Phase 8: this is the boundary between the engine's internal
+    // Value contract and the worker's bytes-friendly index path.
+    if (msg && msg.refArrays) msg = { ...msg, refArrays: _unwrapRefArrays(msg.refArrays) };
     try {
       switch (msg.type) {
         case 'init': {

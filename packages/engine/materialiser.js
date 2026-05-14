@@ -114,17 +114,25 @@ function collectRefArrays(ir, fixedValues, getMeasure) {
   return Promise.all(names.map(getMeasure)).then((measures) => {
     const out = {};
     for (let i = 0; i < names.length; i++) {
-      // Phase 7b: prefer the shape-tagged Value view for vector-atom
-      // parents (matIid etc. — `.dims` indicates intrinsic shape per
-      // atom). Scalar-atom parents continue to surface as bare
-      // Float64Arrays for back-compat with consumers that index
-      // `refArrays[name][i]`. Vector-atom refs require a Value-aware
-      // consumer (the per-atom-fallback handles both forms).
+      // Phase 8: refArrays uniformly carry Values internally. Phase 4b
+      // ensures every scalar-leaf Measure has a populated `.value`
+      // (shape=[N] for scalar atoms, shape=[N, ...dims] for vector
+      // atoms). Consumers — _perAtomFallback / walkLeaf accessors,
+      // broadcast helpers — assume Value inputs and dispatch on shape.
+      // The legacy "Float64Array for scalar-atom parents" path is gone;
+      // the uniform Value type is the single internal contract.
       const m = measures[i];
-      if (m.dims && m.value) {
+      if (m.value) {
         out[names[i]] = m.value;
+      } else if (m.samples) {
+        // Defensive: pre-Phase-4b measures (shouldn't exist post-
+        // migration, but guard for hand-crafted Measure inputs in
+        // tests that bypass the materialiser).
+        out[names[i]] = valueLib.batchedScalar(m.samples);
       } else {
-        out[names[i]] = m.samples;
+        // No data at all — shouldn't happen for scalar-leaf measures.
+        throw new Error('collectRefArrays: measure for "' + names[i]
+          + '" has neither .value nor .samples');
       }
     }
     return out;
@@ -314,12 +322,19 @@ function matEvaluate(d, ctx) {
   return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures) => {
     const refArrays = {};
     for (let i = 0; i < parentNames.length; i++) {
-      // Phase 7b: surface the Value form for vector-atom parents so
-      // shape-aware ops (reductions over per-atom vectors, etc.)
-      // dispatch correctly via the per-atom fallback's Value-aware
-      // accessor. Scalar-atom parents keep the bare Float64Array path.
+      // Phase 8: uniform Value refArrays internally. Mirrors
+      // collectRefArrays. Phase 4b populates `.value` on every
+      // scalar-leaf parent; we fall back to wrapping `.samples`
+      // defensively for pre-migration measures.
       const m = parentMeasures[i];
-      refArrays[parentNames[i]] = (m.dims && m.value) ? m.value : m.samples;
+      if (m.value) {
+        refArrays[parentNames[i]] = m.value;
+      } else if (m.samples) {
+        refArrays[parentNames[i]] = valueLib.batchedScalar(m.samples);
+      } else {
+        throw new Error('matEvaluate: parent "' + parentNames[i]
+          + '" has neither .value nor .samples');
+      }
     }
     return ctx.sendWorker({
       type: 'evaluateN',

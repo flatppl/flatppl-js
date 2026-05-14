@@ -1229,32 +1229,33 @@ function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
   if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) {
     callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
   }
-  // Pre-compute per-ref accessors. For scalar-atom refs the entry is a
-  // Float64Array(N) and refArrays[k][i] picks the atom. For vector-
-  // atom refs the entry is a Value with shape=[N, k...] (Phase 7b);
-  // atom i is a length-prod(rest) sub-Value (or a length-1 scalar for
-  // shape=[N]). Computing the access pattern once per ref avoids the
-  // typeof-check in the hot N-atom loop.
+  // Pre-compute per-ref accessors. Phase 8: refArrays uniformly carry
+  // Values internally (post unification); legacy Float64Array entries
+  // are accepted as a back-compat path for tests that pass refArrays
+  // directly. shape=[N] (scalar atoms) → `i => data[i]`; shape=[N,
+  // ...rest] (vector / matrix atoms) → atom i is a length-prod(rest)
+  // sub-Value (subarray view). Computing the access pattern once per
+  // ref keeps the inner N-atom loop branch-free.
   const accessors = new Array(refNames.length);
   for (let j = 0; j < refNames.length; j++) {
     const k = refNames[j];
     const v = refArrays[k];
     if (valueLib.isValue(v)) {
       const shape = v.shape;
+      const data = v.data;
       if (shape.length === 1) {
-        const data = v.data;
         accessors[j] = (i) => data[i];
       } else {
-        // shape=[N, ...rest]. Atom i occupies a contiguous slice.
         const tailDims = shape.slice(1);
         const tailLen = tailDims.reduce((a, b) => a * b, 1);
-        const data = v.data;
         accessors[j] = (i) => ({
           shape: tailDims,
           data: data.subarray(i * tailLen, (i + 1) * tailLen),
         });
       }
     } else {
+      // Back-compat: refArrays passed directly as a Float64Array (by
+      // tests / external callers that haven't migrated to Values).
       const arr = v;
       accessors[j] = (i) => arr[i];
     }
