@@ -758,6 +758,14 @@ function liftInlineSubexpressions(bindings) {
   // needs the lifted shape too.
   for (const [name, binding] of bindings) {
     if (!binding.node || !binding.node.value) continue;
+    // Detect `chain(...)` as the original binding head BEFORE lift. The
+    // chain rewrite drops the prior fields, leaving a joint(K_body_fields)
+    // shape indistinguishable from `jointchain(...)` w/o prior fields or
+    // a direct `joint(...)` of the same fields — but the density
+    // semantics differs: chain marginalises over the prior, jointchain
+    // doesn't. We tag the binding so matLogdensityof can apply the
+    // MC marginal-density reduction (logsumexp − log N) when scoring.
+    const chainOrigin = isChainCall(binding.node.value);
     let cloned = cloneAst(binding.node.value);
     cloned = inlineUserCall(cloned);
     visit(cloned);
@@ -780,7 +788,14 @@ function liftInlineSubexpressions(bindings) {
       ...binding,
       node: { ...binding.node, value: cloned },
       effectiveValue: effLifted,
+      ...(chainOrigin ? { _chainOrigin: true } : {}),
     });
+  }
+
+  function isChainCall(ast) {
+    return ast && ast.type === 'CallExpr'
+      && ast.callee && ast.callee.type === 'Identifier'
+      && ast.callee.name === 'chain';
   }
 
   // Post-pass: cache the lowered IR alongside the AST on every binding
@@ -1893,7 +1908,17 @@ function buildDerivations(bindings) {
   // unsupported, A also drops.
   for (const [name, binding] of bindings) {
     const d = classifyDerivation(binding, bindings);
-    if (d) derivations[name] = d;
+    if (d) {
+      // Propagate the _chainOrigin marker from the binding to the
+      // derivation so the materialiser can detect chain measures and
+      // apply MC marginal-density reduction at scoring time. The
+      // chain rewrite has already produced a record-shaped IR (K's
+      // body fields without prior fields), so the derivation's
+      // structural kind stays 'record' — the marker only affects
+      // density semantics (sampling is identical to a plain record).
+      if (binding._chainOrigin) d.chainOrigin = true;
+      derivations[name] = d;
+    }
   }
 
   // Fixed-phase pre-evaluation. Walk fixed-phase bindings in topo

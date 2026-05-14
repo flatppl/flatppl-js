@@ -348,6 +348,63 @@ lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
     + lp.samples[0] + ' (expected ' + expected + ')');
 });
 
+// =====================================================================
+// chain(M, K) — Kleisli composition with prior marginalisation
+// =====================================================================
+
+test('chain: produces a measure of K\'s body fields only (no prior)', async () => {
+  // chain(M, K) drops the prior fields and keeps only K's body —
+  // semantically marginalising the prior away. The materialiser
+  // samples K(prior_atom_i) per atom; the binding's chainOrigin
+  // flag survives so density evaluation knows to MC-marginalise.
+  const ctx = makeCtx(`
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+prior = lawof(record(theta1 = theta1))
+obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
+forward_kernel = functionof(obs_dist, theta1 = theta1)
+predictive = chain(prior, forward_kernel)
+`);
+  const d = ctx.derivations.predictive;
+  assert.ok(d, 'predictive should be derivable');
+  assert.equal(d.kind, 'record');
+  assert.deepEqual(Object.keys(d.fields), ['y']);
+  assert.ok(d.chainOrigin === true,
+    'chainOrigin flag should be set so matLogdensityof picks up marginalisation');
+});
+
+test('chain: logdensityof marginalises via MC (logsumexp − log N)', async () => {
+  // Closed-form check: chain(Normal(0,1), x ↦ Normal(x, 1)) is
+  // Normal(0, √2). The MC estimator of its log-density at obs=0 is
+  //   logsumexp_i { log p(0 | Normal(prior_i, 1)) } − log N
+  // which converges to log p(0 | Normal(0, √2)) = −½log(2π) − ½log(2).
+  // We check the broadcast scalar at atom 0 against the analytic
+  // value within a generous tolerance (MC standard error at 1024
+  // atoms is roughly 0.05 on the log scale).
+  const ctx = makeCtx(`
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+prior = lawof(record(theta1 = theta1))
+obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
+forward_kernel = functionof(obs_dist, theta1 = theta1)
+predictive = chain(prior, forward_kernel)
+lp = logdensityof(predictive, record(y = 0.0))
+`);
+  const lp = await ctx.getMeasure('lp');
+  // All atoms broadcast the same MC estimate.
+  const v0 = lp.samples[0];
+  for (let i = 1; i < lp.samples.length; i++) {
+    assert.equal(lp.samples[i], v0,
+      'chain marginal logp should be broadcast (atom ' + i + ' differs)');
+  }
+  // Analytical marginal: Normal(0, sqrt(2)) at y=0.
+  const LOG_2PI = Math.log(2 * Math.PI);
+  const expected = -0.5 * LOG_2PI - 0.5 * Math.log(2);
+  assert.ok(Math.abs(v0 - expected) < 0.1,
+    'MC marginal logp should match analytic Normal(0, √2) within MC error, got '
+    + v0 + ' (expected ' + expected + ')');
+  // n_eff collapses to 1 — there's one estimator here.
+  assert.equal(lp.n_eff, 1);
+});
+
 test('jointchain: positional scalar form logdensityof', async () => {
   // funnel = jointchain(Exp(1), fn(Normal(1, _))) — variate is [a, b]
   // with a ~ Exp(1) and b ~ Normal(1, a). Positional jointchain lifts

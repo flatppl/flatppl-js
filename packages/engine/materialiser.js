@@ -721,6 +721,25 @@ function matLogdensityof(d, ctx) {
   // Per spec §sec:posterior: broadcast logdensityof over prior atoms.
   // For each atom i of M, evaluate logp(obs | M_i). Produces a per-i
   // value (a scalar binding) — no logWeights, no totalmass mutation.
+  //
+  // chain MARGINALISATION: when the measure was originally a
+  // `chain(prior, K)` (per spec §06 ν(B) = ∫ K(a, B) dμ(a)), the
+  // per-atom log-likelihoods we compute below are exactly the
+  // integrand evaluated at MC samples a_i ~ μ. The marginal
+  // log-density of the chain at obs is:
+  //
+  //   log p_ν(obs) = log ∫ p_K(obs | a) dμ(a)
+  //                ≈ logsumexp_i { log p_K(obs | a_i) } − log N
+  //
+  // We detect chain origin via the derivation's chainOrigin flag
+  // (set by buildDerivations from the binding's pre-lift surface)
+  // and reduce the per-atom output to this scalar, broadcast to N
+  // for shape consistency with the per-atom convention. n_eff
+  // collapses to 1 — there's only one estimator here, even though
+  // it's built from N prior samples.
+  const measureDeriv = ctx.derivations[d.measureName];
+  const isChain = !!(measureDeriv && measureDeriv.chainOrigin);
+
   const measureIR = orchestrator.expandMeasureIR(d.measureName, ctx.derivations);
   if (!measureIR) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
@@ -747,12 +766,28 @@ function matLogdensityof(d, ctx) {
       refArrays: refArrays,
       observed: observed,
       tally: 'clamped',
-    }).then((reply) => ({
-      samples: reply.samples,
-      logWeights: null,
-      logTotalmass: 0,
-      n_eff: reply.samples.length,
-    }));
+    }).then((reply) => {
+      if (!isChain) {
+        return {
+          samples: reply.samples,
+          logWeights: null,
+          logTotalmass: 0,
+          n_eff: reply.samples.length,
+        };
+      }
+      // chain marginalisation reduction.
+      const perAtom = reply.samples;
+      const lse = empirical.logSumExp(perAtom);
+      const margLogp = lse - Math.log(perAtom.length);
+      const out = new Float64Array(perAtom.length);
+      out.fill(margLogp);
+      return {
+        samples: out,
+        logWeights: null,
+        logTotalmass: 0,
+        n_eff: 1,
+      };
+    });
   });
 }
 
