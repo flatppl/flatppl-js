@@ -1047,7 +1047,14 @@ function liftInlineSubexpressions(bindings) {
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
       astArg = inlineDensityof(astArg);
-      astArg = inlinePushfwd(astArg);
+      // pushfwd is now a first-class measure-op (classifyPushfwd +
+      // matPushfwd in materialiser + density.walkPushfwd). The legacy
+      // AST-rewrite to lawof(f(draw(M))) is no longer needed; sampling
+      // and density both consult the proper pushfwd derivation
+      // structure. Only the f-position lift remains — inline
+      // fn / functionof shapes get hoisted to anon bindings so the
+      // classifier sees a clean self-ref.
+      astArg = inlinePushfwdLift(astArg);
       astArg = inlineFilterLift(astArg);
       astArg = inlineBroadcasted(astArg);
     }
@@ -1129,6 +1136,32 @@ function liftInlineSubexpressions(bindings) {
    * `filter(pred_ref, data)` shape so analyzer / typer see the
    * normal form.
    */
+  /**
+   * Lift the function arg of `pushfwd(f, M)` to a named binding if
+   * it's an inline function expression. Mirrors inlineFilterLift's
+   * shape: classifyPushfwd expects a self-ref to a fn / functionof /
+   * kernelof / bijection binding; inline `fn(...)` / `functionof(...)`
+   * shapes get hoisted to anon bindings here.
+   */
+  function inlinePushfwdLift(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'pushfwd') return astArg;
+    if (!astArg.args || astArg.args.length !== 2) return astArg;
+    let fArg = astArg.args[0];
+    if (fArg.type === 'KeywordArg') return astArg;
+    if (fArg.type === 'Identifier') return astArg;
+    visit(fArg);
+    if (fArg.type === 'Identifier') {
+      astArg.args[0] = fArg;
+      return astArg;
+    }
+    const n = freshName();
+    out.set(n, makeSyntheticBinding(n, fArg));
+    astArg.args[0] = makeIdent(n, astArg.loc);
+    return astArg;
+  }
+
   function inlineFilterLift(astArg) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
@@ -1147,106 +1180,6 @@ function liftInlineSubexpressions(bindings) {
     out.set(n, makeSyntheticBinding(n, fArg));
     astArg.args[0] = makeIdent(n, astArg.loc);
     return astArg;
-  }
-
-  /**
-   * Rewrite `pushfwd(f, M)` per spec §06: pushforward of measure M
-   * through function f. Sampling reduces to "draw from M, apply f" —
-   * we lower to `lawof(f(draw(M)))` so the existing variate / evaluate
-   * machinery handles sampling end-to-end. Density evaluation needs
-   * the bijection's inverse + log-volume-element (the `bijection`
-   * annotation in spec §sec:bijection) and is not yet wired through.
-   *
-   *   pushfwd(f, M)  →  lawof(f(draw(M)))
-   *
-   * Mechanics:
-   *   1. Lift M to an anon binding if not already an Identifier.
-   *   2. Synthesize `__anon_m = draw(M_ref)` — the variate.
-   *   3. Build `f(__anon_m)` and call inlineUserCall on it so any
-   *      fn / functionof / kernelof body gets substituted with the
-   *      variate ref. The result becomes the variate-derived value
-   *      expression.
-   *   4. Synthesize `__anon_y = <step-3 result>` — the pushed value.
-   *   5. Return `lawof(__anon_y)` — classifier sees this and aliases
-   *      to __anon_y's law.
-   *
-   * Constraints (Phase 1):
-   *   - f must be an Identifier whose binding is functionof / kernelof /
-   *     fn. Built-in function refs by bare name (`pushfwd(exp, M)`)
-   *     defer to Phase 2; the user can wrap them in fn (`fn(exp(_))`)
-   *     today.
-   */
-  function inlinePushfwd(astArg) {
-    if (!astArg || astArg.type !== 'CallExpr') return astArg;
-    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
-    if (astArg.callee.name !== 'pushfwd') return astArg;
-    if (!astArg.args || astArg.args.length !== 2) return astArg;
-    let fArg = astArg.args[0];
-    let mArg = astArg.args[1];
-    if (fArg.type === 'KeywordArg' || mArg.type === 'KeywordArg') return astArg;
-
-    // Lift M to an anon binding so the synthesized draw has a clean
-    // measure ref to point at. Skip if M is already an Identifier.
-    if (mArg.type !== 'Identifier') {
-      const n = freshName();
-      out.set(n, makeSyntheticBinding(n, mArg));
-      mArg = makeIdent(n, astArg.loc);
-    }
-    // f must be a callable binding (fn / functionof / kernelof) or an
-    // inline expression that lifts to one. Lift inline expressions
-    // through visit + the surrounding lift pass so anonymous fn(...)
-    // shapes turn into fn-typed anon bindings before we inspect them.
-    if (fArg.type !== 'Identifier') {
-      visit(fArg);
-      if (fArg.type !== 'Identifier') {
-        const n = freshName();
-        out.set(n, makeSyntheticBinding(n, fArg));
-        fArg = makeIdent(n, astArg.loc);
-      }
-    }
-    const fBinding = out.get(fArg.name);
-    if (!fBinding) return astArg;
-    if (fBinding.type !== 'fn' && fBinding.type !== 'functionof'
-        && fBinding.type !== 'kernelof') return astArg;
-
-    // Synthesise __anon_m = draw(M).
-    const mDrawName = freshName();
-    const mDraw = {
-      type: 'CallExpr',
-      callee: makeIdent('draw', astArg.loc),
-      args: [makeIdent(mArg.name, astArg.loc)],
-      loc: astArg.loc,
-    };
-    out.set(mDrawName, makeSyntheticBinding(mDrawName, mDraw));
-
-    // Apply f to __anon_m. inlineOnce substitutes the fn / functionof
-    // body, replacing the parameter with a ref to mDrawName. The
-    // resulting AST is the value expression for the pushed variate.
-    const fCall = {
-      type: 'CallExpr',
-      callee: makeIdent(fArg.name, astArg.loc),
-      args: [makeIdent(mDrawName, astArg.loc)],
-      loc: astArg.loc,
-    };
-    const yExpr = inlineOnce(fCall);
-    if (yExpr === fCall) return astArg;  // f not inlineable here
-
-    // Synthesise __anon_y = <yExpr>. Visit it so any nested inline
-    // measure / value expressions in the substituted body get lifted.
-    visit(yExpr);
-    const yName = freshName();
-    out.set(yName, makeSyntheticBinding(yName, yExpr));
-
-    // Return lawof(__anon_y): the binding's law becomes the pushed
-    // measure. The classifier turns lawof(<ref>) into an alias of
-    // <ref>'s sample-step measure, so materialisation works through
-    // existing matSample / matEvaluate paths.
-    return {
-      type: 'CallExpr',
-      callee: makeIdent('lawof', astArg.loc),
-      args: [makeIdent(yName, astArg.loc)],
-      loc: astArg.loc,
-    };
   }
 
   /**
@@ -2883,6 +2816,40 @@ function classifyTruncate(rhsIR, ast, bindings) {
   return { kind: 'truncate', from: baseName, setDescr };
 }
 
+// pushfwd(f, M) — first-class measure-op classifier. Per spec §06:
+// pushforward of measure M through function f. The result is a measure
+// whose variate is `f(x)` for x ~ M.
+//
+// Sampling (matPushfwd): one batched call to evaluateExprN over M's
+// per-atom samples. Density (density.walkPushfwd): score M at
+// f_inv(y), subtract logvolume(f_inv(y)) — requires the f arg to be
+// a `bijection(...)` annotation (otherwise density isn't tractable in
+// general and we throw a clear error).
+//
+// Supported f bindings: fn / functionof / kernelof / bijection. The
+// pushfwd's f-position lift signature (see signatureOf) lifts inline
+// fn / functionof shapes to anon bindings, so by the time we classify
+// here both args are self-refs.
+function classifyPushfwd(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const fIR = rhsIR.args[0];
+  const mIR = rhsIR.args[1];
+  if (!isSelfRef(fIR) || !isSelfRef(mIR)) return null;
+  const fBinding = bindings.get(fIR.name);
+  const mBinding = bindings.get(mIR.name);
+  if (!fBinding || !mBinding) return null;
+  // f must be a function-typed binding so matPushfwd can find a body
+  // to evaluate. bijection-annotated functions are themselves
+  // functionof-shaped (the underlying f's body); they classify here
+  // identically and density-side dispatch reads the bijection metadata
+  // separately via opts.resolveBijection.
+  if (fBinding.type !== 'fn' && fBinding.type !== 'functionof'
+      && fBinding.type !== 'kernelof' && fBinding.type !== 'bijection') {
+    return null;
+  }
+  return { kind: 'pushfwd', from: mIR.name, fnRef: fIR.name };
+}
+
 const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
@@ -2894,6 +2861,7 @@ const MEASURE_OP_CLASSIFIERS = {
   logdensityof: classifyLogdensityof,
   totalmass:    classifyTotalmass,
   truncate:     classifyTruncate,
+  pushfwd:      classifyPushfwd,
 };
 
 /**
@@ -2956,6 +2924,11 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   }
   // iid: the inner measure must be resolvable.
   if (d.kind === 'iid') {
+    return resolvable(d.from);
+  }
+  // pushfwd: the base measure must be resolvable. f is a function
+  // binding referenced by name; we trust the binding map.
+  if (d.kind === 'pushfwd') {
     return resolvable(d.from);
   }
   if (d.kind === 'bayesupdate') {
@@ -3224,6 +3197,18 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         return {
           kind: 'call', op: 'logweighted',
           args: [{ kind: 'lit', value: d.logShift }, inner],
+        };
+      }
+      case 'pushfwd': {
+        // pushfwd(f, M): the f-arg surfaces as a self-ref to the
+        // function binding (so density.js can look up bijection
+        // metadata via opts.resolveBijection). The M-arg is expanded
+        // recursively into its own measure IR.
+        const inner = expandMeasureIR(d.from, derivations, next, bindings);
+        if (!inner) return null;
+        return {
+          kind: 'call', op: 'pushfwd',
+          args: [{ kind: 'ref', ns: 'self', name: d.fnRef }, inner],
         };
       }
       // evaluate / array / normalize / superpose / iid-of-iid / etc.

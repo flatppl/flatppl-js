@@ -443,19 +443,25 @@ lp = logdensityof(M, 0.0)
 // pushfwd(f, M) — pushforward of measure through function
 // =====================================================================
 
-test('pushfwd: classifier rewrites pushfwd(fn(exp(_)), M) to lawof(draw-and-apply)', async () => {
+test('pushfwd: classifier produces a pushfwd derivation referencing f + M', async () => {
+  // pushfwd is a first-class measure-op. ln's derivation directly
+  // carries the function ref and base measure name; matPushfwd in the
+  // materialiser produces samples by applying f over M's atoms in one
+  // batched evaluateN call.
   const ctx = makeCtx(`
 M = Normal(mu = 0.0, sigma = 1.0)
 ln = pushfwd(fn(exp(_)), M)
 `);
   const d = ctx.derivations.ln;
   assert.ok(d, 'ln should be derivable');
-  // After the rewrite ln aliases to an anon binding whose RHS is the
-  // applied function (exp of M's variate). The alias chain bottoms
-  // out at an evaluate-kind binding.
-  assert.equal(d.kind, 'alias');
-  const anon = ctx.derivations[d.from];
-  assert.equal(anon && anon.kind, 'evaluate');
+  assert.equal(d.kind, 'pushfwd');
+  assert.equal(d.from, 'M');
+  assert.ok(d.fnRef, 'fnRef should point at the (lifted) function binding');
+  // The lifted function binding is a fn / functionof, callable as f.
+  const fBinding = ctx.bindings.get(d.fnRef);
+  assert.ok(fBinding);
+  assert.ok(fBinding.type === 'fn' || fBinding.type === 'functionof',
+    `fnRef binding type should be fn or functionof, got ${fBinding.type}`);
 });
 
 test('pushfwd: samples of pushfwd(fn(exp(_)), Normal(0,1)) match LogNormal(0,1)', async () => {

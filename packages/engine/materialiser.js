@@ -239,6 +239,78 @@ function matEvaluate(d, ctx) {
   });
 }
 
+function matPushfwd(name, d, ctx) {
+  // pushfwd(f, M): the pushforward of M through function f. Per spec
+  // §06, samples are { f(x) : x ~ M }. We get M's samples via the
+  // recursive getMeasure, then run one batched evaluateN over f's
+  // body with refArrays binding f's param name to M's samples — same
+  // mass / logWeights / n_eff propagate through unchanged (the
+  // pushforward map preserves total mass; bijection or not).
+  //
+  // For density evaluation, density.js consults f's bijection
+  // annotation via opts.resolveBijection (set up by matLogdensityof /
+  // matBayesupdate when they encounter pushfwd in the expanded IR).
+  const fBinding = ctx.bindings && ctx.bindings.get(d.fnRef);
+  if (!fBinding) {
+    return Promise.reject(new Error(`pushfwd: function binding '${d.fnRef}' not found`));
+  }
+  const fnInfo = resolveFnBody(fBinding, ctx.bindings);
+  if (!fnInfo) {
+    return Promise.reject(new Error(`pushfwd: function binding '${d.fnRef}' has no callable body`
+      + ` (type=${fBinding.type})`));
+  }
+  return ctx.getMeasure(d.from).then((M) => {
+    if (!M.samples) {
+      return Promise.reject(new Error(`pushfwd: base measure '${d.from}' is not scalar `
+        + `(record/tuple/iid not yet supported for first-class pushfwd materialisation)`));
+    }
+    return ctx.sendWorker({
+      type: 'evaluateN',
+      ir: fnInfo.body,
+      count: M.samples.length,
+      refArrays: { [fnInfo.paramName]: M.samples },
+    }).then((reply) => {
+      return {
+        samples: reply.samples,
+        logWeights: M.logWeights,
+        logTotalmass: M.logTotalmass,
+        n_eff: M.n_eff,
+      };
+    });
+  });
+}
+
+// Resolve a function binding (fn / functionof / kernelof / bijection)
+// to its callable body + single-param name. Bijection bindings carry
+// their `f` component in `binding.ir.args[0]` (the bijection
+// annotation classifier stores it via a ref so the orchestrator
+// preserves the inner function); we follow that ref to the actual
+// function binding's body. Returns { body, paramName } or null when
+// the binding isn't function-shaped.
+function resolveFnBody(binding, bindings) {
+  if (!binding) return null;
+  if (binding.type === 'bijection') {
+    // The bijection's first arg is the forward function f. Follow
+    // through to its body. Stored as binding.bijection = { fName,
+    // fInvName, logVolume } by the classifier (see orchestrator
+    // classifyBijection).
+    if (!binding.bijection || !binding.bijection.fName) return null;
+    const fwd = bindings.get(binding.bijection.fName);
+    return resolveFnBody(fwd, bindings);
+  }
+  if (binding.type !== 'fn' && binding.type !== 'functionof'
+      && binding.type !== 'kernelof') {
+    return null;
+  }
+  if (!binding.ir || binding.ir.kind !== 'call'
+      || binding.ir.op !== 'functionof' || !binding.ir.body) {
+    return null;
+  }
+  const params = binding.ir.params || [];
+  if (params.length !== 1) return null;
+  return { body: binding.ir.body, paramName: params[0] };
+}
+
 function matArray(d) {
   // Static array literal — values verbatim, no sampling, no worker
   // round-trip. Length equals the array's literal length, NOT the
@@ -810,6 +882,7 @@ const KIND_HANDLERS = {
   logdensityof: (name, d, ctx) => matLogdensityof(d, ctx),
   totalmass:    (name, d, ctx) => matTotalmass(d, ctx),
   truncate:     (name, d, ctx) => matTruncate(d, ctx),
+  pushfwd:      (name, d, ctx) => matPushfwd(name, d, ctx),
 };
 
 /**
