@@ -2861,6 +2861,29 @@
      * with ratio 100% and k̂ shown as "—" (not meaningful for
      * uniform weights).
      */
+    /** Format a log-total-mass for the stats readout. The engine carries
+        mass on the log scale precisely because deep compositions can
+        easily overflow Float64; the display layer formats it back.
+        Returns null when the mass is essentially 1 (normalized) — the
+        caller skips the badge entirely so the readout only surfaces
+        info when there's something to say. */
+    function formatLogTotalmass(logTotalmass) {
+      if (!Number.isFinite(logTotalmass)) {
+        return logTotalmass === -Infinity ? '0 (zero mass)' : null;
+      }
+      if (Math.abs(logTotalmass) < 1e-9) return null;   // ≈ normalized
+      // Float64 representable: ~ log(Number.MAX_VALUE) ≈ 709.78. Use a
+      // tighter range so the linear form stays human-readable; outside
+      // that, render in exp(...) form which stays meaningful at any
+      // scale.
+      if (Math.abs(logTotalmass) <= 12) {
+        var linear = Math.exp(logTotalmass);
+        if (linear >= 0.01 && linear < 10000) return linear.toPrecision(4);
+        return linear.toExponential(3);
+      }
+      return 'exp(' + (logTotalmass >= 0 ? '+' : '') + logTotalmass.toPrecision(5) + ')';
+    }
+
     function renderSampleStats(measure) {
       var wrap = document.createElement('span');
       wrap.style.display = 'inline-flex';
@@ -2869,6 +2892,24 @@
       wrap.style.opacity = '0.85';
       wrap.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
       wrap.style.fontSize = '0.92em';
+
+      // Totalmass badge — shows when the measure is non-normalized
+      // (weighted, superpose, bayesupdate's posterior carrying the
+      // marginal likelihood Z, etc.). Normalized measures (every leaf
+      // distribution, normalize(...), lawof(...)) show no badge so the
+      // readout stays uncluttered.
+      if (measure && typeof measure.logTotalmass === 'number') {
+        var massText = formatLogTotalmass(measure.logTotalmass);
+        if (massText != null) {
+          var massSpan = document.createElement('span');
+          massSpan.textContent = 'total mass: ' + massText;
+          massSpan.title = 'log total mass: ' + measure.logTotalmass.toFixed(4)
+            + '\nThe measure is unnormalized — its total mass differs from 1. '
+            + 'Wrap in normalize(...) to rescale.';
+          massSpan.style.opacity = '0.9';
+          wrap.appendChild(massSpan);
+        }
+      }
 
       // Defensive try/catch: a thrown error here would propagate up
       // through renderPlotFrame → renderRecordMarginals' rerenderAll,
