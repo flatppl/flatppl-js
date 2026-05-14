@@ -59,6 +59,20 @@ function scalar(prim)   { return { kind: 'scalar', prim }; }
  *  `elem` is the element type (a Type, often scalar). */
 function array(rank, shape, elem) { return { kind: 'array', rank, shape, elem }; }
 
+/** Transposed-vector type (spec §03; FlatPIR `%tvector`).
+ *  Distinct from `array(1, [length], elem)`: the spec formalises
+ *  transposed vectors as a separate value type from non-transposed
+ *  ones, distinguished by orientation. Used so that the return type of
+ *  `*` is inferable at the type level:
+ *    `transposed_vector(n) * vector(n) → scalar`         (inner product)
+ *    `vector(m) * transposed_vector(n) → matrix(m, n)`   (outer product)
+ *    `transposed_vector(n) * matrix(n, p) → transposed_vector(p)`
+ *    `transpose(vector(n)) → transposed_vector(n)`       (and inverse)
+ *
+ *  At runtime the orientation is captured by the Klein-4 tag on Value
+ *  (engine/value.js); type-level we use this distinct constructor. */
+function tvector(length, elem) { return { kind: 'tvector', length, elem }; }
+
 /** Record type. `fields` is a plain object mapping field name → Type. */
 function record(fields) { return { kind: 'record', fields }; }
 
@@ -139,6 +153,9 @@ function equal(a, b) {
       if (a.shape.length !== b.shape.length) return false;
       for (let i = 0; i < a.shape.length; i++) if (a.shape[i] !== b.shape[i]) return false;
       return equal(a.elem, b.elem);
+    case 'tvector':
+      if (a.length !== b.length) return false;
+      return equal(a.elem, b.elem);
     case 'record': {
       const ka = Object.keys(a.fields), kb = Object.keys(b.fields);
       if (ka.length !== kb.length) return false;
@@ -186,6 +203,7 @@ function substitute(t, subst) {
     return v ? substitute(v, subst) : t;
   }
   if (t.kind === 'array')   return array(t.rank, t.shape.slice(), substitute(t.elem, subst));
+  if (t.kind === 'tvector') return tvector(t.length, substitute(t.elem, subst));
   if (t.kind === 'measure') return measure(substitute(t.domain, subst));
   if (t.kind === 'tuple')   return tuple(t.elems.map(e => substitute(e, subst)));
   if (t.kind === 'record') {
@@ -242,6 +260,12 @@ function unify(a, b, subst) {
         if (a.shape[i] === '%dynamic' || b.shape[i] === '%dynamic') continue;
         if (a.shape[i] !== b.shape[i]) return null;
       }
+      return unify(a.elem, b.elem, subst);
+    }
+    case 'tvector': {
+      // Same %dynamic-length convention as array.
+      if (a.length !== '%dynamic' && b.length !== '%dynamic'
+          && a.length !== b.length) return null;
       return unify(a.elem, b.elem, subst);
     }
     case 'tuple': {
@@ -341,6 +365,8 @@ function show(t) {
     case 'any':      return 'any';
     case 'scalar':   return t.prim;
     case 'array':    return showArray(t);
+    case 'tvector':  return 'transposed vector of ' + show(t.elem)
+                            + (t.length !== '%dynamic' ? ' (length ' + t.length + ')' : '');
     case 'record':   return showRecord(t);
     case 'tuple':    return 'tuple (' + t.elems.map(show).join(', ') + ')';
     case 'measure':  return showMeasure(t);
@@ -405,6 +431,7 @@ function isValue(t) {
   switch (t.kind) {
     case 'scalar':
     case 'array':
+    case 'tvector':
     case 'record':
     case 'tuple':
     case 'deferred':
@@ -712,12 +739,15 @@ const SIGNATURE_FACTORIES = {
   // are 1-D real arrays. Most results stay deferred — the static
   // type system can't easily express n×n preservation across
   // transpose / inv etc. without a square-matrix shape variable.
-  transpose:      () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
-                           kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
-  adjoint:        () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
-                           kwargs: {},
-                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  // transpose / adjoint accept matrix OR vector OR tvector per spec
+  // §07: "transpose | A | A^T | vectors, matrices". Result shape
+  // depends on input shape — handled by inferTransposeAdjoint in
+  // typeinfer.js (the static signature here is a permissive fallback
+  // for callers that don't dispatch on `special`).
+  transpose:      () => ({ args: [any()], kwargs: {},
+                           result: deferred(), special: 'transpose' }),
+  adjoint:        () => ({ args: [any()], kwargs: {},
+                           result: deferred(), special: 'adjoint' }),
   trace:          () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
                            kwargs: {}, result: REAL }),
   diagmat:        () => ({ args: [array(1, ['%dynamic'], REAL)],
@@ -981,7 +1011,7 @@ function hasSignature(opName) {
 
 module.exports = {
   // Constructors
-  deferred, failed, any, scalar, array, record, tuple, measure, rngstate, tvar,
+  deferred, failed, any, scalar, array, tvector, record, tuple, measure, rngstate, tvar,
   funcType, kernelType,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Operations

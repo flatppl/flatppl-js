@@ -248,6 +248,12 @@ function createInferenceContext(loweredModule) {
       // spec §sec:kernelof line 421-422 and §sec:fn line 618-628),
       // so we only see functionof here.
       case 'functionof': return write(inferReification(expr, scopes), expr);
+      // transpose / adjoint: spec §07 — apply to vectors and matrices.
+      // For vectors, return type is transposed_vector (the new spec
+      // type from flatppl-design 244b0e5); for transposed_vector,
+      // return type is vector (involution); for matrices, swap dims.
+      case 'transpose': return write(inferTransposeAdjoint(expr, scopes), expr);
+      case 'adjoint':   return write(inferTransposeAdjoint(expr, scopes), expr);
     }
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
@@ -320,6 +326,46 @@ function createInferenceContext(loweredModule) {
   // -------------------------------------------------------------------
   // Special-case op handlers
   // -------------------------------------------------------------------
+
+  // transpose / adjoint dispatch on input shape per spec §07:
+  //   vector(n)            → transposed_vector(n)
+  //   transposed_vector(n) → vector(n)             (involution)
+  //   matrix(m, n)         → matrix(n, m)          (dim swap)
+  //   matrix(N, m, n)      → matrix(N, n, m)       (atom-batched per-slice;
+  //                          rank-3 not currently expressible in array type
+  //                          system but documented here for future extension)
+  //   scalar               → error (transpose undefined on scalars)
+  //   other                → deferred (unknown shape — let runtime handle)
+  function inferTransposeAdjoint(expr, scopes) {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);
+    const at = inferExpr(args[0], scopes);
+    if (!at) return T.deferred();
+    switch (at.kind) {
+      case 'array':
+        if (at.rank === 1) {
+          // vector(n) → transposed_vector(n)
+          return T.tvector(at.shape[0], at.elem);
+        }
+        if (at.rank === 2) {
+          // matrix(m, n) → matrix(n, m). Swap shape entries; elem unchanged.
+          return T.array(2, [at.shape[1], at.shape[0]], at.elem);
+        }
+        // rank ≥ 3 — spec is silent; runtime supports swap-last-two-axes.
+        // Pass through unchanged at the type level.
+        return at;
+      case 'tvector':
+        // transposed_vector(n) → vector(n)
+        return T.array(1, [at.length], at.elem);
+      case 'scalar':
+        return T.failed(expr.op + ': not defined on scalars');
+      case 'deferred':
+      case 'any':
+      case 'var':
+        return T.deferred();
+    }
+    return T.deferred();
+  }
 
   function inferElementof(expr, scopes) {
     const args = expr.args || [];
