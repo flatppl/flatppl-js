@@ -2908,6 +2908,15 @@
             + 'Wrap in normalize(...) to rescale.';
           massSpan.style.opacity = '0.9';
           wrap.appendChild(massSpan);
+          // Visual separator between badges. flexbox `gap` adds space
+          // but no glyph — without a separator the readout reads as
+          // "total mass: <X> 10⁵ samples" run-on. A subdued middle dot
+          // is the conventional badge separator and stays readable
+          // against dark backgrounds.
+          var sep = document.createElement('span');
+          sep.textContent = '·';
+          sep.style.opacity = '0.5';
+          wrap.appendChild(sep);
         }
       }
 
