@@ -1074,6 +1074,15 @@ function _evalN(ir, refArrays, N, baseEnv, overlay) {
         const args = (ir.args || []).map(a => _evalN(a, refArrays, N, baseEnv, overlay));
         return ARITH_OPS_N[op](args, N);
       }
+      // Phase 7a: batched approximation functions. Each has the shape
+      // (atom-indep coefficients/edges/values, per-atom x). If x batches
+      // (Float64Array(N) or Value shape=[N]), collapse the per-atom JS-
+      // call overhead into a single tight inner loop. Otherwise fall
+      // through to _perAtomFallback (atom-indep eval or per-atom dispatch).
+      if (op === 'polynomial' || op === 'bernstein' || op === 'stepwise') {
+        const r = _batchedApproximation(op, ir, refArrays, N, baseEnv, overlay);
+        if (r !== _BATCH_FELL_THROUGH) return r;
+      }
       // Non-batched op: per-atom dispatch through the existing
       // single-point evaluateExpr. Atom-indep when no per-atom refs
       // touch this subtree (cheap one-shot); per-atom loop otherwise.
@@ -1082,6 +1091,129 @@ function _evalN(ir, refArrays, N, baseEnv, overlay) {
     default:
       throw new Error(`evaluateExprN: unsupported IR node kind '${ir.kind}'`);
   }
+}
+
+// Phase 7a: batched approximation function dispatch (polynomial /
+// bernstein / stepwise). Each takes atom-indep coefficient-class
+// arguments and a per-atom x; if x batches, we run one tight Horner /
+// Bernstein-basis / stepwise loop over the entire N-atom batch
+// rather than N JS function calls through the per-atom fallback.
+//
+// The sentinel `_BATCH_FELL_THROUGH` distinguishes "I refused to
+// handle this; please use the per-atom fallback" from a legitimate
+// `null` / `undefined` result.
+const _BATCH_FELL_THROUGH = Symbol('batch-fell-through');
+
+function _batchedApproximation(op, ir, refArrays, N, baseEnv, overlay) {
+  const kw = ir.kwargs || {};
+  // Each op has the same coefficient-class + x shape; pull both.
+  let coeffsIR, xIR, edgesIR;
+  if (op === 'polynomial') {
+    coeffsIR = kw.coefficients != null ? kw.coefficients : ir.args && ir.args[0];
+    xIR      = kw.x            != null ? kw.x            : ir.args && ir.args[1];
+  } else if (op === 'bernstein') {
+    coeffsIR = kw.coefficients != null ? kw.coefficients : ir.args && ir.args[0];
+    xIR      = kw.x            != null ? kw.x            : ir.args && ir.args[1];
+  } else { // stepwise
+    edgesIR  = kw.edges        != null ? kw.edges        : ir.args && ir.args[0];
+    coeffsIR = kw.values       != null ? kw.values       : ir.args && ir.args[1];
+    xIR      = kw.x            != null ? kw.x            : ir.args && ir.args[2];
+  }
+  if (!coeffsIR || !xIR) return _BATCH_FELL_THROUGH;
+
+  // Evaluate the atom-indep operands once. For batching to apply,
+  // coefficients/edges/values must not depend on per-atom refs — we
+  // detect this by evaluating against baseEnv WITHOUT refArrays.
+  // The cheap path: if the IR has no self-refs, evaluation against
+  // baseEnv succeeds; otherwise it throws and we fall through.
+  let coeffs, edges;
+  try {
+    coeffs = evaluateExpr(coeffsIR, baseEnv);
+    if (op === 'stepwise') edges = evaluateExpr(edgesIR, baseEnv);
+  } catch (_) {
+    return _BATCH_FELL_THROUGH;
+  }
+  if (!Array.isArray(coeffs) && !(coeffs && coeffs.BYTES_PER_ELEMENT)) {
+    return _BATCH_FELL_THROUGH;
+  }
+  if (op === 'stepwise'
+      && !Array.isArray(edges) && !(edges && edges.BYTES_PER_ELEMENT)) {
+    return _BATCH_FELL_THROUGH;
+  }
+
+  // Evaluate x. If it's per-atom (Float64Array(N) or Value shape=[N]),
+  // batch. Otherwise fall through.
+  const xVal = _evalN(xIR, refArrays, N, baseEnv, overlay);
+  const xIsBatch = isBatch(xVal, N);
+  if (!xIsBatch) {
+    // x is atom-indep — the per-atom fallback already short-circuits
+    // to a single evaluateExpr call (one-shot path). No reason to
+    // run the batched loop here.
+    return _BATCH_FELL_THROUGH;
+  }
+  const xData = xVal instanceof Float64Array ? xVal : xVal.data;
+
+  // Tight inner loops. coeffs is treated as length-k indexed via [];
+  // works for Array and Float64Array uniformly.
+  const out = new Float64Array(N);
+  if (op === 'polynomial') {
+    const k = coeffs.length;
+    if (k === 0) {
+      // Zero polynomial → 0 for every atom; out is already zero-filled.
+    } else {
+      for (let i = 0; i < N; i++) {
+        const x = xData[i];
+        let acc = coeffs[k - 1];
+        for (let j = k - 2; j >= 0; j--) acc = acc * x + coeffs[j];
+        out[i] = acc;
+      }
+    }
+  } else if (op === 'bernstein') {
+    const n = coeffs.length - 1;
+    if (n < 0) {
+      // out already zeros
+    } else {
+      for (let i = 0; i < N; i++) {
+        const x = xData[i];
+        const omx = 1 - x;
+        if (omx === 0) {
+          out[i] = coeffs[n];
+          continue;
+        }
+        let acc = 0, binom = 1, xk = 1, omxn = Math.pow(omx, n);
+        for (let k = 0; k <= n; k++) {
+          acc += coeffs[k] * binom * xk * omxn;
+          xk *= x;
+          omxn /= omx;
+          binom = binom * (n - k) / (k + 1);
+        }
+        out[i] = acc;
+      }
+    }
+  } else { // stepwise
+    const nBin = coeffs.length;
+    if (edges.length !== nBin + 1) {
+      throw new Error('stepwise: edges length must equal values length + 1');
+    }
+    const eLast = edges[nBin];
+    for (let i = 0; i < N; i++) {
+      const x = xData[i];
+      if (x < edges[0] || x > eLast) { out[i] = NaN; continue; }
+      let v = NaN;
+      for (let b = 0; b < nBin; b++) {
+        if (x >= edges[b]
+            && (x < edges[b + 1] || (b === nBin - 1 && x === edges[b + 1]))) {
+          v = coeffs[b];
+          break;
+        }
+      }
+      out[i] = v;
+    }
+  }
+  // Preserve Phase 1 "same kind as inputs" semantics: if xVal was a
+  // Value, return a Value; if it was a bare Float64Array, return one.
+  if (valueLib.isValue(xVal)) return valueLib.batchedScalar(out);
+  return out;
 }
 
 function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
