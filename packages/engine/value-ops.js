@@ -366,6 +366,75 @@ function neg(a) {
 }
 
 // =====================================================================
+// Value ↔ nested-JS-array bridges (Phase 3)
+// =====================================================================
+//
+// The legacy linear-algebra implementations in sampler.js (Cholesky,
+// LU, Gauss–Jordan, etc.) operate on nested JS arrays `M[i][j]`. To
+// expose those ops on Values without re-implementing each algorithm
+// on flat Float64Arrays (per the TODO Phase 3 plan — these are atom-
+// indep one-shot ops where reallocation cost is negligible), we
+// provide thin bridges: `_valueToNested` materialises a Value into
+// nested form, honouring the Klein-4 transpose tag via index
+// permutation. `_nestedToValue` packs the result back. The bridges
+// support 1-D (vectors → flat JS array) and 2-D (matrices → nested
+// JS array) shapes — the ranks the linalg ops accept.
+
+function _valueToNested(v) {
+  if (!isValue(v)) throw new Error('_valueToNested: not a Value');
+  const r = v.shape.length;
+  if (r === 1) {
+    // Vector → flat JS array. Tag toggles row/column orientation but
+    // doesn't change the data layout (vectors are 1-D).
+    return Array.from(v.data);
+  }
+  if (r === 2) {
+    const [m, n] = v.shape;
+    const swapped = isTransposeView(v);
+    const out = new Array(m);
+    if (!swapped) {
+      for (let i = 0; i < m; i++) {
+        const row = new Array(n);
+        const base = i * n;
+        for (let j = 0; j < n; j++) row[j] = v.data[base + j];
+        out[i] = row;
+      }
+    } else {
+      // data is laid out [n, m] row-major; logical (i, j) at data[j*m + i].
+      for (let i = 0; i < m; i++) {
+        const row = new Array(n);
+        for (let j = 0; j < n; j++) row[j] = v.data[j * m + i];
+        out[i] = row;
+      }
+    }
+    return out;
+  }
+  throw new Error('_valueToNested: only rank-1 and rank-2 supported (got ' +
+    JSON.stringify(v.shape) + ')');
+}
+
+function _nestedToValue(nested) {
+  if (Array.isArray(nested) && nested.length > 0 && Array.isArray(nested[0])) {
+    const m = nested.length, n = nested[0].length;
+    const data = new Float64Array(m * n);
+    for (let i = 0; i < m; i++) {
+      const row = nested[i];
+      if (row.length !== n) {
+        throw new Error('_nestedToValue: ragged matrix at row ' + i);
+      }
+      const base = i * n;
+      for (let j = 0; j < n; j++) data[base + j] = +row[j];
+    }
+    return { shape: [m, n], data: data };
+  }
+  if (Array.isArray(nested)) {
+    return { shape: [nested.length], data: Float64Array.from(nested) };
+  }
+  // Bare scalar — wrap.
+  return { shape: [], data: new Float64Array([+nested]) };
+}
+
+// =====================================================================
 // Atom-batched cross (Phase 2d)
 // =====================================================================
 //
@@ -558,6 +627,8 @@ module.exports = {
   negN,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
+  _valueToNested,
+  _nestedToValue,
   _innerProduct,
   _outerProduct,
   _matVecMul,
