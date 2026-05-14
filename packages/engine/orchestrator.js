@@ -2847,7 +2847,16 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         for (const k in d.fields) {
           const inner = expandMeasureIR(d.fields[k], derivations, next, bindings);
           if (!inner) return null;
-          fields.push({ name: k, value: inner });
+          // Attach the source binding name alongside the expanded
+          // value. Density-side env-threading uses this as a second
+          // env key so refs to the source binding (e.g. an anon
+          // produced by kernel substitution) resolve to the OBSERVED
+          // field value, not the per-atom prior sample. Without this,
+          // jointchain rewrites whose substituted bodies ref the
+          // source-binding anons (as opposed to the surface field
+          // names) get the wrong density. See
+          // flatppl-dev/flatppl-engine-concepts.md §5 (env-threading).
+          fields.push({ name: k, value: inner, source: d.fields[k] });
         }
         // Use 'joint' op (the measure form). 'record' and 'joint'
         // share the IR shape and the walker treats them equivalently.

@@ -291,11 +291,20 @@ function walkJoint(state, ir, env, observed, ctx) {
       logp += r.logp;
       st = r.state;
       // Thread the consumed value into env for subsequent fields.
-      // Only meaningful for scalar leaves (per-atom resolveValueRef
-      // hooks expect scalar values); structured field values still
-      // get written but downstream refs to them would be uncommon.
+      // We write under TWO keys: the surface field name (so a leaf
+      // refs the binding by name) and the source binding name (so a
+      // leaf refs the anon binding that the orchestrator's
+      // expandMeasureIR pass attached as `source` — typically a
+      // kernel-substituted anon whose name doesn't match any
+      // user-visible binding). Both writes are local to the joint
+      // walk via the shadowed env copy above; structured field
+      // values still get written but downstream refs to them would
+      // be uncommon.
       if (observed != null && Object.prototype.hasOwnProperty.call(observed, f.name)) {
         walkEnv[f.name] = r.value;
+        if (f.source && f.source !== f.name) {
+          walkEnv[f.source] = r.value;
+        }
       }
     }
     return { value: out, logp, state: st };
