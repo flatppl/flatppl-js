@@ -1051,6 +1051,16 @@
     // arrives — the panel always boots with a config push from the host.
     var SAMPLE_COUNT = 100000;
 
+    // Per-atom rejection budget for matTruncate's rejection-redraw path
+    // (spec §06 truncate). When the parent measure isn't CDF-invertible,
+    // the worker redraws from the underlying distribution up to this
+    // many times per atom before giving up and emitting NaN. Higher
+    // values trade compute for less ESS loss on tightly-truncated
+    // measures; lower values keep large-N plots responsive. The host
+    // pushes a new value through configUpdate when the user changes
+    // the corresponding setting (VS Code: flatppl.truncate.rejectionBudget).
+    var REJECTION_BUDGET = 1000;
+
     function rebuildDerivations() {
       if (!currentBindings) {
         derivationsState = null;
@@ -1343,6 +1353,7 @@
         sendWorker:  sendWorker,
         sampleCount: SAMPLE_COUNT,
         rootSeed:    rootSeed,
+        rejectionBudget: REJECTION_BUDGET,
       });
       promise.then(function(m) { measureCache.set(name, m); });
       return promise;
@@ -6906,6 +6917,19 @@
           HISTORY_CAP = cfg.dagNavigationHistoryCap | 0;
           while (history.length > HISTORY_CAP) history.shift();
           updateBackBtn();
+        }
+
+        // truncateRejectionBudget: re-bind. Drop the cache because any
+        // cached truncate(...)-derived measure was sized at the prior
+        // budget — its n_eff and NaN slots would no longer reflect the
+        // current setting. Re-render to recompute against the new value.
+        if (typeof cfg.truncateRejectionBudget === 'number'
+            && cfg.truncateRejectionBudget >= 1
+            && cfg.truncateRejectionBudget !== REJECTION_BUDGET) {
+          REJECTION_BUDGET = cfg.truncateRejectionBudget | 0;
+          measureCache = new Map();
+          histogramCache = new Map();
+          if (plotEnabled) renderPlotForCurrent();
         }
         return;
       }
