@@ -1201,6 +1201,14 @@ function liftInlineSubexpressions(bindings) {
     const op = astArg.callee.name;
     if (op !== 'jointchain' && op !== 'chain') return astArg;
     if (!astArg.args || astArg.args.length !== 2) return astArg;
+    // N-ary jointchain (≥3 args) lives outside this rewrite today.
+    // Per spec §06 the chain is left-associative, so semantically it
+    // unfolds to `jointchain(jointchain(M, K1), K2)... Kn)`; but each
+    // nested rewrite has to be RE-NORMALISED to its record/array form
+    // before the next outer step can apply (otherwise the outer Ki+1's
+    // input-shape match fails on an un-rewritten anon binding). That
+    // re-normalisation needs to thread through the orchestrator's
+    // visit / inlineUserCall pipeline, which is a separate refactor.
 
     // Keyword-shorthand jointchain: jointchain(a = M, b = K) per spec
     // §sec:jointchain is equivalent to
