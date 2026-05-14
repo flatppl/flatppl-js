@@ -66,6 +66,14 @@
 
 const rng = require('./rng');
 
+// Math special functions from stdlib for gamma / loggamma / erf-based
+// probit / invprobit. The straight-JS variants (logit, invlogit, min,
+// max) don't need stdlib backing.
+const stdlibGamma    = require('@stdlib/math-base-special-gamma');
+const stdlibGammaln  = require('@stdlib/math-base-special-gammaln');
+const stdlibErfc     = require('@stdlib/math-base-special-erfc');
+const stdlibErfcinv  = require('@stdlib/math-base-special-erfcinv');
+
 // Distribution constructors (analytical PDF/CDF/quantile/mean/etc.)
 const Normal      = require('@stdlib/stats-base-dists-normal-ctor');
 const Exponential = require('@stdlib/stats-base-dists-exponential-ctor');
@@ -581,6 +589,26 @@ const ARITH_OPS = {
   ceil:  a => Math.ceil(a),
   round: a => Math.round(a),
   pow:   (a, b) => Math.pow(a, b),
+  // Binary scalar reductions (spec §07). Distinct from the variadic
+  // `maximum` / `minimum` reductions, which take an array argument.
+  min:   (a, b) => Math.min(a, b),
+  max:   (a, b) => Math.max(a, b),
+  // Special functions: gamma function family and link functions (spec
+  // §07 "Elementary functions"). Domain checks are minimal here —
+  // stdlib returns NaN / Infinity for out-of-domain inputs which the
+  // caller can detect via isfinite / isnan.
+  gamma:     a => stdlibGamma(a),
+  loggamma:  a => stdlibGammaln(a),
+  // Link functions:
+  //   logit(p)    = log(p / (1−p))                            on (0,1)
+  //   invlogit(x) = 1 / (1 + exp(−x))                         on ℝ
+  //   probit(p)   = Φ⁻¹(p)  via the erfcinv identity          on (0,1)
+  //   invprobit(x)= Φ(x)    via the erfc identity             on ℝ
+  // probit and invprobit reach ±∞ at the endpoints (spec §07).
+  logit:     p => Math.log(p / (1 - p)),
+  invlogit:  x => 1 / (1 + Math.exp(-x)),
+  probit:    p => -Math.SQRT2 * stdlibErfcinv(2 * p),
+  invprobit: x => 0.5 * stdlibErfc(-x / Math.SQRT2),
   // Comparison ops produce booleans (per spec §07). Spec preserves
   // strict typing — no implicit numeric→boolean cast — so the
   // operands are treated as reals and the result is JS boolean.

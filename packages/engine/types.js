@@ -636,6 +636,17 @@ const SIGNATURE_FACTORIES = {
   floor:  () => ({ args: [REAL], kwargs: {}, result: INTEGER }),
   ceil:   () => ({ args: [REAL], kwargs: {}, result: INTEGER }),
   round:  () => ({ args: [REAL], kwargs: {}, result: INTEGER }),
+  // Binary min/max — variadic `maximum`/`minimum` over arrays live
+  // elsewhere; these are the binary scalar form.
+  min:    () => ({ args: [REAL, REAL], kwargs: {}, result: REAL }),
+  max:    () => ({ args: [REAL, REAL], kwargs: {}, result: REAL }),
+  // Gamma function family and logit / probit link functions.
+  gamma:     () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  loggamma:  () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  logit:     () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  invlogit:  () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  probit:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  invprobit: () => ({ args: [REAL], kwargs: {}, result: REAL }),
   // Predicates → boolean.
   equal:   () => ({ args: [tvar('T'), tvar('T')], kwargs: {}, result: BOOLEAN }),
   unequal: () => ({ args: [tvar('T'), tvar('T')], kwargs: {}, result: BOOLEAN }),

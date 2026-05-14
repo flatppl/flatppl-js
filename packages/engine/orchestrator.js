@@ -100,6 +100,12 @@ const EVALUABLE_OPS = new Set([
   'sin', 'cos',
   'floor', 'ceil', 'round',
   'pow',
+  // Binary min/max and gamma/loggamma/link functions (spec §07
+  // Elementary functions). All scalar→scalar (or scalar,scalar→scalar)
+  // and dispatch through sampler.ARITH_OPS.
+  'min', 'max',
+  'gamma', 'loggamma',
+  'logit', 'invlogit', 'probit', 'invprobit',
   // Comparisons → boolean.
   'lt', 'le', 'gt', 'ge', 'equal', 'unequal',
   // Predicates → boolean.
