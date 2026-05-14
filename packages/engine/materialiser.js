@@ -239,6 +239,24 @@ function matEvaluate(d, ctx) {
   });
 }
 
+// Function-typed bindings (fn / functionof / kernelof / bijection)
+// aren't materialisable as values — they're consulted by name at
+// density / sample dispatch time. matLogdensityof / matBayesupdate use
+// this to filter such refs out of their "materialise the parents"
+// pre-pass; the parents that ARE values still need materialising.
+function isFunctionLikeBinding(binding) {
+  if (!binding) return false;
+  switch (binding.type) {
+    case 'fn':
+    case 'functionof':
+    case 'kernelof':
+    case 'bijection':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function matPushfwd(name, d, ctx) {
   // pushfwd(f, M): the pushforward of M through function f. Per spec
   // §06, samples are { f(x) : x ~ M }. We get M's samples via the
@@ -519,12 +537,15 @@ function matBayesupdate(d, ctx) {
   // The atoms are the prior's; logWeights = prior.logWeights + per-i logp.
   const bodyIR = d.bodyIR
     ? orchestrator.expandMeasureRefsInIR(d.bodyIR, ctx.derivations)
-    : orchestrator.expandMeasureIR(d.bodyName, ctx.derivations);
+    : orchestrator.expandMeasureIR(d.bodyName, ctx.derivations, undefined, ctx.bindings);
   if (!bodyIR) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
   const valueRefs = [];
-  orchestrator.collectSelfRefs(bodyIR).forEach((n) => valueRefs.push(n));
+  orchestrator.collectSelfRefs(bodyIR).forEach((n) => {
+    if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
+    valueRefs.push(n);
+  });
   return Promise.all([ctx.getMeasure(d.from)].concat(valueRefs.map(ctx.getMeasure)))
     .then((arr) => {
       const parent = arr[0];
@@ -812,13 +833,16 @@ function matLogdensityof(d, ctx) {
   const measureDeriv = ctx.derivations[d.measureName];
   const isChain = !!(measureDeriv && measureDeriv.chainOrigin);
 
-  const measureIR = orchestrator.expandMeasureIR(d.measureName, ctx.derivations);
+  const measureIR = orchestrator.expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
   if (!measureIR) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
       + d.measureName + '" into a self-contained IR'));
   }
   const valueRefs = [];
-  orchestrator.collectSelfRefs(measureIR).forEach((n) => valueRefs.push(n));
+  orchestrator.collectSelfRefs(measureIR).forEach((n) => {
+    if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
+    valueRefs.push(n);
+  });
   return Promise.all(valueRefs.map(ctx.getMeasure)).then((refMeasures) => {
     const refArrays = {};
     for (let i = 0; i < valueRefs.length; i++) {

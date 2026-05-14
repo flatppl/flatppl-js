@@ -68,6 +68,7 @@ function classifyStatement(valueNode) {
       case 'functionof': return 'functionof';
       case 'kernelof': return 'kernelof';
       case 'fn': return 'fn';
+      case 'bijection': return 'bijection';
       case 'likelihoodof': return 'likelihood';
       case 'bayesupdate': return 'bayesupdate';
       case 'load_module': return 'module';

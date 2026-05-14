@@ -374,6 +374,77 @@ function walkJointchainStub() {
     + 'record/joint by expandMeasureIR before reaching density');
 }
 
+function walkPushfwd(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // pushfwd(f, M) density per spec §06: requires f to be a
+  // `bijection(f, f_inv, logvolume)` annotation so we have an inverse
+  // and a Jacobian volume element. Then:
+  //
+  //   log p_{f*M}(y) = log p_M(f_inv(y)) − logvolume(f_inv(y))
+  //
+  // The bijection metadata travels on `ir.bijection`, attached by
+  // `expandMeasureIR` when the f arg was a bijection-typed binding.
+  // No callback / resolveBijection opt needed — the IR self-describes.
+  //
+  // The walker:
+  //   1. consume y from the head of `value` (atom-independent scalar)
+  //   2. compute x = f_inv(y) — atom-independent if f_inv's body
+  //      doesn't reference refArrays (common case: standard bijections
+  //      like exp/log, affine maps with literal coefficients)
+  //   3. recurse on M with x as the consumed value
+  //   4. subtract logvolume(x) — either a literal scalar or a function
+  //      of x
+  //
+  // Per-atom-parameterised bijections (where f_inv's body references
+  // refArrays — would arise from MvNormal-via-spec-rewrite with per-
+  // atom mu/L) aren't supported here yet because they'd push a per-
+  // atom value into the recursive walk, which density.js assumes is
+  // atom-independent. MvNormal goes via path B (direct REGISTRY
+  // entry) so this gap doesn't bite. When it does, extending the
+  // recursive walker to accept per-atom values is the natural next
+  // step.
+  const bij = ir.bijection;
+  const M_ir = ir.args[1];
+  if (!bij) {
+    const fRef = ir.args[0];
+    const fName = fRef && fRef.name;
+    throw new Error("density: pushfwd of '" + (fName || '<?>') + "' requires a "
+      + "bijection annotation — use bijection(f, f_inv, logvolume) to enable "
+      + "pushforward density");
+  }
+  // Consume the head — pushfwd's variate footprint matches M's.
+  const { head: y, rest } = consumeScalar(value);
+  // Compute x = f_inv(y). Atom-indep eval against baseEnv ∪ overlay.
+  const finvEnv = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(finvEnv, overlay);
+  finvEnv[bij.fInv.paramName] = y;
+  const x = samplerLib.evaluateExpr(bij.fInv.body, finvEnv);
+  if (typeof x !== 'number') {
+    throw new Error('density: pushfwd f_inv returned non-scalar (got '
+      + (typeof x) + '); per-atom or vector-valued bijections not yet '
+      + 'supported here');
+  }
+  // Recurse on M scoring at x. x is atom-independent → walks through
+  // M's structure with the standard consume/rest semantics.
+  walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
+  // Subtract logvolume(x). Scalar logvolume is a uniform shift; a
+  // function evaluates body at x.
+  if (bij.logVolume.kind === 'scalar') {
+    const lv = +bij.logVolume.value;
+    if (lv !== 0) for (let i = 0; i < N; i++) acc[i] -= lv;
+  } else {
+    const lvEnv = Object.assign({}, baseEnv);
+    if (overlay) Object.assign(lvEnv, overlay);
+    // paramName null means a 0-arg function — a closed-form constant
+    // like `fn(log(2.0))`. We still evaluate the body, just without
+    // binding x into env. paramName non-null is the 1-arg case where
+    // logvolume varies with the bijection's domain point.
+    if (bij.logVolume.paramName) lvEnv[bij.logVolume.paramName] = x;
+    const lv = +samplerLib.evaluateExpr(bij.logVolume.body, lvEnv);
+    if (lv !== 0) for (let i = 0; i < N; i++) acc[i] -= lv;
+  }
+  return rest;
+}
+
 const OP_HANDLERS = {
   weighted:    walkWeighted,
   logweighted: walkLogWeighted,
@@ -383,6 +454,7 @@ const OP_HANDLERS = {
   record:      walkJointFieldsOrPositional,
   iid:         walkIid,
   jointchain:  walkJointchainStub,
+  pushfwd:     walkPushfwd,
 };
 
 // ---- Per-atom scalar contribution helpers ---------------------------

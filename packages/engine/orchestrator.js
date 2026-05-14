@@ -1055,6 +1055,7 @@ function liftInlineSubexpressions(bindings) {
       // fn / functionof shapes get hoisted to anon bindings so the
       // classifier sees a clean self-ref.
       astArg = inlinePushfwdLift(astArg);
+      astArg = inlineBijectionLift(astArg);
       astArg = inlineFilterLift(astArg);
       astArg = inlineBroadcasted(astArg);
     }
@@ -1159,6 +1160,34 @@ function liftInlineSubexpressions(bindings) {
     const n = freshName();
     out.set(n, makeSyntheticBinding(n, fArg));
     astArg.args[0] = makeIdent(n, astArg.loc);
+    return astArg;
+  }
+
+  /**
+   * Lift the three function args of `bijection(f, f_inv, logvolume)`
+   * to named bindings. f and f_inv must be functions; logvolume may
+   * be a function OR a literal scalar (`0` for volume-preserving
+   * maps per spec §06 — we accept any non-CallExpr in the third slot
+   * and treat it as a constant). Inline fn / functionof shapes get
+   * hoisted to anon bindings; bare identifiers stay as-is.
+   */
+  function inlineBijectionLift(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'bijection') return astArg;
+    if (!astArg.args || astArg.args.length !== 3) return astArg;
+    for (let i = 0; i < 3; i++) {
+      let a = astArg.args[i];
+      if (a.type === 'KeywordArg') return astArg;
+      if (a.type === 'Identifier') continue;
+      // Scalar literal for logvolume slot is fine to keep inline.
+      if (i === 2 && (a.type === 'NumberLiteral' || a.type === 'BoolLiteral')) continue;
+      visit(a);
+      if (a.type === 'Identifier') { astArg.args[i] = a; continue; }
+      const n = freshName();
+      out.set(n, makeSyntheticBinding(n, a));
+      astArg.args[i] = makeIdent(n, astArg.loc);
+    }
     return astArg;
   }
 
@@ -1692,6 +1721,22 @@ function liftInlineSubexpressions(bindings) {
     //     §sec:fn line 593-595 each hole is normatively named
     //     `arg1`, `arg2`, …, so positional call args bind in order
     //     and `argN=` kwargs bind to the N-th hole. Handled below.
+    // Bijection is semantically `f` — calling it dispatches to the
+    // forward function. Rewrite `b(x...)` to `<f-ref>(x...)` and
+    // recurse so inlineOnce inlines f's body. f is the first arg of
+    // the bijection call; inlineBijectionLift has hoisted any inline
+    // shape to an anon binding, so it's always an Identifier here.
+    if (fnBinding.type === 'bijection') {
+      const bijAst = fnBinding.node && fnBinding.node.value;
+      const fIdent = bijAst && bijAst.args && bijAst.args[0];
+      if (fIdent && fIdent.type === 'Identifier') {
+        const rewritten = Object.assign({}, astArg, {
+          callee: makeIdent(fIdent.name, astArg.loc),
+        });
+        return inlineOnce(rewritten);
+      }
+      return astArg;
+    }
     if (fnBinding.type !== 'functionof' && fnBinding.type !== 'kernelof'
         && fnBinding.type !== 'fn') {
       return astArg;
@@ -2091,6 +2136,35 @@ function buildDerivations(bindings) {
   // case for inline weighted/normalize/superpose/draw inside another
   // measure expression.
   bindings = liftInlineSubexpressions(bindings);
+
+  // After the lift, record bijection metadata on bijection-typed
+  // bindings. The classifier and downstream code (matPushfwd's
+  // resolveFnBody, density.walkPushfwd) consult
+  // `binding.bijection = { fName, fInvName, logVolume }`. fName /
+  // fInvName point at lifted function bindings; logVolume is either
+  // `{ kind: 'fn', name }` (function binding) or `{ kind: 'scalar',
+  // value }` (literal scalar — for volume-preserving maps).
+  for (const [, binding] of bindings) {
+    if (binding.type !== 'bijection') continue;
+    const ast = binding.node && binding.node.value;
+    if (!ast || ast.type !== 'CallExpr' || !Array.isArray(ast.args)
+        || ast.args.length !== 3) continue;
+    const fA = ast.args[0], fIA = ast.args[1], lvA = ast.args[2];
+    if (!fA || fA.type !== 'Identifier') continue;
+    if (!fIA || fIA.type !== 'Identifier') continue;
+    let logVolume;
+    if (lvA.type === 'Identifier') {
+      logVolume = { kind: 'fn', name: lvA.name };
+    } else if (lvA.type === 'NumberLiteral') {
+      logVolume = { kind: 'scalar', value: +lvA.value };
+    } else {
+      // inlineBijectionLift should have lifted any non-trivial shape;
+      // unrecognised shape leaves the bijection without metadata and
+      // density-side dispatch reports a clear error.
+      continue;
+    }
+    binding.bijection = { fName: fA.name, fInvName: fIA.name, logVolume };
+  }
 
   const derivations = Object.create(null);
 
@@ -3122,6 +3196,42 @@ function leafSampleIR(name, derivations, visited) {
  * to work today. evaluate-typed bindings are deterministic
  * transforms (no density without a Jacobian, see project notes).
  */
+/**
+ * Resolve a bijection binding's metadata into call-ready form for
+ * density.walkPushfwd. Reads the f_inv and logvolume bindings to
+ * extract their body+paramName (or, for a scalar logvolume, the
+ * literal value). Returns null when the metadata can't be resolved
+ * (missing binding, non-functionof IR) — callers treat null as "not
+ * available, density not tractable for this binding".
+ */
+function resolveBijectionMeta(bij, bindings) {
+  // Read body + paramName from a functionof binding. arity=1 returns
+  // a fn-with-param; arity=0 returns a fn-with-null-paramName (a
+  // closed-form constant — `fn(log(2.0))` is the canonical example).
+  function fnBodyOf(bindingName, allowConst) {
+    const b = bindings.get(bindingName);
+    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'functionof') return null;
+    const params = b.ir.params || [];
+    if (!b.ir.body) return null;
+    if (params.length === 1) return { body: b.ir.body, paramName: params[0] };
+    if (params.length === 0 && allowConst) return { body: b.ir.body, paramName: null };
+    return null;
+  }
+  // f_inv must be a true 1-arg function — y is its input.
+  const fInv = fnBodyOf(bij.fInvName, false);
+  if (!fInv) return null;
+  let logVolume;
+  if (bij.logVolume.kind === 'scalar') {
+    logVolume = { kind: 'scalar', value: bij.logVolume.value };
+  } else {
+    // logvolume may be a function of x OR a constant (per spec §06).
+    const lvBody = fnBodyOf(bij.logVolume.name, true);
+    if (!lvBody) return null;
+    logVolume = { kind: 'fn', body: lvBody.body, paramName: lvBody.paramName };
+  }
+  return { fInv, logVolume };
+}
+
 function expandMeasureIR(name, derivations, visited, bindings) {
   visited = visited || new Set();
   if (visited.has(name)) return null;
@@ -3201,15 +3311,25 @@ function expandMeasureIR(name, derivations, visited, bindings) {
       }
       case 'pushfwd': {
         // pushfwd(f, M): the f-arg surfaces as a self-ref to the
-        // function binding (so density.js can look up bijection
-        // metadata via opts.resolveBijection). The M-arg is expanded
-        // recursively into its own measure IR.
+        // function binding (so call-site recognition by name stays
+        // possible). When f is a `bijection(...)` annotation, attach
+        // the resolved metadata (f_inv body + paramName, logvolume
+        // body+paramName OR scalar) as a side-property on the call IR
+        // so density.walkPushfwd can compute the pushforward density
+        // without round-tripping through a resolver callback.
         const inner = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
-        return {
+        const out = {
           kind: 'call', op: 'pushfwd',
           args: [{ kind: 'ref', ns: 'self', name: d.fnRef }, inner],
         };
+        if (bindings) {
+          const fBinding = bindings.get(d.fnRef);
+          const bijMeta = fBinding && fBinding.bijection
+            ? resolveBijectionMeta(fBinding.bijection, bindings) : null;
+          if (bijMeta) out.bijection = bijMeta;
+        }
+        return out;
       }
       // evaluate / array / normalize / superpose / iid-of-iid / etc.
       // are not measures-with-densities we can score today.
