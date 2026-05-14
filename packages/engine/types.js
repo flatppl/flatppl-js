@@ -753,6 +753,13 @@ const SIGNATURE_FACTORIES = {
   extlinspace: () => ({ args: [REAL, REAL, INTEGER], kwargs: {
                           from: REAL, to: REAL, n: INTEGER },
                         result: array(1, ['%dynamic'], REAL) }),
+  // filter(predicate, data) — keep elements satisfying predicate.
+  // The orchestrator rewrites this at lift time into a 3-arg shape
+  // with the predicate's body embedded, so type-checking sees the
+  // original surface (predicate, data) form. Result is dynamic-length.
+  filter: () => ({ args: [any(), array(1, ['%dynamic'], tvar('T'))],
+                   kwargs: {},
+                   result: array(1, ['%dynamic'], tvar('T')) }),
   // partition(xs, spec) — split a vector into a vector of sub-vectors.
   // Static return type kept dynamic (the inner shape depends on spec).
   partition:   () => ({ args: [array(1, ['%dynamic'], any()), any()],

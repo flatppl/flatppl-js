@@ -154,6 +154,10 @@ const EVALUABLE_OPS = new Set([
   // arguments; dispatch through ARITH_OPS.
   'linspace', 'extlinspace', 'partition', 'reverse',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
+  // filter is dispatched via a dedicated case in sampler.evaluateCall
+  // (not in ARITH_OPS) because it needs per-element evaluation of an
+  // embedded body IR rather than the positional-spread shape.
+  'filter',
   // Scalar restrictors (spec §07).
   'boolean', 'integer',
   // Linear algebra (spec §07). All pure value ops on matrices /
@@ -1041,7 +1045,36 @@ function liftInlineSubexpressions(bindings) {
       astArg = inlineFchain(astArg);
       astArg = inlineDensityof(astArg);
       astArg = inlinePushfwd(astArg);
+      astArg = inlineFilterLift(astArg);
     }
+    return astArg;
+  }
+
+  /**
+   * Lift the predicate arg of `filter(pred, data)` to a named binding
+   * if it's an inline function expression. Per-element application
+   * happens at evaluation time via the env's __resolveFnBody hook
+   * (orchestrator.pre-eval attaches it); the AST keeps the surface
+   * `filter(pred_ref, data)` shape so analyzer / typer see the
+   * normal form.
+   */
+  function inlineFilterLift(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'filter') return astArg;
+    if (!astArg.args || astArg.args.length !== 2) return astArg;
+    let fArg = astArg.args[0];
+    if (fArg.type === 'KeywordArg') return astArg;
+    if (fArg.type === 'Identifier') return astArg;
+    // Lift inline fn(...) to an anon binding.
+    visit(fArg);
+    if (fArg.type === 'Identifier') {
+      astArg.args[0] = fArg;
+      return astArg;
+    }
+    const n = freshName();
+    out.set(n, makeSyntheticBinding(n, fArg));
+    astArg.args[0] = makeIdent(n, astArg.loc);
     return astArg;
   }
 
@@ -2192,6 +2225,30 @@ function buildDerivations(bindings) {
         for (const r of refs) {
           if (!bindings.has(r)) continue;
           const dep = bindings.get(r);
+          // Function-typed bindings (fn / functionof / kernelof) aren't
+          // looked up as values during evaluation — the ones that flow
+          // through evaluator dispatch (filter, broadcast, etc.) get
+          // resolved via env.__resolveFnBody at the call site, not
+          // through env[name]. Skip them from the value-ref gate so
+          // pre-eval doesn't block on them being in fixedValues
+          // (they never will be — there's no value to set). But the
+          // FUNCTION'S BODY may reference fixed-phase value bindings
+          // (e.g. `fn(_ > threshold)` closes over `threshold`); we
+          // need those values preloaded into env before evaluating
+          // the surrounding call (filter, broadcast). Recurse into
+          // the body's refs.
+          if (dep && (dep.type === 'fn' || dep.type === 'functionof'
+                      || dep.type === 'kernelof')) {
+            if (dep.ir && dep.ir.kind === 'call'
+                && dep.ir.op === 'functionof' && dep.ir.body) {
+              // Walk the body, but only follow refs to value-typed
+              // bindings (not refs to the function's own parameters,
+              // which are %local). collectSelfRefs already filters
+              // for ns === 'self'.
+              collectFor(dep.ir.body, inMeasureContext);
+            }
+            continue;
+          }
           // A binding the orchestrator has classified as a measure
           // derivation: recurse through the canonical sampleable
           // expansion (what traceeval actually walks at runtime).
@@ -2288,6 +2345,25 @@ function buildDerivations(bindings) {
         return [v, state];
       }
       env.__resolveValueRef = localResolveValueRef;
+
+      // filter(pred, data) needs to walk pred's body per element of
+      // data. The sampler's evaluateCall picks up this hook to
+      // resolve a binding name to its (body IR + parameter name)
+      // pair when the binding is a unary fn / functionof / kernelof.
+      env.__resolveFnBody = function (bname) {
+        const fb = bindings.get(bname);
+        if (!fb || (fb.type !== 'fn' && fb.type !== 'functionof'
+                    && fb.type !== 'kernelof')) {
+          return null;
+        }
+        const fIR = fb.ir;
+        if (!fIR || fIR.kind !== 'call' || fIR.op !== 'functionof'
+            || !Array.isArray(fIR.params) || !fIR.body
+            || fIR.params.length !== 1) {
+          return null;
+        }
+        return { body: fIR.body, paramName: fIR.params[0] };
+      };
 
       // The synthesised disintegrate effectiveValue can be a measure
       // expression (e.g. `lawof(...)`); evaluating that as a value is

@@ -1856,6 +1856,44 @@ function evaluateCall(ir, env) {
     }
     return out;
   }
+  if (op === 'filter') {
+    // filter(pred_ref, data) per spec §07. pred must be a unary
+    // function (fn / functionof / kernelof) binding; we resolve its
+    // body IR + parameter name via the env's __resolveFnBody hook
+    // that the orchestrator's pre-eval pass attaches. Per-element
+    // application: bind paramName → element in a shadowed env, eval
+    // body, keep when truthy.
+    const args = ir.args || [];
+    if (args.length !== 2) {
+      throw new Error('filter: expected 2 args (predicate, data), got ' + args.length);
+    }
+    const predIR = args[0];
+    if (!predIR || predIR.kind !== 'ref' || predIR.ns !== 'self') {
+      throw new Error('filter: predicate must be a named function binding (got '
+        + (predIR && predIR.kind) + ')');
+    }
+    if (typeof env.__resolveFnBody !== 'function') {
+      throw new Error('filter: env missing __resolveFnBody hook — filter is only '
+        + 'evaluable in contexts where the orchestrator wires in the bindings map');
+    }
+    const fn = env.__resolveFnBody(predIR.name);
+    if (!fn) {
+      throw new Error("filter: predicate '" + predIR.name + "' is not a unary function binding");
+    }
+    const data = evaluateExpr(args[1], env);
+    if (!Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
+      throw new Error('filter: data must be a vector (got '
+        + (data === null ? 'null' : typeof data) + ')');
+    }
+    const elemEnv = Object.assign({}, env);
+    const out = [];
+    for (let i = 0; i < data.length; i++) {
+      elemEnv[fn.paramName] = data[i];
+      const keep = evaluateExpr(fn.body, elemEnv);
+      if (keep) out.push(data[i]);
+    }
+    return out;
+  }
   if (op === 'bincounts') {
     // bincounts(bins, data) — count data points falling into bins.
     // 1D case: bins is a vector of n+1 edges defining n bins;
