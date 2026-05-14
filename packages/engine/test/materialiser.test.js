@@ -237,6 +237,66 @@ lp = logdensityof(U, 0.5)
 });
 
 // =====================================================================
+// Logistic / Weibull — synthesised inverse-CDF samplers
+// =====================================================================
+
+test('Logistic(0, 1) sample moments match analytic mean=0, var=π²/3', async () => {
+  const ctx = makeCtx(`
+M = Logistic(mu = 0.0, s = 1.0)
+x = draw(M)
+`, { sampleCount: 8192 });
+  const m = await ctx.getMeasure('x');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  let ss = 0;
+  for (const v of m.samples) ss += (v - mean) * (v - mean);
+  const variance = ss / m.samples.length;
+  assert.ok(Math.abs(mean - 0) < 0.15,
+    'mean should be ≈ 0, got ' + mean);
+  const expectedVar = (Math.PI * Math.PI) / 3;
+  assert.ok(Math.abs(variance - expectedVar) < 0.3,
+    'variance should be ≈ π²/3 ≈ 3.29, got ' + variance);
+});
+
+test('Logistic: logdensityof matches analytic logpdf at the mode', async () => {
+  // logpdf at x=mu (the mode) for Logistic(mu=0, s=1):
+  //   z = 0 → exp(-0)/(1·(1+1)^2) = 1/4 → log = -log(4)
+  const ctx = makeCtx(`
+M = Logistic(mu = 0.0, s = 1.0)
+lp = logdensityof(M, 0.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - (-Math.log(4))) < 1e-12,
+    'logp at mode should be -log(4), got ' + m.samples[0]);
+});
+
+test('Weibull(2, 1) samples are non-negative and match analytic mean ≈ √π/2', async () => {
+  const ctx = makeCtx(`
+M = Weibull(shape = 2.0, scale = 1.0)
+x = draw(M)
+`, { sampleCount: 8192 });
+  const m = await ctx.getMeasure('x');
+  let neg = 0;
+  for (let i = 0; i < m.samples.length; i++) if (m.samples[i] < 0) neg++;
+  assert.equal(neg, 0, 'all Weibull atoms should be ≥ 0');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const expected = Math.sqrt(Math.PI) / 2;   // λ · Γ(1 + 1/k) at k=2, λ=1
+  assert.ok(Math.abs(mean - expected) < 0.05,
+    'mean should be ≈ √π/2, got ' + mean);
+});
+
+test('Weibull(1, 1/λ) ≡ Exponential(λ): logdensity at 0 matches log(λ)', async () => {
+  // Weibull(shape=1, scale=1/2) ≡ Exponential(rate=2). At x=0 both
+  // densities equal λ = 2; log = log(2).
+  const ctx = makeCtx(`
+M = Weibull(shape = 1.0, scale = 0.5)
+lp = logdensityof(M, 0.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - Math.log(2)) < 1e-12,
+    'logp at 0 of Weibull(1, 1/2) should be log(2), got ' + m.samples[0]);
+});
+
+// =====================================================================
 // pushfwd(f, M) — pushforward of measure through function
 // =====================================================================
 
