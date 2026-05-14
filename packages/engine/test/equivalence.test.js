@@ -166,3 +166,67 @@ test('equivalence: closed-form joint logdensity matches the analytic value AND e
   assert.ok(Math.abs(v_lp.samples[0] - m_lp.samples[0]) < 1e-12,
     'variate and MA styles should agree exactly on closed-form density');
 });
+
+// =====================================================================
+// Model B: 3-level chain
+//
+//   theta1 ~ Normal(0, 1)
+//   theta2 ~ Normal(theta1, 1)
+//   y      ~ Normal(theta2, 1)
+//
+// Closed-form joint density at (theta1, theta2, y) = (0, 0, 0):
+//   -3 × ½ log(2π)
+//
+// Exercises N-ary jointchain (via the step-wise fold) AND the
+// source-key env-threading fix for closed-form density on chains
+// where field name ≠ source binding name.
+
+const VARIATE_3LEVEL = `
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+theta2 = draw(Normal(mu = theta1, sigma = 1.0))
+y      = draw(Normal(mu = theta2, sigma = 1.0))
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, y = y))
+lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
+`;
+
+const MA_3LEVEL = `
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+prior = lawof(record(theta1 = theta1))
+theta2 = draw(Normal(mu = theta1, sigma = 1.0))
+obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
+obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
+K1 = functionof(obs_dist1, theta1 = theta1)
+K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
+joint_model = jointchain(prior, K1, K2)
+lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
+`;
+
+test('equivalence: 3-level model — joint density agrees across styles AND with analytic', async () => {
+  const varCtx = makeCtx(VARIATE_3LEVEL);
+  const maCtx  = makeCtx(MA_3LEVEL);
+  const v_lp = await varCtx.getMeasure('lp');
+  const m_lp = await maCtx.getMeasure('lp');
+  const expected = -1.5 * Math.log(2 * Math.PI);
+  assert.ok(Math.abs(v_lp.samples[0] - expected) < 1e-10,
+    'variate 3-level logp should be -1.5·log(2π), got ' + v_lp.samples[0]);
+  assert.ok(Math.abs(m_lp.samples[0] - expected) < 1e-10,
+    'MA-style 3-level logp (N-ary jointchain) should be -1.5·log(2π), got '
+    + m_lp.samples[0]);
+  assert.ok(Math.abs(v_lp.samples[0] - m_lp.samples[0]) < 1e-12,
+    'variate and N-ary MA styles should agree exactly on the 3-level joint density');
+});
+
+test('equivalence: 3-level model — y marginal variance matches Normal(0, √3)', async () => {
+  // y = theta2 + ε3, theta2 = theta1 + ε2, theta1 = ε1, εi ~ N(0,1) iid.
+  // So y is N(0, 3), variance = 3.
+  const varCtx = makeCtx(VARIATE_3LEVEL);
+  const maCtx  = makeCtx(MA_3LEVEL);
+  const vm = await varCtx.getMeasure('joint_model');
+  const mm = await maCtx.getMeasure('joint_model');
+  const v_y = vm.fields.y.samples;
+  const m_y = mm.fields.y.samples;
+  assert.ok(Math.abs(variance(v_y) - 3) < 0.5,
+    'variate y marginal var ≈ 3 (Normal(0, √3)), got ' + variance(v_y));
+  assert.ok(Math.abs(variance(m_y) - 3) < 0.5,
+    'MA y marginal var ≈ 3 (Normal(0, √3)), got ' + variance(m_y));
+});
