@@ -15,6 +15,7 @@ const lower = require('./lower');
 const orchestrator = require('./orchestrator');
 const histogram = require('./histogram');
 const empirical = require('./empirical');
+const materialiser = require('./materialiser');
 const types = require('./types');
 const typeinfer = require('./typeinfer');
 const pir = require('./pir');
@@ -69,6 +70,6 @@ module.exports = {
   disintegrate,
   AST, builtins,
   // Lightweight sampling-stack components (no stdlib pull-in)
-  rng, lower, orchestrator, histogram, empirical,
+  rng, lower, orchestrator, histogram, empirical, materialiser,
   types, typeinfer, pir,
 };
