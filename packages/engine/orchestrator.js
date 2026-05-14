@@ -62,7 +62,8 @@ const { quantileSorted } = require('./histogram');
 // distribution we don't list, the chain comes back unsupported instead
 // of failing later in the worker.
 const SAMPLEABLE_DISTRIBUTIONS = new Set([
-  'Normal', 'Exponential', 'Uniform', 'LogNormal', 'Beta', 'Gamma',
+  'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull',
+  'LogNormal', 'Beta', 'Gamma',
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
   // Dirac is degenerate (zero entropy): the sampler emits the
   // 'value' kwarg verbatim N times. Listed here so measure-alias

@@ -181,6 +181,150 @@ DiracCtor.prototype.logpdf   = function(x) { return x === this.value ? 0 : -Infi
 DiracCtor.prototype.cdf      = function(x) { return x < this.value ? 0 : 1; };
 DiracCtor.prototype.quantile = function(_p) { return this.value; };
 
+// ---------------------------------------------------------------------
+// Synthetic Logistic and Weibull distributions
+// ---------------------------------------------------------------------
+//
+// Neither has a corresponding @stdlib/random-base-* or stats-base-dists-
+// *-ctor package installed. Both have simple closed-form inverse-CDFs,
+// so we hand-roll factory + Ctor + logpdfFn in the same shape the rest
+// of the REGISTRY uses. Inverse-CDF sampling: u ~ U(0,1), x = Q(u).
+// Edge clipping at u → 0 / u → 1 avoids ±∞ output from log / log1p
+// when the prng emits the very boundary; an ~eps-thin band is
+// statistically harmless at any practical sample count.
+
+function uClip(u) {
+  if (u <= 0)            return Number.EPSILON;
+  if (u >= 1 - 1e-16)    return 1 - Number.EPSILON;
+  return u;
+}
+
+// Logistic(mu, s):  pdf = exp(-z) / (s · (1 + exp(-z))^2)  where z = (x − μ)/s
+//                   cdf = 1 / (1 + exp(-z))
+//                   Q(p) = μ + s · log(p / (1 − p))
+const randLogistic = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      // Parametric: returned closure takes (mu, s) per call.
+      return function parametricLogisticSampler(mu, s) {
+        const u = uClip(prng());
+        return +mu + (+s) * Math.log(u / (1 - u));
+      };
+    }
+    const mu = +args[0], s = +args[1];
+    return function staticLogisticSampler() {
+      const u = uClip(prng());
+      return mu + s * Math.log(u / (1 - u));
+    };
+  },
+};
+
+function LogisticCtor(mu, s) {
+  this.mu = +mu; this.s = +s;
+  this.mean = +mu;
+  this.variance = (s * s) * (Math.PI * Math.PI) / 3;
+  this.stdev = Math.sqrt(this.variance);
+  this.support = [-Infinity, Infinity];
+}
+LogisticCtor.prototype.pdf = function (x) {
+  const z = (x - this.mu) / this.s;
+  const ez = Math.exp(-z);
+  const denom = 1 + ez;
+  return ez / (this.s * denom * denom);
+};
+LogisticCtor.prototype.logpdf = function (x) {
+  const z = (x - this.mu) / this.s;
+  return -z - Math.log(this.s) - 2 * Math.log(1 + Math.exp(-z));
+};
+LogisticCtor.prototype.cdf = function (x) {
+  return 1 / (1 + Math.exp(-(x - this.mu) / this.s));
+};
+LogisticCtor.prototype.quantile = function (p) {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  return this.mu + this.s * Math.log(p / (1 - p));
+};
+function logpdfLogistic(x, mu, s) {
+  const z = (x - mu) / s;
+  return -z - Math.log(s) - 2 * Math.log(1 + Math.exp(-z));
+}
+
+// Weibull(shape, scale):  pdf = (k/λ)·(x/λ)^{k−1}·exp(−(x/λ)^k) for x ≥ 0
+//                         cdf = 1 − exp(−(x/λ)^k)
+//                         Q(p) = λ · (−log(1−p))^{1/k}
+const randWeibull = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricWeibullSampler(k, lambda) {
+        const u = uClip(prng());
+        return (+lambda) * Math.pow(-Math.log(1 - u), 1 / (+k));
+      };
+    }
+    const k = +args[0], lambda = +args[1];
+    return function staticWeibullSampler() {
+      const u = uClip(prng());
+      return lambda * Math.pow(-Math.log(1 - u), 1 / k);
+    };
+  },
+};
+
+function WeibullCtor(shape, scale) {
+  // FlatPPL spec names: shape (k), scale (λ).
+  this.k = +shape; this.lambda = +scale;
+  // Mean = λ · Γ(1 + 1/k); variance = λ² · (Γ(1 + 2/k) − Γ(1 + 1/k)²).
+  // We don't have stdlib gamma in scope here without adding a require —
+  // the analytical handle leaves these undefined; plot ranges fall
+  // back to quantile-based bounds.
+  this.support = [0, Infinity];
+}
+WeibullCtor.prototype.pdf = function (x) {
+  if (x < 0) return 0;
+  if (x === 0) return this.k === 1 ? 1 / this.lambda : (this.k > 1 ? 0 : Infinity);
+  const z = x / this.lambda;
+  return (this.k / this.lambda) * Math.pow(z, this.k - 1) * Math.exp(-Math.pow(z, this.k));
+};
+WeibullCtor.prototype.logpdf = function (x) {
+  if (x < 0) return -Infinity;
+  if (x === 0) {
+    if (this.k === 1) return -Math.log(this.lambda);
+    return this.k > 1 ? -Infinity : Infinity;
+  }
+  const z = x / this.lambda;
+  return Math.log(this.k / this.lambda)
+       + (this.k - 1) * Math.log(z)
+       - Math.pow(z, this.k);
+};
+WeibullCtor.prototype.cdf = function (x) {
+  if (x <= 0) return 0;
+  return 1 - Math.exp(-Math.pow(x / this.lambda, this.k));
+};
+WeibullCtor.prototype.quantile = function (p) {
+  if (p <= 0) return 0;
+  if (p >= 1) return Infinity;
+  return this.lambda * Math.pow(-Math.log(1 - p), 1 / this.k);
+};
+function logpdfWeibull(x, k, lambda) {
+  if (x < 0) return -Infinity;
+  if (x === 0) {
+    if (k === 1) return -Math.log(lambda);
+    return k > 1 ? -Infinity : Infinity;
+  }
+  const z = x / lambda;
+  return Math.log(k / lambda) + (k - 1) * Math.log(z) - Math.pow(z, k);
+}
+
 function logpdfDirac(x, value) {
   return x === value ? 0 : -Infinity;
 }
@@ -253,6 +397,27 @@ const REGISTRY = {
       }
       return [lo, hi];
     },
+  },
+  Logistic: {
+    // Spec: Logistic(mu, s) — location mu, scale s. Synthesised
+    // because @stdlib/random-base-logistic isn't installed; cheap
+    // inverse-CDF sampler, exact pdf/cdf/quantile.
+    params:   ['mu', 's'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     LogisticCtor,
+    randFn:   randLogistic,
+    logpdfFn: logpdfLogistic,
+  },
+  Weibull: {
+    // Spec: Weibull(shape, scale) — Weibull(1, 1/rate) ≡
+    // Exponential(rate). Synthesised inverse-CDF sampler.
+    params:   ['shape', 'scale'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     WeibullCtor,
+    randFn:   randWeibull,
+    logpdfFn: logpdfWeibull,
   },
   LogNormal: {
     params:   ['mu', 'sigma'],
