@@ -77,6 +77,7 @@ const stdlibErfcinv  = require('@stdlib/math-base-special-erfcinv');
 // Distribution constructors (analytical PDF/CDF/quantile/mean/etc.)
 const Normal      = require('@stdlib/stats-base-dists-normal-ctor');
 const Exponential = require('@stdlib/stats-base-dists-exponential-ctor');
+const Uniform     = require('@stdlib/stats-base-dists-uniform-ctor');
 const LogNormal   = require('@stdlib/stats-base-dists-lognormal-ctor');
 const Beta        = require('@stdlib/stats-base-dists-beta-ctor');
 const Gamma       = require('@stdlib/stats-base-dists-gamma-ctor');
@@ -91,6 +92,7 @@ const Poisson     = require('@stdlib/stats-base-dists-poisson-ctor');
 // our Philox adapter into.
 const randNormal      = require('@stdlib/random-base-normal');
 const randExponential = require('@stdlib/random-base-exponential');
+const randUniform     = require('@stdlib/random-base-uniform');
 const randLogNormal   = require('@stdlib/random-base-lognormal');
 const randBeta        = require('@stdlib/random-base-beta');
 const randGamma       = require('@stdlib/random-base-gamma');
@@ -108,6 +110,7 @@ const randPoisson     = require('@stdlib/random-base-poisson');
 // can dispatch on it generically.
 const logpdfNormal      = require('@stdlib/stats-base-dists-normal-logpdf');
 const logpdfExponential = require('@stdlib/stats-base-dists-exponential-logpdf');
+const logpdfUniform     = require('@stdlib/stats-base-dists-uniform-logpdf');
 const logpdfLogNormal   = require('@stdlib/stats-base-dists-lognormal-logpdf');
 const logpdfBeta        = require('@stdlib/stats-base-dists-beta-logpdf');
 const logpdfGamma       = require('@stdlib/stats-base-dists-gamma-logpdf');
@@ -219,6 +222,37 @@ const REGISTRY = {
     Ctor:     Exponential,
     randFn:   randExponential,
     logpdfFn: logpdfExponential,
+  },
+  Uniform: {
+    // Spec form: Uniform(support = S) where S is a set (typically an
+    // interval). stdlib's positional ctor takes (a, b). We extract the
+    // numeric bounds from the support arg via regionBoundsFromIR,
+    // which understands literal interval(lo, hi) and named real sets.
+    // Unbounded supports (e.g. `reals`) make the Uniform improper —
+    // sampling would never terminate — so we reject them at param-
+    // resolution time with a clear error rather than passing through
+    // an infinity to stdlib.
+    params:   ['support'],   // surface name only; bounds get derived
+    aliases:  {},
+    discrete: false,
+    Ctor:     Uniform,
+    randFn:   randUniform,
+    logpdfFn: logpdfUniform,
+    customResolveParams: function (measureIR, env) {
+      const kwargs = measureIR.kwargs || {};
+      const positional = measureIR.args || [];
+      const supportIR = ('support' in kwargs) ? kwargs.support
+                      : (positional.length > 0 ? positional[0] : null);
+      if (!supportIR) {
+        throw new Error('sampler: Uniform missing support argument');
+      }
+      const [lo, hi] = regionBoundsFromIR(supportIR, env);
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+        throw new Error('sampler: Uniform requires a bounded support, got ['
+          + lo + ', ' + hi + ']');
+      }
+      return [lo, hi];
+    },
   },
   LogNormal: {
     params:   ['mu', 'sigma'],
@@ -1026,6 +1060,14 @@ function lookupDistribution(measureIR) {
 }
 
 function resolveParams(measureIR, entry, env) {
+  // Hook for distributions whose surface params aren't directly
+  // evaluable as numerics (e.g. Uniform(support = interval(lo, hi)),
+  // where the `support` arg is a set IR rather than a value). The
+  // entry-supplied resolver returns the positional numeric list that
+  // the stdlib factory / ctor / logpdf call expects.
+  if (typeof entry.customResolveParams === 'function') {
+    return entry.customResolveParams(measureIR, env);
+  }
   const kwargs = measureIR.kwargs || {};
   const positional = measureIR.args || [];
   const out = [];
