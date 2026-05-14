@@ -129,13 +129,13 @@ function fixedValueToMeasure(v, sampleCount) {
   if (typeof v === 'number' && Number.isFinite(v)) {
     const arr = new Float64Array(sampleCount);
     arr.fill(v);
-    return { samples: arr, logWeights: null,
-             logTotalmass: 0, n_eff: sampleCount };
+    return scalarMeasureN(arr,
+      { logWeights: null, logTotalmass: 0, n_eff: sampleCount });
   }
   if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
     const samples = Float64Array.from(v);
-    return { samples: samples, logWeights: null,
-             logTotalmass: 0, n_eff: samples.length };
+    return scalarMeasureN(samples,
+      { logWeights: null, logTotalmass: 0, n_eff: samples.length });
   }
   if (Array.isArray(v)) {
     // Plain JS array: flat numeric vector OR mixed-shape tuple.
@@ -145,8 +145,8 @@ function fixedValueToMeasure(v, sampleCount) {
     }
     if (allNum) {
       const samples = Float64Array.from(v);
-      return { samples: samples, logWeights: null,
-               logTotalmass: 0, n_eff: samples.length };
+      return scalarMeasureN(samples,
+        { logWeights: null, logTotalmass: 0, n_eff: samples.length });
     }
     const elems = new Array(v.length);
     for (let ei = 0; ei < v.length; ei++) elems[ei] = fixedValueToMeasure(v[ei], sampleCount);
@@ -210,6 +210,16 @@ function valueOf(m) {
 }
 
 /**
+ * Convenience: build a scalar-atom Measure from a Float64Array of
+ * per-atom samples plus the metadata fields. Equivalent to
+ * `measureFromValue(batchedScalar(samples), extras)` — the most common
+ * call shape in the handler migrations.
+ */
+function scalarMeasureN(samples, extras) {
+  return measureFromValue(valueLib.batchedScalar(samples), extras);
+}
+
+/**
  * Build a Measure record from a Value plus the measure-metadata fields.
  * `v.data` becomes both `.samples` (legacy view) and `.value.data`
  * (shared storage; no copy). `extras` carries logWeights /
@@ -262,12 +272,11 @@ function matSample(name, d, ctx) {
       // from a bare leaf-distribution sample). A leaf distribution is
       // a normalized probability measure, so logTotalmass = 0.
       const lw = reply.logWeights || null;
-      return {
-        samples: reply.samples,
+      return scalarMeasureN(reply.samples, {
         logWeights: lw,
         logTotalmass: 0,
         n_eff: reply.samples.length,
-      };
+      });
     });
 }
 
@@ -310,12 +319,11 @@ function matEvaluate(d, ctx) {
       // right answer for a deterministic transform of normalized
       // probability variates; weighted inputs propagate their mass.
       const logTotalmass = lw ? empirical.logSumExp(lw) : 0;
-      return {
-        samples: reply.samples,
+      return scalarMeasureN(reply.samples, {
         logWeights: lw,
         logTotalmass: logTotalmass,
         n_eff: n_eff,
-      };
+      });
     });
   });
 }
@@ -369,12 +377,11 @@ function matPushfwd(name, d, ctx) {
       count: M.samples.length,
       refArrays: { [fnInfo.paramName]: M.samples },
     }).then((reply) => {
-      return {
-        samples: reply.samples,
+      return scalarMeasureN(reply.samples, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
         n_eff: M.n_eff,
-      };
+      });
     });
   });
 }
@@ -415,12 +422,11 @@ function matArray(d) {
   // round-trip. Length equals the array's literal length, NOT the
   // sample count; downstream plot dispatches by mode for this kind.
   const samples = Float64Array.from(d.values);
-  return Promise.resolve({
-    samples: samples,
+  return Promise.resolve(scalarMeasureN(samples, {
     logWeights: null,
     logTotalmass: 0,
     n_eff: samples.length,
-  });
+  }));
 }
 
 function matWeighted(d, ctx) {
@@ -463,21 +469,20 @@ function matWeighted(d, ctx) {
         }
         const lTM = empirical.logSumExp(w);
         const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
-        return { samples: lifted.samples, logWeights: w,
-                 logTotalmass: lTM, n_eff: nEff };
+        return scalarMeasureN(lifted.samples,
+          { logWeights: w, logTotalmass: lTM, n_eff: nEff });
       });
     }
     // Constant fast path: orchestrator pre-computed d.logShift (a
     // uniform per-atom additive shift). totalmass simply scales.
     for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + d.logShift;
     const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
-    return {
-      samples: lifted.samples,
+    return scalarMeasureN(lifted.samples, {
       logWeights: w,
       logTotalmass: parentLTM + d.logShift,
       // Uniform constant-shift doesn't change relative weights → n_eff unchanged.
       n_eff: (typeof parent.n_eff === 'number') ? parent.n_eff : N,
-    };
+    });
   });
 }
 
@@ -490,8 +495,8 @@ function matNormalize(d, ctx) {
     const w = new Float64Array(N);
     for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] - lse;
     const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
-    return { samples: lifted.samples, logWeights: w,
-             logTotalmass: 0, n_eff: nEff };
+    return scalarMeasureN(lifted.samples,
+      { logWeights: w, logTotalmass: 0, n_eff: nEff });
   });
 }
 
@@ -519,9 +524,12 @@ function matIid(name, d, ctx) {
       // We could fetch the inner measure for n_eff / logTotalmass,
       // but for a leaf-distribution iid those defaults are 1 and N,
       // matching the leaf-sample handler. Stay simple.
+      //
+      // Vector-atom Value: shape=[N, ...dims]. data is atom-major.
+      const value = { shape: [ctx.sampleCount | 0].concat(d.dims), data: reply.samples };
       return Object.assign(
         empirical.arrayMeasure(reply.samples, d.dims, null),
-        { logTotalmass: 0, n_eff: ctx.sampleCount },
+        { value: value, logTotalmass: 0, n_eff: ctx.sampleCount },
       );
     });
 }
@@ -581,8 +589,12 @@ function matSuperpose(name, d, ctx) {
     let totalN = 0;
     for (const p of parents) totalN += p.samples.length;
     if (totalN === 0) {
-      return { samples: new Float64Array(0), logWeights: null,
-               logTotalmass: -Infinity, n_eff: 0 };
+      // shape=[0] empty batched scalar. Use measureFromValue directly
+      // because batchedScalar would also produce shape=[0] but going
+      // through the helper documents the empty case.
+      return measureFromValue(
+        { shape: [0], data: new Float64Array(0) },
+        { logWeights: null, logTotalmass: -Infinity, n_eff: 0 });
     }
     const combinedSamples = new Float64Array(totalN);
     const combinedLogWeights = new Float64Array(totalN);
@@ -601,13 +613,12 @@ function matSuperpose(name, d, ctx) {
     const perAtom = totalLogMass - Math.log(ctx.sampleCount);
     const outW = new Float64Array(ctx.sampleCount);
     outW.fill(perAtom);
-    return {
-      samples: out,
+    return scalarMeasureN(out, {
       logWeights: outW,
       logTotalmass: totalLogMass,
       // After systematic resampling the atoms are uniform → n_eff = N.
       n_eff: ctx.sampleCount,
-    };
+    });
   });
 }
 
@@ -666,12 +677,11 @@ function matBayesupdate(d, ctx) {
             { logTotalmass: lTM, n_eff: nEff },
           );
         }
-        return {
-          samples: parent.samples,
+        return scalarMeasureN(parent.samples, {
           logWeights: newLW,
           logTotalmass: lTM,
           n_eff: nEff,
-        };
+        });
       });
     });
 }
@@ -755,8 +765,7 @@ function matTruncate(d, ctx) {
           count: N,
           mode: 'cdf',
           seed: seed,
-        }).then((reply) => ({
-          samples: reply.samples,
+        }).then((reply) => scalarMeasureN(reply.samples, {
           logWeights: null,
           logTotalmass: parentLTM + reply.logShift,
           n_eff: reply.n_eff,
@@ -793,12 +802,11 @@ function matTruncate(d, ctx) {
               logWeights[i] = Number.isNaN(samples[i]) ? -Infinity : 0;
             }
           }
-          return {
-            samples: samples,
+          return scalarMeasureN(samples, {
             logWeights: logWeights,
             logTotalmass: parentLTM + reply.logShift,
             n_eff: reply.n_eff,
-          };
+          });
         });
     }
 
@@ -835,12 +843,11 @@ function matTruncate(d, ctx) {
       // log(M(S)/M(R)) — caller already has parent.logTotalmass; we
       // add the empirical conditional log-probability.
       const logShift = isFinite(lseA) && isFinite(lseT) ? (lseA - lseT) : -Infinity;
-      return {
-        samples: out,
+      return scalarMeasureN(out, {
         logWeights: outW,
         logTotalmass: parentLTM + logShift,
         n_eff: n_eff,
-      };
+      });
     }
     // Uniform parent: simple count-based shift.
     let anyNaN = false;
@@ -859,12 +866,11 @@ function matTruncate(d, ctx) {
     const logShift = n_eff > 0
       ? Math.log(n_eff / parentSamples.length)
       : -Infinity;
-    return {
-      samples: out,
+    return scalarMeasureN(out, {
       logWeights: logWeights,
       logTotalmass: parentLTM + logShift,
       n_eff: n_eff,
-    };
+    });
   });
 }
 
@@ -882,12 +888,11 @@ function matTotalmass(d, ctx) {
     const tm = Math.exp(typeof m.logTotalmass === 'number' ? m.logTotalmass : 0);
     const samples = new Float64Array(N);
     samples.fill(tm);
-    return {
-      samples: samples,
+    return scalarMeasureN(samples, {
       logWeights: null,
       logTotalmass: 0,
       n_eff: N,
-    };
+    });
   });
 }
 
@@ -945,12 +950,11 @@ function matLogdensityof(d, ctx) {
       tally: 'clamped',
     }).then((reply) => {
       if (!isChain) {
-        return {
-          samples: reply.samples,
+        return scalarMeasureN(reply.samples, {
           logWeights: null,
           logTotalmass: 0,
           n_eff: reply.samples.length,
-        };
+        });
       }
       // chain marginalisation reduction.
       const perAtom = reply.samples;
@@ -958,12 +962,11 @@ function matLogdensityof(d, ctx) {
       const margLogp = lse - Math.log(perAtom.length);
       const out = new Float64Array(perAtom.length);
       out.fill(margLogp);
-      return {
-        samples: out,
+      return scalarMeasureN(out, {
         logWeights: null,
         logTotalmass: 0,
         n_eff: 1,
-      };
+      });
     });
   });
 }

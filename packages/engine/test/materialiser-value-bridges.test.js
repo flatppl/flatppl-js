@@ -140,3 +140,132 @@ test('round-trip: measureFromValue then valueOf returns the same value', () => {
   // returns it directly (same reference, free).
   assert.equal(recovered, v);
 });
+
+// =====================================================================
+// Phase 4b regression — every handler that produces a scalar-leaf
+// Measure must populate `.value` (the migration's atomic invariant).
+// =====================================================================
+
+const { processSource, orchestrator } = require('..');
+const { createWorkerHandler } = require('../worker');
+
+function makeCtx(source) {
+  const lifted = processSource(source);
+  const built  = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 0xC0DECAFE });
+  const cache = new Map();
+  const ctx = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure:  (name) => {
+      if (cache.has(name)) return cache.get(name);
+      const materialiser = require('../materialiser');
+      const p = materialiser.materialiseMeasure(name, ctx);
+      cache.set(name, p);
+      return p;
+    },
+    sendWorker:  (msg) => Promise.resolve(worker.handle(msg)),
+    sampleCount: 256,
+    rootSeed:    0xC0DECAFE,
+  };
+  return ctx;
+}
+
+test('Phase 4b: matSample populates .value (shape=[N])', async () => {
+  const ctx = makeCtx(`x = Normal(mu=0.0, sigma=1.0)`);
+  const m = await ctx.getMeasure('x');
+  assert.ok(m.value, 'matSample result must have .value populated');
+  assert.deepEqual(m.value.shape, [256]);
+  assert.equal(m.value.data, m.samples, 'value.data must share storage with samples');
+});
+
+test('Phase 4b: matEvaluate populates .value', async () => {
+  const ctx = makeCtx(`
+x = Normal(mu=0.0, sigma=1.0)
+y = 2.0 * x + 1.0
+`);
+  const m = await ctx.getMeasure('y');
+  assert.ok(m.value);
+  assert.deepEqual(m.value.shape, [256]);
+});
+
+test('Phase 4b: matIid populates .value (shape=[N, k])', async () => {
+  const ctx = makeCtx(`xs = iid(Normal(mu=0.0, sigma=1.0), 5)`);
+  const m = await ctx.getMeasure('xs');
+  assert.ok(m.value, 'matIid result must have .value populated');
+  assert.deepEqual(m.value.shape, [256, 5]);
+  assert.equal(m.value.data, m.samples);
+});
+
+test('Phase 4b: matWeighted populates .value', async () => {
+  const ctx = makeCtx(`
+base = Normal(mu=0.0, sigma=1.0)
+w = weighted(2.0, base)
+`);
+  const m = await ctx.getMeasure('w');
+  assert.ok(m.value);
+});
+
+test('Phase 4b: matNormalize populates .value', async () => {
+  const ctx = makeCtx(`
+base = Normal(mu=0.0, sigma=1.0)
+n = normalize(weighted(2.0, base))
+`);
+  const m = await ctx.getMeasure('n');
+  assert.ok(m.value);
+});
+
+test('Phase 4b: matTotalmass populates .value', async () => {
+  const ctx = makeCtx(`
+base = Normal(mu=0.0, sigma=1.0)
+w = weighted(2.0, base)
+tm = totalmass(w)
+`);
+  const m = await ctx.getMeasure('tm');
+  assert.ok(m.value);
+});
+
+test('Phase 4b: matSuperpose populates .value', async () => {
+  const ctx = makeCtx(`
+a = Normal(mu=0.0, sigma=1.0)
+b = Normal(mu=5.0, sigma=1.0)
+s = superpose(weighted(0.5, a), weighted(0.5, b))
+`);
+  const m = await ctx.getMeasure('s');
+  assert.ok(m.value);
+});
+
+test('Phase 4b: matPushfwd populates .value', async () => {
+  const ctx = makeCtx(`
+base = Normal(mu=0.0, sigma=1.0)
+ln = pushfwd(fn(exp(_)), base)
+`);
+  const m = await ctx.getMeasure('ln');
+  assert.ok(m.value);
+});
+
+test('Phase 4b: matLogdensityof populates .value', async () => {
+  const ctx = makeCtx(`
+base = Normal(mu=0.0, sigma=1.0)
+lp = logdensityof(base, 1.5)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(m.value);
+});
+
+test('Phase 4b: record fields have .value on the scalar leaves', async () => {
+  const ctx = makeCtx(`
+a = Normal(mu=0.0, sigma=1.0)
+b = Normal(mu=5.0, sigma=1.0)
+j = joint(a=a, b=b)
+`);
+  const m = await ctx.getMeasure('j');
+  // The record itself has no top-level .value (no samples); each field
+  // sub-measure has its own .value.
+  assert.ok(m.fields);
+  assert.ok(m.fields.a.value);
+  assert.ok(m.fields.b.value);
+  assert.deepEqual(m.fields.a.value.shape, [256]);
+});
