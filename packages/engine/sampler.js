@@ -710,6 +710,75 @@ function evaluateCall(ir, env) {
     }
     return obj[key];
   }
+  // Shape functions (spec §07 Approximation functions). All three take
+  // kwargs so they don't pass through ARITH_OPS; dispatch explicitly.
+  // The kwargs are `coefficients` / `values` (a fixed-phase array) and
+  // `x` (the evaluation point), plus `edges` for stepwise.
+  if (op === 'polynomial') {
+    const kw = ir.kwargs || {};
+    const coeffs = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
+                                           : evaluateExpr(ir.args[0], env);
+    const x = kw.x != null ? evaluateExpr(kw.x, env)
+                           : evaluateExpr(ir.args[1], env);
+    // Σ a_i · x^i, evaluated Horner-style for numerical stability.
+    let acc = 0;
+    for (let i = coeffs.length - 1; i >= 0; i--) acc = acc * x + coeffs[i];
+    return acc;
+  }
+  if (op === 'bernstein') {
+    // Bernstein basis on [0, 1]: f(x) = Σ_{k=0..n} a_k · C(n, k) · x^k · (1-x)^{n-k}
+    // where n = length(coefficients) - 1. Numerically stable for x ∈ [0,1].
+    const kw = ir.kwargs || {};
+    const coeffs = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
+                                           : evaluateExpr(ir.args[0], env);
+    const x = kw.x != null ? evaluateExpr(kw.x, env)
+                           : evaluateExpr(ir.args[1], env);
+    const n = coeffs.length - 1;
+    if (n < 0) return 0;
+    // Binomial coefficients via Pascal recurrence (n choose k).
+    // O(n) per call after pre-computing the row.
+    const oneMinusX = 1 - x;
+    let acc = 0, binom = 1;
+    let xk = 1, omxn = Math.pow(oneMinusX, n);
+    // omxn starts as (1-x)^n; will be divided by (1-x) at each step.
+    // Handle x === 1 (oneMinusX = 0) carefully.
+    if (oneMinusX === 0) {
+      // All bases vanish except the last: f(1) = coeffs[n].
+      return coeffs[n];
+    }
+    for (let k = 0; k <= n; k++) {
+      acc += coeffs[k] * binom * xk * omxn;
+      xk *= x;
+      omxn /= oneMinusX;
+      binom = binom * (n - k) / (k + 1);
+    }
+    return acc;
+  }
+  if (op === 'stepwise') {
+    // Piecewise constant: edges has length n+1, values has length n.
+    // For x in [edges[i], edges[i+1]) return values[i]; right edge
+    // is closed for the last bin.
+    const kw = ir.kwargs || {};
+    const edges  = kw.edges  != null ? evaluateExpr(kw.edges,  env)
+                                     : evaluateExpr(ir.args[0], env);
+    const values = kw.values != null ? evaluateExpr(kw.values, env)
+                                     : evaluateExpr(ir.args[1], env);
+    const x      = kw.x      != null ? evaluateExpr(kw.x,      env)
+                                     : evaluateExpr(ir.args[2], env);
+    const n = values.length;
+    if (edges.length !== n + 1) {
+      throw new Error('stepwise: edges length must equal values length + 1');
+    }
+    if (x < edges[0] || x > edges[n]) return NaN;
+    // Linear scan — fine for typical bin counts (≤ few hundred); a
+    // binary search would help for very long edge vectors.
+    for (let i = 0; i < n; i++) {
+      if (x >= edges[i] && (x < edges[i + 1] || (i === n - 1 && x === edges[i + 1]))) {
+        return values[i];
+      }
+    }
+    return NaN;
+  }
   // record(...) — build a JS object from the call's `fields` array
   // (lowered from surface `record(a=x, b=y)`). Field values are
   // evaluated; keys are static names from the fields array.

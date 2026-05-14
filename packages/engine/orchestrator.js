@@ -127,6 +127,10 @@ const EVALUABLE_OPS = new Set([
   // ordinary value-typed functions whose phase propagates from
   // their inputs. sampler.evaluateCall dispatches each.
   'rnginit', 'rngstate', 'rand',
+  // Shape functions (spec §07 Approximation functions). Pure value
+  // ops; kwargs-shaped so they don't fit ARITH_OPS — sampler.evaluateCall
+  // dispatches each via a dedicated case.
+  'polynomial', 'bernstein', 'stepwise',
 ]);
 
 /**

@@ -83,6 +83,11 @@ test('invariant: REGISTRY discrete flag matches DISCRETE_DISTRIBUTIONS', () => {
 const SAMPLER_INLINE_EVALUABLE = new Set([
   'tuple', 'tuple_get', 'get_field', 'record',
   'rnginit', 'rngstate', 'rand',
+  // Shape functions (spec §07 Approximation functions). Dispatched
+  // by sampler.evaluateCall via dedicated cases because they take
+  // kwargs (coefficients / edges / values + x) that ARITH_OPS's
+  // positional-spread form doesn't handle.
+  'polynomial', 'bernstein', 'stepwise',
 ]);
 
 test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () => {

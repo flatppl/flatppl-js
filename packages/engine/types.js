@@ -648,6 +648,28 @@ const SIGNATURE_FACTORIES = {
   isnan:   () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
   iszero:  () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
 
+  // ---- Approximation functions (spec §07) ---------------------------
+  // Pure value functions. polynomial / bernstein take a real-array of
+  // coefficients and a scalar evaluation point. stepwise takes an
+  // edge vector (n+1 reals), a value vector (n reals), and an
+  // evaluation point. All three return REAL.
+  polynomial: () => ({
+    args:   [array(1, ['%dynamic'], REAL), REAL],
+    kwargs: { coefficients: array(1, ['%dynamic'], REAL), x: REAL },
+    result: REAL,
+  }),
+  bernstein:  () => ({
+    args:   [array(1, ['%dynamic'], REAL), REAL],
+    kwargs: { coefficients: array(1, ['%dynamic'], REAL), x: REAL },
+    result: REAL,
+  }),
+  stepwise:   () => ({
+    args:   [array(1, ['%dynamic'], REAL), array(1, ['%dynamic'], REAL), REAL],
+    kwargs: { edges: array(1, ['%dynamic'], REAL),
+              values: array(1, ['%dynamic'], REAL), x: REAL },
+    result: REAL,
+  }),
+
   // ---- Logic / conditionals ----------------------------------------
   // Spec §07 — boolean ops. `lnot` is unary; the others are binary.
   // `ifelse(cond, a, b)` is the conditional expression — both branches
