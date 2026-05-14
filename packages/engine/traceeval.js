@@ -269,15 +269,34 @@ function walkJoint(state, ir, env, observed, ctx) {
     const out = {};
     let logp = 0;
     let st = state;
+    // Env-threading for scoring: when an observation pins each
+    // field's value, write the observed value into env keyed by field
+    // name BEFORE walking subsequent fields. This is the joint-density
+    // semantics — `logdensityof(joint(theta1=M1, theta2=M2, y=K(theta1,
+    // theta2)), {theta1=0, theta2=1, y=0})` evaluates y's leaf at the
+    // OBSERVED θ values, not at the prior per-atom θ samples.
+    // Variate name === binding name in FlatPPL by construction (the
+    // jointchain rewrite preserves names through extractRecordFields).
+    //
+    // We don't mutate the caller's env — shallow-copy on demand so
+    // independent atoms or sibling walks aren't entangled.
+    const walkEnv = (observed != null) ? Object.assign({}, env) : env;
     for (let i = 0; i < fields.length; i++) {
       const f = fields[i];
       const sub = observed != null && Object.prototype.hasOwnProperty.call(observed, f.name)
         ? observed[f.name]
         : undefined;
-      const r = walkInner(st, f.value, env, sub, ctx);
+      const r = walkInner(st, f.value, walkEnv, sub, ctx);
       out[f.name] = r.value;
       logp += r.logp;
       st = r.state;
+      // Thread the consumed value into env for subsequent fields.
+      // Only meaningful for scalar leaves (per-atom resolveValueRef
+      // hooks expect scalar values); structured field values still
+      // get written but downstream refs to them would be uncommon.
+      if (observed != null && Object.prototype.hasOwnProperty.call(observed, f.name)) {
+        walkEnv[f.name] = r.value;
+      }
     }
     return { value: out, logp, state: st };
   }
