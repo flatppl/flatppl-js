@@ -319,6 +319,25 @@ test('Klein-4: matrix transpose swaps shape entries', () => {
   assert.deepEqual(value.transpose(vT).shape, [2, 3]);
 });
 
+test('Klein-4: atom-batched matrix transpose swaps LAST TWO axes', () => {
+  // Shape=[N, m, n] atom-batched matrix: transpose should swap the per-
+  // atom m and n axes only (NumPy/JAX/PyTorch convention), giving
+  // shape=[N, n, m]. Reversing the full shape (the original Phase 2a
+  // bug) would have produced shape=[n, m, N] — wrong.
+  const v = { shape: [4, 2, 3], data: new Float64Array(24) };
+  const vT = value.transpose(v);
+  assert.deepEqual(vT.shape, [4, 3, 2]);
+  assert.equal(vT.data, v.data, 'tag op must share buffer');
+  // Round-trip restores logical shape.
+  assert.deepEqual(value.transpose(vT).shape, [4, 2, 3]);
+});
+
+test('Klein-4: adjoint of atom-batched matrix also swaps last two axes', () => {
+  const v = { shape: [4, 2, 3], data: new Float64Array(24) };
+  const vA = value.adjoint(v);
+  assert.deepEqual(vA.shape, [4, 3, 2]);
+});
+
 test('Klein-4: vector transpose preserves shape (vectors are 1-D)', () => {
   // Per FlatPPL semantics: transpose is self-inverse on vectors;
   // transpose(vec) is NOT a single-row matrix. The tag distinguishes

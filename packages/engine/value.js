@@ -180,13 +180,21 @@ function isConjugateView(v) { return _TAG_CONJUGATED[getTag(v)]; }
 // out in memory, before applying the transpose tag. For a Value with
 // shape=[m, n] and t='T', the stored data is laid out [n, m] row-major.
 // For vectors and scalars (1-D or 0-D), the storage shape equals shape.
+//
+// For higher-rank tensors (rank ≥ 3, e.g. atom-batched matrices
+// shape=[N, m, n]), transpose swaps the LAST TWO axes — the
+// NumPy/JAX/PyTorch convention. This makes transpose well-defined per-
+// atom for atom-batched matrices: shape=[N, m, n] with t='T' is
+// observationally an atom-batched matrix where every atom's m×n slice
+// is transposed to n×m.
 function _dataShape(v) {
   if (v.shape.length < 2) return v.shape;
   if (!isTransposeView(v)) return v.shape;
-  const out = new Array(v.shape.length);
-  for (let i = 0; i < v.shape.length; i++) {
-    out[i] = v.shape[v.shape.length - 1 - i];
-  }
+  const out = v.shape.slice();
+  const last = out.length - 1;
+  const tmp = out[last];
+  out[last] = out[last - 1];
+  out[last - 1] = tmp;
   return out;
 }
 
@@ -212,12 +220,18 @@ function isBatched(v, N) {
 // `shape` entries, but never touch the `data` buffer. Cost is O(rank)
 // for the shape swap; constant for vectors and scalars.
 
-// Swap shape entries in place on a fresh array — used by transpose and
-// adjoint for rank-≥2 values.
+// Swap the LAST TWO shape entries on a fresh array — used by transpose
+// and adjoint for rank-≥2 values. Higher-rank tensors (e.g. atom-
+// batched matrices shape=[N, m, n]) have their last two axes swapped,
+// matching the NumPy/JAX/PyTorch convention. This means transpose is
+// per-atom on atom-batched matrices: [N, m, n] → [N, n, m].
 function _swappedShape(shape) {
   if (shape.length < 2) return shape.slice();
-  const out = new Array(shape.length);
-  for (let i = 0; i < shape.length; i++) out[i] = shape[shape.length - 1 - i];
+  const out = shape.slice();
+  const last = out.length - 1;
+  const tmp = out[last];
+  out[last] = out[last - 1];
+  out[last - 1] = tmp;
   return out;
 }
 
