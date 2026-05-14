@@ -9,16 +9,35 @@
 // the binding's empirical distribution.
 //
 // The Measure record is the EmpiricalMeasure shape from empirical.js
-// extended with two scalar metadata fields:
+// extended with two scalar metadata fields, plus an internal Value
+// view (shape-explicit refactor, Phase 4):
 //
-//   { samples:      Float64Array,             // per-atom values
+//   { samples:      Float64Array,             // per-atom values (legacy view)
+//     value?:       Value,                    // shape-explicit view (Phase 4)
 //     logWeights:   Float64Array | null,      // null = uniform 1/N
 //     logTotalmass: number,                   // default 0 (= totalmass 1)
 //     n_eff:        number,                   // default = samples.length
 //     fields?:      { name → Measure },       // record/joint shape
 //     elems?:       Measure[],                // tuple shape
-//     shape?:       'record' | 'tuple' | 'array',
+//     shape?:       'record' | 'tuple' | 'array',  // kind discriminator (string)
+//     dims?:        number[],                 // legacy intrinsic-dim suffix for
+//                                             //   vector-atom measures (matIid)
 //     ... }
+//
+// **Phase 4 contract.** The internal `.value` field carries the
+// shape-explicit Value (see engine/value.js) for scalar-leaf measures
+// — i.e. measures whose atoms are real-valued and not records/tuples.
+// `.value.shape` includes the leading N (atom count) axis: shape=[N]
+// for scalar atoms, shape=[N, k] for k-vector atoms (matIid), etc.
+// `.value.data` shares storage with the legacy `.samples` Float64Array
+// (no copy). The Klein-4 transpose tag is preserved through value-ops
+// dispatch.
+//
+// Phase 4a (this commit) introduces the helpers `valueOf(m)` and
+// `measureFromValue(v, extras)` plus documents the contract. The
+// handlers themselves still produce the legacy shape; Phase 4b
+// migrates each handler to populate `.value` and the consumers
+// (density.js Phase 5, MvNormal Phase 6) start reading via `valueOf`.
 //
 // `logTotalmass` is on the log scale so deep compositions (iid^n,
 // chain of weighted, …) stay representable when raw totalmass would
@@ -43,6 +62,7 @@
 const empirical    = require('./empirical');
 const orchestrator = require('./orchestrator');
 const rng          = require('./rng');
+const valueLib     = require('./value');
 
 // =====================================================================
 // Helpers
@@ -161,6 +181,67 @@ function measureN(m) {
   }
   if (m.elems && m.elems.length > 0) return measureN(m.elems[0]);
   return 0;
+}
+
+/**
+ * Return a Value view of a scalar-leaf measure (Phase 4 helper). The
+ * Value's `data` SHARES STORAGE with `m.samples` — no copy. Shape is
+ * computed from the legacy `.dims` suffix:
+ *
+ *   m.dims = undefined         → shape = [N]            (scalar atoms)
+ *   m.dims = [k]               → shape = [N, k]         (k-vector atoms)
+ *   m.dims = [m, n]            → shape = [N, m, n]      (matrix atoms)
+ *
+ * Returns `null` for measures without a top-level `.samples` field
+ * (records / tuples — call `valueOf` on a field or element of those
+ * instead).
+ *
+ * Prefers `m.value` if already populated (Phase 4b migration); falls
+ * back to building one from `.samples` and `.dims` (works for
+ * pre-migration handlers).
+ */
+function valueOf(m) {
+  if (!m) return null;
+  if (m.value != null) return m.value;
+  if (!m.samples) return null;
+  const N = m.samples.length / (m.dims ? m.dims.reduce((a, b) => a * b, 1) : 1);
+  const shape = m.dims ? [N | 0].concat(m.dims) : [m.samples.length];
+  return { shape: shape, data: m.samples };
+}
+
+/**
+ * Build a Measure record from a Value plus the measure-metadata fields.
+ * `v.data` becomes both `.samples` (legacy view) and `.value.data`
+ * (shared storage; no copy). `extras` carries logWeights /
+ * logTotalmass / n_eff / dims; defaults are uniform weights and
+ * full ESS. The Value's tail dimensions (shape after the leading N)
+ * are written into `dims` so legacy consumers continue to work.
+ *
+ *   measureFromValue({shape: [N], data: …})           → scalar-atom Measure
+ *   measureFromValue({shape: [N, k], data: …})        → k-vector-atom Measure
+ *   measureFromValue({shape: [N, m, n], data: …})     → matrix-atom Measure
+ */
+function measureFromValue(v, extras) {
+  if (!valueLib.isValue(v)) {
+    throw new Error('measureFromValue: argument is not a Value');
+  }
+  if (v.shape.length === 0) {
+    throw new Error(
+      'measureFromValue: scalar Value (shape=[]) has no atom axis; ' +
+      'wrap into a batched scalar (shape=[N]) first');
+  }
+  const N = v.shape[0];
+  const dims = v.shape.length > 1 ? v.shape.slice(1) : undefined;
+  extras = extras || {};
+  const m = {
+    samples:      v.data,
+    value:        v,
+    logWeights:   extras.logWeights != null ? extras.logWeights : null,
+    logTotalmass: extras.logTotalmass != null ? extras.logTotalmass : 0,
+    n_eff:        extras.n_eff != null ? extras.n_eff : N,
+  };
+  if (dims) m.dims = dims;
+  return m;
 }
 
 // =====================================================================
@@ -955,4 +1036,8 @@ module.exports = {
   collectRefArrays,
   nameSeed,
   makeMainThreadPrng,
+  // Phase 4 helpers — Value ↔ Measure bridges.
+  valueOf,
+  measureFromValue,
+  measureN,
 };
