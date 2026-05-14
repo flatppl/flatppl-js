@@ -1281,13 +1281,21 @@
      * we don't know how to surface (rngstate, opaque objects).
      */
     function fixedValueToMeasure(v) {
+      // Phase 8: every scalar-leaf Measure carries `.value` (the
+      // shape-tagged Value view). `.value.data` shares storage with
+      // `.samples`. Without `.value` here, collectRefArrays' defensive
+      // batchedScalar wrap kicks in — correct but redundant.
       if (typeof v === 'number' && Number.isFinite(v)) {
         var arr = new Float64Array(SAMPLE_COUNT);
         arr.fill(v);
-        return { samples: arr, logWeights: null };
+        return { samples: arr, value: { shape: [SAMPLE_COUNT], data: arr },
+                 logWeights: null };
       }
       if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
-        return { samples: Float64Array.from(v), logWeights: null };
+        var samples = Float64Array.from(v);
+        return { samples: samples,
+                 value: { shape: [samples.length], data: samples },
+                 logWeights: null };
       }
       if (Array.isArray(v)) {
         // A plain JS array is either a flat numeric vector (data
@@ -1298,7 +1306,12 @@
         for (var i = 0; allNum && i < v.length; i++) {
           if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) allNum = false;
         }
-        if (allNum) return { samples: Float64Array.from(v), logWeights: null };
+        if (allNum) {
+          var samplesA = Float64Array.from(v);
+          return { samples: samplesA,
+                   value: { shape: [samplesA.length], data: samplesA },
+                   logWeights: null };
+        }
         // Tuple: per-element recursive measure. Opaque elements
         // (rngstate) become null entries; formatConstantMeasure
         // renders those as a placeholder so a tuple containing a
@@ -5064,7 +5077,14 @@
           refArrays: refArrays,
         });
       }).then(function(reply) {
-        return { samples: reply.samples, logWeights: null };
+        // Phase 8: hand-built Measures populate `.value` for
+        // consistency with materialiser-produced ones.
+        var data = reply.samples;
+        return {
+          samples: data,
+          value: { shape: [data.length], data: data },
+          logWeights: null,
+        };
       });
     }
 

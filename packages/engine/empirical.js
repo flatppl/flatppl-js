@@ -338,9 +338,21 @@ function tupleMeasure(elems, logWeights) {
  * Build an array-shaped measure. Samples are flat (atom-major):
  * `samples[i*stride + j]` is atom i's j-th element. `dims` records
  * the per-atom shape (e.g. `[10]` for `iid(M, 10)`).
+ *
+ * Phase 8: also populate `.value` (the shape-tagged Value view) so
+ * downstream consumers using the Phase 4+ valueOf/measureFromValue
+ * contract see a coherent shape. `.value.data` shares storage with
+ * `.samples` — no allocation overhead.
  */
 function arrayMeasure(samples, dims, logWeights) {
-  return { shape: 'array', samples, dims, logWeights: logWeights || null };
+  const m = { shape: 'array', samples, dims, logWeights: logWeights || null };
+  if (samples && dims && dims.length > 0
+      && samples.BYTES_PER_ELEMENT !== undefined) {
+    const total = dims.reduce(function (p, n) { return p * n; }, 1);
+    const N = total > 0 ? (samples.length / total) : 0;
+    m.value = { shape: [N | 0].concat(dims), data: samples };
+  }
+  return m;
 }
 
 /** Effective shape — back-compat shim. Untagged measures are scalar. */
