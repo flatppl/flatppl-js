@@ -1,72 +1,66 @@
 'use strict';
 
 // =====================================================================
-// density.js — log-density evaluation with consume/rest semantics
+// density.js — batched log-density evaluation with consume/rest
 // =====================================================================
 //
-// Provides a single primitive that walks a measure IR alongside a
-// candidate variate value, consuming the leading part of the value
-// that the measure occupies and returning what's left:
+// The single density implementation for the engine. Every production
+// density caller (matLogdensityof, matBayesupdate, profileN-logdensity,
+// worker.logDensityN) goes through here. Both batched (N atoms in one
+// call) and single-point (N=1) evaluation share the same code path —
+// batching is the natural primitive, single-point is the trivial case.
+//
+// Naming follows the engine-wide convention:
+//   - `…N(…count…)`   — batched primitive over `count` atoms
+//   - `…Consume…`     — returns a `rest` (the unconsumed value
+//                       leftover) alongside the result, for callers
+//                       that compose with other consumers
+//
+// Layered API:
+//
+//   logDensityConsumeN(ir, value, refArrays, count, opts)
+//     → { logps: Float64Array(count), rest }
+//     The foundation. Walks the IR structure once (atom-independent
+//     consume/rest splitting), evaluates per-leaf logpdf N times
+//     (the only per-atom work), threads consumed values into `baseEnv`
+//     for downstream sub-walks (env-threading).
+//
+//   logDensityN(ir, value, refArrays, count, opts) → Float64Array
+//     Strict batched wrapper — asserts the value was fully consumed
+//     (rest === null). Same shape as the worker's logDensityN message.
 //
 //   logDensityConsume(ir, value, env, opts) → { logp, rest }
+//     Single-point convenience: count=1 wrapper around the foundation.
 //
-// This is the foundation for log-density evaluation throughout the
-// engine. Composite measures (joint / jointchain / iid / …) split the
-// value across their components by recursing into logDensityConsume
-// and threading `rest` from one component into the next. Leaf
-// distributions consume one entry and produce one logp. The wrapper
-// `logDensity(ir, value, env, opts)` asserts that nothing remains
-// after the walk; a non-empty `rest` indicates a shape mismatch
-// between the measure and the value.
+//   logDensity(ir, value, env, opts) → number
+//     Single-point strict: count=1 wrapper around logDensityN.
 //
-// Why a separate primitive (rather than reusing traceeval.walk):
-//
-//   * traceeval.walk handles a unified sample-OR-score path, where
-//     `observed` is pre-shaped to mirror the IR (records keyed by
-//     name, iid blocks as arrays of length n, …). Composite measures
-//     whose variates are CAT'd (positional joint, jointchain) don't
-//     fit that template — the caller would have to pre-split the
-//     value, which duplicates the engine's shape knowledge in every
-//     call site.
-//
-//   * The consume/rest pattern moves all that shape-aware splitting
-//     into one place. Each measure-kind handler knows its own
-//     footprint; the caller hands over a flat value and gets back
-//     exactly what wasn't consumed.
-//
-//   * The empty-rest invariant (in `logDensity`) catches shape
-//     mismatches as proper errors rather than silently scoring the
-//     wrong slice — useful both for users and as a regression check
-//     when adding new composite measures.
+// Per-atom variation comes from `refArrays` ({ [name]: Float64Array(N) }):
+// the value-position refs that change per atom (typically a prior's
+// per-atom θ samples). `baseEnv` is the atom-independent portion
+// (session env from fixed-phase bindings, plus values written by
+// env-threading from consumed observation fields — these are shared
+// across atoms since `value` itself is shared).
 //
 // Value-shape conventions (what `value` may be at each consumer):
-//
-//   - number              — a single scalar entry. Fully consumed by
-//                           a scalar leaf distribution. rest = null.
-//   - Float64Array / TypedArray
-//                         — a flat numeric vector. Consumers take a
-//                           prefix slice via subarray; rest is the
-//                           remaining suffix (or null if all consumed).
-//   - Array (plain JS)    — same shape conventions as a typed array;
-//                           consumers use slice for "rest".
-//   - Object (plain)      — a record keyed by field name. Consumers
-//                           pull named keys and return a shallow copy
-//                           with those keys removed (null if empty).
+//   - number              — single scalar; fully consumed by a leaf
+//   - Float64Array/TypedArray — flat numeric vector; prefix-slice
+//   - Array (plain JS)    — same as typed array; `.slice` for rest
+//   - Object (plain)      — record by field name; shallow copy minus
+//                           consumed key
 //
 // Refs:
-//   - Value-position refs in distribution kwargs (e.g. `Normal(mu =
-//     ref a)`) resolve through `env`, the same map the sampler /
-//     traceeval expects.
+//   - Value-position refs (e.g. `Normal(mu = ref a)`) resolve through
+//     baseEnv ∪ refArrays. Per-atom resolution happens at each leaf.
 //   - Measure-position refs (e.g. `joint(M1ref, M2ref)`) resolve via
-//     opts.resolveMeasureRef(name) → ir | null. The caller typically
+//     opts.resolveMeasureRef(name) → ir | null. Caller typically
 //     supplies a closure over `orchestrator.expandMeasureIR(name,
 //     derivations)`.
 
 const samplerLib = require('./sampler');
 
 // =====================================================================
-// Shape helpers — consume-from-front, return-rest. Centralised so each
-// measure-kind dispatch stays small.
+// Shape helpers — atom-independent consume/rest splitting
 // =====================================================================
 
 /** True iff `rest` is null/undefined or an empty container. */
@@ -90,8 +84,6 @@ function isEmptyRest(rest) {
  *   - bare number → fully consumed; rest = null
  *   - typed array / plain array of length ≥ 1 → element [0] as head,
  *     remaining as rest (a Float64Array subarray view or array slice)
- *   - 1-key record (rare): not allowed — scalar leaves don't consume
- *     from records (the caller should have routed through a field).
  */
 function consumeScalar(value) {
   if (value == null) {
@@ -117,8 +109,9 @@ function consumeScalar(value) {
 /**
  * Pull a single named field from a record `value`. Returns
  * { head: value[name], rest } where rest is a shallow copy of value
- * with `name` removed. Throws when the key isn't present — the
- * caller's shape didn't match the measure's declared fields.
+ * with `name` removed (or null when the record was a single-field one).
+ * Throws when the key isn't present — the caller's shape didn't match
+ * the measure's declared fields.
  */
 function consumeField(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -138,13 +131,59 @@ function consumeField(value, name) {
 }
 
 // =====================================================================
-// Per-IR-kind dispatch
+// Foundation: batched recursive walker
 // =====================================================================
+//
+// `logDensityConsumeN` walks the IR once (the structural walk is
+// atom-independent), accumulating per-atom logpdf contributions into a
+// pre-allocated Float64Array. The only per-atom work happens at leaves
+// (and at weighted / logweighted operands whose weight expression may
+// reference refArrays).
+//
+// Internal contract:
+//   - `acc` is a Float64Array(count) the caller pre-allocates; we add
+//     each atom's contribution in place (so composite measures naturally
+//     accumulate by recursing with the same acc).
+//   - `baseEnv` is the atom-independent env. Env-threading writes the
+//     consumed value of an earlier joint-field into baseEnv so later
+//     fields' leaf-kwarg refs resolve to the observation (not to a
+//     per-atom prior sample).
+//   - `refArrays` is { name → Float64Array(count) }. Used only where
+//     leaf params (or weight exprs) reference these names; never
+//     duplicated structurally.
+//   - Returns the (atom-independent) `rest` of `value`.
 
-function logDensityConsume(ir, value, env, opts) {
+function logDensityConsumeN(ir, value, refArrays, count, opts) {
   opts = opts || {};
+  const N = count | 0;
+  if (N <= 0) throw new Error('density: count must be positive');
   if (!ir) throw new Error('density: missing IR');
+  refArrays = refArrays || {};
+  const baseEnv = opts.baseEnv || {};
 
+  const acc = new Float64Array(N);
+  // overlay starts empty; env-threading from joint fields adds entries
+  // that win over both baseEnv and per-atom refArrays at each leaf.
+  const rest = walkAcc(ir, value, refArrays, N, opts, acc, baseEnv, null);
+  return { logps: acc, rest };
+}
+
+// In-place recursive accumulator. Adds contributions to `acc` and
+// returns rest.
+//
+// Env-precedence at each leaf (highest first):
+//   1. overlay (env-threading: consumed observation field values).
+//      Atom-independent. Wins over refArrays because env-threaded
+//      values represent the *observed* state of a prior component —
+//      not a per-atom prior sample.
+//   2. refArrays per-atom values (typically prior θ_i samples).
+//   3. baseEnv (session env from fixed-phase bindings).
+//
+// `overlay` is null when empty; walkLeaf branches on that to skip the
+// extra copy when no env-threading is active above us. Composite
+// walkers grow the overlay copy-on-write when adding env-threaded
+// values.
+function walkAcc(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   if (ir.kind === 'ref' && ir.ns === 'self') {
     const resolver = opts.resolveMeasureRef;
     if (typeof resolver !== 'function') {
@@ -155,144 +194,273 @@ function logDensityConsume(ir, value, env, opts) {
     if (!expanded) {
       throw new Error('density: cannot resolve measure ref \'' + ir.name + '\'');
     }
-    return logDensityConsume(expanded, value, env, opts);
+    return walkAcc(expanded, value, refArrays, N, opts, acc, baseEnv, overlay);
   }
-
   if (ir.kind !== 'call') {
     throw new Error('density: unsupported IR kind \'' + ir.kind + '\'');
   }
-
   const op = ir.op;
+  const handler = OP_HANDLERS[op];
+  if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
 
-  // Scalar leaf distribution. Single-entry consume from `value`,
-  // evaluate logpdf at that entry, no further recursion.
+  // Leaf distribution — the only kind not in OP_HANDLERS (because
+  // there are many of them and they're discovered via the REGISTRY).
   if (samplerLib.isKnownDistribution(op)) {
-    const { head, rest } = consumeScalar(value);
-    const entry = samplerLib.lookupDistribution(ir);
-    const params = samplerLib.resolveParams(ir, entry, env);
+    return walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
+  throw new Error('density: unsupported measure op \'' + op + '\'');
+}
+
+// ---- Per-op handlers (the in-place accumulators) --------------------
+
+function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // The only per-atom work in the entire walk: consume one entry from
+  // the value, then loop atoms resolving params and adding logpdf to
+  // acc[i]. consumeScalar is atom-independent (head + rest are derived
+  // from `value`, which is shared).
+  const { head, rest } = consumeScalar(value);
+  const entry = samplerLib.lookupDistribution(ir);
+  const refNames = Object.keys(refArrays);
+  const overlayKeys = overlay ? Object.keys(overlay) : null;
+  // Hot path: no per-atom refs AND no overlay → params constant across
+  // atoms. Resolve once, broadcast.
+  if (refNames.length === 0 && !overlayKeys) {
+    const params = samplerLib.resolveParams(ir, entry, baseEnv);
     const logp = entry.logpdfFn(head, ...params);
-    return { logp, rest };
+    for (let i = 0; i < N; i++) acc[i] += logp;
+    return rest;
   }
-
-  // weighted(w, base) — density adds log(w). Negative or zero weights
-  // collapse to -Infinity (zero-mass atom). The orchestrator may have
-  // pre-computed a uniform shift via `logShift` on the derivation, but
-  // here we only have the IR — compute fresh from the weight expr.
-  if (op === 'weighted') {
-    const w = +samplerLib.evaluateExpr(ir.args[0], env);
-    const { logp, rest } = logDensityConsume(ir.args[1], value, env, opts);
-    if (!(w > 0)) return { logp: -Infinity, rest };
-    return { logp: logp + Math.log(w), rest };
-  }
-  if (op === 'logweighted') {
-    const lw = +samplerLib.evaluateExpr(ir.args[0], env);
-    const { logp, rest } = logDensityConsume(ir.args[1], value, env, opts);
-    return { logp: logp + lw, rest };
-  }
-
-  // truncate(M, S) — indicator over S × base density. Per spec §06
-  // does NOT normalise, so density inside S equals base density;
-  // outside S it's -Infinity. The set descriptor is opaque IR here;
-  // the caller's opts.parseSet bridges to numeric bounds.
-  if (op === 'truncate') {
-    const parseSet = opts.parseSet;
-    if (typeof parseSet !== 'function') {
-      throw new Error('density: truncate requires parseSet opt');
+  // Per-atom path. callEnv layering (bottom-up): baseEnv, refArrays[i],
+  // overlay. Overlay applied last so env-threaded observation values
+  // win over per-atom refs.
+  const callEnv = Object.assign({}, baseEnv);
+  // Apply the (atom-independent) overlay once outside the loop —
+  // refArrays writes would otherwise stomp these names per atom.
+  // We re-apply inside the loop after refArrays.
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < refNames.length; j++) {
+      const k = refNames[j];
+      callEnv[k] = refArrays[k][i];
     }
-    const setDescr = parseSet(ir.args[1]);
-    const { logp, rest } = logDensityConsume(ir.args[0], value, env, opts);
-    const consumed = inferConsumedScalar(value, rest);
-    if (consumed != null && !inSet(consumed, setDescr)) {
-      return { logp: -Infinity, rest };
+    if (overlayKeys) {
+      for (let j = 0; j < overlayKeys.length; j++) {
+        const k = overlayKeys[j];
+        callEnv[k] = overlay[k];
+      }
     }
-    return { logp, rest };
+    const params = samplerLib.resolveParams(ir, entry, callEnv);
+    acc[i] += entry.logpdfFn(head, ...params);
   }
+  return rest;
+}
 
-  if (op === 'normalize') {
-    // normalize(base) = base / totalmass(base). Density shifts by
-    // -log(totalmass(base)). The caller must supply the parent's
-    // logTotalmass via opts.measureLogTotalmass — we can't compute
-    // it analytically from the IR alone for arbitrary base measures.
-    const getLTM = opts.measureLogTotalmass;
-    const baseLTM = typeof getLTM === 'function' ? getLTM(ir.args[0]) : 0;
-    const { logp, rest } = logDensityConsume(ir.args[0], value, env, opts);
-    return { logp: logp - baseLTM, rest };
+function walkWeighted(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // weighted(w, base): adds log(w) per atom. Recurse into base first
+  // (with the same acc), then add log(w_i). Negative or zero weights
+  // collapse the atom's logp to -Infinity.
+  const wIR = ir.args[0];
+  const rest = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
+  applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, addLogW);
+  return rest;
+}
+
+function walkLogWeighted(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // logweighted(g, base): adds g directly per atom. -Infinity is
+  // permitted; NaN is left as-is (callers detect downstream).
+  const gIR = ir.args[0];
+  const rest = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
+  applyAtomScalar(gIR, refArrays, N, baseEnv, overlay, acc, addRaw);
+  return rest;
+}
+
+function walkTruncate(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // truncate(M, S): indicator(S) × base density. Per spec §06 this does
+  // NOT normalise — density inside S equals base density; outside S
+  // it's -Infinity. The consumed scalar is atom-independent (lives in
+  // `value`), so the indicator gate is evaluated once and applied
+  // uniformly to acc when out-of-support.
+  const parseSet = opts.parseSet;
+  if (typeof parseSet !== 'function') {
+    throw new Error('density: truncate requires parseSet opt');
   }
+  const setDescr = parseSet(ir.args[1]);
+  const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+  const consumed = inferConsumedScalar(value, rest);
+  if (consumed != null && !inSet(consumed, setDescr)) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+  }
+  return rest;
+}
 
-  // record / kwarg-joint: { kind:'call', op:'record'|'joint',
-  // fields: [{name, value}, ...] }. Consume named keys in declared
-  // order; sum component logp's.
-  if ((op === 'record' || op === 'joint') && Array.isArray(ir.fields)) {
+function walkNormalize(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // normalize(base) = base / totalmass(base). Density shifts by
+  // -log(totalmass(base)). The caller supplies the parent's
+  // logTotalmass via opts.measureLogTotalmass — atom-independent today;
+  // a per-atom variant can be added when needed.
+  const getLTM = opts.measureLogTotalmass;
+  const baseLTM = typeof getLTM === 'function' ? +getLTM(ir.args[0]) : 0;
+  const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+  if (baseLTM !== 0) {
+    for (let i = 0; i < N; i++) acc[i] -= baseLTM;
+  }
+  return rest;
+}
+
+function walkJointFieldsOrPositional(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // record / kwarg-joint: ir.fields = [{name, value: subIR, source?}, …].
+  // Consume named fields in declared order; env-thread each consumed
+  // head into the overlay so later fields' leaf-kwarg refs to f.name /
+  // f.source see the OBSERVED value, even when refArrays also has an
+  // entry under that name (e.g. matLogdensityof passes per-atom prior
+  // samples under the same binding names that the observation pins).
+  if (Array.isArray(ir.fields)) {
     const fields = ir.fields;
     let cur = value;
-    let total = 0;
+    let curOverlay = overlay;
     for (let i = 0; i < fields.length; i++) {
       const f = fields[i];
       const { head, rest: outerRest } = consumeField(cur, f.name);
-      const { logp, rest: innerRest } = logDensityConsume(f.value, head, env, opts);
+      const innerRest = walkAcc(f.value, head, refArrays, N, opts, acc, baseEnv, curOverlay);
       if (!isEmptyRest(innerRest)) {
         throw new Error('density: field \'' + f.name
           + '\' did not fully consume its value');
       }
-      total += logp;
       cur = outerRest;
+      if (i + 1 < fields.length) {
+        // Copy-on-first-write: don't entangle the caller's overlay
+        // across sibling joint walks.
+        curOverlay = curOverlay ? Object.assign({}, curOverlay) : {};
+        curOverlay[f.name] = head;
+        if (f.source && f.source !== f.name) curOverlay[f.source] = head;
+      }
     }
-    return { logp: total, rest: cur };
+    return cur;
   }
-
-  // Positional joint: args = [M1, M2, ...]. Consume each Mi from the
-  // current rest. Independent components → sum logp's, no env
-  // threading (each Mi sees the same env).
-  if (op === 'joint' && Array.isArray(ir.args)) {
+  // Positional joint: args = [M1, M2, ...]. No env-threading (each Mi
+  // sees the same env); just thread `rest` through.
+  if (Array.isArray(ir.args)) {
     let cur = value;
-    let total = 0;
     for (let i = 0; i < ir.args.length; i++) {
-      const r = logDensityConsume(ir.args[i], cur, env, opts);
-      total += r.logp;
-      cur = r.rest;
+      cur = walkAcc(ir.args[i], cur, refArrays, N, opts, acc, baseEnv, overlay);
     }
-    return { logp: total, rest: cur };
+    return cur;
   }
+  throw new Error('density: joint with neither fields nor args');
+}
 
-  // jointchain(M, K1, K2, ...): like positional joint for consumption,
-  // but each subsequent kernel sees the prior components' consumed
-  // values bound in env under the variate names declared at lift
-  // time. Today's jointchain isn't yet a derivation kind — left as a
-  // marker so callers get a clear error rather than silent fall-through.
-  if (op === 'jointchain') {
-    throw new Error('density: jointchain not yet wired through density.js');
+function walkIid(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // iid(M, n): n copies of M's footprint. Count `n` is atom-independent
+  // — it's a value-position expression typically of fixed phase. We
+  // evaluate against baseEnv (no per-atom or overlay coverage); if a
+  // user pattern needs per-atom counts, we'd switch to ragged storage
+  // and that's a separate refactor.
+  const args = ir.args || [];
+  if (args.length !== 2) throw new Error('density: iid expected 2 args, got ' + args.length);
+  const n = +samplerLib.evaluateExpr(args[1], baseEnv) | 0;
+  if (n < 0) throw new Error('density: iid count negative: ' + n);
+  let cur = value;
+  for (let i = 0; i < n; i++) {
+    cur = walkAcc(args[0], cur, refArrays, N, opts, acc, baseEnv, overlay);
   }
+  return cur;
+}
 
-  // iid(M, n): n copies of M's footprint. Loop consume.
-  if (op === 'iid' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const n = samplerLib.evaluateExpr(ir.args[1], env) | 0;
-    if (n < 0) throw new Error('density: iid count negative: ' + n);
-    let cur = value;
-    let total = 0;
-    for (let i = 0; i < n; i++) {
-      const r = logDensityConsume(ir.args[0], cur, env, opts);
-      total += r.logp;
-      cur = r.rest;
+function walkJointchainStub() {
+  // jointchain isn't a derivation-level shape that ever reaches density
+  // — orchestrator.expandMeasureIR canonicalises jointchain into
+  // `record` (or `joint`-fields) IR before density sees it. Left as a
+  // loud error so a future regression here surfaces immediately.
+  throw new Error('density: jointchain should have been canonicalised to '
+    + 'record/joint by expandMeasureIR before reaching density');
+}
+
+const OP_HANDLERS = {
+  weighted:    walkWeighted,
+  logweighted: walkLogWeighted,
+  truncate:    walkTruncate,
+  normalize:   walkNormalize,
+  joint:       walkJointFieldsOrPositional,
+  record:      walkJointFieldsOrPositional,
+  iid:         walkIid,
+  jointchain:  walkJointchainStub,
+};
+
+// ---- Per-atom scalar contribution helpers ---------------------------
+
+// Evaluate `wIR` against env_i for each atom and apply `combine(acc, i, value)`.
+// Specialised for the two scalar-shift cases (weighted's log(w), logweighted's
+// g) so they don't duplicate the per-atom env-rebuild scaffolding. Same env
+// precedence as walkLeaf: baseEnv < refArrays[i] < overlay.
+function applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, combine) {
+  const refNames = Object.keys(refArrays);
+  const overlayKeys = overlay ? Object.keys(overlay) : null;
+  if (refNames.length === 0 && !overlayKeys) {
+    const v = +samplerLib.evaluateExpr(wIR, baseEnv);
+    for (let i = 0; i < N; i++) combine(acc, i, v);
+    return;
+  }
+  const callEnv = Object.assign({}, baseEnv);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < refNames.length; j++) {
+      const k = refNames[j];
+      callEnv[k] = refArrays[k][i];
     }
-    return { logp: total, rest: cur };
+    if (overlayKeys) {
+      for (let j = 0; j < overlayKeys.length; j++) {
+        const k = overlayKeys[j];
+        callEnv[k] = overlay[k];
+      }
+    }
+    const v = +samplerLib.evaluateExpr(wIR, callEnv);
+    combine(acc, i, v);
   }
+}
 
-  throw new Error('density: unsupported measure op \'' + op + '\'');
+function addLogW(acc, i, w) {
+  if (!(w > 0)) acc[i] = -Infinity;
+  else acc[i] += Math.log(w);
+}
+function addRaw(acc, i, v) {
+  acc[i] += v;
+}
+
+// =====================================================================
+// Public wrappers
+// =====================================================================
+
+/**
+ * Strict batched API: runs `logDensityConsumeN` and asserts every atom
+ * consumed the value fully. Returns just `logps` — the form most
+ * callers want, and the same shape as the worker.logDensityN message
+ * reply.
+ */
+function logDensityN(ir, value, refArrays, count, opts) {
+  const { logps, rest } = logDensityConsumeN(ir, value, refArrays, count, opts);
+  if (!isEmptyRest(rest)) {
+    throw new Error('logDensityN: value has unconsumed leftover after walking IR'
+      + ' (op=' + (ir && ir.op) + ')');
+  }
+  return logps;
 }
 
 /**
- * Strict wrapper: walks the IR alongside the value, then asserts the
- * value was fully consumed. Returns just the log-density. Any leftover
- * `rest` indicates a shape mismatch between the measure and value —
- * surfaced as an error rather than scoring an off-by-one slice.
+ * Single-point consume — count=1 wrapper. Returns { logp, rest } in
+ * the same shape as the original logDensityConsume API.
+ */
+function logDensityConsume(ir, value, env, opts) {
+  const callOpts = env ? Object.assign({}, opts || {}, { baseEnv: env }) : opts;
+  const { logps, rest } = logDensityConsumeN(ir, value, null, 1, callOpts);
+  return { logp: logps[0], rest };
+}
+
+/**
+ * Single-point strict — count=1 wrapper over logDensityN. The
+ * Float64Array(1) allocation is the only single-point overhead vs the
+ * batched form.
  */
 function logDensity(ir, value, env, opts) {
-  const { logp, rest } = logDensityConsume(ir, value, env, opts);
-  if (!isEmptyRest(rest)) {
-    throw new Error('logDensity: value has unconsumed leftover after walking IR'
-      + ' (op=' + (ir && ir.op) + ')');
-  }
-  return logp;
+  const callOpts = env ? Object.assign({}, opts || {}, { baseEnv: env }) : opts;
+  return logDensityN(ir, value, null, 1, callOpts)[0];
 }
 
 // =====================================================================
@@ -322,6 +490,11 @@ function inSet(x, setDescr) {
 }
 
 module.exports = {
+  // Foundation (batched, returns rest)
+  logDensityConsumeN,
+  // Strict batched
+  logDensityN,
+  // Single-point conveniences (count=1 of the foundation)
   logDensityConsume,
   logDensity,
   // Test/debug surface — exposes the shape helpers in case callers

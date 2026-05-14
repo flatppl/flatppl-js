@@ -2276,14 +2276,14 @@ function evaluateRand(ir, env) {
   // the resolver samples it on demand, threading state. Same passthrough
   // pattern: the orchestrator builds the closure, evaluateRand just
   // forwards what's been parked on env.
-  const opts = { tally: 'none' };
+  const opts = {};
   if (env && typeof env.__resolveMeasureRef === 'function') {
     opts.resolveMeasureRef = env.__resolveMeasureRef;
   }
   if (env && typeof env.__resolveValueRef === 'function') {
     opts.resolveValueRef = env.__resolveValueRef;
   }
-  const r = getTraceeval().walk(state, args[1], env, undefined, opts);
+  const r = getTraceeval().walk(state, args[1], env, opts);
   return [r.value, r.state];
 }
 

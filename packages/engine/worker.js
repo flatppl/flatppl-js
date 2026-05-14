@@ -88,7 +88,7 @@
 
 const rngLib = require('./rng');
 const samplerLib = require('./sampler');
-const traceevalLib = require('./traceeval');
+const densityLib = require('./density');
 
 function createWorkerHandler(opts = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
@@ -255,50 +255,32 @@ function createWorkerHandler(opts = {}) {
           return { type: 'samples', id, samples: out, logWeights: null };
         }
         case 'logDensityN': {
-          // Per-i density evaluation via traceeval.walk. The walker is
-          // a single recursion that handles leaf distributions,
-          // joint/record, iid, weighted, logweighted — same code as
-          // sampling, just with `tally` set so log-densities accumulate.
+          // Batched density evaluation — thin shell around
+          // density.logDensityBatch (the single density implementation
+          // for the whole engine; see density.js for the consume/rest
+          // primitive and batch loop). The worker hosts this so the
+          // main-thread cache and postMessage protocol stay stable
+          // even though density is pure: future parallelisation, or
+          // running density across multiple workers, only changes
+          // this handler.
           //
-          // Two tally modes are useful here:
-          //   'clamped' — only score observed leaves (likelihoodof,
-          //               bayesupdate). Latents either don't appear in
-          //               the IR (already substituted) or are
-          //               re-sampled freely; their logp doesn't enter
-          //               the accumulator.
-          //   'all'     — joint log-density of the whole sampled
-          //               trace, useful for diagnostics.
-          //
-          // For 'clamped' against a single observation shared across
-          // atoms (the typical bayesupdate case: one obs, N priors),
-          // pass `observed` once and we reuse it for every i. For
-          // per-i observations, encode them as refArrays and have the
-          // measure IR reference them.
+          // `observed` is shared across atoms (typical bayesupdate /
+          // likelihoodof case: one obs, N prior atoms). Per-atom
+          // variation comes from `refArrays` — the prior's per-atom
+          // value-position refs.
           //
           // Reply uses the 'samples' shape so the main-thread cache
           // and zero-copy transfer logic don't need a new path; the
           // numbers are log-densities, not draws.
           const count = msg.count | 0;
           if (count <= 0) throw new Error(`logDensityN.count must be positive integer (got ${msg.count})`);
-          const refArrays = msg.refArrays || {};
-          const observed = msg.observed; // may be undefined; null means same
-          const tally = msg.tally || 'clamped';
-          const out = new Float64Array(count);
-          // Layer session env (fixed-phase bindings pushed via setEnv)
-          // under the per-atom refArrays. Same precedence as evaluateN.
-          const callEnv = { ...env };
-          // Walker needs a state even when no sampling occurs; reuse
-          // session philox (or a per-call seed if supplied) for any
-          // free latents the caller leaves unobserved.
-          let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
-          for (let i = 0; i < count; i++) {
-            for (const k in refArrays) callEnv[k] = refArrays[k][i];
-            const r = traceevalLib.walk(state, msg.ir, callEnv, observed, { tally });
-            out[i] = r.logp;
-            state = r.state;
-          }
-          if (msg.seed == null) philox = state;
-          return { type: 'samples', id, samples: out, logWeights: null };
+          const logps = densityLib.logDensityN(
+            msg.ir,
+            msg.observed,
+            msg.refArrays || null,
+            count,
+            { baseEnv: env });
+          return { type: 'samples', id, samples: logps, logWeights: null };
         }
         case 'truncateSampleN': {
           // Truncated-distribution sampling primitive for matTruncate
@@ -418,20 +400,20 @@ function createWorkerHandler(opts = {}) {
           //                  for fn / functionof bindings. ir is the
           //                  reified body. env_i = fixedEnv with the
           //                  swept axis name set to the i-th sample.
-          //   'logdensity' — out[i] = traceeval.walk(...).logp
-          //                  for kernelof / likelihoodof bindings. ir
-          //                  is the expanded measure IR; observed is
-          //                  the obs value (constant across i for
-          //                  likelihoods).
+          //   'logdensity' — out[i] = density.logDensity(ir, observed,
+          //                  env_i) for kernelof / likelihoodof bindings.
+          //                  Density routes through density.js (the
+          //                  single density implementation); we pass
+          //                  the swept axis as a length-N refArray and
+          //                  the surrounding fixedEnv as baseEnv, then
+          //                  scatter the result through a per-atom
+          //                  try/catch so domain-of-definition errors
+          //                  become NaN gaps instead of aborting.
           //
-          // Domain-of-definition errors (log of negative, division
-          // by zero, etc.) become NaN entries — the plot pane shows
-          // them as gaps rather than aborting the whole sweep.
-          //
-          // Note: %local refs in reified bodies look up via the same
-          // env as 'self' refs (sampler.evaluateExpr handles both
-          // namespaces uniformly), so we can populate env keyed by
-          // param name and the body's lookups Just Work.
+          // %local refs in reified bodies look up via the same env as
+          // 'self' refs (sampler.evaluateExpr handles both namespaces
+          // uniformly), so populating env keyed by param name works
+          // for both reified-function and measure paths.
           const count = msg.count | 0;
           if (count <= 0) throw new Error(`profileN.count must be positive integer (got ${msg.count})`);
           const range = msg.range || [0, 1];
@@ -443,33 +425,54 @@ function createWorkerHandler(opts = {}) {
           if (!sweepName) throw new Error('profileN.sweepName is required');
           const fixedEnv = msg.fixedEnv || {};
           const mode     = msg.mode     || 'function';
-          const observed = msg.observed;
-          const tally    = msg.tally || 'clamped';
           const out      = new Float64Array(count);
           // Layer the message's per-call fixedEnv over the session env
           // (fixed-phase module bindings pushed via setEnv). Per-call
           // values win, so a sweep can locally override a module
           // binding without mutating session state.
-          const evalEnv  = Object.assign({}, env, fixedEnv);
-          let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
-          for (let i = 0; i < count; i++) {
-            const t = count === 1 ? 0 : i / (count - 1);
-            evalEnv[sweepName] = lo + t * (hi - lo);
-            try {
-              if (mode === 'function') {
+          const baseEnv = Object.assign({}, env, fixedEnv);
+          if (mode === 'function') {
+            const evalEnv = Object.assign({}, baseEnv);
+            for (let i = 0; i < count; i++) {
+              const t = count === 1 ? 0 : i / (count - 1);
+              evalEnv[sweepName] = lo + t * (hi - lo);
+              try {
                 out[i] = samplerLib.evaluateExpr(msg.ir, evalEnv);
-              } else if (mode === 'logdensity') {
-                const r = traceevalLib.walk(state, msg.ir, evalEnv, observed, { tally });
-                out[i] = r.logp;
-                state = r.state;
-              } else {
-                throw new Error(`profileN.mode must be 'function' or 'logdensity' (got '${mode}')`);
+              } catch (_) {
+                out[i] = NaN;
               }
-            } catch (_) {
-              out[i] = NaN;
             }
+          } else if (mode === 'logdensity') {
+            // Build a per-atom refArray for the swept axis and call
+            // density.logDensityN once for the whole sweep. Per-atom
+            // domain errors become NaN: density.logDensityN throws on
+            // the whole batch if any atom hits an unrecoverable error,
+            // so we fall back to per-atom calls when the batch throws.
+            const sweepArr = new Float64Array(count);
+            for (let i = 0; i < count; i++) {
+              const t = count === 1 ? 0 : i / (count - 1);
+              sweepArr[i] = lo + t * (hi - lo);
+            }
+            const refArrays = { [sweepName]: sweepArr };
+            try {
+              const logps = densityLib.logDensityN(
+                msg.ir, msg.observed, refArrays, count, { baseEnv });
+              out.set(logps);
+            } catch (_) {
+              // Per-atom fallback for NaN-gap behaviour.
+              const callEnv = Object.assign({}, baseEnv);
+              for (let i = 0; i < count; i++) {
+                callEnv[sweepName] = sweepArr[i];
+                try {
+                  out[i] = densityLib.logDensity(msg.ir, msg.observed, callEnv);
+                } catch (_) {
+                  out[i] = NaN;
+                }
+              }
+            }
+          } else {
+            throw new Error(`profileN.mode must be 'function' or 'logdensity' (got '${mode}')`);
           }
-          if (msg.seed == null) philox = state;
           return { type: 'samples', id, samples: out, logWeights: null };
         }
         case 'dispose': {

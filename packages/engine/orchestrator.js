@@ -2390,8 +2390,7 @@ function buildDerivations(bindings) {
           if (!measureIR) {
             throw new Error(`resolveValueRef: cannot expand measure for '${refName}'`);
           }
-          const r = traceeval.walk(state, measureIR, env, undefined, {
-            tally: 'none',
+          const r = traceeval.walk(state, measureIR, env, {
             resolveMeasureRef,
             resolveValueRef: localResolveValueRef,
           });
