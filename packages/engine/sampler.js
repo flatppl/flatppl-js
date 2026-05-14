@@ -1324,14 +1324,22 @@ const ARITH_OPS = {
     return out;
   },
   // ---- Linear algebra (spec §07) ------------------------------------
-  // Matrices are nested JS arrays (row-major): M[i][j] is row i, col j.
-  // Vectors are flat JS arrays. We implement textbook algorithms
-  // directly — no stdlib BLAS/LAPACK available — which is fine for the
-  // problem sizes FlatPPL targets (HEP models with ~few × few matrices,
-  // covariance matrices up to dozens of dimensions). Larger matrices
-  // would warrant a native-backed engine; this implementation favours
-  // clarity and self-containment.
+  // Phase 3 of the shape-explicit refactor: ops dispatch on Value
+  // inputs. Value path bridges through nested-array form for the
+  // matrix-decomposition algorithms (atom-indep one-shot ops; the
+  // realloc cost is negligible against the algorithm work). transpose
+  // and adjoint use the free Klein-4 tag flip on Value input (no
+  // data allocation).
+  //
+  // Legacy nested-JS-array inputs continue to work unchanged — the
+  // existing linear-algebra test suite exercises them via the IR
+  // pipeline. Once materialisers (Phase 4) produce Values, the
+  // Value path becomes the default.
+  //
+  // Matrices in legacy form are nested JS arrays (row-major):
+  // M[i][j] is row i, col j. Vectors are flat JS arrays.
   transpose: M => {
+    if (valueLib.isValue(M)) return valueLib.transpose(M);  // O(1) tag flip
     if (!Array.isArray(M) || M.length === 0) return [];
     const rows = M.length, cols = M[0].length;
     const out = new Array(cols);
@@ -1343,9 +1351,15 @@ const ARITH_OPS = {
     return out;
   },
   // adjoint = conjugate transpose. For real matrices = transpose.
-  // (Complex support deferred.)
-  adjoint: M => ARITH_OPS.transpose(M),
+  // (Complex support deferred — but the tag tracks it.)
+  adjoint: M => {
+    if (valueLib.isValue(M)) return valueLib.adjoint(M);  // O(1) tag flip
+    return ARITH_OPS.transpose(M);
+  },
   trace: M => {
+    if (valueLib.isValue(M)) {
+      return valueLib.scalar(ARITH_OPS.trace(valueOps._valueToNested(M)));
+    }
     if (!Array.isArray(M)) throw new Error('trace: argument must be a matrix');
     const n = M.length;
     if (n === 0 || M[0].length !== n) {
@@ -1356,6 +1370,9 @@ const ARITH_OPS = {
     return s;
   },
   diagmat: v => {
+    if (valueLib.isValue(v)) {
+      return valueOps._nestedToValue(ARITH_OPS.diagmat(valueOps._valueToNested(v)));
+    }
     const n = v.length;
     const out = new Array(n);
     for (let i = 0; i < n; i++) {
@@ -1366,6 +1383,9 @@ const ARITH_OPS = {
     return out;
   },
   self_outer: v => {
+    if (valueLib.isValue(v)) {
+      return valueOps._nestedToValue(ARITH_OPS.self_outer(valueOps._valueToNested(v)));
+    }
     const n = v.length;
     const out = new Array(n);
     for (let i = 0; i < n; i++) {
@@ -1378,6 +1398,9 @@ const ARITH_OPS = {
   // det(A): determinant via LU with partial pivoting. Returns 0 for
   // singular matrices. O(n³).
   det: A => {
+    if (valueLib.isValue(A)) {
+      return valueLib.scalar(ARITH_OPS.det(valueOps._valueToNested(A)));
+    }
     if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
       throw new Error('det: argument must be a non-empty square matrix');
     }
@@ -1386,6 +1409,9 @@ const ARITH_OPS = {
   // logabsdet(A): log |det(A)|. Computed alongside det via the LU
   // decomposition to keep numerical stability on near-singular inputs.
   logabsdet: A => {
+    if (valueLib.isValue(A)) {
+      return valueLib.scalar(ARITH_OPS.logabsdet(valueOps._valueToNested(A)));
+    }
     if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
       throw new Error('logabsdet: argument must be a non-empty square matrix');
     }
@@ -1394,6 +1420,9 @@ const ARITH_OPS = {
   // inv(A): matrix inverse via Gauss-Jordan with partial pivoting. O(n³).
   // Throws on singular matrices.
   inv: A => {
+    if (valueLib.isValue(A)) {
+      return valueOps._nestedToValue(ARITH_OPS.inv(valueOps._valueToNested(A)));
+    }
     if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
       throw new Error('inv: argument must be a non-empty square matrix');
     }
@@ -1402,6 +1431,11 @@ const ARITH_OPS = {
   // linsolve(A, b): solve A x = b for x. b may be a vector (returns
   // vector) or a matrix (returns matrix, solved column-by-column).
   linsolve: (A, b) => {
+    if (valueLib.isValue(A) || valueLib.isValue(b)) {
+      const aN = valueLib.isValue(A) ? valueOps._valueToNested(A) : A;
+      const bN = valueLib.isValue(b) ? valueOps._valueToNested(b) : b;
+      return valueOps._nestedToValue(ARITH_OPS.linsolve(aN, bN));
+    }
     if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
       throw new Error('linsolve: A must be a non-empty square matrix');
     }
@@ -1410,15 +1444,27 @@ const ARITH_OPS = {
   // lower_cholesky(A): lower-triangular L with A = L L^T for symmetric
   // positive-definite A. Throws if A is not PD.
   lower_cholesky: A => {
+    if (valueLib.isValue(A)) {
+      return valueOps._nestedToValue(
+        ARITH_OPS.lower_cholesky(valueOps._valueToNested(A)));
+    }
     if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
       throw new Error('lower_cholesky: argument must be a non-empty square matrix');
     }
     return _cholesky(A);
   },
   // row_gram(A) = A · A^T; col_gram(A) = A^T · A. Useful for LKJ ↔
-  // LKJCholesky conversions and Gram-matrix priors.
-  row_gram: A => _matmul(A, ARITH_OPS.transpose(A)),
-  col_gram: A => _matmul(ARITH_OPS.transpose(A), A),
+  // LKJCholesky conversions and Gram-matrix priors. On Value input,
+  // the matmul goes through value-ops.mul (which honours the tag at
+  // dispatch — no transpose materialisation).
+  row_gram: A => {
+    if (valueLib.isValue(A)) return valueOps.mul(A, valueLib.transpose(A));
+    return _matmul(A, ARITH_OPS.transpose(A));
+  },
+  col_gram: A => {
+    if (valueLib.isValue(A)) return valueOps.mul(valueLib.transpose(A), A);
+    return _matmul(ARITH_OPS.transpose(A), A);
+  },
   // array(data, size, dimorder) — n-D array from a flat data vector
   // per spec §07. size is an n-vector of positive dimensions;
   // dimorder is a permutation of [1..n] listing axes from slowest- to
