@@ -753,6 +753,15 @@ const SIGNATURE_FACTORIES = {
   extlinspace: () => ({ args: [REAL, REAL, INTEGER], kwargs: {
                           from: REAL, to: REAL, n: INTEGER },
                         result: array(1, ['%dynamic'], REAL) }),
+  // broadcast(f, x = A, ...) — handled specially. The integration
+  // tests on fixtures using broadcast type-check before a sig was
+  // added here; adding a strict sig regresses those, because the
+  // first-arg type-recursion hits get_field on `standard_module`
+  // refs that don't yet have full record-typing. Leave broadcast
+  // out of SIGNATURE_FACTORIES for now; the value-evaluator handles
+  // it at runtime via the dedicated case in sampler.evaluateCall.
+  // TODO: add a proper sig once standard_module typing is wired
+  // through get_field correctly.
   // reduce(f, xs) — left fold over xs with binary f. First element of
   // xs is the initial accumulator; result type follows xs's element.
   reduce: () => ({ args: [any(), array(1, ['%dynamic'], tvar('T'))],

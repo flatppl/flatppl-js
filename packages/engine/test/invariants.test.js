@@ -90,11 +90,11 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   'polynomial', 'bernstein', 'stepwise',
   // Binning (spec §07). bincounts also kwargs-shaped.
   'bincounts', 'selectbins',
-  // Higher-order ops (filter, reduce, scan) are dispatched via
-  // dedicated cases in evaluateCall — each evaluates a referenced
+  // Higher-order ops (filter, reduce, scan, broadcast) are dispatched
+  // via dedicated cases in evaluateCall — each evaluates a referenced
   // function's body per element rather than fitting the positional-
   // spread ARITH_OPS shape.
-  'filter', 'reduce', 'scan',
+  'filter', 'reduce', 'scan', 'broadcast',
 ]);
 
 test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () => {

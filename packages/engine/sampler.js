@@ -1774,7 +1774,12 @@ function _resolveFn(fnIR, env) {
   }
   if (fnIR.kind === 'call' && fnIR.op === 'functionof'
       && Array.isArray(fnIR.params) && fnIR.body) {
-    return { body: fnIR.body, params: fnIR.params, paramName: fnIR.params[0] };
+    return {
+      body: fnIR.body,
+      params: fnIR.params,
+      paramKwargs: fnIR.paramKwargs,
+      paramName: fnIR.params[0],
+    };
   }
   return null;
 }
@@ -1906,6 +1911,60 @@ function evaluateCall(ir, env) {
       if (edges[i] <= hi && edges[i + 1] >= lo) {
         out.push(counts[i]);
       }
+    }
+    return out;
+  }
+  if (op === 'broadcast') {
+    // broadcast(f, A, B, ...) per spec §04 higher-order ops. Apply f
+    // elementwise over arrays. Two surface shapes accepted:
+    //   broadcast(f, A, B, ...)              — positional arrays
+    //   broadcast(f, x = A, y = B, ...)      — kwargs naming f's params
+    // Each array must have the same length; no auto-broadcast.
+    //
+    // Kernel-broadcast (stochastic case) is NOT handled here — that
+    // would produce an array-valued measure, which lives in the
+    // materialiser path, not the value evaluator.
+    const args   = ir.args   || [];
+    const kwargs = ir.kwargs || {};
+    if (args.length < 1) throw new Error('broadcast: no function argument');
+    const fn = _resolveFn(args[0], env);
+    if (!fn) throw new Error('broadcast: first arg must be a function');
+    const kwargKeys = Object.keys(kwargs);
+    const sources = new Array(fn.params.length);
+    if (kwargKeys.length > 0) {
+      // kwargs form: match by surface kwarg name first (paramKwargs),
+      // fall back to internal placeholder name (params).
+      for (let i = 0; i < fn.params.length; i++) {
+        const surface = (fn.paramKwargs && fn.paramKwargs[i]) || fn.params[i];
+        if (kwargs[surface] != null) sources[i] = kwargs[surface];
+        else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
+        else throw new Error('broadcast: no argument for parameter '
+          + (surface || fn.params[i]));
+      }
+    } else {
+      const posArgs = args.slice(1);
+      if (posArgs.length !== fn.params.length) {
+        throw new Error('broadcast: expected ' + fn.params.length
+          + ' positional arrays, got ' + posArgs.length);
+      }
+      for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
+    }
+    const arrs = sources.map(s => evaluateExpr(s, env));
+    if (arrs.length === 0) return [];
+    const n = arrs[0].length;
+    for (let i = 1; i < arrs.length; i++) {
+      if (arrs[i].length !== n) {
+        throw new Error('broadcast: array length mismatch at position ' + i
+          + ' (expected ' + n + ', got ' + arrs[i].length + ')');
+      }
+    }
+    const elemEnv = Object.assign({}, env);
+    const out = new Array(n);
+    for (let r = 0; r < n; r++) {
+      for (let p = 0; p < fn.params.length; p++) {
+        elemEnv[fn.params[p]] = arrs[p][r];
+      }
+      out[r] = evaluateExpr(fn.body, elemEnv);
     }
     return out;
   }
