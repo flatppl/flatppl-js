@@ -603,6 +603,15 @@ const SIGNATURE_FACTORIES = {
   record: () => ({ args: [], kwargs: {}, result: deferred(), special: 'record' }),
   vector: () => ({ args: [tvar('T')], kwargs: {}, result: array(1, ['%dynamic'], tvar('T')),
                    variadic: 'positional' }),
+  // cat(...) — structural concatenation (spec §07). All-scalar args
+  // produce a vector, all-vector args produce a concatenated vector,
+  // all-record args produce a merged record. The static type system
+  // can't easily express the all-three-shapes-with-shape-class-uniformity
+  // discipline, so we mark cat as `special` and defer the result type
+  // to the typeinfer pass for now. The runtime check in
+  // sampler.ARITH_OPS catches kind-mix violations.
+  cat:    () => ({ args: [any()], kwargs: {}, result: deferred(),
+                   variadic: 'positional', special: 'cat' }),
   tuple:  () => ({ args: [], kwargs: {}, result: deferred(), special: 'tuple' }),
   // fixed(x) — identity-typed marker (spec §03 value types). Carries
   // no runtime semantics beyond passing the wrapped value through; the
