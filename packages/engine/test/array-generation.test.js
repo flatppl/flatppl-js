@@ -91,3 +91,67 @@ test('reverse: empty vector ⇒ empty vector', () => {
 test('reverse: single-element vector ⇒ same single element', () => {
   assert.deepEqual(ev(call('reverse', vec(42))), [42]);
 });
+
+// =====================================================================
+// fill / zeros / ones / eye / onehot
+// =====================================================================
+
+test('fill(x, n) ⇒ length-n array of x', () => {
+  assert.deepEqual(ev(call('fill', lit(3), lit(4))), [3, 3, 3, 3]);
+});
+
+test('fill(x, n, m) ⇒ n × m nested array', () => {
+  assert.deepEqual(ev(call('fill', lit(0), lit(2), lit(3))),
+    [[0, 0, 0], [0, 0, 0]]);
+});
+
+test('zeros(n) ⇒ vector of zeros; ones(n) ⇒ vector of ones', () => {
+  assert.deepEqual(ev(call('zeros', lit(3))), [0, 0, 0]);
+  assert.deepEqual(ev(call('ones',  lit(3))), [1, 1, 1]);
+});
+
+test('zeros / ones: multi-dimensional', () => {
+  assert.deepEqual(ev(call('zeros', lit(2), lit(2))), [[0, 0], [0, 0]]);
+  assert.deepEqual(ev(call('ones',  lit(2), lit(2))), [[1, 1], [1, 1]]);
+});
+
+test('eye(n) ⇒ n × n identity matrix', () => {
+  assert.deepEqual(ev(call('eye', lit(3))),
+    [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+});
+
+test('onehot(i, n) ⇒ length-n basis vector with 1 at position i (1-based)', () => {
+  assert.deepEqual(ev(call('onehot', lit(2), lit(4))), [0, 1, 0, 0]);
+  assert.deepEqual(ev(call('onehot', lit(1), lit(3))), [1, 0, 0]);
+  assert.deepEqual(ev(call('onehot', lit(3), lit(3))), [0, 0, 1]);
+});
+
+test('onehot: out-of-range index ⇒ runtime error', () => {
+  assert.throws(() => ev(call('onehot', lit(0), lit(3))), /out of range/);
+  assert.throws(() => ev(call('onehot', lit(4), lit(3))), /out of range/);
+});
+
+// =====================================================================
+// boolean / integer scalar restrictors
+// =====================================================================
+
+test('boolean: accepts true / false; coerces 0 / 1', () => {
+  assert.equal(ev(call('boolean', lit(true))),  true);
+  assert.equal(ev(call('boolean', lit(false))), false);
+  assert.equal(ev(call('boolean', lit(0))),     false);
+  assert.equal(ev(call('boolean', lit(1))),     true);
+});
+
+test('boolean: non-boolean numeric ⇒ runtime error', () => {
+  assert.throws(() => ev(call('boolean', lit(3.14))), /not a boolean/);
+});
+
+test('integer: accepts integers verbatim', () => {
+  assert.equal(ev(call('integer', lit(42))),  42);
+  assert.equal(ev(call('integer', lit(-7))),  -7);
+  assert.equal(ev(call('integer', lit(0))),   0);
+});
+
+test('integer: non-integer ⇒ runtime error', () => {
+  assert.throws(() => ev(call('integer', lit(3.5))), /not an integer/);
+});

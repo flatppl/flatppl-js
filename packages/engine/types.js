@@ -690,6 +690,24 @@ const SIGNATURE_FACTORIES = {
               values: array(1, ['%dynamic'], REAL), x: REAL },
     result: REAL,
   }),
+  // Array constructors (spec §07). All variadic in shape; result type
+  // stays dynamic since the shape arity varies. fill is generic over
+  // element type; zeros/ones default to real; eye/onehot are reals.
+  fill:   () => ({ args: [tvar('T')], kwargs: {},
+                   result: deferred(), variadic: 'positional' }),
+  zeros:  () => ({ args: [INTEGER], kwargs: {},
+                   result: deferred(), variadic: 'positional' }),
+  ones:   () => ({ args: [INTEGER], kwargs: {},
+                   result: deferred(), variadic: 'positional' }),
+  eye:    () => ({ args: [INTEGER], kwargs: { n: INTEGER },
+                   result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  onehot: () => ({ args: [INTEGER, INTEGER], kwargs: { i: INTEGER, n: INTEGER },
+                   result: array(1, ['%dynamic'], REAL) }),
+  // Scalar restrictors (spec §07). Identity at runtime; type system
+  // pins the canonical scalar category.
+  boolean: () => ({ args: [any()], kwargs: {}, result: BOOLEAN }),
+  integer: () => ({ args: [any()], kwargs: {}, result: INTEGER }),
+
   // linspace(from, to, n) — endpoint-inclusive evenly-spaced vector.
   // extlinspace adds ±∞ overflow edges. Both produce real vectors.
   linspace:    () => ({ args: [REAL, REAL, INTEGER], kwargs: {

@@ -153,6 +153,9 @@ const EVALUABLE_OPS = new Set([
   // Array generation (spec §07). All pure value ops over fixed-phase
   // arguments; dispatch through ARITH_OPS.
   'linspace', 'extlinspace', 'partition', 'reverse',
+  'fill', 'zeros', 'ones', 'eye', 'onehot',
+  // Scalar restrictors (spec §07).
+  'boolean', 'integer',
 ]);
 
 /**

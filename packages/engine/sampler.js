@@ -1110,6 +1110,89 @@ const ARITH_OPS = {
   // per-atom vector, which doesn't fit the scalar-per-atom worker
   // contract. Vector-valued stochastic bindings have their own
   // tuple / array materialiser paths.
+  // fill(x, n, m, ...) — n-D array of shape `n × m × ...` filled with x.
+  // Returns nested JS arrays for 2-D+; flat array for 1-D. Spec §07.
+  fill: (x, ...dims) => {
+    if (dims.length === 0) return +x;
+    function build(level) {
+      const n = dims[level] | 0;
+      const out = new Array(n);
+      if (level === dims.length - 1) {
+        for (let i = 0; i < n; i++) out[i] = x;
+      } else {
+        for (let i = 0; i < n; i++) out[i] = build(level + 1);
+      }
+      return out;
+    }
+    return build(0);
+  },
+  // zeros / ones — convenience wrappers around fill. Spec §07.
+  zeros: (...dims) => {
+    if (dims.length === 0) return 0;
+    function build(level) {
+      const n = dims[level] | 0;
+      const out = new Array(n);
+      if (level === dims.length - 1) {
+        for (let i = 0; i < n; i++) out[i] = 0;
+      } else {
+        for (let i = 0; i < n; i++) out[i] = build(level + 1);
+      }
+      return out;
+    }
+    return build(0);
+  },
+  ones: (...dims) => {
+    if (dims.length === 0) return 1;
+    function build(level) {
+      const n = dims[level] | 0;
+      const out = new Array(n);
+      if (level === dims.length - 1) {
+        for (let i = 0; i < n; i++) out[i] = 1;
+      } else {
+        for (let i = 0; i < n; i++) out[i] = build(level + 1);
+      }
+      return out;
+    }
+    return build(0);
+  },
+  // eye(n) — n × n identity matrix. Spec §07.
+  eye: n => {
+    const k = n | 0;
+    if (k <= 0) return [];
+    const out = new Array(k);
+    for (let i = 0; i < k; i++) {
+      const row = new Array(k);
+      for (let j = 0; j < k; j++) row[j] = i === j ? 1 : 0;
+      out[i] = row;
+    }
+    return out;
+  },
+  // onehot(i, n) — length-n basis vector with 1 at position i (1-based
+  // per FlatPPL convention). Spec §07.
+  onehot: (i, n) => {
+    const idx = i | 0;
+    const k = n | 0;
+    if (k <= 0) return [];
+    if (idx < 1 || idx > k) {
+      throw new Error('onehot: index ' + idx + ' out of range [1, ' + k + ']');
+    }
+    const out = new Array(k);
+    for (let j = 0; j < k; j++) out[j] = (j === idx - 1) ? 1 : 0;
+    return out;
+  },
+  // Scalar restrictors (spec §07). Identity at runtime; static typing
+  // catches domain violations at type-check time when they're
+  // discernible. The runtime versions check the obvious cases.
+  boolean: x => {
+    if (x === true || x === false) return x;
+    if (x === 0) return false;
+    if (x === 1) return true;
+    throw new Error('boolean: value ' + x + ' is not a boolean');
+  },
+  integer: x => {
+    if (Number.isInteger(x)) return x;
+    throw new Error('integer: value ' + x + ' is not an integer');
+  },
   // linspace(from, to, n) — endpoint-inclusive range of n real numbers
   // evenly spaced from `from` to `to`. n=1 returns [from]; both endpoints
   // are included exactly (not computed via accumulating step). Spec §07.
