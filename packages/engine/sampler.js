@@ -754,6 +754,43 @@ function evaluateCall(ir, env) {
     }
     return acc;
   }
+  if (op === 'bincounts') {
+    // bincounts(bins, data) — count data points falling into bins.
+    // 1D case: bins is a vector of n+1 edges defining n bins;
+    // returns an n-vector of integer counts. Bin semantics: left-
+    // closed / right-open for interior bins, the LAST bin is also
+    // right-closed so a point exactly at the upper boundary lands in
+    // the last bin (spec §07 Binning). Points outside [bins[0], bins[n]]
+    // are ignored.
+    // Multi-D case (bins is a record of edge vectors): not yet
+    // supported — falls through to an explicit error.
+    const kw = ir.kwargs || {};
+    const bins = kw.bins != null ? evaluateExpr(kw.bins, env)
+                                 : evaluateExpr(ir.args[0], env);
+    const data = kw.data != null ? evaluateExpr(kw.data, env)
+                                 : evaluateExpr(ir.args[1], env);
+    if (!bins || typeof bins.length !== 'number'
+        || (bins.length > 0 && typeof bins[0] !== 'number')) {
+      throw new Error('bincounts: multi-dimensional binning not yet supported');
+    }
+    const n = bins.length - 1;
+    if (n < 0) throw new Error('bincounts: bins must have at least 1 edge');
+    const counts = new Array(n).fill(0);
+    const last = n - 1;
+    const lo = bins[0], hi = bins[n];
+    for (let i = 0; i < data.length; i++) {
+      const x = data[i];
+      if (x < lo || x > hi) continue;
+      // Linear scan — adequate for typical bin counts (≤ few hundred).
+      for (let j = 0; j < n; j++) {
+        if (x >= bins[j] && (x < bins[j + 1] || (j === last && x === bins[j + 1]))) {
+          counts[j]++;
+          break;
+        }
+      }
+    }
+    return counts;
+  }
   if (op === 'stepwise') {
     // Piecewise constant: edges has length n+1, values has length n.
     // For x in [edges[i], edges[i+1]) return values[i]; right edge

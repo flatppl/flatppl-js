@@ -88,6 +88,8 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   // kwargs (coefficients / edges / values + x) that ARITH_OPS's
   // positional-spread form doesn't handle.
   'polynomial', 'bernstein', 'stepwise',
+  // Binning (spec §07). bincounts also kwargs-shaped.
+  'bincounts',
 ]);
 
 test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () => {

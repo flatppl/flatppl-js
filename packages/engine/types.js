@@ -669,6 +669,16 @@ const SIGNATURE_FACTORIES = {
               values: array(1, ['%dynamic'], REAL), x: REAL },
     result: REAL,
   }),
+  // bincounts(bins, data) — count data points falling into bins. 1D
+  // case: bins is a vector of edges, data is a vector of reals,
+  // result is an integer-count vector of length n-1 (where n is the
+  // edge count). Multi-D variants defer (record-of-edges shape).
+  bincounts: () => ({
+    args:   [array(1, ['%dynamic'], REAL), array(1, ['%dynamic'], REAL)],
+    kwargs: { bins: array(1, ['%dynamic'], REAL),
+              data: array(1, ['%dynamic'], REAL) },
+    result: array(1, ['%dynamic'], INTEGER),
+  }),
 
   // ---- Logic / conditionals ----------------------------------------
   // Spec §07 — boolean ops. `lnot` is unary; the others are binary.

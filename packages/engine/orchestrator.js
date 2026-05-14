@@ -131,6 +131,9 @@ const EVALUABLE_OPS = new Set([
   // ops; kwargs-shaped so they don't fit ARITH_OPS — sampler.evaluateCall
   // dispatches each via a dedicated case.
   'polynomial', 'bernstein', 'stepwise',
+  // Binning (spec §07). bincounts produces an integer count array
+  // from edges + data; kwargs-shaped, sampler.evaluateCall dispatches.
+  'bincounts',
 ]);
 
 /**

@@ -117,6 +117,74 @@ test('stepwise: out-of-range x ⇒ NaN', () => {
   assert.ok(Number.isNaN(sampler.evaluateExpr(irHi, {})));
 });
 
+// =====================================================================
+// bincounts: count data points falling into bins
+// =====================================================================
+
+test('bincounts: simple 4-bin example', () => {
+  // edges [0, 2.5, 5, 7.5, 10] → 4 bins.
+  // data [1.0, 3.0, 4.9, 5.0, 9.9] →
+  //   bin 0 [0, 2.5): 1.0 ⇒ 1
+  //   bin 1 [2.5, 5.0): 3.0, 4.9 ⇒ 2
+  //   bin 2 [5.0, 7.5): 5.0 ⇒ 1
+  //   bin 3 [7.5, 10.0]: 9.9 ⇒ 1
+  const ir = call('bincounts', {
+    bins: vec(0, 2.5, 5, 7.5, 10),
+    data: vec(1.0, 3.0, 4.9, 5.0, 9.9),
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [1, 2, 1, 1]);
+});
+
+test('bincounts: last-bin upper boundary is inclusive', () => {
+  // x exactly at the right edge of the last bin falls into it.
+  const ir = call('bincounts', {
+    bins: vec(0, 1, 2),
+    data: vec(2.0),  // last edge
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [0, 1]);
+});
+
+test('bincounts: interior bin upper boundary is exclusive (next bin owns it)', () => {
+  // x exactly at the right edge of an INTERIOR bin should fall into
+  // the next bin, not this one.
+  const ir = call('bincounts', {
+    bins: vec(0, 1, 2),
+    data: vec(1.0),  // interior edge
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [0, 1]);
+});
+
+test('bincounts: out-of-range data is ignored', () => {
+  const ir = call('bincounts', {
+    bins: vec(0, 1, 2),
+    data: vec(-1.0, 0.5, 1.5, 3.0),  // -1 and 3 fall outside
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [1, 1]);
+});
+
+test('bincounts: empty data ⇒ all zeros', () => {
+  const ir = call('bincounts', {
+    bins: vec(0, 1, 2, 3),
+    data: vec(),
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [0, 0, 0]);
+});
+
+test('bincounts: rejects multi-dimensional binning (record bins)', () => {
+  // First-arg bins as a record (multi-D) — defer per spec §07.
+  // Constructed by hand here since the lower-level evaluator
+  // doesn't have a record-of-vectors literal at this test layer.
+  const ir = call('bincounts', {
+    bins: { kind: 'call', op: 'record', fields: [
+      { name: 'a', value: vec(0, 1) },
+      { name: 'b', value: vec(0, 1) },
+    ]},
+    data: vec(0.5),
+  });
+  assert.throws(() => sampler.evaluateExpr(ir, {}),
+    /multi-dimensional binning/);
+});
+
 test('stepwise: edges length must equal values length + 1', () => {
   const irBad = call('stepwise', {
     edges: vec(0, 1, 2),   // 3 edges
