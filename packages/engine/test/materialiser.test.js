@@ -195,6 +195,48 @@ t       = truncate(y, posreals)
 });
 
 // =====================================================================
+// Uniform(support = S) — continuous uniform with set-typed support
+// =====================================================================
+
+test('Uniform(interval(0, 1)) samples ⊂ [0, 1] with mean ≈ 0.5', async () => {
+  const ctx = makeCtx(`
+U = Uniform(support = interval(0.0, 1.0))
+x = draw(U)
+`, { sampleCount: 4096 });
+  const m = await ctx.getMeasure('x');
+  for (let i = 0; i < m.samples.length; i++) {
+    assert.ok(m.samples[i] >= 0 && m.samples[i] <= 1,
+      'atom ' + i + ' should lie in [0, 1], got ' + m.samples[i]);
+  }
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  assert.ok(Math.abs(mean - 0.5) < 0.05,
+    'mean of Uniform(0, 1) should be ≈ 0.5, got ' + mean);
+});
+
+test('Uniform(support = unitinterval) — named-set support', async () => {
+  const ctx = makeCtx(`
+U = Uniform(support = unitinterval)
+x = draw(U)
+`, { sampleCount: 2048 });
+  const m = await ctx.getMeasure('x');
+  for (let i = 0; i < m.samples.length; i++) {
+    assert.ok(m.samples[i] >= 0 && m.samples[i] <= 1,
+      'unitinterval atom ' + i + ' should lie in [0, 1]');
+  }
+});
+
+test('Uniform: logdensityof returns analytic 1/(b−a) inside support', async () => {
+  // Uniform(0, 2) at x=0.5: density = 1/(2−0) = 0.5; log = -log(2).
+  const ctx = makeCtx(`
+U = Uniform(support = interval(0.0, 2.0))
+lp = logdensityof(U, 0.5)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - Math.log(0.5)) < 1e-12,
+    'logp should be log(0.5), got ' + m.samples[0]);
+});
+
+// =====================================================================
 // pushfwd(f, M) — pushforward of measure through function
 // =====================================================================
 
