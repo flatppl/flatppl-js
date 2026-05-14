@@ -690,6 +690,19 @@ const SIGNATURE_FACTORIES = {
               data: array(1, ['%dynamic'], REAL) },
     result: array(1, ['%dynamic'], INTEGER),
   }),
+  // selectbins(edges, region, counts) — keep counts for bins whose
+  // interval intersects `region`. The `region` argument is a set
+  // expression; the sampler accepts literal interval(lo,hi) and the
+  // named real sets (reals / posreals / nonnegreals / unitinterval).
+  // Result length depends on region overlap — type stays dynamic.
+  selectbins: () => ({
+    args:   [array(1, ['%dynamic'], REAL), any(),
+             array(1, ['%dynamic'], REAL)],
+    kwargs: { edges: array(1, ['%dynamic'], REAL),
+              region: any(),
+              counts: array(1, ['%dynamic'], REAL) },
+    result: array(1, ['%dynamic'], REAL),
+  }),
 
   // ---- Logic / conditionals ----------------------------------------
   // Spec §07 — boolean ops. `lnot` is unary; the others are binary.

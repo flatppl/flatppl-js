@@ -185,6 +185,93 @@ test('bincounts: rejects multi-dimensional binning (record bins)', () => {
     /multi-dimensional binning/);
 });
 
+// =====================================================================
+// selectbins: keep counts for bins whose interval intersects region
+// =====================================================================
+
+function interval(lo, hi) {
+  return { kind: 'call', op: 'interval', args: [lit(lo), lit(hi)] };
+}
+function constSet(name) { return { kind: 'const', name }; }
+
+test('selectbins: interior region keeps only intersecting bins', () => {
+  // edges [0, 1, 2, 3, 4] → bins [0,1] [1,2] [2,3] [3,4]
+  // counts [10, 20, 30, 40]
+  // region [1.5, 3.5] intersects bins 1, 2, 3 (in 1-based) → keeps [20, 30, 40]
+  // (bin 0 [0,1] doesn't intersect [1.5, 3.5])
+  const ir = call('selectbins', {
+    edges: vec(0, 1, 2, 3, 4),
+    region: interval(1.5, 3.5),
+    counts: vec(10, 20, 30, 40),
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [20, 30, 40]);
+});
+
+test('selectbins: region covering all bins keeps everything', () => {
+  const ir = call('selectbins', {
+    edges: vec(0, 1, 2, 3),
+    region: interval(-10, 10),
+    counts: vec(5, 6, 7),
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [5, 6, 7]);
+});
+
+test('selectbins: region disjoint from all bins ⇒ empty result', () => {
+  const ir = call('selectbins', {
+    edges: vec(0, 1, 2),
+    region: interval(10, 20),
+    counts: vec(1, 2),
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), []);
+});
+
+test('selectbins: bin grazing region boundary counts as intersecting', () => {
+  // Bin [1, 2] touches region [2, 3] at exactly 2 → bin is kept
+  // per the inclusive ≤/≥ semantics.
+  const ir = call('selectbins', {
+    edges: vec(0, 1, 2, 3),
+    region: interval(2, 3),
+    counts: vec(10, 20, 30),
+  });
+  // Bins [0,1] [1,2] [2,3] vs region [2,3]: bin 0 misses, bins 1, 2 touch.
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [20, 30]);
+});
+
+test('selectbins: posreals region drops only bins entirely on the negative side', () => {
+  // edges [-2, -1, 0, 1, 2] → bins [-2,-1] [-1,0] [0,1] [1,2]
+  // region posreals ≡ [0, ∞]
+  // bin [-2,-1] strictly negative → drop
+  // bin [-1, 0] right edge at 0 → touches region → keep
+  // bin [0, 1] → keep
+  // bin [1, 2] → keep
+  const ir = call('selectbins', {
+    edges: vec(-2, -1, 0, 1, 2),
+    region: constSet('posreals'),
+    counts: vec(1, 2, 3, 4),
+  });
+  assert.deepEqual(sampler.evaluateExpr(ir, {}), [2, 3, 4]);
+});
+
+test('selectbins: edges length must equal counts length + 1', () => {
+  const irBad = call('selectbins', {
+    edges: vec(0, 1, 2),   // 3 edges
+    region: interval(0, 5),
+    counts: vec(1, 2, 3),  // 3 counts — mismatch (expected 2)
+  });
+  assert.throws(() => sampler.evaluateExpr(irBad, {}),
+    /edges length must equal counts length/);
+});
+
+test('selectbins: unsupported region shape surfaces a clear error', () => {
+  const irBad = call('selectbins', {
+    edges: vec(0, 1, 2),
+    region: { kind: 'lit', value: 42 },   // not a set IR
+    counts: vec(1, 2),
+  });
+  assert.throws(() => sampler.evaluateExpr(irBad, {}),
+    /unsupported region shape/);
+});
+
 test('stepwise: edges length must equal values length + 1', () => {
   const irBad = call('stepwise', {
     edges: vec(0, 1, 2),   // 3 edges

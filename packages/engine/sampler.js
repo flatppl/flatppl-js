@@ -684,6 +684,29 @@ function reduce(step, init) {
   };
 }
 
+// Map a set IR shape to numeric [lo, hi] bounds for value-level ops
+// that accept a region argument (e.g. selectbins). Recognizes literal
+// `interval(lo, hi)` and the named real sets. Anything else throws
+// — richer set descriptors live behind orchestrator.parseSetIR, which
+// the sampler intentionally doesn't depend on.
+function regionBoundsFromIR(ir, env) {
+  if (!ir) throw new Error('regionBoundsFromIR: missing IR');
+  if (ir.kind === 'call' && ir.op === 'interval'
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    return [evaluateExpr(ir.args[0], env), evaluateExpr(ir.args[1], env)];
+  }
+  if (ir.kind === 'const') {
+    switch (ir.name) {
+      case 'reals':       return [-Infinity, Infinity];
+      case 'posreals':    return [0, Infinity];
+      case 'nonnegreals': return [0, Infinity];
+      case 'unitinterval':return [0, 1];
+    }
+  }
+  throw new Error('regionBoundsFromIR: unsupported region shape (kind='
+    + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');
+}
+
 function evaluateCall(ir, env) {
   const op = ir.op;
   if (op in ARITH_OPS) {
@@ -781,6 +804,38 @@ function evaluateCall(ir, env) {
       binom = binom * (n - k) / (k + 1);
     }
     return acc;
+  }
+  if (op === 'selectbins') {
+    // selectbins(edges, region, counts) — keep counts for bins whose
+    // interval [edges[i], edges[i+1]] intersects `region`. Returns a
+    // shorter count array per spec §07: no fractional-bin clipping,
+    // bins are either fully included or fully excluded.
+    //
+    // Region is a set IR. We accept literal `interval(lo, hi)` and the
+    // named real sets (`reals` / `posreals` / `nonnegreals` /
+    // `unitinterval`) inline here — anything richer would require
+    // crossing into orchestrator.parseSetIR territory, which the
+    // sampler intentionally doesn't depend on.
+    const kw = ir.kwargs || {};
+    const edges    = kw.edges    != null ? evaluateExpr(kw.edges,    env)
+                                         : evaluateExpr(ir.args[0],  env);
+    const regionIR = kw.region   != null ? kw.region                 : ir.args[1];
+    const counts   = kw.counts   != null ? evaluateExpr(kw.counts,   env)
+                                         : evaluateExpr(ir.args[2],  env);
+    const [lo, hi] = regionBoundsFromIR(regionIR, env);
+    const n = counts.length;
+    if (edges.length !== n + 1) {
+      throw new Error('selectbins: edges length must equal counts length + 1');
+    }
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      // Bin [edges[i], edges[i+1]] intersects [lo, hi] iff
+      //   edges[i] ≤ hi  AND  edges[i+1] ≥ lo
+      if (edges[i] <= hi && edges[i + 1] >= lo) {
+        out.push(counts[i]);
+      }
+    }
+    return out;
   }
   if (op === 'bincounts') {
     // bincounts(bins, data) — count data points falling into bins.
