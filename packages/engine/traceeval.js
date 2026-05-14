@@ -250,23 +250,107 @@ function walkLeaf(state, ir, env, observed, ctx) {
 }
 
 function walkJoint(state, ir, env, observed, ctx) {
-  // joint/record fields: [{ name, value }, ...]. observed is split per
-  // field name (a missing key means "not observed at that field").
-  const fields = ir.fields || [];
-  const out = {};
-  let logp = 0;
-  let st = state;
-  for (let i = 0; i < fields.length; i++) {
-    const f = fields[i];
-    const sub = observed != null && Object.prototype.hasOwnProperty.call(observed, f.name)
-      ? observed[f.name]
-      : undefined;
-    const r = walkInner(st, f.value, env, sub, ctx);
-    out[f.name] = r.value;
-    logp += r.logp;
-    st = r.state;
+  // Two surface forms:
+  //
+  //   * kwarg-joint / record: ir.fields = [{ name, value }, ...]. The
+  //     output variate is keyed by field name; `observed` is a record
+  //     (plain object) keyed the same way. A missing key means "not
+  //     observed at that field" (sampled fresh, no clamped tally).
+  //
+  //   * positional joint:    ir.args   = [M1, M2, ...]. The output
+  //     variate is a vector built by concatenating component variates
+  //     (cat semantics per spec §06). `observed`, if provided, is a
+  //     flat array consumed left-to-right by each component's
+  //     footprint. We split it by trial-walking each component
+  //     against the *remaining* tail and threading the unused
+  //     suffix to the next.
+  if (Array.isArray(ir.fields)) {
+    const fields = ir.fields;
+    const out = {};
+    let logp = 0;
+    let st = state;
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const sub = observed != null && Object.prototype.hasOwnProperty.call(observed, f.name)
+        ? observed[f.name]
+        : undefined;
+      const r = walkInner(st, f.value, env, sub, ctx);
+      out[f.name] = r.value;
+      logp += r.logp;
+      st = r.state;
+    }
+    return { value: out, logp, state: st };
   }
-  return { value: out, logp, state: st };
+  if (Array.isArray(ir.args)) {
+    const components = ir.args;
+    // For sampling (observed == null) we don't need to split — each
+    // sub-walk just samples and we concatenate values into an array.
+    // For scoring (observed != null) we slice the observation per
+    // component's footprint, computed by inferComponentSize.
+    const out = new Array(components.length);
+    let logp = 0;
+    let st = state;
+    let cursor = 0;
+    for (let i = 0; i < components.length; i++) {
+      let sub;
+      if (observed != null) {
+        const k = inferComponentSize(components[i], env, ctx);
+        sub = Array.isArray(observed) || (observed && observed.BYTES_PER_ELEMENT)
+          ? sliceObserved(observed, cursor, cursor + k)
+          : undefined;
+        cursor += k;
+      }
+      const r = walkInner(st, components[i], env, sub, ctx);
+      out[i] = r.value;
+      logp += r.logp;
+      st = r.state;
+    }
+    return { value: out, logp, state: st };
+  }
+  throw new Error("traceeval: joint with neither fields nor args");
+}
+
+// Footprint inference for positional joint's observation-splitting.
+// Each measure kind contributes a fixed-or-derivable number of scalar
+// entries to the cat'd output: scalar leaf → 1, iid(M, n) → n × M's
+// footprint, joint(args) → sum of components, joint(fields) → sum of
+// fields, weighted/logweighted → same as base. Refs resolve through
+// the same resolveRef the walker uses for measure refs.
+function inferComponentSize(ir, env, ctx) {
+  if (!ir) return 1;
+  if (ir.kind === 'ref' && ir.ns === 'self' && ctx && ctx.resolveRef) {
+    const inner = ctx.resolveRef(ir.name);
+    if (inner) return inferComponentSize(inner, env, ctx);
+  }
+  if (ir.kind !== 'call') return 1;
+  const op = ir.op;
+  if (samplerLib.isKnownDistribution(op)) return 1;
+  if (op === 'iid' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const n = samplerLib.evaluateExpr(ir.args[1], env) | 0;
+    return Math.max(0, n) * inferComponentSize(ir.args[0], env, ctx);
+  }
+  if (op === 'weighted' || op === 'logweighted') {
+    return inferComponentSize(ir.args[1], env, ctx);
+  }
+  if (op === 'truncate' || op === 'normalize') {
+    return inferComponentSize(ir.args[0], env, ctx);
+  }
+  if ((op === 'joint' || op === 'record') && Array.isArray(ir.fields)) {
+    let s = 0;
+    for (const f of ir.fields) s += inferComponentSize(f.value, env, ctx);
+    return s;
+  }
+  if (op === 'joint' && Array.isArray(ir.args)) {
+    let s = 0;
+    for (const a of ir.args) s += inferComponentSize(a, env, ctx);
+    return s;
+  }
+  return 1;
+}
+
+function sliceObserved(obs, lo, hi) {
+  if (obs && obs.BYTES_PER_ELEMENT) return obs.subarray(lo, hi);
+  return obs.slice(lo, hi);
 }
 
 function walkIid(state, ir, env, observed, ctx) {

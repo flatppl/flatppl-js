@@ -514,6 +514,16 @@ function argSignature(op, numArgs) {
     // — the classifier reads it raw via parseSetIR.
     return ['measure', 'value'];
   }
+  if (op === 'joint') {
+    // Positional joint(M1, M2, ...): all args are measure-typed. The
+    // kwarg form (joint(name1 = M1, ...)) is handled separately via
+    // the isRecordLike branch — its kwarg values get liftMeasure'd
+    // there. Setting a 'measure'-per-position signature here covers
+    // the positional surface so that inline measure expressions
+    // (e.g. `joint(Normal(0,1), Exp(1))`) get lifted to named anon
+    // bindings before the classifier reads them.
+    return Array(numArgs).fill('measure');
+  }
   if (op === 'totalmass' || op === 'logdensityof') {
     // totalmass(<measure>) / logdensityof(<measure>, <obs>): first arg
     // measure-typed so a bare inline distribution gets lifted to a
@@ -2383,14 +2393,37 @@ function classifySuperpose(rhsIR, ast, bindings) {
 // a record. Both share IR shape (call with `fields:[{name,value},…]`)
 // and the same SoA empirical-measure layout downstream — typeinfer
 // records the value-vs-measure distinction, the derivation kind unifies.
+//
+// Positional joint (`joint(M1, M2, ...)`) is the same measure-algebra
+// construction (independent product) but produces a positional shape
+// rather than a named-field record. Per spec §06: "all components
+// must have the same shape class — all scalars yields a vector, all
+// vectors yields a concatenated vector, all records (with distinct
+// fields) yields a merged record." Today we map all-scalar positional
+// joint to the same `tuple` derivation kind used for array literals
+// of measure refs; downstream matTuple materialises a positional
+// EmpiricalMeasure (SoA across the components).
 function classifyRecordOrJoint(rhsIR /*, ast, bindings */) {
-  if (!Array.isArray(rhsIR.fields) || rhsIR.fields.length === 0) return null;
-  const fields = {};
-  for (const f of rhsIR.fields) {
-    if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
-    fields[f.name] = f.value.name;
+  if (Array.isArray(rhsIR.fields) && rhsIR.fields.length > 0) {
+    const fields = {};
+    for (const f of rhsIR.fields) {
+      if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
+      fields[f.name] = f.value.name;
+    }
+    return { kind: 'record', fields };
   }
-  return { kind: 'record', fields };
+  if (Array.isArray(rhsIR.args) && rhsIR.args.length > 0) {
+    // Positional joint: every arg must already be a self-ref to a
+    // measure binding (liftInlineSubexpressions lifts inline measure
+    // expressions into anon bindings before classification).
+    const elems = [];
+    for (const a of rhsIR.args) {
+      if (!a || a.kind !== 'ref' || a.ns !== 'self') return null;
+      elems.push(a.name);
+    }
+    return { kind: 'tuple', elems };
+  }
+  return null;
 }
 
 function classifyIid(rhsIR, ast, bindings) {
@@ -2778,6 +2811,17 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         // Use 'joint' op (the measure form). 'record' and 'joint'
         // share the IR shape and the walker treats them equivalently.
         return { kind: 'call', op: 'joint', fields };
+      }
+      case 'tuple': {
+        // Positional joint(M1, M2, ...) — args = [inner_M1, inner_M2, ...].
+        // Walker dispatches the positional-args branch of walkJoint.
+        const argsIR = [];
+        for (const n of d.elems) {
+          const inner = expandMeasureIR(n, derivations, next, bindings);
+          if (!inner) return null;
+          argsIR.push(inner);
+        }
+        return { kind: 'call', op: 'joint', args: argsIR };
       }
       case 'weighted': {
         const inner = expandMeasureIR(d.from, derivations, next, bindings);

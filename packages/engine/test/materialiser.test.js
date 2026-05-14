@@ -190,6 +190,81 @@ t       = truncate(y, posreals)
     'n_eff should equal count of non-NaN atoms');
 });
 
+// =====================================================================
+// Positional joint(M1, M2, ...) — independent product, tuple shape
+// =====================================================================
+
+test('joint positional: classifies as tuple over component refs', async () => {
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 1.0)
+J  = joint(M1, M2)
+`);
+  const d = ctx.derivations.J;
+  assert.ok(d, 'J should be derivable');
+  assert.equal(d.kind, 'tuple');
+  assert.deepEqual(d.elems, ['M1', 'M2']);
+});
+
+test('joint positional: materialises as tuple of per-component sub-measures', async () => {
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 1.0)
+J  = joint(M1, M2)
+`);
+  const J = await ctx.getMeasure('J');
+  assert.ok(J.elems && J.elems.length === 2,
+    'tuple measure should expose two elems');
+  // Each component is independently sampled — means should be near
+  // the configured μ for each within sampling noise.
+  const m0 = mean(J.elems[0].samples);
+  const m1 = mean(J.elems[1].samples);
+  assert.ok(Math.abs(m0 - 0.0) < 0.2, 'elem 0 mean ≈ 0, got ' + m0);
+  assert.ok(Math.abs(m1 - 5.0) < 0.2, 'elem 1 mean ≈ 5, got ' + m1);
+});
+
+test('joint positional: lifts inline measure expressions', async () => {
+  // The lift pass should pull `Normal(0,1)` and `Exponential(1)` into
+  // anon bindings; classifyRecordOrJoint then sees positional refs.
+  const ctx = makeCtx(`
+J = joint(Normal(mu = 0.0, sigma = 1.0), Exponential(rate = 1.0))
+`);
+  const d = ctx.derivations.J;
+  assert.ok(d, 'J should be derivable');
+  assert.equal(d.kind, 'tuple');
+  assert.equal(d.elems.length, 2,
+    'positional joint should classify two component refs after lifting');
+});
+
+function mean(arr) {
+  let s = 0;
+  for (let i = 0; i < arr.length; i++) s += arr[i];
+  return s / arr.length;
+}
+
+test('joint positional: logdensityof matches summed component logpdfs', async () => {
+  // densityof(joint(M1, M2), [x, y]) = pdf_M1(x) · pdf_M2(y) — no
+  // marginalisation, no normalising constant. Verifies traceeval's
+  // positional-args branch routes the observation through each
+  // component's footprint.
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 2.0)
+J  = joint(M1, M2)
+lp = logdensityof(J, [0.0, 5.0])
+`);
+  const lp = await ctx.getMeasure('lp');
+  // For each prior atom the answer is the same shared scalar (no
+  // per-i refs); we check atom 0 against analytic.
+  // logpdf_Normal(0;0,1) = -log√(2π) - 0
+  // logpdf_Normal(5;5,2) = -log(2·√(2π)) - 0
+  const LOG_2PI = Math.log(2 * Math.PI);
+  const expected = -0.5 * LOG_2PI + (-Math.log(2) - 0.5 * LOG_2PI);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+    'lp[0] should equal sum of component logpdfs, got ' + lp.samples[0]
+    + ' (expected ' + expected + ')');
+});
+
 test('truncate: composed totalmass scales by truncation factor', async () => {
   // truncate(Normal, posreals) reaches the CDF path → exact mass 0.5.
   // Wrapping in weighted(0.5, …) multiplies by 0.5 → exact 0.25.
