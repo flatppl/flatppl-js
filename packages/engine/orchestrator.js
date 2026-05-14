@@ -1200,15 +1200,48 @@ function liftInlineSubexpressions(bindings) {
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
     if (op !== 'jointchain' && op !== 'chain') return astArg;
-    if (!astArg.args || astArg.args.length !== 2) return astArg;
-    // N-ary jointchain (≥3 args) lives outside this rewrite today.
-    // Per spec §06 the chain is left-associative, so semantically it
-    // unfolds to `jointchain(jointchain(M, K1), K2)... Kn)`; but each
-    // nested rewrite has to be RE-NORMALISED to its record/array form
-    // before the next outer step can apply (otherwise the outer Ki+1's
-    // input-shape match fails on an un-rewritten anon binding). That
-    // re-normalisation needs to thread through the orchestrator's
-    // visit / inlineUserCall pipeline, which is a separate refactor.
+    if (!astArg.args || astArg.args.length < 2) return astArg;
+
+    // N-ary jointchain (≥3 positional args): per spec §06 the chain is
+    // left-associative — `jointchain(M, K1, K2, ..., Kn)` ≡
+    // `jointchain(jointchain(...jointchain(M, K1), K2)..., Kn)`. Realise
+    // that fold step-by-step, REWRITING each 2-arg level before wrapping
+    // it in the next outer; the outer step then sees a normalised joint
+    // (record) AST as its args[0] rather than an un-rewritten jointchain.
+    // Skip when any arg is a kwarg (shorthand path handles those) or
+    // when this is a chain (only 2-arg chain handled today).
+    if (op === 'jointchain' && astArg.args.length > 2
+        && astArg.args.every(a => a && a.type !== 'KeywordArg')) {
+      let folded = astArg.args[0];
+      for (let i = 1; i < astArg.args.length; i++) {
+        // Lift folded (if not already an Identifier) to an anon binding
+        // BEFORE wrapping in the next outer jointchain. This explicit
+        // lift parallels what the 2-arg pairwise path does internally;
+        // doing it here keeps the new anon visible to subsequent visits
+        // and lookups in `out`.
+        if (folded.type !== 'Identifier') {
+          const n = freshName();
+          out.set(n, makeSyntheticBinding(n, folded));
+          folded = makeIdent(n, astArg.loc);
+        }
+        const pair = {
+          type: 'CallExpr',
+          callee: makeIdent('jointchain', astArg.loc),
+          args: [folded, astArg.args[i]],
+          loc: astArg.loc,
+        };
+        const rewritten = inlineChainOps(pair);
+        if (rewritten === pair) {
+          // Pairwise rewrite bailed — typically the positional scalar-P
+          // path can't handle vector-typed P (the cat of prior variates
+          // Kn+1 would consume). Surface as unsupported.
+          return astArg;
+        }
+        folded = rewritten;
+      }
+      return folded;
+    }
+    if (astArg.args.length !== 2) return astArg;
 
     // Keyword-shorthand jointchain: jointchain(a = M, b = K) per spec
     // §sec:jointchain is equivalent to

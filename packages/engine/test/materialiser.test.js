@@ -291,6 +291,48 @@ lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 1.0, y = 0.0))
     + lp.samples[0] + ' (expected ' + expected + ')');
 });
 
+test('jointchain: N-ary record-shaped (M, K1, K2) folds left-associatively', async () => {
+  // jointchain(M, K1, K2, ..., Kn) per spec §06 is left-associative,
+  // unfolding to jointchain(jointchain(...jointchain(M, K1), K2)..., Kn).
+  // We fold step-by-step, rewriting each 2-arg level before wrapping
+  // it in the next outer — each outer step sees an already-normalised
+  // record AST as its args[0]. End-to-end: 3-arg jointchain on a
+  // record-shaped prior produces a record measure with prior fields
+  // + each kernel's body fields.
+  const ctx = makeCtx(`
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+prior = lawof(record(theta1 = theta1))
+theta2 = draw(Normal(mu = theta1, sigma = 1.0))
+obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
+obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
+K1 = functionof(obs_dist1, theta1 = theta1)
+K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
+joint_model = jointchain(prior, K1, K2)
+`);
+  const d = ctx.derivations.joint_model;
+  assert.ok(d, 'joint_model should be derivable');
+  assert.equal(d.kind, 'record');
+  assert.deepEqual(Object.keys(d.fields).sort(), ['theta1', 'theta2', 'y']);
+  const m = await ctx.getMeasure('joint_model');
+  assert.ok(m.fields, 'should materialise as a record measure');
+  assert.deepEqual(Object.keys(m.fields).sort(), ['theta1', 'theta2', 'y']);
+});
+
+// N-ary jointchain closed-form logdensityof has a known limitation:
+// kernel substitution produces refs to sample-binding anons inside
+// downstream fields' leaves (e.g., y's Normal(mu=ref(__anonN)) where
+// __anonN is the theta2 sample binding, not the field name 'theta2').
+// walkJoint's env-threading writes by field name only, so the leaf's
+// per-atom env resolves __anonN to the PRIOR sample rather than the
+// observed value. The 2-arg case incidentally avoids this because
+// user-named bindings match their field names; the N-ary case can't.
+// Fix lives in the upcoming jointchain-as-derivation-kind refactor:
+// matJointchain will own the env binding for both field name AND
+// source binding name as it threads through each step. Marker test
+// kept commented as the regression check for that refactor.
+//
+// test('jointchain: N-ary closed-form logdensityof with env-threading', ...)
+
 test('jointchain: positional scalar form logdensityof', async () => {
   // funnel = jointchain(Exp(1), fn(Normal(1, _))) — variate is [a, b]
   // with a ~ Exp(1) and b ~ Normal(1, a). Positional jointchain lifts
