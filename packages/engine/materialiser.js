@@ -113,7 +113,20 @@ function collectRefArrays(ir, fixedValues, getMeasure) {
   });
   return Promise.all(names.map(getMeasure)).then((measures) => {
     const out = {};
-    for (let i = 0; i < names.length; i++) out[names[i]] = measures[i].samples;
+    for (let i = 0; i < names.length; i++) {
+      // Phase 7b: prefer the shape-tagged Value view for vector-atom
+      // parents (matIid etc. — `.dims` indicates intrinsic shape per
+      // atom). Scalar-atom parents continue to surface as bare
+      // Float64Arrays for back-compat with consumers that index
+      // `refArrays[name][i]`. Vector-atom refs require a Value-aware
+      // consumer (the per-atom-fallback handles both forms).
+      const m = measures[i];
+      if (m.dims && m.value) {
+        out[names[i]] = m.value;
+      } else {
+        out[names[i]] = m.samples;
+      }
+    }
     return out;
   });
 }
@@ -301,7 +314,12 @@ function matEvaluate(d, ctx) {
   return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures) => {
     const refArrays = {};
     for (let i = 0; i < parentNames.length; i++) {
-      refArrays[parentNames[i]] = parentMeasures[i].samples;
+      // Phase 7b: surface the Value form for vector-atom parents so
+      // shape-aware ops (reductions over per-atom vectors, etc.)
+      // dispatch correctly via the per-atom fallback's Value-aware
+      // accessor. Scalar-atom parents keep the bare Float64Array path.
+      const m = parentMeasures[i];
+      refArrays[parentNames[i]] = (m.dims && m.value) ? m.value : m.samples;
     }
     return ctx.sendWorker({
       type: 'evaluateN',

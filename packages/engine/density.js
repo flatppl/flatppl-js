@@ -324,14 +324,41 @@ function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   // Per-atom path. callEnv layering (bottom-up): baseEnv, refArrays[i],
   // overlay. Overlay applied last so env-threaded observation values
   // win over per-atom refs.
+  //
+  // refArrays entries are either Float64Array (scalar-atom parent) or
+  // Value (Phase 7b vector-atom parent). Pre-compute the access
+  // pattern so the inner loop stays branch-free.
   const callEnv = Object.assign({}, baseEnv);
+  const accessors = new Array(refNames.length);
+  for (let j = 0; j < refNames.length; j++) {
+    const k = refNames[j];
+    const v = refArrays[k];
+    if (valueLib.isValue(v)) {
+      const shape = v.shape;
+      if (shape.length === 1) {
+        const data = v.data;
+        accessors[j] = (i) => data[i];
+      } else {
+        const tailDims = shape.slice(1);
+        const tailLen = tailDims.reduce((a, b) => a * b, 1);
+        const data = v.data;
+        accessors[j] = (i) => ({
+          shape: tailDims,
+          data: data.subarray(i * tailLen, (i + 1) * tailLen),
+        });
+      }
+    } else {
+      const arr = v;
+      accessors[j] = (i) => arr[i];
+    }
+  }
   // Apply the (atom-independent) overlay once outside the loop —
   // refArrays writes would otherwise stomp these names per atom.
   // We re-apply inside the loop after refArrays.
   for (let i = 0; i < N; i++) {
     for (let j = 0; j < refNames.length; j++) {
       const k = refNames[j];
-      callEnv[k] = refArrays[k][i];
+      callEnv[k] = accessors[j](i);
     }
     if (overlayKeys) {
       for (let j = 0; j < overlayKeys.length; j++) {

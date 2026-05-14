@@ -1229,13 +1229,43 @@ function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
   if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) {
     callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
   }
+  // Pre-compute per-ref accessors. For scalar-atom refs the entry is a
+  // Float64Array(N) and refArrays[k][i] picks the atom. For vector-
+  // atom refs the entry is a Value with shape=[N, k...] (Phase 7b);
+  // atom i is a length-prod(rest) sub-Value (or a length-1 scalar for
+  // shape=[N]). Computing the access pattern once per ref avoids the
+  // typeof-check in the hot N-atom loop.
+  const accessors = new Array(refNames.length);
+  for (let j = 0; j < refNames.length; j++) {
+    const k = refNames[j];
+    const v = refArrays[k];
+    if (valueLib.isValue(v)) {
+      const shape = v.shape;
+      if (shape.length === 1) {
+        const data = v.data;
+        accessors[j] = (i) => data[i];
+      } else {
+        // shape=[N, ...rest]. Atom i occupies a contiguous slice.
+        const tailDims = shape.slice(1);
+        const tailLen = tailDims.reduce((a, b) => a * b, 1);
+        const data = v.data;
+        accessors[j] = (i) => ({
+          shape: tailDims,
+          data: data.subarray(i * tailLen, (i + 1) * tailLen),
+        });
+      }
+    } else {
+      const arr = v;
+      accessors[j] = (i) => arr[i];
+    }
+  }
   const out = new Array(N);
   for (let i = 0; i < N; i++) {
     for (let j = 0; j < refNames.length; j++) {
       const k = refNames[j];
       // overlay wins over refArrays — skip the write when overlay has it.
       if (overlayKeys && Object.prototype.hasOwnProperty.call(overlay, k)) continue;
-      callEnv[k] = refArrays[k][i];
+      callEnv[k] = accessors[j](i);
     }
     out[i] = evaluateExpr(ir, callEnv);
   }
@@ -1866,8 +1896,9 @@ const ARITH_OPS = {
     throw new Error('cat: unsupported argument shape (got '
       + (typeof first) + ')');
   },
-  // Reductions over an array. Operate on JS arrays / TypedArrays
-  // alike (both expose .length and indexed access). Spec semantics:
+  // Reductions over an array. Operate on JS arrays / TypedArrays /
+  // Values (Phase 7b) alike. `_arrLike` unwraps the underlying
+  // indexable form. Spec semantics:
   //   sum     = Σ x[i]
   //   mean    = sum / N
   //   prod    = Π x[i]
@@ -1875,21 +1906,27 @@ const ARITH_OPS = {
   //   maximum = max x[i]   (Math.max would .apply-blow-stack at length 1e6)
   //   minimum = min x[i]
   //   var     = mean( (x - mean)² )  — population variance, divisor N
-  sum:     reduce((acc, v) => acc + v, 0),
-  mean:    arr => reduce((acc, v) => acc + v, 0)(arr) / arr.length,
-  prod:    reduce((acc, v) => acc * v, 1),
-  length:  arr => arr.length,
-  maximum: arr => {
+  sum:     a => { const arr = _arrLike(a); let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i]; return s; },
+  mean:    a => { const arr = _arrLike(a); let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; },
+  prod:    a => { const arr = _arrLike(a); let p = 1;
+    for (let i = 0; i < arr.length; i++) p *= arr[i]; return p; },
+  length:  a => _arrLike(a).length,
+  maximum: a => {
+    const arr = _arrLike(a);
     let m = -Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
     return m;
   },
-  minimum: arr => {
+  minimum: a => {
+    const arr = _arrLike(a);
     let m = Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
     return m;
   },
-  var: arr => {
+  var: a => {
+    const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return 0;
     let s = 0;
@@ -1902,17 +1939,20 @@ const ARITH_OPS = {
   // Norms and normalization (spec §07). All take a single vector
   // argument. Numerically stable forms — logsumexp uses the standard
   // shift-by-max trick so exp doesn't overflow on large entries.
-  l1norm: arr => {
+  l1norm: a => {
+    const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
     return s;
   },
-  l2norm: arr => {
+  l2norm: a => {
+    const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     return Math.sqrt(s);
   },
-  l1unit: arr => {
+  l1unit: a => {
+    const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
     if (s === 0) throw new Error('l1unit: zero-norm vector has no unit form');
@@ -1920,7 +1960,8 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / s;
     return out;
   },
-  l2unit: arr => {
+  l2unit: a => {
+    const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     if (s === 0) throw new Error('l2unit: zero-norm vector has no unit form');
@@ -1929,7 +1970,8 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / r;
     return out;
   },
-  logsumexp: arr => {
+  logsumexp: a => {
+    const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return -Infinity;
     let m = -Infinity;
@@ -1939,7 +1981,8 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
     return m + Math.log(s);
   },
-  softmax: arr => {
+  softmax: a => {
+    const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return [];
     let m = -Infinity;
@@ -1956,7 +1999,8 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) exps[i] /= s;
     return exps;
   },
-  logsoftmax: arr => {
+  logsoftmax: a => {
+    const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return [];
     let m = -Infinity;
@@ -1972,6 +2016,15 @@ const ARITH_OPS = {
     return out;
   },
 };
+
+// _arrLike: unwrap Value to its underlying Float64Array data, or pass
+// through Float64Array / JS array. Used by reductions (sum, mean,
+// l1norm, etc.) so they handle Value inputs uniformly without
+// branching on every loop iteration.
+function _arrLike(v) {
+  if (valueLib.isValue(v)) return v.data;
+  return v;
+}
 
 // =====================================================================
 // Batched scalar-arithmetic: ARITH_OPS_N (used by evaluateExprN) is
