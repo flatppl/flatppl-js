@@ -1238,6 +1238,70 @@ const ARITH_OPS = {
   // LKJCholesky conversions and Gram-matrix priors.
   row_gram: A => _matmul(A, ARITH_OPS.transpose(A)),
   col_gram: A => _matmul(ARITH_OPS.transpose(A), A),
+  // array(data, size, dimorder) — n-D array from a flat data vector
+  // per spec §07. size is an n-vector of positive dimensions;
+  // dimorder is a permutation of [1..n] listing axes from slowest- to
+  // fastest-varying as `data` is traversed. dimorder = [1,2,...,n]
+  // is row-major (C order); reversed is column-major (Fortran).
+  //
+  // dimorder doesn't imply memory layout in FlatPPL — it only
+  // specifies how the flat data is unpacked into the n-D shape. The
+  // result is a nested JS array.
+  array: (data, size, dimorder) => {
+    const n = size.length;
+    if (dimorder.length !== n) {
+      throw new Error('array: dimorder length ' + dimorder.length
+        + ' must match size length ' + n);
+    }
+    let total = 1;
+    for (let i = 0; i < n; i++) total *= (size[i] | 0);
+    if (data.length !== total) {
+      throw new Error('array: prod(size) = ' + total
+        + ' does not match data length ' + data.length);
+    }
+    if (n === 0) return data.length > 0 ? data[0] : null;
+    // Build nested array of the desired shape (using row-major
+    // convention internally), then traverse `data` in dimorder.
+    // For each linear index k into data, decode it via dimorder to
+    // get the n-D coordinate.
+    //   k = ∑ c[dimorder[i] - 1] · stride_in_dimorder
+    // where the slowest-varying axis is dimorder[0].
+    function makeShape(level) {
+      if (level === n) return 0;
+      const out = new Array(size[level]);
+      for (let i = 0; i < size[level]; i++) out[i] = makeShape(level + 1);
+      return out;
+    }
+    const result = makeShape(0);
+    function setAt(coord, value) {
+      let cur = result;
+      for (let level = 0; level < n - 1; level++) cur = cur[coord[level]];
+      cur[coord[n - 1]] = value;
+    }
+    // Compute stride per axis index in dimorder. Slowest-varying axis
+    // has stride = prod of all faster axes' sizes.
+    const stridesInDimorder = new Array(n);
+    let strideAcc = 1;
+    for (let i = n - 1; i >= 0; i--) {
+      // dimorder[i] is the (1-based) axis index for position i in
+      // the traversal; size[dimorder[i] - 1] is that axis's length.
+      stridesInDimorder[i] = strideAcc;
+      strideAcc *= size[(dimorder[i] | 0) - 1];
+    }
+    const coord = new Array(n);
+    for (let k = 0; k < total; k++) {
+      // Decode k into per-axis indices via dimorder + strides.
+      let rem = k;
+      for (let i = 0; i < n; i++) {
+        const axis = (dimorder[i] | 0) - 1;
+        const stride = stridesInDimorder[i];
+        coord[axis] = Math.floor(rem / stride) % size[axis];
+        rem %= stride;
+      }
+      setAt(coord, data[k]);
+    }
+    return result;
+  },
   // fill(x, n, m, ...) — n-D array of shape `n × m × ...` filled with x.
   // Returns nested JS arrays for 2-D+; flat array for 1-D. Spec §07.
   fill: (x, ...dims) => {

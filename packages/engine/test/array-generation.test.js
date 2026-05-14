@@ -157,6 +157,53 @@ test('integer: non-integer ⇒ runtime error', () => {
 });
 
 // =====================================================================
+// array(data, size, dimorder) — n-D from flat data
+// =====================================================================
+
+test('array: row-major 2×3 (dimorder = [1, 2])', () => {
+  // Equivalent to rowstack([[1,2,3], [4,5,6]]).
+  assert.deepEqual(
+    ev(call('array', vec(1, 2, 3, 4, 5, 6), vec(2, 3), vec(1, 2))),
+    [[1, 2, 3], [4, 5, 6]]);
+});
+
+test('array: column-major 2×3 (dimorder = [2, 1])', () => {
+  // Equivalent to colstack([[1,2], [3,4], [5,6]]).
+  assert.deepEqual(
+    ev(call('array', vec(1, 2, 3, 4, 5, 6), vec(2, 3), vec(2, 1))),
+    [[1, 3, 5], [2, 4, 6]]);
+});
+
+test('array: 1-D shape pass-through', () => {
+  assert.deepEqual(
+    ev(call('array', vec(1, 2, 3), vec(3), vec(1))),
+    [1, 2, 3]);
+});
+
+test('array: data length mismatch ⇒ runtime error', () => {
+  assert.throws(
+    () => ev(call('array', vec(1, 2, 3), vec(2, 3), vec(1, 2))),
+    /does not match data length/);
+});
+
+test('array: dimorder length mismatch ⇒ runtime error', () => {
+  assert.throws(
+    () => ev(call('array', vec(1, 2, 3, 4, 5, 6), vec(2, 3), vec(1))),
+    /must match size length/);
+});
+
+test('array: 3-D shape (2×2×2, row-major)', () => {
+  // [1..8] with dimorder [1, 2, 3] (slowest = axis 1, fastest = axis 3)
+  // Layout: [k=0: [1,2; 3,4],  k=1: [5,6; 7,8]]
+  const r = ev(call('array', vec(1, 2, 3, 4, 5, 6, 7, 8),
+                    vec(2, 2, 2), vec(1, 2, 3)));
+  assert.deepEqual(r, [
+    [[1, 2], [3, 4]],
+    [[5, 6], [7, 8]],
+  ]);
+});
+
+// =====================================================================
 // rowstack / colstack
 // =====================================================================
 

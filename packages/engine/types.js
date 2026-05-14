@@ -786,6 +786,16 @@ const SIGNATURE_FACTORIES = {
   reverse:     () => ({ args: [array(1, ['%dynamic'], tvar('T'))],
                         kwargs: {},
                         result: array(1, ['%dynamic'], tvar('T')) }),
+  // array(data, size, dimorder) — n-D array from flat data + shape.
+  // Result type stays dynamic (rank depends on size); the runtime
+  // returns nested JS arrays of the appropriate shape.
+  array: () => ({ args: [array(1, ['%dynamic'], REAL),
+                         array(1, ['%dynamic'], INTEGER),
+                         array(1, ['%dynamic'], INTEGER)],
+                  kwargs: { data: array(1, ['%dynamic'], REAL),
+                            size: array(1, ['%dynamic'], INTEGER),
+                            dimorder: array(1, ['%dynamic'], INTEGER) },
+                  result: deferred() }),
   // rowstack(vs) / colstack(vs) — vector-of-vectors → matrix. Inputs
   // must all have the same length (runtime check).
   rowstack:    () => ({ args: [array(1, ['%dynamic'],

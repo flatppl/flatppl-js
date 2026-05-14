@@ -154,7 +154,7 @@ const EVALUABLE_OPS = new Set([
   // arguments; dispatch through ARITH_OPS.
   'linspace', 'extlinspace', 'partition', 'reverse',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
-  'rowstack', 'colstack',
+  'rowstack', 'colstack', 'array',
   // Higher-order ops (spec §04 / §07). Dispatched via dedicated cases
   // in sampler.evaluateCall (not ARITH_OPS) because they evaluate a
   // referenced function's body per element. filter takes a unary
