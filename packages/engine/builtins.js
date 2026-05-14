@@ -122,7 +122,7 @@ const DISTRIBUTIONS = new Set([
   'Logistic', 'LogNormal', 'Exponential', 'Gamma', 'Weibull',
   'InverseGamma', 'Beta',
   // Discrete
-  'Bernoulli', 'Categorical', 'Binomial', 'Poisson',
+  'Bernoulli', 'Categorical', 'Categorical0', 'Binomial', 'Poisson',
   // Multivariate
   'MvNormal', 'Wishart', 'InverseWishart',
   'LKJ', 'LKJCholesky', 'Dirichlet', 'Multinomial',

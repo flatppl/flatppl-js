@@ -237,6 +237,66 @@ lp = logdensityof(U, 0.5)
 });
 
 // =====================================================================
+// Categorical / Categorical0 — discrete with 1-based / 0-based support
+// =====================================================================
+
+test('Categorical([0.5, 0.3, 0.2]) sample fractions ≈ probabilities', async () => {
+  const ctx = makeCtx(`
+M = Categorical(p = [0.5, 0.3, 0.2])
+x = draw(M)
+`, { sampleCount: 8192 });
+  const m = await ctx.getMeasure('x');
+  const counts = { 1: 0, 2: 0, 3: 0 };
+  for (let i = 0; i < m.samples.length; i++) {
+    const k = m.samples[i] | 0;
+    assert.ok(k >= 1 && k <= 3, 'atom ' + i + ' must be in {1, 2, 3}, got ' + m.samples[i]);
+    counts[k]++;
+  }
+  const N = m.samples.length;
+  assert.ok(Math.abs(counts[1] / N - 0.5) < 0.04,
+    'fraction of 1 should ≈ 0.5, got ' + counts[1] / N);
+  assert.ok(Math.abs(counts[2] / N - 0.3) < 0.04,
+    'fraction of 2 should ≈ 0.3, got ' + counts[2] / N);
+  assert.ok(Math.abs(counts[3] / N - 0.2) < 0.04,
+    'fraction of 3 should ≈ 0.2, got ' + counts[3] / N);
+});
+
+test('Categorical0([0.5, 0.3, 0.2]) shifts support to {0, 1, 2}', async () => {
+  const ctx = makeCtx(`
+M = Categorical0(p = [0.5, 0.3, 0.2])
+x = draw(M)
+`, { sampleCount: 2048 });
+  const m = await ctx.getMeasure('x');
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < m.samples.length; i++) {
+    const v = m.samples[i] | 0;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  assert.equal(min, 0, 'Categorical0 support starts at 0');
+  assert.equal(max, 2, 'Categorical0 support ends at length-1');
+});
+
+test('Categorical: logdensityof at category 2 ⇒ log(p[1]) = log(0.3)', async () => {
+  const ctx = makeCtx(`
+M = Categorical(p = [0.5, 0.3, 0.2])
+lp = logdensityof(M, 2)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - Math.log(0.3)) < 1e-12,
+    'logp at k=2 should be log(0.3), got ' + m.samples[0]);
+});
+
+test('Categorical: out-of-support log-density ⇒ -Infinity', async () => {
+  const ctx = makeCtx(`
+M = Categorical(p = [0.5, 0.3, 0.2])
+lp = logdensityof(M, 5)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.equal(m.samples[0], -Infinity);
+});
+
+// =====================================================================
 // Logistic / Weibull — synthesised inverse-CDF samplers
 // =====================================================================
 
