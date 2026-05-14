@@ -150,6 +150,9 @@ const EVALUABLE_OPS = new Set([
   // from edges + data; kwargs-shaped, sampler.evaluateCall dispatches.
   // selectbins keeps whole bins whose interval intersects a region.
   'bincounts', 'selectbins',
+  // Array generation (spec §07). All pure value ops over fixed-phase
+  // arguments; dispatch through ARITH_OPS.
+  'linspace', 'extlinspace', 'partition', 'reverse',
 ]);
 
 /**

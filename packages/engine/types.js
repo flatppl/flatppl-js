@@ -690,6 +690,22 @@ const SIGNATURE_FACTORIES = {
               values: array(1, ['%dynamic'], REAL), x: REAL },
     result: REAL,
   }),
+  // linspace(from, to, n) — endpoint-inclusive evenly-spaced vector.
+  // extlinspace adds ±∞ overflow edges. Both produce real vectors.
+  linspace:    () => ({ args: [REAL, REAL, INTEGER], kwargs: {
+                          from: REAL, to: REAL, n: INTEGER },
+                        result: array(1, ['%dynamic'], REAL) }),
+  extlinspace: () => ({ args: [REAL, REAL, INTEGER], kwargs: {
+                          from: REAL, to: REAL, n: INTEGER },
+                        result: array(1, ['%dynamic'], REAL) }),
+  // partition(xs, spec) — split a vector into a vector of sub-vectors.
+  // Static return type kept dynamic (the inner shape depends on spec).
+  partition:   () => ({ args: [array(1, ['%dynamic'], any()), any()],
+                        kwargs: {}, result: deferred() }),
+  // reverse(xs) — same shape as input, elements reversed.
+  reverse:     () => ({ args: [array(1, ['%dynamic'], tvar('T'))],
+                        kwargs: {},
+                        result: array(1, ['%dynamic'], tvar('T')) }),
   // bincounts(bins, data) — count data points falling into bins. 1D
   // case: bins is a vector of edges, data is a vector of reals,
   // result is an integer-count vector of length n-1 (where n is the

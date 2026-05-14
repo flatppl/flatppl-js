@@ -1110,6 +1110,97 @@ const ARITH_OPS = {
   // per-atom vector, which doesn't fit the scalar-per-atom worker
   // contract. Vector-valued stochastic bindings have their own
   // tuple / array materialiser paths.
+  // linspace(from, to, n) — endpoint-inclusive range of n real numbers
+  // evenly spaced from `from` to `to`. n=1 returns [from]; both endpoints
+  // are included exactly (not computed via accumulating step). Spec §07.
+  linspace: (from, to, n) => {
+    const k = n | 0;
+    if (k <= 0) return [];
+    if (k === 1) return [+from];
+    const out = new Array(k);
+    const lo = +from, hi = +to;
+    for (let i = 0; i < k; i++) {
+      // Use the parametric form (1−t)·lo + t·hi so the endpoints land
+      // exactly on lo and hi without floating-point drift.
+      const t = i / (k - 1);
+      out[i] = (1 - t) * lo + t * hi;
+    }
+    return out;
+  },
+  // extlinspace(from, to, n) — like linspace but with -inf and +inf
+  // prepended/appended. Useful for overflow-bin definitions in binned
+  // analyses. Spec §07.
+  extlinspace: (from, to, n) => {
+    const k = n | 0;
+    if (k <= 0) return [-Infinity, Infinity];
+    const out = new Array(k + 2);
+    out[0] = -Infinity;
+    out[k + 1] = Infinity;
+    if (k === 1) { out[1] = +from; return out; }
+    const lo = +from, hi = +to;
+    for (let i = 0; i < k; i++) {
+      const t = i / (k - 1);
+      out[i + 1] = (1 - t) * lo + t * hi;
+    }
+    return out;
+  },
+  // partition(xs, spec) — split a vector into groups. spec may be a
+  // positive integer (equal-size groups) or a vector of positive
+  // integers (custom group sizes). Spec §07. Returns a vector of
+  // sub-vectors (JS arrays of JS arrays).
+  partition: (xs, spec) => {
+    const n = xs.length;
+    if (typeof spec === 'number') {
+      const k = spec | 0;
+      if (k <= 0) throw new Error('partition: group size must be positive, got ' + k);
+      if (n % k !== 0) {
+        throw new Error('partition: length ' + n + ' not divisible by group size ' + k);
+      }
+      const groups = n / k;
+      const out = new Array(groups);
+      for (let g = 0; g < groups; g++) {
+        const grp = new Array(k);
+        for (let i = 0; i < k; i++) grp[i] = xs[g * k + i];
+        out[g] = grp;
+      }
+      return out;
+    }
+    if (Array.isArray(spec) || (spec && spec.BYTES_PER_ELEMENT)) {
+      let total = 0;
+      for (let i = 0; i < spec.length; i++) total += (spec[i] | 0);
+      if (total !== n) {
+        throw new Error('partition: spec sums to ' + total + ' but vector length is ' + n);
+      }
+      const out = new Array(spec.length);
+      let cursor = 0;
+      for (let g = 0; g < spec.length; g++) {
+        const sz = spec[g] | 0;
+        const grp = new Array(sz);
+        for (let i = 0; i < sz; i++) grp[i] = xs[cursor + i];
+        out[g] = grp;
+        cursor += sz;
+      }
+      return out;
+    }
+    throw new Error('partition: spec must be a positive integer or a vector of positive integers');
+  },
+  // reverse(xs) — reverse element order in a vector. Tables defer for
+  // now (no canonical table runtime yet).
+  reverse: xs => {
+    if (xs && xs.BYTES_PER_ELEMENT) {
+      // Typed array — slice and reverse to keep type, but Float64Array's
+      // reverse is in-place. Make a copy first.
+      const out = new Float64Array(xs.length);
+      for (let i = 0; i < xs.length; i++) out[xs.length - 1 - i] = xs[i];
+      return out;
+    }
+    if (Array.isArray(xs)) {
+      const out = new Array(xs.length);
+      for (let i = 0; i < xs.length; i++) out[xs.length - 1 - i] = xs[i];
+      return out;
+    }
+    throw new Error('reverse: argument must be a vector');
+  },
   cat: (...xs) => {
     if (xs.length === 0) return [];
     const first = xs[0];
