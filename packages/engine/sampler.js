@@ -66,6 +66,7 @@
 
 const rng = require('./rng');
 const valueLib = require('./value');
+const valueOps = require('./value-ops');
 
 // Math special functions from stdlib for gamma / loggamma / erf-based
 // probit / invprobit. The straight-JS variants (logit, invlogit, min,
@@ -1146,10 +1147,52 @@ function resolveRef(ir, env) {
   return env[ir.name];
 }
 
+// Determine whether `v` carries an intrinsic vector/matrix shape
+// (i.e. is a Value with rank ≥ 2, or rank 1 with length ≠ atom-count
+// N). Used by mul / add / sub dispatchers to route shape-aware paths.
+// Bare JS numbers and bare Float64Arrays are NOT rich; they pass
+// through the existing scalar-broadcast helpers.
+function _isShapeRich(v, N) {
+  if (!valueLib.isValue(v)) return false;
+  const r = v.shape.length;
+  if (r === 0) return false;                    // atom-indep scalar
+  if (r === 1 && N !== undefined && v.shape[0] === N) return false;  // batched scalar
+  return true;
+}
+
 const ARITH_OPS = {
   add: (a, b) => a + b,
   sub: (a, b) => a - b,
-  mul: (a, b) => a * b,
+  // mul: shape-dispatched. Bare scalars stay on the JS-multiply fast
+  // path; Value inputs with rank ≥ 1 (vectors / matrices, with
+  // Klein-4 transpose tag respected) route to value-ops.mul. The
+  // dispatcher is reached when:
+  //   - ARITH_OPS_N.mul → broadcast2 sees both inputs as not-batched,
+  //     unwraps the (any) Value to its scalar via _scalarVal, calls
+  //     ARITH_OPS.mul. Hit only when both operands are scalars (the
+  //     atom-indep fast path); the (a, b) → a*b primitive still wins.
+  //   - ARITH_OPS_N.mul detects a shape-rich Value and routes around
+  //     broadcast2 directly to value-ops.mul (see ARITH_OPS_N
+  //     construction below).
+  //   - evaluateExpr (single-point) hits ARITH_OPS.mul directly. If
+  //     either arg is a shape-rich Value it dispatches here.
+  mul: (a, b) => {
+    if (valueLib.isValue(a) || valueLib.isValue(b)) {
+      // Route to value-ops only when at least one operand has
+      // intrinsic shape; otherwise keep the scalar JS fast path
+      // (Value shape=[] inputs get unwrapped by _scalarVal above and
+      // never reach here in that form).
+      if (_isShapeRich(a) || _isShapeRich(b)) {
+        return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
+      }
+      // Both are atom-indep scalars (one wrapped, one bare or both
+      // wrapped). Unwrap and multiply.
+      const av = valueLib.isValue(a) ? a.data[0] : a;
+      const bv = valueLib.isValue(b) ? b.data[0] : b;
+      return av * bv;
+    }
+    return a * b;
+  },
   div: (a, b) => a / b,
   mod: (a, b) => a % b,
   neg: a => -a,
@@ -1906,6 +1949,19 @@ for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
   else if (arity === 3) ARITH_OPS_N[op] = (args, N) => broadcast3(fn, args[0], args[1], args[2], N);
   else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
 }
+
+// Phase 2b: shape-aware mul takes precedence over the broadcast2-based
+// dispatch when either operand carries an intrinsic vector/matrix
+// shape (Value with rank ≥ 1 whose leading dim isn't the atom count).
+// Bare scalars and batched scalars stay on the scalar broadcast path.
+const _mulBroadcast = ARITH_OPS_N.mul;
+ARITH_OPS_N.mul = (args, N) => {
+  const a = args[0], b = args[1];
+  if (_isShapeRich(a, N) || _isShapeRich(b, N)) {
+    return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
+  }
+  return _mulBroadcast(args, N);
+};
 
 // =====================================================================
 // Linear-algebra helpers (textbook algorithms; small-matrix sized)
