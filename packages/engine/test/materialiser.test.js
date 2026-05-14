@@ -195,6 +195,64 @@ t       = truncate(y, posreals)
 });
 
 // =====================================================================
+// pushfwd(f, M) — pushforward of measure through function
+// =====================================================================
+
+test('pushfwd: classifier rewrites pushfwd(fn(exp(_)), M) to lawof(draw-and-apply)', async () => {
+  const ctx = makeCtx(`
+M = Normal(mu = 0.0, sigma = 1.0)
+ln = pushfwd(fn(exp(_)), M)
+`);
+  const d = ctx.derivations.ln;
+  assert.ok(d, 'ln should be derivable');
+  // After the rewrite ln aliases to an anon binding whose RHS is the
+  // applied function (exp of M's variate). The alias chain bottoms
+  // out at an evaluate-kind binding.
+  assert.equal(d.kind, 'alias');
+  const anon = ctx.derivations[d.from];
+  assert.equal(anon && anon.kind, 'evaluate');
+});
+
+test('pushfwd: samples of pushfwd(fn(exp(_)), Normal(0,1)) match LogNormal(0,1)', async () => {
+  // The pushforward of standard Normal through exp is the standard
+  // LogNormal. Analytic moments at μ=0, σ=1:
+  //   E[X] = exp(0.5)  ≈ 1.649
+  //   Var  = (e − 1)·e ≈ 4.671
+  // All atoms are positive. We use a large sample count to reduce MC
+  // error well below the assertion tolerance.
+  const ctx = makeCtx(`
+M = Normal(mu = 0.0, sigma = 1.0)
+ln = pushfwd(fn(exp(_)), M)
+`, { sampleCount: 16384 });
+  const m = await ctx.getMeasure('ln');
+  let neg = 0;
+  for (let i = 0; i < m.samples.length; i++) {
+    if (m.samples[i] < 0) neg++;
+  }
+  assert.equal(neg, 0, 'all pushfwd-through-exp atoms should be positive');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  assert.ok(Math.abs(mean - Math.exp(0.5)) < 0.1,
+    'mean should be ≈ exp(½), got ' + mean);
+});
+
+test('pushfwd: linear transform pushfwd(fn(2 * _ + 1), Normal) is Normal(2μ+1, 2σ)', async () => {
+  const ctx = makeCtx(`
+M = Normal(mu = 0.0, sigma = 1.0)
+shifted = pushfwd(fn(2.0 * _ + 1.0), M)
+`, { sampleCount: 4096 });
+  const m = await ctx.getMeasure('shifted');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  // Analytic mean = 2·0 + 1 = 1; variance = 4·1 = 4 → sd = 2.
+  assert.ok(Math.abs(mean - 1.0) < 0.15,
+    'mean should be ≈ 1, got ' + mean);
+  let ss = 0;
+  for (const v of m.samples) ss += (v - mean) * (v - mean);
+  const variance = ss / m.samples.length;
+  assert.ok(Math.abs(variance - 4.0) < 0.5,
+    'variance should be ≈ 4, got ' + variance);
+});
+
+// =====================================================================
 // Positional joint(M1, M2, ...) — independent product, tuple shape
 // =====================================================================
 
