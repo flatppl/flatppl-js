@@ -99,11 +99,13 @@ const EVALUABLE_OPS = new Set([
   // This list mirrors sampler.js's ARITH_OPS exactly. Extend both
   // sides together when adding ops (the static gate must match the
   // worker's evaluator).
-  'add', 'sub', 'mul', 'div', 'mod', 'neg', 'pos',
+  'add', 'sub', 'mul', 'div', 'divide', 'mod', 'neg', 'pos',
   'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
   'sin', 'cos',
   'floor', 'ceil', 'round',
   'pow',
+  // Complex arithmetic (spec §03 / §07): constructor + accessors.
+  'complex', 'real', 'imag', 'conj', 'cis',
   // Binary min/max and gamma/loggamma/link functions (spec §07
   // Elementary functions). All scalar→scalar (or scalar,scalar→scalar)
   // and dispatch through sampler.ARITH_OPS.

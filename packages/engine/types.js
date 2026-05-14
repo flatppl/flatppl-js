@@ -680,6 +680,20 @@ const SIGNATURE_FACTORIES = {
   // Gamma function family and logit / probit link functions.
   gamma:     () => ({ args: [REAL], kwargs: {}, result: REAL }),
   loggamma:  () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  // Complex arithmetic primitives (spec §03 / §07).
+  //   complex(re, im) :: (real, real) → complex
+  //   real(z)         :: complex → real    (also identity on real)
+  //   imag(z)         :: complex → real    (zero on real)
+  //   conj(z)         :: complex → complex (identity on real)
+  //   cis(theta)      :: real → complex    (e^{iθ})
+  // Real ↔ complex unify via the canonical embedding (spec §03's
+  // booleans ⊂ integers ⊂ reals embedded in complexes) so call sites
+  // mixing scalar primitives don't emit spurious type errors.
+  complex: () => ({ args: [REAL, REAL], kwargs: {}, result: COMPLEX }),
+  real:    () => ({ args: [COMPLEX],    kwargs: {}, result: REAL }),
+  imag:    () => ({ args: [COMPLEX],    kwargs: {}, result: REAL }),
+  conj:    () => ({ args: [COMPLEX],    kwargs: {}, result: COMPLEX }),
+  cis:     () => ({ args: [REAL],       kwargs: {}, result: COMPLEX }),
   logit:     () => ({ args: [REAL], kwargs: {}, result: REAL }),
   invlogit:  () => ({ args: [REAL], kwargs: {}, result: REAL }),
   probit:    () => ({ args: [REAL], kwargs: {}, result: REAL }),

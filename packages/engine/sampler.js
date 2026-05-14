@@ -1336,9 +1336,78 @@ function resolveConst(name) {
     case 'e':   return Math.E;
     case 'inf': return Infinity;
     case '-inf': return -Infinity;
+    case 'im':  return { re: 0, im: 1 };  // imaginary unit (spec §03)
     default:
       throw new Error(`evaluateExpr: unknown constant '${name}'`);
   }
+}
+
+// =====================================================================
+// Complex arithmetic primitives (spec §03 / §07)
+// =====================================================================
+//
+// Scalar complex representation: a plain JS object `{re, im}` of two
+// numbers. Operations auto-promote real → complex when meeting a
+// complex operand. Storage is plain-object rather than a class so
+// JSON round-trips work and structured clone preserves shape across
+// postMessage.
+//
+// For atom-batched complex storage (a per-atom complex value), the
+// design is: Value with `dtype: 'complex'`, `data: Float64Array(N)` for
+// real parts, `im: Float64Array(N)` for imaginary parts (separate
+// buffers, matching TF.js's complex-tensor representation). That
+// extension lands when a concrete use case demands it; for now scalar
+// complex values are sufficient for the spec §07 operator set.
+
+function _isComplex(v) {
+  return v != null && typeof v === 'object'
+    && typeof v.re === 'number' && typeof v.im === 'number';
+}
+
+function _toComplex(v) {
+  if (_isComplex(v)) return v;
+  if (typeof v === 'number') return { re: v, im: 0 };
+  if (typeof v === 'boolean') return { re: v ? 1 : 0, im: 0 };
+  throw new Error('cannot promote ' + typeof v + ' to complex');
+}
+
+function _cAdd(a, b) { return { re: a.re + b.re, im: a.im + b.im }; }
+function _cSub(a, b) { return { re: a.re - b.re, im: a.im - b.im }; }
+function _cNeg(a)    { return { re: -a.re,       im: -a.im }; }
+function _cMul(a, b) {
+  return { re: a.re * b.re - a.im * b.im,
+           im: a.re * b.im + a.im * b.re };
+}
+function _cDiv(a, b) {
+  const d = b.re * b.re + b.im * b.im;
+  return { re: (a.re * b.re + a.im * b.im) / d,
+           im: (a.im * b.re - a.re * b.im) / d };
+}
+function _cConj(a)   { return { re: a.re, im: -a.im }; }
+function _cAbs(a)    { return Math.hypot(a.re, a.im); }
+function _cAbs2(a)   { return a.re * a.re + a.im * a.im; }
+function _cExp(z) {
+  const r = Math.exp(z.re);
+  return { re: r * Math.cos(z.im), im: r * Math.sin(z.im) };
+}
+function _cLog(z) {
+  // Principal branch: arg ∈ (-π, π] per spec §07.
+  return { re: Math.log(Math.hypot(z.re, z.im)),
+           im: Math.atan2(z.im, z.re) };
+}
+function _cSqrt(z) {
+  // Principal branch.
+  if (z.im === 0 && z.re >= 0) return { re: Math.sqrt(z.re), im: 0 };
+  const r = Math.hypot(z.re, z.im);
+  // half-angle formulas avoiding catastrophic cancellation near the
+  // negative real axis (preferred over re-deriving via _cExp(0.5·_cLog)).
+  const reOut = Math.sqrt((r + z.re) / 2);
+  const sign = z.im >= 0 ? 1 : -1;
+  return { re: reOut, im: sign * Math.sqrt((r - z.re) / 2) };
+}
+function _cPow(base, exp) {
+  // z^w = exp(w · log(z)), principal branch (spec §07).
+  return _cExp(_cMul(exp, _cLog(base)));
 }
 
 function resolveRef(ir, env) {
@@ -1371,7 +1440,16 @@ function _isShapeRich(v, N) {
 // ARITH_OPS table below). Same logic as the mul dispatcher: if either
 // operand carries an intrinsic vector/matrix shape, route to
 // value-ops; otherwise stay on the scalar JS fast path.
-function _shapeAwareBinop(opName, scalarFn, a, b) {
+//
+// Complex extension: when either operand is a complex scalar ({re, im}),
+// promote both to complex and dispatch through the complex helper. The
+// shape-rich Value path stays real-only for now; per-atom complex
+// Values are deferred (storage decision: separate re/im Float64Arrays
+// in Value.im — lands when needed).
+function _shapeAwareBinop(opName, scalarFn, a, b, complexFn) {
+  if (_isComplex(a) || _isComplex(b)) {
+    return complexFn(_toComplex(a), _toComplex(b));
+  }
   if (valueLib.isValue(a) || valueLib.isValue(b)) {
     if (_isShapeRich(a) || _isShapeRich(b)) {
       return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
@@ -1384,8 +1462,8 @@ function _shapeAwareBinop(opName, scalarFn, a, b) {
 }
 
 const ARITH_OPS = {
-  add: (a, b) => _shapeAwareBinop('add', (x, y) => x + y, a, b),
-  sub: (a, b) => _shapeAwareBinop('sub', (x, y) => x - y, a, b),
+  add: (a, b) => _shapeAwareBinop('add', (x, y) => x + y, a, b, _cAdd),
+  sub: (a, b) => _shapeAwareBinop('sub', (x, y) => x - y, a, b, _cSub),
   // mul: shape-dispatched. Bare scalars stay on the JS-multiply fast
   // path; Value inputs with rank ≥ 1 (vectors / matrices, with
   // Klein-4 transpose tag respected) route to value-ops.mul. The
@@ -1400,6 +1478,9 @@ const ARITH_OPS = {
   //   - evaluateExpr (single-point) hits ARITH_OPS.mul directly. If
   //     either arg is a shape-rich Value it dispatches here.
   mul: (a, b) => {
+    if (_isComplex(a) || _isComplex(b)) {
+      return _cMul(_toComplex(a), _toComplex(b));
+    }
     if (valueLib.isValue(a) || valueLib.isValue(b)) {
       // Route to value-ops only when at least one operand has
       // intrinsic shape; otherwise keep the scalar JS fast path
@@ -1416,30 +1497,65 @@ const ARITH_OPS = {
     }
     return a * b;
   },
-  div: (a, b) => a / b,
+  div: (a, b) => {
+    if (_isComplex(a) || _isComplex(b)) {
+      return _cDiv(_toComplex(a), _toComplex(b));
+    }
+    return a / b;
+  },
+  divide: (a, b) => {
+    if (_isComplex(a) || _isComplex(b)) {
+      return _cDiv(_toComplex(a), _toComplex(b));
+    }
+    return a / b;
+  },
   mod: (a, b) => a % b,
   neg: a => {
+    if (_isComplex(a)) return _cNeg(a);
     if (valueLib.isValue(a)) {
       if (_isShapeRich(a)) return valueOps.neg(a);
       return -a.data[0];
     }
     return -a;
   },
-  pos: a => +a,
+  pos: a => _isComplex(a) ? a : +a,
   // Common unary maths — extend EVALUABLE_OPS in orchestrator.js
-  // alongside any addition here so the static gate matches.
-  abs:   a => Math.abs(a),
-  abs2:  a => a * a,
-  exp:   a => Math.exp(a),
-  log:   a => Math.log(a),
+  // alongside any addition here so the static gate matches. Complex
+  // arguments dispatch to the complex helpers (spec §07: exp / log /
+  // sqrt / abs / abs2 extend naturally; sin/cos defer until needed).
+  abs:   a => _isComplex(a) ? _cAbs(a) : Math.abs(a),
+  abs2:  a => _isComplex(a) ? _cAbs2(a) : a * a,
+  exp:   a => _isComplex(a) ? _cExp(a) : Math.exp(a),
+  log:   a => _isComplex(a) ? _cLog(a) : Math.log(a),
   log10: a => Math.log10(a),
-  sqrt:  a => Math.sqrt(a),
+  sqrt:  a => _isComplex(a) ? _cSqrt(a) : Math.sqrt(a),
   sin:   a => Math.sin(a),
   cos:   a => Math.cos(a),
   floor: a => Math.floor(a),
   ceil:  a => Math.ceil(a),
   round: a => Math.round(a),
-  pow:   (a, b) => Math.pow(a, b),
+  pow:   (a, b) => {
+    if (_isComplex(a) || _isComplex(b)) {
+      return _cPow(_toComplex(a), _toComplex(b));
+    }
+    return Math.pow(a, b);
+  },
+  // Complex constructor + accessors (spec §03 / §07).
+  complex: (re, im) => {
+    // Two-arg constructor: complex(re, im) → {re, im}. (One-arg form
+    // `complex(x)` is the scalar restrictor — identity if already
+    // complex; lift if real.)
+    if (im === undefined) {
+      if (_isComplex(re)) return re;
+      if (typeof re === 'number') return { re: re, im: 0 };
+      throw new Error('complex: single-arg restrictor requires real or complex input');
+    }
+    return { re: +re, im: +im };
+  },
+  real: z => _isComplex(z) ? z.re : +z,
+  imag: z => _isComplex(z) ? z.im : 0,
+  conj: z => _isComplex(z) ? _cConj(z) : +z,
+  cis: theta => ({ re: Math.cos(+theta), im: Math.sin(+theta) }),
   // Binary scalar reductions (spec §07). Distinct from the variadic
   // `maximum` / `minimum` reductions, which take an array argument.
   min:   (a, b) => Math.min(a, b),
