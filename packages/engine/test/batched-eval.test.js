@@ -223,3 +223,96 @@ test('isBatch: Float64Array of correct length is batched', () => {
   assert.equal(sampler.isBatch([1, 2, 3, 4], 4), false);  // not typed
   assert.equal(sampler.isBatch(null, 4), false);
 });
+
+// =====================================================================
+// Phase 1: Value-polymorphic broadcast — ARITH_OPS_N accepts Value
+// inputs (shape=[] / shape=[N]) alongside the legacy bare-primitive
+// (number / Float64Array) forms. "Same kind as inputs" output
+// semantics: any Value input ⇒ Value output; otherwise legacy bare.
+// =====================================================================
+
+const value = require('../value');
+const { ARITH_OPS_N } = sampler._internal;
+
+test('isBatch: Value shape=[N] is batched; shape=[] is not', () => {
+  const N = 4;
+  const bv = value.batchedScalar(new Float64Array([1, 2, 3, 4]));
+  assert.equal(sampler.isBatch(bv, N), true);
+  const sv = value.scalar(5);
+  assert.equal(sampler.isBatch(sv, N), false);
+  // Wrong-length Value not batched.
+  const wrong = value.batchedScalar(new Float64Array([1, 2, 3]));
+  assert.equal(sampler.isBatch(wrong, N), false);
+});
+
+test('ARITH_OPS_N: all-bare inputs → bare result (legacy fast path)', () => {
+  // No Value in → no Value out. Atom-indep scalar args fold to number.
+  const r = ARITH_OPS_N.add([2, 3], 4);
+  assert.equal(r, 5);
+  assert.equal(typeof r, 'number');
+  // Bare Float64Array batched → bare Float64Array out.
+  const r2 = ARITH_OPS_N.add([new Float64Array([1, 2, 3, 4]), 1], 4);
+  assert.ok(r2 instanceof Float64Array);
+  assert.deepEqual(Array.from(r2), [2, 3, 4, 5]);
+});
+
+test('ARITH_OPS_N: Value shape=[] scalar in → Value shape=[] out', () => {
+  const r = ARITH_OPS_N.add([value.scalar(2), value.scalar(3)], 4);
+  assert.deepEqual(r.shape, []);
+  assert.equal(r.data[0], 5);
+});
+
+test('ARITH_OPS_N: Value shape=[N] batched in → Value shape=[N] out', () => {
+  const bv = value.batchedScalar(new Float64Array([1, 2, 3, 4]));
+  const r = ARITH_OPS_N.mul([bv, value.scalar(10)], 4);
+  assert.deepEqual(r.shape, [4]);
+  assert.deepEqual(Array.from(r.data), [10, 20, 30, 40]);
+});
+
+test('ARITH_OPS_N: mixed Value + bare number → Value out (any Value triggers wrap)', () => {
+  // Value × number → Value. The number is broadcast as atom-indep.
+  const r = ARITH_OPS_N.add([value.scalar(5), 2], 4);
+  assert.ok(value.isValue(r), 'expected Value wrap when any input is a Value');
+  assert.equal(value.asScalar(r), 7);
+});
+
+test('ARITH_OPS_N: mixed Value batched + bare Float64Array → Value out', () => {
+  const vb = value.batchedScalar(new Float64Array([1, 2, 3, 4]));
+  const fb = new Float64Array([10, 20, 30, 40]);
+  const r = ARITH_OPS_N.add([vb, fb], 4);
+  assert.ok(value.isValue(r));
+  assert.deepEqual(r.shape, [4]);
+  assert.deepEqual(Array.from(r.data), [11, 22, 33, 44]);
+});
+
+test('ARITH_OPS_N: unary op preserves Value-ness (exp on shape=[] / shape=[N])', () => {
+  const r1 = ARITH_OPS_N.exp([value.scalar(0)], 4);
+  assert.ok(value.isValue(r1));
+  assert.equal(value.asScalar(r1), 1);
+
+  const r2 = ARITH_OPS_N.exp([value.batchedScalar(new Float64Array([0, 1]))], 2);
+  assert.ok(value.isValue(r2));
+  assert.deepEqual(r2.shape, [2]);
+  assert.ok(Math.abs(r2.data[0] - 1) < 1e-12);
+  assert.ok(Math.abs(r2.data[1] - Math.E) < 1e-12);
+});
+
+test('ARITH_OPS_N: ternary op (ifelse) honours polymorphism', () => {
+  // ifelse(cond, then, else); arity 3. Mix Value + bare.
+  const cond = value.batchedScalar(new Float64Array([1, 0, 1, 0]));
+  const r = ARITH_OPS_N.ifelse([cond, 100, 200], 4);
+  assert.ok(value.isValue(r), 'any Value input ⇒ Value output');
+  assert.deepEqual(Array.from(r.data), [100, 200, 100, 200]);
+});
+
+test('ARITH_OPS_N: bare-only ternary stays bare', () => {
+  const cond = new Float64Array([1, 0, 1, 0]);
+  const r = ARITH_OPS_N.ifelse([cond, 100, 200], 4);
+  assert.ok(r instanceof Float64Array, 'bare inputs ⇒ bare output');
+  assert.deepEqual(Array.from(r), [100, 200, 100, 200]);
+});
+
+test('ARITH_OPS_N: result Value carries dtype=f64 default', () => {
+  const r = ARITH_OPS_N.add([value.scalar(1), value.scalar(2)], 4);
+  assert.equal(value.getDType(r), 'f64');
+});

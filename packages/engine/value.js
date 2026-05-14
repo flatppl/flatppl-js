@@ -115,6 +115,15 @@ function getShape(v) { return v.shape; }
 function getData(v)  { return v.data; }
 function getDType(v) { return v.dtype || DEFAULT_DTYPE; }
 
+// Structural predicate: is `v` a Value-shaped object? Cheap check used
+// by polymorphic dispatch sites (e.g. broadcast helpers in sampler.js)
+// to distinguish Value inputs from bare JS numbers / Float64Arrays.
+function isValue(v) {
+  return v != null && typeof v === 'object'
+    && Array.isArray(v.shape)
+    && v.data instanceof Float64Array;
+}
+
 // Is `v` batched along an outer axis of size N?
 function isBatched(v, N) {
   return v.shape.length > 0 && v.shape[0] === N;
@@ -258,6 +267,7 @@ module.exports = {
   getShape: getShape,
   getData: getData,
   getDType: getDType,
+  isValue: isValue,
   isBatched: isBatched,
   numel: numel,
   // constructors
