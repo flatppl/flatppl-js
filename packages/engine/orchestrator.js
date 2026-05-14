@@ -154,6 +154,7 @@ const EVALUABLE_OPS = new Set([
   // arguments; dispatch through ARITH_OPS.
   'linspace', 'extlinspace', 'partition', 'reverse',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
+  'rowstack', 'colstack',
   // filter is dispatched via a dedicated case in sampler.evaluateCall
   // (not in ARITH_OPS) because it needs per-element evaluation of an
   // embedded body IR rather than the positional-spread shape.

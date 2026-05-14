@@ -1110,6 +1110,38 @@ const ARITH_OPS = {
   // per-atom vector, which doesn't fit the scalar-per-atom worker
   // contract. Vector-valued stochastic bindings have their own
   // tuple / array materialiser paths.
+  // rowstack(vs) — turn a vector of vectors into a matrix where the
+  // input vectors become rows. colstack does the same but as columns.
+  // Spec §07. All input vectors must have the same length.
+  rowstack: vs => {
+    if (!Array.isArray(vs) || vs.length === 0) return [];
+    const n = vs[0].length;
+    for (let i = 1; i < vs.length; i++) {
+      if (vs[i].length !== n) {
+        throw new Error('rowstack: row length mismatch at index ' + i);
+      }
+    }
+    // Shallow copy each row so the caller's nested arrays are not aliased.
+    const out = new Array(vs.length);
+    for (let i = 0; i < vs.length; i++) out[i] = vs[i].slice();
+    return out;
+  },
+  colstack: vs => {
+    if (!Array.isArray(vs) || vs.length === 0) return [];
+    const n = vs[0].length;
+    for (let i = 1; i < vs.length; i++) {
+      if (vs[i].length !== n) {
+        throw new Error('colstack: column length mismatch at index ' + i);
+      }
+    }
+    const out = new Array(n);
+    for (let r = 0; r < n; r++) {
+      const row = new Array(vs.length);
+      for (let c = 0; c < vs.length; c++) row[c] = vs[c][r];
+      out[r] = row;
+    }
+    return out;
+  },
   // ---- Linear algebra (spec §07) ------------------------------------
   // Matrices are nested JS arrays (row-major): M[i][j] is row i, col j.
   // Vectors are flat JS arrays. We implement textbook algorithms

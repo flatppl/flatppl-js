@@ -768,6 +768,16 @@ const SIGNATURE_FACTORIES = {
   reverse:     () => ({ args: [array(1, ['%dynamic'], tvar('T'))],
                         kwargs: {},
                         result: array(1, ['%dynamic'], tvar('T')) }),
+  // rowstack(vs) / colstack(vs) — vector-of-vectors → matrix. Inputs
+  // must all have the same length (runtime check).
+  rowstack:    () => ({ args: [array(1, ['%dynamic'],
+                                     array(1, ['%dynamic'], REAL))],
+                        kwargs: {},
+                        result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  colstack:    () => ({ args: [array(1, ['%dynamic'],
+                                     array(1, ['%dynamic'], REAL))],
+                        kwargs: {},
+                        result: array(2, ['%dynamic', '%dynamic'], REAL) }),
   // bincounts(bins, data) — count data points falling into bins. 1D
   // case: bins is a vector of edges, data is a vector of reals,
   // result is an integer-count vector of length n-1 (where n is the

@@ -155,3 +155,31 @@ test('integer: accepts integers verbatim', () => {
 test('integer: non-integer ⇒ runtime error', () => {
   assert.throws(() => ev(call('integer', lit(3.5))), /not an integer/);
 });
+
+// =====================================================================
+// rowstack / colstack
+// =====================================================================
+
+function vov(...rows) {
+  return { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) };
+}
+
+test('rowstack: input vectors become rows', () => {
+  assert.deepEqual(ev(call('rowstack', vov([1, 2, 3], [4, 5, 6]))),
+    [[1, 2, 3], [4, 5, 6]]);
+});
+
+test('colstack: input vectors become columns', () => {
+  assert.deepEqual(ev(call('colstack', vov([1, 2, 3], [4, 5, 6]))),
+    [[1, 4], [2, 5], [3, 6]]);
+});
+
+test('rowstack: mismatched row lengths ⇒ runtime error', () => {
+  assert.throws(() => ev(call('rowstack', vov([1, 2], [3, 4, 5]))),
+    /length mismatch/);
+});
+
+test('colstack: mismatched column lengths ⇒ runtime error', () => {
+  assert.throws(() => ev(call('colstack', vov([1, 2], [3, 4, 5]))),
+    /length mismatch/);
+});
