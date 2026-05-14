@@ -1049,8 +1049,76 @@ function liftInlineSubexpressions(bindings) {
       astArg = inlineDensityof(astArg);
       astArg = inlinePushfwd(astArg);
       astArg = inlineFilterLift(astArg);
+      astArg = inlineBroadcasted(astArg);
     }
     return astArg;
+  }
+
+  /**
+   * Rewrite `broadcasted(f)(args...)` to `broadcast(fn(f(_, _, ...)), args...)`
+   * per spec §04: broadcasted(f)(args) ≡ broadcast(f, args). We
+   * synthesize a `fn(...)` wrapping a call to f with one hole per
+   * positional arg, so broadcast's value evaluator (which expects
+   * its first arg to be a function-shaped IR) can apply f per
+   * element — even when f is a built-in operator like `add` that
+   * wouldn't otherwise have a functionof body to walk.
+   *
+   * Handles two surface shapes:
+   *   * Direct: `broadcasted(f)(x, y)` — callee is a `broadcasted` call.
+   *   * Via binding: `bc = broadcasted(f); bc(x, y)` — callee is an
+   *     Identifier whose binding's RHS is a `broadcasted(...)` call.
+   *
+   * Mirrors inlineFchain in shape.
+   */
+  function inlineBroadcasted(astArg) {
+    if (!astArg || astArg.type !== 'CallExpr' || !astArg.callee) return astArg;
+    let bcCall = null;
+    if (astArg.callee.type === 'CallExpr'
+        && astArg.callee.callee
+        && astArg.callee.callee.type === 'Identifier'
+        && astArg.callee.callee.name === 'broadcasted') {
+      bcCall = astArg.callee;
+    } else if (astArg.callee.type === 'Identifier') {
+      const target = out.get(astArg.callee.name);
+      const targetAst = target && (target.effectiveValue || (target.node && target.node.value));
+      if (targetAst && targetAst.type === 'CallExpr' && targetAst.callee
+          && targetAst.callee.type === 'Identifier'
+          && targetAst.callee.name === 'broadcasted') {
+        bcCall = targetAst;
+      }
+    }
+    if (!bcCall) return astArg;
+    const fns = (bcCall.args || []).filter(a => a && a.type !== 'KeywordArg');
+    if (fns.length !== 1) return astArg;
+    const fArg = fns[0];
+
+    // Count user-supplied positional args; build that many holes inside
+    // the synthesized fn. Kwargs aren't supported through broadcasted
+    // today (the user would write them through plain broadcast).
+    const callerArgs = astArg.args || [];
+    const posArgs = callerArgs.filter(a => a && a.type !== 'KeywordArg');
+    if (posArgs.length === 0) return astArg;
+    const holes = new Array(posArgs.length);
+    for (let i = 0; i < posArgs.length; i++) {
+      holes[i] = { type: 'Hole', loc: astArg.loc };
+    }
+    const fnExpr = {
+      type: 'CallExpr',
+      callee: makeIdent('fn', astArg.loc),
+      args: [{
+        type: 'CallExpr',
+        callee: cloneAst(fArg),
+        args: holes,
+        loc: astArg.loc,
+      }],
+      loc: astArg.loc,
+    };
+    return {
+      type: 'CallExpr',
+      callee: makeIdent('broadcast', astArg.loc),
+      args: [fnExpr].concat(posArgs.map(cloneAst)),
+      loc: astArg.loc,
+    };
   }
 
   /**
