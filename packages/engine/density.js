@@ -387,33 +387,22 @@ const OP_HANDLERS = {
 
 // ---- Per-atom scalar contribution helpers ---------------------------
 
-// Evaluate `wIR` against env_i for each atom and apply `combine(acc, i, value)`.
-// Specialised for the two scalar-shift cases (weighted's log(w), logweighted's
-// g) so they don't duplicate the per-atom env-rebuild scaffolding. Same env
-// precedence as walkLeaf: baseEnv < refArrays[i] < overlay.
+// Evaluate `wIR` once over the whole atom batch via sampler.evaluateExprN,
+// then accumulate via `combine(acc, i, value)`. The single batched call
+// replaces what used to be N scalar evaluateExpr loops — same env-
+// precedence (overlay > refArrays > baseEnv) but enforced inside
+// evaluateExprN.
 function applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, combine) {
-  const refNames = Object.keys(refArrays);
-  const overlayKeys = overlay ? Object.keys(overlay) : null;
-  if (refNames.length === 0 && !overlayKeys) {
-    const v = +samplerLib.evaluateExpr(wIR, baseEnv);
+  const result = samplerLib.evaluateExprN(
+    wIR, refArrays || null, N, baseEnv,
+    overlay ? { overlay } : undefined);
+  if (typeof result === 'number' || typeof result === 'boolean') {
+    const v = +result;
     for (let i = 0; i < N; i++) combine(acc, i, v);
     return;
   }
-  const callEnv = Object.assign({}, baseEnv);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < refNames.length; j++) {
-      const k = refNames[j];
-      callEnv[k] = refArrays[k][i];
-    }
-    if (overlayKeys) {
-      for (let j = 0; j < overlayKeys.length; j++) {
-        const k = overlayKeys[j];
-        callEnv[k] = overlay[k];
-      }
-    }
-    const v = +samplerLib.evaluateExpr(wIR, callEnv);
-    combine(acc, i, v);
-  }
+  // Float64Array(N) or generic Array(N).
+  for (let i = 0; i < N; i++) combine(acc, i, +result[i]);
 }
 
 function addLogW(acc, i, w) {

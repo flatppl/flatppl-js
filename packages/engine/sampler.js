@@ -1006,6 +1006,121 @@ function evaluateExpr(ir, env) {
   }
 }
 
+// =====================================================================
+// Batched IR evaluation — the foundation for per-atom paths across the
+// engine (worker.evaluateN, density.applyAtomScalar, future profileN).
+// =====================================================================
+//
+// Contract:
+//   evaluateExprN(ir, refArrays, count, baseEnv, opts={}) → value
+//
+//   - Scalar-typed IR → Float64Array(count) when any input is per-atom;
+//     a plain JS scalar (number / boolean) when all inputs are
+//     atom-independent. The "scalar-when-possible" fast path means
+//     single-point eval (count=1, refArrays=null) returns scalars with
+//     no allocation overhead.
+//   - Non-scalar-typed IR (vector/matrix/record/tuple) → atom-indep
+//     JS value when no per-atom refs touch this subtree; otherwise a
+//     length-N JS Array of per-atom values (packed to Float64Array
+//     if every element is numeric/boolean).
+//
+//   refArrays: { name → Float64Array(count) } per-atom value overrides.
+//              May be null/empty.
+//   baseEnv:   atom-independent env (session env + lifted fixed-phase).
+//   opts.overlay: { name → scalar } that wins over BOTH refArrays and
+//                 baseEnv at every leaf — used by density.js for
+//                 env-threading from consumed observation fields.
+//
+// Env-precedence at refs (highest first): overlay > refArrays > baseEnv.
+//
+// Scalar arith ops dispatch through ARITH_OPS_N (batched broadcast).
+// Non-scalar ops fall back to per-atom dispatch via the single-point
+// `evaluateExpr` — fine for ops where per-atom inputs are uncommon
+// (vector/matrix/record builders typically take atom-indep inputs);
+// future batched-non-scalar rewrites would eliminate the fallback.
+
+function evaluateExprN(ir, refArrays, count, baseEnv, opts) {
+  const N = count | 0;
+  if (N <= 0) throw new Error('evaluateExprN: count must be positive');
+  const overlay = (opts && opts.overlay) || null;
+  return _evalN(ir, refArrays || null, N, baseEnv || {}, overlay);
+}
+
+function _evalN(ir, refArrays, N, baseEnv, overlay) {
+  switch (ir.kind) {
+    case 'lit':
+      return ir.value;
+    case 'const':
+      return resolveConst(ir.name);
+    case 'ref': {
+      if (overlay && Object.prototype.hasOwnProperty.call(overlay, ir.name)) {
+        return overlay[ir.name];
+      }
+      if (refArrays && Object.prototype.hasOwnProperty.call(refArrays, ir.name)) {
+        return refArrays[ir.name];
+      }
+      if (baseEnv != null && ir.name in baseEnv) return baseEnv[ir.name];
+      throw new Error(
+        `evaluateExprN: unbound ${ir.ns} reference '${ir.name}' — env must ` +
+        `provide values for all upstream-resolved names`
+      );
+    }
+    case 'call': {
+      const op = ir.op;
+      // Scalar-batched dispatch.
+      if (op in ARITH_OPS_N) {
+        const args = (ir.args || []).map(a => _evalN(a, refArrays, N, baseEnv, overlay));
+        return ARITH_OPS_N[op](args, N);
+      }
+      // Non-batched op: per-atom dispatch through the existing
+      // single-point evaluateExpr. Atom-indep when no per-atom refs
+      // touch this subtree (cheap one-shot); per-atom loop otherwise.
+      return _perAtomFallback(ir, refArrays, N, baseEnv, overlay);
+    }
+    default:
+      throw new Error(`evaluateExprN: unsupported IR node kind '${ir.kind}'`);
+  }
+}
+
+function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
+  const refNames = refArrays ? Object.keys(refArrays) : [];
+  const overlayKeys = overlay ? Object.keys(overlay) : null;
+  // Fast path: nothing varies per atom AND overlay is empty → one shot.
+  if (refNames.length === 0 && !overlayKeys) {
+    return evaluateExpr(ir, baseEnv);
+  }
+  // Per-atom loop. Build a callEnv that overlays per-atom refArrays
+  // values + the overlay (overlay last so it wins over refArrays).
+  const callEnv = Object.assign({}, baseEnv);
+  if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) {
+    callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+  }
+  const out = new Array(N);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < refNames.length; j++) {
+      const k = refNames[j];
+      // overlay wins over refArrays — skip the write when overlay has it.
+      if (overlayKeys && Object.prototype.hasOwnProperty.call(overlay, k)) continue;
+      callEnv[k] = refArrays[k][i];
+    }
+    out[i] = evaluateExpr(ir, callEnv);
+  }
+  // Pack to Float64Array if every result is numeric/boolean (the
+  // common case for non-scalar ops whose outputs happen to be scalar,
+  // e.g. polynomial / get_field returning numbers).
+  let allNumeric = true;
+  for (let i = 0; i < N; i++) {
+    const t = typeof out[i];
+    if (t !== 'number' && t !== 'boolean') { allNumeric = false; break; }
+  }
+  if (allNumeric) {
+    const arr = new Float64Array(N);
+    for (let i = 0; i < N; i++) arr[i] = +out[i];
+    return arr;
+  }
+  return out;
+}
+
 function resolveConst(name) {
   switch (name) {
     case 'pi':  return Math.PI;
@@ -1613,6 +1728,110 @@ const ARITH_OPS = {
     return out;
   },
 };
+
+// =====================================================================
+// Batched scalar-arithmetic: ARITH_OPS_N (used by evaluateExprN) is
+// generated from this arity table + ARITH_OPS via broadcast helpers.
+// Each scalar primitive is defined ONCE (its lambda lives in ARITH_OPS);
+// the batched form is mechanically derived.
+//
+// This is the foundation for batched IR evaluation across the engine:
+// worker.evaluateN, density.applyAtomScalar, and any future per-atom
+// path dispatch through ARITH_OPS_N. Single-point evaluateExpr keeps
+// using ARITH_OPS directly (zero allocation in the scalar-only path).
+//
+// Architectural note: each batched dispatch goes through ONE indirection
+// (the broadcast helper). Future backends (TF.js, WASM SIMD, …) swap
+// the broadcast helpers and the leaf logpdf/sample primitives; the
+// walker layer stays identical. See "JS-TF backend" notes in TODO.
+// =====================================================================
+
+// Which ARITH_OPS entries are scalar-in-scalar-out — eligible for
+// batched broadcast through Float64Array. Listed by op name → arity.
+// The actual scalar implementation lives in ARITH_OPS above; this table
+// drives ARITH_OPS_N construction below.
+const _SCALAR_PRIM_ARITY = {
+  // Arithmetic
+  add: 2, sub: 2, mul: 2, div: 2, mod: 2, neg: 1, pos: 1, pow: 2,
+  // Elementary math
+  abs: 1, abs2: 1, exp: 1, log: 1, log10: 1, sqrt: 1,
+  sin: 1, cos: 1, floor: 1, ceil: 1, round: 1,
+  // Pairwise reductions
+  min: 2, max: 2,
+  // Special functions & link functions
+  gamma: 1, loggamma: 1,
+  logit: 1, invlogit: 1, probit: 1, invprobit: 1,
+  // Comparison
+  lt: 2, le: 2, gt: 2, ge: 2, equal: 2, unequal: 2,
+  // Predicates
+  isfinite: 1, isinf: 1, isnan: 1, iszero: 1,
+  // Logic + conditional
+  land: 2, lor: 2, lxor: 2, lnot: 1, ifelse: 3,
+  // Scalar restrictors
+  boolean: 1, integer: 1,
+};
+
+// Broadcast helpers — atom-major Float64Array semantics. Each takes a
+// scalar function and per-atom-or-scalar inputs; returns either a
+// scalar (when ALL inputs are scalar — the single-point fast path with
+// no allocation) or Float64Array(N) (when any input is batched).
+//
+// `isBatch(v, N)` is the marker: a Float64Array of length exactly N
+// means "per-atom scalar values". Any other shape (number, JS array,
+// nested array, record) is treated as atom-independent and broadcast
+// uniformly.
+//
+// These three helpers cover every op in _SCALAR_PRIM_ARITY (arities 1,
+// 2, 3). Future variadic / N-ary scalar reductions would extend this
+// set; non-scalar ops use perAtomDispatch in evaluateExprN below.
+
+function isBatch(v, N) {
+  return v != null && v.BYTES_PER_ELEMENT !== undefined
+    && typeof v.length === 'number' && v.length === N;
+}
+
+function broadcast1(fn, a, N) {
+  if (!isBatch(a, N)) return fn(a);
+  const out = new Float64Array(N);
+  for (let i = 0; i < N; i++) out[i] = +fn(a[i]);
+  return out;
+}
+
+function broadcast2(fn, a, b, N) {
+  const aB = isBatch(a, N), bB = isBatch(b, N);
+  if (!aB && !bB) return fn(a, b);
+  const out = new Float64Array(N);
+  if (aB && bB) for (let i = 0; i < N; i++) out[i] = +fn(a[i], b[i]);
+  else if (aB)  for (let i = 0; i < N; i++) out[i] = +fn(a[i], b);
+  else          for (let i = 0; i < N; i++) out[i] = +fn(a, b[i]);
+  return out;
+}
+
+function broadcast3(fn, a, b, c, N) {
+  const aB = isBatch(a, N), bB = isBatch(b, N), cB = isBatch(c, N);
+  if (!aB && !bB && !cB) return fn(a, b, c);
+  const out = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    out[i] = +fn(aB ? a[i] : a, bB ? b[i] : b, cB ? c[i] : c);
+  }
+  return out;
+}
+
+// Build ARITH_OPS_N from the arity table. Each entry is a function
+// `(args: Array, N: number) → Float64Array(N) | scalar`. Returns scalar
+// when all inputs are atom-independent (the count=1 fast path).
+const ARITH_OPS_N = {};
+for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
+  const arity = _SCALAR_PRIM_ARITY[op];
+  const fn = ARITH_OPS[op];
+  if (typeof fn !== 'function') {
+    throw new Error(`ARITH_OPS_N: scalar primitive '${op}' has no ARITH_OPS entry`);
+  }
+  if (arity === 1) ARITH_OPS_N[op] = (args, N) => broadcast1(fn, args[0], N);
+  else if (arity === 2) ARITH_OPS_N[op] = (args, N) => broadcast2(fn, args[0], args[1], N);
+  else if (arity === 3) ARITH_OPS_N[op] = (args, N) => broadcast3(fn, args[0], args[1], args[2], N);
+  else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
+}
 
 // =====================================================================
 // Linear-algebra helpers (textbook algorithms; small-matrix sized)
@@ -2387,6 +2606,8 @@ module.exports = {
   density,
   makeAnalytical,
   evaluateExpr,
+  evaluateExprN,
+  isBatch,
 
   // Shared with traceeval.js — both modules need to dispatch on the
   // distribution registry and resolve param expressions against an env.

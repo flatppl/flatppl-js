@@ -226,27 +226,32 @@ function createWorkerHandler(opts = {}) {
           return { type: 'samples', id, samples: out, logWeights: null };
         }
         case 'evaluateN': {
-          // Element-wise deterministic compute. ir typically a (call op …)
-          // node from the orchestrator; refArrays is the per-i env.
+          // Element-wise deterministic compute. Thin wrapper around
+          // sampler.evaluateExprN — the single batched-evaluation
+          // primitive. Scalar-arith ops dispatch through ARITH_OPS_N
+          // (one Float64Array result for the whole batch); non-scalar
+          // ops fall back to per-atom dispatch internally.
+          //
+          // Env precedence at refs: refArrays (per-atom) > baseEnv
+          // (session). Same layering as the old hand-coded loop —
+          // expressions like `mean(random_data)` resolve `random_data`
+          // through baseEnv when refArrays doesn't carry it.
           const count = msg.count | 0;
           if (count <= 0) throw new Error(`evaluateN.count must be positive integer (got ${msg.count})`);
-          const refArrays = msg.refArrays || {};
-          const out = new Float64Array(count);
-          // callEnv merges three layers in priority order:
-          //   1. session env (fixed-phase bindings the orchestrator
-          //      pre-evaluated and pushed via setEnv — full values,
-          //      not per-atom)
-          //   2. refArrays per-atom slice (stochastic deps)
-          // Per-atom keys take precedence so a stochastic ref of the
-          // same name as a fixed binding (shouldn't happen in practice)
-          // wouldn't collide silently. The session-env layer lets
-          // expressions like `mean(random_data)` resolve `random_data`
-          // to its full fixed array rather than the per-i undefined
-          // slice that refArrays would produce.
-          const callEnv = { ...env };
-          for (let i = 0; i < count; i++) {
-            for (const k in refArrays) callEnv[k] = refArrays[k][i];
-            out[i] = samplerLib.evaluateExpr(msg.ir, callEnv);
+          const refArrays = msg.refArrays || null;
+          const result = samplerLib.evaluateExprN(msg.ir, refArrays, count, env);
+          let out;
+          if (result && result.BYTES_PER_ELEMENT !== undefined
+              && result.length === count) {
+            out = result;  // Float64Array(count) — happy path
+          } else if (typeof result === 'number' || typeof result === 'boolean') {
+            // Atom-independent scalar — broadcast to the batch.
+            out = new Float64Array(count);
+            out.fill(+result);
+          } else {
+            throw new Error('evaluateN: expression produced non-scalar per-atom '
+              + 'result (got ' + (typeof result) + '); only scalar exprs are '
+              + 'supported on this path');
           }
           // Deterministic transforms preserve their parents' weights.
           // The main thread is responsible for plumbing the parent's
