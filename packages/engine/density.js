@@ -58,6 +58,7 @@
 //     derivations)`.
 
 const samplerLib = require('./sampler');
+const valueLib   = require('./value');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -90,6 +91,27 @@ function consumeScalar(value) {
     throw new Error('density: scalar leaf has no entry to consume (value exhausted)');
   }
   if (typeof value === 'number') return { head: value, rest: null };
+  // Shape-explicit Value (Phase 5): a rank-1 Value behaves like a
+  // typed array; rank-0 yields head and a null rest. Higher-rank
+  // Values (matrix observations) can't be consumed by a scalar leaf.
+  if (valueLib.isValue(value)) {
+    if (value.shape.length === 0) {
+      return { head: value.data[0], rest: null };
+    }
+    if (value.shape.length === 1) {
+      const k = value.shape[0];
+      if (k === 0) {
+        throw new Error('density: scalar leaf has no entry to consume (vector exhausted)');
+      }
+      return {
+        head: value.data[0],
+        rest: k === 1 ? null
+          : { shape: [k - 1], data: value.data.subarray(1) },
+      };
+    }
+    throw new Error('density: cannot consume scalar from Value of rank '
+      + value.shape.length + ' (shape=' + JSON.stringify(value.shape) + ')');
+  }
   if (value && value.BYTES_PER_ELEMENT && typeof value.length === 'number') {
     if (value.length === 0) {
       throw new Error('density: scalar leaf has no entry to consume (vector exhausted)');
@@ -103,6 +125,75 @@ function consumeScalar(value) {
     return { head: +value[0], rest: value.length === 1 ? null : value.slice(1) };
   }
   throw new Error('density: cannot consume scalar from value of type '
+    + (typeof value));
+}
+
+/**
+ * Pull the leading n-vector off a value, used by multivariate leaves
+ * (MvNormal in Phase 6, Dirichlet in follow-ups). Returns:
+ *
+ *   { head: Float64Array(n) or Value shape=[n], rest }
+ *
+ * `value` may be:
+ *   - Value shape=[n] (k===n)        → head=value.data, rest=null
+ *   - Value shape=[k] (k>n)          → head=subarray, rest=Value [k-n]
+ *   - Float64Array length n          → head=value, rest=null
+ *   - Float64Array length k > n      → head=subarray, rest=subarray
+ *   - JS array length n              → head=Float64Array.from, rest=null
+ *
+ * Records / shape>1 Values are not consumable as a vector — the caller
+ * should structurally walk those first.
+ */
+function consumeVector(value, n) {
+  if (value == null) {
+    throw new Error('density: vector leaf has no entry to consume (value exhausted)');
+  }
+  if (typeof value === 'number') {
+    if (n !== 1) {
+      throw new Error('density: cannot consume vector of length ' + n + ' from scalar');
+    }
+    const head = new Float64Array(1);
+    head[0] = value;
+    return { head, rest: null };
+  }
+  if (valueLib.isValue(value)) {
+    if (value.shape.length !== 1) {
+      throw new Error('density: consumeVector expects a rank-1 Value, got shape=' +
+        JSON.stringify(value.shape));
+    }
+    const k = value.shape[0];
+    if (k < n) {
+      throw new Error('density: vector leaf wants ' + n + ' entries, only '
+        + k + ' available');
+    }
+    return {
+      head: value.data.subarray(0, n),
+      rest: k === n ? null
+        : { shape: [k - n], data: value.data.subarray(n) },
+    };
+  }
+  if (value && value.BYTES_PER_ELEMENT && typeof value.length === 'number') {
+    if (value.length < n) {
+      throw new Error('density: vector leaf wants ' + n + ' entries, only '
+        + value.length + ' available');
+    }
+    return {
+      head: value.subarray(0, n),
+      rest: value.length === n ? null : value.subarray(n),
+    };
+  }
+  if (Array.isArray(value)) {
+    if (value.length < n) {
+      throw new Error('density: vector leaf wants ' + n + ' entries, only '
+        + value.length + ' available');
+    }
+    const head = Float64Array.from(value.slice(0, n));
+    return {
+      head,
+      rest: value.length === n ? null : value.slice(n),
+    };
+  }
+  throw new Error('density: cannot consume vector from value of type '
     + (typeof value));
 }
 
@@ -560,5 +651,5 @@ module.exports = {
   logDensity,
   // Test/debug surface — exposes the shape helpers in case callers
   // outside the dispatch want to compose their own consumers.
-  _internal: { consumeScalar, consumeField, isEmptyRest, inSet },
+  _internal: { consumeScalar, consumeField, consumeVector, isEmptyRest, inSet },
 };
