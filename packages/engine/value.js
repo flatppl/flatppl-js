@@ -48,8 +48,62 @@
 // shape=[k=N] vector cannot be disambiguated from shape alone. The
 // surrounding context (caller knows its N) resolves this — same
 // convention the engine's current `isBatch(v, N)` check already uses.
+//
+// ---------------------------------------------------------------------
+// Transpose / adjoint tag (Klein-4 algebra)
+// ---------------------------------------------------------------------
+//
+// Every Value carries an optional `t` slot — a four-state tag from the
+// Klein-4 group representing the value's orientation against transpose
+// and complex conjugation:
+//
+//   'N'  normal (default; absent ⇒ 'N')                  — no flip, no conj
+//   'T'  transposed                                       — flip, no conj
+//   'A'  adjoint = transpose + conjugate                  — flip, conj
+//   'C'  conjugated only (= T ∘ A)                        — no flip, conj
+//
+// Bit decomposition: (swapped, conjugated)
+//   N = (0, 0)   T = (1, 0)   A = (1, 1)   C = (0, 1)
+//
+// Operations:
+//   transpose toggles `swapped`              N↔T,  A↔C
+//   adjoint   toggles both bits               N↔A,  T↔C
+//   conjugate toggles `conjugated`            N↔C,  T↔A
+//
+// For real-valued data (dtype='f64') the conjugate bit is mathematically
+// a no-op: N is observationally identical to C, T to A. The tag is
+// nonetheless preserved through compositions so the algebra is correct
+// once complex dtypes are introduced (no migration of call sites).
+//
+// `shape` is the LOGICAL shape (post-tag). For matrices, transpose
+// updates both: a [m, n] Value with t='N' becomes a [n, m] Value with
+// t='T'. `data` is preserved (no allocation); consumers compute the
+// underlying storage shape via `_dataShape(v)` when they need to index
+// the buffer directly.
+//
+// For vectors (shape=[k]) transpose toggles the tag but leaves the
+// shape unchanged: row and column vectors are both 1-D objects in
+// FlatPPL, distinguished by orientation tag rather than by being [1,k]
+// vs [k,1] matrices. This matches the spec's vector / single-row-matrix
+// distinction (a row matrix has shape [1, k] and is NOT a vector).
+//
+// BLAS analogue: the tag corresponds to the TRANSA/TRANSB flag on
+// dgemm. When crossing backend boundaries (TF.js, future Rust /
+// StableHLO), the tag is realized by an explicit transpose call once
+// per crossing; internal hot paths get free transposes.
 
 const DEFAULT_DTYPE = 'f64';
+const DEFAULT_TAG   = 'N';
+
+// Klein-4 tag transitions, computed from the (swapped, conjugated) bit
+// representation. Pre-computed for cheap dispatch.
+const _TAG_TRANSPOSE = { N: 'T', T: 'N', A: 'C', C: 'A' };
+const _TAG_ADJOINT   = { N: 'A', T: 'C', A: 'N', C: 'T' };
+const _TAG_CONJUGATE = { N: 'C', T: 'A', A: 'T', C: 'N' };
+// Effective bits (used by consumers that need to know "should I treat
+// the data as transposed?" without caring about conjugation).
+const _TAG_SWAPPED    = { N: false, T: true,  A: true,  C: false };
+const _TAG_CONJUGATED = { N: false, T: false, A: true,  C: true  };
 
 // ---------------------------------------------------------------------
 // Shape helpers
@@ -114,6 +168,27 @@ function flattenNested(arr, out, offset, depth, shape) {
 function getShape(v) { return v.shape; }
 function getData(v)  { return v.data; }
 function getDType(v) { return v.dtype || DEFAULT_DTYPE; }
+function getTag(v)   { return v.t || DEFAULT_TAG; }
+
+// Tag bit extractors. Use these in dispatch code rather than equality
+// against the four state strings — they make "is this view swapped?"
+// and "is this view conjugated?" clear at the call site.
+function isTransposeView(v) { return _TAG_SWAPPED[getTag(v)]; }
+function isConjugateView(v) { return _TAG_CONJUGATED[getTag(v)]; }
+
+// Storage shape — the dimensions of the underlying Float64Array as laid
+// out in memory, before applying the transpose tag. For a Value with
+// shape=[m, n] and t='T', the stored data is laid out [n, m] row-major.
+// For vectors and scalars (1-D or 0-D), the storage shape equals shape.
+function _dataShape(v) {
+  if (v.shape.length < 2) return v.shape;
+  if (!isTransposeView(v)) return v.shape;
+  const out = new Array(v.shape.length);
+  for (let i = 0; i < v.shape.length; i++) {
+    out[i] = v.shape[v.shape.length - 1 - i];
+  }
+  return out;
+}
 
 // Structural predicate: is `v` a Value-shaped object? Cheap check used
 // by polymorphic dispatch sites (e.g. broadcast helpers in sampler.js)
@@ -127,6 +202,58 @@ function isValue(v) {
 // Is `v` batched along an outer axis of size N?
 function isBatched(v, N) {
   return v.shape.length > 0 && v.shape[0] === N;
+}
+
+// ---------------------------------------------------------------------
+// Klein-4 tag operations: transpose / adjoint / conjugate
+// ---------------------------------------------------------------------
+//
+// All three are lazy: they update the tag and (for matrices) swap the
+// `shape` entries, but never touch the `data` buffer. Cost is O(rank)
+// for the shape swap; constant for vectors and scalars.
+
+// Swap shape entries in place on a fresh array — used by transpose and
+// adjoint for rank-≥2 values.
+function _swappedShape(shape) {
+  if (shape.length < 2) return shape.slice();
+  const out = new Array(shape.length);
+  for (let i = 0; i < shape.length; i++) out[i] = shape[shape.length - 1 - i];
+  return out;
+}
+
+// transpose(v): toggles the swapped bit; flips shape entries for
+// rank-≥2 values. For scalars (rank 0) transpose is identity; for
+// vectors (rank 1) transpose toggles the tag without changing shape.
+function transpose(v) {
+  if (!isValue(v)) throw new Error('transpose: argument is not a Value');
+  const newTag = _TAG_TRANSPOSE[getTag(v)];
+  const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
+  const out = { shape: newShape, data: v.data, t: newTag };
+  if (v.dtype) out.dtype = v.dtype;
+  return out;
+}
+
+// adjoint(v): toggles both bits (transpose + conjugate). Shape behaves
+// the same as transpose. For real-valued data the conjugate bit is a
+// no-op observationally but the tag tracks it for correctness once
+// complex values arrive.
+function adjoint(v) {
+  if (!isValue(v)) throw new Error('adjoint: argument is not a Value');
+  const newTag = _TAG_ADJOINT[getTag(v)];
+  const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
+  const out = { shape: newShape, data: v.data, t: newTag };
+  if (v.dtype) out.dtype = v.dtype;
+  return out;
+}
+
+// conjugate(v): toggles only the conjugate bit; shape unchanged.
+// Real-valued no-op (still tag-tracked).
+function conjugate(v) {
+  if (!isValue(v)) throw new Error('conjugate: argument is not a Value');
+  const newTag = _TAG_CONJUGATE[getTag(v)];
+  const out = { shape: v.shape.slice(), data: v.data, t: newTag };
+  if (v.dtype) out.dtype = v.dtype;
+  return out;
 }
 
 // ---------------------------------------------------------------------
@@ -267,9 +394,16 @@ module.exports = {
   getShape: getShape,
   getData: getData,
   getDType: getDType,
+  getTag: getTag,
+  isTransposeView: isTransposeView,
+  isConjugateView: isConjugateView,
   isValue: isValue,
   isBatched: isBatched,
   numel: numel,
+  // tag-flipping operations (lazy; never touch data)
+  transpose: transpose,
+  adjoint: adjoint,
+  conjugate: conjugate,
   // constructors
   scalar: scalar,
   batchedScalar: batchedScalar,

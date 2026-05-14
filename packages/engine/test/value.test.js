@@ -266,6 +266,143 @@ test('round-trip: asBatch(batchedScalar(arr), N) shares storage with arr', () =>
   assert.equal(asBatch(batchedScalar(arr), 3), arr);
 });
 
+// =====================================================================
+// Klein-4 transpose/adjoint/conjugate tag (Phase 2a)
+// =====================================================================
+//
+// The tag forms the Klein-4 group under the two generators
+// (transpose, adjoint). For real values the conjugate bit is
+// observationally a no-op but is preserved through compositions for
+// correctness once complex dtypes arrive.
+
+test('Klein-4: getTag defaults to N when absent', () => {
+  assert.equal(value.getTag(scalar(1)), 'N');
+  assert.equal(value.getTag({ shape: [], data: new Float64Array(1) }), 'N');
+});
+
+test('Klein-4: transpose toggles the swap bit N↔T, A↔C', () => {
+  const v = matrix([1, 2, 3, 4, 5, 6], 2, 3);
+  assert.equal(value.getTag(v), 'N');
+  const vT = value.transpose(v);
+  assert.equal(value.getTag(vT), 'T');
+  assert.equal(value.transpose(vT).t, 'N');
+  // A↔C path: build directly.
+  const vA = { shape: [3, 2], data: v.data, t: 'A' };
+  assert.equal(value.getTag(value.transpose(vA)), 'C');
+  const vC = { shape: [2, 3], data: v.data, t: 'C' };
+  assert.equal(value.getTag(value.transpose(vC)), 'A');
+});
+
+test('Klein-4: adjoint toggles both bits N↔A, T↔C', () => {
+  const v = matrix([1, 2, 3, 4], 2, 2);
+  assert.equal(value.getTag(value.adjoint(v)), 'A');
+  assert.equal(value.getTag(value.adjoint(value.adjoint(v))), 'N');
+  const vT = value.transpose(v);
+  assert.equal(value.getTag(value.adjoint(vT)), 'C');
+});
+
+test('Klein-4: conjugate toggles only the conjugate bit N↔C, T↔A', () => {
+  const v = matrix([1, 2, 3, 4], 2, 2);
+  assert.equal(value.getTag(value.conjugate(v)), 'C');
+  const vT = value.transpose(v);
+  assert.equal(value.getTag(value.conjugate(vT)), 'A');
+  assert.equal(value.getTag(value.conjugate(value.conjugate(v))), 'N');
+});
+
+test('Klein-4: matrix transpose swaps shape entries', () => {
+  const v = matrix([1, 2, 3, 4, 5, 6], 2, 3);
+  const vT = value.transpose(v);
+  assert.deepEqual(vT.shape, [3, 2]);
+  // Data buffer is preserved (no allocation).
+  assert.equal(vT.data, v.data);
+  // Round-trip restores logical shape.
+  assert.deepEqual(value.transpose(vT).shape, [2, 3]);
+});
+
+test('Klein-4: vector transpose preserves shape (vectors are 1-D)', () => {
+  // Per FlatPPL semantics: transpose is self-inverse on vectors;
+  // transpose(vec) is NOT a single-row matrix. The tag distinguishes
+  // column-vector (N) from row-vector (T).
+  const v = vector([1, 2, 3]);
+  const vT = value.transpose(v);
+  assert.deepEqual(vT.shape, [3]);
+  assert.equal(value.getTag(vT), 'T');
+  // Self-inverse.
+  assert.deepEqual(value.transpose(vT), { shape: [3], data: v.data, t: 'N' });
+});
+
+test('Klein-4: scalar transpose is identity in shape and tag toggle', () => {
+  // Rank-0 scalars: shape stays [], tag toggles (formal property).
+  const s = scalar(2.5);
+  const sT = value.transpose(s);
+  assert.deepEqual(sT.shape, []);
+  assert.equal(value.getTag(sT), 'T');
+  // Round-trip back to N.
+  assert.equal(value.getTag(value.transpose(sT)), 'N');
+});
+
+test('Klein-4: transpose is laziness-only (data buffer shared, not copied)', () => {
+  const v = matrix([1, 2, 3, 4], 2, 2);
+  const vT = value.transpose(v);
+  // Same underlying buffer — mutating one mutates the other.
+  v.data[0] = 999;
+  assert.equal(vT.data[0], 999, 'tag operation must not copy the buffer');
+});
+
+test('Klein-4: dtype carries through tag operations', () => {
+  const v = { shape: [2, 2], data: new Float64Array([1, 2, 3, 4]), dtype: 'f64' };
+  assert.equal(value.transpose(v).dtype, 'f64');
+  assert.equal(value.adjoint(v).dtype, 'f64');
+  assert.equal(value.conjugate(v).dtype, 'f64');
+});
+
+test('Klein-4: isTransposeView / isConjugateView decode the tag bits', () => {
+  const N = { shape: [], data: new Float64Array(1), t: 'N' };
+  const T = { shape: [], data: new Float64Array(1), t: 'T' };
+  const A = { shape: [], data: new Float64Array(1), t: 'A' };
+  const C = { shape: [], data: new Float64Array(1), t: 'C' };
+  assert.equal(value.isTransposeView(N), false);
+  assert.equal(value.isTransposeView(T), true);
+  assert.equal(value.isTransposeView(A), true);
+  assert.equal(value.isTransposeView(C), false);
+  assert.equal(value.isConjugateView(N), false);
+  assert.equal(value.isConjugateView(T), false);
+  assert.equal(value.isConjugateView(A), true);
+  assert.equal(value.isConjugateView(C), true);
+});
+
+test('Klein-4: full group closure — every (op, state) is in {N,T,A,C}', () => {
+  // Exhaustively exercise the transitions, asserting that every
+  // intermediate state lands in the four-element set. Catches typos
+  // in the lookup tables.
+  const valid = new Set(['N', 'T', 'A', 'C']);
+  for (const start of ['N', 'T', 'A', 'C']) {
+    const v = { shape: [2, 2], data: new Float64Array(4), t: start };
+    for (const op of [value.transpose, value.adjoint, value.conjugate]) {
+      const r = op(v);
+      assert.ok(valid.has(value.getTag(r)),
+        `${op.name}(${start}) produced invalid tag ${r.t}`);
+    }
+  }
+});
+
+test('Klein-4: composed ops match the algebra (T∘A = A∘T = conjugate)', () => {
+  const v = matrix([1, 2, 3, 4], 2, 2);
+  // transpose then adjoint
+  const TA = value.adjoint(value.transpose(v));
+  // adjoint then transpose
+  const AT = value.transpose(value.adjoint(v));
+  // both equal conjugate(v): tag='C', shape unchanged
+  assert.equal(value.getTag(TA), 'C');
+  assert.equal(value.getTag(AT), 'C');
+  assert.deepEqual(TA.shape, [2, 2]);
+  assert.deepEqual(AT.shape, [2, 2]);
+});
+
+// =====================================================================
+// Round-trip and storage invariants
+// =====================================================================
+
 test('storage invariant: every constructor returns Float64Array data', () => {
   const samples = [
     scalar(0),
