@@ -2615,6 +2615,17 @@ function classifyDerivation(binding, bindings) {
       return { kind: 'sample', distIR: normalizedRhsIR };
     }
 
+    // Multivariate sampleable distributions go through dedicated kind
+    // handlers (matMvNormal etc.) — they produce vector atoms
+    // (shape=[N, n]) rather than scalar atoms, and use closed-form
+    // density walkers (walkMvNormal etc.) instead of the per-leaf
+    // logpdf dispatch in walkLeaf. Added as Phase 6 of the shape-
+    // explicit refactor.
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'MvNormal') {
+      return { kind: 'mvnormal', distIR: normalizedRhsIR };
+    }
+
     // Measure-algebra ops dispatch through MEASURE_OP_CLASSIFIERS
     // below. Each entry is one tightly-scoped handler that decides the
     // derivation kind (or returns null). New ops add one entry — no
@@ -3244,6 +3255,12 @@ function expandMeasureIR(name, derivations, visited, bindings) {
       case 'sample':
         // Leaf distribution call — return the distIR verbatim. Refs
         // in its kwargs are value refs (per-i params).
+        return d.distIR;
+      case 'mvnormal':
+        // Multivariate sampleable distribution (Phase 6). Same
+        // treatment as 'sample': return the IR verbatim; the density
+        // walker has a dedicated handler keyed on the op name
+        // (walkMvNormal in density.js OP_HANDLERS).
         return d.distIR;
       case 'iid': {
         const inner = expandMeasureIR(d.from, derivations, next, bindings);
