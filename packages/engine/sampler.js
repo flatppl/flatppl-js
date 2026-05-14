@@ -65,6 +65,7 @@
 // the translated names. See `PARAM_TRANSLATION` below for the full table.
 
 const rng = require('./rng');
+const valueLib = require('./value');
 
 // Math special functions from stdlib for gamma / loggamma / erf-based
 // probit / invprobit. The straight-JS variants (logit, invlogit, min,
@@ -1776,8 +1777,23 @@ const _SCALAR_PRIM_ARITY = {
 // scalar (when ALL inputs are scalar — the single-point fast path with
 // no allocation) or Float64Array(N) (when any input is batched).
 //
-// `isBatch(v, N)` is the marker: a Float64Array of length exactly N
-// means "per-atom scalar values". Any other shape (number, JS array,
+// Polymorphic on Value inputs (Phase 1 of the shape-explicit refactor;
+// see TODO-flatppl-js.md and engine/value.js). Each input may be:
+//
+//   - a bare JS number / boolean              (atom-indep scalar; legacy)
+//   - a bare Float64Array of length N         (atom-batched scalar; legacy)
+//   - a Value with shape=[]                   (atom-indep scalar; Value form)
+//   - a Value with shape=[N]                  (atom-batched scalar; Value form)
+//
+// "Same kind as inputs" output semantics: when ANY input is a Value
+// the result is wrapped as a Value (scalar(out) or batchedScalar(out));
+// when all inputs are bare primitives (number / Float64Array) the
+// output stays bare. This preserves zero-allocation behaviour for
+// single-point evaluation while letting Value-aware callers thread
+// shape information through.
+//
+// `isBatch(v, N)` recognises BOTH bare Float64Array of length N AND
+// Value shape=[N]. Anything else (number, Value shape=[], JS array,
 // nested array, record) is treated as atom-independent and broadcast
 // uniformly.
 //
@@ -1785,36 +1801,94 @@ const _SCALAR_PRIM_ARITY = {
 // 2, 3). Future variadic / N-ary scalar reductions would extend this
 // set; non-scalar ops use perAtomDispatch in evaluateExprN below.
 
+const isValueObj = valueLib.isValue;
+
 function isBatch(v, N) {
-  return v != null && v.BYTES_PER_ELEMENT !== undefined
-    && typeof v.length === 'number' && v.length === N;
+  if (v == null) return false;
+  // Bare Float64Array of length N (legacy path; also catches any
+  // typed array with matching length — same as before).
+  if (v.BYTES_PER_ELEMENT !== undefined
+      && typeof v.length === 'number' && v.length === N) {
+    return true;
+  }
+  // Value with shape=[N].
+  if (isValueObj(v)
+      && v.shape.length === 1 && v.shape[0] === N) {
+    return true;
+  }
+  return false;
 }
 
+// Underlying Float64Array for a batched input (either bare or wrapped).
+function _batchData(v) {
+  return v instanceof Float64Array ? v : v.data;
+}
+
+// JS-number view of an atom-indep scalar (either bare or shape=[] Value).
+// Bare arrays / non-batched arrays return unchanged — the scalar fn
+// receives them as-is (legacy behaviour: garbage-in-garbage-out for
+// shape mismatches at the scalar layer).
+function _scalarVal(v) {
+  if (isValueObj(v) && v.shape.length === 0) return v.data[0];
+  return v;
+}
+
+// Any input is a Value? Triggers Value-wrapped output.
+function _anyValue1(a)       { return isValueObj(a); }
+function _anyValue2(a, b)    { return isValueObj(a) || isValueObj(b); }
+function _anyValue3(a, b, c) { return isValueObj(a) || isValueObj(b) || isValueObj(c); }
+
 function broadcast1(fn, a, N) {
-  if (!isBatch(a, N)) return fn(a);
+  const wantValue = _anyValue1(a);
+  if (!isBatch(a, N)) {
+    const r = fn(_scalarVal(a));
+    return wantValue ? valueLib.scalar(r) : r;
+  }
+  const ad = _batchData(a);
   const out = new Float64Array(N);
-  for (let i = 0; i < N; i++) out[i] = +fn(a[i]);
-  return out;
+  for (let i = 0; i < N; i++) out[i] = +fn(ad[i]);
+  return wantValue ? valueLib.batchedScalar(out) : out;
 }
 
 function broadcast2(fn, a, b, N) {
   const aB = isBatch(a, N), bB = isBatch(b, N);
-  if (!aB && !bB) return fn(a, b);
+  const wantValue = _anyValue2(a, b);
+  if (!aB && !bB) {
+    const r = fn(_scalarVal(a), _scalarVal(b));
+    return wantValue ? valueLib.scalar(r) : r;
+  }
   const out = new Float64Array(N);
-  if (aB && bB) for (let i = 0; i < N; i++) out[i] = +fn(a[i], b[i]);
-  else if (aB)  for (let i = 0; i < N; i++) out[i] = +fn(a[i], b);
-  else          for (let i = 0; i < N; i++) out[i] = +fn(a, b[i]);
-  return out;
+  if (aB && bB) {
+    const ad = _batchData(a), bd = _batchData(b);
+    for (let i = 0; i < N; i++) out[i] = +fn(ad[i], bd[i]);
+  } else if (aB) {
+    const ad = _batchData(a), bs = _scalarVal(b);
+    for (let i = 0; i < N; i++) out[i] = +fn(ad[i], bs);
+  } else {
+    const as = _scalarVal(a), bd = _batchData(b);
+    for (let i = 0; i < N; i++) out[i] = +fn(as, bd[i]);
+  }
+  return wantValue ? valueLib.batchedScalar(out) : out;
 }
 
 function broadcast3(fn, a, b, c, N) {
   const aB = isBatch(a, N), bB = isBatch(b, N), cB = isBatch(c, N);
-  if (!aB && !bB && !cB) return fn(a, b, c);
+  const wantValue = _anyValue3(a, b, c);
+  if (!aB && !bB && !cB) {
+    const r = fn(_scalarVal(a), _scalarVal(b), _scalarVal(c));
+    return wantValue ? valueLib.scalar(r) : r;
+  }
+  const ad = aB ? _batchData(a) : null;
+  const bd = bB ? _batchData(b) : null;
+  const cd = cB ? _batchData(c) : null;
+  const as = aB ? null : _scalarVal(a);
+  const bs = bB ? null : _scalarVal(b);
+  const cs = cB ? null : _scalarVal(c);
   const out = new Float64Array(N);
   for (let i = 0; i < N; i++) {
-    out[i] = +fn(aB ? a[i] : a, bB ? b[i] : b, cB ? c[i] : c);
+    out[i] = +fn(aB ? ad[i] : as, bB ? bd[i] : bs, cB ? cd[i] : cs);
   }
-  return out;
+  return wantValue ? valueLib.batchedScalar(out) : out;
 }
 
 // Build ARITH_OPS_N from the arity table. Each entry is a function
@@ -2623,6 +2697,7 @@ module.exports = {
   _internal: {
     REGISTRY,
     ARITH_OPS,
+    ARITH_OPS_N,
     makePhiloxPrngAdapter,
     resolveParams,
     lookupDistribution,
