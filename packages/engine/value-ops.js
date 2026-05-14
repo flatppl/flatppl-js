@@ -365,11 +365,197 @@ function neg(a) {
   return r;
 }
 
+// =====================================================================
+// Atom-batched cross (Phase 2d)
+// =====================================================================
+//
+// When an operand carries a leading axis of size N (the atom count),
+// it represents one independent intrinsic value per atom — a per-atom
+// scalar, vector, or matrix. The atom-indep `mul` / `add` / `sub` /
+// `neg` defined above don't know about N; the `…N(args, N)` variants
+// below dispatch the atom-batched cases that MvNormal-style models
+// require (e.g. `mu + L * z` where L is atom-indep and z is shape=[N,
+// n]).
+//
+// Today's coverage:
+//
+//   - matrix(m, n) × shape=[N, n] → shape=[N, m]           (mulN)
+//   - shape=[k] + shape=[N, k]    → shape=[N, k]           (addN/subN)
+//   - shape=[N, k] + shape=[N, k] → shape=[N, k] (delegate to atom-
+//                                                 indep add: same data
+//                                                 layout)
+//   - scalar + shape=[N, ...]     → broadcast (data-level; works via
+//                                              the atom-indep add)
+//   - pointwise neg               → works at any rank via atom-indep neg
+//
+// Deferred (uncommon today; lands as Phase 6 / 7 needs surface):
+//   - shape=[N, m, n] × shape=[N, n]    (atom-batched matrix × vector)
+//   - shape=[N] (batched scalar) ⊙ shape=[N, k]
+//   - per-atom matrix × per-atom matrix
+
+// matrix(m, n) × shape=[N, n] → shape=[N, m]. Atom-major output;
+// per-atom matvec with shared matrix. Tag on the matrix is honoured
+// (BLAS gemm-flag style).
+function _matBatchedVecMul(A, V, N) {
+  const [m, n] = A.shape;
+  if (V.shape.length !== 2 || V.shape[0] !== N || V.shape[1] !== n) {
+    throw new Error(
+      'mulN: matrix×batchedVector shape mismatch (' +
+      JSON.stringify(A.shape) + ' × ' + JSON.stringify(V.shape) +
+      '; expected batched vector shape=[N=' + N + ', n=' + n + '])');
+  }
+  if (isTransposeView(V)) {
+    throw new Error('mulN: batched vector must be column-oriented');
+  }
+  const aSwap = isTransposeView(A);
+  const out = new Float64Array(N * m);
+  if (!aSwap) {
+    for (let atom = 0; atom < N; atom++) {
+      const vBase = atom * n;
+      const oBase = atom * m;
+      for (let i = 0; i < m; i++) {
+        let s = 0;
+        const row = i * n;
+        for (let k = 0; k < n; k++) s += A.data[row + k] * V.data[vBase + k];
+        out[oBase + i] = s;
+      }
+    }
+  } else {
+    for (let atom = 0; atom < N; atom++) {
+      const vBase = atom * n;
+      const oBase = atom * m;
+      for (let i = 0; i < m; i++) {
+        let s = 0;
+        for (let k = 0; k < n; k++) s += A.data[k * m + i] * V.data[vBase + k];
+        out[oBase + i] = s;
+      }
+    }
+  }
+  return { shape: [N, m], data: out };
+}
+
+// Atom-indep value broadcast over the leading N axis of an atom-batched
+// value, applied via a binary scalar fn. `batched` has shape=[N, ...rest];
+// `indep` must have shape=rest (same orientation). Result has the
+// batched shape.
+function _atomBroadcastBinop(scalarFn, batched, indep, N, swapArgs, opName) {
+  if (batched.shape[0] !== N) {
+    throw new Error(opName + 'N: leading axis (' + batched.shape[0] +
+      ') is not the atom count N=' + N);
+  }
+  const restLen = batched.shape.length - 1;
+  if (indep.shape.length !== restLen) {
+    throw new Error(opName + 'N: atom-indep rank ' + indep.shape.length +
+      ' doesn\'t match atom-batched per-atom rank ' + restLen);
+  }
+  for (let i = 0; i < restLen; i++) {
+    if (batched.shape[i + 1] !== indep.shape[i]) {
+      throw new Error(opName + 'N: per-atom shape mismatch ' +
+        JSON.stringify(batched.shape.slice(1)) + ' vs ' +
+        JSON.stringify(indep.shape));
+    }
+  }
+  if (isTransposeView(batched) !== isTransposeView(indep)) {
+    throw new Error(opName + 'N: opposite orientation between atom-batched ' +
+      'and atom-indep operands');
+  }
+  const stride = indep.data.length;
+  const out = new Float64Array(batched.data.length);
+  if (swapArgs) {
+    for (let atom = 0; atom < N; atom++) {
+      const base = atom * stride;
+      for (let i = 0; i < stride; i++) {
+        out[base + i] = scalarFn(indep.data[i], batched.data[base + i]);
+      }
+    }
+  } else {
+    for (let atom = 0; atom < N; atom++) {
+      const base = atom * stride;
+      for (let i = 0; i < stride; i++) {
+        out[base + i] = scalarFn(batched.data[base + i], indep.data[i]);
+      }
+    }
+  }
+  const r = { shape: batched.shape.slice(), data: out };
+  if (batched.t && batched.t !== 'N') r.t = batched.t;
+  if (batched.dtype) r.dtype = batched.dtype;
+  return r;
+}
+
+// Atom-batched marker: leading axis is the atom count AND there is a
+// non-trivial per-atom shape (rank ≥ 2).
+function _hasAtomAxis(v, N) {
+  return v.shape.length >= 2 && v.shape[0] === N;
+}
+
+// mulN: atom-aware multiplication. Routes the MvNormal-style
+// matrix × shape=[N, n] case to _matBatchedVecMul; otherwise delegates
+// to the atom-indep `mul` (which already handles scalar broadcast,
+// matmul, matvec etc. correctly when neither operand has an atom axis).
+function mulN(a, b, N) {
+  if (!isValue(a) || !isValue(b)) {
+    throw new Error('value-ops.mulN: both operands must be Values');
+  }
+  const aBatched = _hasAtomAxis(a, N);
+  const bBatched = _hasAtomAxis(b, N);
+  // matrix × shape=[N, n]: a is shape [m, n], b is shape [N, n].
+  if (!aBatched && bBatched
+      && a.shape.length === 2 && b.shape.length === 2) {
+    return _matBatchedVecMul(a, b, N);
+  }
+  // Atom-indep case.
+  if (!aBatched && !bBatched) return mul(a, b);
+  // Other atom-batched cases land in Phase 6 / 7 as needed.
+  throw new Error(
+    'mulN: unsupported atom-batched shape combination ' +
+    JSON.stringify(a.shape) + ' × ' + JSON.stringify(b.shape) +
+    ' with N=' + N);
+}
+
+// addN / subN: atom-aware. Handles the atom-indep + atom-batched
+// broadcast that MvNormal's `mu + L*z` needs (mu is atom-indep,
+// L*z is atom-batched).
+function _makeAtomAwareBinop(scalarFn, atomIndepImpl, opName) {
+  return function atomAwareBinop(a, b, N) {
+    if (!isValue(a) || !isValue(b)) {
+      throw new Error('value-ops.' + opName + 'N: both operands must be Values');
+    }
+    const aBatched = _hasAtomAxis(a, N);
+    const bBatched = _hasAtomAxis(b, N);
+    if (aBatched && bBatched) {
+      // Both atom-batched: same shape required; delegate to atom-indep
+      // elementwise add (the data layouts agree and rank includes N).
+      return atomIndepImpl(a, b);
+    }
+    if (aBatched && !bBatched) {
+      return _atomBroadcastBinop(scalarFn, a, b, N, false, opName);
+    }
+    if (!aBatched && bBatched) {
+      return _atomBroadcastBinop(scalarFn, b, a, N, true, opName);
+    }
+    return atomIndepImpl(a, b);
+  };
+}
+
+const addN = _makeAtomAwareBinop((x, y) => x + y, add, 'add');
+const subN = _makeAtomAwareBinop((x, y) => x - y, sub, 'sub');
+
+// negN: pointwise — the atom-indep neg already iterates over the
+// whole data buffer regardless of rank, so atom-batched values are
+// handled correctly without extra plumbing.
+function negN(a, _N) {
+  return neg(a);
+}
+
 module.exports = {
   mul,
   add,
   sub,
   neg,
+  mulN,
+  addN,
+  subN,
+  negN,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
   _innerProduct,
@@ -377,6 +563,8 @@ module.exports = {
   _matVecMul,
   _vecMatMul,
   _matMatMul,
+  _matBatchedVecMul,
+  _atomBroadcastBinop,
   _scalarBroadcastMul,
   _scalarBroadcastBinop,
   _matIdxN,

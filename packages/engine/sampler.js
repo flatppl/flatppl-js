@@ -1972,28 +1972,43 @@ for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
   else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
 }
 
-// Phase 2b/2c: shape-aware mul / add / sub / neg take precedence over
+// Phase 2b/2c/2d: shape-aware mul / add / sub / neg take precedence over
 // the broadcast{1,2}-based dispatch when any operand carries an
 // intrinsic vector/matrix shape (Value with rank ≥ 1 whose leading
 // dim isn't the atom count). Bare scalars and batched scalars
 // (shape=[N]) stay on the scalar broadcast path.
-function _wrapShapeAwareBinopN(opName) {
+//
+// Phase 2d adds the atom-batched cross — when either operand has a
+// leading N-sized axis with rank ≥ 2 (e.g. shape=[N, k] per-atom
+// vector, shape=[N, m, n] per-atom matrix), route through the …N
+// variants (`valueOps.mulN`, `valueOps.addN`, etc.) which dispatch
+// per-atom shapes correctly. `_isShapeRich` (rank ≥ 1, leading dim ≠ N)
+// excludes batched scalars (shape=[N]) which stay on broadcast2; an
+// additional `_hasAtomAxis` check picks up shape=[N, k…] inputs.
+function _shapeAwareCandidate(v, N) {
+  if (!valueLib.isValue(v)) return false;
+  const r = v.shape.length;
+  if (r === 0) return false;
+  if (r === 1 && v.shape[0] === N) return false;  // batched scalar (Phase 1)
+  return true;  // shape-rich OR atom-batched non-scalar
+}
+function _wrapShapeAwareBinopN(opName, opNameN) {
   const fallback = ARITH_OPS_N[opName];
   return (args, N) => {
     const a = args[0], b = args[1];
-    if (_isShapeRich(a, N) || _isShapeRich(b, N)) {
-      return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
+    if (_shapeAwareCandidate(a, N) || _shapeAwareCandidate(b, N)) {
+      return valueOps[opNameN](valueLib.asValue(a), valueLib.asValue(b), N);
     }
     return fallback(args, N);
   };
 }
-ARITH_OPS_N.mul = _wrapShapeAwareBinopN('mul');
-ARITH_OPS_N.add = _wrapShapeAwareBinopN('add');
-ARITH_OPS_N.sub = _wrapShapeAwareBinopN('sub');
+ARITH_OPS_N.mul = _wrapShapeAwareBinopN('mul', 'mulN');
+ARITH_OPS_N.add = _wrapShapeAwareBinopN('add', 'addN');
+ARITH_OPS_N.sub = _wrapShapeAwareBinopN('sub', 'subN');
 const _negBroadcast = ARITH_OPS_N.neg;
 ARITH_OPS_N.neg = (args, N) => {
   const a = args[0];
-  if (_isShapeRich(a, N)) return valueOps.neg(valueLib.asValue(a));
+  if (_shapeAwareCandidate(a, N)) return valueOps.negN(valueLib.asValue(a), N);
   return _negBroadcast(args, N);
 };
 
