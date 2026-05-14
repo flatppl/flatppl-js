@@ -156,6 +156,11 @@ const EVALUABLE_OPS = new Set([
   'fill', 'zeros', 'ones', 'eye', 'onehot',
   // Scalar restrictors (spec §07).
   'boolean', 'integer',
+  // Linear algebra (spec §07). All pure value ops on matrices /
+  // vectors; dispatch through ARITH_OPS.
+  'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer',
+  'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
+  'row_gram', 'col_gram',
 ]);
 
 /**

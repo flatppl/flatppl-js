@@ -708,6 +708,43 @@ const SIGNATURE_FACTORIES = {
   boolean: () => ({ args: [any()], kwargs: {}, result: BOOLEAN }),
   integer: () => ({ args: [any()], kwargs: {}, result: INTEGER }),
 
+  // Linear algebra (spec §07). Matrices are 2-D real arrays; vectors
+  // are 1-D real arrays. Most results stay deferred — the static
+  // type system can't easily express n×n preservation across
+  // transpose / inv etc. without a square-matrix shape variable.
+  transpose:      () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  adjoint:        () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  trace:          () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {}, result: REAL }),
+  diagmat:        () => ({ args: [array(1, ['%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  self_outer:     () => ({ args: [array(1, ['%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  det:            () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {}, result: REAL }),
+  logabsdet:      () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {}, result: REAL }),
+  inv:            () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  linsolve:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL), any()],
+                           kwargs: {}, result: deferred() }),
+  lower_cholesky: () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  row_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  col_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+
   // linspace(from, to, n) — endpoint-inclusive evenly-spaced vector.
   // extlinspace adds ±∞ overflow edges. Both produce real vectors.
   linspace:    () => ({ args: [REAL, REAL, INTEGER], kwargs: {
