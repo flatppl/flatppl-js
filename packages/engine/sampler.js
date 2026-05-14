@@ -325,6 +325,105 @@ function logpdfWeibull(x, k, lambda) {
   return Math.log(k / lambda) + (k - 1) * Math.log(z) - Math.pow(z, k);
 }
 
+// ---------------------------------------------------------------------
+// Synthetic Categorical / Categorical0
+// ---------------------------------------------------------------------
+//
+// Discrete distributions over {1, …, n} (Categorical, 1-based per
+// FlatPPL convention) and {0, …, n−1} (Categorical0). Sampling: draw
+// u ~ U(0,1), walk the cumulative sum of p and pick the first index
+// where the running sum ≥ u. pmf is just p_k at the support point;
+// outside the support the log-pmf is −∞.
+//
+// The p argument is a probability vector — already on the standard
+// simplex by spec. We don't renormalize here; callers should use
+// l1unit / softmax upstream when starting from logits or unnormalized
+// weights.
+
+function _catSample(p, prng, offset) {
+  let u = prng();
+  if (u <= 0) u = Number.EPSILON;
+  if (u >= 1) u = 1 - Number.EPSILON;
+  let cum = 0;
+  for (let i = 0; i < p.length; i++) {
+    cum += p[i];
+    if (u <= cum) return i + offset;
+  }
+  // Numerical drift: total may be 1 − ε. Return the last index.
+  return (p.length - 1) + offset;
+}
+
+function _catLogpmf(k, p, offset) {
+  const idx = (k | 0) - offset;
+  if (idx < 0 || idx >= p.length) return -Infinity;
+  const pi = p[idx];
+  return pi > 0 ? Math.log(pi) : -Infinity;
+}
+
+const randCategorical = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricCategoricalSampler(p) {
+        return _catSample(p, prng, 1);
+      };
+    }
+    const p = args[0];
+    return function staticCategoricalSampler() { return _catSample(p, prng, 1); };
+  },
+};
+
+const randCategorical0 = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricCategorical0Sampler(p) {
+        return _catSample(p, prng, 0);
+      };
+    }
+    const p = args[0];
+    return function staticCategorical0Sampler() { return _catSample(p, prng, 0); };
+  },
+};
+
+function CategoricalCtor(p) {
+  this.p = p;
+  this.support = [1, p.length];
+}
+CategoricalCtor.prototype.pmf = function (k) {
+  const idx = (k | 0) - 1;
+  return (idx < 0 || idx >= this.p.length) ? 0 : this.p[idx];
+};
+CategoricalCtor.prototype.logpmf = function (k) { return _catLogpmf(k, this.p, 1); };
+// .pdf as alias so density() — which dispatches on `discrete` flag — works.
+CategoricalCtor.prototype.pdf    = function (k) { return this.pmf(k); };
+CategoricalCtor.prototype.logpdf = function (k) { return this.logpmf(k); };
+
+function Categorical0Ctor(p) {
+  this.p = p;
+  this.support = [0, p.length - 1];
+}
+Categorical0Ctor.prototype.pmf = function (k) {
+  const idx = k | 0;
+  return (idx < 0 || idx >= this.p.length) ? 0 : this.p[idx];
+};
+Categorical0Ctor.prototype.logpmf = function (k) { return _catLogpmf(k, this.p, 0); };
+Categorical0Ctor.prototype.pdf    = function (k) { return this.pmf(k); };
+Categorical0Ctor.prototype.logpdf = function (k) { return this.logpmf(k); };
+
+function logpdfCategorical(x, p)  { return _catLogpmf(x, p, 1); }
+function logpdfCategorical0(x, p) { return _catLogpmf(x, p, 0); }
+
 function logpdfDirac(x, value) {
   return x === value ? 0 : -Infinity;
 }
@@ -479,6 +578,26 @@ const REGISTRY = {
     Ctor:     Binomial,
     randFn:   randBinomial,
     logpdfFn: logpmfBinomial,
+  },
+  Categorical: {
+    // Categorical(p): discrete uniform-or-not over {1, …, length(p)}.
+    // p is a probability vector (already on the standard simplex per
+    // spec). Synthesised cumulative-sum sampler; pmf at k is p[k−1].
+    params:   ['p'],
+    aliases:  {},
+    discrete: true,
+    Ctor:     CategoricalCtor,
+    randFn:   randCategorical,
+    logpdfFn: logpdfCategorical,
+  },
+  Categorical0: {
+    // Zero-based variant: support {0, …, length(p)−1}.
+    params:   ['p'],
+    aliases:  {},
+    discrete: true,
+    Ctor:     Categorical0Ctor,
+    randFn:   randCategorical0,
+    logpdfFn: logpdfCategorical0,
   },
   Poisson: {
     // Spec: Poisson(rate). stdlib calls it lambda.

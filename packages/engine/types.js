@@ -545,7 +545,8 @@ const SIGNATURE_FACTORIES = {
   Binomial:  () => intDistKwargs({ n: INTEGER, p: REAL }),
   Poisson:   () => intDistKwargs({ rate: REAL }),
   // Categorical is over integer atoms (categories indexed 1..K).
-  Categorical: () => intDistKwargs({ p: array(1, ['%dynamic'], REAL) }),
+  Categorical:  () => intDistKwargs({ p: array(1, ['%dynamic'], REAL) }),
+  Categorical0: () => intDistKwargs({ p: array(1, ['%dynamic'], REAL) }),
   // Fundamental reference measures (spec §06). The optional `support = S`
   // kwarg parameterises on the set the measure lives on; default is `reals`
   // for Lebesgue and `integers` for Counting. The result's measure-domain

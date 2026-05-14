@@ -65,6 +65,7 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
   'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull',
   'LogNormal', 'Beta', 'Gamma',
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
+  'Categorical', 'Categorical0',
   // Dirac is degenerate (zero entropy): the sampler emits the
   // 'value' kwarg verbatim N times. Listed here so measure-alias
   // bindings like `m = Dirac(value = 5)` get classified 'skip' and
@@ -80,6 +81,7 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
 // integer-histogram density estimation.
 const DISCRETE_DISTRIBUTIONS = new Set([
   'Bernoulli', 'Binomial', 'Poisson',
+  'Categorical', 'Categorical0',
 ]);
 
 // Deterministic builtins whose call IRs the worker's evaluateExpr knows

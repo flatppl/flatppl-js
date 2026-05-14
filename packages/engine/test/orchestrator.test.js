@@ -195,7 +195,10 @@ test('chain: unknown target → unsupported', () => {
 });
 
 test('chain: distribution not in SAMPLEABLE list → unsupported', () => {
-  const r = chainOf('x = draw(Categorical(p = [0.5, 0.5]))', 'x');
+  // MvNormal isn't in SAMPLEABLE_DISTRIBUTIONS yet (no multivariate
+  // sampler) — picked here because Categorical / Categorical0 / Uniform
+  // / Logistic / Weibull have since been wired in.
+  const r = chainOf('x = draw(MvNormal(mu = [0.0], cov = [[1.0]]))', 'x');
   assert.ok(r.unsupported);
 });
 
