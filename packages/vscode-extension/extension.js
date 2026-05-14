@@ -153,6 +153,7 @@ function activate(context) {
     return {
       sampleCount: cfg.get('sampleCount', 100000),
       dagNavigationHistoryCap: cfg.get('dagNavigationHistoryCap', 1000),
+      truncateRejectionBudget: cfg.get('truncateRejectionBudget', 1000),
     };
   }
 

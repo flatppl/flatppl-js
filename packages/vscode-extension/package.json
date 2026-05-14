@@ -159,6 +159,13 @@
           "minimum": 0,
           "maximum": 100000,
           "markdownDescription": "Maximum number of entries kept in the visualizer's DAG navigation history (the back-button stack). Older entries are dropped when the cap is reached. Each entry is a small sub-DAG snapshot (~few KB)."
+        },
+        "flatppl.visualization.truncateRejectionBudget": {
+          "type": "integer",
+          "default": 1000,
+          "minimum": 1,
+          "maximum": 1000000,
+          "markdownDescription": "Per-atom rejection-redraw budget for `truncate(M, S)` when the parent measure isn't CDF-invertible. The visualizer redraws from the underlying distribution up to this many times per atom before giving up and emitting `NaN`. Higher values trade compute for less ESS loss on tightly-truncated measures; lower values keep large-N plots responsive. Changing this clears the visualizer's sample cache."
         }
       }
     }
