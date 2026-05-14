@@ -140,6 +140,62 @@ function materialiseUniform(measure) {
 }
 
 /**
+ * Combine the per-atom log-weights of several parent measures into the
+ * log-weights of a derived (atom-aligned) measure. The atom-i value of
+ * the derived measure is a deterministic function of the atom-i values
+ * of its parents, so the IS weight at atom i of the result is the joint
+ * IS weight of (parent_1[i], parent_2[i], …) under the per-atom-pair
+ * proposal — i.e. the product in linear space, sum in log space — over
+ * the INDEPENDENT weighting events the parents bring in.
+ *
+ * Independence is detected by reference identity of the `logWeights`
+ * arrays: two parents whose `logWeights` point at the same Float64Array
+ * trace the same weighting event (the typical case when one parent is
+ * a deterministic transform of another), so we count those weights
+ * once. Distinct array references describe independent events whose IS
+ * weights multiply. This contract requires the engine to NEVER clone
+ * `logWeights` along an inheritance chain (evaluate-kind, alias, iid,
+ * record projection, …): always pass the same reference forward;
+ * allocate fresh only when introducing a new weighting event (a draw
+ * from a non-trivial measure, weighted / logweighted, bayesupdate).
+ *
+ * Returns:
+ *   - null when every parent has null logWeights (uniform).
+ *   - the shared reference when exactly one independent weight stream
+ *     is present (preserves reference identity so downstream dedupe
+ *     keeps working).
+ *   - a fresh Float64Array equal to the per-atom sum when two or more
+ *     independent streams are combined.
+ *
+ * @param {Iterable<{logWeights: Float64Array | null}>} parents
+ * @returns {Float64Array | null}
+ */
+function propagateLogWeights(parents) {
+  const seen = new Set();
+  const unique = [];
+  for (const p of parents) {
+    if (!p || !p.logWeights) continue;
+    if (seen.has(p.logWeights)) continue;
+    seen.add(p.logWeights);
+    unique.push(p.logWeights);
+  }
+  if (unique.length === 0) return null;
+  if (unique.length === 1) return unique[0];
+  const N = unique[0].length;
+  for (let k = 1; k < unique.length; k++) {
+    if (unique[k].length !== N) {
+      throw new Error('propagateLogWeights: parent logWeights lengths disagree — '
+        + 'every parent must share the engine\'s N-atom axis');
+    }
+  }
+  const out = new Float64Array(N);
+  for (const w of unique) {
+    for (let i = 0; i < N; i++) out[i] += w[i];
+  }
+  return out;
+}
+
+/**
  * Systematic resampling. The standard particle-filter trick for
  * turning a weighted empirical measure with `N` atoms into a uniformly-
  * weighted empirical measure with `n` atoms, in distribution.
@@ -656,6 +712,7 @@ module.exports = {
   totalLogMass,
   effectiveSampleSize,
   materialiseUniform,
+  propagateLogWeights,
   systematicResample,
   multinomialResample,
   // Multivariate

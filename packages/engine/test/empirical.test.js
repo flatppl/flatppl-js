@@ -21,6 +21,7 @@ const {
   totalLogMass,
   effectiveSampleSize,
   materialiseUniform,
+  propagateLogWeights,
   systematicResample,
   multinomialResample,
 } = require('../empirical');
@@ -137,6 +138,101 @@ test('materialiseUniform: pass-through when already explicit', () => {
   const m = { samples, logWeights: w };
   const out = materialiseUniform(m);
   assert.equal(out, m, 'no-op should return the same object');
+});
+
+// =====================================================================
+// propagateLogWeights — joint-IS combination of parent weights, with
+// reference-identity dedupe for shared weighting events
+// =====================================================================
+
+test('propagateLogWeights: every parent uniform → null (no allocation)', () => {
+  const p1 = { samples: new Float64Array([1, 2, 3]), logWeights: null };
+  const p2 = { samples: new Float64Array([4, 5, 6]), logWeights: null };
+  assert.equal(propagateLogWeights([p1, p2]), null);
+});
+
+test('propagateLogWeights: empty parent list → null', () => {
+  assert.equal(propagateLogWeights([]), null);
+});
+
+test('propagateLogWeights: one weighted parent → returns same reference', () => {
+  // The reference-identity contract: callers that inherit weights
+  // through evaluate-kind / alias / iid pass the SAME Float64Array
+  // forward so downstream dedupe of shared weighting events works.
+  const w = new Float64Array([-0.1, -0.2, -0.3]);
+  const p = { samples: new Float64Array([1, 2, 3]), logWeights: w };
+  const out = propagateLogWeights([p]);
+  assert.equal(out, w, 'must return the same Float64Array reference');
+});
+
+test('propagateLogWeights: mixed null + weighted → returns weighted parent\'s reference', () => {
+  // Uniform parents contribute no IS weight; the weighted parent\'s
+  // event survives unchanged.
+  const w = new Float64Array([-0.5, 0.0, 0.5]);
+  const p_null = { samples: new Float64Array([1, 2, 3]), logWeights: null };
+  const p_w    = { samples: new Float64Array([4, 5, 6]), logWeights: w };
+  const out = propagateLogWeights([p_null, p_w]);
+  assert.equal(out, w, 'reference equality preserved through mixed-uniform combine');
+});
+
+test('propagateLogWeights: two parents sharing logWeights reference → returns that ref, no double-count', () => {
+  // The b = a + 1 case: b inherits a\'s logWeights ref through
+  // evaluate-kind. Then c = a + b sees two parents whose logWeights
+  // point at the same array. Dedupe must count it once.
+  const w = new Float64Array([0.0, -1.0, -2.0, -3.0]);
+  const a = { samples: new Float64Array([1, 2, 3, 4]), logWeights: w };
+  const b = { samples: new Float64Array([2, 3, 4, 5]), logWeights: w };  // same ref
+  const out = propagateLogWeights([a, b]);
+  assert.equal(out, w, 'shared weighting event counted once');
+});
+
+test('propagateLogWeights: two parents with distinct refs → element-wise sum (joint IS)', () => {
+  // Independent draws from two different weighted measures: joint
+  // IS weight at atom i is the product (sum in log).
+  const wa = new Float64Array([0.0, -1.0, 0.5]);
+  const wb = new Float64Array([0.2, -0.3, 1.0]);
+  const a = { samples: new Float64Array([1, 2, 3]), logWeights: wa };
+  const b = { samples: new Float64Array([4, 5, 6]), logWeights: wb };
+  const out = propagateLogWeights([a, b]);
+  assert.ok(out instanceof Float64Array);
+  assert.notEqual(out, wa, 'must allocate fresh — wa would be mutated otherwise');
+  assert.notEqual(out, wb);
+  for (let i = 0; i < 3; i++) {
+    assert.ok(Math.abs(out[i] - (wa[i] + wb[i])) < 1e-12,
+      `index ${i}: expected ${wa[i] + wb[i]}, got ${out[i]}`);
+  }
+});
+
+test('propagateLogWeights: three parents — two share, one distinct → sum the unique two', () => {
+  // a, b both inherit from the same upstream event; c is independent.
+  // Result = (shared event once) + c\'s contribution.
+  const w_shared = new Float64Array([1.0, 2.0]);
+  const w_c      = new Float64Array([0.5, -0.5]);
+  const a = { samples: new Float64Array([0, 0]), logWeights: w_shared };
+  const b = { samples: new Float64Array([0, 0]), logWeights: w_shared };  // same ref as a
+  const c = { samples: new Float64Array([0, 0]), logWeights: w_c };
+  const out = propagateLogWeights([a, b, c]);
+  for (let i = 0; i < 2; i++) {
+    const expected = w_shared[i] + w_c[i];
+    assert.ok(Math.abs(out[i] - expected) < 1e-12);
+  }
+});
+
+test('propagateLogWeights: mismatched logWeights lengths → throws', () => {
+  const wa = new Float64Array([0, 0, 0]);
+  const wb = new Float64Array([0, 0]);
+  const a = { samples: new Float64Array(3), logWeights: wa };
+  const b = { samples: new Float64Array(2), logWeights: wb };
+  assert.throws(() => propagateLogWeights([a, b]),
+    /lengths disagree/);
+});
+
+test('propagateLogWeights: null entries in parent list tolerated', () => {
+  // Defensive: callers may pass undefined / null placeholders for
+  // missing parents; the helper just skips them.
+  const w = new Float64Array([0.1, 0.2]);
+  const p = { samples: new Float64Array([0, 0]), logWeights: w };
+  assert.equal(propagateLogWeights([null, p, undefined]), w);
 });
 
 // =====================================================================

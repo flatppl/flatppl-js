@@ -1381,21 +1381,41 @@
           return m;
         });
       } else if (d.kind === 'evaluate') {
-        promise = collectRefArrays(d.ir).then(function(refArrays) {
-          return sendWorker({
-            type: 'evaluateN',
-            ir: d.ir,
-            count: SAMPLE_COUNT,
-            refArrays: refArrays,
-          });
-        }).then(function(reply) {
-          // TODO when weighted ops land: deterministic transforms
-          // preserve the parents' weights (they're index-aligned). For
-          // now every parent is unweighted (null) so the result is too.
-          var m = { samples: reply.samples, logWeights: reply.logWeights || null };
-          measureCache.set(name, m);
-          return m;
+        // Resolve parent measures so we can both (a) extract per-atom
+        // samples as refArrays for the worker's evaluateN and (b) feed
+        // the full measure list into propagateLogWeights so the result's
+        // weights reflect the joint IS weighting of its inputs. Fixed-
+        // phase bindings flow through the worker's session env (NOT
+        // refArrays) and don't introduce weights either.
+        var refs = FlatPPLEngine.orchestrator.collectSelfRefs(d.ir);
+        var fixedNow = derivationsState && derivationsState.fixedValues;
+        var parentNames = [];
+        refs.forEach(function(n) {
+          if (fixedNow && fixedNow.has(n)) return;
+          parentNames.push(n);
         });
+        promise = Promise.all(parentNames.map(function(n) { return getMeasure(n); }))
+          .then(function(parentMeasures) {
+            var refArrays = {};
+            for (var i = 0; i < parentNames.length; i++) {
+              refArrays[parentNames[i]] = parentMeasures[i].samples;
+            }
+            return sendWorker({
+              type: 'evaluateN',
+              ir: d.ir,
+              count: SAMPLE_COUNT,
+              refArrays: refArrays,
+            }).then(function(reply) {
+              // Deterministic transforms are atom-aligned: c_i = f(parents_i).
+              // The IS weight at atom i of c is the joint IS weight of its
+              // parents at that atom (sum of independent log-weights, dedupe
+              // shared weighting events via reference identity).
+              var lw = FlatPPLEngine.empirical.propagateLogWeights(parentMeasures);
+              var m = { samples: reply.samples, logWeights: lw };
+              measureCache.set(name, m);
+              return m;
+            });
+          });
       } else if (d.kind === 'array') {
         // Static array literal — values verbatim, no sampling, no
         // worker round-trip. Length equals the array length, NOT
