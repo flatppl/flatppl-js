@@ -326,6 +326,130 @@ function logpdfWeibull(x, k, lambda) {
 }
 
 // ---------------------------------------------------------------------
+// Synthetic GeneralizedNormal (symmetric)
+// ---------------------------------------------------------------------
+//
+// Spec §08: GeneralizedNormal(mean, alpha, beta).
+//   pdf  =  β / (2α · Γ(1/β)) · exp( −(|x − μ| / α)^β )
+//   β = 2  → reduces to Normal with σ = α/√2
+//   β = 1  → reduces to Laplace
+//
+// Sampling: the canonical "scaled-gamma + Rademacher" construction.
+//   Y ~ Gamma(shape = 1/β, rate = 1)
+//   R = ±1  uniformly
+//   X = μ + R · α · Y^(1/β)
+// Derivation: Y^(1/β) follows the absolute-value of GeneralizedNormal
+// up to scale; the Rademacher symmetrises around the mean. We use
+// stdlib's randGamma factory bound to the same prng for both draws,
+// and a separate prng() call for the sign bit.
+
+const randGeneralizedNormal = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      const inner = randGamma.factory({ prng });
+      return function parametricGenNormalSampler(mean, alpha, beta) {
+        const y = inner(1 / beta, 1);        // Gamma(1/β, rate=1)
+        const r = prng() < 0.5 ? -1 : 1;
+        return mean + r * alpha * Math.pow(y, 1 / beta);
+      };
+    }
+    const mean  = +args[0];
+    const alpha = +args[1];
+    const beta  = +args[2];
+    const inner = randGamma.factory(1 / beta, 1, { prng });
+    return function staticGenNormalSampler() {
+      const y = inner();
+      const r = prng() < 0.5 ? -1 : 1;
+      return mean + r * alpha * Math.pow(y, 1 / beta);
+    };
+  },
+};
+
+function GeneralizedNormalCtor(mean, alpha, beta) {
+  this.mean  = +mean;
+  this.alpha = +alpha;
+  this.beta  = +beta;
+  this.support = [-Infinity, Infinity];
+}
+GeneralizedNormalCtor.prototype.pdf = function (x) {
+  return Math.exp(this.logpdf(x));
+};
+GeneralizedNormalCtor.prototype.logpdf = function (x) {
+  const a = this.alpha, b = this.beta;
+  const z = Math.abs(x - this.mean) / a;
+  return Math.log(b) - Math.log(2 * a) - stdlibGammaln(1 / b) - Math.pow(z, b);
+};
+function logpdfGeneralizedNormal(x, mean, alpha, beta) {
+  const z = Math.abs(x - mean) / alpha;
+  return Math.log(beta) - Math.log(2 * alpha)
+       - stdlibGammaln(1 / beta) - Math.pow(z, beta);
+}
+
+// ---------------------------------------------------------------------
+// Synthetic InverseGamma
+// ---------------------------------------------------------------------
+//
+// Spec §08: InverseGamma(shape, scale). Mathematical equivalence with
+// Gamma (spec line 200): if Y ~ Gamma(shape, rate = scale) then
+// 1/Y ~ InverseGamma(shape, scale). We delegate sampling to stdlib's
+// Gamma rand factory with rate = scale (= the InverseGamma scale
+// parameter), then invert. logpdf has a closed form — no integration.
+
+const randInverseGamma = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      // Parametric: returned closure takes (shape, scale) per call.
+      // Build one parametric Gamma factory bound to prng; invoke
+      // it per call with the right (shape, rate) pair.
+      const inner = randGamma.factory({ prng });
+      return function parametricInverseGammaSampler(shape, scale) {
+        const y = inner(+shape, +scale);  // Gamma(shape, rate=scale)
+        return 1 / y;
+      };
+    }
+    const shape = +args[0], scale = +args[1];
+    // Static: bake (shape, rate=scale) into a single Gamma sampler.
+    const inner = randGamma.factory(shape, scale, { prng });
+    return function staticInverseGammaSampler() { return 1 / inner(); };
+  },
+};
+
+function InverseGammaCtor(shape, scale) {
+  this.shape = +shape;
+  this.scale = +scale;
+  this.support = [0, Infinity];
+}
+InverseGammaCtor.prototype.pdf = function (x) {
+  if (x <= 0) return 0;
+  // β^α / Γ(α) · x^(-α-1) · exp(-β/x)
+  return Math.exp(this.logpdf(x));
+};
+InverseGammaCtor.prototype.logpdf = function (x) {
+  if (x <= 0) return -Infinity;
+  const a = this.shape, b = this.scale;
+  return a * Math.log(b) - stdlibGammaln(a) - (a + 1) * Math.log(x) - b / x;
+};
+function logpdfInverseGamma(x, shape, scale) {
+  if (x <= 0) return -Infinity;
+  return shape * Math.log(scale)
+       - stdlibGammaln(shape)
+       - (shape + 1) * Math.log(x)
+       - scale / x;
+}
+
+// ---------------------------------------------------------------------
 // Synthetic Categorical / Categorical0
 // ---------------------------------------------------------------------
 //
@@ -578,6 +702,27 @@ const REGISTRY = {
     Ctor:     Binomial,
     randFn:   randBinomial,
     logpdfFn: logpmfBinomial,
+  },
+  GeneralizedNormal: {
+    // Spec: GeneralizedNormal(mean, alpha, beta). β = 2 → Normal,
+    // β = 1 → Laplace. Synthesised via scaled-gamma + Rademacher.
+    params:   ['mean', 'alpha', 'beta'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     GeneralizedNormalCtor,
+    randFn:   randGeneralizedNormal,
+    logpdfFn: logpdfGeneralizedNormal,
+  },
+  InverseGamma: {
+    // Spec: InverseGamma(shape, scale). Synthesised via 1/Gamma(shape,
+    // rate=scale) — the standard mathematical equivalence (spec §08
+    // line 200).
+    params:   ['shape', 'scale'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     InverseGammaCtor,
+    randFn:   randInverseGamma,
+    logpdfFn: logpdfInverseGamma,
   },
   Categorical: {
     // Categorical(p): discrete uniform-or-not over {1, …, length(p)}.

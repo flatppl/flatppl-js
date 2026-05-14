@@ -63,7 +63,8 @@ const { quantileSorted } = require('./histogram');
 // of failing later in the worker.
 const SAMPLEABLE_DISTRIBUTIONS = new Set([
   'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull',
-  'LogNormal', 'Beta', 'Gamma',
+  'LogNormal', 'Beta', 'Gamma', 'InverseGamma',
+  'GeneralizedNormal',
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
   'Categorical', 'Categorical0',
   // Dirac is degenerate (zero entropy): the sampler emits the

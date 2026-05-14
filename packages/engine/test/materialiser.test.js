@@ -237,6 +237,89 @@ lp = logdensityof(U, 0.5)
 });
 
 // =====================================================================
+// GeneralizedNormal — closes out spec §08 continuous family
+// =====================================================================
+
+test('GeneralizedNormal(0, √2, 2) ≡ Normal(0, 1) (β = 2 case)', async () => {
+  // Per spec, GN with β=2 reduces to Normal with σ = α/√2.
+  // Setting α=√2 gives σ=1; sample moments should match Normal(0, 1).
+  const ctx = makeCtx(`
+M = GeneralizedNormal(mean = 0.0, alpha = 1.4142135623730951, beta = 2.0)
+x = draw(M)
+`, { sampleCount: 16384 });
+  const m = await ctx.getMeasure('x');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  let ss = 0;
+  for (const v of m.samples) ss += (v - mean) * (v - mean);
+  const variance = ss / m.samples.length;
+  assert.ok(Math.abs(mean - 0) < 0.05, 'mean should ≈ 0, got ' + mean);
+  assert.ok(Math.abs(variance - 1) < 0.1, 'variance should ≈ 1, got ' + variance);
+});
+
+test('GeneralizedNormal(0, 1, 1) ≡ Laplace(0, 1): variance ≈ 2', async () => {
+  // β=1 collapses to Laplace with scale α. Laplace(μ=0, b=1) has
+  // variance 2·b² = 2.
+  const ctx = makeCtx(`
+M = GeneralizedNormal(mean = 0.0, alpha = 1.0, beta = 1.0)
+x = draw(M)
+`, { sampleCount: 16384 });
+  const m = await ctx.getMeasure('x');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  let ss = 0;
+  for (const v of m.samples) ss += (v - mean) * (v - mean);
+  const variance = ss / m.samples.length;
+  assert.ok(Math.abs(variance - 2.0) < 0.2,
+    'Laplace(0, 1) variance should ≈ 2, got ' + variance);
+});
+
+test('GeneralizedNormal: logdensityof at the mode (x=μ) is closed-form', async () => {
+  // logpdf(μ; μ, α, β) = log(β) − log(2α) − Γln(1/β).
+  // For α=1, β=2: = log(2) − log(2) − Γln(0.5) = −Γln(0.5) = −log(√π).
+  const ctx = makeCtx(`
+M = GeneralizedNormal(mean = 0.0, alpha = 1.0, beta = 2.0)
+lp = logdensityof(M, 0.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - (-0.5 * Math.log(Math.PI))) < 1e-12,
+    'logpdf at mode should be -log(√π), got ' + m.samples[0]);
+});
+
+// =====================================================================
+// InverseGamma — derived from Gamma via 1/X equivalence
+// =====================================================================
+
+test('InverseGamma(3, 2): all samples positive; mean ≈ 1, var ≈ 1', async () => {
+  // Spec §08 line 200: if X ~ Gamma(α, β), then 1/X ~ InverseGamma(α, β).
+  // Analytical moments for α = 3, β = 2:
+  //   E[X] = β / (α − 1) = 2 / 2 = 1
+  //   Var  = β² / ((α − 1)² · (α − 2)) = 4 / (4 · 1) = 1
+  const ctx = makeCtx(`
+M = InverseGamma(shape = 3.0, scale = 2.0)
+x = draw(M)
+`, { sampleCount: 16384 });
+  const m = await ctx.getMeasure('x');
+  let neg = 0;
+  for (let i = 0; i < m.samples.length; i++) if (m.samples[i] <= 0) neg++;
+  assert.equal(neg, 0, 'all InverseGamma atoms must be > 0');
+  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  assert.ok(Math.abs(mean - 1.0) < 0.1,
+    'mean should be ≈ 1, got ' + mean);
+});
+
+test('InverseGamma: logdensityof at x=1 matches the closed-form pdf', async () => {
+  // logpdf(x=1; α=3, β=2) = α·log(β) − Γln(α) − (α+1)·log(x) − β/x
+  //                       = 3·log(2) − log(2) − 0 − 2 = 2·log(2) − 2.
+  const ctx = makeCtx(`
+M = InverseGamma(shape = 3.0, scale = 2.0)
+lp = logdensityof(M, 1.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = 2 * Math.log(2) - 2;
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-12,
+    'logpdf at 1 should be 2·log(2)−2, got ' + m.samples[0]);
+});
+
+// =====================================================================
 // Categorical / Categorical0 — discrete with 1-based / 0-based support
 // =====================================================================
 
