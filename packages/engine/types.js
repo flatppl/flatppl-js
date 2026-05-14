@@ -725,6 +725,20 @@ const SIGNATURE_FACTORIES = {
   var:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   maximum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   minimum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  // Norms and softmax family (spec §07). Single vector argument.
+  // *norm / logsumexp produce a scalar; *unit / softmax / logsoftmax
+  // produce a vector of the same length.
+  l1norm:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  l2norm:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  logsumexp:  () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  l1unit:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                       result: array(1, ['%dynamic'], REAL) }),
+  l2unit:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                       result: array(1, ['%dynamic'], REAL) }),
+  softmax:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                       result: array(1, ['%dynamic'], REAL) }),
+  logsoftmax: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                       result: array(1, ['%dynamic'], REAL) }),
 
   // ---- RNG (per spec §sec:random) ----------------------------------
   // rnginit(seed) — seed is a byte-vector; result is an opaque rngstate.

@@ -123,6 +123,11 @@ const EVALUABLE_OPS = new Set([
   // (with stochastic refs) must NOT classify as evaluable, so the
   // existing array-derivation special case keeps owning that path.
   'sum', 'mean', 'prod', 'length', 'maximum', 'minimum', 'var',
+  // Norms and softmax family (spec §07). All single-arg, vector
+  // input; *unit / softmax / logsoftmax return vectors, the rest
+  // return scalars.
+  'l1norm', 'l2norm', 'l1unit', 'l2unit',
+  'logsumexp', 'softmax', 'logsoftmax',
   // Engine-internal projection emitted by the analyzer's multi-LHS
   // rewriter (`a, b = rand(...)`). sampler.evaluateCall handles it.
   'tuple_get', 'tuple',

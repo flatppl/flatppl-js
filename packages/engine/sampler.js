@@ -870,6 +870,78 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
     return v / n;
   },
+  // Norms and normalization (spec §07). All take a single vector
+  // argument. Numerically stable forms — logsumexp uses the standard
+  // shift-by-max trick so exp doesn't overflow on large entries.
+  l1norm: arr => {
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
+    return s;
+  },
+  l2norm: arr => {
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
+    return Math.sqrt(s);
+  },
+  l1unit: arr => {
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
+    if (s === 0) throw new Error('l1unit: zero-norm vector has no unit form');
+    const out = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) out[i] = arr[i] / s;
+    return out;
+  },
+  l2unit: arr => {
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
+    if (s === 0) throw new Error('l2unit: zero-norm vector has no unit form');
+    const r = Math.sqrt(s);
+    const out = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) out[i] = arr[i] / r;
+    return out;
+  },
+  logsumexp: arr => {
+    const n = arr.length;
+    if (n === 0) return -Infinity;
+    let m = -Infinity;
+    for (let i = 0; i < n; i++) if (arr[i] > m) m = arr[i];
+    if (!Number.isFinite(m)) return m;   // all -Inf → result is -Inf
+    let s = 0;
+    for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
+    return m + Math.log(s);
+  },
+  softmax: arr => {
+    const n = arr.length;
+    if (n === 0) return [];
+    let m = -Infinity;
+    for (let i = 0; i < n; i++) if (arr[i] > m) m = arr[i];
+    if (!Number.isFinite(m)) {
+      // All -Inf: degenerate uniform on the simplex would be the
+      // continuous limit, but emit zeros (mass shifts to nowhere).
+      // Match the standard library behavior on all-zero exp inputs.
+      throw new Error('softmax: all-(-Infinity) input is undefined');
+    }
+    const exps = new Array(n);
+    let s = 0;
+    for (let i = 0; i < n; i++) { exps[i] = Math.exp(arr[i] - m); s += exps[i]; }
+    for (let i = 0; i < n; i++) exps[i] /= s;
+    return exps;
+  },
+  logsoftmax: arr => {
+    const n = arr.length;
+    if (n === 0) return [];
+    let m = -Infinity;
+    for (let i = 0; i < n; i++) if (arr[i] > m) m = arr[i];
+    if (!Number.isFinite(m)) {
+      throw new Error('logsoftmax: all-(-Infinity) input is undefined');
+    }
+    let s = 0;
+    for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
+    const lse = m + Math.log(s);
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) out[i] = arr[i] - lse;
+    return out;
+  },
 };
 
 // Helper: build a one-pass reducer that loops over array indices.
