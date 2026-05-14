@@ -162,6 +162,54 @@ running_max = scan(fn(max(_, _)), 0.0, data)
   assert.deepEqual(r.fixedValues.get('running_max'), [3, 3, 4, 4, 5, 9, 9]);
 });
 
+// =====================================================================
+// broadcast — elementwise function application over arrays
+// =====================================================================
+
+test('broadcast: unary positional ⇒ map over single array', () => {
+  const r = buildFixed(`
+xs = [1.0, 2.0, 3.0, 4.0]
+ys = broadcast(fn(_ * 2.0 + 1.0), xs)
+`);
+  assert.deepEqual(r.fixedValues.get('ys'), [3, 5, 7, 9]);
+});
+
+test('broadcast: binary positional ⇒ zip-map over two arrays', () => {
+  const r = buildFixed(`
+xs = [1.0, 2.0, 3.0]
+ys = [10.0, 20.0, 30.0]
+sums = broadcast(fn(_ + _), xs, ys)
+`);
+  assert.deepEqual(r.fixedValues.get('sums'), [11, 22, 33]);
+});
+
+test('broadcast: closure over fixed-phase scalar', () => {
+  const r = buildFixed(`
+scale = 10.0
+xs = [1.0, 2.0, 3.0]
+ys = broadcast(fn(scale * _), xs)
+`);
+  assert.deepEqual(r.fixedValues.get('ys'), [10, 20, 30]);
+});
+
+test('broadcast: empty input ⇒ empty output', () => {
+  const r = buildFixed(`
+xs = []
+ys = broadcast(fn(_ + 1.0), xs)
+`);
+  assert.deepEqual(r.fixedValues.get('ys'), []);
+});
+
+test('broadcast: length mismatch ⇒ pre-eval silently skips on throw', () => {
+  const r = buildFixed(`
+xs = [1.0, 2.0, 3.0]
+ys = [10.0, 20.0]
+sums = broadcast(fn(_ + _), xs, ys)
+`);
+  // pre-eval silently swallows the throw → sums stays unevaluated.
+  assert.equal(r.fixedValues.get('sums'), undefined);
+});
+
 test('filter: integrates with bincounts (region-restricted observation)', () => {
   const r = buildFixed(`
 in_region = functionof(land(_x_ >= 2.0, _x_ <= 5.0), x = _x_)

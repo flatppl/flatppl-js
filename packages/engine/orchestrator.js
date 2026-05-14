@@ -155,11 +155,12 @@ const EVALUABLE_OPS = new Set([
   'linspace', 'extlinspace', 'partition', 'reverse',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
   'rowstack', 'colstack',
-  // Higher-order ops (spec §07). Dispatched via dedicated cases in
-  // sampler.evaluateCall (not ARITH_OPS) because they evaluate a
+  // Higher-order ops (spec §04 / §07). Dispatched via dedicated cases
+  // in sampler.evaluateCall (not ARITH_OPS) because they evaluate a
   // referenced function's body per element. filter takes a unary
-  // predicate; reduce / scan take binary accumulators.
-  'filter', 'reduce', 'scan',
+  // predicate; reduce / scan take binary accumulators; broadcast
+  // takes an n-ary function and n equal-length arrays.
+  'filter', 'reduce', 'scan', 'broadcast',
   // Scalar restrictors (spec §07).
   'boolean', 'integer',
   // Linear algebra (spec §07). All pure value ops on matrices /
@@ -2363,14 +2364,15 @@ function buildDerivations(bindings) {
             || !Array.isArray(fIR.params) || !fIR.body) {
           return null;
         }
-        // Return all params so binary higher-order callers
-        // (reduce / scan) can name both slots. Unary callers
-        // (filter) look at params[0] / paramName.
+        // Return all params + surface kwarg names so higher-order
+        // callers can name both slots. broadcast's kwargs form needs
+        // surface names (paramKwargs); filter / reduce / scan use
+        // internal params for env-keying.
         return {
-          body:       fIR.body,
-          params:     fIR.params,
-          // Convenience alias for the common unary case.
-          paramName:  fIR.params[0],
+          body:        fIR.body,
+          params:      fIR.params,
+          paramKwargs: fIR.paramKwargs,
+          paramName:   fIR.params[0],
         };
       };
 
