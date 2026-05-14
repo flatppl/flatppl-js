@@ -55,7 +55,7 @@ jobs:
         # less-tested workspace doesn't get silently skipped. For
         # public repos the upload works without CODECOV_TOKEN; set
         # the secret if rate-limited or for a private fork.
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           files: packages/engine/coverage/lcov.info
           fail_ci_if_error: false
