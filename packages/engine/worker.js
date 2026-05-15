@@ -116,7 +116,13 @@ function _unwrapRefArrays(refArrays) {
   const out = {};
   for (const k in refArrays) {
     const v = refArrays[k];
-    out[k] = (v && Array.isArray(v.shape)
+    // Complex shape=[N] refs must stay whole: unwrapping to v.data
+    // would silently drop the imaginary buffer. The complex-aware
+    // per-atom accessor (sampler._cxArgAccessor) consumes the Value
+    // object directly, so leave it intact.
+    const isComplex = v && v.dtype === 'complex'
+      && v.im && v.im.BYTES_PER_ELEMENT !== undefined;
+    out[k] = (!isComplex && v && Array.isArray(v.shape)
               && v.data && v.data.BYTES_PER_ELEMENT !== undefined
               && v.shape.length === 1)
       ? v.data
@@ -280,7 +286,7 @@ function createWorkerHandler(opts = {}) {
           if (count <= 0) throw new Error(`evaluateN.count must be positive integer (got ${msg.count})`);
           const refArrays = msg.refArrays || null;
           const result = samplerLib.evaluateExprN(msg.ir, refArrays, count, env);
-          let out, dims;
+          let out, dims, imag;
           if (result && result.BYTES_PER_ELEMENT !== undefined
               && result.length === count) {
             out = result;  // Float64Array(count) — happy path
@@ -290,6 +296,14 @@ function createWorkerHandler(opts = {}) {
             out.fill(+result);
           } else if (result && Array.isArray(result.shape) && result.data
                      && result.data.BYTES_PER_ELEMENT !== undefined) {
+            // Complex Value: carry the imaginary buffer alongside the
+            // real samples so the main thread can build a complex
+            // Measure (planar re/im preserved across postMessage —
+            // structured clone copies both Float64Arrays).
+            if (result.dtype === 'complex'
+                && result.im && result.im.BYTES_PER_ELEMENT !== undefined) {
+              imag = result.im;
+            }
             // Phase 7c: Value result (shape-tagged). Atom-batched
             // scalar (shape=[N]) returns the data buffer; vector-atom
             // (shape=[N, k]) returns the flat data + dims so the
@@ -315,6 +329,7 @@ function createWorkerHandler(opts = {}) {
           // lets that wrap-up happen at the cache boundary.
           const reply = { type: 'samples', id, samples: out, logWeights: null };
           if (dims) reply.dims = dims;
+          if (imag) reply.imag = imag;
           return reply;
         }
         case 'logDensityN': {

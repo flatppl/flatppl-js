@@ -944,3 +944,92 @@ test('evaluateN: per-atom refArrays override session env', () => {
   const reply = w.handle({ type: 'evaluateN', ir, count: 3, refArrays });
   assert.deepEqual(Array.from(reply.samples), [10, 20, 30]);
 });
+
+// =====================================================================
+// evaluateN — complex results (chunk 4 of the complex-values thread)
+// =====================================================================
+//
+// Atom-dependent complex previously threw. evaluateN now carries the
+// planar imaginary buffer through the reply (reply.imag), and
+// _unwrapRefArrays keeps complex shape=[N] refs whole instead of
+// dropping their .im.
+
+const valueLib = require('../value');
+
+test('evaluateN: complex(re, im) over batched real refs → reply.imag', () => {
+  const w = createWorkerHandler();
+  const ir = {
+    kind: 'call', op: 'complex',
+    args: [
+      { kind: 'ref', ns: 'self', name: 're', loc: synthLoc() },
+      { kind: 'ref', ns: 'self', name: 'im', loc: synthLoc() },
+    ],
+    loc: synthLoc(),
+  };
+  const r = w.handle({
+    type: 'evaluateN', ir, count: 3,
+    refArrays: {
+      re: new Float64Array([1, 2, 3]),
+      im: new Float64Array([4, 5, 6]),
+    },
+  });
+  assert.equal(r.type, 'samples');
+  assert.deepEqual(Array.from(r.samples), [1, 2, 3]);
+  assert.ok(r.imag, 'reply must carry the imaginary buffer');
+  assert.deepEqual(Array.from(r.imag), [4, 5, 6]);
+});
+
+test('evaluateN: complex shape=[N] ref survives _unwrapRefArrays (conj)', () => {
+  const w = createWorkerHandler();
+  const z = valueLib.complexValue([1, 2, 3], [7, 8, 9], [3]);
+  const ir = {
+    kind: 'call', op: 'conj',
+    args: [{ kind: 'ref', ns: 'self', name: 'z', loc: synthLoc() }],
+    loc: synthLoc(),
+  };
+  const r = w.handle({ type: 'evaluateN', ir, count: 3, refArrays: { z } });
+  assert.deepEqual(Array.from(r.samples), [1, 2, 3]);
+  assert.deepEqual(Array.from(r.imag), [-7, -8, -9], 'conj negates imag');
+});
+
+test('evaluateN: abs2 of a complex ref → real reply (no imag)', () => {
+  const w = createWorkerHandler();
+  const z = valueLib.complexValue([3, 0], [4, 2], [2]);   // |.|² = 25, 4
+  const ir = {
+    kind: 'call', op: 'abs2',
+    args: [{ kind: 'ref', ns: 'self', name: 'z', loc: synthLoc() }],
+    loc: synthLoc(),
+  };
+  const r = w.handle({ type: 'evaluateN', ir, count: 2, refArrays: { z } });
+  assert.deepEqual(Array.from(r.samples), [25, 4]);
+  assert.equal(r.imag, undefined, 'real result must not carry imag');
+});
+
+test('evaluateN: spec §03 amplitude — abs2(A_sig*coupling + A_bkg)', () => {
+  const w = createWorkerHandler();
+  const ref = (n) => ({ kind: 'ref', ns: 'self', name: n, loc: synthLoc() });
+  const ir = {
+    kind: 'call', op: 'abs2',
+    args: [{
+      kind: 'call', op: 'add',
+      args: [
+        { kind: 'call', op: 'mul', args: [ref('A_sig'), ref('coupling')], loc: synthLoc() },
+        ref('A_bkg'),
+      ],
+      loc: synthLoc(),
+    }],
+    loc: synthLoc(),
+  };
+  const r = w.handle({
+    type: 'evaluateN', ir, count: 2,
+    refArrays: {
+      A_sig:    valueLib.complexValue([1, 2], [1, 0], [2]),
+      coupling: valueLib.complexValue([0, 1], [1, 0], [2]),  // i, 1
+      A_bkg:    valueLib.complexValue([1, 1], [0, 0], [2]),
+    },
+  });
+  // atom0: (1+i)*i = -1+i ; +1 = i ; |.|²=1
+  // atom1: 2*1 = 2 ; +1 = 3 ; |.|²=9
+  assert.deepEqual(Array.from(r.samples), [1, 9]);
+  assert.equal(r.imag, undefined);
+});
