@@ -844,6 +844,13 @@ const SIGNATURE_FACTORIES = {
   reverse:     () => ({ args: [array(1, ['%dynamic'], tvar('T'))],
                         kwargs: {},
                         result: array(1, ['%dynamic'], tvar('T')) }),
+  // addaxes(A, n_leading, n_trailing) — insert singular axes around A
+  // (spec §07). Output rank = rank(A) + n_leading + n_trailing, so
+  // the result type is dynamic (rank depends on the integer args),
+  // same treatment as `array`. n_leading / n_trailing are fixed
+  // non-negative integers.
+  addaxes:     () => ({ args: [any(), INTEGER, INTEGER],
+                        kwargs: {}, result: deferred() }),
   // array(data, size, dimorder) — n-D array from flat data + shape.
   // Result type stays dynamic (rank depends on size); the runtime
   // returns nested JS arrays of the appropriate shape.
