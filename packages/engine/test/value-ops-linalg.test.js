@@ -129,14 +129,14 @@ test('ARITH_OPS.logabsdet on Value', () => {
 // Matrix-result ops
 // =====================================================================
 
-test('ARITH_OPS.diagmat on Value vector → Value matrix', () => {
+test('ARITH_OPS.diagmat on Value vector → vector-backed diag Value', () => {
   const v = vector([1, 2, 3]);
   const D = ARITH_OPS.diagmat(v);
   assert.deepEqual(D.shape, [3, 3]);
-  assert.deepEqual(Array.from(D.data),
-    [1, 0, 0,
-     0, 2, 0,
-     0, 0, 3]);
+  assert.ok(valueLib.isDiagStored(D), 'diag structure, O(m) storage');
+  assert.deepEqual(Array.from(D.data), [1, 2, 3], 'stores the diagonal');
+  assert.deepEqual(Array.from(valueLib.densify(D).data),
+    [1, 0, 0, 0, 2, 0, 0, 0, 3]);
 });
 
 test('ARITH_OPS.self_outer on Value vector → Value matrix', () => {

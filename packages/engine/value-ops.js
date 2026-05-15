@@ -88,9 +88,102 @@ function _matIdxT(i, j, m) { return j * m + i; }
 // mul — shape-dispatched multiplication
 // ---------------------------------------------------------------------
 
+// Diagonal fast-paths for `mul`. A diag Value is vector-backed
+// (data = the m-vector, logical shape [m,m]); these avoid both the
+// O(m²) densification and the O(m³) gemm. Returns a Value, or null
+// when the combination isn't fast-pathed (caller densifies the diag
+// operand(s) and falls through to the generic dense path — correctness
+// never depends on a fast-path existing). Real diagonals only; a
+// complex diagonal returns null → densify (rare; cov is real).
+function _diagMul(a, b) {
+  const aD = valueLib.isDiagStored(a) && !a.im;
+  const bD = valueLib.isDiagStored(b) && !b.im;
+  if (!aD && !bD) return null;
+  const sa = a.shape, sb = b.shape;
+  // scalar × diag  /  diag × scalar  → diag (structure preserved)
+  if (aD && sb.length === 0) {
+    const s = b.data[0], d = new Float64Array(a.data.length);
+    for (let i = 0; i < d.length; i++) d[i] = a.data[i] * s;
+    return valueLib.diagMatrix(d);
+  }
+  if (bD && sa.length === 0) {
+    const s = a.data[0], d = new Float64Array(b.data.length);
+    for (let i = 0; i < d.length; i++) d[i] = s * b.data[i];
+    return valueLib.diagMatrix(d);
+  }
+  // diag × diag → diag (Hadamard of the diagonals)
+  if (aD && bD) {
+    if (a.data.length !== b.data.length) {
+      throw new Error('mul: diagonal dimension mismatch (' +
+        a.data.length + ' vs ' + b.data.length + ')');
+    }
+    const d = new Float64Array(a.data.length);
+    for (let i = 0; i < d.length; i++) d[i] = a.data[i] * b.data[i];
+    return valueLib.diagMatrix(d);
+  }
+  // diag(m×m) × column-vector(m) → vector(m): elementwise scale
+  if (aD && sb.length === 1 && !isTransposeView(b)) {
+    const d = a.data;
+    if (b.shape[0] !== d.length) {
+      throw new Error('mul: matrix×vector dimension mismatch ([' +
+        d.length + ',' + d.length + '] × [' + b.shape[0] + '])');
+    }
+    const out = new Float64Array(d.length);
+    for (let i = 0; i < d.length; i++) out[i] = d[i] * b.data[i];
+    return { shape: [d.length], data: out };
+  }
+  // row-vector(m) × diag(m×m) → row vector(m): elementwise scale
+  if (bD && sa.length === 1 && isTransposeView(a)) {
+    const d = b.data;
+    if (a.shape[0] !== d.length) {
+      throw new Error('mul: vector×matrix dimension mismatch');
+    }
+    const out = new Float64Array(d.length);
+    for (let i = 0; i < d.length; i++) out[i] = a.data[i] * d[i];
+    return { shape: [d.length], data: out, t: 'T' };
+  }
+  // diag(m×m) × dense matrix(m×p) → scale rows  (canonical, real)
+  if (aD && sb.length === 2 && !b.im && !isTransposeView(b)
+      && b.struct === undefined) {
+    const d = a.data, m = d.length, p = b.shape[1];
+    if (b.shape[0] !== m) {
+      throw new Error('mul: matrix×matrix dimension mismatch');
+    }
+    const out = new Float64Array(m * p);
+    for (let i = 0; i < m; i++) {
+      const di = d[i], base = i * p;
+      for (let j = 0; j < p; j++) out[base + j] = di * b.data[base + j];
+    }
+    return { shape: [m, p], data: out };
+  }
+  // dense matrix(p×m) × diag(m×m) → scale columns  (canonical, real)
+  if (bD && sa.length === 2 && !a.im && !isTransposeView(a)
+      && a.struct === undefined) {
+    const d = b.data, m = d.length, p = a.shape[0];
+    if (a.shape[1] !== m) {
+      throw new Error('mul: matrix×matrix dimension mismatch');
+    }
+    const out = new Float64Array(p * m);
+    for (let i = 0; i < p; i++) {
+      const base = i * m;
+      for (let j = 0; j < m; j++) out[base + j] = a.data[base + j] * d[j];
+    }
+    return { shape: [p, m], data: out };
+  }
+  return null;   // not fast-pathed → caller densifies
+}
+
 function mul(a, b) {
   if (!isValue(a) || !isValue(b)) {
     throw new Error('value-ops.mul: both operands must be Values');
+  }
+  if (valueLib.isDiagStored(a) || valueLib.isDiagStored(b)) {
+    const r = _diagMul(a, b);
+    if (r !== null) return r;
+    // Unhandled combination (e.g. complex diagonal): densify the diag
+    // operand(s) and fall through to the generic dense path.
+    if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
+    if (valueLib.isDiagStored(b)) b = valueLib.densify(b);
   }
   const sa = a.shape, sb = b.shape;
   if (_isCx(a, b)) {
@@ -564,6 +657,19 @@ function _makeElementwiseBinop(scalarFn, opName) {
     if (!isValue(a) || !isValue(b)) {
       throw new Error('value-ops.' + opName + ': both operands must be Values');
     }
+    if (valueLib.isDiagStored(a) || valueLib.isDiagStored(b)) {
+      // diag ∘ diag (real) stays diag — operate on the m-vectors.
+      // Any other mix densifies the diag operand(s) (occupancy of
+      // diag+dense is dense anyway) so the generic path is correct.
+      if (valueLib.isDiagStored(a) && valueLib.isDiagStored(b)
+          && !a.im && !b.im && a.data.length === b.data.length) {
+        const d = new Float64Array(a.data.length);
+        for (let i = 0; i < d.length; i++) d[i] = scalarFn(a.data[i], b.data[i]);
+        return valueLib.diagMatrix(d);
+      }
+      if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
+      if (valueLib.isDiagStored(b)) b = valueLib.densify(b);
+    }
     if (_isCx(a, b)) return _complexLinearBinop(scalarFn, a, b, opName);
     const sa = a.shape, sb = b.shape;
     // scalar × anything → broadcast (preserve tag of the non-scalar)
@@ -634,6 +740,12 @@ const sub = _makeElementwiseBinop((a, b) => a - b, 'sub');
 
 function neg(a) {
   if (!isValue(a)) throw new Error('value-ops.neg: argument must be a Value');
+  if (valueLib.isDiagStored(a) && !a.im) {           // -diag stays diag
+    const d = new Float64Array(a.data.length);
+    for (let i = 0; i < d.length; i++) d[i] = -a.data[i];
+    return valueLib.diagMatrix(d);
+  }
+  if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
   if (isComplexValue(a)) {
     // Negate raw stored buffers and keep the full Klein-4 tag — neg
     // commutes with transpose and conjugation, so no materialization is
@@ -671,6 +783,15 @@ function neg(a) {
 
 function _valueToNested(v) {
   if (!isValue(v)) throw new Error('_valueToNested: not a Value');
+  // Structured Values (vector-backed diag, future tri/sym) must be
+  // materialized before nested indexing — the raw buffer is not a
+  // dense row-major m×n layout. This single guard keeps every
+  // nested-bridge linalg op (det / inv / linsolve / lower_cholesky /
+  // trace / …) correct for structured inputs; O(n) fast-paths layer
+  // on top at the op sites for the hot cases.
+  if (v.struct !== undefined && (v.struct & valueLib.ST_OCC_MASK) !== valueLib.ST_DENSE) {
+    v = valueLib.densify(v);
+  }
   const r = v.shape.length;
   if (r === 1) {
     // Vector → flat JS array. Tag toggles row/column orientation but

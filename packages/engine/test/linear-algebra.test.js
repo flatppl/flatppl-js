@@ -9,6 +9,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler');
+const valueLib = require('../value');
 
 function lit(v)        { return { kind: 'lit', value: v }; }
 function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
@@ -57,9 +58,12 @@ test('trace: rejects non-square matrix', () => {
 // diagmat / self_outer
 // =====================================================================
 
-test('diagmat: vector → diagonal matrix', () => {
-  assert.deepEqual(ev(call('diagmat', vec(1, 2, 3))),
-    [[1, 0, 0], [0, 2, 0], [0, 0, 3]]);
+test('diagmat: vector → vector-backed diagonal structure', () => {
+  const D = ev(call('diagmat', vec(1, 2, 3)));
+  assert.ok(valueLib.isDiagStored(D), 'diagmat yields a diag Value');
+  assert.deepEqual(Array.from(D.data), [1, 2, 3], 'stores the diagonal');
+  assert.deepEqual(Array.from(valueLib.densify(D).data),
+    [1, 0, 0, 0, 2, 0, 0, 0, 3]);
 });
 
 test('self_outer: v · vᵀ', () => {

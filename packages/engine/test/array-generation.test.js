@@ -115,9 +115,13 @@ test('zeros / ones: multi-dimensional', () => {
   assert.deepEqual(ev(call('ones',  lit(2), lit(2))), [[1, 1], [1, 1]]);
 });
 
-test('eye(n) ⇒ n × n identity matrix', () => {
-  assert.deepEqual(ev(call('eye', lit(3))),
-    [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+test('eye(n) ⇒ n × n identity (vector-backed diag structure)', () => {
+  const I = ev(call('eye', lit(3)));
+  assert.ok(valueLib.isDiagStored(I), 'eye is a diag Value, not dense');
+  assert.deepEqual(I.shape, [3, 3]);
+  assert.deepEqual(Array.from(I.data), [1, 1, 1], 'stores the diagonal');
+  assert.deepEqual(Array.from(valueLib.densify(I).data),
+    [1, 0, 0, 0, 1, 0, 0, 0, 1], 'densifies to the identity matrix');
 });
 
 test('onehot(i, n) ⇒ length-n basis vector with 1 at position i (1-based)', () => {

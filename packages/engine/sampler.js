@@ -1680,6 +1680,10 @@ const ARITH_OPS = {
     return ARITH_OPS.transpose(M);
   },
   trace: M => {
+    if (valueLib.isDiagStored(M) && !M.im) {           // O(n): Σ diagonal
+      let s = 0; for (let i = 0; i < M.data.length; i++) s += M.data[i];
+      return valueLib.scalar(s);
+    }
     if (valueLib.isValue(M)) {
       return valueLib.scalar(ARITH_OPS.trace(valueOps._valueToNested(M)));
     }
@@ -1692,18 +1696,16 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) s += M[i][i];
     return s;
   },
+  // diagmat(v) → the m×m diagonal matrix with v on the diagonal.
+  // Produces the vector-backed `diag` structured Value (O(m) storage);
+  // every diag-aware op fast-paths it, anything else densify()s. A
+  // complex diagonal carries its imaginary part on the same vector.
   diagmat: v => {
     if (valueLib.isValue(v)) {
-      return valueOps._nestedToValue(ARITH_OPS.diagmat(valueOps._valueToNested(v)));
+      const vec = v.shape.length === 1 ? v : valueLib.asValue(valueOps._valueToNested(v));
+      return valueLib.diagMatrix(vec.data, vec.im);
     }
-    const n = v.length;
-    const out = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const row = new Array(n);
-      for (let j = 0; j < n; j++) row[j] = (i === j) ? v[i] : 0;
-      out[i] = row;
-    }
-    return out;
+    return valueLib.diagMatrix(v instanceof Float64Array ? v : Float64Array.from(v));
   },
   self_outer: v => {
     if (valueLib.isValue(v)) {
@@ -1721,6 +1723,10 @@ const ARITH_OPS = {
   // det(A): determinant via LU with partial pivoting. Returns 0 for
   // singular matrices. O(n³).
   det: A => {
+    if (valueLib.isDiagStored(A) && !A.im) {           // O(n): ∏ diagonal
+      let p = 1; for (let i = 0; i < A.data.length; i++) p *= A.data[i];
+      return valueLib.scalar(p);
+    }
     if (valueLib.isValue(A)) {
       return valueLib.scalar(ARITH_OPS.det(valueOps._valueToNested(A)));
     }
@@ -1732,6 +1738,10 @@ const ARITH_OPS = {
   // logabsdet(A): log |det(A)|. Computed alongside det via the LU
   // decomposition to keep numerical stability on near-singular inputs.
   logabsdet: A => {
+    if (valueLib.isDiagStored(A) && !A.im) {           // O(n): Σ log|diag|
+      let s = 0; for (let i = 0; i < A.data.length; i++) s += Math.log(Math.abs(A.data[i]));
+      return valueLib.scalar(s);
+    }
     if (valueLib.isValue(A)) {
       return valueLib.scalar(ARITH_OPS.logabsdet(valueOps._valueToNested(A)));
     }
@@ -1743,6 +1753,14 @@ const ARITH_OPS = {
   // inv(A): matrix inverse via Gauss-Jordan with partial pivoting. O(n³).
   // Throws on singular matrices.
   inv: A => {
+    if (valueLib.isDiagStored(A) && !A.im) {           // O(n): reciprocal
+      const d = new Float64Array(A.data.length);
+      for (let i = 0; i < d.length; i++) {
+        if (A.data[i] === 0) throw new Error('inv: singular diagonal matrix');
+        d[i] = 1 / A.data[i];
+      }
+      return valueLib.diagMatrix(d);
+    }
     if (valueLib.isValue(A)) {
       return valueOps._nestedToValue(ARITH_OPS.inv(valueOps._valueToNested(A)));
     }
@@ -1754,6 +1772,22 @@ const ARITH_OPS = {
   // linsolve(A, b): solve A x = b for x. b may be a vector (returns
   // vector) or a matrix (returns matrix, solved column-by-column).
   linsolve: (A, b) => {
+    // Diagonal A: x = b ⊘ diag, O(n), no factorization. Vector b only
+    // (the MvNormal/whitening case); matrix b densifies via the
+    // generic path below.
+    if (valueLib.isDiagStored(A) && !A.im) {
+      const d = A.data, m = d.length;
+      const bv = valueLib.isValue(b) ? b : null;
+      const bd = bv ? bv.data : b;
+      if (bd && bd.length === m && (!bv || bv.shape.length === 1)) {
+        const x = new Float64Array(m);
+        for (let i = 0; i < m; i++) {
+          if (d[i] === 0) throw new Error('linsolve: singular diagonal matrix');
+          x[i] = bd[i] / d[i];
+        }
+        return bv ? valueLib.vector(x) : Array.from(x);
+      }
+    }
     if (valueLib.isValue(A) || valueLib.isValue(b)) {
       const aN = valueLib.isValue(A) ? valueOps._valueToNested(A) : A;
       const bN = valueLib.isValue(b) ? valueOps._valueToNested(b) : b;
@@ -1767,6 +1801,18 @@ const ARITH_OPS = {
   // lower_cholesky(A): lower-triangular L with A = L L^T for symmetric
   // positive-definite A. Throws if A is not PD.
   lower_cholesky: A => {
+    if (valueLib.isDiagStored(A) && !A.im) {
+      // A diagonal PD matrix is its own Cholesky structure: L = √diag,
+      // still diagonal (lower-triangular). O(n), no factorization.
+      const d = new Float64Array(A.data.length);
+      for (let i = 0; i < d.length; i++) {
+        if (!(A.data[i] > 0)) {
+          throw new Error('lower_cholesky: matrix is not positive definite');
+        }
+        d[i] = Math.sqrt(A.data[i]);
+      }
+      return valueLib.diagMatrix(d);
+    }
     if (valueLib.isValue(A)) {
       return valueOps._nestedToValue(
         ARITH_OPS.lower_cholesky(valueOps._valueToNested(A)));
@@ -1902,16 +1948,13 @@ const ARITH_OPS = {
     return build(0);
   },
   // eye(n) — n × n identity matrix. Spec §07.
+  // eye(n) → n×n identity, as a vector-backed diag of ones.
   eye: n => {
     const k = n | 0;
     if (k <= 0) return [];
-    const out = new Array(k);
-    for (let i = 0; i < k; i++) {
-      const row = new Array(k);
-      for (let j = 0; j < k; j++) row[j] = i === j ? 1 : 0;
-      out[i] = row;
-    }
-    return out;
+    const d = new Float64Array(k);
+    d.fill(1);
+    return valueLib.diagMatrix(d);
   },
   // onehot(i, n) — length-n basis vector with 1 at position i (1-based
   // per FlatPPL convention). Spec §07.
