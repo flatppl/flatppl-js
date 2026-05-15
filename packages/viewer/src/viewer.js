@@ -2265,6 +2265,33 @@
       return String(parseFloat(v.toPrecision(4)));
     }
 
+    // "a + b i" / "a - b i" for a complex scalar constant. Both parts
+    // go through formatScalar so precision/integer handling matches
+    // the real path. The sign is folded into the connector so we never
+    // print "a + -b i"; -0 imaginary reads as "+ 0 i".
+    function formatComplexScalar(re, im) {
+      var imv = im === 0 ? 0 : im;            // normalise -0 → 0
+      var sign = imv < 0 ? ' - ' : ' + ';
+      return formatScalar(re) + sign + formatScalar(Math.abs(imv)) + ' i';
+    }
+
+    // Toolbar badge for a complex binding rendered as its real part.
+    // Static (no interaction) in v1 — the |z| / Im / Argand mode
+    // toggle is a tracked follow-up and will replace this with a
+    // button group in the same toolbar slot.
+    function complexReBadge() {
+      var b = document.createElement('span');
+      b.textContent = 'complex — showing Re(z)';
+      b.title = 'This binding is complex-valued; the histogram is its '
+        + 'real part. Modulus / Im / Argand views are planned.';
+      b.style.padding = '0.15em 0.6em';
+      b.style.borderRadius = '3px';
+      b.style.fontSize = '0.92em';
+      b.style.background = 'var(--vscode-badge-background, #4d4d4d)';
+      b.style.color = 'var(--vscode-badge-foreground, #fff)';
+      return b;
+    }
+
     // Compose pre-formatted element strings into "[a, b, c]" or
     // "[a, b, c, …, z] (length N)" for long arrays. The threshold
     // balances readability against verbosity: 8 fits on typical
@@ -6016,6 +6043,16 @@
         return;
       }
       var samples = measure.samples;
+      // Complex-valued binding (engine sets dtype:'complex' + .imag,
+      // planar with .samples = Re). v1 renders the real part — honest
+      // about it via a toolbar badge — rather than silently showing
+      // Re with no indication it's one projection of a complex value.
+      // |z| / Im / Argand modes + a mode toggle are a tracked
+      // follow-up (TODO-flatppl-js.md §03); the badge is the seam
+      // they'll grow from. Array/record-shaped complex (per-atom
+      // vectors) keep their existing corner rendering of Re for now.
+      var isComplex = measure.dtype === 'complex'
+        && measure.imag instanceof Float64Array;
       // Array-mode: skip histogram + density entirely; the data
       // is a fixed-length sequence to plot as index→value, not
       // a sample of a distribution.
@@ -6024,9 +6061,15 @@
         return;
       }
       // Constant scalar samples: render as text (same path as
-      // phase=fixed scalars and degenerate distributions).
+      // phase=fixed scalars and degenerate distributions). A constant
+      // complex value shows both parts ("a + b i") — showing only Re
+      // would be actively misleading for a fixed complex constant.
       if (samplesAreConstant(samples)) {
-        renderTextValue(name, formatScalar(samples[0]));
+        if (isComplex) {
+          renderTextValue(name, formatComplexScalar(samples[0], measure.imag[0]));
+        } else {
+          renderTextValue(name, formatScalar(samples[0]));
+        }
         return;
       }
       // Histogram lives on the main thread now — no round-trip.
@@ -6055,6 +6098,12 @@
       var resolvedToolbar = typeof opts.toolbarControls === 'function'
         ? opts.toolbarControls()
         : opts.toolbarControls;
+      // Complex scalar bindings carry no toolbar of their own — surface
+      // the "showing Re(z)" badge so the histogram isn't mistaken for
+      // the whole value.
+      if (isComplex && resolvedToolbar == null) {
+        resolvedToolbar = complexReBadge();
+      }
       // Only fetch analytical density when applicable. This is the
       // only worker round-trip per plot for measure bindings, and
       // it's skipped entirely for variates and chain-mode (stochastic-
