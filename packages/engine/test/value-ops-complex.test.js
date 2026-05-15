@@ -75,11 +75,62 @@ test('complex scalar broadcast mul = full complex multiply', () => {
   assert.deepEqual(reim(p), [[-5, -7], [2, 3]]);
 });
 
-test('complex matmul/matvec is guarded, not a silent im-drop', () => {
-  const A = complexValue(new Float64Array(4), new Float64Array(4), [2, 2]);
-  const v = complexValue([1, 1], [1, 1]);
-  assert.throws(() => vops.mul(A, v),
-    /complex matrix\/vector products are not yet implemented/);
+test('complex matrix × complex vector (conjugation-aware gemm)', () => {
+  // A = [[1+0i, 0+1i],[0-1i, 2+0i]]  (Hermitian),  v = (1+0i, 0+1i)ᵀ
+  const A = complexValue([1, 0, 0, 2], [0, 1, -1, 0], [2, 2]);
+  const v = complexValue([1, 0], [0, 1], [2]);
+  const r = readComplex(vops.mul(A, v));
+  // row0: (1)(1) + (i)(i) = 1 + (-1) = 0
+  // row1: (-i)(1) + (2)(i) = -i + 2i = i
+  assert.deepEqual([Array.from(r.re), Array.from(r.im)], [[0, 0], [0, 1]]);
+});
+
+test('Hermitian inner product: adjoint(z)*z = ||z||²  (real, ≥0)', () => {
+  const z = complexValue([3, 0], [4, 2], [2]);   // 3+4i, 2i  → |·|²=25,4
+  const ip = readComplex(vops.mul(value.adjoint(z), z));
+  assert.equal(ip.re[0], 29, 'sum of squared moduli');
+  assert.ok(Math.abs(ip.im[0]) < 1e-12, 'Hermitian form is real');
+});
+
+test('bilinear vs sesquilinear: transpose(z)*z keeps cross terms', () => {
+  const z = complexValue([1, 0], [1, 1], [2]);   // 1+i, i
+  // transpose (no conj): (1+i)² + (i)² = (2i) + (-1) = -1 + 2i
+  const t = readComplex(vops.mul(value.transpose(z), z));
+  assert.ok(Math.abs(t.re[0] + 1) < 1e-12 && Math.abs(t.im[0] - 2) < 1e-12);
+  // adjoint (conj): |1+i|² + |i|² = 2 + 1 = 3 (real)
+  const a = readComplex(vops.mul(value.adjoint(z), z));
+  assert.ok(Math.abs(a.re[0] - 3) < 1e-12 && Math.abs(a.im[0]) < 1e-12);
+});
+
+test('complex matmul: (i·I)·B = i·B', () => {
+  const iI = complexValue([0, 0, 0, 0], [1, 0, 0, 1], [2, 2]);  // i·I
+  const B  = complexValue([1, 2, 3, 4], [0, 0, 0, 0], [2, 2]);
+  const r = readComplex(vops.mul(iI, B));
+  assert.deepEqual(Array.from(r.re), [0, 0, 0, 0]);
+  assert.deepEqual(Array.from(r.im), [1, 2, 3, 4]);
+});
+
+test('complex outer product u * adjoint(v) = u v^H', () => {
+  const u = complexValue([1, 0], [0, 1], [2]);          // (1, i)ᵀ
+  const v = complexValue([1, 1], [1, 0], [2]);          // (1+i, 1)
+  const r = readComplex(vops.mul(u, value.adjoint(v))); // 2×2
+  // u v^H, v^H = (1-i, 1)
+  // row0 (u0=1):   [1·(1-i), 1·1]   = [1-i, 1]
+  // row1 (u1=i):   [i·(1-i), i·1]   = [1+i, i]
+  assert.deepEqual(Array.from(r.re), [1, 1, 1, 0]);
+  assert.deepEqual(Array.from(r.im), [-1, 0, 1, 1]);
+});
+
+test('mulN: complex shared matrix × per-atom complex vector', () => {
+  // N must differ from the matrix dim to avoid the shape ambiguity
+  // (a 2×2 matrix with leading dim == N looks atom-batched).
+  const N = 3;
+  const A = complexValue([1, 0, 0, 1], [0, 0, 0, 0], [2, 2]);   // I (real)
+  const V = complexValue([1, 2, 3, 4, 5, 6],
+                         [7, 8, 9, 10, 11, 12], [N, 2]);          // per-atom
+  const r = readComplex(vops.mulN(A, V, N));                      // = V
+  assert.deepEqual(Array.from(r.re), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(Array.from(r.im), [7, 8, 9, 10, 11, 12]);
 });
 
 // ---- conjugation through the elementwise algebra ----------------------

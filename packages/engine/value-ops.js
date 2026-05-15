@@ -94,20 +94,17 @@ function mul(a, b) {
   }
   const sa = a.shape, sb = b.shape;
   if (_isCx(a, b)) {
-    // Complex scalar broadcast is a full complex multiply (the scalar
-    // carries an imaginary part). Complex matmul / matvec / inner /
-    // outer need conjugation-aware gemm — a separable larger piece,
-    // deferred (see TODO-flatppl-js.md §03). Guard rather than silently
-    // drop the imaginary part.
-    if (sa.length === 0 || sb.length === 0) {
-      return _complexScalarBroadcastMul(a, b);
-    }
+    // Conjugation-aware complex gemm. readComplex (inside each helper)
+    // folds the Klein-4 conj bit, so adjoint(·) gives the Hermitian
+    // form for free; the swapped bit still drives index permutation.
+    if (sa.length === 0 || sb.length === 0) return _complexScalarBroadcastMul(a, b);
+    if (sa.length === 1 && sb.length === 1) return _cxVecVecMul(a, b);
+    if (sa.length === 2 && sb.length === 1) return _cxMatVecMul(a, b);
+    if (sa.length === 1 && sb.length === 2) return _cxVecMatMul(a, b);
+    if (sa.length === 2 && sb.length === 2) return _cxMatMatMul(a, b);
     throw new Error(
-      'value-ops.mul: complex matrix/vector products are not yet ' +
-      'implemented (shapes ' + JSON.stringify(sa) + ' × ' +
-      JSON.stringify(sb) + '). Complex elementwise/scalar arithmetic ' +
-      'is supported; conjugation-aware complex gemm is a separate ' +
-      'follow-up (TODO-flatppl-js.md §03).');
+      'value-ops.mul: unsupported complex shape combination ' +
+      JSON.stringify(sa) + ' × ' + JSON.stringify(sb));
   }
   // scalar × anything
   if (sa.length === 0) return _scalarBroadcastMul(a.data[0], b);
@@ -333,6 +330,161 @@ function _matMatMul(A, B) {
     }
   }
   return { shape: [m, p], data: out };
+}
+
+// =====================================================================
+// Conjugation-aware complex gemm (vec/mat products)
+// =====================================================================
+//
+// The real product helpers above read raw `.data` and apply the
+// Klein-4 swapped bit via index permutation (BLAS gemm-flag style).
+// The complex variants below are structurally identical but:
+//
+//   - operands are read through readComplex(), which folds the
+//     conjugation bit into the logical buffers ONCE. This is exactly
+//     what makes the Hermitian forms fall out for free:
+//       transpose(v) * v  → tag T (no conj) → bilinear  vᵀv
+//       adjoint(v)   * v  → tag A (conj)    → sesquilin. v̄ᵀv
+//     No explicit conjugation logic is needed here — the lazy conj
+//     design (value.js) already did it.
+//   - the swapped bit still drives index permutation (readComplex
+//     leaves data in STORED layout, identical to the real path).
+//   - accumulation is the complex MAC (ar·br − ai·bi, ar·bi + ai·br).
+//   - results are canonical (conj folded into data ⇒ tag-'N' conj
+//     bit); _vecMat returns a row vector with the swapped bit set.
+//
+// Mixed real×complex works transparently: readComplex on a real Value
+// yields a zero imaginary buffer.
+
+function _cxVecVecMul(u, v) {
+  const uSwapped = isTransposeView(u);
+  const vSwapped = isTransposeView(v);
+  if (uSwapped && !vSwapped) return _cxInnerProduct(u, v);
+  if (!uSwapped && vSwapped) return _cxOuterProduct(u, v);
+  if (!uSwapped && !vSwapped) {
+    throw new Error(
+      'mul: vector * vector is not defined; use transpose(v1) * v2 ' +
+      'for inner product or v1 * transpose(v2) for outer product');
+  }
+  throw new Error(
+    'mul: transpose(v1) * transpose(v2) is not defined (two row vectors)');
+}
+
+function _cxInnerProduct(u, v) {
+  const k = u.shape[0];
+  if (v.shape[0] !== k) {
+    throw new Error('mul: inner-product vector length mismatch (' +
+      k + ' vs ' + v.shape[0] + ')');
+  }
+  const cu = readComplex(u), cv = readComplex(v);
+  let sr = 0, si = 0;
+  for (let i = 0; i < k; i++) {
+    const ar = cu.re[i], ai = cu.im[i], br = cv.re[i], bi = cv.im[i];
+    sr += ar * br - ai * bi;
+    si += ar * bi + ai * br;
+  }
+  return _packCx([sr], [si], [], false);
+}
+
+function _cxOuterProduct(u, v) {
+  const m = u.shape[0], n = v.shape[0];
+  const cu = readComplex(u), cv = readComplex(v);
+  const re = new Float64Array(m * n), im = new Float64Array(m * n);
+  for (let i = 0; i < m; i++) {
+    const ar = cu.re[i], ai = cu.im[i];
+    for (let j = 0; j < n; j++) {
+      const br = cv.re[j], bi = cv.im[j];
+      re[i * n + j] = ar * br - ai * bi;
+      im[i * n + j] = ar * bi + ai * br;
+    }
+  }
+  return _packCx(re, im, [m, n], false);
+}
+
+function _cxMatVecMul(A, v) {
+  const [m, n] = A.shape;
+  if (v.shape[0] !== n) {
+    throw new Error('mul: matrix×vector dimension mismatch (' +
+      JSON.stringify(A.shape) + ' × [' + v.shape[0] + '])');
+  }
+  if (isTransposeView(v)) {
+    throw new Error('mul: matrix * (transposed/row vector) is not ' +
+      'defined; mul requires a column vector on the right');
+  }
+  const cA = readComplex(A), cv = readComplex(v);
+  const aSwap = isTransposeView(A);
+  const re = new Float64Array(m), im = new Float64Array(m);
+  for (let i = 0; i < m; i++) {
+    let sr = 0, si = 0;
+    for (let k = 0; k < n; k++) {
+      const idx = aSwap ? (k * m + i) : (i * n + k);
+      const ar = cA.re[idx], ai = cA.im[idx];
+      const br = cv.re[k],   bi = cv.im[k];
+      sr += ar * br - ai * bi;
+      si += ar * bi + ai * br;
+    }
+    re[i] = sr; im[i] = si;
+  }
+  return _packCx(re, im, [m], false);
+}
+
+function _cxVecMatMul(u, B) {
+  if (!isTransposeView(u)) {
+    throw new Error('mul: (column vector) * matrix is not defined; ' +
+      'mul requires matrix on the left of a column vector or ' +
+      'transpose(v) on the left of a matrix');
+  }
+  const k = u.shape[0];
+  const [bRows, p] = B.shape;
+  if (bRows !== k) {
+    throw new Error('mul: vector×matrix dimension mismatch ([' + k +
+      '] × ' + JSON.stringify(B.shape) + ')');
+  }
+  const cu = readComplex(u), cB = readComplex(B);
+  const bSwap = isTransposeView(B);
+  const re = new Float64Array(p), im = new Float64Array(p);
+  for (let j = 0; j < p; j++) {
+    let sr = 0, si = 0;
+    for (let i = 0; i < k; i++) {
+      const idx = bSwap ? (j * k + i) : (i * p + j);
+      const ar = cu.re[i], ai = cu.im[i];
+      const br = cB.re[idx], bi = cB.im[idx];
+      sr += ar * br - ai * bi;
+      si += ar * bi + ai * br;
+    }
+    re[j] = sr; im[j] = si;
+  }
+  // Row vector: swapped bit set. Conjugation already folded into data
+  // by readComplex, so the result is a pure transpose view (tag 'T'),
+  // not 'A'.
+  return _packCx(re, im, [p], true);
+}
+
+function _cxMatMatMul(A, B) {
+  const [m, n] = A.shape;
+  const [bRows, p] = B.shape;
+  if (bRows !== n) {
+    throw new Error('mul: matrix×matrix dimension mismatch (' +
+      JSON.stringify(A.shape) + ' × ' + JSON.stringify(B.shape) + ')');
+  }
+  const cA = readComplex(A), cB = readComplex(B);
+  const aSwap = isTransposeView(A), bSwap = isTransposeView(B);
+  const re = new Float64Array(m * p), im = new Float64Array(m * p);
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < p; j++) {
+      let sr = 0, si = 0;
+      for (let k = 0; k < n; k++) {
+        const ai_ = aSwap ? (k * m + i) : (i * n + k);
+        const bi_ = bSwap ? (j * n + k) : (k * p + j);
+        const ar = cA.re[ai_], aim = cA.im[ai_];
+        const br = cB.re[bi_], bim = cB.im[bi_];
+        sr += ar * br - aim * bim;
+        si += ar * bim + aim * br;
+      }
+      re[i * p + j] = sr; im[i * p + j] = si;
+    }
+  }
+  return _packCx(re, im, [m, p], false);
 }
 
 // =====================================================================
@@ -640,6 +792,40 @@ function _matBatchedVecMul(A, V, N) {
   return { shape: [N, m], data: out };
 }
 
+// Complex atom-batched matrix × shape=[N, n] → complex shape=[N, m].
+// Per-atom matvec with a shared (possibly transposed/adjoint) matrix;
+// readComplex folds the matrix's conj bit (Hermitian for adjoint(A)).
+function _cxMatBatchedVecMul(A, V, N) {
+  const [m, n] = A.shape;
+  if (V.shape.length !== 2 || V.shape[0] !== N || V.shape[1] !== n) {
+    throw new Error(
+      'mulN: matrix×batchedVector shape mismatch (' +
+      JSON.stringify(A.shape) + ' × ' + JSON.stringify(V.shape) +
+      '; expected batched vector shape=[N=' + N + ', n=' + n + '])');
+  }
+  if (isTransposeView(V)) {
+    throw new Error('mulN: batched vector must be column-oriented');
+  }
+  const cA = readComplex(A), cV = readComplex(V);
+  const aSwap = isTransposeView(A);
+  const re = new Float64Array(N * m), im = new Float64Array(N * m);
+  for (let atom = 0; atom < N; atom++) {
+    const vBase = atom * n, oBase = atom * m;
+    for (let i = 0; i < m; i++) {
+      let sr = 0, si = 0;
+      for (let k = 0; k < n; k++) {
+        const ai_ = aSwap ? (k * m + i) : (i * n + k);
+        const ar = cA.re[ai_], aim = cA.im[ai_];
+        const br = cV.re[vBase + k], bim = cV.im[vBase + k];
+        sr += ar * br - aim * bim;
+        si += ar * bim + aim * br;
+      }
+      re[oBase + i] = sr; im[oBase + i] = si;
+    }
+  }
+  return _packCx(re, im, [N, m], false);
+}
+
 // Atom-indep value broadcast over the leading N axis of an atom-batched
 // value, applied via a binary scalar fn. `batched` has shape=[N, ...rest];
 // `indep` must have shape=rest (same orientation). Result has the
@@ -731,12 +917,7 @@ function mulN(a, b, N) {
   // matrix × shape=[N, n]: a is shape [m, n], b is shape [N, n].
   if (!aBatched && bBatched
       && a.shape.length === 2 && b.shape.length === 2) {
-    if (_isCx(a, b)) {
-      throw new Error(
-        'value-ops.mulN: complex atom-batched matrix×vector is not yet ' +
-        'implemented (conjugation-aware gemm; TODO-flatppl-js.md §03). ' +
-        'Complex elementwise/scalar arithmetic is supported.');
-    }
+    if (_isCx(a, b)) return _cxMatBatchedVecMul(a, b, N);
     return _matBatchedVecMul(a, b, N);
   }
   // Atom-indep case.

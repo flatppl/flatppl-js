@@ -1776,16 +1776,20 @@ const ARITH_OPS = {
     }
     return _cholesky(A);
   },
-  // row_gram(A) = A · A^T; col_gram(A) = A^T · A. Useful for LKJ ↔
-  // LKJCholesky conversions and Gram-matrix priors. On Value input,
-  // the matmul goes through value-ops.mul (which honours the tag at
-  // dispatch — no transpose materialisation).
+  // row_gram(A) = A · A^†; col_gram(A) = A^† · A (spec §07 — adjoint /
+  // conjugate-transpose, the Hermitian Gram). For real A the conj bit
+  // is a numerical no-op so this is identical to the old transpose
+  // form; for complex A the adjoint is required for the Gram to be
+  // Hermitian. On Value input the matmul goes through value-ops.mul,
+  // which folds the Klein-4 conj+swap tags at dispatch (no transpose
+  // or conjugate materialisation). Useful for LKJ ↔ LKJCholesky
+  // conversions and Gram-matrix priors.
   row_gram: A => {
-    if (valueLib.isValue(A)) return valueOps.mul(A, valueLib.transpose(A));
+    if (valueLib.isValue(A)) return valueOps.mul(A, valueLib.adjoint(A));
     return _matmul(A, ARITH_OPS.transpose(A));
   },
   col_gram: A => {
-    if (valueLib.isValue(A)) return valueOps.mul(valueLib.transpose(A), A);
+    if (valueLib.isValue(A)) return valueOps.mul(valueLib.adjoint(A), A);
     return _matmul(ARITH_OPS.transpose(A), A);
   },
   // array(data, size, dimorder) — n-D array from a flat data vector
