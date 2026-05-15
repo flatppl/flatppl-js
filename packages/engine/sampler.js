@@ -2030,6 +2030,44 @@ const ARITH_OPS = {
     }
     throw new Error('reverse: argument must be a vector');
   },
+  // addaxes(A, n_leading, n_trailing) — reshape A by inserting
+  // n_leading singular (size-1) axes before A's axes and n_trailing
+  // after (spec §07). Size-1 axes leave numel and the flat buffer
+  // unchanged, so this is a ZERO-COPY shape rewrite on the Value —
+  // the same lazy-metadata pattern as the Klein-4 transpose tag.
+  // It is the explicit, layout-agnostic alternative to implicit
+  // NumPy/Julia axis insertion in `broadcast` (spec commit 87c9be1):
+  // addaxes(b,1,0) gives NumPy-style alignment, addaxes(b,0,1)
+  // Julia-style — the engine never picks for the user.
+  addaxes: (A, nLeading, nTrailing) => {
+    const _intAxis = (x, what) => {
+      const n = (x && Array.isArray(x.shape) && x.data) ? x.data[0] : +x;
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error('addaxes: ' + what +
+          ' must be a non-negative integer, got ' + x);
+      }
+      return n;
+    };
+    const nl = _intAxis(nLeading, 'n_leading');
+    const nt = _intAxis(nTrailing, 'n_trailing');
+    const v = valueLib.asValue(A);
+    if (valueLib.isTransposeView(v)) {
+      // addaxes is a logical-shape rewrite; composing it with a
+      // pending transpose/adjoint tag would make "last two axes"
+      // ambiguous. Apply addaxes to a non-transposed array.
+      throw new Error('addaxes: argument is a transposed/adjoint view; '
+        + 'addaxes operates on logical (non-transposed) array shape');
+    }
+    const shape = new Array(nl + v.shape.length + nt);
+    let p = 0;
+    for (let i = 0; i < nl; i++) shape[p++] = 1;
+    for (let i = 0; i < v.shape.length; i++) shape[p++] = v.shape[i];
+    for (let i = 0; i < nt; i++) shape[p++] = 1;
+    const out = { shape: shape, data: v.data };          // shared buffer
+    if (v.dtype) out.dtype = v.dtype;
+    if (v.im instanceof Float64Array) out.im = v.im;     // complex rides along
+    return out;
+  },
   cat: (...xs) => {
     if (xs.length === 0) return [];
     const first = xs[0];

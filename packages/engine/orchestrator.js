@@ -154,7 +154,7 @@ const EVALUABLE_OPS = new Set([
   'bincounts', 'selectbins',
   // Array generation (spec §07). All pure value ops over fixed-phase
   // arguments; dispatch through ARITH_OPS.
-  'linspace', 'extlinspace', 'partition', 'reverse',
+  'linspace', 'extlinspace', 'partition', 'reverse', 'addaxes',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
   'rowstack', 'colstack', 'array',
   // Higher-order ops (spec §04 / §07). Dispatched via dedicated cases

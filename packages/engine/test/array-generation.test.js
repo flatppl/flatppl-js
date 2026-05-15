@@ -230,3 +230,56 @@ test('colstack: mismatched column lengths ⇒ runtime error', () => {
   assert.throws(() => ev(call('colstack', vov([1, 2], [3, 4, 5]))),
     /length mismatch/);
 });
+
+// =====================================================================
+// addaxes — explicit singular-axis insertion (spec §07; commit 87c9be1)
+// =====================================================================
+
+const valueLib = require('../value');
+
+test('addaxes(A, 2, 1): inserts leading/trailing singular axes', () => {
+  const r = ev(call('addaxes', vec(1, 2, 3), lit(2), lit(1)));
+  assert.deepEqual(r.shape, [1, 1, 3, 1]);
+  assert.deepEqual(Array.from(r.data), [1, 2, 3]);
+  assert.equal(valueLib.numel(r.shape), r.data.length);
+});
+
+test('addaxes(A, 0, 0): identity shape, same content', () => {
+  const r = ev(call('addaxes', vec(5, 6), lit(0), lit(0)));
+  assert.deepEqual(r.shape, [2]);
+  assert.deepEqual(Array.from(r.data), [5, 6]);
+});
+
+test('addaxes is zero-copy: result shares the input buffer', () => {
+  // A as a Value flows through unchanged; the data buffer is reused.
+  const A = valueLib.vector([7, 8, 9]);
+  const r = sampler.evaluateExpr(
+    { kind: 'call', op: 'addaxes',
+      args: [{ kind: 'lit', value: A }, lit(1), lit(2)] }, {});
+  assert.deepEqual(r.shape, [1, 3, 1, 1]);
+  assert.equal(r.data, A.data, 'buffer shared (no copy)');
+});
+
+test('addaxes: NumPy- vs Julia-style alignment is explicit', () => {
+  // A length-3 vector lifted to a row (1,3) vs a column (3,1) — the
+  // engine never picks; the user states it via addaxes.
+  const numpyRow = ev(call('addaxes', vec(1, 2, 3), lit(1), lit(0)));
+  const juliaCol = ev(call('addaxes', vec(1, 2, 3), lit(0), lit(1)));
+  assert.deepEqual(numpyRow.shape, [1, 3]);
+  assert.deepEqual(juliaCol.shape, [3, 1]);
+});
+
+test('addaxes: negative axis count is rejected', () => {
+  assert.throws(() => ev(call('addaxes', vec(1, 2), lit(-1), lit(0))),
+    /non-negative integer/);
+});
+
+test('addaxes: complex Value carries its imaginary buffer through', () => {
+  const z = valueLib.complexValue([1, 2], [3, 4], [2]);
+  const r = sampler.evaluateExpr(
+    { kind: 'call', op: 'addaxes',
+      args: [{ kind: 'lit', value: z }, lit(1), lit(0)] }, {});
+  assert.deepEqual(r.shape, [1, 2]);
+  assert.equal(r.dtype, 'complex');
+  assert.deepEqual(Array.from(r.im), [3, 4]);
+});
