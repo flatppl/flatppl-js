@@ -131,8 +131,35 @@ test('add of complex shape=[N,k] routes through value-ops, not guarded', () => {
   assert.deepEqual(reim(s), [[11, 12, 13, 14], [1, 1, 1, 1]]);
 });
 
-test('abs2 of shape-rich complex on batched-scalar path is guarded', () => {
+test('abs2 of shape-rich complex → real Value, shape preserved', () => {
   const z = complexValue([1, 2, 3, 4], [1, 1, 1, 1], [2, 2]);
-  assert.throws(() => ARITH_OPS_N.abs2([z], 2),
-    /shape-rich complex Value .* not supported on the batched-scalar path/);
+  const r = ARITH_OPS_N.abs2([z], 2);
+  assert.ok(isValue(r) && !isComplexValue(r));
+  assert.deepEqual(r.shape, [2, 2]);
+  // |1+i|²=2, |2+i|²=5, |3+i|²=10, |4+i|²=17
+  assert.deepEqual(Array.from(r.data), [2, 5, 10, 17]);
+});
+
+test('exp / conj / real of a shape-rich complex (per-atom vector)', () => {
+  const z = complexValue([0, 1], [Math.PI, 0], [1, 2]);  // (iπ, 1)
+  const e = ARITH_OPS_N.exp([z], 1);                       // (e^{iπ}=-1, e)
+  assert.ok(isComplexValue(e) && e.shape[0] === 1);
+  const ce = readComplex(e);
+  assert.ok(Math.abs(ce.re[0] + 1) < 1e-12 && Math.abs(ce.im[0]) < 1e-12);
+  assert.ok(Math.abs(ce.re[1] - Math.E) < 1e-12);
+  const c = readComplex(ARITH_OPS_N.conj([z], 1));
+  assert.deepEqual(Array.from(c.im), [-Math.PI, -0]);
+  const re = ARITH_OPS_N.real([z], 1);
+  assert.ok(!isComplexValue(re));
+  assert.deepEqual(Array.from(re.data), [0, 1]);
+  assert.deepEqual(re.shape, [1, 2]);
+});
+
+test('complex(reVec, imVec) constructor over shape-rich real inputs', () => {
+  const A = value.withShape(Float64Array.from([1, 2, 3, 4]), [2, 2]);
+  const B = value.withShape(Float64Array.from([5, 6, 7, 8]), [2, 2]);
+  const z = ARITH_OPS_N.complex([A, B], 2);
+  assert.ok(isComplexValue(z));
+  assert.deepEqual(z.shape, [2, 2]);
+  assert.deepEqual(reim(z), [[1, 2, 3, 4], [5, 6, 7, 8]]);
 });
