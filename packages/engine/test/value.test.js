@@ -442,3 +442,85 @@ test('storage invariant: every constructor returns Float64Array data', () => {
       'data length mismatch for shape=' + JSON.stringify(v.shape));
   }
 });
+
+// =====================================================================
+// Complex Values (dtype: 'complex') — chunk 1 foundation
+// =====================================================================
+
+const {
+  complexValue, readComplex, isComplexValue, getImag,
+  transpose, adjoint, conjugate, getTag,
+} = value;
+
+test('complexValue: builds planar {re, im} Value with dtype complex', () => {
+  const z = complexValue([1, 2, 3], [4, 5, 6]);
+  assert.deepEqual(z.shape, [3]);
+  assert.equal(z.dtype, 'complex');
+  assert.ok(z.data instanceof Float64Array && z.im instanceof Float64Array);
+  assert.deepEqual(Array.from(z.data), [1, 2, 3]);
+  assert.deepEqual(Array.from(z.im), [4, 5, 6]);
+  assert.ok(isComplexValue(z));
+  assert.equal(getImag(z), z.im);
+});
+
+test('complexValue: explicit shape, length-mismatch + numel guards', () => {
+  const z = complexValue(new Float64Array(6), new Float64Array(6), [2, 3]);
+  assert.deepEqual(z.shape, [2, 3]);
+  assert.throws(() => complexValue([1, 2], [1]), /re length 2 != im length 1/);
+  assert.throws(() => complexValue([1, 2, 3], [1, 2, 3], [2, 2]),
+    /numel\(\[2,2\]\) != buffer length 3/);
+});
+
+test('isComplexValue / getImag: real Values are not complex', () => {
+  const r = vector([1, 2, 3]);
+  assert.equal(isComplexValue(r), false);
+  assert.equal(getImag(r), null);
+});
+
+test('readComplex: real Value yields zero imaginary buffer', () => {
+  const r = vector([1, 2, 3]);
+  const { re, im } = readComplex(r);
+  assert.deepEqual(Array.from(re), [1, 2, 3]);
+  assert.deepEqual(Array.from(im), [0, 0, 0]);
+});
+
+test('readComplex: non-conjugated complex returns stored buffers (no copy)', () => {
+  const z = complexValue([1, 2], [3, 4]);
+  const { re, im } = readComplex(z);
+  assert.equal(re, z.data, 'real buffer shared');
+  assert.equal(im, z.im, 'imag buffer shared when not conjugated');
+});
+
+test('readComplex: conjugate view negates the logical imaginary part', () => {
+  const z = complexValue([1, 2], [3, 4]);
+  const zc = conjugate(z);
+  assert.equal(getTag(zc), 'C');
+  const { re, im } = readComplex(zc);
+  assert.deepEqual(Array.from(re), [1, 2], 'real part unchanged by conj');
+  assert.deepEqual(Array.from(im), [-3, -4], 'imag negated for conj view');
+  // Storage itself is canonical / untouched (lazy conj).
+  assert.deepEqual(Array.from(z.im), [3, 4]);
+});
+
+test('transpose/adjoint/conjugate carry the .im buffer through', () => {
+  const z = complexValue(new Float64Array([1, 2, 3, 4]),
+                         new Float64Array([5, 6, 7, 8]), [2, 2]);
+  for (const op of [transpose, adjoint, conjugate]) {
+    const out = op(z);
+    assert.ok(out.im instanceof Float64Array,
+      op.name + ' dropped the imaginary buffer');
+    assert.equal(out.im, z.im, op.name + ' should share im storage (lazy)');
+    assert.equal(out.dtype, 'complex');
+  }
+});
+
+test('adjoint of complex = transpose + conjugate (tag A, im negated on read)', () => {
+  const z = complexValue(new Float64Array([1, 2, 3, 4]),
+                         new Float64Array([5, 6, 7, 8]), [2, 2]);
+  const za = adjoint(z);
+  assert.equal(getTag(za), 'A');
+  assert.deepEqual(za.shape, [2, 2]);
+  const { im } = readComplex(za);
+  assert.deepEqual(Array.from(im), [-5, -6, -7, -8],
+    'adjoint view conjugates the imaginary part');
+});

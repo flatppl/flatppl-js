@@ -244,6 +244,11 @@ function transpose(v) {
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
   const out = { shape: newShape, data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
+  // Complex payload rides along untouched: the imaginary buffer shares
+  // the same storage layout as `data`, so the lazy axis-swap applies to
+  // it identically via _dataShape. The conjugation bit (in newTag) is
+  // honoured at read time by readComplex, not here.
+  if (v.im instanceof Float64Array) out.im = v.im;
   return out;
 }
 
@@ -257,6 +262,7 @@ function adjoint(v) {
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
   const out = { shape: newShape, data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
+  if (v.im instanceof Float64Array) out.im = v.im;
   return out;
 }
 
@@ -267,7 +273,84 @@ function conjugate(v) {
   const newTag = _TAG_CONJUGATE[getTag(v)];
   const out = { shape: v.shape.slice(), data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
+  if (v.im instanceof Float64Array) out.im = v.im;
   return out;
+}
+
+// ---------------------------------------------------------------------
+// Complex Values (dtype: 'complex')
+// ---------------------------------------------------------------------
+//
+// A complex Value is the planar generalization of the scalar `{re, im}`
+// representation into the batched Value pipeline:
+//
+//   { shape, data: Float64Array, im: Float64Array, dtype: 'complex', t? }
+//
+// `data` holds the real parts, `im` the imaginary parts, in PARALLEL
+// (planar) layout — NOT interleaved. Both buffers have identical length
+// numel(shape) and share the same shape / storage-layout / transpose-tag
+// semantics as a real Value. This matches TF.js's complex-tensor
+// representation (separate real/imag tensors) and makes the structural
+// constructors free:
+//
+//   - complex(re, im)  →  pair two existing buffers (no arithmetic)
+//   - real(z)/imag(z)  →  relabel one buffer (no copy)
+//   - conj(z)          →  lazy Klein-4 conjugate-bit flip (no copy)
+//
+// **Conjugation is lazy.** conjugate()/adjoint() only flip the tag bit;
+// the stored `im` buffer is canonical (tag-'N' interpretation). Any
+// consumer that needs the concrete logical imaginary part calls
+// readComplex(v), which applies the conjugation sign once. Real Values
+// keep paying nothing for the conj bit (no one reads "logical im").
+
+// Is `v` a complex Value? Cheap structural check used by op dispatch to
+// route the (re, im) buffer-wise algebra.
+function isComplexValue(v) {
+  return v != null && typeof v === 'object'
+    && v.dtype === 'complex'
+    && Array.isArray(v.shape)
+    && v.data instanceof Float64Array
+    && v.im instanceof Float64Array;
+}
+
+// Raw stored imaginary buffer (tag-'N' interpretation), or null for a
+// real Value. Prefer readComplex when you need the logical value.
+function getImag(v) { return (v && v.im instanceof Float64Array) ? v.im : null; }
+
+// Complex Value constructor. `re` and `im` are array-likes of equal
+// length; `shape` defaults to [length] (atom-batched scalar / vector,
+// disambiguated by the caller's N exactly like the real constructors).
+// Borrows Float64Array storage when given; copies otherwise.
+function complexValue(re, im, shape) {
+  const reD = re instanceof Float64Array ? re : Float64Array.from(re);
+  const imD = im instanceof Float64Array ? im : Float64Array.from(im);
+  if (reD.length !== imD.length) {
+    throw new Error('complexValue: re length ' + reD.length +
+                    ' != im length ' + imD.length);
+  }
+  const shp = shape ? shape.slice() : [reD.length];
+  if (numel(shp) !== reD.length) {
+    throw new Error('complexValue: numel(' + JSON.stringify(shp) +
+                    ') != buffer length ' + reD.length);
+  }
+  return { shape: shp, data: reD, im: imD, dtype: 'complex' };
+}
+
+// Materialize the LOGICAL complex parts of `v`, honouring the Klein-4
+// conjugation bit: returns `{ re, im }` Float64Arrays where `im` is the
+// stored buffer negated iff the value is a conjugate view. `re` is
+// always the stored buffer (conjugation never touches the real part).
+// The negation allocates a fresh buffer only when conjugated — the lazy
+// conj cost is realized here, at the one consumer that needs it. For a
+// real Value the imaginary part is an implicit zero buffer.
+function readComplex(v) {
+  if (!isComplexValue(v)) {
+    return { re: v.data, im: new Float64Array(v.data.length) };
+  }
+  if (!isConjugateView(v)) return { re: v.data, im: v.im };
+  const im = new Float64Array(v.im.length);
+  for (let i = 0; i < im.length; i++) im[i] = -v.im[i];
+  return { re: v.data, im: im };
 }
 
 // ---------------------------------------------------------------------
@@ -412,6 +495,8 @@ module.exports = {
   isTransposeView: isTransposeView,
   isConjugateView: isConjugateView,
   isValue: isValue,
+  isComplexValue: isComplexValue,
+  getImag: getImag,
   isBatched: isBatched,
   numel: numel,
   // tag-flipping operations (lazy; never touch data)
@@ -426,6 +511,8 @@ module.exports = {
   matrix: matrix,
   batchedMatrix: batchedMatrix,
   withShape: withShape,
+  complexValue: complexValue,
+  readComplex: readComplex,
   // coercions
   asValue: asValue,
   asScalar: asScalar,
