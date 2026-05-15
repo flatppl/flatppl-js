@@ -2405,6 +2405,160 @@ ARITH_OPS_N.neg = (args, N) => {
 };
 
 // =====================================================================
+// Complex batched broadcast (planar re/im, shape=[] or shape=[N])
+// =====================================================================
+//
+// broadcast{1,2,3} coerce per-atom results with `+fn(...)`, which turns
+// a complex {re, im} into NaN. Complex *shape-rich* values (shape=[N,k]
+// per-atom vectors/matrices) already route through the shape-aware
+// value-ops path (complex-aware since chunk 2). The remaining gap is:
+//
+//   - complex *batched scalars* (shape=[N] of one complex per atom), and
+//   - the complex constructors / accessors (complex / real / imag /
+//     conj / cis) which never had ARITH_OPS_N entries at all (atom-
+//     dependent complex previously threw, per TODO §03).
+//
+// _cxBroadcast runs the EXISTING scalar ARITH_OPS primitive per atom
+// (those already dispatch on {re, im}) and writes into two parallel
+// Float64Arrays — the planar layout makes the batched form a pure
+// re-pack of the scalar op, exactly as the design intends. Each arg is
+// presented to the primitive in its natural scalar form (a JS number
+// for real inputs, a {re, im} object for complex), identical to the
+// atom-indep evaluateExpr path — so the primitives need no batched
+// variant. Result type is detected from the primitive's output
+// (number ⇒ real Value, {re, im} ⇒ complex Value).
+
+// Does the complex path apply? True if any arg is complex (scalar
+// {re, im} or a complex Value). Constructors (complex / cis) force the
+// complex path explicitly at their registration site, since their
+// inputs are real but the output is complex.
+function _cxInPlay(args) {
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i];
+    if (_isComplex(v) || valueLib.isComplexValue(v)) return true;
+  }
+  return false;
+}
+
+// Per-arg accessor: returns a function i → (number | {re, im}) plus an
+// `atomBatched` flag. Mirrors isBatch/_scalarVal/_batchData but is
+// complex-aware and rejects shape-rich complex (handled elsewhere).
+function _cxArgAccessor(v, N) {
+  if (_isComplex(v)) return { batched: false, at: () => v };
+  if (valueLib.isComplexValue(v)) {
+    if (v.shape.length === 0) {
+      const c = valueLib.readComplex(v);
+      const z = { re: c.re[0], im: c.im[0] };
+      return { batched: false, at: () => z };
+    }
+    if (v.shape.length === 1 && v.shape[0] === N) {
+      const c = valueLib.readComplex(v);   // resolves conj once
+      return { batched: true, at: (i) => ({ re: c.re[i], im: c.im[i] }) };
+    }
+    throw new Error(
+      '_cxBroadcast: shape-rich complex Value (shape=[' +
+      v.shape.join(',') + ']) is not supported on the batched-scalar ' +
+      'path; complex per-atom vectors/matrices need the value-ops ' +
+      'elementwise path (TODO-flatppl-js.md §03).');
+  }
+  if (valueLib.isValue(v)) {
+    if (v.shape.length === 0) { const s = v.data[0]; return { batched: false, at: () => s }; }
+    if (v.shape.length === 1 && v.shape[0] === N) {
+      const d = v.data; return { batched: true, at: (i) => d[i] };
+    }
+    const s0 = v.data[0]; return { batched: false, at: () => s0 };
+  }
+  if (v instanceof Float64Array && v.length === N) {
+    return { batched: true, at: (i) => v[i] };
+  }
+  const s = (typeof v === 'boolean') ? (v ? 1 : 0) : +v;
+  return { batched: false, at: () => s };
+}
+
+function _cxBroadcast(fn, args, N) {
+  const accs = new Array(args.length);
+  let anyBatched = false;
+  for (let k = 0; k < args.length; k++) {
+    accs[k] = _cxArgAccessor(args[k], N);
+    if (accs[k].batched) anyBatched = true;
+  }
+  if (!anyBatched) {
+    const r = fn.apply(null, accs.map((a) => a.at(0)));
+    return _isComplex(r)
+      ? valueLib.complexValue([r.re], [r.im], [])
+      : valueLib.scalar(+r);
+  }
+  const re = new Float64Array(N);
+  let im = null;                       // allocated lazily on first complex
+  const callArgs = new Array(args.length);
+  for (let i = 0; i < N; i++) {
+    for (let k = 0; k < accs.length; k++) callArgs[k] = accs[k].at(i);
+    const r = fn.apply(null, callArgs);
+    if (_isComplex(r)) {
+      if (im === null) im = new Float64Array(N);
+      re[i] = r.re; im[i] = r.im;
+    } else {
+      re[i] = +r;
+    }
+  }
+  return im === null
+    ? valueLib.batchedScalar(re)
+    : valueLib.complexValue(re, im, [N]);
+}
+
+// Rewire complex-relevant arithmetic ops to take the complex path when
+// complex is in play; otherwise keep the zero-alloc real Float64Array
+// broadcast. add/sub/mul/neg already have a shape-aware wrapper (which
+// handles complex shape-rich via value-ops); we only need to redirect
+// their *scalar* fallback (non-shape-rich) to _cxBroadcast.
+// add/sub/mul/neg: `realEntry` is the shape-aware wrapper, which
+// already routes shape-rich operands (including complex shape=[N,k]) to
+// the complex-aware value-ops path. So: shape-rich → realEntry
+// (value-ops); else complex scalar → _cxBroadcast; else real scalar →
+// realEntry (zero-alloc).
+function _cxOrRealShapeAware(opName) {
+  const realEntry = ARITH_OPS_N[opName];
+  const prim = ARITH_OPS[opName];
+  return (args, N) => {
+    for (let i = 0; i < args.length; i++) {
+      if (_shapeAwareCandidate(args[i], N)) return realEntry(args, N);
+    }
+    return _cxInPlay(args) ? _cxBroadcast(prim, args, N) : realEntry(args, N);
+  };
+}
+for (const op of ['add', 'sub', 'mul', 'neg']) {
+  if (ARITH_OPS_N[op]) ARITH_OPS_N[op] = _cxOrRealShapeAware(op);
+}
+
+// div/divide/pos/pow/abs/abs2/exp/log/sqrt are scalar-only ops with no
+// shape-rich value-ops path. When complex is in play they go through
+// _cxBroadcast (which itself raises a clear guard for shape-rich
+// complex — better than silently producing NaN). Otherwise the
+// existing real broadcast entry is preserved unchanged.
+function _cxOrReal(opName) {
+  const realEntry = ARITH_OPS_N[opName];
+  const prim = ARITH_OPS[opName];
+  return (args, N) => _cxInPlay(args)
+    ? _cxBroadcast(prim, args, N)
+    : realEntry(args, N);
+}
+for (const op of ['div', 'divide', 'pos', 'pow',
+                   'abs', 'abs2', 'exp', 'log', 'sqrt']) {
+  if (ARITH_OPS_N[op]) ARITH_OPS_N[op] = _cxOrReal(op);
+}
+
+// complex / real / imag / conj / cis had no ARITH_OPS_N entry (atom-
+// dependent complex previously threw). Route them unconditionally
+// through _cxBroadcast: it degrades to a real Value when inputs and
+// output are real (e.g. conj / real on real data), and produces a
+// complex Value for the constructors (complex / cis) and for complex
+// inputs. Arity is taken from the IR args length at call time.
+for (const op of ['complex', 'real', 'imag', 'conj', 'cis']) {
+  const prim = ARITH_OPS[op];
+  ARITH_OPS_N[op] = (args, N) => _cxBroadcast(prim, args, N);
+}
+
+// =====================================================================
 // Linear-algebra helpers (textbook algorithms; small-matrix sized)
 // =====================================================================
 
