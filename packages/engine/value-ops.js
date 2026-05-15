@@ -33,8 +33,39 @@
 const valueLib = require('./value');
 const {
   isValue, getTag, isTransposeView, isConjugateView,
+  isComplexValue, readComplex, complexValue,
   scalar, batchedScalar, vector, withShape,
 } = valueLib;
+
+// ---------------------------------------------------------------------
+// Complex elementwise helpers
+// ---------------------------------------------------------------------
+//
+// Complex Values are planar: parallel re (`.data`) / im (`.im`) buffers
+// with identical shape + layout (see value.js). All elementwise ops
+// therefore reduce to running the real algebra over the re buffers and
+// the matching imaginary algebra over the im buffers, with shapes
+// already validated by the shared shape checks. readComplex applies the
+// Klein-4 conjugation bit once, so downstream cell math never re-checks
+// the tag.
+//
+// `_isCx(a, b)` — does this op need the complex path?
+function _isCx(a, b) {
+  return isComplexValue(a) || (b !== undefined && isComplexValue(b));
+}
+
+// Pack two equal-length re/im buffers back into a complex Value with the
+// given logical shape. readComplex already resolved any input
+// conjugation into the buffers, so the result carries no conj bit; but
+// it leaves the data in STORED (pre-transpose) layout, so the swapped
+// bit must be carried forward when the governing operand was a
+// transpose view. `swapped` true ⇒ tag 'T' (pure transpose, conj
+// already folded), else canonical 'N'.
+function _packCx(re, im, shape, swapped) {
+  const v = complexValue(re, im, shape);
+  if (swapped) v.t = 'T';
+  return v;
+}
 
 // ---------------------------------------------------------------------
 // Indexing helpers
@@ -62,6 +93,22 @@ function mul(a, b) {
     throw new Error('value-ops.mul: both operands must be Values');
   }
   const sa = a.shape, sb = b.shape;
+  if (_isCx(a, b)) {
+    // Complex scalar broadcast is a full complex multiply (the scalar
+    // carries an imaginary part). Complex matmul / matvec / inner /
+    // outer need conjugation-aware gemm — a separable larger piece,
+    // deferred (see TODO-flatppl-js.md §03). Guard rather than silently
+    // drop the imaginary part.
+    if (sa.length === 0 || sb.length === 0) {
+      return _complexScalarBroadcastMul(a, b);
+    }
+    throw new Error(
+      'value-ops.mul: complex matrix/vector products are not yet ' +
+      'implemented (shapes ' + JSON.stringify(sa) + ' × ' +
+      JSON.stringify(sb) + '). Complex elementwise/scalar arithmetic ' +
+      'is supported; conjugation-aware complex gemm is a separate ' +
+      'follow-up (TODO-flatppl-js.md §03).');
+  }
   // scalar × anything
   if (sa.length === 0) return _scalarBroadcastMul(a.data[0], b);
   if (sb.length === 0) return _scalarBroadcastMul(b.data[0], a);
@@ -87,6 +134,29 @@ function _scalarBroadcastMul(s, v) {
   if (v.t && v.t !== 'N') r.t = v.t;  // preserve orientation
   if (v.dtype) r.dtype = v.dtype;
   return r;
+}
+
+// Complex scalar broadcast multiply: one operand is shape=[] (a complex
+// or real scalar), the other any shape. Full complex multiply per cell
+// (the scalar's imaginary part participates). Multiplication is
+// commutative, so the re/im formula is order-independent. The array
+// operand governs output shape and transpose orientation; conjugation
+// of both operands is resolved by readComplex up front.
+function _complexScalarBroadcastMul(a, b) {
+  const aScalar = a.shape.length === 0;
+  const scalarV = aScalar ? a : b;
+  const arrV    = aScalar ? b : a;
+  const s = readComplex(scalarV);
+  const w = readComplex(arrV);
+  const sr = s.re[0], si = s.im[0];
+  const n = w.re.length;
+  const re = new Float64Array(n), im = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const wr = w.re[i], wi = w.im[i];
+    re[i] = sr * wr - si * wi;
+    im[i] = sr * wi + si * wr;
+  }
+  return _packCx(re, im, arrV.shape, isTransposeView(arrV));
 }
 
 // vector × vector → scalar (inner) or matrix (outer), depending on tags.
@@ -283,11 +353,66 @@ function _matMatMul(A, B) {
 
 // Build the elementwise binary op from a scalar primitive. Used to
 // generate `add` and `sub` from `(a,b) => a+b` and `(a,b) => a-b`.
+// Complex elementwise add/sub. add/sub are ℂ-linear: the real algebra
+// runs independently over the re and im buffers, so the same scalar
+// primitive (`(x,y)=>x+y` etc.) applies to both. Shape/orientation
+// rules are identical to the real path; broadcast handled by treating
+// the missing im of a real operand as an implicit zero buffer (which
+// readComplex already supplies).
+function _complexLinearBinop(scalarFn, a, b, opName) {
+  const sa = a.shape, sb = b.shape;
+  const ca = readComplex(a), cb = readComplex(b);
+  // scalar ∘ scalar
+  if (sa.length === 0 && sb.length === 0) {
+    return _packCx(
+      [scalarFn(ca.re[0], cb.re[0])],
+      [scalarFn(ca.im[0], cb.im[0])], [], false);
+  }
+  // scalar ∘ array  (broadcast the scalar over every cell; the array
+  // operand governs shape AND orientation)
+  if (sa.length === 0 || sb.length === 0) {
+    const scal = sa.length === 0 ? ca : cb;
+    const arr  = sa.length === 0 ? cb : ca;
+    const arrV = sa.length === 0 ? b : a;
+    const sLeft = sa.length === 0;
+    const n = arr.re.length;
+    const re = new Float64Array(n), im = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      re[i] = sLeft ? scalarFn(scal.re[0], arr.re[i]) : scalarFn(arr.re[i], scal.re[0]);
+      im[i] = sLeft ? scalarFn(scal.im[0], arr.im[i]) : scalarFn(arr.im[i], scal.im[0]);
+    }
+    return _packCx(re, im, arrV.shape, isTransposeView(arrV));
+  }
+  // array ∘ array — shapes + orientation must agree (same checks as real)
+  if (sa.length !== sb.length) {
+    throw new Error(opName + ': rank mismatch (' + JSON.stringify(sa) +
+      ' vs ' + JSON.stringify(sb) + ')');
+  }
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i] !== sb[i]) {
+      throw new Error(opName + ': shape mismatch (' + JSON.stringify(sa) +
+        ' vs ' + JSON.stringify(sb) + ')');
+    }
+  }
+  if (isTransposeView(a) !== isTransposeView(b)) {
+    throw new Error(opName + ': cannot combine values of opposite ' +
+      'orientation (one is transposed). Apply transpose to align them first.');
+  }
+  const n = ca.re.length;
+  const re = new Float64Array(n), im = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    re[i] = scalarFn(ca.re[i], cb.re[i]);
+    im[i] = scalarFn(ca.im[i], cb.im[i]);
+  }
+  return _packCx(re, im, sa, isTransposeView(a));
+}
+
 function _makeElementwiseBinop(scalarFn, opName) {
   return function elementwiseBinop(a, b) {
     if (!isValue(a) || !isValue(b)) {
       throw new Error('value-ops.' + opName + ': both operands must be Values');
     }
+    if (_isCx(a, b)) return _complexLinearBinop(scalarFn, a, b, opName);
     const sa = a.shape, sb = b.shape;
     // scalar × anything → broadcast (preserve tag of the non-scalar)
     if (sa.length === 0 && sb.length === 0) {
@@ -357,6 +482,18 @@ const sub = _makeElementwiseBinop((a, b) => a - b, 'sub');
 
 function neg(a) {
   if (!isValue(a)) throw new Error('value-ops.neg: argument must be a Value');
+  if (isComplexValue(a)) {
+    // Negate raw stored buffers and keep the full Klein-4 tag — neg
+    // commutes with transpose and conjugation, so no materialization is
+    // needed (mirrors the real path: stored layout + tag preserved).
+    const reO = new Float64Array(a.data.length);
+    const imO = new Float64Array(a.im.length);
+    for (let i = 0; i < reO.length; i++) reO[i] = -a.data[i];
+    for (let i = 0; i < imO.length; i++) imO[i] = -a.im[i];
+    const r = { shape: a.shape.slice(), data: reO, im: imO, dtype: 'complex' };
+    if (a.t && a.t !== 'N') r.t = a.t;
+    return r;
+  }
   const out = new Float64Array(a.data.length);
   for (let i = 0; i < a.data.length; i++) out[i] = -a.data[i];
   const r = { shape: a.shape.slice(), data: out };
@@ -528,6 +665,30 @@ function _atomBroadcastBinop(scalarFn, batched, indep, N, swapArgs, opName) {
     throw new Error(opName + 'N: opposite orientation between atom-batched ' +
       'and atom-indep operands');
   }
+  if (isComplexValue(batched) || isComplexValue(indep)) {
+    // Complex add/sub is ℂ-linear: run the same scalar primitive over
+    // the re and im buffers independently. readComplex resolves any
+    // conjugation; the swapped bit (transpose) rides along on the
+    // batched operand exactly as in the real path.
+    const cb = readComplex(batched), ci = readComplex(indep);
+    const stride = ci.re.length;
+    const re = new Float64Array(cb.re.length);
+    const im = new Float64Array(cb.im.length);
+    for (let atom = 0; atom < N; atom++) {
+      const base = atom * stride;
+      for (let i = 0; i < stride; i++) {
+        const bi = base + i;
+        if (swapArgs) {
+          re[bi] = scalarFn(ci.re[i], cb.re[bi]);
+          im[bi] = scalarFn(ci.im[i], cb.im[bi]);
+        } else {
+          re[bi] = scalarFn(cb.re[bi], ci.re[i]);
+          im[bi] = scalarFn(cb.im[bi], ci.im[i]);
+        }
+      }
+    }
+    return _packCx(re, im, batched.shape, isTransposeView(batched));
+  }
   const stride = indep.data.length;
   const out = new Float64Array(batched.data.length);
   if (swapArgs) {
@@ -570,6 +731,12 @@ function mulN(a, b, N) {
   // matrix × shape=[N, n]: a is shape [m, n], b is shape [N, n].
   if (!aBatched && bBatched
       && a.shape.length === 2 && b.shape.length === 2) {
+    if (_isCx(a, b)) {
+      throw new Error(
+        'value-ops.mulN: complex atom-batched matrix×vector is not yet ' +
+        'implemented (conjugation-aware gemm; TODO-flatppl-js.md §03). ' +
+        'Complex elementwise/scalar arithmetic is supported.');
+    }
     return _matBatchedVecMul(a, b, N);
   }
   // Atom-indep case.
