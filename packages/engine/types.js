@@ -239,16 +239,23 @@ function unify(a, b, subst) {
   if (a.kind !== b.kind) return null;
   switch (a.kind) {
     case 'scalar':
-      // Strict equality, OR canonical promotion either direction.
-      // §sec:valuetypes: "booleans ⊂ integers ⊂ reals" with a canonical
-      // embedding into complexes. So `Normal(mu=0, sigma=1)` (integer
-      // literals) unifies cleanly against the (real, real) kwarg
-      // signature, and `equal(b, 1)` (boolean vs integer) doesn't
-      // emit a spurious error. Subtyping is intentionally collapsed
-      // into unification here — keeps the inference machinery simple
-      // and matches the spec's "may use these embeddings implicitly".
+      // Spec §03 promotion ladder: booleans ⊂ integers ⊂ reals, with
+      // reals embedded into complexes. The embeddings are ONE-
+      // DIRECTIONAL — a boolean can be used where an integer is
+      // expected, but not the other way; a real can be used where a
+      // complex is expected, but a complex cannot be used where a
+      // real is expected.
+      //
+      // The unify convention in the engine: `a` is the SIGNATURE-side
+      // (expected) type, `b` is the actual/inferred type. The check
+      // is `canPromote(actual, expected)` — does the actual fit where
+      // the signature wants?
+      //
+      // Symmetric numeric joins (e.g. `int + real → real`) belong to
+      // `unifyArith`, which calls unify in explicit wider/narrower
+      // order so the directional check applies correctly.
       if (a.prim === b.prim) return subst;
-      if (canPromote(a.prim, b.prim) || canPromote(b.prim, a.prim)) return subst;
+      if (canPromote(b.prim, a.prim)) return subst;
       return null;
     case 'measure':
       return unify(a.domain, b.domain, subst);
@@ -470,14 +477,21 @@ function unifyArith(a, b, subst) {
   if (a.kind === 'deferred' || a.kind === 'any')  return { result: b, subst };
   if (b.kind === 'deferred' || b.kind === 'any')  return { result: a, subst };
 
-  // Both scalars — fall through to the numeric-promotion path of unify.
+  // Both scalars — numeric promotion to the wider type (join in the
+  // canonical-embedding lattice).
   if (a.kind === 'scalar' && b.kind === 'scalar') {
-    const s2 = unify(a, b, subst);
-    if (s2 == null) return null;
-    // Pick the "wider" scalar so 1 + 1.0 lands on real.
     const aRank = SCALAR_RANK[a.prim], bRank = SCALAR_RANK[b.prim];
-    const result = (aRank != null && bRank != null && aRank >= bRank) ? a : b;
-    return { result, subst: s2 };
+    // Pick the wider as the expected, narrower as actual — that's
+    // the direction in which unify's directional canPromote check
+    // succeeds. The join becomes the result type.
+    let wider, narrower;
+    if (aRank != null && bRank != null && aRank >= bRank) { wider = a; narrower = b; }
+    else if (aRank != null && bRank != null)              { wider = b; narrower = a; }
+    else if (aRank != null) { wider = a; narrower = b; }
+    else                    { wider = b; narrower = a; }
+    const s2 = unify(wider, narrower, subst);
+    if (s2 == null) return null;
+    return { result: wider, subst: s2 };
   }
   // Both arrays — shapes must match (with %dynamic flexibility);
   // element types unify as numerics.
