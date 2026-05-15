@@ -2919,6 +2919,129 @@ function _resolveFn(fnIR, env) {
   return null;
 }
 
+// broadcast(callable, inputs…) per spec §04 + commit 87c9be1.
+//
+//   - Collection inputs (arrays / typed arrays / Value rank ≥ 1) are
+//     the only things iterated over.
+//   - All collections must have the SAME number of axes — the engine
+//     never inserts leading/trailing axes implicitly; `addaxes(...)`
+//     is the explicit, layout-agnostic way to align ranks.
+//   - Along each axis sizes must be equal or 1; size-1 expands by
+//     repetition (singleton broadcast).
+//   - Non-collection inputs (scalars, Value rank-0, function/kernel
+//     objects) are loop-invariant — held constant. The callable is
+//     loop-invariant in exactly this sense; it is not special with
+//     respect to iteration.
+//   - Records and tuples are not allowed as broadcast inputs.
+//   - No collection inputs ⇒ a single call (everything constant).
+//
+// Result is a nested JS array of the broadcast shape (1-D → a flat
+// JS array, matching the rest of the value-evaluator's array forms).
+function _broadcastApply(fn, inputs, env) {
+  const P = fn.params.length;
+  const slots = new Array(P);
+  for (let i = 0; i < P; i++) {
+    const v = inputs[i];
+    if (valueLib.isValue(v)) {
+      if (v.shape.length === 0) slots[i] = { coll: false, val: v.data[0] };
+      else slots[i] = { coll: true, V: v };
+    } else if (v != null && v.BYTES_PER_ELEMENT !== undefined
+               && typeof v.length === 'number') {
+      slots[i] = { coll: true, V: valueLib.asValue(v) };
+    } else if (Array.isArray(v)) {
+      slots[i] = { coll: true, V: valueLib.asValue(v) };
+    } else if (typeof v === 'number' || typeof v === 'boolean'
+               || (v && typeof v === 'object'
+                   && typeof v.re === 'number' && typeof v.im === 'number')) {
+      slots[i] = { coll: false, val: v };                  // scalar / complex scalar
+    } else if (v && typeof v === 'object'
+               && v.body !== undefined && Array.isArray(v.params)) {
+      slots[i] = { coll: false, val: v };                  // fn/kernel held constant
+    } else if (v && typeof v === 'object') {
+      // A plain object with named fields is a record (or tuple).
+      throw new Error('broadcast: records and tuples are not allowed as '
+        + 'broadcast inputs (spec §04)');
+    } else {
+      slots[i] = { coll: false, val: v };
+    }
+  }
+
+  const colls = [];
+  for (let i = 0; i < P; i++) if (slots[i].coll) colls.push(slots[i].V);
+
+  const elemEnv = Object.assign({}, env);
+  if (colls.length === 0) {
+    // No collection arguments → a single call (spec).
+    for (let p = 0; p < P; p++) elemEnv[fn.params[p]] = slots[p].val;
+    return evaluateExpr(fn.body, elemEnv);
+  }
+
+  // Same number of axes across all collections — no implicit insertion.
+  const rank = colls[0].shape.length;
+  for (let c = 1; c < colls.length; c++) {
+    if (colls[c].shape.length !== rank) {
+      throw new Error('broadcast: all collection arguments must have the '
+        + 'same number of axes (got ranks ' + rank + ' and '
+        + colls[c].shape.length + '); the engine does not insert axes '
+        + 'implicitly — use addaxes(...) to align them (spec §04)');
+    }
+  }
+  // Per-axis broadcast size: each collection's size must be that size
+  // or 1 (singleton, expanded by repetition).
+  const bshape = new Array(rank);
+  for (let a = 0; a < rank; a++) {
+    let sz = 1;
+    for (let c = 0; c < colls.length; c++) {
+      const s = colls[c].shape[a];
+      if (s !== 1) {
+        if (sz !== 1 && sz !== s) {
+          throw new Error('broadcast: incompatible sizes on axis ' + a
+            + ' (' + sz + ' vs ' + s + '); sizes must be equal or 1');
+        }
+        sz = s;
+      }
+    }
+    bshape[a] = sz;
+  }
+
+  // Row-major strides per collection on its OWN shape; a size-1 axis
+  // gets stride 0 so it auto-repeats under the broadcast index.
+  const strides = colls.map(function(c) {
+    const st = new Array(rank);
+    let acc = 1;
+    for (let a = rank - 1; a >= 0; a--) {
+      st[a] = (c.shape[a] === 1) ? 0 : acc;
+      acc *= c.shape[a];
+    }
+    return st;
+  });
+  const collOf = new Array(P);
+  for (let p = 0, k = 0; p < P; p++) collOf[p] = slots[p].coll ? k++ : -1;
+
+  const idx = new Array(rank).fill(0);
+  function recur(axis) {
+    if (axis === rank) {
+      for (let p = 0; p < P; p++) {
+        if (collOf[p] < 0) { elemEnv[fn.params[p]] = slots[p].val; continue; }
+        const ci = collOf[p], V = colls[ci], st = strides[ci];
+        let off = 0;
+        for (let a = 0; a < rank; a++) off += idx[a] * st[a];
+        elemEnv[fn.params[p]] = (V.dtype === 'complex' && V.im)
+          ? { re: V.data[off], im: V.im[off] }
+          : V.data[off];
+      }
+      return evaluateExpr(fn.body, elemEnv);
+    }
+    const out = new Array(bshape[axis]);
+    for (let i = 0; i < bshape[axis]; i++) {
+      idx[axis] = i;
+      out[i] = recur(axis + 1);
+    }
+    return out;
+  }
+  return recur(0);
+}
+
 function evaluateCall(ir, env) {
   const op = ir.op;
   if (op in ARITH_OPS) {
@@ -3084,24 +3207,8 @@ function evaluateCall(ir, env) {
       }
       for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
     }
-    const arrs = sources.map(s => evaluateExpr(s, env));
-    if (arrs.length === 0) return [];
-    const n = arrs[0].length;
-    for (let i = 1; i < arrs.length; i++) {
-      if (arrs[i].length !== n) {
-        throw new Error('broadcast: array length mismatch at position ' + i
-          + ' (expected ' + n + ', got ' + arrs[i].length + ')');
-      }
-    }
-    const elemEnv = Object.assign({}, env);
-    const out = new Array(n);
-    for (let r = 0; r < n; r++) {
-      for (let p = 0; p < fn.params.length; p++) {
-        elemEnv[fn.params[p]] = arrs[p][r];
-      }
-      out[r] = evaluateExpr(fn.body, elemEnv);
-    }
-    return out;
+    const inputs = sources.map(s => evaluateExpr(s, env));
+    return _broadcastApply(fn, inputs, env);
   }
   if (op === 'reduce') {
     // reduce(f, xs) per spec §07. f is a binary function; xs is a
