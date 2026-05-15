@@ -2213,8 +2213,12 @@ function _arrLike(v) {
 // The actual scalar implementation lives in ARITH_OPS above; this table
 // drives ARITH_OPS_N construction below.
 const _SCALAR_PRIM_ARITY = {
-  // Arithmetic
-  add: 2, sub: 2, mul: 2, div: 2, mod: 2, neg: 1, pos: 1, pow: 2,
+  // Arithmetic. `divide` is the spec §07 function-form of `/` (passed
+  // to broadcast/reduce/scan); same scalar semantics as `div`, so it
+  // belongs on the batched-broadcast path. Without an entry here it
+  // fell to the slow per-atom fallback (real) and broke outright for
+  // complex (the fallback can't pack {re,im}).
+  add: 2, sub: 2, mul: 2, div: 2, divide: 2, mod: 2, neg: 1, pos: 1, pow: 2,
   // Elementary math
   abs: 1, abs2: 1, exp: 1, log: 1, log10: 1, sqrt: 1,
   sin: 1, cos: 1, floor: 1, ceil: 1, round: 1,

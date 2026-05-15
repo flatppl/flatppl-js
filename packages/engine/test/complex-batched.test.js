@@ -163,3 +163,22 @@ test('complex(reVec, imVec) constructor over shape-rich real inputs', () => {
   assert.deepEqual(z.shape, [2, 2]);
   assert.deepEqual(reim(z), [[1, 2, 3, 4], [5, 6, 7, 8]]);
 });
+
+// ---- divide (spec §07 function-form of `/`) ---------------------------
+
+test('divide: batched real → fast Float64Array broadcast Value', () => {
+  const a = batchedScalar([10, 20, 30]);
+  const b = batchedScalar([2, 4, 5]);
+  const r = ARITH_OPS_N.divide([a, b], 3);
+  assert.ok(isValue(r) && !isComplexValue(r));
+  assert.deepEqual(Array.from(r.data), [5, 5, 6]);
+});
+
+test('divide: batched complex (was broken — per-atom fallback)', () => {
+  const a = complexValue([1, 4], [2, 0], [2]);   // 1+2i, 4
+  const b = complexValue([0, 2], [1, 0], [2]);   // i,   2
+  const r = ARITH_OPS_N.divide([a, b], 2);
+  assert.ok(isComplexValue(r));
+  // (1+2i)/i = 2-i ; 4/2 = 2
+  assert.deepEqual(reim(r), [[2, 2], [-1, 0]]);
+});
