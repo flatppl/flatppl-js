@@ -289,7 +289,11 @@ function parse(tokens, variant) {
     // Number
     if (at(T.NUMBER)) {
       advance();
-      return AST.NumberLiteral(parseFloat(tok.value), tok.value, tok.loc);
+      // Use Number() (handles hex 0x… correctly) rather than parseFloat
+      // (which stops at the first non-decimal digit and returns 0 for
+      // "0xb2"). Strip spec-allowed underscore digit separators first.
+      const clean = tok.value.replace(/_/g, '');
+      return AST.NumberLiteral(Number(clean), tok.value, tok.loc);
     }
 
     // String

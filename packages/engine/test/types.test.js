@@ -117,16 +117,31 @@ test('unify: identical concrete types succeed with empty subst', () => {
   assert.equal(s.size, 0);
 });
 
-test('unify: scalar promotion lets booleans ⊂ integers ⊂ reals → complexes unify', () => {
-  // §sec:valuetypes canonical embeddings. Integer literals unify with
-  // the (real, real) kwargs of distribution constructors and other
-  // arithmetic-typed signatures.
-  assert.ok(T.unify(T.INTEGER, T.REAL, new Map()));
-  assert.ok(T.unify(T.REAL,    T.INTEGER, new Map()));   // symmetric
-  assert.ok(T.unify(T.BOOLEAN, T.INTEGER, new Map()));
-  assert.ok(T.unify(T.REAL,    T.COMPLEX, new Map()));
-  // String is outside the numeric tower — no promotion.
+test('unify: directional promotion per spec §03 embedding ladder', () => {
+  // Spec §03 canonical embeddings are one-directional:
+  //   booleans ⊂ integers ⊂ reals → complexes.
+  // The engine convention: unify(expected, actual) — actual can fit
+  // where expected is requested iff actual is at most as "wide" as
+  // expected. So promoting actual upward succeeds; demoting fails.
+
+  // expected REAL, actual INTEGER → integer fits in real (succeeds).
+  assert.ok(T.unify(T.REAL, T.INTEGER, new Map()));
+  // expected COMPLEX, actual REAL → real embeds in complex (succeeds).
+  assert.ok(T.unify(T.COMPLEX, T.REAL, new Map()));
+  // expected INTEGER, actual BOOLEAN → boolean fits in integer (succeeds).
+  assert.ok(T.unify(T.INTEGER, T.BOOLEAN, new Map()));
+
+  // Demotions are NOT allowed per spec: a real does not generally fit
+  // where an integer is expected, etc.
+  assert.equal(T.unify(T.INTEGER, T.REAL,    new Map()), null);
+  assert.equal(T.unify(T.REAL,    T.COMPLEX, new Map()), null);
+  assert.equal(T.unify(T.BOOLEAN, T.INTEGER, new Map()), null);
+  // Complex → integer is a two-step demotion; also forbidden.
+  assert.equal(T.unify(T.REAL,    T.COMPLEX, new Map()), null);
+
+  // String is outside the numeric tower — never promotes.
   assert.equal(T.unify(T.STRING, T.REAL, new Map()), null);
+  assert.equal(T.unify(T.REAL, T.STRING, new Map()), null);
 });
 
 test('unify: variable binds to concrete type', () => {
