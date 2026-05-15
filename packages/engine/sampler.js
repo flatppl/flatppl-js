@@ -2459,11 +2459,11 @@ function _cxArgAccessor(v, N) {
       const c = valueLib.readComplex(v);   // resolves conj once
       return { batched: true, at: (i) => ({ re: c.re[i], im: c.im[i] }) };
     }
+    // Shape-rich complex is handled by _cxElementwise before any
+    // accessor is built; reaching here would be a dispatch bug.
     throw new Error(
-      '_cxBroadcast: shape-rich complex Value (shape=[' +
-      v.shape.join(',') + ']) is not supported on the batched-scalar ' +
-      'path; complex per-atom vectors/matrices need the value-ops ' +
-      'elementwise path (TODO-flatppl-js.md §03).');
+      '_cxArgAccessor: shape-rich complex Value (shape=[' +
+      v.shape.join(',') + ']) must be routed through _cxElementwise');
   }
   if (valueLib.isValue(v)) {
     if (v.shape.length === 0) { const s = v.data[0]; return { batched: false, at: () => s }; }
@@ -2479,7 +2479,88 @@ function _cxArgAccessor(v, N) {
   return { batched: false, at: () => s };
 }
 
+// Shape-rich complex/real elementwise: applies the scalar primitive to
+// every element of a per-atom vector/matrix (shape=[N, k…] or an
+// atom-indep vector shape=[k>1]). Used for complex unary ops (abs2 /
+// exp / log / sqrt / real / imag / conj / cis / pos) and the complex
+// constructor over real vectors — the "free reshaping" ops that
+// shouldn't be limited to scalars. Scalar args broadcast (length-1
+// buffers); the governing shape-rich arg's swapped (transpose) bit is
+// preserved (readComplex already folded conj, so the result is a pure
+// transpose view, never a residual adjoint).
+//
+// Note: binary add/sub/mul over shape-rich complex never reach here —
+// their wrapper routes shape-rich operands to the complex-aware
+// value-ops path first. This covers the unary / constructor / scalar-
+// op-over-vector cases that the value-ops shape dispatch doesn't.
+function _cxRichArgGetter(v) {
+  if (_isComplex(v)) return () => v;
+  if (valueLib.isComplexValue(v)) {
+    const c = valueLib.readComplex(v);
+    if (c.re.length === 1) { const z = { re: c.re[0], im: c.im[0] }; return () => z; }
+    return (i) => ({ re: c.re[i], im: c.im[i] });
+  }
+  if (valueLib.isValue(v)) {
+    if (v.data.length === 1) { const s = v.data[0]; return () => s; }
+    const d = v.data; return (i) => d[i];
+  }
+  if (v instanceof Float64Array) {
+    if (v.length === 1) { const s = v[0]; return () => s; }
+    return (i) => v[i];
+  }
+  const s = (typeof v === 'boolean') ? (v ? 1 : 0) : +v;
+  return () => s;
+}
+
+function _cxElementwise(fn, args, shape, swapped) {
+  let M = 1;
+  for (let d = 0; d < shape.length; d++) M *= shape[d];
+  const get = args.map(_cxRichArgGetter);
+  const callArgs = new Array(args.length);
+  const re = new Float64Array(M);
+  let im = null;
+  for (let i = 0; i < M; i++) {
+    for (let k = 0; k < get.length; k++) callArgs[k] = get[k](i);
+    const r = fn.apply(null, callArgs);
+    if (_isComplex(r)) {
+      if (im === null) im = new Float64Array(M);
+      re[i] = r.re; im[i] = r.im;
+    } else {
+      re[i] = +r;
+    }
+  }
+  let out;
+  if (im === null) out = { shape: shape.slice(), data: re };
+  else out = valueLib.complexValue(re, im, shape);
+  if (swapped) out.t = 'T';
+  return out;
+}
+
+// Is `v` a shape-rich Value for the complex path — a per-atom
+// vector/matrix (rank ≥ 2) or an atom-indep vector (rank 1, length ≠ N
+// and > 1)? Batched scalars (shape=[N]) and scalars are NOT rich.
+function _cxIsRich(v, N) {
+  if (!valueLib.isValue(v)) return false;
+  const r = v.shape.length;
+  if (r === 0) return false;
+  if (r === 1) return v.shape[0] !== N && v.shape[0] > 1;
+  return true;
+}
+
 function _cxBroadcast(fn, args, N) {
+  // Shape-rich elementwise (per-atom vectors/matrices, atom-indep
+  // vectors). The first rich arg governs the output shape + swapped
+  // bit; remaining shape-rich args must match its element count.
+  let richShape = null, richSwapped = false;
+  for (let k = 0; k < args.length; k++) {
+    if (_cxIsRich(args[k], N)) {
+      richShape = args[k].shape;
+      richSwapped = valueLib.isTransposeView(args[k]);
+      break;
+    }
+  }
+  if (richShape) return _cxElementwise(fn, args, richShape, richSwapped);
+
   const accs = new Array(args.length);
   let anyBatched = false;
   for (let k = 0; k < args.length; k++) {
