@@ -524,3 +524,72 @@ test('adjoint of complex = transpose + conjugate (tag A, im negated on read)', (
   assert.deepEqual(Array.from(im), [-5, -6, -7, -8],
     'adjoint view conjugates the imaginary part');
 });
+
+// =====================================================================
+// Structured-matrix tag (`struct`) — diag storage + bitmask algebra
+// =====================================================================
+
+const {
+  diagMatrix, densify, getStruct, structOcc,
+  isDiagStored, isDiagStruct, isDenseStruct,
+  ST_LOWER, ST_DIAG, ST_UPPER, ST_SYM, ST_OCC_MASK, ST_DENSE,
+} = value;
+
+test('diagMatrix: logical m×m, vector-backed (data length = m)', () => {
+  const D = diagMatrix([2, 3, 4]);
+  assert.deepEqual(D.shape, [3, 3]);
+  assert.equal(D.data.length, 3, 'stores the m-vector, not m²');
+  assert.equal(D.struct, ST_DIAG);
+  assert.ok(isDiagStored(D) && isDiagStruct(D));
+  assert.equal(structOcc(D), ST_DIAG);
+});
+
+test('struct accessors: absent ⇒ dense, explicit 0 ⇒ zero matrix', () => {
+  const dense = matrix([1, 2, 3, 4], 2, 2);
+  assert.equal(getStruct(dense), ST_DENSE);
+  assert.ok(isDenseStruct(dense));
+  const zero = { shape: [2, 2], data: new Float64Array(4), struct: 0 };
+  assert.equal(getStruct(zero), 0, 'explicit 0 is distinct from absent');
+  assert.equal(structOcc(zero), 0);
+});
+
+test('densify: diag → dense m×m, zeros off-diagonal', () => {
+  const D = diagMatrix([5, 6, 7]);
+  const dn = densify(D);
+  assert.equal(dn.struct, undefined);
+  assert.equal(dn.data.length, 9);
+  assert.deepEqual(Array.from(dn.data), [5, 0, 0, 0, 6, 0, 0, 0, 7]);
+  // dense input is returned unchanged (no copy)
+  const dense = matrix([1, 2, 3, 4], 2, 2);
+  assert.equal(densify(dense), dense);
+});
+
+test('complex diag: parallel im diagonal, densify preserves it', () => {
+  const D = diagMatrix([1, 2], [3, 4]);
+  assert.equal(D.dtype, 'complex');
+  assert.deepEqual(Array.from(D.im), [3, 4]);
+  const dn = densify(D);
+  assert.deepEqual(Array.from(dn.data), [1, 0, 0, 2]);
+  assert.deepEqual(Array.from(dn.im), [3, 0, 0, 4]);
+  assert.equal(dn.dtype, 'complex');
+});
+
+test('transpose/adjoint swap LOWER↔UPPER; DIAG + refinements kept', () => {
+  // tri-lower flagged dense: occupancy LOWER|DIAG, plus SYM refinement
+  const triL = { shape: [2, 2], data: new Float64Array([1, 0, 2, 3]),
+                 struct: ST_LOWER | ST_DIAG | ST_SYM };
+  const t = transpose(triL);
+  assert.equal(t.struct, ST_UPPER | ST_DIAG | ST_SYM,
+    'lower→upper, diag + sym preserved');
+  assert.equal(transpose(t).struct, triL.struct, 'transpose is involutive');
+  assert.equal(adjoint(triL).struct, ST_UPPER | ST_DIAG | ST_SYM);
+});
+
+test('transpose(diag)=diag, conjugate keeps struct (orthogonal to t)', () => {
+  const D = diagMatrix([1, 2, 3]);
+  const dt = transpose(D);
+  assert.equal(dt.struct, ST_DIAG, 'diag transposes to diag');
+  assert.equal(dt.data, D.data, 'vector buffer shared (lazy)');
+  const D2 = diagMatrix([1, 2], [5, 6]);
+  assert.equal(conjugate(D2).struct, ST_DIAG, 'conj leaves structure');
+});
