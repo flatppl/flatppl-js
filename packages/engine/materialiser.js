@@ -281,7 +281,33 @@ function measureFromValue(v, extras) {
     m.dims = dims;
     m.shape = 'array';
   }
+  // Complex-valued binding: `.samples` stays the real part (the legacy
+  // scalar view); the imaginary buffer is exposed alongside as `.imag`
+  // and the Measure is tagged `dtype: 'complex'` so the viewer can
+  // render it as a complex quantity (modulus / Argand / re+im) rather
+  // than silently plotting only the real part. Planar storage means
+  // `.imag` shares the Value's `.im` buffer (no copy).
+  if (valueLib.isComplexValue(v)) {
+    m.imag = v.im;
+    m.dtype = 'complex';
+  }
   return m;
+}
+
+/**
+ * Build a Measure from a worker `evaluateN` reply, transparently
+ * handling the real / complex and scalar-atom / vector-atom cases.
+ * `reply.imag` (present iff the per-atom result was complex) is paired
+ * with `reply.samples` into a planar complex Value; `reply.dims`
+ * (present for vector-output ops) becomes the per-atom shape.
+ */
+function measureFromReply(reply, count, extras) {
+  const dims = reply.dims;
+  const shape = dims ? [count | 0].concat(dims) : [reply.samples.length];
+  const v = reply.imag
+    ? valueLib.complexValue(reply.samples, reply.imag, shape)
+    : { shape: shape, data: reply.samples };
+  return measureFromValue(v, extras);
 }
 
 // =====================================================================
@@ -362,19 +388,10 @@ function matEvaluate(d, ctx) {
       // probability variates; weighted inputs propagate their mass.
       const logTotalmass = lw ? empirical.logSumExp(lw) : 0;
       // Phase 7c: vector-output ops (softmax / l1unit / l2unit /
-      // logsoftmax over per-atom inputs) produce a flat Float64Array
-      // with reply.dims describing the per-atom shape. Build a
-      // vector-atom Value and route through measureFromValue.
-      if (reply.dims) {
-        const N = ctx.sampleCount;
-        const value = { shape: [N | 0].concat(reply.dims), data: reply.samples };
-        return measureFromValue(value, {
-          logWeights: lw,
-          logTotalmass: logTotalmass,
-          n_eff: n_eff,
-        });
-      }
-      return scalarMeasureN(reply.samples, {
+      // logsoftmax) produce reply.dims; complex-valued transforms
+      // produce reply.imag. measureFromReply handles both (and the
+      // plain scalar-real case) uniformly.
+      return measureFromReply(reply, ctx.sampleCount, {
         logWeights: lw,
         logTotalmass: logTotalmass,
         n_eff: n_eff,
@@ -432,7 +449,7 @@ function matPushfwd(name, d, ctx) {
       count: M.samples.length,
       refArrays: { [fnInfo.paramName]: M.samples },
     }).then((reply) => {
-      return scalarMeasureN(reply.samples, {
+      return measureFromReply(reply, M.samples.length, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
         n_eff: M.n_eff,

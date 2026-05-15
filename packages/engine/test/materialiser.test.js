@@ -777,3 +777,65 @@ z  = totalmass(m)
       'composed totalmass should equal 0.25, got ' + z.samples[i]);
   }
 });
+
+// =====================================================================
+// Complex-valued bindings (chunk 5 of the complex-values thread)
+// =====================================================================
+//
+// A deterministic complex transform of a stochastic parent flows
+// through matEvaluate → evaluateN (reply.imag) → measureFromReply.
+// The Measure keeps `.samples` as the real part (legacy scalar view)
+// and exposes the imaginary buffer as `.imag` + `dtype:'complex'`.
+
+test('complex(x, 2x) binding → Measure carries planar re/im', async () => {
+  const ctx = makeCtx(`
+x ~ Normal(mu = 0.0, sigma = 1.0)
+z = complex(x, 2.0 * x)
+`);
+  const x = await ctx.getMeasure('x');
+  const z = await ctx.getMeasure('z');
+  assert.equal(z.dtype, 'complex');
+  assert.ok(z.imag instanceof Float64Array);
+  assert.equal(z.imag.length, SAMPLE_COUNT);
+  assert.equal(z.value.dtype, 'complex');
+  assert.equal(z.value.im, z.imag, 'planar: Measure.imag shares Value.im');
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    assert.ok(Math.abs(z.samples[i] - x.samples[i]) < 1e-12,
+      'real part = x at atom ' + i);
+    assert.ok(Math.abs(z.imag[i] - 2 * x.samples[i]) < 1e-12,
+      'imag part = 2x at atom ' + i);
+  }
+});
+
+test('abs2 of a complex binding → REAL Measure (no dtype/imag)', async () => {
+  const ctx = makeCtx(`
+x ~ Normal(mu = 0.0, sigma = 1.0)
+A = complex(x, 1.0)
+I = abs2(A)
+`);
+  const x = await ctx.getMeasure('x');
+  const I = await ctx.getMeasure('I');
+  assert.equal(I.dtype, undefined, 'modulus-squared is real');
+  assert.equal(I.imag, undefined);
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    const want = x.samples[i] * x.samples[i] + 1;
+    assert.ok(Math.abs(I.samples[i] - want) < 1e-10,
+      'abs2 atom ' + i + ': got ' + I.samples[i] + ' want ' + want);
+  }
+});
+
+test('conj of a complex binding negates the imaginary part', async () => {
+  const ctx = makeCtx(`
+x ~ Normal(mu = 1.0, sigma = 0.5)
+z = complex(x, x)
+zc = conj(z)
+`);
+  const z  = await ctx.getMeasure('z');
+  const zc = await ctx.getMeasure('zc');
+  assert.equal(zc.dtype, 'complex');
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    assert.ok(Math.abs(zc.samples[i] - z.samples[i]) < 1e-12);
+    assert.ok(Math.abs(zc.imag[i] + z.imag[i]) < 1e-12,
+      'conj imag = -imag at atom ' + i);
+  }
+});
