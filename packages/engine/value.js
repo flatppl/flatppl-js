@@ -106,6 +106,58 @@ const _TAG_SWAPPED    = { N: false, T: true,  A: true,  C: false };
 const _TAG_CONJUGATED = { N: false, T: false, A: true,  C: true  };
 
 // ---------------------------------------------------------------------
+// Structured-matrix tag (`struct` — ORTHOGONAL to the Klein-4 tag)
+// ---------------------------------------------------------------------
+//
+// One small integer bitmask with two layers:
+//
+//   Occupancy (where nonzeros MAY be) — exact boolean algebra:
+//     ST_LOWER  1   strict lower triangle
+//     ST_DIAG   2   the diagonal
+//     ST_UPPER  4   strict upper triangle
+//
+//   Refinements (value FACTS, conservative — NOT occupancy):
+//     ST_UNIT    8  diagonal ≡ 1 (implicit; cleared by `+`)
+//     ST_SYM    16  symmetric / Hermitian
+//     ST_POSDEF 32  positive-definite (implies ST_SYM)
+//
+// Absent `struct` ⇒ dense (LOWER|DIAG|UPPER = 7). An explicit `0` is a
+// genuine all-zero matrix (the OR identity), distinct from absent.
+//
+// Algebra (kept as tiny pure functions, not pair-tables):
+//   A + B          → occ = occ(A) | occ(B); SYM/POSDEF = AND; UNIT clear
+//   c · A          → occ unchanged; SYM keep; POSDEF iff c>0; UNIT clear
+//   transpose(A)   → swap LOWER↔UPPER; DIAG + refinements kept
+//   adjoint(A)     → as transpose (entry-conj is the orthogonal Klein-4
+//                    bit; it does not move the triangle)
+//   conjugate(A)   → struct unchanged
+//   A · B          → small occupancy propagation (see value-ops); generic
+//                    mul clears SYM/POSDEF (gram/cholesky producers set
+//                    them — mul never infers them)
+//
+// `struct` is orthogonal to the Klein-4 `t` tag: a matrix can be e.g.
+// upper-triangular AND read transposed; the two never share a bit.
+//
+// Storage: only `diag` is vector-backed (data = the m-vector, logical
+// shape = [m, m]); every other structure is dense + flag in v1. Any
+// consumer without a structured fast-path calls `densify(v)` first, so
+// correctness never depends on a fast-path existing (same contract as
+// readComplex / _dataShape).
+const ST_LOWER = 1, ST_DIAG = 2, ST_UPPER = 4;
+const ST_UNIT = 8, ST_SYM = 16, ST_POSDEF = 32;
+const ST_OCC_MASK = ST_LOWER | ST_DIAG | ST_UPPER;   // 7
+const ST_DENSE = ST_OCC_MASK;                        // 7
+
+// transpose / adjoint structure transition: swap LOWER↔UPPER, keep the
+// diagonal bit and all refinements. conjugate leaves struct unchanged.
+function _structTranspose(s) {
+  let r = s & ~(ST_LOWER | ST_UPPER);
+  if (s & ST_LOWER) r |= ST_UPPER;
+  if (s & ST_UPPER) r |= ST_LOWER;
+  return r;
+}
+
+// ---------------------------------------------------------------------
 // Shape helpers
 // ---------------------------------------------------------------------
 
@@ -249,6 +301,7 @@ function transpose(v) {
   // it identically via _dataShape. The conjugation bit (in newTag) is
   // honoured at read time by readComplex, not here.
   if (v.im instanceof Float64Array) out.im = v.im;
+  if (v.struct !== undefined) out.struct = _structTranspose(v.struct);
   return out;
 }
 
@@ -263,6 +316,7 @@ function adjoint(v) {
   const out = { shape: newShape, data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
   if (v.im instanceof Float64Array) out.im = v.im;
+  if (v.struct !== undefined) out.struct = _structTranspose(v.struct);
   return out;
 }
 
@@ -272,6 +326,88 @@ function conjugate(v) {
   if (!isValue(v)) throw new Error('conjugate: argument is not a Value');
   const newTag = _TAG_CONJUGATE[getTag(v)];
   const out = { shape: v.shape.slice(), data: v.data, t: newTag };
+  if (v.dtype) out.dtype = v.dtype;
+  if (v.im instanceof Float64Array) out.im = v.im;
+  if (v.struct !== undefined) out.struct = v.struct;   // conj keeps structure
+  return out;
+}
+
+// ---------------------------------------------------------------------
+// Structured matrices (`struct` bitmask)
+// ---------------------------------------------------------------------
+//
+// See the `struct` tag section above for the bit layout and algebra.
+// v1 implements the `diag` storage form fully; the occupancy/refinement
+// bits are defined and carried so producers (lower_cholesky → tri,
+// row_gram → sym, …) and their fast-paths land as pure additions.
+
+// Full bitmask (absent ⇒ dense; explicit 0 ⇒ all-zero matrix).
+function getStruct(v) {
+  return (v && v.struct !== undefined) ? v.struct : ST_DENSE;
+}
+// Occupancy sub-mask (low 3 bits).
+function structOcc(v) { return getStruct(v) & ST_OCC_MASK; }
+
+// Occupancy predicates. `isDiagStruct` is occupancy-diagonal-only; a
+// diag Value is additionally vector-backed (data length = m, not m²) —
+// `isDiagStored` is the storage-level check used before raw indexing.
+function isDenseStruct(v) { return structOcc(v) === ST_DENSE; }
+function isDiagStruct(v)  { return structOcc(v) === ST_DIAG; }
+function isDiagStored(v) {
+  return isValue(v) && (v.struct & ST_OCC_MASK) === ST_DIAG
+    && v.shape.length === 2 && v.shape[0] === v.shape[1]
+    && v.data.length === v.shape[0];
+}
+
+// Diagonal-matrix constructor: logical m×m, but `data` stores only the
+// m-vector diagonal (O(m) storage). Complex via parallel `im` (the
+// diagonal of a complex diagonal matrix). This is the one vector-backed
+// structured form (everything else is dense + flag in v1).
+function diagMatrix(diagVec, imVec) {
+  const d = diagVec instanceof Float64Array ? diagVec : Float64Array.from(diagVec);
+  const m = d.length;
+  const out = { shape: [m, m], data: d, struct: ST_DIAG };
+  if (imVec != null) {
+    out.im = imVec instanceof Float64Array ? imVec : Float64Array.from(imVec);
+    if (out.im.length !== m) {
+      throw new Error('diagMatrix: im length ' + out.im.length +
+                      ' != diagonal length ' + m);
+    }
+    out.dtype = 'complex';
+  }
+  return out;
+}
+
+// Materialize a structured Value to a plain dense Value (struct cleared,
+// data length = numel(shape)). The single fallback every op without a
+// structured fast-path calls — correctness never depends on a fast-path
+// existing. Dense input is returned unchanged (no copy). Only the
+// vector-backed `diag` form needs real expansion in v1; flagged-dense
+// structures (tri/sym, later) just drop the flag.
+function densify(v) {
+  if (!isValue(v)) throw new Error('densify: argument is not a Value');
+  if (v.struct === undefined || (v.struct & ST_OCC_MASK) === ST_DENSE) {
+    return v;
+  }
+  if (isDiagStored(v)) {
+    const m = v.shape[0];
+    const data = new Float64Array(m * m);
+    for (let i = 0; i < m; i++) data[i * m + i] = v.data[i];
+    const out = { shape: [m, m], data: data };
+    if (v.im instanceof Float64Array) {
+      const im = new Float64Array(m * m);
+      for (let i = 0; i < m; i++) im[i * m + i] = v.im[i];
+      out.im = im;
+      out.dtype = 'complex';
+    }
+    return out;                       // struct cleared ⇒ dense
+  }
+  // Flagged-dense structure (tri/sym in later versions): data is already
+  // dense and full; just drop the structural flag. The implicit-zero /
+  // implicit-unit-diagonal forms (strict/unit triangular) are not
+  // produced yet, so no masking is required in v1.
+  const out = { shape: v.shape.slice(), data: v.data };
+  if (v.t && v.t !== 'N') out.t = v.t;
   if (v.dtype) out.dtype = v.dtype;
   if (v.im instanceof Float64Array) out.im = v.im;
   return out;
@@ -499,6 +635,17 @@ module.exports = {
   getImag: getImag,
   isBatched: isBatched,
   numel: numel,
+  // structured-matrix tag (orthogonal to the Klein-4 tag)
+  ST_LOWER: ST_LOWER, ST_DIAG: ST_DIAG, ST_UPPER: ST_UPPER,
+  ST_UNIT: ST_UNIT, ST_SYM: ST_SYM, ST_POSDEF: ST_POSDEF,
+  ST_OCC_MASK: ST_OCC_MASK, ST_DENSE: ST_DENSE,
+  getStruct: getStruct,
+  structOcc: structOcc,
+  isDenseStruct: isDenseStruct,
+  isDiagStruct: isDiagStruct,
+  isDiagStored: isDiagStored,
+  diagMatrix: diagMatrix,
+  densify: densify,
   // tag-flipping operations (lazy; never touch data)
   transpose: transpose,
   adjoint: adjoint,
