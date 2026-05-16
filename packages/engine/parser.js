@@ -72,6 +72,21 @@ function parse(tokens, variant) {
     return (v.logicalSyms && v.logicalSyms[kind]) || null;
   }
 
+  // Dot-notation desugaring (spec §05 Broadcasting syntax). Build a
+  // `broadcast(<callee>, <operands…>)` CallExpr — the literal lowering
+  // the spec mandates ("`A .+ B` lowers to `broadcast(add, A, B)`",
+  // "`f.(<args>)` lowers to `broadcast(f, <args>)`"). Used for the
+  // dotted forms the parser already desugars by builtin name (`.&&`,
+  // `.||`, `.!`, `.^`) and for dot-call. Dotted arithmetic &
+  // comparisons instead tag their Binary/UnaryExpr with
+  // `broadcast:true` (see below) and are wrapped in lower.js, which is
+  // the single owner of the operator→builtin map — so the parser
+  // never duplicates that table.
+  function broadcastCall(calleeNode, operands, loc) {
+    return AST.CallExpr(AST.Identifier('broadcast', loc),
+      [calleeNode, ...operands], loc);
+  }
+
   // True when the next token matches the variant's logical operator
   // for `kind` (one of 'and' / 'or' / 'not'). FlatPPL/FlatPPJ use the
   // dedicated AMPAMP / PIPEPIPE / BANG tokens; FlatPPY uses IDENT
@@ -90,10 +105,12 @@ function parse(tokens, variant) {
     while (atLogicalSym('or')) {
       const opTok = advance();
       const right = parseAnd();
+      const mloc = AST.loc(left.loc.start.line, left.loc.start.col,
+                           right.loc.end.line, right.loc.end.col);
       const callee = AST.Identifier('lor', opTok.loc);
-      left = AST.CallExpr(callee, [left, right],
-        AST.loc(left.loc.start.line, left.loc.start.col,
-                right.loc.end.line, right.loc.end.col));
+      left = opTok.dotted
+        ? broadcastCall(callee, [left, right], mloc)
+        : AST.CallExpr(callee, [left, right], mloc);
     }
     return left;
   }
@@ -105,10 +122,12 @@ function parse(tokens, variant) {
     while (atLogicalSym('and')) {
       const opTok = advance();
       const right = parseComparison();
+      const mloc = AST.loc(left.loc.start.line, left.loc.start.col,
+                           right.loc.end.line, right.loc.end.col);
       const callee = AST.Identifier('land', opTok.loc);
-      left = AST.CallExpr(callee, [left, right],
-        AST.loc(left.loc.start.line, left.loc.start.col,
-                right.loc.end.line, right.loc.end.col));
+      left = opTok.dotted
+        ? broadcastCall(callee, [left, right], mloc)
+        : AST.CallExpr(callee, [left, right], mloc);
     }
     return left;
   }
@@ -132,6 +151,10 @@ function parse(tokens, variant) {
     let opTok = advance();
     let right = parseAddition();
     let chain = AST.BinaryExpr(opTok.value, left, right, mergeLoc(left, right));
+    // A dotted comparison broadcasts elementwise; the `land` chain
+    // combiner (below) stays scalar. Each comparison desugars
+    // independently, so mixed chains like `a < b .< c` are permitted.
+    if (opTok.dotted) chain.broadcast = true;
     let lastRight = right;
 
     // Without chained comparison, a second operator at this level is
@@ -151,6 +174,7 @@ function parse(tokens, variant) {
       right = parseAddition();
       const cmp = AST.BinaryExpr(opTok.value, lastRight, right,
                                  mergeLoc(lastRight, right));
+      if (opTok.dotted) cmp.broadcast = true;
       const callee = AST.Identifier('land', opTok.loc);
       chain = AST.CallExpr(callee, [chain, cmp], mergeLoc(chain, cmp));
       lastRight = right;
@@ -165,6 +189,7 @@ function parse(tokens, variant) {
       const right = parseMultiplication();
       left = AST.BinaryExpr(opTok.value, left, right,
         AST.loc(left.loc.start.line, left.loc.start.col, right.loc.end.line, right.loc.end.col));
+      if (opTok.dotted) left.broadcast = true;
     }
     return left;
   }
@@ -176,6 +201,7 @@ function parse(tokens, variant) {
       const right = parseUnary();
       left = AST.BinaryExpr(opTok.value, left, right,
         AST.loc(left.loc.start.line, left.loc.start.col, right.loc.end.line, right.loc.end.col));
+      if (opTok.dotted) left.broadcast = true;
     }
     return left;
   }
@@ -184,8 +210,10 @@ function parse(tokens, variant) {
     if (at(T.MINUS)) {
       const opTok = advance();
       const operand = parseUnary();
-      return AST.UnaryExpr('-', operand,
+      const un = AST.UnaryExpr('-', operand,
         AST.loc(opTok.loc.start.line, opTok.loc.start.col, operand.loc.end.line, operand.loc.end.col));
+      if (opTok.dotted) un.broadcast = true;  // `.-x` → broadcast(neg, x)
+      return un;
     }
     // FlatPPL/FlatPPJ: `!` lives at the Unary level (binds tighter
     // than Comparison, so `!a < b` ≡ `(!a) < b`). FlatPPY's `not`
@@ -193,10 +221,12 @@ function parse(tokens, variant) {
     if (at(T.BANG) && logicalSym('not') === '!') {
       const opTok = advance();
       const operand = parseUnary();
+      const uloc = AST.loc(opTok.loc.start.line, opTok.loc.start.col,
+                           operand.loc.end.line, operand.loc.end.col);
       const callee = AST.Identifier('lnot', opTok.loc);
-      return AST.CallExpr(callee, [operand],
-        AST.loc(opTok.loc.start.line, opTok.loc.start.col,
-                operand.loc.end.line, operand.loc.end.col));
+      return opTok.dotted
+        ? broadcastCall(callee, [operand], uloc)        // `.! x` → broadcast(lnot, x)
+        : AST.CallExpr(callee, [operand], uloc);
     }
     return parseExponential();
   }
@@ -223,10 +253,12 @@ function parse(tokens, variant) {
     }
     advance();  // ^
     const exponent = parseUnary();
+    const eloc = AST.loc(base.loc.start.line, base.loc.start.col,
+                         exponent.loc.end.line, exponent.loc.end.col);
     const callee = AST.Identifier('pow', caretTok.loc);
-    return AST.CallExpr(callee, [base, exponent],
-      AST.loc(base.loc.start.line, base.loc.start.col,
-              exponent.loc.end.line, exponent.loc.end.col));
+    return caretTok.dotted
+      ? broadcastCall(callee, [base, exponent], eloc)   // `a .^ b` → broadcast(pow, a, b)
+      : AST.CallExpr(callee, [base, exponent], eloc);
   }
 
   function parsePostfix() {
@@ -252,6 +284,24 @@ function parse(tokens, variant) {
         expr = AST.IndexExpr(expr, indices,
           AST.loc(expr.loc.start.line, expr.loc.start.col, endLoc.end.line, endLoc.end.col),
           v.indexingLowersTo);
+      } else if (at(T.DOT) && tokens[pos + 1]
+                 && tokens[pos + 1].type === T.LPAREN) {
+        // Dot-call (spec §05): `f.(args)` lowers to
+        // `broadcast(f, args)`. One-token lookahead after `.`
+        // distinguishes this from field access (`.` + Name). The
+        // callee `f` becomes broadcast's first argument; positional
+        // and keyword args flow straight through (broadcast's own
+        // kwarg handling in lower.js applies, e.g.
+        // `g.(a = s, x = p)` ≡ `broadcast(g, a = s, x = p)`).
+        advance(); // .
+        advance(); // (
+        const args = parseArgList();
+        const rparen = expect(T.RPAREN);
+        const endLoc = rparen ? rparen.loc
+          : args.length > 0 ? args[args.length - 1].loc : expr.loc;
+        expr = broadcastCall(expr, args,
+          AST.loc(expr.loc.start.line, expr.loc.start.col,
+                  endLoc.end.line, endLoc.end.col));
       } else if (at(T.DOT)) {
         // Field access: expr.field
         advance(); // .

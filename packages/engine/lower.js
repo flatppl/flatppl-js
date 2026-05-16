@@ -109,7 +109,7 @@
 
 const builtins = require('./builtins');
 
-const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN } = builtins;
+const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS } = builtins;
 
 // ---------------------------------------------------------------------
 // Public API
@@ -329,17 +329,45 @@ function _lowerIdentifier(node, ctx) {
   return { kind: 'ref', ns: 'self', name, loc };
 }
 
+// Dot-notation broadcast (spec §05 / §04 higher-order): a Binary/Unary
+// node tagged `broadcast:true` by the parser (`A .+ B`, `.- x`, `a .< b`,
+// …) lowers to `broadcast(<functionof wrapping the op>, <operands…>)`.
+// The synthesized functionof is byte-identical in shape to what
+// `fn(<op>(_, …))` lowers to, so the entire existing broadcast path
+// (`_resolveFn`'s functionof branch, `_broadcastApply`, kernel-broadcast
+// in the materialiser) applies unchanged — no new runtime surface. This
+// is also the single place that knows the operator→builtin map
+// (BIN_OP_MAP / UN_OP_MAP); the parser never duplicates it.
+function _synthOpFunctionof(opName, arity) {
+  const params = [], paramKwargs = [], paramSources = [], bodyArgs = [];
+  for (let i = 1; i <= arity; i++) {
+    const p = `_arg${i}_`;
+    params.push(p);
+    paramKwargs.push(`arg${i}`);
+    paramSources.push({ kind: 'placeholder', name: p });
+    bodyArgs.push({ kind: 'ref', ns: '%local', name: p });
+  }
+  return {
+    kind: 'call', op: 'functionof',
+    params, paramKwargs, paramSources,
+    body: { kind: 'call', op: opName, args: bodyArgs },
+  };
+}
+
 function _lowerBinaryExpr(node, ctx) {
   const op = BIN_OP_MAP[node.op];
   if (!op) {
     throw new Error(`lower: unknown binary operator '${node.op}'`);
   }
-  return {
-    kind: 'call',
-    op,
-    args: [_lowerExpr(node.left, ctx), _lowerExpr(node.right, ctx)],
-    loc:  node.loc,
-  };
+  const args = [_lowerExpr(node.left, ctx), _lowerExpr(node.right, ctx)];
+  if (node.broadcast) {
+    return {
+      kind: 'call', op: 'broadcast',
+      args: [_synthOpFunctionof(op, 2), ...args],
+      loc:  node.loc,
+    };
+  }
+  return { kind: 'call', op, args, loc: node.loc };
 }
 
 function _lowerUnaryExpr(node, ctx) {
@@ -347,12 +375,15 @@ function _lowerUnaryExpr(node, ctx) {
   if (!op) {
     throw new Error(`lower: unknown unary operator '${node.op}'`);
   }
-  return {
-    kind: 'call',
-    op,
-    args: [_lowerExpr(node.operand, ctx)],
-    loc:  node.loc,
-  };
+  const args = [_lowerExpr(node.operand, ctx)];
+  if (node.broadcast) {
+    return {
+      kind: 'call', op: 'broadcast',
+      args: [_synthOpFunctionof(op, 1), ...args],
+      loc:  node.loc,
+    };
+  }
+  return { kind: 'call', op, args, loc: node.loc };
 }
 
 function _lowerCallExpr(node, ctx) {
@@ -377,6 +408,9 @@ function _lowerCallExpr(node, ctx) {
   }
   if (MODULE_LOAD_FORMS.has(calleeName)) {
     return _lowerModuleLoad(calleeName, node, ctx);
+  }
+  if (calleeName === 'broadcast') {
+    return _lowerBroadcast(node, ctx);
   }
 
   // General call: built-in (we know its name) vs user-defined (we don't).
@@ -406,6 +440,57 @@ function _lowerCallExpr(node, ctx) {
   }
   if (args.length > 0)  out.args   = args;
   if (hasKwargs)        out.kwargs = kwargs;
+  return out;
+}
+
+// broadcast(callable, operands…) — spec §04 higher-order. Mirrors the
+// general-call path but normalizes a *bare builtin-function* callee
+// (`broadcast(add, A, B)` — the literal lowering the spec mandates for
+// `A .+ B`, and the shape every parser-desugared dotted operator
+// `.^ .&& .|| .!` produces) into the SAME functionof a
+// `fn(add(_, …))` would lower to. The runtime then resolves it via
+// the existing functionof branch of `_resolveFn` — no new runtime
+// surface. Untouched, by design:
+//   • distributions (`Normal`, …) — not in BUILTIN_FUNCTIONS, so
+//     kernel-broadcast in the materialiser still sees the bare name;
+//   • user functions / `fn(…)` / `functionof(…)` — not bare
+//     Identifiers in BUILTIN_FUNCTIONS, lowered as before.
+function _lowerBroadcast(node, ctx) {
+  const calleeArg = node.args && node.args[0];
+  if (!calleeArg) {
+    // `broadcast()` — invalid; let the evaluator raise the proper
+    // "no function argument" error (parity with the old path).
+    return { kind: 'call', op: 'broadcast', loc: node.loc };
+  }
+  const posArgs = [];
+  const kwargs = {};
+  const kwOrder = [];
+  let hasKwargs = false;
+  for (const arg of node.args.slice(1)) {
+    if (arg.type === 'KeywordArg') {
+      kwargs[arg.name] = _lowerExpr(arg.value, ctx);
+      kwOrder.push(arg.name);
+      hasKwargs = true;
+    } else {
+      posArgs.push(_lowerExpr(arg, ctx));
+    }
+  }
+  let head;
+  if (calleeArg.type === 'Identifier'
+      && BUILTIN_FUNCTIONS.has(calleeArg.name)) {
+    const arity = hasKwargs ? kwOrder.length : posArgs.length;
+    head = _synthOpFunctionof(calleeArg.name, arity);
+    // Keyword form: match the synthesized params to the caller's
+    // kwarg names (in order) so `_broadcastApply`'s kwarg path binds.
+    if (hasKwargs) head.paramKwargs = kwOrder.slice();
+  } else {
+    head = _lowerExpr(calleeArg, ctx);
+  }
+  const out = {
+    kind: 'call', op: 'broadcast',
+    args: [head, ...posArgs], loc: node.loc,
+  };
+  if (hasKwargs) out.kwargs = kwargs;
   return out;
 }
 
