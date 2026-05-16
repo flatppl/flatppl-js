@@ -135,6 +135,11 @@ function activate(context) {
   const diagCollection = vscode.languages.createDiagnosticCollection('flatppl');
   context.subscriptions.push(diagCollection);
 
+  // Embedded-support menus/buttons gate on this; explicitly false so
+  // the Activate command's `!flatppl.embeddedActive` palette gate is
+  // correct before anything is armed.
+  vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
+
   function getParsed(document) {
     const uri = document.uri.toString();
     if (uri === cachedUri && document.version === cachedVersion) return cachedResult;
@@ -206,20 +211,6 @@ function activate(context) {
     return true;
   }
 
-  // Show the module-level (multi-root) DAG. Distinct from
-  // showDAGForCursor — there's no per-cursor target; the panel just
-  // renders every binding linked by its dependencies, the user clicks
-  // around to drill into a single binding view.
-  function showModuleForCurrent(editor) {
-    if (!editor || !isFlatPPLDoc(editor.document)) return false;
-    const { bindings } = getParsed(editor.document);
-    if (bindings.size === 0) return false;
-    renderToPanel({
-      source: editor.document.getText(), mode: 'module',
-      sourceUri: editor.document.uri, pushHistory: true,
-    });
-    return true;
-  }
 
   // Read the current visualization-related settings into a plain
   // object that can be postMessage'd to the webview. Centralised here
@@ -233,112 +224,151 @@ function activate(context) {
     };
   }
 
-  // --- Commands ---
-
-  const showDagCmd = vscode.commands.registerCommand('flatppl.visualize', () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || !isFlatPPLDoc(editor.document)) {
-      vscode.window.showErrorMessage('Place cursor in a FlatPPL file');
-      return;
-    }
-    if (!showDAGForCursor(editor)) {
-      vscode.window.showInformationMessage('No bindings to visualize in this file');
-    }
-  });
-
-  const showModuleCmd = vscode.commands.registerCommand('flatppl.visualizeModule', () => {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || !isFlatPPLDoc(editor.document)) {
-      vscode.window.showErrorMessage('Place cursor in a FlatPPL file');
-      return;
-    }
-    if (!showModuleForCurrent(editor)) {
-      vscode.window.showInformationMessage('No bindings to visualize in this file');
-    }
-  });
-
-  // Visualize FlatPPL embedded in a Python/Julia host file. A read-
-  // only module snapshot of the flatppl(r\"\"\"…\"\"\") /
-  // flatppl\"\"\"…\"\"\" block at the cursor. onCommand-activated only,
-  // so it adds zero cost for Python/Julia users who never invoke it.
-  // Lazily-registered source→DAG cursor follower for the embedded
-  // view. Created ONLY when the user invokes visualizeEmbedded (the
-  // extension is already active + the user has opted in by then), and
-  // disposed when the panel closes or the command is re-invoked. So
-  // Python/Julia users who never use FlatPPL pay nothing — there is
-  // no onLanguage activation and no listener until explicit opt-in.
-  let embeddedFollow;
+  // --- Embedded support: session-scoped, opt-in lifecycle ---
+  //
+  // Nothing here runs until the user invokes a FlatPPL command in a
+  // Python/Julia file (or the explicit Activate command). Arming sets
+  // the `flatppl.embeddedActive` context key (menus/buttons gate on
+  // it) and registers the on-demand bundle (cursor follower now;
+  // diagnostics added in a later commit). Disarm tears it all down.
+  // So Python/Julia users who never opt in pay nothing.
+  let embeddedArmed = false;
+  let embeddedDisposables = [];
+  let embeddedFollow;          // the single active cursor-follow listener
   let embeddedFollowTimer;
 
-  const showEmbeddedCmd = vscode.commands.registerCommand(
-    'flatppl.visualizeEmbedded', () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        vscode.window.showErrorMessage('Open a file with embedded FlatPPL');
-        return;
-      }
-      const text = editor.document.getText();
-      const off = editor.document.offsetAt(editor.selection.active);
-      const block = extractEmbeddedFlatPPL(text, off);
-      if (!block) {
-        vscode.window.showInformationMessage(
-          'No embedded FlatPPL found — expected flatppl(r"""…""") (Python) '
-          + 'or flatppl"""…""" (Julia).');
-        return;
-      }
-      // Host line where the block's FlatPPL content starts: the engine
-      // reports binding locations relative to block.source, so a
-      // DAG→source jump adds this base line to land in the host file.
-      const baseLine = editor.document.positionAt(block.start).line;
-      const wasNew = !FlatPPLPanel.currentPanel;
-      FlatPPLPanel.createOrShow(context);
-      if (wasNew) {
-        FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
-      }
-      FlatPPLPanel.currentPanel.showModule(
-        block.source, null, /* pushHistory */ true, /* readOnly */ true,
-        { uri: editor.document.uri, baseLine: baseLine });
+  function armEmbeddedSupport() {
+    if (embeddedArmed) return false;
+    embeddedArmed = true;
+    vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', true);
+    vscode.window.showInformationMessage(
+      'FlatPPL: embedded support enabled for this window — Visualize '
+      + 'Binding / Model now work inside flatppl(…) blocks in '
+      + 'Python/Julia files.');
+    return true;
+  }
 
-      // (Re)arm the on-demand source→DAG follower for this host doc.
-      const hostUriStr = editor.document.uri.toString();
-      if (embeddedFollow) embeddedFollow.dispose();
-      let lastEmbName = '';
-      embeddedFollow = vscode.window.onDidChangeTextEditorSelection(ev => {
-        // Self-dispose once the panel is gone — avoids needing a
-        // panel.onDidDispose hook and guarantees the listener can't
-        // outlive the feature the user opted into.
-        if (!FlatPPLPanel.currentPanel) {
-          embeddedFollow.dispose();
-          embeddedFollow = undefined;
-          return;
-        }
-        if (ev.textEditor.document.uri.toString() !== hostUriStr) return;
-        const k = ev.kind;
-        const KIND = vscode.TextEditorSelectionChangeKind;
-        if (k !== KIND.Keyboard && k !== KIND.Mouse) return;
-        clearTimeout(embeddedFollowTimer);
-        embeddedFollowTimer = setTimeout(() => {
-          if (!FlatPPLPanel.currentPanel) return;
-          const doc = ev.textEditor.document;
-          const cur = ev.selections[0].active;
-          const blk = extractEmbeddedFlatPPL(
-            doc.getText(), doc.offsetAt(cur));
-          if (!blk) return;                       // cursor left every block
-          const base = doc.positionAt(blk.start).line;
-          const parsed = processSource(blk.source, { variant: 'flatppl' });
-          // Cursor → binding within the block (content lines are
-          // verbatim, so a line shift by `base` is the whole mapping).
-          const b = findBindingAtLine(
-            parsed.bindings, cur.line - base, cur.character);
-          const name = b ? b.name : null;
-          if (name === lastEmbName) return;
-          lastEmbName = name;
-          FlatPPLPanel.currentPanel.updateSource(
-            blk.source, name, null, /* pushHistory */ true,
-            { readOnly: true, navOrigin: { uri: doc.uri, baseLine: base } });
-        }, 150);
-      });
-      context.subscriptions.push(embeddedFollow);
+  function disarmEmbeddedSupport() {
+    if (!embeddedArmed) return;
+    embeddedArmed = false;
+    vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
+    if (embeddedFollow) { embeddedFollow.dispose(); embeddedFollow = undefined; }
+    for (const d of embeddedDisposables) { try { d.dispose(); } catch (_) {} }
+    embeddedDisposables = [];
+  }
+
+  // Resolve what to render for `editor` in `mode` ('binding'|'module')
+  // across native .flatppl and embedded Python/Julia — parsing only,
+  // no side effects (arming/following is runViz's job). One resolver
+  // ⇒ the two surfaces and the follower can't drift.
+  function resolveVizTarget(editor, mode) {
+    if (!editor) return { kind: 'none', error: 'No active editor.' };
+    const doc = editor.document;
+    if (isFlatPPLDoc(doc)) {
+      const { bindings } = getParsed(doc);
+      if (bindings.size === 0) {
+        return { kind: 'none', error: 'No bindings to visualize in this file.' };
+      }
+      const pos = editor.selection.active;
+      const b = mode === 'binding'
+        ? pickBindingForCursor(bindings, pos.line, pos.character) : null;
+      return { kind: 'native', opts: {
+        source: doc.getText(), mode, targetName: b ? b.name : null,
+        sourceUri: doc.uri, readOnly: false, pushHistory: true } };
+    }
+    const lang = doc.languageId;
+    if (lang === 'python' || lang === 'julia') {
+      const block = extractEmbeddedFlatPPL(
+        doc.getText(), doc.offsetAt(editor.selection.active));
+      if (!block) {
+        return { kind: 'none', error:
+          'No embedded FlatPPL at the cursor — expected flatppl(r"""…""") '
+          + '(Python) or flatppl"""…""" (Julia).' };
+      }
+      const baseLine = doc.positionAt(block.start).line;
+      let targetName = null;
+      if (mode === 'binding') {
+        const { bindings } = processSource(block.source, { variant: 'flatppl' });
+        const pos = editor.selection.active;
+        const b = pickBindingForCursor(
+          bindings, pos.line - baseLine, pos.character);
+        targetName = b ? b.name : null;
+      }
+      return { kind: 'embedded', hostUri: doc.uri, opts: {
+        source: block.source, mode, targetName,
+        sourceUri: null, readOnly: true,
+        navOrigin: { uri: doc.uri, baseLine }, pushHistory: true } };
+    }
+    return { kind: 'none', error:
+      'Open a .flatppl file, or a Python/Julia file with embedded FlatPPL.' };
+  }
+
+  // (Re)arm the embedded source→DAG cursor follower for `hostUri`.
+  // Lazy (user already opted in), self-disposes when the panel is
+  // gone, replaced on re-arm. Reuses resolveVizTarget + renderToPanel
+  // so the follow path is identical to the command path.
+  function armEmbeddedFollower(hostUri) {
+    const hostUriStr = hostUri.toString();
+    if (embeddedFollow) embeddedFollow.dispose();
+    let lastName = ' ';
+    embeddedFollow = vscode.window.onDidChangeTextEditorSelection(ev => {
+      if (!FlatPPLPanel.currentPanel) {
+        embeddedFollow.dispose(); embeddedFollow = undefined; return;
+      }
+      if (ev.textEditor.document.uri.toString() !== hostUriStr) return;
+      const k = ev.kind;
+      const KIND = vscode.TextEditorSelectionChangeKind;
+      if (k !== KIND.Keyboard && k !== KIND.Mouse) return;
+      clearTimeout(embeddedFollowTimer);
+      embeddedFollowTimer = setTimeout(() => {
+        if (!FlatPPLPanel.currentPanel) return;
+        const r = resolveVizTarget(ev.textEditor, 'binding');
+        if (r.kind !== 'embedded') return;     // cursor left every block
+        if (r.opts.targetName === lastName) return;
+        lastName = r.opts.targetName;
+        renderToPanel(r.opts);
+      }, 150);
+    });
+    embeddedDisposables.push(embeddedFollow);
+  }
+
+  // Shared body of the two visualize commands. Native and embedded
+  // differ only in resolveVizTarget; embedded additionally auto-arms
+  // and follows.
+  function runViz(mode) {
+    const r = resolveVizTarget(vscode.window.activeTextEditor, mode);
+    if (r.kind === 'none') {
+      vscode.window.showInformationMessage(r.error);
+      return;
+    }
+    if (r.kind === 'embedded') {
+      armEmbeddedSupport();                    // first embedded use arms
+      armEmbeddedFollower(r.hostUri);
+    }
+    renderToPanel(r.opts);
+  }
+
+  // --- Commands ---
+
+  const showDagCmd = vscode.commands.registerCommand(
+    'flatppl.visualize', () => runViz('binding'));
+
+  const showModuleCmd = vscode.commands.registerCommand(
+    'flatppl.visualizeModule', () => runViz('module'));
+
+  const activateEmbeddedCmd = vscode.commands.registerCommand(
+    'flatppl.activateEmbedded', () => {
+      if (!armEmbeddedSupport()) {
+        vscode.window.showInformationMessage(
+          'FlatPPL embedded support is already enabled for this window.');
+      }
+    });
+
+  const deactivateEmbeddedCmd = vscode.commands.registerCommand(
+    'flatppl.deactivateEmbedded', () => {
+      disarmEmbeddedSupport();
+      vscode.window.showInformationMessage(
+        'FlatPPL embedded support disabled for this window.');
     });
 
   // --- Live DAG update on cursor move ---
@@ -752,7 +782,7 @@ function activate(context) {
   });
 
   context.subscriptions.push(
-    showDagCmd, showModuleCmd, showEmbeddedCmd,
+    showDagCmd, showModuleCmd, activateEmbeddedCmd, deactivateEmbeddedCmd,
     selectionListener, changeListener, openListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,

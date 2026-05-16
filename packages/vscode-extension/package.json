@@ -55,41 +55,54 @@
         }
       },
       {
-        "command": "flatppl.visualizeEmbedded",
-        "title": "FlatPPL: Visualize Embedded Model"
+        "command": "flatppl.activateEmbedded",
+        "title": "FlatPPL: Activate Embedded Support"
+      },
+      {
+        "command": "flatppl.deactivateEmbedded",
+        "title": "FlatPPL: Deactivate Embedded Support"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "flatppl.visualize",
-          "when": "editorLangId == flatppl"
+          "when": "editorLangId == flatppl || editorLangId == python || editorLangId == julia"
         },
         {
           "command": "flatppl.visualizeModule",
-          "when": "editorLangId == flatppl"
+          "when": "editorLangId == flatppl || editorLangId == python || editorLangId == julia"
         },
         {
-          "command": "flatppl.visualizeEmbedded",
-          "when": "editorLangId == python || editorLangId == julia"
+          "command": "flatppl.activateEmbedded",
+          "when": "(editorLangId == python || editorLangId == julia) && !flatppl.embeddedActive"
+        },
+        {
+          "command": "flatppl.deactivateEmbedded",
+          "when": "flatppl.embeddedActive"
         }
       ],
       "editor/context": [
         {
-          "command": "flatppl.visualizeEmbedded",
-          "when": "editorLangId == python || editorLangId == julia",
-          "group": "navigation@9"
+          "command": "flatppl.visualize",
+          "when": "(editorLangId == python || editorLangId == julia) && flatppl.embeddedActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "flatppl.visualizeModule",
+          "when": "(editorLangId == python || editorLangId == julia) && flatppl.embeddedActive",
+          "group": "navigation@2"
         }
       ],
       "editor/title": [
         {
           "command": "flatppl.visualize",
-          "when": "editorLangId == flatppl",
+          "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)",
           "group": "navigation@1"
         },
         {
           "command": "flatppl.visualizeModule",
-          "when": "editorLangId == flatppl",
+          "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)",
           "group": "navigation@2"
         }
       ]
