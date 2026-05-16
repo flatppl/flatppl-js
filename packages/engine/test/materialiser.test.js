@@ -658,11 +658,11 @@ lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
 });
 
 // =====================================================================
-// chain(M, K) — Kleisli composition with prior marginalisation
+// kchain(M, K) — Kleisli composition with prior marginalisation
 // =====================================================================
 
-test('chain: produces a measure of K\'s body fields only (no prior)', async () => {
-  // chain(M, K) drops the prior fields and keeps only K's body —
+test('kchain: produces a measure of K\'s body fields only (no prior)', async () => {
+  // kchain(M, K) drops the prior fields and keeps only K's body —
   // semantically marginalising the prior away. The materialiser
   // samples K(prior_atom_i) per atom; the binding's chainOrigin
   // flag survives so density evaluation knows to MC-marginalise.
@@ -671,7 +671,7 @@ theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
 obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
 forward_kernel = functionof(obs_dist, theta1 = theta1)
-predictive = chain(prior, forward_kernel)
+predictive = kchain(prior, forward_kernel)
 `);
   const d = ctx.derivations.predictive;
   assert.ok(d, 'predictive should be derivable');
@@ -681,8 +681,8 @@ predictive = chain(prior, forward_kernel)
     'chainOrigin flag should be set so matLogdensityof picks up marginalisation');
 });
 
-test('chain: logdensityof marginalises via MC (logsumexp − log N)', async () => {
-  // Closed-form check: chain(Normal(0,1), x ↦ Normal(x, 1)) is
+test('kchain: logdensityof marginalises via MC (logsumexp − log N)', async () => {
+  // Closed-form check: kchain(Normal(0,1), x ↦ Normal(x, 1)) is
   // Normal(0, √2). The MC estimator of its log-density at obs=0 is
   //   logsumexp_i { log p(0 | Normal(prior_i, 1)) } − log N
   // which converges to log p(0 | Normal(0, √2)) = −½log(2π) − ½log(2).
@@ -694,7 +694,7 @@ theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
 obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
 forward_kernel = functionof(obs_dist, theta1 = theta1)
-predictive = chain(prior, forward_kernel)
+predictive = kchain(prior, forward_kernel)
 lp = logdensityof(predictive, record(y = 0.0))
 `);
   const lp = await ctx.getMeasure('lp');

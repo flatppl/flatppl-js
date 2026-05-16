@@ -1217,7 +1217,7 @@ function matLogdensityof(d, ctx) {
   // value (a scalar binding) — no logWeights, no totalmass mutation.
   //
   // chain MARGINALISATION: when the measure was originally a
-  // `chain(prior, K)` (per spec §06 ν(B) = ∫ K(a, B) dμ(a)), the
+  // `kchain(prior, K)` (per spec §06 ν(B) = ∫ K(a, B) dμ(a)), the
   // per-atom log-likelihoods we compute below are exactly the
   // integrand evaluated at MC samples a_i ~ μ. The marginal
   // log-density of the chain at obs is:
