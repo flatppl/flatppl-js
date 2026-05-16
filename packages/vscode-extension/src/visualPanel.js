@@ -99,6 +99,13 @@ class FlatPPLPanel {
       // workspace changeListener gates on activeTextEditor.document
       // and can miss the change when the webview has focus, so
       // relying on it would leave the viewer with stale source.
+      if (msg.type === 'editSource' && this._readOnly) {
+        vscode.window.showInformationMessage(
+          'This FlatPPL DAG is a read-only snapshot of an embedded model — '
+          + 'edit the FlatPPL inside the host Python/Julia file directly, '
+          + 'then re-run "FlatPPL: Visualize Embedded Model".');
+        return;
+      }
       if (msg.type === 'editSource' && this._sourceUri != null) {
         const uri = this._sourceUri;
         vscode.workspace.openTextDocument(uri).then(doc => {
@@ -167,6 +174,7 @@ class FlatPPLPanel {
    * and the future standalone web preview.
    */
   updateSource(source, targetName, sourceUri, pushHistory) {
+    this._readOnly = false;             // writable host-document path
     if (sourceUri) this._sourceUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
     this._post({
@@ -199,8 +207,19 @@ class FlatPPLPanel {
    * mode. The webview pushes a history entry when pushHistory is
    * true so the back-button can return to a prior single-binding view.
    */
-  showModule(source, sourceUri, pushHistory) {
-    if (sourceUri) this._sourceUri = sourceUri;
+  showModule(source, sourceUri, pushHistory, readOnly) {
+    if (readOnly) {
+      // Embedded FlatPPL (extracted from a Python/Julia host string):
+      // a read-only snapshot. Clear _sourceUri so the DAG-rename
+      // write-back path (which targets _sourceUri at FlatPPL-relative
+      // ranges) can never corrupt the host file, and don't leave a
+      // stale prior .flatppl uri behind.
+      this._readOnly = true;
+      this._sourceUri = null;
+    } else {
+      this._readOnly = false;
+      if (sourceUri) this._sourceUri = sourceUri;
+    }
     this._panel.title = 'FlatPPL: module';
     this._post({
       type: 'showModule',

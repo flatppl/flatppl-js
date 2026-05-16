@@ -37,6 +37,41 @@ function variantIdForDoc(_document) {
   return 'flatppl';
 }
 
+// Extract embedded FlatPPL from a host (Python/Julia) document — spec
+// §05 "Host-language embedding": flatppl(r"""…""") / flatppl(r'''…''')
+// in Python, flatppl"""…""" / flatppl"…" (string macro) in Julia. The
+// FlatPPL inside is canonical and verbatim (host interpolation is
+// disallowed, so f-string prefixes are intentionally NOT matched —
+// such a block isn't a valid embedding and is skipped). Returns the
+// block whose content contains `cursorOffset`; else the sole block;
+// else the last block starting before the cursor; else null.
+//
+// Used only by the on-demand visualize command — there is no parsing,
+// no listeners, and the extension is dormant (onCommand activation)
+// until the user invokes it, so Python/Julia users uninterested in
+// FlatPPL pay nothing.
+function extractEmbeddedFlatPPL(text, cursorOffset) {
+  // Group 2: Python triple/triple-single after `flatppl( [raw]?`.
+  // Group 3: Julia `"""` or `"` immediately after `flatppl`.
+  const re = /\bflatppl\s*(?:\(\s*(?:[rRbB]{1,2})?\s*("""|''')|("""|"))/g;
+  const blocks = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const delim = m[1] || m[2];
+    const start = m.index + m[0].length;
+    const end = text.indexOf(delim, start);
+    if (end === -1) continue;                 // unterminated — skip
+    blocks.push({ start, end, source: text.slice(start, end) });
+    re.lastIndex = end + delim.length;
+  }
+  if (blocks.length === 0) return null;
+  const hit = blocks.find(b => cursorOffset >= b.start && cursorOffset <= b.end);
+  if (hit) return hit;
+  if (blocks.length === 1) return blocks[0];
+  const before = blocks.filter(b => b.start <= cursorOffset);
+  return before.length ? before[before.length - 1] : blocks[0];
+}
+
 function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
@@ -181,6 +216,35 @@ function activate(context) {
       vscode.window.showInformationMessage('No bindings to visualize in this file');
     }
   });
+
+  // Visualize FlatPPL embedded in a Python/Julia host file. A read-
+  // only module snapshot of the flatppl(r\"\"\"…\"\"\") /
+  // flatppl\"\"\"…\"\"\" block at the cursor. onCommand-activated only,
+  // so it adds zero cost for Python/Julia users who never invoke it.
+  const showEmbeddedCmd = vscode.commands.registerCommand(
+    'flatppl.visualizeEmbedded', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showErrorMessage('Open a file with embedded FlatPPL');
+        return;
+      }
+      const text = editor.document.getText();
+      const off = editor.document.offsetAt(editor.selection.active);
+      const block = extractEmbeddedFlatPPL(text, off);
+      if (!block) {
+        vscode.window.showInformationMessage(
+          'No embedded FlatPPL found — expected flatppl(r"""…""") (Python) '
+          + 'or flatppl"""…""" (Julia).');
+        return;
+      }
+      const wasNew = !FlatPPLPanel.currentPanel;
+      FlatPPLPanel.createOrShow(context);
+      if (wasNew) {
+        FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
+      }
+      FlatPPLPanel.currentPanel.showModule(
+        block.source, null, /* pushHistory */ true, /* readOnly */ true);
+    });
 
   // --- Live DAG update on cursor move ---
 
@@ -593,7 +657,8 @@ function activate(context) {
   });
 
   context.subscriptions.push(
-    showDagCmd, showModuleCmd, selectionListener, changeListener, openListener, closeListener,
+    showDagCmd, showModuleCmd, showEmbeddedCmd,
+    selectionListener, changeListener, openListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
     configListener,

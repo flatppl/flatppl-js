@@ -53,6 +53,10 @@
           "light": "./media/visualize-module-light.svg",
           "dark":  "./media/visualize-module-dark.svg"
         }
+      },
+      {
+        "command": "flatppl.visualizeEmbedded",
+        "title": "FlatPPL: Visualize Embedded Model"
       }
     ],
     "menus": {
@@ -64,6 +68,17 @@
         {
           "command": "flatppl.visualizeModule",
           "when": "editorLangId == flatppl"
+        },
+        {
+          "command": "flatppl.visualizeEmbedded",
+          "when": "editorLangId == python || editorLangId == julia"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "flatppl.visualizeEmbedded",
+          "when": "editorLangId == python || editorLangId == julia",
+          "group": "navigation@9"
         }
       ],
       "editor/title": [
