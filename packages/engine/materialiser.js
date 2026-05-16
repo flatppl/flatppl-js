@@ -1328,7 +1328,23 @@ const KIND_HANDLERS = {
   truncate:     (name, d, ctx) => matTruncate(d, ctx),
   pushfwd:      (name, d, ctx) => matPushfwd(name, d, ctx),
   mvnormal:     (name, d, ctx) => matMvNormal(name, d, ctx),
+  // jointchain/kchain first-class kind. Step-1 stub: the kind is only
+  // produced when orchestrator JOINTCHAIN_STATE.firstClass is on (off by
+  // default), and step-1 tests exercise classification only. Real
+  // sampling lands in step 2 (sample base; per step apply kernelRef to
+  // the accumulated prior atoms; marginalize ⇒ keep last step's
+  // variates). Throws clearly if reached early.
+  jointchain:   (name, d, ctx) => matJointchain(name, d, ctx),
 };
+
+function matJointchain(name, d, ctx) {
+  void name; void d; void ctx;
+  return Promise.reject(new Error(
+    'matJointchain: first-class jointchain/kchain materialisation is '
+    + 'not implemented yet (step 2 of the consume/rest consolidation). '
+    + 'This kind should not be produced while JOINTCHAIN_STATE.firstClass '
+    + 'is off.'));
+}
 
 /**
  * Entry point. ctx = {

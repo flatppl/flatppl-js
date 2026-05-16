@@ -1447,6 +1447,10 @@ function liftInlineSubexpressions(bindings) {
     const op = astArg.callee.name;
     if (op !== 'jointchain' && op !== 'kchain') return astArg;
     if (!astArg.args || astArg.args.length < 2) return astArg;
+    // Dual-path gate: when the first-class kind is enabled, leave the
+    // jointchain/kchain call intact so `classifyJointchain` sees it.
+    // OFF by default ⇒ legacy rewrite below runs exactly as before.
+    if (JOINTCHAIN_STATE.firstClass) return astArg;
 
     // N-ary jointchain (≥3 positional args): per spec §06 the chain is
     // left-associative — `jointchain(M, K1, K2, ..., Kn)` ≡
@@ -3026,6 +3030,109 @@ function classifyPushfwd(rhsIR, ast, bindings) {
   return { kind: 'pushfwd', from: mIR.name, fnRef: fIR.name };
 }
 
+// ---------------------------------------------------------------------
+// jointchain / kchain first-class derivation kind (consume/rest
+// consolidation — flatppl-dev TODO §06 "APPROVED DESIGN").
+//
+// Migration flag. While OFF (the default) the engine behaves EXACTLY
+// as before: `inlineChainOps` performs the legacy AST-rewrite of
+// jointchain/kchain → joint/record/tuple, and `classifyJointchain` is
+// unreachable dead code (the rewrite consumes the node before the IR
+// ever carries op 'jointchain'/'kchain'). Flipping it ON (step 2) gates
+// `inlineChainOps` off for these ops so the call survives to
+// `classifyJointchain`, which builds an explicit step structure
+// materialised/scored on the consume/rest spine. Dual-path by design
+// (user-approved): retire `inlineChainOps` only at step 4 once every
+// shape is covered. Tests force the flag on locally to exercise the
+// new classifier without changing global behaviour.
+//
+// Mutable holder (not a bare const) so tests can flip `firstClass`
+// and restore it; the single read site is the inlineChainOps gate.
+const JOINTCHAIN_STATE = { firstClass: false };
+
+/**
+ * Classify `jointchain(...)` / `kchain(...)` into a first-class
+ * `kind:'jointchain'` derivation with an EXPLICIT step structure —
+ * no AST rewrite, no surface-kwarg-name matching (the fragility class
+ * `inlineChainOps` suffers from).
+ *
+ *   { kind:'jointchain',
+ *     marginalize: bool,                 // kchain ⇒ true (keep last only)
+ *     labels: [string]|null,             // kwarg form ⇒ record-shaped
+ *     steps: [
+ *       { var, role:'base',   ref, kernel:bool },   // step 0 (M, or
+ *                                                   //   kernel-first)
+ *       { var, role:'kernel', ref, inputs:[var…] }, // step i≥1: K_i on
+ *       … ] }                                       //   cat(prior vars)
+ *
+ * Mirrors the spec stochastic-node equivalence
+ * `a~M1; b~K2(a); c~K3([a,b])` (§06). Kernel application is recorded
+ * structurally (`ref` + `inputs`), never by inlining K's body.
+ *
+ * Parity scope (user-approved) + unlock kernel-first: positional
+ * (2-arg, N-ary), kwarg, and kernel-first (step-0 ref is itself a
+ * kernel). Returns null for shapes not yet covered → caller falls back
+ * to `inlineChainOps` (dual-path) while the flag is on.
+ *
+ * NOTE step 1: classification only. Reached only when
+ * JOINTCHAIN_STATE.firstClass is on (else inlineChainOps consumes the node
+ * first). `matJointchain` is a step-2 stub today.
+ */
+function classifyJointchain(rhsIR, ast, bindings) {
+  if (!rhsIR || rhsIR.kind !== 'call'
+      || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
+  if (!ast || !Array.isArray(ast.args) || ast.args.length < 2) return null;
+  const marginalize = (rhsIR.op === 'kchain');
+
+  // A binding is a kernel iff its surface type is one of the reified
+  // callable forms (mirrors inlineChainOps' Kbinding.type gate).
+  const isKernelName = (nm) => {
+    const b = nm != null && bindings.get(nm);
+    return !!b && (b.type === 'functionof' || b.type === 'kernelof'
+      || b.type === 'fn');
+  };
+  // Resolve a positional/kwarg arg AST to a bound name. After the lift
+  // pass every non-trivial arg is an Identifier (measure/kernel refs);
+  // `lawof(ref)` is also accepted as a measure ref.
+  const refName = (node) => {
+    if (!node) return null;
+    if (node.type === 'Identifier' && bindings.has(node.name)) return node.name;
+    if (node.type === 'CallExpr' && node.callee
+        && node.callee.type === 'Identifier' && node.callee.name === 'lawof'
+        && Array.isArray(node.args) && node.args.length === 1
+        && node.args[0].type === 'Identifier'
+        && bindings.has(node.args[0].name)) return node.args[0].name;
+    return null;
+  };
+
+  const kw = ast.args.every((a) => a && a.type === 'KeywordArg');
+  const positional = ast.args.every((a) => a && a.type !== 'KeywordArg');
+  if (!kw && !positional) return null;            // mixed → unsupported here
+
+  const labels = kw ? ast.args.map((a) => a.name) : null;
+  const argExprs = kw ? ast.args.map((a) => a.value) : ast.args;
+
+  const steps = [];
+  for (let i = 0; i < argExprs.length; i++) {
+    const nm = refName(argExprs[i]);
+    if (nm == null) return null;                  // not a resolvable ref
+    const v = labels ? labels[i] : ('s' + i);
+    if (i === 0) {
+      // Step 0 is the base: a measure, or (kernel-first) a kernel.
+      steps.push({
+        var: v, role: 'base', ref: nm, kernel: isKernelName(nm),
+      });
+    } else {
+      if (!isKernelName(nm)) return null;         // K_i must be a kernel
+      steps.push({
+        var: v, role: 'kernel', ref: nm,
+        inputs: steps.map((s) => s.var),
+      });
+    }
+  }
+  return { kind: 'jointchain', marginalize, labels, steps };
+}
+
 const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
@@ -3039,6 +3146,10 @@ const MEASURE_OP_CLASSIFIERS = {
   totalmass:    classifyTotalmass,
   truncate:     classifyTruncate,
   pushfwd:      classifyPushfwd,
+  // Reachable only when JOINTCHAIN_STATE.firstClass is on (else
+  // inlineChainOps rewrites the node before the IR carries this op).
+  jointchain:   classifyJointchain,
+  kchain:       classifyJointchain,
 };
 
 /**
@@ -4800,5 +4911,11 @@ module.exports = {
   SAMPLEABLE_DISTRIBUTIONS,
   DISCRETE_DISTRIBUTIONS,
   EVALUABLE_OPS,
-  _internal: { classifyForChain, isEvaluable, classifyDerivation, isDiscreteAt },
+  _internal: {
+    classifyForChain, isEvaluable, classifyDerivation, isDiscreteAt,
+    // jointchain-first-class migration (step 1): the classifier and the
+    // mutable flag, so tests can exercise the new path in isolation
+    // without changing default behaviour.
+    classifyJointchain, JOINTCHAIN_STATE,
+  },
 };
