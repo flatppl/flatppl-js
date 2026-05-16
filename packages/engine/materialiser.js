@@ -159,13 +159,23 @@ function fixedValueToMeasure(v, sampleCount) {
       { logWeights: null, logTotalmass: 0, n_eff: samples.length });
   }
   if (Array.isArray(v)) {
-    // Plain JS array: flat numeric vector OR mixed-shape tuple.
-    let allNum = v.length > 0;
-    for (let i = 0; allNum && i < v.length; i++) {
-      if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) allNum = false;
+    // Plain JS array: flat scalar vector OR mixed-shape tuple. Scalars
+    // are finite numbers or booleans — a deterministic boolean array
+    // (e.g. an elementwise comparison / `.<` broadcast bound to a
+    // name) is a value, not a 3-element tuple of nulls. Booleans
+    // coerce to 1/0, matching how the engine surfaces booleans
+    // everywhere else (a scalar `true` binding already samples as 1).
+    let allScalar = v.length > 0;
+    for (let i = 0; allScalar && i < v.length; i++) {
+      const t = typeof v[i];
+      if (t === 'boolean') continue;
+      if (t !== 'number' || !Number.isFinite(v[i])) allScalar = false;
     }
-    if (allNum) {
-      const samples = Float64Array.from(v);
+    if (allScalar) {
+      const samples = new Float64Array(v.length);
+      for (let i = 0; i < v.length; i++) {
+        samples[i] = v[i] === true ? 1 : v[i] === false ? 0 : v[i];
+      }
       return scalarMeasureN(samples,
         { logWeights: null, logTotalmass: 0, n_eff: samples.length });
     }
