@@ -237,13 +237,18 @@ function activate(context) {
           + 'or flatppl"""…""" (Julia).');
         return;
       }
+      // Host line where the block's FlatPPL content starts: the engine
+      // reports binding locations relative to block.source, so a
+      // DAG→source jump adds this base line to land in the host file.
+      const baseLine = editor.document.positionAt(block.start).line;
       const wasNew = !FlatPPLPanel.currentPanel;
       FlatPPLPanel.createOrShow(context);
       if (wasNew) {
         FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
       }
       FlatPPLPanel.currentPanel.showModule(
-        block.source, null, /* pushHistory */ true, /* readOnly */ true);
+        block.source, null, /* pushHistory */ true, /* readOnly */ true,
+        { uri: editor.document.uri, baseLine: baseLine });
     });
 
   // --- Live DAG update on cursor move ---
