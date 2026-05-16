@@ -23,17 +23,18 @@ const { processSource, findBindingAtLine, builtins,
 const { FlatPPLPanel } = require('./src/visualPanel');
 
 // Surface-syntax variants this extension handles. Per-document
-// variant detection uses the document's languageId (set by VS Code
-// from the file extension via package.json's `languages`
-// contribution). The three IDs share grammar / configuration —
-// what differs is which surface syntax the engine parses.
-const FLATPPL_LANGS = new Set(['flatppl', 'flatppy', 'flatppj']);
+// Activation uses the document's languageId (set by VS Code from the
+// `.flatppl` extension via package.json's `languages` contribution).
+// There is a single canonical FlatPPL surface syntax (flatppl-design
+// cc81e4b removed FlatPPY/FlatPPJ); embedded FlatPPL inside Python/
+// Julia is handled by injection grammars, not separate language IDs.
+const FLATPPL_LANGS = new Set(['flatppl']);
 function isFlatPPLDoc(document) {
   return document != null && FLATPPL_LANGS.has(document.languageId);
 }
-function variantIdForDoc(document) {
-  if (!isFlatPPLDoc(document)) return 'flatppl';
-  return document.languageId;
+// One canonical FlatPPL surface syntax (flatppl-design cc81e4b).
+function variantIdForDoc(_document) {
+  return 'flatppl';
 }
 
 function activate(context) {

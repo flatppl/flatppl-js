@@ -72,50 +72,9 @@ test('tilde: FlatPPL `_, rs ~ rand(...)` discards first', () => {
 });
 
 // ---------------------------------------------------------------------
-// FlatPPJ: same tilde behavior as FlatPPL (superset)
+// Path-detected source still accepts tilde (canonical FlatPPL)
 // ---------------------------------------------------------------------
-
-test('tilde: FlatPPJ `x ~ M` lowers to draw(M)', () => {
-  const r = parseOK('x ~ M', { variant: 'flatppj' });
-  const v = firstBindingValue(r, 'x');
-  assert.equal(v.callee.name, 'draw');
-});
-
-// ---------------------------------------------------------------------
-// FlatPPY: tilde is rejected
-// ---------------------------------------------------------------------
-
-test('tilde: FlatPPY rejects `x ~ M`', () => {
-  const r = processSource('x ~ M', { variant: 'flatppy' });
-  assert.ok(r.diagnostics.length >= 1);
-  assert.match(r.diagnostics[0].message,
-    /Tilde binding '~' is not allowed in flatppy/);
-});
-
-test('tilde: FlatPPY rejects decomposition tilde', () => {
-  const r = processSource('a, b ~ M', { variant: 'flatppy' });
-  assert.ok(r.diagnostics.length >= 1);
-  assert.match(r.diagnostics[0].message,
-    /Tilde binding '~' is not allowed in flatppy/);
-});
-
-test('tilde: FlatPPY still accepts `x = draw(M)`', () => {
-  parseOK('x = draw(M)', { variant: 'flatppy' });
-});
-
-// ---------------------------------------------------------------------
-// Path-detected variant follows the same rules
-// ---------------------------------------------------------------------
-
-test('tilde: path-detected .flatppy rejects tilde', () => {
-  const r = processSource('x ~ M', { path: 'foo.flatppy' });
-  assert.ok(r.diagnostics.length >= 1);
-});
 
 test('tilde: path-detected .flatppl accepts tilde', () => {
   parseOK('x ~ M', { path: 'foo.flatppl' });
-});
-
-test('tilde: path-detected .flatppj accepts tilde', () => {
-  parseOK('x ~ M', { path: 'foo.flatppj' });
 });

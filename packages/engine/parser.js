@@ -99,34 +99,18 @@ function parse(tokens, variant) {
   }
 
   function parseAnd() {
-    // FlatPPY: between And and Comparison sits the `not` level. This
-    // gives Python's `not a < b` ≡ `not (a < b)` precedence. FlatPPL
-    // / FlatPPJ keep `!` at the Unary level (lower than Comparison),
-    // so they call parseComparison directly here.
-    const child = (v.id === 'flatppy') ? parseNot : parseComparison;
-    let left = child();
+    // Canonical FlatPPL keeps `!` at the Unary level (lower than
+    // Comparison), so `&&` sits directly above Comparison.
+    let left = parseComparison();
     while (atLogicalSym('and')) {
       const opTok = advance();
-      const right = child();
+      const right = parseComparison();
       const callee = AST.Identifier('land', opTok.loc);
       left = AST.CallExpr(callee, [left, right],
         AST.loc(left.loc.start.line, left.loc.start.col,
                 right.loc.end.line, right.loc.end.col));
     }
     return left;
-  }
-
-  // FlatPPY-only level: `not` above Comparison.
-  function parseNot() {
-    if (atLogicalSym('not')) {
-      const opTok = advance();
-      const operand = parseNot();
-      const callee = AST.Identifier('lnot', opTok.loc);
-      return AST.CallExpr(callee, [operand],
-        AST.loc(opTok.loc.start.line, opTok.loc.start.col,
-                operand.loc.end.line, operand.loc.end.col));
-    }
-    return parseComparison();
   }
 
   function parseComparison() {

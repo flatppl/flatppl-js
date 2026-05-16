@@ -29,12 +29,6 @@ test('chain: FlatPPL `a < b` stays a plain BinaryExpr', () => {
   assert.equal(v.op, '<');
 });
 
-test('chain: FlatPPY `a == b` stays a plain BinaryExpr', () => {
-  const v = parseRHS('x = a == b', { variant: 'flatppy' });
-  assert.equal(v.type, 'BinaryExpr');
-  assert.equal(v.op, '==');
-});
-
 // ---------------------------------------------------------------------
 // FlatPPL: chained → land(...)
 // ---------------------------------------------------------------------
@@ -78,23 +72,7 @@ test('chain: FlatPPL mixed operators `1 < a == b != 0`', () => {
 });
 
 // ---------------------------------------------------------------------
-// FlatPPY / FlatPPJ same behavior
-// ---------------------------------------------------------------------
-
-test('chain: FlatPPY `a < b <= c` → land(...)', () => {
-  const v = parseRHS('x = a < b <= c', { variant: 'flatppy' });
-  assert.equal(v.callee.name, 'land');
-  assert.equal(v.args[0].op, '<');
-  assert.equal(v.args[1].op, '<=');
-});
-
-test('chain: FlatPPJ `a < b <= c` → land(...)', () => {
-  const v = parseRHS('x = a < b <= c', { variant: 'flatppj' });
-  assert.equal(v.callee.name, 'land');
-});
-
-// ---------------------------------------------------------------------
-// `in` operator (all three variants)
+// `in` operator
 // ---------------------------------------------------------------------
 
 test('chain: FlatPPL `x in S` is a BinaryExpr with op "in"', () => {
@@ -103,12 +81,6 @@ test('chain: FlatPPL `x in S` is a BinaryExpr with op "in"', () => {
   assert.equal(v.op, 'in');
   assert.equal(v.left.name, 'a');
   assert.equal(v.right.name, 'S');
-});
-
-test('chain: FlatPPY `x in S` works the same way', () => {
-  const v = parseRHS('x = a in S', { variant: 'flatppy' });
-  assert.equal(v.type, 'BinaryExpr');
-  assert.equal(v.op, 'in');
 });
 
 test('chain: `a < b in S` chains: land(a<b, b in S)', () => {
@@ -133,9 +105,9 @@ test('chain: FlatPPL `a < b <= c && d` — chain has tighter precedence', () => 
   assert.equal(v.args[1].name, 'd');
 });
 
-test('chain: FlatPPY `not a < b < c` — `not` wraps the chain', () => {
-  // `not` is above Comparison in FlatPPY → not(land(a<b, b<c))
-  const v = parseRHS('x = not a < b < c', { variant: 'flatppy' });
+test('chain: `!(a < b < c)` — `!` wraps the chain', () => {
+  // `!` is above Comparison → lnot(land(a<b, b<c))
+  const v = parseRHS('x = !(a < b < c)', { variant: 'flatppl' });
   assert.equal(v.callee.name, 'lnot');
   assert.equal(v.args[0].callee.name, 'land');
 });
