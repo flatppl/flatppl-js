@@ -69,9 +69,15 @@ class FlatPPLPanel {
       // into events without a host round-trip), so the only remaining
       // host-bound messages are ones that need VS Code API access:
       // moving the editor cursor and updating the panel title.
-      if (msg.type === 'navigateTo' && this._sourceUri != null) {
-        const line = msg.line;
-        const uri = this._sourceUri;
+      if (msg.type === 'navigateTo' && (this._sourceUri != null || this._navUri != null)) {
+        // Native .flatppl: jump to the reported line in _sourceUri.
+        // Embedded (read-only): _sourceUri is null (write-back is
+        // disabled), but a reveal-only jump into the host .py/.jl is
+        // safe — shift the FlatPPL-relative line by the host line
+        // where the embedded block's content starts.
+        const embedded = this._sourceUri == null;
+        const uri = embedded ? this._navUri : this._sourceUri;
+        const line = (embedded ? this._navBaseLine : 0) + msg.line;
         vscode.window.showTextDocument(uri, {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: false,
@@ -175,6 +181,7 @@ class FlatPPLPanel {
    */
   updateSource(source, targetName, sourceUri, pushHistory) {
     this._readOnly = false;             // writable host-document path
+    this._navUri = null;                // not an embedded snapshot
     if (sourceUri) this._sourceUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
     this._post({
@@ -207,17 +214,23 @@ class FlatPPLPanel {
    * mode. The webview pushes a history entry when pushHistory is
    * true so the back-button can return to a prior single-binding view.
    */
-  showModule(source, sourceUri, pushHistory, readOnly) {
+  showModule(source, sourceUri, pushHistory, readOnly, navOrigin) {
     if (readOnly) {
       // Embedded FlatPPL (extracted from a Python/Julia host string):
       // a read-only snapshot. Clear _sourceUri so the DAG-rename
       // write-back path (which targets _sourceUri at FlatPPL-relative
       // ranges) can never corrupt the host file, and don't leave a
-      // stale prior .flatppl uri behind.
+      // stale prior .flatppl uri behind. `navOrigin` ({uri, baseLine})
+      // enables reveal-only DAG→source jumps into the host file
+      // without re-enabling write-back.
       this._readOnly = true;
       this._sourceUri = null;
+      this._navUri = navOrigin ? navOrigin.uri : null;
+      this._navBaseLine = navOrigin ? navOrigin.baseLine : 0;
     } else {
       this._readOnly = false;
+      this._navUri = null;
+      this._navBaseLine = 0;
       if (sourceUri) this._sourceUri = sourceUri;
     }
     this._panel.title = 'FlatPPL: module';
