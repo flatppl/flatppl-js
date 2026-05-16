@@ -2834,6 +2834,35 @@ function classifyIid(rhsIR, ast, bindings) {
   return { kind: 'iid', from: baseName, dims };
 }
 
+// Stochastic kernel-broadcast: `broadcast(K, c1, c2, …)` where K is a
+// distribution kernel → array-valued independent-product measure
+// (spec §04). v1 scope: arg0 is a sampleable-distribution constructor
+// used directly as the kernel (`broadcast(Normal, means, sigmas)`);
+// the collection args bind to the distribution's parameters,
+// positionally or by kwarg. The deterministic value-broadcast
+// (`broadcast(f, …)` with f a function) returns null here and is
+// handled as an ordinary value binding, not a measure.
+//
+// `fn(Dist(…))` / `kernelof` / multi-axis collections are documented
+// follow-ups (TODO §04). Per-element shape resolution + sampling
+// happens in matKernelBroadcast (length K is data-driven, resolved at
+// materialise time — unlike iid's static integer dims).
+function classifyKernelBroadcast(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
+  const k = rhsIR.args[0];
+  // Bare distribution-constructor kernel, not shadowed by a binding.
+  if (!k || k.kind !== 'ref' || k.ns !== 'self'
+      || !SAMPLEABLE_DISTRIBUTIONS.has(k.name) || bindings.has(k.name)) {
+    return null;
+  }
+  const argIRs = rhsIR.args.slice(1);
+  const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
+  if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
+    return null;   // no parameter inputs → not a broadcast
+  }
+  return { kind: 'kernelbroadcast', distOp: k.name, argIRs: argIRs, kwargIRs: kwargIRs };
+}
+
 // `logdensityof(M, x)` — per spec §sec:posterior, evaluate M's
 // log-density at x. Result is REAL (a value, not a measure), but the
 // classifier dispatch lives here uniformly: the materialiser computes
@@ -2945,6 +2974,7 @@ const MEASURE_OP_CLASSIFIERS = {
   record:       classifyRecordOrJoint,
   joint:        classifyRecordOrJoint,
   iid:          classifyIid,
+  broadcast:    classifyKernelBroadcast,
   logdensityof: classifyLogdensityof,
   totalmass:    classifyTotalmass,
   truncate:     classifyTruncate,
@@ -3012,6 +3042,18 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   // iid: the inner measure must be resolvable.
   if (d.kind === 'iid') {
     return resolvable(d.from);
+  }
+  // kernelbroadcast: every self-ref in the parameter inputs must be
+  // resolvable (the distribution kernel itself is a builtin).
+  if (d.kind === 'kernelbroadcast') {
+    const irs = (d.argIRs || []).concat(
+      d.kwargIRs ? Object.keys(d.kwargIRs).map((k) => d.kwargIRs[k]) : []);
+    for (const ir of irs) {
+      for (const r of collectSelfRefs(ir)) {
+        if (!resolvable(r)) return false;
+      }
+    }
+    return true;
   }
   // pushfwd: the base measure must be resolvable. f is a function
   // binding referenced by name; we trust the binding map.
