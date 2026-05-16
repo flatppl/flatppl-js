@@ -248,6 +248,22 @@ function _remapSelectionRange(vscode, sr, dl) {
     sr.parent ? _remapSelectionRange(vscode, sr.parent, dl) : undefined);
 }
 
+// Location.uri is already the host uri (the shim's uri === hostDoc's);
+// only the range needs shifting back into host coordinates.
+const _remapLocation = (vscode, loc, dl) =>
+  new vscode.Location(loc.uri, _shiftRange(vscode, loc.range, dl));
+
+// definition → Location | Location[] (our impl: single or null).
+const remapDefinition = (vscode, res, dl) => Array.isArray(res)
+  ? res.map(l => _remapLocation(vscode, l, dl))
+  : _remapLocation(vscode, res, dl);
+
+const remapReferences = (vscode, res, dl) =>
+  res.map(l => _remapLocation(vscode, l, dl));
+
+const remapHighlights = (vscode, res, dl) => res.map(h =>
+  new vscode.DocumentHighlight(_shiftRange(vscode, h.range, dl), h.kind));
+
 function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
@@ -441,12 +457,18 @@ function activate(context) {
       vscode.workspace.onDidCloseTextDocument(d => {
         if (isEmbeddingHost(d)) diagCollection.delete(d.uri);
       }),
-      // Hover / completion: position-based, reuse impls via the shim.
+      // Position-based, reuse impls via the shim.
       vscode.languages.registerHoverProvider(EMB,
         embedPositional(vscode, hoverImpl, 'provideHover', remapHover)),
       vscode.languages.registerCompletionItemProvider(EMB,
         embedPositional(vscode, completionImpl, 'provideCompletionItems',
           (_v, r) => r, /* emptyValue (additive, don't suppress host) */ [])),
+      vscode.languages.registerDefinitionProvider(EMB,
+        embedPositional(vscode, defImpl, 'provideDefinition', remapDefinition)),
+      vscode.languages.registerReferenceProvider(EMB,
+        embedPositional(vscode, referenceImpl, 'provideReferences', remapReferences)),
+      vscode.languages.registerDocumentHighlightProvider(EMB,
+        embedPositional(vscode, highlightImpl, 'provideDocumentHighlights', remapHighlights)),
       // Document symbols: no position — union every block's outline,
       // each shifted by its own host base line.
       vscode.languages.registerDocumentSymbolProvider(EMB, {
@@ -682,7 +704,7 @@ function activate(context) {
 
   // --- Go-to-definition ---
 
-  const defProvider = vscode.languages.registerDefinitionProvider([...FLATPPL_LANGS], {
+  const defImpl = {
     provideDefinition(document, position) {
       const { bindings } = parsedFor(document);
       const wordRange = document.getWordRangeAtPosition(position);
@@ -693,7 +715,9 @@ function activate(context) {
       return new vscode.Location(document.uri,
         new vscode.Position(binding.nameLoc.start.line, binding.nameLoc.start.col));
     }
-  });
+  };
+  const defProvider = vscode.languages.registerDefinitionProvider(
+    [...FLATPPL_LANGS], defImpl);
 
   // --- Hover ---
 
@@ -949,7 +973,7 @@ function activate(context) {
 
   // --- Find All References (Shift+F12) ---
 
-  const referenceProvider = vscode.languages.registerReferenceProvider([...FLATPPL_LANGS], {
+  const referenceImpl = {
     provideReferences(document, position, refContext) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
@@ -962,11 +986,13 @@ function activate(context) {
       }
       return locs.map(loc => new vscode.Location(document.uri, locToRange(loc)));
     }
-  });
+  };
+  const referenceProvider = vscode.languages.registerReferenceProvider(
+    [...FLATPPL_LANGS], referenceImpl);
 
   // --- Document Highlight (auto, when cursor is on an identifier) ---
 
-  const highlightProvider = vscode.languages.registerDocumentHighlightProvider([...FLATPPL_LANGS], {
+  const highlightImpl = {
     provideDocumentHighlights(document, position) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
@@ -983,7 +1009,9 @@ function activate(context) {
         return new vscode.DocumentHighlight(locToRange(loc), kind);
       });
     }
-  });
+  };
+  const highlightProvider = vscode.languages.registerDocumentHighlightProvider(
+    [...FLATPPL_LANGS], highlightImpl);
 
   // --- Selection Range (Shift+Alt+→ to expand selection) ---
 
