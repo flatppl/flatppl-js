@@ -229,3 +229,29 @@ test('parser: error recovery skips to next line', () => {
   assert.ok(ast.body.some(s => s.type === 'AssignStatement'
     && s.names[0].name === 'y'));
 });
+
+// Reserved keyword/literal tokens at binding LHS (spec §05 "Note on
+// reserved words", post flatppl-design cc81e4b): `in`, `true`, `false`
+// are recognized before `Name` and cannot be a binding LHS. The former
+// FlatPPY-only reservations (and/or/not/True/False) were removed.
+test('parser: in/true/false are reserved at binding LHS', () => {
+  for (const name of ['in', 'true', 'false']) {
+    const { diagnostics } = parseSrc(name + ' = 1');
+    assert.ok(diagnostics.some(d => d.severity === 'error'
+      && /reserved name/.test(d.message)),
+      `'${name} = 1' should be rejected (reserved)`);
+  }
+});
+
+test('parser: and/or/not/True/False are NOT reserved (FlatPPY rule gone)', () => {
+  for (const name of ['and', 'or', 'not', 'True', 'False']) {
+    const { diagnostics } = parseSrc(name + ' = 1');
+    assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0,
+      `'${name} = 1' should parse (no longer reserved)`);
+  }
+});
+
+test('parser: true/false still usable as boolean literals; in as operator', () => {
+  assert.equal(parseSrc('x = true').diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(parseSrc('y = a in S').diagnostics.filter(d => d.severity === 'error').length, 0);
+});
