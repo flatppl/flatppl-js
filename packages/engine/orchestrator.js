@@ -3830,7 +3830,7 @@ function isSelfRef(ir) {
  *      cannot reach through static IR recursion.
  *   2. Recursive walk into the referenced binding's lowered IR.
  *
- * Recognised IR shapes:
+ * Static fast paths (no sampler dependency, exact-shaped JS output):
  *   - { kind: 'lit', value: <number> }    → number
  *   - { kind: 'call', op: 'vector', args }→ array of resolved elements
  *   - { kind: 'call', op: 'record',
@@ -3838,9 +3838,22 @@ function isSelfRef(ir) {
  *   - { kind: 'call', op: 'neg', args }   → negative
  *   - { kind: 'ref', ns: 'self', name }   → resolve as above
  *
- * Throws on anything else, including cycles. The thrown message
- * names the IR shape so the viewer can surface it directly as a
- * plot-time error rather than a silent failure.
+ * Anything else (general deterministic expressions: `broadcast`,
+ * arithmetic, `get`, nested compositions — e.g. kernel-broadcast
+ * distribution parameters like `Gamma.(tau .+ 1.0, tau)`) is delegated
+ * to the engine's real deterministic evaluator `sampler.evaluateExpr`,
+ * with this resolver's own ref machinery (fixedValues → recursive
+ * binding walk → cycle guard) supplied as the evaluator's env. This is
+ * the same evaluator the orchestrator's fixed-phase pre-eval and the
+ * worker use, so every value-position resolver in the engine agrees on
+ * deterministic semantics. The fallback is strictly additive — inputs
+ * that hit a static fast path are byte-for-byte unchanged; only inputs
+ * that previously threw `unsupported op/kind` now resolve.
+ *
+ * Still throws on genuine errors (not an IR node, dependency cycles,
+ * an expression the deterministic evaluator itself rejects). The
+ * thrown message names the failure so the viewer can surface it
+ * directly as a plot-time error rather than a silent failure.
  */
 function resolveIRToValue(ir, bindings, fixedValues) {
   return walk(ir, new Set());
@@ -3875,10 +3888,62 @@ function resolveIRToValue(ir, bindings, fixedValues) {
       if (ir.op === 'neg' && Array.isArray(ir.args) && ir.args.length === 1) {
         return -walk(ir.args[0], seen);
       }
-      throw new Error(`resolveIRToValue: unsupported op '${ir.op}'`);
+      // Fall through to the general deterministic evaluator.
     }
-    throw new Error(`resolveIRToValue: unsupported kind '${ir.kind}'`);
+    // General case: delegate to the engine's real deterministic
+    // evaluator. `sampler.evaluateExpr(ir, env)` understands the full
+    // value language (broadcast, arithmetic, get, functionof bodies,
+    // …); we only need to answer its top-level `ref self`/`%local`
+    // lookups, which we route back through `walk` so fixedValues, the
+    // recursive binding walk, and cycle detection above are reused
+    // verbatim. A Proxy gives evaluateExpr's `name in env` / `env[name]`
+    // access without eagerly snapshotting the (possibly large)
+    // fixedValues map.
+    const env = new Proxy(Object.create(null), {
+      has(_t, name) {
+        if (typeof name !== 'string') return false;
+        if (fixedValues && fixedValues.has(name)) return true;
+        return !!(bindings && bindings.get(name) && bindings.get(name).ir);
+      },
+      get(_t, name) {
+        if (typeof name !== 'string') return undefined;
+        return walk({ kind: 'ref', ns: 'self', name }, seen);
+      },
+    });
+    const samplerLib = require('./sampler');
+    return valueToPlain(samplerLib.evaluateExpr(ir, env));
   }
+}
+
+/**
+ * Normalize a `sampler.evaluateExpr` result back to `resolveIRToValue`'s
+ * documented JS contract (number | nested array | plain object). The
+ * evaluator returns plain numbers/arrays for most expressions but a
+ * shape-tagged Value for some vector/matrix ops; callers of
+ * resolveIRToValue (obsIR clamping, MvNormal mu/cov, kernel-broadcast
+ * params) expect plain JS / will re-`asValue` it, so collapse Values to
+ * row-major nested arrays here. Booleans pass through as-is (the array
+ * caller coerces true/false → 1/0, matching the rest of the engine).
+ */
+function valueToPlain(v) {
+  if (v == null || typeof v === 'number' || typeof v === 'boolean') return v;
+  if (Array.isArray(v)) return v.map(valueToPlain);
+  // Shape-tagged Value → nested JS array (row-major), scalar → number.
+  if (typeof v === 'object' && Array.isArray(v.shape)
+      && v.data instanceof Float64Array) {
+    const data = v.data;
+    const build = (axis, offset, stride) => {
+      if (axis === v.shape.length) return data[offset];
+      const n = v.shape[axis];
+      const inner = stride / n;
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) out[i] = build(axis + 1, offset + i * inner, inner);
+      return out;
+    };
+    const total = v.shape.reduce((a, b) => a * b, 1);
+    return v.shape.length === 0 ? data[0] : build(0, 0, total);
+  }
+  return v;
 }
 
 /**

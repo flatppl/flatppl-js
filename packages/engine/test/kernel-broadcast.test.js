@@ -159,6 +159,29 @@ test('broadcast(Normal,…) closed-form: per-element var + independence', async 
   assert.ok(Math.abs(cov01) < 0.15, 'columns independent (cov≈0), got ' + cov01);
 });
 
+test('kernel-broadcast: distribution params are general deterministic exprs', async () => {
+  // Regression: a kernel-broadcast whose distribution parameters are
+  // themselves composite fixed-phase expressions (nested broadcasts,
+  // arithmetic) — the pyhf-uncorrelated_background prior pattern
+  // `gamma = draw(Gamma.(tau .+ 1.0, tau))` with
+  // `tau = (bkg ./ dbkg) .^ 2`. Previously matKernelBroadcast resolved
+  // param IRs through the minimal static resolveIRToValue, which threw
+  // "unsupported op 'broadcast'". The resolver now delegates general
+  // exprs to the real deterministic evaluator. Gamma(shape=t+1, rate=t)
+  // has mean (t+1)/t = 1 + 1/t; tau = [50/3, 52/7]^2 = [277.78, 55.18].
+  const N = 12000;
+  const m = await materialise(
+    'bkg  = [50.0, 52.0]\n' +
+    'dbkg = [3.0, 7.0]\n' +
+    'tau  = (bkg ./ dbkg) .^ 2\n' +
+    'gamma ~ Gamma.(tau .+ 1.0, tau)\n', 'gamma', N);
+  assert.equal(m.shape, 'array');
+  assert.deepEqual(m.dims, [2]);
+  assert.equal(m.logTotalmass, 0, 'product of probability measures');
+  assert.ok(Math.abs(colMean(m, 2, 0, N) - (1 + 1 / (2500 / 9))) < 0.01);
+  assert.ok(Math.abs(colMean(m, 2, 1, N) - (1 + 1 / (2704 / 49))) < 0.02);
+});
+
 test('broadcast: incompatible collection lengths is an error', async () => {
   await assert.rejects(
     materialise('p = [1.0, 2.0, 3.0]\n' +
