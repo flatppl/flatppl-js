@@ -221,6 +221,15 @@ function activate(context) {
   // only module snapshot of the flatppl(r\"\"\"…\"\"\") /
   // flatppl\"\"\"…\"\"\" block at the cursor. onCommand-activated only,
   // so it adds zero cost for Python/Julia users who never invoke it.
+  // Lazily-registered source→DAG cursor follower for the embedded
+  // view. Created ONLY when the user invokes visualizeEmbedded (the
+  // extension is already active + the user has opted in by then), and
+  // disposed when the panel closes or the command is re-invoked. So
+  // Python/Julia users who never use FlatPPL pay nothing — there is
+  // no onLanguage activation and no listener until explicit opt-in.
+  let embeddedFollow;
+  let embeddedFollowTimer;
+
   const showEmbeddedCmd = vscode.commands.registerCommand(
     'flatppl.visualizeEmbedded', () => {
       const editor = vscode.window.activeTextEditor;
@@ -249,6 +258,47 @@ function activate(context) {
       FlatPPLPanel.currentPanel.showModule(
         block.source, null, /* pushHistory */ true, /* readOnly */ true,
         { uri: editor.document.uri, baseLine: baseLine });
+
+      // (Re)arm the on-demand source→DAG follower for this host doc.
+      const hostUriStr = editor.document.uri.toString();
+      if (embeddedFollow) embeddedFollow.dispose();
+      let lastEmbName = '';
+      embeddedFollow = vscode.window.onDidChangeTextEditorSelection(ev => {
+        // Self-dispose once the panel is gone — avoids needing a
+        // panel.onDidDispose hook and guarantees the listener can't
+        // outlive the feature the user opted into.
+        if (!FlatPPLPanel.currentPanel) {
+          embeddedFollow.dispose();
+          embeddedFollow = undefined;
+          return;
+        }
+        if (ev.textEditor.document.uri.toString() !== hostUriStr) return;
+        const k = ev.kind;
+        const KIND = vscode.TextEditorSelectionChangeKind;
+        if (k !== KIND.Keyboard && k !== KIND.Mouse) return;
+        clearTimeout(embeddedFollowTimer);
+        embeddedFollowTimer = setTimeout(() => {
+          if (!FlatPPLPanel.currentPanel) return;
+          const doc = ev.textEditor.document;
+          const cur = ev.selections[0].active;
+          const blk = extractEmbeddedFlatPPL(
+            doc.getText(), doc.offsetAt(cur));
+          if (!blk) return;                       // cursor left every block
+          const base = doc.positionAt(blk.start).line;
+          const parsed = processSource(blk.source, { variant: 'flatppl' });
+          // Cursor → binding within the block (content lines are
+          // verbatim, so a line shift by `base` is the whole mapping).
+          const b = findBindingAtLine(
+            parsed.bindings, cur.line - base, cur.character);
+          const name = b ? b.name : null;
+          if (name === lastEmbName) return;
+          lastEmbName = name;
+          FlatPPLPanel.currentPanel.updateSource(
+            blk.source, name, null, /* pushHistory */ true,
+            { readOnly: true, navOrigin: { uri: doc.uri, baseLine: base } });
+        }, 150);
+      });
+      context.subscriptions.push(embeddedFollow);
     });
 
   // --- Live DAG update on cursor move ---

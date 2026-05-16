@@ -179,7 +179,25 @@ class FlatPPLPanel {
    * webview and means one engine codebase serves both the VS Code panel
    * and the future standalone web preview.
    */
-  updateSource(source, targetName, sourceUri, pushHistory) {
+  updateSource(source, targetName, sourceUri, pushHistory, opts) {
+    if (opts && opts.readOnly) {
+      // Embedded cursor-follow: re-center on a binding while keeping
+      // the snapshot read-only (write-back stays refused) and the
+      // reveal-only host nav origin.
+      this._readOnly = true;
+      this._sourceUri = null;
+      this._navUri = opts.navOrigin ? opts.navOrigin.uri : null;
+      this._navBaseLine = opts.navOrigin ? opts.navOrigin.baseLine : 0;
+      if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
+      this._post({
+        type: 'sourceUpdate',
+        source,
+        targetName: targetName || null,
+        pushHistory: !!pushHistory,
+        variant: 'flatppl',
+      });
+      return;
+    }
     this._readOnly = false;             // writable host-document path
     this._navUri = null;                // not an embedded snapshot
     if (sourceUri) this._sourceUri = sourceUri;
