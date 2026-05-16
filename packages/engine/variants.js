@@ -27,7 +27,12 @@
 //   - chainedComparison: lower `a < b < c` to `land(a<b, b<c)`
 //   - semiKwargs:        false (no `f(x; a=1)` form in canonical FlatPPL)
 //   - indexingLowersTo:  'get' (1-based; the canonical convention)
-//   - reservedAtBinding: empty (nothing reserved at binding position)
+//   - reservedAtBinding: {in,true,false} — keyword/literal tokens that
+//                        are recognized before `Name` and so cannot be
+//                        a binding LHS (spec §05 "Note on reserved
+//                        words"). The former FlatPPY-only reservations
+//                        (and/or/not/True/False) were removed by
+//                        flatppl-design cc81e4b.
 
 const FLATPPL = Object.freeze({
   id: 'flatppl',
@@ -39,7 +44,7 @@ const FLATPPL = Object.freeze({
   chainedComparison: true,
   semiKwargs: false,
   indexingLowersTo: 'get',
-  reservedAtBinding: new Set(),
+  reservedAtBinding: new Set(['in', 'true', 'false']),
 });
 
 const EXTENSION_MAP = Object.freeze({ '.flatppl': FLATPPL });
