@@ -8,15 +8,10 @@ const vscode = require('vscode');
 // bundle's footer exposes the same shape to CommonJS require.
 const { isValidBindingName, variants } = require('../lib/engine.min.js');
 
-/** Derive the surface-syntax variant id from a vscode.Uri (or null).
-    Returns an id string the engine recognizes, or 'flatppl' as the
-    canonical fallback when the URI isn't one of the three known
-    extensions. */
-function variantIdFromUri(uri) {
-  if (uri && typeof uri.path === 'string') {
-    const v = variants.variantForPath(uri.path);
-    if (v) return v.id;
-  }
+/** There is one canonical FlatPPL surface syntax (flatppl-design
+    cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
+    single call sites stay stable. */
+function variantIdFromUri(_uri) {
   return 'flatppl';
 }
 

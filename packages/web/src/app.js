@@ -334,7 +334,7 @@
     var s = String(raw || '').trim();
     if (!s) return null;
     if (s.indexOf('/') === -1) s = 'new/' + s;
-    if (!/\.(flatppl|flatppy|flatppj)$/i.test(s)) s = s + '.flatppl';
+    if (!/\.flatppl$/i.test(s)) s = s + '.flatppl';
     return s;
   }
 

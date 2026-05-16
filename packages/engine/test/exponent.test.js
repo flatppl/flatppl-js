@@ -69,23 +69,6 @@ test('exp: FlatPPL `x = a * b ^ c` — ^ binds tighter than *', () => {
   assert.equal(v.right.callee.name, 'pow');
 });
 
-test('exp: FlatPPJ `x = a ^ b` lowers to pow', () => {
-  const v = parseRHS('x = a ^ b', { variant: 'flatppj' });
-  assert.equal(v.callee.name, 'pow');
-});
-
-test('exp: FlatPPY rejects `^` with a clear diagnostic', () => {
-  const r = processSource('x = a ^ b', { variant: 'flatppy' });
-  const errors = r.diagnostics.filter(d => d.severity === 'error');
-  assert.ok(errors.length >= 1);
-  assert.match(errors[0].message, /'\^' is not an operator in flatppy/);
-});
-
-test('exp: FlatPPY still accepts `pow(a, b)`', () => {
-  const v = parseRHS('x = pow(a, b)', { variant: 'flatppy' });
-  assert.equal(v.callee.name, 'pow');
-});
-
 test('exp: FlatPPL pow(a, b) parses identically to a ^ b at AST level', () => {
   const fromOp = parseRHS('x = a ^ b', { variant: 'flatppl' });
   const fromFn = parseRHS('x = pow(a, b)', { variant: 'flatppl' });

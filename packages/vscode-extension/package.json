@@ -30,9 +30,7 @@
     "echarts": "^6.0.0"
   },
   "activationEvents": [
-    "onLanguage:flatppl",
-    "onLanguage:flatppy",
-    "onLanguage:flatppj"
+    "onLanguage:flatppl"
   ],
   "categories": [
     "Programming Languages",
@@ -61,22 +59,22 @@
       "commandPalette": [
         {
           "command": "flatppl.visualize",
-          "when": "editorLangId == flatppl || editorLangId == flatppy || editorLangId == flatppj"
+          "when": "editorLangId == flatppl"
         },
         {
           "command": "flatppl.visualizeModule",
-          "when": "editorLangId == flatppl || editorLangId == flatppy || editorLangId == flatppj"
+          "when": "editorLangId == flatppl"
         }
       ],
       "editor/title": [
         {
           "command": "flatppl.visualize",
-          "when": "editorLangId == flatppl || editorLangId == flatppy || editorLangId == flatppj",
+          "when": "editorLangId == flatppl",
           "group": "navigation@1"
         },
         {
           "command": "flatppl.visualizeModule",
-          "when": "editorLangId == flatppl || editorLangId == flatppy || editorLangId == flatppj",
+          "when": "editorLangId == flatppl",
           "group": "navigation@2"
         }
       ]
@@ -92,43 +90,11 @@
           ".flatppl"
         ],
         "configuration": "./language-configuration.json"
-      },
-      {
-        "id": "flatppy",
-        "aliases": [
-          "FlatPPY",
-          "flatppy"
-        ],
-        "extensions": [
-          ".flatppy"
-        ],
-        "configuration": "./language-configuration.json"
-      },
-      {
-        "id": "flatppj",
-        "aliases": [
-          "FlatPPJ",
-          "flatppj"
-        ],
-        "extensions": [
-          ".flatppj"
-        ],
-        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
         "language": "flatppl",
-        "scopeName": "source.flatppl",
-        "path": "./grammars/textmate/flatppl.tmLanguage.json"
-      },
-      {
-        "language": "flatppy",
-        "scopeName": "source.flatppl",
-        "path": "./grammars/textmate/flatppl.tmLanguage.json"
-      },
-      {
-        "language": "flatppj",
         "scopeName": "source.flatppl",
         "path": "./grammars/textmate/flatppl.tmLanguage.json"
       },

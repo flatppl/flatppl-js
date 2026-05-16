@@ -30,14 +30,6 @@ test('cat: FlatPPL `x = cat(1, 2, 3)` parses cleanly', () => {
   assert.equal(v.args.length, 3);
 });
 
-test('cat: FlatPPY `x = cat(1, 2, 3)` parses cleanly', () => {
-  parseOK('x = cat(1, 2, 3)', { variant: 'flatppy' });
-});
-
-test('cat: FlatPPJ `x = cat(1, 2, 3)` parses cleanly', () => {
-  parseOK('x = cat(1, 2, 3)', { variant: 'flatppj' });
-});
-
 test('cat: mixed scalar / vector args still parse (semantic check is downstream)', () => {
   // The spec rejects mixed-kind cats as a runtime/type error; the
   // parser doesn't know the kind of each arg. This test pins the
