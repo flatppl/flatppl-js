@@ -236,11 +236,74 @@ function activate(context) {
   let embeddedDisposables = [];
   let embeddedFollow;          // the single active cursor-follow listener
   let embeddedFollowTimer;
+  const embeddedDiagTimers = new Map();   // uriString → debounce timeout
+
+  function isEmbeddingHost(doc) {
+    return doc && (doc.languageId === 'python' || doc.languageId === 'julia');
+  }
+
+  // Parse every flatppl(…) block in a Python/Julia host doc and
+  // publish FlatPPL diagnostics into the shared collection, shifted to
+  // host coordinates. Each block is its own module (spec §05), so they
+  // are parsed independently and their diagnostics unioned. Same
+  // diagCollection as native .flatppl — keyed by host uri, disjoint
+  // from .flatppl uris, so no conflict. No blocks ⇒ clear (stale).
+  function publishEmbeddedDiagnostics(doc) {
+    if (!isEmbeddingHost(doc)) return;
+    const text = doc.getText();
+    const blocks = findEmbeddedBlocks(text);
+    if (blocks.length === 0) { diagCollection.delete(doc.uri); return; }
+    const out = [];
+    for (const block of blocks) {
+      const baseLine = doc.positionAt(block.start).line;
+      let diags;
+      try {
+        diags = processSource(block.source, { variant: 'flatppl' }).diagnostics;
+      } catch (_) { continue; }               // never throw from a listener
+      for (const d of engineToVsDiagnostics(vscode, diags, baseLine)) {
+        out.push(d);
+      }
+    }
+    diagCollection.set(doc.uri, out);
+  }
+
+  // Debounced per-doc refresh (cheap regex scan + parse only when
+  // armed; opt-in, so uninterested users never reach here).
+  function scheduleEmbeddedDiagnostics(doc) {
+    if (!isEmbeddingHost(doc)) return;
+    const key = doc.uri.toString();
+    clearTimeout(embeddedDiagTimers.get(key));
+    embeddedDiagTimers.set(key, setTimeout(() => {
+      embeddedDiagTimers.delete(key);
+      publishEmbeddedDiagnostics(doc);
+    }, 250));
+  }
+
+  function clearAllEmbeddedDiagnostics() {
+    for (const t of embeddedDiagTimers.values()) clearTimeout(t);
+    embeddedDiagTimers.clear();
+    for (const d of vscode.workspace.textDocuments) {
+      if (isEmbeddingHost(d)) diagCollection.delete(d.uri);
+    }
+  }
 
   function armEmbeddedSupport() {
     if (embeddedArmed) return false;
     embeddedArmed = true;
     vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', true);
+
+    // Embedded LSP bundle (diagnostics today; hover/symbols can slot
+    // in here later). All registered lazily — only now that the user
+    // has opted in — and torn down by disarm.
+    embeddedDisposables.push(
+      vscode.workspace.onDidChangeTextDocument(e => scheduleEmbeddedDiagnostics(e.document)),
+      vscode.workspace.onDidOpenTextDocument(d => publishEmbeddedDiagnostics(d)),
+      vscode.workspace.onDidCloseTextDocument(d => {
+        if (isEmbeddingHost(d)) diagCollection.delete(d.uri);
+      }),
+    );
+    // Catch up: lint already-open host docs.
+    for (const d of vscode.workspace.textDocuments) publishEmbeddedDiagnostics(d);
     vscode.window.showInformationMessage(
       'FlatPPL: embedded support enabled for this window — Visualize '
       + 'Binding / Model now work inside flatppl(…) blocks in '
@@ -255,6 +318,7 @@ function activate(context) {
     if (embeddedFollow) { embeddedFollow.dispose(); embeddedFollow = undefined; }
     for (const d of embeddedDisposables) { try { d.dispose(); } catch (_) {} }
     embeddedDisposables = [];
+    clearAllEmbeddedDiagnostics();   // remove host-doc squiggles too
   }
 
   // Resolve what to render for `editor` in `mode` ('binding'|'module')
