@@ -46,13 +46,18 @@ function variantIdForDoc(_document) {
 // block whose content contains `cursorOffset`; else the sole block;
 // else the last block starting before the cursor; else null.
 //
-// Used only by the on-demand visualize command — there is no parsing,
-// no listeners, and the extension is dormant (onCommand activation)
-// until the user invokes it, so Python/Julia users uninterested in
+// Nothing here runs until the user explicitly invokes a FlatPPL
+// command (onCommand activation); Python/Julia users uninterested in
 // FlatPPL pay nothing.
-function extractEmbeddedFlatPPL(text, cursorOffset) {
-  // Group 2: Python triple/triple-single after `flatppl( [raw]?`.
-  // Group 3: Julia `"""` or `"` immediately after `flatppl`.
+//
+// `findEmbeddedBlocks` is the single pure scan — every consumer
+// (visualize at cursor, the cursor follower, embedded diagnostics)
+// goes through it, so the embedding-recognition rule lives in exactly
+// one place and stays in lockstep with the injection grammars.
+// Returns ALL blocks: { start, end, source } with absolute offsets.
+function findEmbeddedBlocks(text) {
+  // Group 1: Python triple/triple-single after `flatppl( [raw]?`.
+  // Group 2: Julia `"""` or `"` immediately after `flatppl`.
   const re = /\bflatppl\s*(?:\(\s*(?:[rRbB]{1,2})?\s*("""|''')|("""|"))/g;
   const blocks = [];
   let m;
@@ -64,12 +69,60 @@ function extractEmbeddedFlatPPL(text, cursorOffset) {
     blocks.push({ start, end, source: text.slice(start, end) });
     re.lastIndex = end + delim.length;
   }
+  return blocks;
+}
+
+// The block at `cursorOffset`; else the sole block; else the last
+// block starting before the cursor; else null. Pure cursor-pick over
+// findEmbeddedBlocks (scan and pick kept orthogonal).
+function extractEmbeddedFlatPPL(text, cursorOffset) {
+  const blocks = findEmbeddedBlocks(text);
   if (blocks.length === 0) return null;
   const hit = blocks.find(b => cursorOffset >= b.start && cursorOffset <= b.end);
   if (hit) return hit;
   if (blocks.length === 1) return blocks[0];
   const before = blocks.filter(b => b.start <= cursorOffset);
   return before.length ? before[before.length - 1] : blocks[0];
+}
+
+// Engine diagnostics → vscode.Diagnostic[], shifting every line by
+// `lineOffset` (0 for a native .flatppl document; the host line where
+// an embedded block's content starts, for embedded). Single converter
+// shared by the native parse path and the embedded-diagnostics path
+// so severity/range mapping isn't duplicated. Column is unshifted:
+// the canonical embedding opens `"""` then a newline, so content
+// lines sit at their natural columns; a same-line-as-delim opening
+// would be off only in column on the first line (documented edge).
+function engineToVsDiagnostics(vscode, diagnostics, lineOffset) {
+  const off = lineOffset || 0;
+  return diagnostics.map(d => {
+    const range = new vscode.Range(
+      d.loc.start.line + off, d.loc.start.col,
+      d.loc.end.line + off, d.loc.end.col
+    );
+    const severity = d.severity === 'error'
+      ? vscode.DiagnosticSeverity.Error
+      : d.severity === 'warning'
+      ? vscode.DiagnosticSeverity.Warning
+      : vscode.DiagnosticSeverity.Information;
+    return new vscode.Diagnostic(range, d.message, severity);
+  });
+}
+
+// Binding the cursor is on; else the next binding at/below the cursor
+// line; else the last binding; else null (only when there are none).
+// One selection rule shared by the native cursor view and the
+// embedded cursor follower so they can never drift apart.
+function pickBindingForCursor(bindings, line, char) {
+  const at = findBindingAtLine(bindings, line, char);
+  if (at) return at;
+  const all = [...bindings.values()];
+  if (all.length === 0) return null;
+  let next = null;
+  for (const b of all) {
+    if (b.line >= line && (!next || b.line < next.line)) next = b;
+  }
+  return next || all[all.length - 1];
 }
 
 function activate(context) {
@@ -93,20 +146,9 @@ function activate(context) {
     cachedVersion = document.version;
     cachedUri = uri;
 
-    // Update diagnostics in VS Code
-    const vsDiags = diagnostics.map(d => {
-      const range = new vscode.Range(
-        d.loc.start.line, d.loc.start.col,
-        d.loc.end.line, d.loc.end.col
-      );
-      const severity = d.severity === 'error'
-        ? vscode.DiagnosticSeverity.Error
-        : d.severity === 'warning'
-        ? vscode.DiagnosticSeverity.Warning
-        : vscode.DiagnosticSeverity.Information;
-      return new vscode.Diagnostic(range, d.message, severity);
-    });
-    diagCollection.set(document.uri, vsDiags);
+    // Update diagnostics in VS Code (native: no line shift).
+    diagCollection.set(document.uri,
+      engineToVsDiagnostics(vscode, diagnostics, 0));
 
     return cachedResult;
   }
@@ -124,32 +166,12 @@ function activate(context) {
   // webview's focusNode only pushes when the target actually changes,
   // so passing true here is safe even when the cursor lands on the
   // same binding.
-  function showDAGForCursor(editor, pushHistory) {
-    if (!editor || !isFlatPPLDoc(editor.document)) return false;
-
-    const { bindings } = getParsed(editor.document);
-    const pos = editor.selection.active;
-    let binding = findBindingAtLine(bindings, pos.line, pos.character);
-    if (!binding) {
-      // Cursor isn't on a binding (blank line, comment, between
-      // statements, or past the last binding). Pick the next binding
-      // at or below the cursor's line — that's the one the user is
-      // most likely about to write/edit/read. If they're already past
-      // every binding, fall back to the last binding so we always
-      // surface *something*.
-      const all = [...bindings.values()];
-      if (all.length === 0) return false;
-      const cursorLine = pos.line;
-      let next = null;
-      for (const b of all) {
-        if (b.line >= cursorLine && (!next || b.line < next.line)) {
-          next = b;
-        }
-      }
-      binding = next || all[all.length - 1];
-    }
-
-    const source = editor.document.getText();
+  // One panel-drive used by every surface (native binding/module,
+  // embedded). createOrShow + first-time config + the right panel
+  // call; the readOnly/navOrigin opts flow straight through.
+  // opts: { source, mode:'binding'|'module', targetName?, sourceUri?,
+  //         readOnly?, navOrigin?, pushHistory? }
+  function renderToPanel(opts) {
     const wasNew = !FlatPPLPanel.currentPanel;
     FlatPPLPanel.createOrShow(context);
     if (wasNew) {
@@ -157,8 +179,30 @@ function activate(context) {
       // cache and SAMPLE_COUNT are correct on the first plot request.
       FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
     }
-    FlatPPLPanel.currentPanel.updateSource(
-      source, binding.name, editor.document.uri, /* pushHistory */ !!pushHistory);
+    if (opts.mode === 'module') {
+      FlatPPLPanel.currentPanel.showModule(
+        opts.source, opts.sourceUri || null, !!opts.pushHistory,
+        !!opts.readOnly, opts.navOrigin || null);
+    } else {
+      FlatPPLPanel.currentPanel.updateSource(
+        opts.source, opts.targetName || null, opts.sourceUri || null,
+        !!opts.pushHistory,
+        opts.readOnly ? { readOnly: true, navOrigin: opts.navOrigin || null }
+                      : undefined);
+    }
+  }
+
+  function showDAGForCursor(editor, pushHistory) {
+    if (!editor || !isFlatPPLDoc(editor.document)) return false;
+    const { bindings } = getParsed(editor.document);
+    const pos = editor.selection.active;
+    const binding = pickBindingForCursor(bindings, pos.line, pos.character);
+    if (!binding) return false;
+    renderToPanel({
+      source: editor.document.getText(), mode: 'binding',
+      targetName: binding.name, sourceUri: editor.document.uri,
+      pushHistory: !!pushHistory,
+    });
     return true;
   }
 
@@ -170,14 +214,10 @@ function activate(context) {
     if (!editor || !isFlatPPLDoc(editor.document)) return false;
     const { bindings } = getParsed(editor.document);
     if (bindings.size === 0) return false;
-    const source = editor.document.getText();
-    const wasNew = !FlatPPLPanel.currentPanel;
-    FlatPPLPanel.createOrShow(context);
-    if (wasNew) {
-      FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
-    }
-    FlatPPLPanel.currentPanel.showModule(
-      source, editor.document.uri, /* pushHistory */ true);
+    renderToPanel({
+      source: editor.document.getText(), mode: 'module',
+      sourceUri: editor.document.uri, pushHistory: true,
+    });
     return true;
   }
 
