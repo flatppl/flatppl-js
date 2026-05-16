@@ -111,6 +111,27 @@ test('deterministic broadcast(f, …) is NOT classified as a kernel', async () =
   assert.deepEqual(Array.from(m.samples).slice(0, 3), [2, 4, 6]);
 });
 
+test('deterministic boolean-array broadcast is a value, not null elems', async () => {
+  // Regression: a deterministic broadcast producing a boolean array
+  // (elementwise comparison, incl. dotted `.<`) was mis-surfaced by
+  // fixedValueToMeasure as a 3-element tuple of nulls because the
+  // flat-vector check rejected booleans. Booleans coerce to 1/0,
+  // exactly like a scalar `true` binding already did.
+  const m = await materialise(
+    'A = [1.0, 2.0, 3.0]\n' +
+    'B = [3.0, 2.0, 9.0]\n' +
+    'C = A .< B\n', 'C', 100);
+  assert.notEqual(m.shape, 'array');
+  assert.ok(m.samples, 'expected flat samples, not elems');
+  assert.deepEqual(Array.from(m.samples).slice(0, 3), [1, 0, 1]);
+  // explicit broadcast(fn) form must agree (dotted is pure sugar)
+  const e = await materialise(
+    'A = [1.0, 2.0, 3.0]\n' +
+    'B = [3.0, 2.0, 9.0]\n' +
+    'C = broadcast(fn(_ < _), A, B)\n', 'C', 100);
+  assert.deepEqual(Array.from(e.samples).slice(0, 3), [1, 0, 1]);
+});
+
 test('broadcast(Normal,…) closed-form: per-element var + independence', async () => {
   // Exercises the MvNormal(mu, diag(sigma²)) specialization (diag
   // lower_cholesky=diag(σ), diag mulN). Each column j ~ N(mu_j,
