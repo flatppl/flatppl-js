@@ -107,6 +107,26 @@
         "embeddedLanguages": {
           "meta.embedded.block.flatppl": "flatppl"
         }
+      },
+      {
+        "scopeName": "flatppl.embedded.python",
+        "path": "./grammars/textmate/flatppl-python.tmLanguage.json",
+        "injectTo": [
+          "source.python"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.flatppl": "flatppl"
+        }
+      },
+      {
+        "scopeName": "flatppl.embedded.julia",
+        "path": "./grammars/textmate/flatppl-julia.tmLanguage.json",
+        "injectTo": [
+          "source.julia"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.flatppl": "flatppl"
+        }
       }
     ],
     "configuration": {
