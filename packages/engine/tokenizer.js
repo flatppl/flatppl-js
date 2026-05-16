@@ -144,8 +144,11 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
     // Number literal (decimal, hex, with optional underscores between digits)
     if (isDigit(ch) || (ch === '.' && isDigit(at(1)))) {
       let num = '';
-      // Hex: 0x HexDigit (_? HexDigit)*  — at least one hex digit required
-      if (ch === '0' && (at(1) === 'x' || at(1) === 'X')) {
+      // Hex: 0x HexDigit (_? HexDigit)*  — at least one hex digit
+      // required. Lowercase `0x` only, per spec §05 HexIntLit (matches
+      // Julia/Rust; the uppercase `0X` C-family form is intentionally
+      // not canonical FlatPPL).
+      if (ch === '0' && at(1) === 'x') {
         num += advance(); // 0
         num += advance(); // x
         if (!isHexDigit(at())) {

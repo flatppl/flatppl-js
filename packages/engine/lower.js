@@ -201,7 +201,7 @@ function _lowerExpr(node, ctx) {
       // Integer if the source lexeme is a decimal integer or a hex
       // literal (with optional underscore digit separators). Anything
       // with a decimal point or exponent classifies as real.
-      const isInt = /^[+-]?(\d(_?\d)*|0[xX][0-9a-fA-F](_?[0-9a-fA-F])*)$/.test(raw);
+      const isInt = /^[+-]?(\d(_?\d)*|0x[0-9a-fA-F](_?[0-9a-fA-F])*)$/.test(raw);
       const numType = isInt ? 'integer' : 'real';
       return { kind: 'lit', value: node.value, numType, loc: node.loc };
     }
