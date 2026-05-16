@@ -670,12 +670,56 @@ function matKernelBroadcast(name, d, ctx) {
       + '): empty collection argument'));
   }
   const N = ctx.sampleCount;
-  // Per element j: build Dist(params_j) and draw N atoms. K small
-  // (model dimension), N large — K leaf-sample calls is fine for v1.
+  // j-th element of a collection arg (scalar / length-1 → broadcast).
   const elemAt = (v, j) => {
     const len = v.shape.length === 0 ? 1 : v.shape[0];
     return v.data[len === 1 ? 0 : j];
   };
+
+  // Closed-form specialization: broadcast(Normal, mu, sigma) is the
+  // independent product of N(mu_j, sigma_j²) — i.e. MvNormal(mu,
+  // diag(sigma²)). With the structured-matrix diag fast-paths this is
+  // O(N·n), exact, and a single worker draw: lower_cholesky(diag) =
+  // diag(sigma), then mu + L·z via the diag mulN/addN fast-paths
+  // (exactly matMvNormal's pipeline, but the cov never densifies and
+  // there is no O(n³) Cholesky). Scalar / held-constant mu or sigma
+  // broadcast into the length-K vectors, so this also covers
+  // broadcast(Normal, scalarMu, sigmas) etc.
+  if (d.distOp === 'Normal' && srcByParam.mu && srcByParam.sigma) {
+    const valueOps = require('./value-ops');
+    const muVec  = new Float64Array(K);
+    const sigSq  = new Float64Array(K);
+    for (let j = 0; j < K; j++) {
+      muVec[j] = elemAt(srcByParam.mu, j);
+      const s = elemAt(srcByParam.sigma, j);
+      sigSq[j] = s * s;
+    }
+    const cov = valueLib.diagMatrix(sigSq);                 // diag Value
+    let L;
+    try {
+      L = sampler._internal.ARITH_OPS.lower_cholesky(cov);  // diag(σ), O(n)
+    } catch (err) {
+      return Promise.reject(new Error('broadcast(Normal): ' + err.message));
+    }
+    const stdNormalIR = {
+      kind: 'call', op: 'Normal',
+      kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
+    };
+    return ctx.sendWorker({
+      type: 'sampleN', ir: stdNormalIR, count: N, repeat: K,
+      refArrays: {}, seed: nameSeed(name, ctx.rootSeed),
+    }).then((reply) => {
+      const z = { shape: [N, K], data: reply.samples };     // [N,K] atom-major
+      const Lz = valueOps.mulN(L, z, N);                     // diag·z, O(N·n)
+      const result = valueOps.addN({ shape: [K], data: muVec }, Lz, N);
+      return measureFromValue(result, {
+        logWeights: null, logTotalmass: 0, n_eff: N,
+      });
+    });
+  }
+
+  // Per element j: build Dist(params_j) and draw N atoms. K small
+  // (model dimension), N large — K leaf-sample calls is fine for v1.
   const cols = new Array(K);
   let chain = Promise.resolve();
   for (let j = 0; j < K; j++) {

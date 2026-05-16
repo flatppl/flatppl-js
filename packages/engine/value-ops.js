@@ -1038,6 +1038,28 @@ function mulN(a, b, N) {
   // matrix × shape=[N, n]: a is shape [m, n], b is shape [N, n].
   if (!aBatched && bBatched
       && a.shape.length === 2 && b.shape.length === 2) {
+    // Diagonal matrix × per-atom vector: O(N·n) elementwise scale —
+    // no densification, no gemm (the diagonal-covariance MvNormal
+    // `mu + L·z` path). Complex diag densifies (rare; cov is real).
+    if (valueLib.isDiagStored(a)) {
+      if (a.im) { a = valueLib.densify(a); }
+      else {
+        const d = a.data, n = d.length;
+        if (b.shape[1] !== n) {
+          throw new Error('mulN: diag×batchedVector shape mismatch (' +
+            JSON.stringify(a.shape) + ' × ' + JSON.stringify(b.shape) + ')');
+        }
+        if (isTransposeView(b)) {
+          throw new Error('mulN: batched vector must be column-oriented');
+        }
+        const out = new Float64Array(N * n);
+        for (let atom = 0; atom < N; atom++) {
+          const base = atom * n;
+          for (let i = 0; i < n; i++) out[base + i] = d[i] * b.data[base + i];
+        }
+        return { shape: [N, n], data: out };
+      }
+    }
     if (_isCx(a, b)) return _cxMatBatchedVecMul(a, b, N);
     return _matBatchedVecMul(a, b, N);
   }

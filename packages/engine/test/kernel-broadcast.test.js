@@ -111,6 +111,33 @@ test('deterministic broadcast(f, …) is NOT classified as a kernel', async () =
   assert.deepEqual(Array.from(m.samples).slice(0, 3), [2, 4, 6]);
 });
 
+test('broadcast(Normal,…) closed-form: per-element var + independence', async () => {
+  // Exercises the MvNormal(mu, diag(sigma²)) specialization (diag
+  // lower_cholesky=diag(σ), diag mulN). Each column j ~ N(mu_j,
+  // sigma_j²) independently: sample variance ≈ sigma_j², and the
+  // cross-column covariance ≈ 0 (diagonal covariance).
+  const N = 20000, K = 3;
+  const m = await materialise(
+    'mu = [0.0, 0.0, 0.0]\n' +
+    'sg = [1.0, 3.0, 0.5]\n' +
+    'r ~ broadcast(Normal, mu, sg)\n', 'r', N);
+  const mean = [0, 0, 0], col = [[], [], []];
+  for (let i = 0; i < N; i++) for (let j = 0; j < K; j++) {
+    const x = m.samples[i * K + j]; col[j].push(x); mean[j] += x / N;
+  }
+  const varj = [0, 0, 0];
+  for (let j = 0; j < K; j++) {
+    for (let i = 0; i < N; i++) varj[j] += (col[j][i] - mean[j]) ** 2 / N;
+  }
+  assert.ok(Math.abs(varj[0] - 1.0) < 0.1, 'var col0 ≈ 1');
+  assert.ok(Math.abs(varj[1] - 9.0) < 0.6, 'var col1 ≈ 9');
+  assert.ok(Math.abs(varj[2] - 0.25) < 0.05, 'var col2 ≈ 0.25');
+  // cov(col0, col1) ≈ 0 (independent columns)
+  let cov01 = 0;
+  for (let i = 0; i < N; i++) cov01 += (col[0][i] - mean[0]) * (col[1][i] - mean[1]) / N;
+  assert.ok(Math.abs(cov01) < 0.15, 'columns independent (cov≈0), got ' + cov01);
+});
+
 test('broadcast: incompatible collection lengths is an error', async () => {
   await assert.rejects(
     materialise('p = [1.0, 2.0, 3.0]\n' +
