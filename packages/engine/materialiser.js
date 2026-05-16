@@ -606,6 +606,108 @@ function matIid(name, d, ctx) {
     });
 }
 
+function matKernelBroadcast(name, d, ctx) {
+  // broadcast(Dist, c1, c2, …) — array-valued independent-product
+  // measure (spec §04). Element j of every atom is drawn from
+  // Dist(params_j), where params_j is the j-th element of each
+  // collection arg (rank-1) or the held-constant scalar (rank-0 /
+  // length-1 singleton — the 87c9be1 shape rules, v1 = 1-D). Result
+  // is a vector-atom measure shape=[N, K], atom-major, mirroring
+  // matIid. Probability kernel ⇒ independent product is a probability
+  // measure: logTotalmass 0, n_eff N. Closed-form logdensity is a
+  // documented follow-up (TODO §04), exactly as matIid defers it.
+  const sampler = require('./sampler');
+  const params = (sampler._internal.REGISTRY[d.distOp] || {}).params;
+  if (!params) {
+    return Promise.reject(new Error(
+      'broadcast: unknown distribution kernel ' + d.distOp));
+  }
+  // Map parameter name → source Value (resolved atom-indep, like
+  // matMvNormal does for mu/cov).
+  const srcByParam = {};
+  try {
+    if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
+      for (const pn of Object.keys(d.kwargIRs)) {
+        srcByParam[pn] = valueLib.asValue(orchestrator.resolveIRToValue(
+          d.kwargIRs[pn], ctx.bindings, ctx.fixedValues));
+      }
+    } else {
+      if (d.argIRs.length !== params.length) {
+        throw new Error('broadcast(' + d.distOp + '): expected '
+          + params.length + ' parameter args (' + params.join(', ')
+          + '), got ' + d.argIRs.length);
+      }
+      for (let i = 0; i < params.length; i++) {
+        srcByParam[params[i]] = valueLib.asValue(orchestrator.resolveIRToValue(
+          d.argIRs[i], ctx.bindings, ctx.fixedValues));
+      }
+    }
+  } catch (err) {
+    return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+  }
+  // Broadcast length K: the common length of the rank-1 collection
+  // args; scalars / length-1 are singletons held constant.
+  let K = 1;
+  const pnames = Object.keys(srcByParam);
+  for (const pn of pnames) {
+    const v = srcByParam[pn];
+    if (v.shape.length > 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp + '): parameter '
+        + pn + ' must be a scalar or 1-D array (multi-axis is a follow-up),'
+        + ' got shape=' + JSON.stringify(v.shape)));
+    }
+    const len = v.shape.length === 0 ? 1 : v.shape[0];
+    if (len !== 1) {
+      if (K !== 1 && K !== len) {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): incompatible collection lengths (' + K + ' vs ' + len + ')'));
+      }
+      K = len;
+    }
+  }
+  if (K < 1) {
+    return Promise.reject(new Error('broadcast(' + d.distOp
+      + '): empty collection argument'));
+  }
+  const N = ctx.sampleCount;
+  // Per element j: build Dist(params_j) and draw N atoms. K small
+  // (model dimension), N large — K leaf-sample calls is fine for v1.
+  const elemAt = (v, j) => {
+    const len = v.shape.length === 0 ? 1 : v.shape[0];
+    return v.data[len === 1 ? 0 : j];
+  };
+  const cols = new Array(K);
+  let chain = Promise.resolve();
+  for (let j = 0; j < K; j++) {
+    const jj = j;
+    chain = chain.then(() => {
+      const kwargs = {};
+      for (const pn of pnames) {
+        kwargs[pn] = { kind: 'lit', value: elemAt(srcByParam[pn], jj) };
+      }
+      const distIR = { kind: 'call', op: d.distOp, kwargs: kwargs };
+      return ctx.sendWorker({
+        type: 'sampleN', ir: distIR, count: N,
+        refArrays: {},
+        seed: nameSeed(name + ':' + jj, ctx.rootSeed),
+      }).then((reply) => { cols[jj] = reply.samples; });
+    });
+  }
+  return chain.then(() => {
+    // Atom-major pack into shape=[N, K]: atom i occupies [i*K, (i+1)*K).
+    const out = new Float64Array(N * K);
+    for (let j = 0; j < K; j++) {
+      const col = cols[j];
+      for (let i = 0; i < N; i++) out[i * K + j] = col[i];
+    }
+    const value = { shape: [N | 0, K], data: out };
+    return Object.assign(
+      empirical.arrayMeasure(out, [K], null),
+      { value: value, logTotalmass: 0, n_eff: N },
+    );
+  });
+}
+
 function matTuple(d, ctx) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
@@ -1162,6 +1264,7 @@ const KIND_HANDLERS = {
   weighted:     (name, d, ctx) => matWeighted(d, ctx),
   normalize:    (name, d, ctx) => matNormalize(d, ctx),
   iid:          (name, d, ctx) => matIid(name, d, ctx),
+  kernelbroadcast: (name, d, ctx) => matKernelBroadcast(name, d, ctx),
   tuple:        (name, d, ctx) => matTuple(d, ctx),
   record:       (name, d, ctx) => matRecord(d, ctx),
   superpose:    (name, d, ctx) => matSuperpose(name, d, ctx),
