@@ -2477,6 +2477,38 @@ function buildDerivations(bindings) {
     }
   }
 
+  // Classification diagnostics. "No derivation" is a heavily
+  // overloaded state — inputs (`elementof`), callables (`functionof`,
+  // `kernelof`, `bijection`), likelihood objects, and parameterized-
+  // /stochastic-phase variates all legitimately have none, and the
+  // cascade-prune below routinely (by design) drops parameterized
+  // stochastic derivations that the viewer then re-plots via the
+  // implicit-`kernelof` escape hatch. So a "dropped derivation" is
+  // NOT a failure signal — testing proved it false-positives on every
+  // ordinary `x ~ Normal(mu = elementof, …)` model.
+  //
+  // The one UNAMBIGUOUS silent-failure mode is the fixed-phase dead
+  // end: a fixed-phase VALUE computation that ends with neither a
+  // fixedValues entry (pre-eval gave up) nor a derivation (classifier
+  // gave up). A deterministic expression that produces nothing is an
+  // engine gap, not a modelling choice. (Fixed phase rules out draws;
+  // callable / measure-object binding types are excluded — those are
+  // legitimately underived.) This precisely names the root cause —
+  // e.g. `bcadd = broadcasted(add)` in the explicit-`broadcasted` +
+  // `disintegrate` model whose whole downstream graph silently
+  // vanished — instead of the user hitting a confusing plot-time
+  // error far from the cause. The broader stochastic-side overloading
+  // is real debt tracked for the derivation-kind unification refactor.
+  const diagnostics = [];
+  const OBJECT_BINDING_TYPES = new Set([
+    'input', 'functionof', 'fn', 'kernelof', 'bijection', 'lawof',
+    'likelihood',
+  ]);
+  function bindingLoc(name) {
+    const b = bindings.get(name);
+    return (b && b.node && b.node.loc) || undefined;
+  }
+
   // Cascade-prune: drop any derivation whose refs aren't satisfiable.
   // Runs AFTER pre-eval so refs to fixed-phase value bindings (whose
   // derivations were dropped because the value is opaque / a record)
@@ -2492,6 +2524,26 @@ function buildDerivations(bindings) {
         changed = true;
       }
     }
+  }
+
+  // Fixed-phase dead end (mode b). A fixed-phase value computation
+  // must end up either pre-evaluated (fixedValues) or classified
+  // (derivations); neither means the engine silently gave up on a
+  // deterministic computation.
+  for (const [name, b] of bindings) {
+    if (!b || b.phase !== 'fixed') continue;
+    if (OBJECT_BINDING_TYPES.has(b.type)) continue;     // legit underived
+    if (derivations[name]) continue;
+    if (fixedValues.has(name)) continue;
+    diagnostics.push({
+      severity: 'error',
+      message: `Fixed-phase binding '${name}' produced no value: the engine `
+        + `could neither evaluate it (pre-eval) nor classify it `
+        + `(derivation). This is an engine gap — the expression is `
+        + `deterministic but unsupported. Plotting '${name}' or anything `
+        + `depending on it will fail.`,
+      loc: bindingLoc(name),
+    });
   }
 
   // Discrete map: walk through aliases to find each binding's leaf
@@ -2510,7 +2562,7 @@ function buildDerivations(bindings) {
   // (the viewer's profile-plot path) can call signatureOf without
   // re-running the lift pass. Backward-compatible: existing callers
   // that destructure just { derivations, discrete } are unaffected.
-  return { derivations, discrete, bindings, fixedValues };
+  return { derivations, discrete, bindings, fixedValues, diagnostics };
 }
 
 /**

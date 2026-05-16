@@ -1071,6 +1071,15 @@
       }
       try {
         derivationsState = FlatPPLEngine.orchestrator.buildDerivations(currentBindings);
+        // Surface classification diagnostics instead of letting a
+        // silently-dropped binding turn into a confusing plot-time
+        // error far from its cause. buildDerivations only emits the
+        // unambiguous fixed-phase-dead-end case (an engine gap on a
+        // deterministic expression), so any entry here is actionable.
+        var bdiags = (derivationsState && derivationsState.diagnostics) || [];
+        for (var bi = 0; bi < bdiags.length; bi++) {
+          console.warn('FlatPPL: ' + bdiags[bi].message);
+        }
       } catch (e) {
         console.error('FlatPPL: buildDerivations failed:', e);
         derivationsState = null;

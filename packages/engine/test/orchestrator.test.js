@@ -3092,3 +3092,47 @@ test('auto-splat: inline record(...) call splats fields', () => {
   const errs = diagnostics.filter(d => d.severity === 'error');
   assert.deepEqual(errs, [], `unexpected errors: ${JSON.stringify(errs)}`);
 });
+
+// ---------------------------------------------------------------------
+// buildDerivations classification diagnostics (refactor #1).
+//
+// "No derivation" is heavily overloaded, so buildDerivations emits a
+// diagnostic ONLY for the unambiguous silent-failure mode: a
+// fixed-phase value computation that ends with neither a fixedValues
+// entry nor a derivation (an engine gap on a deterministic
+// expression). The cascade-prune of parameterized stochastic
+// derivations is by-design and must NOT be flagged.
+// ---------------------------------------------------------------------
+
+test('diagnostics: fixed-phase dead end is surfaced (named at the cause)', () => {
+  // `broadcasted(add)` curried form is not pre-evaluable and not
+  // classified — previously the whole downstream graph vanished
+  // silently. Now the root cause is named.
+  const { bindings } = processSource(
+    'bcadd = broadcasted(add)\n' +
+    'xs = [1.0, 2.0, 3.0]\n' +
+    'ys = bcadd(xs, 1.0)\n');
+  const { diagnostics } = buildDerivations(bindings);
+  const dead = diagnostics.filter(d => d.severity === 'error'
+    && /Fixed-phase binding 'bcadd' produced no value/.test(d.message));
+  assert.equal(dead.length, 1, 'bcadd flagged once as fixed-phase dead end');
+  assert.ok(dead[0].loc, 'diagnostic carries a source location');
+});
+
+test('diagnostics: no false positives on ordinary models', () => {
+  // Parameterized variate (cascade-pruned + replotted via implicit
+  // kernelof), callables, lawof, measure algebra, plain fixed/draw —
+  // none of these is an engine gap; none must be flagged.
+  for (const src of [
+    'mu=elementof(reals)\nx~Normal(mu=mu,sigma=1)\ny=2*x+1\nm=lawof(x)\nf=functionof(y,mu=mu)\n',
+    'a=2.0\nb=[1.0,2.0]\nc=(b ./ b)\nd~Normal(mu=0,sigma=1)\n',
+    'p=joint(a=Normal(mu=0,sigma=1),b=Exponential(rate=1))\n' +
+      'mix=normalize(superpose(weighted(0.7,Normal(mu=0,sigma=1)),' +
+      'weighted(0.3,Normal(mu=3,sigma=1))))\n',
+  ]) {
+    const { diagnostics } = buildDerivations(processSource(src).bindings);
+    assert.deepEqual(diagnostics, [],
+      `unexpected diagnostics for model:\n${src}\n` +
+      JSON.stringify(diagnostics));
+  }
+});
