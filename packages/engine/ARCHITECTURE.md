@@ -616,6 +616,44 @@ via the `phases` and `absorbedCache` Maps; cycle-guarded.
 
 ---
 
+## Deterministic-evaluation authority
+
+There is exactly **one** deterministic value evaluator in the engine:
+`sampler.evaluateExpr(ir, env)` (single-point) and its batched sibling
+`sampler.evaluateExprN(ir, refArrays, count, baseEnv, opts)`. Everything that
+needs "compute the JS value of this deterministic IR" routes through it:
+
+- **Fixed-phase pre-eval** (`orchestrator.buildDerivations`) — calls
+  `evaluateExpr` per fixed binding (see next section).
+- **`orchestrator.resolveIRToValue`** — a thin *adapter*, not a second
+  evaluator: it keeps zero-dependency static fast paths (lit / neg / vector /
+  record / ref) for its plain-JS output contract and delegates *every other*
+  IR shape to `evaluateExpr`, feeding its own ref machinery (fixedValues →
+  recursive binding walk → cycle guard) in as the env. `valueToPlain`
+  normalizes the result back to the documented number|array|object contract.
+- **Worker leaf-draw / param eval** — `evaluateExprN` over per-atom
+  `refArrays` layered on the session env (fixed-phase bindings pushed via
+  `setEnv`).
+
+**The invariant: do not grow a parallel mini-interpreter.** The
+`resolveIRToValue`-broadcast bug and the `get`-not-evaluable dead end were both
+the same defect — a partial re-implementation of evaluation standing in for the
+authority and throwing "the orchestrator should pre-resolve this" on anything
+it didn't cover. When the evaluator is missing an op, the fix is to implement
+that op *in `evaluateCall`* (the authority), not to special-case it in a
+caller. `evaluateCall` covers ARITH_OPS (positional spread) plus dedicated
+cases for the kwargs-/structure-shaped ops: `tuple`/`tuple_get`/`record`/
+`get_field`/`get`/`get0`/`fixed`/`rnginit`/`rngstate`/`rand`/shape funcs/
+binning/`filter`/`reduce`/`scan`/`broadcast`. The remaining throw is reached
+only by genuinely non-deterministic-in-scope shapes (user-defined function
+calls, module access) — and a fixed-phase binding that hits it is now surfaced
+loudly by `buildDerivations`'s fixed-phase-dead-end diagnostic rather than
+failing silently far downstream.
+
+The `orchestrator.EVALUABLE_OPS` static gate must list every op
+`evaluateCall` can handle (enforced by `test/invariants.test.js` block 3 +
+the inline-evaluable set); they move together.
+
 ## Fixed-phase pre-eval and `fixedValues`
 
 Per spec §04, fixed-phase bindings are compile-time-determinate. The orchestrator

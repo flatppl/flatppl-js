@@ -3139,6 +3139,74 @@ function evaluateCall(ir, env) {
     }
     return obj[key];
   }
+  // get(container, sel, ...) / get0(...) — spec §07 unified element /
+  // subset / axis-slice access. All of `v[i]`, `A[i,j]`, `A[:,j]`,
+  // `v[[1,3]]`, `get(r,"a")`, tuple integer index lower to `get`
+  // (1-based); `get0` is the 0-based variant (`get0(v,0)` → first).
+  // Pure deterministic value op over plain JS values (the form
+  // fixed-phase pre-eval produces): numbers, JS/typed arrays, records
+  // (objects), tuples (arrays). Implemented HERE — in the single
+  // deterministic-evaluator authority — rather than as yet another
+  // ad-hoc indexer, so fixed-phase expressions containing indexing
+  // (`Gamma(shape = tau[1] + 1.0, …)`) no longer dead-end.
+  if (op === 'get' || op === 'get0') {
+    const args = ir.args || [];
+    if (args.length < 2) {
+      throw new Error(`evaluateExpr: ${op} expects a container and at least one selector`);
+    }
+    const oneBased = (op === 'get');
+    const container = evaluateExpr(args[0], env);
+    // `all` (axis slice) is a selector token, not a value — keep it as
+    // a sentinel; every other selector evaluates to an index / key /
+    // subset array.
+    const ALL = Symbol('all');
+    const sels = args.slice(1).map((a) =>
+      (a && a.kind === 'const' && a.name === 'all')
+        ? ALL : evaluateExpr(a, env));
+    const isArrayLike = (c) => Array.isArray(c) || ArrayBuffer.isView(c);
+    const applyGet = (c, ss) => {
+      if (ss.length === 0) return c;
+      const s = ss[0], rest = ss.slice(1);
+      if (s === ALL) {                       // whole axis: map over it
+        if (!isArrayLike(c)) {
+          throw new Error(`evaluateExpr: ${op} ':' axis-slice target is not an array`);
+        }
+        const out = [];
+        for (let i = 0; i < c.length; i++) out.push(applyGet(c[i], rest));
+        return out;
+      }
+      if (Array.isArray(s)) {                // subset selection
+        // All-string subset of a record → a sub-record (spec §07);
+        // otherwise an array subset along this axis.
+        if (s.every((e) => typeof e === 'string')
+            && c != null && typeof c === 'object' && !isArrayLike(c)) {
+          const r = {};
+          for (const k of s) r[k] = applyGet(c[k], rest);
+          return r;
+        }
+        return s.map((si) => applyGet(c, [si, ...rest]));
+      }
+      if (typeof s === 'string') {           // record field
+        if (c == null || typeof c !== 'object' || isArrayLike(c)) {
+          throw new Error(`evaluateExpr: ${op}(…, "${s}") target is not a record`);
+        }
+        return applyGet(c[s], rest);
+      }
+      if (typeof s === 'number' || typeof s === 'boolean') {
+        if (!isArrayLike(c)) {
+          throw new Error(`evaluateExpr: ${op} index target is not an array (got ${typeof c})`);
+        }
+        const idx = (oneBased ? (s | 0) - 1 : (s | 0));
+        if (idx < 0 || idx >= c.length) {
+          throw new Error(`evaluateExpr: ${op} index ${oneBased ? s : s} out of `
+            + `bounds for length ${c.length}`);
+        }
+        return applyGet(c[idx], rest);
+      }
+      throw new Error(`evaluateExpr: ${op} unsupported selector ${String(s)}`);
+    };
+    return applyGet(container, sels);
+  }
   // Shape functions (spec §07 Approximation functions). All three take
   // kwargs so they don't pass through ARITH_OPS; dispatch explicitly.
   // The kwargs are `coefficients` / `values` (a fixed-phase array) and

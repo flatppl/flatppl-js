@@ -140,6 +140,14 @@ const EVALUABLE_OPS = new Set([
   // a=x, b=y)` constructors. Both are pure value computations the
   // evaluator handles.
   'get_field', 'record',
+  // Unified element/subset/slice access (spec §07). `v[i]`, `A[i,j]`,
+  // `A[:,j]`, `v[[1,3]]`, `get(r,"a")` all lower to `get` (1-based);
+  // `get0` is the 0-based variant. Pure deterministic value ops —
+  // sampler.evaluateCall dispatches both via a dedicated case. Added
+  // so a fixed-phase expression containing indexing (e.g.
+  // `Gamma(shape = tau[1] + 1.0, …)`) evaluates through the single
+  // deterministic-evaluator authority instead of dead-ending.
+  'get', 'get0',
   // Random-number primitives (spec §sec:random). All three are
   // ordinary value-typed functions whose phase propagates from
   // their inputs. sampler.evaluateCall dispatches each.

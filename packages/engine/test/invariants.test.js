@@ -82,6 +82,10 @@ test('invariant: REGISTRY discrete flag matches DISCRETE_DISTRIBUTIONS', () => {
 // rngstate, rand. EVALUABLE_OPS lists those + ARITH_OPS keys.
 const SAMPLER_INLINE_EVALUABLE = new Set([
   'tuple', 'tuple_get', 'get_field', 'record',
+  // get / get0: unified element/subset/axis-slice access (spec §07),
+  // dispatched by evaluateCall via a dedicated recursive case (not the
+  // positional-spread ARITH_OPS shape).
+  'get', 'get0',
   'rnginit', 'rngstate', 'rand',
   // Shape functions (spec §07 Approximation functions). Dispatched
   // by sampler.evaluateCall via dedicated cases because they take
