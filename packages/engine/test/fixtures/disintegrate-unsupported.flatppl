@@ -29,10 +29,10 @@ joint_d  = jointchain(prior_b, kernel_b)
 fk_del, pr_del = disintegrate(["obs"], joint_d)
 
 
-# === Case 3: unsupported — chain(...) is structurally unresolvable. =======
-joint_chained = chain(Normal(mu = 0, sigma = 1), Normal(mu = 0, sigma = 1))
+# === Case 3: unsupported — kchain(...) is structurally unresolvable. ======
+joint_chained = kchain(Normal(mu = 0, sigma = 1), Normal(mu = 0, sigma = 1))
 
-# Plan returns Unsupported (chain marginalizes intermediates).
+# Plan returns Unsupported (kchain marginalizes intermediates).
 # Renders with dotted orange border + reason in the info panel.
 fk_chain, pr_chain = disintegrate(["x"], joint_chained)
 

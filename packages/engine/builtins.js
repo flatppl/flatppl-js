@@ -139,7 +139,7 @@ const MEASURE_OPS = new Set([
   // Normalization and mass
   'normalize', 'totalmass',
   // Composition
-  'superpose', 'joint', 'iid', 'chain', 'jointchain',
+  'superpose', 'joint', 'iid', 'kchain', 'jointchain',
   // Restriction and transformation
   'truncate', 'pushfwd',
   // Likelihoods
@@ -157,7 +157,7 @@ const MEASURE_OPS = new Set([
 const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
   'weighted', 'logweighted', 'bayesupdate', 'normalize',
-  'superpose', 'joint', 'iid', 'chain', 'jointchain',
+  'superpose', 'joint', 'iid', 'kchain', 'jointchain',
   'truncate', 'pushfwd',
 ]);
 

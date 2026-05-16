@@ -190,7 +190,7 @@ function disintegratePlan(joint, selector, bindings, ctx) {
     case 'jointchain': return ruleJointchain(node, selector, bindings, ctx);
 
     // v2 — placeholders, filled in below.
-    case 'chain':      return ruleChain(node, selector, bindings, ctx);
+    case 'kchain':     return ruleChain(node, selector, bindings, ctx);
     case 'relabel':    return ruleRelabel(node, selector, bindings, ctx);
     case 'pushfwd':    return rulePushfwd(node, selector, bindings, ctx);
 
@@ -560,7 +560,7 @@ function jointchainPositional(node, selector, bindings, ctx) {
   return synthesized(kernelExpr, build(priorComps));
 }
 
-// === Rule: chain(M, K1, ..., Kn) ====================================
+// === Rule: kchain(M, K1, ..., Kn) ===================================
 //
 // `chain` is Kleisli composition that drops intermediate variates: only
 // the last kernel's variate survives. The output measure equals the
@@ -570,15 +570,15 @@ function jointchainPositional(node, selector, bindings, ctx) {
 // engage with in this rewriter (cf. Hakaru's symbolic disintegration).
 //
 // We bail out with a clear reason. The single-component degenerate form
-// `chain(M)` is just `M`; we treat that as Unsupported here too because
+// `kchain(M)` is just `M`; we treat that as Unsupported here too because
 // users won't write it, and the dispatcher would already have unwrapped
 // any Identifier alias before reaching this rule.
 
 function ruleChain(node, selector, bindings, ctx) {
   void selector; void bindings; void ctx;
   return unsupported(
-    "'chain' has no structural disintegration rule", node,
-    'chain(M, K1, ..., Kn) marginalizes out intermediate variates; recovering them from the result requires integration');
+    "'kchain' has no structural disintegration rule", node,
+    'kchain(M, K1, ..., Kn) marginalizes out intermediate variates; recovering them from the result requires integration');
 }
 
 // === Rule: relabel(M, [n1, n2, ...]) ================================

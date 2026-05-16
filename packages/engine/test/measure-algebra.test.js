@@ -901,7 +901,7 @@ test('chain: marginalizes prior, keeps only kernel-body fields', () => {
     obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
     forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
     prior = lawof(record(theta1 = theta1, theta2 = theta2))
-    prior_predictive = chain(prior, forward_kernel)
+    prior_predictive = kchain(prior, forward_kernel)
   `;
   const { bindings } = processSource(src);
   const m = materialise('prior_predictive', bindings, { sampleCount: 64 });

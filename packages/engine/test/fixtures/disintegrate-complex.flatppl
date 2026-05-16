@@ -37,7 +37,7 @@ fk_b, pr_b = disintegrate(["obs1", "obs2"], joint_with_inputs)
 joint_pure = lawof(record(theta1 = theta1, obs1 = obs1))
 fk_c, pr_c = disintegrate("obs1", joint_pure)
 
-# ---- Fall-back case: joint constructed via measure-algebra `chain` ----
+# ---- Fall-back case: joint constructed via measure-algebra `kchain` ----
 #
 # The structure isn't statically resolvable to a record-of-fields, so the
 # engine should leave the disintegration result as a plain dependency on
@@ -45,5 +45,5 @@ fk_c, pr_c = disintegrate("obs1", joint_pure)
 
 prior_m = Normal(mu = 0.0, sigma = 1.0)
 fwd_k = Normal(mu = mu, sigma = 1.0)
-joint_chained = chain(prior_m, fwd_k)
+joint_chained = kchain(prior_m, fwd_k)
 fk_d, pr_d = disintegrate("x", joint_chained)

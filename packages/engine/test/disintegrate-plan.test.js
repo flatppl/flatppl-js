@@ -170,7 +170,7 @@ test('Plan: chain → Unsupported (marginalization)', () => {
   const src = `
 prior_m = Normal(mu = 0, sigma = 1)
 fwd_k = Normal(mu = 0, sigma = 1)
-joint_model = chain(prior_m, fwd_k)
+joint_model = kchain(prior_m, fwd_k)
 fk, pr = disintegrate("x", joint_model)
 `;
   const { bindings } = processSource(src);

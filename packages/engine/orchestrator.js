@@ -592,8 +592,8 @@ function argSignature(op, numArgs) {
     for (let i = 1; i < numArgs; i++) sig.push('value');
     return sig;
   }
-  if (op === 'jointchain' || op === 'chain') {
-    // jointchain(M, K1, K2, ...) / chain(M, K1, K2, ...): every
+  if (op === 'jointchain' || op === 'kchain') {
+    // jointchain(M, K1, K2, ...) / kchain(M, K1, K2, ...): every
     // positional arg is measure-typed (the first a base measure or
     // closed kernel; the rest non-nullary kernels). Lifting them lets
     // inlineChainOps find them as named bindings to walk.
@@ -817,7 +817,7 @@ function liftInlineSubexpressions(bindings) {
   // needs the lifted shape too.
   for (const [name, binding] of bindings) {
     if (!binding.node || !binding.node.value) continue;
-    // Detect `chain(...)` as the original binding head BEFORE lift. The
+    // Detect `kchain(...)` as the original binding head BEFORE lift. The
     // chain rewrite drops the prior fields, leaving a joint(K_body_fields)
     // shape indistinguishable from `jointchain(...)` w/o prior fields or
     // a direct `joint(...)` of the same fields — but the density
@@ -866,7 +866,7 @@ function liftInlineSubexpressions(bindings) {
   function isChainCall(ast) {
     return ast && ast.type === 'CallExpr'
       && ast.callee && ast.callee.type === 'Identifier'
-      && ast.callee.name === 'chain';
+      && ast.callee.name === 'kchain';
   }
 
   // Post-pass: cache the lowered IR alongside the AST on every binding
@@ -1420,7 +1420,7 @@ function liftInlineSubexpressions(bindings) {
    * Rewrite `jointchain(P, K)` and `chain(P, K)` at the AST level.
    *
    *   jointchain(P, K)  →  joint(P_fields..., K_body_fields...)
-   *   chain(P, K)       →  K_body  (P's fields marginalized away)
+   *   kchain(P, K)      →  K_body  (P's fields marginalized away)
    *
    * Mechanics: extract P's record-field map; map K's surface kwargs
    * to P's fields by name; build a synthetic kernel-call AST and
@@ -1445,7 +1445,7 @@ function liftInlineSubexpressions(bindings) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
-    if (op !== 'jointchain' && op !== 'chain') return astArg;
+    if (op !== 'jointchain' && op !== 'kchain') return astArg;
     if (!astArg.args || astArg.args.length < 2) return astArg;
 
     // N-ary jointchain (≥3 positional args): per spec §06 the chain is

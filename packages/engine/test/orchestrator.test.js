@@ -430,7 +430,7 @@ test('derivations: superpose with a non-derivable component cascades to unsuppor
   // drops out via the cascade-prune pass.
   const { derivations } = derivationsOf(`
 m = Normal(mu = 0, sigma = 1)
-unsupp = chain(m, m)
+unsupp = kchain(m, m)
 ms = superpose(m, unsupp)
 `);
   assert.ok(!('ms' in derivations));
@@ -495,7 +495,7 @@ test('derivations: unsupported binding is omitted, dependents drop too', () => {
   const { derivations } = derivationsOf(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 m      = Normal(mu = 0, sigma = 1)
-unsupp = chain(m, m)
+unsupp = kchain(m, m)
 ghost  = unsupp + 1
 `);
   assert.ok(derivations.theta1);

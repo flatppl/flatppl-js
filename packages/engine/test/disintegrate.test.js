@@ -96,12 +96,12 @@ fk, pr = disintegrate("obs", joint_model)
 });
 
 test('disintegrate: fall back to plain trace when joint is non-lawof', () => {
-  // joint is the result of chain(...) — structure not statically resolvable.
+  // joint is the result of kchain(...) — structure not statically resolvable.
   // We don't lower disintegration; fk and pr just trace through joint as deps.
   const src = `
 prior_m = Normal(mu = 0, sigma = 1)
 fwd_k = Normal(mu = 0, sigma = 1)
-joint_model = chain(prior_m, fwd_k)
+joint_model = kchain(prior_m, fwd_k)
 fk, pr = disintegrate("x", joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
@@ -222,7 +222,7 @@ test('disintegrate (complex fixture): no-input joint produces clean prior', () =
 });
 
 test('disintegrate (complex fixture): chain-based joint falls back to plain trace', () => {
-  // joint_chained = chain(...) — non-statically-resolvable.
+  // joint_chained = kchain(...) — non-statically-resolvable.
   // fk_d, pr_d should NOT be tagged with disintegrateRole and just trace deps.
   const src = fs.readFileSync(FIXTURE, 'utf8');
   const { bindings } = processSource(src);
