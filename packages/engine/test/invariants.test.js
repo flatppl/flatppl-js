@@ -177,3 +177,53 @@ test('invariant: REGISTRY params (incl. aliases) covered by types.js kwargs', ()
     }
   }
 });
+
+// ---------------------------------------------------------------------
+// 6. UN_OP_MAP targets have type signatures
+//
+// Symmetric to block 4 (BIN_OP_MAP). Block 4's header names both maps
+// but the test only iterated BIN_OP_MAP, leaving unary desugaring
+// (`-x` → `neg`, `+x` → `pos`) unguarded against the same `==`→`eq`
+// class of silent drift. Pin it.
+// ---------------------------------------------------------------------
+
+test('invariant: every UN_OP_MAP target has a type signature', () => {
+  const T = require('../types');
+  const UN = lower._internal ? lower._internal.UN_OP_MAP : lower.UN_OP_MAP;
+  for (const op of Object.values(UN)) {
+    assert.ok(T.signatureOf(op),
+      `UN_OP_MAP emits '${op}' but types.signatureOf has no entry`);
+  }
+});
+
+// ---------------------------------------------------------------------
+// 7. Sampleable-distribution sets anchor to the canonical name registry
+//
+// The orchestrator's sampleable / discrete sets must name only real
+// builtin distributions, else the orchestrator admits a constructor
+// the parser/analyzer never recognised.
+//
+// (Deliberately NOT asserting MEASURE_OP_CLASSIFIERS ⊆
+// builtins.MEASURE_OPS, nor ⊆ traceeval MEASURE_OP_WALKERS: the
+// classifier map is intentionally cross-cut — it also keys structural
+// ops (record/tuple/draw/broadcast) that aren't measure-algebra ops,
+// and only the trace-sampled subset has a walker. Both would be false
+// invariants; the audit confirmed the measure-op catalogs do not form
+// clean subset relations by design.)
+// ---------------------------------------------------------------------
+
+test('invariant: SAMPLEABLE_DISTRIBUTIONS ⊆ builtins.DISTRIBUTIONS', () => {
+  for (const name of orchestrator.SAMPLEABLE_DISTRIBUTIONS) {
+    assert.ok(builtins.DISTRIBUTIONS.has(name),
+      `SAMPLEABLE_DISTRIBUTIONS lists '${name}' but builtins.DISTRIBUTIONS ` +
+      `doesn't — parser/analyzer won't recognise the constructor name`);
+  }
+});
+
+test('invariant: DISCRETE_DISTRIBUTIONS ⊆ builtins.DISTRIBUTIONS', () => {
+  for (const name of orchestrator.DISCRETE_DISTRIBUTIONS) {
+    assert.ok(builtins.DISTRIBUTIONS.has(name),
+      `DISCRETE_DISTRIBUTIONS lists '${name}' but builtins.DISTRIBUTIONS ` +
+      `doesn't`);
+  }
+});

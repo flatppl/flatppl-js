@@ -484,8 +484,17 @@ BigInt overhead on the hot path.
 
 ## Cross-file invariants
 
-These lists must agree across multiple files. None is currently enforced by a
-test — drift produces silent runtime failures. Watch for them when extending.
+These lists must agree across multiple files; drift produces silent runtime
+failures. The cleanly-checkable ones ARE enforced by `test/invariants.test.js`
+(distribution ↔ REGISTRY both ways, discrete flag, EVALUABLE_OPS ↔ ARITH_OPS,
+BIN_OP_MAP / UN_OP_MAP type signatures, REGISTRY params ↔ types kwargs,
+sampleable/discrete ⊆ builtins.DISTRIBUTIONS) — if you change a catalog the
+failing test names the mirror to update. Not every cross-file relation forms a
+clean subset, though: the measure-op catalogs (`MEASURE_OP_CLASSIFIERS`,
+traceeval `MEASURE_OP_WALKERS`, `MEASURE_PRODUCING`) are intentionally
+cross-cut by structural vs algebraic vs density-routed handling, so those are
+NOT invariant-tested (an equivalence there would be false). Watch them by hand
+when extending.
 
 ### Adding a new built-in distribution (e.g. `Foo`)
 
@@ -517,9 +526,9 @@ distribution with mismatched param names it'll fail loudly.
 | `test/sampler.test.js` | regression test for `bar` evaluation |
 
 `orchestrator.EVALUABLE_OPS` and `sampler.ARITH_OPS` must contain the same op
-names (the orchestrator's static gate is the runtime's gate). The orchestrator
-header at line ~90 acknowledges this dependency in a comment but no test enforces
-it.
+names (the orchestrator's static gate is the runtime's gate). This IS
+enforced both ways by `test/invariants.test.js` block 3 (modulo the
+documented `vector` / `cat` exemptions and the inline-evaluable handful).
 
 ### Adding a new measure-algebra op (e.g. `baz`)
 
