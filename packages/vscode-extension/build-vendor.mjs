@@ -227,6 +227,12 @@ async function syncGrammars() {
   if (existsSync(grammarsSibling)) {
     console.log(`  grammars: using sibling clone at ${grammarsSibling}`);
     await copyDirRecursive(join(grammarsSibling, 'textmate'), join(gramDir, 'textmate'));
+    // cSpell vocabulary (FlatPPL builtins/keywords) — same canonical
+    // source as the grammars; contributed to the Code Spell Checker
+    // via the package.json `cspell` block.
+    if (existsSync(join(grammarsSibling, 'cspell'))) {
+      await copyDirRecursive(join(grammarsSibling, 'cspell'), join(gramDir, 'cspell'));
+    }
   } else {
     console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
     await fetchAndExtractGrammars(grammarsRemote, gramDir);
@@ -297,6 +303,9 @@ async function fetchAndExtractGrammars(url, dstDir) {
     }
     const topLevel = join(tmpExtract, entries[0]);
     await copyDirRecursive(join(topLevel, 'textmate'), join(dstDir, 'textmate'));
+    if (existsSync(join(topLevel, 'cspell'))) {
+      await copyDirRecursive(join(topLevel, 'cspell'), join(dstDir, 'cspell'));
+    }
   } finally {
     // Best-effort cleanup; leave artifacts in place if anything errors.
     await rm(tmpFile,    { force: true }).catch(() => {});

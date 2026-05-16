@@ -155,5 +155,20 @@
         }
       }
     }
+  },
+  "cspell": {
+    "version": "0.2",
+    "dictionaryDefinitions": [
+      {
+        "name": "flatppl",
+        "path": "./grammars/cspell/flatppl-words.txt",
+        "description": "FlatPPL builtins / keywords (synced from flatppl-grammars)"
+      }
+    ],
+    "languageSettings": [
+      { "languageId": "flatppl", "dictionaries": ["flatppl"] },
+      { "languageId": "python", "dictionaries": ["flatppl"] },
+      { "languageId": "julia", "dictionaries": ["flatppl"] }
+    ]
   }
 }
