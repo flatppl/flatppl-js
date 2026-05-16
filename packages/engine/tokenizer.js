@@ -242,6 +242,43 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
       continue;
     }
 
+    // Dot-prefixed (broadcast) operators, spec §05 Broadcasting syntax:
+    // `.+ .- .* ./ .^ .< .> .<= .>= .== .!= .&& .|| .!`. Each is a
+    // single token recognized by maximal munch (longest match — the
+    // 3-char forms are tried before their 2-char prefixes). They carry
+    // the SAME token type and value as the plain operator plus a
+    // `dotted:true` marker, so the precedence parser matches them with
+    // zero change and only the desugaring branches inspect the marker.
+    //
+    // Reaching here means `ch === '.'` was NOT consumed by the number
+    // branch (which already ate `.`+digit, so `1./x` munched `1.` as
+    // the real literal `1.0` — the Julia rule, spec §05). `.(`
+    // (dot-call) and `.name` (field access) are left as a bare DOT for
+    // the parser, since `(` and identifier-starts are not operator
+    // chars below.
+    if (ch === '.') {
+      const DOT_OPS_3 = {
+        '.==': T.EQEQ, '.!=': T.NEQ, '.<=': T.LTE, '.>=': T.GTE,
+        '.&&': T.AMPAMP, '.||': T.PIPEPIPE,
+      };
+      const DOT_OPS_2 = {
+        '.<': T.LT, '.>': T.GT, '.+': T.PLUS, '.-': T.MINUS,
+        '.*': T.STAR, './': T.SLASH, '.^': T.CARET, '.!': T.BANG,
+      };
+      const three = ch + at(1) + at(2);
+      const two = ch + at(1);
+      let lexeme = null, ttype = null;
+      if (DOT_OPS_3[three]) { lexeme = three; ttype = DOT_OPS_3[three]; }
+      else if (DOT_OPS_2[two]) { lexeme = two; ttype = DOT_OPS_2[two]; }
+      if (lexeme) {
+        for (let k = 0; k < lexeme.length; k++) advance();
+        const tok = token(ttype, lexeme.slice(1), startLine, startCol, line, col);
+        tok.dotted = true;
+        tokens.push(tok);
+        continue;
+      }
+    }
+
     // Single-character tokens
     const singleMap = {
       '(': T.LPAREN, ')': T.RPAREN,
