@@ -3136,3 +3136,33 @@ test('diagnostics: no false positives on ordinary models', () => {
       JSON.stringify(diagnostics));
   }
 });
+
+// ---------------------------------------------------------------------
+// #2.5: a fixed-phase array produced by a loosely-typed expression
+// (dotted-broadcast → inferredType 'deferred') must be indistinguishable
+// from a literal fixed array, so the viewer's "route by what it IS"
+// fallback (fixedValues entry is a flat numeric vector → array mode)
+// holds. `tau = (bkg ./ dbkg) .^ 2` vs the literal `dbkg`.
+// ---------------------------------------------------------------------
+
+test('fixed dotted-broadcast array == literal fixed array (viewer-routing contract)', () => {
+  const { bindings } = processSource(
+    'bkg = [50.0, 52.0]\n' +
+    'dbkg = [3.0, 7.0]\n' +
+    'tau = (bkg ./ dbkg) .^ 2\n');
+  const { fixedValues } = buildDerivations(bindings);
+  // Both pre-evaluate to flat numeric JS arrays — the exact signal the
+  // viewer's fixed-phase array-mode fallback keys on.
+  const dbkg = fixedValues.get('dbkg');
+  const tau = fixedValues.get('tau');
+  for (const [nm, v] of [['dbkg', dbkg], ['tau', tau]]) {
+    assert.ok(Array.isArray(v) && v.length === 2
+      && v.every(e => typeof e === 'number' && Number.isFinite(e)),
+      `${nm} should be a flat finite numeric vector, got ${JSON.stringify(v)}`);
+  }
+  assert.ok(Math.abs(tau[0] - (50 / 3) ** 2) < 1e-9);
+  assert.ok(Math.abs(tau[1] - (52 / 7) ** 2) < 1e-9);
+  // tau's loose static type is exactly why the viewer can't route on it.
+  assert.equal(bindings.get('tau').inferredType.kind, 'deferred');
+  assert.equal(bindings.get('dbkg').inferredType.kind, 'array');
+});

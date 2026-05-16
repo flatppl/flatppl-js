@@ -1827,7 +1827,28 @@
         // Static numeric arrays still take the dedicated step-plot
         // path. (kind:'array' derivation also implies phase='fixed'
         // and inferredType=array.)
-        if ((d && d.kind === 'array') || typeKind === 'array') {
+        //
+        // Ground-truth fallback: route by WHAT THE BINDING IS, not by
+        // the static type. A fixed-phase binding whose pre-evaluated
+        // value (orchestrator fixedValues) is a flat numeric/boolean
+        // vector IS an array value — even when inferredType came back
+        // 'deferred' because the producing expression isn't covered by
+        // typeinfer. The canonical case: `tau = (bkg ./ dbkg) .^ 2`
+        // (dotted-broadcast typeinfer is intentionally loose, TODO
+        // §07), which materialises byte-identically to the literal
+        // `dbkg = [3.0, 7.0]` yet, without this, fell through to the
+        // scalar-sample path and rendered as an empty 2-point
+        // histogram. Tightening dotted-broadcast typeinfer would also
+        // fix it at the source; this fallback hardens the viewer
+        // against every present and future loose-typeinfer case.
+        var fvMap = derivationsState.fixedValues;
+        var fvVal = fvMap && fvMap.has(name) ? fvMap.get(name) : undefined;
+        var isFlatNumericVec = Array.isArray(fvVal) && fvVal.length > 0
+          && fvVal.every(function (e) {
+            return typeof e === 'number' || typeof e === 'boolean';
+          });
+        if ((d && d.kind === 'array') || typeKind === 'array'
+            || isFlatNumericVec) {
           return { name: name, mode: 'array' };
         }
         if (typeKind === 'scalar') {
