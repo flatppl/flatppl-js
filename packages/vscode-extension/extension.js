@@ -264,6 +264,27 @@ const remapReferences = (vscode, res, dl) =>
 const remapHighlights = (vscode, res, dl) => res.map(h =>
   new vscode.DocumentHighlight(_shiftRange(vscode, h.range, dl), h.kind));
 
+// prepareRename → { range, placeholder }: shift the range, keep the
+// placeholder text.
+const remapPrepareRename = (vscode, res, dl) => ({
+  range: _shiftRange(vscode, res.range, dl),
+  placeholder: res.placeholder,
+});
+
+// Rebuild a WorkspaceEdit shifting every TextEdit's range to host
+// coordinates. The uri is already the host doc's (the shim's uri ===
+// hostDoc's), so only the line offset changes — the rename writes
+// back into the .py/.jl at the correct lines within the block.
+function remapWorkspaceEdit(vscode, edit, dl) {
+  const out = new vscode.WorkspaceEdit();
+  for (const [uri, edits] of edit.entries()) {
+    for (const te of edits) {
+      out.replace(uri, _shiftRange(vscode, te.range, dl), te.newText);
+    }
+  }
+  return out;
+}
+
 function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
@@ -469,6 +490,31 @@ function activate(context) {
         embedPositional(vscode, referenceImpl, 'provideReferences', remapReferences)),
       vscode.languages.registerDocumentHighlightProvider(EMB,
         embedPositional(vscode, highlightImpl, 'provideDocumentHighlights', remapHighlights)),
+      // Rename: two methods on one provider; the edit writes back into
+      // the host .py/.jl at block-shifted ranges. Outside a block we
+      // decline (undefined/null) so the host language's rename runs.
+      vscode.languages.registerRenameProvider(EMB, {
+        prepareRename(document, position) {
+          const at = blockAt(document, position);
+          if (!at) return undefined;
+          const vdoc = makeBlockDoc(vscode, document, at.block);
+          const vpos = new vscode.Position(
+            position.line - at.baseLine, position.character);
+          const res = renameImpl.prepareRename(vdoc, vpos);  // may throw
+          return res == null ? res
+            : remapPrepareRename(vscode, res, at.baseLine);
+        },
+        provideRenameEdits(document, position, newName) {
+          const at = blockAt(document, position);
+          if (!at) return null;
+          const vdoc = makeBlockDoc(vscode, document, at.block);
+          const vpos = new vscode.Position(
+            position.line - at.baseLine, position.character);
+          const edit = renameImpl.provideRenameEdits(vdoc, vpos, newName);
+          return edit == null ? edit
+            : remapWorkspaceEdit(vscode, edit, at.baseLine);
+        },
+      }),
       // Document symbols: no position — union every block's outline,
       // each shifted by its own host base line.
       vscode.languages.registerDocumentSymbolProvider(EMB, {
@@ -924,7 +970,7 @@ function activate(context) {
     );
   }
 
-  const renameProvider = vscode.languages.registerRenameProvider([...FLATPPL_LANGS], {
+  const renameImpl = {
     prepareRename(document, position) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
@@ -969,7 +1015,9 @@ function activate(context) {
       }
       return edit;
     }
-  });
+  };
+  const renameProvider = vscode.languages.registerRenameProvider(
+    [...FLATPPL_LANGS], renameImpl);
 
   // --- Find All References (Shift+F12) ---
 
