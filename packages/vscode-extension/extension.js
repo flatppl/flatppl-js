@@ -125,6 +125,129 @@ function pickBindingForCursor(bindings, line, char) {
   return next || all[all.length - 1];
 }
 
+// ---------------------------------------------------------------------
+// Embedded LSP plumbing — make the native FlatPPL providers serve
+// flatppl(…) blocks inside Python/Julia, unchanged.
+//
+// A native provider takes a vscode.TextDocument + Position and returns
+// vscode results whose ranges are FlatPPL-source coordinates. For an
+// embedded block we hand the *same* provider a minimal TextDocument
+// shim backed by the extracted block text (so `parsedFor` parses just
+// the block, no diagnostics/cache), translate the incoming position
+// block-relative, and shift result ranges back by the block's host
+// base line. One shim + one wrapper per result shape ⇒ zero provider-
+// logic duplication; native and embedded can't drift.
+// ---------------------------------------------------------------------
+
+const EMBEDDING_HOST_SELECTOR = [{ language: 'python' }, { language: 'julia' }];
+const _WORD_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
+
+// Minimal vscode.TextDocument over one block's source. Implements only
+// what the FlatPPL providers touch: getText([range]), positionAt,
+// offsetAt, lineAt, getWordRangeAtPosition, uri/version/languageId,
+// plus __embeddedSource so parsedFor parses the block (not the host).
+function makeBlockDoc(vscode, hostDoc, block) {
+  const src = block.source;
+  const lineStart = [0];
+  for (let i = 0; i < src.length; i++) if (src[i] === '\n') lineStart.push(i + 1);
+  const offsetAt = (pos) => {
+    const ls = lineStart[Math.max(0, Math.min(pos.line, lineStart.length - 1))] || 0;
+    return Math.min(ls + pos.character, src.length);
+  };
+  const positionAt = (off) => {
+    off = Math.max(0, Math.min(off, src.length));
+    let lo = 0, hi = lineStart.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (lineStart[m] <= off) lo = m; else hi = m - 1; }
+    return new vscode.Position(lo, off - lineStart[lo]);
+  };
+  return {
+    uri: hostDoc.uri,
+    version: hostDoc.version,
+    languageId: 'flatppl',
+    __embeddedSource: src,
+    lineCount: lineStart.length,
+    offsetAt,
+    positionAt,
+    getText(range) {
+      if (!range) return src;
+      return src.slice(offsetAt(range.start), offsetAt(range.end));
+    },
+    lineAt(lineOrPos) {
+      const line = typeof lineOrPos === 'number' ? lineOrPos : lineOrPos.line;
+      const a = lineStart[line] || 0;
+      const b = line + 1 < lineStart.length ? lineStart[line + 1] - 1 : src.length;
+      const text = src.slice(a, b);
+      return { lineNumber: line, text,
+        range: new vscode.Range(line, 0, line, text.length) };
+    },
+    getWordRangeAtPosition(pos) {
+      const lineText = this.lineAt(pos.line).text;
+      _WORD_RE.lastIndex = 0;
+      let m;
+      while ((m = _WORD_RE.exec(lineText)) !== null) {
+        if (pos.character >= m.index && pos.character <= m.index + m[0].length) {
+          return new vscode.Range(pos.line, m.index, pos.line, m.index + m[0].length);
+        }
+      }
+      return undefined;
+    },
+  };
+}
+
+function _shiftRange(vscode, r, dl) {
+  return new vscode.Range(
+    r.start.line + dl, r.start.character, r.end.line + dl, r.end.character);
+}
+
+// Block whose content contains `position` (host coords) + the host
+// line where it starts. Null when the cursor isn't in any block.
+function blockAt(hostDoc, position) {
+  const blocks = findEmbeddedBlocks(hostDoc.getText());
+  if (blocks.length === 0) return null;
+  const off = hostDoc.offsetAt(position);
+  const b = blocks.find(x => off >= x.start && off <= x.end);
+  if (!b) return null;
+  return { block: b, baseLine: hostDoc.positionAt(b.start).line };
+}
+
+// Embedded wrapper for a position-based provider. `remap(vscode,
+// result, baseLine)` shifts result ranges to host coords (identity for
+// range-less results like completion items). Returns null/[] outside a
+// block so the host language's own provider is unaffected.
+function embedPositional(vscode, impl, method, remap, emptyValue) {
+  return {
+    [method](document, position, ...rest) {
+      const at = blockAt(document, position);
+      if (!at) return emptyValue !== undefined ? emptyValue : null;
+      const vdoc = makeBlockDoc(vscode, document, at.block);
+      const vpos = new vscode.Position(
+        position.line - at.baseLine, position.character);
+      const res = impl[method](vdoc, vpos, ...rest);
+      return res == null ? res : remap(vscode, res, at.baseLine);
+    },
+  };
+}
+
+const remapHover = (vscode, h, dl) => new vscode.Hover(
+  h.contents, h.range ? _shiftRange(vscode, h.range, dl) : undefined);
+
+function _remapSymbol(vscode, s, dl) {
+  const out = new vscode.DocumentSymbol(
+    s.name, s.detail, s.kind,
+    _shiftRange(vscode, s.range, dl),
+    _shiftRange(vscode, s.selectionRange, dl));
+  if (s.children && s.children.length) {
+    out.children = s.children.map(c => _remapSymbol(vscode, c, dl));
+  }
+  return out;
+}
+
+function _remapSelectionRange(vscode, sr, dl) {
+  return new vscode.SelectionRange(
+    _shiftRange(vscode, sr.range, dl),
+    sr.parent ? _remapSelectionRange(vscode, sr.parent, dl) : undefined);
+}
+
 function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
@@ -156,6 +279,21 @@ function activate(context) {
       engineToVsDiagnostics(vscode, diagnostics, 0));
 
     return cachedResult;
+  }
+
+  // Parse source for a language provider. A real .flatppl document
+  // goes through getParsed (uri/version cache + diagnostic publish).
+  // A virtual embedded-block document (carries __embeddedSource — the
+  // extracted FlatPPL of one flatppl(…) block) is parsed directly with
+  // no cache write and no diagnostic publish (embedded diagnostics are
+  // owned by publishEmbeddedDiagnostics). This single indirection lets
+  // every native provider serve embedded blocks unchanged — the only
+  // edit to a provider body is getParsed → parsedFor.
+  function parsedFor(document) {
+    if (document && typeof document.__embeddedSource === 'string') {
+      return processSource(document.__embeddedSource, { variant: 'flatppl' });
+    }
+    return getParsed(document);
   }
 
   // Show the visualizer for whichever binding contains the cursor (or
@@ -292,14 +430,52 @@ function activate(context) {
     embeddedArmed = true;
     vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', true);
 
-    // Embedded LSP bundle (diagnostics today; hover/symbols can slot
-    // in here later). All registered lazily — only now that the user
-    // has opted in — and torn down by disarm.
+    // Embedded LSP bundle — registered lazily (only now that the user
+    // opted in) and torn down by disarm. Same native provider impls,
+    // served over a block shim; results shifted to host coords.
+    const EMB = EMBEDDING_HOST_SELECTOR;
     embeddedDisposables.push(
+      // Diagnostics.
       vscode.workspace.onDidChangeTextDocument(e => scheduleEmbeddedDiagnostics(e.document)),
       vscode.workspace.onDidOpenTextDocument(d => publishEmbeddedDiagnostics(d)),
       vscode.workspace.onDidCloseTextDocument(d => {
         if (isEmbeddingHost(d)) diagCollection.delete(d.uri);
+      }),
+      // Hover / completion: position-based, reuse impls via the shim.
+      vscode.languages.registerHoverProvider(EMB,
+        embedPositional(vscode, hoverImpl, 'provideHover', remapHover)),
+      vscode.languages.registerCompletionItemProvider(EMB,
+        embedPositional(vscode, completionImpl, 'provideCompletionItems',
+          (_v, r) => r, /* emptyValue (additive, don't suppress host) */ [])),
+      // Document symbols: no position — union every block's outline,
+      // each shifted by its own host base line.
+      vscode.languages.registerDocumentSymbolProvider(EMB, {
+        provideDocumentSymbols(document) {
+          const out = [];
+          for (const b of findEmbeddedBlocks(document.getText())) {
+            const baseLine = document.positionAt(b.start).line;
+            const vdoc = makeBlockDoc(vscode, document, b);
+            for (const s of symbolImpl.provideDocumentSymbols(vdoc) || []) {
+              out.push(_remapSymbol(vscode, s, baseLine));
+            }
+          }
+          return out;
+        },
+      }),
+      // Selection range: per requested position, in its own block.
+      vscode.languages.registerSelectionRangeProvider(EMB, {
+        provideSelectionRanges(document, positions) {
+          return positions.map(pos => {
+            const at = blockAt(document, pos);
+            if (!at) return null;
+            const vdoc = makeBlockDoc(vscode, document, at.block);
+            const vpos = new vscode.Position(
+              pos.line - at.baseLine, pos.character);
+            const r = selectionRangeImpl.provideSelectionRanges(vdoc, [vpos]);
+            if (!r || !r[0]) return null;
+            return _remapSelectionRange(vscode, r[0], at.baseLine);
+          }).filter(Boolean);
+        },
       }),
     );
     // Catch up: lint already-open host docs.
@@ -508,7 +684,7 @@ function activate(context) {
 
   const defProvider = vscode.languages.registerDefinitionProvider([...FLATPPL_LANGS], {
     provideDefinition(document, position) {
-      const { bindings } = getParsed(document);
+      const { bindings } = parsedFor(document);
       const wordRange = document.getWordRangeAtPosition(position);
       if (!wordRange) return null;
       const word = document.getText(wordRange);
@@ -521,9 +697,9 @@ function activate(context) {
 
   // --- Hover ---
 
-  const hoverProvider = vscode.languages.registerHoverProvider([...FLATPPL_LANGS], {
+  const hoverImpl = {
     provideHover(document, position) {
-      const { bindings } = getParsed(document);
+      const { bindings } = parsedFor(document);
       const wordRange = document.getWordRangeAtPosition(position);
       if (!wordRange) return null;
       const word = document.getText(wordRange);
@@ -544,13 +720,15 @@ function activate(context) {
       md.isTrusted = true;
       return new vscode.Hover(md, wordRange);
     }
-  });
+  };
+  const hoverProvider = vscode.languages.registerHoverProvider(
+    [...FLATPPL_LANGS], hoverImpl);
 
   // --- Document symbols (outline) ---
 
-  const symbolProvider = vscode.languages.registerDocumentSymbolProvider([...FLATPPL_LANGS], {
+  const symbolImpl = {
     provideDocumentSymbols(document) {
-      const { symbols } = getParsed(document);
+      const { symbols } = parsedFor(document);
       const kindMap = {
         Variable: vscode.SymbolKind.Variable,
         Function: vscode.SymbolKind.Function,
@@ -565,7 +743,9 @@ function activate(context) {
         new vscode.Range(s.nameLoc.start.line, s.nameLoc.start.col, s.nameLoc.end.line, s.nameLoc.end.col),
       ));
     }
-  });
+  };
+  const symbolProvider = vscode.languages.registerDocumentSymbolProvider(
+    [...FLATPPL_LANGS], symbolImpl);
 
   // --- Completion provider ---
 
@@ -690,9 +870,9 @@ function activate(context) {
 
   const builtinCompletions = makeBuiltinCompletions();
 
-  const completionProvider = vscode.languages.registerCompletionItemProvider([...FLATPPL_LANGS], {
+  const completionImpl = {
     provideCompletionItems(document, position) {
-      const { bindings } = getParsed(document);
+      const { bindings } = parsedFor(document);
       const items = [...builtinCompletions];
 
       // Add user-defined names from this document
@@ -707,7 +887,9 @@ function activate(context) {
 
       return items;
     }
-  });
+  };
+  const completionProvider = vscode.languages.registerCompletionItemProvider(
+    [...FLATPPL_LANGS], completionImpl);
 
   // --- Rename provider (F2) ---
 
@@ -720,7 +902,7 @@ function activate(context) {
 
   const renameProvider = vscode.languages.registerRenameProvider([...FLATPPL_LANGS], {
     prepareRename(document, position) {
-      const { ast, bindings } = getParsed(document);
+      const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) {
         // Throw to give VS Code a clear "not renameable" signal.
@@ -735,7 +917,7 @@ function activate(context) {
     },
 
     provideRenameEdits(document, position, newName) {
-      const { ast, bindings } = getParsed(document);
+      const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) return null;
 
@@ -769,7 +951,7 @@ function activate(context) {
 
   const referenceProvider = vscode.languages.registerReferenceProvider([...FLATPPL_LANGS], {
     provideReferences(document, position, refContext) {
-      const { ast, bindings } = getParsed(document);
+      const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) return null;
       // For binding renames, locs[0] is the LHS definition and the rest are
@@ -786,7 +968,7 @@ function activate(context) {
 
   const highlightProvider = vscode.languages.registerDocumentHighlightProvider([...FLATPPL_LANGS], {
     provideDocumentHighlights(document, position) {
-      const { ast, bindings } = getParsed(document);
+      const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) return null;
       return plan.locs.map((loc, i) => {
@@ -805,9 +987,9 @@ function activate(context) {
 
   // --- Selection Range (Shift+Alt+→ to expand selection) ---
 
-  const selectionRangeProvider = vscode.languages.registerSelectionRangeProvider([...FLATPPL_LANGS], {
+  const selectionRangeImpl = {
     provideSelectionRanges(document, positions) {
-      const { ast } = getParsed(document);
+      const { ast } = parsedFor(document);
       return positions.map(pos => {
         const ranges = findEnclosingRanges(ast, pos.line, pos.character);
         if (ranges.length === 0) {
@@ -823,7 +1005,9 @@ function activate(context) {
         return current;
       }).filter(Boolean);
     }
-  });
+  };
+  const selectionRangeProvider = vscode.languages.registerSelectionRangeProvider(
+    [...FLATPPL_LANGS], selectionRangeImpl);
 
   // --- Clean up diagnostics on close ---
 
