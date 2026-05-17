@@ -805,3 +805,51 @@ lps = broadcast(logdensityof, mix, [${grid.join(', ')}])
       + `reference ${single} (must be bit-identical)`);
   }
 });
+
+// =====================================================================
+// §11 (2a): INLINE-measure ifelse branches — ifelse(c, Normal(..),
+// Normal(..)) (sampleable-leaf branches, no named bindings). Same
+// select core; must match the named-branch form exactly. Value-valued
+// ifelse stays declined (evaluator path) — covered by logical-ops
+// tests; the suite-green gate guards that.
+// =====================================================================
+
+test('inline-branch ifelse: density == named-branch ifelse == analytic', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 2.0)
+c = draw(Bernoulli(p = 0.3))
+named  = ifelse(c, A, B)
+inline = ifelse(c, Normal(mu = 0.0, sigma = 1.0), Normal(mu = 5.0, sigma = 2.0))
+lpN = logdensityof(named, 1.3)
+lpI = logdensityof(inline, 1.3)
+`);
+  const [N, I] = await Promise.all([ctx.getMeasure('lpN'), ctx.getMeasure('lpI')]);
+  const expected = Math.log(
+    0.3 * Math.exp(normalLogpdf(1.3, 0, 1))
+    + 0.7 * Math.exp(normalLogpdf(1.3, 5, 2)));
+  assert.ok(Math.abs(I.samples[0] - expected) < 1e-10,
+    `inline-branch ifelse density: got ${I.samples[0]}, expected ${expected}`);
+  assert.ok(Math.abs(I.samples[0] - N.samples[0]) < 1e-12,
+    `inline must equal named-branch ifelse: ${I.samples[0]} vs ${N.samples[0]}`);
+});
+
+test('inline-branch ifelse: sampling mixture mean/variance (closed-form)', async () => {
+  const p = 0.3, muA = -8, sgA = 1, muB = 8, sgB = 1;     // well-separated
+  const ctx = makeCtx(`
+c = draw(Bernoulli(p = 0.3))
+x = draw(ifelse(c, Normal(mu = -8.0, sigma = 1.0), Normal(mu = 8.0, sigma = 1.0)))
+`);
+  const xs = (await ctx.getMeasure('x')).samples;
+  const EX = p * muA + (1 - p) * muB;                       // = 3.2
+  const EX2 = p * (sgA * sgA + muA * muA) + (1 - p) * (sgB * sgB + muB * muB);
+  const VX = EX2 - EX * EX;
+  let nA = 0;
+  for (let i = 0; i < xs.length; i++) if (xs[i] < 0) nA++;   // clean split
+  assert.ok(Math.abs(unweightedMean(xs) - EX) < 0.15,
+    `mean: got ${unweightedMean(xs)}, expected ${EX}`);
+  assert.ok(Math.abs(unweightedVar(xs) - VX) / VX < 0.10,
+    `variance: got ${unweightedVar(xs)}, expected ${VX}`);
+  assert.ok(Math.abs(nA / xs.length - p) < 0.02,
+    `branch-A fraction ≈ p = ${p}, got ${nA / xs.length}`);
+});

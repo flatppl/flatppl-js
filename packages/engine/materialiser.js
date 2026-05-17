@@ -869,8 +869,8 @@ function matSelect(name, d, ctx) {
   // (Bernoulli success) ⇒ branch 0 (a), else branch 1 (b). For K>2
   // (explicit Categorical mixture, later) the selector is a 1-based
   // index; clamp defensively.
-  const branchNames = d.branches || [];
-  if (branchNames.length === 0) {
+  const branchEntries = d.branches || [];
+  if (branchEntries.length === 0) {
     return Promise.reject(new Error('matSelect: select has no branches'));
   }
   if (!d.selectorRef) {
@@ -880,8 +880,21 @@ function matSelect(name, d, ctx) {
       + 'density is tractable, but this binding cannot be sampled in '
       + 'the current scope (inline / non-closed-form selector).'));
   }
-  const want = branchNames.map(ctx.getMeasure);
-  want.push(ctx.getMeasure(d.selectorRef));
+  // Each branch is a named measure binding ({ ref }) or an inline
+  // sampleable-distribution leaf ({ ir }); sample the latter directly
+  // via the worker (the matSample path) — no binding to fetch.
+  const branchP = branchEntries.map((b, bi) => {
+    if (b && b.ref != null) return ctx.getMeasure(b.ref);
+    return collectRefArrays(b.ir, ctx.fixedValues, ctx.getMeasure)
+      .then((refArrays) => ctx.sendWorker({
+        type: 'sampleN', ir: b.ir, count: ctx.sampleCount,
+        refArrays: refArrays, seed: nameSeed(name + ':b' + bi, ctx.rootSeed),
+      }))
+      .then((reply) => scalarMeasureN(reply.samples, {
+        logWeights: reply.logWeights || null, logTotalmass: 0,
+        n_eff: reply.samples.length }));
+  });
+  const want = branchP.concat([ctx.getMeasure(d.selectorRef)]);
   return Promise.all(want).then((ms) => {
     const sel = empirical.materialiseUniform(ms[ms.length - 1]).samples;
     const branches = ms.slice(0, ms.length - 1)
