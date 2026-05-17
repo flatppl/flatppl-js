@@ -703,6 +703,16 @@ function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   if (!Array.isArray(branches) || branches.length === 0) {
     throw new Error('density: select requires a non-empty branches array');
   }
+  // A runtime-weight spec must have been resolved to literal
+  // logweights by the materialiser before the IR reaches the density
+  // worker (engine-concepts §11 MC-weight selector). If it survived
+  // here, fall-through would silently score a raw (equal-weight)
+  // superpose — a wrong number. Fail loud instead.
+  if (ir.weightsFrom != null && ir.logweights == null) {
+    throw new Error('density: select carries an unresolved runtime-weight '
+      + 'spec (weightsFrom) — the materialiser must estimate and substitute '
+      + 'literal logweights before density evaluation');
+  }
   const K = branches.length;
   // Reference-measure guard (engine-concepts §11/§12). logsumexp-ing
   // branch log-densities is only meaningful when every branch scores

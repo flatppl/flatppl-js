@@ -1283,6 +1283,96 @@ function matMvNormal(name, d, ctx) {
   });
 }
 
+// Walk an expanded measure IR collecting every `select` node that
+// still carries an unresolved runtime-weight spec (`weightsFrom`).
+// engine-concepts §11: a non-closed-form selector condition yields a
+// structurally-exact mixture whose per-branch weights must be
+// estimated ONCE from the materialised selector ensemble. expandMeasureIR
+// is pure and cannot reduce an ensemble, so it threads the spec
+// through; the materialiser resolves it here. The estimate is a
+// single scalar per branch (the selector is marginalised in the
+// density), hence constant in the observation point — it fits the
+// existing IR `logweights` slot exactly, just supplied at
+// materialisation instead of by classify. Generic deep walk over all
+// object/array child slots so it finds selects nested anywhere
+// (branches, weighted/normalize wrappers, jointchain steps, …).
+function collectRuntimeWeightNodes(node, out, seen) {
+  if (!node || typeof node !== 'object') return;
+  if (seen.has(node)) return;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const x of node) collectRuntimeWeightNodes(x, out, seen);
+    return;
+  }
+  if (node.kind === 'call' && node.op === 'select'
+      && node.weightsFrom && node.logweights == null) {
+    out.push(node);
+  }
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === 'object') collectRuntimeWeightNodes(v, out, seen);
+  }
+}
+
+// Resolve every runtime-weight spec in `measureIR` into literal
+// logweights, in place (the IR is freshly expanded per call). Each
+// distinct selector ref is materialised once; the per-branch weight
+// is the empirical frequency p̂_k of the selector landing in branch k
+// (K==2 boolean ifelse: branch 0 = condition TRUE = selector truthy,
+// matching matSelect's `sel?0:1` gather, so density and sampling
+// agree). log 0 = −∞ is the correct weight for an unobserved branch
+// (it drops out of the logsumexp mixture). No-op (and synchronous-
+// equivalent) when there are no specs, so existing fast paths are
+// unaffected. This is the general "materialiser resolves
+// ensemble-reduction weights" capability — MC-weight ifelse is its
+// first consumer; future ensemble-weighted selects reuse it
+// unchanged.
+function resolveRuntimeWeights(measureIR, ctx) {
+  const nodes = [];
+  collectRuntimeWeightNodes(measureIR, nodes, new Set());
+  if (nodes.length === 0) return Promise.resolve(measureIR);
+  const refNames = Array.from(new Set(nodes.map((n) => n.weightsFrom.ref)));
+  return Promise.all(refNames.map(ctx.getMeasure)).then((measures) => {
+    const byName = {};
+    refNames.forEach((nm, i) => { byName[nm] = measures[i]; });
+    for (const node of nodes) {
+      const spec = node.weightsFrom;
+      const M = byName[spec.ref];
+      if (!M || !M.samples || !M.samples.length) {
+        throw new Error('select runtime weights: selector "' + spec.ref
+          + '" did not materialise to a sampled ensemble');
+      }
+      const sel = M.samples;
+      const Nn = sel.length;
+      const K = spec.K | 0;
+      const base = spec.base | 0;
+      const cnt = new Float64Array(K);
+      if (K === 2 && base === 0) {
+        // Boolean ifelse: branch 0 when the {0,1} selector is truthy.
+        let t = 0;
+        for (let i = 0; i < Nn; i++) if (sel[i]) t++;
+        cnt[0] = t; cnt[1] = Nn - t;
+      } else {
+        // General K-way: branch (sel − base), clamped (matSelect uses
+        // the same clamped gather, so weights and gather stay aligned).
+        for (let i = 0; i < Nn; i++) {
+          let idx = (sel[i] | 0) - base;
+          if (idx < 0) idx = 0; else if (idx >= K) idx = K - 1;
+          cnt[idx]++;
+        }
+      }
+      const lw = new Array(K);
+      for (let k = 0; k < K; k++) {
+        const p = cnt[k] / Nn;
+        lw[k] = { kind: 'lit', value: p > 0 ? Math.log(p) : -Infinity };
+      }
+      node.logweights = lw;
+      delete node.weightsFrom;
+    }
+    return measureIR;
+  });
+}
+
 function matLogdensityof(d, ctx) {
   // Per spec §sec:posterior: broadcast logdensityof over prior atoms.
   // For each atom i of M, evaluate logp(obs | M_i). Produces a per-i
@@ -1309,11 +1399,15 @@ function matLogdensityof(d, ctx) {
   const isChain = !!(measureDeriv
     && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
 
-  const measureIR = orchestrator.expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
-  if (!measureIR) {
+  const measureIR0 = orchestrator.expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
+  if (!measureIR0) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
       + d.measureName + '" into a self-contained IR'));
   }
+  // Resolve any non-closed-form selector weights (engine-concepts §11
+  // MC-weight selector) from their materialised ensembles before
+  // density evaluation. No-op for closed-form / weight-free measures.
+  return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
   const valueRefs = [];
   const fixedRefs = [];
   orchestrator.collectSelfRefs(measureIR).forEach((n) => {
@@ -1393,6 +1487,7 @@ function matLogdensityof(d, ctx) {
       });
     });
   });
+  });
 }
 
 function matBroadcastLogdensity(d, ctx) {
@@ -1428,8 +1523,13 @@ function matBroadcastLogdensity(d, ctx) {
   const measureDeriv = ctx.derivations[d.measureName];
   const isChain = !!(measureDeriv
     && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
-  const measureIR = orchestrator.expandMeasureIR(
+  const measureIR0 = orchestrator.expandMeasureIR(
     d.measureName, ctx.derivations, undefined, ctx.bindings);
+  // Resolve non-closed-form selector weights (engine-concepts §11)
+  // from their materialised ensembles. The resulting literal weights
+  // are constants, so a runtime-weight select stays closed-form-
+  // batchable (it then takes the fast points-batched pass below).
+  return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
   let batchable = !!measureIR && !isChain;
   const fixedRefs = [];
   if (batchable) {
@@ -1484,6 +1584,7 @@ function matBroadcastLogdensity(d, ctx) {
   return chain.then(() => scalarMeasureN(out, {
     logWeights: null, logTotalmass: 0, n_eff: out.length,
   }));
+  });
 }
 
 // =====================================================================

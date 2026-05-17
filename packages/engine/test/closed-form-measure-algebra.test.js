@@ -464,6 +464,84 @@ xF = draw(ifelse(cF, A, B))
     `p=0 ⇒ branch B (μ=+5), got ${unweightedMean(F.samples)}`);
 });
 
+// ---- MC-weight ifelse: NON-closed-form selector condition ----------
+// engine-concepts §11. The condition `c = z > 0` (z ~ Normal) is a
+// {0,1} selector with NO closed-form P(true) — classifyIfelse can't
+// resolve a Bernoulli p. The mixture is still STRUCTURALLY exact; the
+// per-branch weight P(true) is estimated ONCE from the materialised
+// selector ensemble (the general materialiser runtime-weight
+// resolver) and substituted as a constant logweight. With z~N(0,1),
+// P(z>0)=0.5, so the density must match the closed-form symmetric
+// mixture to within the p̂ Monte-Carlo error (statistical, not exact).
+test('MC-weight ifelse: non-closed-form condition density ≈ estimated mixture', async () => {
+  const ctx = makeCtx(`
+z = draw(Normal(mu = 0.0, sigma = 1.0))
+c = z > 0.0
+A = Normal(mu = -3.0, sigma = 1.0)
+B = Normal(mu =  3.0, sigma = 1.0)
+M = ifelse(c, A, B)
+lp = logdensityof(M, 0.5)
+`);
+  const m = await ctx.getMeasure('lp');
+  // True P(z>0) = 0.5; analytic symmetric mixture density at x=0.5.
+  const expected = Math.log(
+    0.5 * Math.exp(normalLogpdf(0.5, -3, 1))
+    + 0.5 * Math.exp(normalLogpdf(0.5, 3, 1)));
+  // p̂ SE ≈ 1/(2√N) ≈ 0.0055 (N=8192); local d(logp)/dp ≈ −1.8 here,
+  // so 3σ on logp ≈ 0.03 — allow a comfortable 0.08 margin.
+  assert.ok(Number.isFinite(m.samples[0])
+    && Math.abs(m.samples[0] - expected) < 0.08,
+    `MC-weight ifelse logp: got ${m.samples[0]}, expected ≈ ${expected}`);
+});
+
+test('MC-weight ifelse: density ≈ closed-form Bernoulli(0.5) ifelse (same structure)', async () => {
+  // The non-closed-form-condition spelling and the closed-form
+  // Bernoulli spelling are the SAME mixture; only the weight's
+  // PROVENANCE differs (MC-estimated vs analytic). They must agree to
+  // within the estimator error — proves the structure is exact and
+  // only the weight is approximated.
+  const ctx = makeCtx(`
+z = draw(Normal(mu = 0.0, sigma = 1.0))
+cMC = z > 0.0
+cCF = draw(Bernoulli(p = 0.5))
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 4.0, sigma = 2.0)
+lpMC = logdensityof(ifelse(cMC, A, B), 1.7)
+lpCF = logdensityof(ifelse(cCF, A, B), 1.7)
+`);
+  const [MC, CF] = await Promise.all(
+    [ctx.getMeasure('lpMC'), ctx.getMeasure('lpCF')]);
+  assert.ok(Math.abs(MC.samples[0] - CF.samples[0]) < 0.05,
+    `MC-weight=${MC.samples[0]} vs closed-form=${CF.samples[0]} `
+    + '— same structure, weight only estimated');
+});
+
+test('MC-weight ifelse: sampling mixture mean / variance (closed-form)', async () => {
+  // Sampling never needed P(true) (matSelect gathers by the realised
+  // condition), so the generated mixture is exact regardless of the
+  // density-weight estimation. z~N(0,1) ⇒ symmetric 50/50 split of
+  // Normal(−3,1) and Normal(3,1): E[X]=0, Var[X]=0.5(1+9)·2/2=10.
+  const ctx = makeCtx(`
+z = draw(Normal(mu = 0.0, sigma = 1.0))
+c = z > 0.0
+A = Normal(mu = -3.0, sigma = 1.0)
+B = Normal(mu =  3.0, sigma = 1.0)
+x = draw(ifelse(c, A, B))
+`);
+  const xs = (await ctx.getMeasure('x')).samples;
+  const meanHat = unweightedMean(xs);
+  const varHat  = unweightedVar(xs);
+  let nA = 0;
+  for (let i = 0; i < xs.length; i++) if (xs[i] < 0) nA++;
+  const fracA = nA / xs.length;
+  assert.ok(Math.abs(meanHat - 0) < 0.15,
+    `mixture mean: got ${meanHat}, expected 0`);
+  assert.ok(Math.abs(varHat - 10) / 10 < 0.10,
+    `mixture variance: got ${varHat}, expected 10`);
+  assert.ok(Math.abs(fracA - 0.5) < 0.03,
+    `branch-A fraction: got ${fracA}, expected 0.5`);
+});
+
 // =====================================================================
 // normalized mixture (engine-concepts §11): the spec's canonical
 //   mix = normalize(superpose(weighted(w1, M1), weighted(w2, M2)))

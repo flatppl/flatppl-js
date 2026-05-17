@@ -919,18 +919,47 @@ function classifyIfelse(rhsIR, ast, bindings) {
   const aB = resolveBranch(ast.args[1], rhsIR.args[1]);
   const bB = resolveBranch(ast.args[2], rhsIR.args[2]);
   if (!aB || !bB) return null;
-  const pIR = resolveBernoulliP(rhsIR.args[0], bindings, new Set());
-  if (pIR == null) return null;
   const call = (op, args) => ({ kind: 'call', op, args });
   const lit1 = { kind: 'lit', value: 1 };
   // Realised selector for SAMPLING (matSelect): the condition binding
-  // — a {0,1} Bernoulli variate. Density only needs logweightIRs
-  // (selector marginalised); generation needs the per-atom realised
-  // condition. When the condition isn't a bare self-ref, selectorRef
-  // is null → density still works, sampling reports a clear error.
+  // — a {0,1} Bernoulli variate. Density only needs the per-branch
+  // log-weights (selector marginalised); generation needs the
+  // per-atom realised condition. When the condition isn't a bare
+  // self-ref, selectorRef is null → no materialisable selector.
   const cond = rhsIR.args[0];
   const selectorRef = (cond && cond.kind === 'ref' && cond.ns === 'self')
     ? cond.name : null;
+  const pIR = resolveBernoulliP(rhsIR.args[0], bindings, new Set());
+  if (pIR == null) {
+    // Non-closed-form condition (comparisons of continuous RVs,
+    // arbitrary boolean expressions, …). The mixture is still
+    // STRUCTURALLY exact — only the selector probability P(true)
+    // lacks a closed form. If the condition is a materialisable
+    // {0,1} self-ref we estimate P(true) ONCE from its sampled
+    // ensemble at materialisation time (engine-concepts §11
+    // MC-weight selector): density then uses the constant logweights
+    // [log p̂, log(1−p̂)], the exact discrete-mixture form with an
+    // estimated weight rather than an estimated structure. Sampling
+    // never needed P(true) at all (matSelect gathers by the realised
+    // condition). Without a materialisable selector we can do
+    // neither → decline, so value-valued ifelse and opaque
+    // conditions stay on the evaluator path untouched.
+    if (selectorRef == null) return null;
+    return {
+      kind: 'select',
+      branches: [aB, bB],
+      // Weights deferred to materialisation: p̂_0 = P(cond TRUE) =
+      // empirical frequency of the {0,1} selector being truthy
+      // (branch 0 = the TRUE branch, matching matSelect's sel?0:1
+      // gather), p̂_1 = 1 − p̂_0. The materialiser's runtime-weight
+      // resolver fills the select node's logweights from this spec.
+      logweightIRs: null,
+      runtimeWeights: { ref: selectorRef, K: 2, base: 0 },
+      selectorRef,
+      marginalize: true,
+      mode: 'mixture',
+    };
+  }
   return {
     kind: 'select',
     branches: [aB, bB],
@@ -1711,6 +1740,12 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         return {
           kind: 'call', op: 'select', branches,
           logweights: d.logweightIRs || null,
+          // Unresolved runtime-weight spec (non-closed-form selector,
+          // engine-concepts §11). expandMeasureIR is pure — it cannot
+          // reduce the selector ensemble — so it carries the spec
+          // through for the materialiser's runtime-weight resolver to
+          // turn into literal logweights before density evaluation.
+          weightsFrom: d.runtimeWeights || null,
         };
       }
       case 'jointchain': {
