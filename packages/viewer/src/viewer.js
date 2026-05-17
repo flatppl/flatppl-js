@@ -517,6 +517,17 @@
       // of a known distribution with literal params).
       var SAMPLER_WORKER_URL = CONFIG.samplerWorkerUrl || '';
 
+      // Per-mount state container (decomposition Phase 2). Every
+      // captured mutable/shared identifier migrates onto `ctx` so the
+      // nested functions stop relying on lexical capture and can be
+      // hoisted out of mount() (Phase 3) and split into ES modules
+      // (Phase 4). `ctx` is declared here at mount top, so it shares
+      // the exact lexical-capture scope of the vars it replaces
+      // (including async/RAF/event-listener/returned closures) — the
+      // `X → ctx.X` rewrite is therefore behaviour-neutral. Fields are
+      // added group-by-group (G1–G8, see the module map above).
+      var ctx = {};
+
     // ---- Palette ----
     //
     // Single source of truth for every node / edge / bubble colour the
@@ -1033,11 +1044,12 @@
     // can multiplex multiple in-flight requests cleanly.
     // ---------------------------------------------------------------
 
-    var samplerWorker = null;
-    var samplerWorkerPromise = null;   // Promise<Worker> while spawn is in-flight
-    var samplerWorkerError = null;     // last spawn error, surfaced in the UI
-    var samplerReqId = 0;
-    var pendingRequests = new Map(); // id → { resolve, reject }
+    // G3 worker state (decomposition Phase 2 — on ctx).
+    ctx.samplerWorker = null;
+    ctx.samplerWorkerPromise = null;   // Promise<Worker> while spawn is in-flight
+    ctx.samplerWorkerError = null;     // last spawn error, surfaced in the UI
+    ctx.samplerReqId = 0;
+    ctx.pendingRequests = new Map(); // id → { resolve, reject }
     var plotEchart = null;
 
     // ---------------------------------------------------------------
@@ -1482,10 +1494,10 @@
      * also documented in the official VS Code webview samples.
      */
     function ensureSamplerWorker() {
-      if (samplerWorker) return Promise.resolve(samplerWorker);
-      if (samplerWorkerPromise) return samplerWorkerPromise;
+      if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
+      if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
-      samplerWorkerPromise = (async function() {
+      ctx.samplerWorkerPromise = (async function() {
         // Try direct construction first — cheapest path on hosts where
         // it works. Fall back to blob: on any failure (security error,
         // cross-origin block, etc.).
@@ -1509,29 +1521,29 @@
           setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
         }
         wireWorker(w);
-        samplerWorker = w;
+        ctx.samplerWorker = w;
         // Initialize with a fixed seed for deterministic output. Future:
         // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
         sendWorkerNow(w, { type: 'init', seed: 1 });
         return w;
       })();
 
-      samplerWorkerPromise.catch(function(err) {
-        samplerWorkerError = err;
-        samplerWorkerPromise = null;
+      ctx.samplerWorkerPromise.catch(function(err) {
+        ctx.samplerWorkerError = err;
+        ctx.samplerWorkerPromise = null;
         console.error('FlatPPL: sampler worker unavailable:', err);
       });
 
-      return samplerWorkerPromise;
+      return ctx.samplerWorkerPromise;
     }
 
     function wireWorker(w) {
       w.addEventListener('message', function(ev) {
         var reply = ev.data;
         if (!reply || reply.id == null) return;
-        var p = pendingRequests.get(reply.id);
+        var p = ctx.pendingRequests.get(reply.id);
         if (!p) return;
-        pendingRequests.delete(reply.id);
+        ctx.pendingRequests.delete(reply.id);
         if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
         else p.resolve(reply);
       });
@@ -1541,12 +1553,12 @@
         // may be dead. Reject all and reset so a future request can retry
         // the spawn.
         console.error('FlatPPL sampler worker error:', e.message || e);
-        for (var entry of pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
-        pendingRequests.clear();
+        for (var entry of ctx.pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
+        ctx.pendingRequests.clear();
         try { w.terminate(); } catch (_) {}
-        if (samplerWorker === w) {
-          samplerWorker = null;
-          samplerWorkerPromise = null;
+        if (ctx.samplerWorker === w) {
+          ctx.samplerWorker = null;
+          ctx.samplerWorkerPromise = null;
         }
       });
     }
@@ -1555,16 +1567,16 @@
     // about the reply). Distinct from sendWorker so we don't allocate a
     // pending-request entry for messages whose reply is just an 'ok'.
     function sendWorkerNow(w, msg) {
-      var id = ++samplerReqId;
+      var id = ++ctx.samplerReqId;
       w.postMessage(Object.assign({ id: id }, msg));
     }
 
     function sendWorker(msg) {
       return ensureSamplerWorker().then(function(w) {
-        var id = ++samplerReqId;
+        var id = ++ctx.samplerReqId;
         var wrapped = Object.assign({ id: id }, msg);
         return new Promise(function(resolve, reject) {
-          pendingRequests.set(id, { resolve: resolve, reject: reject });
+          ctx.pendingRequests.set(id, { resolve: resolve, reject: reject });
           w.postMessage(wrapped);
         });
       });
@@ -2059,13 +2071,13 @@
      * keeping a "warm" worker around.
      */
     function cancelAllSampling() {
-      if (samplerWorker) {
-        try { samplerWorker.terminate(); } catch (_) {}
-        samplerWorker = null;
-        samplerWorkerPromise = null;
+      if (ctx.samplerWorker) {
+        try { ctx.samplerWorker.terminate(); } catch (_) {}
+        ctx.samplerWorker = null;
+        ctx.samplerWorkerPromise = null;
       }
-      var entries = pendingRequests.values();
-      pendingRequests = new Map();
+      var entries = ctx.pendingRequests.values();
+      ctx.pendingRequests = new Map();
       for (var entry of entries) {
         try { entry.reject(new Error('cancelled')); } catch (_) {}
       }
