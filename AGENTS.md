@@ -206,9 +206,12 @@ items below are larger structural work or open feature gaps.
   silently — most multivariate distributions, the array/table-generation
   suite, linear algebra, several measure-algebra ops. If you add a new
   distribution or built-in, also add its signature in `types.js`.
-- **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and
-  5 683 lines). Be aware before opening them; both have natural decomposition
-  seams documented in `ARCHITECTURE.md`.
+- **`orchestrator.js` was split** into five facade modules (`ir-shared`,
+  `lift`, `derivations`, `signatures`, `profile-plan`); it is now ~460
+  lines (core + facades). See the "Module map" in `ARCHITECTURE.md` for
+  what lives where and the one-way dependency order. **`viewer/src/viewer.js`
+  is still oversized** (~5 683 lines) — be aware before opening it; it has
+  natural decomposition seams documented in `ARCHITECTURE.md`.
 - **The planning document `flatppl-dev/TODO-flatppl-js.md`** (in the
   sibling `flatppl-dev` repo, resolved the same way as `flatppl-design`)
   tracks the remaining work toward complete spec coverage. `flatppl-dev`
