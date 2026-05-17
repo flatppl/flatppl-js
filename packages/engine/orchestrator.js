@@ -3542,6 +3542,77 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         }
         return { kind: 'call', op: 'joint', args: argsIR };
       }
+      case 'jointchain': {
+        // First-class jointchain/kchain (consume/rest consolidation
+        // step 2c). Canonicalise the EXPLICIT step structure into the
+        // equivalent self-contained measure IR the proven env-threaded
+        // walkJoint already scores — the structural, robust analogue
+        // of what inlineChainOps did fragilely by surface-kwarg-name
+        // matching. 2-step scope (matches matJointchain 2b); N-ary /
+        // kernel-first / non-ref base return null (a clear "cannot
+        // expand" — the 2b-ext follow-up; flag off in production).
+        const steps = d.steps || [];
+        if (steps.length !== 2) return null;
+        const base = steps[0], kstep = steps[1];
+        if (base.kernel || base.ref == null) return null;
+        const baseIR = expandMeasureIR(base.ref, derivations, next, bindings);
+        if (!baseIR) return null;
+        // Kernel: inline functionof IR, or a kernel binding whose IR
+        // is a functionof (mirrors materialiser.resolveFnBody).
+        let fnIR = kstep.kernelIR;
+        if (!fnIR && kstep.ref != null) {
+          const kb = bindings && bindings.get(kstep.ref);
+          if (kb && kb.ir && kb.ir.kind === 'call'
+              && kb.ir.op === 'functionof') fnIR = kb.ir;
+        }
+        const kparams = (fnIR && fnIR.params) || [];
+        if (!fnIR || kparams.length !== 1 || !fnIR.body) return null;
+        // Rewire the kernel's single param to the prior variate: the
+        // base binding name. For jointchain this resolves through
+        // walkJoint's `source` env-threading once the base field is
+        // consumed; for kchain matLogdensityof resolves it per-atom
+        // via refArrays (getMeasure(base.ref)) and the chain MC
+        // marginal reduction (isChain) integrates the prior out.
+        const priorName = base.ref;
+        const rewire = (node) => {
+          if (node == null || typeof node !== 'object') return node;
+          if (Array.isArray(node)) return node.map(rewire);
+          if (node.kind === 'ref'
+              && (node.ns === '%local' || node.ns === 'self')
+              && node.name === kparams[0]) {
+            return { kind: 'ref', ns: 'self', name: priorName, loc: node.loc };
+          }
+          const out = {};
+          for (const k in node) out[k] = rewire(node[k]);
+          return out;
+        };
+        const kBody = rewire(fnIR.body);
+        if (d.marginalize) {
+          // kchain: only the last step's measure; the prior is
+          // marginalized by matLogdensityof's MC estimator (isChain).
+          // Reuses the exact, tested legacy chainOrigin path.
+          return kBody;
+        }
+        // jointchain joint density = p(a)·p(b|a). The dependency
+        // requires env-threading the consumed `a` into the kernel
+        // field — exactly what walkJoint's `fields` branch + `source`
+        // overlay does (the proven legacy record-jointchain path).
+        // That branch consumes by field NAME ⇒ needs a record-shaped
+        // observation, so only the LABELLED form is supported here.
+        // Positional (tuple-observed) jointchain density needs a
+        // dependent-positional walker variant — a clear deferral
+        // (return null ⇒ matLogdensityof rejects cleanly; sampling via
+        // matJointchain still works; flag off in production). Tracked
+        // as 2b-ext.
+        if (!d.labels) return null;
+        return {
+          kind: 'call', op: 'joint',
+          fields: [
+            { name: d.labels[0], value: baseIR, source: priorName },
+            { name: d.labels[1], value: kBody },
+          ],
+        };
+      }
       case 'weighted': {
         const inner = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;

@@ -1232,7 +1232,13 @@ function matLogdensityof(d, ctx) {
   // collapses to 1 — there's only one estimator here, even though
   // it's built from N prior samples.
   const measureDeriv = ctx.derivations[d.measureName];
-  const isChain = !!(measureDeriv && measureDeriv.chainOrigin);
+  // chainOrigin: legacy inlineChainOps kchain tag. The first-class
+  // path expresses the same MC marginal as kind:'jointchain' with
+  // marginalize:true (kchain) — expandMeasureIR returns just the last
+  // step's measure (prior var as a per-atom ref), so the SAME
+  // logsumexp−logN reduction marginalizes the prior out.
+  const isChain = !!(measureDeriv && (measureDeriv.chainOrigin
+    || (measureDeriv.kind === 'jointchain' && measureDeriv.marginalize)));
 
   const measureIR = orchestrator.expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
   if (!measureIR) {
