@@ -38,6 +38,44 @@
   // Standalone (online) embedding will land in 2c+: the same mount
   // entry point, no host adapter required.
   // =====================================================================
+  //
+  // ── DECOMPOSITION MODULE MAP (in progress) ───────────────────────────
+  // This file is being decomposed from one ~7k-line IIFE into layered
+  // ES modules (engine-concepts §10; mirrors the orchestrator.js facade
+  // split). The seams below are one-way (bottom → top); the ONLY
+  // structural obstacle is that almost everything from `mount` onward is
+  // a closure capturing per-mount state by lexical scope. The phased
+  // plan: (1) document seams [here]; (2) thread an explicit per-mount
+  // `ctx` object so functions stop relying on lexical capture
+  // (behaviour-neutral); (3) hoist the parameterized groups out of
+  // `mount` to IIFE scope; (4) split into ES modules + bundle via
+  // esbuild (IIFE, globalName FlatPPLViewer) in BOTH host build
+  // pipelines, preserving the global-merge + DOMContentLoaded auto-mount
+  // + single-acquireVsCodeApi contract.
+  //
+  // Layers (leaf → top), with their de-facto module boundaries:
+  //   L0  static templates           VIEWER_CSS, VIEWER_BODY_HTML
+  //   L1  DOM/host shim              ensureCssInjected, getVscodeApi,
+  //                                  defaultVscodeHost, auto-mount
+  //         (L0+L1 are capture-free — already module-shaped)
+  //   --- everything below is currently nested inside mount() ---
+  //   L2  palette/format (leaf)      PALETTE/TYPE_STYLE/resolveNodeColor,
+  //                                  esc, format* scalar/array/IR/value
+  //   L3  engine facade              fixedValueToMeasure, getMeasure,
+  //                                  collectRefArrays, resolveMeasureAlias
+  //   L4  state cores                worker (ensure/wire/sendWorker),
+  //                                  derivations (rebuildDerivations),
+  //                                  override/domain stores, plot-frame
+  //   L5  renderers                  record/sample-stats, density/corner,
+  //                                  samples/array/empirical, profile,
+  //                                  buildPlotPlan
+  //   L6  DAG                        initCy, renderDAG,
+  //                                  drawReificationLassos, focusNode,
+  //                                  enterModuleView
+  //   L7  orchestration (top)        updatePlotForBinding,
+  //                                  applySourceUpdate, message listener,
+  //                                  resize observers, mount prologue
+  // ─────────────────────────────────────────────────────────────────────
   (function(global) {
     var FlatPPLViewer = (global.FlatPPLViewer = global.FlatPPLViewer || {});
 
