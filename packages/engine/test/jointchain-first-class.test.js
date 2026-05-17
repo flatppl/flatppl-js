@@ -72,16 +72,22 @@ const KDEF =
   'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
   'K2 = functionof(Normal(mu = y, sigma = 1.0), y = y)\n';
 
-test('flag OFF (default): jointchain still goes through legacy rewrite', () => {
-  // No kind:'jointchain' is produced; inlineChainOps rewrites to a
-  // record/tuple/joint shape exactly as before. (Zero-behaviour-change
-  // guarantee for step 1.)
+test('first-class jointchain is the DEFAULT path (flag flipped, step 2d)', () => {
+  // Post-consolidation: the first-class kind:'jointchain' classifier
+  // is authoritative in production WITHOUT any flag toggle. (Through
+  // steps 1–2c this asserted the opposite — the dual-path
+  // zero-behaviour-change guarantee while inlineChainOps was still the
+  // default. The flag flips at 2d; it is removed entirely with
+  // inlineChainOps at step 4.)
+  assert.equal(JOINTCHAIN_STATE.firstClass, true,
+    'first-class jointchain is on by default');
   const { derivations } = buildDerivations(
     processSource(KDEF + 'jc = jointchain(a = M, b = K)\n').bindings);
   const d = derivations['jc'];
-  assert.ok(!d || d.kind !== 'jointchain',
-    'with the flag off, no first-class jointchain kind may appear');
-  assert.equal(JOINTCHAIN_STATE.firstClass, false, 'flag stays off by default');
+  assert.ok(d && d.kind === 'jointchain',
+    'jointchain classifies first-class by default');
+  assert.equal(d.marginalize, false);
+  assert.deepEqual(d.labels, ['a', 'b']);
 });
 
 test('flag ON: positional 2-arg jointchain → explicit step structure', () => {

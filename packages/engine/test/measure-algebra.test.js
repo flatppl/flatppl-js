@@ -36,6 +36,23 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator, empirical } = require('..');
 const { createWorkerHandler } = require('../worker');
 
+// Legacy-path guard. A few tests below exercise the inlineChainOps
+// rewrite specifically (kernel-application closure walk; kchain over an
+// iid-valued kernel-body field — a shape the first-class jointchain
+// consolidation does not yet cover). They use the local sync go()
+// materialise() helper which only knows the legacy kinds. Pin them to
+// the legacy path (inlineChainOps still present until step 4) so they
+// keep guarding it; they are deleted together with inlineChainOps and
+// the sync helper at step 4. The behavioural contract (kernel
+// application correctness, kchain marginalisation) is covered by the
+// structural jointchain-first-class suite for the supported shapes.
+const _JC_STATE = orchestrator._internal.JOINTCHAIN_STATE;
+function withLegacyChain(fn) {
+  const prev = _JC_STATE.firstClass;
+  _JC_STATE.firstClass = false;
+  try { return fn(); } finally { _JC_STATE.firstClass = prev; }
+}
+
 const SAMPLE_COUNT = 2048;
 
 // Per-binding seed: same FNV-1a hash mix as visualPanel.nameSeed,
@@ -863,8 +880,9 @@ test('iid: marginal distribution at each index matches the inner measure', () =>
   }
 });
 
-test('kernel application: closure walk produces substituted copies of ancestors', () => {
-  // forward_kernel = functionof(obs_dist, theta1=theta1, theta2=theta2)
+test('kernel application: closure walk produces substituted copies of ancestors', () => withLegacyChain(() => {
+  // LEGACY-PATH test (deleted with inlineChainOps + the sync go()
+  // helper at step 4). forward_kernel = functionof(obs_dist, ...)
   // applied at the prior's theta values yields a record measure
   // structurally identical to obs_dist (with renamed synthesized
   // anons for closure ancestors).
@@ -889,10 +907,11 @@ test('kernel application: closure walk produces substituted copies of ancestors'
   assert.equal(m.fields.obs.shape, 'array');
   assert.deepEqual(m.fields.obs.dims, [10]);
   assert.equal(m.fields.obs.samples.length, 640);
-});
+}));
 
-test('chain: marginalizes prior, keeps only kernel-body fields', () => {
-  // chain(P, K) is jointchain minus the prior fields.
+test('chain: marginalizes prior, keeps only kernel-body fields', () => withLegacyChain(() => {
+  // LEGACY-PATH test (deleted with inlineChainOps at step 4).
+  // kchain(P, K) is jointchain minus the prior fields.
   const src = `
     theta1 = draw(Normal(mu = 0, sigma = 1))
     theta2 = draw(Exponential(rate = 1))
@@ -908,7 +927,7 @@ test('chain: marginalizes prior, keeps only kernel-body fields', () => {
   assert.equal(m.shape, 'record');
   assert.deepEqual(Object.keys(m.fields), ['obs']);
   assert.equal(m.fields.obs.shape, 'array');
-});
+}));
 
 test('iid: nested inside a joint record produces a record with an array field', () => {
   // The `obs_dist = joint(obs = iid(Normal(...), 10))` pattern from
