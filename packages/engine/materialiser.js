@@ -1383,6 +1383,17 @@ function matJointchain(name, d, ctx) {
   // jointchain ✓; 2-step kchain MC ✓; N-ary kchain + positional
   // jointchain density are clean deferrals (null ⇒ reject; sampling
   // unaffected).
+  // Structural sampler mirroring the density side (expandMeasureIR is
+  // the "closure walk"): materialise the base (scalar ⇒ one variate;
+  // record ⇒ its fields); for each kernel step expand the body
+  // (following body→ref via expandMeasureIR into the self-contained
+  // measure IR where the boundary params surface as leaf refs), then
+  // sample each LEAF field with refArrays binding params to prior
+  // variates — NAMED params auto-splat to like-named prior fields
+  // (spec §04), a lone HOLE param rewires to the prior cat (spec §06
+  // `c~K3([a,b])`). jointchain ⇒ record/tuple of all variates; kchain
+  // ⇒ only the last step's variates (prior marginalised; density MC
+  // via matLogdensityof isChain).
   const steps = (d && d.steps) || [];
   if (steps.length < 2) {
     return Promise.reject(new Error('jointchain: need at least 2 steps'));
@@ -1394,7 +1405,6 @@ function matJointchain(name, d, ctx) {
       + 'measure (spec §06 kernel-first chain) — not materialisable; '
       + 'disintegrate handles it structurally (step 3).'));
   }
-
   const baseP = base.ref != null
     ? ctx.getMeasure(base.ref)
     : ctx.sendWorker({
@@ -1404,107 +1414,198 @@ function matJointchain(name, d, ctx) {
         { logTotalmass: 0, n_eff: ctx.sampleCount }));
 
   return Promise.resolve(baseP).then((M0) => {
-    if (!M0 || !M0.samples) {
+    // priorVars: ordered [{ name, m }] of every scalar variate so far;
+    // byName for auto-splat refArray binding. baseRefName lets a hole
+    // param bind to the single base prior (scalar base).
+    const priorVars = [];
+    if (M0 && M0.samples) {
+      priorVars.push({ name: 's0', m: M0 });
+    } else if (M0 && M0.fields) {
+      for (const k of Object.keys(M0.fields)) {
+        priorVars.push({ name: k, m: M0.fields[k] });
+      }
+    } else {
       return Promise.reject(new Error(
-        'jointchain: scalar-atom base measure required (record/tuple/iid '
-        + 'base is a follow-up)'));
+        'jointchain: base measure must be scalar- or record-shaped '
+        + '(tuple/iid base is a follow-up)'));
     }
-    const N = M0.samples.length;
-    const fnInfoOf = (kstep) => {
-      if (kstep.kernelIR) {
-        const params = kstep.kernelIR.params || [];
-        if (params.length !== 1 || !kstep.kernelIR.body) return null;
-        return { body: kstep.kernelIR.body, paramName: params[0] };
-      }
-      return resolveFnBody(ctx.bindings && ctx.bindings.get(kstep.ref),
-        ctx.bindings);
-    };
-    // Left-associative recursion realised iteratively (spec §06:
-    // jointchain(M,K1,K2) ≡ jointchain(jointchain(M,K1),K2); the i-th
-    // kernel takes the cat of ALL prior variates as its SINGLE
-    // argument — `b ~ K2(a)` for one prior, `c ~ K3([a,b])` for ≥2).
-    //
-    // Realised by substituting the kernel body's single param ref with
-    //   1 prior  → ref(prior_0)                       (scalar `a`)
-    //   ≥2 priors→ vector(ref p0, ref p1, …)          (the cat `[a,b]`)
-    // and binding each prior variate as a SCALAR refArray. This reuses
-    // the vector/get evaluator (no worker vector-per-atom extension)
-    // and is purely structural — never surface-kwarg-name matching.
-    const PRIOR = (j) => '__jc$' + j;            // synthetic prior ref
-    const rewireParam = (node, paramName, k) => {
-      if (node == null || typeof node !== 'object') return node;
-      if (Array.isArray(node)) {
-        return node.map((x) => rewireParam(x, paramName, k));
-      }
-      if (node.kind === 'ref'
-          && (node.ns === '%local' || node.ns === 'self')
-          && node.name === paramName) {
-        if (k === 1) return { kind: 'ref', ns: 'self', name: PRIOR(0) };
-        const args = [];
-        for (let j = 0; j < k; j++) {
-          args.push({ kind: 'ref', ns: 'self', name: PRIOR(j) });
+    const N = priorVars[0].m.samples.length;
+    const baseRefName = base.ref;
+
+    // Resolve a kernel step → { params, leaves:[{ name, ir }] }. Body
+    // is expanded through refs (the closure walk); a record/joint body
+    // contributes one leaf per field, a leaf-dist body one unnamed
+    // leaf. One nesting level (the obs_dist=joint(y=Normal) shape);
+    // deeper composites are a clean follow-up.
+    const kernelLeaves = (kstep, fallbackName) => {
+      let f = kstep.kernelIR;
+      if (!f && kstep.ref != null) {
+        const kb = ctx.bindings && ctx.bindings.get(kstep.ref);
+        if (kb && kb.ir && kb.ir.kind === 'call'
+            && kb.ir.op === 'functionof') f = kb.ir;
+        else {
+          const fi = resolveFnBody(kb, ctx.bindings);
+          if (fi) f = { params: [fi.paramName], body: fi.body };
         }
-        return { kind: 'call', op: 'vector', args };
       }
-      const out = {};
-      for (const key in node) out[key] = rewireParam(node[key], paramName, k);
-      return out;
+      if (!f || !f.body || !Array.isArray(f.params)
+          || f.params.length === 0) return null;
+      let body = f.body;
+      if (body.kind === 'ref' && body.ns === 'self') {
+        body = orchestrator.expandMeasureIR(
+          body.name, ctx.derivations, undefined, ctx.bindings);
+        if (!body) return null;
+      }
+      let leaves;
+      if (body.kind === 'call'
+          && (body.op === 'joint' || body.op === 'record')
+          && Array.isArray(body.fields)) {
+        leaves = body.fields.map((fl) => ({ name: fl.name, ir: fl.value }));
+      } else {
+        leaves = [{ name: fallbackName, ir: body }];
+      }
+      return { params: f.params, leaves };
     };
 
-    let chainP = Promise.resolve([M0]);
+    // Bind a leaf-dist IR's kernel params to prior variates and return
+    // { ir, refArrays }. NAMED param matching a prior var ⇒ refArray
+    // by that name (auto-splat). A lone HOLE param (single, unmatched)
+    // ⇒ rewire to the prior cat: ref(p0) for one prior, vector(p0,…)
+    // for ≥2; bind each via a synthetic scalar refArray.
+    const PRIOR = (j) => '__jc$' + j;
+    const bindLeaf = (leafIR, params) => {
+      const refArrays = {};
+      const named = params.filter((p) =>
+        priorVars.some((v) => v.name === p));
+      const holes = params.filter((p) => named.indexOf(p) === -1);
+      for (const p of named) {
+        const v = priorVars.find((q) => q.name === p);
+        refArrays[p] = v.m.samples;
+      }
+      let ir = leafIR;
+      if (holes.length > 0) {
+        if (params.length !== 1) return null;     // multi-param + hole
+        // Hole binds to the whole prior cat (all variates so far; for
+        // a scalar base that's the base itself).
+        const catVars = priorVars.length > 0
+          ? priorVars
+          : [{ name: baseRefName, m: M0 }];
+        const k = catVars.length;
+        for (let j = 0; j < k; j++) refArrays[PRIOR(j)] = catVars[j].m.samples;
+        const param = holes[0];
+        const sub = (node) => {
+          if (node == null || typeof node !== 'object') return node;
+          if (Array.isArray(node)) return node.map(sub);
+          if (node.kind === 'ref'
+              && (node.ns === '%local' || node.ns === 'self')
+              && node.name === param) {
+            if (k === 1) {
+              return { kind: 'ref', ns: 'self', name: PRIOR(0) };
+            }
+            return { kind: 'call', op: 'vector',
+              args: catVars.map((_, j) =>
+                ({ kind: 'ref', ns: 'self', name: PRIOR(j) })) };
+          }
+          const out = {};
+          for (const key in node) out[key] = sub(node[key]);
+          return out;
+        };
+        ir = sub(leafIR);
+      }
+      return { ir, refArrays };
+    };
+
+    // Fold the kernel steps left-associatively. Each step appends its
+    // produced variate(s) to `produced` (and to priorVars so later
+    // steps can splat them).
+    let chainP = Promise.resolve([]);
     for (let i = 1; i < steps.length; i++) {
       const kstep = steps[i];
-      chainP = chainP.then((priorList) => {
-        const fnInfo = fnInfoOf(kstep);
-        if (!fnInfo) {
+      chainP = chainP.then((produced) => {
+        const ke = kernelLeaves(kstep, 's' + i);
+        if (!ke) {
           return Promise.reject(new Error(
             `jointchain: step ${i} kernel `
             + `${kstep.ref ? `'${kstep.ref}' ` : '(inline) '}`
-            + 'has no single-param callable body'));
+            + 'has no resolvable functionof body'));
         }
-        const k = priorList.length;
-        const body = rewireParam(fnInfo.body, fnInfo.paramName, k);
-        const refArrays = {};
-        for (let j = 0; j < k; j++) {
-          refArrays[PRIOR(j)] = priorList[j].samples;
-        }
-        return ctx.sendWorker({
-          type: 'sampleN', ir: body, count: N, refArrays: refArrays,
-          seed: nameSeed(name + ':jc' + i, ctx.rootSeed),
-        }).then((reply) => {
-          const Mi = measureFromReply(reply, N, {
-            logWeights: M0.logWeights, logTotalmass: 0, n_eff: M0.n_eff,
+        let p = Promise.resolve(produced);
+        for (let li = 0; li < ke.leaves.length; li++) {
+          const leaf = ke.leaves[li];
+          p = p.then((acc) => {
+            const bound = bindLeaf(leaf.ir, ke.params);
+            if (!bound) {
+              return Promise.reject(new Error(
+                `jointchain: step ${i} multi-param kernel with an `
+                + 'unmatched param (not a prior field) is unsupported'));
+            }
+            return ctx.sendWorker({
+              type: 'sampleN', ir: bound.ir, count: N,
+              refArrays: bound.refArrays,
+              seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootSeed),
+            }).then((reply) => {
+              const Mi = measureFromReply(reply, N, {
+                logWeights: priorVars[0].m.logWeights,
+                logTotalmass: 0, n_eff: priorVars[0].m.n_eff,
+              });
+              if (!Mi.samples) {
+                return Promise.reject(new Error(
+                  `jointchain: step ${i} kernel leaf produced a `
+                  + 'non-scalar variate (follow-up)'));
+              }
+              const vn = leaf.name != null ? leaf.name : ('s' + i);
+              priorVars.push({ name: vn, m: Mi });
+              return acc.concat([{ name: vn, m: Mi }]);
+            });
           });
-          if (!Mi.samples) {
-            return Promise.reject(new Error(
-              `jointchain: step ${i} kernel produced a non-scalar variate `
-              + '(vector/record kernel output is a follow-up)'));
-          }
-          return priorList.concat([Mi]);
-        });
+        }
+        return p;
       });
     }
 
-    return chainP.then((variates) => {
-      // kchain: the marginal law of the last variate. The forward
-      // samples ARE draws from the marginal; the density MC integral
-      // over the intermediates is handled by matLogdensityof (isChain).
-      if (d.marginalize) return variates[variates.length - 1];
-      // jointchain: retain the cat of all step variates.
-      const lw = empirical.propagateLogWeights(variates);
-      let nEff = N;
-      for (const v of variates) {
-        if (v.n_eff != null) nEff = Math.min(nEff, v.n_eff);
+    return chainP.then((produced) => {
+      // kchain: only the last step's produced variate(s); prior
+      // marginalised (density MC handled by matLogdensityof isChain).
+      // jointchain: all variates (base + every produced).
+      const lastStepCount = (() => {
+        const ke = kernelLeaves(steps[steps.length - 1], 's');
+        return ke ? ke.leaves.length : 1;
+      })();
+      let outPairs;
+      if (d.marginalize) {
+        outPairs = produced.slice(produced.length - lastStepCount);
+      } else {
+        const basePairs = (M0 && M0.fields)
+          ? Object.keys(M0.fields).map((k) => ({ name: k, m: M0.fields[k] }))
+          : [{ name: (d.labels && d.labels[0]) || 's0', m: M0 }];
+        outPairs = basePairs.concat(produced);
       }
-      if (d.labels) {
+      const subs = outPairs.map((x) => x.m);
+      const lw = empirical.propagateLogWeights(subs);
+      let nEff = N;
+      for (const s of subs) {
+        if (s.n_eff != null) nEff = Math.min(nEff, s.n_eff);
+      }
+      // Single scalar variate (e.g. scalar-base kchain) ⇒ a scalar
+      // measure; multiple / named ⇒ a record; positional unlabelled
+      // all-scalar jointchain ⇒ a tuple.
+      if (outPairs.length === 1) {
+        return Object.assign({}, outPairs[0].m,
+          { logTotalmass: 0, n_eff: nEff });
+      }
+      const named = !!d.labels || (M0 && M0.fields)
+        || outPairs.some((x) => !/^s\d+$/.test(x.name));
+      if (named) {
         const fields = {};
-        for (let i = 0; i < variates.length; i++) {
-          fields[d.labels[i]] = variates[i];
+        for (let i = 0; i < outPairs.length; i++) {
+          const nm = (d.labels && !d.marginalize && d.labels[i] != null)
+            ? d.labels[i] : outPairs[i].name;
+          fields[nm] = outPairs[i].m;
         }
         return Object.assign(empirical.recordMeasure(fields, lw),
           { logTotalmass: 0, n_eff: nEff });
       }
-      return Object.assign(empirical.tupleMeasure(variates, lw),
+      return Object.assign(empirical.tupleMeasure(subs, lw),
         { logTotalmass: 0, n_eff: nEff });
     });
   });
