@@ -768,6 +768,72 @@ function classifySuperpose(rhsIR, ast, bindings) {
   return { kind: 'superpose', fromNames };
 }
 
+// Resolve a condition IR to a Bernoulli success-probability value-IR
+// (the closed-form selector weight: P(true)=p, P(false)=1−p).
+// Follows self-refs / draw / lawof down to a `Bernoulli(p)` call and
+// returns its `p` value-IR. Returns null when P(true) isn't closed-
+// form (comparisons of continuous RVs, arbitrary boolean expressions,
+// …) — classifyIfelse then declines, leaving the MC-estimated-weight
+// fallback as a documented follow-up (engine-concepts §11).
+function resolveBernoulliP(ir, bindings, seen) {
+  if (!ir || seen.size > 64) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (seen.has(ir.name)) return null;
+    seen.add(ir.name);
+    const b = bindings.get(ir.name);
+    if (!b || !b.ir) return null;
+    return resolveBernoulliP(b.ir, bindings, seen);
+  }
+  if (ir.kind === 'call') {
+    if ((ir.op === 'draw' || ir.op === 'lawof')
+        && Array.isArray(ir.args) && ir.args.length === 1) {
+      return resolveBernoulliP(ir.args[0], bindings, seen);
+    }
+    if (ir.op === 'Bernoulli') {
+      if (ir.kwargs && ir.kwargs.p) return ir.kwargs.p;
+      if (Array.isArray(ir.args) && ir.args.length === 1) return ir.args[0];
+    }
+  }
+  return null;
+}
+
+// ifelse(cond, a, b) over MEASURES — the 2-branch discrete-selector
+// mixture (engine-concepts §11). Classifies to the shared `select`
+// kind: branch a is taken when cond is true (prob p), b when false
+// (prob 1−p), so the marginal (selector-anonymous) density is the
+// exact mixture logsumexp([log p + logp_a, log(1−p) + logp_b]).
+//
+// Scope (first pass): branches must be NAMED measure bindings (the
+// canonical `a = Normal(…); b = Normal(…); m = ifelse(c, a, b)`
+// form) and the condition must resolve to a Bernoulli probability
+// (closed-form weight). Inline-measure branches and non-closed-form
+// conditions are documented deferrals; classifyIfelse returns null
+// for them, so value-valued ifelse stays on the evaluator path
+// untouched.
+function classifyIfelse(rhsIR, ast, bindings) {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 3) return null;
+  if (!ast || !Array.isArray(ast.args) || ast.args.length !== 3) return null;
+  const aName = resolveMeasureBaseName(ast.args[1], bindings);
+  const bName = resolveMeasureBaseName(ast.args[2], bindings);
+  if (aName == null || bName == null) return null;
+  const pIR = resolveBernoulliP(rhsIR.args[0], bindings, new Set());
+  if (pIR == null) return null;
+  const call = (op, args) => ({ kind: 'call', op, args });
+  const lit1 = { kind: 'lit', value: 1 };
+  return {
+    kind: 'select',
+    branches: [aName, bName],
+    // log P(true)=log p ; log P(false)=log(1−p). Constant in the
+    // observation point; walkSelect evaluates these per atom.
+    logweightIRs: [
+      call('log', [pIR]),
+      call('log', [call('sub', [lit1, pIR])]),
+    ],
+    marginalize: true,
+    mode: 'mixture',
+  };
+}
+
 // `record` builds a record-typed value; `joint` builds a measure over
 // a record. Both share IR shape (call with `fields:[{name,value},…]`)
 // and the same SoA empirical-measure layout downstream — typeinfer
@@ -1064,6 +1130,7 @@ const MEASURE_OP_CLASSIFIERS = {
   logweighted:  classifyLogWeighted,
   normalize:    classifyNormalize,
   superpose:    classifySuperpose,
+  ifelse:       classifyIfelse,
   record:       classifyRecordOrJoint,
   joint:        classifyRecordOrJoint,
   iid:          classifyIid,
@@ -1116,6 +1183,14 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   // Superpose: every component must be resolvable.
   if (d.kind === 'superpose') {
     for (const n of d.fromNames) {
+      if (!resolvable(n)) return false;
+    }
+    return true;
+  }
+  // Select (ifelse / mixture): every branch must be resolvable.
+  if (d.kind === 'select') {
+    if (!Array.isArray(d.branches) || d.branches.length === 0) return false;
+    for (const n of d.branches) {
       if (!resolvable(n)) return false;
     }
     return true;
@@ -1205,6 +1280,15 @@ function isDiscreteAt(name, derivations, visited) {
     // bins) is the safer default.
     if (d.fromNames.length === 0) return false;
     for (const n of d.fromNames) {
+      if (!isDiscreteAt(n, derivations, new Set(visited))) return false;
+    }
+    return true;
+  }
+  if (d.kind === 'select') {
+    // Same rule as superpose: a mixture/ifelse is discrete only if
+    // every branch is (mixed support ⇒ treat as continuous).
+    if (!Array.isArray(d.branches) || d.branches.length === 0) return false;
+    for (const n of d.branches) {
       if (!isDiscreteAt(n, derivations, new Set(visited))) return false;
     }
     return true;
@@ -1374,6 +1458,26 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         }
         if (branches.length === 0) return null;
         return { kind: 'call', op: 'select', branches, logweights: null };
+      }
+      case 'select': {
+        // Weighted discrete-selector mixture (ifelse today; explicit
+        // mixture / xs[i] later). Same canonical `select` IR as the
+        // superpose case, but with explicit per-branch log-weight
+        // value-IRs (e.g. ifelse ⇒ [log p, log(1−p)] from the
+        // Bernoulli condition). Marginalising selector ⇒ walkSelect
+        // logsumexp_k(logw_k + logp_branch_k) — the exact mixture
+        // density.
+        const branches = [];
+        for (const n of d.branches) {
+          const inner = expandMeasureIR(n, derivations, next, bindings);
+          if (!inner) return null;
+          branches.push(inner);
+        }
+        if (branches.length === 0) return null;
+        return {
+          kind: 'call', op: 'select', branches,
+          logweights: d.logweightIRs || null,
+        };
       }
       case 'jointchain': {
         // First-class jointchain/kchain (consume/rest consolidation,

@@ -75,6 +75,13 @@ function argSignature(op, numArgs) {
   if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
   if (op === 'normalize')                         return ['measure'];
   if (op === 'superpose')                         return Array(numArgs).fill('measure');
+  // NOTE: `ifelse` is intentionally NOT given a measure-arg
+  // signature. ifelse is dual (value- OR measure-valued); forcing
+  // its branch slots to 'measure' would mis-hoist value-valued
+  // ifelse subexpressions (`ifelse(c, x+1, x-1)`) into bogus anon
+  // measures. Measure-valued ifelse is recognised at classify time
+  // (classifyIfelse) on NAMED measure-binding branches; inline-
+  // measure branches are a documented deferral.
   if (op === 'lawof')                             return ['value-or-measure'];
   if (op === 'iid') {
     // iid(<measure>, n, m, ...): first arg measure-typed, rest values.

@@ -321,3 +321,94 @@ lp = logdensityof(S, 0.6)
   assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
     `got ${m.samples[0]}, expected log5 + logp = ${expected}`);
 });
+
+// =====================================================================
+// measure-valued ifelse density (engine-concepts §11). ifelse(c,a,b)
+// with c ~ Bernoulli(p) is the 2-branch discrete-selector mixture;
+// marginalising the (anonymous) selector gives the EXACT closed-form
+//   log p(x) = log[ p·p_a(x) + (1−p)·p_b(x) ]
+// =====================================================================
+
+test('ifelse density: log[ p·p_A(x) + (1−p)·p_B(x) ] (Bernoulli selector)', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 2.0)
+c = draw(Bernoulli(p = 0.3))
+M = ifelse(c, A, B)
+lp = logdensityof(M, 1.3)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    0.3 * Math.exp(normalLogpdf(1.3, 0, 1))
+    + 0.7 * Math.exp(normalLogpdf(1.3, 5, 2)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `ifelse logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('ifelse density: p=0.5 ⇒ log[ ½(p_A + p_B) ]', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = -2.0, sigma = 1.0)
+B = Normal(mu =  2.0, sigma = 1.0)
+c = draw(Bernoulli(p = 0.5))
+M = ifelse(c, A, B)
+lp = logdensityof(M, 0.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    0.5 * Math.exp(normalLogpdf(0.0, -2, 1))
+    + 0.5 * Math.exp(normalLogpdf(0.0, 2, 1)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('ifelse density: identical branches ⇒ logp_m for ANY p (invariant)', async () => {
+  // ifelse(c, m, m): mixture = p·p_m + (1−p)·p_m = p_m regardless of p.
+  const ctx = makeCtx(`
+m = Normal(mu = 1.0, sigma = 0.7)
+c = draw(Bernoulli(p = 0.137))
+M = ifelse(c, m, m)
+lp  = logdensityof(M, 0.4)
+lpm = logdensityof(m, 0.4)
+`);
+  const [M, Mm] = await Promise.all([ctx.getMeasure('lp'), ctx.getMeasure('lpm')]);
+  assert.ok(Math.abs(M.samples[0] - Mm.samples[0]) < 1e-10,
+    `ifelse(c,m,m) should equal logp_m: got ${M.samples[0]} vs ${Mm.samples[0]}`);
+  assert.ok(Math.abs(Mm.samples[0] - normalLogpdf(0.4, 1, 0.7)) < 1e-10);
+});
+
+test('ifelse density: degenerate p=1 ⇒ branch A; p=0 ⇒ branch B', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 9.0, sigma = 1.0)
+cT = draw(Bernoulli(p = 1.0))
+cF = draw(Bernoulli(p = 0.0))
+MT = ifelse(cT, A, B)
+MF = ifelse(cF, A, B)
+lpT = logdensityof(MT, 0.5)
+lpF = logdensityof(MF, 0.5)
+`);
+  const [T, F] = await Promise.all([ctx.getMeasure('lpT'), ctx.getMeasure('lpF')]);
+  // p=1: log[1·p_A + 0·p_B] = logp_A (the −Inf branch drops out).
+  assert.ok(Math.abs(T.samples[0] - normalLogpdf(0.5, 0, 1)) < 1e-10,
+    `p=1 ⇒ logp_A, got ${T.samples[0]}`);
+  assert.ok(Math.abs(F.samples[0] - normalLogpdf(0.5, 9, 1)) < 1e-10,
+    `p=0 ⇒ logp_B, got ${F.samples[0]}`);
+});
+
+test('ifelse density ≡ superpose(weighted(p,A), weighted(1−p,B)) density', async () => {
+  // Cross-construct consistency: ifelse and superpose ride the SAME
+  // select core, so the two spellings of the same mixture must give
+  // bit-comparable densities.
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 4.0, sigma = 1.5)
+c = draw(Bernoulli(p = 0.4))
+viaIf = ifelse(c, A, B)
+viaSup = superpose(weighted(0.4, A), weighted(0.6, B))
+lpIf  = logdensityof(viaIf, 2.1)
+lpSup = logdensityof(viaSup, 2.1)
+`);
+  const [I, S] = await Promise.all([ctx.getMeasure('lpIf'), ctx.getMeasure('lpSup')]);
+  assert.ok(Math.abs(I.samples[0] - S.samples[0]) < 1e-10,
+    `ifelse=${I.samples[0]} vs superpose=${S.samples[0]} — shared core must agree`);
+});
