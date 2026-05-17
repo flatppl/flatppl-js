@@ -412,3 +412,54 @@ lpSup = logdensityof(viaSup, 2.1)
   assert.ok(Math.abs(I.samples[0] - S.samples[0]) < 1e-10,
     `ifelse=${I.samples[0]} vs superpose=${S.samples[0]} — shared core must agree`);
 });
+
+// ---- ifelse SAMPLING (matSelect gather) vs closed-form mixture -----
+// X = ifelse(c~Bernoulli(p), A, B):
+//   E[X]   = p·μ_A + (1−p)·μ_B
+//   E[X²]  = p·(σ_A²+μ_A²) + (1−p)·(σ_B²+μ_B²)
+//   Var[X] = E[X²] − E[X]²
+//   P(X from branch A) = p
+test('ifelse sampling: mixture mean / variance / branch fraction (closed-form)', async () => {
+  const p = 0.3, muA = 0, sgA = 1, muB = 10, sgB = 2;
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 10.0, sigma = 2.0)
+c = draw(Bernoulli(p = 0.3))
+M = ifelse(c, A, B)
+x = draw(M)
+`);
+  const m = await ctx.getMeasure('x');
+  const xs = m.samples;
+  const EX  = p * muA + (1 - p) * muB;                 // = 7
+  const EX2 = p * (sgA * sgA + muA * muA)
+            + (1 - p) * (sgB * sgB + muB * muB);
+  const VX  = EX2 - EX * EX;
+  const meanHat = unweightedMean(xs);
+  const varHat  = unweightedVar(xs);
+  // Branch-A fraction: A-mass sits near 0, B-mass near 10 → split @5.
+  let nA = 0;
+  for (let i = 0; i < xs.length; i++) if (xs[i] < 5) nA++;
+  const fracA = nA / xs.length;
+  assert.ok(Math.abs(meanHat - EX) < 0.15,
+    `mixture mean: got ${meanHat}, expected ${EX}`);
+  assert.ok(Math.abs(varHat - VX) / VX < 0.10,
+    `mixture variance: got ${varHat}, expected ${VX}`);
+  assert.ok(Math.abs(fracA - p) < 0.02,
+    `branch-A fraction: got ${fracA}, expected p=${p}`);
+});
+
+test('ifelse sampling: p=1 ⇒ all branch A; p=0 ⇒ all branch B', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = -5.0, sigma = 0.5)
+B = Normal(mu =  5.0, sigma = 0.5)
+cT = draw(Bernoulli(p = 1.0))
+cF = draw(Bernoulli(p = 0.0))
+xT = draw(ifelse(cT, A, B))
+xF = draw(ifelse(cF, A, B))
+`);
+  const [T, F] = await Promise.all([ctx.getMeasure('xT'), ctx.getMeasure('xF')]);
+  assert.ok(Math.abs(unweightedMean(T.samples) - (-5)) < 0.1,
+    `p=1 ⇒ branch A (μ=−5), got ${unweightedMean(T.samples)}`);
+  assert.ok(Math.abs(unweightedMean(F.samples) - 5) < 0.1,
+    `p=0 ⇒ branch B (μ=+5), got ${unweightedMean(F.samples)}`);
+});

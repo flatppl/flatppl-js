@@ -820,6 +820,14 @@ function classifyIfelse(rhsIR, ast, bindings) {
   if (pIR == null) return null;
   const call = (op, args) => ({ kind: 'call', op, args });
   const lit1 = { kind: 'lit', value: 1 };
+  // Realised selector for SAMPLING (matSelect): the condition binding
+  // — a {0,1} Bernoulli variate. Density only needs logweightIRs
+  // (selector marginalised); generation needs the per-atom realised
+  // condition. When the condition isn't a bare self-ref, selectorRef
+  // is null → density still works, sampling reports a clear error.
+  const cond = rhsIR.args[0];
+  const selectorRef = (cond && cond.kind === 'ref' && cond.ns === 'self')
+    ? cond.name : null;
   return {
     kind: 'select',
     branches: [aName, bName],
@@ -829,6 +837,7 @@ function classifyIfelse(rhsIR, ast, bindings) {
       call('log', [pIR]),
       call('log', [call('sub', [lit1, pIR])]),
     ],
+    selectorRef,
     marginalize: true,
     mode: 'mixture',
   };
