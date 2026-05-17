@@ -686,3 +686,93 @@ lps = broadcast(logdensityof, mix, [${grid}])
   assert.ok(Math.abs(integral - 1.0) < 2e-3,
     `broadcast density must integrate to 1, got ${integral}`);
 });
+
+// =====================================================================
+// Reference-measure guard (engine-concepts §11/§12). logsumexp-ing a
+// continuous (Lebesgue) branch with a discrete/atomic (counting /
+// point-mass) one is dimensionally meaningless — the spike-and-slab
+// trap. The guard refuses such a logdensityof with a clear error,
+// while leaving SAMPLING (well-defined) allowed, and never rejects a
+// homogeneous mixture (zero-false-positive).
+// =====================================================================
+
+test('ref-measure guard: spike-and-slab ifelse(c,Normal,Dirac) density is refused', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+S = Dirac(value = 0.0)
+c = draw(Bernoulli(p = 0.3))
+M = ifelse(c, A, S)
+lp = logdensityof(M, 0.0)
+`);
+  await assert.rejects(() => ctx.getMeasure('lp'),
+    /incommensurable reference measures|spike-and-slab/);
+});
+
+test('ref-measure guard: spike-and-slab SAMPLING stays well-defined (density-only guard)', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+S = Dirac(value = 7.0)
+c = draw(Bernoulli(p = 0.25))
+x = draw(ifelse(c, A, S))
+`);
+  const m = await ctx.getMeasure('x');           // must NOT throw
+  // ifelse(c, A, S): c true (prob p=0.25) → A=Normal; c false
+  // (prob 1−p=0.75) → S=Dirac@7. The atom at exactly 7.0 carries
+  // ≈ 1−p = 0.75 of the mass.
+  let atom = 0;
+  for (let i = 0; i < m.samples.length; i++) if (m.samples[i] === 7.0) atom++;
+  const frac = atom / m.samples.length;
+  assert.ok(Math.abs(frac - 0.75) < 0.04,
+    `spike (Dirac/false-branch) fraction ≈ 1−p = 0.75, got ${frac}`);
+});
+
+test('ref-measure guard: superpose(Normal, Poisson) density is refused (continuous ⊕ discrete)', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Poisson(rate = 2.0)
+lp = logdensityof(superpose(A, B), 1.0)
+`);
+  await assert.rejects(() => ctx.getMeasure('lp'),
+    /incommensurable reference measures/);
+});
+
+test('ref-measure guard: homogeneous discrete superpose(Poisson,Bernoulli) is allowed + correct', async () => {
+  const ctx = makeCtx(`
+A = Poisson(rate = 2.0)
+B = Bernoulli(p = 0.5)
+lp = logdensityof(superpose(A, B), 1.0)
+`);
+  const m = await ctx.getMeasure('lp');          // must NOT throw
+  // raw additive: p_Pois(1;2) + p_Bern(1;0.5) = 2·e^-2 + 0.5
+  const expected = Math.log(2 * Math.exp(-2) + 0.5);
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-9,
+    `homogeneous-discrete superpose: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('ref-measure guard: homogeneous continuous superpose(Normal,Cauchy) is allowed', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Cauchy(location = 0.0, scale = 1.0)
+lp = logdensityof(superpose(A, B), 0.5)
+`);
+  const m = await ctx.getMeasure('lp');          // must NOT throw
+  const expected = Math.log(
+    Math.exp(normalLogpdf(0.5, 0, 1))
+    + (1 / (Math.PI * (1 + 0.5 * 0.5))));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-9,
+    `Normal+Cauchy superpose: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('ref-measure guard: nested heterogeneity (branch is itself mixed) is refused', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 3.0, sigma = 1.0)
+S = Dirac(value = 0.0)
+inner = superpose(B, S)
+c = draw(Bernoulli(p = 0.5))
+M = ifelse(c, A, inner)
+lp = logdensityof(M, 0.0)
+`);
+  await assert.rejects(() => ctx.getMeasure('lp'),
+    /incommensurable reference measures|spike-and-slab/);
+});
