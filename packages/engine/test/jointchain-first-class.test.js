@@ -218,15 +218,33 @@ test('matJointchain: kwarg jointchain(p=M,q=K) → record-shaped', async () => {
   assert.ok(m.fields && m.fields.p && m.fields.q, 'record { p, q }');
 });
 
-test('matJointchain: N-ary (>2) is a clean deferral pending design', async () => {
-  // N-ary kernel-arg binding (vector-cat vs multi-scalar-param) is an
-  // open design decision; must reject clearly, never mis-sample.
-  await assert.rejects(materialise(
-    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
-    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
-    'K2 = functionof(Normal(mu = y, sigma = 1.0), y = y)\n' +
-    'jc = jointchain(M, K, K2)\n', 'jc', 1000),
-    /N-ary .* design decision|N-ary .* pending/);
+test('matJointchain 2b-ext: N-ary kchain marginal (3-step) ≈ N(0,3)', async () => {
+  // Left-assoc (spec §06): a0~N(0,1); a1~N(a0,1); a2~N(a1,1). The 3rd
+  // kernel takes the cat [a0,a1] (`c~K3([a,b])`) and uses a1=get(_,2).
+  // kchain marginal a2 ~ N(0, var 1+1+1 = 3).
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'd  = kchain(M, K1, K2)\n', 'd', 12000);
+  assert.ok(m.samples, 'scalar marginal (a2)');
+  assert.ok(Math.abs(meanOf(m.samples)) < 0.1, 'mean ~ 0');
+  assert.ok(Math.abs(varOf(m.samples) - 3.0) < 0.35,
+    'var ~ 3, got ' + varOf(m.samples));
+});
+
+test('matJointchain 2b-ext: N-ary jointchain (3-step) retains (a0,a1,a2)', async () => {
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'jc = jointchain(M, K1, K2)\n', 'jc', 8000);
+  assert.ok(m.elems && m.elems.length === 3, 'tuple of (a0,a1,a2)');
+  const a0 = m.elems[0].samples, a1 = m.elems[1].samples,
+        a2 = m.elems[2].samples;
+  assert.ok(Math.abs(varOf(a0) - 1) < 0.15, 'var a0 ~ 1');
+  assert.ok(Math.abs(varOf(a1) - 2) < 0.3, 'var a1 ~ 2');
+  assert.ok(Math.abs(varOf(a2) - 3) < 0.45, 'var a2 ~ 3');
 });
 
 // ---- 2c: density (consume/rest via expandMeasureIR) ----
@@ -259,6 +277,23 @@ test('density 2c: labelled jointchain joint logdensity = p(a)·p(b|a)', async ()
   const want = normLogpdf(0.5, 0, 1) + normLogpdf(1.0, 0.5, 1); // ≈ -2.0879
   assert.ok(Math.abs(got - want) < 1e-6,
     `jointchain joint logp ${got} vs analytic ${want}`);
+});
+
+test('density 2b-ext: N-ary labelled jointchain joint logdensity (3-step)', async () => {
+  // logp = logN(0.3;0,1) + logN(0.5;0.3,1) + logN(0.9;0.5,1). Exact
+  // (no MC) — the 3rd kernel takes cat[p,q] and uses q = get(_,2).
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'jc = jointchain(p = M, q = K1, r = K2)\n' +
+    'lp = logdensityof(jc, record(p = 0.3, q = 0.5, r = 0.9))\n',
+    'lp', 2000);
+  const got = m.samples[0];
+  const want = normLogpdf(0.3, 0, 1) + normLogpdf(0.5, 0.3, 1)
+             + normLogpdf(0.9, 0.5, 1);
+  assert.ok(Math.abs(got - want) < 1e-6,
+    `N-ary jointchain joint logp ${got} vs analytic ${want}`);
 });
 
 test('density 2c: positional jointchain density is a clean deferral', async () => {

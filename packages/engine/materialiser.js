@@ -1249,6 +1249,20 @@ function matLogdensityof(d, ctx) {
   const fixedRefs = [];
   orchestrator.collectSelfRefs(measureIR).forEach((n) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
+    // Walker-threaded names: a ref that is neither a binding nor a
+    // fixed value is a synthetic joint step-variate name introduced by
+    // expandMeasureIR's first-class jointchain canonicalisation (e.g.
+    // the intermediate variates of an N-ary chain). The density
+    // walker's `fields`/`source` overlay env-threading resolves these
+    // from the consumed observation — they are NOT per-atom prior
+    // refs, so they must not be materialised here (getMeasure would
+    // fail with "no derivation"). Overlay precedence (overlay >
+    // refArrays > baseEnv) makes this correct even when a name
+    // coincides with a binding.
+    if (!(ctx.bindings && ctx.bindings.has(n))
+        && !(ctx.fixedValues && ctx.fixedValues.has(n))) {
+      return;
+    }
     // Fixed-phase refs (literal values, arrays/matrices, etc.) flow
     // through the worker's session env via setEnv — they're atom-
     // independent, so the density walker resolves them once per call
@@ -1359,29 +1373,19 @@ function matJointchain(name, d, ctx) {
   //
   // Scope (2b/2b-ext): N steps, left-associative; scalar base measure
   // and scalar-variate single-param kernels; the i-th kernel takes the
-  // cat of all prior step variates (spec §06 `c ~ K3([a,b])`).
-  // Kernel-first base and record/tuple/iid base / vector-or-record
-  // kernel output remain explicit clear deferrals (flag OFF in
-  // production so legacy inlineChainOps still owns uncovered shapes —
-  // no regression). N-ary DENSITY (expandMeasureIR) stays 2-step until
-  // 2b-ext density; sampling here is full-N.
+  // cat of all prior step variates (spec §06 `c ~ K3([a,b])`),
+  // realised by rewiring the kernel param to ref(prior_0) / vector(ref
+  // prior_0, …) + scalar refArrays (no worker vector-refArray ext).
+  // Kernel-first base, record/tuple/iid base, and vector/record kernel
+  // output remain explicit clear deferrals (flag OFF in production so
+  // legacy inlineChainOps still owns uncovered shapes — no
+  // regression). Density parity (expandMeasureIR): N-ary labelled
+  // jointchain ✓; 2-step kchain MC ✓; N-ary kchain + positional
+  // jointchain density are clean deferrals (null ⇒ reject; sampling
+  // unaffected).
   const steps = (d && d.steps) || [];
   if (steps.length < 2) {
     return Promise.reject(new Error('jointchain: need at least 2 steps'));
-  }
-  if (steps.length > 2) {
-    // N-ary (>2) needs the i-th kernel to consume the cat of >1 prior
-    // variate. Whether that is one vector-valued kernel arg (needs
-    // worker vector-per-atom refArray support) or multiple scalar
-    // params bound positionally/by-label is an open design decision
-    // (surfaced to the user). 2-step is fully implemented; flag OFF in
-    // production ⇒ legacy inlineChainOps still owns N-ary — no
-    // regression. Clean deferral, never a wrong result.
-    return Promise.reject(new Error(
-      'jointchain: N-ary (>2 step) materialisation pending a design '
-      + 'decision on kernel-arg binding (vector-cat vs multi-scalar-'
-      + 'param); 2-step implemented, legacy path owns N-ary while the '
-      + 'first-class flag is off.'));
   }
   const base = steps[0];
   if (base.kernel) {
@@ -1415,25 +1419,38 @@ function matJointchain(name, d, ctx) {
       return resolveFnBody(ctx.bindings && ctx.bindings.get(kstep.ref),
         ctx.bindings);
     };
-    // Per-spec §06 the i-th kernel takes the cat of ALL prior step
-    // variates as its single argument (`c ~ K3([a,b])`): one prior ⇒
-    // the scalar [N]; k priors ⇒ an atom-major [N, k] vector. This is
-    // the structural realisation of the left-associative chain —
-    // never surface-kwarg-name matching.
-    const priorCat = (priorList) => {
-      if (priorList.length === 1) {
-        return valueLib.batchedScalar(priorList[0].samples);
+    // Left-associative recursion realised iteratively (spec §06:
+    // jointchain(M,K1,K2) ≡ jointchain(jointchain(M,K1),K2); the i-th
+    // kernel takes the cat of ALL prior variates as its SINGLE
+    // argument — `b ~ K2(a)` for one prior, `c ~ K3([a,b])` for ≥2).
+    //
+    // Realised by substituting the kernel body's single param ref with
+    //   1 prior  → ref(prior_0)                       (scalar `a`)
+    //   ≥2 priors→ vector(ref p0, ref p1, …)          (the cat `[a,b]`)
+    // and binding each prior variate as a SCALAR refArray. This reuses
+    // the vector/get evaluator (no worker vector-per-atom extension)
+    // and is purely structural — never surface-kwarg-name matching.
+    const PRIOR = (j) => '__jc$' + j;            // synthetic prior ref
+    const rewireParam = (node, paramName, k) => {
+      if (node == null || typeof node !== 'object') return node;
+      if (Array.isArray(node)) {
+        return node.map((x) => rewireParam(x, paramName, k));
       }
-      const k = priorList.length;
-      const data = new Float64Array(N * k);
-      for (let a = 0; a < N; a++) {
-        for (let j = 0; j < k; j++) data[a * k + j] = priorList[j].samples[a];
+      if (node.kind === 'ref'
+          && (node.ns === '%local' || node.ns === 'self')
+          && node.name === paramName) {
+        if (k === 1) return { kind: 'ref', ns: 'self', name: PRIOR(0) };
+        const args = [];
+        for (let j = 0; j < k; j++) {
+          args.push({ kind: 'ref', ns: 'self', name: PRIOR(j) });
+        }
+        return { kind: 'call', op: 'vector', args };
       }
-      return { shape: [N, k], data };
+      const out = {};
+      for (const key in node) out[key] = rewireParam(node[key], paramName, k);
+      return out;
     };
 
-    // Fold the steps left-associatively: draw each kernel step from
-    // its body measure with the prior-cat pinned per-atom.
     let chainP = Promise.resolve([M0]);
     for (let i = 1; i < steps.length; i++) {
       const kstep = steps[i];
@@ -1445,9 +1462,14 @@ function matJointchain(name, d, ctx) {
             + `${kstep.ref ? `'${kstep.ref}' ` : '(inline) '}`
             + 'has no single-param callable body'));
         }
+        const k = priorList.length;
+        const body = rewireParam(fnInfo.body, fnInfo.paramName, k);
+        const refArrays = {};
+        for (let j = 0; j < k; j++) {
+          refArrays[PRIOR(j)] = priorList[j].samples;
+        }
         return ctx.sendWorker({
-          type: 'sampleN', ir: fnInfo.body, count: N,
-          refArrays: { [fnInfo.paramName]: priorCat(priorList) },
+          type: 'sampleN', ir: body, count: N, refArrays: refArrays,
           seed: nameSeed(name + ':jc' + i, ctx.rootSeed),
         }).then((reply) => {
           const Mi = measureFromReply(reply, N, {
