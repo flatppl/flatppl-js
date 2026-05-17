@@ -72,6 +72,9 @@ const {
   NAMED_SETS,
   parseSetIR,
   NAMED_SET_NAMES,
+  SAMPLEABLE_DISTRIBUTIONS,
+  DISCRETE_DISTRIBUTIONS,
+  EVALUABLE_OPS,
 } = require('./ir-shared');
 
 // Facade re-bind of the profile-plot UI support now living in
@@ -105,131 +108,6 @@ const {
   enumerateOutputLeaves,
   extractOutputIR,
 } = require('./signatures');
-
-// Distributions the worker's REGISTRY currently implements. Hardcoded
-// here to avoid pulling sampler.js (and stdlib) into the main bundle.
-// Mirrored in sampler.js's REGISTRY; if you add one there, add it here
-// too. The orchestrator gates on this list — if a binding's RHS is a
-// distribution we don't list, the chain comes back unsupported instead
-// of failing later in the worker.
-const SAMPLEABLE_DISTRIBUTIONS = new Set([
-  'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull',
-  'LogNormal', 'Beta', 'Gamma', 'InverseGamma',
-  'GeneralizedNormal',
-  'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
-  'Categorical', 'Categorical0',
-  // Dirac is degenerate (zero entropy): the sampler emits the
-  // 'value' kwarg verbatim N times. Listed here so measure-alias
-  // bindings like `m = Dirac(value = 5)` get classified 'skip' and
-  // resolved to a sample step at the target rather than failing
-  // SAMPLEABLE_DISTRIBUTIONS gate. Identity rewrite for
-  // `draw(Dirac(value=e))` lives in classifyForChain — at the
-  // draw site we re-route to evaluate(e) rather than sampling.
-  'Dirac',
-]);
-
-// Subset of the above whose density is over the counting reference (a
-// pmf, integer atoms). Used by the worker to switch between KDE and
-// integer-histogram density estimation.
-const DISCRETE_DISTRIBUTIONS = new Set([
-  'Bernoulli', 'Binomial', 'Poisson',
-  'Categorical', 'Categorical0',
-]);
-
-// Deterministic builtins whose call IRs the worker's evaluateExpr knows
-// how to compute. Mirrors the operator desugaring in lower.js plus a
-// small catalogue of safe scalar functions. Anything else lowered as
-// `(call <op> ...)` is treated as unsupported, so a stray `joint(...)`
-// or `disintegrate(...)` doesn't silently get scheduled.
-//
-// Keep in sync with sampler.js's evaluateExpr handler set. When the
-// evaluator gains a new builtin (e.g. `pow`), add it both there and
-// here.
-const EVALUABLE_OPS = new Set([
-  // Operator desugaring (BIN_OP_MAP / UN_OP_MAP in lower.js).
-  // This list mirrors sampler.js's ARITH_OPS exactly. Extend both
-  // sides together when adding ops (the static gate must match the
-  // worker's evaluator).
-  'add', 'sub', 'mul', 'div', 'divide', 'mod', 'neg', 'pos',
-  'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
-  'sin', 'cos',
-  'floor', 'ceil', 'round',
-  'pow',
-  // Complex arithmetic (spec §03 / §07): constructor + accessors.
-  'complex', 'real', 'imag', 'conj', 'cis',
-  // Binary min/max and gamma/loggamma/link functions (spec §07
-  // Elementary functions). All scalar→scalar (or scalar,scalar→scalar)
-  // and dispatch through sampler.ARITH_OPS.
-  'min', 'max',
-  'gamma', 'loggamma',
-  'logit', 'invlogit', 'probit', 'invprobit',
-  // Comparisons → boolean.
-  'lt', 'le', 'gt', 'ge', 'equal', 'unequal',
-  // Predicates → boolean.
-  'isfinite', 'isinf', 'isnan', 'iszero',
-  // Logic / conditionals.
-  'land', 'lor', 'lxor', 'lnot', 'ifelse',
-  // Reductions over arrays (sampler.js implements the runtime ops). The
-  // static gate for these is conservative: only mark the binding
-  // evaluable when the operand is a static array (kind: 'array'
-  // derivation) — handled by the array-evaluable check downstream.
-  // Generic ref-to-stochastic-array isn't evaluable in the per-i
-  // worker model since each atom's value would itself be an array.
-  // Note: 'vector' deliberately omitted — leaves like `[mu, 1.0]`
-  // (with stochastic refs) must NOT classify as evaluable, so the
-  // existing array-derivation special case keeps owning that path.
-  'sum', 'mean', 'prod', 'length', 'maximum', 'minimum', 'var',
-  // Norms and softmax family (spec §07). All single-arg, vector
-  // input; *unit / softmax / logsoftmax return vectors, the rest
-  // return scalars.
-  'l1norm', 'l2norm', 'l1unit', 'l2unit',
-  'logsumexp', 'softmax', 'logsoftmax',
-  // Engine-internal projection emitted by the analyzer's multi-LHS
-  // rewriter (`a, b = rand(...)`). sampler.evaluateCall handles it.
-  'tuple_get', 'tuple',
-  // Field access: lowered from surface `obj.field` and from `record(
-  // a=x, b=y)` constructors. Both are pure value computations the
-  // evaluator handles.
-  'get_field', 'record',
-  // Unified element/subset/slice access (spec §07). `v[i]`, `A[i,j]`,
-  // `A[:,j]`, `v[[1,3]]`, `get(r,"a")` all lower to `get` (1-based);
-  // `get0` is the 0-based variant. Pure deterministic value ops —
-  // sampler.evaluateCall dispatches both via a dedicated case. Added
-  // so a fixed-phase expression containing indexing (e.g.
-  // `Gamma(shape = tau[1] + 1.0, …)`) evaluates through the single
-  // deterministic-evaluator authority instead of dead-ending.
-  'get', 'get0',
-  // Random-number primitives (spec §sec:random). All three are
-  // ordinary value-typed functions whose phase propagates from
-  // their inputs. sampler.evaluateCall dispatches each.
-  'rnginit', 'rngstate', 'rand',
-  // Shape functions (spec §07 Approximation functions). Pure value
-  // ops; kwargs-shaped so they don't fit ARITH_OPS — sampler.evaluateCall
-  // dispatches each via a dedicated case.
-  'polynomial', 'bernstein', 'stepwise',
-  // Binning (spec §07). bincounts produces an integer count array
-  // from edges + data; kwargs-shaped, sampler.evaluateCall dispatches.
-  // selectbins keeps whole bins whose interval intersects a region.
-  'bincounts', 'selectbins',
-  // Array generation (spec §07). All pure value ops over fixed-phase
-  // arguments; dispatch through ARITH_OPS.
-  'linspace', 'extlinspace', 'partition', 'reverse', 'addaxes',
-  'fill', 'zeros', 'ones', 'eye', 'onehot',
-  'rowstack', 'colstack', 'array',
-  // Higher-order ops (spec §04 / §07). Dispatched via dedicated cases
-  // in sampler.evaluateCall (not ARITH_OPS) because they evaluate a
-  // referenced function's body per element. filter takes a unary
-  // predicate; reduce / scan take binary accumulators; broadcast
-  // takes an n-ary function and n equal-length arrays.
-  'filter', 'reduce', 'scan', 'broadcast',
-  // Scalar restrictors (spec §07).
-  'boolean', 'integer',
-  // Linear algebra (spec §07). All pure value ops on matrices /
-  // vectors; dispatch through ARITH_OPS.
-  'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer',
-  'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
-  'row_gram', 'col_gram',
-]);
 
 /**
  * Build an execution chain for sampling `targetName`.
