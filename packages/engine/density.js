@@ -594,6 +594,52 @@ function restSize(r) {
   return 1;
 }
 
+// Reference-measure class of a select branch's expanded measure IR:
+// 'continuous' (density w.r.t. Lebesgue) vs 'noncontinuous' (pmf
+// w.r.t. counting, OR an atomic point mass / Dirac). `null` =
+// undeterminable — caller PERMITS those (zero-false-positive
+// discipline: never reject a valid homogeneous mixture; an unknown is
+// no worse than today). The spike-and-slab trap is mixing the two:
+// logsumexp-ing a per-length density with a per-atom probability is
+// dimensionally meaningless. Note `Dirac.discrete` is deliberately
+// false in the REGISTRY (the engine can't tell its scalar type from
+// IR), so Dirac is special-cased atomic here — exactly the slab/spike
+// case. weighted/logweighted/normalize/truncate/pushfwd don't change
+// the reference measure (they scale / restrict / bijection-map), so
+// recurse into the base; a nested select inherits its branches'.
+function selectBranchRefClass(ir, depth) {
+  if (!ir || ir.kind !== 'call' || (depth | 0) > 64) return null;
+  const op = ir.op;
+  if (op === 'Dirac') return 'noncontinuous';   // atomic point mass
+  if (samplerLib.isKnownDistribution(op)) {
+    const entry = samplerLib.lookupDistribution(ir);
+    return entry && entry.discrete ? 'noncontinuous' : 'continuous';
+  }
+  if ((op === 'weighted' || op === 'logweighted' || op === 'pushfwd')
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    return selectBranchRefClass(ir.args[1], (depth | 0) + 1);
+  }
+  if ((op === 'normalize' || op === 'truncate')
+      && Array.isArray(ir.args) && ir.args.length >= 1) {
+    return selectBranchRefClass(ir.args[0], (depth | 0) + 1);
+  }
+  if (op === 'select' && Array.isArray(ir.branches)) {
+    let cont = false, nonc = false;
+    for (const b of ir.branches) {
+      const c = selectBranchRefClass(b, (depth | 0) + 1);
+      if (c === 'continuous') cont = true;
+      else if (c === 'noncontinuous') nonc = true;
+    }
+    if (cont && nonc) return 'mixed';            // nested heterogeneous
+    if (cont) return 'continuous';
+    if (nonc) return 'noncontinuous';
+    return null;
+  }
+  // joint / record / iid / MvNormal-as-vector / unknown: not a scalar
+  // leaf we classify for this guard → permit (null).
+  return null;
+}
+
 function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   // select(branches, logweights): the discrete-selector mixture — the
   // EXACT (finite, no −logN) discrete sibling of the kchain MC
@@ -615,6 +661,37 @@ function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
     throw new Error('density: select requires a non-empty branches array');
   }
   const K = branches.length;
+  // Reference-measure guard (engine-concepts §11/§12). logsumexp-ing
+  // branch log-densities is only meaningful when every branch scores
+  // w.r.t. the SAME reference measure. Mixing a continuous (Lebesgue)
+  // branch with a discrete/atomic one (the spike-and-slab trap, e.g.
+  // ifelse(c, Normal, Dirac) or superpose(Normal, Poisson)) combines a
+  // per-length density with a per-atom probability — dimensionally
+  // meaningless. Refuse with a clear error rather than return a wrong
+  // number. Zero-false-positive: throw ONLY when ≥1 branch is
+  // positively continuous AND ≥1 is positively non-continuous (or a
+  // nested select is itself heterogeneous); undeterminable branches
+  // are permitted (a homogeneous mixture is never rejected). This is a
+  // DENSITY-only guard — sampling such a mixture (matSelect) is
+  // well-defined and stays allowed.
+  let sawCont = false, sawNonc = false, sawMixed = false;
+  for (let k = 0; k < K; k++) {
+    const c = selectBranchRefClass(branches[k], 0);
+    if (c === 'continuous') sawCont = true;
+    else if (c === 'noncontinuous') sawNonc = true;
+    else if (c === 'mixed') sawMixed = true;
+  }
+  if (sawMixed || (sawCont && sawNonc)) {
+    const cls = branches.map((b, k) =>
+      `  branch ${k}: ${selectBranchRefClass(b, 0) || 'unknown'}`).join('\n');
+    throw new Error(
+      'density: select/mixture combines branches with incommensurable '
+      + 'reference measures — cannot logsumexp a continuous (Lebesgue) '
+      + 'density with a discrete/atomic (counting / point-mass) one '
+      + '(the spike-and-slab case, e.g. ifelse(c, Normal, Dirac)). '
+      + 'Its SAMPLING is well-defined and still allowed; only its '
+      + 'logdensityof is refused.\n' + cls);
+  }
   const bacc = new Array(K);
   let rest0; let haveRest = false;
   for (let k = 0; k < K; k++) {
