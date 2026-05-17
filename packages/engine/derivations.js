@@ -1385,6 +1385,75 @@ function resolveBijectionMeta(bij, bindings) {
   return { fInv, logVolume };
 }
 
+// Closed-form total mass (in log) of an already-expanded measure IR,
+// or null when it isn't closed-form here (data-dependent weights,
+// truncate, pushfwd, …). Mirrors the measure-algebra mass rules and
+// is used to lower `normalize(M)` to `logweighted(−log Z, M)` so the
+// normalized-mixture density needs no opts/worker plumbing and reuses
+// walkLogWeighted (engine-concepts §11; "totalmass is a first-class
+// node concern"). All stdlib leaf distributions are normalized (unit
+// mass); weighted/superpose/iid compose multiplicatively/additively.
+function closedFormLogTotalmass(ir, bindings) {
+  if (!ir || ir.kind !== 'call') return null;
+  const op = ir.op;
+  if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
+  if (op === 'normalize') return 0;
+  if (op === 'logweighted') {
+    const g = resolveConstant(ir.args[0], bindings || new Map(), new Set());
+    if (g == null || !Number.isFinite(g)) return null;
+    const b = closedFormLogTotalmass(ir.args[1], bindings);
+    return b == null ? null : g + b;
+  }
+  if (op === 'weighted') {
+    const w = resolveConstant(ir.args[0], bindings || new Map(), new Set());
+    if (w == null || !(w > 0) || !Number.isFinite(w)) return null;
+    const b = closedFormLogTotalmass(ir.args[1], bindings);
+    return b == null ? null : Math.log(w) + b;
+  }
+  if (op === 'select') {
+    const br = ir.branches || [];
+    if (br.length === 0) return null;
+    const terms = [];
+    for (let k = 0; k < br.length; k++) {
+      const b = closedFormLogTotalmass(br[k], bindings);
+      if (b == null) return null;
+      let lw = 0;
+      if (ir.logweights) {
+        lw = resolveConstant(ir.logweights[k], bindings || new Map(), new Set());
+        if (lw == null || !Number.isFinite(lw)) return null;
+      }
+      terms.push(lw + b);
+    }
+    let m = -Infinity;
+    for (const t of terms) if (t > m) m = t;
+    if (!Number.isFinite(m)) return m;
+    let s = 0;
+    for (const t of terms) s += Math.exp(t - m);
+    return m + Math.log(s);
+  }
+  if (op === 'joint' || op === 'record') {
+    const comps = Array.isArray(ir.fields) ? ir.fields.map((f) => f.value)
+      : (Array.isArray(ir.args) ? ir.args : null);
+    if (!comps) return null;
+    let acc = 0;
+    for (const c of comps) {
+      const t = closedFormLogTotalmass(c, bindings);
+      if (t == null) return null;
+      acc += t;
+    }
+    return acc;
+  }
+  if (op === 'iid' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const inner = closedFormLogTotalmass(ir.args[0], bindings);
+    if (inner == null) return null;
+    const n = resolveConstant(ir.args[1], bindings || new Map(), new Set());
+    if (n == null || !Number.isFinite(n)) return null;
+    return n * inner;
+  }
+  // truncate / pushfwd / jointchain / unknown — not closed-form here.
+  return null;
+}
+
 function expandMeasureIR(name, derivations, visited, bindings) {
   visited = visited || new Set();
   if (visited.has(name)) return null;
@@ -1667,6 +1736,29 @@ function expandMeasureIR(name, derivations, visited, bindings) {
           kind: 'call', op: 'logweighted',
           args: [{ kind: 'lit', value: d.logShift }, inner],
         };
+      }
+      case 'normalize': {
+        // normalize(M) = M / totalmass(M). Lower to
+        // logweighted(−log Z, expand(M)) when Z is closed-form (the
+        // canonical normalized mixture
+        // normalize(superpose(weighted(w_k, M_k))) has Z = Σ w_k, so
+        // a probability mixture has Z=1 ⇒ a 0-shift no-op; an
+        // unnormalized base shifts every atom by −log Z). Reuses
+        // walkLogWeighted — no opts/worker plumbing, exact density.
+        const inner = expandMeasureIR(d.from, derivations, next, bindings);
+        if (!inner) return null;
+        const logZ = closedFormLogTotalmass(inner, bindings);
+        if (logZ != null && Number.isFinite(logZ)) {
+          return {
+            kind: 'call', op: 'logweighted',
+            args: [{ kind: 'lit', value: -logZ }, inner],
+          };
+        }
+        // Z not closed-form here (truncate base, data-dependent
+        // weights, …): emit the normalize IR; walkNormalize falls
+        // back to opts.measureLogTotalmass (default 0) — a documented
+        // limitation, not silently wrong for the common closed cases.
+        return { kind: 'call', op: 'normalize', args: [inner] };
       }
       case 'pushfwd': {
         // pushfwd(f, M): the f-arg surfaces as a self-ref to the

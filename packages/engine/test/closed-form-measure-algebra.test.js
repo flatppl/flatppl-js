@@ -463,3 +463,70 @@ xF = draw(ifelse(cF, A, B))
   assert.ok(Math.abs(unweightedMean(F.samples) - 5) < 0.1,
     `p=0 ⇒ branch B (μ=+5), got ${unweightedMean(F.samples)}`);
 });
+
+// =====================================================================
+// normalized mixture (engine-concepts §11): the spec's canonical
+//   mix = normalize(superpose(weighted(w1, M1), weighted(w2, M2)))
+// normalize(M) is lowered to logweighted(−log Z, M) with CLOSED-FORM
+// Z = Σ w_k. Probability mixture ⇒ Z=1 (0-shift no-op); an
+// unnormalized base divides every atom by Z exactly.
+// =====================================================================
+
+test('normalized mixture: density = log[ w1·p_A + w2·p_B ] (Σw=1, Z=1)', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 2.0)
+mix = normalize(superpose(weighted(0.25, A), weighted(0.75, B)))
+lp = logdensityof(mix, 1.3)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    0.25 * Math.exp(normalLogpdf(1.3, 0, 1))
+    + 0.75 * Math.exp(normalLogpdf(1.3, 5, 2)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `normalized mixture logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('normalized mixture: normalize(superpose(2·m, 3·m)) ≡ m (Z=5 divided out)', async () => {
+  const ctx = makeCtx(`
+m  = Normal(mu = 1.0, sigma = 0.7)
+mn = normalize(superpose(weighted(2.0, m), weighted(3.0, m)))
+lpn = logdensityof(mn, 0.4)
+lpm = logdensityof(m, 0.4)
+`);
+  const [Mn, Mm] = await Promise.all([ctx.getMeasure('lpn'), ctx.getMeasure('lpm')]);
+  assert.ok(Math.abs(Mn.samples[0] - Mm.samples[0]) < 1e-10,
+    `normalize(2m+3m) must equal m: got ${Mn.samples[0]} vs ${Mm.samples[0]}`);
+  assert.ok(Math.abs(Mm.samples[0] - normalLogpdf(0.4, 1, 0.7)) < 1e-10);
+});
+
+test('normalized mixture: integrates to 1 (trapezoid over a wide grid)', async () => {
+  // ∫ p_mix(x) dx ≈ 1 for a proper normalized mixture. Evaluate the
+  // closed-form density on a fine grid and trapezoid-integrate.
+  const ctx = makeCtx(`
+A = Normal(mu = -2.0, sigma = 0.8)
+B = Normal(mu =  3.0, sigma = 1.3)
+mix = normalize(superpose(weighted(0.4, A), weighted(0.6, B)))
+`);
+  // logdensityof at each grid point (one binding per point keeps the
+  // harness simple; closed-form ⇒ exact, no sampling).
+  const lo = -12, hi = 15, n = 6000, h = (hi - lo) / n;
+  let src = `
+A = Normal(mu = -2.0, sigma = 0.8)
+B = Normal(mu =  3.0, sigma = 1.3)
+mix = normalize(superpose(weighted(0.4, A), weighted(0.6, B)))
+`;
+  for (let i = 0; i <= n; i++) {
+    src += `p${i} = logdensityof(mix, ${(lo + i * h).toFixed(6)})\n`;
+  }
+  const c2 = makeCtx(src);
+  let integral = 0;
+  for (let i = 0; i <= n; i++) {
+    const lp = (await c2.getMeasure('p' + i)).samples[0];
+    const w = (i === 0 || i === n) ? 0.5 : 1.0;
+    integral += w * Math.exp(lp);
+  }
+  integral *= h;
+  assert.ok(Math.abs(integral - 1.0) < 2e-3,
+    `normalized mixture must integrate to 1, got ${integral}`);
+});
