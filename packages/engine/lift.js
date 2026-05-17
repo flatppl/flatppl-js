@@ -27,6 +27,36 @@ const {
   SAMPLEABLE_DISTRIBUTIONS,
 } = require('./ir-shared');
 
+// =====================================================================
+// Inline-subexpression lifting
+//
+// FlatPPL operators have positional argument-type expectations: draw()
+// expects a measure, weighted() expects (value, measure), normalize()
+// expects a measure, etc. A user can supply either a bare reference to
+// a binding or an inline expression in any of those positions, and the
+// language semantics treat the two as equivalent — caching aside, an
+// intermediate binding is just a name for a sub-expression.
+//
+// Rather than have every classifier branch handle inline forms one by
+// one (and re-bug each time a new op is added), we run a single AST
+// rewrite that lifts every non-trivial inline subexpression in a
+// measure-arg position to a synthetic anonymous binding `__anon_N`,
+// replacing the in-place AST with a reference. After lifting, every
+// measure-typed argument is a bare Identifier; the existing classifier
+// handles all forms uniformly. Inline `draw(<...>)` in a value slot
+// gets the same treatment so the surviving value expression is
+// evaluable end-to-end.
+//
+// Mutability: every binding's RHS is deep-cloned before being walked,
+// so the original bindings map (and its AST nodes) are untouched.
+// Calling buildDerivations twice on the same bindings is therefore
+// idempotent — each call sees pristine input.
+//
+// Synthetic bindings carry `synthetic: true` so downstream layers
+// (DAG render, plot pane) can choose to display them differently or
+// hide them entirely.
+// =====================================================================
+
 /**
  * Argument-type signature for a known op, given its positional arity.
  *
