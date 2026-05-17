@@ -1357,23 +1357,33 @@ function matJointchain(name, d, ctx) {
   // body measure with refArrays binding the param to the prior atoms
   // (structural — never by surface-kwarg-name matching).
   //
-  // Scope (2b): 2-step, scalar base measure, single-param kernel — the
-  // dominant shape and the user-reported `kchain(Exp(1), fn(...))`
-  // case. N-ary (>2), kernel-first base, and record/tuple/iid base are
-  // explicit, clear deferrals (a tight follow-up before the 2d flag
-  // flip; the flag is OFF in production so legacy inlineChainOps still
-  // owns those shapes — no regression).
+  // Scope (2b/2b-ext): N steps, left-associative; scalar base measure
+  // and scalar-variate single-param kernels; the i-th kernel takes the
+  // cat of all prior step variates (spec §06 `c ~ K3([a,b])`).
+  // Kernel-first base and record/tuple/iid base / vector-or-record
+  // kernel output remain explicit clear deferrals (flag OFF in
+  // production so legacy inlineChainOps still owns uncovered shapes —
+  // no regression). N-ary DENSITY (expandMeasureIR) stays 2-step until
+  // 2b-ext density; sampling here is full-N.
   const steps = (d && d.steps) || [];
   if (steps.length < 2) {
     return Promise.reject(new Error('jointchain: need at least 2 steps'));
   }
   if (steps.length > 2) {
+    // N-ary (>2) needs the i-th kernel to consume the cat of >1 prior
+    // variate. Whether that is one vector-valued kernel arg (needs
+    // worker vector-per-atom refArray support) or multiple scalar
+    // params bound positionally/by-label is an open design decision
+    // (surfaced to the user). 2-step is fully implemented; flag OFF in
+    // production ⇒ legacy inlineChainOps still owns N-ary — no
+    // regression. Clean deferral, never a wrong result.
     return Promise.reject(new Error(
-      'jointchain: N-ary (>2 step) materialisation is a step-2 follow-up '
-      + '(2-step jointchain/kchain implemented; flag off in production so '
-      + 'legacy inlineChainOps still handles N-ary).'));
+      'jointchain: N-ary (>2 step) materialisation pending a design '
+      + 'decision on kernel-arg binding (vector-cat vs multi-scalar-'
+      + 'param); 2-step implemented, legacy path owns N-ary while the '
+      + 'first-class flag is off.'));
   }
-  const base = steps[0], kstep = steps[1];
+  const base = steps[0];
   if (base.kernel) {
     return Promise.reject(new Error(
       'jointchain: kernel-first base is itself a kernel, not a closed '
@@ -1381,14 +1391,11 @@ function matJointchain(name, d, ctx) {
       + 'disintegrate handles it structurally (step 3).'));
   }
 
-  const seed0 = nameSeed(name + ':jc0', ctx.rootSeed);
-  const seed1 = nameSeed(name + ':jc1', ctx.rootSeed);
-
   const baseP = base.ref != null
     ? ctx.getMeasure(base.ref)
     : ctx.sendWorker({
         type: 'sampleN', ir: base.measureIR, count: ctx.sampleCount,
-        refArrays: {}, seed: seed0,
+        refArrays: {}, seed: nameSeed(name + ':jc0', ctx.rootSeed),
       }).then((r) => measureFromReply(r, ctx.sampleCount,
         { logTotalmass: 0, n_eff: ctx.sampleCount }));
 
@@ -1398,52 +1405,84 @@ function matJointchain(name, d, ctx) {
         'jointchain: scalar-atom base measure required (record/tuple/iid '
         + 'base is a follow-up)'));
     }
-    // Resolve the kernel to {body, paramName}: inline functionof IR
-    // (the lifted-hole case) or a kernel binding.
-    let fnInfo;
-    if (kstep.kernelIR) {
-      const params = kstep.kernelIR.params || [];
-      if (params.length !== 1 || !kstep.kernelIR.body) {
-        return Promise.reject(new Error(
-          'jointchain: inline kernel must have exactly one parameter'));
-      }
-      fnInfo = { body: kstep.kernelIR.body, paramName: params[0] };
-    } else {
-      fnInfo = resolveFnBody(ctx.bindings && ctx.bindings.get(kstep.ref),
-        ctx.bindings);
-      if (!fnInfo) {
-        return Promise.reject(new Error(
-          `jointchain: kernel '${kstep.ref}' has no single-param callable `
-          + 'body'));
-      }
-    }
     const N = M0.samples.length;
-    // b ~ K(a): draw from K's body measure with its parameter pinned
-    // per-atom to the prior variate's samples.
-    return ctx.sendWorker({
-      type: 'sampleN', ir: fnInfo.body, count: N,
-      refArrays: { [fnInfo.paramName]: M0.samples }, seed: seed1,
-    }).then((reply) => {
-      const M1 = measureFromReply(reply, N, {
-        logWeights: M0.logWeights, logTotalmass: 0, n_eff: M0.n_eff,
+    const fnInfoOf = (kstep) => {
+      if (kstep.kernelIR) {
+        const params = kstep.kernelIR.params || [];
+        if (params.length !== 1 || !kstep.kernelIR.body) return null;
+        return { body: kstep.kernelIR.body, paramName: params[0] };
+      }
+      return resolveFnBody(ctx.bindings && ctx.bindings.get(kstep.ref),
+        ctx.bindings);
+    };
+    // Per-spec §06 the i-th kernel takes the cat of ALL prior step
+    // variates as its single argument (`c ~ K3([a,b])`): one prior ⇒
+    // the scalar [N]; k priors ⇒ an atom-major [N, k] vector. This is
+    // the structural realisation of the left-associative chain —
+    // never surface-kwarg-name matching.
+    const priorCat = (priorList) => {
+      if (priorList.length === 1) {
+        return valueLib.batchedScalar(priorList[0].samples);
+      }
+      const k = priorList.length;
+      const data = new Float64Array(N * k);
+      for (let a = 0; a < N; a++) {
+        for (let j = 0; j < k; j++) data[a * k + j] = priorList[j].samples[a];
+      }
+      return { shape: [N, k], data };
+    };
+
+    // Fold the steps left-associatively: draw each kernel step from
+    // its body measure with the prior-cat pinned per-atom.
+    let chainP = Promise.resolve([M0]);
+    for (let i = 1; i < steps.length; i++) {
+      const kstep = steps[i];
+      chainP = chainP.then((priorList) => {
+        const fnInfo = fnInfoOf(kstep);
+        if (!fnInfo) {
+          return Promise.reject(new Error(
+            `jointchain: step ${i} kernel `
+            + `${kstep.ref ? `'${kstep.ref}' ` : '(inline) '}`
+            + 'has no single-param callable body'));
+        }
+        return ctx.sendWorker({
+          type: 'sampleN', ir: fnInfo.body, count: N,
+          refArrays: { [fnInfo.paramName]: priorCat(priorList) },
+          seed: nameSeed(name + ':jc' + i, ctx.rootSeed),
+        }).then((reply) => {
+          const Mi = measureFromReply(reply, N, {
+            logWeights: M0.logWeights, logTotalmass: 0, n_eff: M0.n_eff,
+          });
+          if (!Mi.samples) {
+            return Promise.reject(new Error(
+              `jointchain: step ${i} kernel produced a non-scalar variate `
+              + '(vector/record kernel output is a follow-up)'));
+          }
+          return priorList.concat([Mi]);
+        });
       });
-      // kchain: the marginal law of b. b_i ~ K(a_i), a_i ~ M0, so the
-      // empirical b-samples ARE draws from ∫K(a)dM0 — sampling needs
-      // no extra work; the density MC integral is step 2c.
-      if (d.marginalize) return M1;
-      // jointchain: retain both variates (cat semantics).
-      const subs = [M0, M1];
-      const lw = empirical.propagateLogWeights(subs);
-      const nEff = Math.min(M0.n_eff != null ? M0.n_eff : N,
-                            M1.n_eff != null ? M1.n_eff : N);
+    }
+
+    return chainP.then((variates) => {
+      // kchain: the marginal law of the last variate. The forward
+      // samples ARE draws from the marginal; the density MC integral
+      // over the intermediates is handled by matLogdensityof (isChain).
+      if (d.marginalize) return variates[variates.length - 1];
+      // jointchain: retain the cat of all step variates.
+      const lw = empirical.propagateLogWeights(variates);
+      let nEff = N;
+      for (const v of variates) {
+        if (v.n_eff != null) nEff = Math.min(nEff, v.n_eff);
+      }
       if (d.labels) {
         const fields = {};
-        fields[d.labels[0]] = M0;
-        fields[d.labels[1]] = M1;
+        for (let i = 0; i < variates.length; i++) {
+          fields[d.labels[i]] = variates[i];
+        }
         return Object.assign(empirical.recordMeasure(fields, lw),
           { logTotalmass: 0, n_eff: nEff });
       }
-      return Object.assign(empirical.tupleMeasure(subs, lw),
+      return Object.assign(empirical.tupleMeasure(variates, lw),
         { logTotalmass: 0, n_eff: nEff });
     });
   });

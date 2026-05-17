@@ -218,13 +218,15 @@ test('matJointchain: kwarg jointchain(p=M,q=K) → record-shaped', async () => {
   assert.ok(m.fields && m.fields.p && m.fields.q, 'record { p, q }');
 });
 
-test('matJointchain: N-ary (>2) is a clear deferral, not a wrong result', async () => {
+test('matJointchain: N-ary (>2) is a clean deferral pending design', async () => {
+  // N-ary kernel-arg binding (vector-cat vs multi-scalar-param) is an
+  // open design decision; must reject clearly, never mis-sample.
   await assert.rejects(materialise(
     'M = Normal(mu = 0.0, sigma = 1.0)\n' +
     'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
     'K2 = functionof(Normal(mu = y, sigma = 1.0), y = y)\n' +
     'jc = jointchain(M, K, K2)\n', 'jc', 1000),
-    /N-ary .* follow-up/);
+    /N-ary .* design decision|N-ary .* pending/);
 });
 
 // ---- 2c: density (consume/rest via expandMeasureIR) ----
