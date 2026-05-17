@@ -75,6 +75,8 @@ const {
   SAMPLEABLE_DISTRIBUTIONS,
   DISCRETE_DISTRIBUTIONS,
   EVALUABLE_OPS,
+  normalizeMeasureIR,
+  isFixedPhaseValueIR,
 } = require('./ir-shared');
 
 // Facade re-bind of the profile-plot UI support now living in
@@ -261,69 +263,6 @@ function buildSampleChain(targetName, bindings) {
   return { chain: order, discrete };
 }
 
-/**
- * Canonicalise measure-construction IRs so downstream classification,
- * sampling, and the viewer's plot dispatch all see a single normalized
- * shape per equivalence class. Pure: input IR is not mutated.
- *
- *   lawof(e)              ≡ Dirac(value = e)   ONLY when e is fixed-phase.
- *      (For deterministic e the law is a point mass at e. For
- *      stochastic e — e.g. `lawof(draw(m))` — the spec identity is
- *      lawof(draw(m)) ≡ m, NOT Dirac(value=draw_result), so we skip
- *      the rewrite. Spec §sec:variate-measure + §sec:lawof.)
- *
- *   Dirac(e)              ≡ Dirac(value = e)
- *      (Positional argument bound to the kwarg name per spec
- *      §sec:calling-convention: built-in callables accept both
- *      positional and keyword forms, with identical semantics.
- *      Purely syntactic — no phase check needed.)
- *
- * Applied at every entry point that classifies measure IRs
- * (classifyForChain, resolveMeasure, target-promotion,
- * classifyDerivation). After this point, fixed-phase lawof and
- * positional-Dirac don't appear as distinct measure surface forms —
- * only Dirac(value=...) remains, and the Dirac sampler / viewer text
- * path handles it uniformly.
- *
- * @param ir       IR node to (possibly) rewrite.
- * @param bindings Optional bindings map. When supplied, enables the
- *                 lawof rewrite by letting us check the phase of a
- *                 ref-arg. Without it, lawof passes through unchanged.
- */
-function normalizeMeasureIR(ir, bindings) {
-  if (!ir || ir.kind !== 'call') return ir;
-  if (ir.op === 'lawof'
-      && Array.isArray(ir.args) && ir.args.length === 1
-      && (!ir.kwargs || Object.keys(ir.kwargs).length === 0)) {
-    if (isFixedPhaseValueIR(ir.args[0], bindings)) {
-      return { kind: 'call', op: 'Dirac',
-               kwargs: { value: ir.args[0] }, loc: ir.loc };
-    }
-  }
-  if (ir.op === 'Dirac'
-      && (!ir.kwargs || !Object.prototype.hasOwnProperty.call(ir.kwargs, 'value'))
-      && Array.isArray(ir.args) && ir.args.length === 1) {
-    return { kind: 'call', op: 'Dirac',
-             kwargs: { value: ir.args[0] }, loc: ir.loc };
-  }
-  return ir;
-}
-
-// Conservative "this IR denotes a deterministic value" predicate used
-// by normalizeMeasureIR's lawof rewrite. Literals and named constants
-// are always fixed; refs are fixed iff they point at a binding with
-// phase='fixed'. Anything else (calls, missing bindings) returns
-// false — the rewrite skips them and the lawof stays in its original
-// form for downstream phase-aware dispatch.
-function isFixedPhaseValueIR(ir, bindings) {
-  if (!ir) return false;
-  if (ir.kind === 'lit' || ir.kind === 'const') return true;
-  if (ir.kind === 'ref' && ir.ns === 'self' && bindings) {
-    const b = bindings.get(ir.name);
-    return !!(b && b.phase === 'fixed');
-  }
-  return false;
-}
 
 /**
  * Decide how a single binding contributes to the chain.
