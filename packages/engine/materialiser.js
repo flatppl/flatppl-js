@@ -850,6 +850,63 @@ function matSuperpose(name, d, ctx) {
   });
 }
 
+function matSelect(name, d, ctx) {
+  // Discrete-selector mixture generation (engine-concepts §11): the
+  // SAMPLING half of the shared select core (density is walkSelect).
+  // Eval-all-branches-then-gather — draw every branch's full N-atom
+  // batch AND the realised per-atom selector, then pick per atom:
+  //
+  //   out[i] = branch_{idx(selector[i])}.samples[i]
+  //
+  // Drawing all branches for every atom (even unpicked ones) keeps
+  // the per-atom RNG threading consistent (the same property matIid /
+  // the worker sampleN rely on); the gather itself is deterministic.
+  // `marginalize` is a DENSITY-only concept — for sampling the
+  // selector is always realised (never marginalised); that is exactly
+  // the kchain-sample vs kchain-density asymmetry.
+  //
+  // ifelse(c, a, b): branches=[a, b], selector c ∈ {0,1}; c truthy
+  // (Bernoulli success) ⇒ branch 0 (a), else branch 1 (b). For K>2
+  // (explicit Categorical mixture, later) the selector is a 1-based
+  // index; clamp defensively.
+  const branchNames = d.branches || [];
+  if (branchNames.length === 0) {
+    return Promise.reject(new Error('matSelect: select has no branches'));
+  }
+  if (!d.selectorRef) {
+    return Promise.reject(new Error(
+      'matSelect: sampling a select/ifelse needs a materialisable '
+      + 'selector (a named Bernoulli/Categorical condition). Its '
+      + 'density is tractable, but this binding cannot be sampled in '
+      + 'the current scope (inline / non-closed-form selector).'));
+  }
+  const want = branchNames.map(ctx.getMeasure);
+  want.push(ctx.getMeasure(d.selectorRef));
+  return Promise.all(want).then((ms) => {
+    const sel = empirical.materialiseUniform(ms[ms.length - 1]).samples;
+    const branches = ms.slice(0, ms.length - 1)
+      .map((m) => empirical.materialiseUniform(m).samples);
+    const K = branches.length;
+    const N = ctx.sampleCount;
+    const out = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let k;
+      if (K === 2) {
+        // ifelse: success/true (selector ≠ 0) ⇒ branch 0.
+        k = sel[i] ? 0 : 1;
+      } else {
+        // 1-based Categorical index into the branch list.
+        k = (sel[i] | 0) - 1;
+      }
+      if (k < 0) k = 0; else if (k >= K) k = K - 1;
+      out[i] = branches[k][i];
+    }
+    // ifelse / mixture of probability measures is a probability
+    // measure (uniform atoms, unit mass).
+    return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N });
+  });
+}
+
 function matBayesupdate(d, ctx) {
   // Reweight the prior atoms by per-atom log-likelihood. Per spec:
   //   posterior = bayesupdate(L, prior),  L = likelihoodof(K, obs)
@@ -1339,6 +1396,7 @@ const KIND_HANDLERS = {
   tuple:        (name, d, ctx) => matTuple(d, ctx),
   record:       (name, d, ctx) => matRecord(d, ctx),
   superpose:    (name, d, ctx) => matSuperpose(name, d, ctx),
+  select:       (name, d, ctx) => matSelect(name, d, ctx),
   bayesupdate:  (name, d, ctx) => matBayesupdate(d, ctx),
   logdensityof: (name, d, ctx) => matLogdensityof(d, ctx),
   totalmass:    (name, d, ctx) => matTotalmass(d, ctx),
