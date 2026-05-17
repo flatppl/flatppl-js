@@ -227,6 +227,49 @@ test('matJointchain: N-ary (>2) is a clear deferral, not a wrong result', async 
     /N-ary .* follow-up/);
 });
 
+// ---- 2c: density (consume/rest via expandMeasureIR) ----
+const LOG2PI = Math.log(2 * Math.PI);
+const normLogpdf = (x, mu, sig) =>
+  -0.5 * LOG2PI - Math.log(sig) - ((x - mu) ** 2) / (2 * sig * sig);
+
+test('density 2c: kchain marginal logdensity ≈ Normal(0, sqrt2)', async () => {
+  // a~N(0,1); b~N(a,1); kchain marginal = N(0, sqrt2). MC estimator
+  // logsumexp_i logp(0 | N(a_i,1)) − logN → logpdf_{N(0,sqrt2)}(0).
+  const m = await materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'd = kchain(M, K)\n' +
+    'lp = logdensityof(d, 0.0)\n', 'lp', 9000);
+  const got = m.samples[0];                       // broadcast scalar
+  const want = normLogpdf(0, 0, Math.sqrt(2));     // ≈ -1.2655
+  assert.ok(Math.abs(got - want) < 0.06,
+    `kchain marginal logp ${got} vs analytic ${want}`);
+});
+
+test('density 2c: labelled jointchain joint logdensity = p(a)·p(b|a)', async () => {
+  // Exact (no MC): logp = logN(0.5;0,1) + logN(1.0;0.5,1).
+  const m = await materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'jc = jointchain(p = M, q = K)\n' +
+    'lp = logdensityof(jc, record(p = 0.5, q = 1.0))\n', 'lp', 2000);
+  const got = m.samples[0];
+  const want = normLogpdf(0.5, 0, 1) + normLogpdf(1.0, 0.5, 1); // ≈ -2.0879
+  assert.ok(Math.abs(got - want) < 1e-6,
+    `jointchain joint logp ${got} vs analytic ${want}`);
+});
+
+test('density 2c: positional jointchain density is a clean deferral', async () => {
+  // Dependent-positional density needs a walker variant (2b-ext);
+  // must reject clearly, never silently mis-score.
+  await assert.rejects(materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'jc = jointchain(M, K)\n' +
+    'lp = logdensityof(jc, [0.5, 1.0])\n', 'lp', 1000),
+    /cannot expand|expand measure/);
+});
+
 test('classifyJointchain: non-kernel later arg → null (parity fallback)', () => {
   // K_i must be a kernel; a measure in kernel position isn't covered
   // by the first-class path → null so the dual-path falls back.
