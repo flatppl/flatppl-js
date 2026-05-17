@@ -1382,6 +1382,43 @@ function matLogdensityof(d, ctx) {
   });
 }
 
+function matBroadcastLogdensity(d, ctx) {
+  // Reference (eager, per-point) realisation of
+  //   broadcast(logdensityof, M, pts) = [logdensityof(M, p) ∀ p∈pts]
+  // (engine-concepts §11: flatppl-js is the EAGER engine; this maps
+  // the trusted single-point matLogdensityof over the points so we
+  // have correct reference code + tests under the future principled
+  // FlatPIR-codegen path). Tractable M ⇒ matLogdensityof does NOT
+  // sample. Sequential to avoid concurrent worker pressure;
+  // correctness > speed by design here. Result is a value array
+  // (length = #points), same measure shape as a static `array`
+  // binding — the plot panel renders it as an index/value curve.
+  const ptsVal = orchestrator.resolveIRToValue(
+    d.pointsIR, ctx.bindings, ctx.fixedValues);
+  const pts = Array.isArray(ptsVal) ? ptsVal
+    : (ptsVal && ptsVal.data ? Array.from(ptsVal.data) : null);
+  if (!pts || pts.length === 0) {
+    return Promise.reject(new Error(
+      'broadcast(logdensityof, M, pts): points must resolve to a '
+      + 'non-empty array (got ' + JSON.stringify(ptsVal) + ')'));
+  }
+  const out = new Float64Array(pts.length);
+  let chain = Promise.resolve();
+  for (let k = 0; k < pts.length; k++) {
+    const kk = k;
+    chain = chain
+      .then(() => matLogdensityof({
+        kind: 'logdensityof',
+        measureName: d.measureName,
+        obsIR: { kind: 'lit', value: pts[kk] },
+      }, ctx))
+      .then((m) => { out[kk] = m.samples[0]; });
+  }
+  return chain.then(() => scalarMeasureN(out, {
+    logWeights: null, logTotalmass: 0, n_eff: out.length,
+  }));
+}
+
 // =====================================================================
 // Top-level dispatch
 // =====================================================================
@@ -1395,6 +1432,7 @@ const KIND_HANDLERS = {
   normalize:    (name, d, ctx) => matNormalize(d, ctx),
   iid:          (name, d, ctx) => matIid(name, d, ctx),
   kernelbroadcast: (name, d, ctx) => matKernelBroadcast(name, d, ctx),
+  broadcast_logdensity: (name, d, ctx) => matBroadcastLogdensity(d, ctx),
   tuple:        (name, d, ctx) => matTuple(d, ctx),
   record:       (name, d, ctx) => matRecord(d, ctx),
   superpose:    (name, d, ctx) => matSuperpose(name, d, ctx),

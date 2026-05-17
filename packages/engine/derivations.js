@@ -1012,6 +1012,40 @@ function classifyKernelBroadcast(rhsIR, ast, bindings) {
   return { kind: 'kernelbroadcast', distOp: k.name, argIRs: argIRs, kwargIRs: kwargIRs };
 }
 
+// broadcast(logdensityof, M, points) — evaluate a measure's density
+// at MANY points. Reference (eager, per-point) realisation: the
+// abstract lowering says logdensityof(M,_) is a batched closed-form
+// expression in the point and broadcast maps it; flatppl-js is the
+// EAGER engine (engine-concepts §11), so we map the trusted
+// single-point logdensityof over the points — tractable M ⇒ no
+// sampling. The principled FlatPIR-codegen path can later replace
+// this with tests + this reference under it.
+function classifyBroadcastLogdensity(rhsIR, ast, bindings) {
+  if (rhsIR.op !== 'broadcast' || !Array.isArray(rhsIR.args)
+      || rhsIR.args.length !== 3) return null;
+  const fIR = rhsIR.args[0];
+  const mIR = rhsIR.args[1];
+  const pIR = rhsIR.args[2];
+  // First arg must be the bare `logdensityof` builtin (not a
+  // user-shadowed binding).
+  if (!fIR || fIR.kind !== 'ref' || fIR.ns !== 'self'
+      || fIR.name !== 'logdensityof' || bindings.has('logdensityof')) {
+    return null;
+  }
+  if (!isSelfRef(mIR) || !bindings.has(mIR.name)) return null;
+  return { kind: 'broadcast_logdensity', measureName: mIR.name, pointsIR: pIR };
+}
+
+// `broadcast` is overloaded: stochastic kernel-broadcast
+// (broadcast(Normal, mus, sigmas)) vs. broadcast(logdensityof, M,
+// pts). Try the logdensity form first; fall back to kernel-broadcast
+// (which only matches a bare SAMPLEABLE head, so the two never
+// collide).
+function classifyBroadcast(rhsIR, ast, bindings) {
+  return classifyBroadcastLogdensity(rhsIR, ast, bindings)
+      || classifyKernelBroadcast(rhsIR, ast, bindings);
+}
+
 // `logdensityof(M, x)` — per spec §sec:posterior, evaluate M's
 // log-density at x. Result is REAL (a value, not a measure), but the
 // classifier dispatch lives here uniformly: the materialiser computes
@@ -1234,7 +1268,7 @@ const MEASURE_OP_CLASSIFIERS = {
   record:       classifyRecordOrJoint,
   joint:        classifyRecordOrJoint,
   iid:          classifyIid,
-  broadcast:    classifyKernelBroadcast,
+  broadcast:    classifyBroadcast,
   logdensityof: classifyLogdensityof,
   totalmass:    classifyTotalmass,
   truncate:     classifyTruncate,
@@ -1324,6 +1358,12 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
       }
     }
     return true;
+  }
+  // broadcast(logdensityof, M, pts): the measure must be resolvable
+  // (the points expression is a fixed-phase value resolved at
+  // materialise time).
+  if (d.kind === 'broadcast_logdensity') {
+    return resolvable(d.measureName);
   }
   // pushfwd: the base measure must be resolvable. f is a function
   // binding referenced by name; we trust the binding map.

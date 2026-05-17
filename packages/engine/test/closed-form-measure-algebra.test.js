@@ -599,3 +599,90 @@ x  = draw(xs[i])
     && Math.abs(n3 / N - 0.5) < 0.025,
     `branch fractions [${n1 / N}, ${n2 / N}, ${n3 / N}] vs [0.2,0.3,0.5]`);
 });
+
+// =====================================================================
+// broadcast(logdensityof, M, points) — evaluate a tractable density
+// at many points. flatppl-js EAGER reference realisation
+// (engine-concepts §11): maps the trusted single-point logdensityof
+// over the points; tractable M ⇒ NO sampling. Result is a value
+// array (one logp per point).
+// =====================================================================
+
+test('broadcast(logdensityof, M, pts): plain leaf == analytic logpdf vector', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+pts = [0.0, 1.0, 2.5, 5.0]
+lps = broadcast(logdensityof, A, pts)
+`);
+  const m = await ctx.getMeasure('lps');
+  const P = [0.0, 1.0, 2.5, 5.0];
+  assert.equal(m.samples.length, P.length, 'one logp per point');
+  for (let i = 0; i < P.length; i++) {
+    assert.ok(Math.abs(m.samples[i] - normalLogpdf(P[i], 0, 1)) < 1e-10,
+      `point ${P[i]}: got ${m.samples[i]}, expected ${normalLogpdf(P[i], 0, 1)}`);
+  }
+});
+
+test('broadcast(logdensityof, mixture, pts): per-point closed-form mixture', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 2.0)
+mix = normalize(superpose(weighted(0.3, A), weighted(0.7, B)))
+pts = [-1.0, 0.0, 1.0, 2.5, 5.0, 8.0]
+lps = broadcast(logdensityof, mix, pts)
+`);
+  const m = await ctx.getMeasure('lps');
+  const P = [-1.0, 0.0, 1.0, 2.5, 5.0, 8.0];
+  for (let i = 0; i < P.length; i++) {
+    const exp = Math.log(
+      0.3 * Math.exp(normalLogpdf(P[i], 0, 1))
+      + 0.7 * Math.exp(normalLogpdf(P[i], 5, 2)));
+    assert.ok(Math.abs(m.samples[i] - exp) < 1e-10,
+      `point ${P[i]}: got ${m.samples[i]}, expected ${exp}`);
+  }
+});
+
+test('broadcast(logdensityof, ifelse, pts) ≡ broadcast over normalize(superpose) — shared core through broadcast', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 2.0)
+c = draw(Bernoulli(p = 0.3))
+viaIf = ifelse(c, A, B)
+viaSup = normalize(superpose(weighted(0.3, A), weighted(0.7, B)))
+pts = [0.0, 1.3, 4.0, 6.5]
+lpsIf  = broadcast(logdensityof, viaIf, pts)
+lpsSup = broadcast(logdensityof, viaSup, pts)
+`);
+  const [I, S] = await Promise.all([ctx.getMeasure('lpsIf'), ctx.getMeasure('lpsSup')]);
+  assert.equal(I.samples.length, 4);
+  for (let i = 0; i < 4; i++) {
+    assert.ok(Math.abs(I.samples[i] - S.samples[i]) < 1e-10,
+      `point ${i}: ifelse=${I.samples[i]} vs normalize(superpose)=${S.samples[i]}`);
+  }
+});
+
+test('broadcast(logdensityof, mix, pts): inline point vector trapezoids to 1', async () => {
+  // ∫ p_mix dx ≈ 1 via a single broadcast over a fine inline grid —
+  // exercises broadcast(logdensityof,…) with an inline (non-binding)
+  // points expression and confirms it is a proper density.
+  const lo = -10, hi = 14, n = 4000, h = (hi - lo) / n;
+  let grid = '';
+  for (let i = 0; i <= n; i++) {
+    grid += (i ? ', ' : '') + (lo + i * h).toFixed(6);
+  }
+  const ctx = makeCtx(`
+A = Normal(mu = -1.0, sigma = 0.9)
+B = Normal(mu =  4.0, sigma = 1.4)
+mix = normalize(superpose(weighted(0.45, A), weighted(0.55, B)))
+lps = broadcast(logdensityof, mix, [${grid}])
+`);
+  const m = await ctx.getMeasure('lps');
+  let integral = 0;
+  for (let i = 0; i <= n; i++) {
+    const w = (i === 0 || i === n) ? 0.5 : 1.0;
+    integral += w * Math.exp(m.samples[i]);
+  }
+  integral *= h;
+  assert.ok(Math.abs(integral - 1.0) < 2e-3,
+    `broadcast density must integrate to 1, got ${integral}`);
+});
