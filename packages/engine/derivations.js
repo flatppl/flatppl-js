@@ -855,7 +855,7 @@ function classifyStochasticIndex(rhsIR, ast, bindings) {
   const branches = [];
   for (const el of cb.ir.args) {
     if (!el || el.kind !== 'ref' || el.ns !== 'self') return null;
-    branches.push(el.name);
+    branches.push({ ref: el.name });
   }
   const cat = resolveCategoricalP(indexIR, bindings, new Set());
   if (!cat) return null;
@@ -903,9 +903,22 @@ function classifyStochasticIndex(rhsIR, ast, bindings) {
 function classifyIfelse(rhsIR, ast, bindings) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 3) return null;
   if (!ast || !Array.isArray(ast.args) || ast.args.length !== 3) return null;
-  const aName = resolveMeasureBaseName(ast.args[1], bindings);
-  const bName = resolveMeasureBaseName(ast.args[2], bindings);
-  if (aName == null || bName == null) return null;
+  // A branch is either a NAMED measure binding (resolveMeasureBaseName)
+  // or an INLINE sampleable-distribution leaf call — the common
+  // `ifelse(c, Normal(0,1), Normal(5,1))` form. Inline *composite*
+  // measures stay unsupported here (use named bindings for those);
+  // value-valued ifelse resolves to null on both and stays on the
+  // evaluator path. Unified branch shape: { ref } | { ir }.
+  const resolveBranch = (astArg, irArg) => {
+    const nm = resolveMeasureBaseName(astArg, bindings);
+    if (nm != null) return { ref: nm };
+    if (irArg && irArg.kind === 'call'
+        && SAMPLEABLE_DISTRIBUTIONS.has(irArg.op)) return { ir: irArg };
+    return null;
+  };
+  const aB = resolveBranch(ast.args[1], rhsIR.args[1]);
+  const bB = resolveBranch(ast.args[2], rhsIR.args[2]);
+  if (!aB || !bB) return null;
   const pIR = resolveBernoulliP(rhsIR.args[0], bindings, new Set());
   if (pIR == null) return null;
   const call = (op, args) => ({ kind: 'call', op, args });
@@ -920,7 +933,7 @@ function classifyIfelse(rhsIR, ast, bindings) {
     ? cond.name : null;
   return {
     kind: 'select',
-    branches: [aName, bName],
+    branches: [aB, bB],
     // log P(true)=log p ; log P(false)=log(1−p). Constant in the
     // observation point; walkSelect evaluates these per atom.
     logweightIRs: [
@@ -1321,11 +1334,12 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
     }
     return true;
   }
-  // Select (ifelse / mixture): every branch must be resolvable.
+  // Select (ifelse / mixture): every NAMED branch must be resolvable;
+  // inline-IR branches ({ ir }) are self-contained.
   if (d.kind === 'select') {
     if (!Array.isArray(d.branches) || d.branches.length === 0) return false;
-    for (const n of d.branches) {
-      if (!resolvable(n)) return false;
+    for (const b of d.branches) {
+      if (b && b.ref != null && !resolvable(b.ref)) return false;
     }
     return true;
   }
@@ -1426,10 +1440,16 @@ function isDiscreteAt(name, derivations, visited) {
   }
   if (d.kind === 'select') {
     // Same rule as superpose: a mixture/ifelse is discrete only if
-    // every branch is (mixed support ⇒ treat as continuous).
+    // every branch is (mixed support ⇒ treat as continuous). Named
+    // branch ⇒ recurse; inline-IR leaf branch ⇒ check the dist op.
     if (!Array.isArray(d.branches) || d.branches.length === 0) return false;
-    for (const n of d.branches) {
-      if (!isDiscreteAt(n, derivations, new Set(visited))) return false;
+    for (const b of d.branches) {
+      if (!b) return false;
+      if (b.ref != null) {
+        if (!isDiscreteAt(b.ref, derivations, new Set(visited))) return false;
+      } else if (b.ir) {
+        if (!DISCRETE_DISTRIBUTIONS.has(b.ir.op)) return false;
+      } else return false;
     }
     return true;
   }
@@ -1677,8 +1697,13 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         // logsumexp_k(logw_k + logp_branch_k) — the exact mixture
         // density.
         const branches = [];
-        for (const n of d.branches) {
-          const inner = expandMeasureIR(n, derivations, next, bindings);
+        for (const b of d.branches) {
+          let inner = null;
+          if (b && b.ref != null) {
+            inner = expandMeasureIR(b.ref, derivations, next, bindings);
+          } else if (b && b.ir) {
+            inner = _expandMeasureIRStructural(b.ir, derivations, next, bindings);
+          }
           if (!inner) return null;
           branches.push(inner);
         }
