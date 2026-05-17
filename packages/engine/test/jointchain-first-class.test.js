@@ -1,12 +1,10 @@
 'use strict';
 
-// jointchain/kchain first-class derivation kind — STEP 1 (classifier +
-// explicit step structure, behind the off-by-default
-// JOINTCHAIN_STATE.firstClass flag). Dual-path migration: with the
-// flag off the legacy inlineChainOps rewrite is unchanged (zero
-// behaviour change — the rest of the suite proves that); with it on,
-// classifyJointchain builds the explicit step structure. Materialiser
-// is a step-2 stub, so these tests assert CLASSIFICATION only.
+// jointchain/kchain first-class derivation kind. The consolidation is
+// complete and UNCONDITIONAL: classifyJointchain + matJointchain +
+// expandMeasureIR are the only path (legacy inlineChainOps and its
+// migration flag have been deleted). These tests pin the classifier
+// structure and end-to-end sampling/density behaviour.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -14,39 +12,34 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator, materialiser } = require('..');
 const { createWorkerHandler } = require('../worker');
 const { buildDerivations } = orchestrator;
-const { JOINTCHAIN_STATE } = orchestrator._internal;
 
-// Materialise `target` from `src` with the first-class flag forced on
-// (restored after). Mirrors the kernel-broadcast test harness.
+// Materialise `target` from `src` via the real materialiser. Mirrors
+// the kernel-broadcast test harness.
 function materialise(src, target, sampleCount) {
-  const prev = JOINTCHAIN_STATE.firstClass;
-  JOINTCHAIN_STATE.firstClass = true;
-  try {
-    const lifted = processSource(src);
-    const built = orchestrator.buildDerivations(lifted.bindings);
-    const worker = createWorkerHandler();
-    worker.handle({ type: 'init', seed: 4242 });
-    const cache = new Map();
-    const ctx = {
-      derivations: built.derivations,
-      bindings: built.bindings,
-      fixedValues: built.fixedValues || new Map(),
-      getMeasure: (n) => {
-        if (cache.has(n)) return cache.get(n);
-        const p = materialiser.materialiseMeasure(n, ctx);
-        cache.set(n, p);
-        return p;
-      },
-      sendWorker: (m) => {
-        const r = worker.handle(m);
-        return r && r.type === 'error'
-          ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
-      },
-      sampleCount: sampleCount || 6000,
-      rootSeed: 4242,
-    };
-    return ctx.getMeasure(target);
-  } finally { JOINTCHAIN_STATE.firstClass = prev; }
+  const lifted = processSource(src);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 4242 });
+  const cache = new Map();
+  const ctx = {
+    derivations: built.derivations,
+    bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure: (n) => {
+      if (cache.has(n)) return cache.get(n);
+      const p = materialiser.materialiseMeasure(n, ctx);
+      cache.set(n, p);
+      return p;
+    },
+    sendWorker: (m) => {
+      const r = worker.handle(m);
+      return r && r.type === 'error'
+        ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+    },
+    sampleCount: sampleCount || 6000,
+    rootSeed: 4242,
+  };
+  return ctx.getMeasure(target);
 }
 
 function meanOf(arr) {
@@ -59,28 +52,19 @@ function varOf(arr) {
   return s / arr.length;
 }
 
-// Run `fn` with the first-class flag forced on, always restoring it
-// (test isolation — every other suite must see the default off path).
-function withFirstClass(fn) {
-  const prev = JOINTCHAIN_STATE.firstClass;
-  JOINTCHAIN_STATE.firstClass = true;
-  try { return fn(); } finally { JOINTCHAIN_STATE.firstClass = prev; }
-}
+// First-class jointchain is unconditional (the migration flag is
+// gone). Retained as a thin identity wrapper so the structural test
+// bodies below stay grouped/readable without churn.
+function withFirstClass(fn) { return fn(); }
 
 const KDEF =
   'M = Normal(mu = 0.0, sigma = 1.0)\n' +
   'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
   'K2 = functionof(Normal(mu = y, sigma = 1.0), y = y)\n';
 
-test('first-class jointchain is the DEFAULT path (flag flipped, step 2d)', () => {
-  // Post-consolidation: the first-class kind:'jointchain' classifier
-  // is authoritative in production WITHOUT any flag toggle. (Through
-  // steps 1–2c this asserted the opposite — the dual-path
-  // zero-behaviour-change guarantee while inlineChainOps was still the
-  // default. The flag flips at 2d; it is removed entirely with
-  // inlineChainOps at step 4.)
-  assert.equal(JOINTCHAIN_STATE.firstClass, true,
-    'first-class jointchain is on by default');
+test('first-class jointchain is the only path (no flag, no legacy)', () => {
+  // Post-consolidation: kind:'jointchain' classification is
+  // unconditional — inlineChainOps and the migration flag are gone.
   const { derivations } = buildDerivations(
     processSource(KDEF + 'jc = jointchain(a = M, b = K)\n').bindings);
   const d = derivations['jc'];

@@ -1225,20 +1225,17 @@ function matLogdensityof(d, ctx) {
   //   log p_ν(obs) = log ∫ p_K(obs | a) dμ(a)
   //                ≈ logsumexp_i { log p_K(obs | a_i) } − log N
   //
-  // We detect chain origin via the derivation's chainOrigin flag
-  // (set by buildDerivations from the binding's pre-lift surface)
-  // and reduce the per-atom output to this scalar, broadcast to N
-  // for shape consistency with the per-atom convention. n_eff
-  // collapses to 1 — there's only one estimator here, even though
-  // it's built from N prior samples.
-  const measureDeriv = ctx.derivations[d.measureName];
-  // chainOrigin: legacy inlineChainOps kchain tag. The first-class
-  // path expresses the same MC marginal as kind:'jointchain' with
-  // marginalize:true (kchain) — expandMeasureIR returns just the last
-  // step's measure (prior var as a per-atom ref), so the SAME
+  // We detect a kchain (marginalising) measure via the first-class
+  // derivation (kind:'jointchain' with marginalize:true) and reduce
+  // the per-atom output to this scalar, broadcast to N for shape
+  // consistency with the per-atom convention. n_eff collapses to 1 —
+  // there's only one estimator here, even though it's built from N
+  // prior samples. expandMeasureIR returns just the last step's
+  // measure (the prior variate as a per-atom ref), so the
   // logsumexp−logN reduction marginalizes the prior out.
-  const isChain = !!(measureDeriv && (measureDeriv.chainOrigin
-    || (measureDeriv.kind === 'jointchain' && measureDeriv.marginalize)));
+  const measureDeriv = ctx.derivations[d.measureName];
+  const isChain = !!(measureDeriv
+    && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
 
   const measureIR = orchestrator.expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
   if (!measureIR) {
@@ -1348,12 +1345,10 @@ const KIND_HANDLERS = {
   truncate:     (name, d, ctx) => matTruncate(d, ctx),
   pushfwd:      (name, d, ctx) => matPushfwd(name, d, ctx),
   mvnormal:     (name, d, ctx) => matMvNormal(name, d, ctx),
-  // jointchain/kchain first-class kind. Step-1 stub: the kind is only
-  // produced when orchestrator JOINTCHAIN_STATE.firstClass is on (off by
-  // default), and step-1 tests exercise classification only. Real
-  // sampling lands in step 2 (sample base; per step apply kernelRef to
-  // the accumulated prior atoms; marginalize ⇒ keep last step's
-  // variates). Throws clearly if reached early.
+  // jointchain/kchain first-class kind (the only path; legacy
+  // inlineChainOps deleted). matJointchain samples the base then
+  // applies each kernel step structurally; marginalize ⇒ keep only
+  // the last step's variate(s).
   jointchain:   (name, d, ctx) => matJointchain(name, d, ctx),
 };
 

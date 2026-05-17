@@ -595,10 +595,8 @@ function argSignature(op, numArgs) {
   if (op === 'jointchain' || op === 'kchain') {
     // jointchain(M, K1, K2, ...) / kchain(M, K1, K2, ...): every
     // positional arg is measure-typed (the first a base measure or
-    // closed kernel; the rest non-nullary kernels). Lifting them as
-    // measures hoists inline measure/kernel args to anon bindings
-    // so classifyJointchain sees uniform refs (first-class kind;
-    // the legacy inlineChainOps consumer is gone).
+    // closed kernel; the rest non-nullary kernels). Lifting them lets
+    // inlineChainOps find them as named bindings to walk.
     return Array(numArgs).fill('measure');
   }
   if (SAMPLEABLE_DISTRIBUTIONS.has(op))           return Array(numArgs).fill('value');
@@ -1407,7 +1405,8 @@ function liftInlineSubexpressions(bindings) {
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     const fnName = astArg.callee.name;
     // Use `out`, not `bindings`, so synthesized anon bindings created
-    // during the lift pass are visible to inlineOnce too.
+    // during the lift pass are visible to inlineOnce too (mirrors the
+    // change in inlineChainOps above).
     const fnBinding = out.get(fnName);
     if (!fnBinding) return astArg;
     // We only inline real reified callables. fn and kernelof are
