@@ -75,6 +75,38 @@
   //   L7  orchestration (top)        updatePlotForBinding,
   //                                  applySourceUpdate, message listener,
   //                                  resize observers, mount prologue
+  //
+  // ── PHASE 2 EXECUTION MAP (ctx-threading) ───────────────────────────
+  // Key safety finding (authoritative inventory): there is NO
+  // mount-scope variable shadowing by any nested function, and a
+  // single `var ctx` declared at the top of mount() shares the EXACT
+  // lexical-capture scope as the per-mount state vars it replaces
+  // (including async/RAF/event-listener/returned-closure captures).
+  // Therefore a mechanical `X → ctx.X` rewrite is behaviour-neutral
+  // and can proceed group-by-group (each group's names are disjoint,
+  // so each commit is self-contained). Captured mutable-state groups:
+  //   G1 DAG/state     cy, bb, history, currentState
+  //   G2 plot control  plotEnabled, currentPlotPlan,
+  //                    currentPlotBindingName, plotEchart
+  //   G3 worker        samplerWorker(+Promise/Error), samplerReqId,
+  //                    pendingRequests
+  //   G4 derivations   derivationsState, measureCache, histogramCache,
+  //                    profileRangeCache, presetOverrides,
+  //                    domainOverrides
+  //   G5 sampling cfg  rootSeed, SAMPLE_COUNT, REJECTION_BUDGET
+  //   G6 source        currentSource, currentVariantId,
+  //                    currentBindings, currentLoweredModule
+  //   G7 plan memory   pendingPresetName, pendingDomainName,
+  //                    planMemoryByName
+  //   G8 mutable cfg   HISTORY_CAP (reassigned in configUpdate)
+  // Per-mount constants (PALETTE/PHASE_COLORS/DRAW_EDGE_COLOR/
+  // TYPE_STYLE/CODICON_PATHS/MODULE_TARGET/host/CONFIG/HINT/
+  // SAMPLER_WORKER_URL) also move onto ctx in Phase 2 so Phase 3 can
+  // hoist functions out of mount. KNOWN CLEANUP: `fixedValueToMeasure`
+  // is defined twice inside mount — the first (full recursive impl,
+  // ~L1330) is dead (the later thin delegator wins via fn-decl
+  // hoisting); delete the dead first def during the G4 step, not as a
+  // drive-by.
   // ─────────────────────────────────────────────────────────────────────
   (function(global) {
     var FlatPPLViewer = (global.FlatPPLViewer = global.FlatPPLViewer || {});
