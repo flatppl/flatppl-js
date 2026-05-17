@@ -1533,6 +1533,74 @@ function matJointchain(name, d, ctx) {
         for (let li = 0; li < ke.leaves.length; li++) {
           const leaf = ke.leaves[li];
           p = p.then((acc) => {
+            const vn = leaf.name != null ? leaf.name : ('s' + i);
+            // Composite kernel-body field: an `iid(D, n)` field (e.g.
+            // obs_dist = joint(obs = iid(Normal(a, b), 10))). Reuse
+            // matIid's worker mechanism — sampleN of the inner leaf
+            // with repeat=n — so the iid draws share the per-atom
+            // parameter context (a, b are closure ancestors of the
+            // prior; collectRefArrays threads them via getMeasure,
+            // consistently with the cached prior draws since prior
+            // field names == kernel param names == draw binding
+            // names). Worker-RNG path, same as every other jointchain
+            // leaf — no in-process traceeval / RNG split.
+            if (leaf.ir && leaf.ir.kind === 'call'
+                && leaf.ir.op === 'iid'
+                && Array.isArray(leaf.ir.args) && leaf.ir.args.length === 2) {
+              let inner = leaf.ir.args[0];
+              if (inner && inner.kind === 'ref' && inner.ns === 'self') {
+                inner = orchestrator.leafSampleIR(inner.name, ctx.derivations)
+                  || inner;
+              }
+              // iid count: a fixed-phase scalar (literal, or a
+              // fixed-binding expr the deterministic evaluator can
+              // compute against fixedValues).
+              const cIR = leaf.ir.args[1];
+              let reps = null;
+              if (cIR && cIR.kind === 'lit' && typeof cIR.value === 'number') {
+                reps = cIR.value | 0;
+              } else {
+                try {
+                  const env = {};
+                  if (ctx.fixedValues) {
+                    for (const [k2, v2] of ctx.fixedValues) env[k2] = v2;
+                  }
+                  const cv = require('./sampler').evaluateExpr(cIR, env);
+                  if (typeof cv === 'number' && Number.isFinite(cv)) {
+                    reps = cv | 0;
+                  }
+                } catch (_) { reps = null; }
+              }
+              if (reps == null || reps < 0 || !inner
+                  || inner.kind !== 'call'
+                  || !require('./sampler').isKnownDistribution(inner.op)) {
+                return Promise.reject(new Error(
+                  `jointchain: step ${i} composite kernel-body field `
+                  + `'${vn}' — only iid(<leaf dist>, <fixed n>) is `
+                  + 'supported (deeper nesting is a follow-up)'));
+              }
+              const bnd = bindLeaf(inner, ke.params);
+              if (!bnd) {
+                return Promise.reject(new Error(
+                  `jointchain: step ${i} iid-field kernel param binding `
+                  + 'unsupported'));
+              }
+              return collectRefArrays(bnd.ir, ctx.fixedValues, ctx.getMeasure)
+                .then((extra) => ctx.sendWorker({
+                  type: 'sampleN', ir: bnd.ir, count: N, repeat: reps,
+                  refArrays: Object.assign({}, extra, bnd.refArrays),
+                  seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootSeed),
+                })).then((reply) => {
+                  const Mi = Object.assign(
+                    empirical.arrayMeasure(reply.samples, [reps], null),
+                    {
+                      value: { shape: [N, reps], data: reply.samples },
+                      logTotalmass: 0, n_eff: N,
+                    });
+                  priorVars.push({ name: vn, m: Mi });
+                  return acc.concat([{ name: vn, m: Mi }]);
+                });
+            }
             const bound = bindLeaf(leaf.ir, ke.params);
             if (!bound) {
               return Promise.reject(new Error(
@@ -1553,7 +1621,6 @@ function matJointchain(name, d, ctx) {
                   `jointchain: step ${i} kernel leaf produced a `
                   + 'non-scalar variate (follow-up)'));
               }
-              const vn = leaf.name != null ? leaf.name : ('s' + i);
               priorVars.push({ name: vn, m: Mi });
               return acc.concat([{ name: vn, m: Mi }]);
             });
@@ -1586,10 +1653,17 @@ function matJointchain(name, d, ctx) {
       for (const s of subs) {
         if (s.n_eff != null) nEff = Math.min(nEff, s.n_eff);
       }
-      // Single scalar variate (e.g. scalar-base kchain) ⇒ a scalar
-      // measure; multiple / named ⇒ a record; positional unlabelled
-      // all-scalar jointchain ⇒ a tuple.
-      if (outPairs.length === 1) {
+      // Variate shape mirrors the kernel/base structure. Unwrap to a
+      // bare scalar measure ONLY for a lone SYNTHETIC-named scalar
+      // (scalar-base kchain / hole-kernel scalar body). A lone NAMED
+      // field (e.g. kchain whose kernel body is joint(obs=…)) keeps
+      // its record shape {obs} — the kernel's variate is that record
+      // (spec: kchain keeps the last kernel's variate). Multiple /
+      // named ⇒ record; positional all-synthetic-scalar ⇒ tuple.
+      if (outPairs.length === 1
+          && /^s\d+$/.test(outPairs[0].name)
+          && outPairs[0].m && outPairs[0].m.samples
+          && !outPairs[0].m.fields) {
         return Object.assign({}, outPairs[0].m,
           { logTotalmass: 0, n_eff: nEff });
       }
