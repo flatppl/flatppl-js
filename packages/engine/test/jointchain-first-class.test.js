@@ -11,9 +11,53 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource, orchestrator } = require('..');
+const { processSource, orchestrator, materialiser } = require('..');
+const { createWorkerHandler } = require('../worker');
 const { buildDerivations } = orchestrator;
 const { JOINTCHAIN_STATE } = orchestrator._internal;
+
+// Materialise `target` from `src` with the first-class flag forced on
+// (restored after). Mirrors the kernel-broadcast test harness.
+function materialise(src, target, sampleCount) {
+  const prev = JOINTCHAIN_STATE.firstClass;
+  JOINTCHAIN_STATE.firstClass = true;
+  try {
+    const lifted = processSource(src);
+    const built = orchestrator.buildDerivations(lifted.bindings);
+    const worker = createWorkerHandler();
+    worker.handle({ type: 'init', seed: 4242 });
+    const cache = new Map();
+    const ctx = {
+      derivations: built.derivations,
+      bindings: built.bindings,
+      fixedValues: built.fixedValues || new Map(),
+      getMeasure: (n) => {
+        if (cache.has(n)) return cache.get(n);
+        const p = materialiser.materialiseMeasure(n, ctx);
+        cache.set(n, p);
+        return p;
+      },
+      sendWorker: (m) => {
+        const r = worker.handle(m);
+        return r && r.type === 'error'
+          ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+      },
+      sampleCount: sampleCount || 6000,
+      rootSeed: 4242,
+    };
+    return ctx.getMeasure(target);
+  } finally { JOINTCHAIN_STATE.firstClass = prev; }
+}
+
+function meanOf(arr) {
+  let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i];
+  return s / arr.length;
+}
+function varOf(arr) {
+  const m = meanOf(arr); let s = 0;
+  for (let i = 0; i < arr.length; i++) s += (arr[i] - m) ** 2;
+  return s / arr.length;
+}
 
 // Run `fn` with the first-class flag forced on, always restoring it
 // (test isolation — every other suite must see the default off path).
@@ -127,6 +171,60 @@ test('flag ON: inline fn/functionof kernel arg (the kchain(Exp,fn) case)', () =>
       'inline kernel carried structurally as kernelIR');
     assert.deepEqual(d.steps[1].inputs, ['s0']);
   });
+});
+
+test('matJointchain: kchain(Normal,fn) marginal = Normal(0, sqrt2)', async () => {
+  // a ~ N(0,1); b ~ N(a,1); kchain marginalizes a ⇒ b ~ N(0, 2).
+  const m = await materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'd = kchain(M, K)\n', 'd', 8000);
+  assert.ok(m.samples, 'kchain yields a scalar-atom measure (marginal b)');
+  assert.ok(Math.abs(meanOf(m.samples)) < 0.08, 'mean ~ 0');
+  assert.ok(Math.abs(varOf(m.samples) - 2.0) < 0.25, 'var ~ 2');
+});
+
+test('matJointchain: the user case kchain(Exp(1), fn(Normal(0,_)))', async () => {
+  // a ~ Exp(1); b ~ Normal(0, a). E[b]=0, Var(b)=E[a^2]=2 (rate 1).
+  const m = await materialise(
+    'd = kchain(Exponential(rate = 1.0), fn(Normal(mu = 0.0, sigma = _)))\n',
+    'd', 8000);
+  assert.ok(m.samples, 'now plottable (was the reported gap)');
+  assert.ok(Math.abs(meanOf(m.samples)) < 0.1, 'symmetric, mean ~ 0');
+  assert.ok(varOf(m.samples) > 1.0, 'heavy-tailed scale mixture, var ~ 2');
+});
+
+test('matJointchain: jointchain(M,K) retains both variates (tuple)', async () => {
+  // a ~ N(0,1); b ~ N(a,1); jointchain keeps (a,b).
+  const m = await materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'jc = jointchain(M, K)\n', 'jc', 8000);
+  assert.ok(m.elems && m.elems.length === 2, 'tuple of (a, b)');
+  const a = m.elems[0].samples, b = m.elems[1].samples;
+  assert.ok(Math.abs(meanOf(a)) < 0.08 && Math.abs(meanOf(b)) < 0.1);
+  // Cov(a,b) = Var(a) = 1 (b = a + noise).
+  let cov = 0; const ma = meanOf(a), mb = meanOf(b);
+  for (let i = 0; i < a.length; i++) cov += (a[i] - ma) * (b[i] - mb);
+  cov /= a.length;
+  assert.ok(Math.abs(cov - 1.0) < 0.15, 'cov(a,b) ~ 1, got ' + cov);
+});
+
+test('matJointchain: kwarg jointchain(p=M,q=K) → record-shaped', async () => {
+  const m = await materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'jc = jointchain(p = M, q = K)\n', 'jc', 4000);
+  assert.ok(m.fields && m.fields.p && m.fields.q, 'record { p, q }');
+});
+
+test('matJointchain: N-ary (>2) is a clear deferral, not a wrong result', async () => {
+  await assert.rejects(materialise(
+    'M = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
+    'K2 = functionof(Normal(mu = y, sigma = 1.0), y = y)\n' +
+    'jc = jointchain(M, K, K2)\n', 'jc', 1000),
+    /N-ary .* follow-up/);
 });
 
 test('classifyJointchain: non-kernel later arg → null (parity fallback)', () => {

@@ -1338,12 +1338,109 @@ const KIND_HANDLERS = {
 };
 
 function matJointchain(name, d, ctx) {
-  void name; void d; void ctx;
-  return Promise.reject(new Error(
-    'matJointchain: first-class jointchain/kchain materialisation is '
-    + 'not implemented yet (step 2 of the consume/rest consolidation). '
-    + 'This kind should not be produced while JOINTCHAIN_STATE.firstClass '
-    + 'is off.'));
+  // First-class jointchain/kchain materialisation (consume/rest
+  // consolidation step 2b). Mirrors the spec §06 stochastic-node
+  // equivalence WITHOUT the inlineChainOps AST rewrite:
+  //   a ~ M           (step 0 base measure)
+  //   b ~ K(a)        (step 1 kernel applied to the prior variate)
+  //   jointchain ⇒ variate = cat(a, b)  (tuple, or record if labelled)
+  //   kchain     ⇒ variate = b          (a marginalized; the MC
+  //                                       density integral is step 2c)
+  // Kernel application reuses the same per-atom primitive as
+  // matPushfwd: resolve {body, paramName}, then one worker draw of K's
+  // body measure with refArrays binding the param to the prior atoms
+  // (structural — never by surface-kwarg-name matching).
+  //
+  // Scope (2b): 2-step, scalar base measure, single-param kernel — the
+  // dominant shape and the user-reported `kchain(Exp(1), fn(...))`
+  // case. N-ary (>2), kernel-first base, and record/tuple/iid base are
+  // explicit, clear deferrals (a tight follow-up before the 2d flag
+  // flip; the flag is OFF in production so legacy inlineChainOps still
+  // owns those shapes — no regression).
+  const steps = (d && d.steps) || [];
+  if (steps.length < 2) {
+    return Promise.reject(new Error('jointchain: need at least 2 steps'));
+  }
+  if (steps.length > 2) {
+    return Promise.reject(new Error(
+      'jointchain: N-ary (>2 step) materialisation is a step-2 follow-up '
+      + '(2-step jointchain/kchain implemented; flag off in production so '
+      + 'legacy inlineChainOps still handles N-ary).'));
+  }
+  const base = steps[0], kstep = steps[1];
+  if (base.kernel) {
+    return Promise.reject(new Error(
+      'jointchain: kernel-first base is itself a kernel, not a closed '
+      + 'measure (spec §06 kernel-first chain) — not materialisable; '
+      + 'disintegrate handles it structurally (step 3).'));
+  }
+
+  const seed0 = nameSeed(name + ':jc0', ctx.rootSeed);
+  const seed1 = nameSeed(name + ':jc1', ctx.rootSeed);
+
+  const baseP = base.ref != null
+    ? ctx.getMeasure(base.ref)
+    : ctx.sendWorker({
+        type: 'sampleN', ir: base.measureIR, count: ctx.sampleCount,
+        refArrays: {}, seed: seed0,
+      }).then((r) => measureFromReply(r, ctx.sampleCount,
+        { logTotalmass: 0, n_eff: ctx.sampleCount }));
+
+  return Promise.resolve(baseP).then((M0) => {
+    if (!M0 || !M0.samples) {
+      return Promise.reject(new Error(
+        'jointchain: scalar-atom base measure required (record/tuple/iid '
+        + 'base is a follow-up)'));
+    }
+    // Resolve the kernel to {body, paramName}: inline functionof IR
+    // (the lifted-hole case) or a kernel binding.
+    let fnInfo;
+    if (kstep.kernelIR) {
+      const params = kstep.kernelIR.params || [];
+      if (params.length !== 1 || !kstep.kernelIR.body) {
+        return Promise.reject(new Error(
+          'jointchain: inline kernel must have exactly one parameter'));
+      }
+      fnInfo = { body: kstep.kernelIR.body, paramName: params[0] };
+    } else {
+      fnInfo = resolveFnBody(ctx.bindings && ctx.bindings.get(kstep.ref),
+        ctx.bindings);
+      if (!fnInfo) {
+        return Promise.reject(new Error(
+          `jointchain: kernel '${kstep.ref}' has no single-param callable `
+          + 'body'));
+      }
+    }
+    const N = M0.samples.length;
+    // b ~ K(a): draw from K's body measure with its parameter pinned
+    // per-atom to the prior variate's samples.
+    return ctx.sendWorker({
+      type: 'sampleN', ir: fnInfo.body, count: N,
+      refArrays: { [fnInfo.paramName]: M0.samples }, seed: seed1,
+    }).then((reply) => {
+      const M1 = measureFromReply(reply, N, {
+        logWeights: M0.logWeights, logTotalmass: 0, n_eff: M0.n_eff,
+      });
+      // kchain: the marginal law of b. b_i ~ K(a_i), a_i ~ M0, so the
+      // empirical b-samples ARE draws from ∫K(a)dM0 — sampling needs
+      // no extra work; the density MC integral is step 2c.
+      if (d.marginalize) return M1;
+      // jointchain: retain both variates (cat semantics).
+      const subs = [M0, M1];
+      const lw = empirical.propagateLogWeights(subs);
+      const nEff = Math.min(M0.n_eff != null ? M0.n_eff : N,
+                            M1.n_eff != null ? M1.n_eff : N);
+      if (d.labels) {
+        const fields = {};
+        fields[d.labels[0]] = M0;
+        fields[d.labels[1]] = M1;
+        return Object.assign(empirical.recordMeasure(fields, lw),
+          { logTotalmass: 0, n_eff: nEff });
+      }
+      return Object.assign(empirical.tupleMeasure(subs, lw),
+        { logTotalmass: 0, n_eff: nEff });
+    });
+  });
 }
 
 /**
