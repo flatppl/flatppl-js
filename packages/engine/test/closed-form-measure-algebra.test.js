@@ -530,3 +530,72 @@ mix = normalize(superpose(weighted(0.4, A), weighted(0.6, B)))
   assert.ok(Math.abs(integral - 1.0) < 2e-3,
     `normalized mixture must integrate to 1, got ${integral}`);
 });
+
+// =====================================================================
+// stochastic-phase array indexing (engine-concepts §11) — the draw-
+// style spelling of a discrete mixture:
+//   i ~ Categorical(w); xs = [draw(M1),…]; x = xs[i]
+// recognised onto the SAME select core. Density (selector
+// marginalised) = logsumexp_k(log w_k + logp_{M_k}); sampling gathers
+// branch i per atom. Categorical is spec 1-based.
+// =====================================================================
+
+test('xs[i] density: K-component categorical mixture (closed-form)', async () => {
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 1.0)
+M3 = Normal(mu = 9.0, sigma = 1.0)
+i  = draw(Categorical(p = [0.2, 0.3, 0.5]))
+xs = [draw(M1), draw(M2), draw(M3)]
+x  = xs[i]
+lp = logdensityof(x, 4.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    0.2 * Math.exp(normalLogpdf(4.0, 0, 1))
+    + 0.3 * Math.exp(normalLogpdf(4.0, 5, 1))
+    + 0.5 * Math.exp(normalLogpdf(4.0, 9, 1)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-9,
+    `xs[i] mixture logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('xs[i] ≡ explicit superpose(weighted…) density (shared core)', async () => {
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 2.0)
+i  = draw(Categorical(p = [0.35, 0.65]))
+xs = [draw(M1), draw(M2)]
+viaIdx = xs[i]
+viaSup = normalize(superpose(weighted(0.35, M1), weighted(0.65, M2)))
+lpIdx = logdensityof(viaIdx, 2.4)
+lpSup = logdensityof(viaSup, 2.4)
+`);
+  const [I, S] = await Promise.all([ctx.getMeasure('lpIdx'), ctx.getMeasure('lpSup')]);
+  assert.ok(Math.abs(I.samples[0] - S.samples[0]) < 1e-10,
+    `xs[i]=${I.samples[0]} vs normalize(superpose)=${S.samples[0]}`);
+});
+
+test('xs[i] sampling: mixture mean + per-branch fractions = w (closed-form)', async () => {
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 1.0)
+M3 = Normal(mu = 9.0, sigma = 1.0)
+i  = draw(Categorical(p = [0.2, 0.3, 0.5]))
+xs = [draw(M1), draw(M2), draw(M3)]
+x  = draw(xs[i])
+`);
+  const m = await ctx.getMeasure('x');
+  const xs = m.samples;
+  const EX = 0.2 * 0 + 0.3 * 5 + 0.5 * 9;            // = 6.0
+  let n1 = 0, n2 = 0, n3 = 0;
+  for (let k = 0; k < xs.length; k++) {
+    if (xs[k] < 2.5) n1++; else if (xs[k] < 7) n2++; else n3++;
+  }
+  const N = xs.length;
+  assert.ok(Math.abs(unweightedMean(xs) - EX) < 0.15,
+    `mixture mean: got ${unweightedMean(xs)}, expected ${EX}`);
+  assert.ok(Math.abs(n1 / N - 0.2) < 0.025
+    && Math.abs(n2 / N - 0.3) < 0.025
+    && Math.abs(n3 / N - 0.5) < 0.025,
+    `branch fractions [${n1 / N}, ${n2 / N}, ${n3 / N}] vs [0.2,0.3,0.5]`);
+});

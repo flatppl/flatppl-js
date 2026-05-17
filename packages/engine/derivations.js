@@ -797,6 +797,96 @@ function resolveBernoulliP(ir, bindings, seen) {
   return null;
 }
 
+// Resolve an index IR to a Categorical selector: { pIR, base } where
+// pIR is the probability-vector value-IR and base is 1 (Categorical,
+// spec 1-based) or 0 (Categorical0). Follows self-refs / draw / lawof
+// to the Categorical call. null when not a closed-form Categorical
+// index (→ classifyStochasticIndex declines; plain value indexing
+// stays a deterministic `get`).
+function resolveCategoricalP(ir, bindings, seen) {
+  if (!ir || seen.size > 64) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (seen.has(ir.name)) return null;
+    seen.add(ir.name);
+    const b = bindings.get(ir.name);
+    if (!b || !b.ir) return null;
+    return resolveCategoricalP(b.ir, bindings, seen);
+  }
+  if (ir.kind === 'call') {
+    if ((ir.op === 'draw' || ir.op === 'lawof')
+        && Array.isArray(ir.args) && ir.args.length === 1) {
+      return resolveCategoricalP(ir.args[0], bindings, seen);
+    }
+    if (ir.op === 'Categorical' || ir.op === 'Categorical0') {
+      const base = ir.op === 'Categorical' ? 1 : 0;
+      if (ir.kwargs && ir.kwargs.p) return { pIR: ir.kwargs.p, base };
+      if (Array.isArray(ir.args) && ir.args.length === 1) {
+        return { pIR: ir.args[0], base };
+      }
+    }
+  }
+  return null;
+}
+
+// Stochastic-phase array indexing — the draw-style spelling of a
+// discrete mixture (engine-concepts §11):
+//
+//   i  ~ Categorical(w)
+//   xs = [draw(M1), draw(M2), …]      # a `tuple` of variates
+//   x  = xs[i]                         # get(xs, i), i stochastic
+//
+// is exactly the K-branch select: branches = xs's component measures,
+// selector = i, weight_k = w_k. Recognised here so it rides the SAME
+// core as ifelse/superpose/mixture (no parallel path). Declines
+// (null) unless the container is a vector/tuple of self-refs AND the
+// index resolves to a closed-form Categorical — plain deterministic
+// `xs[k]` indexing is untouched.
+function classifyStochasticIndex(rhsIR, ast, bindings) {
+  if (rhsIR.op !== 'get' || !Array.isArray(rhsIR.args)
+      || rhsIR.args.length !== 2) return null;
+  const containerIR = rhsIR.args[0];
+  const indexIR = rhsIR.args[1];
+  if (!containerIR || containerIR.kind !== 'ref' || containerIR.ns !== 'self') {
+    return null;
+  }
+  const cb = bindings.get(containerIR.name);
+  if (!cb || !cb.ir || cb.ir.kind !== 'call' || cb.ir.op !== 'vector'
+      || !Array.isArray(cb.ir.args) || cb.ir.args.length === 0) return null;
+  const branches = [];
+  for (const el of cb.ir.args) {
+    if (!el || el.kind !== 'ref' || el.ns !== 'self') return null;
+    branches.push(el.name);
+  }
+  const cat = resolveCategoricalP(indexIR, bindings, new Set());
+  if (!cat) return null;
+  const K = branches.length;
+  const selectorRef = (indexIR.kind === 'ref' && indexIR.ns === 'self')
+    ? indexIR.name : null;
+  // Per-branch log-weights from the Categorical pmf. A literal weight
+  // vector folds to per-element log lits; otherwise index the weight
+  // IR per branch (base-aware: Categorical 1-based, Categorical0 0).
+  const pIR = cat.pIR;
+  const litVec = (pIR.kind === 'call' && pIR.op === 'vector'
+    && Array.isArray(pIR.args) && pIR.args.length === K) ? pIR.args : null;
+  const logweightIRs = [];
+  for (let k = 0; k < K; k++) {
+    const elem = litVec
+      ? litVec[k]
+      : { kind: 'call', op: 'get',
+          args: [pIR, { kind: 'lit', value: cat.base + k }] };
+    logweightIRs.push({ kind: 'call', op: 'log', args: [elem] });
+  }
+  return {
+    kind: 'select',
+    branches,
+    logweightIRs,
+    selectorRef,
+    selectorBase: cat.base,
+    marginalize: true,
+    mode: 'mixture',
+  };
+}
+
 // ifelse(cond, a, b) over MEASURES — the 2-branch discrete-selector
 // mixture (engine-concepts §11). Classifies to the shared `select`
 // kind: branch a is taken when cond is true (prob p), b when false
@@ -1140,6 +1230,7 @@ const MEASURE_OP_CLASSIFIERS = {
   normalize:    classifyNormalize,
   superpose:    classifySuperpose,
   ifelse:       classifyIfelse,
+  get:          classifyStochasticIndex,
   record:       classifyRecordOrJoint,
   joint:        classifyRecordOrJoint,
   iid:          classifyIid,

@@ -895,8 +895,10 @@ function matSelect(name, d, ctx) {
         // ifelse: success/true (selector ≠ 0) ⇒ branch 0.
         k = sel[i] ? 0 : 1;
       } else {
-        // 1-based Categorical index into the branch list.
-        k = (sel[i] | 0) - 1;
+        // Categorical index into the branch list. Base is 1 for
+        // Categorical (spec 1-based), 0 for Categorical0.
+        const base = (d.selectorBase != null) ? d.selectorBase : 1;
+        k = (sel[i] | 0) - base;
       }
       if (k < 0) k = 0; else if (k >= K) k = K - 1;
       out[i] = branches[k][i];
