@@ -101,6 +101,34 @@ test('flag ON: kernel-first (step-0 ref is itself a kernel)', () => {
   });
 });
 
+test('flag ON: inline fn/functionof kernel arg (the kchain(Exp,fn) case)', () => {
+  // Regression for the user-reported "not plottable":
+  //   d = kchain(Exponential(1), fn(Normal(0, _)))
+  // The lift hoists the measure Exponential(1) → a ref but leaves the
+  // hole-containing fn(...) inline as a functionof IR (liftMeasure:989).
+  // The IR-driven classifier must still build a step structure: base =
+  // measure ref, kernel step = inline kernelIR (no ref), marginalize.
+  withFirstClass(() => {
+    const { derivations } = buildDerivations(processSource(
+      'd = kchain(Exponential(rate = 1.0), fn(Normal(mu = 0.0, sigma = _)))\n'
+    ).bindings);
+    const d = derivations['d'];
+    assert.ok(d, 'd classified (was "not plottable" before)');
+    assert.equal(d.kind, 'jointchain');
+    assert.equal(d.marginalize, true, 'kchain');
+    assert.equal(d.steps.length, 2);
+    assert.equal(d.steps[0].role, 'base');
+    assert.equal(d.steps[0].kernel, false, 'base is the Exponential measure');
+    assert.ok(d.steps[0].ref, 'base hoisted to a measure ref');
+    assert.equal(d.steps[1].role, 'kernel');
+    assert.equal(d.steps[1].ref, undefined, 'inline kernel ⇒ no ref');
+    assert.ok(d.steps[1].kernelIR
+      && d.steps[1].kernelIR.op === 'functionof',
+      'inline kernel carried structurally as kernelIR');
+    assert.deepEqual(d.steps[1].inputs, ['s0']);
+  });
+});
+
 test('classifyJointchain: non-kernel later arg → null (parity fallback)', () => {
   // K_i must be a kernel; a measure in kernel position isn't covered
   // by the first-class path → null so the dual-path falls back.

@@ -3081,53 +3081,73 @@ const JOINTCHAIN_STATE = { firstClass: false };
 function classifyJointchain(rhsIR, ast, bindings) {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
-  if (!ast || !Array.isArray(ast.args) || ast.args.length < 2) return null;
   const marginalize = (rhsIR.op === 'kchain');
 
-  // A binding is a kernel iff its surface type is one of the reified
-  // callable forms (mirrors inlineChainOps' Kbinding.type gate).
-  const isKernelName = (nm) => {
-    const b = nm != null && bindings.get(nm);
-    return !!b && (b.type === 'functionof' || b.type === 'kernelof'
-      || b.type === 'fn');
-  };
-  // Resolve a positional/kwarg arg AST to a bound name. After the lift
-  // pass every non-trivial arg is an Identifier (measure/kernel refs);
-  // `lawof(ref)` is also accepted as a measure ref.
-  const refName = (node) => {
-    if (!node) return null;
-    if (node.type === 'Identifier' && bindings.has(node.name)) return node.name;
-    if (node.type === 'CallExpr' && node.callee
-        && node.callee.type === 'Identifier' && node.callee.name === 'lawof'
-        && Array.isArray(node.args) && node.args.length === 1
-        && node.args[0].type === 'Identifier'
-        && bindings.has(node.args[0].name)) return node.args[0].name;
+  // IR-driven (not AST/ref-only). Each component is uniformly one of:
+  //   - a self-ref to a measure or kernel binding, or
+  //   - an INLINE callable IR — `functionof` (a kernel; `fn`/`kernelof`
+  //     lower to functionof) which the lift leaves in place because it
+  //     contains a hole (liftMeasure:989), or an inline measure call
+  //     (op ∈ MEASURE_PRODUCING). Reading the IR resolves the
+  //     `liftMeasure` hole asymmetry that left the kernel inline while
+  //     the measure was hoisted to a ref (the `kchain(Exponential(1),
+  //     fn(Normal(0,_)))` case).
+  // Kwarg form lowers to `fields:[{name,value}]` (FIELD_FORMS);
+  // positional to `args:[…]`.
+  let comps, labels;
+  if (Array.isArray(rhsIR.fields) && rhsIR.fields.length >= 2) {
+    labels = rhsIR.fields.map((f) => f.name);
+    comps = rhsIR.fields.map((f) => f.value);
+  } else if (Array.isArray(rhsIR.args) && rhsIR.args.length >= 2) {
+    labels = null;
+    comps = rhsIR.args;
+  } else {
+    return null;
+  }
+
+  // Classify one component IR into a node descriptor:
+  //   { ref, isKernel }            self-ref to a binding
+  //   { kernelIR }                 inline functionof
+  //   { measureIR }                inline measure call
+  // or null if it's none of these.
+  const describe = (ir) => {
+    if (!ir) return null;
+    if (ir.kind === 'ref' && ir.ns === 'self' && bindings.has(ir.name)) {
+      const b = bindings.get(ir.name);
+      const isKernel = !!b && (b.type === 'functionof'
+        || b.type === 'kernelof' || b.type === 'fn');
+      const isMeasure = !isKernel && (
+        (b && b.ir && b.ir.kind === 'call' && MEASURE_PRODUCING.has(b.ir.op))
+        || isMeasureExpr(b && b.node && b.node.value, bindings));
+      if (!isKernel && !isMeasure) return null;
+      return { ref: ir.name, isKernel };
+    }
+    if (ir.kind === 'call' && ir.op === 'functionof') return { kernelIR: ir };
+    if (ir.kind === 'call' && MEASURE_PRODUCING.has(ir.op)) {
+      return { measureIR: ir };
+    }
     return null;
   };
 
-  const kw = ast.args.every((a) => a && a.type === 'KeywordArg');
-  const positional = ast.args.every((a) => a && a.type !== 'KeywordArg');
-  if (!kw && !positional) return null;            // mixed → unsupported here
-
-  const labels = kw ? ast.args.map((a) => a.name) : null;
-  const argExprs = kw ? ast.args.map((a) => a.value) : ast.args;
-
   const steps = [];
-  for (let i = 0; i < argExprs.length; i++) {
-    const nm = refName(argExprs[i]);
-    if (nm == null) return null;                  // not a resolvable ref
+  for (let i = 0; i < comps.length; i++) {
+    const d = describe(comps[i]);
+    if (!d) return null;                            // shape not covered
     const v = labels ? labels[i] : ('s' + i);
+    const isKernelComp = !!(d.kernelIR || d.isKernel);
     if (i === 0) {
-      // Step 0 is the base: a measure, or (kernel-first) a kernel.
-      steps.push({
-        var: v, role: 'base', ref: nm, kernel: isKernelName(nm),
-      });
+      // Base: a measure, or (kernel-first) a kernel.
+      const step = { var: v, role: 'base', kernel: isKernelComp };
+      if (d.ref != null) step.ref = d.ref;
+      else if (d.kernelIR) step.kernelIR = d.kernelIR;
+      else step.measureIR = d.measureIR;
+      steps.push(step);
     } else {
-      if (!isKernelName(nm)) return null;         // K_i must be a kernel
-      steps.push({
-        var: v, role: 'kernel', ref: nm,
-        inputs: steps.map((s) => s.var),
-      });
+      if (!isKernelComp) return null;               // K_i must be a kernel
+      const step = { var: v, role: 'kernel', inputs: steps.map((s) => s.var) };
+      if (d.ref != null) step.ref = d.ref;
+      else step.kernelIR = d.kernelIR;
+      steps.push(step);
     }
   }
   return { kind: 'jointchain', marginalize, labels, steps };
