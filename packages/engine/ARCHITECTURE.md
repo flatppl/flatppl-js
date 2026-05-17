@@ -41,6 +41,8 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 ┌──────▼─────────┐
 │ orchestrator.js│  buildSampleChain, buildDerivations, signatureOf-likelihood,
 └──────┬─────────┘  profile-plan, scope materialisation, axis enumeration
+       │            (facade over ir-shared / lift / derivations /
+       │             signatures / profile-plan — see "Module map")
        │
        │ chain steps  (sent over postMessage)
 ┌──────▼──────┐
@@ -345,7 +347,7 @@ Auto-splatting (single positional record arg whose fields are a subset of the
 callee's input names) is detected and routed through the kwarg path so type
 checks fire correctly.
 
-### `orchestrator.js` (3445 lines — large; mentally split)
+### `orchestrator.js` (~460 lines) + its split modules
 
 **Responsibility.** Builds executable artifacts on top of analyzer + lowered IR:
 - `buildSampleChain(target, bindings)` — topological list of sample/evaluate
@@ -360,23 +362,57 @@ checks fire correctly.
   `inlineForProfile`).
 - Scope materialisation for reified callables.
 
-**Internal subdivision** (informally — all in one file):
-- ~64-450: `buildSampleChain` and supporting predicates (`normalizeMeasureIR`,
-  `classifyForChain`, `resolveMeasure`).
-- ~480-1640: `liftInlineSubexpressions` and the inline-subexpression machinery
-  (handles `mu = 2 * draw(...)` style forms by lifting the inner draw).
-- ~1685-2095: `buildDerivations` and `classifyDerivation` — the measure-algebra
-  classifier dispatch.
-- ~2110-2250: per-op derivation classifiers (`classifyWeighted`,
-  `classifyNormalize`, ...). Driven by `MEASURE_OP_CLASSIFIERS`.
-- ~2250-2630: derivation expansion and resolution (`derivationRefsValid`,
-  `expandMeasureIR`, `expandMeasureRefsInIR`).
-- ~2630-2820: `bayesupdate` classification, `resolveIRToValue`, `collectSelfRefs`.
-- ~2830-3210: `signatureOf` for callables, `signatureOfLikelihood`, axis
-  enumeration (`distributeAxes`, `walkType`, `enumerateOutputLeaves`).
-- ~3243-3420: profile-plot helpers.
+**Module map.** `orchestrator.js` was decomposed into five sibling modules
+(facade-preserving: `orchestrator.js` re-binds every moved name via
+`const { ... } = require('./<mod>')`, so the public API and
+`module.exports` — including `_internal` test hooks — are byte-identical
+to the monolith). Dependency order is strictly one-way, no cycles:
 
-**Key static gates** (must agree across files — see "Cross-file invariants"):
+```
+ir-shared.js  ◄── signatures.js ◄── lift.js ◄── derivations.js
+     ▲                ▲                ▲              ▲
+     └──────── profile-plan.js         │              │
+     └────────────────────────── orchestrator.js (core + 5 facades)
+```
+
+- **`ir-shared.js`** — the dependency ROOT / universal leaf. Pure,
+  near-dependency-free IR utilities shared by every other split module:
+  constant folding (`resolveConstant`), IR→value resolution
+  (`resolveIRToValue`, `valueToPlain`), self-ref collection
+  (`collectSelfRefs`), set parsing (`parseSetIR`, `NAMED_SETS`),
+  measure-IR canonicalisation (`normalizeMeasureIR`,
+  `isFixedPhaseValueIR`), and the **static gates**
+  (`SAMPLEABLE_DISTRIBUTIONS`, `DISCRETE_DISTRIBUTIONS`,
+  `EVALUABLE_OPS`). Requires only `lower` + `analyzer` (+ a lazy
+  `sampler` require inside `resolveIRToValue`).
+- **`lift.js`** — inline-subexpression lifting
+  (`liftInlineSubexpressions` and its arg-typing /
+  implicit-boundary-canonicalisation helpers; `isEvaluable`). Handles
+  `mu = 2 * draw(...)` style forms by hoisting the inner draw to a
+  synthetic binding. Requires `lower`, `signatures`, `ir-shared`.
+- **`derivations.js`** — the measure-algebra heart: `buildDerivations`,
+  `classifyDerivation`, the per-op `classify*` family +
+  `MEASURE_OP_CLASSIFIERS`, derivation expansion/resolution
+  (`expandMeasureIR` & friends, `derivationRefsValid`), `isDiscreteAt`,
+  `leafSampleIR`, `classifyBayesupdate`, implicit kernel/function
+  signatures. Leaf w.r.t. the orchestrator core (never calls
+  `buildSampleChain`/`classifyForChain`/`resolveMeasure`).
+- **`signatures.js`** — callable introspection for the profile-plot UI:
+  `signatureOf`/`signatureOfLikelihood`, axis enumeration
+  (`distributeAxes`, `walkType`, `enumerateOutputLeaves`,
+  `extractOutputIR`, `substituteLocals`). Requires only `ir-shared`.
+- **`profile-plan.js`** — profile-plot range/preset derivation
+  (`resolveAxisBaseSet`, `findMatchingPresets`, `findMatchingDomains`,
+  `fourSigmaQuantileRange`, `inlineForProfile`). Zero internal callers
+  in `orchestrator.js`; reached only via the public API.
+- **`orchestrator.js`** itself now keeps just the `buildSampleChain`
+  core (`normalizeMeasureIR`-driven `classifyForChain`, `resolveMeasure`,
+  the fixed-phase pre-eval), the five facade re-binds, and
+  `module.exports`.
+
+**Key static gates** — now defined in `ir-shared.js` (must agree across
+files — see "Cross-file invariants"); `orchestrator.js` /
+`derivations.js` consult them via the `ir-shared` facade:
 - `SAMPLEABLE_DISTRIBUTIONS` — names the worker's `sampler.REGISTRY` implements.
 - `DISCRETE_DISTRIBUTIONS` — subset whose density is over the counting reference.
 - `EVALUABLE_OPS` — built-ins the worker's `evaluateExpr` knows how to compute;
@@ -503,7 +539,7 @@ when extending.
 | `builtins.js` | `'Foo'` in `DISTRIBUTIONS` (and so in `ALL_KNOWN`) | parser/analyzer recognise the name |
 | `builtins.js` | (keep `MEASURE_PRODUCING` in sync) | typeinfer / orchestrator measure-classification |
 | `types.js` | `Foo: () => realDistKwargs({...})` in `SIGNATURE_FACTORIES` | typeinfer kwargs/result shape |
-| `orchestrator.js` | `'Foo'` in `SAMPLEABLE_DISTRIBUTIONS` (and `DISCRETE_DISTRIBUTIONS` if applicable) | chain builder admits it |
+| `ir-shared.js` | `'Foo'` in `SAMPLEABLE_DISTRIBUTIONS` (and `DISCRETE_DISTRIBUTIONS` if applicable) | chain builder admits it (re-bound into orchestrator/derivations via the `ir-shared` facade) |
 | `sampler.js` | `Foo: { params, aliases, discrete, Ctor, randFn, logpdfFn }` in `REGISTRY` | runtime sampling + density |
 | `sampler.js` | stdlib package `require()`s at top of file | Ctor / randFn / logpdfFn |
 | `engine/package.json` | `@stdlib/...` deps for the new packages | npm install |
@@ -521,11 +557,11 @@ distribution with mismatched param names it'll fail loudly.
 | `builtins.js` | `'bar'` in `BUILTIN_FUNCTIONS` |
 | `types.js` | `bar: () => ({ args: [REAL], kwargs: {}, result: REAL })` in `SIGNATURE_FACTORIES` |
 | `lower.js` | only if `bar` has special syntax handling (most don't) |
-| `orchestrator.js` | `'bar'` in `EVALUABLE_OPS` |
+| `ir-shared.js` | `'bar'` in `EVALUABLE_OPS` |
 | `sampler.js` | `bar: a => Math.bar(a)` in `ARITH_OPS` |
 | `test/sampler.test.js` | regression test for `bar` evaluation |
 
-`orchestrator.EVALUABLE_OPS` and `sampler.ARITH_OPS` must contain the same op
+`ir-shared.EVALUABLE_OPS` and `sampler.ARITH_OPS` must contain the same op
 names (the orchestrator's static gate is the runtime's gate). This IS
 enforced both ways by `test/invariants.test.js` block 3 (modulo the
 documented `vector` / `cat` exemptions and the inline-evaluable handful).
@@ -538,7 +574,7 @@ documented `vector` / `cat` exemptions and the inline-evaluable handful).
 | `types.js` | signature in `SIGNATURE_FACTORIES`, possibly `special: 'baz'` if structurally unusual |
 | `typeinfer.js` | a special-case handler in `inferCall` if `special` is set |
 | `lower.js` | `'baz'` in `FIELD_FORMS` if it has ordered named entries |
-| `orchestrator.js` | `classifyBaz` derivation classifier; entry in `MEASURE_OP_CLASSIFIERS` |
+| `derivations.js` | `classifyBaz` derivation classifier; entry in `MEASURE_OP_CLASSIFIERS` |
 | `traceeval.js` | walker function; entry in `MEASURE_OP_WALKERS` |
 | `disintegrate.js` | dispatch entry if it can appear in joint-measure RHS |
 | `test/measure-algebra.test.js` | regression test |
@@ -714,8 +750,8 @@ fields-of-Float64Array, scalars → fill, numeric arrays → literal).
 `inferredType.kind === 'rngstate'`. Same convention applies if other opaque
 value types arrive in future.
 
-**Source.** `orchestrator.js:1750-1915` (resolveMeasureRef closure, isMeasureBinding,
-the iterative loop). `viewer/src/viewer.js`: `fixedValueToMeasure`,
+**Source.** `derivations.js` `expandMeasureIR` (resolveMeasureRef closure,
+isMeasureBinding, the iterative loop). `viewer/src/viewer.js`: `fixedValueToMeasure`,
 `rebuildDerivations`'s setEnv push, `collectRefArrays`'s skip, `getMeasure`'s
 short-circuit.
 
@@ -796,9 +832,9 @@ in ~3.5 s as of writing.
 | "Why is this name unknown?" | `builtins.js` (catalogs), `analyzer.js:1075` (undefined-name warning) |
 | "Why does this expression have type X?" | `typeinfer.js` (inferCall), `types.js` (signatures) |
 | "What phase is this binding?" | `analyzer.js:607` (`computePhases`) |
-| "Why is the chain unsupported?" | `orchestrator.js:340` (`classifyForChain`) |
+| "Why is the chain unsupported?" | `orchestrator.js` (`classifyForChain`) |
 | "How is this distribution sampled?" | `sampler.js` (REGISTRY entry) |
-| "How is this measure-algebra op handled?" | `orchestrator.js` classifier; `traceeval.js` walker |
+| "How is this measure-algebra op handled?" | `derivations.js` classifier; `traceeval.js` walker |
 | "Why does the DAG render this way?" | `dag.js` |
 | "Why did disintegrate produce this Plan?" | `disintegrate.js` |
 | "How does the worker thread work?" | `worker.js` (handler), `worker-entry.js` (transport) |
@@ -822,12 +858,11 @@ items are larger:
   measure-algebra ops (`truncate`, `pushfwd`, `chain`, `relabel`, `bijection`,
   …). When you add a new distribution, also add its signature. See `TODO.md`
   for the planned coverage roadmap.
-- **`orchestrator.js` and `viewer/src/viewer.js` are oversized** (3 445 and 5 683
-  lines respectively). Both have natural decomposition seams documented in
-  this file ("Internal subdivision" in the orchestrator section). They
-  haven't been split yet because the inline comments are dense enough that
-  intra-file navigation is workable; future contributors looking to split
-  should start with the seams flagged in this doc.
+- **`orchestrator.js` has been decomposed** (4 763 → ~460 lines) into the
+  five facade-preserving modules documented above in the "Module map"
+  (`ir-shared`, `lift`, `derivations`, `signatures`, `profile-plan`).
+  **`viewer/src/viewer.js` is still oversized** (~5 683 lines) and is the
+  next decomposition target; it has natural seams but no module split yet.
 - **The cross-file invariants table at the top of this section is enforced
   by `test/invariants.test.js`** for the SAMPLEABLE↔REGISTRY, EVALUABLE↔ARITH_OPS,
   DISCRETE-flag-consistency, BIN_OP_MAP-has-signature, and REGISTRY-params-↔-
