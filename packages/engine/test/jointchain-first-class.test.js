@@ -296,15 +296,20 @@ test('density 2b-ext: N-ary labelled jointchain joint logdensity (3-step)', asyn
     `N-ary jointchain joint logp ${got} vs analytic ${want}`);
 });
 
-test('density 2c: positional jointchain density is a clean deferral', async () => {
-  // Dependent-positional density needs a walker variant (2b-ext);
-  // must reject clearly, never silently mis-score.
-  await assert.rejects(materialise(
+test('density 2b-ext: positional jointchain joint logdensity (dependent)', async () => {
+  // Dependent-positional density now works: jointchain(M,K) variate
+  // [a,b]; logp([0.5,1.0]) = logN(0.5;0,1)+logN(1.0;0.5,1), exact —
+  // walkJoint positional `args` threads the consumed a under `s0` so
+  // the kernel body's rewired ref(s0) scores against the OBSERVED a.
+  const m = await materialise(
     'M = Normal(mu = 0.0, sigma = 1.0)\n' +
     'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
     'jc = jointchain(M, K)\n' +
-    'lp = logdensityof(jc, [0.5, 1.0])\n', 'lp', 1000),
-    /cannot expand|expand measure/);
+    'lp = logdensityof(jc, [0.5, 1.0])\n', 'lp', 2000);
+  const got = m.samples[0];
+  const want = normLogpdf(0.5, 0, 1) + normLogpdf(1.0, 0.5, 1);
+  assert.ok(Math.abs(got - want) < 1e-6,
+    `positional jointchain joint logp ${got} vs analytic ${want}`);
 });
 
 test('classifyJointchain: non-kernel later arg → null (parity fallback)', () => {

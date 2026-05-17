@@ -454,12 +454,29 @@ function walkJointFieldsOrPositional(ir, value, refArrays, N, opts, acc, baseEnv
     }
     return cur;
   }
-  // Positional joint: args = [M1, M2, ...]. No env-threading (each Mi
-  // sees the same env); just thread `rest` through.
+  // Positional joint: args = [M1, M2, ...]. Independent components
+  // (`joint(M1,M2)`) ignore each other's values. Dependent positional
+  // jointchain (`jointchain(M, K)` → `joint([base, K-body refing s0])`)
+  // needs the consumed scalar of component i threaded under the
+  // synthetic name `s{i}` so a later component's kernel-body ref
+  // resolves to the OBSERVED value — exactly the `fields`/`source`
+  // overlay mechanism, positionally. Threading extra `s{i}` keys is
+  // inert for independent joints (they never ref them).
   if (Array.isArray(ir.args)) {
     let cur = value;
+    let curOverlay = overlay;
     for (let i = 0; i < ir.args.length; i++) {
-      cur = walkAcc(ir.args[i], cur, refArrays, N, opts, acc, baseEnv, overlay);
+      const before = cur;
+      cur = walkAcc(ir.args[i], before, refArrays, N, opts, acc, baseEnv,
+        curOverlay);
+      if (i + 1 < ir.args.length && Array.isArray(before)) {
+        const restLen = Array.isArray(cur) ? cur.length
+          : (cur == null ? 0 : 1);
+        if (before.length - restLen === 1) {     // consumed one scalar
+          curOverlay = curOverlay ? Object.assign({}, curOverlay) : {};
+          curOverlay['s' + i] = before[0];
+        }
+      }
     }
     return cur;
   }

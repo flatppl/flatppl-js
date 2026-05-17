@@ -3671,13 +3671,24 @@ function expandMeasureIR(name, derivations, visited, bindings) {
           return body;
         }
 
-        // jointchain: ∏ conditional densities via walkJoint `fields` +
-        // `source` overlay env-threading. Record-shaped observation
-        // (consume by field name); positional (tuple) is a clean
-        // deferral.
-        if (!d.labels && !(baseIR.kind === 'call'
-            && (baseIR.op === 'joint' || baseIR.op === 'record'))) {
-          return null;
+        // jointchain: ∏ conditional densities. Record/labelled (or a
+        // record-shaped base) ⇒ walkJoint `fields` + `source`/name
+        // overlay env-threading. Positional scalar base
+        // (tuple-observed) ⇒ walkJoint positional `args`, which now
+        // threads each consumed scalar under `s{i}` so the kernel
+        // body's rewired `ref(s0)` resolves to the observed prior.
+        // 2-step positional scope (the funnel form); N-ary positional
+        // density is a clean deferral (null ⇒ rejects cleanly).
+        const baseIsRecord = baseIR.kind === 'call'
+          && (baseIR.op === 'joint' || baseIR.op === 'record')
+          && Array.isArray(baseIR.fields);
+        if (!d.labels && !baseIsRecord) {
+          if (steps.length !== 2) return null;
+          const ke = kernelExpand(steps[1]);
+          if (!ke) return null;
+          const kb = bindKernel(ke, ['s0']);   // hole → ref('s0')
+          if (!kb) return null;
+          return { kind: 'call', op: 'joint', args: [baseIR, kb] };
         }
         for (let i = 1; i < steps.length; i++) {
           const ke = kernelExpand(steps[i]);
