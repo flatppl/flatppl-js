@@ -357,7 +357,7 @@ function createWorkerHandler(opts = {}) {
             msg.observed,
             msg.refArrays || null,
             count,
-            { baseEnv: env });
+            { baseEnv: env, pointsBatched: !!msg.pointsBatched });
           return { type: 'samples', id, samples: logps, logWeights: null };
         }
         case 'truncateSampleN': {

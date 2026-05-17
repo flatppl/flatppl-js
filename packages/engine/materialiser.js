@@ -1383,16 +1383,23 @@ function matLogdensityof(d, ctx) {
 }
 
 function matBroadcastLogdensity(d, ctx) {
-  // Reference (eager, per-point) realisation of
-  //   broadcast(logdensityof, M, pts) = [logdensityof(M, p) ∀ p∈pts]
-  // (engine-concepts §11: flatppl-js is the EAGER engine; this maps
-  // the trusted single-point matLogdensityof over the points so we
-  // have correct reference code + tests under the future principled
-  // FlatPIR-codegen path). Tractable M ⇒ matLogdensityof does NOT
-  // sample. Sequential to avoid concurrent worker pressure;
-  // correctness > speed by design here. Result is a value array
-  // (length = #points), same measure shape as a static `array`
-  // binding — the plot panel renders it as an index/value curve.
+  // broadcast(logdensityof, M, pts) = [logdensityof(M, p) ∀ p∈pts].
+  //
+  // FAST PATH (engine-concepts §11/§12; flatppl-js is the EAGER
+  // engine): when M is a self-contained tractable measure — no
+  // per-atom prior refs, not a kchain MC-marginal — its log-density
+  // is a closed-form function of the point, so evaluate it at ALL
+  // points in ONE batched, sampling-free pass: the density spine's
+  // N-axis indexes the evaluation points (`pointsBatched`). This
+  // reuses walkSelect/walkWeighted/walkNormalize/walkLeaf verbatim and
+  // is bit-identical to the per-point reference (same logpdf
+  // catalogue + params) — the closed-form broadcast(logdensityof,…)
+  // tests are the regression oracle. Otherwise (kchain marginal, or
+  // M with per-atom prior refs where the points axis would collide
+  // with the prior-atom axis) fall back to the per-point reference
+  // route (correctness over speed). Result is a value array
+  // (length = #points), same shape as a static `array` binding — the
+  // plot panel renders it as an index/value curve.
   const ptsVal = orchestrator.resolveIRToValue(
     d.pointsIR, ctx.bindings, ctx.fixedValues);
   const pts = Array.isArray(ptsVal) ? ptsVal
@@ -1402,6 +1409,53 @@ function matBroadcastLogdensity(d, ctx) {
       'broadcast(logdensityof, M, pts): points must resolve to a '
       + 'non-empty array (got ' + JSON.stringify(ptsVal) + ')'));
   }
+
+  // Eligibility for the batched closed-form pass: expand M and
+  // classify its self-refs exactly as matLogdensityof does.
+  const measureDeriv = ctx.derivations[d.measureName];
+  const isChain = !!(measureDeriv
+    && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
+  const measureIR = orchestrator.expandMeasureIR(
+    d.measureName, ctx.derivations, undefined, ctx.bindings);
+  let batchable = !!measureIR && !isChain;
+  const fixedRefs = [];
+  if (batchable) {
+    for (const n of orchestrator.collectSelfRefs(measureIR)) {
+      if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) continue;
+      if (!(ctx.bindings && ctx.bindings.has(n))
+          && !(ctx.fixedValues && ctx.fixedValues.has(n))) continue;
+      if (ctx.fixedValues && ctx.fixedValues.has(n)) { fixedRefs.push(n); continue; }
+      // A per-atom prior ref: the points axis would collide with the
+      // prior-atom axis ⇒ not closed-form-batchable here.
+      batchable = false;
+      break;
+    }
+  }
+
+  if (batchable) {
+    let setEnvP = Promise.resolve();
+    if (fixedRefs.length > 0) {
+      const fixedEnv = {};
+      for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
+      setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+    }
+    return setEnvP.then(() => ctx.sendWorker({
+      type: 'logDensityN',
+      ir: measureIR,
+      count: pts.length,
+      refArrays: {},
+      observed: pts,
+      pointsBatched: true,
+    })).then((reply) => {
+      const s = reply.samples;
+      return scalarMeasureN(
+        s instanceof Float64Array ? s : Float64Array.from(s),
+        { logWeights: null, logTotalmass: 0, n_eff: pts.length });
+    });
+  }
+
+  // Fallback: per-point reference route (kchain marginal / per-atom-
+  // ref measures). Correct, non-batched, sequential.
   const out = new Float64Array(pts.length);
   let chain = Promise.resolve();
   for (let k = 0; k < pts.length; k++) {

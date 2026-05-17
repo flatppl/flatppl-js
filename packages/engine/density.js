@@ -309,10 +309,53 @@ function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   // the value, then loop atoms resolving params and adding logpdf to
   // acc[i]. consumeScalar is atom-independent (head + rest are derived
   // from `value`, which is shared).
-  const { head, rest } = consumeScalar(value);
   const entry = samplerLib.lookupDistribution(ir);
   const refNames = Object.keys(refArrays);
   const overlayKeys = overlay ? Object.keys(overlay) : null;
+
+  // Points-batched mode (broadcast(logdensityof, M, pts), §11/§12):
+  // here the N-axis indexes EVALUATION POINTS, not prior atoms — atom
+  // i observes `value[i]`. A scalar leaf consumes the whole length-N
+  // points vector (no structural rest; M is scalar). Same logpdf
+  // catalogue + param resolution as below; only the observation is
+  // per-atom instead of shared, so the result is bit-identical to the
+  // per-point reference route. (matBroadcastLogdensity guarantees no
+  // per-atom prior refs in this mode — the points axis is the only
+  // N-axis — so the constant-param path is the normal case; the
+  // overlay/baseEnv-resolved param path is kept for generality.)
+  if (opts.pointsBatched) {
+    const pv = value;
+    const ptAt = valueLib.isValue(pv) ? (i) => pv.data[i] : (i) => pv[i];
+    if (refNames.length === 0 && !overlayKeys) {
+      const params = samplerLib.resolveParams(ir, entry, baseEnv);
+      for (let i = 0; i < N; i++) {
+        acc[i] += entry.logpdfFn(ptAt(i), ...params);
+      }
+      return null;
+    }
+    const callEnv = Object.assign({}, baseEnv);
+    if (overlayKeys) {
+      for (let j = 0; j < overlayKeys.length; j++) {
+        callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < refNames.length; j++) {
+        const v = refArrays[refNames[j]];
+        callEnv[refNames[j]] = valueLib.isValue(v) ? v.data[i] : v[i];
+      }
+      if (overlayKeys) {
+        for (let j = 0; j < overlayKeys.length; j++) {
+          callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+        }
+      }
+      const params = samplerLib.resolveParams(ir, entry, callEnv);
+      acc[i] += entry.logpdfFn(ptAt(i), ...params);
+    }
+    return null;
+  }
+
+  const { head, rest } = consumeScalar(value);
   // Hot path: no per-atom refs AND no overlay → params constant across
   // atoms. Resolve once, broadcast.
   if (refNames.length === 0 && !overlayKeys) {
