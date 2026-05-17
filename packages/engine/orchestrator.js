@@ -3559,28 +3559,55 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         if (base.kernel || base.ref == null) return null;
         const baseIR = expandMeasureIR(base.ref, derivations, next, bindings);
         if (!baseIR) return null;
-        // Resolve a kernel step to its functionof IR (inline kernelIR,
-        // or a kernel binding whose IR is a functionof — mirrors
-        // materialiser.resolveFnBody).
-        const fnIROf = (kstep) => {
+        const vname = (i) => (d.labels && d.labels[i]) || ('s' + i);
+
+        // Resolve a kernel step to { params, body } and EXPAND the
+        // body. The "closure walk" the legacy inlineChainOps did by
+        // hand IS just expandMeasureIR: when a `functionof` body is a
+        // ref to a measure binding, expandMeasureIR follows it into
+        // the self-contained measure IR where the kernel's boundary
+        // params surface as leaf refs (e.g. `functionof(obs_dist,
+        // theta1=theta1, theta2=theta2)` ⇒ body expands to
+        // `joint(y = Normal(mu = ref theta1, sigma = ref theta2))`).
+        // So kernel application = expand the body, then bind each
+        // param to the prior variate: a NAMED param that matches a
+        // prior field resolves for free by walkJoint's overlay
+        // env-threading (its leaf ref already carries that name); a
+        // lone HOLE/placeholder param (the `fn(…_…)` case, single
+        // param, no matching prior field) is rewired to the prior cat.
+        const kernelExpand = (kstep) => {
           let f = kstep.kernelIR;
           if (!f && kstep.ref != null) {
             const kb = bindings && bindings.get(kstep.ref);
             if (kb && kb.ir && kb.ir.kind === 'call'
                 && kb.ir.op === 'functionof') f = kb.ir;
           }
-          const ps = (f && f.params) || [];
-          return (f && ps.length === 1 && f.body)
-            ? { body: f.body, param: ps[0] } : null;
+          if (!f || !f.body || !Array.isArray(f.params)
+              || f.params.length === 0) return null;
+          let body = f.body;
+          if (body.kind === 'ref' && body.ns === 'self') {
+            body = expandMeasureIR(body.name, derivations, next, bindings);
+            if (!body) return null;
+          }
+          return { params: f.params, body };
         };
-        // Step-var name carrying each variate through walkJoint's
-        // `source`/name overlay env-threading.
-        const vname = (i) => (d.labels && d.labels[i]) || ('s' + i);
-        // Rewire a kernel body's single param to the prior cat: one
-        // prior ⇒ ref(prior_0); ≥2 ⇒ vector(ref prior_0, …) over the
-        // prior step-var names (resolved by env-threading for
-        // jointchain, or per-atom refArrays for the 2-step kchain).
-        const rewireTo = (body, param, priorNames) => {
+        // Spread a (record/joint) measure IR into its named field
+        // descriptors (preserving `source` for env-threading); a
+        // scalar measure IR contributes one field under `fallback`.
+        const spreadFields = (ir, fallback, src) => {
+          if (ir && ir.kind === 'call'
+              && (ir.op === 'joint' || ir.op === 'record')
+              && Array.isArray(ir.fields)) {
+            return ir.fields.map((fl) => ({
+              name: fl.name, value: fl.value,
+              source: fl.source != null ? fl.source : fl.name,
+            }));
+          }
+          return [{ name: fallback, value: ir, source: src }];
+        };
+        // Rewire a lone hole/placeholder param to the prior cat: one
+        // prior ⇒ ref(prior_0); ≥2 ⇒ vector(ref prior_0, …).
+        const rewireHole = (body, param, priorNames) => {
           const sub = (node) => {
             if (node == null || typeof node !== 'object') return node;
             if (Array.isArray(node)) return node.map(sub);
@@ -3601,45 +3628,69 @@ function expandMeasureIR(name, derivations, visited, bindings) {
           };
           return sub(body);
         };
+        // Bind a kernel's expanded body to the available prior field
+        // names. Named params already matching a prior field thread
+        // for free; a single unmatched param is a hole bound to the
+        // prior cat; an unmatched param in a multi-param kernel is
+        // unsupported (clean null).
+        const bindKernel = (ke, priorNames) => {
+          let body = ke.body;
+          for (const p of ke.params) {
+            if (priorNames.indexOf(p) === -1) {
+              if (ke.params.length !== 1) return null;
+              body = rewireHole(body, p, priorNames);
+            }
+          }
+          return body;
+        };
+
+        // Flatten all step variates left-associatively into one joint.
+        const outFields = spreadFields(baseIR, vname(0), base.ref);
+        const priorNames = outFields.map((f) => f.name);
 
         if (d.marginalize) {
-          // kchain: marginal of the LAST variate. 2-step reuses the
-          // exact tested legacy chainOrigin path — return just the
-          // kernel body with its param rewired to the base binding
-          // (matLogdensityof resolves it per-atom via refArrays and
-          // the isChain logsumexp−logN MC reduction integrates the
-          // prior out). N-ary kchain density needs the full prior-path
-          // MC — a clear deferral (null ⇒ matLogdensityof rejects
-          // cleanly; sampling via matJointchain still works).
+          // kchain: marginal of the LAST step's variate(s); the prior
+          // is integrated out by matLogdensityof's isChain MC
+          // (logsumexp−logN). 2-step reuses the exact tested
+          // chainOrigin path. A HOLE param binds to the BASE BINDING
+          // ref — a single materialisable prior matLogdensityof
+          // resolves per-atom (the synthetic spread name `s0` is NOT a
+          // binding, so it must not be the rewire target here). NAMED
+          // params (record-kchain) already ref the base record's draw
+          // bindings — leave them for matLogdensityof + isChain.
           if (steps.length !== 2) return null;
-          const fn = fnIROf(steps[1]);
-          if (!fn) return null;
-          return rewireTo(fn.body, fn.param, [base.ref]);
+          const ke = kernelExpand(steps[1]);
+          if (!ke) return null;
+          let body = ke.body;
+          for (const p of ke.params) {
+            if (priorNames.indexOf(p) === -1) {
+              if (ke.params.length !== 1) return null;
+              body = rewireHole(body, p, [base.ref]);
+            }
+          }
+          return body;
         }
 
-        // jointchain joint density = ∏ conditional densities. The
-        // dependency is carried by walkJoint's `fields` branch +
-        // `source`/name overlay env-threading (the proven legacy
-        // record-jointchain path), which consumes by field NAME ⇒
-        // needs a record-shaped observation. Only the LABELLED form is
-        // supported; positional (tuple-observed) needs a
-        // dependent-positional walker variant — clean deferral (null ⇒
-        // rejects cleanly; sampling unaffected).
-        if (!d.labels) return null;
-        const fields = [
-          { name: vname(0), value: baseIR, source: base.ref },
-        ];
-        for (let i = 1; i < steps.length; i++) {
-          const fn = fnIROf(steps[i]);
-          if (!fn) return null;
-          const priorNames = [];
-          for (let j = 0; j < i; j++) priorNames.push(vname(j));
-          fields.push({
-            name: vname(i),
-            value: rewireTo(fn.body, fn.param, priorNames),
-          });
+        // jointchain: ∏ conditional densities via walkJoint `fields` +
+        // `source` overlay env-threading. Record-shaped observation
+        // (consume by field name); positional (tuple) is a clean
+        // deferral.
+        if (!d.labels && !(baseIR.kind === 'call'
+            && (baseIR.op === 'joint' || baseIR.op === 'record'))) {
+          return null;
         }
-        return { kind: 'call', op: 'joint', fields };
+        for (let i = 1; i < steps.length; i++) {
+          const ke = kernelExpand(steps[i]);
+          if (!ke) return null;
+          const kb = bindKernel(ke, priorNames.slice());
+          if (!kb) return null;
+          const kfs = spreadFields(kb, vname(i), null);
+          for (const fl of kfs) {
+            outFields.push(fl);
+            priorNames.push(fl.name);
+          }
+        }
+        return { kind: 'call', op: 'joint', fields: outFields };
       }
       case 'weighted': {
         const inner = expandMeasureIR(d.from, derivations, next, bindings);
