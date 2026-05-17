@@ -1857,24 +1857,57 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         if (d.marginalize) {
           // kchain: marginal of the LAST step's variate(s); the prior
           // is integrated out by matLogdensityof's isChain MC
-          // (logsumexp−logN over the prior atoms). A HOLE param binds
-          // to the BASE BINDING ref — a single materialisable prior
-          // matLogdensityof
-          // resolves per-atom (the synthetic spread name `s0` is NOT a
-          // binding, so it must not be the rewire target here). NAMED
-          // params (record-kchain) already ref the base record's draw
-          // bindings — leave them for matLogdensityof + isChain.
-          if (steps.length !== 2) return null;
-          const ke = kernelExpand(steps[1]);
+          // (logsumexp−logN over the prior atoms).
+          const ke = kernelExpand(steps[steps.length - 1]);
           if (!ke) return null;
-          let body = ke.body;
-          for (const p of ke.params) {
-            if (priorNames.indexOf(p) === -1) {
-              if (ke.params.length !== 1) return null;
-              body = rewireHole(body, p, [base.ref]);
+          if (steps.length === 2) {
+            // Proven 2-step path. A HOLE param binds to the BASE
+            // BINDING ref — a single materialisable scalar prior that
+            // matLogdensityof resolves per-atom (the synthetic spread
+            // name `s0` is NOT a binding, so it must not be the
+            // rewire target here). NAMED params (record-kchain)
+            // already ref the base record's draw bindings — leave
+            // them for matLogdensityof + isChain.
+            let body = ke.body;
+            for (const p of ke.params) {
+              if (priorNames.indexOf(p) === -1) {
+                if (ke.params.length !== 1) return null;
+                body = rewireHole(body, p, [base.ref]);
+              }
+            }
+            return body;
+          }
+          // N-ary (>2) chain-associativity recursion (engine-concepts
+          // §6): kchain(M,K₁,…,K_{n-1}) ≡ a 2-step kchain whose prior
+          // is the RETAINED (n−1)-joint history jointchain(M,K₁,…,
+          // K_{n-2}). We return ONLY the final kernel body with its
+          // hole rewired to the cat over that history's variate names
+          // (`rewireHole`'s ≥2 vector branch — the SAME helper the
+          // retain branch below uses, so marginalize/retain share one
+          // hole-rewire path, no parallel logic). matLogdensityof
+          // materialises that joint history ONCE and binds its variate
+          // columns as the per-atom refArrays the cat consumes, then
+          // logsumexp−logN — the SAME estimator as the 2-step case,
+          // lifted to a joint prior. The prior-variate names are the
+          // deterministic positional `vname(i)` (= `s{i}`, labels
+          // null); matLogdensityof rebuilds the same names by position
+          // from the materialised history (shared `vname` convention).
+          // Labelled/record-prior N-ary stays a clean deferral.
+          if (d.labels) return null;
+          for (let i = 1; i < steps.length - 1; i++) {
+            const ik = kernelExpand(steps[i]);
+            if (!ik) return null;
+            const ib = bindKernel(ik, priorNames.slice());
+            if (!ib) return null;
+            const ifs = spreadFields(ib, vname(i), null);
+            for (const fl of ifs) {
+              outFields.push(fl);
+              priorNames.push(fl.name);
             }
           }
-          return body;
+          const kb = bindKernel(ke, priorNames.slice());
+          if (!kb) return null;
+          return kb;
         }
 
         // jointchain: ∏ conditional densities. Record/labelled (or a

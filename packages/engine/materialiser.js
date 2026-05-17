@@ -1437,7 +1437,28 @@ function matLogdensityof(d, ctx) {
     }
     valueRefs.push(n);
   });
-  return Promise.all(valueRefs.map(ctx.getMeasure)).then((refMeasures) => {
+  // N-ary kchain density (engine-concepts §6 chain-associativity).
+  // expandMeasureIR returned ONLY the final kernel body with its hole
+  // rewired to the cat over the (n−1)-joint history's variate names
+  // (the deterministic positional `s{i}` convention shared with
+  // derivations.js). Materialise that retained joint history ONCE via
+  // matJointchain (N-ary retain SAMPLING is already complete) and
+  // bind its variate columns as the per-atom refArrays the cat
+  // consumes — the joint draw is preserved (same atom index across
+  // columns), so the existing logsumexp−logN reduction below is the
+  // exact MC marginal, just over a joint prior instead of a scalar.
+  const naryKchain = isChain && measureDeriv
+    && Array.isArray(measureDeriv.steps) && measureDeriv.steps.length > 2
+    && !measureDeriv.labels;
+  const innerJointP = naryKchain
+    ? matJointchain(d.measureName + '$jchist',
+        { kind: 'jointchain', marginalize: false, labels: null,
+          steps: measureDeriv.steps.slice(0, -1) }, ctx)
+    : Promise.resolve(null);
+  return Promise.all([
+    Promise.all(valueRefs.map(ctx.getMeasure)),
+    innerJointP,
+  ]).then(([refMeasures, innerJoint]) => {
     const refArrays = {};
     for (let i = 0; i < valueRefs.length; i++) {
       const rm = refMeasures[i];
@@ -1446,6 +1467,27 @@ function matLogdensityof(d, ctx) {
           '" did not materialise to a scalar EmpiricalMeasure');
       }
       refArrays[valueRefs[i]] = rm.samples;
+    }
+    if (innerJoint) {
+      // Positional retain history ⇒ a tuple measure (.elems) in step
+      // order; column i is variate `s{i}` (matches expandMeasureIR's
+      // vname). Record history (.fields) ordered the same way.
+      const comps = innerJoint.elems
+        || (innerJoint.fields
+          ? Object.keys(innerJoint.fields).map((k) => innerJoint.fields[k])
+          : null);
+      if (!comps) {
+        throw new Error('logdensityof: N-ary kchain prior history did '
+          + 'not materialise to a joint (tuple/record) measure');
+      }
+      for (let i = 0; i < comps.length; i++) {
+        const cs = comps[i] && comps[i].samples;
+        if (!cs || !cs.BYTES_PER_ELEMENT) {
+          throw new Error('logdensityof: N-ary kchain history component '
+            + i + ' did not materialise to a scalar ensemble');
+        }
+        refArrays['s' + i] = cs;
+      }
     }
     const observed = orchestrator.resolveIRToValue(
       d.obsIR, ctx.bindings, ctx.fixedValues);

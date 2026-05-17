@@ -256,6 +256,47 @@ test('density 2c: kchain marginal logdensity ≈ Normal(0, sqrt2)', async () => 
     `kchain marginal logp ${got} vs analytic ${want}`);
 });
 
+test('density: N-ary kchain marginal logdensity (3-step) ≈ Normal(0, sqrt3)',
+  async () => {
+  // Chain-associativity recursion (engine-concepts §6): a0~N(0,1);
+  // a1~N(a0,1); a2~N(a1,1) — kchain marginal a2 ~ N(0, var 3). The
+  // n-step kchain density is a 2-step kchain over the RETAINED
+  // (n−1)-joint history jointchain(M,K1) (a0,a1); matLogdensityof
+  // materialises that joint path once and the proven logsumexp−logN
+  // estimator scores the final kernel over it. Same get/cat spelling
+  // as the N-ary SAMPLING test (the 3rd kernel uses get(_,2)=a1).
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'd  = kchain(M, K1, K2)\n' +
+    'lp = logdensityof(d, 0.0)\n', 'lp', 9000);
+  const got = m.samples[0];
+  const want = normLogpdf(0, 0, Math.sqrt(3));     // ≈ -1.4189
+  // Same single-logsumexp−logN variance class as the 2-step case
+  // (over the jointly-sampled history); generous MC tolerance.
+  assert.ok(Math.abs(got - want) < 0.1,
+    `3-step kchain marginal logp ${got} vs analytic ${want}`);
+});
+
+test('density: N-ary kchain marginal logdensity (4-step) ≈ Normal(0, 2)',
+  async () => {
+  // a0~N(0,1); a1~N(a0,1); a2~N(a1,1); a3~N(a2,1) — marginal a3 ~
+  // N(0, var 4). Exercises the deeper recursion (inner = retained
+  // 3-joint history).
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'K3 = fn(Normal(mu = get(_, 3), sigma = 1.0))\n' +
+    'd  = kchain(M, K1, K2, K3)\n' +
+    'lp = logdensityof(d, 0.0)\n', 'lp', 9000);
+  const got = m.samples[0];
+  const want = normLogpdf(0, 0, 2.0);              // ≈ -1.6121
+  assert.ok(Math.abs(got - want) < 0.12,
+    `4-step kchain marginal logp ${got} vs analytic ${want}`);
+});
+
 test('density 2c: labelled jointchain joint logdensity = p(a)·p(b|a)', async () => {
   // Exact (no MC): logp = logN(0.5;0,1) + logN(1.0;0.5,1).
   const m = await materialise(
