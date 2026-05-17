@@ -3048,7 +3048,7 @@ function classifyPushfwd(rhsIR, ast, bindings) {
 //
 // Mutable holder (not a bare const) so tests can flip `firstClass`
 // and restore it; the single read site is the inlineChainOps gate.
-const JOINTCHAIN_STATE = { firstClass: false };
+const JOINTCHAIN_STATE = { firstClass: true };
 
 /**
  * Classify `jointchain(...)` / `kchain(...)` into a first-class

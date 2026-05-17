@@ -620,8 +620,10 @@ joint_model = jointchain(prior, K1, K2)
 `);
   const d = ctx.derivations.joint_model;
   assert.ok(d, 'joint_model should be derivable');
-  assert.equal(d.kind, 'record');
-  assert.deepEqual(Object.keys(d.fields).sort(), ['theta1', 'theta2', 'y']);
+  // BEHAVIOURAL contract: N-ary record-shaped jointchain retains every
+  // component variate. (Pre-consolidation this also pinned the legacy
+  // internal `d.kind === 'record'`; first-class classifies it as
+  // kind:'jointchain' — an implementation detail, not behaviour.)
   const m = await ctx.getMeasure('joint_model');
   assert.ok(m.fields, 'should materialise as a record measure');
   assert.deepEqual(Object.keys(m.fields).sort(), ['theta1', 'theta2', 'y']);
@@ -662,10 +664,15 @@ lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
 // =====================================================================
 
 test('kchain: produces a measure of K\'s body fields only (no prior)', async () => {
-  // kchain(M, K) drops the prior fields and keeps only K's body —
-  // semantically marginalising the prior away. The materialiser
-  // samples K(prior_atom_i) per atom; the binding's chainOrigin
-  // flag survives so density evaluation knows to MC-marginalise.
+  // BEHAVIOURAL contract (first-class jointchain consolidation): kchain
+  // drops the prior and keeps only K's body, marginalising the prior
+  // away. Here y ~ Normal(theta1, 1) with theta1 ~ Normal(0,1), so the
+  // marginal of y is Normal(0, √2): mean ≈ 0, var ≈ 2 — and the
+  // measure must NOT expose the prior field theta1. (Pre-consolidation
+  // this asserted the legacy internal representation: d.kind ==
+  // 'record', d.fields == ['y'], d.chainOrigin === true. Those are the
+  // inlineChainOps mechanism being retired; behaviour is what matters
+  // and is what we now pin.)
   const ctx = makeCtx(`
 theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
@@ -673,12 +680,17 @@ obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
 forward_kernel = functionof(obs_dist, theta1 = theta1)
 predictive = kchain(prior, forward_kernel)
 `);
-  const d = ctx.derivations.predictive;
-  assert.ok(d, 'predictive should be derivable');
-  assert.equal(d.kind, 'record');
-  assert.deepEqual(Object.keys(d.fields), ['y']);
-  assert.ok(d.chainOrigin === true,
-    'chainOrigin flag should be set so matLogdensityof picks up marginalisation');
+  const m = await ctx.getMeasure('predictive');
+  // Prior marginalised away: no theta1 component anywhere.
+  assert.ok(!(m.fields && m.fields.theta1),
+    'kchain must not expose the marginalised prior field theta1');
+  const ys = m.samples
+    || (m.fields && m.fields.y && m.fields.y.samples);
+  assert.ok(ys && ys.length > 0, 'kchain yields K-body variate y');
+  const mean = ys.reduce((a, b) => a + b, 0) / ys.length;
+  let v = 0; for (const x of ys) v += (x - mean) ** 2; v /= ys.length;
+  assert.ok(Math.abs(mean) < 0.12, 'y marginal mean ≈ 0, got ' + mean);
+  assert.ok(Math.abs(v - 2.0) < 0.35, 'y marginal var ≈ 2, got ' + v);
 });
 
 test('kchain: logdensityof marginalises via MC (logsumexp − log N)', async () => {

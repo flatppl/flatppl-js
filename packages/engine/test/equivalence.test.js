@@ -108,24 +108,22 @@ lp    = logdensityof(joint_model, record(theta = 0.0, y = 0.0))
 test('equivalence: variate-style and MA-style hierarchical Normal-Normal classify identically', async () => {
   const varCtx = makeCtx(VARIATE_NORMAL_NORMAL);
   const maCtx  = makeCtx(MA_NORMAL_NORMAL);
-  // The MA-style joint_model classifies directly as kind='record'
-  // (the jointchain rewrite emits a joint(...) at the binding's
-  // surface). The variate-style joint_model classifies as
-  // kind='alias' — `lawof(<inline record>)` lifts the record to an
-  // anonymous binding and the user-visible binding aliases that
-  // anon. We chase aliases to reach the record derivation; both
-  // styles end up with the same structural record shape.
-  function chaseToRecord(ctx, name) {
-    let d = ctx.derivations[name];
-    while (d && d.kind === 'alias') d = ctx.derivations[d.from];
-    return d;
-  }
-  const vd = chaseToRecord(varCtx, 'joint_model');
-  const md = chaseToRecord(maCtx,  'joint_model');
-  assert.equal(vd && vd.kind, 'record');
-  assert.equal(md && md.kind, 'record');
-  assert.deepEqual(Object.keys(vd.fields).sort(), ['theta', 'y']);
-  assert.deepEqual(Object.keys(md.fields).sort(), ['theta', 'y']);
+  // BEHAVIOURAL equivalence: the two authoring styles must produce the
+  // SAME model. Pre-consolidation this was proxied by both classifying
+  // to the same internal kind='record' (variate-style via an
+  // alias-chase, MA-style via the inlineChainOps rewrite). Under the
+  // first-class consolidation those internal kinds legitimately differ
+  // (variate-style lawof(record) → record/alias; MA-style jointchain →
+  // kind:'jointchain') — what must hold is OBSERVABLE equivalence: the
+  // materialised measure has the same record shape. Numeric agreement
+  // (sample stats, closed-form density) is pinned by the other
+  // equivalence tests in this file, which pass under first-class.
+  const vm = await varCtx.getMeasure('joint_model');
+  const mm = await maCtx.getMeasure('joint_model');
+  assert.ok(vm.fields && mm.fields,
+    'both styles materialise as a record measure');
+  assert.deepEqual(Object.keys(vm.fields).sort(), ['theta', 'y']);
+  assert.deepEqual(Object.keys(mm.fields).sort(), ['theta', 'y']);
 });
 
 test('equivalence: per-axis marginal sample statistics match within MC error', async () => {
