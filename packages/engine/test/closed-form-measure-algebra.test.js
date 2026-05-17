@@ -776,3 +776,32 @@ lp = logdensityof(M, 0.0)
   await assert.rejects(() => ctx.getMeasure('lp'),
     /incommensurable reference measures|spike-and-slab/);
 });
+
+// =====================================================================
+// broadcast(logdensityof, M, pts): the batched closed-form pass
+// (points-batched density) must be BIT-IDENTICAL to the single-point
+// reference route — the invariant of that optimisation, pinned here
+// independently of any analytic reference.
+// =====================================================================
+
+test('broadcast(logdensityof) batched ≡ per-point single logdensityof (bit-identical)', async () => {
+  const grid = [-3.0, -1.25, 0.0, 0.4, 2.7, 5.0, 8.5];
+  let src = `
+A = Normal(mu = 0.0, sigma = 1.3)
+B = Normal(mu = 5.0, sigma = 2.0)
+c = draw(Bernoulli(p = 0.35))
+mix = ifelse(c, A, B)
+lps = broadcast(logdensityof, mix, [${grid.join(', ')}])
+`;
+  // one single-point logdensityof binding per grid point
+  grid.forEach((x, i) => { src += `p${i} = logdensityof(mix, ${x})\n`; });
+  const ctx = makeCtx(src);
+  const batched = await ctx.getMeasure('lps');
+  assert.equal(batched.samples.length, grid.length);
+  for (let i = 0; i < grid.length; i++) {
+    const single = (await ctx.getMeasure('p' + i)).samples[0];
+    assert.ok(Math.abs(batched.samples[i] - single) < 1e-12,
+      `point ${grid[i]}: batched ${batched.samples[i]} vs single-point `
+      + `reference ${single} (must be bit-identical)`);
+  }
+});
