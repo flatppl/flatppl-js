@@ -207,6 +207,110 @@ test('density: weighted(c, iid(N, n)) propagates log(c) once', () => {
 });
 
 // =====================================================================
+// select — discrete-selector mixture (engine-concepts §11)
+//   log p(x) = logsumexp_k ( logw_k + log p_{branch_k}(x) )
+// =====================================================================
+
+function sel(branches, logweights) {
+  const ir = { kind: 'call', op: 'select', branches };
+  ir.logweights = logweights || null;
+  return ir;
+}
+function nLogp(x, mu, sigma) {
+  return -Math.log(sigma) - 0.5 * LOG_TWO_PI
+    - (x - mu) * (x - mu) / (2 * sigma * sigma);
+}
+
+test('density: select(null weights) = raw measure addition log Σ p_k (superpose)', () => {
+  // superpose semantics: ν = M0 + M1 ⇒ p(x) = p0(x) + p1(x).
+  const ir = sel([Normal(0, 1), Normal(4, 1)], null);
+  const x = 1.0;
+  const expected = Math.log(Math.exp(nLogp(x, 0, 1)) + Math.exp(nLogp(x, 4, 1)));
+  const logp = density.logDensity(ir, x, {});
+  assert.ok(Math.abs(logp - expected) < 1e-12, `got ${logp}, exp ${expected}`);
+});
+
+test('density: select with explicit logweights = log Σ w_k p_k (mixture)', () => {
+  // 0.25·N(0,1) + 0.75·N(5,2) — the canonical 2-Gaussian mixture.
+  const w0 = 0.25, w1 = 0.75, x = 1.3;
+  const ir = sel([Normal(0, 1), Normal(5, 2)],
+    [lit(Math.log(w0)), lit(Math.log(w1))]);
+  const expected = Math.log(
+    w0 * Math.exp(nLogp(x, 0, 1)) + w1 * Math.exp(nLogp(x, 5, 2)));
+  const logp = density.logDensity(ir, x, {});
+  assert.ok(Math.abs(logp - expected) < 1e-12, `got ${logp}, exp ${expected}`);
+});
+
+test('density: select equals weighted+superpose composition', () => {
+  // select([N0,N1], [log a, log b]) ≡ logsumexp of weighted branches.
+  const a = 2, b = 3, x = 0.7;
+  const viaSelect = density.logDensity(
+    sel([Normal(0, 1), Normal(2, 0.5)], [lit(Math.log(a)), lit(Math.log(b))]),
+    x, {});
+  const viaWeighted = density.logDensity(
+    sel([callOp('weighted', [lit(a), Normal(0, 1)]),
+      callOp('weighted', [lit(b), Normal(2, 0.5)])], null),
+    x, {});
+  assert.ok(Math.abs(viaSelect - viaWeighted) < 1e-12,
+    `select=${viaSelect}, weighted+superpose=${viaWeighted}`);
+});
+
+test('density: single-branch select equals that branch', () => {
+  const x = 1.7;
+  const one = density.logDensity(sel([Normal(0.5, 2)], null), x, {});
+  const bare = density.logDensity(Normal(0.5, 2), x, {});
+  assert.ok(Math.abs(one - bare) < 1e-12);
+});
+
+test('density: select drops a -Infinity (zero-mass) branch', () => {
+  // weighted(0, ·) collapses that branch to -Inf; logsumexp ignores it
+  // ⇒ result equals the surviving branch's logp exactly.
+  const x = 0.3;
+  const ir = sel([callOp('weighted', [lit(0), Normal(0, 1)]), Normal(0, 1)], null);
+  const logp = density.logDensity(ir, x, {});
+  assert.ok(Math.abs(logp - nLogp(x, 0, 1)) < 1e-12, `got ${logp}`);
+});
+
+test('density: select all-zero-mass branches → -Infinity', () => {
+  const ir = sel([callOp('weighted', [lit(0), Normal(0, 1)]),
+    callOp('weighted', [lit(0), Normal(3, 1)])], null);
+  assert.equal(density.logDensity(ir, 0.0, {}), -Infinity);
+});
+
+test('density: select logsumexp is numerically stable for far-apart branches', () => {
+  // Branch logps differ by ~5000; naive exp() would overflow/underflow.
+  // Stable logsumexp ⇒ result == max + log1p(exp(min-max)) ≈ max.
+  const x = 0.0;
+  const ir = sel([Normal(0, 1), Normal(100, 1)], null);
+  const lpNear = nLogp(x, 0, 1);          // ≈ -0.919
+  const lpFar  = nLogp(x, 100, 1);        // ≈ -5000.9
+  const expected = Math.log(Math.exp(lpNear) + Math.exp(lpFar)); // == lpNear effectively
+  const logp = density.logDensity(ir, x, {});
+  assert.ok(Number.isFinite(logp) && Math.abs(logp - expected) < 1e-9
+    && Math.abs(logp - lpNear) < 1e-9, `got ${logp}, exp ${expected}`);
+});
+
+test('density: select branch footprint mismatch throws', () => {
+  // A scalar leaf vs a 2-component positional joint don't share a
+  // variate space — must be rejected loudly.
+  const ir = sel([Normal(0, 1), callOp('joint', [Normal(0, 1), Normal(0, 1)])],
+    null);
+  assert.throws(() => density.logDensity(ir, [0, 0], {}),
+    /different observation footprints|share one variate space|leftover|exhausted/);
+});
+
+test('density: select consumes one scalar (rest threads to sibling)', () => {
+  // positional joint( select(N,N), N ) at [x0, x1]: the select consumes
+  // exactly one scalar so the trailing Normal scores x1.
+  const ir = callOp('joint', [sel([Normal(0, 1), Normal(1, 1)], null), Normal(0, 1)]);
+  const x0 = 0.2, x1 = -0.4;
+  const selLogp = Math.log(Math.exp(nLogp(x0, 0, 1)) + Math.exp(nLogp(x0, 1, 1)));
+  const expected = selLogp + nLogp(x1, 0, 1);
+  const logp = density.logDensity(ir, [x0, x1], {});
+  assert.ok(Math.abs(logp - expected) < 1e-12, `got ${logp}, exp ${expected}`);
+});
+
+// =====================================================================
 // Measure refs — resolveMeasureRef callback
 // =====================================================================
 

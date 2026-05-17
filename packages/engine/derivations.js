@@ -1356,6 +1356,25 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         }
         return { kind: 'call', op: 'joint', args: argsIR };
       }
+      case 'superpose': {
+        // Additive superposition ν = Σ_k M_k (spec §06). Canonicalise
+        // to the discrete-selector `select` IR (engine-concepts §11):
+        // density = logsumexp_k logp_{M_k} = log Σ p_k — the *raw*
+        // (un-normalised) sum, so `logweights:null` (each component
+        // self-carries any weighted()/normalize() factor via its own
+        // expanded sub-IR). All components share one variate space
+        // (spec), so every branch consumes the same observation; the
+        // walker asserts identical consumption. This is the discrete
+        // sibling of the kchain MC marginal — but EXACT (no −logN).
+        const branches = [];
+        for (const n of d.fromNames) {
+          const inner = expandMeasureIR(n, derivations, next, bindings);
+          if (!inner) return null;
+          branches.push(inner);
+        }
+        if (branches.length === 0) return null;
+        return { kind: 'call', op: 'select', branches, logweights: null };
+      }
       case 'jointchain': {
         // First-class jointchain/kchain (consume/rest consolidation,
         // steps 2c + 2b-ext). Canonicalise the EXPLICIT step structure

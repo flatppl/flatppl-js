@@ -580,6 +580,87 @@ function walkPushfwd(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   return rest;
 }
 
+// ---- Discrete-selector mixture (engine-concepts §11) ---------------
+
+// Footprint size of a `rest` (how many scalar slots remain). Used only
+// to assert that every select branch consumed the SAME observation
+// footprint — components of a superpose/mixture/ifelse share one
+// variate space (spec §06), so their rests must agree.
+function restSize(r) {
+  if (r == null) return 0;
+  if (typeof r === 'number') return 1;
+  if (valueLib.isValue(r)) return r.data.length;
+  if (Array.isArray(r) || (r && typeof r.length === 'number')) return r.length;
+  return 1;
+}
+
+function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+  // select(branches, logweights): the discrete-selector mixture — the
+  // EXACT (finite, no −logN) discrete sibling of the kchain MC
+  // marginal. Density:
+  //
+  //   log p(x) = logsumexp_k ( logw_k + log p_{branch_k}(x) )
+  //
+  // Every branch is an alternative measure over ONE shared variate
+  // space (spec §06: superpose components share variate space), so
+  // each consumes the same observation footprint from `value`; we
+  // walk each into its own scratch accumulator, combine per atom via
+  // a numerically-stable logsumexp, then add to the caller's `acc`.
+  // `logweights:null` ⇒ all-zero (raw superpose ν = Σ M_k; each
+  // component self-carries any weighted()/normalize() factor through
+  // its own expanded sub-IR). Closed-form: zero sampling — the branch
+  // walks are themselves closed-form for tractable components.
+  const branches = ir.branches;
+  if (!Array.isArray(branches) || branches.length === 0) {
+    throw new Error('density: select requires a non-empty branches array');
+  }
+  const K = branches.length;
+  const bacc = new Array(K);
+  let rest0; let haveRest = false;
+  for (let k = 0; k < K; k++) {
+    const a = new Float64Array(N);
+    const rk = walkAcc(branches[k], value, refArrays, N, opts, a, baseEnv, overlay);
+    bacc[k] = a;
+    if (!haveRest) { rest0 = rk; haveRest = true; }
+    else if (restSize(rk) !== restSize(rest0)) {
+      throw new Error('density: select branches consumed different '
+        + 'observation footprints — components must share one variate '
+        + 'space (spec §06)');
+    }
+  }
+  // Per-branch log-weights (constant in the observation point; may
+  // depend on params/per-atom refs). null ⇒ raw superpose (all 0).
+  let lwArr = null;
+  if (ir.logweights != null) {
+    const lw = ir.logweights;
+    if (!Array.isArray(lw) || lw.length !== K) {
+      throw new Error('density: select logweights length must equal branches');
+    }
+    lwArr = new Array(K);
+    for (let k = 0; k < K; k++) {
+      const w = new Float64Array(N);
+      applyAtomScalar(lw[k], refArrays, N, baseEnv, overlay, w, addRaw);
+      lwArr[k] = w;
+    }
+  }
+  // Stable per-atom logsumexp over the K weighted branch log-densities.
+  for (let i = 0; i < N; i++) {
+    let m = -Infinity;
+    for (let k = 0; k < K; k++) {
+      const t = bacc[k][i] + (lwArr ? lwArr[k][i] : 0);
+      if (t > m) m = t;
+    }
+    if (m === -Infinity) { acc[i] += -Infinity; continue; }
+    if (m === Infinity)  { acc[i] += Infinity;  continue; }
+    let s = 0;
+    for (let k = 0; k < K; k++) {
+      s += Math.exp(bacc[k][i] + (lwArr ? lwArr[k][i] : 0) - m);
+    }
+    acc[i] += m + Math.log(s);
+  }
+  return rest0;
+}
+
 const OP_HANDLERS = {
   weighted:    walkWeighted,
   logweighted: walkLogWeighted,
@@ -590,6 +671,7 @@ const OP_HANDLERS = {
   iid:         walkIid,
   jointchain:  walkJointchainStub,
   pushfwd:     walkPushfwd,
+  select:      walkSelect,
   MvNormal:    walkMvNormal,
 };
 

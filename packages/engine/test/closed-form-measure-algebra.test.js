@@ -229,3 +229,95 @@ posterior = bayesupdate(L, prior)
   assert.ok(post.n_eff > SAMPLE_COUNT * 0.3,
     'n_eff > 30% of N (reasonable IS overlap), got ' + post.n_eff);
 });
+
+// =====================================================================
+// superpose density (engine-concepts §11 — the discrete-selector
+// `select` path). superpose is *additive* and *un-normalised*:
+//   ν = Σ_k M_k  ⇒  p_ν(x) = Σ_k p_{M_k}(x)
+// so logdensityof(superpose(...), x) = logsumexp_k logp_{M_k}(x),
+// exactly (no Monte-Carlo, no −logN — the EXACT discrete sibling of
+// the kchain MC marginal). Closed-form Normal references.
+// =====================================================================
+
+function normalLogpdf(x, mu, sigma) {
+  return -Math.log(sigma) - 0.5 * Math.log(2 * Math.PI)
+    - (x - mu) * (x - mu) / (2 * sigma * sigma);
+}
+
+test('superpose density: log p(x) = log[ p_A(x) + p_B(x) ] (raw additive)', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 4.0, sigma = 1.0)
+S = superpose(A, B)
+lp = logdensityof(S, 1.0)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    Math.exp(normalLogpdf(1.0, 0, 1)) + Math.exp(normalLogpdf(1.0, 4, 1)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `superpose logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('superpose density: superpose(m, m) = log 2 + logp_m (additivity)', async () => {
+  const ctx = makeCtx(`
+m = Normal(mu = 2.0, sigma = 0.5)
+T = superpose(m, m)
+lpt = logdensityof(T, 1.3)
+lpm = logdensityof(m, 1.3)
+`);
+  const [T, M] = await Promise.all([ctx.getMeasure('lpt'), ctx.getMeasure('lpm')]);
+  assert.ok(Math.abs(T.samples[0] - (Math.LN2 + M.samples[0])) < 1e-10,
+    `expected log2 + logp_m = ${Math.LN2 + M.samples[0]}, got ${T.samples[0]}`);
+  // And against the closed form directly.
+  assert.ok(Math.abs(M.samples[0] - normalLogpdf(1.3, 2, 0.5)) < 1e-10);
+});
+
+test('superpose density: weighted summands ⇒ log Σ w_k p_k', async () => {
+  // superpose(weighted(0.25, A), weighted(0.75, B)) at x=1.3.
+  // Un-normalised: density = 0.25·p_A + 0.75·p_B (NOT divided by Σw —
+  // that's what normalize() would do; superpose alone does not).
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 2.0)
+S = superpose(weighted(0.25, A), weighted(0.75, B))
+lp = logdensityof(S, 1.3)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    0.25 * Math.exp(normalLogpdf(1.3, 0, 1))
+    + 0.75 * Math.exp(normalLogpdf(1.3, 5, 2)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `weighted superpose logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('superpose density: 3-component superpose sums all branches', async () => {
+  const ctx = makeCtx(`
+A = Normal(mu = -3.0, sigma = 1.0)
+B = Normal(mu =  0.0, sigma = 0.5)
+C = Normal(mu =  3.0, sigma = 2.0)
+S = superpose(A, B, C)
+lp = logdensityof(S, 0.4)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(
+    Math.exp(normalLogpdf(0.4, -3, 1))
+    + Math.exp(normalLogpdf(0.4, 0, 0.5))
+    + Math.exp(normalLogpdf(0.4, 3, 2)));
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `3-component superpose logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
+test('superpose density: totalmass additivity stays consistent with density', async () => {
+  // superpose(weighted(2, m), weighted(3, m)) has total mass 2+3 = 5
+  // (existing materialiser invariant) AND density = log[(2+3)·p_m] =
+  // log 5 + logp_m — the two views must agree.
+  const ctx = makeCtx(`
+m  = Normal(mu = 0.0, sigma = 1.0)
+S  = superpose(weighted(2.0, m), weighted(3.0, m))
+lp = logdensityof(S, 0.6)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.log(5) + normalLogpdf(0.6, 0, 1);
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-10,
+    `got ${m.samples[0]}, expected log5 + logp = ${expected}`);
+});
