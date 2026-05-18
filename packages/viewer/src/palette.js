@@ -4,7 +4,7 @@
 // per-mount ctx.PALETTE / ctx.PHASE_COLORS / ctx.TYPE_STYLE objects
 // (built in mount's prologue). No external function dependencies.
 
-export /**
+/**
  * Single source of truth for "what colour does this node get?".
  * Used by the DAG renderer, the plot-view colorForBinding lookup,
  * and the reification-bubble fill so all three views stay coherent.
@@ -20,7 +20,7 @@ export /**
  * applyScopeLocalPhases — so the same theta1 reads stochastic in
  * the main view and parameterized inside a kernel bubble.
  */
-function resolveNodeColor(ctx, node) {
+export function resolveNodeColor(ctx, node) {
   if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
   if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
   var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;

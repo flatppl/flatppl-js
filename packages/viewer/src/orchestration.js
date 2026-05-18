@@ -10,13 +10,14 @@
 import { rebuildDerivations } from './derivations.js';
 import { updatePlotForBinding } from './render-plot.js';
 
-export /**
+/**
  * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
  * each binding its own RNG stream for sampleN(). Independent of
  * arrival order — two independent variables stay independent
  * regardless of which one the user clicked first.
  */
-function nameSeed(ctx, name) {
+import { enterModuleView, focusNode } from './dag.js';
+export function nameSeed(ctx, name) {
   var h = 2166136261;
   for (var i = 0; i < name.length; i++) {
     h = h ^ name.charCodeAt(i);

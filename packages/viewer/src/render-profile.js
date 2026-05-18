@@ -6,6 +6,15 @@
 // commitSliceX commits user edits to the x-axis bounds back into
 // ctx.profileRangeCache.
 
+import { tryGetMeasure } from './engine-facade.js';
+import { activeDomainRangesFor, activeFixedNamesFor, activePresetFor, computeAutoValues, ensureDomainOverrideFor, ensureOverrideFor, resolveSweepRange, setDomainOverrideFor, setOverrideFor } from './overrides.js';
+import { colorForBinding } from './palette.js';
+import { buildDomainControl, buildPresetControl } from './render-controls.js';
+import { showPlotMessage } from './render-frame.js';
+import { defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
+import { sendWorker } from './worker.js';
+import { renderPlotFrame } from './render-frame.js';
+import { plotZoomOptions } from './util.js';
 export function renderProfilePlotForCurrent(ctx) {
   var plan = ctx.currentPlotPlan;
   if (!plan || plan.mode !== 'profile') return;
@@ -227,14 +236,14 @@ export function renderProfilePlotForCurrent(ctx) {
   });
 }
 
-export /**
+/**
  * Build the profile-plot toolbar controls (axis dropdown, preset
  * dropdown, y-cutoff selector, x-range inputs). Returns a
  * DocumentFragment that the caller hands to renderPlotFrame as
  * `toolbarControls`. Logic mirrors the original inline build; only
  * the styling ctx.host moved.
  */
-function buildProfileControls(ctx, plan, range) {
+export function buildProfileControls(ctx, plan, range) {
   var frag = document.createDocumentFragment();
   var isLogDensity = plan.signature.kind === 'kernel'
                   || plan.signature.kind === 'likelihood';
@@ -390,7 +399,7 @@ function buildProfileControls(ctx, plan, range) {
   return frag;
 }
 
-export /**
+/**
  * Row that sits under the echarts plot in profile mode:
  *
  *   [lo input]    <axis name>    [hi input]
@@ -402,7 +411,7 @@ export /**
  * (binding, sweepKey, preset) — same store as before, same
  * effect on the re-render path.
  */
-function buildProfileBottomRow(ctx, plan, range) {
+export function buildProfileBottomRow(ctx, plan, range) {
   var fg = getComputedStyle(document.body).color || '#ccc';
   var row = document.createElement('div');
   row.style.display = 'flex';

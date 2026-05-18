@@ -29,7 +29,7 @@ export function truncateExpr(expr) {
   return expr;
 }
 
-export /**
+/**
  * True when every sample equals the first one. Catches:
  *   - literal bindings (c = 5.0)
  *   - derived constants (d = c + 1) — same value at every i
@@ -39,7 +39,7 @@ export /**
  * the scalar value as text instead. The check is O(n) but n=5000
  * floats is sub-millisecond.
  */
-function samplesAreConstant(samples) {
+export function samplesAreConstant(samples) {
   if (!samples || samples.length === 0) return false;
   var v = samples[0];
   for (var i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
@@ -90,7 +90,7 @@ export function formatArrayWithEllipsis(values, maxShown) {
   return formatArrayParts(parts, values.length, maxShown);
 }
 
-export /**
+/**
  * Pretty-print a FlatPIR IR node as canonical FlatPPL surface
  * syntax. Used by the fixed-Dirac viewer path to render the
  * value argument of `Dirac(value = ...)` without evaluating it
@@ -105,7 +105,7 @@ export /**
  * gets a placeholder "<op>(…)" so the surface form stays
  * legible without claiming false precision.
  */
-function formatIRValue(ir) {
+export function formatIRValue(ir) {
   if (!ir) return '?';
   if (ir.kind === 'lit')   return formatScalar(ir.value);
   if (ir.kind === 'const') return ir.name; // pi / e / inf / true / false
@@ -200,11 +200,11 @@ export function formatLogTotalmass(logTotalmass) {
   return 'exp(' + (logTotalmass >= 0 ? '+' : '') + logTotalmass.toPrecision(5) + ')';
 }
 
-export /**
+/**
  * Tooltip text for the quality-readout span. Spells out the
  * diagnostic ingredients so a hover gives the full picture.
  */
-function qualityTooltip(q) {
+export function qualityTooltip(q) {
   var parts = [
     'Importance-sampling quality: ' + q.label,
     '',
@@ -277,7 +277,7 @@ export function hexToRgba(hex, alpha) {
   return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
 }
 
-export /**
+/**
  * Wrap a Philox state in a closure that returns U(0,1) uniforms,
  * matching the "() => number" callback shape that
  * empirical.systematicResample / multinomialResample expect.
@@ -288,7 +288,7 @@ export /**
  * so empirical.js stays dep-free of rng.js — visualPanel does
  * the wiring at the call site.
  */
-function makeMainThreadPrng(seed) {
+export function makeMainThreadPrng(seed) {
   var state = FlatPPLEngine.rng.stateFromKey(seed);
   return function() {
     var pair = FlatPPLEngine.rng.nextUniform(state);
@@ -297,7 +297,7 @@ function makeMainThreadPrng(seed) {
   };
 }
 
-export /**
+/**
  * Common echarts zoom config — mouse-wheel + drag zoom on x via
  * the inside-type dataZoom, plus a top-left toolbox button for
  * rectangle-select zoom and a reset button. y-axis stays fixed:
@@ -310,7 +310,7 @@ export /**
  *
  * Returned fresh each call so the caller can pass to setOption.
  */
-function plotZoomOptions(fg) {
+export function plotZoomOptions(fg) {
   return {
     dataZoom: [
       { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
@@ -332,7 +332,7 @@ function plotZoomOptions(fg) {
   };
 }
 
-export /**
+/**
  * Enumerate the plottable scalar leaves of a multivariate
  * EmpiricalMeasure, with display labels and synthetic per-axis
  * sample arrays.
@@ -350,7 +350,7 @@ export /**
  * Float64Array regardless of whether the source was a flat record
  * field or a column of an iid array.
  */
-function listScalarAxes(measure) {
+export function listScalarAxes(measure) {
   var out = [];
   function walk(m, prefix) {
     if (m.fields) {
@@ -392,7 +392,7 @@ function listScalarAxes(measure) {
   return out;
 }
 
-export /**
+/**
  * Walk the derivation chain for a measure binding to find the
  * value-typed binding it's mathematically equivalent to (if any).
  * Two equivalence forms after engine canonicalisation:
@@ -410,7 +410,7 @@ export /**
  * Dirac(value = inline-call), or a non-degenerate sample step).
  * The caller then falls through to the existing dispatch.
  */
-function resolveMeasureAlias(name, derivations, bindings) {
+export function resolveMeasureAlias(name, derivations, bindings) {
   if (!derivations || !bindings) return null;
   var seen = new Set();
   var cur = name;

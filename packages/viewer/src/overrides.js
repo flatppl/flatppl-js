@@ -4,6 +4,8 @@
 // helpers that read/mutate them. Stable across binding navigation;
 // reconciled in rebuildDerivations against current source values.
 
+import { getMeasure } from './engine-facade.js';
+import { defaultRangeForLeafType, defaultValueForLeafType, filterOverrideToAxes, rangeFromSetDescriptor } from './util.js';
 export function overrideEntryFor(ctx, plan) {
   if (plan.presetName == null) return plan.autoOverride;
   return ctx.presetOverrides.get(plan.presetName) || null;

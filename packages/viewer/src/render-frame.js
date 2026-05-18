@@ -7,13 +7,17 @@
 // type-error rows the info panel echoes. makeActionButton is the
 // codicon-based icon button used by preset/domain controls.
 
-export /**
+import { renderPlotForCurrent } from './render-plot.js';
+import { renderSampleStats } from './render-record.js';
+import { esc } from './util.js';
+/**
  * Return the analyzer-level error diagnostics that landed on a
  * binding (typeinfer mismatches, undefined refs, etc.), or null
  * if there are none. Source for both the plot pane's
  * "semantically invalid" message and the DAG's red error border.
  */
-function errorsForBinding(ctx, bindingName) {
+import { cancelAllSampling } from './worker.js';
+export function errorsForBinding(ctx, bindingName) {
   if (!bindingName || !ctx.currentState || !ctx.currentState.data
       || !ctx.currentState.data.nodes) return null;
   var nodes = ctx.currentState.data.nodes;
@@ -23,13 +27,13 @@ function errorsForBinding(ctx, bindingName) {
   return null;
 }
 
-export /**
+/**
  * Reset plot-content's inline style. The marginals view sets
  * display:grid with several layout properties; subsequent
  * single-chart views need a clean slate so their content fills
  * the pane without inheriting a stale grid.
  */
-function resetPlotContentStyle(ctx) {
+export function resetPlotContentStyle(ctx) {
   var el = document.getElementById('plot-content');
   el.style.display = '';
   el.style.gridTemplateColumns = '';
@@ -127,7 +131,7 @@ export function setPlotEnabled(ctx, enabled) {
   }
 }
 
-export /**
+/**
  * Single entry-point for laying out a plot. Owns:
  *   - the flex-column structure of #plot-content
  *   - an optional toolbar row (controls on the left, sample-stats
@@ -154,7 +158,7 @@ export /**
  *                      writes its chart DOM (echarts.init,
  *                      grid layout, etc.) directly into it.
  */
-function renderPlotFrame(ctx, opts) {
+export function renderPlotFrame(ctx, opts) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   var el = document.getElementById('plot-content');
@@ -216,7 +220,7 @@ function renderPlotFrame(ctx, opts) {
   opts.chartCallback(chartHost);
 }
 
-export /**
+/**
  * Render a constant value (literal, deterministic arithmetic of
  * literals, or a degenerate distribution) as plain text in the
  * scalar-display block. Used by:
@@ -227,7 +231,7 @@ export /**
  * The font-size auto-shrinks for long renderings (record(...) with
  * many fields) so the value still fits within the pane.
  */
-function renderTextValue(ctx, bindingName, text) {
+export function renderTextValue(ctx, bindingName, text) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   var el = document.getElementById('plot-content');

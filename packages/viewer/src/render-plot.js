@@ -9,6 +9,13 @@
 import { buildPlotPlan } from './plot-plan.js';
 import { renderFixedRecord, renderKernelSampleForCurrent } from './render-kernel.js';
 
+import { getMeasure } from './engine-facade.js';
+import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
+import { showPlotMessage } from './render-frame.js';
+import { renderProfilePlotForCurrent } from './render-profile.js';
+import { esc } from './util.js';
+import { errorsForBinding } from './render-frame.js';
+import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderPlotForCurrent(ctx) {
   // The plot panel stays mounted whenever plotEnabled is true. When
   // the focused binding isn't plottable (lawof, modules, etc.) we

@@ -6,6 +6,9 @@
 // ConcreteMeasure substitutes user-set kwargs into a sampleable
 // measure IR for the kernel-sample plot path.
 
+import { collectRefArrays } from './engine-facade.js';
+import { sendWorker } from './worker.js';
+import { resolveMeasureAlias } from './util.js';
 export function buildPlotPlan(ctx, binding /*, bindingsMap */) {
   if (!binding || !ctx.derivationsState) return null;
   var name = binding.name;

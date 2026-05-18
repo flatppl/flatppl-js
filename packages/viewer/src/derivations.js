@@ -6,6 +6,8 @@
 // and primes the cytoscape DAG's element list. Called on every
 // sourceUpdate and configUpdate.
 
+import { sendWorkerNow } from './worker.js';
+import { ensureSamplerWorker } from './worker.js';
 export function rebuildDerivations(ctx) {
   if (!ctx.currentBindings) {
     ctx.derivationsState = null;
