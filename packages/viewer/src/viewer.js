@@ -1088,8 +1088,8 @@
     // order of materialisation. A future "Resample" button can bump
     // rootSeed and clear the cache to redraw everything.
     // ---------------------------------------------------------------
-    var derivationsState = null;       // { derivations, discrete } from orchestrator
-    var measureCache = new Map();      // Map<name, EmpiricalMeasure>
+    ctx.derivationsState = null;       // { derivations, discrete } from orchestrator
+    ctx.measureCache = new Map();      // Map<name, EmpiricalMeasure>
     // Per-binding histogram cache. Histogram computation is O(N) and
     // for N=1M takes a noticeable few ms; caching keeps click-flipping
     // between previously-viewed bindings instant. Invalidated together
@@ -1097,7 +1097,7 @@
     // the discrete flag so the same name plotted discrete vs. continuous
     // gets distinct cache entries (defensive — discreteness is fixed
     // per binding today but the door's open for future modes).
-    var histogramCache = new Map();    // Map<"name|d"|"name|c", histogram>
+    ctx.histogramCache = new Map();    // Map<"name|d"|"name|c", histogram>
     // Profile-plot per-axis range cache. Keyed by
     // "binding|sweepKey|presetName" so each (function, axis,
     // preset) combination remembers the user's x-axis edits across
@@ -1107,7 +1107,7 @@
     // fromAuto distinguishes ranges initially populated by
     // resolveSweepRange (auto) vs. user-edited (override) — used
     // for tooltip / debug; the renderer treats both the same.
-    var profileRangeCache = new Map();
+    ctx.profileRangeCache = new Map();
     // Module-wide overrides on named preset (record-point) bindings.
     // Persists across binding navigation, so tuning pars1 on a
     // likelihood plot applies the same overrides when the user visits
@@ -1117,7 +1117,7 @@
     // source value now matches the override drops from the override
     // automatically.
     //   Map<presetName, { values: { kwargName → number } }>
-    var presetOverrides = new Map();
+    ctx.presetOverrides = new Map();
     // Module-wide overrides on named preset-domain bindings (cartprod
     // forms). Same lifetime/reconciliation pattern as presetOverrides:
     // persists across binding navigation, prunes per kwarg against
@@ -1125,7 +1125,7 @@
     // is gone.
     //   Map<domainName, { ranges }>
     // ranges: { kwargName → { lo, hi } }   user-set range overrides
-    var domainOverrides = new Map();
+    ctx.domainOverrides = new Map();
     var rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
@@ -1149,34 +1149,34 @@
 
     function rebuildDerivations() {
       if (!currentBindings) {
-        derivationsState = null;
-        measureCache = new Map();
-        histogramCache = new Map();
-        profileRangeCache = new Map();
+        ctx.derivationsState = null;
+        ctx.measureCache = new Map();
+        ctx.histogramCache = new Map();
+        ctx.profileRangeCache = new Map();
         return;
       }
       try {
-        derivationsState = FlatPPLEngine.orchestrator.buildDerivations(currentBindings);
+        ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(currentBindings);
         // Surface classification diagnostics instead of letting a
         // silently-dropped binding turn into a confusing plot-time
         // error far from its cause. buildDerivations only emits the
         // unambiguous fixed-phase-dead-end case (an engine gap on a
         // deterministic expression), so any entry here is actionable.
-        var bdiags = (derivationsState && derivationsState.diagnostics) || [];
+        var bdiags = (ctx.derivationsState && ctx.derivationsState.diagnostics) || [];
         for (var bi = 0; bi < bdiags.length; bi++) {
           console.warn('FlatPPL: ' + bdiags[bi].message);
         }
       } catch (e) {
         console.error('FlatPPL: buildDerivations failed:', e);
-        derivationsState = null;
+        ctx.derivationsState = null;
       }
       // Source change invalidates every cached measure — derivations
       // (or just signatures) may have shifted under any of them. Drop
       // the histogram cache too since histograms are downstream of
       // measures.
-      measureCache = new Map();
-      histogramCache = new Map();
-      profileRangeCache = new Map();
+      ctx.measureCache = new Map();
+      ctx.histogramCache = new Map();
+      ctx.profileRangeCache = new Map();
 
       // Reconcile module-wide preset overrides against the new
       // source. For each existing override:
@@ -1189,7 +1189,7 @@
       //     the next rebuildDerivations finds equal values and
       //     prunes the override automatically.
       //   - If the override is empty after pruning, retire it.
-      presetOverrides.forEach(function(entry, name) {
+      ctx.presetOverrides.forEach(function(entry, name) {
         var b = currentBindings.get(name);
         var curValues = null;
         // analyzer.classifyStatement only returns 'literal' for
@@ -1223,7 +1223,7 @@
           }
         }
         if (!curValues) {
-          presetOverrides.delete(name);
+          ctx.presetOverrides.delete(name);
           return;
         }
         var vs = entry.values || {};
@@ -1236,7 +1236,7 @@
           }
         }
         if (Object.keys(vs).length === 0) {
-          presetOverrides.delete(name);
+          ctx.presetOverrides.delete(name);
         }
       });
 
@@ -1254,7 +1254,7 @@
       //     the override in place: the user's range overrides the
       //     unbounded source.
       //   - If the override is empty after pruning, retire it.
-      domainOverrides.forEach(function(entry, name) {
+      ctx.domainOverrides.forEach(function(entry, name) {
         var b = currentBindings.get(name);
         var sourceKwargs = null;
         var sourceIntervals = null;
@@ -1281,7 +1281,7 @@
           }
         }
         if (!sourceKwargs) {
-          domainOverrides.delete(name);
+          ctx.domainOverrides.delete(name);
           return;
         }
         var rs = entry.ranges || {};
@@ -1298,7 +1298,7 @@
           // explicit range still adds information — keep it.
         }
         if (Object.keys(rs).length === 0) {
-          domainOverrides.delete(name);
+          ctx.domainOverrides.delete(name);
         }
       });
 
@@ -1310,10 +1310,10 @@
       // non-scalar fixed values like a length-10 `random_data` array.
       // setEnv with merge=false replaces (so a stale fixedValues map
       // from the previous source can't leak into the new one).
-      if (derivationsState && derivationsState.fixedValues
-          && derivationsState.fixedValues.size > 0) {
+      if (ctx.derivationsState && ctx.derivationsState.fixedValues
+          && ctx.derivationsState.fixedValues.size > 0) {
         var envObj = {};
-        derivationsState.fixedValues.forEach(function(v, k) { envObj[k] = v; });
+        ctx.derivationsState.fixedValues.forEach(function(v, k) { envObj[k] = v; });
         ensureSamplerWorker().then(function(w) {
           sendWorkerNow(w, { type: 'setEnv', env: envObj, merge: false });
         }).catch(function(err) {
@@ -1367,69 +1367,6 @@
      * and its measure is free. With null-uniform logWeights the cache
      * is purely additive over today's behaviour — no extra allocation.
      */
-    /**
-     * Convert a JS value (from the orchestrator's fixedValues map) to
-     * the SoA empirical-measure shape getMeasure normally produces.
-     * Records → { fields: { name: <recursive>, … } }, tuples →
-     * { elems: [<recursive>, …] }, scalars → Float64Array(N).fill(v),
-     * numeric arrays → Float64Array literal. Returns null for values
-     * we don't know how to surface (rngstate, opaque objects).
-     */
-    function fixedValueToMeasure(v) {
-      // Phase 8: every scalar-leaf Measure carries `.value` (the
-      // shape-tagged Value view). `.value.data` shares storage with
-      // `.samples`. Without `.value` here, collectRefArrays' defensive
-      // batchedScalar wrap kicks in — correct but redundant.
-      if (typeof v === 'number' && Number.isFinite(v)) {
-        var arr = new Float64Array(SAMPLE_COUNT);
-        arr.fill(v);
-        return { samples: arr, value: { shape: [SAMPLE_COUNT], data: arr },
-                 logWeights: null };
-      }
-      if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
-        var samples = Float64Array.from(v);
-        return { samples: samples,
-                 value: { shape: [samples.length], data: samples },
-                 logWeights: null };
-      }
-      if (Array.isArray(v)) {
-        // A plain JS array is either a flat numeric vector (data
-        // literal) or a tuple of mixed-shape elements (single-LHS
-        // rand returns `(value, new_state)`). Distinguish by checking
-        // whether every element is a finite number.
-        var allNum = v.length > 0;
-        for (var i = 0; allNum && i < v.length; i++) {
-          if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) allNum = false;
-        }
-        if (allNum) {
-          var samplesA = Float64Array.from(v);
-          return { samples: samplesA,
-                   value: { shape: [samplesA.length], data: samplesA },
-                   logWeights: null };
-        }
-        // Tuple: per-element recursive measure. Opaque elements
-        // (rngstate) become null entries; formatConstantMeasure
-        // renders those as a placeholder so a tuple containing a
-        // state still surfaces its other elements as text.
-        var elems = new Array(v.length);
-        for (var ei = 0; ei < v.length; ei++) elems[ei] = fixedValueToMeasure(v[ei]);
-        return { elems: elems };
-      }
-      if (v && typeof v === 'object') {
-        // rngstate / opaque objects carry an internal `key` array we
-        // don't surface. Plain JS records map to the SoA `fields` form.
-        if (v.key && Array.isArray(v.key) && v.counter) return null;   // rngstate
-        var fields = {};
-        var anyOk = false;
-        for (var k in v) {
-          if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
-          var sub = fixedValueToMeasure(v[k]);
-          if (sub) { fields[k] = sub; anyOk = true; }
-        }
-        if (anyOk) return { fields: fields };
-      }
-      return null;
-    }
 
     /** Soft-fail variant of getMeasure: resolves to null instead of
         rejecting when the binding can't produce a measure (no
@@ -1445,8 +1382,8 @@
     }
 
     function getMeasure(name) {
-      if (measureCache.has(name)) return Promise.resolve(measureCache.get(name));
-      if (!derivationsState) return Promise.reject(new Error('no model loaded'));
+      if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
+      if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
       // All per-kind materialisation lives in the engine — the viewer's
       // job here is just to memoise the result against the cache. The
       // engine-side materialiser dispatches by derivation kind, computes
@@ -1454,16 +1391,16 @@
       // Measure record. Recursion is handled by passing getMeasure
       // itself back in so child materialisations hit the same cache.
       var promise = FlatPPLEngine.materialiser.materialiseMeasure(name, {
-        derivations: derivationsState.derivations,
-        bindings:    derivationsState.bindings,
-        fixedValues: derivationsState.fixedValues,
+        derivations: ctx.derivationsState.derivations,
+        bindings:    ctx.derivationsState.bindings,
+        fixedValues: ctx.derivationsState.fixedValues,
         getMeasure:  getMeasure,
         sendWorker:  sendWorker,
         sampleCount: SAMPLE_COUNT,
         rootSeed:    rootSeed,
         rejectionBudget: REJECTION_BUDGET,
       });
-      promise.then(function(m) { measureCache.set(name, m); });
+      promise.then(function(m) { ctx.measureCache.set(name, m); });
       return promise;
     }
     // Plot-plan fallbacks below still need the helper as a local
@@ -1474,7 +1411,7 @@
       return FlatPPLEngine.materialiser.fixedValueToMeasure(v, SAMPLE_COUNT);
     }
     function collectRefArrays(ir) {
-      var fv = derivationsState && derivationsState.fixedValues;
+      var fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
       return FlatPPLEngine.materialiser.collectRefArrays(ir, fv, getMeasure);
     }
     // Current plot plan from buildPlotPlan(). Two shapes:
@@ -1655,7 +1592,7 @@
     }
 
     function buildPlotPlan(binding /*, bindingsMap */) {
-      if (!binding || !derivationsState) return null;
+      if (!binding || !ctx.derivationsState) return null;
       var name = binding.name;
 
       // Callable bindings (function / kernel / fn / likelihood) don't
@@ -1668,15 +1605,15 @@
       // default range and dispatches to worker.profileN.
       if (binding.type === 'functionof' || binding.type === 'fn'
           || binding.type === 'kernelof' || binding.type === 'likelihood') {
-        if (!derivationsState.bindings) return null;
-        var sig = FlatPPLEngine.orchestrator.signatureOf(name, derivationsState.bindings);
+        if (!ctx.derivationsState.bindings) return null;
+        var sig = FlatPPLEngine.orchestrator.signatureOf(name, ctx.derivationsState.bindings);
         if (!sig || !sig.body) return null;
         var axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
         if (axes.length === 0) return null;
         var presets = FlatPPLEngine.orchestrator.findMatchingPresets(
-          sig, derivationsState.bindings);
+          sig, ctx.derivationsState.bindings);
         var domains = FlatPPLEngine.orchestrator.findMatchingDomains(
-          sig, derivationsState.bindings);
+          sig, ctx.derivationsState.bindings);
         // On-demand specialize the output type at this synthetic call
         // site: scope = {paramName → input type}. typeinfer's
         // inferExprInScope handles polymorphic bodies — module-level
@@ -1757,12 +1694,12 @@
         };
       }
 
-      var d = derivationsState.derivations[name];
+      var d = ctx.derivationsState.derivations[name];
       // A binding with no derivation can still be plottable when the
       // orchestrator's pre-eval pass put a value in fixedValues
       // (typically a record / array from rand). The phase-driven
       // dispatch below routes those by inferredType alone.
-      var fixedValues = derivationsState.fixedValues;
+      var fixedValues = ctx.derivationsState.fixedValues;
       // Or — and this is the implicit-kernelof escape hatch — a
       // stochastic binding can have its derivation pruned because
       // its distIR depends on a parameterized (elementof) ancestor.
@@ -1788,14 +1725,14 @@
         // through to "Not plottable".
         if (binding.phase === 'stochastic') {
           var implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
-            name, derivationsState.bindings, derivationsState.derivations);
+            name, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
           if (implicitSig && implicitSig.inputs.length > 0) {
             var iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
             if (iAxes.length > 0) {
               var iPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
-                implicitSig, derivationsState.bindings);
+                implicitSig, ctx.derivationsState.bindings);
               var iDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
-                implicitSig, derivationsState.bindings);
+                implicitSig, ctx.derivationsState.bindings);
               return {
                 name: name,
                 mode: 'kernel-sample',
@@ -1812,14 +1749,14 @@
           }
         } else if (binding.phase === 'parameterized') {
           var implicitFnSig = FlatPPLEngine.orchestrator.implicitFunctionSignature(
-            name, derivationsState.bindings, derivationsState.derivations);
+            name, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
           if (implicitFnSig && implicitFnSig.inputs.length > 0) {
             var fAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitFnSig);
             if (fAxes.length > 0) {
               var fPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
-                implicitFnSig, derivationsState.bindings);
+                implicitFnSig, ctx.derivationsState.bindings);
               var fDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
-                implicitFnSig, derivationsState.bindings);
+                implicitFnSig, ctx.derivationsState.bindings);
               var fOutputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(
                 implicitFnSig.output && implicitFnSig.output.type);
               var fOutputKey = fOutputs.length > 0 ? fOutputs[0].key : null;
@@ -1843,7 +1780,7 @@
         }
         return null;
       }
-      var discrete = !!derivationsState.discrete[name];
+      var discrete = !!ctx.derivationsState.discrete[name];
 
       // Phase-driven dispatch (per spec §sec:phases):
       //   'stochastic'   → atoms vary across i; histogram / corner plot.
@@ -1884,7 +1821,7 @@
       // bindings (the common case — Normal samples, posterior,
       // function bindings, etc.) resolveMeasureAlias returns null
       // and we fall through to the regular dispatch below.
-      var sourceName = resolveMeasureAlias(name, derivationsState.derivations,
+      var sourceName = resolveMeasureAlias(name, ctx.derivationsState.derivations,
                                            currentBindings);
       if (sourceName && sourceName !== name) {
         var sourceBinding = currentBindings.get(sourceName);
@@ -1927,7 +1864,7 @@
         // histogram. Tightening dotted-broadcast typeinfer would also
         // fix it at the source; this fallback hardens the viewer
         // against every present and future loose-typeinfer case.
-        var fvMap = derivationsState.fixedValues;
+        var fvMap = ctx.derivationsState.fixedValues;
         var fvVal = fvMap && fvMap.has(name) ? fvMap.get(name) : undefined;
         var isFlatNumericVec = Array.isArray(fvVal) && fvVal.length > 0
           && fvVal.every(function (e) {
@@ -1963,7 +1900,7 @@
       // not the phase check; that's intentional.)
       var analyticalIR = null;
       if (binding.phase !== 'stochastic') {
-        var leafIR = FlatPPLEngine.orchestrator.leafSampleIR(name, derivationsState.derivations);
+        var leafIR = FlatPPLEngine.orchestrator.leafSampleIR(name, ctx.derivationsState.derivations);
         if (leafIR && leafIR.kind === 'call' && leafIR.op
             && (!leafIR.args || leafIR.args.length === 0)) {
           var allLit = true;
@@ -3984,8 +3921,8 @@
       showPlotMessage('Sampling…', { cancellable: true, hint: true });
       var planForCall = plan;
       // Cache hit: use previously-sampled measure directly.
-      if (measureCache.has(cacheKey)) {
-        return Promise.resolve(measureCache.get(cacheKey)).then(function(m) {
+      if (ctx.measureCache.has(cacheKey)) {
+        return Promise.resolve(ctx.measureCache.get(cacheKey)).then(function(m) {
           if (ctx.currentPlotPlan !== planForCall) return;
           renderKernelSampleMeasure(m, plan);
         });
@@ -4018,7 +3955,7 @@
         }
         var ir = sig.body;
         ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
-          ir, derivationsState.derivations);
+          ir, ctx.derivationsState.derivations);
         // expandMeasureRefsInIR fails closed for refs whose derivation
         // was pruned by buildDerivations (e.g. `x` here, because its
         // distIR depends on the parameterized `mu`). The kernel-sample
@@ -4027,12 +3964,12 @@
         // bindings fallback to recover from binding.ir directly.
         if (ir && ir.kind === 'ref' && ir.ns === 'self') {
           var expanded = FlatPPLEngine.orchestrator.expandMeasureIR(
-            ir.name, derivationsState.derivations,
-            undefined, derivationsState.bindings);
+            ir.name, ctx.derivationsState.derivations,
+            undefined, ctx.derivationsState.bindings);
           if (expanded) ir = expanded;
         }
         ir = FlatPPLEngine.orchestrator.inlineForProfile(
-          ir, paramNames, derivationsState.bindings, derivationsState.derivations);
+          ir, paramNames, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
         ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
 
         // Captured self-refs (outer-scope stochastic / fixed bindings
@@ -4046,7 +3983,7 @@
         return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
       }).then(function(measure) {
         if (ctx.currentPlotPlan !== planForCall) return;
-        measureCache.set(cacheKey, measure);
+        ctx.measureCache.set(cacheKey, measure);
         renderKernelSampleMeasure(measure, plan);
       }).catch(function(err) {
         if (ctx.currentPlotPlan !== planForCall) return;
@@ -4056,10 +3993,10 @@
 
     /** The override entry for the active selection — auto's lives
         on the plan (per-binding), named presets live in the
-        module-wide presetOverrides map. Returns null if none. */
+        module-wide ctx.presetOverrides map. Returns null if none. */
     function overrideEntryFor(plan) {
       if (plan.presetName == null) return plan.autoOverride;
-      return presetOverrides.get(plan.presetName) || null;
+      return ctx.presetOverrides.get(plan.presetName) || null;
     }
 
     /** Whether the active preset selection currently has any value
@@ -4085,9 +4022,9 @@
         return;
       }
       if (entry) {
-        presetOverrides.set(plan.presetName, entry);
+        ctx.presetOverrides.set(plan.presetName, entry);
       } else {
-        presetOverrides.delete(plan.presetName);
+        ctx.presetOverrides.delete(plan.presetName);
       }
     }
 
@@ -4142,10 +4079,10 @@
 
     /** Override entry for the active domain, or null when none. Auto
         domain's entry lives on plan.domainAutoOverride; named ones in
-        domainOverrides keyed by name. */
+        ctx.domainOverrides keyed by name. */
     function domainOverrideEntryFor(plan) {
       if (plan.domainName == null) return plan.domainAutoOverride || null;
-      return domainOverrides.get(plan.domainName) || null;
+      return ctx.domainOverrides.get(plan.domainName) || null;
     }
 
     /** Get-or-create a domain override entry for the active selection.
@@ -4166,9 +4103,9 @@
         return;
       }
       if (entry) {
-        domainOverrides.set(plan.domainName, entry);
+        ctx.domainOverrides.set(plan.domainName, entry);
       } else {
-        domainOverrides.delete(plan.domainName);
+        ctx.domainOverrides.delete(plan.domainName);
       }
     }
 
@@ -4276,7 +4213,7 @@
       var autoValues = computeAutoValues(plan);
 
       function buildEntry(name, baseValues, isAuto) {
-        var entryOverride = (name == null) ? plan.autoOverride : presetOverrides.get(name);
+        var entryOverride = (name == null) ? plan.autoOverride : ctx.presetOverrides.get(name);
         var modified = !!(entryOverride && entryOverride.values
           && Object.keys(entryOverride.values).length > 0);
         var combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
@@ -4489,7 +4426,7 @@
       function buildEntry(name, baseRanges, baseSetNames, isAuto) {
         var entryOverride = (name == null)
           ? plan.domainAutoOverride
-          : domainOverrides.get(name);
+          : ctx.domainOverrides.get(name);
         var modified = !!(entryOverride && entryOverride.ranges
           && Object.keys(entryOverride.ranges).length > 0);
         var combinedRanges = Object.assign({}, baseRanges,
@@ -4874,7 +4811,7 @@
         if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
       }
       if (matching.length !== 1) return 'reals';  // non-scalar — defer
-      var bindings = derivationsState && derivationsState.bindings;
+      var bindings = ctx.derivationsState && ctx.derivationsState.bindings;
       var d = null;
       try {
         d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(matching[0].source, bindings);
@@ -5017,7 +4954,7 @@
             + formatScalarForSource(r.hi) + ')');
           continue;
         }
-        var cached = profileRangeCache.get(
+        var cached = ctx.profileRangeCache.get(
           plan.name + '|' + kw + '|D=' + (plan.domainName || ''));
         if (cached && Number.isFinite(cached.lo) && Number.isFinite(cached.hi)) {
           parts.push(kw + ' = interval('
@@ -5070,8 +5007,8 @@
         var ax = axes[i];
         var def = defaultValueForLeafType(ax.leafType);
         if (ax.source && ax.source.kind === 'binding'
-            && measureCache && measureCache.has(ax.source.name)) {
-          var m = measureCache.get(ax.source.name);
+            && ctx.measureCache && ctx.measureCache.has(ax.source.name)) {
+          var m = ctx.measureCache.get(ax.source.name);
           if (m && m.samples && m.samples.length > 0) def = m.samples[0];
         }
         out[ax.kwargName] = def;
@@ -5298,7 +5235,7 @@
     // getMeasure(...).
     function resolveSweepRange(axis) {
       var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
-        axis.source, derivationsState && derivationsState.bindings);
+        axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
       if (descriptor && descriptor.kind === 'empirical') {
         return getMeasure(descriptor.name).then(function(m) {
           if (m && m.samples && m.samples.length > 0) {
@@ -5420,7 +5357,7 @@
       }
       if (mode === 'logdensity') {
         ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
-          ir, derivationsState.derivations);
+          ir, ctx.derivationsState.derivations);
       }
       // Propagate the swept axis (and other params) through transitive
       // deterministic deps. Without this, e.g. sweeping `theta1` in a
@@ -5431,7 +5368,7 @@
       // rewrites self.theta1 → %local.theta1.
       var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
       ir = FlatPPLEngine.orchestrator.inlineForProfile(
-        ir, paramNames, derivationsState.bindings, derivationsState.derivations);
+        ir, paramNames, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
       var POINT_COUNT = 200;
       showPlotMessage('Profiling…', { cancellable: true, hint: true });
       var planForCall = plan;
@@ -5463,11 +5400,11 @@
         rangePromise = Promise.resolve(
           [domainRangeForSweep.lo, domainRangeForSweep.hi]);
       } else {
-        var cached = profileRangeCache.get(cacheKey);
+        var cached = ctx.profileRangeCache.get(cacheKey);
         rangePromise = cached
           ? Promise.resolve([cached.lo, cached.hi])
           : resolveSweepRange(sweepAxis).then(function(r) {
-              profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
+              ctx.profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
               return r;
             });
       }
@@ -5523,7 +5460,7 @@
         var observed;
         if (sig.obsIR != null) {
           observed = FlatPPLEngine.orchestrator.resolveIRToValue(
-            sig.obsIR, derivationsState.bindings, derivationsState.fixedValues);
+            sig.obsIR, ctx.derivationsState.bindings, ctx.derivationsState.fixedValues);
         }
         return sendWorker({
           type: 'profileN',
@@ -5717,7 +5654,7 @@
      * Wrapper-edge-aligned (lo pinned left, hi pinned right; axis
      * name centred). The axis name comes from plan.axes[…].label;
      * the (default = V) decoration is added in a later step.
-     * Range edits commit to profileRangeCache keyed by
+     * Range edits commit to ctx.profileRangeCache keyed by
      * (binding, sweepKey, preset) — same store as before, same
      * effect on the re-render path.
      */
@@ -6007,7 +5944,7 @@
 
     /** Commit a clicked x value as the sweep-axis value of the
         active preset. Writes through the unified override store
-        (autoOverride for auto, presetOverrides for named). */
+        (autoOverride for auto, ctx.presetOverrides for named). */
     function commitSliceX(plan, x) {
       if (!plan || !plan.axes) return;
       var kwarg = null;
@@ -6194,7 +6131,7 @@
       // rebuildDerivations and configUpdate (sampleCount change)
       // clear it.
       var histKey = name + '|' + (opts.discrete ? 'd' : 'c');
-      var hist = histogramCache.get(histKey);
+      var hist = ctx.histogramCache.get(histKey);
       if (!hist) {
         // Pass logWeights through so weighted measures (post
         // weighted/bayesupdate/normalize) render their bars
@@ -6204,7 +6141,7 @@
         hist = opts.discrete
           ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
           : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
-        histogramCache.set(histKey, hist);
+        ctx.histogramCache.set(histKey, hist);
       }
       var staleGuard = opts.staleGuard || function() { return true; };
       // Scalar histogram path renders once (no internal rerenders), so
@@ -7089,8 +7026,8 @@
             && cfg.sampleCount > 0
             && cfg.sampleCount !== SAMPLE_COUNT) {
           SAMPLE_COUNT = cfg.sampleCount | 0;
-          measureCache = new Map();
-          histogramCache = new Map();
+          ctx.measureCache = new Map();
+          ctx.histogramCache = new Map();
           if (ctx.plotEnabled) renderPlotForCurrent();
         }
 
@@ -7112,8 +7049,8 @@
             && cfg.truncateRejectionBudget >= 1
             && cfg.truncateRejectionBudget !== REJECTION_BUDGET) {
           REJECTION_BUDGET = cfg.truncateRejectionBudget | 0;
-          measureCache = new Map();
-          histogramCache = new Map();
+          ctx.measureCache = new Map();
+          ctx.histogramCache = new Map();
           if (ctx.plotEnabled) renderPlotForCurrent();
         }
         return;
