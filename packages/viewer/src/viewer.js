@@ -642,10 +642,11 @@
       return ts.color;
     }
 
-    var cy = null;
-    var bb = null;
-    var history = [];
-    var currentState = null;
+    // G1 DAG/state (decomposition Phase 2 — on ctx).
+    ctx.cy = null;
+    ctx.bb = null;
+    ctx.history = [];
+    ctx.currentState = null;
     // Bound on the DAG-navigation history (back-button stack). Cheap
     // insurance against pathological growth (a runaway extension or
     // rapid-fire navigation). Each entry is a sub-DAG's data plus a
@@ -741,7 +742,7 @@
     function updateHeader(data) {
       var el = document.getElementById('header-expr');
       // Module view: no per-node target; just label the view.
-      if (currentState && currentState.targetName === MODULE_TARGET) {
+      if (ctx.currentState && ctx.currentState.targetName === MODULE_TARGET) {
         el.innerHTML = '<span class="target-name">module</span>';
         return;
       }
@@ -757,11 +758,11 @@
     }
 
     function updateBackBtn() {
-      document.getElementById('back-btn').style.display = history.length > 0 ? 'block' : 'none';
+      document.getElementById('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
     }
 
     function initCy() {
-      cy = cytoscape({
+      ctx.cy = cytoscape({
         container: document.getElementById('cy'),
         style: [
           {
@@ -940,20 +941,20 @@
         wheelSensitivity: 2,
       });
 
-      if (typeof cy.bubbleSets === 'function') {
+      if (typeof ctx.cy.bubbleSets === 'function') {
         // bubblesets uses one scratch key per cytoscape node; when paths
         // share nodes (e.g. theta1 belongs to both prior and forward_kernel),
         // their cached geometry stomps on each other and one path goes empty
         // on update. Workaround: tear down and rebuild all paths on drag
         // release, rAF-batched. Updates skipped during drag for snappiness.
-        bb = cy.bubbleSets({ interactive: false });
+        ctx.bb = ctx.cy.bubbleSets({ interactive: false });
         var bbRedrawScheduled = false;
-        cy.on('free', 'node', function() {
-          if (!bb || bbRedrawScheduled || !currentState) return;
+        ctx.cy.on('free', 'node', function() {
+          if (!ctx.bb || bbRedrawScheduled || !ctx.currentState) return;
           bbRedrawScheduled = true;
           requestAnimationFrame(function() {
             bbRedrawScheduled = false;
-            if (currentState) drawReificationLassos(currentState.data);
+            if (ctx.currentState) drawReificationLassos(ctx.currentState.data);
           });
         });
       }
@@ -964,7 +965,7 @@
       // selection rather than the DAG's terminal target so users can
       // explore the graph node-by-node and read each binding's
       // distribution in place.
-      cy.on('tap', 'node', function(evt) {
+      ctx.cy.on('tap', 'node', function(evt) {
         var oe = evt.originalEvent;
         if (oe && (oe.ctrlKey || oe.metaKey)) {
           var line = evt.target.data('line');
@@ -984,8 +985,8 @@
         updatePlotForBinding(d.id);
       });
 
-      cy.on('tap', function(evt) {
-        if (evt.target === cy) {
+      ctx.cy.on('tap', function(evt) {
+        if (evt.target === ctx.cy) {
           document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
         }
       });
@@ -994,7 +995,7 @@
       // webview owns the parsed bindings and recomputes the sub-DAG itself
       // (no host round-trip). Title sync to the editor still goes via a
       // postMessage to the host since the title is on the VS Code panel.
-      cy.on('dbltap', 'node', function(evt) {
+      ctx.cy.on('dbltap', 'node', function(evt) {
         var nodeId = evt.target.data('id');
         // Don't drill into synthetic nodes (placeholder/hole inputs).
         if (nodeId.indexOf(':') !== -1) return;
@@ -1003,7 +1004,7 @@
       });
 
       var tip = document.getElementById('tooltip');
-      cy.on('mouseover', 'node', function(evt) {
+      ctx.cy.on('mouseover', 'node', function(evt) {
         var d = evt.target.data();
         var expr = d.expr || '';
         if (!expr) return;
@@ -1018,10 +1019,10 @@
         tip.style.left = tx + 'px';
         tip.style.top = ty + 'px';
       });
-      cy.on('mouseout', 'node', function() {
+      ctx.cy.on('mouseout', 'node', function() {
         tip.style.display = 'none';
       });
-      cy.on('viewport', function() {
+      ctx.cy.on('viewport', function() {
         tip.style.display = 'none';
       });
     }
@@ -2019,10 +2020,10 @@
       }
       // Cytoscape skipped resize while the graph pane was at a
       // different height — kick it now so the layout fills correctly.
-      if (cy) {
+      if (ctx.cy) {
         // requestAnimationFrame so the flex re-layout has settled
         // before we ask cytoscape for the new size.
-        requestAnimationFrame(function() { cy.resize(); cy.fit(undefined, 40); });
+        requestAnimationFrame(function() { ctx.cy.resize(); ctx.cy.fit(undefined, 40); });
       }
     }
 
@@ -2233,7 +2234,7 @@
         return;
       }
       if (!currentPlotPlan) {
-        if (currentState && currentState.targetName === MODULE_TARGET) {
+        if (ctx.currentState && ctx.currentState.targetName === MODULE_TARGET) {
           showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
           return;
         }
@@ -2650,9 +2651,9 @@
      * "semantically invalid" message and the DAG's red error border.
      */
     function errorsForBinding(bindingName) {
-      if (!bindingName || !currentState || !currentState.data
-          || !currentState.data.nodes) return null;
-      var nodes = currentState.data.nodes;
+      if (!bindingName || !ctx.currentState || !ctx.currentState.data
+          || !ctx.currentState.data.nodes) return null;
+      var nodes = ctx.currentState.data.nodes;
       for (var i = 0; i < nodes.length; i++) {
         if (nodes[i].id === bindingName) return nodes[i].errors || null;
       }
@@ -2660,8 +2661,8 @@
     }
 
     function colorForBinding(bindingName) {
-      if (currentState && currentState.data && currentState.data.nodes) {
-        var nodes = currentState.data.nodes;
+      if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
+        var nodes = ctx.currentState.data.nodes;
         for (var i = 0; i < nodes.length; i++) {
           if (nodes[i].id === bindingName) return resolveNodeColor(nodes[i]);
         }
@@ -6632,12 +6633,12 @@
     //      tear-down and call this.update() on the dead path. Fix: stomp
     //      path.update to a no-op before removing.
     function teardownBubbles() {
-      if (!bb) return;
-      bb.getPaths().forEach(function(p) {
+      if (!ctx.bb) return;
+      ctx.bb.getPaths().forEach(function(p) {
         p.update = function() {};
-        bb.removePath(p);
+        ctx.bb.removePath(p);
       });
-      cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
+      ctx.cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
     }
 
     // Member-id set for one reification's bubble: its own kernel PLUS the
@@ -6657,7 +6658,7 @@
     }
 
     function drawReificationLassos(data) {
-      if (!bb || !data.reifications) return;
+      if (!ctx.bb || !data.reifications) return;
       teardownBubbles();
 
       for (var k = 0; k < data.reifications.length; k++) {
@@ -6669,20 +6670,20 @@
         var bubbleColor = resolveNodeColor(r);
 
         var memberIds = bubbleMemberIds(r, data.reifications);
-        var nodes = cy.collection();
+        var nodes = ctx.cy.collection();
         for (var memId in memberIds) {
-          nodes = nodes.union(cy.getElementById(memId));
+          nodes = nodes.union(ctx.cy.getElementById(memId));
         }
         // Hidden edges (visibility:hidden) can return undefined endpoints,
         // which silently corrupts bubblesets' potential field — exclude.
-        var edges = cy.edges().filter(function(e) {
+        var edges = ctx.cy.edges().filter(function(e) {
           return nodes.contains(e.source())
             && nodes.contains(e.target())
             && !e.data('hidden');
         });
-        var avoid = cy.nodes().difference(nodes);
+        var avoid = ctx.cy.nodes().difference(nodes);
 
-        bb.addPath(nodes, edges, avoid, {
+        ctx.bb.addPath(nodes, edges, avoid, {
           // virtualEdges: connect spatially-disconnected member groups via
           // routed connectors. Required for kernels spread across the
           // canvas — marching squares only traces one component per call.
@@ -6706,7 +6707,7 @@
     }
 
     function renderDAG(data) {
-      if (!cy) initCy();
+      if (!ctx.cy) initCy();
       updateHeader(data);
 
       var elements = [];
@@ -6830,10 +6831,10 @@
       // Tear down old bubble paths BEFORE detaching elements so we can
       // clear scratch on still-attached cytoscape elements.
       teardownBubbles();
-      cy.elements().remove();
-      cy.add(elements);
+      ctx.cy.elements().remove();
+      ctx.cy.add(elements);
 
-      cy.layout({
+      ctx.cy.layout({
         name: 'dagre',
         rankDir: 'TB',
         nodeSep: 40,
@@ -6842,7 +6843,7 @@
         animate: false,
       }).run();
 
-      cy.fit(undefined, 40);
+      ctx.cy.fit(undefined, 40);
       drawReificationLassos(data);
 
       // Show details for the target node automatically (the cursor is already
@@ -6902,8 +6903,8 @@
       // through to the last binding when there's no prior focus or
       // the focused binding was deleted by the edit.
       if (!targetName) {
-        if (currentState && currentBindings.has(currentState.targetName)) {
-          targetName = currentState.targetName;
+        if (ctx.currentState && currentBindings.has(ctx.currentState.targetName)) {
+          targetName = ctx.currentState.targetName;
         } else {
           var allNames = [];
           currentBindings.forEach(function(_b, name) { allNames.push(name); });
@@ -6924,12 +6925,12 @@
       // is plenty for navigation but well below any pressure point. On
       // overflow we drop the oldest entry (FIFO trim) — going way back
       // is rare enough that this is the right trade-off.
-      if (pushHistory && currentState && currentState.targetName !== targetName) {
-        history.push(currentState);
-        if (history.length > HISTORY_CAP) history.shift();
+      if (pushHistory && ctx.currentState && ctx.currentState.targetName !== targetName) {
+        ctx.history.push(ctx.currentState);
+        if (ctx.history.length > HISTORY_CAP) ctx.history.shift();
       }
 
-      currentState = { data: dagData, targetName: targetName };
+      ctx.currentState = { data: dagData, targetName: targetName };
       renderDAG(dagData);
       updateBackBtn();
       updatePlotForBinding(targetName);
@@ -6950,7 +6951,7 @@
     /**
      * Render the module-level (multi-root) DAG. Plot pane shows a
      * "click a binding to plot it" message because there's no single
-     * focused binding here. Pushes onto history when requested and
+     * focused binding here. Pushes onto ctx.history when requested and
      * the previous view wasn't already the module view.
      */
     function enterModuleView(pushHistory) {
@@ -6958,12 +6959,12 @@
       var dagData = FlatPPLEngine.computeFullDAG(currentBindings);
       if (!dagData || dagData.nodes.length === 0) return;
 
-      if (pushHistory && currentState && currentState.targetName !== MODULE_TARGET) {
-        history.push(currentState);
-        if (history.length > HISTORY_CAP) history.shift();
+      if (pushHistory && ctx.currentState && ctx.currentState.targetName !== MODULE_TARGET) {
+        ctx.history.push(ctx.currentState);
+        if (ctx.history.length > HISTORY_CAP) ctx.history.shift();
       }
 
-      currentState = { data: dagData, targetName: MODULE_TARGET };
+      ctx.currentState = { data: dagData, targetName: MODULE_TARGET };
       renderDAG(dagData);
       updateBackBtn();
       // Mirror module-view focus to the host (null = whole module).
@@ -6981,20 +6982,20 @@
     // hold both the data and the target name, so we don't have to recompute
     // when going back.)
     document.getElementById('back-btn').addEventListener('click', function() {
-      if (history.length === 0) return;
-      currentState = history.pop();
-      renderDAG(currentState.data);
+      if (ctx.history.length === 0) return;
+      ctx.currentState = ctx.history.pop();
+      renderDAG(ctx.currentState.data);
       updateBackBtn();
       // Module view has no per-binding plot target and no per-binding
       // title — call updatePlotForBinding(null) so the plot pane shows
       // its module-mode placeholder, and tell the host to set a
       // generic title rather than the sentinel string.
-      if (currentState.targetName === MODULE_TARGET) {
+      if (ctx.currentState.targetName === MODULE_TARGET) {
         updatePlotForBinding(null);
         if (host.setTitle) host.setTitle('module');
       } else {
-        updatePlotForBinding(currentState.targetName);
-        if (host.setTitle) host.setTitle(currentState.targetName);
+        updatePlotForBinding(ctx.currentState.targetName);
+        if (host.setTitle) host.setTitle(ctx.currentState.targetName);
       }
     });
 
@@ -7056,8 +7057,8 @@
       // focusNode finishes.
       var preservedPlotBinding = null;
       if (sourceChanged && currentPlotBindingName
-          && currentState
-          && currentPlotBindingName !== currentState.targetName) {
+          && ctx.currentState
+          && currentPlotBindingName !== ctx.currentState.targetName) {
         preservedPlotBinding = currentPlotBindingName;
       }
       focusNode(msg.targetName, msg.pushHistory);
@@ -7096,7 +7097,7 @@
         if (typeof cfg.dagNavigationHistoryCap === 'number'
             && cfg.dagNavigationHistoryCap >= 0) {
           HISTORY_CAP = cfg.dagNavigationHistoryCap | 0;
-          while (history.length > HISTORY_CAP) history.shift();
+          while (ctx.history.length > HISTORY_CAP) ctx.history.shift();
           updateBackBtn();
         }
 
@@ -7169,11 +7170,11 @@
     // window.resize, which cytoscape already handles internally; the
     // standalone web host (CSS Grid + flex) needs the explicit observer.
     function resizeAndFitCy() {
-      if (!cy) return;
+      if (!ctx.cy) return;
       // requestAnimationFrame so the layout pass that triggered the
       // resize has settled before we ask cytoscape for the new size.
       requestAnimationFrame(function () {
-        try { cy.resize(); cy.fit(undefined, 40); }
+        try { ctx.cy.resize(); ctx.cy.fit(undefined, 40); }
         catch (_) {}
       });
     }
