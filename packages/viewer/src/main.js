@@ -67,6 +67,51 @@ import {
   tryGetMeasure,
 } from './engine-facade.js';
 
+
+import {
+  activeDomainRangesFor,
+  activeFixedNamesFor,
+  activePresetFor,
+  applyRememberedSelections,
+  baseRangesFor,
+  baseValuesFor,
+  computeAutoValues,
+  domainOverrideEntryFor,
+  ensureDomainOverrideFor,
+  ensureOverrideFor,
+  hasDomainOverrides,
+  hasOverrides,
+  overrideEntryFor,
+  rememberPlanSelections,
+  resolveSweepRange,
+  setDomainOverrideFor,
+  setOverrideFor,
+} from './overrides.js';
+import {
+  buildPersistedDomainLine,
+  buildPersistedPresetLine,
+  canPersistActive,
+  canPersistDomain,
+  defaultSetSourceForKwarg,
+  formatScalarForSource,
+  persistActive,
+  persistAutoAsNewBinding,
+  persistAutoDomainAsNewBinding,
+  persistDomain,
+  persistNamedDomain,
+  persistNamedPreset,
+  setFieldToSource,
+} from './persist.js';
+import {
+  errorsForBinding,
+  makeActionButton,
+  renderPlotFrame,
+  renderTextValue,
+  resetPlotContentStyle,
+  setPlotEnabled,
+  showPlotMessage,
+} from './render-frame.js';
+
   var VIEWER_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -556,21 +601,6 @@ function formatConstantMeasure(ctx, m) {
   return '?';
 }
 
-/**
- * Return the analyzer-level error diagnostics that landed on a
- * binding (typeinfer mismatches, undefined refs, etc.), or null
- * if there are none. Source for both the plot pane's
- * "semantically invalid" message and the DAG's red error border.
- */
-function errorsForBinding(ctx, bindingName) {
-  if (!bindingName || !ctx.currentState || !ctx.currentState.data
-      || !ctx.currentState.data.nodes) return null;
-  var nodes = ctx.currentState.data.nodes;
-  for (var i = 0; i < nodes.length; i++) {
-    if (nodes[i].id === bindingName) return nodes[i].errors || null;
-  }
-  return null;
-}
 
 
 
@@ -597,157 +627,21 @@ function errorsForBinding(ctx, bindingName) {
 
 // ---- Hoisted L4 override store + plot-frame helpers (Phase 3e) ----
 
-/**
- * Reset plot-content's inline style. The marginals view sets
- * display:grid with several layout properties; subsequent
- * single-chart views need a clean slate so their content fills
- * the pane without inheriting a stale grid.
- */
-function resetPlotContentStyle(ctx) {
-  var el = document.getElementById('plot-content');
-  el.style.display = '';
-  el.style.gridTemplateColumns = '';
-  el.style.gridTemplateRows = '';
-  el.style.gap = '';
-  el.style.padding = '';
-  el.style.boxSizing = '';
-  el.style.flexDirection = '';
-}
-
-function showPlotMessage(ctx, html, options) {
-  if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
-  resetPlotContentStyle(ctx);
-  var el = document.getElementById('plot-content');
-  var cancellable = options && options.cancellable;
-  var hint       = options && options.hint;
-  var stopHtml = cancellable
-    ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
-    : '';
-  var cls = hint ? ' class="hint"' : '';
-  el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
-  if (cancellable) {
-    var btn = document.getElementById('plot-stop-btn');
-    if (btn) btn.addEventListener('click', cancelAllSampling);
-  }
-}
 
 
-function overrideEntryFor(ctx, plan) {
-  if (plan.presetName == null) return plan.autoOverride;
-  return ctx.presetOverrides.get(plan.presetName) || null;
-}
 
-function hasOverrides(ctx, plan) {
-  var e = overrideEntryFor(ctx, plan);
-  if (!e) return false;
-  var v = e.values || {};
-  for (var k in v) {
-    if (Object.prototype.hasOwnProperty.call(v, k)) return true;
-  }
-  return false;
-}
 
-function setOverrideFor(ctx, plan, entry) {
-  if (plan.presetName == null) {
-    plan.autoOverride = entry;
-    return;
-  }
-  if (entry) {
-    ctx.presetOverrides.set(plan.presetName, entry);
-  } else {
-    ctx.presetOverrides.delete(plan.presetName);
-  }
-}
 
-function ensureOverrideFor(ctx, plan) {
-  var existing = overrideEntryFor(ctx, plan);
-  if (existing) {
-    existing.values = Object.assign({}, existing.values || {});
-    return existing;
-  }
-  return { values: {} };
-}
 
-function activePresetFor(ctx, plan) {
-  var baseValues = baseValuesFor(ctx, plan);
-  var entry = overrideEntryFor(ctx, plan);
-  if (!entry) return { values: baseValues };
-  return {
-    values: Object.assign({}, baseValues, entry.values || {}),
-  };
-}
 
-function baseValuesFor(ctx, plan) {
-  if (plan.presetName != null && plan.matchedPresets) {
-    for (var i = 0; i < plan.matchedPresets.length; i++) {
-      if (plan.matchedPresets[i].name === plan.presetName) {
-        return plan.matchedPresets[i].values || {};
-      }
-    }
-  }
-  return {};
-}
 
-function domainOverrideEntryFor(ctx, plan) {
-  if (plan.domainName == null) return plan.domainAutoOverride || null;
-  return ctx.domainOverrides.get(plan.domainName) || null;
-}
 
-function ensureDomainOverrideFor(ctx, plan) {
-  var existing = domainOverrideEntryFor(ctx, plan);
-  if (existing) {
-    existing.ranges = Object.assign({}, existing.ranges || {});
-    return existing;
-  }
-  return { ranges: {} };
-}
 
-function setDomainOverrideFor(ctx, plan, entry) {
-  if (plan.domainName == null) {
-    plan.domainAutoOverride = entry;
-    return;
-  }
-  if (entry) {
-    ctx.domainOverrides.set(plan.domainName, entry);
-  } else {
-    ctx.domainOverrides.delete(plan.domainName);
-  }
-}
 
-function hasDomainOverrides(ctx, plan) {
-  var e = domainOverrideEntryFor(ctx, plan);
-  if (!e || !e.ranges) return false;
-  return Object.keys(e.ranges).length > 0;
-}
 
-function baseRangesFor(ctx, plan) {
-  if (plan.domainName != null && plan.matchedDomains) {
-    for (var i = 0; i < plan.matchedDomains.length; i++) {
-      if (plan.matchedDomains[i].name === plan.domainName) {
-        return plan.matchedDomains[i].ranges || {};
-      }
-    }
-  }
-  return {};
-}
 
-function activeDomainRangesFor(ctx, plan) {
-  var base = baseRangesFor(ctx, plan);
-  var entry = domainOverrideEntryFor(ctx, plan);
-  if (!entry || !entry.ranges) return Object.assign({}, base);
-  return Object.assign({}, base, entry.ranges);
-}
 
-function activeFixedNamesFor(ctx, plan) {
-  if (plan.presetName != null && plan.matchedPresets) {
-    for (var i = 0; i < plan.matchedPresets.length; i++) {
-      if (plan.matchedPresets[i].name === plan.presetName) {
-        return plan.matchedPresets[i].fixedNames || new Set();
-      }
-    }
-  }
-  return new Set();
-}
+
 
 
 
@@ -814,112 +708,17 @@ function updateBackBtn(ctx) {
   document.getElementById('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
 }
 
-function makeActionButton(ctx, iconKey, title) {
-  var b = document.createElement('button');
-  b.type = 'button';
-  b.title = title;
-  b.setAttribute('aria-label', title);
-  b.style.background = 'transparent';
-  b.style.color = 'var(--vscode-foreground, #cccccc)';
-  b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
-  b.style.borderRadius = '3px';
-  b.style.padding = '2px 4px';
-  b.style.display = 'inline-flex';
-  b.style.alignItems = 'center';
-  b.style.justifyContent = 'center';
-  b.style.cursor = 'pointer';
-  b.style.opacity = '0.75';
-  b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
-    + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
-    + 'aria-hidden="true"><path d="' + ctx.CODICON_PATHS[iconKey] + '"/></svg>';
-  b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
-  b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
-  return b;
-}
-
-
-function formatScalarForSource(ctx, v) {
-  if (typeof v === 'boolean') {
-    // Boolean spelling follows the source-file variant: FlatPPL
-    // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
-    // capitalized `True`/`False`.
-    if (ctx.currentVariantId === 'flatppy') return v ? 'True' : 'False';
-    return v ? 'true' : 'false';
-  }
-  if (!Number.isFinite(v)) return String(v);
-  return String(v);
-}
 
 
 
 
 
 
-function resolveSweepRange(ctx, axis) {
-  var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
-    axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
-  if (descriptor && descriptor.kind === 'empirical') {
-    return getMeasure(ctx, descriptor.name).then(function(m) {
-      if (m && m.samples && m.samples.length > 0) {
-        var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
-        if (range && range[0] < range[1]) return range;
-      }
-      return defaultRangeForLeafType(axis.leafType);
-    }, function() {
-      return defaultRangeForLeafType(axis.leafType);
-    });
-  }
-  var fromDescriptor = rangeFromSetDescriptor(descriptor);
-  if (fromDescriptor) return Promise.resolve(fromDescriptor);
-  return Promise.resolve(defaultRangeForLeafType(axis.leafType));
-}
 
 
-function applyRememberedSelections(ctx, plan) {
-  if (!plan) return;
-  var mem = ctx.planMemoryByName.get(plan.name);
-  if (!mem) return;
-  var axisKwargs = new Set();
-  if (plan.axes) {
-    for (var i = 0; i < plan.axes.length; i++) {
-      if (plan.axes[i].kwargName) axisKwargs.add(plan.axes[i].kwargName);
-    }
-  }
-  if (mem.sweepKey
-      && plan.axes
-      && plan.axes.some(function(a) { return a.key === mem.sweepKey; })) {
-    plan.sweepKey = mem.sweepKey;
-  }
-  if (mem.outputKey
-      && plan.outputs
-      && plan.outputs.some(function(o) { return o.key === mem.outputKey; })) {
-    plan.outputKey = mem.outputKey;
-  }
-  plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
-  plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
-  if (mem.presetName != null
-      && plan.matchedPresets
-      && plan.matchedPresets.some(function(p) { return p.name === mem.presetName; })) {
-    plan.presetName = mem.presetName;
-  }
-  if (mem.domainName != null
-      && plan.matchedDomains
-      && plan.matchedDomains.some(function(d) { return d.name === mem.domainName; })) {
-    plan.domainName = mem.domainName;
-  }
-}
 
-function rememberPlanSelections(ctx, plan) {
-  if (!plan || !plan.name) return;
-  ctx.planMemoryByName.set(plan.name, {
-    sweepKey: plan.sweepKey || null,
-    outputKey: plan.outputKey || null,
-    presetName: plan.presetName || null,
-    domainName: plan.domainName || null,
-    autoOverride: plan.autoOverride || null,
-    domainAutoOverride: plan.domainAutoOverride || null,
-  });
-}
+
+
 
 function teardownBubbles(ctx) {
   if (!ctx.bb) return;
@@ -1705,173 +1504,8 @@ function buildPlotPlan(ctx, binding /*, bindingsMap */) {
   return { name: name, mode: 'samples', discrete: discrete, analyticalIR: analyticalIR };
 }
 
-function setPlotEnabled(ctx, enabled) {
-  ctx.plotEnabled = !!enabled;
-  var plot    = document.getElementById('plot-panel');
-  var graph   = document.getElementById('graph-panel');
-  var divider = document.getElementById('plot-divider');
-  var btn     = document.getElementById('plot-toggle');
-  plot.classList.toggle('hidden', !ctx.plotEnabled);
-  graph.classList.toggle('full',  !ctx.plotEnabled);
-  divider.classList.toggle('hidden', !ctx.plotEnabled);
-  btn.classList.toggle('on', ctx.plotEnabled);
-  btn.textContent = 'Plot: ' + (ctx.plotEnabled ? 'on' : 'off');
-  // Drop any user-dragged inline flex so the class-based defaults
-  // (flex: 1 1 100% on graph-full, flex: 0 0 0 on plot-hidden, or
-  // the regular 60/40 split when both are showing) take effect.
-  // Inline-style takes precedence over our class rules; clearing
-  // it here means a toggle-off-then-on resets the split rather
-  // than holding the previous drag position into the hidden state.
-  graph.style.flex = '';
-  plot.style.flex = '';
-  // Persist across panel reopens. VS Code restores webview state
-  // automatically when the panel is shown again.
-  if (ctx.host.saveState) { try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled }); } catch (_) {} }
-  if (ctx.plotEnabled) {
-    // Render whatever the current plan says — including the
-    // "not plottable" message if the focused binding isn't
-    // chainable. Echarts also needs resize after becoming visible
-    // (it measures 0×0 while collapsed).
-    renderPlotForCurrent(ctx);
-    if (ctx.plotEchart) ctx.plotEchart.resize();
-  } else if (ctx.plotEchart) {
-    // Tear down the echart instance to avoid keeping its canvas /
-    // event listeners alive while the panel is collapsed. It'll
-    // be reconstructed on the next renderDensity call.
-    try { ctx.plotEchart.dispose(); } catch (_) {}
-    ctx.plotEchart = null;
-  }
-  // Cytoscape skipped resize while the graph pane was at a
-  // different height — kick it now so the layout fills correctly.
-  if (ctx.cy) {
-    // requestAnimationFrame so the flex re-layout has settled
-    // before we ask cytoscape for the new size.
-    requestAnimationFrame(function() { ctx.cy.resize(); ctx.cy.fit(undefined, 40); });
-  }
-}
 
-/**
- * Single entry-point for laying out a plot. Owns:
- *   - the flex-column structure of #plot-content
- *   - an optional toolbar row (controls on the left, sample-stats
- *     readout pinned right when `measure` is supplied)
- *   - the chart ctx.host that fills the remaining vertical space
- *   - disposal of any prior `ctx.plotEchart` and reset of inline styles
- *
- * Every measure-backed renderer (samples / corner / strips / kernel-
- * sample / profile / array-step) goes through here so the visual
- * framing is consistent across binding kinds. Plain text views
- * (constant scalars / records) use `renderTextValue` instead.
- *
- * opts:
- *   measure          — optional EmpiricalMeasure; drives N+ESS
- *                      readout (always shown when given, including
- *                      for unweighted measures where ESS = N).
- *   toolbarControls  — optional Element (or DocumentFragment)
- *                      appended to the LEFT of the toolbar. The
- *                      sample-stats readout (if `measure`) sits to
- *                      the RIGHT via `margin-left: auto`.
- *   chartCallback    — function(chartHost) called once the layout
- *                      is in place. The ctx.host is a div that fills
- *                      the remaining vertical space; the callback
- *                      writes its chart DOM (echarts.init,
- *                      grid layout, etc.) directly into it.
- */
-function renderPlotFrame(ctx, opts) {
-  resetPlotContentStyle(ctx);
-  if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
-  var el = document.getElementById('plot-content');
-  el.innerHTML = '';
-  el.style.display = 'flex';
-  el.style.flexDirection = 'column';
-  el.style.padding = '10px';
-  el.style.boxSizing = 'border-box';
-  el.style.gap = '8px';
 
-  var hasToolbarLeft = opts.toolbarControls != null;
-  var hasMeasureStats = opts.measure != null;
-  if (hasToolbarLeft || hasMeasureStats) {
-    var bar = document.createElement('div');
-    bar.className = 'plot-frame-toolbar';
-    bar.style.display = 'flex';
-    bar.style.flexWrap = 'wrap';
-    bar.style.gap = '0.75em';
-    bar.style.alignItems = 'center';
-    bar.style.padding = '0.4em 0.6em';
-    bar.style.background = 'rgba(255,255,255,0.02)';
-    bar.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
-    bar.style.borderRadius = '3px';
-    bar.style.fontSize = '0.92em';
-    bar.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-    bar.style.flexShrink = '0';
-    if (hasToolbarLeft) bar.appendChild(opts.toolbarControls);
-    if (hasMeasureStats) {
-      // margin-left:auto on the spacer pushes the stats readout
-      // to the right edge regardless of how many controls are
-      // on the left.
-      var spacer = document.createElement('div');
-      spacer.style.marginLeft = 'auto';
-      bar.appendChild(spacer);
-      bar.appendChild(renderSampleStats(ctx, opts.measure));
-    }
-    el.appendChild(bar);
-  }
-
-  var chartHost = document.createElement('div');
-  chartHost.style.flex = '1 1 auto';
-  chartHost.style.minHeight = '0';
-  chartHost.style.minWidth = '0';
-  chartHost.style.position = 'relative';
-  el.appendChild(chartHost);
-
-  // Optional row beneath the chart. Used by the profile-plot path
-  // to surface the lo/hi x-axis limit inputs alongside the axis
-  // name, vertically aligned with where echarts' axis-name would
-  // otherwise sit. Other plot types pass nothing and get the
-  // previous layout (chart fills remaining height).
-  if (opts.bottomRow) {
-    var bottom = document.createElement('div');
-    bottom.style.flexShrink = '0';
-    bottom.appendChild(opts.bottomRow);
-    el.appendChild(bottom);
-  }
-
-  opts.chartCallback(chartHost);
-}
-
-/**
- * Render a constant value (literal, deterministic arithmetic of
- * literals, or a degenerate distribution) as plain text in the
- * scalar-display block. Used by:
- *   - constant scalar bindings (samplesAreConstant short-circuit)
- *   - phase=fixed records / tuples (renderConstantRecord)
- *   - kernel-sample bindings whose substituted body collapses to
- *     a single value
- * The font-size auto-shrinks for long renderings (record(...) with
- * many fields) so the value still fits within the pane.
- */
-function renderTextValue(ctx, bindingName, text) {
-  resetPlotContentStyle(ctx);
-  if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
-  var el = document.getElementById('plot-content');
-  var name = bindingName ? esc(bindingName) : '';
-  // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero
-  // 36px treatment so the value pops as the answer. Composite
-  // values (records, multi-element arrays, Dirac wrappers around
-  // structured bodies) fall back to a comfortable monospace
-  // size — the .composite class flip is enough; the threshold
-  // is "contains structural punctuation AND non-trivial length",
-  // which catches both "record(a = 1.5, …)" (long) and
-  // "[1.2, 3.4, 5.1, …, 3.9]" (medium). Short Dirac wraps like
-  // "Dirac(5)" stay big.
-  var composite = text.length > 16 && /[(\[]/.test(text);
-  var valueClass = composite ? 'value composite' : 'value';
-  el.innerHTML =
-    '<div class="scalar-display">'
-    + (name ? '<div class="name">' + name + '</div>' : '')
-    + '<div class="' + valueClass + '">' + esc(text) + '</div>'
-    + '</div>';
-}
 
 function renderPlotForCurrent(ctx) {
   // The plot panel stays mounted whenever plotEnabled is true. When
@@ -3460,307 +3094,18 @@ function buildDomainControl(ctx, plan, onChange) {
   return frag;
 }
 
-function canPersistActive(ctx, plan) {
-  if (!hasOverrides(ctx, plan)) return false;
-  if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
-  if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
-  if (ctx.host.canPersist === false) return false;
-  if (plan.presetName == null) {
-    return typeof ctx.host.promptForName === 'function';
-  }
-  if (!ctx.currentBindings) return false;
-  var b = ctx.currentBindings.get(plan.presetName);
-  if (!b || !b.node || !b.node.value
-      || b.node.value.type !== 'CallExpr'
-      || !b.node.value.callee
-      || b.node.value.callee.name !== 'record') return false;
-  // Persist only when every field is a literal — possibly wrapped
-  // in fixed(...) which is identity at runtime (spec §03) and just
-  // a "hold constant" hint we preserve when rewriting. Anything
-  // more structural (refs, nested calls) means the source isn't
-  // edit-in-place writable; canPersist returns false so the
-  // toolbar hides the button rather than offering a broken
-  // write-back.
-  var args = b.node.value.args || [];
-  for (var i = 0; i < args.length; i++) {
-    var a = args[i];
-    if (a.type !== 'KeywordArg' || !a.value) return false;
-    var v = a.value;
-    if (v.type === 'CallExpr' && v.callee && v.callee.name === 'fixed'
-        && Array.isArray(v.args) && v.args.length === 1) {
-      v = v.args[0];
-    }
-    if (v.type !== 'NumberLiteral' && v.type !== 'BoolLiteral') return false;
-  }
-  return true;
-}
 
-function buildPersistedPresetLine(ctx, plan) {
-  var active = activePresetFor(ctx, plan);
-  var b = ctx.currentBindings.get(plan.presetName);
-  var srcArgs = b.node.value.args || [];
-  var parts = [];
-  for (var i = 0; i < srcArgs.length; i++) {
-    var sa = srcArgs[i];
-    var kwarg = sa.name;
-    var srcVal = sa.value;
-    var wasFixed = srcVal && srcVal.type === 'CallExpr'
-                 && srcVal.callee && srcVal.callee.name === 'fixed';
-    var innerSrc = wasFixed ? srcVal.args[0] : srcVal;
-    var override = active.values
-                && Object.prototype.hasOwnProperty.call(active.values, kwarg);
-    var v = override ? active.values[kwarg]
-                     : (innerSrc && innerSrc.value);
-    var text = formatScalarForSource(ctx, v);
-    if (wasFixed) text = 'fixed(' + text + ')';
-    parts.push(kwarg + ' = ' + text);
-  }
-  return plan.presetName + ' = record(' + parts.join(', ') + ')';
-}
 
-function persistActive(ctx, plan) {
-  if (!canPersistActive(ctx, plan)) return;
-  if (plan.presetName == null) {
-    persistAutoAsNewBinding(ctx, plan);
-  } else {
-    persistNamedPreset(ctx, plan);
-  }
-}
 
-function persistNamedPreset(ctx, plan) {
-  var b = ctx.currentBindings.get(plan.presetName);
-  var newText = buildPersistedPresetLine(ctx, plan);
-  try {
-    ctx.host.editSource({
-      range: {
-        start: { line: b.node.loc.start.line, col: b.node.loc.start.col },
-        end:   { line: b.node.loc.end.line,   col: b.node.loc.end.col },
-      },
-      newText: newText,
-    });
-  } catch (err) {
-    console.error('[viewer] editSource (named persist) failed:', err);
-  }
-}
 
-function persistAutoAsNewBinding(ctx, plan) {
-  if (typeof ctx.host.promptForName !== 'function'
-      || typeof ctx.host.editSource !== 'function') {
-    console.warn('[viewer] persist auto: ctx.host missing promptForName / editSource');
-    return;
-  }
-  var autoValues = computeAutoValues(ctx, plan);
-  var override = plan.autoOverride;
-  var combined = Object.assign({}, autoValues, (override && override.values) || {});
-  var parts = [];
-  for (var k in combined) {
-    if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
-    var v = combined[k];
-    if (!Number.isFinite(v)) continue;
-    parts.push(k + ' = ' + formatScalarForSource(ctx, v));
-  }
-  if (parts.length === 0) return;
-  var existingNames = [];
-  if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
-  var pairsText = parts.join(', ');
-  var suggested = (plan.name || 'inputs') + '_default';
-  Promise.resolve(ctx.host.promptForName({
-    suggested: suggested,
-    existingNames: existingNames,
-  })).then(function(name) {
-    if (!name) return;
-    ctx.pendingPresetName = name;
-    ctx.host.editSource({
-      range: null,
-      newText: name + ' = record(' + pairsText + ')',
-    });
-  }).catch(function(err) {
-    console.error('[viewer] persistAutoAsNewBinding failed:', err);
-  });
-}
 
-function setFieldToSource(ctx, v) {
-  if (v.type === 'Identifier') return v.name;
-  // interval(NumLit, NumLit)
-  return 'interval('
-    + formatScalarForSource(ctx, v.args[0].value) + ', '
-    + formatScalarForSource(ctx, v.args[1].value) + ')';
-}
 
-function defaultSetSourceForKwarg(ctx, plan, kwargName) {
-  if (!plan.axes) return 'reals';
-  var matching = [];
-  for (var i = 0; i < plan.axes.length; i++) {
-    if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
-  }
-  if (matching.length !== 1) return 'reals';  // non-scalar — defer
-  var bindings = ctx.derivationsState && ctx.derivationsState.bindings;
-  var d = null;
-  try {
-    d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(matching[0].source, bindings);
-  } catch (_) { d = null; }
-  if (!d) return 'reals';
-  switch (d.kind) {
-    case 'reals':           return 'reals';
-    case 'posreals':        return 'posreals';
-    case 'nonnegreals':     return 'nonnegreals';
-    case 'integers':        return 'integers';
-    case 'posintegers':     return 'posintegers';
-    case 'nonnegintegers':  return 'nonnegintegers';
-    case 'booleans':        return 'booleans';
-    case 'interval':
-      if (d.lo === 0 && d.hi === 1) return 'unitinterval';
-      return 'interval('
-        + formatScalarForSource(ctx, d.lo) + ', '
-        + formatScalarForSource(ctx, d.hi) + ')';
-    default:                return 'reals';  // empirical / unknown
-  }
-}
 
-function canPersistDomain(ctx, plan) {
-  if (!hasDomainOverrides(ctx, plan)) return false;
-  if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
-  if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
-  if (ctx.host.canPersist === false) return false;
-  if (plan.domainName == null) {
-    return typeof ctx.host.promptForName === 'function';
-  }
-  if (!ctx.currentBindings) return false;
-  var b = ctx.currentBindings.get(plan.domainName);
-  if (!b || !b.node || !b.node.value
-      || b.node.value.type !== 'CallExpr'
-      || !b.node.value.callee
-      || b.node.value.callee.name !== 'cartprod') return false;
-  var args = b.node.value.args || [];
-  for (var i = 0; i < args.length; i++) {
-    var a = args[i];
-    if (a.type !== 'KeywordArg' || !a.value) return false;
-    if (!isPersistableSetField(a.value)) return false;
-  }
-  return true;
-}
 
-function persistDomain(ctx, plan) {
-  if (!canPersistDomain(ctx, plan)) return;
-  if (plan.domainName == null) {
-    persistAutoDomainAsNewBinding(ctx, plan);
-  } else {
-    persistNamedDomain(ctx, plan);
-  }
-}
 
-function buildPersistedDomainLine(ctx, plan) {
-  var b = ctx.currentBindings.get(plan.domainName);
-  var srcArgs = b.node.value.args || [];
-  var override = domainOverrideEntryFor(ctx, plan);
-  var or = (override && override.ranges) || {};
-  var parts = [];
-  for (var i = 0; i < srcArgs.length; i++) {
-    var sa = srcArgs[i];
-    var kwarg = sa.name;
-    if (Object.prototype.hasOwnProperty.call(or, kwarg)) {
-      parts.push(kwarg + ' = interval('
-        + formatScalarForSource(ctx, or[kwarg].lo) + ', '
-        + formatScalarForSource(ctx, or[kwarg].hi) + ')');
-    } else {
-      parts.push(kwarg + ' = ' + setFieldToSource(ctx, sa.value));
-    }
-  }
-  return plan.domainName + ' = cartprod(' + parts.join(', ') + ')';
-}
 
-function persistNamedDomain(ctx, plan) {
-  var b = ctx.currentBindings.get(plan.domainName);
-  var newText = buildPersistedDomainLine(ctx, plan);
-  try {
-    ctx.host.editSource({
-      range: {
-        start: { line: b.node.loc.start.line - 1, col: 0 },
-        end:   { line: b.node.loc.end.line   - 1, col: 1000000 },
-      },
-      newText: newText,
-    });
-  } catch (err) {
-    console.error('[viewer] persistNamedDomain failed:', err);
-  }
-}
 
-function persistAutoDomainAsNewBinding(ctx, plan) {
-  if (typeof ctx.host.promptForName !== 'function'
-      || typeof ctx.host.editSource !== 'function') {
-    console.warn('[viewer] persist domain auto: ctx.host missing promptForName / editSource');
-    return;
-  }
-  var override = plan.domainAutoOverride;
-  var ranges = (override && override.ranges) || {};
-  // Enumerate every signature input so the resulting cartprod has
-  // full shape coverage. Per-kwarg precedence:
-  //   1. user override range          → interval(lo, hi)
-  //   2. auto-fit cached for this kwarg in profileRangeCache
-  //      (the plot engine populated it when the user previously
-  //      had this kwarg selected as sweep axis) → interval(lo, hi)
-  //   3. natural base set from the input's source descriptor
-  //      → bare named set (reals / posreals / …)
-  // Step 2 means an axis the user looked at but never edited
-  // still persists with its observed bounds rather than being
-  // weakened to the natural set.
-  var inputs = (plan.signature && plan.signature.inputs) || [];
-  var parts = [];
-  for (var i = 0; i < inputs.length; i++) {
-    var kw = inputs[i].kwargName;
-    if (!kw) continue;
-    var r = Object.prototype.hasOwnProperty.call(ranges, kw) ? ranges[kw] : null;
-    if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
-      parts.push(kw + ' = interval('
-        + formatScalarForSource(ctx, r.lo) + ', '
-        + formatScalarForSource(ctx, r.hi) + ')');
-      continue;
-    }
-    var cached = ctx.profileRangeCache.get(
-      plan.name + '|' + kw + '|D=' + (plan.domainName || ''));
-    if (cached && Number.isFinite(cached.lo) && Number.isFinite(cached.hi)) {
-      parts.push(kw + ' = interval('
-        + formatScalarForSource(ctx, cached.lo) + ', '
-        + formatScalarForSource(ctx, cached.hi) + ')');
-      continue;
-    }
-    parts.push(kw + ' = ' + defaultSetSourceForKwarg(ctx, plan, kw));
-  }
-  if (parts.length === 0) return;
-  var existingNames = [];
-  if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
-  var pairsText = parts.join(', ');
-  var suggested = (plan.name || 'domain') + '_domain';
-  Promise.resolve(ctx.host.promptForName({
-    suggested: suggested,
-    existingNames: existingNames,
-  })).then(function(name) {
-    if (!name) return;
-    ctx.pendingDomainName = name;
-    ctx.host.editSource({
-      range: null,
-      newText: name + ' = cartprod(' + pairsText + ')',
-    });
-  }).catch(function(err) {
-    console.error('[viewer] persistAutoDomainAsNewBinding failed:', err);
-  });
-}
 
-function computeAutoValues(ctx, plan) {
-  var out = {};
-  var axes = plan.axes || [];
-  for (var i = 0; i < axes.length; i++) {
-    var ax = axes[i];
-    var def = defaultValueForLeafType(ax.leafType);
-    if (ax.source && ax.source.kind === 'binding'
-        && ctx.measureCache && ctx.measureCache.has(ax.source.name)) {
-      var m = ctx.measureCache.get(ax.source.name);
-      if (m && m.samples && m.samples.length > 0) def = m.samples[0];
-    }
-    out[ax.kwargName] = def;
-  }
-  return out;
-}
 
 function renderKernelSampleMeasure(ctx, measure, plan) {
   // Always wire the input-selection toolbar when the plan has
