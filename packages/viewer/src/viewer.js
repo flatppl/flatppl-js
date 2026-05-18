@@ -1075,6 +1075,157 @@
     return cur === name ? null : cur;
   }
 
+
+  // -------------------------------------------------------------
+  // Hoisted L3 engine facade + L4 worker subgroup (Phase 3d).
+  // Each takes ctx as first param; in-file call sites have been
+  // updated to pass ctx. Two callback sites (getMeasure and
+  // sendWorker passed to FlatPPLEngine.materialiser as 1-arg
+  // callbacks) are wrapped at the call point to bind ctx — the
+  // engine's signature contract stays unchanged.
+  // -------------------------------------------------------------
+  function tryGetMeasure(ctx, name) {
+    return getMeasure(ctx, name).then(
+      function(m) { return m; },
+      function(_err) { return null; });
+  }
+
+  function getMeasure(ctx, name) {
+    if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
+    if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
+    // All per-kind materialisation lives in the engine — the viewer's
+    // job here is just to memoise the result against the cache. The
+    // engine-side materialiser dispatches by derivation kind, computes
+    // samples + logWeights + logTotalmass + n_eff, and returns the
+    // Measure record. Recursion is handled by passing getMeasure
+    // itself back in so child materialisations hit the same cache.
+    var promise = FlatPPLEngine.materialiser.materialiseMeasure(name, {
+      derivations: ctx.derivationsState.derivations,
+      bindings:    ctx.derivationsState.bindings,
+      fixedValues: ctx.derivationsState.fixedValues,
+      // Bind ctx into 1-arg callbacks: the engine's
+      // materialiseMeasure expects callbacks with the original
+      // signatures (`getMeasure(name)`, `sendWorker(msg)`); our
+      // hoisted versions added `ctx` as a first parameter, so we
+      // close over `ctx` here to keep the engine ABI unchanged.
+      getMeasure:  function (n) { return getMeasure(ctx, n); },
+      sendWorker:  function (m) { return sendWorker(ctx, m); },
+      sampleCount: ctx.SAMPLE_COUNT,
+      rootSeed:    ctx.rootSeed,
+      rejectionBudget: ctx.REJECTION_BUDGET,
+    });
+    promise.then(function(m) { ctx.measureCache.set(name, m); });
+    return promise;
+  }
+
+  function fixedValueToMeasure(ctx, v) {
+    return FlatPPLEngine.materialiser.fixedValueToMeasure(v, ctx.SAMPLE_COUNT);
+  }
+
+  function collectRefArrays(ctx, ir) {
+    var fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
+    return FlatPPLEngine.materialiser.collectRefArrays(
+      ir, fv, function (n) { return getMeasure(ctx, n); });
+  }
+
+  /**
+   * Asynchronously spawn the sampler worker, caching the result.
+   * Returns a Promise<Worker> so callers can await spawn completion.
+   *
+   * Why blob-URL? VS Code webviews are sandboxed iframes whose CSP and
+   * cross-origin posture refuses 'new Worker(webview-uri)' in some
+   * VS Code versions. The reliable workaround is to fetch the bundle
+   * text via the webview URI (which IS allowed by connect-src) and
+   * spawn the worker from a same-origin blob: URL. This pattern is
+   * also documented in the official VS Code webview samples.
+   */
+  function ensureSamplerWorker(ctx) {
+    if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
+    if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
+
+    ctx.samplerWorkerPromise = (async function() {
+      // Try direct construction first — cheapest path on hosts where
+      // it works. Fall back to blob: on any failure (security error,
+      // cross-origin block, etc.).
+      var w = null;
+      try {
+        w = new Worker(ctx.SAMPLER_WORKER_URL);
+      } catch (e) {
+        // continue to blob fallback
+        console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:', e && e.message);
+      }
+      if (!w) {
+        var resp = await fetch(ctx.SAMPLER_WORKER_URL);
+        if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status + ' ' + resp.statusText);
+        var src = await resp.text();
+        var blob = new Blob([src], { type: 'application/javascript' });
+        var url = URL.createObjectURL(blob);
+        w = new Worker(url);
+        // The blob URL only needs to live until the Worker has parsed
+        // its source — revoke after a short delay so the URL isn't
+        // leaked (the worker keeps running independently).
+        setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
+      }
+      wireWorker(ctx, w);
+      ctx.samplerWorker = w;
+      // Initialize with a fixed seed for deterministic output. Future:
+      // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
+      sendWorkerNow(ctx, w, { type: 'init', seed: 1 });
+      return w;
+    })();
+
+    ctx.samplerWorkerPromise.catch(function(err) {
+      ctx.samplerWorkerError = err;
+      ctx.samplerWorkerPromise = null;
+      console.error('FlatPPL: sampler worker unavailable:', err);
+    });
+
+    return ctx.samplerWorkerPromise;
+  }
+
+  function wireWorker(ctx, w) {
+    w.addEventListener('message', function(ev) {
+      var reply = ev.data;
+      if (!reply || reply.id == null) return;
+      var p = ctx.pendingRequests.get(reply.id);
+      if (!p) return;
+      ctx.pendingRequests.delete(reply.id);
+      if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
+      else p.resolve(reply);
+    });
+    w.addEventListener('error', function(e) {
+      // A top-level worker error fails every outstanding request — there's
+      // no way to know which request the error pertains to, and the worker
+      // may be dead. Reject all and reset so a future request can retry
+      // the spawn.
+      console.error('FlatPPL sampler worker error:', e.message || e);
+      for (var entry of ctx.pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
+      ctx.pendingRequests.clear();
+      try { w.terminate(); } catch (_) {}
+      if (ctx.samplerWorker === w) {
+        ctx.samplerWorker = null;
+        ctx.samplerWorkerPromise = null;
+      }
+    });
+  }
+
+  function sendWorkerNow(ctx, w, msg) {
+    var id = ++ctx.samplerReqId;
+    w.postMessage(Object.assign({ id: id }, msg));
+  }
+
+  function sendWorker(ctx, msg) {
+    return ensureSamplerWorker(ctx).then(function(w) {
+      var id = ++ctx.samplerReqId;
+      var wrapped = Object.assign({ id: id }, msg);
+      return new Promise(function(resolve, reject) {
+        ctx.pendingRequests.set(id, { resolve: resolve, reject: reject });
+        w.postMessage(wrapped);
+      });
+    });
+  }
+
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
 
@@ -1872,8 +2023,8 @@
           && ctx.derivationsState.fixedValues.size > 0) {
         var envObj = {};
         ctx.derivationsState.fixedValues.forEach(function(v, k) { envObj[k] = v; });
-        ensureSamplerWorker().then(function(w) {
-          sendWorkerNow(w, { type: 'setEnv', env: envObj, merge: false });
+        ensureSamplerWorker(ctx).then(function(w) {
+          sendWorkerNow(ctx, w, { type: 'setEnv', env: envObj, merge: false });
         }).catch(function(err) {
           console.error('FlatPPL: setEnv push failed:', err);
         });
@@ -1900,45 +2051,11 @@
         sample-derived defaults for every source-binding axis but
         shouldn't blow up on the ones that genuinely have no samples
         to chase. */
-    function tryGetMeasure(name) {
-      return getMeasure(name).then(
-        function(m) { return m; },
-        function(_err) { return null; });
-    }
 
-    function getMeasure(name) {
-      if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
-      if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
-      // All per-kind materialisation lives in the engine — the viewer's
-      // job here is just to memoise the result against the cache. The
-      // engine-side materialiser dispatches by derivation kind, computes
-      // samples + logWeights + logTotalmass + n_eff, and returns the
-      // Measure record. Recursion is handled by passing getMeasure
-      // itself back in so child materialisations hit the same cache.
-      var promise = FlatPPLEngine.materialiser.materialiseMeasure(name, {
-        derivations: ctx.derivationsState.derivations,
-        bindings:    ctx.derivationsState.bindings,
-        fixedValues: ctx.derivationsState.fixedValues,
-        getMeasure:  getMeasure,
-        sendWorker:  sendWorker,
-        sampleCount: ctx.SAMPLE_COUNT,
-        rootSeed:    ctx.rootSeed,
-        rejectionBudget: ctx.REJECTION_BUDGET,
-      });
-      promise.then(function(m) { ctx.measureCache.set(name, m); });
-      return promise;
-    }
     // Plot-plan fallbacks below still need the helper as a local
     // function reference; expose the engine copies under their old
     // names so the rest of viewer.js keeps working without further
     // edits.
-    function fixedValueToMeasure(v) {
-      return FlatPPLEngine.materialiser.fixedValueToMeasure(v, ctx.SAMPLE_COUNT);
-    }
-    function collectRefArrays(ir) {
-      var fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
-      return FlatPPLEngine.materialiser.collectRefArrays(ir, fv, getMeasure);
-    }
     // Current plot plan from buildPlotPlan(). Two shapes:
     //   { mode: 'analytical', ir }
     //   { mode: 'chain', chain, discrete }
@@ -1948,105 +2065,12 @@
     ctx.currentPlotPlan = null;
     ctx.currentPlotBindingName = null;
 
-    /**
-     * Asynchronously spawn the sampler worker, caching the result.
-     * Returns a Promise<Worker> so callers can await spawn completion.
-     *
-     * Why blob-URL? VS Code webviews are sandboxed iframes whose CSP and
-     * cross-origin posture refuses 'new Worker(webview-uri)' in some
-     * VS Code versions. The reliable workaround is to fetch the bundle
-     * text via the webview URI (which IS allowed by connect-src) and
-     * spawn the worker from a same-origin blob: URL. This pattern is
-     * also documented in the official VS Code webview samples.
-     */
-    function ensureSamplerWorker() {
-      if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
-      if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
-      ctx.samplerWorkerPromise = (async function() {
-        // Try direct construction first — cheapest path on hosts where
-        // it works. Fall back to blob: on any failure (security error,
-        // cross-origin block, etc.).
-        var w = null;
-        try {
-          w = new Worker(ctx.SAMPLER_WORKER_URL);
-        } catch (e) {
-          // continue to blob fallback
-          console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:', e && e.message);
-        }
-        if (!w) {
-          var resp = await fetch(ctx.SAMPLER_WORKER_URL);
-          if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status + ' ' + resp.statusText);
-          var src = await resp.text();
-          var blob = new Blob([src], { type: 'application/javascript' });
-          var url = URL.createObjectURL(blob);
-          w = new Worker(url);
-          // The blob URL only needs to live until the Worker has parsed
-          // its source — revoke after a short delay so the URL isn't
-          // leaked (the worker keeps running independently).
-          setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
-        }
-        wireWorker(w);
-        ctx.samplerWorker = w;
-        // Initialize with a fixed seed for deterministic output. Future:
-        // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
-        sendWorkerNow(w, { type: 'init', seed: 1 });
-        return w;
-      })();
-
-      ctx.samplerWorkerPromise.catch(function(err) {
-        ctx.samplerWorkerError = err;
-        ctx.samplerWorkerPromise = null;
-        console.error('FlatPPL: sampler worker unavailable:', err);
-      });
-
-      return ctx.samplerWorkerPromise;
-    }
-
-    function wireWorker(w) {
-      w.addEventListener('message', function(ev) {
-        var reply = ev.data;
-        if (!reply || reply.id == null) return;
-        var p = ctx.pendingRequests.get(reply.id);
-        if (!p) return;
-        ctx.pendingRequests.delete(reply.id);
-        if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
-        else p.resolve(reply);
-      });
-      w.addEventListener('error', function(e) {
-        // A top-level worker error fails every outstanding request — there's
-        // no way to know which request the error pertains to, and the worker
-        // may be dead. Reject all and reset so a future request can retry
-        // the spawn.
-        console.error('FlatPPL sampler worker error:', e.message || e);
-        for (var entry of ctx.pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
-        ctx.pendingRequests.clear();
-        try { w.terminate(); } catch (_) {}
-        if (ctx.samplerWorker === w) {
-          ctx.samplerWorker = null;
-          ctx.samplerWorkerPromise = null;
-        }
-      });
-    }
 
     // Fire-and-forget message send (used during init when we don't care
     // about the reply). Distinct from sendWorker so we don't allocate a
     // pending-request entry for messages whose reply is just an 'ok'.
-    function sendWorkerNow(w, msg) {
-      var id = ++ctx.samplerReqId;
-      w.postMessage(Object.assign({ id: id }, msg));
-    }
 
-    function sendWorker(msg) {
-      return ensureSamplerWorker().then(function(w) {
-        var id = ++ctx.samplerReqId;
-        var wrapped = Object.assign({ id: id }, msg);
-        return new Promise(function(resolve, reject) {
-          ctx.pendingRequests.set(id, { resolve: resolve, reject: reject });
-          w.postMessage(wrapped);
-        });
-      });
-    }
 
     /**
      * Build a plot plan for a binding. The orchestrator decides
@@ -2714,7 +2738,7 @@
       // a microtask so the UI flush is uniform and the stale-reply
       // guard pattern stays the same.
       Promise.resolve()
-        .then(function() { return getMeasure(planForCall.name); })
+        .then(function() { return getMeasure(ctx, planForCall.name); })
         .then(function(measure) {
           if (ctx.currentPlotPlan !== planForCall) return null;
           return renderEmpiricalMeasure(measure, {
@@ -3885,7 +3909,7 @@
     function renderFixedRecord(plan) {
       showPlotMessage('Loading…', { hint: true });
       var planForCall = plan;
-      getMeasure(plan.name).then(function(measure) {
+      getMeasure(ctx, plan.name).then(function(measure) {
         if (ctx.currentPlotPlan !== planForCall) return;
         renderConstantRecord(measure, plan.name);
       }).catch(function(err) {
@@ -4001,7 +4025,7 @@
       // deps. Anything still self-ref'd is genuinely a captured
       // stochastic/fixed dep from the outer scope.
       Promise.all(bindingSourceLookups.map(function(s) {
-        return tryGetMeasure(s.sourceName);
+        return tryGetMeasure(ctx, s.sourceName);
       })).then(function(srcMeasures) {
         for (var i = 0; i < bindingSourceLookups.length; i++) {
           var sm = srcMeasures[i];
@@ -5170,8 +5194,8 @@
         // atom index — out-of-bounds for i >= count).
         var SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
         if (inner.kind === 'call' && SAMPLEABLE && SAMPLEABLE.has(inner.op)) {
-          return collectRefArrays(inner).then(function(refArrays) {
-            return sendWorker({
+          return collectRefArrays(ctx, inner).then(function(refArrays) {
+            return sendWorker(ctx, {
               type: 'sampleN', ir: inner, count: count, repeat: k,
               refArrays: refArrays, seed: seed,
             });
@@ -5207,8 +5231,8 @@
       // — same mechanism getMeasure uses for closed-measure
       // sampling. Fixed-phase refs flow through the worker's session
       // env, so collectRefArrays drops them.
-      return collectRefArrays(ir).then(function(refArrays) {
-        return sendWorker({
+      return collectRefArrays(ctx, ir).then(function(refArrays) {
+        return sendWorker(ctx, {
           type: 'sampleN', ir: ir, count: count, seed: seed,
           refArrays: refArrays,
         });
@@ -5293,7 +5317,7 @@
       var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
         axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
       if (descriptor && descriptor.kind === 'empirical') {
-        return getMeasure(descriptor.name).then(function(m) {
+        return getMeasure(ctx, descriptor.name).then(function(m) {
           if (m && m.samples && m.samples.length > 0) {
             var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
             if (range && range[0] < range[1]) return range;
@@ -5467,9 +5491,9 @@
       var rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
       Promise.all([
         rangePromise,
-        Promise.all(selfRefs.map(function(n) { return tryGetMeasure(n); })),
+        Promise.all(selfRefs.map(function(n) { return tryGetMeasure(ctx, n); })),
         Promise.all(nonSweptBindingSources.map(function(s) {
-          return tryGetMeasure(s.sourceName);
+          return tryGetMeasure(ctx, s.sourceName);
         })),
       ]).then(function(arr) {
         rangeRef[0] = arr[0];
@@ -5518,7 +5542,7 @@
           observed = FlatPPLEngine.orchestrator.resolveIRToValue(
             sig.obsIR, ctx.derivationsState.bindings, ctx.derivationsState.fixedValues);
         }
-        return sendWorker({
+        return sendWorker(ctx, {
           type: 'profileN',
           ir: ir,
           sweepName: sweepParamName,
@@ -6230,7 +6254,7 @@
         }
         var densOpts = { gridPoints: 256 };
         if (range) densOpts.range = range;
-        return sendWorker({ type: 'density', ir: opts.analyticalIR, opts: densOpts })
+        return sendWorker(ctx, { type: 'density', ir: opts.analyticalIR, opts: densOpts })
           .then(function(densReply) {
             if (!staleGuard()) return;
             renderSamplesAndDensity(
