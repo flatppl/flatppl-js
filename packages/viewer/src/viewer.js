@@ -1030,6 +1030,51 @@
   }
 
 
+
+  /**
+   * Walk the derivation chain for a measure binding to find the
+   * value-typed binding it's mathematically equivalent to (if any).
+   * Two equivalence forms after engine canonicalisation:
+   *
+   *   m = lawof(observed_data)   → derivation 'alias' to observed_data
+   *   m = Dirac(observed_data)   → derivation 'sample' on Dirac IR
+   *                                whose kwargs.value is a ref to
+   *                                observed_data
+   *
+   * Both routes resolve to 'observed_data' here. Composes through
+   * multiple alias hops; cycle-guarded.
+   *
+   * Returns null when the chain doesn't bottom out on a single
+   * named value-typed source binding (e.g. Dirac(value = literal),
+   * Dirac(value = inline-call), or a non-degenerate sample step).
+   * The caller then falls through to the existing dispatch.
+   */
+  function resolveMeasureAlias(name, derivations, bindings) {
+    if (!derivations || !bindings) return null;
+    var seen = new Set();
+    var cur = name;
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      var d = derivations[cur];
+      if (!d) return null;
+      if (d.kind === 'alias') { cur = d.from; continue; }
+      // Engine-canonicalised Dirac with a ref to a known binding
+      // → follow the ref. Anything else (literal value, inline
+      // expression, non-Dirac sample) terminates the resolution.
+      if (d.kind === 'sample' && d.distIR
+          && d.distIR.kind === 'call' && d.distIR.op === 'Dirac'
+          && d.distIR.kwargs && d.distIR.kwargs.value) {
+        var v = d.distIR.kwargs.value;
+        if (v.kind === 'ref' && v.ns === 'self' && bindings.has(v.name)) {
+          cur = v.name;
+          continue;
+        }
+      }
+      break;
+    }
+    return cur === name ? null : cur;
+  }
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
 
@@ -2027,49 +2072,6 @@
      *   { chain, discrete, analyticalIR? }   — plottable
      *   null                                 — not plottable
      */
-    /**
-     * Walk the derivation chain for a measure binding to find the
-     * value-typed binding it's mathematically equivalent to (if any).
-     * Two equivalence forms after engine canonicalisation:
-     *
-     *   m = lawof(observed_data)   → derivation 'alias' to observed_data
-     *   m = Dirac(observed_data)   → derivation 'sample' on Dirac IR
-     *                                whose kwargs.value is a ref to
-     *                                observed_data
-     *
-     * Both routes resolve to 'observed_data' here. Composes through
-     * multiple alias hops; cycle-guarded.
-     *
-     * Returns null when the chain doesn't bottom out on a single
-     * named value-typed source binding (e.g. Dirac(value = literal),
-     * Dirac(value = inline-call), or a non-degenerate sample step).
-     * The caller then falls through to the existing dispatch.
-     */
-    function resolveMeasureAlias(name, derivations, bindings) {
-      if (!derivations || !bindings) return null;
-      var seen = new Set();
-      var cur = name;
-      while (cur && !seen.has(cur)) {
-        seen.add(cur);
-        var d = derivations[cur];
-        if (!d) return null;
-        if (d.kind === 'alias') { cur = d.from; continue; }
-        // Engine-canonicalised Dirac with a ref to a known binding
-        // → follow the ref. Anything else (literal value, inline
-        // expression, non-Dirac sample) terminates the resolution.
-        if (d.kind === 'sample' && d.distIR
-            && d.distIR.kind === 'call' && d.distIR.op === 'Dirac'
-            && d.distIR.kwargs && d.distIR.kwargs.value) {
-          var v = d.distIR.kwargs.value;
-          if (v.kind === 'ref' && v.ns === 'self' && bindings.has(v.name)) {
-            cur = v.name;
-            continue;
-          }
-        }
-        break;
-      }
-      return cur === name ? null : cur;
-    }
 
     function buildPlotPlan(binding /*, bindingsMap */) {
       if (!binding || !ctx.derivationsState) return null;
