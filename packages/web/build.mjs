@@ -31,7 +31,7 @@
 //   npm run watch         # rebuild engine bundles on source changes
 
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, watch as fsWatch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -207,6 +207,27 @@ if (WATCH) {
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
   console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
   await Promise.all([engineCtx.watch(), workerCtx.watch(), codemirrorCtx.watch()]);
+
+  // esbuild contexts only watch their own bundle inputs. The static
+  // copyFile() steps above (notably the viewer source) are one-shot,
+  // so without an explicit watcher an edit to packages/viewer/src/
+  // viewer.js wouldn't propagate to dist/vendor/. Recopy on change
+  // (debounced — editors often fire several events per save). The
+  // serve.mjs SSE watcher on dist/ then pushes a reload to the
+  // browser, completing the round-trip: edit src → recopy → SSE →
+  // page reload, with no manual rebuild.
+  const viewerSrc = join(viewerPkg, 'src', 'viewer.js');
+  const viewerDst = join(vendorDir, 'viewer.js');
+  let recopyTimer = null;
+  fsWatch(viewerSrc, () => {
+    clearTimeout(recopyTimer);
+    recopyTimer = setTimeout(() => {
+      copyFile(viewerSrc, viewerDst).then(
+        () => console.log('  re-copied @flatppl/viewer source -> dist/vendor/viewer.js'),
+        (e) => console.error('  re-copy failed:', e && e.message || e));
+    }, 50);
+  });
+
   console.log('  watching for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
