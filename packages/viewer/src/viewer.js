@@ -2756,23 +2756,23 @@
     //                                    axes (per-axis selection)
     //   marginalGroups = all groups (group-level selection used in
     //                                marginals mode)
-    if (!recordSelection || recordSelection.bindingName !== bindingName) {
-      recordSelection = {
+    if (!ctx.recordSelection || ctx.recordSelection.bindingName !== bindingName) {
+      ctx.recordSelection = {
         bindingName: bindingName,
         mode: 'correlations',
-        selected: axes.slice(0, CORRELATIONS_MAX_AXES).map(function(a) { return a.key; }),
+        selected: axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a) { return a.key; }),
         marginalGroups: allGroups.slice(),
       };
     } else {
       // Drop any selections that no longer exist (rare — defensive).
       var present = {}; axes.forEach(function(a) { present[a.key] = true; });
-      recordSelection.selected = recordSelection.selected.filter(function(k) { return present[k]; });
-      if (!recordSelection.marginalGroups) recordSelection.marginalGroups = allGroups.slice();
+      ctx.recordSelection.selected = ctx.recordSelection.selected.filter(function(k) { return present[k]; });
+      if (!ctx.recordSelection.marginalGroups) ctx.recordSelection.marginalGroups = allGroups.slice();
       else {
         var presentGroups = {}; allGroups.forEach(function(g) { presentGroups[g] = true; });
-        recordSelection.marginalGroups = recordSelection.marginalGroups.filter(
+        ctx.recordSelection.marginalGroups = ctx.recordSelection.marginalGroups.filter(
           function(g) { return presentGroups[g]; });
-        if (recordSelection.marginalGroups.length === 0) recordSelection.marginalGroups = allGroups.slice();
+        if (ctx.recordSelection.marginalGroups.length === 0) ctx.recordSelection.marginalGroups = allGroups.slice();
       }
     }
 
@@ -2795,12 +2795,12 @@
       chartHostRef.style.gridTemplateColumns = '';
       chartHostRef.style.gridTemplateRows = '';
       chartHostRef.style.gap = '';
-      if (recordSelection.mode === 'marginals') {
+      if (ctx.recordSelection.mode === 'marginals') {
         // Marginals mode: filter axes by selected groups (group =
         // axis label's prefix before any "[k]"). Default is all
         // groups → full axis list; users uncheck to narrow.
         var selSet = {};
-        (recordSelection.marginalGroups || allGroups).forEach(function(g) {
+        (ctx.recordSelection.marginalGroups || allGroups).forEach(function(g) {
           selSet[g] = true;
         });
         var picked = axes.filter(function(a) { return selSet[axisGroupKey(a.label)]; });
@@ -2864,7 +2864,7 @@
       b.style.padding = '0.2em 0.8em';
       b.style.border = '1px solid var(--vscode-button-border, transparent)';
       b.style.borderRadius = '3px';
-      var active = recordSelection.mode === modeKey;
+      var active = ctx.recordSelection.mode === modeKey;
       b.style.background = active
         ? 'var(--vscode-button-background, #0e639c)'
         : 'var(--vscode-button-secondaryBackground, #3a3d41)';
@@ -2872,12 +2872,12 @@
         ? 'var(--vscode-button-foreground, #fff)'
         : 'var(--vscode-button-secondaryForeground, #ccc)';
       b.addEventListener('click', function() {
-        if (recordSelection.mode === modeKey) return;
-        recordSelection.mode = modeKey;
+        if (ctx.recordSelection.mode === modeKey) return;
+        ctx.recordSelection.mode = modeKey;
         // Clip selection to correlations cap when switching back.
         if (modeKey === 'correlations'
-            && recordSelection.selected.length > CORRELATIONS_MAX_AXES) {
-          recordSelection.selected = recordSelection.selected.slice(0, CORRELATIONS_MAX_AXES);
+            && ctx.recordSelection.selected.length > ctx.CORRELATIONS_MAX_AXES) {
+          ctx.recordSelection.selected = ctx.recordSelection.selected.slice(0, ctx.CORRELATIONS_MAX_AXES);
         }
         // Mode toggle changes button styling → full toolbar rebuild.
         onModeChange();
@@ -2894,7 +2894,7 @@
     // checkboxes, capped at CORRELATIONS_MAX_AXES); group-level
     // selector in marginals mode (one entry per name-prefix —
     // obs[1]…obs[10] collapse into a single "obs" toggle).
-    if (recordSelection.mode === 'correlations') {
+    if (ctx.recordSelection.mode === 'correlations') {
       var sep = document.createElement('div');
       sep.style.width = '1px';
       sep.style.alignSelf = 'stretch';
@@ -2905,7 +2905,7 @@
       // chart-only callback so the dropdown doesn't get rebuilt
       // out from under its open popup.
       bar.appendChild(renderAxisDropdown(ctx, axes, onSelectionChange));
-    } else if (recordSelection.mode === 'marginals' && groups && groups.length > 1) {
+    } else if (ctx.recordSelection.mode === 'marginals' && groups && groups.length > 1) {
       var sep2 = document.createElement('div');
       sep2.style.width = '1px';
       sep2.style.alignSelf = 'stretch';
@@ -3032,7 +3032,7 @@
     btn.style.background = 'var(--vscode-button-secondaryBackground, #3a3d41)';
     btn.style.color = 'var(--vscode-button-secondaryForeground, #ccc)';
     btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-    btn.textContent = recordSelection.selected.length
+    btn.textContent = ctx.recordSelection.selected.length
       + ' / ' + axes.length + '  ▾';
     wrap.appendChild(btn);
 
@@ -3077,30 +3077,30 @@
 
       var cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = recordSelection.selected.indexOf(axis.key) >= 0;
+      cb.checked = ctx.recordSelection.selected.indexOf(axis.key) >= 0;
       cb.addEventListener('change', function(ev) {
         // Don't bubble up to the wrap's outside-click closer.
         ev.stopPropagation();
-        var idx = recordSelection.selected.indexOf(axis.key);
+        var idx = ctx.recordSelection.selected.indexOf(axis.key);
         if (cb.checked) {
           if (idx >= 0) return;
-          if (recordSelection.selected.length >= CORRELATIONS_MAX_AXES) {
+          if (ctx.recordSelection.selected.length >= ctx.CORRELATIONS_MAX_AXES) {
             cb.checked = false;
-            capErr.textContent = 'At most ' + CORRELATIONS_MAX_AXES
+            capErr.textContent = 'At most ' + ctx.CORRELATIONS_MAX_AXES
               + ' axes — uncheck one first.';
             capErr.style.opacity = '1';
             return;
           }
-          recordSelection.selected.push(axis.key);
+          ctx.recordSelection.selected.push(axis.key);
         } else {
-          if (idx >= 0) recordSelection.selected.splice(idx, 1);
+          if (idx >= 0) ctx.recordSelection.selected.splice(idx, 1);
         }
         capErr.style.opacity = '0';
         // Update the count on the button without rebuilding the
         // toolbar (which would tear down this dropdown's open
         // panel). The axis-dropdown stays open until the user
         // clicks outside.
-        btn.textContent = recordSelection.selected.length
+        btn.textContent = ctx.recordSelection.selected.length
           + ' / ' + axes.length + '  ▾';
         onChange();
       });
@@ -3140,7 +3140,7 @@
    * Group-level checkbox dropdown for marginals view. Same shape
    * as renderAxisDropdown but operates on group prefixes (obs[1]
    * …obs[10] collapse to a single "obs" entry) and has no
-   * selection cap. State lives in recordSelection.marginalGroups.
+   * selection cap. State lives in ctx.recordSelection.marginalGroups.
    */
   function renderGroupDropdown(ctx, groups, onChange) {
     var wrap = document.createElement('div');
@@ -3164,7 +3164,7 @@
     btn.style.color = 'var(--vscode-button-secondaryForeground, #ccc)';
     btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
     function updateBtn() {
-      btn.textContent = recordSelection.marginalGroups.length
+      btn.textContent = ctx.recordSelection.marginalGroups.length
         + ' / ' + groups.length + '  ▾';
     }
     updateBtn();
@@ -3200,14 +3200,14 @@
 
       var cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = recordSelection.marginalGroups.indexOf(g) >= 0;
+      cb.checked = ctx.recordSelection.marginalGroups.indexOf(g) >= 0;
       cb.addEventListener('change', function(ev) {
         ev.stopPropagation();
-        var idx = recordSelection.marginalGroups.indexOf(g);
+        var idx = ctx.recordSelection.marginalGroups.indexOf(g);
         if (cb.checked) {
-          if (idx < 0) recordSelection.marginalGroups.push(g);
+          if (idx < 0) ctx.recordSelection.marginalGroups.push(g);
         } else {
-          if (idx >= 0) recordSelection.marginalGroups.splice(idx, 1);
+          if (idx >= 0) ctx.recordSelection.marginalGroups.splice(idx, 1);
         }
         updateBtn();
         onChange();
@@ -3442,7 +3442,7 @@
   function renderCornerGrid(ctx, hostEl, measure, bindingName) {
     hostEl.innerHTML = '';
     var axes = listScalarAxes(measure)
-      .filter(function(a) { return recordSelection.selected.indexOf(a.key) >= 0; });
+      .filter(function(a) { return ctx.recordSelection.selected.indexOf(a.key) >= 0; });
     var n = axes.length;
     if (n === 0) {
       var empty = document.createElement('div');
@@ -6655,8 +6655,8 @@
     // becomes unreadable past 4x4, so we cap selection at 4. Marginals
     // mode (one density-shaded column per axis) scales linearly to
     // the full axis count and ignores the selection.
-    var recordSelection = null;
-    var CORRELATIONS_MAX_AXES = 4;
+    ctx.recordSelection = null;
+    ctx.CORRELATIONS_MAX_AXES = 4;
 
 
     /**
