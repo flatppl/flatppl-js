@@ -654,7 +654,7 @@
     // memory. Owned by the host setting flatppl.visualization.
     // dagNavigationHistoryCap (default 1000); the host pushes its
     // value via configUpdate alongside sampleCount.
-    var HISTORY_CAP = 1000;
+    ctx.HISTORY_CAP = 1000;
 
     // VS Code codicons — `discard`, `save`, `save-as` paths copied
     // verbatim from microsoft/vscode-codicons (src/icons/*.svg) so the
@@ -4747,7 +4747,7 @@
         existingNames: existingNames,
       })).then(function(name) {
         if (!name) return;
-        pendingPresetName = name;
+        ctx.pendingPresetName = name;
         host.editSource({
           range: null,
           newText: name + ' = record(' + pairsText + ')',
@@ -4974,7 +4974,7 @@
         existingNames: existingNames,
       })).then(function(name) {
         if (!name) return;
-        pendingDomainName = name;
+        ctx.pendingDomainName = name;
         host.editSource({
           range: null,
           newText: name + ' = cartprod(' + pairsText + ')',
@@ -6378,8 +6378,8 @@
     // next updatePlotForBinding call (then cleared). Two separate
     // slots so a domain save-as can't accidentally knock the user
     // off a selected preset and vice-versa.
-    var pendingPresetName = null;
-    var pendingDomainName = null;
+    ctx.pendingPresetName = null;
+    ctx.pendingDomainName = null;
 
     // Per-binding memory of the user's plan-level selections (sweep
     // axis, output leaf, preset / domain name, auto-overrides for
@@ -6390,7 +6390,7 @@
     // matchedPresets / matchedDomains / axes existence checks in
     // applyRememberedSelections, so a renamed-then-restored binding
     // re-applies its memory rather than discarding it.
-    var planMemoryByName = new Map();
+    ctx.planMemoryByName = new Map();
 
     // Drop override values for kwargs the rebuilt plan no longer has
     // (e.g. the source was edited so an input went away). Without
@@ -6416,7 +6416,7 @@
 
     function applyRememberedSelections(plan) {
       if (!plan) return;
-      var mem = planMemoryByName.get(plan.name);
+      var mem = ctx.planMemoryByName.get(plan.name);
       if (!mem) return;
       var axisKwargs = new Set();
       if (plan.axes) {
@@ -6450,7 +6450,7 @@
 
     function rememberPlanSelections(plan) {
       if (!plan || !plan.name) return;
-      planMemoryByName.set(plan.name, {
+      ctx.planMemoryByName.set(plan.name, {
         sweepKey: plan.sweepKey || null,
         outputKey: plan.outputKey || null,
         presetName: plan.presetName || null,
@@ -6479,17 +6479,17 @@
       // selection so a freshly-coined name lands selected.
       applyRememberedSelections(plan);
       if (plan) {
-        if (pendingPresetName != null) {
-          var pn = pendingPresetName;
-          pendingPresetName = null;
+        if (ctx.pendingPresetName != null) {
+          var pn = ctx.pendingPresetName;
+          ctx.pendingPresetName = null;
           if (plan.matchedPresets
               && plan.matchedPresets.some(function(p) { return p.name === pn; })) {
             plan.presetName = pn;
           }
         }
-        if (pendingDomainName != null) {
-          var dn = pendingDomainName;
-          pendingDomainName = null;
+        if (ctx.pendingDomainName != null) {
+          var dn = ctx.pendingDomainName;
+          ctx.pendingDomainName = null;
           if (plan.matchedDomains
               && plan.matchedDomains.some(function(d) { return d.name === dn; })) {
             plan.domainName = dn;
@@ -6867,7 +6867,7 @@
       // is rare enough that this is the right trade-off.
       if (pushHistory && ctx.currentState && ctx.currentState.targetName !== targetName) {
         ctx.history.push(ctx.currentState);
-        if (ctx.history.length > HISTORY_CAP) ctx.history.shift();
+        if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
       }
 
       ctx.currentState = { data: dagData, targetName: targetName };
@@ -6901,7 +6901,7 @@
 
       if (pushHistory && ctx.currentState && ctx.currentState.targetName !== MODULE_TARGET) {
         ctx.history.push(ctx.currentState);
-        if (ctx.history.length > HISTORY_CAP) ctx.history.shift();
+        if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
       }
 
       ctx.currentState = { data: dagData, targetName: MODULE_TARGET };
@@ -7036,8 +7036,8 @@
         // or the back button beyond the trim.
         if (typeof cfg.dagNavigationHistoryCap === 'number'
             && cfg.dagNavigationHistoryCap >= 0) {
-          HISTORY_CAP = cfg.dagNavigationHistoryCap | 0;
-          while (ctx.history.length > HISTORY_CAP) ctx.history.shift();
+          ctx.HISTORY_CAP = cfg.dagNavigationHistoryCap | 0;
+          while (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
           updateBackBtn();
         }
 
