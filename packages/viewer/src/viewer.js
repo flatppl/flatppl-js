@@ -869,6 +869,167 @@
     return out;
   }
 
+  // -------------------------------------------------------------
+  // Hoisted ctx-taking utilities (decomposition Phase 3b.2).
+  // Each takes `ctx` (the per-mount state container) as its first
+  // parameter; every call site in this file has been updated to
+  // pass ctx. In-mount callers reach ctx via lexical capture (the
+  // `var ctx = {}` at the top of mount()); IIFE-scope callers
+  // pass their own ctx parameter through. Phase 4 will turn this
+  // block into ES modules (palette.js / engine-facade.js / etc.).
+  // -------------------------------------------------------------
+  /**
+   * Single source of truth for "what colour does this node get?".
+   * Used by the DAG renderer, the plot-view colorForBinding lookup,
+   * and the reification-bubble fill so all three views stay coherent.
+   *
+   * Decision tree:
+   *   kind === 'kernel'         → kernelof teal (overrides type)
+   *   kind === 'measure'        → lawof blue   (overrides type)
+   *   type ∈ {'draw', 'call'}   → ctx.PHASE_COLORS[phase]   (value node)
+   *   else                      → ctx.TYPE_STYLE[type].color (structural)
+   *
+   * Inside a reification bubble, node.phase has already been
+   * overridden to the scope-local phase by dag.js's
+   * applyScopeLocalPhases — so the same theta1 reads stochastic in
+   * the main view and parameterized inside a kernel bubble.
+   */
+  function resolveNodeColor(ctx, node) {
+    if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
+    if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
+    var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
+    if (node.type === 'draw' || node.type === 'call') {
+      return ctx.PHASE_COLORS[node.phase] || ts.color;
+    }
+    return ts.color;
+  }
+
+  /**
+   * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
+   * each binding its own RNG stream for sampleN(). Independent of
+   * arrival order — two independent variables stay independent
+   * regardless of which one the user clicked first.
+   */
+  function nameSeed(ctx, name) {
+    var h = 2166136261;
+    for (var i = 0; i < name.length; i++) {
+      h = h ^ name.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h ^ ctx.rootSeed) >>> 0;
+  }
+
+  function measureIsConstant(ctx, m) {
+    if (!m) return false;
+    if (m.fields) {
+      for (var k in m.fields) {
+        if (!measureIsConstant(ctx, m.fields[k])) return false;
+      }
+      return true;
+    }
+    if (Array.isArray(m.elems)) {
+      for (var i = 0; i < m.elems.length; i++) {
+        if (!measureIsConstant(ctx, m.elems[i])) return false;
+      }
+      return true;
+    }
+    if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
+      // Atom-major SoA: stride k = prod(dims) per atom. The whole
+      // array is constant iff slot s has the same value at every
+      // atom, for every s in [0, k).
+      var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
+      if (stride === 0) return true;
+      var N = m.samples.length / stride;
+      for (var s = 0; s < stride; s++) {
+        var v = m.samples[s];
+        for (var ai = 1; ai < N; ai++) {
+          if (m.samples[ai * stride + s] !== v) return false;
+        }
+      }
+      return true;
+    }
+    if (m.samples instanceof Float64Array) {
+      // Length-mismatch with SAMPLE_COUNT identifies a literal-array
+      // measure (kind: 'array' derivation): per-atom these are
+      // deterministic, even though the array's own elements differ.
+      if (m.samples.length !== ctx.SAMPLE_COUNT) return true;
+      return samplesAreConstant(m.samples);
+    }
+    return false;
+  }
+
+  function formatConstantMeasure(ctx, m) {
+    if (!m) return '?';
+    if (m.fields) {
+      var ks = Object.keys(m.fields);
+      var fparts = new Array(ks.length);
+      for (var i = 0; i < ks.length; i++) {
+        fparts[i] = ks[i] + ' = ' + formatConstantMeasure(ctx, m.fields[ks[i]]);
+      }
+      return 'record(' + fparts.join(', ') + ')';
+    }
+    if (Array.isArray(m.elems)) {
+      var eparts = new Array(m.elems.length);
+      for (var ei = 0; ei < m.elems.length; ei++) {
+        // Tuple element may be null when fixedValueToMeasure
+        // couldn't represent it (an rngstate, typically). Surface
+        // a placeholder so the rest of the tuple's structure stays
+        // visible — e.g. `(record(obs = […]), <rngstate>)` for a
+        // single-LHS `rand(rs, m)` result.
+        eparts[ei] = m.elems[ei] ? formatConstantMeasure(ctx, m.elems[ei]) : '<rngstate>';
+      }
+      return '(' + eparts.join(', ') + ')';
+    }
+    if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
+      var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
+      return formatValue(m.samples.subarray(0, stride));
+    }
+    if (m.samples instanceof Float64Array && m.samples.length > 0) {
+      // Two cases distinguished by sample length:
+      //   - length === SAMPLE_COUNT: a per-atom scalar measure
+      //     (caller verified samples are constant across atoms);
+      //     surface a single number.
+      //   - length !== SAMPLE_COUNT: a literal-data array
+      //     (kind:'array' derivation surfaced as a record field);
+      //     surface every element with array ellipsis.
+      if (m.samples.length === ctx.SAMPLE_COUNT) return formatScalar(m.samples[0]);
+      return formatValue(m.samples);
+    }
+    return '?';
+  }
+
+  /**
+   * Return the analyzer-level error diagnostics that landed on a
+   * binding (typeinfer mismatches, undefined refs, etc.), or null
+   * if there are none. Source for both the plot pane's
+   * "semantically invalid" message and the DAG's red error border.
+   */
+  function errorsForBinding(ctx, bindingName) {
+    if (!bindingName || !ctx.currentState || !ctx.currentState.data
+        || !ctx.currentState.data.nodes) return null;
+    var nodes = ctx.currentState.data.nodes;
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].id === bindingName) return nodes[i].errors || null;
+    }
+    return null;
+  }
+
+  function colorForBinding(ctx, bindingName) {
+    if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
+      var nodes = ctx.currentState.data.nodes;
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].id === bindingName) return resolveNodeColor(ctx, nodes[i]);
+      }
+    }
+    // Fallback when the plot is updating ahead of the DAG (rare, but
+    // possible during config-update reflows). currentBindings has
+    // .type but not .kind/.phase, so resolveNodeColor naturally
+    // degrades to the type colour.
+    var binding = ctx.currentBindings && ctx.currentBindings.get(bindingName);
+    return resolveNodeColor(ctx, { type: (binding && binding.type) || 'draw' });
+  }
+
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
 
@@ -1014,31 +1175,6 @@
       unknown:     { color: ctx.PALETTE.unknown,            shape: 'rectangle',       label: 'unknown' },
     };
 
-    /**
-     * Single source of truth for "what colour does this node get?".
-     * Used by the DAG renderer, the plot-view colorForBinding lookup,
-     * and the reification-bubble fill so all three views stay coherent.
-     *
-     * Decision tree:
-     *   kind === 'kernel'         → kernelof teal (overrides type)
-     *   kind === 'measure'        → lawof blue   (overrides type)
-     *   type ∈ {'draw', 'call'}   → ctx.PHASE_COLORS[phase]   (value node)
-     *   else                      → ctx.TYPE_STYLE[type].color (structural)
-     *
-     * Inside a reification bubble, node.phase has already been
-     * overridden to the scope-local phase by dag.js's
-     * applyScopeLocalPhases — so the same theta1 reads stochastic in
-     * the main view and parameterized inside a kernel bubble.
-     */
-    function resolveNodeColor(node) {
-      if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
-      if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
-      var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
-      if (node.type === 'draw' || node.type === 'call') {
-        return ctx.PHASE_COLORS[node.phase] || ts.color;
-      }
-      return ts.color;
-    }
 
     // G1 DAG/state (decomposition Phase 2 — on ctx).
     ctx.cy = null;
@@ -1084,7 +1220,7 @@
       // line — a single binding can pick up several mismatches if its
       // RHS has multiple bad arg positions.
       var errorRow = '';
-      var errors = errorsForBinding(d.id);
+      var errors = errorsForBinding(ctx, d.id);
       if (errors && errors.length > 0) {
         for (var i = 0; i < errors.length; i++) {
           errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
@@ -1699,20 +1835,6 @@
       }
     }
 
-    /**
-     * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
-     * each binding its own RNG stream for sampleN(). Independent of
-     * arrival order — two independent variables stay independent
-     * regardless of which one the user clicked first.
-     */
-    function nameSeed(name) {
-      var h = 2166136261;
-      for (var i = 0; i < name.length; i++) {
-        h = h ^ name.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-      }
-      return (h ^ ctx.rootSeed) >>> 0;
-    }
 
 
     /**
@@ -2520,7 +2642,7 @@
       // valid-looking empty histogram with NaN samples instead of
       // the actionable diagnostic.
       var name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
-      var typeErrors = errorsForBinding(ctx.currentPlotBindingName);
+      var typeErrors = errorsForBinding(ctx, ctx.currentPlotBindingName);
       if (typeErrors && typeErrors.length > 0) {
         var msg = '<strong>' + name + '</strong> is semantically invalid:'
           + '<ul>';
@@ -2697,44 +2819,6 @@
     // them as "constant" even though the array's values differ from
     // each other. We detect this via samples.length !== SAMPLE_COUNT;
     // a per-atom scalar measure has length === SAMPLE_COUNT.
-    function measureIsConstant(m) {
-      if (!m) return false;
-      if (m.fields) {
-        for (var k in m.fields) {
-          if (!measureIsConstant(m.fields[k])) return false;
-        }
-        return true;
-      }
-      if (Array.isArray(m.elems)) {
-        for (var i = 0; i < m.elems.length; i++) {
-          if (!measureIsConstant(m.elems[i])) return false;
-        }
-        return true;
-      }
-      if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
-        // Atom-major SoA: stride k = prod(dims) per atom. The whole
-        // array is constant iff slot s has the same value at every
-        // atom, for every s in [0, k).
-        var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
-        if (stride === 0) return true;
-        var N = m.samples.length / stride;
-        for (var s = 0; s < stride; s++) {
-          var v = m.samples[s];
-          for (var ai = 1; ai < N; ai++) {
-            if (m.samples[ai * stride + s] !== v) return false;
-          }
-        }
-        return true;
-      }
-      if (m.samples instanceof Float64Array) {
-        // Length-mismatch with SAMPLE_COUNT identifies a literal-array
-        // measure (kind: 'array' derivation): per-atom these are
-        // deterministic, even though the array's own elements differ.
-        if (m.samples.length !== ctx.SAMPLE_COUNT) return true;
-        return samplesAreConstant(m.samples);
-      }
-      return false;
-    }
 
     // Render a constant measure as the FlatPPL surface form. Used by
     // the plot-pane dispatch when measureIsConstant returns true:
@@ -2743,45 +2827,6 @@
     // ellipsize past length 8 so a 10-observation literal stays
     // readable. Walks the SoA tree top-down — same shape conventions
     // as listScalarAxes.
-    function formatConstantMeasure(m) {
-      if (!m) return '?';
-      if (m.fields) {
-        var ks = Object.keys(m.fields);
-        var fparts = new Array(ks.length);
-        for (var i = 0; i < ks.length; i++) {
-          fparts[i] = ks[i] + ' = ' + formatConstantMeasure(m.fields[ks[i]]);
-        }
-        return 'record(' + fparts.join(', ') + ')';
-      }
-      if (Array.isArray(m.elems)) {
-        var eparts = new Array(m.elems.length);
-        for (var ei = 0; ei < m.elems.length; ei++) {
-          // Tuple element may be null when fixedValueToMeasure
-          // couldn't represent it (an rngstate, typically). Surface
-          // a placeholder so the rest of the tuple's structure stays
-          // visible — e.g. `(record(obs = […]), <rngstate>)` for a
-          // single-LHS `rand(rs, m)` result.
-          eparts[ei] = m.elems[ei] ? formatConstantMeasure(m.elems[ei]) : '<rngstate>';
-        }
-        return '(' + eparts.join(', ') + ')';
-      }
-      if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
-        var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
-        return formatValue(m.samples.subarray(0, stride));
-      }
-      if (m.samples instanceof Float64Array && m.samples.length > 0) {
-        // Two cases distinguished by sample length:
-        //   - length === SAMPLE_COUNT: a per-atom scalar measure
-        //     (caller verified samples are constant across atoms);
-        //     surface a single number.
-        //   - length !== SAMPLE_COUNT: a literal-data array
-        //     (kind:'array' derivation surfaced as a record field);
-        //     surface every element with array ellipsis.
-        if (m.samples.length === ctx.SAMPLE_COUNT) return formatScalar(m.samples[0]);
-        return formatValue(m.samples);
-      }
-      return '?';
-    }
 
     /**
      * Resolve a binding's plot color to match the DAG renderer's
@@ -2796,36 +2841,7 @@
      * the current DAG — paths that update the plot independent of
      * the DAG (rare, but possible during config-update reflows).
      */
-    /**
-     * Return the analyzer-level error diagnostics that landed on a
-     * binding (typeinfer mismatches, undefined refs, etc.), or null
-     * if there are none. Source for both the plot pane's
-     * "semantically invalid" message and the DAG's red error border.
-     */
-    function errorsForBinding(bindingName) {
-      if (!bindingName || !ctx.currentState || !ctx.currentState.data
-          || !ctx.currentState.data.nodes) return null;
-      var nodes = ctx.currentState.data.nodes;
-      for (var i = 0; i < nodes.length; i++) {
-        if (nodes[i].id === bindingName) return nodes[i].errors || null;
-      }
-      return null;
-    }
 
-    function colorForBinding(bindingName) {
-      if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
-        var nodes = ctx.currentState.data.nodes;
-        for (var i = 0; i < nodes.length; i++) {
-          if (nodes[i].id === bindingName) return resolveNodeColor(nodes[i]);
-        }
-      }
-      // Fallback when the plot is updating ahead of the DAG (rare, but
-      // possible during config-update reflows). currentBindings has
-      // .type but not .kind/.phase, so resolveNodeColor naturally
-      // degrades to the type colour.
-      var binding = ctx.currentBindings && ctx.currentBindings.get(bindingName);
-      return resolveNodeColor({ type: (binding && binding.type) || 'draw' });
-    }
 
 
     /**
@@ -2870,7 +2886,7 @@
     // record; the simple len-based cutoff is fine here (the value is
     // either short and reads at 36px or long enough to want 16px).
     function renderConstantRecord(measure, bindingName) {
-      renderTextValue(bindingName, formatConstantMeasure(measure));
+      renderTextValue(bindingName, formatConstantMeasure(ctx, measure));
     }
 
     function renderRecordMarginals(measure, bindingName, extraToolbarControls) {
@@ -3454,7 +3470,7 @@
       }
 
       var fg = getComputedStyle(document.body).color || '#ccc';
-      var color = colorForBinding(bindingName);
+      var color = colorForBinding(ctx, bindingName);
       var logWeights = measure.logWeights;
       var histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
@@ -3634,7 +3650,7 @@
       }
 
       var fg = getComputedStyle(document.body).color || '#ccc';
-      var color = colorForBinding(bindingName);
+      var color = colorForBinding(ctx, bindingName);
       var logWeights = measure.logWeights;
       var histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
@@ -3798,7 +3814,7 @@
       var indices;
       if (measure.logWeights) {
         var nOut = Math.min(anyN, maxPoints);
-        var rsPrng = makeMainThreadPrng(nameSeed(bindingName + ':scatter'));
+        var rsPrng = makeMainThreadPrng(nameSeed(ctx, bindingName + ':scatter'));
         indices = FlatPPLEngine.empirical.systematicResample(
           measure.logWeights, nOut, rsPrng);
       } else {
@@ -4018,7 +4034,7 @@
         // the per-atom semantics of the closed-measure getMeasure
         // path. Per spec §04, stochastic ancestors that aren't
         // boundary inputs participate in the kernel's randomness.
-        return materialiseConcreteMeasure(ir, ctx.SAMPLE_COUNT, nameSeed(plan.name));
+        return materialiseConcreteMeasure(ir, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name));
       }).then(function(measure) {
         if (ctx.currentPlotPlan !== planForCall) return;
         ctx.measureCache.set(cacheKey, measure);
@@ -5806,7 +5822,7 @@
 
     function renderProfileLine(values, range, plan, sweepAxis) {
       var fg = getComputedStyle(document.body).color || '#ccc';
-      var color = colorForBinding(ctx.currentPlotBindingName);
+      var color = colorForBinding(ctx, ctx.currentPlotBindingName);
       var n = values.length;
       var lo = range[0], hi = range[1];
       // Integer-typed sweep axis: only integer x values are
@@ -6014,7 +6030,7 @@
       // palette the DAG view paints. For literal arrays that's the
       // shared phaseFixed grey (post the literal-color unification);
       // for other shapes it picks up the node.kind overrides.
-      var color = colorForBinding(ctx.currentPlotBindingName);
+      var color = colorForBinding(ctx, ctx.currentPlotBindingName);
       var distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'array';
       var arrayLegendLabel = n + ' values';
       // No measure passed — fixed array data isn't a sampled empirical
@@ -6126,7 +6142,7 @@
         // even when "constant" they're more useful as per-slot
         // histograms.
         if ((measure.shape === 'record' || measure.shape === 'tuple')
-            && measureIsConstant(measure)) {
+            && measureIsConstant(ctx, measure)) {
           renderConstantRecord(measure, name);
           return;
         }
@@ -6253,7 +6269,7 @@
       // node.kind override that maps a measure-typed binding to the
       // lawof blue rather than the generic 'call' grey. See
       // colorForBinding above.
-      var color = colorForBinding(ctx.currentPlotBindingName);
+      var color = colorForBinding(ctx, ctx.currentPlotBindingName);
 
       var hist = reply.histogram;
       var dens = reply.density;
@@ -6645,7 +6661,7 @@
         if (!ctx.TYPE_STYLE[r.type]) continue;
         // Same colour the bubble's reification node would get — keeps
         // bubble fill, bubble stroke, and node fill in lockstep.
-        var bubbleColor = resolveNodeColor(r);
+        var bubbleColor = resolveNodeColor(ctx, r);
 
         var memberIds = bubbleMemberIds(r, data.reifications);
         var nodes = ctx.cy.collection();
@@ -6710,7 +6726,7 @@
         if (node.kind === 'kernel')      shape = 'round-hexagon';
         else if (node.kind === 'measure') shape = 'round-rectangle';
 
-        var color = resolveNodeColor(node);
+        var color = resolveNodeColor(ctx, node);
         // Anonymous nodes (inline-expression targets) have label === ''
         // deliberately and show their expression on hover only. Others
         // fall back to their id.
