@@ -755,6 +755,17 @@
 
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
+
+      // Per-mount state container (decomposition Phase 2). Every
+      // captured mutable/shared identifier migrates onto `ctx` so the
+      // nested functions stop relying on lexical capture and can be
+      // hoisted out of mount() (Phase 3) and split into ES modules
+      // (Phase 4). `ctx` is declared at the very top of mount so it's
+      // initialized BEFORE any `ctx.X = …` assignment in the prologue;
+      // var-hoisting alone wouldn't suffice because the assignment
+      // `ctx = {}` is what makes ctx an object, and the prologue's
+      // first ctx-write (e.g. `ctx.host = …`) must see an object.
+      var ctx = {};
       // container: the element the viewer renders inside. Defaults to
       // document.body for backward-compat with the existing VS Code
       // wrapper. The viewer injects its layout markup as innerHTML and
@@ -798,16 +809,6 @@
       // of a known distribution with literal params).
       ctx.SAMPLER_WORKER_URL = ctx.CONFIG.samplerWorkerUrl || '';
 
-      // Per-mount state container (decomposition Phase 2). Every
-      // captured mutable/shared identifier migrates onto `ctx` so the
-      // nested functions stop relying on lexical capture and can be
-      // hoisted out of mount() (Phase 3) and split into ES modules
-      // (Phase 4). `ctx` is declared here at mount top, so it shares
-      // the exact lexical-capture scope of the vars it replaces
-      // (including async/RAF/event-listener/returned closures) — the
-      // `X → ctx.X` rewrite is therefore behaviour-neutral. Fields are
-      // added group-by-group (G1–G8, see the module map above).
-      var ctx = {};
 
     // ---- Palette ----
     //
