@@ -215,7 +215,7 @@
       background: var(--vscode-button-background, #0e639c);
     }
     #plot-divider.hidden { display: none; }
-    /* Plot pane layout, controls, and chart host are styled inline by
+    /* Plot pane layout, controls, and chart ctx.host are styled inline by
        renderPlotFrame — no CSS rules needed here for the per-renderer
        layout. The constant-value / message blocks below still rely on
        global rules. */
@@ -501,7 +501,7 @@
       // bridges to VS Code's postMessage / setState / getState. This
       // keeps the existing extension wrapper working without any
       // host-side changes.
-      var host = opts.host || defaultVscodeHost();
+      ctx.host = opts.host || defaultVscodeHost();
 
       // Host-supplied configuration. The vscode-extension host writes
       // window.__FLATPPL_CONFIG__ via a small inline bootstrap <script>
@@ -970,7 +970,7 @@
         if (oe && (oe.ctrlKey || oe.metaKey)) {
           var line = evt.target.data('line');
           if (line >= 0) {
-            if (host.revealSourceLine) host.revealSourceLine(line);
+            if (ctx.host.revealSourceLine) ctx.host.revealSourceLine(line);
           }
           return;
         }
@@ -1000,7 +1000,7 @@
         // Don't drill into synthetic nodes (placeholder/hole inputs).
         if (nodeId.indexOf(':') !== -1) return;
         focusNode(nodeId, /* pushHistory */ true);
-        if (host.setTitle) host.setTitle(nodeId);
+        if (ctx.host.setTitle) ctx.host.setTitle(nodeId);
       });
 
       var tip = document.getElementById('tooltip');
@@ -1943,7 +1943,7 @@
       plot.style.flex = '';
       // Persist across panel reopens. VS Code restores webview state
       // automatically when the panel is shown again.
-      if (host.saveState) { try { host.saveState({ plotEnabled: ctx.plotEnabled }); } catch (_) {} }
+      if (ctx.host.saveState) { try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled }); } catch (_) {} }
       if (ctx.plotEnabled) {
         // Render whatever the current plan says — including the
         // "not plottable" message if the focused binding isn't
@@ -2029,7 +2029,7 @@
      *   - the flex-column structure of #plot-content
      *   - an optional toolbar row (controls on the left, sample-stats
      *     readout pinned right when `measure` is supplied)
-     *   - the chart host that fills the remaining vertical space
+     *   - the chart ctx.host that fills the remaining vertical space
      *   - disposal of any prior `ctx.plotEchart` and reset of inline styles
      *
      * Every measure-backed renderer (samples / corner / strips / kernel-
@@ -2046,7 +2046,7 @@
      *                      sample-stats readout (if `measure`) sits to
      *                      the RIGHT via `margin-left: auto`.
      *   chartCallback    — function(chartHost) called once the layout
-     *                      is in place. The host is a div that fills
+     *                      is in place. The ctx.host is a div that fills
      *                      the remaining vertical space; the callback
      *                      writes its chart DOM (echarts.init,
      *                      grid layout, etc.) directly into it.
@@ -3399,8 +3399,8 @@
      * want each axis's bin grid to align to its own FD-derived
      * edges. Custom render gives that flexibility cheaply.
      */
-    function renderDensityStrips(host, measure, bindingName, axesArg) {
-      host.innerHTML = '';
+    function renderDensityStrips(hostEl, measure, bindingName, axesArg) {
+      hostEl.innerHTML = '';
       // Marginals mode passes the full axis list (no selection cap); we
       // fall back to listScalarAxes for legacy callers.
       var axes = axesArg || listScalarAxes(measure);
@@ -3411,7 +3411,7 @@
         empty.style.opacity = '0.5';
         empty.style.padding = '24px';
         empty.style.textAlign = 'center';
-        host.appendChild(empty);
+        hostEl.appendChild(empty);
         return;
       }
 
@@ -3447,21 +3447,21 @@
         info.style.opacity = '0.5';
         info.style.padding = '24px';
         info.style.textAlign = 'center';
-        host.appendChild(info);
+        hostEl.appendChild(info);
         return;
       }
 
       // One echarts instance hosts the whole strip view. Categories on
       // x (one per axis); value y (continuous, shared range). Bins
       // rendered as semi-transparent rects via custom series.
-      host.style.display = '';
-      host.style.gridTemplateColumns = '';
-      host.style.gridTemplateRows = '';
-      host.innerHTML = '';
+      hostEl.style.display = '';
+      hostEl.style.gridTemplateColumns = '';
+      hostEl.style.gridTemplateRows = '';
+      hostEl.innerHTML = '';
       var chartDiv = document.createElement('div');
       chartDiv.style.width = '100%';
       chartDiv.style.height = '100%';
-      host.appendChild(chartDiv);
+      hostEl.appendChild(chartDiv);
 
       // Group adjacent axes that belong to the same parent (an iid
       // array's slots all share the prefix before "[k]"). Within a
@@ -3576,12 +3576,12 @@
 
     /**
      * Build the corner-plot grid (diagonal marginals + below-diagonal
-     * scatters) for the currently-selected axes. host is the parent
+     * scatters) for the currently-selected axes. ctx.host is the parent
      * div whose contents we replace; it must be a flex/block child
      * with a fixed height so the inner grid expands correctly.
      */
-    function renderCornerGrid(host, measure, bindingName) {
-      host.innerHTML = '';
+    function renderCornerGrid(hostEl, measure, bindingName) {
+      hostEl.innerHTML = '';
       var axes = listScalarAxes(measure)
         .filter(function(a) { return recordSelection.selected.indexOf(a.key) >= 0; });
       var n = axes.length;
@@ -3591,7 +3591,7 @@
         empty.style.opacity = '0.5';
         empty.style.padding = '24px';
         empty.style.textAlign = 'center';
-        host.appendChild(empty);
+        hostEl.appendChild(empty);
         return;
       }
 
@@ -3611,11 +3611,11 @@
       //           [1fr]
       //           ...
       //           [auto]                             1 row of x labels
-      host.style.display = 'grid';
-      host.style.gridTemplateColumns = 'auto repeat(' + n + ', 1fr)';
-      host.style.gridTemplateRows    = 'repeat(' + n + ', 1fr) auto';
-      host.style.gap = '6px';
-      host.style.minHeight = '0';
+      hostEl.style.display = 'grid';
+      hostEl.style.gridTemplateColumns = 'auto repeat(' + n + ', 1fr)';
+      hostEl.style.gridTemplateRows    = 'repeat(' + n + ', 1fr) auto';
+      hostEl.style.gap = '6px';
+      hostEl.style.minHeight = '0';
 
       // ---- y-axis labels (left column, vertical) -----------------
       // Each label sits in column 1 (the auto-sized leftmost
@@ -3636,7 +3636,7 @@
         ylab.style.fontSize = '0.92em';
         ylab.style.opacity = '0.85';
         ylab.style.padding = '0 0.3em';
-        host.appendChild(ylab);
+        hostEl.appendChild(ylab);
       }
 
       // ---- x-axis labels (bottom row, horizontal) ----------------
@@ -3654,7 +3654,7 @@
         xlab.style.fontSize = '0.92em';
         xlab.style.opacity = '0.85';
         xlab.style.padding = '0.2em 0';
-        host.appendChild(xlab);
+        hostEl.appendChild(xlab);
       }
 
       // Per-cell builder: chart container only — no internal label,
@@ -3669,7 +3669,7 @@
         cell.style.background = 'rgba(255,255,255,0.02)';
         cell.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
         cell.style.borderRadius = '3px';
-        host.appendChild(cell);
+        hostEl.appendChild(cell);
         return cell;
       }
 
@@ -4596,19 +4596,19 @@
       return frag;
     }
 
-    /** Persist is supported when there's an override AND the host
-        adapter can write (host.editSource defined and host.canPersist
+    /** Persist is supported when there's an override AND the ctx.host
+        adapter can write (ctx.host.editSource defined and ctx.host.canPersist
         returns true). For named presets the source RHS also has to
         be literal-friendly; for auto we additionally need
-        host.promptForName for the new-binding name. Hidden
+        ctx.host.promptForName for the new-binding name. Hidden
         otherwise so the user never sees a disabled-looking button. */
     function canPersistActive(plan) {
       if (!hasOverrides(plan)) return false;
-      if (!host || typeof host.editSource !== 'function') return false;
-      if (typeof host.canPersist === 'function' && !host.canPersist()) return false;
-      if (host.canPersist === false) return false;
+      if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
+      if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
+      if (ctx.host.canPersist === false) return false;
       if (plan.presetName == null) {
-        return typeof host.promptForName === 'function';
+        return typeof ctx.host.promptForName === 'function';
       }
       if (!ctx.currentBindings) return false;
       var b = ctx.currentBindings.get(plan.presetName);
@@ -4684,7 +4684,7 @@
       return plan.presetName + ' = record(' + parts.join(', ') + ')';
     }
 
-    /** Invoke host.persistPreset for the active selection. Routes
+    /** Invoke ctx.host.persistPreset for the active selection. Routes
         to "replace existing binding" or "append new binding"
         depending on whether the active selection is a named
         preset or auto. Host applies the edit; the next source-
@@ -4703,7 +4703,7 @@
       var b = ctx.currentBindings.get(plan.presetName);
       var newText = buildPersistedPresetLine(plan);
       try {
-        host.editSource({
+        ctx.host.editSource({
           range: {
             start: { line: b.node.loc.start.line, col: b.node.loc.start.col },
             end:   { line: b.node.loc.end.line,   col: b.node.loc.end.col },
@@ -4715,16 +4715,16 @@
       }
     }
 
-    /** Auto persist: ask the host to prompt for a binding name,
+    /** Auto persist: ask the ctx.host to prompt for a binding name,
         then ask it to append the new preset binding at end-of-
         source. The two-step contract keeps line/text construction
         and queuing the next-active-preset hint in the viewer
-        (single source of truth); each host implements only the
+        (single source of truth); each ctx.host implements only the
         primitives (UI prompt + edit application). */
     function persistAutoAsNewBinding(plan) {
-      if (typeof host.promptForName !== 'function'
-          || typeof host.editSource !== 'function') {
-        console.warn('[viewer] persist auto: host missing promptForName / editSource');
+      if (typeof ctx.host.promptForName !== 'function'
+          || typeof ctx.host.editSource !== 'function') {
+        console.warn('[viewer] persist auto: ctx.host missing promptForName / editSource');
         return;
       }
       var autoValues = computeAutoValues(plan);
@@ -4742,13 +4742,13 @@
       if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       var pairsText = parts.join(', ');
       var suggested = (plan.name || 'inputs') + '_default';
-      Promise.resolve(host.promptForName({
+      Promise.resolve(ctx.host.promptForName({
         suggested: suggested,
         existingNames: existingNames,
       })).then(function(name) {
         if (!name) return;
         ctx.pendingPresetName = name;
-        host.editSource({
+        ctx.host.editSource({
           range: null,
           newText: name + ' = record(' + pairsText + ')',
         });
@@ -4834,18 +4834,18 @@
       }
     }
 
-    /** Persist is supported when there's an override AND the host
+    /** Persist is supported when there's an override AND the ctx.host
         adapter can write. For named domains every source field has
         to be a recognized set form (interval-with-literal-bounds OR
         a named set like `reals` / `posreals` / …). For auto we
-        additionally need host.promptForName for the new-binding name. */
+        additionally need ctx.host.promptForName for the new-binding name. */
     function canPersistDomain(plan) {
       if (!hasDomainOverrides(plan)) return false;
-      if (!host || typeof host.editSource !== 'function') return false;
-      if (typeof host.canPersist === 'function' && !host.canPersist()) return false;
-      if (host.canPersist === false) return false;
+      if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
+      if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
+      if (ctx.host.canPersist === false) return false;
       if (plan.domainName == null) {
-        return typeof host.promptForName === 'function';
+        return typeof ctx.host.promptForName === 'function';
       }
       if (!ctx.currentBindings) return false;
       var b = ctx.currentBindings.get(plan.domainName);
@@ -4902,7 +4902,7 @@
       var b = ctx.currentBindings.get(plan.domainName);
       var newText = buildPersistedDomainLine(plan);
       try {
-        host.editSource({
+        ctx.host.editSource({
           range: {
             start: { line: b.node.loc.start.line - 1, col: 0 },
             end:   { line: b.node.loc.end.line   - 1, col: 1000000 },
@@ -4915,7 +4915,7 @@
     }
 
     /** Append a fresh cartprod(...) binding capturing the current
-        domain override. Asks the host for a name via promptForName.
+        domain override. Asks the ctx.host for a name via promptForName.
         Fills *every* input kwarg in the signature: overridden ones
         get `interval(lo, hi)`, the rest get their natural base set
         (`reals` / `posreals` / …) via defaultSetSourceForKwarg.
@@ -4924,9 +4924,9 @@
         domain like `cartprod(theta1 = interval(-4, 4))` wouldn't
         appear in the Domain dropdown after persist. */
     function persistAutoDomainAsNewBinding(plan) {
-      if (typeof host.promptForName !== 'function'
-          || typeof host.editSource !== 'function') {
-        console.warn('[viewer] persist domain auto: host missing promptForName / editSource');
+      if (typeof ctx.host.promptForName !== 'function'
+          || typeof ctx.host.editSource !== 'function') {
+        console.warn('[viewer] persist domain auto: ctx.host missing promptForName / editSource');
         return;
       }
       var override = plan.domainAutoOverride;
@@ -4969,13 +4969,13 @@
       if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       var pairsText = parts.join(', ');
       var suggested = (plan.name || 'domain') + '_domain';
-      Promise.resolve(host.promptForName({
+      Promise.resolve(ctx.host.promptForName({
         suggested: suggested,
         existingNames: existingNames,
       })).then(function(name) {
         if (!name) return;
         ctx.pendingDomainName = name;
-        host.editSource({
+        ctx.host.editSource({
           range: null,
           newText: name + ' = cartprod(' + pairsText + ')',
         });
@@ -5488,7 +5488,7 @@
      * dropdown, y-cutoff selector, x-range inputs). Returns a
      * DocumentFragment that the caller hands to renderPlotFrame as
      * `toolbarControls`. Logic mirrors the original inline build; only
-     * the styling host moved.
+     * the styling ctx.host moved.
      */
     function buildProfileControls(plan, range) {
       var frag = document.createDocumentFragment();
@@ -6831,7 +6831,7 @@
      * Re-render the DAG focused on targetName using the cached bindings.
      * If pushHistory is true, the current view is pushed onto the back-
      * button stack first. If targetName is null, falls back to the last
-     * binding in document order (the same default the extension host used
+     * binding in document order (the same default the extension ctx.host used
      * before this refactor).
      */
     function focusNode(targetName, pushHistory) {
@@ -6883,8 +6883,8 @@
       // an editor triggered a debounced update that yanked focus
       // back to a previous binding. With this call, host and viewer
       // share one target.
-      if (host && typeof host.setTarget === 'function') {
-        try { host.setTarget(targetName); } catch (_) {}
+      if (ctx.host && typeof ctx.host.setTarget === 'function') {
+        try { ctx.host.setTarget(targetName); } catch (_) {}
       }
     }
 
@@ -6908,8 +6908,8 @@
       renderDAG(dagData);
       updateBackBtn();
       // Mirror module-view focus to the host (null = whole module).
-      if (host && typeof host.setTarget === 'function') {
-        try { host.setTarget(null); } catch (_) {}
+      if (ctx.host && typeof ctx.host.setTarget === 'function') {
+        try { ctx.host.setTarget(null); } catch (_) {}
       }
       // No specific binding to plot in module view. Pass null so the
       // Plot panel renders its placeholder; renderPlotForCurrent
@@ -6932,10 +6932,10 @@
       // generic title rather than the sentinel string.
       if (ctx.currentState.targetName === ctx.MODULE_TARGET) {
         updatePlotForBinding(null);
-        if (host.setTitle) host.setTitle('module');
+        if (ctx.host.setTitle) ctx.host.setTitle('module');
       } else {
         updatePlotForBinding(ctx.currentState.targetName);
-        if (host.setTitle) host.setTitle(ctx.currentState.targetName);
+        if (ctx.host.setTitle) ctx.host.setTitle(ctx.currentState.targetName);
       }
     });
 
@@ -7068,8 +7068,8 @@
     // "empty panel on first Visualize" issue. The host buffers
     // sourceUpdate / showModule / configUpdate until it sees this
     // 'webviewReady' and then flushes in order.
-    if (host && host.signalReady) {
-      try { host.signalReady(); } catch (_) {}
+    if (ctx.host && ctx.host.signalReady) {
+      try { ctx.host.signalReady(); } catch (_) {}
     }
 
     // Resize every echart instance inside #plot-content whenever the
@@ -7131,8 +7131,8 @@
     // is OFF for first-time use — the plot panel is opt-in to keep the
     // initial DAG-only experience clean.
     var prevState = null;
-    if (host.loadState) { try { prevState = host.loadState(); } catch (_) {} }
-    setPlotEnabled(prevState && prevState.ctx.plotEnabled === true);
+    if (ctx.host.loadState) { try { prevState = ctx.host.loadState(); } catch (_) {} }
+    setPlotEnabled(prevState && prevState.plotEnabled === true);
 
     // Initial source bootstrap. When opts.source is supplied, render
     // immediately. Otherwise the viewer waits for a postMessage
