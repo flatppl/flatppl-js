@@ -53,7 +53,9 @@ export function showPlotMessage(ctx, html, options) {
   el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
   if (cancellable) {
     var btn = document.getElementById('plot-stop-btn');
-    if (btn) btn.addEventListener('click', cancelAllSampling);
+    // Wrap to bind ctx — Phase 3 added ctx as first param, but the
+    // click handler invokes its callback with the MouseEvent.
+    if (btn) btn.addEventListener('click', function () { cancelAllSampling(ctx); });
   }
 }
 

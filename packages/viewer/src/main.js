@@ -1502,11 +1502,15 @@ export function mount(container, opts) {
   // up its own listener. Falls back to window.resize where
   // ResizeObserver isn't available (older webview hosts).
   if (typeof ResizeObserver === 'function') {
-    var plotResizeObserver = new ResizeObserver(resizeAllEchartsInPlot);
+    // Wrap to bind ctx — Phase 3 parameterised these on ctx, but the
+    // ResizeObserver / window resize callbacks invoke their handlers
+    // with no args, so the bare function reference would receive
+    // `undefined` as ctx and throw.
+    var plotResizeObserver = new ResizeObserver(function () { resizeAllEchartsInPlot(ctx); });
     var plotRoot = document.getElementById('plot-content');
     if (plotRoot) plotResizeObserver.observe(plotRoot);
   } else {
-    window.addEventListener('resize', resizeAllEchartsInPlot);
+    window.addEventListener('resize', function () { resizeAllEchartsInPlot(ctx); });
   }
 
   // Resize the cytoscape DAG when its container changes size. Without
@@ -1519,11 +1523,11 @@ export function mount(container, opts) {
   // window.resize, which cytoscape already handles internally; the
   // standalone web host (CSS Grid + flex) needs the explicit observer.
   if (typeof ResizeObserver === 'function') {
-    var cyResizeObserver = new ResizeObserver(resizeAndFitCy);
+    var cyResizeObserver = new ResizeObserver(function () { resizeAndFitCy(ctx); });
     var cyRoot = document.getElementById('cy');
     if (cyRoot) cyResizeObserver.observe(cyRoot);
   } else {
-    window.addEventListener('resize', resizeAndFitCy);
+    window.addEventListener('resize', function () { resizeAndFitCy(ctx); });
   }
 
   // Restore Plot toggle state from the host's persistent state so the
