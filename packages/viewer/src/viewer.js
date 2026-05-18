@@ -1408,7 +1408,7 @@
   // ---- Hoisted leaf batch (Phase 3f) — header/info, leaf defaults,
   //      persist-helpers, plan-memory, bubble teardown ----
 
-  function showNodeInfo(d) {
+  function showNodeInfo(ctx, d) {
     var phase = d.phase || 'unknown';
     var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
     var unsupportedRow = '';
@@ -2072,7 +2072,7 @@
           return;
         }
         var d = evt.target.data();
-        showNodeInfo(d);
+        showNodeInfo(ctx, d);
         // Always re-target the plot to whatever the user clicked. For
         // synthetic nodes (anonymous inline expressions, placeholders,
         // holes — recognised by ':' in the id) there's no binding to
@@ -6905,7 +6905,7 @@
       // on it in the source). Falls back to the hint if no target is present.
       var target = data.nodes.find(function(n) { return n.isTarget; });
       if (target) {
-        showNodeInfo({
+        showNodeInfo(ctx, {
           label: target.label || target.id,
           nodeType: target.type,
           phase: target.phase || '',
