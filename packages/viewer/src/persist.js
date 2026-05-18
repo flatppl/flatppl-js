@@ -7,6 +7,7 @@
 
 import { activePresetFor, computeAutoValues, domainOverrideEntryFor, hasDomainOverrides, hasOverrides } from './overrides.js';
 
+import { isPersistableSetField } from './util.js';
 export function formatScalarForSource(ctx, v) {
   if (typeof v === 'boolean') {
     // Boolean spelling follows the source-file variant: FlatPPL

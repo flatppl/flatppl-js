@@ -7,7 +7,7 @@
 // rejects every in-flight request — used by the Stop button and
 // when SAMPLE_COUNT / REJECTION_BUDGET change.
 
-export /**
+/**
  * Asynchronously spawn the sampler worker, caching the result.
  * Returns a Promise<Worker> so callers can await spawn completion.
  *
@@ -18,7 +18,7 @@ export /**
  * spawn the worker from a same-origin blob: URL. This pattern is
  * also documented in the official VS Code webview samples.
  */
-function ensureSamplerWorker(ctx) {
+export function ensureSamplerWorker(ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
@@ -104,7 +104,7 @@ export function sendWorker(ctx, msg) {
   });
 }
 
-export /**
+/**
  * Cancel any in-flight sample requests by terminating the worker
  * and rejecting every pending promise. The main-thread sample
  * cache is preserved, so bindings that finished before the cancel
@@ -114,7 +114,7 @@ export /**
  * ensureSamplerWorker(). Cheap enough that we don't bother
  * keeping a "warm" worker around.
  */
-function cancelAllSampling(ctx) {
+export function cancelAllSampling(ctx) {
   if (ctx.samplerWorker) {
     try { ctx.samplerWorker.terminate(); } catch (_) {}
     ctx.samplerWorker = null;

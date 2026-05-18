@@ -9,6 +9,10 @@
 // info-bar helpers (showNodeInfo, updateHeader, updateBackBtn) live
 // here too — they're only called from the DAG event handlers.
 
+import { updatePlotForBinding } from './render-plot.js';
+import { bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
+import { resolveNodeColor } from './palette.js';
+import { errorsForBinding } from './render-frame.js';
 export function showNodeInfo(ctx, d) {
   var phase = d.phase || 'unknown';
   var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
@@ -540,14 +544,14 @@ export function renderDAG(ctx, data) {
   }
 }
 
-export /**
+/**
  * Re-render the DAG focused on targetName using the cached bindings.
  * If pushHistory is true, the current view is pushed onto the back-
  * button stack first. If targetName is null, falls back to the last
  * binding in document order (the same default the extension ctx.host used
  * before this refactor).
  */
-function focusNode(ctx, targetName, pushHistory) {
+export function focusNode(ctx, targetName, pushHistory) {
   if (!ctx.currentBindings) return;
   // No targetName supplied → prefer keeping the current focus.
   // This is the path used by source-only updates from the host
@@ -601,13 +605,13 @@ function focusNode(ctx, targetName, pushHistory) {
   }
 }
 
-export /**
+/**
  * Render the module-level (multi-root) DAG. Plot pane shows a
  * "click a binding to plot it" message because there's no single
  * focused binding here. Pushes onto ctx.history when requested and
  * the previous view wasn't already the module view.
  */
-function enterModuleView(ctx, pushHistory) {
+export function enterModuleView(ctx, pushHistory) {
   if (!ctx.currentBindings) return;
   var dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
   if (!dagData || dagData.nodes.length === 0) return;

@@ -9,6 +9,12 @@ import { nameSeed } from './orchestration.js';
 import { materialiseConcreteMeasure } from './plot-plan.js';
 import { buildPresetControl } from './render-controls.js';
 
+import { getMeasure, tryGetMeasure } from './engine-facade.js';
+import { activePresetFor } from './overrides.js';
+import { showPlotMessage } from './render-frame.js';
+import { renderConstantRecord } from './render-record.js';
+import { defaultValueForLeafType, esc } from './util.js';
+import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderFixedRecord(ctx, plan) {
   showPlotMessage(ctx, 'Loading…', { hint: true });
   var planForCall = plan;

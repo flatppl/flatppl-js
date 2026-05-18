@@ -4,7 +4,8 @@
 // marginals view); renderCornerGrid is the NxN matrix view
 // (marginals on the diagonal, joint scatters off-diagonal).
 
-export /**
+import { colorForBinding } from './palette.js';
+/**
  * Render the selected axes as a 2D density-strip view: one
  * column per axis, where each column shades by the per-axis
  * marginal density along y. Useful for array-shaped data where
@@ -22,7 +23,9 @@ export /**
  * want each axis's bin grid to align to its own FD-derived
  * edges. Custom render gives that flexibility cheaply.
  */
-function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) {
+import { nameSeed } from './orchestration.js';
+import { listScalarAxes, makeMainThreadPrng } from './util.js';
+export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) {
   hostEl.innerHTML = '';
   // Marginals mode passes the full axis list (no selection cap); we
   // fall back to listScalarAxes for legacy callers.
@@ -197,13 +200,13 @@ function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) {
   });
 }
 
-export /**
+/**
  * Build the corner-plot grid (diagonal marginals + below-diagonal
  * scatters) for the currently-selected axes. ctx.host is the parent
  * div whose contents we replace; it must be a flex/block child
  * with a fixed height so the inner grid expands correctly.
  */
-function renderCornerGrid(ctx, hostEl, measure, bindingName) {
+export function renderCornerGrid(ctx, hostEl, measure, bindingName) {
   hostEl.innerHTML = '';
   var axes = listScalarAxes(measure)
     .filter(function(a) { return ctx.recordSelection.selected.indexOf(a.key) >= 0; });

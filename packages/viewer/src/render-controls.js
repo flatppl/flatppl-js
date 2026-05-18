@@ -5,6 +5,10 @@
 // override per-binding preset values / cartprod ranges, persist them
 // to source, or reset to the source's declared values.
 
+import { computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideFor, setOverrideFor } from './overrides.js';
+import { canPersistActive, canPersistDomain, persistActive, persistDomain } from './persist.js';
+import { makeActionButton } from './render-frame.js';
+import { domainBoundsText, presetValuesText } from './util.js';
 export function buildPresetControl(ctx, plan, onChange) {
   var frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;

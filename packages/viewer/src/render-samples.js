@@ -7,6 +7,11 @@
 
 import { measureIsConstant, renderConstantRecord, renderRecordMarginals } from './render-record.js';
 
+import { colorForBinding } from './palette.js';
+import { complexReBadge, esc, formatComplexScalar, formatScalar } from './util.js';
+import { sendWorker } from './worker.js';
+import { renderPlotFrame, renderTextValue } from './render-frame.js';
+import { plotZoomOptions, samplesAreConstant } from './util.js';
 export function renderArrayStepPlot(ctx, arr) {
   var fg = getComputedStyle(document.body).color || '#ccc';
   var n = arr.length;
@@ -77,7 +82,7 @@ export function renderArrayStepPlot(ctx, arr) {
   });
 }
 
-export /**
+/**
  * Single dispatch entry point for all empirical-measure plots.
  * A measure is just a nullary kernel — so kernel-sample bindings
  * (with substituted inputs) and ordinary measure bindings render
@@ -121,7 +126,7 @@ export /**
  *                      identity comparison without leaking a
  *                      stale plot across binding navigation.
  */
-function renderEmpiricalMeasure(ctx, measure, opts) {
+export function renderEmpiricalMeasure(ctx, measure, opts) {
   var name = opts.name;
   // Multivariate measure (record / tuple / array shapes): route
   // to the corner / 2D-strip renderer.

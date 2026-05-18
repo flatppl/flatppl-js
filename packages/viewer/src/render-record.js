@@ -9,6 +9,10 @@
 
 import { renderCornerGrid, renderDensityStrips } from './render-density.js';
 
+import { showPlotMessage } from './render-frame.js';
+import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
+import { renderPlotFrame, renderTextValue } from './render-frame.js';
+import { listScalarAxes, qualityTooltip, samplesAreConstant } from './util.js';
 export function measureIsConstant(ctx, m) {
   if (!m) return false;
   if (m.fields) {
@@ -197,7 +201,7 @@ export function renderRecordMarginals(ctx, measure, bindingName, extraToolbarCon
   rerenderAll();
 }
 
-export /**
+/**
  * Build the inner controls of the corner-plot toolbar: view-mode
  * toggle on the left, axis (or group) selector to its right, and
  * the kernel-sample preset dropdown (when supplied) further right.
@@ -211,7 +215,7 @@ export /**
  * mode buttons reflect active state and the selector visibility
  * tracks the mode.
  */
-function renderRecordToolbar(ctx, axes, groups, onModeChange, onSelectionChange, extraToolbarControls) {
+export function renderRecordToolbar(ctx, axes, groups, onModeChange, onSelectionChange, extraToolbarControls) {
   var bar = document.createDocumentFragment();
 
   // ---- Mode toggle group ----
@@ -368,14 +372,14 @@ export function renderSampleStats(ctx, measure) {
   return wrap;
 }
 
-export /**
+/**
  * Compact dropdown axis selector for correlations mode. Button
  * shows the count ("Plot axes (3 / 12) ▾"); click opens a
  * popup-anchored panel with a scrollable checkbox list. Outside
  * clicks close it. Cap enforcement (max 4) shows an inline red
  * note in the panel when the user tries to exceed.
  */
-function renderAxisDropdown(ctx, axes, onChange) {
+export function renderAxisDropdown(ctx, axes, onChange) {
   var wrap = document.createElement('div');
   wrap.style.position = 'relative';
   wrap.style.display = 'inline-flex';
@@ -500,13 +504,13 @@ function renderAxisDropdown(ctx, axes, onChange) {
   return wrap;
 }
 
-export /**
+/**
  * Group-level checkbox dropdown for marginals view. Same shape
  * as renderAxisDropdown but operates on group prefixes (obs[1]
  * …obs[10] collapse to a single "obs" entry) and has no
  * selection cap. State lives in ctx.recordSelection.marginalGroups.
  */
-function renderGroupDropdown(ctx, groups, onChange) {
+export function renderGroupDropdown(ctx, groups, onChange) {
   var wrap = document.createElement('div');
   wrap.style.position = 'relative';
   wrap.style.display = 'inline-flex';
