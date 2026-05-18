@@ -323,7 +323,7 @@
       color: #fff;
     }
     /* Phase tag colors. CSS custom properties are set at startup from
-       the JS PALETTE so the in-bar tag and the node fill share one
+       the JS ctx.PALETTE so the in-bar tag and the node fill share one
        source of truth. */
     #info .phase-fixed         { background: var(--phase-fixed);         color: #222; }
     #info .phase-parameterized { background: var(--phase-parameterized); color: #222; }
@@ -510,12 +510,12 @@
       // including viewer.js. Currently expected fields:
       //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
       //                                loaded as a Web Worker.
-      var CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
-      var HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
+      ctx.CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
+      ctx.HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
       // Sampler-worker URL. Used lazily — no worker is spawned until the
       // user picks a binding for which the Plot tab is enabled (a 'draw'
       // of a known distribution with literal params).
-      var SAMPLER_WORKER_URL = CONFIG.samplerWorkerUrl || '';
+      ctx.SAMPLER_WORKER_URL = ctx.CONFIG.samplerWorkerUrl || '';
 
       // Per-mount state container (decomposition Phase 2). Every
       // captured mutable/shared identifier migrates onto `ctx` so the
@@ -551,7 +551,7 @@
     // viridis-style and colourblind-safe. The phase trio reuses the
     // historical draw/input/call hex values so the visual story stays
     // familiar after the shift to phase-driven colouring.
-    var PALETTE = {
+    ctx.PALETTE = {
       phaseStochastic:    '#B39DDB',  // purple
       phaseParameterized: '#4DD0E1',  // teal
       phaseFixed:         '#90A4AE',  // blue-grey
@@ -578,42 +578,42 @@
     // literal in the stylesheet.
     (function bindPaletteToCss() {
       var s = document.documentElement.style;
-      s.setProperty('--phase-stochastic',    PALETTE.phaseStochastic);
-      s.setProperty('--phase-parameterized', PALETTE.phaseParameterized);
-      s.setProperty('--phase-fixed',         PALETTE.phaseFixed);
+      s.setProperty('--phase-stochastic',    ctx.PALETTE.phaseStochastic);
+      s.setProperty('--phase-parameterized', ctx.PALETTE.phaseParameterized);
+      s.setProperty('--phase-fixed',         ctx.PALETTE.phaseFixed);
     })();
 
     // Phase → fill colour for value-producing nodes (draw / call /
     // computed values inside a kernel scope). Used by both the DAG
     // renderer and the legend.
-    var PHASE_COLORS = {
-      stochastic:    PALETTE.phaseStochastic,
-      parameterized: PALETTE.phaseParameterized,
-      fixed:         PALETTE.phaseFixed,
+    ctx.PHASE_COLORS = {
+      stochastic:    ctx.PALETTE.phaseStochastic,
+      parameterized: ctx.PALETTE.phaseParameterized,
+      fixed:         ctx.PALETTE.phaseFixed,
     };
 
     // Stand-alone for the "draw" edge — visually distinct from any
     // node fill so a stochastic boundary reads as an edge, not a fill.
-    var DRAW_EDGE_COLOR = PALETTE.drawEdge;
+    ctx.DRAW_EDGE_COLOR = ctx.PALETTE.drawEdge;
 
     // Type → { color, shape, legend label }. The phase trio (input /
     // draw / call) intentionally reuses PALETTE.phase* so a
     // value-producing node falls back to the matching phase colour
     // when phase metadata is missing.
-    var TYPE_STYLE = {
-      input:       { color: PALETTE.phaseParameterized, shape: 'diamond',         label: 'input (elementof)' },
-      draw:        { color: PALETTE.phaseStochastic,    shape: 'ellipse',         label: 'draw' },
-      call:        { color: PALETTE.phaseFixed,         shape: 'round-rectangle', label: 'call' },
-      lawof:       { color: PALETTE.measure,            shape: 'round-rectangle', label: 'lawof (measure)' },
-      kernelof:    { color: PALETTE.kernel,             shape: 'round-hexagon',   label: 'kernelof (kernel)' },
-      functionof:  { color: PALETTE.fn,                 shape: 'hexagon',         label: 'functionof' },
-      fn:          { color: PALETTE.fn,                 shape: 'hexagon',         label: 'fn' },
-      literal:     { color: PALETTE.phaseFixed,         shape: 'rectangle',       label: 'literal' },
-      likelihood:  { color: PALETTE.likelihood,         shape: 'octagon',         label: 'likelihood' },
-      bayesupdate: { color: PALETTE.bayesupdate,        shape: 'octagon',         label: 'bayesupdate' },
-      module:      { color: PALETTE.module,             shape: 'round-rectangle', label: 'module' },
-      table:       { color: PALETTE.table,              shape: 'round-rectangle', label: 'table' },
-      unknown:     { color: PALETTE.unknown,            shape: 'rectangle',       label: 'unknown' },
+    ctx.TYPE_STYLE = {
+      input:       { color: ctx.PALETTE.phaseParameterized, shape: 'diamond',         label: 'input (elementof)' },
+      draw:        { color: ctx.PALETTE.phaseStochastic,    shape: 'ellipse',         label: 'draw' },
+      call:        { color: ctx.PALETTE.phaseFixed,         shape: 'round-rectangle', label: 'call' },
+      lawof:       { color: ctx.PALETTE.measure,            shape: 'round-rectangle', label: 'lawof (measure)' },
+      kernelof:    { color: ctx.PALETTE.kernel,             shape: 'round-hexagon',   label: 'kernelof (kernel)' },
+      functionof:  { color: ctx.PALETTE.fn,                 shape: 'hexagon',         label: 'functionof' },
+      fn:          { color: ctx.PALETTE.fn,                 shape: 'hexagon',         label: 'fn' },
+      literal:     { color: ctx.PALETTE.phaseFixed,         shape: 'rectangle',       label: 'literal' },
+      likelihood:  { color: ctx.PALETTE.likelihood,         shape: 'octagon',         label: 'likelihood' },
+      bayesupdate: { color: ctx.PALETTE.bayesupdate,        shape: 'octagon',         label: 'bayesupdate' },
+      module:      { color: ctx.PALETTE.module,             shape: 'round-rectangle', label: 'module' },
+      table:       { color: ctx.PALETTE.table,              shape: 'round-rectangle', label: 'table' },
+      unknown:     { color: ctx.PALETTE.unknown,            shape: 'rectangle',       label: 'unknown' },
     };
 
     /**
@@ -624,8 +624,8 @@
      * Decision tree:
      *   kind === 'kernel'         → kernelof teal (overrides type)
      *   kind === 'measure'        → lawof blue   (overrides type)
-     *   type ∈ {'draw', 'call'}   → PHASE_COLORS[phase]   (value node)
-     *   else                      → TYPE_STYLE[type].color (structural)
+     *   type ∈ {'draw', 'call'}   → ctx.PHASE_COLORS[phase]   (value node)
+     *   else                      → ctx.TYPE_STYLE[type].color (structural)
      *
      * Inside a reification bubble, node.phase has already been
      * overridden to the scope-local phase by dag.js's
@@ -633,11 +633,11 @@
      * the main view and parameterized inside a kernel bubble.
      */
     function resolveNodeColor(node) {
-      if (node.kind === 'kernel')  return TYPE_STYLE.kernelof.color;
-      if (node.kind === 'measure') return TYPE_STYLE.lawof.color;
-      var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
+      if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
+      if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
+      var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
       if (node.type === 'draw' || node.type === 'call') {
-        return PHASE_COLORS[node.phase] || ts.color;
+        return ctx.PHASE_COLORS[node.phase] || ts.color;
       }
       return ts.color;
     }
@@ -665,7 +665,7 @@
     // © Microsoft Corporation. Licensed under CC BY 4.0
     // (https://creativecommons.org/licenses/by/4.0/). See
     // packages/viewer/NOTICE.md for full attribution.
-    var CODICON_PATHS = {
+    ctx.CODICON_PATHS = {
       discard: 'M3.00098 2.5C3.00098 2.22386 3.22483 2 3.50098 2C3.77712 2 4.00098 2.22386 4.00098 2.5V6.34262L7.17202 3.17157C8.73412 1.60948 11.2668 1.60948 12.8289 3.17157C14.391 4.73367 14.391 7.26633 12.8289 8.82843L7.80375 13.8536C7.60849 14.0488 7.2919 14.0488 7.09664 13.8536C6.90138 13.6583 6.90138 13.3417 7.09664 13.1464L12.1218 8.12132C13.2933 6.94975 13.2933 5.05025 12.1218 3.87868C10.9502 2.70711 9.0507 2.70711 7.87913 3.87868L4.75781 7H8.50098C8.77712 7 9.00098 7.22386 9.00098 7.5C9.00098 7.77614 8.77712 8 8.50098 8H3.60098C3.26961 8 3.00098 7.73137 3.00098 7.4V2.5Z',
       save: 'M14.414 3.207L12.793 1.586C12.421 1.213 11.905 1 11.379 1H3C1.897 1 1 1.897 1 3V13C1 14.103 1.897 15 3 15H13C14.103 15 15 14.103 15 13V4.621C15 4.095 14.787 3.579 14.414 3.207ZM9 2V3.5C9 3.776 8.776 4 8.5 4H6.5C6.224 4 6 3.776 6 3.5V2H9ZM5 14V9.5C5 9.224 5.224 9 5.5 9H10.5C10.776 9 11 9.224 11 9.5V14H5ZM14 13C14 13.551 13.551 14 13 14H12V9.5C12 8.673 11.327 8 10.5 8H5.5C4.673 8 4 8.673 4 9.5V14H3C2.449 14 2 13.551 2 13V3C2 2.449 2.449 2 3 2H5V3.5C5 4.327 5.673 5 6.5 5H8.5C9.327 5 10 4.327 10 3.5V2H11.379C11.642 2 11.9 2.107 12.086 2.293L13.707 3.914C13.893 4.1 14 4.358 14 4.621V13Z',
       'save-as': 'M5 9.5C5 9.224 5.224 9 5.5 9H10.5C10.738 9 10.929 9.171 10.979 9.394L11.729 8.644C11.458 8.256 11.009 8 10.5 8H5.5C4.673 8 4 8.673 4 9.5V14H3C2.449 14 2 13.551 2 13V3C2 2.449 2.449 2 3 2H5V3.5C5 4.327 5.673 5 6.5 5H8.5C9.327 5 10 4.327 10 3.5V2H11.379C11.642 2 11.9 2.107 12.086 2.293L13.707 3.914C13.893 4.1 14 4.358 14 4.621V7.04C14.143 7.015 14.289 6.997 14.437 6.997C14.629 6.997 14.817 7.023 15 7.064V4.62C15 4.094 14.787 3.578 14.414 3.206L12.793 1.585C12.421 1.212 11.905 0.999001 11.379 0.999001H3C1.897 1 1 1.897 1 3V13C1 14.103 1.897 15 3 15H7.045L7.293 14H5V9.5ZM6 2H9V3.5C9 3.776 8.776 4 8.5 4H6.5C6.224 4 6 3.776 6 3.5V2ZM16 9.559C16 9.764 15.96 9.967 15.882 10.157C15.803 10.346 15.688 10.519 15.543 10.664L11.254 14.951C10.898 15.307 10.452 15.56 9.964 15.682L8.753 15.982C8.651 16.008 8.544 16.006 8.443 15.978C8.342 15.95 8.249 15.896 8.175 15.822C8.101 15.748 8.047 15.655 8.019 15.554C7.991 15.453 7.99 15.346 8.015 15.244L8.315 14.033C8.437 13.544 8.689 13.098 9.045 12.742L13.333 8.455C13.626 8.162 14.023 7.998 14.437 7.998C14.851 7.998 15.248 8.163 15.541 8.455C15.687 8.599 15.802 8.772 15.881 8.961C15.96 9.151 16 9.354 16 9.559Z',
@@ -737,12 +737,12 @@
     // sentinel uses ':' which the analyzer can't produce). Used by
     // updateHeader, updatePlotForBinding, and the back-button to
     // distinguish module view from a single-binding view.
-    var MODULE_TARGET = ':module';
+    ctx.MODULE_TARGET = ':module';
 
     function updateHeader(data) {
       var el = document.getElementById('header-expr');
       // Module view: no per-node target; just label the view.
-      if (ctx.currentState && ctx.currentState.targetName === MODULE_TARGET) {
+      if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
         el.innerHTML = '<span class="target-name">module</span>';
         return;
       }
@@ -875,8 +875,8 @@
             // enters the model.
             selector: 'edge[edgeType = "draw"]',
             style: {
-              'line-color': DRAW_EDGE_COLOR,
-              'target-arrow-color': DRAW_EDGE_COLOR,
+              'line-color': ctx.DRAW_EDGE_COLOR,
+              'target-arrow-color': ctx.DRAW_EDGE_COLOR,
               'width': 2.5,
             }
           },
@@ -987,7 +987,7 @@
 
       ctx.cy.on('tap', function(evt) {
         if (evt.target === ctx.cy) {
-          document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
+          document.getElementById('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
         }
       });
 
@@ -1444,13 +1444,13 @@
         // cross-origin block, etc.).
         var w = null;
         try {
-          w = new Worker(SAMPLER_WORKER_URL);
+          w = new Worker(ctx.SAMPLER_WORKER_URL);
         } catch (e) {
           // continue to blob fallback
           console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:', e && e.message);
         }
         if (!w) {
-          var resp = await fetch(SAMPLER_WORKER_URL);
+          var resp = await fetch(ctx.SAMPLER_WORKER_URL);
           if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status + ' ' + resp.statusText);
           var src = await resp.text();
           var blob = new Blob([src], { type: 'application/javascript' });
@@ -2174,7 +2174,7 @@
         return;
       }
       if (!ctx.currentPlotPlan) {
-        if (ctx.currentState && ctx.currentState.targetName === MODULE_TARGET) {
+        if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
           showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
           return;
         }
@@ -2274,7 +2274,7 @@
      *                     discrete-with-no-analytical (the histogram
      *                     itself is already the empirical pmf)
      *
-     * Both layers (bars + curve) use the focused binding's TYPE_STYLE
+     * Both layers (bars + curve) use the focused binding's ctx.TYPE_STYLE
      * color from the DAG view, so a stochastic 'draw' node plots
      * purple, a measure-alias 'call' node plots grey-blue, etc. Bars
      * sit at low alpha; the line/dots are opaque on top.
@@ -2573,14 +2573,14 @@
 
     /**
      * Resolve a binding's plot color to match the DAG renderer's
-     * choice exactly. The DAG picks color from TYPE_STYLE[node.type]
+     * choice exactly. The DAG picks color from ctx.TYPE_STYLE[node.type]
      * but then overrides it when node.kind says "measure" (lawof
      * blue) or "kernel" (kernelof teal). Without those overrides the
      * plot for a measure-typed binding (theta1_dist, type='call')
      * would draw in grey instead of the blue used in the DAG bubble,
      * breaking the visual link between the two views.
      *
-     * Fall back to TYPE_STYLE[binding.type] when the binding isn't in
+     * Fall back to ctx.TYPE_STYLE[binding.type] when the binding isn't in
      * the current DAG — paths that update the plot independent of
      * the DAG (rare, but possible during config-update reflows).
      */
@@ -4183,7 +4183,7 @@
       b.style.opacity = '0.75';
       b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
         + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
-        + 'aria-hidden="true"><path d="' + CODICON_PATHS[iconKey] + '"/></svg>';
+        + 'aria-hidden="true"><path d="' + ctx.CODICON_PATHS[iconKey] + '"/></svg>';
       b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
       b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
       return b;
@@ -6604,7 +6604,7 @@
       for (var k = 0; k < data.reifications.length; k++) {
         var r = data.reifications[k];
         if (r.kernel.length < 2) continue;
-        if (!TYPE_STYLE[r.type]) continue;
+        if (!ctx.TYPE_STYLE[r.type]) continue;
         // Same colour the bubble's reification node would get — keeps
         // bubble fill, bubble stroke, and node fill in lockstep.
         var bubbleColor = resolveNodeColor(r);
@@ -6668,7 +6668,7 @@
 
       for (var i = 0; i < data.nodes.length; i++) {
         var node = data.nodes[i];
-        var ts = TYPE_STYLE[node.type] || TYPE_STYLE.unknown;
+        var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
 
         // Shape: type-driven (carries the structural info — what *kind*
         // of binding this is). The engine-computed reification kind
@@ -6797,7 +6797,7 @@
           expr: target.expr || '',
         });
       } else {
-        document.getElementById('info').innerHTML = '<span class="hint">' + HINT + '</span>';
+        document.getElementById('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
       }
     }
 
@@ -6899,12 +6899,12 @@
       var dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
       if (!dagData || dagData.nodes.length === 0) return;
 
-      if (pushHistory && ctx.currentState && ctx.currentState.targetName !== MODULE_TARGET) {
+      if (pushHistory && ctx.currentState && ctx.currentState.targetName !== ctx.MODULE_TARGET) {
         ctx.history.push(ctx.currentState);
         if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
       }
 
-      ctx.currentState = { data: dagData, targetName: MODULE_TARGET };
+      ctx.currentState = { data: dagData, targetName: ctx.MODULE_TARGET };
       renderDAG(dagData);
       updateBackBtn();
       // Mirror module-view focus to the host (null = whole module).
@@ -6930,7 +6930,7 @@
       // title — call updatePlotForBinding(null) so the plot pane shows
       // its module-mode placeholder, and tell the host to set a
       // generic title rather than the sentinel string.
-      if (ctx.currentState.targetName === MODULE_TARGET) {
+      if (ctx.currentState.targetName === ctx.MODULE_TARGET) {
         updatePlotForBinding(null);
         if (host.setTitle) host.setTitle('module');
       } else {
