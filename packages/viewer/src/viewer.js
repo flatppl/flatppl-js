@@ -753,6 +753,122 @@
   }
 
 
+
+  /**
+   * Wrap a Philox state in a closure that returns U(0,1) uniforms,
+   * matching the "() => number" callback shape that
+   * empirical.systematicResample / multinomialResample expect.
+   * Used for deterministic main-thread resampling under a
+   * per-binding seed (currently: superpose).
+   *
+   * Same-engine RNG as the worker's sampleN, but instantiated locally
+   * so empirical.js stays dep-free of rng.js — visualPanel does
+   * the wiring at the call site.
+   */
+  function makeMainThreadPrng(seed) {
+    var state = FlatPPLEngine.rng.stateFromKey(seed);
+    return function() {
+      var pair = FlatPPLEngine.rng.nextUniform(state);
+      state = pair[1];
+      return pair[0];
+    };
+  }
+
+  /**
+   * Common echarts zoom config — mouse-wheel + drag zoom on x via
+   * the inside-type dataZoom, plus a top-left toolbox button for
+   * rectangle-select zoom and a reset button. y-axis stays fixed:
+   * zooming probability values alone is rarely useful and the
+   * rectangle-select would otherwise need a second click to reset
+   * each axis.
+   *
+   * filterMode 'none' keeps out-of-window data rendered (just
+   * clipped) so panning is smooth.
+   *
+   * Returned fresh each call so the caller can pass to setOption.
+   */
+  function plotZoomOptions(fg) {
+    return {
+      dataZoom: [
+        { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+      ],
+      toolbox: {
+        show: true,
+        left: 12, top: 4,
+        itemSize: 14,
+        iconStyle: { borderColor: fg, opacity: 0.55 },
+        emphasis: { iconStyle: { borderColor: fg, opacity: 1 } },
+        feature: {
+          dataZoom: {
+            yAxisIndex: 'none',
+            title: { zoom: 'Zoom rectangle', back: 'Reset zoom' },
+          },
+          restore: { title: 'Reset' },
+        },
+      },
+    };
+  }
+
+  /**
+   * Enumerate the plottable scalar leaves of a multivariate
+   * EmpiricalMeasure, with display labels and synthetic per-axis
+   * sample arrays.
+   *
+   *   - record fields with scalar samples → axis with the field name.
+   *   - record fields with array samples → one axis per array slot,
+   *     labelled "field[i]" (1-indexed per spec §03 line 148);
+   *     the per-axis samples array is a strided extract from the
+   *     atom-major buffer.
+   *   - top-level array measures → one axis per slot, labelled
+   *     "[i]" (the binding name itself shows up in the bubble).
+   *
+   * Strided extracts allocate fresh Float64Arrays — small (~N
+   * elements) so cheap; gives downstream code the same scalar-shape
+   * Float64Array regardless of whether the source was a flat record
+   * field or a column of an iid array.
+   */
+  function listScalarAxes(measure) {
+    var out = [];
+    function walk(m, prefix) {
+      if (m.fields) {
+        var ks = Object.keys(m.fields);
+        for (var i = 0; i < ks.length; i++) {
+          walk(m.fields[ks[i]], prefix ? (prefix + '.' + ks[i]) : ks[i]);
+        }
+        return;
+      }
+      if (m.shape === 'tuple' && Array.isArray(m.elems)) {
+        // Positional analogue of record. 1-indexed component
+        // labels per FlatPPL convention (xs[1], xs[2], ...).
+        for (var ti = 0; ti < m.elems.length; ti++) {
+          var label = (prefix ? prefix : '') + '[' + (ti + 1) + ']';
+          walk(m.elems[ti], label);
+        }
+        return;
+      }
+      if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
+        // Total inner stride per atom = prod(dims).
+        var k = m.dims.reduce(function(p, n) { return p * n; }, 1);
+        var N = m.samples.length / k;
+        for (var slot = 0; slot < k; slot++) {
+          // Stride-extract slot j across atoms.
+          var col = new Float64Array(N);
+          for (var i = 0; i < N; i++) col[i] = m.samples[i * k + slot];
+          // 1-indexed labels per FlatPPL convention.
+          var label = (prefix ? prefix : '') + '[' + (slot + 1) + ']';
+          out.push({ key: label, label: label, samples: col });
+        }
+        return;
+      }
+      if (m.samples instanceof Float64Array) {
+        // Plain scalar leaf.
+        out.push({ key: prefix, label: prefix, samples: m.samples });
+      }
+    }
+    walk(measure, '');
+    return out;
+  }
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
 
@@ -1598,25 +1714,6 @@
       return (h ^ ctx.rootSeed) >>> 0;
     }
 
-    /**
-     * Wrap a Philox state in a closure that returns U(0,1) uniforms,
-     * matching the "() => number" callback shape that
-     * empirical.systematicResample / multinomialResample expect.
-     * Used for deterministic main-thread resampling under a
-     * per-binding seed (currently: superpose).
-     *
-     * Same-engine RNG as the worker's sampleN, but instantiated locally
-     * so empirical.js stays dep-free of rng.js — visualPanel does
-     * the wiring at the call site.
-     */
-    function makeMainThreadPrng(seed) {
-      var state = FlatPPLEngine.rng.stateFromKey(seed);
-      return function() {
-        var pair = FlatPPLEngine.rng.nextUniform(state);
-        state = pair[1];
-        return pair[0];
-      };
-    }
 
     /**
      * Recursively materialise the empirical measure for a binding,
@@ -2730,40 +2827,6 @@
       return resolveNodeColor({ type: (binding && binding.type) || 'draw' });
     }
 
-    /**
-     * Common echarts zoom config — mouse-wheel + drag zoom on x via
-     * the inside-type dataZoom, plus a top-left toolbox button for
-     * rectangle-select zoom and a reset button. y-axis stays fixed:
-     * zooming probability values alone is rarely useful and the
-     * rectangle-select would otherwise need a second click to reset
-     * each axis.
-     *
-     * filterMode 'none' keeps out-of-window data rendered (just
-     * clipped) so panning is smooth.
-     *
-     * Returned fresh each call so the caller can pass to setOption.
-     */
-    function plotZoomOptions(fg) {
-      return {
-        dataZoom: [
-          { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-        ],
-        toolbox: {
-          show: true,
-          left: 12, top: 4,
-          itemSize: 14,
-          iconStyle: { borderColor: fg, opacity: 0.55 },
-          emphasis: { iconStyle: { borderColor: fg, opacity: 1 } },
-          feature: {
-            dataZoom: {
-              yAxisIndex: 'none',
-              title: { zoom: 'Zoom rectangle', back: 'Reset zoom' },
-            },
-            restore: { title: 'Reset' },
-          },
-        },
-      };
-    }
 
     /**
      * Render a fixed-length array as an index→value step plot. Used
@@ -2786,65 +2849,6 @@
     var recordSelection = null;
     var CORRELATIONS_MAX_AXES = 4;
 
-    /**
-     * Enumerate the plottable scalar leaves of a multivariate
-     * EmpiricalMeasure, with display labels and synthetic per-axis
-     * sample arrays.
-     *
-     *   - record fields with scalar samples → axis with the field name.
-     *   - record fields with array samples → one axis per array slot,
-     *     labelled "field[i]" (1-indexed per spec §03 line 148);
-     *     the per-axis samples array is a strided extract from the
-     *     atom-major buffer.
-     *   - top-level array measures → one axis per slot, labelled
-     *     "[i]" (the binding name itself shows up in the bubble).
-     *
-     * Strided extracts allocate fresh Float64Arrays — small (~N
-     * elements) so cheap; gives downstream code the same scalar-shape
-     * Float64Array regardless of whether the source was a flat record
-     * field or a column of an iid array.
-     */
-    function listScalarAxes(measure) {
-      var out = [];
-      function walk(m, prefix) {
-        if (m.fields) {
-          var ks = Object.keys(m.fields);
-          for (var i = 0; i < ks.length; i++) {
-            walk(m.fields[ks[i]], prefix ? (prefix + '.' + ks[i]) : ks[i]);
-          }
-          return;
-        }
-        if (m.shape === 'tuple' && Array.isArray(m.elems)) {
-          // Positional analogue of record. 1-indexed component
-          // labels per FlatPPL convention (xs[1], xs[2], ...).
-          for (var ti = 0; ti < m.elems.length; ti++) {
-            var label = (prefix ? prefix : '') + '[' + (ti + 1) + ']';
-            walk(m.elems[ti], label);
-          }
-          return;
-        }
-        if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
-          // Total inner stride per atom = prod(dims).
-          var k = m.dims.reduce(function(p, n) { return p * n; }, 1);
-          var N = m.samples.length / k;
-          for (var slot = 0; slot < k; slot++) {
-            // Stride-extract slot j across atoms.
-            var col = new Float64Array(N);
-            for (var i = 0; i < N; i++) col[i] = m.samples[i * k + slot];
-            // 1-indexed labels per FlatPPL convention.
-            var label = (prefix ? prefix : '') + '[' + (slot + 1) + ']';
-            out.push({ key: label, label: label, samples: col });
-          }
-          return;
-        }
-        if (m.samples instanceof Float64Array) {
-          // Plain scalar leaf.
-          out.push({ key: prefix, label: prefix, samples: m.samples });
-        }
-      }
-      walk(measure, '');
-      return out;
-    }
 
     /**
      * Render a record-shaped EmpiricalMeasure as a corner plot,
