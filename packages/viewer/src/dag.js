@@ -1,0 +1,631 @@
+// @flatppl/viewer — DAG (cytoscape) layer (Phase 4e).
+//
+// initCy builds the cytoscape instance + style stanzas + tap/dbltap/
+// hover/zoom handlers; renderDAG repopulates from a parsed module's
+// data; focusNode / enterModuleView are the navigation entry points
+// (drill into sub-DAGs / back to the module overview);
+// drawReificationLassos draws the bubblesets around reification
+// groups; teardownBubbles tears them down on free-event. The small
+// info-bar helpers (showNodeInfo, updateHeader, updateBackBtn) live
+// here too — they're only called from the DAG event handlers.
+
+export function showNodeInfo(ctx, d) {
+  var phase = d.phase || 'unknown';
+  var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
+  var unsupportedRow = '';
+  if (d.unsupported) {
+    var msg = 'disintegration unresolved: ' + esc(d.unsupportedReason || '');
+    if (d.unsupportedDetail) msg += ' — ' + esc(d.unsupportedDetail);
+    unsupportedRow = '<div class="expr" style="color:#FF8A65;">' + msg + '</div>';
+  }
+  // Type-error row(s). Drawn in the same red as the node border so
+  // the visual link reads at a glance. Each diagnostic gets its own
+  // line — a single binding can pick up several mismatches if its
+  // RHS has multiple bad arg positions.
+  var errorRow = '';
+  var errors = errorsForBinding(ctx, d.id);
+  if (errors && errors.length > 0) {
+    for (var i = 0; i < errors.length; i++) {
+      errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
+    }
+  }
+  // Construction kind (binding.type — draw, lawof, call, …) is
+  // intentionally omitted: the expression always starts with the
+  // operator, and the DAG node's shape + color already encodes
+  // the same axis. The inferred FlatPIR type/shape carries
+  // strictly richer information (structural result type) and
+  // takes that pill's slot.
+  var inferTag = d.inferredType
+    ? '<span class="infer">' + esc(d.inferredType) + '</span>'
+    : '';
+  document.getElementById('info').innerHTML =
+    '<div class="row"><span class="name">' + esc(d.label) + '</span>'
+    + phaseTag
+    + inferTag + '</div>'
+    + '<div class="expr">' + esc(d.expr) + '</div>'
+    + unsupportedRow
+    + errorRow;
+}
+
+export function updateHeader(ctx, data) {
+  var el = document.getElementById('header-expr');
+  // Module view: no per-node target; just label the view.
+  if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
+    el.innerHTML = '<span class="target-name">module</span>';
+    return;
+  }
+  var target = null;
+  for (var i = 0; i < data.nodes.length; i++) {
+    if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
+  }
+  if (!target) { el.innerHTML = ''; return; }
+  var name = target.label || target.id;
+  var expr = truncateExpr(target.expr);
+  el.innerHTML = '<span class="target-name">' + esc(name) + '</span>'
+    + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
+}
+
+export function updateBackBtn(ctx) {
+  document.getElementById('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
+}
+
+export function teardownBubbles(ctx) {
+  if (!ctx.bb) return;
+  ctx.bb.getPaths().forEach(function(p) {
+    p.update = function() {};
+    ctx.bb.removePath(p);
+  });
+  ctx.cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
+}
+
+export function initCy(ctx) {
+  ctx.cy = cytoscape({
+    container: document.getElementById('cy'),
+    style: [
+      {
+        selector: 'node',
+        style: {
+          'label': 'data(label)',
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'font-size': '13px',
+          'color': '#333',
+          'background-color': 'data(color)',
+          'shape': 'data(shape)',
+          'width': 'data(width)',
+          'height': 36,
+          'border-width': 2,
+          'border-color': '#888',
+        }
+      },
+      {
+        // Reification anchor nodes — bindings that head a
+        // reification group (lawof / functionof / kernelof / fn
+        // with internal kernel members). They sit at the entrance
+        // of their bubble; the translucent fill + same-color
+        // border read as belonging to the bubble rather than
+        // floating inside it.
+        //
+        // Selecting on the engine-computed isReifAnchor flag
+        // (rather than nodeType alone) excludes synthesized
+        // measure bindings that happen to have type=lawof but no
+        // visible bubble (e.g. prior2 = lawof(disintegrate(…))
+        // where disintegrate produces a closed-form rewrite, no
+        // new scope to render). Those fall through to the default
+        // solid fill — same visual treatment as joint_model and
+        // other measure-producing operations without a bubble.
+        selector: 'node[?isReifAnchor]',
+        style: {
+          'background-color': 'data(color)',
+          'background-opacity': 0.18,
+          'border-color': 'data(color)',
+          'border-width': 1.5,
+          'color': 'data(color)',
+        }
+      },
+      {
+        selector: 'node[?isBoundary]',
+        style: {
+          'border-color': '#FFD600',
+          'border-width': 3,
+          'border-style': 'dashed',
+        }
+      },
+      {
+        // Disintegration result whose Plan came back Unsupported —
+        // the trace through it is the user's literal source, not a
+        // structural decomposition. Dotted orange border distinguishes
+        // it from boundary inputs (dashed yellow) and target (solid blue).
+        selector: 'node[?unsupported]',
+        style: {
+          'border-color': '#FF8A65',
+          'border-width': 3,
+          'border-style': 'dotted',
+        }
+      },
+      {
+        // Bindings with analyzer-level error diagnostics (typeinfer
+        // mismatch, undefined ref, etc.) get a solid red border.
+        // Distinct from the dashed yellow boundary and dotted orange
+        // unsupported markers so the three semantic signals don't
+        // collide visually.
+        selector: 'node[?hasError]',
+        style: {
+          'border-color': '#E57373',
+          'border-width': 3,
+          'border-style': 'solid',
+        }
+      },
+      {
+        selector: 'node[?isTarget]',
+        style: {
+          'border-color': '#1565C0',
+          'border-width': 4,
+        }
+      },
+      {
+        selector: 'edge',
+        style: {
+          'width': 2,
+          'line-color': '#999',
+          'target-arrow-color': '#999',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'arrow-scale': 1.0,
+        }
+      },
+      {
+        selector: 'edge[edgeType = "call"]',
+        style: {
+          'line-style': 'dashed',
+          'line-dash-pattern': [6, 4],
+          'line-color': '#bbb',
+          'target-arrow-color': '#bbb',
+          'width': 1.5,
+        }
+      },
+      {
+        // Draw edges: the boundary between deterministic and
+        // stochastic. Solid line in a darker purple than the
+        // node fill so it reads boldly as a line; thicker than
+        // dataflow edges so the eye lands on where stochasticity
+        // enters the model.
+        selector: 'edge[edgeType = "draw"]',
+        style: {
+          'line-color': ctx.DRAW_EDGE_COLOR,
+          'target-arrow-color': ctx.DRAW_EDGE_COLOR,
+          'width': 2.5,
+        }
+      },
+      {
+        // Hidden edges — present so dagre uses them for layout, but
+        // not rendered (the enclosing bubble conveys the relation).
+        selector: 'edge[?hidden]',
+        style: {
+          'visibility': 'hidden',
+        }
+      },
+      {
+        // Tether: faint connection from a reified value to its
+        // reification node. Same kernel-internal flow as the hidden
+        // edges, but drawn so you can see what is being reified.
+        // Labeled with the reification keyword (lawof / functionof /
+        // kernelof / fn) so the operation is legible without having
+        // to read the target node.
+        selector: 'edge[edgeType = "tether"]',
+        style: {
+          'line-color': function(ele) { return ele.target().data('color') || '#aaa'; },
+          'opacity': 0.6,
+          'width': 1.5,
+          'target-arrow-shape': 'none',
+          'curve-style': 'straight',
+          'label': 'data(tetherLabel)',
+          'font-size': '10px',
+          'font-style': 'italic',
+          'color': function(ele) { return ele.target().data('color') || '#aaa'; },
+          // Full text opacity overrides the edge's 0.6 — the line stays
+          // faint, the label reads as bright as a node label.
+          'text-opacity': 1,
+          // Center the label on the line and let an opaque background
+          // pad visually break the line at the label — the tether
+          // appears to connect into the lawof/kernelof/… box on both
+          // sides, like a labeled link in an electrical schematic.
+          // Literal hex (not a CSS var) — cytoscape draws on HTML canvas
+          // and cannot resolve "var(--name)" values, so a CSS variable
+          // would silently fall back to a transparent background and
+          // let the line show through.
+          'text-rotation': 'autorotate',
+          'text-background-color': '#1e1e1e',
+          'text-background-opacity': 1,
+          'text-background-padding': '2px',
+          'text-background-shape': 'roundrectangle',
+          'text-border-width': 1,
+          'text-border-color': function(ele) { return ele.target().data('color') || '#aaa'; },
+          'text-border-opacity': 0.6,
+        }
+      },
+      {
+        selector: 'node:selected',
+        style: {
+          'border-color': '#2196F3',
+          'border-width': 3,
+          'overlay-opacity': 0,
+        }
+      },
+    ],
+    elements: [],
+    layout: { name: 'preset' },
+    wheelSensitivity: 2,
+  });
+
+  if (typeof ctx.cy.bubbleSets === 'function') {
+    // bubblesets uses one scratch key per cytoscape node; when paths
+    // share nodes (e.g. theta1 belongs to both prior and forward_kernel),
+    // their cached geometry stomps on each other and one path goes empty
+    // on update. Workaround: tear down and rebuild all paths on drag
+    // release, rAF-batched. Updates skipped during drag for snappiness.
+    ctx.bb = ctx.cy.bubbleSets({ interactive: false });
+    var bbRedrawScheduled = false;
+    ctx.cy.on('free', 'node', function() {
+      if (!ctx.bb || bbRedrawScheduled || !ctx.currentState) return;
+      bbRedrawScheduled = true;
+      requestAnimationFrame(function() {
+        bbRedrawScheduled = false;
+        if (ctx.currentState) drawReificationLassos(ctx, ctx.currentState.data);
+      });
+    });
+  }
+
+  // Ctrl/Cmd+click: jump to source.
+  // Plain click: select the node — info bar updates AND the plot
+  // panel re-targets to this binding. The plot follows the
+  // selection rather than the DAG's terminal target so users can
+  // explore the graph node-by-node and read each binding's
+  // distribution in place.
+  ctx.cy.on('tap', 'node', function(evt) {
+    var oe = evt.originalEvent;
+    if (oe && (oe.ctrlKey || oe.metaKey)) {
+      var line = evt.target.data('line');
+      if (line >= 0) {
+        if (ctx.host.revealSourceLine) ctx.host.revealSourceLine(line);
+      }
+      return;
+    }
+    var d = evt.target.data();
+    showNodeInfo(ctx, d);
+    // Always re-target the plot to whatever the user clicked. For
+    // synthetic nodes (anonymous inline expressions, placeholders,
+    // holes — recognised by ':' in the id) there's no binding to
+    // sample, so updatePlotForBinding ends up rendering a
+    // "Not plottable" placeholder. Either way the plot reflects
+    // the current selection rather than a stale earlier focus.
+    updatePlotForBinding(ctx, d.id);
+  });
+
+  ctx.cy.on('tap', function(evt) {
+    if (evt.target === ctx.cy) {
+      document.getElementById('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
+    }
+  });
+
+  // Double-click: drill into node's sub-DAG. Handled locally — the
+  // webview owns the parsed bindings and recomputes the sub-DAG itself
+  // (no host round-trip). Title sync to the editor still goes via a
+  // postMessage to the host since the title is on the VS Code panel.
+  ctx.cy.on('dbltap', 'node', function(evt) {
+    var nodeId = evt.target.data('id');
+    // Don't drill into synthetic nodes (placeholder/hole inputs).
+    if (nodeId.indexOf(':') !== -1) return;
+    focusNode(ctx, nodeId, /* pushHistory */ true);
+    if (ctx.host.setTitle) ctx.host.setTitle(nodeId);
+  });
+
+  var tip = document.getElementById('tooltip');
+  ctx.cy.on('mouseover', 'node', function(evt) {
+    var d = evt.target.data();
+    var expr = d.expr || '';
+    if (!expr) return;
+    tip.textContent = d.label ? (d.label + ' = ' + expr) : expr;
+    tip.style.display = 'block';
+    var pos = evt.renderedPosition;
+    var cRect = document.getElementById('cy').getBoundingClientRect();
+    var tx = pos.x + cRect.left + 12;
+    var ty = pos.y + cRect.top - 30;
+    if (tx + tip.offsetWidth > cRect.right - 8) tx = cRect.right - tip.offsetWidth - 8;
+    if (ty < cRect.top + 4) ty = pos.y + cRect.top + 16;
+    tip.style.left = tx + 'px';
+    tip.style.top = ty + 'px';
+  });
+  ctx.cy.on('mouseout', 'node', function() {
+    tip.style.display = 'none';
+  });
+  ctx.cy.on('viewport', function() {
+    tip.style.display = 'none';
+  });
+}
+
+export function drawReificationLassos(ctx, data) {
+  if (!ctx.bb || !data.reifications) return;
+  teardownBubbles(ctx);
+
+  for (var k = 0; k < data.reifications.length; k++) {
+    var r = data.reifications[k];
+    if (r.kernel.length < 2) continue;
+    if (!ctx.TYPE_STYLE[r.type]) continue;
+    // Same colour the bubble's reification node would get — keeps
+    // bubble fill, bubble stroke, and node fill in lockstep.
+    var bubbleColor = resolveNodeColor(ctx, r);
+
+    var memberIds = bubbleMemberIds(r, data.reifications);
+    var nodes = ctx.cy.collection();
+    for (var memId in memberIds) {
+      nodes = nodes.union(ctx.cy.getElementById(memId));
+    }
+    // Hidden edges (visibility:hidden) can return undefined endpoints,
+    // which silently corrupts bubblesets' potential field — exclude.
+    var edges = ctx.cy.edges().filter(function(e) {
+      return nodes.contains(e.source())
+        && nodes.contains(e.target())
+        && !e.data('hidden');
+    });
+    var avoid = ctx.cy.nodes().difference(nodes);
+
+    ctx.bb.addPath(nodes, edges, avoid, {
+      // virtualEdges: connect spatially-disconnected member groups via
+      // routed connectors. Required for kernels spread across the
+      // canvas — marching squares only traces one component per call.
+      virtualEdges: true,
+      style: {
+        fill: hexToRgba(bubbleColor, 0.12),
+        stroke: bubbleColor,
+        strokeWidth: '1.5px',
+        strokeOpacity: '0.7',
+      },
+    });
+  }
+}
+
+export function renderDAG(ctx, data) {
+  if (!ctx.cy) initCy(ctx);
+  updateHeader(ctx, data);
+
+  var elements = [];
+
+  // Reification anchor names — bindings that head a reification
+  // group (i.e. spawn a bubble with internal kernel members).
+  // Used to gate the "hollow fill" cytoscape style: only nodes
+  // that actually anchor a visible bubble get the translucent
+  // treatment, so synthesized bindings like prior2 =
+  // lawof(disintegrate(...)) (no internal scope, no bubble
+  // drawn) render with the default solid measure style.
+  var reifAnchorNames = {};
+  if (data.reifications) {
+    for (var ra = 0; ra < data.reifications.length; ra++) {
+      reifAnchorNames[data.reifications[ra].name] = true;
+    }
+  }
+
+  for (var i = 0; i < data.nodes.length; i++) {
+    var node = data.nodes[i];
+    var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
+
+    // Shape: type-driven (carries the structural info — what *kind*
+    // of binding this is). The engine-computed reification kind
+    // overrides for "functionof acting on a measure → render as a
+    // kernel" so the user sees a kernel regardless of which
+    // keyword they wrote.
+    var shape = ts.shape;
+    if (node.kind === 'kernel')      shape = 'round-hexagon';
+    else if (node.kind === 'measure') shape = 'round-rectangle';
+
+    var color = resolveNodeColor(ctx, node);
+    // Anonymous nodes (inline-expression targets) have label === ''
+    // deliberately and show their expression on hover only. Others
+    // fall back to their id.
+    var displayLabel = node.label === '' ? '' : (node.label || node.id);
+    var width = displayLabel === ''
+      ? 60
+      : Math.max(displayLabel.length * 9 + 24, 60);
+    elements.push({
+      group: 'nodes',
+      data: {
+        id: node.id,
+        label: displayLabel,
+        color: color,
+        shape: shape,
+        nodeType: node.type,
+        phase: node.phase || '',
+        expr: node.expr || '',
+        line: node.line != null ? node.line : -1,
+        isBoundary: node.isBoundary || false,
+        isTarget: node.isTarget || false,
+        unsupported: !!node.unsupported,
+        unsupportedReason: node.unsupportedReason || '',
+        unsupportedDetail: node.unsupportedDetail || '',
+        inferredType: node.inferredType || '',
+        hasError: !!(node.errors && node.errors.length > 0),
+        isReifAnchor: !!reifAnchorNames[node.id],
+        width: width,
+      },
+    });
+  }
+
+  // For edges entering a reification node from inside its bubble:
+  //   - if source is one of the reification's targets (the value being
+  //     reified): keep visible but render as a faint "tether"
+  //   - else (boundary arg or other kernel member): fully hide; the
+  //     bubble already conveys that flow. Edge is kept in cy so dagre
+  //     uses it for layout.
+  var reifMembers = {}; // reifName -> {memberId: true}
+  var reifTargets = {}; // reifName -> {targetId: true}
+  if (data.reifications) {
+    for (var ri = 0; ri < data.reifications.length; ri++) {
+      var rf = data.reifications[ri];
+      reifMembers[rf.name] = {};
+      for (var mi = 0; mi < rf.kernel.length; mi++) reifMembers[rf.name][rf.kernel[mi]] = true;
+      reifTargets[rf.name] = {};
+      var ts2 = rf.targets || [];
+      for (var ti = 0; ti < ts2.length; ti++) reifTargets[rf.name][ts2[ti]] = true;
+    }
+  }
+
+  // Map binding name -> binding type, used to label tether edges with
+  // the reification keyword (lawof / functionof / kernelof / fn).
+  var typeByName = {};
+  for (var ni = 0; ni < data.nodes.length; ni++) {
+    typeByName[data.nodes[ni].id] = data.nodes[ni].type;
+  }
+
+  for (var j = 0; j < data.edges.length; j++) {
+    var edge = data.edges[j];
+    var edgeType = edge.edgeType || 'data';
+    var hidden = false;
+    var membersForTarget = reifMembers[edge.target];
+    if (membersForTarget && membersForTarget[edge.source] && edge.source !== edge.target) {
+      if (reifTargets[edge.target] && reifTargets[edge.target][edge.source]) {
+        edgeType = 'tether';
+      } else {
+        hidden = true;
+      }
+    }
+    var tetherLabel = '';
+    if (edgeType === 'tether') {
+      var t = typeByName[edge.target];
+      if (t === 'lawof' || t === 'functionof' || t === 'kernelof' || t === 'fn') {
+        tetherLabel = t;
+      }
+    }
+    elements.push({
+      group: 'edges',
+      data: {
+        source: edge.source,
+        target: edge.target,
+        edgeType: edgeType,
+        hidden: hidden,
+        tetherLabel: tetherLabel,
+      },
+    });
+  }
+
+  // Tear down old bubble paths BEFORE detaching elements so we can
+  // clear scratch on still-attached cytoscape elements.
+  teardownBubbles(ctx);
+  ctx.cy.elements().remove();
+  ctx.cy.add(elements);
+
+  ctx.cy.layout({
+    name: 'dagre',
+    rankDir: 'TB',
+    nodeSep: 40,
+    rankSep: 55,
+    padding: 30,
+    animate: false,
+  }).run();
+
+  ctx.cy.fit(undefined, 40);
+  drawReificationLassos(ctx, data);
+
+  // Show details for the target node automatically (the cursor is already
+  // on it in the source). Falls back to the hint if no target is present.
+  var target = data.nodes.find(function(n) { return n.isTarget; });
+  if (target) {
+    showNodeInfo(ctx, {
+      label: target.label || target.id,
+      nodeType: target.type,
+      phase: target.phase || '',
+      expr: target.expr || '',
+    });
+  } else {
+    document.getElementById('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
+  }
+}
+
+export /**
+ * Re-render the DAG focused on targetName using the cached bindings.
+ * If pushHistory is true, the current view is pushed onto the back-
+ * button stack first. If targetName is null, falls back to the last
+ * binding in document order (the same default the extension ctx.host used
+ * before this refactor).
+ */
+function focusNode(ctx, targetName, pushHistory) {
+  if (!ctx.currentBindings) return;
+  // No targetName supplied → prefer keeping the current focus.
+  // This is the path used by source-only updates from the host
+  // (the user is editing the RHS of the already-shown binding —
+  // they don't want their place reset to "last binding"). Falls
+  // through to the last binding when there's no prior focus or
+  // the focused binding was deleted by the edit.
+  if (!targetName) {
+    if (ctx.currentState && ctx.currentBindings.has(ctx.currentState.targetName)) {
+      targetName = ctx.currentState.targetName;
+    } else {
+      var allNames = [];
+      ctx.currentBindings.forEach(function(_b, name) { allNames.push(name); });
+      if (allNames.length === 0) return;
+      targetName = allNames[allNames.length - 1];
+    }
+  }
+  var dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName);
+  if (!dagData || dagData.nodes.length === 0) return;
+
+  // History grows only when (a) the caller asked us to push, and
+  // (b) the target actually changed from what's currently shown.
+  //   - cursor moves / ctrl-click / drill-down → push (target moved)
+  //   - source-only updates (RHS edits) → no-op (target preserved)
+  //   - same-target refocus → no-op
+  // Capped at HISTORY_CAP entries to bound memory: each entry holds
+  // a sub-DAG's nodes + edges (~few KB), so a few hundred entries
+  // is plenty for navigation but well below any pressure point. On
+  // overflow we drop the oldest entry (FIFO trim) — going way back
+  // is rare enough that this is the right trade-off.
+  if (pushHistory && ctx.currentState && ctx.currentState.targetName !== targetName) {
+    ctx.history.push(ctx.currentState);
+    if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
+  }
+
+  ctx.currentState = { data: dagData, targetName: targetName };
+  renderDAG(ctx, dagData);
+  updateBackBtn(ctx);
+  updatePlotForBinding(ctx, targetName);
+  // Notify the host so any URL / panel state stays in sync with
+  // the viewer's actual focus. Internal navigations (DAG node
+  // clicks, double-clicks, "show whole module" toolbar) used to
+  // diverge from the host's recorded target, which then leaked
+  // back into the viewer when the host pushed a fresh
+  // sourceUpdate carrying its (stale) target — e.g. typing in
+  // an editor triggered a debounced update that yanked focus
+  // back to a previous binding. With this call, host and viewer
+  // share one target.
+  if (ctx.host && typeof ctx.host.setTarget === 'function') {
+    try { ctx.host.setTarget(targetName); } catch (_) {}
+  }
+}
+
+export /**
+ * Render the module-level (multi-root) DAG. Plot pane shows a
+ * "click a binding to plot it" message because there's no single
+ * focused binding here. Pushes onto ctx.history when requested and
+ * the previous view wasn't already the module view.
+ */
+function enterModuleView(ctx, pushHistory) {
+  if (!ctx.currentBindings) return;
+  var dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
+  if (!dagData || dagData.nodes.length === 0) return;
+
+  if (pushHistory && ctx.currentState && ctx.currentState.targetName !== ctx.MODULE_TARGET) {
+    ctx.history.push(ctx.currentState);
+    if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
+  }
+
+  ctx.currentState = { data: dagData, targetName: ctx.MODULE_TARGET };
+  renderDAG(ctx, dagData);
+  updateBackBtn(ctx);
+  // Mirror module-view focus to the host (null = whole module).
+  if (ctx.host && typeof ctx.host.setTarget === 'function') {
+    try { ctx.host.setTarget(null); } catch (_) {}
+  }
+  // No specific binding to plot in module view. Pass null so the
+  // Plot panel renders its placeholder; renderPlotForCurrent
+  // recognizes module mode and tailors the message.
+  updatePlotForBinding(ctx, null);
+}
