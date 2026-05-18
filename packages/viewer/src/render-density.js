@@ -25,6 +25,7 @@ import { colorForBinding } from './palette.js';
  */
 import { nameSeed } from './orchestration.js';
 import { listScalarAxes, makeMainThreadPrng } from './util.js';
+import { formatScalar } from './util.js';
 export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) {
   hostEl.innerHTML = '';
   // Marginals mode passes the full axis list (no selection cap); we
