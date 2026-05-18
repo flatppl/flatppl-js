@@ -1148,7 +1148,7 @@
     ctx.REJECTION_BUDGET = 1000;
 
     function rebuildDerivations() {
-      if (!currentBindings) {
+      if (!ctx.currentBindings) {
         ctx.derivationsState = null;
         ctx.measureCache = new Map();
         ctx.histogramCache = new Map();
@@ -1156,7 +1156,7 @@
         return;
       }
       try {
-        ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(currentBindings);
+        ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(ctx.currentBindings);
         // Surface classification diagnostics instead of letting a
         // silently-dropped binding turn into a confusing plot-time
         // error far from its cause. buildDerivations only emits the
@@ -1190,7 +1190,7 @@
       //     prunes the override automatically.
       //   - If the override is empty after pruning, retire it.
       ctx.presetOverrides.forEach(function(entry, name) {
-        var b = currentBindings.get(name);
+        var b = ctx.currentBindings.get(name);
         var curValues = null;
         // analyzer.classifyStatement only returns 'literal' for
         // primitive literal RHS (NumberLiteral etc.); record(...)
@@ -1255,7 +1255,7 @@
       //     unbounded source.
       //   - If the override is empty after pruning, retire it.
       ctx.domainOverrides.forEach(function(entry, name) {
-        var b = currentBindings.get(name);
+        var b = ctx.currentBindings.get(name);
         var sourceKwargs = null;
         var sourceIntervals = null;
         if (b && b.node && b.node.value
@@ -1629,9 +1629,9 @@
             paramTypes.set(sig.inputs[ii].paramName,
                            sig.inputs[ii].type || { kind: 'any' });
           }
-          var specOutType = sig.body && currentLoweredModule
+          var specOutType = sig.body && ctx.currentLoweredModule
             ? FlatPPLEngine.typeinfer.inferExprInScope(
-                currentLoweredModule, sig.body, paramTypes)
+                ctx.currentLoweredModule, sig.body, paramTypes)
             : (sig.output && sig.output.type) || null;
           outputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(specOutType);
         } catch (_) {
@@ -1822,9 +1822,9 @@
       // function bindings, etc.) resolveMeasureAlias returns null
       // and we fall through to the regular dispatch below.
       var sourceName = resolveMeasureAlias(name, ctx.derivationsState.derivations,
-                                           currentBindings);
+                                           ctx.currentBindings);
       if (sourceName && sourceName !== name) {
-        var sourceBinding = currentBindings.get(sourceName);
+        var sourceBinding = ctx.currentBindings.get(sourceName);
         if (sourceBinding) {
           var sourcePlan = buildPlotPlan(sourceBinding);
           if (sourcePlan) {
@@ -2611,7 +2611,7 @@
       // possible during config-update reflows). currentBindings has
       // .type but not .kind/.phase, so resolveNodeColor naturally
       // degrades to the type colour.
-      var binding = currentBindings && currentBindings.get(bindingName);
+      var binding = ctx.currentBindings && ctx.currentBindings.get(bindingName);
       return resolveNodeColor({ type: (binding && binding.type) || 'draw' });
     }
 
@@ -4610,8 +4610,8 @@
       if (plan.presetName == null) {
         return typeof host.promptForName === 'function';
       }
-      if (!currentBindings) return false;
-      var b = currentBindings.get(plan.presetName);
+      if (!ctx.currentBindings) return false;
+      var b = ctx.currentBindings.get(plan.presetName);
       if (!b || !b.node || !b.node.value
           || b.node.value.type !== 'CallExpr'
           || !b.node.value.callee
@@ -4646,7 +4646,7 @@
         // Boolean spelling follows the source-file variant: FlatPPL
         // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
         // capitalized `True`/`False`.
-        if (currentVariantId === 'flatppy') return v ? 'True' : 'False';
+        if (ctx.currentVariantId === 'flatppy') return v ? 'True' : 'False';
         return v ? 'true' : 'false';
       }
       if (!Number.isFinite(v)) return String(v);
@@ -4663,7 +4663,7 @@
         hold-constant annotation. */
     function buildPersistedPresetLine(plan) {
       var active = activePresetFor(plan);
-      var b = currentBindings.get(plan.presetName);
+      var b = ctx.currentBindings.get(plan.presetName);
       var srcArgs = b.node.value.args || [];
       var parts = [];
       for (var i = 0; i < srcArgs.length; i++) {
@@ -4700,7 +4700,7 @@
     }
 
     function persistNamedPreset(plan) {
-      var b = currentBindings.get(plan.presetName);
+      var b = ctx.currentBindings.get(plan.presetName);
       var newText = buildPersistedPresetLine(plan);
       try {
         host.editSource({
@@ -4739,7 +4739,7 @@
       }
       if (parts.length === 0) return;
       var existingNames = [];
-      if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
+      if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       var pairsText = parts.join(', ');
       var suggested = (plan.name || 'inputs') + '_default';
       Promise.resolve(host.promptForName({
@@ -4847,8 +4847,8 @@
       if (plan.domainName == null) {
         return typeof host.promptForName === 'function';
       }
-      if (!currentBindings) return false;
-      var b = currentBindings.get(plan.domainName);
+      if (!ctx.currentBindings) return false;
+      var b = ctx.currentBindings.get(plan.domainName);
       if (!b || !b.node || !b.node.value
           || b.node.value.type !== 'CallExpr'
           || !b.node.value.callee
@@ -4879,7 +4879,7 @@
             with original bounds, or the bare named-set reference)
         Preserves source kwarg order. */
     function buildPersistedDomainLine(plan) {
-      var b = currentBindings.get(plan.domainName);
+      var b = ctx.currentBindings.get(plan.domainName);
       var srcArgs = b.node.value.args || [];
       var override = domainOverrideEntryFor(plan);
       var or = (override && override.ranges) || {};
@@ -4899,7 +4899,7 @@
     }
 
     function persistNamedDomain(plan) {
-      var b = currentBindings.get(plan.domainName);
+      var b = ctx.currentBindings.get(plan.domainName);
       var newText = buildPersistedDomainLine(plan);
       try {
         host.editSource({
@@ -4966,7 +4966,7 @@
       }
       if (parts.length === 0) return;
       var existingNames = [];
-      if (currentBindings) currentBindings.forEach(function(_b, n) { existingNames.push(n); });
+      if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
       var pairsText = parts.join(', ');
       var suggested = (plan.name || 'domain') + '_domain';
       Promise.resolve(host.promptForName({
@@ -6470,8 +6470,8 @@
       // captures same-binding edits in time for applyRemembered…
       // to restore them onto the rebuilt plan below.
       rememberPlanSelections(ctx.currentPlotPlan);
-      var binding = currentBindings ? currentBindings.get(bindingName) : null;
-      var plan = buildPlotPlan(binding, currentBindings);
+      var binding = ctx.currentBindings ? ctx.currentBindings.get(bindingName) : null;
+      var plan = buildPlotPlan(binding, ctx.currentBindings);
       // Restore user-driven plan state across rebuilds — both same-
       // binding rebuilds (source edit) and cross-binding navigation
       // (click away and back). pendingPresetName / pendingDomainName
@@ -6815,17 +6815,17 @@
     // We re-parse only when source changes; clicking through nodes (zoom-
     // into) reuses currentBindings and just recomputes the sub-DAG.
     // ---------------------------------------------------------------
-    var currentSource = null;
+    ctx.currentSource = null;
     // Active surface-syntax variant id for the in-memory source —
     // drives both processSource grammar selection and persist write-
     // back syntax. Updated whenever a sourceUpdate carries a
     // variant; defaults to 'flatppl'.
-    var currentVariantId = 'flatppl';
-    var currentBindings = null;
+    ctx.currentVariantId = 'flatppl';
+    ctx.currentBindings = null;
     // The lowered module forwarded by processSource — used by
     // typeinfer.inferExprInScope for on-demand call-site
     // specialization (multi-output Output: selector, etc.).
-    var currentLoweredModule = null;
+    ctx.currentLoweredModule = null;
 
     /**
      * Re-render the DAG focused on targetName using the cached bindings.
@@ -6835,7 +6835,7 @@
      * before this refactor).
      */
     function focusNode(targetName, pushHistory) {
-      if (!currentBindings) return;
+      if (!ctx.currentBindings) return;
       // No targetName supplied → prefer keeping the current focus.
       // This is the path used by source-only updates from the host
       // (the user is editing the RHS of the already-shown binding —
@@ -6843,16 +6843,16 @@
       // through to the last binding when there's no prior focus or
       // the focused binding was deleted by the edit.
       if (!targetName) {
-        if (ctx.currentState && currentBindings.has(ctx.currentState.targetName)) {
+        if (ctx.currentState && ctx.currentBindings.has(ctx.currentState.targetName)) {
           targetName = ctx.currentState.targetName;
         } else {
           var allNames = [];
-          currentBindings.forEach(function(_b, name) { allNames.push(name); });
+          ctx.currentBindings.forEach(function(_b, name) { allNames.push(name); });
           if (allNames.length === 0) return;
           targetName = allNames[allNames.length - 1];
         }
       }
-      var dagData = FlatPPLEngine.computeSubDAG(currentBindings, targetName);
+      var dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName);
       if (!dagData || dagData.nodes.length === 0) return;
 
       // History grows only when (a) the caller asked us to push, and
@@ -6895,8 +6895,8 @@
      * the previous view wasn't already the module view.
      */
     function enterModuleView(pushHistory) {
-      if (!currentBindings) return;
-      var dagData = FlatPPLEngine.computeFullDAG(currentBindings);
+      if (!ctx.currentBindings) return;
+      var dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
       if (!dagData || dagData.nodes.length === 0) return;
 
       if (pushHistory && ctx.currentState && ctx.currentState.targetName !== MODULE_TARGET) {
@@ -6947,21 +6947,21 @@
     //   - the initial-source bootstrap (opts.source / opts.target on
     //     mount)
     function applySourceUpdate(msg) {
-      var sourceChanged = (msg.source !== currentSource);
+      var sourceChanged = (msg.source !== ctx.currentSource);
       // Track the surface-syntax variant of the in-memory source so
       // (a) processSource picks the right grammar and (b) persist
       // write-back chooses matching syntax (e.g. `True` vs `true`).
       // Variant comes from the host as an id string ('flatppl' /
       // 'flatppy' / 'flatppj') in msg.variant; if absent, falls back
       // to canonical FlatPPL.
-      if (msg.variant) currentVariantId = msg.variant;
+      if (msg.variant) ctx.currentVariantId = msg.variant;
       if (sourceChanged) {
-        currentSource = msg.source;
+        ctx.currentSource = msg.source;
         try {
           var result = FlatPPLEngine.processSource(msg.source,
-            { variant: currentVariantId });
-          currentBindings = result.bindings;
-          currentLoweredModule = result.loweredModule;
+            { variant: ctx.currentVariantId });
+          ctx.currentBindings = result.bindings;
+          ctx.currentLoweredModule = result.loweredModule;
           // Source change → rebuild derivations and clear sample cache.
           // The orchestrator's derivations key the cache, so any change
           // (renamed bindings, edited dist params, new dependencies)
@@ -7003,7 +7003,7 @@
       }
       focusNode(msg.targetName, msg.pushHistory);
       if (preservedPlotBinding
-          && currentBindings && currentBindings.has(preservedPlotBinding)
+          && ctx.currentBindings && ctx.currentBindings.has(preservedPlotBinding)
           && ctx.currentPlotBindingName !== preservedPlotBinding) {
         updatePlotForBinding(preservedPlotBinding);
       }
