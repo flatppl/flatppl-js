@@ -1051,7 +1051,10 @@
     ctx.samplerWorkerError = null;     // last spawn error, surfaced in the UI
     ctx.samplerReqId = 0;
     ctx.pendingRequests = new Map(); // id → { resolve, reject }
-    var plotEchart = null;
+    // G2 plot control (decomposition Phase 2 — on ctx). Decls are
+    // scattered across mount() — the other three live further down
+    // near their first use; collected onto ctx incrementally.
+    ctx.plotEchart = null;
 
     // ---------------------------------------------------------------
     // Main-thread empirical-measure cache.
@@ -1480,8 +1483,8 @@
     // Used both as the "is plot tab enabled?" flag and as the render
     // input. currentPlotBindingName tracks which binding produced it
     // (for the chart title and stale-reply guards).
-    var currentPlotPlan = null;
-    var currentPlotBindingName = null;
+    ctx.currentPlotPlan = null;
+    ctx.currentPlotBindingName = null;
 
     /**
      * Asynchronously spawn the sampler worker, caching the result.
@@ -1980,19 +1983,19 @@
     // graph pane takes the full content area. The pane content always
     // reflects the current focused binding, so flipping plotEnabled
     // back on never shows stale data.
-    var plotEnabled = false;
+    ctx.plotEnabled = false;
 
     function setPlotEnabled(enabled) {
-      plotEnabled = !!enabled;
+      ctx.plotEnabled = !!enabled;
       var plot    = document.getElementById('plot-panel');
       var graph   = document.getElementById('graph-panel');
       var divider = document.getElementById('plot-divider');
       var btn     = document.getElementById('plot-toggle');
-      plot.classList.toggle('hidden', !plotEnabled);
-      graph.classList.toggle('full',  !plotEnabled);
-      divider.classList.toggle('hidden', !plotEnabled);
-      btn.classList.toggle('on', plotEnabled);
-      btn.textContent = 'Plot: ' + (plotEnabled ? 'on' : 'off');
+      plot.classList.toggle('hidden', !ctx.plotEnabled);
+      graph.classList.toggle('full',  !ctx.plotEnabled);
+      divider.classList.toggle('hidden', !ctx.plotEnabled);
+      btn.classList.toggle('on', ctx.plotEnabled);
+      btn.textContent = 'Plot: ' + (ctx.plotEnabled ? 'on' : 'off');
       // Drop any user-dragged inline flex so the class-based defaults
       // (flex: 1 1 100% on graph-full, flex: 0 0 0 on plot-hidden, or
       // the regular 60/40 split when both are showing) take effect.
@@ -2003,20 +2006,20 @@
       plot.style.flex = '';
       // Persist across panel reopens. VS Code restores webview state
       // automatically when the panel is shown again.
-      if (host.saveState) { try { host.saveState({ plotEnabled: plotEnabled }); } catch (_) {} }
-      if (plotEnabled) {
+      if (host.saveState) { try { host.saveState({ plotEnabled: ctx.plotEnabled }); } catch (_) {} }
+      if (ctx.plotEnabled) {
         // Render whatever the current plan says — including the
         // "not plottable" message if the focused binding isn't
         // chainable. Echarts also needs resize after becoming visible
         // (it measures 0×0 while collapsed).
         renderPlotForCurrent();
-        if (plotEchart) plotEchart.resize();
-      } else if (plotEchart) {
+        if (ctx.plotEchart) ctx.plotEchart.resize();
+      } else if (ctx.plotEchart) {
         // Tear down the echart instance to avoid keeping its canvas /
         // event listeners alive while the panel is collapsed. It'll
         // be reconstructed on the next renderDensity call.
-        try { plotEchart.dispose(); } catch (_) {}
-        plotEchart = null;
+        try { ctx.plotEchart.dispose(); } catch (_) {}
+        ctx.plotEchart = null;
       }
       // Cytoscape skipped resize while the graph pane was at a
       // different height — kick it now so the layout fills correctly.
@@ -2045,7 +2048,7 @@
     }
 
     function showPlotMessage(html, options) {
-      if (plotEchart) { plotEchart.dispose(); plotEchart = null; }
+      if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
       resetPlotContentStyle();
       var el = document.getElementById('plot-content');
       var cancellable = options && options.cancellable;
@@ -2090,7 +2093,7 @@
      *   - an optional toolbar row (controls on the left, sample-stats
      *     readout pinned right when `measure` is supplied)
      *   - the chart host that fills the remaining vertical space
-     *   - disposal of any prior `plotEchart` and reset of inline styles
+     *   - disposal of any prior `ctx.plotEchart` and reset of inline styles
      *
      * Every measure-backed renderer (samples / corner / strips / kernel-
      * sample / profile / array-step) goes through here so the visual
@@ -2113,7 +2116,7 @@
      */
     function renderPlotFrame(opts) {
       resetPlotContentStyle();
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
       el.style.display = 'flex';
@@ -2186,7 +2189,7 @@
      */
     function renderTextValue(bindingName, text) {
       resetPlotContentStyle();
-      if (plotEchart) { try { plotEchart.dispose(); } catch (_) {} plotEchart = null; }
+      if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
       var el = document.getElementById('plot-content');
       var name = bindingName ? esc(bindingName) : '';
       // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero
@@ -2221,8 +2224,8 @@
       // circuit on errors before sampling, otherwise we'd render a
       // valid-looking empty histogram with NaN samples instead of
       // the actionable diagnostic.
-      var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
-      var typeErrors = errorsForBinding(currentPlotBindingName);
+      var name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
+      var typeErrors = errorsForBinding(ctx.currentPlotBindingName);
       if (typeErrors && typeErrors.length > 0) {
         var msg = '<strong>' + name + '</strong> is semantically invalid:'
           + '<ul>';
@@ -2233,7 +2236,7 @@
         showPlotMessage(msg);
         return;
       }
-      if (!currentPlotPlan) {
+      if (!ctx.currentPlotPlan) {
         if (ctx.currentState && ctx.currentState.targetName === MODULE_TARGET) {
           showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
           return;
@@ -2245,7 +2248,7 @@
         // currentPlotBindingName=null. Surface a generic message here
         // — there's nothing user-meaningful to plot, and pointing at
         // a different binding would be guesswork.
-        if (currentPlotBindingName == null) {
+        if (ctx.currentPlotBindingName == null) {
           showPlotMessage('Internal nodes are not plottable.', { hint: true });
           return;
         }
@@ -2255,14 +2258,14 @@
       // Profile mode (function / likelihood bindings) dispatches to
       // its own worker primitive (profileN) and renderer; the rest
       // of this function handles the sample-mode pipeline.
-      if (currentPlotPlan.mode === 'profile') {
+      if (ctx.currentPlotPlan.mode === 'profile') {
         renderProfilePlotForCurrent();
         return;
       }
       // Kernel-sample mode: kernel binding rendered like any
       // sampled measure, with a preset dropdown selecting the
       // kernel's input parameters before sampling.
-      if (currentPlotPlan.mode === 'kernel-sample') {
+      if (ctx.currentPlotPlan.mode === 'kernel-sample') {
         renderKernelSampleForCurrent();
         return;
       }
@@ -2270,8 +2273,8 @@
       // directly (text for scalars/records/tuples; existing step plot
       // for arrays). Scalars whose per-atom samples differ (engine
       // broadcast) fall through to the sample histogram path.
-      if (currentPlotPlan.mode === 'fixed-record') {
-        renderFixedRecord(currentPlotPlan);
+      if (ctx.currentPlotPlan.mode === 'fixed-record') {
+        renderFixedRecord(ctx.currentPlotPlan);
         return;
       }
       // mode='fixed-scalar' falls through to the sample pipeline
@@ -2284,9 +2287,9 @@
       // round-trip), so a Stop button is pointless for it. Sampling
       // mode shows the Stop button so the user can abort long
       // operations (per-i ref chains under huge sample counts).
-      var arrayMode = currentPlotPlan.mode === 'array';
+      var arrayMode = ctx.currentPlotPlan.mode === 'array';
       showPlotMessage(arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
-      var planForCall = currentPlotPlan;
+      var planForCall = ctx.currentPlotPlan;
 
       // Cache hit avoids the worker entirely. We still defer through
       // a microtask so the UI flush is uniform and the stale-reply
@@ -2294,23 +2297,23 @@
       Promise.resolve()
         .then(function() { return getMeasure(planForCall.name); })
         .then(function(measure) {
-          if (currentPlotPlan !== planForCall) return null;
+          if (ctx.currentPlotPlan !== planForCall) return null;
           return renderEmpiricalMeasure(measure, {
             name: planForCall.name,
             mode: planForCall.mode,
             discrete: planForCall.discrete,
             analyticalIR: planForCall.analyticalIR,
             toolbarControls: null,
-            staleGuard: function() { return currentPlotPlan === planForCall; },
+            staleGuard: function() { return ctx.currentPlotPlan === planForCall; },
           });
         })
         .catch(function(err) {
-          if (currentPlotPlan !== planForCall) return;
+          if (ctx.currentPlotPlan !== planForCall) return;
           var msg = err && err.message ? err.message : String(err);
           if (msg === 'cancelled') {
             // User clicked Stop. Make the message actionable rather
             // than dead-end so they know how to retry.
-            var name = currentPlotBindingName ? esc(currentPlotBindingName) : 'this binding';
+            var name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
             showPlotMessage('Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
           } else {
             // Real errors are actionable; not italic/dimmed.
@@ -3890,10 +3893,10 @@
       showPlotMessage('Loading…', { hint: true });
       var planForCall = plan;
       getMeasure(plan.name).then(function(measure) {
-        if (currentPlotPlan !== planForCall) return;
+        if (ctx.currentPlotPlan !== planForCall) return;
         renderConstantRecord(measure, plan.name);
       }).catch(function(err) {
-        if (currentPlotPlan !== planForCall) return;
+        if (ctx.currentPlotPlan !== planForCall) return;
         showPlotMessage('Failed to load <strong>' + esc(plan.name) + '</strong>: '
           + esc(err && err.message || String(err)));
       });
@@ -3919,7 +3922,7 @@
     // switching presets doesn't re-sample, and switching back to a
     // previously-rendered kernel is instant.
     function renderKernelSampleForCurrent() {
-      var plan = currentPlotPlan;
+      var plan = ctx.currentPlotPlan;
       if (!plan || plan.mode !== 'kernel-sample') return;
       var sig = plan.signature;
       var inputByKwarg = {};
@@ -3983,7 +3986,7 @@
       // Cache hit: use previously-sampled measure directly.
       if (measureCache.has(cacheKey)) {
         return Promise.resolve(measureCache.get(cacheKey)).then(function(m) {
-          if (currentPlotPlan !== planForCall) return;
+          if (ctx.currentPlotPlan !== planForCall) return;
           renderKernelSampleMeasure(m, plan);
         });
       }
@@ -4042,11 +4045,11 @@
         // boundary inputs participate in the kernel's randomness.
         return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
       }).then(function(measure) {
-        if (currentPlotPlan !== planForCall) return;
+        if (ctx.currentPlotPlan !== planForCall) return;
         measureCache.set(cacheKey, measure);
         renderKernelSampleMeasure(measure, plan);
       }).catch(function(err) {
-        if (currentPlotPlan !== planForCall) return;
+        if (ctx.currentPlotPlan !== planForCall) return;
         showPlotMessage('Kernel plot failed: ' + esc(err && err.message || String(err)));
       });
     }
@@ -5323,7 +5326,7 @@
     //   - Plain kernelof bindings (not wrapped in likelihoodof) need
     //     an obs value the user has to provide; defer to F4b.
     function renderProfilePlotForCurrent() {
-      var plan = currentPlotPlan;
+      var plan = ctx.currentPlotPlan;
       if (!plan || plan.mode !== 'profile') return;
       var sig = plan.signature;
       var axes = plan.axes;
@@ -5535,10 +5538,10 @@
         });
       }).then(function(reply) {
         if (!reply) return;
-        if (currentPlotPlan !== planForCall) return;
+        if (ctx.currentPlotPlan !== planForCall) return;
         renderProfileLine(reply.samples, rangeRef[0], plan, sweepAxis);
       }).catch(function(err) {
-        if (currentPlotPlan !== planForCall) return;
+        if (ctx.currentPlotPlan !== planForCall) return;
         showPlotMessage('Profile plot failed: ' + esc(err && err.message || String(err)));
       });
     }
@@ -5828,7 +5831,7 @@
 
     function renderProfileLine(values, range, plan, sweepAxis) {
       var fg = getComputedStyle(document.body).color || '#ccc';
-      var color = colorForBinding(currentPlotBindingName);
+      var color = colorForBinding(ctx.currentPlotBindingName);
       var n = values.length;
       var lo = range[0], hi = range[1];
       // Integer-typed sweep axis: only integer x values are
@@ -5882,7 +5885,7 @@
           data[i] = [x, y];
         }
       }
-      var titleText = (currentPlotBindingName ? esc(currentPlotBindingName) : 'profile')
+      var titleText = (ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'profile')
         + ' — ' + esc(sweepAxis.label);
       // Per spec / convention: a kernel with obs fixed (likelihoodof)
       // computes the log-LIKELIHOOD; a bare kernel (or any other
@@ -5898,9 +5901,9 @@
         toolbarControls: buildProfileControls(plan, range),
         bottomRow:       buildProfileBottomRow(plan, range),
         chartCallback: function(chartHost) {
-          plotEchart = echarts.init(chartHost);
+          ctx.plotEchart = echarts.init(chartHost);
           var zoomOpts = plotZoomOptions(fg);
-          plotEchart.setOption({
+          ctx.plotEchart.setOption({
             animation: false,
             dataZoom: zoomOpts.dataZoom,
             toolbox: zoomOpts.toolbox,
@@ -5986,14 +5989,14 @@
           // pinned this axis's value for when they switch the
           // sweep direction to another axis. The under-plot axis
           // name picks up `(default = V)` immediately.
-          plotEchart.getZr().on('click', function(ev) {
+          ctx.plotEchart.getZr().on('click', function(ev) {
             var pt = [ev.offsetX, ev.offsetY];
-            if (!plotEchart.containPixel('grid', pt)) return;
+            if (!ctx.plotEchart.containPixel('grid', pt)) return;
             // xAxisIndex finder takes a scalar pixel and returns a
             // scalar data value (echarts API quirk — only the grid/
             // series finders take arrays). Passing the [x,y] array
             // here returns NaN.
-            var clickedX = plotEchart.convertFromPixel({ xAxisIndex: 0 }, ev.offsetX);
+            var clickedX = ctx.plotEchart.convertFromPixel({ xAxisIndex: 0 }, ev.offsetX);
             if (!Number.isFinite(clickedX)) return;
             commitSliceX(plan, clickedX);
             renderProfilePlotForCurrent();
@@ -6036,17 +6039,17 @@
       // palette the DAG view paints. For literal arrays that's the
       // shared phaseFixed grey (post the literal-color unification);
       // for other shapes it picks up the node.kind overrides.
-      var color = colorForBinding(currentPlotBindingName);
-      var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'array';
+      var color = colorForBinding(ctx.currentPlotBindingName);
+      var distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'array';
       var arrayLegendLabel = n + ' values';
       // No measure passed — fixed array data isn't a sampled empirical
       // measure, so the frame skips the N+ESS readout. (A future
       // refinement could surface "length: n" in the toolbar instead.)
       renderPlotFrame({
         chartCallback: function(chartHost) {
-          plotEchart = echarts.init(chartHost);
+          ctx.plotEchart = echarts.init(chartHost);
           var zoomOpts = plotZoomOptions(fg);
-          plotEchart.setOption({
+          ctx.plotEchart.setOption({
             animation: false,
             dataZoom: zoomOpts.dataZoom,
             toolbox: zoomOpts.toolbox,
@@ -6263,7 +6266,7 @@
       // (Same defensive duplicate of the renderEmpiricalMeasure
       // short-circuit — keeps direct callers safe.)
       if (samplesAreConstant(reply.samples)) {
-        renderTextValue(currentPlotBindingName, formatScalar(reply.samples[0]));
+        renderTextValue(ctx.currentPlotBindingName, formatScalar(reply.samples[0]));
         return;
       }
 
@@ -6275,7 +6278,7 @@
       // node.kind override that maps a measure-typed binding to the
       // lawof blue rather than the generic 'call' grey. See
       // colorForBinding above.
-      var color = colorForBinding(currentPlotBindingName);
+      var color = colorForBinding(ctx.currentPlotBindingName);
 
       var hist = reply.histogram;
       var dens = reply.density;
@@ -6370,7 +6373,7 @@
       var series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
       var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
 
-      var distLabel = currentPlotBindingName ? esc(currentPlotBindingName) : 'distribution';
+      var distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'distribution';
 
       // Frame owns the N + ESS readout (in the toolbar above the
       // chart). Pass reply.measure so the frame can compute it; the
@@ -6381,9 +6384,9 @@
         measure: reply.measure,
         toolbarControls: plan && plan.toolbarControls ? plan.toolbarControls : null,
         chartCallback: function(chartHost) {
-          plotEchart = echarts.init(chartHost);
+          ctx.plotEchart = echarts.init(chartHost);
           var zoomOpts2 = plotZoomOptions(fg);
-          plotEchart.setOption({
+          ctx.plotEchart.setOption({
             animation: false,
             dataZoom: zoomOpts2.dataZoom,
             toolbox: zoomOpts2.toolbox,
@@ -6529,7 +6532,7 @@
       // rememberPlanSelections re-keys on plan.name, so this also
       // captures same-binding edits in time for applyRemembered…
       // to restore them onto the rebuilt plan below.
-      rememberPlanSelections(currentPlotPlan);
+      rememberPlanSelections(ctx.currentPlotPlan);
       var binding = currentBindings ? currentBindings.get(bindingName) : null;
       var plan = buildPlotPlan(binding, currentBindings);
       // Restore user-driven plan state across rebuilds — both same-
@@ -6556,7 +6559,7 @@
           }
         }
       }
-      currentPlotPlan = plan;
+      ctx.currentPlotPlan = plan;
       // Save the freshly-hydrated plan too so a save-as pending name
       // or applyRemembered's filter decisions are reflected in memory
       // before the next mutation. The matching outgoing snapshot at
@@ -6566,18 +6569,18 @@
       // names a binding. Synthetic nodes (anonymous inline expressions,
       // placeholders, holes) carry IDs like 'prior:target' that aren't
       // useful to the user — fall back to a generic message.
-      currentPlotBindingName = binding ? bindingName : null;
+      ctx.currentPlotBindingName = binding ? bindingName : null;
       // Plot pane stays visible whenever plotEnabled is true. When the
       // current binding isn't plottable, renderPlotForCurrent() shows
       // a "Not plottable" message in place of a chart.
-      if (plotEnabled) renderPlotForCurrent();
+      if (ctx.plotEnabled) renderPlotForCurrent();
     }
 
     // Plot toggle click handler. Restores from VS Code webview state on
     // first paint (see initial setPlotEnabled call below) so the user's
     // preference survives reloads.
     document.getElementById('plot-toggle').addEventListener('click', function() {
-      setPlotEnabled(!plotEnabled);
+      setPlotEnabled(!ctx.plotEnabled);
     });
 
     // Drag handle between the DAG and plot panes. Lets the user
@@ -6587,7 +6590,7 @@
     // size change and refit cytoscape / echarts automatically — no
     // explicit resize / fit calls needed here.
     document.getElementById('plot-divider').addEventListener('mousedown', function (ev) {
-      if (!plotEnabled) return;
+      if (!ctx.plotEnabled) return;
       ev.preventDefault();
       var graph = document.getElementById('graph-panel');
       var plot  = document.getElementById('plot-panel');
@@ -7056,15 +7059,15 @@
       // Capture currentPlotBindingName here and restore it after
       // focusNode finishes.
       var preservedPlotBinding = null;
-      if (sourceChanged && currentPlotBindingName
+      if (sourceChanged && ctx.currentPlotBindingName
           && ctx.currentState
-          && currentPlotBindingName !== ctx.currentState.targetName) {
-        preservedPlotBinding = currentPlotBindingName;
+          && ctx.currentPlotBindingName !== ctx.currentState.targetName) {
+        preservedPlotBinding = ctx.currentPlotBindingName;
       }
       focusNode(msg.targetName, msg.pushHistory);
       if (preservedPlotBinding
           && currentBindings && currentBindings.has(preservedPlotBinding)
-          && currentPlotBindingName !== preservedPlotBinding) {
+          && ctx.currentPlotBindingName !== preservedPlotBinding) {
         updatePlotForBinding(preservedPlotBinding);
       }
     }
@@ -7088,7 +7091,7 @@
           SAMPLE_COUNT = cfg.sampleCount | 0;
           measureCache = new Map();
           histogramCache = new Map();
-          if (plotEnabled) renderPlotForCurrent();
+          if (ctx.plotEnabled) renderPlotForCurrent();
         }
 
         // dagNavigationHistoryCap: re-bind the limit and trim oldest
@@ -7111,7 +7114,7 @@
           REJECTION_BUDGET = cfg.truncateRejectionBudget | 0;
           measureCache = new Map();
           histogramCache = new Map();
-          if (plotEnabled) renderPlotForCurrent();
+          if (ctx.plotEnabled) renderPlotForCurrent();
         }
         return;
       }
@@ -7192,7 +7195,7 @@
     // initial DAG-only experience clean.
     var prevState = null;
     if (host.loadState) { try { prevState = host.loadState(); } catch (_) {} }
-    setPlotEnabled(prevState && prevState.plotEnabled === true);
+    setPlotEnabled(prevState && prevState.ctx.plotEnabled === true);
 
     // Initial source bootstrap. When opts.source is supplied, render
     // immediately. Otherwise the viewer waits for a postMessage
