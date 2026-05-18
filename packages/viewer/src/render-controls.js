@@ -1,0 +1,381 @@
+// @flatppl/viewer — preset + domain control popovers (Phase 4f).
+//
+// buildPresetControl / buildDomainControl construct the
+// codicon-buttoned popover UIs above the plot pane that let users
+// override per-binding preset values / cartprod ranges, persist them
+// to source, or reset to the source's declared values.
+
+export function buildPresetControl(ctx, plan, onChange) {
+  var frag = document.createDocumentFragment();
+  if (!plan.axes || plan.axes.length === 0) return frag;
+
+  // One row per preset name (auto plus each named preset). The
+  // "(modified)" tag is appended to the label when the active
+  // override entry has values — there's no separate
+  // "<name> (modified)" row anymore. Switching presets just
+  // changes plan.presetName; the override store decides whether
+  // the row reads as modified.
+  var entries = [];
+  var presets = plan.matchedPresets || [];
+  var autoValues = computeAutoValues(ctx, plan);
+
+  function buildEntry(name, baseValues, isAuto) {
+    var entryOverride = (name == null) ? plan.autoOverride : ctx.presetOverrides.get(name);
+    var modified = !!(entryOverride && entryOverride.values
+      && Object.keys(entryOverride.values).length > 0);
+    var combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
+    var displayName = isAuto ? 'auto' : name;
+    var tag = modified ? ' (modified)' : '';
+    return {
+      name: name,
+      modified: modified,
+      shortLabel: displayName + tag,
+      longLabel: displayName + tag + ': ' + presetValuesText(combined),
+    };
+  }
+
+  entries.push(buildEntry(null, autoValues, true));
+  for (var pi = 0; pi < presets.length; pi++) {
+    entries.push(buildEntry(presets[pi].name, presets[pi].values || {}, false));
+  }
+
+  function isActive(entry) { return entry.name === plan.presetName; }
+  var activeEntry = null;
+  for (var k = 0; k < entries.length; k++) {
+    if (isActive(entries[k])) { activeEntry = entries[k]; break; }
+  }
+  if (!activeEntry) activeEntry = entries[0];
+
+  var wrap = document.createElement('span');
+  wrap.style.position = 'relative';
+  wrap.style.display = 'inline-flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.gap = '0.3em';
+
+  var lbl = document.createElement('label');
+  lbl.textContent = 'Inputs:';
+  lbl.style.opacity = '0.6';
+
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+  btn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+  btn.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+  btn.style.padding = '2px 6px';
+  btn.style.fontSize = '1em';
+  btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+  btn.style.cursor = 'pointer';
+  btn.style.borderRadius = '2px';
+  btn.textContent = activeEntry.shortLabel + '  ▾';
+  btn.title = activeEntry.longLabel;
+
+  var panel = document.createElement('div');
+  panel.style.position = 'absolute';
+  panel.style.top = 'calc(100% + 4px)';
+  panel.style.left = '0';
+  panel.style.zIndex = '50';
+  panel.style.minWidth = '100%';
+  panel.style.maxHeight = '20em';
+  panel.style.overflowY = 'auto';
+  panel.style.padding = '0.2em';
+  panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+  panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+  panel.style.borderRadius = '3px';
+  panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+  panel.style.display = 'none';
+  panel.style.whiteSpace = 'nowrap';
+
+  var outsideClickHandler = null;
+  function closePanel() {
+    panel.style.display = 'none';
+    if (outsideClickHandler) {
+      document.removeEventListener('mousedown', outsideClickHandler);
+      outsideClickHandler = null;
+    }
+  }
+  function openPanel() {
+    panel.style.display = 'block';
+    // Defer the outside-click attach so the same click that
+    // opened the panel doesn't immediately close it.
+    setTimeout(function() {
+      outsideClickHandler = function(ev) {
+        if (!wrap.contains(ev.target)) closePanel();
+      };
+      document.addEventListener('mousedown', outsideClickHandler);
+    }, 0);
+  }
+
+  btn.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    if (panel.style.display === 'none') openPanel(); else closePanel();
+  });
+
+  entries.forEach(function(entry) {
+    var row = document.createElement('div');
+    row.textContent = entry.longLabel;
+    row.style.padding = '0.25em 0.6em';
+    row.style.cursor = 'pointer';
+    row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+    row.style.borderRadius = '2px';
+    if (isActive(entry)) {
+      row.style.background = 'rgba(13, 113, 199, 0.45)';
+      row.style.color = '#fff';
+    }
+    row.addEventListener('mouseenter', function() {
+      if (!isActive(entry)) row.style.background = 'rgba(255,255,255,0.06)';
+    });
+    row.addEventListener('mouseleave', function() {
+      if (!isActive(entry)) row.style.background = '';
+    });
+    row.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      plan.presetName = entry.name;
+      closePanel();
+      onChange();
+    });
+    panel.appendChild(row);
+  });
+
+  wrap.appendChild(lbl);
+  wrap.appendChild(btn);
+  wrap.appendChild(panel);
+
+  frag.appendChild(wrap);
+
+  // Reset / save action buttons live in a tight inline-flex group
+  // so the two icons read as a single control rather than each
+  // inheriting the toolbar's wider gap.
+  // Reset button — visible only when the active selection has
+  // overrides. Clears the override entry (auto → plan.autoOverride
+  // = null; named → presetOverrides.delete(name)) and re-renders
+  // through onChange. The dropdown row's "(modified)" tag then
+  // disappears with no further user action.
+  if (hasOverrides(ctx, plan)) {
+    var actionGroup = document.createElement('span');
+    actionGroup.style.display = 'inline-flex';
+    actionGroup.style.gap = '2px';
+    var resetBtn = makeActionButton(ctx, 'discard', 'Reset preset to source values');
+    resetBtn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      setOverrideFor(ctx, plan, null);
+      onChange();
+    });
+    actionGroup.appendChild(resetBtn);
+
+    // Persist button — visible when the active selection is a
+    // named preset with overrides AND the host supports
+    // writing (web edit-mode on, or VS Code) AND the source RHS
+    // is preset(<kwarg>=<literal>, …) with no non-literal
+    // values. Hidden otherwise so the user never sees a
+    // disabled-looking button.
+    //   - named preset + overrides → 'save'    (overwrite RHS)
+    //   - auto + overrides         → 'save-as' (append new binding)
+    // canPersistActive enforces the host-capability split: 'save'
+    // needs host.editSource; 'save-as' additionally needs
+    // host.promptForName.
+    if (canPersistActive(ctx, plan)) {
+      var isSaveAs = (plan.presetName == null);
+      var persistBtn = makeActionButton(ctx, 
+        isSaveAs ? 'save-as' : 'save',
+        isSaveAs
+          ? 'Save as new preset binding'
+          : 'Save overrides into preset'
+      );
+      persistBtn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        persistActive(ctx, plan);
+      });
+      actionGroup.appendChild(persistBtn);
+    }
+    frag.appendChild(actionGroup);
+  }
+  return frag;
+}
+
+export function buildDomainControl(ctx, plan, onChange) {
+  var frag = document.createDocumentFragment();
+  if (!plan.axes || plan.axes.length === 0) return frag;
+
+  var domains = plan.matchedDomains || [];
+  // kwarg display order: take it from plan.signature.inputs so
+  // every entry — including modifications — reads in the same
+  // order as the source signature, regardless of which kwargs
+  // got user overrides.
+  var inputs = (plan.signature && plan.signature.inputs) || [];
+  var kwargOrder = [];
+  for (var ki = 0; ki < inputs.length; ki++) {
+    if (inputs[ki].kwargName) kwargOrder.push(inputs[ki].kwargName);
+  }
+
+  function buildEntry(name, baseRanges, baseSetNames, isAuto) {
+    var entryOverride = (name == null)
+      ? plan.domainAutoOverride
+      : ctx.domainOverrides.get(name);
+    var modified = !!(entryOverride && entryOverride.ranges
+      && Object.keys(entryOverride.ranges).length > 0);
+    var combinedRanges = Object.assign({}, baseRanges,
+      (entryOverride && entryOverride.ranges) || {});
+    // User overrides shadow source named-set fields: drop those
+    // entries from setNames so the kwarg renders with the
+    // bounded interval rather than both.
+    var combinedSetNames = Object.assign({}, baseSetNames);
+    for (var k in combinedRanges) {
+      if (Object.prototype.hasOwnProperty.call(combinedRanges, k)) {
+        delete combinedSetNames[k];
+      }
+    }
+    var displayName = isAuto ? 'auto' : name;
+    var tag = modified ? ' (modified)' : '';
+    return {
+      name: name,
+      modified: modified,
+      shortLabel: displayName + tag,
+      longLabel: displayName + tag + ': '
+        + domainBoundsText(kwargOrder, combinedRanges, combinedSetNames),
+    };
+  }
+
+  var entries = [];
+  entries.push(buildEntry(null, {}, {}, true));
+  for (var di = 0; di < domains.length; di++) {
+    entries.push(buildEntry(
+      domains[di].name,
+      domains[di].ranges || {},
+      domains[di].setNames || {},
+      false));
+  }
+
+  function isActive(entry) { return entry.name === plan.domainName; }
+  var activeEntry = null;
+  for (var k = 0; k < entries.length; k++) {
+    if (isActive(entries[k])) { activeEntry = entries[k]; break; }
+  }
+  if (!activeEntry) activeEntry = entries[0];
+
+  var wrap = document.createElement('span');
+  wrap.style.position = 'relative';
+  wrap.style.display = 'inline-flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.gap = '0.3em';
+
+  var lbl = document.createElement('label');
+  lbl.textContent = 'Domain:';
+  lbl.style.opacity = '0.6';
+
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+  btn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+  btn.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+  btn.style.padding = '2px 6px';
+  btn.style.fontSize = '1em';
+  btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+  btn.style.cursor = 'pointer';
+  btn.style.borderRadius = '2px';
+  btn.textContent = activeEntry.shortLabel + '  ▾';
+  btn.title = activeEntry.longLabel;
+
+  var panel = document.createElement('div');
+  panel.style.position = 'absolute';
+  panel.style.top = 'calc(100% + 4px)';
+  panel.style.left = '0';
+  panel.style.zIndex = '50';
+  panel.style.minWidth = '100%';
+  panel.style.maxHeight = '20em';
+  panel.style.overflowY = 'auto';
+  panel.style.padding = '0.2em';
+  panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+  panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+  panel.style.borderRadius = '3px';
+  panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+  panel.style.display = 'none';
+  panel.style.whiteSpace = 'nowrap';
+
+  var outsideClickHandler = null;
+  function closePanel() {
+    panel.style.display = 'none';
+    if (outsideClickHandler) {
+      document.removeEventListener('mousedown', outsideClickHandler);
+      outsideClickHandler = null;
+    }
+  }
+  function openPanel() {
+    panel.style.display = 'block';
+    setTimeout(function() {
+      outsideClickHandler = function(ev) {
+        if (!wrap.contains(ev.target)) closePanel();
+      };
+      document.addEventListener('mousedown', outsideClickHandler);
+    }, 0);
+  }
+
+  btn.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    if (panel.style.display === 'none') openPanel(); else closePanel();
+  });
+
+  entries.forEach(function(entry) {
+    var row = document.createElement('div');
+    row.textContent = entry.longLabel;
+    row.style.padding = '0.25em 0.6em';
+    row.style.cursor = 'pointer';
+    row.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+    row.style.borderRadius = '2px';
+    if (isActive(entry)) {
+      row.style.background = 'rgba(13, 113, 199, 0.45)';
+      row.style.color = '#fff';
+    }
+    row.addEventListener('mouseenter', function() {
+      if (!isActive(entry)) row.style.background = 'rgba(255,255,255,0.06)';
+    });
+    row.addEventListener('mouseleave', function() {
+      if (!isActive(entry)) row.style.background = '';
+    });
+    row.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      plan.domainName = entry.name;
+      closePanel();
+      onChange();
+    });
+    panel.appendChild(row);
+  });
+
+  wrap.appendChild(lbl);
+  wrap.appendChild(btn);
+  wrap.appendChild(panel);
+  frag.appendChild(wrap);
+
+  // Reset / save / save-as icons mirror the Inputs control,
+  // grouped in a tight inline-flex span so they read as one
+  // pair rather than picking up the toolbar's wider gap.
+  if (hasDomainOverrides(ctx, plan)) {
+    var actionGroup = document.createElement('span');
+    actionGroup.style.display = 'inline-flex';
+    actionGroup.style.gap = '2px';
+    var resetBtn = makeActionButton(ctx, 'discard', 'Reset domain to source ranges');
+    resetBtn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      setDomainOverrideFor(ctx, plan, null);
+      onChange();
+    });
+    actionGroup.appendChild(resetBtn);
+
+    if (canPersistDomain(ctx, plan)) {
+      var isSaveAs = (plan.domainName == null);
+      var persistBtn = makeActionButton(ctx, 
+        isSaveAs ? 'save-as' : 'save',
+        isSaveAs
+          ? 'Save as new cartprod domain binding'
+          : 'Save range overrides into cartprod'
+      );
+      persistBtn.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        persistDomain(ctx, plan);
+      });
+      actionGroup.appendChild(persistBtn);
+    }
+    frag.appendChild(actionGroup);
+  }
+
+  return frag;
+}
