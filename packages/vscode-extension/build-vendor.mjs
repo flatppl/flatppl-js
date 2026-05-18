@@ -89,23 +89,16 @@ for (const { pkg, src, dst } of COPY_LIBS) {
 }
 
 // Webview viewer JS — sourced from the sibling @flatppl/viewer
-// workspace package. The viewer package owns the host-agnostic
-// browser-side rendering code; this extension just bundles it as a
-// vendored asset alongside cytoscape / echarts so the webview can
-// load it via a webview URI. Online embeds (rosetta-stone, etc.)
-// load the same source file directly without going through this
-// copy step.
-{
-  const viewerPkg = join(here, '..', 'viewer');
-  const from = join(viewerPkg, 'src', 'viewer.js');
-  const to = join(libDir, 'viewer.js');
-  if (!existsSync(from)) {
-    console.error(`  ! missing viewer source at ${from}`);
-    process.exit(1);
-  }
-  await copyFile(from, to);
-  console.log('  copied @flatppl/viewer -> lib/viewer.js');
-}
+// workspace package. From Phase 4 the viewer lives as ES modules
+// (src/index.js + main.js + future submodules); esbuild bundles
+// src/index.js → lib/viewer.js in IIFE format. The viewer entry
+// (index.js) does an explicit global merge
+// (`window.FlatPPLViewer = window.FlatPPLViewer || {}`), so we do
+// NOT use `globalName:` — that would clobber a pre-existing host
+// FlatPPLViewer object. The actual esbuild build is grouped with
+// the engine + sampler-worker builds below so both the WATCH and
+// one-shot paths handle them uniformly.
+const viewerPkg = join(here, '..', 'viewer');
 
 // ---------------------------------------------------------------------
 // 2. Sync grammars from flatppl-grammars (host-neutral artifact repo).
@@ -150,6 +143,20 @@ const engineBuildOpts = {
 // `format: 'iife'` is fine for workers: there's no top-level export that
 // callers need to grab, only `self.onmessage` side-effects. The bundle's
 // IIFE wrapper runs once on worker startup and registers the listener.
+const viewerBuildOpts = {
+  entryPoints: [join(viewerPkg, 'src', 'index.js')],
+  outfile: join(libDir, 'viewer.js'),
+  bundle: true,
+  // minify:false — see ARCHITECTURE.md; viewer bundle stays diffable
+  // and the webview's CSP forbids eval (some minify transforms emit).
+  minify: false,
+  format: 'iife',
+  // No globalName: src/index.js does explicit global-merge.
+  platform: 'browser',
+  target: ['es2020'],
+  legalComments: 'inline',
+};
+
 const samplerWorkerBuildOpts = {
   entryPoints: [join(enginePkg, 'worker-entry.js')],
   outfile: join(libDir, 'sampler-worker.min.js'),
@@ -167,18 +174,22 @@ if (WATCH) {
   // window after a rebuild to pick up the new bundles in the webview.
   const engineCtx = await esbuild.context(engineBuildOpts);
   const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
-  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild()]);
+  const viewerCtx = await esbuild.context(viewerBuildOpts);
+  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(), viewerCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
-  await Promise.all([engineCtx.watch(), workerCtx.watch()]);
-  console.log('  watching packages/engine/ for changes (Ctrl+C to exit)…');
+  console.log('  bundled viewer        -> lib/viewer.js');
+  await Promise.all([engineCtx.watch(), workerCtx.watch(), viewerCtx.watch()]);
+  console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
+    esbuild.build(viewerBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
+  console.log('  bundled viewer        -> lib/viewer.js');
 }
 
 // ---------------------------------------------------------------------
