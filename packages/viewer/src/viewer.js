@@ -472,6 +472,287 @@
       };
     }
 
+  // -------------------------------------------------------------
+  // Hoisted pure utilities (decomposition Phase 3 / leaf L2).
+  // Each of these is a pure function: no references to per-mount
+  // ctx state and no calls to in-mount-only helpers. JS function-
+  // declaration hoisting keeps in-mount callers working unchanged
+  // (they reach these by the normal scope chain). When Phase 4
+  // splits viewer.js into modules, this block becomes format.js /
+  // util.js, exported as ES modules.
+  // -------------------------------------------------------------
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function truncateExpr(expr) {
+    if (!expr) return '';
+    // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
+    var arrMatch = expr.match(/^\\[(.+)\\]$/);
+    if (arrMatch) {
+      var items = arrMatch[1].split(/\\s*,\\s*/);
+      if (items.length > 6) {
+        var head = items.slice(0, 3).join(', ');
+        var tail = items.slice(-3).join(', ');
+        return '[' + head + ', \u2026, ' + tail + ']';
+      }
+    }
+    // Truncate other long expressions in the middle
+    if (expr.length > 80) {
+      return expr.slice(0, 38) + ' \u2026 ' + expr.slice(-38);
+    }
+    return expr;
+  }
+
+  /**
+   * True when every sample equals the first one. Catches:
+   *   - literal bindings (c = 5.0)
+   *   - derived constants (d = c + 1) — same value at every i
+   *   - aliases to constants
+   *   - degenerate distributions (e.g. Normal(0, 0))
+   * Plotting a histogram for these is just a single tall bar; render
+   * the scalar value as text instead. The check is O(n) but n=5000
+   * floats is sub-millisecond.
+   */
+  function samplesAreConstant(samples) {
+    if (!samples || samples.length === 0) return false;
+    var v = samples[0];
+    for (var i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
+    return true;
+  }
+
+  function formatScalar(v) {
+    if (!Number.isFinite(v)) return String(v);
+    if (Number.isInteger(v)) return String(v);
+    return String(parseFloat(v.toPrecision(4)));
+  }
+
+  function formatComplexScalar(re, im) {
+    var imv = im === 0 ? 0 : im;            // normalise -0 → 0
+    var sign = imv < 0 ? ' - ' : ' + ';
+    return formatScalar(re) + sign + formatScalar(Math.abs(imv)) + ' i';
+  }
+
+  function complexReBadge() {
+    var b = document.createElement('span');
+    b.textContent = 'complex — showing Re(z)';
+    b.title = 'This binding is complex-valued; the histogram is its '
+      + 'real part. Modulus / Im / Argand views are planned.';
+    b.style.padding = '0.15em 0.6em';
+    b.style.borderRadius = '3px';
+    b.style.fontSize = '0.92em';
+    b.style.background = 'var(--vscode-badge-background, #4d4d4d)';
+    b.style.color = 'var(--vscode-badge-foreground, #fff)';
+    return b;
+  }
+
+  function formatArrayParts(parts, fullLength, maxShown) {
+    var max = maxShown == null ? 8 : maxShown;
+    var n = parts.length;
+    if (fullLength == null) fullLength = n;
+    if (n <= max) return '[' + parts.join(', ') + ']';
+    var headN = 3, tailN = 1;
+    var head = parts.slice(0, headN);
+    var tail = parts.slice(n - tailN, n);
+    // No "(length N)" suffix — see formatValue array branch for
+    // rationale. Keeping both array-formatters in sync.
+    return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
+  }
+
+  function formatArrayWithEllipsis(values, maxShown) {
+    var parts = new Array(values.length);
+    for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
+    return formatArrayParts(parts, values.length, maxShown);
+  }
+
+  /**
+   * Pretty-print a FlatPIR IR node as canonical FlatPPL surface
+   * syntax. Used by the fixed-Dirac viewer path to render the
+   * value argument of `Dirac(value = ...)` without evaluating it
+   * (since the value may be non-scalar — record, array — that
+   * the engine's main-thread evaluator can't materialise without
+   * running the worker).
+   *
+   * Handles the IR shapes the value-position of a fixed binding
+   * can plausibly take: literals, named constants (pi, inf),
+   * binding refs, unary neg of literals, vector / record literals.
+   * Anything more exotic (calls into transcendental ops, etc.)
+   * gets a placeholder "<op>(…)" so the surface form stays
+   * legible without claiming false precision.
+   */
+  function formatIRValue(ir) {
+    if (!ir) return '?';
+    if (ir.kind === 'lit')   return formatScalar(ir.value);
+    if (ir.kind === 'const') return ir.name; // pi / e / inf / true / false
+    if (ir.kind === 'ref') {
+      return (ir.ns && ir.ns !== 'self' ? ir.ns + '.' : '') + ir.name;
+    }
+    if (ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args.length === 1) {
+      return '-' + formatIRValue(ir.args[0]);
+    }
+    if (ir.kind === 'call' && ir.op === 'vector' && Array.isArray(ir.args)) {
+      return '[' + ir.args.map(formatIRValue).join(', ') + ']';
+    }
+    if (ir.kind === 'call' && ir.op === 'record') {
+      var entries = [];
+      var kwargs = ir.kwargs || {};
+      for (var k in kwargs) {
+        entries.push(k + ' = ' + formatIRValue(kwargs[k]));
+      }
+      return 'record(' + entries.join(', ') + ')';
+    }
+    if (ir.kind === 'call' && ir.op === 'tuple' && Array.isArray(ir.args)) {
+      return '(' + ir.args.map(formatIRValue).join(', ') + ')';
+    }
+    if (ir.kind === 'call' && ir.op) {
+      // Generic call: op(arg1, arg2, k=v) — useful for
+      // fchain-style nestings without committing to a precise
+      // pretty-print of unknown ops.
+      var parts = [];
+      if (Array.isArray(ir.args)) {
+        for (var i = 0; i < ir.args.length; i++) parts.push(formatIRValue(ir.args[i]));
+      }
+      var kw = ir.kwargs || {};
+      for (var k2 in kw) parts.push(k2 + ' = ' + formatIRValue(kw[k2]));
+      return ir.op + '(' + parts.join(', ') + ')';
+    }
+    return '?';
+  }
+
+  function formatValue(v, opts) {
+    if (typeof v === 'number')  return formatScalar(v);
+    if (typeof v === 'boolean') return String(v);
+    if (typeof v === 'string')  return JSON.stringify(v);
+    if (v == null)              return 'null';
+    var isArrayLike = Array.isArray(v) || ArrayBuffer.isView(v);
+    if (isArrayLike) {
+      var len = v.length;
+      var max = (opts && opts.maxArray) || 8;
+      if (len <= max) {
+        var parts = new Array(len);
+        for (var i = 0; i < len; i++) parts[i] = formatValue(v[i], opts);
+        return '[' + parts.join(', ') + ']';
+      }
+      var headN = 3, tailN = 1;
+      var head = new Array(headN);
+      for (var hi = 0; hi < headN; hi++) head[hi] = formatValue(v[hi], opts);
+      var tail = new Array(tailN);
+      for (var ti = 0; ti < tailN; ti++) {
+        tail[ti] = formatValue(v[len - tailN + ti], opts);
+      }
+      // Ellipsis form drops the explicit "(length N)" suffix —
+      // panes are often narrow and the elided "…" already signals
+      // the array continues. Callers that need the count can
+      // surface it separately (the corner-plot axis labels and
+      // the info panel both already do).
+      return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
+    }
+    if (typeof v === 'object') {
+      var keys = Object.keys(v);
+      var entries = new Array(keys.length);
+      for (var k = 0; k < keys.length; k++) {
+        entries[k] = keys[k] + ' = ' + formatValue(v[keys[k]], opts);
+      }
+      return 'record(' + entries.join(', ') + ')';
+    }
+    return String(v);
+  }
+
+  function formatLogTotalmass(logTotalmass) {
+    if (!Number.isFinite(logTotalmass)) {
+      return logTotalmass === -Infinity ? '0 (zero mass)' : null;
+    }
+    if (Math.abs(logTotalmass) < 1e-9) return null;   // ≈ normalized
+    // Float64 representable: ~ log(Number.MAX_VALUE) ≈ 709.78. Use a
+    // tighter range so the linear form stays human-readable; outside
+    // that, render in exp(...) form which stays meaningful at any
+    // scale.
+    if (Math.abs(logTotalmass) <= 12) {
+      var linear = Math.exp(logTotalmass);
+      if (linear >= 0.01 && linear < 10000) return linear.toPrecision(4);
+      return linear.toExponential(3);
+    }
+    return 'exp(' + (logTotalmass >= 0 ? '+' : '') + logTotalmass.toPrecision(5) + ')';
+  }
+
+  /**
+   * Tooltip text for the quality-readout span. Spells out the
+   * diagnostic ingredients so a hover gives the full picture.
+   */
+  function qualityTooltip(q) {
+    var parts = [
+      'Importance-sampling quality: ' + q.label,
+      '',
+      'Kish ESS: ' + Math.round(q.ess).toLocaleString('en-US')
+        + ' / ' + q.N.toLocaleString('en-US')
+        + ' (' + (q.ratio * 100).toFixed(1) + '%)',
+    ];
+    if (Number.isFinite(q.kHat)) {
+      parts.push('PSIS k̂: ' + q.kHat.toFixed(3)
+        + '  (≤0.5 finite variance · ≤0.7 usable · >1 untrustworthy)');
+    } else {
+      parts.push('PSIS k̂: not applicable (unweighted measure)');
+    }
+    parts.push('Max single-atom weight: ' + (q.wmax * 100).toFixed(2) + '%');
+    parts.push('Effective DOF (estimate): ' + q.dof);
+    return parts.join('\n');
+  }
+
+  function measureAtomCount(measure) {
+    // Record / tuple measures have no top-level .samples; pull
+    // length from any sub-measure's samples — all components share
+    // the same atom count by construction.
+    if (measure.fields) {
+      var anyKey = Object.keys(measure.fields)[0];
+      return anyKey ? measureAtomCount(measure.fields[anyKey]) : 0;
+    }
+    if (Array.isArray(measure.elems) && measure.elems.length > 0) {
+      return measureAtomCount(measure.elems[0]);
+    }
+    // Array-shape measure: samples is a flat atom-major buffer of
+    // length N × stride (e.g. iid(Normal, 10) at N=100k → buffer
+    // length 1M, dims=[10]). Divide out the stride so N reads as
+    // 100,000, not 1,000,000. Scalar measures have no dims (or
+    // dims=[]) and pass through unchanged.
+    if (measure.samples) {
+      if (measure.dims && measure.dims.length > 0) {
+        var stride = measure.dims.reduce(function(p, n) { return p * n; }, 1);
+        return stride > 0 ? measure.samples.length / stride : 0;
+      }
+      return measure.samples.length;
+    }
+    return 0;
+  }
+
+  function formatCount(n) {
+    // Integer-formatted count with thousands separators.
+    return Math.round(n).toLocaleString('en-US');
+  }
+
+  function formatSampleCount(n) {
+    if (n > 0 && Math.floor(n) === n) {
+      var lg = Math.log10(n);
+      if (lg >= 2 && Number.isInteger(lg)) {
+        var sup = '';
+        var s = String(lg);
+        for (var i = 0; i < s.length; i++) {
+          sup += '⁰¹²³⁴⁵⁶⁷⁸⁹'[+s[i]];
+        }
+        return '10' + sup;
+      }
+    }
+    return formatCount(n);
+  }
+
+  function hexToRgba(hex, alpha) {
+    var m = /^#([0-9a-f]{6})$/i.exec(hex);
+    if (!m) return hex;
+    var n = parseInt(m[1], 16);
+    var r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
       // container: the element the viewer renders inside. Defaults to
@@ -671,9 +952,6 @@
       'save-as': 'M5 9.5C5 9.224 5.224 9 5.5 9H10.5C10.738 9 10.929 9.171 10.979 9.394L11.729 8.644C11.458 8.256 11.009 8 10.5 8H5.5C4.673 8 4 8.673 4 9.5V14H3C2.449 14 2 13.551 2 13V3C2 2.449 2.449 2 3 2H5V3.5C5 4.327 5.673 5 6.5 5H8.5C9.327 5 10 4.327 10 3.5V2H11.379C11.642 2 11.9 2.107 12.086 2.293L13.707 3.914C13.893 4.1 14 4.358 14 4.621V7.04C14.143 7.015 14.289 6.997 14.437 6.997C14.629 6.997 14.817 7.023 15 7.064V4.62C15 4.094 14.787 3.578 14.414 3.206L12.793 1.585C12.421 1.212 11.905 0.999001 11.379 0.999001H3C1.897 1 1 1.897 1 3V13C1 14.103 1.897 15 3 15H7.045L7.293 14H5V9.5ZM6 2H9V3.5C9 3.776 8.776 4 8.5 4H6.5C6.224 4 6 3.776 6 3.5V2ZM16 9.559C16 9.764 15.96 9.967 15.882 10.157C15.803 10.346 15.688 10.519 15.543 10.664L11.254 14.951C10.898 15.307 10.452 15.56 9.964 15.682L8.753 15.982C8.651 16.008 8.544 16.006 8.443 15.978C8.342 15.95 8.249 15.896 8.175 15.822C8.101 15.748 8.047 15.655 8.019 15.554C7.991 15.453 7.99 15.346 8.015 15.244L8.315 14.033C8.437 13.544 8.689 13.098 9.045 12.742L13.333 8.455C13.626 8.162 14.023 7.998 14.437 7.998C14.851 7.998 15.248 8.163 15.541 8.455C15.687 8.599 15.802 8.772 15.881 8.961C15.96 9.151 16 9.354 16 9.559Z',
     };
 
-    function esc(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
 
     function showNodeInfo(d) {
       var phase = d.phase || 'unknown';
@@ -713,24 +991,6 @@
         + errorRow;
     }
 
-    function truncateExpr(expr) {
-      if (!expr) return '';
-      // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
-      var arrMatch = expr.match(/^\\[(.+)\\]$/);
-      if (arrMatch) {
-        var items = arrMatch[1].split(/\\s*,\\s*/);
-        if (items.length > 6) {
-          var head = items.slice(0, 3).join(', ');
-          var tail = items.slice(-3).join(', ');
-          return '[' + head + ', \u2026, ' + tail + ']';
-        }
-      }
-      // Truncate other long expressions in the middle
-      if (expr.length > 80) {
-        return expr.slice(0, 38) + ' \u2026 ' + expr.slice(-38);
-      }
-      return expr;
-    }
 
     // Sentinel name for the module-overview state. Distinct from any
     // user binding name (binding identifiers are barewords; the
@@ -2279,22 +2539,6 @@
      * purple, a measure-alias 'call' node plots grey-blue, etc. Bars
      * sit at low alpha; the line/dots are opaque on top.
      */
-    /**
-     * True when every sample equals the first one. Catches:
-     *   - literal bindings (c = 5.0)
-     *   - derived constants (d = c + 1) — same value at every i
-     *   - aliases to constants
-     *   - degenerate distributions (e.g. Normal(0, 0))
-     * Plotting a histogram for these is just a single tall bar; render
-     * the scalar value as text instead. The check is O(n) but n=5000
-     * floats is sub-millisecond.
-     */
-    function samplesAreConstant(samples) {
-      if (!samples || samples.length === 0) return false;
-      var v = samples[0];
-      for (var i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
-      return true;
-    }
 
     /**
      * Format a fixed scalar for display. JavaScript's default String()
@@ -2312,63 +2556,24 @@
     // so chart ticks match the same convention. Integers pass through
     // unchanged (Number.isInteger short-circuit) so axis ticks at
     // whole numbers stay readable as "1", "2", … rather than "1.000".
-    function formatScalar(v) {
-      if (!Number.isFinite(v)) return String(v);
-      if (Number.isInteger(v)) return String(v);
-      return String(parseFloat(v.toPrecision(4)));
-    }
 
     // "a + b i" / "a - b i" for a complex scalar constant. Both parts
     // go through formatScalar so precision/integer handling matches
     // the real path. The sign is folded into the connector so we never
     // print "a + -b i"; -0 imaginary reads as "+ 0 i".
-    function formatComplexScalar(re, im) {
-      var imv = im === 0 ? 0 : im;            // normalise -0 → 0
-      var sign = imv < 0 ? ' - ' : ' + ';
-      return formatScalar(re) + sign + formatScalar(Math.abs(imv)) + ' i';
-    }
 
     // Toolbar badge for a complex binding rendered as its real part.
     // Static (no interaction) in v1 — the |z| / Im / Argand mode
     // toggle is a tracked follow-up and will replace this with a
     // button group in the same toolbar slot.
-    function complexReBadge() {
-      var b = document.createElement('span');
-      b.textContent = 'complex — showing Re(z)';
-      b.title = 'This binding is complex-valued; the histogram is its '
-        + 'real part. Modulus / Im / Argand views are planned.';
-      b.style.padding = '0.15em 0.6em';
-      b.style.borderRadius = '3px';
-      b.style.fontSize = '0.92em';
-      b.style.background = 'var(--vscode-badge-background, #4d4d4d)';
-      b.style.color = 'var(--vscode-badge-foreground, #fff)';
-      return b;
-    }
 
     // Compose pre-formatted element strings into "[a, b, c]" or
     // "[a, b, c, …, z] (length N)" for long arrays. The threshold
     // balances readability against verbosity: 8 fits on typical
     // screen widths even with ~5-digit values.
-    function formatArrayParts(parts, fullLength, maxShown) {
-      var max = maxShown == null ? 8 : maxShown;
-      var n = parts.length;
-      if (fullLength == null) fullLength = n;
-      if (n <= max) return '[' + parts.join(', ') + ']';
-      var headN = 3, tailN = 1;
-      var head = parts.slice(0, headN);
-      var tail = parts.slice(n - tailN, n);
-      // No "(length N)" suffix — see formatValue array branch for
-      // rationale. Keeping both array-formatters in sync.
-      return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
-    }
 
     // Back-compat shim: takes a numeric array, formats each element
     // via formatScalar, then composes with formatArrayParts.
-    function formatArrayWithEllipsis(values, maxShown) {
-      var parts = new Array(values.length);
-      for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
-      return formatArrayParts(parts, values.length, maxShown);
-    }
 
     // Composable value-to-string for plain JS values — numbers,
     // booleans, strings, arrays, plain objects. Mirrors the
@@ -2377,98 +2582,7 @@
     // pretty-printer that Julia's Base.show pairs with each value
     // type. Used for preset value display in the toolbar dropdown
     // and as the leaf-formatter for constant-measure rendering.
-    /**
-     * Pretty-print a FlatPIR IR node as canonical FlatPPL surface
-     * syntax. Used by the fixed-Dirac viewer path to render the
-     * value argument of `Dirac(value = ...)` without evaluating it
-     * (since the value may be non-scalar — record, array — that
-     * the engine's main-thread evaluator can't materialise without
-     * running the worker).
-     *
-     * Handles the IR shapes the value-position of a fixed binding
-     * can plausibly take: literals, named constants (pi, inf),
-     * binding refs, unary neg of literals, vector / record literals.
-     * Anything more exotic (calls into transcendental ops, etc.)
-     * gets a placeholder "<op>(…)" so the surface form stays
-     * legible without claiming false precision.
-     */
-    function formatIRValue(ir) {
-      if (!ir) return '?';
-      if (ir.kind === 'lit')   return formatScalar(ir.value);
-      if (ir.kind === 'const') return ir.name; // pi / e / inf / true / false
-      if (ir.kind === 'ref') {
-        return (ir.ns && ir.ns !== 'self' ? ir.ns + '.' : '') + ir.name;
-      }
-      if (ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args.length === 1) {
-        return '-' + formatIRValue(ir.args[0]);
-      }
-      if (ir.kind === 'call' && ir.op === 'vector' && Array.isArray(ir.args)) {
-        return '[' + ir.args.map(formatIRValue).join(', ') + ']';
-      }
-      if (ir.kind === 'call' && ir.op === 'record') {
-        var entries = [];
-        var kwargs = ir.kwargs || {};
-        for (var k in kwargs) {
-          entries.push(k + ' = ' + formatIRValue(kwargs[k]));
-        }
-        return 'record(' + entries.join(', ') + ')';
-      }
-      if (ir.kind === 'call' && ir.op === 'tuple' && Array.isArray(ir.args)) {
-        return '(' + ir.args.map(formatIRValue).join(', ') + ')';
-      }
-      if (ir.kind === 'call' && ir.op) {
-        // Generic call: op(arg1, arg2, k=v) — useful for
-        // fchain-style nestings without committing to a precise
-        // pretty-print of unknown ops.
-        var parts = [];
-        if (Array.isArray(ir.args)) {
-          for (var i = 0; i < ir.args.length; i++) parts.push(formatIRValue(ir.args[i]));
-        }
-        var kw = ir.kwargs || {};
-        for (var k2 in kw) parts.push(k2 + ' = ' + formatIRValue(kw[k2]));
-        return ir.op + '(' + parts.join(', ') + ')';
-      }
-      return '?';
-    }
 
-    function formatValue(v, opts) {
-      if (typeof v === 'number')  return formatScalar(v);
-      if (typeof v === 'boolean') return String(v);
-      if (typeof v === 'string')  return JSON.stringify(v);
-      if (v == null)              return 'null';
-      var isArrayLike = Array.isArray(v) || ArrayBuffer.isView(v);
-      if (isArrayLike) {
-        var len = v.length;
-        var max = (opts && opts.maxArray) || 8;
-        if (len <= max) {
-          var parts = new Array(len);
-          for (var i = 0; i < len; i++) parts[i] = formatValue(v[i], opts);
-          return '[' + parts.join(', ') + ']';
-        }
-        var headN = 3, tailN = 1;
-        var head = new Array(headN);
-        for (var hi = 0; hi < headN; hi++) head[hi] = formatValue(v[hi], opts);
-        var tail = new Array(tailN);
-        for (var ti = 0; ti < tailN; ti++) {
-          tail[ti] = formatValue(v[len - tailN + ti], opts);
-        }
-        // Ellipsis form drops the explicit "(length N)" suffix —
-        // panes are often narrow and the elided "…" already signals
-        // the array continues. Callers that need the count can
-        // surface it separately (the corner-plot axis labels and
-        // the info panel both already do).
-        return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
-      }
-      if (typeof v === 'object') {
-        var keys = Object.keys(v);
-        var entries = new Array(keys.length);
-        for (var k = 0; k < keys.length; k++) {
-          entries[k] = keys[k] + ' = ' + formatValue(v[keys[k]], opts);
-        }
-        return 'record(' + entries.join(', ') + ')';
-      }
-      return String(v);
-    }
 
     // True iff every scalar leaf of a record/tuple/array measure has
     // identical samples across all N atoms. The deterministic
@@ -2971,22 +3085,6 @@
         Returns null when the mass is essentially 1 (normalized) — the
         caller skips the badge entirely so the readout only surfaces
         info when there's something to say. */
-    function formatLogTotalmass(logTotalmass) {
-      if (!Number.isFinite(logTotalmass)) {
-        return logTotalmass === -Infinity ? '0 (zero mass)' : null;
-      }
-      if (Math.abs(logTotalmass) < 1e-9) return null;   // ≈ normalized
-      // Float64 representable: ~ log(Number.MAX_VALUE) ≈ 709.78. Use a
-      // tighter range so the linear form stays human-readable; outside
-      // that, render in exp(...) form which stays meaningful at any
-      // scale.
-      if (Math.abs(logTotalmass) <= 12) {
-        var linear = Math.exp(logTotalmass);
-        if (linear >= 0.01 && linear < 10000) return linear.toPrecision(4);
-        return linear.toExponential(3);
-      }
-      return 'exp(' + (logTotalmass >= 0 ? '+' : '') + logTotalmass.toPrecision(5) + ')';
-    }
 
     function renderSampleStats(measure) {
       var wrap = document.createElement('span');
@@ -3070,59 +3168,8 @@
       return wrap;
     }
 
-    /**
-     * Tooltip text for the quality-readout span. Spells out the
-     * diagnostic ingredients so a hover gives the full picture.
-     */
-    function qualityTooltip(q) {
-      var parts = [
-        'Importance-sampling quality: ' + q.label,
-        '',
-        'Kish ESS: ' + Math.round(q.ess).toLocaleString('en-US')
-          + ' / ' + q.N.toLocaleString('en-US')
-          + ' (' + (q.ratio * 100).toFixed(1) + '%)',
-      ];
-      if (Number.isFinite(q.kHat)) {
-        parts.push('PSIS k̂: ' + q.kHat.toFixed(3)
-          + '  (≤0.5 finite variance · ≤0.7 usable · >1 untrustworthy)');
-      } else {
-        parts.push('PSIS k̂: not applicable (unweighted measure)');
-      }
-      parts.push('Max single-atom weight: ' + (q.wmax * 100).toFixed(2) + '%');
-      parts.push('Effective DOF (estimate): ' + q.dof);
-      return parts.join('\n');
-    }
 
-    function measureAtomCount(measure) {
-      // Record / tuple measures have no top-level .samples; pull
-      // length from any sub-measure's samples — all components share
-      // the same atom count by construction.
-      if (measure.fields) {
-        var anyKey = Object.keys(measure.fields)[0];
-        return anyKey ? measureAtomCount(measure.fields[anyKey]) : 0;
-      }
-      if (Array.isArray(measure.elems) && measure.elems.length > 0) {
-        return measureAtomCount(measure.elems[0]);
-      }
-      // Array-shape measure: samples is a flat atom-major buffer of
-      // length N × stride (e.g. iid(Normal, 10) at N=100k → buffer
-      // length 1M, dims=[10]). Divide out the stride so N reads as
-      // 100,000, not 1,000,000. Scalar measures have no dims (or
-      // dims=[]) and pass through unchanged.
-      if (measure.samples) {
-        if (measure.dims && measure.dims.length > 0) {
-          var stride = measure.dims.reduce(function(p, n) { return p * n; }, 1);
-          return stride > 0 ? measure.samples.length / stride : 0;
-        }
-        return measure.samples.length;
-      }
-      return 0;
-    }
 
-    function formatCount(n) {
-      // Integer-formatted count with thousands separators.
-      return Math.round(n).toLocaleString('en-US');
-    }
 
     // Compact sample-count rendering: powers of 10 collapse to
     // superscript form ("10⁵" instead of "100,000") to save toolbar
@@ -3130,20 +3177,6 @@
     // Anything else falls back to the comma-grouped count. Only
     // exact powers ≥ 10² qualify; "10" itself stays "10" and small
     // counts read better verbatim.
-    function formatSampleCount(n) {
-      if (n > 0 && Math.floor(n) === n) {
-        var lg = Math.log10(n);
-        if (lg >= 2 && Number.isInteger(lg)) {
-          var sup = '';
-          var s = String(lg);
-          for (var i = 0; i < s.length; i++) {
-            sup += '⁰¹²³⁴⁵⁶⁷⁸⁹'[+s[i]];
-          }
-          return '10' + sup;
-        }
-      }
-      return formatCount(n);
-    }
 
     /**
      * Compact dropdown axis selector for correlations mode. Button
@@ -6638,13 +6671,6 @@
       }
     }
 
-    function hexToRgba(hex, alpha) {
-      var m = /^#([0-9a-f]{6})$/i.exec(hex);
-      if (!m) return hex;
-      var n = parseInt(m[1], 16);
-      var r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
-      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
-    }
 
     function renderDAG(data) {
       if (!ctx.cy) initCy();
