@@ -460,6 +460,15 @@ export function isPersistableSetField(v) {
   return false;
 }
 
+// Recognised cartprod named-set identifiers (the bareword form a
+// FlatPPL domain may use, e.g. `cartprod(x = reals, y = posreals)`).
+// Used by isPersistableSetField above. Defined as a module-private
+// const — not exported because no other module reads it.
+const KNOWN_NAMED_SETS = {
+  reals: 1, posreals: 1, nonnegreals: 1, unitinterval: 1,
+  integers: 1, posintegers: 1, nonnegintegers: 1, booleans: 1,
+};
+
 export function presetValuesText(values) {
   var text = formatValue(values);
   if (text.indexOf('record(') === 0 && text.charAt(text.length - 1) === ')') {
