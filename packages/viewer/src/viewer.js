@@ -1226,6 +1226,184 @@
   }
 
 
+
+  // ---- Hoisted L4 override store + plot-frame helpers (Phase 3e) ----
+
+  /**
+   * Reset plot-content's inline style. The marginals view sets
+   * display:grid with several layout properties; subsequent
+   * single-chart views need a clean slate so their content fills
+   * the pane without inheriting a stale grid.
+   */
+  function resetPlotContentStyle(ctx) {
+    var el = document.getElementById('plot-content');
+    el.style.display = '';
+    el.style.gridTemplateColumns = '';
+    el.style.gridTemplateRows = '';
+    el.style.gap = '';
+    el.style.padding = '';
+    el.style.boxSizing = '';
+    el.style.flexDirection = '';
+  }
+
+  function showPlotMessage(ctx, html, options) {
+    if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
+    resetPlotContentStyle(ctx);
+    var el = document.getElementById('plot-content');
+    var cancellable = options && options.cancellable;
+    var hint       = options && options.hint;
+    var stopHtml = cancellable
+      ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
+      : '';
+    var cls = hint ? ' class="hint"' : '';
+    el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
+    if (cancellable) {
+      var btn = document.getElementById('plot-stop-btn');
+      if (btn) btn.addEventListener('click', cancelAllSampling);
+    }
+  }
+
+  /**
+   * Cancel any in-flight sample requests by terminating the worker
+   * and rejecting every pending promise. The main-thread sample
+   * cache is preserved, so bindings that finished before the cancel
+   * stay available — only the in-flight request is dropped.
+   *
+   * The next sendWorker() call will lazily re-spawn the worker via
+   * ensureSamplerWorker(). Cheap enough that we don't bother
+   * keeping a "warm" worker around.
+   */
+  function cancelAllSampling(ctx) {
+    if (ctx.samplerWorker) {
+      try { ctx.samplerWorker.terminate(); } catch (_) {}
+      ctx.samplerWorker = null;
+      ctx.samplerWorkerPromise = null;
+    }
+    var entries = ctx.pendingRequests.values();
+    ctx.pendingRequests = new Map();
+    for (var entry of entries) {
+      try { entry.reject(new Error('cancelled')); } catch (_) {}
+    }
+  }
+
+  function overrideEntryFor(ctx, plan) {
+    if (plan.presetName == null) return plan.autoOverride;
+    return ctx.presetOverrides.get(plan.presetName) || null;
+  }
+
+  function hasOverrides(ctx, plan) {
+    var e = overrideEntryFor(ctx, plan);
+    if (!e) return false;
+    var v = e.values || {};
+    for (var k in v) {
+      if (Object.prototype.hasOwnProperty.call(v, k)) return true;
+    }
+    return false;
+  }
+
+  function setOverrideFor(ctx, plan, entry) {
+    if (plan.presetName == null) {
+      plan.autoOverride = entry;
+      return;
+    }
+    if (entry) {
+      ctx.presetOverrides.set(plan.presetName, entry);
+    } else {
+      ctx.presetOverrides.delete(plan.presetName);
+    }
+  }
+
+  function ensureOverrideFor(ctx, plan) {
+    var existing = overrideEntryFor(ctx, plan);
+    if (existing) {
+      existing.values = Object.assign({}, existing.values || {});
+      return existing;
+    }
+    return { values: {} };
+  }
+
+  function activePresetFor(ctx, plan) {
+    var baseValues = baseValuesFor(ctx, plan);
+    var entry = overrideEntryFor(ctx, plan);
+    if (!entry) return { values: baseValues };
+    return {
+      values: Object.assign({}, baseValues, entry.values || {}),
+    };
+  }
+
+  function baseValuesFor(ctx, plan) {
+    if (plan.presetName != null && plan.matchedPresets) {
+      for (var i = 0; i < plan.matchedPresets.length; i++) {
+        if (plan.matchedPresets[i].name === plan.presetName) {
+          return plan.matchedPresets[i].values || {};
+        }
+      }
+    }
+    return {};
+  }
+
+  function domainOverrideEntryFor(ctx, plan) {
+    if (plan.domainName == null) return plan.domainAutoOverride || null;
+    return ctx.domainOverrides.get(plan.domainName) || null;
+  }
+
+  function ensureDomainOverrideFor(ctx, plan) {
+    var existing = domainOverrideEntryFor(ctx, plan);
+    if (existing) {
+      existing.ranges = Object.assign({}, existing.ranges || {});
+      return existing;
+    }
+    return { ranges: {} };
+  }
+
+  function setDomainOverrideFor(ctx, plan, entry) {
+    if (plan.domainName == null) {
+      plan.domainAutoOverride = entry;
+      return;
+    }
+    if (entry) {
+      ctx.domainOverrides.set(plan.domainName, entry);
+    } else {
+      ctx.domainOverrides.delete(plan.domainName);
+    }
+  }
+
+  function hasDomainOverrides(ctx, plan) {
+    var e = domainOverrideEntryFor(ctx, plan);
+    if (!e || !e.ranges) return false;
+    return Object.keys(e.ranges).length > 0;
+  }
+
+  function baseRangesFor(ctx, plan) {
+    if (plan.domainName != null && plan.matchedDomains) {
+      for (var i = 0; i < plan.matchedDomains.length; i++) {
+        if (plan.matchedDomains[i].name === plan.domainName) {
+          return plan.matchedDomains[i].ranges || {};
+        }
+      }
+    }
+    return {};
+  }
+
+  function activeDomainRangesFor(ctx, plan) {
+    var base = baseRangesFor(ctx, plan);
+    var entry = domainOverrideEntryFor(ctx, plan);
+    if (!entry || !entry.ranges) return Object.assign({}, base);
+    return Object.assign({}, base, entry.ranges);
+  }
+
+  function activeFixedNamesFor(ctx, plan) {
+    if (plan.presetName != null && plan.matchedPresets) {
+      for (var i = 0; i < plan.matchedPresets.length; i++) {
+        if (plan.matchedPresets[i].name === plan.presetName) {
+          return plan.matchedPresets[i].fixedNames || new Set();
+        }
+      }
+    }
+    return new Set();
+  }
+
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
 
@@ -2473,62 +2651,8 @@
       }
     }
 
-    /**
-     * Reset plot-content's inline style. The marginals view sets
-     * display:grid with several layout properties; subsequent
-     * single-chart views need a clean slate so their content fills
-     * the pane without inheriting a stale grid.
-     */
-    function resetPlotContentStyle() {
-      var el = document.getElementById('plot-content');
-      el.style.display = '';
-      el.style.gridTemplateColumns = '';
-      el.style.gridTemplateRows = '';
-      el.style.gap = '';
-      el.style.padding = '';
-      el.style.boxSizing = '';
-      el.style.flexDirection = '';
-    }
 
-    function showPlotMessage(html, options) {
-      if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
-      resetPlotContentStyle();
-      var el = document.getElementById('plot-content');
-      var cancellable = options && options.cancellable;
-      var hint       = options && options.hint;
-      var stopHtml = cancellable
-        ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
-        : '';
-      var cls = hint ? ' class="hint"' : '';
-      el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
-      if (cancellable) {
-        var btn = document.getElementById('plot-stop-btn');
-        if (btn) btn.addEventListener('click', cancelAllSampling);
-      }
-    }
 
-    /**
-     * Cancel any in-flight sample requests by terminating the worker
-     * and rejecting every pending promise. The main-thread sample
-     * cache is preserved, so bindings that finished before the cancel
-     * stay available — only the in-flight request is dropped.
-     *
-     * The next sendWorker() call will lazily re-spawn the worker via
-     * ensureSamplerWorker(). Cheap enough that we don't bother
-     * keeping a "warm" worker around.
-     */
-    function cancelAllSampling() {
-      if (ctx.samplerWorker) {
-        try { ctx.samplerWorker.terminate(); } catch (_) {}
-        ctx.samplerWorker = null;
-        ctx.samplerWorkerPromise = null;
-      }
-      var entries = ctx.pendingRequests.values();
-      ctx.pendingRequests = new Map();
-      for (var entry of entries) {
-        try { entry.reject(new Error('cancelled')); } catch (_) {}
-      }
-    }
 
     /**
      * Single entry-point for laying out a plot. Owns:
@@ -2558,7 +2682,7 @@
      *                      grid layout, etc.) directly into it.
      */
     function renderPlotFrame(opts) {
-      resetPlotContentStyle();
+      resetPlotContentStyle(ctx);
       if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
       var el = document.getElementById('plot-content');
       el.innerHTML = '';
@@ -2631,7 +2755,7 @@
      * many fields) so the value still fits within the pane.
      */
     function renderTextValue(bindingName, text) {
-      resetPlotContentStyle();
+      resetPlotContentStyle(ctx);
       if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
       var el = document.getElementById('plot-content');
       var name = bindingName ? esc(bindingName) : '';
@@ -2676,12 +2800,12 @@
           msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
         }
         msg += '</ul>';
-        showPlotMessage(msg);
+        showPlotMessage(ctx, msg);
         return;
       }
       if (!ctx.currentPlotPlan) {
         if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
-          showPlotMessage('Click a binding in the graph to plot it.', { hint: true });
+          showPlotMessage(ctx, 'Click a binding in the graph to plot it.', { hint: true });
           return;
         }
         // Synthetic / internal nodes (anonymous lifted subexpressions,
@@ -2692,10 +2816,10 @@
         // — there's nothing user-meaningful to plot, and pointing at
         // a different binding would be guesswork.
         if (ctx.currentPlotBindingName == null) {
-          showPlotMessage('Internal nodes are not plottable.', { hint: true });
+          showPlotMessage(ctx, 'Internal nodes are not plottable.', { hint: true });
           return;
         }
-        showPlotMessage('Not plottable for <strong>' + name + '</strong>.', { hint: true });
+        showPlotMessage(ctx, 'Not plottable for <strong>' + name + '</strong>.', { hint: true });
         return;
       }
       // Profile mode (function / likelihood bindings) dispatches to
@@ -2731,7 +2855,7 @@
       // mode shows the Stop button so the user can abort long
       // operations (per-i ref chains under huge sample counts).
       var arrayMode = ctx.currentPlotPlan.mode === 'array';
-      showPlotMessage(arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
+      showPlotMessage(ctx, arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
       var planForCall = ctx.currentPlotPlan;
 
       // Cache hit avoids the worker entirely. We still defer through
@@ -2757,10 +2881,10 @@
             // User clicked Stop. Make the message actionable rather
             // than dead-end so they know how to retry.
             var name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
-            showPlotMessage('Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
+            showPlotMessage(ctx, 'Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
           } else {
             // Real errors are actionable; not italic/dimmed.
-            showPlotMessage('Could not compute plot: ' + esc(msg));
+            showPlotMessage(ctx, 'Could not compute plot: ' + esc(msg));
           }
         });
     }
@@ -2918,7 +3042,7 @@
     function renderRecordMarginals(measure, bindingName, extraToolbarControls) {
       var axes = listScalarAxes(measure);
       if (axes.length === 0) {
-        showPlotMessage('No scalar fields to plot for <strong>' + esc(bindingName) + '</strong>.', { hint: true });
+        showPlotMessage(ctx, 'No scalar fields to plot for <strong>' + esc(bindingName) + '</strong>.', { hint: true });
         return;
       }
 
@@ -3907,14 +4031,14 @@
     // samples are constant, otherwise fall through to the histogram
     // path (engine-broadcast cases like lp_obs).
     function renderFixedRecord(plan) {
-      showPlotMessage('Loading…', { hint: true });
+      showPlotMessage(ctx, 'Loading…', { hint: true });
       var planForCall = plan;
       getMeasure(ctx, plan.name).then(function(measure) {
         if (ctx.currentPlotPlan !== planForCall) return;
         renderConstantRecord(measure, plan.name);
       }).catch(function(err) {
         if (ctx.currentPlotPlan !== planForCall) return;
-        showPlotMessage('Failed to load <strong>' + esc(plan.name) + '</strong>: '
+        showPlotMessage(ctx, 'Failed to load <strong>' + esc(plan.name) + '</strong>: '
           + esc(err && err.message || String(err)));
       });
     }
@@ -3950,13 +4074,13 @@
       // as the function/likelihood profile path.
       for (var ai = 0; ai < plan.axes.length; ai++) {
         if (plan.axes[ai].path && plan.axes[ai].path.length > 0) {
-          showPlotMessage('Kernel plot: record / array inputs not yet supported '
+          showPlotMessage(ctx, 'Kernel plot: record / array inputs not yet supported '
             + '— try a kernel with scalar inputs only.',
             { hint: true });
           return;
         }
       }
-      var active = activePresetFor(plan);
+      var active = activePresetFor(ctx, plan);
       // Cache key embeds the active preset's values directly so two
       // states of the same preset (with vs. without overrides, or
       // two different override sets) don't collide on cached
@@ -3998,7 +4122,7 @@
       var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
       // We can do most of the IR work synchronously, but we need
       // the binding-source samples first to fill env entries.
-      showPlotMessage('Sampling…', { cancellable: true, hint: true });
+      showPlotMessage(ctx, 'Sampling…', { cancellable: true, hint: true });
       var planForCall = plan;
       // Cache hit: use previously-sampled measure directly.
       if (ctx.measureCache.has(cacheKey)) {
@@ -4067,58 +4191,26 @@
         renderKernelSampleMeasure(measure, plan);
       }).catch(function(err) {
         if (ctx.currentPlotPlan !== planForCall) return;
-        showPlotMessage('Kernel plot failed: ' + esc(err && err.message || String(err)));
+        showPlotMessage(ctx, 'Kernel plot failed: ' + esc(err && err.message || String(err)));
       });
     }
 
     /** The override entry for the active selection — auto's lives
         on the plan (per-binding), named presets live in the
         module-wide ctx.presetOverrides map. Returns null if none. */
-    function overrideEntryFor(plan) {
-      if (plan.presetName == null) return plan.autoOverride;
-      return ctx.presetOverrides.get(plan.presetName) || null;
-    }
 
     /** Whether the active preset selection currently has any value
         overrides. Drives the "(modified)" tag and the reset/persist
         button visibility on the Inputs control. Axis-range overrides
-        moved to the Domain control's hasDomainOverrides(plan). */
-    function hasOverrides(plan) {
-      var e = overrideEntryFor(plan);
-      if (!e) return false;
-      var v = e.values || {};
-      for (var k in v) {
-        if (Object.prototype.hasOwnProperty.call(v, k)) return true;
-      }
-      return false;
-    }
+        moved to the Domain control's hasDomainOverrides(ctx, plan). */
 
     /** Write back an override entry for the active selection.
         Routes auto entries to the plan (per-binding), named
         entries to the module-wide store. Pass null to clear. */
-    function setOverrideFor(plan, entry) {
-      if (plan.presetName == null) {
-        plan.autoOverride = entry;
-        return;
-      }
-      if (entry) {
-        ctx.presetOverrides.set(plan.presetName, entry);
-      } else {
-        ctx.presetOverrides.delete(plan.presetName);
-      }
-    }
 
     /** Get-or-create a fresh override entry for the active
         selection (caller will mutate it and call setOverrideFor
         to commit). */
-    function ensureOverrideFor(plan) {
-      var existing = overrideEntryFor(plan);
-      if (existing) {
-        existing.values = Object.assign({}, existing.values || {});
-        return existing;
-      }
-      return { values: {} };
-    }
 
     /** Effective {values} for a plan, merging base preset values
         with any override on top. Base values for named presets come
@@ -4127,28 +4219,10 @@
         separately, but env-substitution falls through to type
         defaults + source-sample materialisation when no explicit
         value is present). */
-    function activePresetFor(plan) {
-      var baseValues = baseValuesFor(plan);
-      var entry = overrideEntryFor(plan);
-      if (!entry) return { values: baseValues };
-      return {
-        values: Object.assign({}, baseValues, entry.values || {}),
-      };
-    }
 
     /** Source-declared base values for the active preset (no
         overrides applied). For named presets this is
         matchedPresets[i].values; for auto, an empty object. */
-    function baseValuesFor(plan) {
-      if (plan.presetName != null && plan.matchedPresets) {
-        for (var i = 0; i < plan.matchedPresets.length; i++) {
-          if (plan.matchedPresets[i].name === plan.presetName) {
-            return plan.matchedPresets[i].values || {};
-          }
-        }
-      }
-      return {};
-    }
 
     // ===================================================================
     // Domain (cartprod) override plumbing — mirrors the preset path
@@ -4160,67 +4234,23 @@
     /** Override entry for the active domain, or null when none. Auto
         domain's entry lives on plan.domainAutoOverride; named ones in
         ctx.domainOverrides keyed by name. */
-    function domainOverrideEntryFor(plan) {
-      if (plan.domainName == null) return plan.domainAutoOverride || null;
-      return ctx.domainOverrides.get(plan.domainName) || null;
-    }
 
     /** Get-or-create a domain override entry for the active selection.
         Caller mutates entry.ranges and commits via setDomainOverrideFor. */
-    function ensureDomainOverrideFor(plan) {
-      var existing = domainOverrideEntryFor(plan);
-      if (existing) {
-        existing.ranges = Object.assign({}, existing.ranges || {});
-        return existing;
-      }
-      return { ranges: {} };
-    }
 
     /** Commit (or clear, with null) a domain override entry. */
-    function setDomainOverrideFor(plan, entry) {
-      if (plan.domainName == null) {
-        plan.domainAutoOverride = entry;
-        return;
-      }
-      if (entry) {
-        ctx.domainOverrides.set(plan.domainName, entry);
-      } else {
-        ctx.domainOverrides.delete(plan.domainName);
-      }
-    }
 
     /** True when the active domain has at least one ranged kwarg in
         its override entry. Used to gate visibility of the reset /
         save buttons. */
-    function hasDomainOverrides(plan) {
-      var e = domainOverrideEntryFor(plan);
-      if (!e || !e.ranges) return false;
-      return Object.keys(e.ranges).length > 0;
-    }
 
     /** Source-declared base ranges for the active domain (no overrides
         applied). For named domains this is matchedDomains[i].ranges;
         for auto, an empty object (the auto domain has no source-side
         ranges — the per-axis auto-fit code computes them on demand). */
-    function baseRangesFor(plan) {
-      if (plan.domainName != null && plan.matchedDomains) {
-        for (var i = 0; i < plan.matchedDomains.length; i++) {
-          if (plan.matchedDomains[i].name === plan.domainName) {
-            return plan.matchedDomains[i].ranges || {};
-          }
-        }
-      }
-      return {};
-    }
 
     /** Effective ranges for the active domain — base merged with any
         override entry's ranges on top. Returns { kwarg: {lo, hi} }. */
-    function activeDomainRangesFor(plan) {
-      var base = baseRangesFor(plan);
-      var entry = domainOverrideEntryFor(plan);
-      if (!entry || !entry.ranges) return Object.assign({}, base);
-      return Object.assign({}, base, entry.ranges);
-    }
 
     /** Held-constant kwargs for the active preset. Drawn from the
         engine's findMatchingPresets `fixedNames` (kwargs whose source
@@ -4228,16 +4258,6 @@
         during optimization" hint). For the auto preset no fixed-hint
         exists, so the set is always empty. Returns a Set so callers
         can do .has(name) directly. */
-    function activeFixedNamesFor(plan) {
-      if (plan.presetName != null && plan.matchedPresets) {
-        for (var i = 0; i < plan.matchedPresets.length; i++) {
-          if (plan.matchedPresets[i].name === plan.presetName) {
-            return plan.matchedPresets[i].fixedNames || new Set();
-          }
-        }
-      }
-      return new Set();
-    }
 
     // Shared icon-button helper used by the Inputs and Domain
     // toolbars' reset / save / save-as buttons. iconKey picks a
@@ -4423,14 +4443,14 @@
       // = null; named → presetOverrides.delete(name)) and re-renders
       // through onChange. The dropdown row's "(modified)" tag then
       // disappears with no further user action.
-      if (hasOverrides(plan)) {
+      if (hasOverrides(ctx, plan)) {
         var actionGroup = document.createElement('span');
         actionGroup.style.display = 'inline-flex';
         actionGroup.style.gap = '2px';
         var resetBtn = makeActionButton('discard', 'Reset preset to source values');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
-          setOverrideFor(plan, null);
+          setOverrideFor(ctx, plan, null);
           onChange();
         });
         actionGroup.appendChild(resetBtn);
@@ -4644,14 +4664,14 @@
       // Reset / save / save-as icons mirror the Inputs control,
       // grouped in a tight inline-flex span so they read as one
       // pair rather than picking up the toolbar's wider gap.
-      if (hasDomainOverrides(plan)) {
+      if (hasDomainOverrides(ctx, plan)) {
         var actionGroup = document.createElement('span');
         actionGroup.style.display = 'inline-flex';
         actionGroup.style.gap = '2px';
         var resetBtn = makeActionButton('discard', 'Reset domain to source ranges');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
-          setDomainOverrideFor(plan, null);
+          setDomainOverrideFor(ctx, plan, null);
           onChange();
         });
         actionGroup.appendChild(resetBtn);
@@ -4683,7 +4703,7 @@
         ctx.host.promptForName for the new-binding name. Hidden
         otherwise so the user never sees a disabled-looking button. */
     function canPersistActive(plan) {
-      if (!hasOverrides(plan)) return false;
+      if (!hasOverrides(ctx, plan)) return false;
       if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
       if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
       if (ctx.host.canPersist === false) return false;
@@ -4742,7 +4762,7 @@
         optimization starting point would silently strip the
         hold-constant annotation. */
     function buildPersistedPresetLine(plan) {
-      var active = activePresetFor(plan);
+      var active = activePresetFor(ctx, plan);
       var b = ctx.currentBindings.get(plan.presetName);
       var srcArgs = b.node.value.args || [];
       var parts = [];
@@ -4920,7 +4940,7 @@
         a named set like `reals` / `posreals` / …). For auto we
         additionally need ctx.host.promptForName for the new-binding name. */
     function canPersistDomain(plan) {
-      if (!hasDomainOverrides(plan)) return false;
+      if (!hasDomainOverrides(ctx, plan)) return false;
       if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
       if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
       if (ctx.host.canPersist === false) return false;
@@ -4961,7 +4981,7 @@
     function buildPersistedDomainLine(plan) {
       var b = ctx.currentBindings.get(plan.domainName);
       var srcArgs = b.node.value.args || [];
-      var override = domainOverrideEntryFor(plan);
+      var override = domainOverrideEntryFor(ctx, plan);
       var or = (override && override.ranges) || {};
       var parts = [];
       for (var i = 0; i < srcArgs.length; i++) {
@@ -5352,7 +5372,7 @@
         if (axes[i].key === plan.sweepKey) { sweepAxis = axes[i]; break; }
       }
       if (!sweepAxis) {
-        showPlotMessage('Profile plot: no axis selected for <strong>'
+        showPlotMessage(ctx, 'Profile plot: no axis selected for <strong>'
           + esc(plan.name) + '</strong>.', { hint: true });
         return;
       }
@@ -5368,7 +5388,7 @@
       // Top-level-scalar-only restriction for F4a.
       for (var a = 0; a < axes.length; a++) {
         if (axes[a].path && axes[a].path.length > 0) {
-          showPlotMessage('Profile plot: record / array inputs not yet supported — '
+          showPlotMessage(ctx, 'Profile plot: record / array inputs not yet supported — '
             + 'try a binding with scalar inputs only.',
             { hint: true });
           return;
@@ -5384,7 +5404,7 @@
       // for any axis whose kwarg the preset (incl. modified
       // overrides) covers — so when the user picks a preset, we
       // don't even fetch the source binding.
-      var active = activePresetFor(plan);
+      var active = activePresetFor(ctx, plan);
       var fixedEnv = {};
       var nonSweptBindingSources = [];   // [{paramName, sourceName}, ...]
       for (var a2 = 0; a2 < axes.length; a2++) {
@@ -5409,7 +5429,7 @@
       var sweepInput = inputByKwarg[sweepAxis.kwargName];
       var sweepParamName = sweepInput && sweepInput.paramName;
       if (!sweepParamName) {
-        showPlotMessage('Profile plot: cannot resolve sweep parameter.', { hint: true });
+        showPlotMessage(ctx, 'Profile plot: cannot resolve sweep parameter.', { hint: true });
         return;
       }
       // For kernels / likelihoods we walk the kernel body via
@@ -5450,7 +5470,7 @@
       ir = FlatPPLEngine.orchestrator.inlineForProfile(
         ir, paramNames, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
       var POINT_COUNT = 200;
-      showPlotMessage('Profiling…', { cancellable: true, hint: true });
+      showPlotMessage(ctx, 'Profiling…', { cancellable: true, hint: true });
       var planForCall = plan;
       // The body may reference other bindings via (ref self <name>) —
       // e.g. `f_a = functionof(c * _par_, ...)` where `c` is an outer
@@ -5472,7 +5492,7 @@
       //      auto-fit. The cache stores auto-fits only.
       // Note: presetOverrides are orthogonal — they drive non-swept
       // input values, not x-axis ranges.
-      var domainRanges = activeDomainRangesFor(plan);
+      var domainRanges = activeDomainRangesFor(ctx, plan);
       var domainRangeForSweep = domainRanges[plan.sweepKey];
       var cacheKey = plan.name + '|' + plan.sweepKey + '|D=' + (plan.domainName || '');
       var rangePromise;
@@ -5559,7 +5579,7 @@
         renderProfileLine(reply.samples, rangeRef[0], plan, sweepAxis);
       }).catch(function(err) {
         if (ctx.currentPlotPlan !== planForCall) return;
-        showPlotMessage('Profile plot failed: ' + esc(err && err.message || String(err)));
+        showPlotMessage(ctx, 'Profile plot failed: ' + esc(err && err.message || String(err)));
       });
     }
 
@@ -5683,7 +5703,7 @@
       // marked fixed), fall back to the unfiltered list so the user
       // can still pick something; the absence of any sweepable axis
       // is a model-authoring decision, not a viewer constraint.
-      var fixedNames = activeFixedNamesFor(plan);
+      var fixedNames = activeFixedNamesFor(ctx, plan);
       var visibleAxes = plan.axes;
       if (fixedNames && fixedNames.size > 0) {
         var kept = plan.axes.filter(function(a) {
@@ -5788,10 +5808,10 @@
         }
         var key = plan.sweepKey;
         if (!key) return;
-        var entry = ensureDomainOverrideFor(plan);
+        var entry = ensureDomainOverrideFor(ctx, plan);
         entry.ranges = entry.ranges || {};
         entry.ranges[key] = { lo: newLo, hi: newHi };
-        setDomainOverrideFor(plan, entry);
+        setDomainOverrideFor(ctx, plan, entry);
         renderProfilePlotForCurrent();
       };
       xLoInput.addEventListener('change', commitRange);
@@ -5819,7 +5839,7 @@
       }
       var defaultText = '';
       if (sweepKwarg) {
-        var activeForLabel = activePresetFor(plan);
+        var activeForLabel = activePresetFor(ctx, plan);
         var v;
         if (activeForLabel.values
             && Object.prototype.hasOwnProperty.call(activeForLabel.values, sweepKwarg)) {
@@ -6035,9 +6055,9 @@
         }
       }
       if (!kwarg) return;
-      var entry = ensureOverrideFor(plan);
+      var entry = ensureOverrideFor(ctx, plan);
       entry.values[kwarg] = x;
-      setOverrideFor(plan, entry);
+      setOverrideFor(ctx, plan, entry);
     }
 
     function renderArrayStepPlot(arr) {
