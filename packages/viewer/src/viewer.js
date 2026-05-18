@@ -1126,7 +1126,7 @@
     //   Map<domainName, { ranges }>
     // ranges: { kwargName → { lo, hi } }   user-set range overrides
     ctx.domainOverrides = new Map();
-    var rootSeed = 1;
+    ctx.rootSeed = 1;
     // Sample budget for chain-based plots. Higher → smoother histograms,
     // marginal cost grows linearly. Tuned for sub-100ms response.
     // Sample budget per binding when the visualizer renders a histogram.
@@ -1135,7 +1135,7 @@
     // configUpdate message and updates it on settings changes. Value
     // here is just an in-flight default until the first configUpdate
     // arrives — the panel always boots with a config push from the host.
-    var SAMPLE_COUNT = 100000;
+    ctx.SAMPLE_COUNT = 100000;
 
     // Per-atom rejection budget for matTruncate's rejection-redraw path
     // (spec §06 truncate). When the parent measure isn't CDF-invertible,
@@ -1145,7 +1145,7 @@
     // measures; lower values keep large-N plots responsive. The host
     // pushes a new value through configUpdate when the user changes
     // the corresponding setting (VS Code: flatppl.truncate.rejectionBudget).
-    var REJECTION_BUDGET = 1000;
+    ctx.REJECTION_BUDGET = 1000;
 
     function rebuildDerivations() {
       if (!currentBindings) {
@@ -1334,7 +1334,7 @@
         h = h ^ name.charCodeAt(i);
         h = Math.imul(h, 16777619);
       }
-      return (h ^ rootSeed) >>> 0;
+      return (h ^ ctx.rootSeed) >>> 0;
     }
 
     /**
@@ -1396,9 +1396,9 @@
         fixedValues: ctx.derivationsState.fixedValues,
         getMeasure:  getMeasure,
         sendWorker:  sendWorker,
-        sampleCount: SAMPLE_COUNT,
-        rootSeed:    rootSeed,
-        rejectionBudget: REJECTION_BUDGET,
+        sampleCount: ctx.SAMPLE_COUNT,
+        rootSeed:    ctx.rootSeed,
+        rejectionBudget: ctx.REJECTION_BUDGET,
       });
       promise.then(function(m) { ctx.measureCache.set(name, m); });
       return promise;
@@ -1408,7 +1408,7 @@
     // names so the rest of viewer.js keeps working without further
     // edits.
     function fixedValueToMeasure(v) {
-      return FlatPPLEngine.materialiser.fixedValueToMeasure(v, SAMPLE_COUNT);
+      return FlatPPLEngine.materialiser.fixedValueToMeasure(v, ctx.SAMPLE_COUNT);
     }
     function collectRefArrays(ir) {
       var fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
@@ -2518,7 +2518,7 @@
         // Length-mismatch with SAMPLE_COUNT identifies a literal-array
         // measure (kind: 'array' derivation): per-atom these are
         // deterministic, even though the array's own elements differ.
-        if (m.samples.length !== SAMPLE_COUNT) return true;
+        if (m.samples.length !== ctx.SAMPLE_COUNT) return true;
         return samplesAreConstant(m.samples);
       }
       return false;
@@ -2565,7 +2565,7 @@
         //   - length !== SAMPLE_COUNT: a literal-data array
         //     (kind:'array' derivation surfaced as a record field);
         //     surface every element with array ellipsis.
-        if (m.samples.length === SAMPLE_COUNT) return formatScalar(m.samples[0]);
+        if (m.samples.length === ctx.SAMPLE_COUNT) return formatScalar(m.samples[0]);
         return formatValue(m.samples);
       }
       return '?';
@@ -3980,7 +3980,7 @@
         // the per-atom semantics of the closed-measure getMeasure
         // path. Per spec §04, stochastic ancestors that aren't
         // boundary inputs participate in the kernel's randomness.
-        return materialiseConcreteMeasure(ir, SAMPLE_COUNT, nameSeed(plan.name));
+        return materialiseConcreteMeasure(ir, ctx.SAMPLE_COUNT, nameSeed(plan.name));
       }).then(function(measure) {
         if (ctx.currentPlotPlan !== planForCall) return;
         ctx.measureCache.set(cacheKey, measure);
@@ -7024,8 +7024,8 @@
         // but the underlying samples will be different.
         if (typeof cfg.sampleCount === 'number'
             && cfg.sampleCount > 0
-            && cfg.sampleCount !== SAMPLE_COUNT) {
-          SAMPLE_COUNT = cfg.sampleCount | 0;
+            && cfg.sampleCount !== ctx.SAMPLE_COUNT) {
+          ctx.SAMPLE_COUNT = cfg.sampleCount | 0;
           ctx.measureCache = new Map();
           ctx.histogramCache = new Map();
           if (ctx.plotEnabled) renderPlotForCurrent();
@@ -7047,8 +7047,8 @@
         // current setting. Re-render to recompute against the new value.
         if (typeof cfg.truncateRejectionBudget === 'number'
             && cfg.truncateRejectionBudget >= 1
-            && cfg.truncateRejectionBudget !== REJECTION_BUDGET) {
-          REJECTION_BUDGET = cfg.truncateRejectionBudget | 0;
+            && cfg.truncateRejectionBudget !== ctx.REJECTION_BUDGET) {
+          ctx.REJECTION_BUDGET = cfg.truncateRejectionBudget | 0;
           ctx.measureCache = new Map();
           ctx.histogramCache = new Map();
           if (ctx.plotEnabled) renderPlotForCurrent();
