@@ -1404,6 +1404,273 @@
   }
 
 
+
+  // ---- Hoisted leaf batch (Phase 3f) — header/info, leaf defaults,
+  //      persist-helpers, plan-memory, bubble teardown ----
+
+  function showNodeInfo(d) {
+    var phase = d.phase || 'unknown';
+    var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
+    var unsupportedRow = '';
+    if (d.unsupported) {
+      var msg = 'disintegration unresolved: ' + esc(d.unsupportedReason || '');
+      if (d.unsupportedDetail) msg += ' — ' + esc(d.unsupportedDetail);
+      unsupportedRow = '<div class="expr" style="color:#FF8A65;">' + msg + '</div>';
+    }
+    // Type-error row(s). Drawn in the same red as the node border so
+    // the visual link reads at a glance. Each diagnostic gets its own
+    // line — a single binding can pick up several mismatches if its
+    // RHS has multiple bad arg positions.
+    var errorRow = '';
+    var errors = errorsForBinding(ctx, d.id);
+    if (errors && errors.length > 0) {
+      for (var i = 0; i < errors.length; i++) {
+        errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
+      }
+    }
+    // Construction kind (binding.type — draw, lawof, call, …) is
+    // intentionally omitted: the expression always starts with the
+    // operator, and the DAG node's shape + color already encodes
+    // the same axis. The inferred FlatPIR type/shape carries
+    // strictly richer information (structural result type) and
+    // takes that pill's slot.
+    var inferTag = d.inferredType
+      ? '<span class="infer">' + esc(d.inferredType) + '</span>'
+      : '';
+    document.getElementById('info').innerHTML =
+      '<div class="row"><span class="name">' + esc(d.label) + '</span>'
+      + phaseTag
+      + inferTag + '</div>'
+      + '<div class="expr">' + esc(d.expr) + '</div>'
+      + unsupportedRow
+      + errorRow;
+  }
+
+  function updateHeader(ctx, data) {
+    var el = document.getElementById('header-expr');
+    // Module view: no per-node target; just label the view.
+    if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
+      el.innerHTML = '<span class="target-name">module</span>';
+      return;
+    }
+    var target = null;
+    for (var i = 0; i < data.nodes.length; i++) {
+      if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
+    }
+    if (!target) { el.innerHTML = ''; return; }
+    var name = target.label || target.id;
+    var expr = truncateExpr(target.expr);
+    el.innerHTML = '<span class="target-name">' + esc(name) + '</span>'
+      + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
+  }
+
+  function updateBackBtn(ctx) {
+    document.getElementById('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
+  }
+
+  function makeActionButton(ctx, iconKey, title) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.style.background = 'transparent';
+    b.style.color = 'var(--vscode-foreground, #cccccc)';
+    b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+    b.style.borderRadius = '3px';
+    b.style.padding = '2px 4px';
+    b.style.display = 'inline-flex';
+    b.style.alignItems = 'center';
+    b.style.justifyContent = 'center';
+    b.style.cursor = 'pointer';
+    b.style.opacity = '0.75';
+    b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
+      + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
+      + 'aria-hidden="true"><path d="' + ctx.CODICON_PATHS[iconKey] + '"/></svg>';
+    b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
+    b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
+    return b;
+  }
+
+  function domainBoundsText(kwargOrder, ranges, setNames) {
+    var parts = [];
+    for (var i = 0; i < kwargOrder.length; i++) {
+      var k = kwargOrder[i];
+      var r = ranges && ranges[k];
+      if (r) {
+        parts.push(k + ' ∈ [' + formatScalar(r.lo) + ', ' + formatScalar(r.hi) + ']');
+      } else if (setNames && setNames[k]) {
+        parts.push(k + ' ∈ ' + setNames[k]);
+      }
+    }
+    return parts.length ? parts.join(', ') : '(no range)';
+  }
+
+  function formatScalarForSource(ctx, v) {
+    if (typeof v === 'boolean') {
+      // Boolean spelling follows the source-file variant: FlatPPL
+      // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
+      // capitalized `True`/`False`.
+      if (ctx.currentVariantId === 'flatppy') return v ? 'True' : 'False';
+      return v ? 'true' : 'false';
+    }
+    if (!Number.isFinite(v)) return String(v);
+    return String(v);
+  }
+
+  function isPersistableSetField(v) {
+    if (!v) return false;
+    if (v.type === 'CallExpr' && v.callee && v.callee.name === 'interval'
+        && Array.isArray(v.args) && v.args.length === 2
+        && v.args[0].type === 'NumberLiteral'
+        && v.args[1].type === 'NumberLiteral') return true;
+    if (v.type === 'Identifier' && KNOWN_NAMED_SETS[v.name]) return true;
+    return false;
+  }
+
+  function presetValuesText(values) {
+    var text = formatValue(values);
+    if (text.indexOf('record(') === 0 && text.charAt(text.length - 1) === ')') {
+      return text.slice('record('.length, -1);
+    }
+    return text;
+  }
+
+  function defaultValueForLeafType(leafType) {
+    if (!leafType) return 0;
+    if (leafType.kind === 'scalar') {
+      if (leafType.prim === 'integer') return 0;
+      if (leafType.prim === 'boolean') return false;
+      return 0;
+    }
+    return 0;
+  }
+
+  function defaultRangeForLeafType(leafType) {
+    if (leafType && leafType.kind === 'scalar' && leafType.prim === 'integer') {
+      return [-10, 10];
+    }
+    return [-5, 5];
+  }
+
+  function rangeFromSetDescriptor(descriptor) {
+    if (!descriptor) return null;
+    switch (descriptor.kind) {
+      case 'interval':       return [descriptor.lo, descriptor.hi];
+      case 'reals':          return [-5, 5];
+      case 'posreals':       return [0.01, 5];
+      case 'nonnegreals':    return [0, 5];
+      case 'unitinterval':   return [0, 1];
+      case 'integers':       return [-10, 10];
+      case 'posintegers':    return [1, 20];
+      case 'nonnegintegers': return [0, 20];
+      case 'booleans':       return [0, 1];
+      default:               return null;
+    }
+  }
+
+  function resolveSweepRange(ctx, axis) {
+    var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
+      axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
+    if (descriptor && descriptor.kind === 'empirical') {
+      return getMeasure(ctx, descriptor.name).then(function(m) {
+        if (m && m.samples && m.samples.length > 0) {
+          var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
+          if (range && range[0] < range[1]) return range;
+        }
+        return defaultRangeForLeafType(axis.leafType);
+      }, function() {
+        return defaultRangeForLeafType(axis.leafType);
+      });
+    }
+    var fromDescriptor = rangeFromSetDescriptor(descriptor);
+    if (fromDescriptor) return Promise.resolve(fromDescriptor);
+    return Promise.resolve(defaultRangeForLeafType(axis.leafType));
+  }
+
+  function filterOverrideToAxes(override, axisKwargs, key) {
+    if (!override) return null;
+    var src = override[key] || {};
+    var dst = {};
+    var kept = false;
+    for (var k in src) {
+      if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+      if (!axisKwargs.has(k)) continue;
+      dst[k] = src[k];
+      kept = true;
+    }
+    if (!kept) return null;
+    var out = Object.assign({}, override);
+    out[key] = dst;
+    return out;
+  }
+
+  function applyRememberedSelections(ctx, plan) {
+    if (!plan) return;
+    var mem = ctx.planMemoryByName.get(plan.name);
+    if (!mem) return;
+    var axisKwargs = new Set();
+    if (plan.axes) {
+      for (var i = 0; i < plan.axes.length; i++) {
+        if (plan.axes[i].kwargName) axisKwargs.add(plan.axes[i].kwargName);
+      }
+    }
+    if (mem.sweepKey
+        && plan.axes
+        && plan.axes.some(function(a) { return a.key === mem.sweepKey; })) {
+      plan.sweepKey = mem.sweepKey;
+    }
+    if (mem.outputKey
+        && plan.outputs
+        && plan.outputs.some(function(o) { return o.key === mem.outputKey; })) {
+      plan.outputKey = mem.outputKey;
+    }
+    plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
+    plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
+    if (mem.presetName != null
+        && plan.matchedPresets
+        && plan.matchedPresets.some(function(p) { return p.name === mem.presetName; })) {
+      plan.presetName = mem.presetName;
+    }
+    if (mem.domainName != null
+        && plan.matchedDomains
+        && plan.matchedDomains.some(function(d) { return d.name === mem.domainName; })) {
+      plan.domainName = mem.domainName;
+    }
+  }
+
+  function rememberPlanSelections(ctx, plan) {
+    if (!plan || !plan.name) return;
+    ctx.planMemoryByName.set(plan.name, {
+      sweepKey: plan.sweepKey || null,
+      outputKey: plan.outputKey || null,
+      presetName: plan.presetName || null,
+      domainName: plan.domainName || null,
+      autoOverride: plan.autoOverride || null,
+      domainAutoOverride: plan.domainAutoOverride || null,
+    });
+  }
+
+  function teardownBubbles(ctx) {
+    if (!ctx.bb) return;
+    ctx.bb.getPaths().forEach(function(p) {
+      p.update = function() {};
+      ctx.bb.removePath(p);
+    });
+    ctx.cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
+  }
+
+  function bubbleMemberIds(r, allReifications) {
+    var ids = {};
+    for (var i = 0; i < r.kernel.length; i++) ids[r.kernel[i]] = true;
+    for (var j = 0; j < allReifications.length; j++) {
+      var r2 = allReifications[j];
+      if (r2 === r || !ids[r2.name]) continue;
+      for (var k = 0; k < r2.kernel.length; k++) ids[r2.kernel[k]] = true;
+    }
+    return ids;
+  }
+
+
     FlatPPLViewer.mount = function mount(container, opts) {
       opts = opts || {};
 
@@ -1580,43 +1847,6 @@
     };
 
 
-    function showNodeInfo(d) {
-      var phase = d.phase || 'unknown';
-      var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
-      var unsupportedRow = '';
-      if (d.unsupported) {
-        var msg = 'disintegration unresolved: ' + esc(d.unsupportedReason || '');
-        if (d.unsupportedDetail) msg += ' — ' + esc(d.unsupportedDetail);
-        unsupportedRow = '<div class="expr" style="color:#FF8A65;">' + msg + '</div>';
-      }
-      // Type-error row(s). Drawn in the same red as the node border so
-      // the visual link reads at a glance. Each diagnostic gets its own
-      // line — a single binding can pick up several mismatches if its
-      // RHS has multiple bad arg positions.
-      var errorRow = '';
-      var errors = errorsForBinding(ctx, d.id);
-      if (errors && errors.length > 0) {
-        for (var i = 0; i < errors.length; i++) {
-          errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
-        }
-      }
-      // Construction kind (binding.type — draw, lawof, call, …) is
-      // intentionally omitted: the expression always starts with the
-      // operator, and the DAG node's shape + color already encodes
-      // the same axis. The inferred FlatPIR type/shape carries
-      // strictly richer information (structural result type) and
-      // takes that pill's slot.
-      var inferTag = d.inferredType
-        ? '<span class="infer">' + esc(d.inferredType) + '</span>'
-        : '';
-      document.getElementById('info').innerHTML =
-        '<div class="row"><span class="name">' + esc(d.label) + '</span>'
-        + phaseTag
-        + inferTag + '</div>'
-        + '<div class="expr">' + esc(d.expr) + '</div>'
-        + unsupportedRow
-        + errorRow;
-    }
 
 
     // Sentinel name for the module-overview state. Distinct from any
@@ -1626,27 +1856,7 @@
     // distinguish module view from a single-binding view.
     ctx.MODULE_TARGET = ':module';
 
-    function updateHeader(data) {
-      var el = document.getElementById('header-expr');
-      // Module view: no per-node target; just label the view.
-      if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
-        el.innerHTML = '<span class="target-name">module</span>';
-        return;
-      }
-      var target = null;
-      for (var i = 0; i < data.nodes.length; i++) {
-        if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
-      }
-      if (!target) { el.innerHTML = ''; return; }
-      var name = target.label || target.id;
-      var expr = truncateExpr(target.expr);
-      el.innerHTML = '<span class="target-name">' + esc(name) + '</span>'
-        + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
-    }
 
-    function updateBackBtn() {
-      document.getElementById('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
-    }
 
     function initCy() {
       ctx.cy = cytoscape({
@@ -4266,28 +4476,6 @@
     // shows the action verb implicitly via context, and dropping the
     // text labels frees the horizontal space the dropdown needs to
     // breathe.
-    function makeActionButton(iconKey, title) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.title = title;
-      b.setAttribute('aria-label', title);
-      b.style.background = 'transparent';
-      b.style.color = 'var(--vscode-foreground, #cccccc)';
-      b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
-      b.style.borderRadius = '3px';
-      b.style.padding = '2px 4px';
-      b.style.display = 'inline-flex';
-      b.style.alignItems = 'center';
-      b.style.justifyContent = 'center';
-      b.style.cursor = 'pointer';
-      b.style.opacity = '0.75';
-      b.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" '
-        + 'xmlns="http://www.w3.org/2000/svg" fill="currentColor" '
-        + 'aria-hidden="true"><path d="' + ctx.CODICON_PATHS[iconKey] + '"/></svg>';
-      b.addEventListener('mouseenter', function() { b.style.opacity = '1'; });
-      b.addEventListener('mouseleave', function() { b.style.opacity = '0.75'; });
-      return b;
-    }
 
     // Build a "Inputs: [auto / pars1 / …]" control fragment for the
     // profile / kernel-sample plot toolbar.
@@ -4447,7 +4635,7 @@
         var actionGroup = document.createElement('span');
         actionGroup.style.display = 'inline-flex';
         actionGroup.style.gap = '2px';
-        var resetBtn = makeActionButton('discard', 'Reset preset to source values');
+        var resetBtn = makeActionButton(ctx, 'discard', 'Reset preset to source values');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
           setOverrideFor(ctx, plan, null);
@@ -4468,7 +4656,7 @@
         // host.promptForName.
         if (canPersistActive(plan)) {
           var isSaveAs = (plan.presetName == null);
-          var persistBtn = makeActionButton(
+          var persistBtn = makeActionButton(ctx, 
             isSaveAs ? 'save-as' : 'save',
             isSaveAs
               ? 'Save as new preset binding'
@@ -4494,19 +4682,6 @@
         kwargs from `ranges` (lo/hi pairs from interval(...) fields
         or user overrides) and unbounded kwargs from `setNames`
         (bare `reals` / `posreals` / … fields). */
-    function domainBoundsText(kwargOrder, ranges, setNames) {
-      var parts = [];
-      for (var i = 0; i < kwargOrder.length; i++) {
-        var k = kwargOrder[i];
-        var r = ranges && ranges[k];
-        if (r) {
-          parts.push(k + ' ∈ [' + formatScalar(r.lo) + ', ' + formatScalar(r.hi) + ']');
-        } else if (setNames && setNames[k]) {
-          parts.push(k + ' ∈ ' + setNames[k]);
-        }
-      }
-      return parts.length ? parts.join(', ') : '(no range)';
-    }
 
     function buildDomainControl(plan, onChange) {
       var frag = document.createDocumentFragment();
@@ -4668,7 +4843,7 @@
         var actionGroup = document.createElement('span');
         actionGroup.style.display = 'inline-flex';
         actionGroup.style.gap = '2px';
-        var resetBtn = makeActionButton('discard', 'Reset domain to source ranges');
+        var resetBtn = makeActionButton(ctx, 'discard', 'Reset domain to source ranges');
         resetBtn.addEventListener('click', function(ev) {
           ev.stopPropagation();
           setDomainOverrideFor(ctx, plan, null);
@@ -4678,7 +4853,7 @@
 
         if (canPersistDomain(plan)) {
           var isSaveAs = (plan.domainName == null);
-          var persistBtn = makeActionButton(
+          var persistBtn = makeActionButton(ctx, 
             isSaveAs ? 'save-as' : 'save',
             isSaveAs
               ? 'Save as new cartprod domain binding'
@@ -4741,17 +4916,6 @@
         rather than formatScalar because formatScalar rounds to 4
         significant figures for display; source needs full
         precision. */
-    function formatScalarForSource(v) {
-      if (typeof v === 'boolean') {
-        // Boolean spelling follows the source-file variant: FlatPPL
-        // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
-        // capitalized `True`/`False`.
-        if (ctx.currentVariantId === 'flatppy') return v ? 'True' : 'False';
-        return v ? 'true' : 'false';
-      }
-      if (!Number.isFinite(v)) return String(v);
-      return String(v);
-    }
 
     /** Build the replacement source text for a named preset-point
         record binding, merging the current source RHS kwargs with the
@@ -4777,7 +4941,7 @@
                     && Object.prototype.hasOwnProperty.call(active.values, kwarg);
         var v = override ? active.values[kwarg]
                          : (innerSrc && innerSrc.value);
-        var text = formatScalarForSource(v);
+        var text = formatScalarForSource(ctx, v);
         if (wasFixed) text = 'fixed(' + text + ')';
         parts.push(kwarg + ' = ' + text);
       }
@@ -4835,7 +4999,7 @@
         if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
         var v = combined[k];
         if (!Number.isFinite(v)) continue;
-        parts.push(k + ' = ' + formatScalarForSource(v));
+        parts.push(k + ' = ' + formatScalarForSource(ctx, v));
       }
       if (parts.length === 0) return;
       var existingNames = [];
@@ -4870,15 +5034,6 @@
         either `interval(NumberLiteral, NumberLiteral)` or a bare
         named-set reference. Used by canPersistDomain to gate the
         save button. */
-    function isPersistableSetField(v) {
-      if (!v) return false;
-      if (v.type === 'CallExpr' && v.callee && v.callee.name === 'interval'
-          && Array.isArray(v.args) && v.args.length === 2
-          && v.args[0].type === 'NumberLiteral'
-          && v.args[1].type === 'NumberLiteral') return true;
-      if (v.type === 'Identifier' && KNOWN_NAMED_SETS[v.name]) return true;
-      return false;
-    }
 
     /** Serialize a recognized cartprod field value back to source
         text. Mirrors isPersistableSetField — caller has already
@@ -4887,8 +5042,8 @@
       if (v.type === 'Identifier') return v.name;
       // interval(NumLit, NumLit)
       return 'interval('
-        + formatScalarForSource(v.args[0].value) + ', '
-        + formatScalarForSource(v.args[1].value) + ')';
+        + formatScalarForSource(ctx, v.args[0].value) + ', '
+        + formatScalarForSource(ctx, v.args[1].value) + ')';
     }
 
     /** Pick a "natural" set-source-text for one of a plan's input
@@ -4928,8 +5083,8 @@
         case 'interval':
           if (d.lo === 0 && d.hi === 1) return 'unitinterval';
           return 'interval('
-            + formatScalarForSource(d.lo) + ', '
-            + formatScalarForSource(d.hi) + ')';
+            + formatScalarForSource(ctx, d.lo) + ', '
+            + formatScalarForSource(ctx, d.hi) + ')';
         default:                return 'reals';  // empirical / unknown
       }
     }
@@ -4989,8 +5144,8 @@
         var kwarg = sa.name;
         if (Object.prototype.hasOwnProperty.call(or, kwarg)) {
           parts.push(kwarg + ' = interval('
-            + formatScalarForSource(or[kwarg].lo) + ', '
-            + formatScalarForSource(or[kwarg].hi) + ')');
+            + formatScalarForSource(ctx, or[kwarg].lo) + ', '
+            + formatScalarForSource(ctx, or[kwarg].hi) + ')');
         } else {
           parts.push(kwarg + ' = ' + setFieldToSource(sa.value));
         }
@@ -5050,16 +5205,16 @@
         var r = Object.prototype.hasOwnProperty.call(ranges, kw) ? ranges[kw] : null;
         if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
           parts.push(kw + ' = interval('
-            + formatScalarForSource(r.lo) + ', '
-            + formatScalarForSource(r.hi) + ')');
+            + formatScalarForSource(ctx, r.lo) + ', '
+            + formatScalarForSource(ctx, r.hi) + ')');
           continue;
         }
         var cached = ctx.profileRangeCache.get(
           plan.name + '|' + kw + '|D=' + (plan.domainName || ''));
         if (cached && Number.isFinite(cached.lo) && Number.isFinite(cached.hi)) {
           parts.push(kw + ' = interval('
-            + formatScalarForSource(cached.lo) + ', '
-            + formatScalarForSource(cached.hi) + ')');
+            + formatScalarForSource(ctx, cached.lo) + ', '
+            + formatScalarForSource(ctx, cached.hi) + ')');
           continue;
         }
         parts.push(kw + ' = ' + defaultSetSourceForKwarg(plan, kw));
@@ -5087,13 +5242,6 @@
     // Strip the outer "record(...)" wrapper from formatValue's
     // output so the dropdown reads cleanly:
     //   record(theta1 = 1.4, theta2 = 1.0)  →  theta1 = 1.4, theta2 = 1.0
-    function presetValuesText(values) {
-      var text = formatValue(values);
-      if (text.indexOf('record(') === 0 && text.charAt(text.length - 1) === ')') {
-        return text.slice('record('.length, -1);
-      }
-      return text;
-    }
 
     // Synthesise the auto-mode fixed-input values for a profile /
     // kernel-sample plan, matching the renderer's fallback
@@ -5275,25 +5423,10 @@
     // to 1.0 (avoids degenerate cases like sigma=0); intervals
     // default to the midpoint; integers default to 0; etc. F4b will
     // let the user override these via the fixed-values panel.
-    function defaultValueForLeafType(leafType) {
-      if (!leafType) return 0;
-      if (leafType.kind === 'scalar') {
-        if (leafType.prim === 'integer') return 0;
-        if (leafType.prim === 'boolean') return false;
-        return 0;
-      }
-      return 0;
-    }
 
     // Default sweep range for an axis from leaf-type alone. Used as
     // the final fallback after the axis-set descriptor and empirical
     // backref both fail to give a range.
-    function defaultRangeForLeafType(leafType) {
-      if (leafType && leafType.kind === 'scalar' && leafType.prim === 'integer') {
-        return [-10, 10];
-      }
-      return [-5, 5];
-    }
 
     // Map a structural set descriptor (from
     // orchestrator.resolveAxisBaseSet) to a concrete sweep range.
@@ -5307,21 +5440,6 @@
     //   nonnegintegers → [0, 20]
     //   booleans       → [0, 1]
     //   interval(a, b) → [a, b]
-    function rangeFromSetDescriptor(descriptor) {
-      if (!descriptor) return null;
-      switch (descriptor.kind) {
-        case 'interval':       return [descriptor.lo, descriptor.hi];
-        case 'reals':          return [-5, 5];
-        case 'posreals':       return [0.01, 5];
-        case 'nonnegreals':    return [0, 5];
-        case 'unitinterval':   return [0, 1];
-        case 'integers':       return [-10, 10];
-        case 'posintegers':    return [1, 20];
-        case 'nonnegintegers': return [0, 20];
-        case 'booleans':       return [0, 1];
-        default:               return null;
-      }
-    }
 
     // Resolve the auto-range for a swept axis. Three-tier fallback:
     //   1. Set descriptor (interval / reals / posreals / …) from
@@ -5333,24 +5451,6 @@
     //   3. Leaf-type default — placeholders, anything unresolved.
     // Returns a Promise<[lo, hi]> since step 2 may need to await
     // getMeasure(...).
-    function resolveSweepRange(axis) {
-      var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
-        axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
-      if (descriptor && descriptor.kind === 'empirical') {
-        return getMeasure(ctx, descriptor.name).then(function(m) {
-          if (m && m.samples && m.samples.length > 0) {
-            var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
-            if (range && range[0] < range[1]) return range;
-          }
-          return defaultRangeForLeafType(axis.leafType);
-        }, function() {
-          return defaultRangeForLeafType(axis.leafType);
-        });
-      }
-      var fromDescriptor = rangeFromSetDescriptor(descriptor);
-      if (fromDescriptor) return Promise.resolve(fromDescriptor);
-      return Promise.resolve(defaultRangeForLeafType(axis.leafType));
-    }
 
     // Render the profile plot for a callable binding. Builds env with
     // default values for non-swept inputs, picks a default range for
@@ -5503,7 +5603,7 @@
         var cached = ctx.profileRangeCache.get(cacheKey);
         rangePromise = cached
           ? Promise.resolve([cached.lo, cached.hi])
-          : resolveSweepRange(sweepAxis).then(function(r) {
+          : resolveSweepRange(ctx, sweepAxis).then(function(r) {
               ctx.profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
               return r;
             });
@@ -6497,68 +6597,8 @@
     // this, navigating back later would re-apply a value to a kwarg
     // that no longer exists, leaking stale state into the override
     // map.
-    function filterOverrideToAxes(override, axisKwargs, key) {
-      if (!override) return null;
-      var src = override[key] || {};
-      var dst = {};
-      var kept = false;
-      for (var k in src) {
-        if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
-        if (!axisKwargs.has(k)) continue;
-        dst[k] = src[k];
-        kept = true;
-      }
-      if (!kept) return null;
-      var out = Object.assign({}, override);
-      out[key] = dst;
-      return out;
-    }
 
-    function applyRememberedSelections(plan) {
-      if (!plan) return;
-      var mem = ctx.planMemoryByName.get(plan.name);
-      if (!mem) return;
-      var axisKwargs = new Set();
-      if (plan.axes) {
-        for (var i = 0; i < plan.axes.length; i++) {
-          if (plan.axes[i].kwargName) axisKwargs.add(plan.axes[i].kwargName);
-        }
-      }
-      if (mem.sweepKey
-          && plan.axes
-          && plan.axes.some(function(a) { return a.key === mem.sweepKey; })) {
-        plan.sweepKey = mem.sweepKey;
-      }
-      if (mem.outputKey
-          && plan.outputs
-          && plan.outputs.some(function(o) { return o.key === mem.outputKey; })) {
-        plan.outputKey = mem.outputKey;
-      }
-      plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
-      plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
-      if (mem.presetName != null
-          && plan.matchedPresets
-          && plan.matchedPresets.some(function(p) { return p.name === mem.presetName; })) {
-        plan.presetName = mem.presetName;
-      }
-      if (mem.domainName != null
-          && plan.matchedDomains
-          && plan.matchedDomains.some(function(d) { return d.name === mem.domainName; })) {
-        plan.domainName = mem.domainName;
-      }
-    }
 
-    function rememberPlanSelections(plan) {
-      if (!plan || !plan.name) return;
-      ctx.planMemoryByName.set(plan.name, {
-        sweepKey: plan.sweepKey || null,
-        outputKey: plan.outputKey || null,
-        presetName: plan.presetName || null,
-        domainName: plan.domainName || null,
-        autoOverride: plan.autoOverride || null,
-        domainAutoOverride: plan.domainAutoOverride || null,
-      });
-    }
 
     // Call after every focusNode() to update the Plot tab's enabled
     // state and (if visible) re-render its content.
@@ -6569,7 +6609,7 @@
       // rememberPlanSelections re-keys on plan.name, so this also
       // captures same-binding edits in time for applyRemembered…
       // to restore them onto the rebuilt plan below.
-      rememberPlanSelections(ctx.currentPlotPlan);
+      rememberPlanSelections(ctx, ctx.currentPlotPlan);
       var binding = ctx.currentBindings ? ctx.currentBindings.get(bindingName) : null;
       var plan = buildPlotPlan(binding, ctx.currentBindings);
       // Restore user-driven plan state across rebuilds — both same-
@@ -6577,7 +6617,7 @@
       // (click away and back). pendingPresetName / pendingDomainName
       // (set by auto-save-as) take precedence over remembered
       // selection so a freshly-coined name lands selected.
-      applyRememberedSelections(plan);
+      applyRememberedSelections(ctx, plan);
       if (plan) {
         if (ctx.pendingPresetName != null) {
           var pn = ctx.pendingPresetName;
@@ -6601,7 +6641,7 @@
       // or applyRemembered's filter decisions are reflected in memory
       // before the next mutation. The matching outgoing snapshot at
       // the top of this function captures user edits between calls.
-      rememberPlanSelections(plan);
+      rememberPlanSelections(ctx, plan);
       // Only surface the clicked name in the plot UI when it actually
       // names a binding. Synthetic nodes (anonymous inline expressions,
       // placeholders, holes) carry IDs like 'prior:target' that aren't
@@ -6672,34 +6712,16 @@
     //      already queued in the throttle. Those queued callbacks fire after
     //      tear-down and call this.update() on the dead path. Fix: stomp
     //      path.update to a no-op before removing.
-    function teardownBubbles() {
-      if (!ctx.bb) return;
-      ctx.bb.getPaths().forEach(function(p) {
-        p.update = function() {};
-        ctx.bb.removePath(p);
-      });
-      ctx.cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
-    }
 
     // Member-id set for one reification's bubble: its own kernel PLUS the
     // full kernel of any nested reification whose name appears in this
     // kernel. Nested-reification synthetic nodes need positive potential —
     // not just "avoid exemption" — for the outer contour to wrap around
     // them rather than pinching past.
-    function bubbleMemberIds(r, allReifications) {
-      var ids = {};
-      for (var i = 0; i < r.kernel.length; i++) ids[r.kernel[i]] = true;
-      for (var j = 0; j < allReifications.length; j++) {
-        var r2 = allReifications[j];
-        if (r2 === r || !ids[r2.name]) continue;
-        for (var k = 0; k < r2.kernel.length; k++) ids[r2.kernel[k]] = true;
-      }
-      return ids;
-    }
 
     function drawReificationLassos(data) {
       if (!ctx.bb || !data.reifications) return;
-      teardownBubbles();
+      teardownBubbles(ctx);
 
       for (var k = 0; k < data.reifications.length; k++) {
         var r = data.reifications[k];
@@ -6741,7 +6763,7 @@
 
     function renderDAG(data) {
       if (!ctx.cy) initCy();
-      updateHeader(data);
+      updateHeader(ctx, data);
 
       var elements = [];
 
@@ -6863,7 +6885,7 @@
 
       // Tear down old bubble paths BEFORE detaching elements so we can
       // clear scratch on still-attached cytoscape elements.
-      teardownBubbles();
+      teardownBubbles(ctx);
       ctx.cy.elements().remove();
       ctx.cy.add(elements);
 
@@ -6965,7 +6987,7 @@
 
       ctx.currentState = { data: dagData, targetName: targetName };
       renderDAG(dagData);
-      updateBackBtn();
+      updateBackBtn(ctx);
       updatePlotForBinding(targetName);
       // Notify the host so any URL / panel state stays in sync with
       // the viewer's actual focus. Internal navigations (DAG node
@@ -6999,7 +7021,7 @@
 
       ctx.currentState = { data: dagData, targetName: ctx.MODULE_TARGET };
       renderDAG(dagData);
-      updateBackBtn();
+      updateBackBtn(ctx);
       // Mirror module-view focus to the host (null = whole module).
       if (ctx.host && typeof ctx.host.setTarget === 'function') {
         try { ctx.host.setTarget(null); } catch (_) {}
@@ -7018,7 +7040,7 @@
       if (ctx.history.length === 0) return;
       ctx.currentState = ctx.history.pop();
       renderDAG(ctx.currentState.data);
-      updateBackBtn();
+      updateBackBtn(ctx);
       // Module view has no per-binding plot target and no per-binding
       // title — call updatePlotForBinding(null) so the plot pane shows
       // its module-mode placeholder, and tell the host to set a
@@ -7131,7 +7153,7 @@
             && cfg.dagNavigationHistoryCap >= 0) {
           ctx.HISTORY_CAP = cfg.dagNavigationHistoryCap | 0;
           while (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
-          updateBackBtn();
+          updateBackBtn(ctx);
         }
 
         // truncateRejectionBudget: re-bind. Drop the cache because any
