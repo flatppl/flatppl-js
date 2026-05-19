@@ -1913,21 +1913,33 @@ function expandMeasureIR(name, derivations, visited, bindings) {
         // jointchain: ∏ conditional densities. Record/labelled (or a
         // record-shaped base) ⇒ walkJoint `fields` + `source`/name
         // overlay env-threading. Positional scalar base
-        // (tuple-observed) ⇒ walkJoint positional `args`, which now
+        // (tuple-observed) ⇒ walkJoint positional `args`, which
         // threads each consumed scalar under `s{i}` so the kernel
-        // body's rewired `ref(s0)` resolves to the observed prior.
-        // 2-step positional scope (the funnel form); N-ary positional
-        // density is a clean deferral (null ⇒ rejects cleanly).
+        // body's rewired `ref(s0)` / `vector(ref s0, ref s1, …)`
+        // resolves to the observed prior. N-ary positional is just
+        // the loop generalisation of the 2-step funnel form: each
+        // kernel K_i takes the cat of prior variates [s0..s_{i-1}]
+        // (spec §06 `c~K3([a,b])`), realised by `bindKernel`'s
+        // existing rewireHole — single-prior collapses to `ref(s0)`,
+        // ≥2 priors to a vector(ref s_k, …). The density walker's
+        // positional loop (density.js walkJointFieldsOrPositional)
+        // already iterates `ir.args.length` without bound, so this
+        // commit just lifts the structural cap at the expand step.
         const baseIsRecord = baseIR.kind === 'call'
           && (baseIR.op === 'joint' || baseIR.op === 'record')
           && Array.isArray(baseIR.fields);
         if (!d.labels && !baseIsRecord) {
-          if (steps.length !== 2) return null;
-          const ke = kernelExpand(steps[1]);
-          if (!ke) return null;
-          const kb = bindKernel(ke, ['s0']);   // hole → ref('s0')
-          if (!kb) return null;
-          return { kind: 'call', op: 'joint', args: [baseIR, kb] };
+          const positionalArgs = [baseIR];
+          const positionalPriorNames = ['s0'];
+          for (let i = 1; i < steps.length; i++) {
+            const ke = kernelExpand(steps[i]);
+            if (!ke) return null;
+            const kb = bindKernel(ke, positionalPriorNames.slice());
+            if (!kb) return null;
+            positionalArgs.push(kb);
+            positionalPriorNames.push('s' + i);
+          }
+          return { kind: 'call', op: 'joint', args: positionalArgs };
         }
         for (let i = 1; i < steps.length; i++) {
           const ke = kernelExpand(steps[i]);

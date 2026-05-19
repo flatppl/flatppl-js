@@ -343,6 +343,46 @@ test('density 2b-ext: positional jointchain joint logdensity (dependent)', async
     `positional jointchain joint logp ${got} vs analytic ${want}`);
 });
 
+test('density: N-ary positional jointchain joint logdensity (3-step, exact)',
+  async () => {
+  // Positional analogue of the labelled 3-step test above: same
+  // a~N(0,1); b~N(a,1); c~N(b,1) Markov walk, observed positionally
+  // as [0.3, 0.5, 0.9]. logp = logN(0.3;0,1) + logN(0.5;0.3,1) +
+  // logN(0.9;0.5,1) — exact (no MC), since every step's kernel
+  // sees the observed prior via walkJoint's positional `s{i}`
+  // threading. K2's `get(_,2)` picks q=s1 out of the cat over [s0,s1].
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'jc = jointchain(M, K1, K2)\n' +
+    'lp = logdensityof(jc, [0.3, 0.5, 0.9])\n', 'lp', 2000);
+  const got = m.samples[0];
+  const want = normLogpdf(0.3, 0, 1) + normLogpdf(0.5, 0.3, 1)
+             + normLogpdf(0.9, 0.5, 1);
+  assert.ok(Math.abs(got - want) < 1e-6,
+    `N-ary positional jointchain joint logp ${got} vs analytic ${want}`);
+});
+
+test('density: N-ary positional jointchain joint logdensity (4-step, exact)',
+  async () => {
+  // Four steps to exercise priorNames ≥ 3 (the 4th kernel's hole
+  // rewires to vector(ref s0, ref s1, ref s2)). a~N(0,1); a1~N(a,1);
+  // a2~N(a1,1); a3~N(a2,1); observed [0.1, 0.4, 0.6, 0.9].
+  const m = await materialise(
+    'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
+    'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
+    'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
+    'K3 = fn(Normal(mu = get(_, 3), sigma = 1.0))\n' +
+    'jc = jointchain(M, K1, K2, K3)\n' +
+    'lp = logdensityof(jc, [0.1, 0.4, 0.6, 0.9])\n', 'lp', 2000);
+  const got = m.samples[0];
+  const want = normLogpdf(0.1, 0, 1) + normLogpdf(0.4, 0.1, 1)
+             + normLogpdf(0.6, 0.4, 1) + normLogpdf(0.9, 0.6, 1);
+  assert.ok(Math.abs(got - want) < 1e-6,
+    `4-step positional jointchain joint logp ${got} vs analytic ${want}`);
+});
+
 test('classifyJointchain: non-kernel later arg → null (parity fallback)', () => {
   // K_i must be a kernel; a measure in kernel position isn't covered
   // by the first-class path → null so the dual-path falls back.
