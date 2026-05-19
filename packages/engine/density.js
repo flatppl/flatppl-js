@@ -714,6 +714,46 @@ function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
       + 'literal logweights before density evaluation');
   }
   const K = branches.length;
+
+  // Retain mode (engine-concepts §11 — discrete sibling of jointchain
+  // retain): if the selector binding has already been consumed by an
+  // enclosing joint and threaded into the env overlay, the density
+  // becomes the JOINT score `logp_{branch_k}(x) + logw_k` with k
+  // determined by the observed selector value — no logsumexp over
+  // branches. Matches the kchain-vs-jointchain pattern: same node,
+  // different policy chosen by env-threading. Absent selector in env
+  // ⇒ fall through to the marginalising mixture path below.
+  if (ir.selectorName) {
+    let sel = (overlay && Object.prototype.hasOwnProperty.call(overlay, ir.selectorName))
+      ? overlay[ir.selectorName]
+      : (baseEnv && Object.prototype.hasOwnProperty.call(baseEnv, ir.selectorName))
+      ? baseEnv[ir.selectorName]
+      : undefined;
+    if (sel !== undefined) {
+      // Same branch-index calculation as matSelect's gather: K==2 ⇒
+      // truthy → branch 0 (Bernoulli/ifelse); K≥2 ⇒ (sel|0) − base
+      // (Categorical 1-based by default, Categorical0 ⇒ base 0),
+      // clamped to [0, K−1].
+      let k;
+      if (K === 2 && (ir.selectorBase == null)) {
+        k = sel ? 0 : 1;
+      } else {
+        const base = (ir.selectorBase != null) ? ir.selectorBase : 1;
+        k = (sel | 0) - base;
+      }
+      if (k < 0) k = 0; else if (k >= K) k = K - 1;
+      // No `logweight` added in retain mode: the selector's
+      // probability mass is paid by the joint's own selector field
+      // (e.g. the Bernoulli/Categorical field that observed `c`).
+      // Adding logw_k here would double-count the selector prior.
+      // In marginalize mode (the fall-through below), logw_k IS the
+      // selector prior — the anonymous-selector case has no separate
+      // field to bill it to.
+      return walkAcc(branches[k], value, refArrays, N, opts, acc,
+        baseEnv, overlay);
+    }
+  }
+
   // Reference-measure guard (engine-concepts §11/§12). logsumexp-ing
   // branch log-densities is only meaningful when every branch scores
   // w.r.t. the SAME reference measure. Mixing a continuous (Lebesgue)
