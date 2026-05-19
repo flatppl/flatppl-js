@@ -543,6 +543,95 @@ x = draw(ifelse(c, A, B))
 });
 
 // =====================================================================
+// retain mode (engine-concepts §11): when the selector binding is
+// observed in an enclosing joint, walkSelect reads the threaded value
+// and scores `walk(branch_k, x)` — picking the conditional, NOT
+// logsumexp-ing the mixture. The selector's prior mass is paid by the
+// joint's selector field separately (avoids double-counting).
+// =====================================================================
+
+test('retain mode: joint(c,ifelse) density = logBernoulli(c) + branch density', async () => {
+  // Construction:
+  //   c ~ Bernoulli(0.3); m = ifelse(c, A, B); joint(c=c, m=m)
+  // Observed (c=1, m=0.5):
+  //   density of c field = log P(c=1) = log 0.3
+  //   density of m field (retain — c is in env): pick branch 0 (A
+  //     since c=1 is truthy in K=2 Bernoulli ifelse), score
+  //     logp_A(0.5). NO logsumexp, NO double-count of log P(c).
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 1.0)
+c = draw(Bernoulli(p = 0.3))
+m = ifelse(c, A, B)
+jc = joint(c = c, m = m)
+lp = logdensityof(jc, record(c = 1.0, m = 0.5))
+`);
+  const M = await ctx.getMeasure('lp');
+  const expected = Math.log(0.3) + normalLogpdf(0.5, 0, 1);
+  assert.ok(Math.abs(M.samples[0] - expected) < 1e-10,
+    `retain joint logp: got ${M.samples[0]}, expected ${expected}`);
+});
+
+test('retain mode: c=0 picks branch B (Bernoulli false ⇒ second branch)', async () => {
+  // Symmetric to the c=1 case: c=0 (falsy) routes to branch 1 (B).
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 1.0)
+c = draw(Bernoulli(p = 0.3))
+m = ifelse(c, A, B)
+jc = joint(c = c, m = m)
+lp = logdensityof(jc, record(c = 0.0, m = 5.2))
+`);
+  const M = await ctx.getMeasure('lp');
+  const expected = Math.log(0.7) + normalLogpdf(5.2, 5, 1);
+  assert.ok(Math.abs(M.samples[0] - expected) < 1e-10,
+    `retain c=0 logp: got ${M.samples[0]}, expected ${expected}`);
+});
+
+test('retain mode: joint(i, xs[i]) — K-way Categorical (1-based)', async () => {
+  // Categorical selector (1-based per FlatPPL spec), retain x's
+  // conditional given the observed selector.
+  //   i ~ Categorical([0.2, 0.3, 0.5]);
+  //   xs = [draw(M1), draw(M2), draw(M3)];
+  //   x = xs[i];
+  //   joint(i=i, x=x) observed (i=2, x=4.5) ⇒ second branch (M2):
+  //   density = log P(i=2) + logp_M2(4.5) = log 0.3 + logN(4.5; 5, 1).
+  const ctx = makeCtx(`
+M1 = Normal(mu = 0.0, sigma = 1.0)
+M2 = Normal(mu = 5.0, sigma = 1.0)
+M3 = Normal(mu = 9.0, sigma = 1.0)
+i  = draw(Categorical(p = [0.2, 0.3, 0.5]))
+xs = [draw(M1), draw(M2), draw(M3)]
+x  = xs[i]
+jc = joint(i = i, x = x)
+lp = logdensityof(jc, record(i = 2.0, x = 4.5))
+`);
+  const M = await ctx.getMeasure('lp');
+  const expected = Math.log(0.3) + normalLogpdf(4.5, 5, 1);
+  assert.ok(Math.abs(M.samples[0] - expected) < 1e-10,
+    `retain Categorical logp: got ${M.samples[0]}, expected ${expected}`);
+});
+
+test('retain mode: differs from marginalize (no enclosing joint ⇒ logsumexp)', async () => {
+  // Same A, B, p — but observing m alone (no joint, no c in env) ⇒
+  // marginalised mixture density. Verifies the retain branch in
+  // walkSelect only fires when the selector is in scope.
+  const ctx = makeCtx(`
+A = Normal(mu = 0.0, sigma = 1.0)
+B = Normal(mu = 5.0, sigma = 1.0)
+c = draw(Bernoulli(p = 0.3))
+m = ifelse(c, A, B)
+lp_marginal = logdensityof(m, 0.5)
+`);
+  const M = await ctx.getMeasure('lp_marginal');
+  const expected = Math.log(
+    0.3 * Math.exp(normalLogpdf(0.5, 0, 1))
+    + 0.7 * Math.exp(normalLogpdf(0.5, 5, 1)));
+  assert.ok(Math.abs(M.samples[0] - expected) < 1e-10,
+    `marginalised logp: got ${M.samples[0]}, expected ${expected}`);
+});
+
+// =====================================================================
 // normalized mixture (engine-concepts §11): the spec's canonical
 //   mix = normalize(superpose(weighted(w1, M1), weighted(w2, M2)))
 // normalize(M) is lowered to logweighted(−log Z, M) with CLOSED-FORM

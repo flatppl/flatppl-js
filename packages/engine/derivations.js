@@ -1746,6 +1746,20 @@ function expandMeasureIR(name, derivations, visited, bindings) {
           // through for the materialiser's runtime-weight resolver to
           // turn into literal logweights before density evaluation.
           weightsFrom: d.runtimeWeights || null,
+          // Retain-mode hint (engine-concepts §11): the selector
+          // binding name, plus its base (Categorical 1-based,
+          // Categorical0 0-based; absent ⇒ Bernoulli/ifelse and the
+          // walker uses sel?0:1). walkSelect checks the env overlay
+          // at evaluation time: if the selector value is in scope
+          // (because an enclosing joint already consumed it from
+          // the observation and threaded it through), walkSelect
+          // routes to the matching branch and scores `logw_k +
+          // logp_branch_k` — the joint/retain density `log P(i=k) +
+          // log p_{x|i}(x_obs | i=k)`. Absent in env ⇒ marginalising
+          // mixture density (the current logsumexp behaviour); same
+          // node, branch chosen by env-threading.
+          selectorName: d.selectorRef || null,
+          selectorBase: (d.selectorBase != null) ? d.selectorBase : null,
         };
       }
       case 'jointchain': {
