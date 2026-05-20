@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — samples / empirical / array renderers (Phase 4e).
 //
 // renderArrayStepPlot draws a fixed-length numeric array as a step

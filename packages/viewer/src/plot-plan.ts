@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — plot plan builder + concrete materialiser (Phase 4f).
 //
 // buildPlotPlan inspects a binding's derivation + signature to

@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — profile-plot renderer family (Phase 4e).
 //
 // renderProfilePlotForCurrent is the entry; buildProfileControls

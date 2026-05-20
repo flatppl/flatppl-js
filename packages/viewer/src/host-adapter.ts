@@ -1,4 +1,3 @@
-// @ts-check
 // @flatppl/viewer — default VS Code webview host adapter (Phase 4g).
 //
 // VS Code permits acquireVsCodeApi() at most once per webview, so
@@ -8,22 +7,18 @@
 // expect. Standalone (non-VS-Code) embeds receive {} and the call
 // sites no-op gracefully.
 
-/** @typedef {import('./types').HostAdapter} HostAdapter */
-/** @typedef {import('./types').VsCodeApi} VsCodeApi */
+import type { HostAdapter, VsCodeApi } from './types';
 
-/** @type {VsCodeApi | null} */
-var cachedVscodeApi = null;
+let cachedVscodeApi: VsCodeApi | null = null;
 
-/** @returns {VsCodeApi | null} */
-export function getVscodeApi() {
+export function getVscodeApi(): VsCodeApi | null {
   if (cachedVscodeApi) return cachedVscodeApi;
   if (typeof acquireVsCodeApi !== 'function') return null;
   try { cachedVscodeApi = acquireVsCodeApi(); } catch (_) { cachedVscodeApi = null; }
   return cachedVscodeApi;
 }
 
-/** @returns {HostAdapter} */
-export function defaultVscodeHost() {
+export function defaultVscodeHost(): HostAdapter {
   // `const` (vs. the previous `var`) lets TS narrow `api` to non-null
   // inside the closures below — `var` reads as "possibly reassigned" and
   // TS conservatively keeps the wider type. Same runtime semantics.

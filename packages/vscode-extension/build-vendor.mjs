@@ -144,7 +144,7 @@ const engineBuildOpts = {
 // callers need to grab, only `self.onmessage` side-effects. The bundle's
 // IIFE wrapper runs once on worker startup and registers the listener.
 const viewerBuildOpts = {
-  entryPoints: [join(viewerPkg, 'src', 'index.js')],
+  entryPoints: [join(viewerPkg, 'src', 'index.ts')],
   outfile: join(libDir, 'viewer.js'),
   bundle: true,
   // minify:false — see ARCHITECTURE.md; viewer bundle stays diffable

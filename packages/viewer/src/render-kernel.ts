@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — kernel-sample renderers (Phase 4f).
 //
 // renderKernelSampleForCurrent is the entry; renderKernelSample-

@@ -206,7 +206,7 @@ const codemirrorBuildOpts = {
 };
 
 const viewerBuildOpts = {
-  entryPoints: [join(viewerPkg, 'src', 'index.js')],
+  entryPoints: [join(viewerPkg, 'src', 'index.ts')],
   outfile: join(vendorDir, 'viewer.js'),
   bundle: true,
   // minify:false — the viewer bundle is reviewed/dev-diffed routinely

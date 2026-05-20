@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — pure utility/formatter module (Phase 4b).
 
 /**

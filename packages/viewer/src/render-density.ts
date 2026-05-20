@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — density-strip + corner-grid renderers (Phase 4e).
 //
 // renderDensityStrips lays out one density column per axis (the

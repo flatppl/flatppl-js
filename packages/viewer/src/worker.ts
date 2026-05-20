@@ -27,7 +27,7 @@ export function ensureSamplerWorker(ctx) {
     // Try direct construction first — cheapest path on hosts where
     // it works. Fall back to blob: on any failure (security error,
     // cross-origin block, etc.).
-    var w = null;
+    let w: Worker | null = null;
     try {
       w = new Worker(ctx.SAMPLER_WORKER_URL);
     } catch (e) {

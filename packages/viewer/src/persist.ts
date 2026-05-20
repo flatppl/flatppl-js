@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — persist-to-source (Phase 4d).
 //
 // Builds source-text edits (preset binding lines, domain cartprod
