@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Pure-numeric helpers for the empirical-measure representation used
@@ -346,7 +345,7 @@ function tupleMeasure(elems, logWeights) {
  * `.samples` — no allocation overhead.
  */
 function arrayMeasure(samples, dims, logWeights) {
-  const m = { shape: 'array', samples, dims, logWeights: logWeights || null };
+  const m: any = { shape: 'array', samples, dims, logWeights: logWeights || null };
   if (samples && dims && dims.length > 0
       && samples.BYTES_PER_ELEMENT !== undefined) {
     const total = dims.reduce(function (p, n) { return p * n; }, 1);

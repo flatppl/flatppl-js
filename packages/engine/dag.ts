@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 const { extractBoundaries, collectDeps, isMeasureExpr, computePhasesForScope } = require('./analyzer.ts');
@@ -271,7 +270,7 @@ function computeSubDAG(bindings, nodeName) {
   const visited = new Map();
   const edges = [];
 
-  function visit(name, useEffective) {
+  function visit(name, useEffective?) {
     if (visited.has(name)) return;
     const b = bindings.get(name);
     // Effective-RHS overlays apply only at the inspection root. Transitive
