@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Token types
@@ -33,7 +32,7 @@ const T = {
   EOF: 'EOF',
 };
 
-function token(type, value, startLine, startCol, endLine, endCol) {
+function token(type, value, startLine, startCol, endLine, endCol): any {
   return {
     type, value,
     loc: { start: { line: startLine, col: startCol }, end: { line: endLine, col: endCol } },
@@ -71,7 +70,7 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
     if (ch === '\n') { line++; col = 0; } else { col++; }
     return ch;
   }
-  function at(offset) { return pos + (offset || 0) < source.length ? source[pos + (offset || 0)] : ''; }
+  function at(offset?) { return pos + (offset || 0) < source.length ? source[pos + (offset || 0)] : ''; }
 
   while (pos < source.length) {
     const startLine = line, startCol = col;
