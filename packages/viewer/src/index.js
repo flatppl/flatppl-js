@@ -11,12 +11,15 @@
 // the global merge below is explicit). Both packages/viewer/build.mjs
 // and packages/vscode-extension/build-vendor.mjs use this entry.
 
+// @ts-check
 import { mount } from './main.js';
 
+/** @type {FlatPPLViewerGlobal} */
 var FlatPPLViewer;
 if (typeof window !== 'undefined') {
   FlatPPLViewer = (window.FlatPPLViewer = window.FlatPPLViewer || {});
 } else if (typeof globalThis !== 'undefined') {
+  // @ts-ignore — globalThis is loosely typed without DOM lib here.
   FlatPPLViewer = (globalThis.FlatPPLViewer = globalThis.FlatPPLViewer || {});
 } else {
   FlatPPLViewer = {};
@@ -33,7 +36,11 @@ function autoMountIfMarkerPresent() {
   var marker = (typeof document !== 'undefined')
     ? document.getElementById('flatppl-viewer-root')
     : null;
-  if (marker) FlatPPLViewer.mount(marker);
+  // FlatPPLViewer.mount is typed as optional (a host could in principle
+  // pre-populate the global with their own surface); the assignment above
+  // guarantees it's set here, but TS doesn't track the flow across the
+  // function-call boundary. The runtime guard is just for paranoia.
+  if (marker && FlatPPLViewer.mount) FlatPPLViewer.mount(marker);
 }
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') {

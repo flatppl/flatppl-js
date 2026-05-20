@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — pure utility/formatter module (Phase 4b).
 //
 // Functions in this module have no per-mount state dependency: they
