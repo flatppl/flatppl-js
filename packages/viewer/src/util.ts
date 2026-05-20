@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — pure utility/formatter module (Phase 4b).
 
 /**
@@ -149,7 +148,7 @@ export function formatIRValue(ir) {
     return '[' + ir.args.map(formatIRValue).join(', ') + ']';
   }
   if (ir.kind === 'call' && ir.op === 'record') {
-    var entries = [];
+    const entries: string[] = [];
     var kwargs = ir.kwargs || {};
     for (var k in kwargs) {
       entries.push(k + ' = ' + formatIRValue(kwargs[k]));
@@ -163,7 +162,7 @@ export function formatIRValue(ir) {
     // Generic call: op(arg1, arg2, k=v) — useful for
     // fchain-style nestings without committing to a precise
     // pretty-print of unknown ops.
-    var parts = [];
+    const parts: string[] = [];
     if (Array.isArray(ir.args)) {
       for (var i = 0; i < ir.args.length; i++) parts.push(formatIRValue(ir.args[i]));
     }
@@ -380,9 +379,9 @@ export function plotZoomOptions(fg) {
  * Float64Array regardless of whether the source was a flat record
  * field or a column of an iid array.
  */
-export function listScalarAxes(measure) {
-  var out = [];
-  function walk(m, prefix) {
+export function listScalarAxes(measure: any): Array<{ key: string; label: string; samples: Float64Array }> {
+  const out: Array<{ key: string; label: string; samples: Float64Array }> = [];
+  function walk(m: any, prefix: string): void {
     if (m.fields) {
       var ks = Object.keys(m.fields);
       for (var i = 0; i < ks.length; i++) {
@@ -466,8 +465,8 @@ export function resolveMeasureAlias(name, derivations, bindings) {
   return cur === name ? null : cur;
 }
 
-export function domainBoundsText(kwargOrder, ranges, setNames) {
-  var parts = [];
+export function domainBoundsText(kwargOrder: string[], ranges: Record<string, { lo: number; hi: number }> | null | undefined, setNames: Record<string, string> | null | undefined): string {
+  const parts: string[] = [];
   for (var i = 0; i < kwargOrder.length; i++) {
     var k = kwargOrder[i];
     var r = ranges && ranges[k];
@@ -499,8 +498,8 @@ const KNOWN_NAMED_SETS = {
   integers: 1, posintegers: 1, nonnegintegers: 1, booleans: 1,
 };
 
-export function presetValuesText(values) {
-  var text = formatValue(values);
+export function presetValuesText(values: unknown): string {
+  var text = formatValue(values, undefined);
   if (text.indexOf('record(') === 0 && text.charAt(text.length - 1) === ')') {
     return text.slice('record('.length, -1);
   }
