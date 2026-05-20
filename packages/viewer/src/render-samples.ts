@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — samples / empirical / array renderers (Phase 4e).
 //
 // renderArrayStepPlot draws a fixed-length numeric array as a step
@@ -225,7 +224,7 @@ export function renderEmpiricalMeasure(ctx, measure, opts) {
     } else if (hist.support) {
       range = [hist.support[0], hist.support[1]];
     }
-    var densOpts = { gridPoints: 256 };
+    const densOpts: { gridPoints: number; range?: number[] } = { gridPoints: 256 };
     if (range) densOpts.range = range;
     return sendWorker(ctx, { type: 'density', ir: opts.analyticalIR, opts: densOpts })
       .then(function(densReply) {
@@ -295,7 +294,7 @@ export function renderSamplesAndDensity(ctx, reply, plan) {
   } else {
     // Continuous: render bars via custom shape so widths track the
     // actual bin edges (not echarts' auto category spacing).
-    var rects = [];
+    const rects: Array<{ value: number[]; x0: number; x1: number }> = [];
     for (var i = 0; i < hist.xs.length; i++) {
       rects.push({
         value: [hist.xs[i], hist.ys[i]],
@@ -330,7 +329,7 @@ export function renderSamplesAndDensity(ctx, reply, plan) {
 
   // Density curve overlay (when available). Discrete + analytical
   // renders as scatter dots at integer atoms; continuous as a line.
-  var densitySeries = null;
+  let densitySeries: any = null;
   if (dens && dens.xs && dens.xs.length > 0) {
     var dPairs = new Array(dens.xs.length);
     for (var j = 0; j < dens.xs.length; j++) dPairs[j] = [dens.xs[j], dens.ys[j]];
