@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Philox-4x32-10 — counter-based pseudorandom number generator.
@@ -283,7 +282,7 @@ function nextUint32(state) {
 // two consecutive uint32s.
 
 function nextUniform(state) {
-  const [u, s] = nextUint32(state);
+  const [u, s] = nextUint32(state) as [number, any];
   return [u / 0x100000000, s];
 }
 
@@ -325,7 +324,7 @@ function bytesFromState(state) {
 }
 
 function stateFromBytes(bytes) {
-  const arr = Array.from(bytes, b => b & 0xff);
+  const arr = Array.from(bytes, (b: any) => (b as number) & 0xff);
   if (arr.length < 24) {
     throw new Error(
       `rng.stateFromBytes: need ≥24 bytes, got ${arr.length}`
