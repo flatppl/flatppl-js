@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — derivation rebuild (Phase 4f).
 //
 // rebuildDerivations parses the current source via
@@ -53,7 +52,7 @@ export function rebuildDerivations(ctx) {
   //   - If the override is empty after pruning, retire it.
   ctx.presetOverrides.forEach(function(entry, name) {
     var b = ctx.currentBindings.get(name);
-    var curValues = null;
+    let curValues: Record<string, number> | null = null;
     // analyzer.classifyStatement only returns 'literal' for
     // primitive literal RHS (NumberLiteral etc.); record(...)
     // binds with type='call'. So gate on the AST callee name
@@ -118,10 +117,8 @@ export function rebuildDerivations(ctx) {
   //   - If the override is empty after pruning, retire it.
   ctx.domainOverrides.forEach(function(entry, name) {
     var b = ctx.currentBindings.get(name);
-    /** @type {Set<string> | null} */
-    var sourceKwargs = null;
-    /** @type {Record<string, {lo: number, hi: number}> | null} */
-    var sourceIntervals = null;
+    let sourceKwargs: Set<string> | null = null;
+    let sourceIntervals: Record<string, { lo: number; hi: number }> | null = null;
     if (b && b.node && b.node.value
         && b.node.value.type === 'CallExpr' && b.node.value.callee
         && b.node.value.callee.name === 'cartprod') {
