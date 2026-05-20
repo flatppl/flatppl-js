@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — profile-plot renderer family (Phase 4e).
 //
 // renderProfilePlotForCurrent is the entry; buildProfileControls
@@ -21,7 +20,7 @@ export function renderProfilePlotForCurrent(ctx) {
   if (!plan || plan.mode !== 'profile') return;
   var sig = plan.signature;
   var axes = plan.axes;
-  var sweepAxis = null;
+  let sweepAxis: any = null;
   for (var i = 0; i < axes.length; i++) {
     if (axes[i].key === plan.sweepKey) { sweepAxis = axes[i]; break; }
   }
@@ -60,7 +59,7 @@ export function renderProfilePlotForCurrent(ctx) {
   // don't even fetch the source binding.
   var active = activePresetFor(ctx, plan);
   var fixedEnv = {};
-  var nonSweptBindingSources = [];   // [{paramName, sourceName}, ...]
+  const nonSweptBindingSources: Array<{ paramName: string; sourceName: string }> = [];
   for (var a2 = 0; a2 < axes.length; a2++) {
     if (axes[a2].key === plan.sweepKey) continue;
     var inp = inputByKwarg[axes[a2].kwargName];
@@ -96,7 +95,7 @@ export function renderProfilePlotForCurrent(ctx) {
   // output leaf. For scalar outputs (single leaf, empty path)
   // this is a no-op pass-through.
   if (plan.outputs && plan.outputs.length > 1 && plan.outputKey) {
-    var selectedOut = null;
+    let selectedOut: any = null;
     for (var oj = 0; oj < plan.outputs.length; oj++) {
       if (plan.outputs[oj].key === plan.outputKey) {
         selectedOut = plan.outputs[oj];
@@ -133,8 +132,8 @@ export function renderProfilePlotForCurrent(ctx) {
   // the user pick a different atom or override these. For
   // stochastic self refs this picks the first atom, which is
   // arbitrary but deterministic — a "good enough" first cut.
-  var selfRefs = [];
-  FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n) {
+  const selfRefs: string[] = [];
+  FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n: string) {
     selfRefs.push(n);
   });
   // Range resolution per (binding, axis, domain):
@@ -281,7 +280,7 @@ export function buildProfileControls(ctx, plan, range) {
       outSelect.appendChild(oOpt);
     }
     outSelect.addEventListener('change', function(e) {
-      plan.outputKey = /** @type {HTMLSelectElement} */ (e.target).value;
+      plan.outputKey = (e.target as HTMLSelectElement).value;
       renderProfilePlotForCurrent(ctx);
     });
     frag.appendChild(outLabel);
@@ -315,7 +314,7 @@ export function buildProfileControls(ctx, plan, range) {
       cutSel.appendChild(copt);
     }
     cutSel.addEventListener('change', function(e) {
-      plan.yCutoff = parseInt(/** @type {HTMLSelectElement} */ (e.target).value, 10);
+      plan.yCutoff = parseInt((e.target as HTMLSelectElement).value, 10);
       renderProfilePlotForCurrent(ctx);
     });
     frag.appendChild(cutLabel);
@@ -383,7 +382,7 @@ export function buildProfileControls(ctx, plan, range) {
       axisEl.appendChild(opt);
     }
     axisEl.addEventListener('change', function(e) {
-      plan.sweepKey = /** @type {HTMLSelectElement} */ (e.target).value;
+      plan.sweepKey = (e.target as HTMLSelectElement).value;
       renderProfilePlotForCurrent(ctx);
     });
   } else if (plan.axes && plan.axes.length === 1) {
@@ -547,7 +546,7 @@ export function renderProfileLine(ctx, values, range, plan, sweepAxis) {
       if (v < yMin) yMin = v;
     }
   }
-  var yClipMin = null, yClipMax = null;
+  let yClipMin: number | null = null, yClipMax: number | null = null;
   if ((plan.signature.kind === 'kernel' || plan.signature.kind === 'likelihood')
       && Number.isFinite(yMax)) {
     var cut = (plan.yCutoff != null) ? plan.yCutoff : 100;
@@ -698,7 +697,7 @@ export function renderProfileLine(ctx, values, range, plan, sweepAxis) {
 
 export function commitSliceX(ctx, plan, x) {
   if (!plan || !plan.axes) return;
-  var kwarg = null;
+  let kwarg: string | null = null;
   for (var i = 0; i < plan.axes.length; i++) {
     if (plan.axes[i].key === plan.sweepKey) {
       kwarg = plan.axes[i].kwargName;
