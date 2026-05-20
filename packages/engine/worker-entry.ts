@@ -1,5 +1,4 @@
 /// <reference lib="webworker" />
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Browser/Node-worker entry shim for the FlatPPL sampler worker.
@@ -42,7 +41,7 @@ if (isBrowserWorker) {
   // We attach via addEventListener (rather than self.onmessage =) so a
   // host that already attached a listener for handshake purposes isn't
   // overwritten.
-  self.addEventListener('message', (e) => {
+  self.addEventListener('message', (e: MessageEvent) => {
     const reply = handler.handle(e.data);
     if (reply) {
       const transfer = transferablesOf(reply);
