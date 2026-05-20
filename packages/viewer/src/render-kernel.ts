@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — kernel-sample renderers (Phase 4f).
 //
 // renderKernelSampleForCurrent is the entry; renderKernelSample-
@@ -58,8 +57,8 @@ export function renderKernelSampleForCurrent(ctx) {
   // axes not covered by the active preset (incl. modified
   // overrides) come from source-binding samples[0] (or type-
   // aware defaults for placeholder sources).
-  var env = {};
-  var bindingSourceLookups = [];   // [{paramName, sourceName}, ...]
+  const env: Record<string, number | boolean> = {};
+  const bindingSourceLookups: Array<{ paramName: string; sourceName: string }> = [];
   for (var a = 0; a < plan.axes.length; a++) {
     var ax = plan.axes[a];
     var inp = inputByKwarg[ax.kwargName];
