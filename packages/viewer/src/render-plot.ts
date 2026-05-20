@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — top-of-stack plot dispatchers (Phase 4f).
 //
 // renderPlotForCurrent is the per-binding plot router (samples /
@@ -17,7 +16,7 @@ import { renderProfilePlotForCurrent } from './render-profile.js';
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
-export function renderPlotForCurrent(ctx) {
+export function renderPlotForCurrent(ctx: any) {
   // The plot panel stays mounted whenever plotEnabled is true. When
   // the focused binding isn't plottable (lawof, modules, etc.) we
   // still show *something* — a "Not plottable" message — so the
@@ -129,7 +128,7 @@ export function renderPlotForCurrent(ctx) {
     });
 }
 
-export function updatePlotForBinding(ctx, bindingName) {
+export function updatePlotForBinding(ctx: any, bindingName: string | null) {
   // Snapshot the outgoing plan first — the user may have
   // mutated it since it was first built (selected a different
   // preset, edited an override value, picked a sweep axis).

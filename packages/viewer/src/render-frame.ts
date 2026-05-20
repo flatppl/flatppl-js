@@ -45,7 +45,7 @@ export function resetPlotContentStyle(ctx) {
   el.style.flexDirection = '';
 }
 
-export function showPlotMessage(ctx, html, options) {
+export function showPlotMessage(ctx: any, html: string, options?: { cancellable?: boolean; hint?: boolean }) {
   if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
   resetPlotContentStyle(ctx);
   var el = $('plot-content');
