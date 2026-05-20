@@ -16,9 +16,13 @@
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "build": "npm run build --workspaces --if-present && npm run build:vendor",
     "build:vendor": "npm run --workspace=packages/vscode-extension build:vendor",
-    "watch:vendor": "npm run --workspace=packages/vscode-extension watch:vendor"
+    "watch:vendor": "npm run --workspace=packages/vscode-extension watch:vendor",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }

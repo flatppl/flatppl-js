@@ -18,7 +18,9 @@
   "scripts": {
     "build": "node ./build.mjs",
     "watch": "node ./build.mjs --watch",
-    "serve": "node ./serve.mjs"
+    "serve": "node ./serve.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {
     "@flatppl/engine": "*",
