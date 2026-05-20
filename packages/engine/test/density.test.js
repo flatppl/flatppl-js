@@ -12,7 +12,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const density = require('../density');
+const density = require('../density.ts');
 
 // Convenience IR constructors — keeps the asserts focused on the
 // density math rather than IR plumbing.

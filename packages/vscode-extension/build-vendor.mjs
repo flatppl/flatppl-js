@@ -116,7 +116,7 @@ await syncGrammars();
 //    required (tests, etc.) and browser-loaded uniformly.
 
 const engineBuildOpts = {
-  entryPoints: [join(enginePkg, 'index.js')],
+  entryPoints: [join(enginePkg, 'index.ts')],
   outfile: join(libDir, 'engine.min.js'),
   bundle: true,
   minify: true,
@@ -158,7 +158,7 @@ const viewerBuildOpts = {
 };
 
 const samplerWorkerBuildOpts = {
-  entryPoints: [join(enginePkg, 'worker-entry.js')],
+  entryPoints: [join(enginePkg, 'worker-entry.ts')],
   outfile: join(libDir, 'sampler-worker.min.js'),
   bundle: true,
   minify: true,

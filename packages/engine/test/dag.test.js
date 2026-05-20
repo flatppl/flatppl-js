@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, computeSubDAG, findBindingAtLine } = require('../index');
+const { processSource, computeSubDAG, findBindingAtLine } = require('../index.ts');
 
 function dagOf(src, target) {
   const { bindings } = processSource(src);

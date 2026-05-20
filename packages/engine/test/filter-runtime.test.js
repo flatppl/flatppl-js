@@ -8,8 +8,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource } = require('../index');
-const orchestrator = require('../orchestrator');
+const { processSource } = require('../index.ts');
+const orchestrator = require('../orchestrator.ts');
 
 function buildFixed(source) {
   const lifted = processSource(source);

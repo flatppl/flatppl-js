@@ -17,8 +17,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const value = require('../value');
-const vops = require('../value-ops');
+const value = require('../value.ts');
+const vops = require('../value-ops.ts');
 const {
   complexValue, vector, scalar, transpose, conjugate, readComplex,
   isComplexValue,

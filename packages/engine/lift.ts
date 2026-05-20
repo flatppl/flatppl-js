@@ -19,13 +19,13 @@
 // SAMPLEABLE_DISTRIBUTIONS) — never on derivations or the
 // orchestrator core, so there is no back-edge.
 
-const { lowerExpr } = require('./lower');
-const { signatureOf } = require('./signatures');
+const { lowerExpr } = require('./lower.ts');
+const { signatureOf } = require('./signatures.ts');
 const {
   parseSetIR,
   EVALUABLE_OPS,
   SAMPLEABLE_DISTRIBUTIONS,
-} = require('./ir-shared');
+} = require('./ir-shared.ts');
 
 // =====================================================================
 // Inline-subexpression lifting

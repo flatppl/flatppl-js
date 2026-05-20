@@ -14,11 +14,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const builtins   = require('../builtins');
-const types      = require('../types');
-const lower      = require('../lower');
-const orchestrator = require('../orchestrator');
-const sampler    = require('../sampler');
+const builtins   = require('../builtins.ts');
+const types      = require('../types.ts');
+const lower      = require('../lower.ts');
+const orchestrator = require('../orchestrator.ts');
+const sampler    = require('../sampler.ts');
 
 // ---------------------------------------------------------------------
 // 1. SAMPLEABLE_DISTRIBUTIONS ↔ sampler.REGISTRY
@@ -143,7 +143,7 @@ test('invariant: every ARITH_OPS key is in EVALUABLE_OPS (or exempt)', () => {
 // ---------------------------------------------------------------------
 
 test('invariant: every BIN_OP_MAP target has a type signature', () => {
-  const T = require('../types');
+  const T = require('../types.ts');
   for (const op of Object.values(lower._internal ? lower._internal.BIN_OP_MAP : lower.BIN_OP_MAP)) {
     if (op === 'in') continue; // 'in' is a set-membership op, deliberately untyped today
     const sig = T.signatureOf(op);
@@ -192,7 +192,7 @@ test('invariant: REGISTRY params (incl. aliases) covered by types.js kwargs', ()
 // ---------------------------------------------------------------------
 
 test('invariant: every UN_OP_MAP target has a type signature', () => {
-  const T = require('../types');
+  const T = require('../types.ts');
   const UN = lower._internal ? lower._internal.UN_OP_MAP : lower.UN_OP_MAP;
   for (const op of Object.values(UN)) {
     assert.ok(T.signatureOf(op),

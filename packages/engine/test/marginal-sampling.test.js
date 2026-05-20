@@ -28,9 +28,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource } = require('../index');
-const orchestrator = require('../orchestrator');
-const { createWorkerHandler } = require('../worker');
+const { processSource } = require('../index.ts');
+const orchestrator = require('../orchestrator.ts');
+const { createWorkerHandler } = require('../worker.ts');
 
 const N = 50000;  // sample count
 

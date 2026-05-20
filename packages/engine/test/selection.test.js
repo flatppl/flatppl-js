@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, findEnclosingRanges } = require('../index');
+const { processSource, findEnclosingRanges } = require('../index.ts');
 
 function rangesAt(src, line, col) {
   const { ast } = processSource(src);

@@ -7,7 +7,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, disintegrate } = require('../index');
+const { processSource, disintegrate } = require('../index.ts');
 
 const { disintegratePlan } = disintegrate;
 
@@ -265,7 +265,7 @@ fk, pr = disintegrate(["c"], joint_model)
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { computeSubDAG } = require('../index');
+const { computeSubDAG } = require('../index.ts');
 const UNSUPPORTED_FIXTURE = path.join(__dirname, 'fixtures', 'disintegrate-unsupported.flatppl');
 
 test('Unsupported fixture: parses cleanly and produces expected plan kinds', () => {

@@ -349,7 +349,7 @@ test('elementof(cartprod): kwargs form → record', () => {
 // re-infer with concrete input types — same rules as a real call
 // site, just specialized to the chosen inputs.
 
-const { inferExprInScope } = require('../typeinfer');
+const { inferExprInScope } = require('../typeinfer.ts');
 
 test('inferExprInScope: polymorphic body specializes by input type', () => {
   const { loweredModule } = processSource(`

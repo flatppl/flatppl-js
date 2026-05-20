@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   processSource, planRename, isValidBindingName, isValidPlaceholderText,
-} = require('../index');
+} = require('../index.ts');
 
 function plan(src, line, col) {
   const { ast, bindings } = processSource(src);

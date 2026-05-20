@@ -24,7 +24,7 @@ const {
   propagateLogWeights,
   systematicResample,
   multinomialResample,
-} = require('../empirical');
+} = require('../empirical.ts');
 
 // =====================================================================
 // logSumExp
@@ -336,7 +336,7 @@ test('multinomialResample: degenerate weights → all output indices equal', () 
 // estimate slightly.
 
 const { paretoKHat, paretoKThreshold, importanceSamplingQuality,
-        estimateDof, recordMeasure, arrayMeasure } = require('../empirical');
+        estimateDof, recordMeasure, arrayMeasure } = require('../empirical.ts');
 
 // Deterministic Pareto sampler: F⁻¹(u) = (1-u)^(-1/α) - 1 has shape
 // k̂ = 1/α for the GPD. Use an LCG for reproducibility.

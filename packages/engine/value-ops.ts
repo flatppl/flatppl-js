@@ -30,7 +30,7 @@
 //
 // =====================================================================
 
-const valueLib = require('./value');
+const valueLib = require('./value.ts');
 const {
   isValue, getTag, isTransposeView, isConjugateView,
   isComplexValue, readComplex, complexValue,

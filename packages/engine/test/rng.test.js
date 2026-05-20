@@ -33,7 +33,7 @@ const {
   nextUniform,
   incrementCounter,
   _internal: { mulhilo32 },
-} = require('../rng');
+} = require('../rng.ts');
 
 // =====================================================================
 // 1. mulhilo32

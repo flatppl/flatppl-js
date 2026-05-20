@@ -25,9 +25,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { tokenize } = require('../tokenizer');
-const { parse } = require('../parser');
-const { lowerExpr, lowerBinding } = require('../lower');
+const { tokenize } = require('../tokenizer.ts');
+const { parse } = require('../parser.ts');
+const { lowerExpr, lowerBinding } = require('../lower.ts');
 
 // Parse a single binding `<name> = <expr>` and return the lowered RHS.
 function lowerOne(source) {

@@ -10,7 +10,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 
 const SAMPLE_COUNT = 16;
 const ROOT_SEED = 0xC0FEEBED;
@@ -51,7 +51,7 @@ function close(a, b, tol) {
 // Per-atom-fallback Value packing — unit test through evaluateExprN
 // =====================================================================
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 const valueLib = require('..').value;
 
 test('evaluateExprN: per-atom softmax packs into Value shape=[N, k]', () => {

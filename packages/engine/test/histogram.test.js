@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
 
 const {
   freedmanDiaconisHistogram, integerHistogram, quantileSorted, meanSd,
-} = require('../histogram');
+} = require('../histogram.ts');
 
 test('freedmanDiaconisHistogram: bins are equal-width and area sums near 1', () => {
   // 5000 standard-normal samples via Box-Muller + LCG, deterministic.

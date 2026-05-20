@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, computeSubDAG } = require('../index');
+const { processSource, computeSubDAG } = require('../index.ts');
 
 test('disintegrate: simple kernel/prior split from lawof(record(...))', () => {
   const src = `

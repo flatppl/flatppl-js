@@ -44,11 +44,11 @@
 // ir-shared, lift, signatures), so the orchestrator's facade
 // re-bind is a one-way edge.
 
-const { lowerExpr } = require('./lower');
-const { isMeasureExpr } = require('./analyzer');
-const { MEASURE_PRODUCING } = require('./builtins');
-const { isEvaluable, liftInlineSubexpressions } = require('./lift');
-const { signatureOf, substituteLocals } = require('./signatures');
+const { lowerExpr } = require('./lower.ts');
+const { isMeasureExpr } = require('./analyzer.ts');
+const { MEASURE_PRODUCING } = require('./builtins.ts');
+const { isEvaluable, liftInlineSubexpressions } = require('./lift.ts');
+const { signatureOf, substituteLocals } = require('./signatures.ts');
 const {
   collectSelfRefs,
   isCallOp,
@@ -60,7 +60,7 @@ const {
   normalizeMeasureIR,
   SAMPLEABLE_DISTRIBUTIONS,
   DISCRETE_DISTRIBUTIONS,
-} = require('./ir-shared');
+} = require('./ir-shared.ts');
 
 /**
  * Build a derivation dictionary for every chainable binding.
@@ -151,7 +151,7 @@ function buildDerivations(bindings) {
   // we can't evaluate (refs to non-fixed names, ops outside the
   // evaluator) silently stay at their original classification.
   const fixedValues = new Map();
-  const samplerLib = require('./sampler');
+  const samplerLib = require('./sampler.ts');
   // resolveMeasureRef closure threaded through evaluateExpr → evaluateRand
   // → traceeval. When traceeval hits a `(ref self <name>)` for a
   // measure operand it consults this to recover the measure IR.
@@ -314,7 +314,7 @@ function buildDerivations(bindings) {
       // env is the SAME object the outer evaluateExpr will consult,
       // so resolved values are cached implicitly — two refs to the
       // same name share one draw.
-      const traceeval = require('./traceeval');
+      const traceeval = require('./traceeval.ts');
       function localResolveValueRef(refName, state) {
         if (env[refName] !== undefined) return [env[refName], state];
         if (fixedValues.has(refName)) {

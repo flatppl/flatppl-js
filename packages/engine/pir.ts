@@ -49,7 +49,7 @@
 //   * S-expression printer / reader. Future work; would let us dump
 //     a `.flatpir` file for inspection.
 
-const lower = require('./lower');
+const lower = require('./lower.ts');
 
 // =====================================================================
 // Constructors

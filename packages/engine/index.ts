@@ -1,26 +1,26 @@
 'use strict';
 
-const variants = require('./variants');
-const { tokenize, T } = require('./tokenizer');
-const { parse } = require('./parser');
+const variants = require('./variants.ts');
+const { tokenize, T } = require('./tokenizer.ts');
+const { parse } = require('./parser.ts');
 const { analyze, collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges, computePhases } = require('./analyzer');
-const { computeSubDAG, computeFullDAG, findBindingAtLine } = require('./dag');
-const disintegrate = require('./disintegrate');
-const AST = require('./ast');
-const builtins = require('./builtins');
-const rng = require('./rng');
-const lower = require('./lower');
-const orchestrator = require('./orchestrator');
-const histogram = require('./histogram');
-const empirical = require('./empirical');
-const materialiser = require('./materialiser');
-const density = require('./density');
-const value = require('./value');
-const types = require('./types');
-const typeinfer = require('./typeinfer');
-const pir = require('./pir');
+  findEnclosingRanges, computePhases } = require('./analyzer.ts');
+const { computeSubDAG, computeFullDAG, findBindingAtLine } = require('./dag.ts');
+const disintegrate = require('./disintegrate.ts');
+const AST = require('./ast.ts');
+const builtins = require('./builtins.ts');
+const rng = require('./rng.ts');
+const lower = require('./lower.ts');
+const orchestrator = require('./orchestrator.ts');
+const histogram = require('./histogram.ts');
+const empirical = require('./empirical.ts');
+const materialiser = require('./materialiser.ts');
+const density = require('./density.ts');
+const value = require('./value.ts');
+const types = require('./types.ts');
+const typeinfer = require('./typeinfer.ts');
+const pir = require('./pir.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
 // stdlib's distribution packages (~1 MB after bundling) and are intended
 // for the sampler-worker bundle only. Main-thread / extension-host code

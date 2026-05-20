@@ -147,7 +147,7 @@ test('round-trip: measureFromValue then valueOf returns the same value', () => {
 // =====================================================================
 
 const { processSource, orchestrator } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 
 function makeCtx(source) {
   const lifted = processSource(source);
@@ -161,7 +161,7 @@ function makeCtx(source) {
     fixedValues: built.fixedValues || new Map(),
     getMeasure:  (name) => {
       if (cache.has(name)) return cache.get(name);
-      const materialiser = require('../materialiser');
+      const materialiser = require('../materialiser.ts');
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;

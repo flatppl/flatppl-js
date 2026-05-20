@@ -12,7 +12,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 const valueLib = require('..').value;
 
 const lit = v => ({ kind: 'lit', value: v });

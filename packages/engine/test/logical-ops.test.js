@@ -10,7 +10,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource } = require('../index');
+const { processSource } = require('../index.ts');
 
 function parseRHS(src, opts) {
   const r = processSource(src, opts);

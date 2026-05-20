@@ -29,7 +29,7 @@ const {
   expandMeasureIR, implicitKernelSignature, implicitFunctionSignature,
   canonicalizeImplicitBoundaries,
   _internal: { isEvaluable, classifyForChain },
-} = require('../orchestrator');
+} = require('../orchestrator.ts');
 
 function chainOf(source, target) {
   const { bindings } = processSource(source);
@@ -60,7 +60,7 @@ test('classifyForChain: both elementof and external skip (boundary inputs)', () 
   //
   // Directly drives classifyForChain so the assertion isn't muddled
   // by downstream chain-promotion logic.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 mu = elementof(reals)
 ext = external("data.dat")
@@ -606,7 +606,7 @@ r = relabel([1, 2, 3], ["x", "y"])
 // its own — it inherits the measure's cascade through that ref).
 
 test('logdensityof: scalar measure with literal obs classifies', () => {
-  const { resolveIRToValue } = require('../orchestrator');
+  const { resolveIRToValue } = require('../orchestrator.ts');
   const { derivations, bindings, fixedValues } = derivationsOf(`
 y_dist = Normal(mu = 0.0, sigma = 1.0)
 lp     = logdensityof(y_dist, 1.5)
@@ -1135,7 +1135,7 @@ function sigOf(source, name) {
   // liftInlineSubexpressions (the lift pass that buildDerivations
   // runs internally). Mimic that here so tests stay decoupled from
   // the full derivation builder.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(source);
   return signatureOf(name, liftInlineSubexpressions(bindings));
 }
@@ -1204,8 +1204,8 @@ L = likelihoodof(K, obs_value)
   assert.equal(sig.kernelName, 'K');
   // The signature carries the obs IR; the viewer's profile-plot
   // path resolves it via resolveIRToValue at sample time.
-  const { resolveIRToValue } = require('../orchestrator');
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { resolveIRToValue } = require('../orchestrator.ts');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
@@ -1334,7 +1334,7 @@ test('inlineForProfile: multi-input auto-promoted functionof rewrites every ref'
   // synthesizes: a single inlineForProfile call must rewrite every
   // ref-to-input as %local. The profile evaluator can then sweep one
   // axis while binding the others via fixedEnv.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 a = elementof(reals)
 b = elementof(reals)
@@ -1560,7 +1560,7 @@ test('inlineForProfile: inlines pruned-but-evaluable call binding', () => {
   // inline mu2's body so the swept `ref self mu` reaches the
   // %local rewrite. Without the fallback the body stays at
   // `ref self mu2` and profileN evaluates to NaN every point.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 mu = elementof(reals)
 mu2 = mu^2
@@ -1606,7 +1606,7 @@ test('resolveAxisBaseSet: identifier-bound elementof(reals) → reals descriptor
   // boundary source is { kind: 'binding', name: 'x_set' } and the
   // resolver surfaces the set restriction (rather than treating
   // x_set as a stochastic binding for empirical-range computation).
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 x_set = elementof(reals)
 f = functionof(x_set * 2, x = x_set)
@@ -1618,7 +1618,7 @@ f = functionof(x_set * 2, x = x_set)
 });
 
 test('resolveAxisBaseSet: identifier-bound elementof(interval(0,1))', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 p_set = elementof(interval(0, 1))
 f = functionof(p_set * 2, p = p_set)
@@ -1630,7 +1630,7 @@ f = functionof(p_set * 2, p = p_set)
 });
 
 test('resolveAxisBaseSet: identifier-bound elementof(unitinterval) → [0, 1]', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 p_set = elementof(unitinterval)
 f = functionof(p_set * 2, p = p_set)
@@ -1668,7 +1668,7 @@ test('resolveAxisBaseSet: external() source → empirical (not a set restriction
   // 'elementof'. The IR-op check (ir.op === 'elementof') correctly
   // skips them so they fall through to the empirical fallback —
   // there's no structural set restriction to surface.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 ext = external("data.dat")
 `);
@@ -1715,7 +1715,7 @@ test('fourSigmaQuantileRange: clipping at high N drops thinnest tails', () => {
 // =====================================================================
 
 test('findMatchingPresets: matches record whose kwargs equal the input set', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -1734,7 +1734,7 @@ pars2 = record(theta1 = 0.5, theta2 = 2.0)
 });
 
 test('findMatchingPresets: rejects records with extra or missing kwargs', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -1758,7 +1758,7 @@ test('findMatchingPresets: accepts constant-foldable values, rejects non-constan
   //     `-3.5` → neg(lit 3.5) lowering for negative numbers).
   // It rejects refs to stochastic bindings, since their value isn't
   // statically determinate.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 c = 5.0
 mu = draw(Normal(mu = 0, sigma = 1))
@@ -1788,7 +1788,7 @@ test('findMatchingPresets: fixed(...) wrapper marks held-constant kwargs', () =>
   // optimization or sweep. The wrapper is identity at runtime, so
   // the resolved value is the same; only the fixedNames set tags
   // which kwargs were marked.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -1812,7 +1812,7 @@ test('findMatchingPresets: empty / null sig → empty list', () => {
 test('findMatchingPresets: record matches fn-derived auto-named arg axes', () => {
   // fn(_ + _) → functionof with paramKwargs ['arg1', 'arg2']. A
   // record(arg1=…, arg2=…) should match.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 g = fn(_ + _)
 some_args = record(arg1 = 2.0, arg2 = -3.5)
@@ -1829,7 +1829,7 @@ some_args = record(arg1 = 2.0, arg2 = -3.5)
 // =====================================================================
 
 test('findMatchingDomains: matches cartprod whose kwargs equal the input set', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -1850,7 +1850,7 @@ wider  = cartprod(theta1 = interval(-10, 10), theta2 = interval(0, 20))
 });
 
 test('findMatchingDomains: rejects cartprod with extra / missing kwargs', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -1866,7 +1866,7 @@ correct = cartprod(theta1 = interval(-1, 1), theta2 = interval(0, 1))
 });
 
 test('findMatchingDomains: rejects degenerate / non-literal intervals', () => {
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta = draw(Normal(mu = 0, sigma = 1))
 f = functionof(theta, theta = theta)
@@ -1884,7 +1884,7 @@ test('findMatchingDomains: accepts named-set fields as unbounded factors', () =>
   // A cartprod field can be a named set (`reals` etc.) instead of an
   // interval, marking that kwarg as unbounded — the viewer will fall
   // back to the per-axis auto-fit there but still match the domain.
-  const { liftInlineSubexpressions } = require('../orchestrator');
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -2641,7 +2641,7 @@ test('phase sharpening: degenerate draws inherit value phase', () => {
   // for value-typed e. Phase sharpening makes degenerate draws
   // inherit the value's phase rather than the structural-stochastic
   // default. Non-degenerate draws (Normal, …) keep structural rule.
-  const { computePhases } = require('../analyzer');
+  const { computePhases } = require('../analyzer.ts');
   const { bindings } = processSource(`
 some_lit = 5.0
 some_arr = [1.2, 3.4]
@@ -2674,10 +2674,10 @@ real = draw(Normal(mu = 0, sigma = 1))
 // "Output:" dropdown for multi-output functions and route the
 // profile-plot evaluation to the chosen scalar leaf.
 
-const T = require('../types');
+const T = require('../types.ts');
 const {
   enumerateOutputLeaves, extractOutputIR,
-} = require('../orchestrator');
+} = require('../orchestrator.ts');
 
 test('enumerateOutputLeaves: scalar output → single empty-path entry', () => {
   const leaves = enumerateOutputLeaves(T.REAL);
@@ -2774,7 +2774,7 @@ f_demo = fn(record(a = _, b = 2 * _))
   const fb = r.bindings.get('f_demo');
   assert.deepEqual(fb.ir.params, ['_arg1_', '_arg2_']);
   // signatureOf should expose both params as inputs.
-  const sig = require('../orchestrator').signatureOf('f_demo', r.bindings);
+  const sig = require('../orchestrator.ts').signatureOf('f_demo', r.bindings);
   assert.equal(sig.inputs.length, 2);
 });
 
@@ -2998,7 +2998,7 @@ test('classify: bayesupdate observation can be a dynamically-computed value', ()
   // value — it stores the IR and the materialiser resolves at
   // sample time via resolveIRToValue + fixedValues. Same code path
   // for literal vs. rand-result observations; no special retry.
-  const { resolveIRToValue } = require('../orchestrator');
+  const { resolveIRToValue } = require('../orchestrator.ts');
   const { bindings } = processSource(`
     theta1_dist = Normal(mu = 0, sigma = 1)
     theta1      = draw(theta1_dist)

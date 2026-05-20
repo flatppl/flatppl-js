@@ -17,7 +17,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 
 const lit = v => ({ kind: 'lit', value: v });
 const ref = n => ({ kind: 'ref', ns: 'self', name: n });
@@ -235,7 +235,7 @@ test('isBatch: Float64Array of correct length is batched', () => {
 // semantics: any Value input ⇒ Value output; otherwise legacy bare.
 // =====================================================================
 
-const value = require('../value');
+const value = require('../value.ts');
 const { ARITH_OPS_N } = sampler._internal;
 
 test('isBatch: Value shape=[N] is batched; shape=[] is not', () => {

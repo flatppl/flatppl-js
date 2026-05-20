@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { tokenize, T } = require('../tokenizer');
+const { tokenize, T } = require('../tokenizer.ts');
 
 function tokenTypes(src) {
   return tokenize(src).tokens.filter(t => t.type !== T.EOF).map(t => t.type);
@@ -181,7 +181,7 @@ test('tokenizer: single | and & are still unknown', () => {
 });
 
 test('tokenizer: variant argument is accepted (no-op for now)', () => {
-  const { FLATPPY } = require('../variants');
+  const { FLATPPY } = require('../variants.ts');
   const { tokens } = tokenize('x ~ M', FLATPPY);
   // FlatPPY doesn't use `~` — the parser will reject it later. The
   // tokenizer still emits TILDE so the parser can produce a clear

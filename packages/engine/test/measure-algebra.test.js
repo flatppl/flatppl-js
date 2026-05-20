@@ -34,7 +34,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource, orchestrator, materialiser, empirical } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 
 // Real (async) materialiser harness — the production path. Used by the
 // jointchain/kchain tests below so they exercise the first-class
@@ -86,7 +86,7 @@ function nameSeed(name, rootSeed) {
 // rng.nextUniform isn't accessible. We use rng so superpose draws are
 // reproducible across test runs.
 function makeMainThreadPrng(seed) {
-  const rng = require('../rng');
+  const rng = require('../rng.ts');
   let state = rng.stateFromKey(seed);
   return () => {
     const pair = rng.nextUniform(state);

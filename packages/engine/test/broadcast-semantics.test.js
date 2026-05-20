@@ -9,7 +9,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 
 const ref = (n) => ({ kind: 'ref', ns: 'self', name: n });
 const lit = (v) => ({ kind: 'lit', value: v });
