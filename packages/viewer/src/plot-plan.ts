@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — plot plan builder + concrete materialiser (Phase 4f).
 //
 // buildPlotPlan inspects a binding's derivation + signature to
@@ -7,10 +6,11 @@
 // ConcreteMeasure substitutes user-set kwargs into a sampleable
 // measure IR for the kernel-sample plot path.
 
+import type { Ctx } from './types';
 import { collectRefArrays } from './engine-facade.js';
 import { sendWorker } from './worker.js';
 import { resolveMeasureAlias } from './util.js';
-export function buildPlotPlan(ctx, binding /*, bindingsMap */) {
+export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): any {
   if (!binding || !ctx.derivationsState) return null;
   var name = binding.name;
 
@@ -41,7 +41,7 @@ export function buildPlotPlan(ctx, binding /*, bindingsMap */) {
     // resolved through paramSources). For multi-output bodies
     // (record/tuple/array of scalars), enumerateOutputLeaves
     // gives one entry per scalar leaf the user can pick from.
-    var outputs = [];
+    let outputs: any[] = [];
     try {
       var paramTypes = new Map();
       for (var ii = 0; ii < sig.inputs.length; ii++) {
@@ -333,7 +333,7 @@ export function buildPlotPlan(ctx, binding /*, bindingsMap */) {
   return { name: name, mode: 'samples', discrete: discrete, analyticalIR: analyticalIR };
 }
 
-export function materialiseConcreteMeasure(ctx, ir, count, seed) {
+export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, seed: number): Promise<any> {
   if (!ir) return Promise.reject(new Error('materialiseConcreteMeasure: null IR'));
   if (ir.kind !== 'call') {
     return Promise.reject(new Error(
@@ -344,7 +344,7 @@ export function materialiseConcreteMeasure(ctx, ir, count, seed) {
   }
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
     var inner = ir.args[0];
-    var dims = [];
+    const dims: number[] = [];
     for (var di = 1; di < ir.args.length; di++) {
       var d = ir.args[di];
       if (!d || d.kind !== 'lit' || !Number.isInteger(d.value)) {
