@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — DAG (cytoscape) layer (Phase 4e).
 //
 // initCy builds the cytoscape instance + style stanzas + tap/dbltap/
@@ -59,7 +58,7 @@ export function updateHeader(ctx, data) {
     el.innerHTML = '<span class="target-name">module</span>';
     return;
   }
-  var target = null;
+  let target: any = null;
   for (var i = 0; i < data.nodes.length; i++) {
     if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
   }
@@ -394,7 +393,7 @@ export function renderDAG(ctx, data) {
   if (!ctx.cy) initCy(ctx);
   updateHeader(ctx, data);
 
-  var elements = [];
+  const elements: any[] = [];
 
   // Reification anchor names — bindings that head a reification
   // group (i.e. spawn a bubble with internal kernel members).
@@ -564,8 +563,8 @@ export function focusNode(ctx, targetName, pushHistory) {
     if (ctx.currentState && ctx.currentBindings.has(ctx.currentState.targetName)) {
       targetName = ctx.currentState.targetName;
     } else {
-      var allNames = [];
-      ctx.currentBindings.forEach(function(_b, name) { allNames.push(name); });
+      const allNames: string[] = [];
+      ctx.currentBindings.forEach(function(_b: unknown, name: string) { allNames.push(name); });
       if (allNames.length === 0) return;
       targetName = allNames[allNames.length - 1];
     }
