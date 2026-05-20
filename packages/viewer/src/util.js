@@ -1,5 +1,34 @@
 // @ts-check
 // @flatppl/viewer — pure utility/formatter module (Phase 4b).
+
+/**
+ * Get an element by ID from the viewer's DOM skeleton, throwing if
+ * absent. The skeleton is owned by templates.js (`VIEWER_BODY_HTML`,
+ * `ensureCssInjected`) — every ID the viewer's modules look up is
+ * laid down by `mount()` before any handler can run. A missing ID is
+ * therefore a template/accessor drift bug (someone renamed the markup
+ * but not the lookup, or vice versa), not a runtime condition.
+ *
+ * Throwing here surfaces the drift at the call site with a useful
+ * message, instead of emitting `Cannot read property 'X' of null`
+ * deep inside a handler somewhere downstream — exactly the bug class
+ * that bit us across the post-Phase-4 fixes (5113732 / 7174cf1 /
+ * 3435094). It also lets TypeScript narrow the return to `HTMLElement`
+ * so every call site loses its `if (el) {...}` boilerplate.
+ *
+ * For the genuinely-conditional case (a child created only when a
+ * branch fires, e.g. the cancellable `plot-stop-btn`), call
+ * `document.getElementById(id)` directly and keep the null check —
+ * `$()` is for the stable skeleton, not conditional widgets.
+ *
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
+export function $(id) {
+  var el = document.getElementById(id);
+  if (!el) throw new Error('viewer: missing #' + id + ' (template/accessor drift?)');
+  return el;
+}
 //
 // Functions in this module have no per-mount state dependency: they
 // take only their declared parameters (plus a few that consult the

@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer main module — Phase 4 first cut.
 //
 // All IIFE-scope content (the hoisted 117 functions + the mount
@@ -18,6 +19,7 @@
   // markup goes into the supplied container.
 
 import {
+  $,
   esc,
   truncateExpr,
   samplesAreConstant,
@@ -1307,7 +1309,7 @@ export function mount(container, opts) {
   // Plot toggle click handler. Restores from VS Code webview state on
   // first paint (see initial setPlotEnabled call below) so the user's
   // preference survives reloads.
-  document.getElementById('plot-toggle').addEventListener('click', function() {
+  $('plot-toggle').addEventListener('click', function() {
     setPlotEnabled(ctx, !ctx.plotEnabled);
   });
 
@@ -1317,11 +1319,11 @@ export function mount(container, opts) {
   // ResizeObservers (set up further below) pick up the resulting
   // size change and refit cytoscape / echarts automatically — no
   // explicit resize / fit calls needed here.
-  document.getElementById('plot-divider').addEventListener('mousedown', function (ev) {
+  $('plot-divider').addEventListener('mousedown', function (ev) {
     if (!ctx.plotEnabled) return;
     ev.preventDefault();
-    var graph = document.getElementById('graph-panel');
-    var plot  = document.getElementById('plot-panel');
+    var graph = $('graph-panel');
+    var plot  = $('plot-panel');
     var startY = ev.clientY;
     var startGraphPx = graph.getBoundingClientRect().height;
     var startPlotPx  = plot.getBoundingClientRect().height;
@@ -1405,7 +1407,7 @@ export function mount(container, opts) {
   // re-render with the saved sub-DAG data. (We push state objects that
   // hold both the data and the target name, so we don't have to recompute
   // when going back.)
-  document.getElementById('back-btn').addEventListener('click', function() {
+  $('back-btn').addEventListener('click', function() {
     if (ctx.history.length === 0) return;
     ctx.currentState = ctx.history.pop();
     renderDAG(ctx, ctx.currentState.data);

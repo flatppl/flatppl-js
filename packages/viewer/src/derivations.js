@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — derivation rebuild (Phase 4f).
 //
 // rebuildDerivations parses the current source via
@@ -117,7 +118,9 @@ export function rebuildDerivations(ctx) {
   //   - If the override is empty after pruning, retire it.
   ctx.domainOverrides.forEach(function(entry, name) {
     var b = ctx.currentBindings.get(name);
+    /** @type {Set<string> | null} */
     var sourceKwargs = null;
+    /** @type {Record<string, {lo: number, hi: number}> | null} */
     var sourceIntervals = null;
     if (b && b.node && b.node.value
         && b.node.value.type === 'CallExpr' && b.node.value.callee
@@ -150,7 +153,7 @@ export function rebuildDerivations(ctx) {
       if (!Object.prototype.hasOwnProperty.call(rs, k)) continue;
       if (!sourceKwargs.has(k)) {
         delete rs[k];                                // kwarg gone
-      } else if (Object.prototype.hasOwnProperty.call(sourceIntervals, k)
+      } else if (sourceIntervals && Object.prototype.hasOwnProperty.call(sourceIntervals, k)
                  && rs[k].lo === sourceIntervals[k].lo
                  && rs[k].hi === sourceIntervals[k].hi) {
         delete rs[k];                                // matches source interval

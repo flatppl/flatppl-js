@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — sampler-worker subsystem (Phase 4c).
 //
 // Spawns the Web Worker from ctx.SAMPLER_WORKER_URL on first use,
@@ -31,7 +32,8 @@ export function ensureSamplerWorker(ctx) {
       w = new Worker(ctx.SAMPLER_WORKER_URL);
     } catch (e) {
       // continue to blob fallback
-      console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:', e && e.message);
+      console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:',
+        e instanceof Error ? e.message : e);
     }
     if (!w) {
       var resp = await fetch(ctx.SAMPLER_WORKER_URL);
