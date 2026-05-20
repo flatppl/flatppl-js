@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — persist-to-source (Phase 4d).
 //
 // Builds source-text edits (preset binding lines, domain cartprod
@@ -6,10 +5,11 @@
 // the host adapter dispatches; testable end-to-end against a
 // captured editSource mock.
 
+import type { Ctx } from './types';
 import { activePresetFor, computeAutoValues, domainOverrideEntryFor, hasDomainOverrides, hasOverrides } from './overrides.js';
 
 import { isPersistableSetField } from './util.js';
-export function formatScalarForSource(ctx, v) {
+export function formatScalarForSource(ctx: Ctx, v: unknown): string {
   if (typeof v === 'boolean') {
     // Boolean spelling follows the source-file variant: FlatPPL
     // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
@@ -21,7 +21,7 @@ export function formatScalarForSource(ctx, v) {
   return String(v);
 }
 
-export function canPersistActive(ctx, plan) {
+export function canPersistActive(ctx: Ctx, plan: any): boolean {
   if (!hasOverrides(ctx, plan)) return false;
   if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
   if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
@@ -56,11 +56,11 @@ export function canPersistActive(ctx, plan) {
   return true;
 }
 
-export function buildPersistedPresetLine(ctx, plan) {
+export function buildPersistedPresetLine(ctx: Ctx, plan: any): string {
   var active = activePresetFor(ctx, plan);
   var b = ctx.currentBindings.get(plan.presetName);
   var srcArgs = b.node.value.args || [];
-  var parts = [];
+  const parts: string[] = [];
   for (var i = 0; i < srcArgs.length; i++) {
     var sa = srcArgs[i];
     var kwarg = sa.name;
@@ -79,7 +79,7 @@ export function buildPersistedPresetLine(ctx, plan) {
   return plan.presetName + ' = record(' + parts.join(', ') + ')';
 }
 
-export function persistActive(ctx, plan) {
+export function persistActive(ctx: Ctx, plan: any): void {
   if (!canPersistActive(ctx, plan)) return;
   if (plan.presetName == null) {
     persistAutoAsNewBinding(ctx, plan);
@@ -88,7 +88,7 @@ export function persistActive(ctx, plan) {
   }
 }
 
-export function persistNamedPreset(ctx, plan) {
+export function persistNamedPreset(ctx: Ctx, plan: any): void {
   var b = ctx.currentBindings.get(plan.presetName);
   var newText = buildPersistedPresetLine(ctx, plan);
   try {
@@ -104,7 +104,7 @@ export function persistNamedPreset(ctx, plan) {
   }
 }
 
-export function persistAutoAsNewBinding(ctx, plan) {
+export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
   if (typeof ctx.host.promptForName !== 'function'
       || typeof ctx.host.editSource !== 'function') {
     console.warn('[viewer] persist auto: ctx.host missing promptForName / editSource');
@@ -113,7 +113,7 @@ export function persistAutoAsNewBinding(ctx, plan) {
   var autoValues = computeAutoValues(ctx, plan);
   var override = plan.autoOverride;
   var combined = Object.assign({}, autoValues, (override && override.values) || {});
-  var parts = [];
+  const parts: string[] = [];
   for (var k in combined) {
     if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
     var v = combined[k];
@@ -121,8 +121,8 @@ export function persistAutoAsNewBinding(ctx, plan) {
     parts.push(k + ' = ' + formatScalarForSource(ctx, v));
   }
   if (parts.length === 0) return;
-  var existingNames = [];
-  if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
+  const existingNames: string[] = [];
+  if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b: unknown, n: string) { existingNames.push(n); });
   var pairsText = parts.join(', ');
   var suggested = (plan.name || 'inputs') + '_default';
   Promise.resolve(ctx.host.promptForName({
@@ -140,7 +140,7 @@ export function persistAutoAsNewBinding(ctx, plan) {
   });
 }
 
-export function setFieldToSource(ctx, v) {
+export function setFieldToSource(ctx: Ctx, v: any): string {
   if (v.type === 'Identifier') return v.name;
   // interval(NumLit, NumLit)
   return 'interval('
@@ -148,15 +148,15 @@ export function setFieldToSource(ctx, v) {
     + formatScalarForSource(ctx, v.args[1].value) + ')';
 }
 
-export function defaultSetSourceForKwarg(ctx, plan, kwargName) {
+export function defaultSetSourceForKwarg(ctx: Ctx, plan: any, kwargName: string): string {
   if (!plan.axes) return 'reals';
-  var matching = [];
+  const matching: any[] = [];
   for (var i = 0; i < plan.axes.length; i++) {
     if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
   }
   if (matching.length !== 1) return 'reals';  // non-scalar — defer
   var bindings = ctx.derivationsState && ctx.derivationsState.bindings;
-  var d = null;
+  let d: any = null;
   try {
     d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(matching[0].source, bindings);
   } catch (_) { d = null; }
@@ -178,7 +178,7 @@ export function defaultSetSourceForKwarg(ctx, plan, kwargName) {
   }
 }
 
-export function canPersistDomain(ctx, plan) {
+export function canPersistDomain(ctx: Ctx, plan: any): boolean {
   if (!hasDomainOverrides(ctx, plan)) return false;
   if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
   if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
@@ -201,7 +201,7 @@ export function canPersistDomain(ctx, plan) {
   return true;
 }
 
-export function persistDomain(ctx, plan) {
+export function persistDomain(ctx: Ctx, plan: any): void {
   if (!canPersistDomain(ctx, plan)) return;
   if (plan.domainName == null) {
     persistAutoDomainAsNewBinding(ctx, plan);
@@ -210,12 +210,12 @@ export function persistDomain(ctx, plan) {
   }
 }
 
-export function buildPersistedDomainLine(ctx, plan) {
+export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
   var b = ctx.currentBindings.get(plan.domainName);
   var srcArgs = b.node.value.args || [];
   var override = domainOverrideEntryFor(ctx, plan);
   var or = (override && override.ranges) || {};
-  var parts = [];
+  const parts: string[] = [];
   for (var i = 0; i < srcArgs.length; i++) {
     var sa = srcArgs[i];
     var kwarg = sa.name;
@@ -230,7 +230,7 @@ export function buildPersistedDomainLine(ctx, plan) {
   return plan.domainName + ' = cartprod(' + parts.join(', ') + ')';
 }
 
-export function persistNamedDomain(ctx, plan) {
+export function persistNamedDomain(ctx: Ctx, plan: any): void {
   var b = ctx.currentBindings.get(plan.domainName);
   var newText = buildPersistedDomainLine(ctx, plan);
   try {
@@ -246,7 +246,7 @@ export function persistNamedDomain(ctx, plan) {
   }
 }
 
-export function persistAutoDomainAsNewBinding(ctx, plan) {
+export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
   if (typeof ctx.host.promptForName !== 'function'
       || typeof ctx.host.editSource !== 'function') {
     console.warn('[viewer] persist domain auto: ctx.host missing promptForName / editSource');
@@ -266,7 +266,7 @@ export function persistAutoDomainAsNewBinding(ctx, plan) {
   // still persists with its observed bounds rather than being
   // weakened to the natural set.
   var inputs = (plan.signature && plan.signature.inputs) || [];
-  var parts = [];
+  const parts: string[] = [];
   for (var i = 0; i < inputs.length; i++) {
     var kw = inputs[i].kwargName;
     if (!kw) continue;
@@ -288,8 +288,8 @@ export function persistAutoDomainAsNewBinding(ctx, plan) {
     parts.push(kw + ' = ' + defaultSetSourceForKwarg(ctx, plan, kw));
   }
   if (parts.length === 0) return;
-  var existingNames = [];
-  if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b, n) { existingNames.push(n); });
+  const existingNames: string[] = [];
+  if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b: unknown, n: string) { existingNames.push(n); });
   var pairsText = parts.join(', ');
   var suggested = (plan.name || 'domain') + '_domain';
   Promise.resolve(ctx.host.promptForName({
