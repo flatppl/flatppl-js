@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer main module — Phase 4 first cut.
 //
 // All IIFE-scope content (the hoisted 117 functions + the mount
@@ -368,7 +368,7 @@ import { defaultVscodeHost } from './host-adapter.js';
 
 
 
-export function mount(container, opts) {
+export function mount(container: HTMLElement, opts?: import('./types').MountOpts) {
     opts = opts || {};
 
     // Per-mount state container (decomposition Phase 2). Every
@@ -380,7 +380,11 @@ export function mount(container, opts) {
     // var-hoisting alone wouldn't suffice because the assignment
     // `ctx = {}` is what makes ctx an object, and the prologue's
     // first ctx-write (e.g. `ctx.host = …`) must see an object.
-    var ctx = {};
+    // Cast to Ctx so the property writes below see the full shape
+    // (Ctx's [extra: string]: any escape hatch keeps unconverted
+    // modules quiet until per-field typing tightens — see
+    // src/types.d.ts).
+    const ctx = {} as import('./types').Ctx;
     // container: the element the viewer renders inside. Defaults to
     // document.body for backward-compat with the existing VS Code
     // wrapper. The viewer injects its layout markup as innerHTML and

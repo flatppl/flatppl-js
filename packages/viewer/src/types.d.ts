@@ -128,14 +128,14 @@ export interface Ctx {
   // ---- current-render state ----
   plotEchart: any;
   plotEnabled: boolean;
-  currentSource: string;
+  currentSource: string | null;
   currentBindings: any;
   currentLoweredModule: any;
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
   currentPlotPlan: any;
   /** Per-record-binding selection map (Phase-4 fix migrated this onto ctx). */
-  recordSelection: Map<string, any>;
+  recordSelection: Map<string, any> | null;
   rootSeed: number;
 
   // ---- caches ----

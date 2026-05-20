@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — DAG (cytoscape) layer (Phase 4e).
 //
 // initCy builds the cytoscape instance + style stanzas + tap/dbltap/

@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — top-of-stack plot dispatchers (Phase 4f).
 //
 // renderPlotForCurrent is the per-binding plot router (samples /

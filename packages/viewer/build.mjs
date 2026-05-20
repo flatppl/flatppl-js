@@ -101,7 +101,7 @@ const samplerWorkerBuildOpts = {
 };
 
 const viewerBuildOpts = {
-  entryPoints: [join(here, 'src', 'index.js')],
+  entryPoints: [join(here, 'src', 'index.ts')],
   outfile: join(vendorDir, 'viewer.js'),
   bundle: true,
   // minify:false — see ARCHITECTURE.md; viewer bundle stays diffable

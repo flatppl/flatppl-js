@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — preset + domain control popovers (Phase 4f).
 //
 // buildPresetControl / buildDomainControl construct the

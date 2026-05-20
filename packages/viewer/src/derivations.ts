@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — derivation rebuild (Phase 4f).
 //
 // rebuildDerivations parses the current source via

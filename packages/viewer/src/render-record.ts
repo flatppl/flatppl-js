@@ -1,4 +1,4 @@
-// @ts-check
+// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — record/sample-stats renderers (Phase 4e).
 //
 // renderRecordMarginals + renderRecordToolbar drive the correlations/

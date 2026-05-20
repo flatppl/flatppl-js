@@ -4,7 +4,7 @@
   "description": "Browser-loadable FlatPPL DAG + plot visualization. Host-agnostic; depends on cytoscape, echarts and the FlatPPL engine bundle. Embedded by the VS Code extension and intended for online docs / standalone web previews.",
   "license": "MIT",
   "private": true,
-  "main": "./src/viewer.js",
+  "main": "./src/index.ts",
   "files": [
     "src/",
     "README.md",
