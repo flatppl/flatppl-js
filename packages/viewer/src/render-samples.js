@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — samples / empirical / array renderers (Phase 4e).
 //
 // renderArrayStepPlot draws a fixed-length numeric array as a step

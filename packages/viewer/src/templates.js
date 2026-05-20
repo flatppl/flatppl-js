@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — DOM templates + CSS injection (Phase 4g).
 //
 // VIEWER_CSS is injected once into <head>; VIEWER_BODY_HTML is the

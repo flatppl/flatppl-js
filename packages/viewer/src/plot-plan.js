@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — plot plan builder + concrete materialiser (Phase 4f).
 //
 // buildPlotPlan inspects a binding's derivation + signature to

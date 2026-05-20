@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — orchestration / source updates / nameSeed (Phase 4f).
 //
 // applySourceUpdate processes a sourceUpdate or showModule message:

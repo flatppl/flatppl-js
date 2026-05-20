@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — record/sample-stats renderers (Phase 4e).
 //
 // renderRecordMarginals + renderRecordToolbar drive the correlations/
