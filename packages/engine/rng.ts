@@ -1,3 +1,4 @@
+// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Philox-4x32-10 — counter-based pseudorandom number generator.

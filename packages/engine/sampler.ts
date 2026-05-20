@@ -1,3 +1,4 @@
+// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Sampler — one-step `rand(state, measure, env)` and analytical `density()`
