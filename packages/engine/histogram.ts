@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Pure-numeric histogram helpers, decoupled from the sampler/worker
@@ -44,7 +43,7 @@
  * @param {number} [opts.maxBins=200]
  * @param {number} [opts.minBins=8]
  */
-function freedmanDiaconisHistogram(samples, opts = {}) {
+function freedmanDiaconisHistogram(samples, opts: { logWeights?: any; trimQ?: number; minBins?: number; maxBins?: number; [k: string]: any } = {}) {
   const n = samples.length;
   if (n === 0) {
     return {
@@ -179,7 +178,7 @@ function freedmanDiaconisHistogram(samples, opts = {}) {
  * @param {object} [opts]
  * @param {Float64Array} [opts.logWeights]
  */
-function integerHistogram(samples, opts = {}) {
+function integerHistogram(samples, opts: { logWeights?: any; [k: string]: any } = {}) {
   const n = samples.length;
   if (n === 0) {
     return { xs: new Float64Array(0), ys: new Float64Array(0), support: [0, 0], reference: 'counting' };
