@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // FlatPPL sampler-worker message handler.
@@ -132,7 +131,7 @@ function _unwrapRefArrays(refArrays) {
   return out;
 }
 
-function createWorkerHandler(opts = {}) {
+function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown> } = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
   // when no explicit seed is passed. The new sampleN path takes a per-
   // call seed and doesn't touch this.
@@ -328,7 +327,7 @@ function createWorkerHandler(opts = {}) {
           // The main thread is responsible for plumbing the parent's
           // logWeights through; the worker just emits null here and
           // lets that wrap-up happen at the cache boundary.
-          const reply = { type: 'samples', id, samples: out, logWeights: null };
+          const reply: any = { type: 'samples', id, samples: out, logWeights: null };
           if (dims) reply.dims = dims;
           if (imag) reply.imag = imag;
           return reply;
