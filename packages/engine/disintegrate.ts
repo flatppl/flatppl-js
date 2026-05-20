@@ -1,3 +1,4 @@
+// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Structural disintegration for FlatPPL.

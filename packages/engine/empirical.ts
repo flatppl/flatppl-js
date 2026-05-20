@@ -1,3 +1,4 @@
+// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Pure-numeric helpers for the empirical-measure representation used

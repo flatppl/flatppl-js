@@ -1,3 +1,5 @@
+/// <reference lib="webworker" />
+// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Browser/Node-worker entry shim for the FlatPPL sampler worker.
