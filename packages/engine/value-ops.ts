@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // =====================================================================
@@ -221,7 +220,7 @@ function mul(a, b) {
 function _scalarBroadcastMul(s, v) {
   const out = new Float64Array(v.data.length);
   for (let i = 0; i < v.data.length; i++) out[i] = s * v.data[i];
-  const r = { shape: v.shape.slice(), data: out };
+  const r: any = { shape: v.shape.slice(), data: out };
   if (v.t && v.t !== 'N') r.t = v.t;  // preserve orientation
   if (v.dtype) r.dtype = v.dtype;
   return r;
@@ -704,7 +703,7 @@ function _makeElementwiseBinop(scalarFn, opName) {
     for (let i = 0; i < a.data.length; i++) {
       out[i] = scalarFn(a.data[i], b.data[i]);
     }
-    const r = { shape: a.shape.slice(), data: out };
+    const r: any = { shape: a.shape.slice(), data: out };
     // Preserve tag — both operands share the swapped bit; for the
     // conjugate bit (real-valued: no-op) prefer the LHS's tag.
     if (a.t && a.t !== 'N') r.t = a.t;
@@ -723,7 +722,7 @@ function _scalarBroadcastBinop(scalarFn, s, v, scalarLeft) {
   } else {
     for (let i = 0; i < v.data.length; i++) out[i] = scalarFn(v.data[i], s);
   }
-  const r = { shape: v.shape.slice(), data: out };
+  const r: any = { shape: v.shape.slice(), data: out };
   if (v.t && v.t !== 'N') r.t = v.t;
   if (v.dtype) r.dtype = v.dtype;
   return r;
@@ -755,13 +754,13 @@ function neg(a) {
     const imO = new Float64Array(a.im.length);
     for (let i = 0; i < reO.length; i++) reO[i] = -a.data[i];
     for (let i = 0; i < imO.length; i++) imO[i] = -a.im[i];
-    const r = { shape: a.shape.slice(), data: reO, im: imO, dtype: 'complex' };
+    const r: any = { shape: a.shape.slice(), data: reO, im: imO, dtype: 'complex' };
     if (a.t && a.t !== 'N') r.t = a.t;
     return r;
   }
   const out = new Float64Array(a.data.length);
   for (let i = 0; i < a.data.length; i++) out[i] = -a.data[i];
-  const r = { shape: a.shape.slice(), data: out };
+  const r: any = { shape: a.shape.slice(), data: out };
   if (a.t && a.t !== 'N') r.t = a.t;
   if (a.dtype) r.dtype = a.dtype;
   return r;
@@ -1014,7 +1013,7 @@ function _atomBroadcastBinop(scalarFn, batched, indep, N, swapArgs, opName) {
       }
     }
   }
-  const r = { shape: batched.shape.slice(), data: out };
+  const r: any = { shape: batched.shape.slice(), data: out };
   if (batched.t && batched.t !== 'N') r.t = batched.t;
   if (batched.dtype) r.dtype = batched.dtype;
   return r;
