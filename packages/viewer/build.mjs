@@ -7,7 +7,7 @@
 //     cytoscape-layers / echarts        — copied from hoisted node_modules
 //   - engine.min.js                     — bundled from packages/engine
 //   - sampler-worker.min.js             — bundled from packages/engine
-//   - viewer.js                          — copied from src/viewer.js
+//   - viewer.js                          — bundled from src/index.js (ES modules → IIFE)
 //
 // This mirrors what packages/vscode-extension/build-vendor.mjs already does
 // (and we deliberately keep the two scripts independent for now —
@@ -65,20 +65,13 @@ for (const { pkg, src, dst } of COPY_LIBS) {
 }
 
 // ---------------------------------------------------------------------
-// 2. Copy the viewer source. The embed page loads it as
-//    <script src="vendor/viewer.js"> alongside the other vendored
-//    bundles. Source-of-truth lives at src/viewer.js; the copy in
-//    vendor/ is a build artifact.
-
-await copyFile(join(here, 'src', 'viewer.js'), join(vendorDir, 'viewer.js'));
-console.log('  copied viewer source -> vendor/viewer.js');
-
-// ---------------------------------------------------------------------
-// 3. Bundle the FlatPPL engine and sampler-worker for browser loading.
-//    Same esbuild config the vscode-extension uses — IIFE format,
-//    minified, browser target. The engine bundle exports
-//    `globalThis.FlatPPLEngine`; the worker registers self.onmessage
-//    side-effects.
+// 2. Bundle the FlatPPL engine, sampler-worker, and viewer entry for
+//    browser loading. The viewer is bundled (not copied) from Phase 4
+//    onwards: src/index.js imports src/main.js + ~20 sibling ES modules,
+//    and esbuild collapses them into a single IIFE the host can load
+//    via <script src="vendor/viewer.js"> (no module-loader needed). The
+//    embed page loads it alongside the other vendored bundles. Engine
+//    and sampler-worker mirror the vscode-extension's bundling config.
 
 const engineBuildOpts = {
   entryPoints: [join(enginePkg, 'index.js')],
@@ -107,19 +100,40 @@ const samplerWorkerBuildOpts = {
   legalComments: 'inline',
 };
 
+const viewerBuildOpts = {
+  entryPoints: [join(here, 'src', 'index.js')],
+  outfile: join(vendorDir, 'viewer.js'),
+  bundle: true,
+  // minify:false — see ARCHITECTURE.md; viewer bundle stays diffable
+  // and the webview's CSP forbids eval (some minify transforms emit).
+  // Matches vscode-extension/build-vendor.mjs's choice exactly.
+  minify: false,
+  format: 'iife',
+  // No globalName: src/index.js does an explicit
+  // `window.FlatPPLViewer = window.FlatPPLViewer || {}` merge so a host
+  // that pre-populates the namespace isn't clobbered.
+  platform: 'browser',
+  target: ['es2020'],
+  legalComments: 'inline',
+};
+
 if (WATCH) {
   const engineCtx = await esbuild.context(engineBuildOpts);
   const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
-  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild()]);
+  const viewerCtx = await esbuild.context(viewerBuildOpts);
+  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(), viewerCtx.rebuild()]);
   console.log('  bundled engine        -> vendor/engine.min.js');
   console.log('  bundled sampler-worker -> vendor/sampler-worker.min.js');
-  await Promise.all([engineCtx.watch(), workerCtx.watch()]);
-  console.log('  watching packages/engine/ for changes (Ctrl+C to exit)…');
+  console.log('  bundled viewer        -> vendor/viewer.js');
+  await Promise.all([engineCtx.watch(), workerCtx.watch(), viewerCtx.watch()]);
+  console.log('  watching packages/engine/ and packages/viewer/src/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
+    esbuild.build(viewerBuildOpts),
   ]);
   console.log('  bundled engine        -> vendor/engine.min.js');
   console.log('  bundled sampler-worker -> vendor/sampler-worker.min.js');
+  console.log('  bundled viewer        -> vendor/viewer.js');
 }
