@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Per-binding measure materialisation.
@@ -107,13 +106,13 @@ function makeMainThreadPrng(seed) {
  */
 function collectRefArrays(ir, fixedValues, getMeasure) {
   const refs = orchestrator.collectSelfRefs(ir);
-  const names = [];
-  refs.forEach((n) => {
+  const names: string[] = [];
+  refs.forEach((n: string) => {
     if (fixedValues && fixedValues.has(n)) return;
     names.push(n);
   });
-  return Promise.all(names.map(getMeasure)).then((measures) => {
-    const out = {};
+  return Promise.all(names.map(getMeasure)).then((measures: any[]) => {
+    const out: any = {};
     for (let i = 0; i < names.length; i++) {
       // Phase 8: refArrays uniformly carry Values internally. Phase 4b
       // ensures every scalar-leaf Measure has a populated `.value`
@@ -275,7 +274,7 @@ function measureFromValue(v, extras) {
   const N = v.shape[0];
   const dims = v.shape.length > 1 ? v.shape.slice(1) : undefined;
   extras = extras || {};
-  const m = {
+  const m: any = {
     samples:      v.data,
     value:        v,
     logWeights:   extras.logWeights != null ? extras.logWeights : null,
@@ -365,7 +364,7 @@ function matEvaluate(d, ctx) {
     if (ctx.fixedValues && ctx.fixedValues.has(n)) return;
     parentNames.push(n);
   });
-  return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures) => {
+  return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
     const refArrays = {};
     for (let i = 0; i < parentNames.length; i++) {
       // Phase 8: uniform Value refArrays internally. Mirrors
@@ -635,7 +634,7 @@ function matKernelBroadcast(name, d, ctx) {
   }
   // Map parameter name → source Value (resolved atom-indep, like
   // matMvNormal does for mu/cov).
-  const srcByParam = {};
+  const srcByParam: any = {};
   try {
     if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
       for (const pn of Object.keys(d.kwargIRs)) {
@@ -768,7 +767,7 @@ function matTuple(d, ctx) {
   // independently; combine into a tuple Measure whose components live
   // in elems. Top-level logWeights is the join of components'
   // (propagateLogWeights handles dedupe + sum).
-  return Promise.all(d.elems.map(ctx.getMeasure)).then((subs) => {
+  return Promise.all(d.elems.map(ctx.getMeasure)).then((subs: any[]) => {
     const lw = empirical.propagateLogWeights(subs);
     let lTM = 0;
     let nEff = ctx.sampleCount;
@@ -791,7 +790,7 @@ function matRecord(d, ctx) {
   // measures multiply masses).
   const fieldNames = Object.keys(d.fields);
   const fieldDeps  = fieldNames.map((k) => d.fields[k]);
-  return Promise.all(fieldDeps.map(ctx.getMeasure)).then((subs) => {
+  return Promise.all(fieldDeps.map(ctx.getMeasure)).then((subs: any[]) => {
     const fields = {};
     let lTM = 0;
     let nEff = ctx.sampleCount;
@@ -1459,7 +1458,7 @@ function matLogdensityof(d, ctx) {
   return Promise.all([
     Promise.all(valueRefs.map(ctx.getMeasure)),
     innerJointP,
-  ]).then(([refMeasures, innerJoint]) => {
+  ]).then(([refMeasures, innerJoint]: [any[], any]) => {
     const refArrays = {};
     for (let i = 0; i < valueRefs.length; i++) {
       const rm = refMeasures[i];
