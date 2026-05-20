@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer main module — Phase 4 first cut.
 //
 // All IIFE-scope content (the hoisted 117 functions + the mount
@@ -1540,7 +1539,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // user's preference survives panel close/reopen and reloads. Default
   // is OFF for first-time use — the plot panel is opt-in to keep the
   // initial DAG-only experience clean.
-  var prevState = null;
+  let prevState: any = null;
   if (ctx.host.loadState) { try { prevState = ctx.host.loadState(); } catch (_) {} }
   setPlotEnabled(ctx, prevState && prevState.plotEnabled === true);
 
