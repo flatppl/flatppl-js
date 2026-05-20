@@ -22,7 +22,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 
 const SAMPLE_COUNT = 8192;
 const ROOT_SEED    = 0xC10D5F;  // distinct from other test files

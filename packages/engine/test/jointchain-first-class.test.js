@@ -10,7 +10,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 const { buildDerivations } = orchestrator;
 
 // Materialise `target` from `src` via the real materialiser. Mirrors

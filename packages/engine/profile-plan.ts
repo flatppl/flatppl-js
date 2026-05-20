@@ -9,13 +9,13 @@
 // ZERO internal callers in orchestrator (only reached via the public
 // API) — the facade re-bind exists purely for module.exports parity.
 
-const { quantileSorted } = require('./histogram');
+const { quantileSorted } = require('./histogram.ts');
 const {
   resolveConstant,
   parseSetIR,
   lowerSafe,
   NAMED_SET_NAMES,
-} = require('./ir-shared');
+} = require('./ir-shared.ts');
 
 /**
  * Resolve the value-set of a paramSources entry to a structural

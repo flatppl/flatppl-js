@@ -1,8 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { tokenize } = require('../tokenizer');
-const { parse } = require('../parser');
+const { tokenize } = require('../tokenizer.ts');
+const { parse } = require('../parser.ts');
 
 function parseSrc(src) {
   return parse(tokenize(src).tokens);

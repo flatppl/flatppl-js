@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 
 function lit(v)        { return { kind: 'lit', value: v }; }
 function call(op, ...args) { return { kind: 'call', op, args }; }

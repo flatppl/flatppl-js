@@ -1,7 +1,7 @@
 'use strict';
 
 // Tests for engine/worker.js (transport-agnostic handler) and the
-// engine/worker-entry.js shim driven via Node worker_threads.
+// engine/worker-entry.ts shim driven via Node worker_threads.
 //
 // Coverage:
 //   - init / setEnv / setSeed / sample / density / evaluate / dispose
@@ -21,7 +21,7 @@ const assert = require('node:assert/strict');
 const { Worker } = require('node:worker_threads');
 const { join } = require('node:path');
 
-const { createWorkerHandler, transferablesOf } = require('../worker');
+const { createWorkerHandler, transferablesOf } = require('../worker.ts');
 
 function synthLoc() {
   return { start: { line: -1, col: -1 }, end: { line: -1, col: -1 }, synthetic: true };
@@ -273,11 +273,11 @@ test('transferablesOf: other reply types yield empty list', () => {
 
 // =====================================================================
 // End-to-end: spawn the entry shim in a Node worker_thread and exchange
-// real postMessage round-trips. This validates worker-entry.js's wiring.
+// real postMessage round-trips. This validates worker-entry.ts's wiring.
 // =====================================================================
 
 test('entry shim: full round-trip via worker_threads (init, sample, density, dispose)', async () => {
-  const entry = join(__dirname, '..', 'worker-entry.js');
+  const entry = join(__dirname, '..', 'worker-entry.ts');
   const worker = new Worker(entry);
 
   // Helper: send msg, await first reply matching id.
@@ -890,7 +890,7 @@ test('profileN: logdensity mode evaluates Normal logpdf along mu axis', () => {
 // =====================================================================
 
 test('entry shim: error replies survive postMessage', async () => {
-  const entry = join(__dirname, '..', 'worker-entry.js');
+  const entry = join(__dirname, '..', 'worker-entry.ts');
   const worker = new Worker(entry);
   try {
     const reply = await new Promise((resolve, reject) => {
@@ -954,7 +954,7 @@ test('evaluateN: per-atom refArrays override session env', () => {
 // _unwrapRefArrays keeps complex shape=[N] refs whole instead of
 // dropping their .im.
 
-const valueLib = require('../value');
+const valueLib = require('../value.ts');
 
 test('evaluateN: complex(re, im) over batched real refs → reply.imag', () => {
   const w = createWorkerHandler();

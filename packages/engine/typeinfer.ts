@@ -43,8 +43,8 @@
 // %local refs resolve against this stack; %self refs against the
 // module's binding map.
 
-const T = require('./types');
-const builtins = require('./builtins');
+const T = require('./types.ts');
+const builtins = require('./builtins.ts');
 
 // =====================================================================
 // Constant maps (carried over from the AST-based version)

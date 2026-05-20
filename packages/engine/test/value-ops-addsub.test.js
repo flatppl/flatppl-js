@@ -20,8 +20,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const valueLib = require('..').value;
-const valueOps = require('../value-ops');
-const sampler = require('../sampler');
+const valueOps = require('../value-ops.ts');
+const sampler = require('../sampler.ts');
 
 const { scalar, vector, matrix, transpose, getTag } = valueLib;
 

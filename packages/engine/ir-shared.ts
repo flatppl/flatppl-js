@@ -9,8 +9,8 @@
 // cycles. orchestrator.js (and later derivations/profile-plan)
 // re-bind these names from here; the public API is unchanged.
 
-const { lowerExpr } = require('./lower');
-const { isMeasureExpr } = require('./analyzer');
+const { lowerExpr } = require('./lower.ts');
+const { isMeasureExpr } = require('./analyzer.ts');
 
 /**
  * Resolve a measure-typed AST argument (the measure operand of
@@ -205,7 +205,7 @@ function resolveIRToValue(ir, bindings, fixedValues) {
         return walk({ kind: 'ref', ns: 'self', name }, seen);
       },
     });
-    const samplerLib = require('./sampler');
+    const samplerLib = require('./sampler.ts');
     return valueToPlain(samplerLib.evaluateExpr(ir, env));
   }
 }

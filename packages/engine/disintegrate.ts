@@ -32,8 +32,8 @@
 // 1988) for the underlying algebra and the slicing literature this draws
 // on.
 
-const ast = require('./ast');
-const { collectDeps, isMeasureExpr } = require('./analyzer');
+const ast = require('./ast.ts');
+const { collectDeps, isMeasureExpr } = require('./analyzer.ts');
 
 // Minimal AST construction helpers, all stamped with synthLoc(source).
 function mkIdent(name, source)        { return ast.Identifier(name, ast.synthLoc(source)); }

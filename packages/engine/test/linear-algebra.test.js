@@ -8,8 +8,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
-const valueLib = require('../value');
+const sampler = require('../sampler.ts');
+const valueLib = require('../value.ts');
 
 function lit(v)        { return { kind: 'lit', value: v }; }
 function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }

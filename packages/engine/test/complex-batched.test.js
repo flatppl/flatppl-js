@@ -8,8 +8,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
-const value = require('../value');
+const sampler = require('../sampler.ts');
+const value = require('../value.ts');
 const { ARITH_OPS_N } = sampler._internal;
 const {
   complexValue, batchedScalar, scalar, vector, readComplex,

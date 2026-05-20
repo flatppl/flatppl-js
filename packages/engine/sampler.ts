@@ -64,9 +64,9 @@
 // boundary — the IR keeps the spec names, the sampler's stdlib calls use
 // the translated names. See `PARAM_TRANSLATION` below for the full table.
 
-const rng = require('./rng');
-const valueLib = require('./value');
-const valueOps = require('./value-ops');
+const rng = require('./rng.ts');
+const valueLib = require('./value.ts');
+const valueOps = require('./value-ops.ts');
 
 // Math special functions from stdlib for gamma / loggamma / erf-based
 // probit / invprobit. The straight-JS variants (logit, invlogit, min,
@@ -3540,7 +3540,7 @@ function isByteVector(x) {
 // the back-reference doesn't blow up module loading).
 let _traceeval = null;
 function getTraceeval() {
-  if (!_traceeval) _traceeval = require('./traceeval');
+  if (!_traceeval) _traceeval = require('./traceeval.ts');
   return _traceeval;
 }
 

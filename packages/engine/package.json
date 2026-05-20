@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Tokenizer, parser, analyzer, IR-lowering, and DAG-extraction utilities for the FlatPPL probabilistic language. JavaScript reference implementation.",
   "license": "MIT",
-  "main": "./index.js",
+  "main": "./index.ts",
   "files": [
-    "*.js",
+    "*.ts",
     "README.md",
     "LICENSE"
   ],

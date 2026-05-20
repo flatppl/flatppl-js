@@ -59,7 +59,7 @@
 //                        affects density; density.js handles that).
 //   lawof / draw       — pass-through (`lawof(draw(M)) ≡ M`).
 
-const samplerLib = require('./sampler');
+const samplerLib = require('./sampler.ts');
 
 function walk(state, ir, env, opts) {
   opts = opts || {};

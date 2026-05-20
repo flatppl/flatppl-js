@@ -8,9 +8,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
-const valueLib = require('../value');
-const vops = require('../value-ops');
+const sampler = require('../sampler.ts');
+const valueLib = require('../value.ts');
+const vops = require('../value-ops.ts');
 const { ARITH_OPS } = sampler._internal;
 const { diagMatrix, densify, isDiagStored, vector, matrix, scalar } = valueLib;
 

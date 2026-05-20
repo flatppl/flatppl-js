@@ -59,10 +59,10 @@
 // materialiser stays pure-async and side-effect-free apart from
 // what those callbacks do.
 
-const empirical    = require('./empirical');
-const orchestrator = require('./orchestrator');
-const rng          = require('./rng');
-const valueLib     = require('./value');
+const empirical    = require('./empirical.ts');
+const orchestrator = require('./orchestrator.ts');
+const rng          = require('./rng.ts');
+const valueLib     = require('./value.ts');
 
 // =====================================================================
 // Helpers
@@ -626,7 +626,7 @@ function matKernelBroadcast(name, d, ctx) {
   // matIid. Probability kernel ⇒ independent product is a probability
   // measure: logTotalmass 0, n_eff N. Closed-form logdensity is a
   // documented follow-up (TODO §04), exactly as matIid defers it.
-  const sampler = require('./sampler');
+  const sampler = require('./sampler.ts');
   const params = (sampler._internal.REGISTRY[d.distOp] || {}).params;
   if (!params) {
     return Promise.reject(new Error(
@@ -696,7 +696,7 @@ function matKernelBroadcast(name, d, ctx) {
   // broadcast into the length-K vectors, so this also covers
   // broadcast(Normal, scalarMu, sigmas) etc.
   if (d.distOp === 'Normal' && srcByParam.mu && srcByParam.sigma) {
-    const valueOps = require('./value-ops');
+    const valueOps = require('./value-ops.ts');
     const muVec  = new Float64Array(K);
     const sigSq  = new Float64Array(K);
     for (let j = 0; j < K; j++) {
@@ -1214,8 +1214,8 @@ function matMvNormal(name, d, ctx) {
   // logTotalmass = 0 (normalized probability measure); n_eff = N
   // (independent atoms). The output Measure is vector-atom shape
   // (samples + dims=[n]) via measureFromValue.
-  const valueOps = require('./value-ops');
-  const sampler  = require('./sampler');
+  const valueOps = require('./value-ops.ts');
+  const sampler  = require('./sampler.ts');
   const distIR = d.distIR;
   if (!distIR || !distIR.kwargs || !distIR.kwargs.mu || !distIR.kwargs.cov) {
     return Promise.reject(new Error('MvNormal: requires mu and cov kwargs'));
@@ -1868,7 +1868,7 @@ function matJointchain(name, d, ctx) {
                   if (ctx.fixedValues) {
                     for (const [k2, v2] of ctx.fixedValues) env[k2] = v2;
                   }
-                  const cv = require('./sampler').evaluateExpr(cIR, env);
+                  const cv = require('./sampler.ts').evaluateExpr(cIR, env);
                   if (typeof cv === 'number' && Number.isFinite(cv)) {
                     reps = cv | 0;
                   }
@@ -1876,7 +1876,7 @@ function matJointchain(name, d, ctx) {
               }
               if (reps == null || reps < 0 || !inner
                   || inner.kind !== 'call'
-                  || !require('./sampler').isKnownDistribution(inner.op)) {
+                  || !require('./sampler.ts').isKnownDistribution(inner.op)) {
                 return Promise.reject(new Error(
                   `jointchain: step ${i} composite kernel-body field `
                   + `'${vn}' — only iid(<leaf dist>, <fixed n>) is `

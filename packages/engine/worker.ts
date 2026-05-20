@@ -86,9 +86,9 @@
 // Every request may carry an `id`; the reply echoes it. Errors come
 // back as `{ type: 'error', id, message, stack? }`.
 
-const rngLib = require('./rng');
-const samplerLib = require('./sampler');
-const densityLib = require('./density');
+const rngLib = require('./rng.ts');
+const samplerLib = require('./sampler.ts');
+const densityLib = require('./density.ts');
 
 // Phase 8: refArrays now uniformly carry Values (post-Phase-7b/8
 // unification). Worker handlers like sampleN / truncateSampleN read

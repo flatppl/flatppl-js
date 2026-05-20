@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource } = require('..');
-const pir = require('../pir');
+const pir = require('../pir.ts');
 
 function lowered(src) {
   const { bindings } = processSource(src);

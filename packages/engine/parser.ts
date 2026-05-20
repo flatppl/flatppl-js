@@ -1,7 +1,7 @@
 'use strict';
 
-const { T } = require('./tokenizer');
-const AST = require('./ast');
+const { T } = require('./tokenizer.ts');
+const AST = require('./ast.ts');
 
 /**
  * Parse a token stream into a FlatPPL AST.
@@ -15,7 +15,7 @@ const AST = require('./ast');
 function parse(tokens, variant) {
   // Fall back to canonical FlatPPL when no variant supplied — keeps
   // existing call sites that pass only `tokens` working.
-  const v = variant || require('./variants').FLATPPL;
+  const v = variant || require('./variants.ts').FLATPPL;
 
   const diagnostics = [];
   let pos = 0;
@@ -354,7 +354,7 @@ function parse(tokens, variant) {
     // BoolLiteral with a JS boolean value regardless of spelling.
     if (at(T.IDENT)) {
       advance();
-      const { isConstant, isSet } = require('./builtins');
+      const { isConstant, isSet } = require('./builtins.ts');
       if (v.booleanLiterals && v.booleanLiterals[0] === tok.value) {
         return AST.BoolLiteral(true, tok.loc);
       }

@@ -57,8 +57,8 @@
 //     supplies a closure over `orchestrator.expandMeasureIR(name,
 //     derivations)`.
 
-const samplerLib = require('./sampler');
-const valueLib   = require('./value');
+const samplerLib = require('./sampler.ts');
+const valueLib   = require('./value.ts');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -891,8 +891,8 @@ function walkMvNormal(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   const muRaw = samplerLib.evaluateExpr(kwargs.mu, muEnv);
   const covRaw = samplerLib.evaluateExpr(kwargs.cov, muEnv);
   // Normalise both to Values.
-  const valueLibLocal = require('./value');
-  const valueOpsLocal = require('./value-ops');
+  const valueLibLocal = require('./value.ts');
+  const valueOpsLocal = require('./value-ops.ts');
   const muValue = valueLibLocal.asValue(muRaw);
   const covValue = Array.isArray(covRaw) && covRaw.length > 0 && Array.isArray(covRaw[0])
     ? valueOpsLocal._nestedToValue(covRaw)

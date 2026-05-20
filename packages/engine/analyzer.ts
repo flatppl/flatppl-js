@@ -1,11 +1,11 @@
 'use strict';
 
-const { isKnownName, MEASURE_PRODUCING } = require('./builtins');
-const AST = require('./ast');
+const { isKnownName, MEASURE_PRODUCING } = require('./builtins.ts');
+const AST = require('./ast.ts');
 // Lazy require to avoid a circular load (disintegrate requires analyzer).
 let _disintegratePlan = null;
 function disintegratePlan(...args) {
-  if (!_disintegratePlan) _disintegratePlan = require('./disintegrate').disintegratePlan;
+  if (!_disintegratePlan) _disintegratePlan = require('./disintegrate.ts').disintegratePlan;
   return _disintegratePlan(...args);
 }
 
@@ -1339,14 +1339,14 @@ function analyze(ast, source) {
   // later) operate on it. The original AST stays in `bindings.node`
   // for source-level concerns (DAG display, source-located
   // diagnostics).
-  const pir = require('./pir');
+  const pir = require('./pir.ts');
   const loweredModule = pir.lowerToModule(bindings);
 
   // Structural type inference (FlatPIR §sec:flatpir). Mutates each
   // lowered binding to set `inferredType` and writes per-call
   // `meta.type` annotations. We mirror inferredType back onto the
   // analyzer-level bindings for consumers that haven't migrated yet.
-  const typeDiagnostics = require('./typeinfer').inferTypes(loweredModule);
+  const typeDiagnostics = require('./typeinfer.ts').inferTypes(loweredModule);
   for (const [name, lb] of loweredModule.bindings) {
     const b = bindings.get(name);
     if (b) b.inferredType = lb.inferredType;

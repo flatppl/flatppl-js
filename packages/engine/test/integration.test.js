@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { processSource, computeSubDAG } = require('../index');
+const { processSource, computeSubDAG } = require('../index.ts');
 
 // Integration tests run against bundled flatppl source files copied from
 // the flatppl-examples and statsmodel-rosetta-stone sibling repos. Update
@@ -111,7 +111,7 @@ test('integration: bayesian_inference_3 posterior derivation cascade', () => {
   // classifier must read the body via Kir.body, not Kir.args[0]. The
   // A1 IR-migration originally read .args[0], silently nulling the
   // posterior derivation and breaking the visualization.
-  const { buildDerivations } = require('../orchestrator');
+  const { buildDerivations } = require('../orchestrator.ts');
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
   const { bindings } = processSource(src);
   const { derivations } = buildDerivations(bindings);
@@ -128,7 +128,7 @@ test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () 
   // exposed as a scalar binding). densityof rewrites to
   // exp(logdensityof(...)) at AST time. Both must reach a derivation
   // when their inputs are derivable.
-  const { buildDerivations, resolveIRToValue } = require('../orchestrator');
+  const { buildDerivations, resolveIRToValue } = require('../orchestrator.ts');
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
   const { bindings } = processSource(src);
   const ds = buildDerivations(bindings);
@@ -193,7 +193,7 @@ test('integration: minimal — f_sqrt auto-promotes `a` as its single input', ()
   // `functionof(b)` with no boundary kwargs invokes
   // canonicalizeImplicitBoundaries to add `a = a` from b's transitive
   // ancestor walk. signatureOf then reads ir.params verbatim.
-  const { signatureOf, liftInlineSubexpressions } = require('../orchestrator');
+  const { signatureOf, liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = loadMinimal('minimal.flatppl');
   const lifted = liftInlineSubexpressions(bindings);
   const sig = signatureOf('f_sqrt', lifted);
@@ -208,7 +208,7 @@ test('integration: minimal — sigma is computed via implicit boundary substitut
   // path against the implicit boundary added by canonicalize. After
   // lift, sigma should compute pow(sigma2, 0.5) — NOT contain an
   // unbound ref to the elementof leaf `a`.
-  const { buildDerivations } = require('../orchestrator');
+  const { buildDerivations } = require('../orchestrator.ts');
   const { bindings } = loadMinimal('minimal.flatppl');
   const ds = buildDerivations(bindings);
   // Walk sigma's transitive closure for any lingering 'a' refs.
@@ -240,7 +240,7 @@ test('integration: minimal — kernel applied to kernel_input record auto-splats
   // and `kernel = kernelof(x, mu = mu)` exercises the splat path in
   // inlineOnce: single positional record arg with field names covering
   // the kernel's surface kwargs.
-  const { buildDerivations } = require('../orchestrator');
+  const { buildDerivations } = require('../orchestrator.ts');
   const { bindings } = loadMinimal('minimal.flatppl');
   const ds = buildDerivations(bindings);
   // dist should classify successfully (no derivation gap from a

@@ -1,6 +1,6 @@
 'use strict';
 
-const { extractBoundaries, collectDeps, isMeasureExpr, computePhasesForScope } = require('./analyzer');
+const { extractBoundaries, collectDeps, isMeasureExpr, computePhasesForScope } = require('./analyzer.ts');
 
 // Resolve a binding's "effective" RHS view. For most bindings this is
 // just the literal RHS; for disintegration results that have a
@@ -314,7 +314,7 @@ function computeSubDAG(bindings, nodeName) {
       // rendered with types.show() so the webview doesn't need to
       // duplicate the rendering logic.
       inferredType: (b && b.inferredType)
-        ? require('./types').show(b.inferredType)
+        ? require('./types.ts').show(b.inferredType)
         : undefined,
     });
 

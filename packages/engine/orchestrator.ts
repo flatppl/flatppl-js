@@ -50,10 +50,10 @@
 // lower.js minimal: the visualizer can choose whether to import the
 // orchestrator at all.
 
-const { lowerExpr } = require('./lower');
-const { isMeasureExpr } = require('./analyzer');
-const { MEASURE_PRODUCING } = require('./builtins');
-const { quantileSorted } = require('./histogram');
+const { lowerExpr } = require('./lower.ts');
+const { isMeasureExpr } = require('./analyzer.ts');
+const { MEASURE_PRODUCING } = require('./builtins.ts');
+const { quantileSorted } = require('./histogram.ts');
 
 // Facade re-bind of the leaf IR utilities now living in ir-shared.js.
 // ir-shared is the dependency ROOT of the orchestrator split (depends
@@ -77,7 +77,7 @@ const {
   EVALUABLE_OPS,
   normalizeMeasureIR,
   isFixedPhaseValueIR,
-} = require('./ir-shared');
+} = require('./ir-shared.ts');
 
 // Facade re-bind of the profile-plot UI support now living in
 // profile-plan.js. These have zero internal callers in the
@@ -89,7 +89,7 @@ const {
   findMatchingDomains,
   fourSigmaQuantileRange,
   inlineForProfile,
-} = require('./profile-plan');
+} = require('./profile-plan.ts');
 
 // Facade re-bind of the callable-introspection support now living in
 // signatures.js (signatureOf / distributeAxes and their helpers).
@@ -109,7 +109,7 @@ const {
   formatAxisLabel,
   enumerateOutputLeaves,
   extractOutputIR,
-} = require('./signatures');
+} = require('./signatures.ts');
 
 // Facade re-bind of the inline-subexpression lifting pass now living
 // in lift.js. buildDerivations (still here / moving to derivations.js)
@@ -125,7 +125,7 @@ const {
   bfsImplicitElementofLeavesAst,
   liftInlineSubexpressions,
   isEvaluable,
-} = require('./lift');
+} = require('./lift.ts');
 
 // Facade re-bind of the derivation builder + classifiers now living in
 // derivations.js. The cluster is a leaf w.r.t. the orchestrator core
@@ -160,7 +160,7 @@ const {
   expandMeasureRefsInIR,
   expandMeasurePos,
   classifyBayesupdate,
-} = require('./derivations');
+} = require('./derivations.ts');
 
 /**
  * Build an execution chain for sampling `targetName`.

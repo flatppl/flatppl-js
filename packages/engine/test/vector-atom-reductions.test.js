@@ -12,7 +12,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 
 const SAMPLE_COUNT = 16;
 const ROOT_SEED = 0xCAFE1234;
@@ -48,7 +48,7 @@ function makeCtx(source) {
 // Direct: ARITH_OPS.sum/mean/etc. accept Values uniformly
 // =====================================================================
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 const valueLib = require('..').value;
 const { ARITH_OPS } = sampler._internal;
 

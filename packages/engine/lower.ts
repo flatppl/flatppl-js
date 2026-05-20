@@ -107,7 +107,7 @@
 // undefined-variable diagnostics separately. The IR pass doesn't perform
 // name resolution beyond local-vs-self.)
 
-const builtins = require('./builtins');
+const builtins = require('./builtins.ts');
 
 const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS } = builtins;
 

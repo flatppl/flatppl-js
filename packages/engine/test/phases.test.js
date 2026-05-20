@@ -1,9 +1,9 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, computePhases } = require('../index');
-const { computePhasesForScope } = require('../analyzer');
-const { computeSubDAG } = require('../dag');
+const { processSource, computePhases } = require('../index.ts');
+const { computePhasesForScope } = require('../analyzer.ts');
+const { computeSubDAG } = require('../dag.ts');
 
 function phasesOf(src) {
   const { bindings } = processSource(src);

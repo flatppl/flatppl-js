@@ -10,8 +10,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const traceeval = require('../traceeval');
-const rng = require('../rng');
+const traceeval = require('../traceeval.ts');
+const rng = require('../rng.ts');
 
 // Helpers — minimal IR builders so the tests read like specs.
 const lit  = (v) => ({ kind: 'lit', value: v });

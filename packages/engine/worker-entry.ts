@@ -20,7 +20,7 @@
 // for the webview. Tests don't need this shim — they import worker.js
 // directly and drive `handle()` synchronously.
 
-const { createWorkerHandler, transferablesOf } = require('./worker');
+const { createWorkerHandler, transferablesOf } = require('./worker.ts');
 
 const handler = createWorkerHandler();
 

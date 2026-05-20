@@ -13,8 +13,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { tokenize, parse, lower } = require('..');
-const sampler = require('../sampler');
-const V = require('../variants').FLATPPL;
+const sampler = require('../sampler.ts');
+const V = require('../variants.ts').FLATPPL;
 
 // Evaluate a single FlatPPL expression through the real pipeline.
 function ev(expr) {

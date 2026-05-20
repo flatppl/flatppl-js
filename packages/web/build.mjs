@@ -163,7 +163,7 @@ await generateManifest();
 // 7. Bundle the FlatPPL engine and sampler-worker for browser loading.
 
 const engineBuildOpts = {
-  entryPoints: [join(enginePkg, 'index.js')],
+  entryPoints: [join(enginePkg, 'index.ts')],
   outfile: join(vendorDir, 'engine.min.js'),
   bundle: true,
   minify: true,
@@ -179,7 +179,7 @@ const engineBuildOpts = {
 };
 
 const samplerWorkerBuildOpts = {
-  entryPoints: [join(enginePkg, 'worker-entry.js')],
+  entryPoints: [join(enginePkg, 'worker-entry.ts')],
   outfile: join(vendorDir, 'sampler-worker.min.js'),
   bundle: true,
   minify: true,

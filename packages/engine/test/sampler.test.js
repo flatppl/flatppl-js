@@ -17,8 +17,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
-const rng = require('../rng');
+const sampler = require('../sampler.ts');
+const rng = require('../rng.ts');
 
 // Helper: build a distribution call IR from a name + kwargs (numeric values
 // only, lifted to lit nodes).

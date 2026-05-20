@@ -27,7 +27,7 @@
 // A leaf w.r.t. the orchestrator split: depends only on ir-shared
 // (isSelfRef, resolveIRToValue).
 
-const { isSelfRef, resolveIRToValue } = require('./ir-shared');
+const { isSelfRef, resolveIRToValue } = require('./ir-shared.ts');
 
 function signatureOf(name, bindings) {
   if (!bindings) return null;

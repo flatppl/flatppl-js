@@ -9,7 +9,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker');
+const { createWorkerHandler } = require('../worker.ts');
 
 function materialise(src, target, sampleCount) {
   const lifted = processSource(src);

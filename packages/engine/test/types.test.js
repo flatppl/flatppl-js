@@ -13,7 +13,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const T = require('../types');
+const T = require('../types.ts');
 
 // =====================================================================
 // Constructors and constants

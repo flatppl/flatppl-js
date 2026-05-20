@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 
 function lit(v)        { return { kind: 'lit', value: v }; }
 function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
@@ -239,7 +239,7 @@ test('colstack: mismatched column lengths ⇒ runtime error', () => {
 // addaxes — explicit singular-axis insertion (spec §07; commit 87c9be1)
 // =====================================================================
 
-const valueLib = require('../value');
+const valueLib = require('../value.ts');
 
 test('addaxes(A, 2, 1): inserts leading/trailing singular axes', () => {
   const r = ev(call('addaxes', vec(1, 2, 3), lit(2), lit(1)));

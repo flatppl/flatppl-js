@@ -7,7 +7,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 
 function lit(v)        { return { kind: 'lit', value: v }; }
 function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }

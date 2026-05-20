@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource } = require('../index');
+const { processSource } = require('../index.ts');
 
 function errors(src) {
   return processSource(src).diagnostics.filter(d => d.severity === 'error');

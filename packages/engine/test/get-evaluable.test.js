@@ -10,7 +10,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const sampler = require('../sampler');
+const sampler = require('../sampler.ts');
 const { processSource, orchestrator } = require('..');
 
 const lit = (v) => ({ kind: 'lit', value: v });
