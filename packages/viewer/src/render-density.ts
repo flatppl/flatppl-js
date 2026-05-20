@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — density-strip + corner-grid renderers (Phase 4e).
 //
 // renderDensityStrips lays out one density column per axis (the
@@ -114,7 +113,7 @@ export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) 
   // Build the rect data: one entry per (axis_idx, bin) pair.
   // Each entry carries [axis_idx, bin_y_center, density] plus
   // the bin's [lo, hi] and per-side gap insets.
-  var data = [];
+  const data: Array<{ value: number[]; edges: number[]; gapLeft: boolean; gapRight: boolean }> = [];
   for (var ai2 = 0; ai2 < hists.length; ai2++) {
     var hh = hists[ai2];
     var gapLeft  = (ai2 > 0)             && groups[ai2] !== groups[ai2 - 1];
@@ -352,7 +351,7 @@ export function renderCornerGrid(ctx, hostEl, measure, bindingName) {
     var samples = axes[i].samples;
     var inner = makeCell(i, i);
     var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
-    var rects = [];
+    const rects: Array<{ value: number[]; x0: number; x1: number }> = [];
     for (var k = 0; k < hist.xs.length; k++) {
       rects.push({
         value: [hist.xs[k], hist.ys[k]],
