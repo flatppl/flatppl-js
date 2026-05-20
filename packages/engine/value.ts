@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // =====================================================================
@@ -295,7 +294,7 @@ function transpose(v) {
   if (!isValue(v)) throw new Error('transpose: argument is not a Value');
   const newTag = _TAG_TRANSPOSE[getTag(v)];
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
-  const out = { shape: newShape, data: v.data, t: newTag };
+  const out: any = { shape: newShape, data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
   // Complex payload rides along untouched: the imaginary buffer shares
   // the same storage layout as `data`, so the lazy axis-swap applies to
@@ -314,7 +313,7 @@ function adjoint(v) {
   if (!isValue(v)) throw new Error('adjoint: argument is not a Value');
   const newTag = _TAG_ADJOINT[getTag(v)];
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
-  const out = { shape: newShape, data: v.data, t: newTag };
+  const out: any = { shape: newShape, data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
   if (v.im instanceof Float64Array) out.im = v.im;
   if (v.struct !== undefined) out.struct = _structTranspose(v.struct);
@@ -326,7 +325,7 @@ function adjoint(v) {
 function conjugate(v) {
   if (!isValue(v)) throw new Error('conjugate: argument is not a Value');
   const newTag = _TAG_CONJUGATE[getTag(v)];
-  const out = { shape: v.shape.slice(), data: v.data, t: newTag };
+  const out: any = { shape: v.shape.slice(), data: v.data, t: newTag };
   if (v.dtype) out.dtype = v.dtype;
   if (v.im instanceof Float64Array) out.im = v.im;
   if (v.struct !== undefined) out.struct = v.struct;   // conj keeps structure
@@ -367,7 +366,7 @@ function isDiagStored(v) {
 function diagMatrix(diagVec, imVec) {
   const d = diagVec instanceof Float64Array ? diagVec : Float64Array.from(diagVec);
   const m = d.length;
-  const out = { shape: [m, m], data: d, struct: ST_DIAG };
+  const out: any = { shape: [m, m], data: d, struct: ST_DIAG };
   if (imVec != null) {
     out.im = imVec instanceof Float64Array ? imVec : Float64Array.from(imVec);
     if (out.im.length !== m) {
@@ -394,7 +393,7 @@ function densify(v) {
     const m = v.shape[0];
     const data = new Float64Array(m * m);
     for (let i = 0; i < m; i++) data[i * m + i] = v.data[i];
-    const out = { shape: [m, m], data: data };
+    const out: any = { shape: [m, m], data: data };
     if (v.im instanceof Float64Array) {
       const im = new Float64Array(m * m);
       for (let i = 0; i < m; i++) im[i * m + i] = v.im[i];
@@ -407,7 +406,7 @@ function densify(v) {
   // dense and full; just drop the structural flag. The implicit-zero /
   // implicit-unit-diagonal forms (strict/unit triangular) are not
   // produced yet, so no masking is required in v1.
-  const out = { shape: v.shape.slice(), data: v.data };
+  const out: any = { shape: v.shape.slice(), data: v.data };
   if (v.t && v.t !== 'N') out.t = v.t;
   if (v.dtype) out.dtype = v.dtype;
   if (v.im instanceof Float64Array) out.im = v.im;
@@ -585,8 +584,8 @@ function asValue(x) {
     return { shape: [x.length], data: x };
   }
   // Other typed arrays: copy through Float64Array.
-  if (ArrayBuffer.isView(x) && typeof x.length === 'number') {
-    const data = Float64Array.from(x);
+  if (ArrayBuffer.isView(x) && typeof (x as any).length === 'number') {
+    const data = Float64Array.from(x as any);
     return { shape: [data.length], data: data };
   }
   if (Array.isArray(x)) {
