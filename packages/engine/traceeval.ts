@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // =====================================================================
@@ -235,7 +234,7 @@ const MEASURE_OP_WALKERS = {
  */
 function fillEnvFromRefs(state, ir, env, ctx) {
   if (!ctx || !ctx.resolveValueRef) return state;
-  const refs = new Set();
+  const refs = new Set<string>();
   collectValueRefs(ir, refs);
   for (const name of refs) {
     if (env && env[name] !== undefined) continue;

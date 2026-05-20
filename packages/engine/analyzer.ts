@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 const { isKnownName, MEASURE_PRODUCING } = require('./builtins.ts');
@@ -24,7 +23,7 @@ function disintegratePlan(...args) {
  * @param {Map} bindings - bindings map (for Identifier resolution)
  * @param {Set} [seen] - cycle guard
  */
-function isMeasureExpr(node, bindings, seen) {
+function isMeasureExpr(node, bindings, seen?) {
   if (!node) return false;
   if (!seen) seen = new Set();
   switch (node.type) {
