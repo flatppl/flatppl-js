@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // lift.js — inline-subexpression lifting for the orchestrator.
@@ -230,7 +229,7 @@ const PLACEHOLDER_SUB_PREFIX = '@placeholder:';
  */
 function canonicalizeImplicitBoundaries(bindings) {
   if (!bindings || bindings.size === 0) return bindings;
-  const out = new Map(bindings);
+  const out: Map<string, any> = new Map(bindings);
 
   for (const [name, b] of bindings) {
     if (b.type !== 'functionof' && b.type !== 'kernelof') continue;
@@ -311,7 +310,7 @@ function liftInlineSubexpressions(bindings) {
   // sees a uniform shape regardless of whether the user wrote
   // explicit kwargs.
   bindings = canonicalizeImplicitBoundaries(bindings);
-  const out = new Map(bindings);
+  const out: Map<string, any> = new Map(bindings);
   let counter = 0;
   function freshName() {
     let n;
@@ -1185,8 +1184,8 @@ function liftInlineSubexpressions(bindings) {
    * propagates through any tree shape.
    */
   function computeClosure(bodyAst, boundaries) {
-    const closure = new Set();
-    const visiting = new Set();
+    const closure = new Set<string>();
+    const visiting = new Set<string>();
 
     function walk(name) {
       if (closure.has(name) || visiting.has(name)) return;
