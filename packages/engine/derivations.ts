@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // derivations.js — the per-binding derivation builder + classifiers.
@@ -227,10 +226,10 @@ function buildDerivations(bindings) {
       // the state thread, and the resolver hands it the values it
       // needs by walking back through the binding graph the same
       // way traceeval would.
-      const env = { __resolveMeasureRef: resolveMeasureRef };
+      const env: any = { __resolveMeasureRef: resolveMeasureRef };
       let depsReady = true;
       const seenMeasure = new Set();
-      const valueRefs = new Set();
+      const valueRefs = new Set<string>();
       const deferredRefs = new Set();
 
       function collectFor(walkIr, inMeasureContext) {
@@ -1226,7 +1225,7 @@ function classifyPushfwd(rhsIR, ast, bindings) {
  * classify" → the binding surfaces an error rather than being
  * silently mis-handled).
  */
-function classifyJointchain(rhsIR, ast, bindings) {
+function classifyJointchain(rhsIR, ast, bindings?, opts?) {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
   const marginalize = (rhsIR.op === 'kchain');
@@ -1285,14 +1284,14 @@ function classifyJointchain(rhsIR, ast, bindings) {
     const isKernelComp = !!(d.kernelIR || d.isKernel);
     if (i === 0) {
       // Base: a measure, or (kernel-first) a kernel.
-      const step = { var: v, role: 'base', kernel: isKernelComp };
+      const step: any = { var: v, role: 'base', kernel: isKernelComp };
       if (d.ref != null) step.ref = d.ref;
       else if (d.kernelIR) step.kernelIR = d.kernelIR;
       else step.measureIR = d.measureIR;
       steps.push(step);
     } else {
       if (!isKernelComp) return null;               // K_i must be a kernel
-      const step = { var: v, role: 'kernel', inputs: steps.map((s) => s.var) };
+      const step: any = { var: v, role: 'kernel', inputs: steps.map((s) => s.var) };
       if (d.ref != null) step.ref = d.ref;
       else step.kernelIR = d.kernelIR;
       steps.push(step);
@@ -1447,7 +1446,7 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   return true;
 }
 
-function isDiscreteAt(name, derivations, visited) {
+function isDiscreteAt(name, derivations, visited?) {
   visited = visited || new Set();
   if (visited.has(name)) return false; // cycle guard
   visited.add(name);
@@ -1635,7 +1634,7 @@ function closedFormLogTotalmass(ir, bindings) {
   return null;
 }
 
-function expandMeasureIR(name, derivations, visited, bindings) {
+function expandMeasureIR(name, derivations, visited?, bindings?) {
   visited = visited || new Set();
   if (visited.has(name)) return null;
   const next = new Set(visited); next.add(name);
