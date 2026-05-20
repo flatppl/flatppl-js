@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Sampler — one-step `rand(state, measure, env)` and analytical `density()`
@@ -1429,7 +1428,7 @@ function resolveRef(ir, env) {
 // N). Used by mul / add / sub dispatchers to route shape-aware paths.
 // Bare JS numbers and bare Float64Arrays are NOT rich; they pass
 // through the existing scalar-broadcast helpers.
-function _isShapeRich(v, N) {
+function _isShapeRich(v, N?) {
   if (!valueLib.isValue(v)) return false;
   const r = v.shape.length;
   if (r === 0) return false;                    // atom-indep scalar
@@ -2107,7 +2106,7 @@ const ARITH_OPS = {
     for (let i = 0; i < nl; i++) shape[p++] = 1;
     for (let i = 0; i < v.shape.length; i++) shape[p++] = v.shape[i];
     for (let i = 0; i < nt; i++) shape[p++] = 1;
-    const out = { shape: shape, data: v.data };          // shared buffer
+    const out: any = { shape: shape, data: v.data };     // shared buffer
     if (v.dtype) out.dtype = v.dtype;
     if (v.im instanceof Float64Array) out.im = v.im;     // complex rides along
     return out;
@@ -2441,7 +2440,7 @@ function broadcast3(fn, a, b, c, N) {
 // Build ARITH_OPS_N from the arity table. Each entry is a function
 // `(args: Array, N: number) → Float64Array(N) | scalar`. Returns scalar
 // when all inputs are atom-independent (the count=1 fast path).
-const ARITH_OPS_N = {};
+const ARITH_OPS_N: any = {};
 for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
   const arity = _SCALAR_PRIM_ARITY[op];
   const fn = ARITH_OPS[op];
@@ -3172,8 +3171,9 @@ function evaluateCall(ir, env) {
         if (!isArrayLike(c)) {
           throw new Error(`evaluateExpr: ${op} ':' axis-slice target is not an array`);
         }
-        const out = [];
-        for (let i = 0; i < c.length; i++) out.push(applyGet(c[i], rest));
+        const ca = c as any;
+        const out: any[] = [];
+        for (let i = 0; i < ca.length; i++) out.push(applyGet(ca[i], rest));
         return out;
       }
       if (Array.isArray(s)) {                // subset selection
@@ -3197,12 +3197,14 @@ function evaluateCall(ir, env) {
         if (!isArrayLike(c)) {
           throw new Error(`evaluateExpr: ${op} index target is not an array (got ${typeof c})`);
         }
-        const idx = (oneBased ? (s | 0) - 1 : (s | 0));
-        if (idx < 0 || idx >= c.length) {
-          throw new Error(`evaluateExpr: ${op} index ${oneBased ? s : s} out of `
-            + `bounds for length ${c.length}`);
+        const ca = c as any;
+        const sn = s as number | boolean;
+        const idx = (oneBased ? ((sn as number) | 0) - 1 : ((sn as number) | 0));
+        if (idx < 0 || idx >= ca.length) {
+          throw new Error(`evaluateExpr: ${op} index ${oneBased ? sn : sn} out of `
+            + `bounds for length ${ca.length}`);
         }
-        return applyGet(c[idx], rest);
+        return applyGet(ca[idx], rest);
       }
       throw new Error(`evaluateExpr: ${op} unsupported selector ${String(s)}`);
     };
@@ -3566,7 +3568,7 @@ function evaluateRand(ir, env) {
   // the resolver samples it on demand, threading state. Same passthrough
   // pattern: the orchestrator builds the closure, evaluateRand just
   // forwards what's been parked on env.
-  const opts = {};
+  const opts: any = {};
   if (env && typeof env.__resolveMeasureRef === 'function') {
     opts.resolveMeasureRef = env.__resolveMeasureRef;
   }
