@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — preset + domain control popovers (Phase 4f).
 //
 // buildPresetControl / buildDomainControl construct the
@@ -6,11 +5,21 @@
 // override per-binding preset values / cartprod ranges, persist them
 // to source, or reset to the source's declared values.
 
+import type { Ctx } from './types';
 import { computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideFor, setOverrideFor } from './overrides.js';
 import { canPersistActive, canPersistDomain, persistActive, persistDomain } from './persist.js';
 import { makeActionButton } from './render-frame.js';
 import { domainBoundsText, presetValuesText } from './util.js';
-export function buildPresetControl(ctx, plan, onChange) {
+
+type ControlEntry = {
+  name: string | null;
+  modified: boolean;
+  shortLabel: string;
+  longLabel: string;
+};
+type OutsideClickHandler = ((ev: MouseEvent) => void) | null;
+
+export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
   var frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;
 
@@ -20,11 +29,11 @@ export function buildPresetControl(ctx, plan, onChange) {
   // "<name> (modified)" row anymore. Switching presets just
   // changes plan.presetName; the override store decides whether
   // the row reads as modified.
-  var entries = [];
+  const entries: ControlEntry[] = [];
   var presets = plan.matchedPresets || [];
   var autoValues = computeAutoValues(ctx, plan);
 
-  function buildEntry(name, baseValues, isAuto) {
+  function buildEntry(name: string | null, baseValues: any, isAuto: boolean): ControlEntry {
     var entryOverride = (name == null) ? plan.autoOverride : ctx.presetOverrides.get(name);
     var modified = !!(entryOverride && entryOverride.values
       && Object.keys(entryOverride.values).length > 0);
@@ -44,8 +53,8 @@ export function buildPresetControl(ctx, plan, onChange) {
     entries.push(buildEntry(presets[pi].name, presets[pi].values || {}, false));
   }
 
-  function isActive(entry) { return entry.name === plan.presetName; }
-  var activeEntry = null;
+  function isActive(entry: ControlEntry): boolean { return entry.name === plan.presetName; }
+  let activeEntry: ControlEntry | null = null;
   for (var k = 0; k < entries.length; k++) {
     if (isActive(entries[k])) { activeEntry = entries[k]; break; }
   }
@@ -90,21 +99,21 @@ export function buildPresetControl(ctx, plan, onChange) {
   panel.style.display = 'none';
   panel.style.whiteSpace = 'nowrap';
 
-  var outsideClickHandler = null;
-  function closePanel() {
+  let outsideClickHandler: OutsideClickHandler = null;
+  function closePanel(): void {
     panel.style.display = 'none';
     if (outsideClickHandler) {
       document.removeEventListener('mousedown', outsideClickHandler);
       outsideClickHandler = null;
     }
   }
-  function openPanel() {
+  function openPanel(): void {
     panel.style.display = 'block';
     // Defer the outside-click attach so the same click that
     // opened the panel doesn't immediately close it.
     setTimeout(function() {
-      outsideClickHandler = function(ev) {
-        if (!wrap.contains(ev.target)) closePanel();
+      outsideClickHandler = function(ev: MouseEvent) {
+        if (!wrap.contains(ev.target as Node)) closePanel();
       };
       document.addEventListener('mousedown', outsideClickHandler);
     }, 0);
@@ -197,7 +206,7 @@ export function buildPresetControl(ctx, plan, onChange) {
   return frag;
 }
 
-export function buildDomainControl(ctx, plan, onChange) {
+export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
   var frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;
 
@@ -207,12 +216,12 @@ export function buildDomainControl(ctx, plan, onChange) {
   // order as the source signature, regardless of which kwargs
   // got user overrides.
   var inputs = (plan.signature && plan.signature.inputs) || [];
-  var kwargOrder = [];
+  const kwargOrder: string[] = [];
   for (var ki = 0; ki < inputs.length; ki++) {
     if (inputs[ki].kwargName) kwargOrder.push(inputs[ki].kwargName);
   }
 
-  function buildEntry(name, baseRanges, baseSetNames, isAuto) {
+  function buildEntry(name: string | null, baseRanges: any, baseSetNames: any, isAuto: boolean): ControlEntry {
     var entryOverride = (name == null)
       ? plan.domainAutoOverride
       : ctx.domainOverrides.get(name);
@@ -240,7 +249,7 @@ export function buildDomainControl(ctx, plan, onChange) {
     };
   }
 
-  var entries = [];
+  const entries: ControlEntry[] = [];
   entries.push(buildEntry(null, {}, {}, true));
   for (var di = 0; di < domains.length; di++) {
     entries.push(buildEntry(
@@ -250,8 +259,8 @@ export function buildDomainControl(ctx, plan, onChange) {
       false));
   }
 
-  function isActive(entry) { return entry.name === plan.domainName; }
-  var activeEntry = null;
+  function isActive(entry: ControlEntry): boolean { return entry.name === plan.domainName; }
+  let activeEntry: ControlEntry | null = null;
   for (var k = 0; k < entries.length; k++) {
     if (isActive(entries[k])) { activeEntry = entries[k]; break; }
   }
@@ -296,19 +305,19 @@ export function buildDomainControl(ctx, plan, onChange) {
   panel.style.display = 'none';
   panel.style.whiteSpace = 'nowrap';
 
-  var outsideClickHandler = null;
-  function closePanel() {
+  let outsideClickHandler: OutsideClickHandler = null;
+  function closePanel(): void {
     panel.style.display = 'none';
     if (outsideClickHandler) {
       document.removeEventListener('mousedown', outsideClickHandler);
       outsideClickHandler = null;
     }
   }
-  function openPanel() {
+  function openPanel(): void {
     panel.style.display = 'block';
     setTimeout(function() {
-      outsideClickHandler = function(ev) {
-        if (!wrap.contains(ev.target)) closePanel();
+      outsideClickHandler = function(ev: MouseEvent) {
+        if (!wrap.contains(ev.target as Node)) closePanel();
       };
       document.addEventListener('mousedown', outsideClickHandler);
     }, 0);
