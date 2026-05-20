@@ -333,7 +333,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): any {
   return { name: name, mode: 'samples', discrete: discrete, analyticalIR: analyticalIR };
 }
 
-export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, seed: number): Promise<any> {
+export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, seed: number | null): Promise<any> {
   if (!ir) return Promise.reject(new Error('materialiseConcreteMeasure: null IR'));
   if (ir.kind !== 'call') {
     return Promise.reject(new Error(
