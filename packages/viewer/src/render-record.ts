@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port JSDoc to TS syntax (migration commit)
 // @flatppl/viewer — record/sample-stats renderers (Phase 4e).
 //
 // renderRecordMarginals + renderRecordToolbar drive the correlations/
@@ -77,7 +76,7 @@ export function formatConstantMeasure(ctx, m) {
   }
   if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
     var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
-    return formatValue(m.samples.subarray(0, stride));
+    return formatValue(m.samples.subarray(0, stride), undefined);
   }
   if (m.samples instanceof Float64Array && m.samples.length > 0) {
     // Two cases distinguished by sample length:
@@ -88,7 +87,7 @@ export function formatConstantMeasure(ctx, m) {
     //     (kind:'array' derivation surfaced as a record field);
     //     surface every element with array ellipsis.
     if (m.samples.length === ctx.SAMPLE_COUNT) return formatScalar(m.samples[0]);
-    return formatValue(m.samples);
+    return formatValue(m.samples, undefined);
   }
   return '?';
 }
@@ -113,8 +112,8 @@ export function renderRecordMarginals(ctx, measure, bindingName, extraToolbarCon
     var i = label.lastIndexOf('[');
     return i >= 0 ? label.slice(0, i) : label;
   }
-  var allGroups = [];
-  var seenGroup = {};
+  const allGroups: string[] = [];
+  const seenGroup: Record<string, boolean> = {};
   for (var gi = 0; gi < axes.length; gi++) {
     var g = axisGroupKey(axes[gi].label);
     if (!seenGroup[g]) { seenGroup[g] = true; allGroups.push(g); }
@@ -148,7 +147,7 @@ export function renderRecordMarginals(ctx, measure, bindingName, extraToolbarCon
   // chartHostRef captures the chart-area div from the frame, so
   // rerenderChart can clear and repopulate it without rebuilding
   // the toolbar (which would close any open dropdown).
-  var chartHostRef = null;
+  let chartHostRef: HTMLElement | null = null;
 
   // Two-tier re-render. rerenderAll rebuilds the entire frame
   // (including the toolbar) — used when mode-button styling
