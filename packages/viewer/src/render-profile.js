@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — profile-plot renderer family (Phase 4e).
 //
 // renderProfilePlotForCurrent is the entry; buildProfileControls
@@ -280,7 +281,7 @@ export function buildProfileControls(ctx, plan, range) {
       outSelect.appendChild(oOpt);
     }
     outSelect.addEventListener('change', function(e) {
-      plan.outputKey = e.target.value;
+      plan.outputKey = /** @type {HTMLSelectElement} */ (e.target).value;
       renderProfilePlotForCurrent(ctx);
     });
     frag.appendChild(outLabel);
@@ -308,13 +309,13 @@ export function buildProfileControls(ctx, plan, range) {
     var cutoffs = [10, 100, 1000, 10000];
     for (var ci = 0; ci < cutoffs.length; ci++) {
       var copt = document.createElement('option');
-      copt.value = cutoffs[ci];
+      copt.value = String(cutoffs[ci]);
       copt.textContent = '−' + cutoffs[ci];
       if (cutoffs[ci] === plan.yCutoff) copt.selected = true;
       cutSel.appendChild(copt);
     }
     cutSel.addEventListener('change', function(e) {
-      plan.yCutoff = parseInt(e.target.value, 10);
+      plan.yCutoff = parseInt(/** @type {HTMLSelectElement} */ (e.target).value, 10);
       renderProfilePlotForCurrent(ctx);
     });
     frag.appendChild(cutLabel);
@@ -382,7 +383,7 @@ export function buildProfileControls(ctx, plan, range) {
       axisEl.appendChild(opt);
     }
     axisEl.addEventListener('change', function(e) {
-      plan.sweepKey = e.target.value;
+      plan.sweepKey = /** @type {HTMLSelectElement} */ (e.target).value;
       renderProfilePlotForCurrent(ctx);
     });
   } else if (plan.axes && plan.axes.length === 1) {

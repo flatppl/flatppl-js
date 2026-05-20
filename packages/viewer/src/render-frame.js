@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — plot-pane frame + per-binding errors (Phase 4d).
 //
 // setPlotEnabled toggles the plot pane; renderPlotFrame builds the
@@ -9,7 +10,7 @@
 
 import { renderPlotForCurrent } from './render-plot.js';
 import { renderSampleStats } from './render-record.js';
-import { esc } from './util.js';
+import { $, esc } from './util.js';
 /**
  * Return the analyzer-level error diagnostics that landed on a
  * binding (typeinfer mismatches, undefined refs, etc.), or null
@@ -34,7 +35,7 @@ export function errorsForBinding(ctx, bindingName) {
  * the pane without inheriting a stale grid.
  */
 export function resetPlotContentStyle(ctx) {
-  var el = document.getElementById('plot-content');
+  var el = $('plot-content');
   el.style.display = '';
   el.style.gridTemplateColumns = '';
   el.style.gridTemplateRows = '';
@@ -47,7 +48,7 @@ export function resetPlotContentStyle(ctx) {
 export function showPlotMessage(ctx, html, options) {
   if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
   resetPlotContentStyle(ctx);
-  var el = document.getElementById('plot-content');
+  var el = $('plot-content');
   var cancellable = options && options.cancellable;
   var hint       = options && options.hint;
   var stopHtml = cancellable
@@ -88,10 +89,10 @@ export function makeActionButton(ctx, iconKey, title) {
 
 export function setPlotEnabled(ctx, enabled) {
   ctx.plotEnabled = !!enabled;
-  var plot    = document.getElementById('plot-panel');
-  var graph   = document.getElementById('graph-panel');
-  var divider = document.getElementById('plot-divider');
-  var btn     = document.getElementById('plot-toggle');
+  var plot    = $('plot-panel');
+  var graph   = $('graph-panel');
+  var divider = $('plot-divider');
+  var btn     = $('plot-toggle');
   plot.classList.toggle('hidden', !ctx.plotEnabled);
   graph.classList.toggle('full',  !ctx.plotEnabled);
   divider.classList.toggle('hidden', !ctx.plotEnabled);
@@ -161,7 +162,7 @@ export function setPlotEnabled(ctx, enabled) {
 export function renderPlotFrame(ctx, opts) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
-  var el = document.getElementById('plot-content');
+  var el = $('plot-content');
   el.innerHTML = '';
   el.style.display = 'flex';
   el.style.flexDirection = 'column';
@@ -234,7 +235,7 @@ export function renderPlotFrame(ctx, opts) {
 export function renderTextValue(ctx, bindingName, text) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
-  var el = document.getElementById('plot-content');
+  var el = $('plot-content');
   var name = bindingName ? esc(bindingName) : '';
   // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero
   // 36px treatment so the value pops as the answer. Composite

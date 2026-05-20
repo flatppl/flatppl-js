@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — top-of-stack plot dispatchers (Phase 4f).
 //
 // renderPlotForCurrent is the per-binding plot router (samples /
@@ -137,7 +138,7 @@ export function updatePlotForBinding(ctx, bindingName) {
   // to restore them onto the rebuilt plan below.
   rememberPlanSelections(ctx, ctx.currentPlotPlan);
   var binding = ctx.currentBindings ? ctx.currentBindings.get(bindingName) : null;
-  var plan = buildPlotPlan(ctx, binding, ctx.currentBindings);
+  var plan = buildPlotPlan(ctx, binding);
   // Restore user-driven plan state across rebuilds — both same-
   // binding rebuilds (source edit) and cross-binding navigation
   // (click away and back). pendingPresetName / pendingDomainName

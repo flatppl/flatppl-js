@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — DAG (cytoscape) layer (Phase 4e).
 //
 // initCy builds the cytoscape instance + style stanzas + tap/dbltap/
@@ -10,7 +11,7 @@
 // here too — they're only called from the DAG event handlers.
 
 import { updatePlotForBinding } from './render-plot.js';
-import { bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
+import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding } from './render-frame.js';
 export function showNodeInfo(ctx, d) {
@@ -42,7 +43,7 @@ export function showNodeInfo(ctx, d) {
   var inferTag = d.inferredType
     ? '<span class="infer">' + esc(d.inferredType) + '</span>'
     : '';
-  document.getElementById('info').innerHTML =
+  $('info').innerHTML =
     '<div class="row"><span class="name">' + esc(d.label) + '</span>'
     + phaseTag
     + inferTag + '</div>'
@@ -52,7 +53,7 @@ export function showNodeInfo(ctx, d) {
 }
 
 export function updateHeader(ctx, data) {
-  var el = document.getElementById('header-expr');
+  var el = $('header-expr');
   // Module view: no per-node target; just label the view.
   if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
     el.innerHTML = '<span class="target-name">module</span>';
@@ -70,7 +71,7 @@ export function updateHeader(ctx, data) {
 }
 
 export function updateBackBtn(ctx) {
-  document.getElementById('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
+  $('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
 }
 
 export function teardownBubbles(ctx) {
@@ -84,7 +85,7 @@ export function teardownBubbles(ctx) {
 
 export function initCy(ctx) {
   ctx.cy = cytoscape({
-    container: document.getElementById('cy'),
+    container: $('cy'),
     style: [
       {
         selector: 'node',
@@ -308,7 +309,7 @@ export function initCy(ctx) {
 
   ctx.cy.on('tap', function(evt) {
     if (evt.target === ctx.cy) {
-      document.getElementById('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
+      $('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
     }
   });
 
@@ -324,7 +325,7 @@ export function initCy(ctx) {
     if (ctx.host.setTitle) ctx.host.setTitle(nodeId);
   });
 
-  var tip = document.getElementById('tooltip');
+  var tip = $('tooltip');
   ctx.cy.on('mouseover', 'node', function(evt) {
     var d = evt.target.data();
     var expr = d.expr || '';
@@ -332,7 +333,7 @@ export function initCy(ctx) {
     tip.textContent = d.label ? (d.label + ' = ' + expr) : expr;
     tip.style.display = 'block';
     var pos = evt.renderedPosition;
-    var cRect = document.getElementById('cy').getBoundingClientRect();
+    var cRect = $('cy').getBoundingClientRect();
     var tx = pos.x + cRect.left + 12;
     var ty = pos.y + cRect.top - 30;
     if (tx + tip.offsetWidth > cRect.right - 8) tx = cRect.right - tip.offsetWidth - 8;
@@ -540,7 +541,7 @@ export function renderDAG(ctx, data) {
       expr: target.expr || '',
     });
   } else {
-    document.getElementById('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
+    $('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
   }
 }
 
