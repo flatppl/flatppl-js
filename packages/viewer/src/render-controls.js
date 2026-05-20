@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — preset + domain control popovers (Phase 4f).
 //
 // buildPresetControl / buildDomainControl construct the

@@ -1,8 +1,11 @@
+// @ts-check
 // @flatppl/viewer — palette-driven node colour helpers (Phase 4c).
 //
 // resolveNodeColor / colorForBinding look up colours from the
 // per-mount ctx.PALETTE / ctx.PHASE_COLORS / ctx.TYPE_STYLE objects
 // (built in mount's prologue). No external function dependencies.
+
+/** @typedef {import('./types').Ctx} Ctx */
 
 /**
  * Single source of truth for "what colour does this node get?".
@@ -19,17 +22,26 @@
  * overridden to the scope-local phase by dag.js's
  * applyScopeLocalPhases — so the same theta1 reads stochastic in
  * the main view and parameterized inside a kernel bubble.
+ *
+ * @param {Ctx} ctx
+ * @param {{ kind?: string; type?: string; phase?: 'stochastic'|'parameterized'|'fixed' }} node
+ * @returns {string}
  */
 export function resolveNodeColor(ctx, node) {
   if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
   if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
-  var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
+  var ts = (node.type && ctx.TYPE_STYLE[node.type]) || ctx.TYPE_STYLE.unknown;
   if (node.type === 'draw' || node.type === 'call') {
-    return ctx.PHASE_COLORS[node.phase] || ts.color;
+    return (node.phase && ctx.PHASE_COLORS[node.phase]) || ts.color;
   }
   return ts.color;
 }
 
+/**
+ * @param {Ctx} ctx
+ * @param {string} bindingName
+ * @returns {string}
+ */
 export function colorForBinding(ctx, bindingName) {
   if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
     var nodes = ctx.currentState.data.nodes;

@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — engine facade (Phase 4c).
 //
 // Thin per-mount wrappers around FlatPPLEngine.materialiser.

@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — preset + domain override stores (Phase 4d).
 //
 // Persistent ctx.presetOverrides / ctx.domainOverrides maps and the

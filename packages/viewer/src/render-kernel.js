@@ -1,3 +1,4 @@
+// @ts-check
 // @flatppl/viewer — kernel-sample renderers (Phase 4f).
 //
 // renderKernelSampleForCurrent is the entry; renderKernelSample-
