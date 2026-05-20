@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // AST → FlatPIR-JSON lowering.
@@ -431,7 +430,7 @@ function _lowerCallExpr(node, ctx) {
     }
   }
 
-  const out = { kind: 'call', loc: node.loc };
+  const out: any = { kind: 'call', loc: node.loc };
   if (ALL_KNOWN.has(calleeName)) {
     // Built-in: bare-symbol head per FlatPIR.
     out.op = calleeName;
@@ -487,7 +486,7 @@ function _lowerBroadcast(node, ctx) {
   } else {
     head = _lowerExpr(calleeArg, ctx);
   }
-  const out = {
+  const out: any = {
     kind: 'call', op: 'broadcast',
     args: [head, ...posArgs], loc: node.loc,
   };
@@ -667,7 +666,7 @@ function _lowerFieldsForm(op, node, ctx) {
       args.push(_lowerExpr(arg, ctx));
     }
   }
-  const out = { kind: 'call', op, loc: node.loc };
+  const out: any = { kind: 'call', op, loc: node.loc };
   if (args.length > 0)   out.args   = args;
   if (fields.length > 0) out.fields = fields;
   return out;
@@ -695,7 +694,7 @@ function _lowerModuleLoad(op, node, ctx) {
       args.push(_lowerExpr(arg, ctx));
     }
   }
-  const out = { kind: 'call', op, loc: node.loc };
+  const out: any = { kind: 'call', op, loc: node.loc };
   if (args.length > 0) out.args = args;
   if (hasAssigns)      out.assigns = assigns;
   return out;
