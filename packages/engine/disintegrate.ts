@@ -1,4 +1,3 @@
-// @ts-nocheck — TODO port to TS-strict (engine TS migration follow-up)
 'use strict';
 
 // Structural disintegration for FlatPPL.
@@ -58,7 +57,7 @@ function synthesized(kernelExpr, priorExpr) {
   return { kind: 'synthesized', kernel: kernelExpr, prior: priorExpr };
 }
 
-function unsupported(reason, blockingNode, detail) {
+function unsupported(reason, blockingNode, detail?) {
   return { kind: 'unsupported', reason, blockingNode, detail: detail || null };
 }
 
@@ -99,7 +98,7 @@ function tryRecord(node) {
 // field names, or [] if the structure isn't statically resolvable. Used to
 // match selectors against jointchain components and to recognise positional
 // joints whose components carry implicit names.
-function namedOutputFields(node, bindings, seen) {
+function namedOutputFields(node, bindings, seen?) {
   if (!node) return [];
   if (!seen) seen = new Set();
   if (node.type === 'Identifier') {
