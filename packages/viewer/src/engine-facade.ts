@@ -14,13 +14,13 @@
 
 import { sendWorker } from './worker.js';
 
-export function tryGetMeasure(ctx, name) {
+export function tryGetMeasure(ctx: any, name: any) {
   return getMeasure(ctx, name).then(
-    function(m) { return m; },
-    function(_err) { return null; });
+    function(m: any) { return m; },
+    function(_err: any) { return null; });
 }
 
-export function getMeasure(ctx, name) {
+export function getMeasure(ctx: any, name: any) {
   if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
   if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
   // All per-kind materialisation lives in the engine — the viewer's
@@ -38,22 +38,22 @@ export function getMeasure(ctx, name) {
     // signatures (`getMeasure(name)`, `sendWorker(msg)`); our
     // hoisted versions added `ctx` as a first parameter, so we
     // close over `ctx` here to keep the engine ABI unchanged.
-    getMeasure:  function (n) { return getMeasure(ctx, n); },
-    sendWorker:  function (m) { return sendWorker(ctx, m); },
+    getMeasure:  function (n: any) { return getMeasure(ctx, n); },
+    sendWorker:  function (m: any) { return sendWorker(ctx, m); },
     sampleCount: ctx.SAMPLE_COUNT,
     rootSeed:    ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
   });
-  promise.then(function(m) { ctx.measureCache.set(name, m); });
+  promise.then(function(m: any) { ctx.measureCache.set(name, m); });
   return promise;
 }
 
-export function fixedValueToMeasure(ctx, v) {
+export function fixedValueToMeasure(ctx: any, v: any) {
   return FlatPPLEngine.materialiser.fixedValueToMeasure(v, ctx.SAMPLE_COUNT);
 }
 
-export function collectRefArrays(ctx, ir) {
+export function collectRefArrays(ctx: any, ir: any) {
   var fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
   return FlatPPLEngine.materialiser.collectRefArrays(
-    ir, fv, function (n) { return getMeasure(ctx, n); });
+    ir, fv, function (n: any) { return getMeasure(ctx, n); });
 }

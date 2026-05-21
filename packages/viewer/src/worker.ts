@@ -19,7 +19,7 @@
  * spawn the worker from a same-origin blob: URL. This pattern is
  * also documented in the official VS Code webview samples.
  */
-export function ensureSamplerWorker(ctx) {
+export function ensureSamplerWorker(ctx: any) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
@@ -55,7 +55,7 @@ export function ensureSamplerWorker(ctx) {
     return w;
   })();
 
-  ctx.samplerWorkerPromise.catch(function(err) {
+  ctx.samplerWorkerPromise.catch(function(err: any) {
     ctx.samplerWorkerError = err;
     ctx.samplerWorkerPromise = null;
     console.error('FlatPPL: sampler worker unavailable:', err);
@@ -64,8 +64,8 @@ export function ensureSamplerWorker(ctx) {
   return ctx.samplerWorkerPromise;
 }
 
-export function wireWorker(ctx, w) {
-  w.addEventListener('message', function(ev) {
+export function wireWorker(ctx: any, w: any) {
+  w.addEventListener('message', function(ev: any) {
     var reply = ev.data;
     if (!reply || reply.id == null) return;
     var p = ctx.pendingRequests.get(reply.id);
@@ -74,7 +74,7 @@ export function wireWorker(ctx, w) {
     if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
     else p.resolve(reply);
   });
-  w.addEventListener('error', function(e) {
+  w.addEventListener('error', function(e: any) {
     // A top-level worker error fails every outstanding request — there's
     // no way to know which request the error pertains to, and the worker
     // may be dead. Reject all and reset so a future request can retry
@@ -90,13 +90,13 @@ export function wireWorker(ctx, w) {
   });
 }
 
-export function sendWorkerNow(ctx, w, msg) {
+export function sendWorkerNow(ctx: any, w: any, msg: any) {
   var id = ++ctx.samplerReqId;
   w.postMessage(Object.assign({ id: id }, msg));
 }
 
-export function sendWorker(ctx, msg) {
-  return ensureSamplerWorker(ctx).then(function(w) {
+export function sendWorker(ctx: any, msg: any) {
+  return ensureSamplerWorker(ctx).then(function(w: any) {
     var id = ++ctx.samplerReqId;
     var wrapped = Object.assign({ id: id }, msg);
     return new Promise(function(resolve, reject) {
@@ -116,7 +116,7 @@ export function sendWorker(ctx, msg) {
  * ensureSamplerWorker(). Cheap enough that we don't bother
  * keeping a "warm" worker around.
  */
-export function cancelAllSampling(ctx) {
+export function cancelAllSampling(ctx: any) {
   if (ctx.samplerWorker) {
     try { ctx.samplerWorker.terminate(); } catch (_) {}
     ctx.samplerWorker = null;

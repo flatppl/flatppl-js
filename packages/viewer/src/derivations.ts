@@ -8,7 +8,7 @@
 
 import { sendWorkerNow } from './worker.js';
 import { ensureSamplerWorker } from './worker.js';
-export function rebuildDerivations(ctx) {
+export function rebuildDerivations(ctx: any) {
   if (!ctx.currentBindings) {
     ctx.derivationsState = null;
     ctx.measureCache = new Map();
@@ -50,7 +50,7 @@ export function rebuildDerivations(ctx) {
   //     the next rebuildDerivations finds equal values and
   //     prunes the override automatically.
   //   - If the override is empty after pruning, retire it.
-  ctx.presetOverrides.forEach(function(entry, name) {
+  ctx.presetOverrides.forEach(function(entry: any, name: any) {
     var b = ctx.currentBindings.get(name);
     let curValues: Record<string, number> | null = null;
     // analyzer.classifyStatement only returns 'literal' for
@@ -115,7 +115,7 @@ export function rebuildDerivations(ctx) {
   //     the override in place: the user's range overrides the
   //     unbounded source.
   //   - If the override is empty after pruning, retire it.
-  ctx.domainOverrides.forEach(function(entry, name) {
+  ctx.domainOverrides.forEach(function(entry: any, name: any) {
     var b = ctx.currentBindings.get(name);
     let sourceKwargs: Set<string> | null = null;
     let sourceIntervals: Record<string, { lo: number; hi: number }> | null = null;
@@ -173,11 +173,11 @@ export function rebuildDerivations(ctx) {
   // from the previous source can't leak into the new one).
   if (ctx.derivationsState && ctx.derivationsState.fixedValues
       && ctx.derivationsState.fixedValues.size > 0) {
-    var envObj = {};
-    ctx.derivationsState.fixedValues.forEach(function(v, k) { envObj[k] = v; });
-    ensureSamplerWorker(ctx).then(function(w) {
+    var envObj: Record<string, any> = {};
+    ctx.derivationsState.fixedValues.forEach(function(v: any, k: any) { envObj[k] = v; });
+    ensureSamplerWorker(ctx).then(function(w: any) {
       sendWorkerNow(ctx, w, { type: 'setEnv', env: envObj, merge: false });
-    }).catch(function(err) {
+    }).catch(function(err: any) {
       console.error('FlatPPL: setEnv push failed:', err);
     });
   }
