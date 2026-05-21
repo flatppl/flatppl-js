@@ -2118,7 +2118,7 @@ const ARITH_OPS = {
       return xs.slice();
     }
     if (Array.isArray(first) || (first && first.BYTES_PER_ELEMENT)) {
-      const out = [];
+      const out: any[] = [];
       for (let j = 0; j < xs.length; j++) {
         const v = xs[j];
         for (let i = 0; i < v.length; i++) out.push(v[i]);
@@ -2603,7 +2603,7 @@ function _cxElementwise(fn, args, shape, swapped) {
   const get = args.map(_cxRichArgGetter);
   const callArgs = new Array(args.length);
   const re = new Float64Array(M);
-  let im = null;
+  let im: Float64Array | null = null;
   for (let i = 0; i < M; i++) {
     for (let k = 0; k < get.length; k++) callArgs[k] = get[k](i);
     const r = fn.apply(null, callArgs);
@@ -2659,7 +2659,7 @@ function _cxBroadcast(fn, args, N) {
       : valueLib.scalar(+r);
   }
   const re = new Float64Array(N);
-  let im = null;                       // allocated lazily on first complex
+  let im: Float64Array | null = null;                       // allocated lazily on first complex
   const callArgs = new Array(args.length);
   for (let i = 0; i < N; i++) {
     for (let k = 0; k < accs.length; k++) callArgs[k] = accs[k].at(i);
@@ -3009,7 +3009,7 @@ function _broadcastApply(fn, inputs, env) {
     }
   }
 
-  const colls = [];
+  const colls: any[] = [];
   for (let i = 0; i < P; i++) if (slots[i].coll) colls.push(slots[i].V);
 
   const elemEnv = Object.assign({}, env);
@@ -3276,7 +3276,7 @@ function evaluateCall(ir, env) {
     if (edges.length !== n + 1) {
       throw new Error('selectbins: edges length must equal counts length + 1');
     }
-    const out = [];
+    const out: any[] = [];
     for (let i = 0; i < n; i++) {
       // Bin [edges[i], edges[i+1]] intersects [lo, hi] iff
       //   edges[i] ≤ hi  AND  edges[i+1] ≥ lo
@@ -3400,7 +3400,7 @@ function evaluateCall(ir, env) {
         + (data === null ? 'null' : typeof data) + ')');
     }
     const elemEnv = Object.assign({}, env);
-    const out = [];
+    const out: any[] = [];
     for (let i = 0; i < data.length; i++) {
       elemEnv[fn.params[0]] = data[i];
       const keep = evaluateExpr(fn.body, elemEnv);
@@ -3541,7 +3541,7 @@ function isByteVector(x) {
 // Local require to break the cyclic dependency (traceeval.js requires
 // sampler.js for the leaf-distribution machinery; we lazy-import here so
 // the back-reference doesn't blow up module loading).
-let _traceeval = null;
+let _traceeval: any = null;
 function getTraceeval() {
   if (!_traceeval) _traceeval = require('./traceeval.ts');
   return _traceeval;
@@ -3607,7 +3607,7 @@ function resolveParams(measureIR, entry, env) {
   }
   const kwargs = measureIR.kwargs || {};
   const positional = measureIR.args || [];
-  const out = [];
+  const out: any[] = [];
   for (let i = 0; i < entry.params.length; i++) {
     const paramName = entry.params[i];
     let exprIR;
