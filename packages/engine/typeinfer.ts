@@ -133,7 +133,7 @@ function inferExprInScope(loweredModule, expr, paramTypes) {
  * separate contexts don't interfere.
  */
 function createInferenceContext(loweredModule) {
-  const diagnostics = [];
+  const diagnostics: any[] = [];
   const visiting = new Set();
   const visited  = new Set();
 
@@ -665,7 +665,7 @@ function createInferenceContext(loweredModule) {
     // integer literal. Refs to integer-typed bindings remain
     // %dynamic for now (full constant folding via resolveConstant
     // could be promoted from orchestrator if we want).
-    const dims = [];
+    const dims: number[] = [];
     for (let i = 1; i < args.length; i++) {
       const dT = inferExpr(args[i], scopes);
       // Type-check: each dim must be integer-promotable.
@@ -808,7 +808,7 @@ function createInferenceContext(loweredModule) {
     // conventions for user-defined callables with explicit boundaries.
     for (let i = 0; i < inputs.length; i++) {
       const inp = inputs[i];
-      let actual = null, actualLoc = expr.loc;
+      let actual: any = null, actualLoc = expr.loc;
       if (i < args.length) {
         actual = inferExpr(args[i], scopes);
         actualLoc = args[i].loc;
