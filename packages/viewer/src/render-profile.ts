@@ -6,6 +6,7 @@
 // commitSliceX commits user edits to the x-axis bounds back into
 // ctx.profileRangeCache.
 
+import type { Ctx, ProfilePlan } from './types';
 import { tryGetMeasure } from './engine-facade.js';
 import { activeDomainRangesFor, activeFixedNamesFor, activePresetFor, computeAutoValues, ensureDomainOverrideFor, ensureOverrideFor, resolveSweepRange, setDomainOverrideFor, setOverrideFor } from './overrides.js';
 import { colorForBinding } from './palette.js';
@@ -15,9 +16,10 @@ import { defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } f
 import { sendWorker } from './worker.js';
 import { renderPlotFrame } from './render-frame.js';
 import { plotZoomOptions } from './util.js';
-export function renderProfilePlotForCurrent(ctx) {
-  var plan = ctx.currentPlotPlan;
-  if (!plan || plan.mode !== 'profile') return;
+export function renderProfilePlotForCurrent(ctx: Ctx) {
+  const planAny = ctx.currentPlotPlan;
+  if (!planAny || planAny.mode !== 'profile') return;
+  const plan: ProfilePlan = planAny;
   var sig = plan.signature;
   var axes = plan.axes;
   let sweepAxis: any = null;
@@ -243,7 +245,7 @@ export function renderProfilePlotForCurrent(ctx) {
  * `toolbarControls`. Logic mirrors the original inline build; only
  * the styling ctx.host moved.
  */
-export function buildProfileControls(ctx, plan, range) {
+export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   var frag = document.createDocumentFragment();
   var isLogDensity = plan.signature.kind === 'kernel'
                   || plan.signature.kind === 'likelihood';
@@ -411,7 +413,7 @@ export function buildProfileControls(ctx, plan, range) {
  * (binding, sweepKey, preset) — same store as before, same
  * effect on the re-render path.
  */
-export function buildProfileBottomRow(ctx, plan, range) {
+export function buildProfileBottomRow(ctx: Ctx, plan: ProfilePlan, range: any) {
   var fg = getComputedStyle(document.body).color || '#ccc';
   var row = document.createElement('div');
   row.style.display = 'flex';
@@ -519,7 +521,7 @@ export function buildProfileBottomRow(ctx, plan, range) {
   return row;
 }
 
-export function renderProfileLine(ctx, values, range, plan, sweepAxis) {
+export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: ProfilePlan, sweepAxis: any) {
   var fg = getComputedStyle(document.body).color || '#ccc';
   var color = colorForBinding(ctx, ctx.currentPlotBindingName);
   var n = values.length;
@@ -695,7 +697,7 @@ export function renderProfileLine(ctx, values, range, plan, sweepAxis) {
   });
 }
 
-export function commitSliceX(ctx, plan, x) {
+export function commitSliceX(ctx: Ctx, plan: ProfilePlan, x: number) {
   if (!plan || !plan.axes) return;
   let kwarg: string | null = null;
   for (var i = 0; i < plan.axes.length; i++) {
