@@ -27,7 +27,7 @@ export function defaultVscodeHost(): HostAdapter {
   return {
     revealSourceLine: function(line) { api.postMessage({ type: 'navigateTo', line: line }); },
     setTitle:         function(name) { api.postMessage({ type: 'updateTitle', name: name }); },
-    saveState:        function(state) { api.setState(state); },
+    saveState:        function(state: any) { api.setState(state); },
     loadState:        function() { return api.getState(); },
     signalReady:      function() { api.postMessage({ type: 'webviewReady' }); },
     // VS Code can always edit the source file. The extension
@@ -42,10 +42,10 @@ export function defaultVscodeHost(): HostAdapter {
     // both round-trip through the extension via postMessage —
     // window.prompt is unavailable in webviews, and edits go
     // through vscode.workspace.applyEdit.
-    promptForName: function(args) {
+    promptForName: function(args: any) {
       var nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       return new Promise(function(resolve) {
-        function listener(event) {
+        function listener(event: any) {
           var m = event.data;
           if (!m || m.type !== 'promptForNameResponse' || m.nonce !== nonce) return;
           window.removeEventListener('message', listener);
@@ -60,7 +60,7 @@ export function defaultVscodeHost(): HostAdapter {
         });
       });
     },
-    editSource: function(args) {
+    editSource: function(args: any) {
       api.postMessage({
         type: 'editSource',
         range:   args.range || null,
