@@ -149,7 +149,12 @@ export type DerivationKind =
   | 'kernelbroadcast'
   | 'mvnormal'
   | 'dirichlet'
-  | 'multinomial';
+  | 'multinomial'
+  | 'wishart'
+  | 'inversewishart'
+  | 'lkjcholesky'
+  | 'lkj'
+  | 'binnedpoissonprocess';
 
 /**
  * Base derivation shape. Each per-kind interface below extends this
@@ -365,6 +370,41 @@ export interface DerivationMultinomial {
   distIR: IRNode;
 }
 
+/** Wishart(nu, scale) — atom is an n×n SPD matrix (Bartlett decomposition). */
+export interface DerivationWishart {
+  kind: 'wishart';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** InverseWishart(nu, scale) — atom is an n×n SPD matrix (inverse of Wishart). */
+export interface DerivationInverseWishart {
+  kind: 'inversewishart';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** LKJCholesky(n, eta) — atom is an n×n lower-triangular Cholesky factor of a correlation matrix. */
+export interface DerivationLKJCholesky {
+  kind: 'lkjcholesky';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** LKJ(n, eta) — atom is an n×n correlation matrix (LKJCholesky * LKJCholesky^T). */
+export interface DerivationLKJ {
+  kind: 'lkj';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** BinnedPoissonProcess(rates) — atom is a length-K integer count vector of independent Poisson counts. */
+export interface DerivationBinnedPoissonProcess {
+  kind: 'binnedpoissonprocess';
+  name?: string;
+  distIR: IRNode;
+}
+
 /** Discriminated union over every kind buildDerivations may emit. */
 export type Derivation =
   | DerivationAlias
@@ -388,7 +428,12 @@ export type Derivation =
   | DerivationKernelBroadcast
   | DerivationMvNormal
   | DerivationDirichlet
-  | DerivationMultinomial;
+  | DerivationMultinomial
+  | DerivationWishart
+  | DerivationInverseWishart
+  | DerivationLKJCholesky
+  | DerivationLKJ
+  | DerivationBinnedPoissonProcess;
 
 // ---------------------------------------------------------------------
 // BindingInfo (engine/analyzer.ts → ParsedModule.bindings entries)
