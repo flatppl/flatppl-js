@@ -50,7 +50,7 @@ const builtins = require('./builtins.ts');
 // Constant maps (carried over from the AST-based version)
 // =====================================================================
 
-const CONST_TYPES = {
+const CONST_TYPES: Record<string, any> = {
   pi:    T.REAL,
   inf:   T.REAL,
   im:    T.COMPLEX,
@@ -58,7 +58,7 @@ const CONST_TYPES = {
   false: T.BOOLEAN,
 };
 
-const SET_VALUE_TYPES = {
+const SET_VALUE_TYPES: Record<string, any> = {
   reals: T.REAL, posreals: T.REAL, nonnegreals: T.REAL, unitinterval: T.REAL,
   integers: T.INTEGER, posintegers: T.INTEGER, nonnegintegers: T.INTEGER,
   booleans: T.BOOLEAN,
@@ -91,7 +91,7 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
  * annotations. Returns diagnostics for type mismatches; loc fields
  * point at the source AST positions captured during lowering.
  */
-function inferTypes(loweredModule) {
+function inferTypes(loweredModule: any) {
   const ctx = createInferenceContext(loweredModule);
   for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
   return ctx.diagnostics;
@@ -117,7 +117,7 @@ function inferTypes(loweredModule) {
  *                        inside `expr` resolves through this.
  * @returns inferred type of `expr` in that scope
  */
-function inferExprInScope(loweredModule, expr, paramTypes) {
+function inferExprInScope(loweredModule: any, expr: any, paramTypes: any) {
   const ctx = createInferenceContext(loweredModule);
   const scopes = paramTypes ? [paramTypes] : [];
   return ctx.inferExpr(expr, scopes);
@@ -132,12 +132,12 @@ function inferExprInScope(loweredModule, expr, paramTypes) {
  * rules. Cycle detection (visiting/visited) is per-context, so
  * separate contexts don't interfere.
  */
-function createInferenceContext(loweredModule) {
+function createInferenceContext(loweredModule: any) {
   const diagnostics: any[] = [];
   const visiting = new Set();
   const visited  = new Set();
 
-  function inferBinding(name) {
+  function inferBinding(name: any): any {
     const b = loweredModule.bindings.get(name);
     if (!b)                   return T.failed('unknown binding "' + name + '"');
     if (visited.has(name))    return b.inferredType || T.deferred();
@@ -147,7 +147,7 @@ function createInferenceContext(loweredModule) {
       return t;
     }
     visiting.add(name);
-    const t = inferExpr(b.rhs, []);   // [] = no enclosing scopes
+    const t: any = inferExpr(b.rhs, []);   // [] = no enclosing scopes
     visiting.delete(name);
     visited.add(name);
     b.inferredType = t;
@@ -160,7 +160,7 @@ function createInferenceContext(loweredModule) {
   // `scopes` is a stack of Map<paramName, type> for each enclosing
   // functionof/kernelof. Top of stack is the innermost scope.
 
-  function inferExpr(expr, scopes) {
+  function inferExpr(expr: any, scopes: any): any {
     if (!expr) return T.failed('null expression');
     switch (expr.kind) {
       case 'lit':   return inferLit(expr);
@@ -172,7 +172,7 @@ function createInferenceContext(loweredModule) {
     return T.deferred();
   }
 
-  function inferLit(expr) {
+  function inferLit(expr: any) {
     const v = expr.value;
     if (typeof v === 'number') {
       // Lower.js preserves the lexical-form distinction in `numType`
@@ -187,13 +187,13 @@ function createInferenceContext(loweredModule) {
     return T.deferred();
   }
 
-  function inferConst(expr) {
+  function inferConst(expr: any) {
     if (CONST_TYPES[expr.name])  return CONST_TYPES[expr.name];
     if (builtins.isSet(expr.name)) return setMarker(expr.name);
     return T.any();
   }
 
-  function inferRef(expr, scopes) {
+  function inferRef(expr: any, scopes: any): any {
     if (expr.ns === '%local') {
       // Look up in the scope stack from innermost outward.
       for (let i = scopes.length - 1; i >= 0; i--) {
@@ -213,7 +213,7 @@ function createInferenceContext(loweredModule) {
     return T.deferred();
   }
 
-  function inferCall(expr, scopes) {
+  function inferCall(expr: any, scopes: any): any {
     // User-defined call: lower.js puts the callee on `target`.
     if (expr.target) return inferUserCall(expr, scopes);
 
@@ -267,7 +267,7 @@ function createInferenceContext(loweredModule) {
   // Helper to attach inferred type to the call's meta slot AND
   // return the type. setMeta is from pir.js but we don't import to
   // keep this module standalone — direct write is fine.
-  function write(t, expr) {
+  function write(t: any, expr: any) {
     if (!expr.meta) expr.meta = {};
     expr.meta.type = t;
     return t;
@@ -277,7 +277,7 @@ function createInferenceContext(loweredModule) {
   // Generic call inference: signature lookup + arg unify
   // -------------------------------------------------------------------
 
-  function inferGenericCall(expr, scopes) {
+  function inferGenericCall(expr: any, scopes: any): any {
     const op = expr.op;
     const sig = T.signatureOf(op);
     if (!sig) return T.deferred();
@@ -297,7 +297,7 @@ function createInferenceContext(loweredModule) {
         return arityError(op, rawN, got, expr.loc);
       }
       for (let i = 0; i < fixedN; i++) {
-        const at = inferExpr(args[i], scopes);
+        const at: any = inferExpr(args[i], scopes);
         const next = T.unify(sig.args[i], at, s);
         if (next == null) return argError(op, i, sig.args[i], at, args[i].loc);
         s = next;
@@ -305,7 +305,7 @@ function createInferenceContext(loweredModule) {
       if (variadic) {
         const tail = sig.args[rawN - 1];
         for (let i = fixedN; i < got; i++) {
-          const at = inferExpr(args[i], scopes);
+          const at: any = inferExpr(args[i], scopes);
           const next = T.unify(tail, at, s);
           if (next == null) return argError(op, i, tail, at, args[i].loc);
           s = next;
@@ -315,7 +315,7 @@ function createInferenceContext(loweredModule) {
 
     for (const k in sig.kwargs) {
       if (!(k in kwargs)) continue;   // optional/defaulted kwargs allowed missing
-      const at = inferExpr(kwargs[k], scopes);
+      const at: any = inferExpr(kwargs[k], scopes);
       const next = T.unify(sig.kwargs[k], at, s);
       if (next == null) return kwargError(op, k, sig.kwargs[k], at, kwargs[k].loc);
       s = next;
@@ -336,10 +336,10 @@ function createInferenceContext(loweredModule) {
   //                          system but documented here for future extension)
   //   scalar               → error (transpose undefined on scalars)
   //   other                → deferred (unknown shape — let runtime handle)
-  function inferTransposeAdjoint(expr, scopes) {
+  function inferTransposeAdjoint(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);
-    const at = inferExpr(args[0], scopes);
+    const at: any = inferExpr(args[0], scopes);
     if (!at) return T.deferred();
     switch (at.kind) {
       case 'array':
@@ -367,7 +367,7 @@ function createInferenceContext(loweredModule) {
     return T.deferred();
   }
 
-  function inferElementof(expr, scopes) {
+  function inferElementof(expr: any, scopes: any) {
     const args = expr.args || [];
     if (args.length !== 1) return arityError('elementof', 1, args.length, expr.loc);
     const t = setValueType(args[0], scopes);
@@ -384,10 +384,10 @@ function createInferenceContext(loweredModule) {
     return t;
   }
 
-  function inferLawof(expr, scopes) {
+  function inferLawof(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return arityError('lawof', 1, args.length, expr.loc);
-    const at = inferExpr(args[0], scopes);
+    const at: any = inferExpr(args[0], scopes);
     if (at && at.kind === 'failed') return T.failed('lawof cascade');
     if (T.isMeasure(at)) return at;             // identity law: lawof(measure) = measure
     if (T.isValue(at))   return T.measure(at);
@@ -399,17 +399,17 @@ function createInferenceContext(loweredModule) {
     return T.failed('lawof bad arg');
   }
 
-  function inferRecord(expr, scopes) {
+  function inferRecord(expr: any, scopes: any) {
     // record uses `fields` (ordered), not `kwargs`.
     const fields = expr.fields || [];
-    const out = {};
+    const out: Record<string, any> = {};
     for (const f of fields) out[f.name] = inferExpr(f.value, scopes);
     return T.record(out);
   }
 
-  function inferJoint(expr, scopes) {
+  function inferJoint(expr: any, scopes: any) {
     const fields = expr.fields || [];
-    const out = {};
+    const out: Record<string, any> = {};
     for (const f of fields) {
       const at = inferExpr(f.value, scopes);
       if (T.isMeasure(at)) out[f.name] = at.domain;
@@ -427,9 +427,9 @@ function createInferenceContext(loweredModule) {
     return T.measure(T.record(out));
   }
 
-  function inferTuple(expr, scopes) {
+  function inferTuple(expr: any, scopes: any) {
     const args = expr.args || [];
-    return T.tuple(args.map(a => inferExpr(a, scopes)));
+    return T.tuple(args.map((a: any) => inferExpr(a, scopes)));
   }
 
   // Lebesgue(support = S) / Counting(support = S). The support kwarg is
@@ -438,7 +438,7 @@ function createInferenceContext(loweredModule) {
   // (cartpow → array, cartprod → record/tuple, stdsimplex → array<real,n>).
   // Falls back to the default scalar when the support shape can't be
   // statically resolved (e.g. the support is itself a binding ref).
-  function inferReferenceMeasure(expr, scopes, defaultElem) {
+  function inferReferenceMeasure(expr: any, scopes: any, defaultElem: any) {
     const args   = expr.args || [];
     const kwargs = expr.kwargs || {};
     let support = null;
@@ -451,12 +451,12 @@ function createInferenceContext(loweredModule) {
     return T.measure(t || defaultElem);
   }
 
-  function inferGetField(expr, scopes) {
+  function inferGetField(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2) {
       return arityError('get_field', 2, args.length, expr.loc);
     }
-    const recT = inferExpr(args[0], scopes);
+    const recT: any = inferExpr(args[0], scopes);
     if (recT && recT.kind === 'failed') return T.failed('get_field cascade');
     if (!recT || recT.kind !== 'record' || !recT.fields) {
       diagnostics.push({
@@ -481,12 +481,12 @@ function createInferenceContext(loweredModule) {
     return recT.fields[nameIR.value];
   }
 
-  function inferTupleGet(expr, scopes) {
+  function inferTupleGet(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2) {
       return arityError('tuple_get', 2, args.length, expr.loc);
     }
-    const tupleT = inferExpr(args[0], scopes);
+    const tupleT: any = inferExpr(args[0], scopes);
     if (tupleT && tupleT.kind === 'failed') return T.failed('tuple_get cascade');
     if (!tupleT || tupleT.kind !== 'tuple') {
       diagnostics.push({
@@ -513,13 +513,13 @@ function createInferenceContext(loweredModule) {
     return tupleT.elems[i];
   }
 
-  function inferVector(expr, scopes) {
+  function inferVector(expr: any, scopes: any) {
     // `(call vector e1 e2 …)` — the array's length is the number of
     // arguments (statically known); the element type is the unifying
     // type of the elements. Empty vectors get an %any element type.
     const args = expr.args || [];
     if (args.length === 0) return T.array(1, [0], T.any());
-    const elemTypes = args.map(a => inferExpr(a, scopes));
+    const elemTypes = args.map((a: any) => inferExpr(a, scopes));
     let s = new Map();
     let elem = elemTypes[0];
     for (let i = 1; i < elemTypes.length; i++) {
@@ -568,13 +568,13 @@ function createInferenceContext(loweredModule) {
   // scalar/array broadcast. Unary: shape-preserving. Comparisons
   // produce boolean of the broadcast shape.
 
-  function inferArith2(expr, scopes) {
+  function inferArith2(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2) return arityError(expr.op, 2, args.length, expr.loc);
-    const aT = inferExpr(args[0], scopes);
-    const bT = inferExpr(args[1], scopes);
+    const aT: any = inferExpr(args[0], scopes);
+    const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
-    const r = T.unifyArith(aT, bT, new Map());
+    const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({
         severity: 'error',
@@ -587,7 +587,7 @@ function createInferenceContext(loweredModule) {
     return r.result;
   }
 
-  function inferArith1(expr, scopes) {
+  function inferArith1(expr: any, scopes: any) {
     const args = expr.args || [];
     if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);
     const aT = inferExpr(args[0], scopes);
@@ -597,7 +597,7 @@ function createInferenceContext(loweredModule) {
     // otherwise the result type matches the input. Other unary maths
     // are real → real for now (spec doesn't require richer overloads).
     const isIntCast = (expr.op === 'floor' || expr.op === 'ceil' || expr.op === 'round');
-    function liftElemwise(t) {
+    function liftElemwise(t: any): any {
       if (t.kind === 'scalar')   return isIntCast ? T.INTEGER : T.REAL;
       if (t.kind === 'array')    return T.array(t.rank, t.shape.slice(),
                                                  liftElemwise(t.elem));
@@ -616,16 +616,16 @@ function createInferenceContext(loweredModule) {
     return out;
   }
 
-  function inferComparison(expr, scopes) {
+  function inferComparison(expr: any, scopes: any): any {
     // Comparisons unify operand shapes via unifyArith and return
     // boolean of that shape. `equal(scalar, array)` would broadcast;
     // `equal(scalar, scalar)` → boolean.
     const args = expr.args || [];
     if (args.length !== 2) return arityError(expr.op, 2, args.length, expr.loc);
-    const aT = inferExpr(args[0], scopes);
-    const bT = inferExpr(args[1], scopes);
+    const aT: any = inferExpr(args[0], scopes);
+    const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
-    const r = T.unifyArith(aT, bT, new Map());
+    const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({
         severity: 'error',
@@ -648,10 +648,10 @@ function createInferenceContext(loweredModule) {
   // n is statically known; %dynamic otherwise. We resolve n via
   // literal and binding-ref folding so common cases (`n = 10;
   // iid(M, n)`) yield concrete shapes for downstream shape checks.
-  function inferIid(expr, scopes) {
+  function inferIid(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length < 2) return arityError('iid', '≥2', args.length, expr.loc);
-    const measureT = inferExpr(args[0], scopes);
+    const measureT: any = inferExpr(args[0], scopes);
     if (!T.isMeasure(measureT)) {
       if (measureT && measureT.kind === 'failed') return T.failed('iid cascade');
       diagnostics.push({
@@ -684,14 +684,14 @@ function createInferenceContext(loweredModule) {
     return T.measure(T.array(rank, dims, measureT.domain));
   }
 
-  function literalIntFromIR(ir) {
+  function literalIntFromIR(ir: any) {
     if (!ir) return null;
     if (ir.kind === 'lit' && ir.numType === 'integer') return ir.value;
     if (ir.kind === 'lit' && Number.isInteger(ir.value)) return ir.value;
     return null;
   }
 
-  function inferReification(expr, scopes) {
+  function inferReification(expr: any, scopes: any): any {
     // Only `functionof` reaches here — kernelof and fn are lowered
     // to functionof by lower.js. The kernelof spec rule "x must not
     // be a measure" emerges naturally from the lawof inside the
@@ -721,10 +721,10 @@ function createInferenceContext(loweredModule) {
     }
 
     const innerScopes = scopes.concat([newScope]);
-    const bodyT = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
+    const bodyT: any = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
     // Inputs use the *surface* keyword name from paramKwargs — that's
     // what call-site kwargs bind to. Types come from the scope.
-    const inputs = params.map((p, i) => ({
+    const inputs = params.map((p: any, i: any) => ({
       name: paramKwargs[i] || p,
       type: newScope.get(p),
     }));
@@ -741,13 +741,13 @@ function createInferenceContext(loweredModule) {
   // User-defined call: callee is a (%ref self <fn-name>)
   // -------------------------------------------------------------------
 
-  function inferUserCall(expr, scopes) {
+  function inferUserCall(expr: any, scopes: any): any {
     const head = expr.target;
     if (!head || head.ns !== 'self') {
       // Cross-module user calls — not yet implemented.
       return write(T.deferred(), expr);
     }
-    const calleeType = inferBinding(head.name);
+    const calleeType: any = inferBinding(head.name);
     if (!T.isCallable(calleeType)) {
       // Cascade silently when the callee already failed or is still
       // deferred (couldn't infer its type — e.g. unknown built-in,
@@ -787,7 +787,7 @@ function createInferenceContext(loweredModule) {
     if (args.length === 1 && Object.keys(kwargs).length === 0 && inputs.length > 0) {
       const splatType = inferExpr(args[0], scopes);
       if (splatType && splatType.kind === 'record' && splatType.fields) {
-        const inputNames = new Set(inputs.map(i => i.name));
+        const inputNames = new Set(inputs.map((i: any) => i.name));
         let allMatch = true;
         for (const k in splatType.fields) {
           if (!inputNames.has(k)) { allMatch = false; break; }
@@ -796,7 +796,7 @@ function createInferenceContext(loweredModule) {
           // Synthesize per-field exprs by typing through `splatType`
           // — no AST rewrite here, just record the per-field types
           // for the unify loop. We re-key the call by field name.
-          const splatKwargs = {};
+          const splatKwargs: Record<string, any> = {};
           for (const k in splatType.fields) splatKwargs[k] = { __splatType: splatType.fields[k] };
           args = [];
           kwargs = splatKwargs;
@@ -852,7 +852,7 @@ function createInferenceContext(loweredModule) {
   // Set-expression value-type resolution (used by elementof)
   // -------------------------------------------------------------------
 
-  function setValueType(expr, scopes) {
+  function setValueType(expr: any, scopes: any): any {
     if (!expr) return null;
     if (expr.kind === 'const' && SET_VALUE_TYPES[expr.name] !== undefined) {
       return SET_VALUE_TYPES[expr.name];
@@ -869,16 +869,16 @@ function createInferenceContext(loweredModule) {
         return T.array(1, [n], T.REAL);
       }
       case 'cartpow': {
-        const inner = setValueType(expr.args[0], scopes);
+        const inner: any = setValueType(expr.args[0], scopes);
         if (inner == null) return null;
-        const dims = (expr.args || []).slice(1).map(a =>
+        const dims = (expr.args || []).slice(1).map((a: any) =>
           (a.kind === 'lit' && Number.isInteger(a.value)) ? a.value : '%dynamic');
         return T.array(dims.length, dims, inner);
       }
       case 'cartprod': {
         const fields = expr.fields || null;
         if (fields && fields.length > 0) {
-          const out = {};
+          const out: Record<string, any> = {};
           for (const f of fields) {
             const t = setValueType(f.value, scopes);
             if (t == null) return null;
@@ -886,8 +886,8 @@ function createInferenceContext(loweredModule) {
           }
           return T.record(out);
         }
-        const elems = (expr.args || []).map(a => setValueType(a, scopes));
-        if (elems.some(e => e == null)) return null;
+        const elems = (expr.args || []).map((a: any) => setValueType(a, scopes));
+        if (elems.some((e: any) => e == null)) return null;
         return elems.length === 1 ? elems[0] : T.tuple(elems);
       }
     }
@@ -898,7 +898,7 @@ function createInferenceContext(loweredModule) {
   // Diagnostics helpers (suppress cascades when inputs already failed)
   // -------------------------------------------------------------------
 
-  function arityError(op, expected, got, loc) {
+  function arityError(op: any, expected: any, got: any, loc: any) {
     diagnostics.push({
       severity: 'error',
       message: op + ' expects ' + expected + ' positional argument(s), got ' + got,
@@ -906,7 +906,7 @@ function createInferenceContext(loweredModule) {
     });
     return T.failed(op + ' arity');
   }
-  function argError(op, i, expected, got, loc) {
+  function argError(op: any, i: any, expected: any, got: any, loc: any) {
     if (got && got.kind === 'failed') return T.failed(op + ' arg type (cascade)');
     diagnostics.push({
       severity: 'error',
@@ -916,7 +916,7 @@ function createInferenceContext(loweredModule) {
     });
     return T.failed(op + ' arg type');
   }
-  function kwargError(op, k, expected, got, loc) {
+  function kwargError(op: any, k: any, expected: any, got: any, loc: any) {
     if (got && got.kind === 'failed') return T.failed(op + ' kwarg type (cascade)');
     diagnostics.push({
       severity: 'error',
@@ -931,6 +931,6 @@ function createInferenceContext(loweredModule) {
 }
 
 // Internal "set" marker — not a user-facing type. elementof handles it.
-function setMarker(name) { return { kind: 'set', name }; }
+function setMarker(name: any) { return { kind: 'set', name }; }
 
 module.exports = { inferTypes, inferExprInScope };
