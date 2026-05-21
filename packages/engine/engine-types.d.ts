@@ -157,7 +157,11 @@ export type DerivationKind =
  */
 export interface DerivationBase {
   kind: DerivationKind;
-  name: string;
+  /** Binding name this derivation is associated with. Required for
+   *  named derivations in the buildDerivations output (which is keyed
+   *  by name); internal synthesised derivations the materialiser
+   *  constructs in flight may omit it. */
+  name?: string;
   [extra: string]: any;
 }
 
