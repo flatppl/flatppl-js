@@ -35,7 +35,7 @@ const { isMeasureExpr } = require('./analyzer.ts');
  * intermediate derivations and are deferred — the user can split
  * them into named bindings for now.
  */
-function resolveMeasureBaseName(astNode, bindings) {
+function resolveMeasureBaseName(astNode: any, bindings: any) {
   if (!astNode) return null;
   if (astNode.type === 'Identifier' && bindings.has(astNode.name)) {
     return isMeasureExpr(astNode, bindings) ? astNode.name : null;
@@ -60,7 +60,7 @@ function resolveMeasureBaseName(astNode, bindings) {
  * derivations to pre-compute the log-shift at classification time
  * rather than at sample-render time. Cycle-guarded.
  */
-function resolveConstant(ir, bindings, seen) {
+function resolveConstant(ir: any, bindings: any, seen: Set<any>): any {
   if (!ir) return null;
   if (ir.kind === 'lit') {
     if (typeof ir.value === 'number' && Number.isFinite(ir.value)) return ir.value;
@@ -87,8 +87,8 @@ function resolveConstant(ir, bindings, seen) {
   // operator set matches EVALUABLE_OPS so the language's evaluator
   // semantics agree at this level.
   if (ir.kind === 'call' && ir.op && Array.isArray(ir.args)) {
-    const args = ir.args.map(a => resolveConstant(a, bindings, seen));
-    if (args.some(v => v == null)) return null;
+    const args = ir.args.map((a: any) => resolveConstant(a, bindings, seen));
+    if (args.some((v: any) => v == null)) return null;
     switch (ir.op) {
       case 'neg': return args.length === 1 ? -args[0] : null;
       case 'pos': return args.length === 1 ?  args[0] : null;
@@ -102,13 +102,13 @@ function resolveConstant(ir, bindings, seen) {
   return null;
 }
 
-function isCallOp(ir, op, expectedArgCount) {
+function isCallOp(ir: any, op: string, expectedArgCount: number | null) {
   if (!ir || ir.kind !== 'call' || ir.op !== op || !Array.isArray(ir.args)) return false;
   if (expectedArgCount !== null && ir.args.length !== expectedArgCount) return false;
   return true;
 }
 
-function isSelfRef(ir) {
+function isSelfRef(ir: any) {
   return !!ir && ir.kind === 'ref' && ir.ns === 'self';
 }
 
@@ -150,9 +150,9 @@ function isSelfRef(ir) {
  * thrown message names the failure so the viewer can surface it
  * directly as a plot-time error rather than a silent failure.
  */
-function resolveIRToValue(ir, bindings, fixedValues) {
+function resolveIRToValue(ir: any, bindings: any, fixedValues: any) {
   return walk(ir, new Set());
-  function walk(ir, seen) {
+  function walk(ir: any, seen: Set<any>): any {
     if (!ir || typeof ir !== 'object') {
       throw new Error('resolveIRToValue: not an IR node');
     }
@@ -176,7 +176,7 @@ function resolveIRToValue(ir, bindings, fixedValues) {
         return out;
       }
       if (ir.op === 'record' && Array.isArray(ir.fields)) {
-        const out = {};
+        const out: Record<string, any> = {};
         for (const f of ir.fields) out[f.name] = walk(f.value, seen);
         return out;
       }
@@ -220,14 +220,14 @@ function resolveIRToValue(ir, bindings, fixedValues) {
  * row-major nested arrays here. Booleans pass through as-is (the array
  * caller coerces true/false → 1/0, matching the rest of the engine).
  */
-function valueToPlain(v) {
+function valueToPlain(v: any): any {
   if (v == null || typeof v === 'number' || typeof v === 'boolean') return v;
   if (Array.isArray(v)) return v.map(valueToPlain);
   // Shape-tagged Value → nested JS array (row-major), scalar → number.
   if (typeof v === 'object' && Array.isArray(v.shape)
       && v.data instanceof Float64Array) {
     const data = v.data;
-    const build = (axis, offset, stride) => {
+    const build = (axis: number, offset: number, stride: number): any => {
       if (axis === v.shape.length) return data[offset];
       const n = v.shape[axis];
       const inner = stride / n;
@@ -235,7 +235,7 @@ function valueToPlain(v) {
       for (let i = 0; i < n; i++) out[i] = build(axis + 1, offset + i * inner, inner);
       return out;
     };
-    const total = v.shape.reduce((a, b) => a * b, 1);
+    const total = v.shape.reduce((a: number, b: number) => a * b, 1);
     return v.shape.length === 0 ? data[0] : build(0, 0, total);
   }
   return v;
@@ -248,11 +248,11 @@ function valueToPlain(v) {
  * those introduce their own scope and their bodies aren't part of the
  * outer binding's data dependencies for sampling.
  */
-function collectSelfRefs(ir) {
+function collectSelfRefs(ir: any) {
   const seen = new Set();
   walk(ir);
   return seen;
-  function walk(node) {
+  function walk(node: any) {
     if (!node || typeof node !== 'object') return;
     if (node.kind === 'ref' && node.ns === 'self') seen.add(node.name);
     if (node.args)   for (const a of node.args)            walk(a);
@@ -266,11 +266,11 @@ function collectSelfRefs(ir) {
   }
 }
 
-function lowerSafe(ast) {
+function lowerSafe(ast: any) {
   try { return lowerExpr(ast); } catch (_) { return null; }
 }
 
-const NAMED_SETS = {
+const NAMED_SETS: Record<string, any> = {
   reals:           { kind: 'reals' },
   posreals:        { kind: 'posreals' },
   nonnegreals:     { kind: 'nonnegreals' },
@@ -281,7 +281,7 @@ const NAMED_SETS = {
   booleans:        { kind: 'booleans' },
 };
 
-function parseSetIR(setIR, bindings) {
+function parseSetIR(setIR: any, bindings: any) {
   if (!setIR) return null;
   if (setIR.kind === 'const' && NAMED_SETS[setIR.name])
     return NAMED_SETS[setIR.name];
@@ -477,7 +477,7 @@ const EVALUABLE_OPS = new Set([
  *                 lawof rewrite by letting us check the phase of a
  *                 ref-arg. Without it, lawof passes through unchanged.
  */
-function normalizeMeasureIR(ir, bindings) {
+function normalizeMeasureIR(ir: any, bindings: any) {
   if (!ir || ir.kind !== 'call') return ir;
   if (ir.op === 'lawof'
       && Array.isArray(ir.args) && ir.args.length === 1
@@ -502,7 +502,7 @@ function normalizeMeasureIR(ir, bindings) {
 // phase='fixed'. Anything else (calls, missing bindings) returns
 // false — the rewrite skips them and the lawof stays in its original
 // form for downstream phase-aware dispatch.
-function isFixedPhaseValueIR(ir, bindings) {
+function isFixedPhaseValueIR(ir: any, bindings: any) {
   if (!ir) return false;
   if (ir.kind === 'lit' || ir.kind === 'const') return true;
   if (ir.kind === 'ref' && ir.ns === 'self' && bindings) {

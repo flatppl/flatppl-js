@@ -12,7 +12,7 @@ const AST = require('./ast.ts');
  * later commits in this series. `variant` is accepted (and ignored)
  * starting now so call sites can pass it without churn.
  */
-function parse(tokens, variant) {
+function parse(tokens: any[], variant: any) {
   // Fall back to canonical FlatPPL when no variant supplied — keeps
   // existing call sites that pass only `tokens` working.
   const v = variant || require('./variants.ts').FLATPPL;
@@ -21,10 +21,10 @@ function parse(tokens, variant) {
   let pos = 0;
 
   function peek() { return tokens[pos]; }
-  function at(type) { return tokens[pos].type === type; }
-  function atValue(type, val) { return tokens[pos].type === type && tokens[pos].value === val; }
+  function at(type: string) { return tokens[pos].type === type; }
+  function atValue(type: string, val: any) { return tokens[pos].type === type && tokens[pos].value === val; }
   function advance() { return tokens[pos++]; }
-  function expect(type) {
+  function expect(type: string) {
     if (at(type)) return advance();
     const tok = peek();
     diagnostics.push({
@@ -64,11 +64,11 @@ function parse(tokens, variant) {
   // above Comparison (so `not a < b` ≡ `not (a < b)`, per Python).
   // Logical ops lower to land / lor / lnot calls regardless of
   // variant.
-  function parseExpr() {
+  function parseExpr(): any {
     return parseOr();
   }
 
-  function logicalSym(kind) {
+  function logicalSym(kind: string) {
     return (v.logicalSyms && v.logicalSyms[kind]) || null;
   }
 
@@ -82,7 +82,7 @@ function parse(tokens, variant) {
   // `broadcast:true` (see below) and are wrapped in lower.js, which is
   // the single owner of the operator→builtin map — so the parser
   // never duplicates that table.
-  function broadcastCall(calleeNode, operands, loc) {
+  function broadcastCall(calleeNode: any, operands: any[], loc: any) {
     return AST.CallExpr(AST.Identifier('broadcast', loc),
       [calleeNode, ...operands], loc);
   }
@@ -91,7 +91,7 @@ function parse(tokens, variant) {
   // for `kind` (one of 'and' / 'or' / 'not'). FlatPPL/FlatPPJ use the
   // dedicated AMPAMP / PIPEPIPE / BANG tokens; FlatPPY uses IDENT
   // tokens with values 'and'/'or'/'not'.
-  function atLogicalSym(kind) {
+  function atLogicalSym(kind: string) {
     const sym = logicalSym(kind);
     if (sym === '&&') return at(T.AMPAMP);
     if (sym === '||') return at(T.PIPEPIPE);
@@ -100,8 +100,8 @@ function parse(tokens, variant) {
     return false;
   }
 
-  function parseOr() {
-    let left = parseAnd();
+  function parseOr(): any {
+    let left: any = parseAnd();
     while (atLogicalSym('or')) {
       const opTok = advance();
       const right = parseAnd();
@@ -115,10 +115,10 @@ function parse(tokens, variant) {
     return left;
   }
 
-  function parseAnd() {
+  function parseAnd(): any {
     // Canonical FlatPPL keeps `!` at the Unary level (lower than
     // Comparison), so `&&` sits directly above Comparison.
-    let left = parseComparison();
+    let left: any = parseComparison();
     while (atLogicalSym('and')) {
       const opTok = advance();
       const right = parseComparison();
@@ -132,18 +132,18 @@ function parse(tokens, variant) {
     return left;
   }
 
-  function parseComparison() {
+  function parseComparison(): any {
     const compOpTypes = [T.EQEQ, T.NEQ, T.LT, T.GT, T.LTE, T.GTE];
     function isCompOp() {
       return compOpTypes.includes(peek().type)
         || (v.membershipOp && atValue(T.IDENT, 'in'));
     }
-    function mergeLoc(a, b) {
+    function mergeLoc(a: any, b: any) {
       return AST.loc(a.loc.start.line, a.loc.start.col,
                      b.loc.end.line,   b.loc.end.col);
     }
 
-    let left = parseAddition();
+    let left: any = parseAddition();
     if (!isCompOp()) return left;
 
     // First comparison — always emitted as a plain BinaryExpr to keep
@@ -182,8 +182,8 @@ function parse(tokens, variant) {
     return chain;
   }
 
-  function parseAddition() {
-    let left = parseMultiplication();
+  function parseAddition(): any {
+    let left: any = parseMultiplication();
     while (at(T.PLUS) || at(T.MINUS)) {
       const opTok = advance();
       const right = parseMultiplication();
@@ -194,8 +194,8 @@ function parse(tokens, variant) {
     return left;
   }
 
-  function parseMultiplication() {
-    let left = parseUnary();
+  function parseMultiplication(): any {
+    let left: any = parseUnary();
     while (at(T.STAR) || at(T.SLASH)) {
       const opTok = advance();
       const right = parseUnary();
@@ -206,11 +206,11 @@ function parse(tokens, variant) {
     return left;
   }
 
-  function parseUnary() {
+  function parseUnary(): any {
     if (at(T.MINUS)) {
       const opTok = advance();
-      const operand = parseUnary();
-      const un = AST.UnaryExpr('-', operand,
+      const operand: any = parseUnary();
+      const un: any = AST.UnaryExpr('-', operand,
         AST.loc(opTok.loc.start.line, opTok.loc.start.col, operand.loc.end.line, operand.loc.end.col));
       if (opTok.dotted) un.broadcast = true;  // `.-x` → broadcast(neg, x)
       return un;
@@ -220,7 +220,7 @@ function parse(tokens, variant) {
     // sits above Comparison and is handled by parseNot.
     if (at(T.BANG) && logicalSym('not') === '!') {
       const opTok = advance();
-      const operand = parseUnary();
+      const operand: any = parseUnary();
       const uloc = AST.loc(opTok.loc.start.line, opTok.loc.start.col,
                            operand.loc.end.line, operand.loc.end.col);
       const callee = AST.Identifier('lnot', opTok.loc);
@@ -236,8 +236,8 @@ function parse(tokens, variant) {
   // back into parseExponential. Binds tighter than unary `-` (so
   // `-x ^ 2` parses as `-(x ^ 2)`). Lowers to `pow(base, exponent)`.
   // FlatPPL/FlatPPJ accept `^`; FlatPPY does not (use `pow()`).
-  function parseExponential() {
-    const base = parsePostfix();
+  function parseExponential(): any {
+    const base: any = parsePostfix();
     if (!at(T.CARET)) return base;
     const caretTok = peek();
     if (!v.exponentOp) {
@@ -252,7 +252,7 @@ function parse(tokens, variant) {
       return base;
     }
     advance();  // ^
-    const exponent = parseUnary();
+    const exponent: any = parseUnary();
     const eloc = AST.loc(base.loc.start.line, base.loc.start.col,
                          exponent.loc.end.line, exponent.loc.end.col);
     const callee = AST.Identifier('pow', caretTok.loc);
@@ -261,8 +261,8 @@ function parse(tokens, variant) {
       : AST.CallExpr(callee, [base, exponent], eloc);
   }
 
-  function parsePostfix() {
-    let expr = parsePrimary();
+  function parsePostfix(): any {
+    let expr: any = parsePrimary();
 
     while (true) {
       if (at(T.LPAREN)) {
@@ -317,7 +317,7 @@ function parse(tokens, variant) {
     return expr;
   }
 
-  function parsePrimary() {
+  function parsePrimary(): any {
     const tok = peek();
 
     // Number
@@ -369,18 +369,18 @@ function parse(tokens, variant) {
     // Parenthesized expression or tuple literal: (expr) | (expr, expr [, expr...])
     if (at(T.LPAREN)) {
       const lparen = advance(); // (
-      const first = parseExpr();
+      const first: any = parseExpr();
       // Tuple? Requires at least one comma.
       if (at(T.COMMA)) {
-        const elements = [first];
+        const elements: any[] = [first];
         while (at(T.COMMA)) {
           advance();
           if (at(T.RPAREN)) break; // trailing comma
           elements.push(parseExpr());
         }
         const rparen = expect(T.RPAREN);
-        const endLoc = rparen ? rparen.loc : (elements[elements.length - 1] || first).loc;
-        const tupleLoc = AST.loc(lparen.loc.start.line, lparen.loc.start.col, endLoc.end.line, endLoc.end.col);
+        const endLoc: any = rparen ? rparen.loc : (elements[elements.length - 1] || first).loc;
+        const tupleLoc: any = AST.loc(lparen.loc.start.line, lparen.loc.start.col, endLoc.end.line, endLoc.end.col);
         if (elements.length < 2) {
           diagnostics.push({
             severity: 'error',
@@ -560,7 +560,7 @@ function parse(tokens, variant) {
     // round-tripping to FlatPPL would surprise readers) are rejected
     // with a clear diagnostic. Bare `_` is always allowed (discard
     // pattern; lowers to a private anon name).
-    function checkReservedName(nameTok) {
+    function checkReservedName(nameTok: any) {
       const isHole = nameTok.type === T.HOLE;
       if (isHole) return;  // `_` is always OK
       if (v.reservedAtBinding && v.reservedAtBinding.has(nameTok.value)) {

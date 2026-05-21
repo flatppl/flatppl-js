@@ -61,7 +61,7 @@
 
 const samplerLib = require('./sampler.ts');
 
-function walk(state, ir, env, opts) {
+function walk(state: any, ir: any, env: any, opts: any) {
   opts = opts || {};
   const ctx = {
     resolveRef: opts.resolveMeasureRef || null,
@@ -70,7 +70,7 @@ function walk(state, ir, env, opts) {
   return walkInner(state, ir, env, ctx);
 }
 
-function walkInner(state, ir, env, ctx) {
+function walkInner(state: any, ir: any, env: any, ctx: any): any {
   // Self-ref to another measure binding. The orchestrator passes a
   // resolver so we can dereference without baking the binding map
   // into this module.
@@ -105,7 +105,7 @@ function walkInner(state, ir, env, ctx) {
   // Dispatch through MEASURE_OP_WALKERS. Adding a new measure-algebra
   // walker (pushfwd, truncate, …) is one entry here plus the handler
   // function — no edits to walkInner itself.
-  const handler = MEASURE_OP_WALKERS[op];
+  const handler: any = (MEASURE_OP_WALKERS as any)[op];
   if (handler) return handler(state, ir, env, ctx);
   throw new Error(
     `traceeval: op '${op}' is not a measure expression we can ` +
@@ -114,7 +114,7 @@ function walkInner(state, ir, env, ctx) {
   );
 }
 
-function walkLeaf(state, ir, env, ctx) {
+function walkLeaf(state: any, ir: any, env: any, ctx: any) {
   // Pre-fill env with any value-position refs in the kwargs that
   // aren't already known. The leaf's distribution params (`mu = ref a`,
   // `sigma = ref b`, …) may reference bindings the caller hasn't
@@ -130,14 +130,14 @@ function walkLeaf(state, ir, env, ctx) {
   return { value, state: prng.getState() };
 }
 
-function walkJoint(state, ir, env, ctx) {
+function walkJoint(state: any, ir: any, env: any, ctx: any) {
   // Two surface forms:
   //   * kwarg-joint / record: ir.fields = [{ name, value }, ...].
   //     Output value is a record keyed by field name.
   //   * positional joint:    ir.args   = [M1, M2, ...]. Output value
   //     is an array of per-component samples.
   if (Array.isArray(ir.fields)) {
-    const out = {};
+    const out: Record<string, any> = {};
     let st = state;
     for (let i = 0; i < ir.fields.length; i++) {
       const f = ir.fields[i];
@@ -161,7 +161,7 @@ function walkJoint(state, ir, env, ctx) {
   throw new Error('traceeval: joint with neither fields nor args');
 }
 
-function walkIid(state, ir, env, ctx) {
+function walkIid(state: any, ir: any, env: any, ctx: any) {
   // iid(M, n): n iid draws of measure M sharing params. Inner env is
   // shared — params do NOT change across the n inner draws (that's
   // what makes it 'iid' vs a vectorised call with per-index params).
@@ -187,7 +187,7 @@ function walkIid(state, ir, env, ctx) {
 
 // weighted / logweighted: sampling is a pure pass-through. The weight
 // only affects density, which lives in density.js.
-function walkWeightedPassThrough(state, ir, env, ctx) {
+function walkWeightedPassThrough(state: any, ir: any, env: any, ctx: any): any {
   const args = ir.args || [];
   if (args.length !== 2) {
     throw new Error(`traceeval: weighted/logweighted expected 2 args, got ${args.length}`);
@@ -199,7 +199,7 @@ function walkWeightedPassThrough(state, ir, env, ctx) {
 // `lawof(draw(M)) ≡ M` (and the dual). Either may appear surfaced in
 // inline forms the orchestrator hasn't yet canonicalised; we unwrap
 // here so callers don't need to do it upstream.
-function walkUnwrap(state, ir, env, ctx) {
+function walkUnwrap(state: any, ir: any, env: any, ctx: any): any {
   const args = ir.args || [];
   if (args.length !== 1) {
     throw new Error(`traceeval: ${ir.op} expected 1 arg, got ${args.length}`);
@@ -232,7 +232,7 @@ const MEASURE_OP_WALKERS = {
  * Returns the (possibly advanced) state. Idempotent when env already
  * has every referenced name.
  */
-function fillEnvFromRefs(state, ir, env, ctx) {
+function fillEnvFromRefs(state: any, ir: any, env: any, ctx: any) {
   if (!ctx || !ctx.resolveValueRef) return state;
   const refs = new Set<string>();
   collectValueRefs(ir, refs);
@@ -246,7 +246,7 @@ function fillEnvFromRefs(state, ir, env, ctx) {
   return state;
 }
 
-function collectValueRefs(ir, out) {
+function collectValueRefs(ir: any, out: Set<string>) {
   if (ir == null || typeof ir !== 'object') return;
   if (ir.kind === 'ref' && ir.ns === 'self') { out.add(ir.name); return; }
   if (Array.isArray(ir.args)) for (const a of ir.args) collectValueRefs(a, out);
