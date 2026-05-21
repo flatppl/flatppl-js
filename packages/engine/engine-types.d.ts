@@ -130,13 +130,13 @@ export type IRNode = IRLit | IRConst | IRRef | IRHole | IRCall;
 export type DerivationKind =
   | 'alias'
   | 'array'
+  | 'tuple'
+  | 'record'
   | 'sample'
   | 'evaluate'
   | 'weighted'
-  | 'logweighted'
   | 'normalize'
   | 'superpose'
-  | 'joint'
   | 'iid'
   | 'jointchain'
   | 'truncate'
@@ -144,6 +144,7 @@ export type DerivationKind =
   | 'bayesupdate'
   | 'logdensityof'
   | 'totalmass'
+  | 'broadcast_logdensity'
   | 'select'
   | 'kernelbroadcast'
   | 'mvnormal';
