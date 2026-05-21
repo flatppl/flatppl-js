@@ -6,15 +6,6 @@
   "//":
     "lint-only step run via `npm run typecheck`.",
 
-  "// strict-overrides":
-    "noImplicitAny stays off: viewer is heavy on dynamic browser-host",
-  "// strict-overrides.2":
-    "globals (echarts, cytoscape, vscode webview API) typed `any` in",
-  "// strict-overrides.3":
-    "ambient declarations. Per-call tightening is a future ratchet,",
-  "// strict-overrides.4":
-    "best pursued after engine-types.d.ts adoption in the engine.",
-
   "compilerOptions": {
     "target": "es2020",
     "module": "es2020",
@@ -24,7 +15,6 @@
     "noEmit": true,
 
     "strict": true,
-    "noImplicitAny": false,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
