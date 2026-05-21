@@ -116,19 +116,49 @@ for (const name of SHARED_ICONS) {
 }
 
 // ---------------------------------------------------------------------
-// 3. Copy the page entry-point and app sources from src/ to dist/.
+// 3. Build the page entry-point and app sources from src/ into dist/.
+//
+// The page-shell <script> tags reference plain .js filenames (e.g.
+// `<script src="app.js">`). Source modules live as .ts under src/ now
+// (post-TypeScript migration); esbuild.transform strips the types and
+// the resulting JS lands at dist/<name>.js so the HTML doesn't change.
+// Non-.ts assets (index.html, style.css, …) are copied verbatim.
 
 // Files in src/ that are esbuild entry points (bundled into
 // dist/vendor/...) rather than served as-is. Skip them in the
-// flat copy to keep dist/ tidy and avoid serving ES-module
-// source the page would never actually load.
-const SRC_BUNDLE_ENTRIES = new Set(['codemirror-bundle-entry.js']);
+// flat copy / transpile loop to keep dist/ tidy and avoid serving
+// ES-module source the page would never actually load.
+const SRC_BUNDLE_ENTRIES = new Set([
+  'codemirror-bundle-entry.js',
+  'codemirror-bundle-entry.ts',
+]);
 
 const SRC_FILES = await readdir(join(here, 'src'));
 for (const name of SRC_FILES) {
   if (SRC_BUNDLE_ENTRIES.has(name)) continue;
-  await copyFile(join(here, 'src', name), join(distDir, name));
-  console.log(`  copied src/${name} -> dist/${name}`);
+  // Ambient declaration files have no runtime output — they're for tsc
+  // only. Skip them so dist/ doesn't get a meaningless `.d.js` sibling.
+  if (name.endsWith('.d.ts')) continue;
+  if (name.endsWith('.ts')) {
+    // Per-file transpile: each script in src/ is loaded by the page as
+    // a plain <script src="...">, NOT as an ES module — so the build
+    // output must keep file boundaries (one .ts → one .js) rather than
+    // bundling cross-file imports. The IIFEs inside each file install
+    // their exports onto window.FlatPPL* globals; that contract stays
+    // intact because esbuild.transform only strips the types.
+    const src = await readFile(join(here, 'src', name), 'utf8');
+    const result = await esbuild.transform(src, {
+      loader: 'ts',
+      target: 'es2020',
+      sourcefile: name,
+    });
+    const outName = name.slice(0, -3) + '.js';
+    await writeFile(join(distDir, outName), result.code);
+    console.log(`  transpiled src/${name} -> dist/${outName}`);
+  } else {
+    await copyFile(join(here, 'src', name), join(distDir, name));
+    console.log(`  copied src/${name} -> dist/${name}`);
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -195,7 +225,7 @@ const samplerWorkerBuildOpts = {
 // it — the flag flips at runtime, and a static-host deploy can't
 // know in advance which deploys want the playground.
 const codemirrorBuildOpts = {
-  entryPoints: [join(here, 'src', 'codemirror-bundle-entry.js')],
+  entryPoints: [join(here, 'src', 'codemirror-bundle-entry.ts')],
   outfile: join(vendorDir, 'codemirror.min.js'),
   bundle: true,
   minify: true,

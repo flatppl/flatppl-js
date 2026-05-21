@@ -22,7 +22,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   var STORAGE_KEY = 'flatppl-web-layout-v1';
 
   // Sane defaults — match the original step-1.2 grid.
@@ -40,10 +40,20 @@
 
   var HANDLE_PX = 5;
 
-  function loadState() {
+  // Mutable layout state. Object.freeze on DEFAULTS would otherwise
+  // make `Object.assign({}, DEFAULTS)` infer as Readonly<…>, breaking
+  // the live drag-handle writes onto state.* below.
+  interface LayoutState {
+    filesWidth: number;
+    sourceFrac: number;
+    viewerFrac: number;
+    collapsed: boolean;
+  }
+
+  function loadState(): LayoutState {
     try {
       var raw = globalScope.localStorage && globalScope.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return Object.assign({}, DEFAULTS);
+      if (!raw) return Object.assign({}, DEFAULTS) as LayoutState;
       var parsed = JSON.parse(raw);
       return {
         filesWidth: clamp(parsed.filesWidth, MIN_FILES_WIDTH, MAX_FILES_WIDTH, DEFAULTS.filesWidth),
@@ -52,7 +62,7 @@
         collapsed:  parsed.collapsed === true,
       };
     } catch (_) {
-      return Object.assign({}, DEFAULTS);
+      return Object.assign({}, DEFAULTS) as LayoutState;
     }
   }
 

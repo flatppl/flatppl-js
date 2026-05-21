@@ -25,7 +25,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   // URL → fetched text. Conservative cache: never expires within a
   // session (the user reloads the page if they edit a file on disk).
   // The browser's HTTP cache backs this for cross-page reuse.

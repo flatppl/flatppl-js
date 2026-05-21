@@ -20,7 +20,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   // Token-class mapping. Falls through to 'tok-ident' for unknown
   // identifiers (user names that don't appear in any builtins
   // catalogue and aren't bindings — typically nothing, since every

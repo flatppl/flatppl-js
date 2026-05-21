@@ -27,7 +27,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   // Default manifest URL. Lives at the gallery's deploy root.
   // Override at boot if a host wants a different filename
   // (e.g. for a multi-gallery deploy that selects between
