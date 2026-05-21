@@ -220,7 +220,7 @@ function buildSampleChain(targetName: string, bindings: any) {
     try {
       rhsIR = lowerExpr(binding.effectiveValue || binding.node.value);
     } catch (e) {
-      unsupported = { reason: `cannot lower '${name}': ${e.message}` };
+      unsupported = { reason: `cannot lower '${name}': ${(e as any).message}` };
       return;
     }
 
