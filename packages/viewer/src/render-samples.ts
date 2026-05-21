@@ -5,6 +5,7 @@
 // for a scalar measure; renderSamplesAndDensity is the combined
 // "histogram + smoothed density" pane.
 
+import type { Ctx } from './types';
 import { measureIsConstant, renderConstantRecord, renderRecordMarginals } from './render-record.js';
 
 import { colorForBinding } from './palette.js';
@@ -12,7 +13,15 @@ import { complexReBadge, esc, formatComplexScalar, formatScalar } from './util.j
 import { sendWorker } from './worker.js';
 import { renderPlotFrame, renderTextValue } from './render-frame.js';
 import { plotZoomOptions, samplesAreConstant } from './util.js';
-export function renderArrayStepPlot(ctx, arr) {
+
+// renderSamplesAndDensity's `plan` parameter is NOT a full Plan union
+// member — internal callers (renderEmpiricalMeasure) pass a small
+// dispatch hint with just `mode` (read to detect 'array') and the
+// pre-resolved toolbarControls. Kept structural so the shape matches
+// what's actually passed at call sites.
+type SamplesPlanHint = { mode?: string; toolbarControls?: any } | null;
+
+export function renderArrayStepPlot(ctx: Ctx, arr: any) {
   var fg = getComputedStyle(document.body).color || '#ccc';
   var n = arr.length;
   // Build piecewise-constant step data: each value v at index i
@@ -126,7 +135,7 @@ export function renderArrayStepPlot(ctx, arr) {
  *                      identity comparison without leaking a
  *                      stale plot across binding navigation.
  */
-export function renderEmpiricalMeasure(ctx, measure, opts) {
+export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   var name = opts.name;
   // Multivariate measure (record / tuple / array shapes): route
   // to the corner / 2D-strip renderer.
@@ -239,7 +248,7 @@ export function renderEmpiricalMeasure(ctx, measure, opts) {
     { mode: opts.mode, toolbarControls: resolvedToolbar });
 }
 
-export function renderSamplesAndDensity(ctx, reply, plan) {
+export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanHint) {
   // Array-data short-circuit: render an index→value step plot.
   // Skips the constant check below — a five-element array of all
   // 1s is a legitimate data sequence, not a scalar to be displayed
