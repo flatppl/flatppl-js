@@ -53,7 +53,7 @@ const EXTENSION_MAP = Object.freeze({ '.flatppl': FLATPPL });
  * Always canonical FlatPPL. Retained for call-site compatibility;
  * `null`/empty path returns null (no path), any other path → FlatPPL.
  */
-function variantForPath(path) {
+function variantForPath(path: string | null | undefined) {
   if (typeof path !== 'string' || path.length === 0) return null;
   return FLATPPL;
 }
@@ -63,7 +63,7 @@ function variantForPath(path) {
  * explicit request for a removed variant is a clear error rather than
  * a silent fallback, so stale callers/tooling surface the migration.
  */
-function resolveVariant(opts) {
+function resolveVariant(opts: any) {
   if (opts && opts.variant != null) {
     const id = typeof opts.variant === 'string'
       ? opts.variant

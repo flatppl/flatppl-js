@@ -168,27 +168,27 @@ const ALL_KNOWN = new Set([
   ...RESERVED_NAMES, ...SPECIAL_BINDINGS,
 ]);
 
-function isKnownName(name) {
+function isKnownName(name: string) {
   return ALL_KNOWN.has(name);
 }
 
-function isConstant(name) {
+function isConstant(name: string) {
   return CONSTANTS.has(name);
 }
 
-function isBoolLiteral(name) {
+function isBoolLiteral(name: string) {
   return BOOL_LITERALS.has(name);
 }
 
-function isSet(name) {
+function isSet(name: string) {
   return SETS.has(name);
 }
 
-function isSpecialOperation(name) {
+function isSpecialOperation(name: string) {
   return SPECIAL_OPERATIONS.has(name);
 }
 
-function isReserved(name) {
+function isReserved(name: string) {
   return RESERVED_NAMES.has(name);
 }
 

@@ -101,7 +101,7 @@ const densityLib = require('./density.ts');
 // shape=[N, k] vector-atom Values are NOT a valid sampleN input
 // (kwarg expressions expect scalar refs); we leave them as-is and
 // any downstream `[i]` indexing will surface a clear error.
-function _unwrapRefArrays(refArrays) {
+function _unwrapRefArrays(refArrays: any) {
   if (!refArrays) return refArrays;
   let needsCopy = false;
   for (const k in refArrays) {
@@ -138,7 +138,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
   let philox: any = rngLib.stateFromKey(opts.seed ?? 0);
   let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
 
-  function handle(msg) {
+  function handle(msg: any) {
     const id = msg.id;
     // Normalise refArrays at the worker boundary: shape=[N] Values
     // unwrap to bare Float64Arrays so handler hot loops stay simple.
@@ -584,7 +584,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
 // CDF clipping. ±Infinity is allowed for half-open / unbounded sets.
 // Throws on shapes that don't reduce to an interval surface (e.g.
 // integer / boolean sets — those defer to a discrete-aware path).
-function setBoundsFor(setDescr) {
+function setBoundsFor(setDescr: any): [number, number] {
   if (!setDescr || typeof setDescr !== 'object') {
     throw new Error('setBoundsFor: missing set descriptor');
   }
@@ -601,7 +601,7 @@ function setBoundsFor(setDescr) {
 // Helper: collect transferable buffers in a reply. The browser shim
 // uses this to populate postMessage's transferList so large sample
 // arrays move zero-copy across the worker boundary.
-function transferablesOf(reply) {
+function transferablesOf(reply: any) {
   if (!reply) return [];
   if (reply.type === 'samples') {
     const out: ArrayBuffer[] = [];
