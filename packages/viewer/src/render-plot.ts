@@ -144,21 +144,26 @@ export function updatePlotForBinding(ctx: any, bindingName: string | null) {
   // (set by auto-save-as) take precedence over remembered
   // selection so a freshly-coined name lands selected.
   applyRememberedSelections(ctx, plan);
-  if (plan) {
+  // Preset / domain pending-name routing only applies to plans with
+  // matchedPresets / matchedDomains — i.e. 'profile' and 'kernel-sample'.
+  // Use any-cast through the union; tightening per-mode lands when
+  // each renderer's narrows tighten.
+  if (plan && (plan.mode === 'profile' || plan.mode === 'kernel-sample')) {
+    const p: any = plan;
     if (ctx.pendingPresetName != null) {
       var pn = ctx.pendingPresetName;
       ctx.pendingPresetName = null;
-      if (plan.matchedPresets
-          && plan.matchedPresets.some(function(p) { return p.name === pn; })) {
-        plan.presetName = pn;
+      if (p.matchedPresets
+          && p.matchedPresets.some(function(pe: any) { return pe.name === pn; })) {
+        p.presetName = pn;
       }
     }
     if (ctx.pendingDomainName != null) {
       var dn = ctx.pendingDomainName;
       ctx.pendingDomainName = null;
-      if (plan.matchedDomains
-          && plan.matchedDomains.some(function(d) { return d.name === dn; })) {
-        plan.domainName = dn;
+      if (p.matchedDomains
+          && p.matchedDomains.some(function(d: any) { return d.name === dn; })) {
+        p.domainName = dn;
       }
     }
   }
