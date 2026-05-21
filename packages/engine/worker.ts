@@ -113,7 +113,7 @@ function _unwrapRefArrays(refArrays) {
     }
   }
   if (!needsCopy) return refArrays;
-  const out = {};
+  const out: any = {};
   for (const k in refArrays) {
     const v = refArrays[k];
     // Complex shape=[N] refs must stay whole: unwrapping to v.data
@@ -135,8 +135,8 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
   // Session RNG state: used by the legacy `sample` / chain primitives
   // when no explicit seed is passed. The new sampleN path takes a per-
   // call seed and doesn't touch this.
-  let philox = rngLib.stateFromKey(opts.seed ?? 0);
-  let env = { ...(opts.env ?? {}) };
+  let philox: any = rngLib.stateFromKey(opts.seed ?? 0);
+  let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
 
   function handle(msg) {
     const id = msg.id;
@@ -604,7 +604,7 @@ function setBoundsFor(setDescr) {
 function transferablesOf(reply) {
   if (!reply) return [];
   if (reply.type === 'samples') {
-    const out = [];
+    const out: ArrayBuffer[] = [];
     if (reply.samples    instanceof Float64Array) out.push(reply.samples.buffer);
     // logWeights is null for unweighted measures (which is everything
     // until the weighted-ops land). When it becomes a typed array,
@@ -613,7 +613,7 @@ function transferablesOf(reply) {
     return out;
   }
   if (reply.type === 'density') {
-    const out = [];
+    const out: ArrayBuffer[] = [];
     if (reply.xs instanceof Float64Array) out.push(reply.xs.buffer);
     if (reply.ys instanceof Float64Array) out.push(reply.ys.buffer);
     return out;
