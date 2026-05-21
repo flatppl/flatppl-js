@@ -9,6 +9,8 @@
 // cycles. orchestrator.js (and later derivations/profile-plan)
 // re-bind these names from here; the public API is unchanged.
 
+import type { IRNode } from './engine-types';
+
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
 
@@ -102,13 +104,13 @@ function resolveConstant(ir: any, bindings: any, seen: Set<any>): any {
   return null;
 }
 
-function isCallOp(ir: any, op: string, expectedArgCount: number | null) {
+function isCallOp(ir: IRNode | null | undefined, op: string, expectedArgCount: number | null) {
   if (!ir || ir.kind !== 'call' || ir.op !== op || !Array.isArray(ir.args)) return false;
   if (expectedArgCount !== null && ir.args.length !== expectedArgCount) return false;
   return true;
 }
 
-function isSelfRef(ir: any) {
+function isSelfRef(ir: IRNode | null | undefined) {
   return !!ir && ir.kind === 'ref' && ir.ns === 'self';
 }
 
@@ -248,11 +250,11 @@ function valueToPlain(v: any): any {
  * those introduce their own scope and their bodies aren't part of the
  * outer binding's data dependencies for sampling.
  */
-function collectSelfRefs(ir: any) {
-  const seen = new Set();
+function collectSelfRefs(ir: IRNode | null | undefined) {
+  const seen = new Set<string>();
   walk(ir);
   return seen;
-  function walk(node: any) {
+  function walk(node: IRNode | null | undefined) {
     if (!node || typeof node !== 'object') return;
     if (node.kind === 'ref' && node.ns === 'self') seen.add(node.name);
     if (node.args)   for (const a of node.args)            walk(a);
@@ -266,7 +268,7 @@ function collectSelfRefs(ir: any) {
   }
 }
 
-function lowerSafe(ast: any) {
+function lowerSafe(ast: any): IRNode | null {
   try { return lowerExpr(ast); } catch (_) { return null; }
 }
 
