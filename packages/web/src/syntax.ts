@@ -169,7 +169,7 @@
     var totalLines = lineStarts.length;
     if (source.length === 0) totalLines = 1;
 
-    var out = [];
+    var out: string[] = [];
     for (var line = 0; line < totalLines; line++) {
       var lineStart = lineStarts[line];
       // Position of the trailing \n, or source.length for the last line.

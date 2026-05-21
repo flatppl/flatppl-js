@@ -104,8 +104,8 @@
     // the user can grab to redistribute width.
     var handleFS = createHandle('files-source');
     var handleSV = createHandle('source-viewer');
-    sourcePane.parentNode.insertBefore(handleFS, sourcePane);
-    viewerPane.parentNode.insertBefore(handleSV, viewerPane);
+    sourcePane.parentNode!.insertBefore(handleFS, sourcePane);
+    viewerPane.parentNode!.insertBefore(handleSV, viewerPane);
 
     function createHandle(id) {
       var el = document.createElement('div');
@@ -118,13 +118,13 @@
     function applyGrid() {
       var filesPart = state.collapsed ? '0px' : (state.filesWidth + 'px');
       var handleFSPart = state.collapsed ? '0px' : (HANDLE_PX + 'px');
-      app.style.gridTemplateColumns =
+      app!.style.gridTemplateColumns =
         filesPart + ' ' +
         handleFSPart + ' ' +
         state.sourceFrac + 'fr ' +
         HANDLE_PX + 'px ' +
         state.viewerFrac + 'fr';
-      filesPane.style.display = state.collapsed ? 'none' : '';
+      filesPane!.style.display = state.collapsed ? 'none' : '';
       handleFS.style.display  = state.collapsed ? 'none' : '';
       if (toggleButton) {
         toggleButton.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
@@ -144,7 +144,7 @@
 
     function startDrag(which, startX) {
       // Capture starting metrics so the drag is purely additive.
-      var rect = app.getBoundingClientRect();
+      var rect = app!.getBoundingClientRect();
       var totalW = rect.width;
       // Width consumed by file pane + first handle (px-sized).
       var fixedPx = (state.collapsed ? 0 : state.filesWidth + HANDLE_PX);

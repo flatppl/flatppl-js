@@ -48,7 +48,7 @@
    * for forward compatibility.
    */
   function normalize(raw) {
-    var out = {
+    var out: { title: string; entries: any[] } = {
       title:   typeof raw.title === 'string' ? raw.title : 'FlatPPL',
       entries: [],
     };
