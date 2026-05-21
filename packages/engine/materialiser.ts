@@ -185,7 +185,7 @@ function fixedValueToMeasure(v, sampleCount) {
   }
   if (v && typeof v === 'object') {
     if (v.key && Array.isArray(v.key) && v.counter) return null;   // rngstate
-    const fields = {};
+    const fields: any = {};
     let anyOk = false;
     for (const k in v) {
       if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
@@ -359,13 +359,13 @@ function matEvaluate(d, ctx) {
   // shared via reference identity). logTotalmass follows from the
   // resulting logWeights; n_eff is min(parents') as a fast bound.
   const refs = orchestrator.collectSelfRefs(d.ir);
-  const parentNames = [];
+  const parentNames: string[] = [];
   refs.forEach((n) => {
     if (ctx.fixedValues && ctx.fixedValues.has(n)) return;
     parentNames.push(n);
   });
   return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
-    const refArrays = {};
+    const refArrays: any = {};
     for (let i = 0; i < parentNames.length; i++) {
       // Phase 8: uniform Value refArrays internally. Mirrors
       // collectRefArrays. Phase 4b populates `.value` on every
@@ -791,7 +791,7 @@ function matRecord(d, ctx) {
   const fieldNames = Object.keys(d.fields);
   const fieldDeps  = fieldNames.map((k) => d.fields[k]);
   return Promise.all(fieldDeps.map(ctx.getMeasure)).then((subs: any[]) => {
-    const fields = {};
+    const fields: any = {};
     let lTM = 0;
     let nEff = ctx.sampleCount;
     for (let i = 0; i < fieldNames.length; i++) {
@@ -933,7 +933,7 @@ function matBayesupdate(d, ctx) {
   if (!bodyIR) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
-  const valueRefs = [];
+  const valueRefs: string[] = [];
   orchestrator.collectSelfRefs(bodyIR).forEach((n) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     valueRefs.push(n);
@@ -942,7 +942,7 @@ function matBayesupdate(d, ctx) {
     .then((arr) => {
       const parent = arr[0];
       const refMeasures = arr.slice(1);
-      const refArrays = {};
+      const refArrays: any = {};
       for (let i = 0; i < valueRefs.length; i++) {
         const rm = refMeasures[i];
         if (!rm || !rm.samples || !rm.samples.BYTES_PER_ELEMENT) {
@@ -1095,7 +1095,7 @@ function matTruncate(d, ctx) {
           for (let i = 0; i < samples.length; i++) {
             if (Number.isNaN(samples[i])) { anyNaN = true; break; }
           }
-          let logWeights = null;
+          let logWeights: Float64Array | null = null;
           if (anyNaN) {
             logWeights = new Float64Array(samples.length);
             for (let i = 0; i < samples.length; i++) {
@@ -1121,19 +1121,20 @@ function matTruncate(d, ctx) {
     let n_eff = 0;
     if (parent.logWeights) {
       // Accumulate logSumExp of accepted weights for the truncated mass.
-      let acceptedWeights = [];
-      let totalWeights = [];
+      const acceptedWeights: number[] = [];
+      const totalWeights: number[] = [];
+      const outWnn = outW!;
       for (let i = 0; i < parentSamples.length; i++) {
         const x = parentSamples[i];
         totalWeights.push(parent.logWeights[i]);
         if (x >= lo && x <= hi) {
           out[i] = x;
-          outW[i] = parent.logWeights[i];
+          outWnn[i] = parent.logWeights[i];
           acceptedWeights.push(parent.logWeights[i]);
           n_eff++;
         } else {
           out[i] = NaN;
-          outW[i] = -Infinity;
+          outWnn[i] = -Infinity;
         }
       }
       const lseA = acceptedWeights.length
@@ -1156,7 +1157,7 @@ function matTruncate(d, ctx) {
       if (x >= lo && x <= hi) { out[i] = x; n_eff++; }
       else { out[i] = NaN; anyNaN = true; }
     }
-    let logWeights = null;
+    let logWeights: Float64Array | null = null;
     if (anyNaN) {
       logWeights = new Float64Array(parentSamples.length);
       for (let i = 0; i < parentSamples.length; i++) {
@@ -1328,7 +1329,7 @@ function collectRuntimeWeightNodes(node, out, seen) {
 // first consumer; future ensemble-weighted selects reuse it
 // unchanged.
 function resolveRuntimeWeights(measureIR, ctx) {
-  const nodes = [];
+  const nodes: any[] = [];
   collectRuntimeWeightNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return Promise.resolve(measureIR);
   const refNames = Array.from(new Set(nodes.map((n) => n.weightsFrom.ref)));
@@ -1408,8 +1409,8 @@ function matLogdensityof(d, ctx) {
   // MC-weight selector) from their materialised ensembles before
   // density evaluation. No-op for closed-form / weight-free measures.
   return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
-  const valueRefs = [];
-  const fixedRefs = [];
+  const valueRefs: string[] = [];
+  const fixedRefs: any[] = [];
   orchestrator.collectSelfRefs(measureIR).forEach((n) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     // Walker-threaded names: a ref that is neither a binding nor a
@@ -1459,7 +1460,7 @@ function matLogdensityof(d, ctx) {
     Promise.all(valueRefs.map(ctx.getMeasure)),
     innerJointP,
   ]).then(([refMeasures, innerJoint]: [any[], any]) => {
-    const refArrays = {};
+    const refArrays: any = {};
     for (let i = 0; i < valueRefs.length; i++) {
       const rm = refMeasures[i];
       if (!rm || !rm.samples || !rm.samples.BYTES_PER_ELEMENT) {
@@ -1573,7 +1574,7 @@ function matBroadcastLogdensity(d, ctx) {
   // batchable (it then takes the fast points-batched pass below).
   return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
   let batchable = !!measureIR && !isChain;
-  const fixedRefs = [];
+  const fixedRefs: any[] = [];
   if (batchable) {
     for (const n of orchestrator.collectSelfRefs(measureIR)) {
       if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) continue;
@@ -1720,7 +1721,7 @@ function matJointchain(name, d, ctx) {
     // priorVars: ordered [{ name, m }] of every scalar variate so far;
     // byName for auto-splat refArray binding. baseRefName lets a hole
     // param bind to the single base prior (scalar base).
-    const priorVars = [];
+    const priorVars: any[] = [];
     if (M0 && M0.samples) {
       priorVars.push({ name: 's0', m: M0 });
     } else if (M0 && M0.fields) {
@@ -1777,7 +1778,7 @@ function matJointchain(name, d, ctx) {
     // for ≥2; bind each via a synthetic scalar refArray.
     const PRIOR = (j) => '__jc$' + j;
     const bindLeaf = (leafIR, params) => {
-      const refArrays = {};
+      const refArrays: any = {};
       const named = params.filter((p) =>
         priorVars.some((v) => v.name === p));
       const holes = params.filter((p) => named.indexOf(p) === -1);
@@ -1835,7 +1836,7 @@ function matJointchain(name, d, ctx) {
         let p = Promise.resolve(produced);
         for (let li = 0; li < ke.leaves.length; li++) {
           const leaf = ke.leaves[li];
-          p = p.then((acc) => {
+          p = p.then((acc: any[]) => {
             const vn = leaf.name != null ? leaf.name : ('s' + i);
             // Composite kernel-body field: an `iid(D, n)` field (e.g.
             // obs_dist = joint(obs = iid(Normal(a, b), 10))). Reuse
@@ -1859,7 +1860,7 @@ function matJointchain(name, d, ctx) {
               // fixed-binding expr the deterministic evaluator can
               // compute against fixedValues).
               const cIR = leaf.ir.args[1];
-              let reps = null;
+              let reps: number | null = null;
               if (cIR && cIR.kind === 'lit' && typeof cIR.value === 'number') {
                 reps = cIR.value | 0;
               } else {
@@ -1973,7 +1974,7 @@ function matJointchain(name, d, ctx) {
       const named = !!d.labels || (M0 && M0.fields)
         || outPairs.some((x) => !/^s\d+$/.test(x.name));
       if (named) {
-        const fields = {};
+        const fields: any = {};
         for (let i = 0; i < outPairs.length; i++) {
           const nm = (d.labels && !d.marginalize && d.labels[i] != null)
             ? d.labels[i] : outPairs[i].name;
