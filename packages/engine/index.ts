@@ -40,7 +40,7 @@ const pir = require('./pir.ts');
  *                    nothing else is supplied.
  * Returns { ast, bindings, symbols, diagnostics, variant }.
  */
-function processSource(source, opts) {
+function processSource(source: string, opts: any) {
   const variant = variants.resolveVariant(opts);
   const { tokens, diagnostics: tokenDiags } = tokenize(source, variant);
   const { ast, diagnostics: parseDiags } = parse(tokens, variant);

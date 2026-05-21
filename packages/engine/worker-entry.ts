@@ -69,7 +69,7 @@ if (isBrowserWorker) {
       : eval('require');
     const { parentPort } = nodeRequire('worker_threads');
     if (parentPort) {
-      parentPort.on('message', (msg) => {
+      parentPort.on('message', (msg: any) => {
         const reply = handler.handle(msg);
         if (reply) {
           // Node's parentPort.postMessage takes a transferList in the
