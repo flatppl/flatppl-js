@@ -278,8 +278,8 @@ function canonicalizeImplicitBoundaries(bindings) {
  */
 function bfsImplicitElementofLeavesAst(bodyAst, bindings) {
   const seen = new Set();
-  const leaves = [];
-  const queue = [];
+  const leaves: any[] = [];
+  const queue: any[] = [];
   collectIds(bodyAst, queue);
   while (queue.length > 0) {
     const name = queue.shift();
@@ -606,7 +606,7 @@ function liftInlineSubexpressions(bindings) {
    */
   function inlineBroadcasted(astArg) {
     if (!astArg || astArg.type !== 'CallExpr' || !astArg.callee) return astArg;
-    let bcCall = null;
+    let bcCall: any = null;
     if (astArg.callee.type === 'CallExpr'
         && astArg.callee.callee
         && astArg.callee.callee.type === 'Identifier'
@@ -783,7 +783,7 @@ function liftInlineSubexpressions(bindings) {
   function inlineFchain(astArg) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee) return astArg;
-    let fchainCall = null;
+    let fchainCall: any = null;
     if (astArg.callee.type === 'CallExpr'
         && astArg.callee.callee
         && astArg.callee.callee.type === 'Identifier'
@@ -857,7 +857,7 @@ function liftInlineSubexpressions(bindings) {
     // doesn't admit a static rewrite.
     if (namesExpr.type !== 'ArrayLiteral') return astArg;
     const elems = namesExpr.elements || namesExpr.elems || [];
-    const names = [];
+    const names: any[] = [];
     for (const el of elems) {
       if (!el || el.type !== 'StringLiteral') return astArg;
       names.push(el.value);
@@ -1017,7 +1017,7 @@ function liftInlineSubexpressions(bindings) {
     //     body (substituteIdents reads both shapes).
     //   - anything else (complex boundary expr) → use the surface
     //     name as a fallback; real boundary surgery deferred.
-    const surfaceOrder = [];
+    const surfaceOrder: any[] = [];
     const internalForSurface = {};
     for (let i = 1; i < fnAst.args.length; i++) {
       const a = fnAst.args[i];
@@ -1066,7 +1066,7 @@ function liftInlineSubexpressions(bindings) {
         && callArgs[0].type !== 'KeywordArg'
         && surfaceOrder.length >= 1) {
       const arg0 = callArgs[0];
-      let splatted = null;
+      let splatted: any = null;
       if (arg0.type === 'CallExpr' && arg0.callee
           && arg0.callee.type === 'Identifier'
           && arg0.callee.name === 'record') {
