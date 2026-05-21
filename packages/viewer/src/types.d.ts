@@ -228,8 +228,10 @@ export interface Ctx {
   derivationsState: any;
   measureCache: Map<string, any>;
   histogramCache: Map<string, any>;
-  /** Cached auto-fit ranges, keyed by `${planName}|${kwarg}|D=${domainName}`. */
-  profileRangeCache: Map<string, { lo: number; hi: number }>;
+  /** Cached auto-fit ranges, keyed by `${planName}|${kwarg}|D=${domainName}`.
+   *  `fromAuto: true` indicates the range was computed by resolveSweepRange
+   *  rather than user-set. */
+  profileRangeCache: Map<string, { lo: number; hi: number; fromAuto?: boolean }>;
   /** Memoised plan-selection state per binding name. */
   planMemoryByName: Map<string, any>;
   presetOverrides: Map<string, any>;
