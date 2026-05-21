@@ -564,3 +564,114 @@ m = BinnedPoissonProcess(rates = rates)
 `);
   await assert.rejects(ctx.getMeasure('m'), /rates\[1\] = -1 must be non-negative/);
 });
+
+// =====================================================================
+// Defensive-path / rejection coverage — the validation branches we
+// hadn't reached yet (cataloguing the failure modes is a real
+// requirement for the materialiser surface, beyond just shape
+// invariants on the happy path).
+// =====================================================================
+
+test('Dirichlet: rejects missing alpha argument', async () => {
+  const ctx = makeCtx(`
+m = Dirichlet()
+`);
+  await assert.rejects(ctx.getMeasure('m'), /requires alpha/);
+});
+
+test('Multinomial: rejects missing n/p', async () => {
+  await assert.rejects(makeCtx(`m = Multinomial(p = [0.5, 0.5])\n`).getMeasure('m'),
+                       /requires n and p/);
+  await assert.rejects(makeCtx(`m = Multinomial(n = 5)\n`).getMeasure('m'),
+                       /requires n and p/);
+});
+
+test('Multinomial: rejects scalar p', async () => {
+  const ctx = makeCtx(`
+m = Multinomial(n = 3, p = 0.5)
+`);
+  await assert.rejects(ctx.getMeasure('m'), /p must be a vector/);
+});
+
+test('Multinomial: rejects empty p', async () => {
+  // Bypass the literal-array lift by using a length-via-zeros literal
+  // that lowers to an empty-vector. Both empty + zero-sum trip the
+  // validation; either rejection is fine.
+  const ctx = makeCtx(`
+p = zeros(0)
+m = Multinomial(n = 3, p = p)
+`);
+  await assert.rejects(ctx.getMeasure('m'), /(non-empty|must sum)/);
+});
+
+test('Wishart: rejects missing nu / scale', async () => {
+  await assert.rejects(makeCtx(`m = Wishart(scale = [[1.0, 0.0], [0.0, 1.0]])\n`).getMeasure('m'),
+                       /requires nu and scale/);
+  await assert.rejects(makeCtx(`m = Wishart(nu = 5)\n`).getMeasure('m'),
+                       /requires nu and scale/);
+});
+
+test('Wishart: rejects non-numeric nu', async () => {
+  const ctx = makeCtx(`
+scale = [[1.0, 0.0], [0.0, 1.0]]
+nu = [1.0, 2.0]
+m = Wishart(nu = nu, scale = scale)
+`);
+  await assert.rejects(ctx.getMeasure('m'), /nu must be a number/);
+});
+
+test('InverseWishart: rejects same shape problems', async () => {
+  await assert.rejects(
+    makeCtx(`m = InverseWishart(scale = [[1.0, 0.0], [0.0, 1.0]])\n`).getMeasure('m'),
+    /requires nu and scale/);
+  await assert.rejects(
+    makeCtx(`m = InverseWishart(nu = 1, scale = [[1.0, 0.0], [0.0, 1.0]])\n`).getMeasure('m'),
+    /must be > n - 1/);
+});
+
+test('LKJCholesky: rejects missing arguments', async () => {
+  await assert.rejects(makeCtx(`m = LKJCholesky(eta = 1.0)\n`).getMeasure('m'),
+                       /requires n and eta/);
+  await assert.rejects(makeCtx(`m = LKJCholesky(n = 3)\n`).getMeasure('m'),
+                       /requires n and eta/);
+});
+
+test('LKJCholesky: rejects invalid n / eta', async () => {
+  await assert.rejects(makeCtx(`m = LKJCholesky(n = 0, eta = 1.0)\n`).getMeasure('m'),
+                       /n must be a positive integer/);
+  await assert.rejects(makeCtx(`m = LKJCholesky(n = 2.5, eta = 1.0)\n`).getMeasure('m'),
+                       /n must be a positive integer/);
+  await assert.rejects(makeCtx(`m = LKJCholesky(n = 3, eta = 0.0)\n`).getMeasure('m'),
+                       /eta must be a positive number/);
+  await assert.rejects(makeCtx(`m = LKJCholesky(n = 3, eta = -1.0)\n`).getMeasure('m'),
+                       /eta must be a positive number/);
+});
+
+test('LKJCholesky: n=1 produces the trivial 1×1 identity', async () => {
+  // Exercises the n===1 short-circuit (otherwise an LKJ-of-1 would be
+  // degenerate but the onion procedure still has to no-op cleanly).
+  const ctx = makeCtx(`m = LKJCholesky(n = 1, eta = 1.0)\n`);
+  const m = await ctx.getMeasure('m');
+  assert.deepEqual(m.value.shape, [SAMPLE_COUNT, 1, 1]);
+  for (let i = 0; i < m.samples.length; i++) {
+    assert.equal(m.samples[i], 1, `atom ${i} of 1×1 LKJCholesky must equal 1`);
+  }
+});
+
+test('BinnedPoissonProcess: rejects missing rates', async () => {
+  const ctx = makeCtx(`m = BinnedPoissonProcess()\n`);
+  await assert.rejects(ctx.getMeasure('m'), /requires rates/);
+});
+
+test('BinnedPoissonProcess: rejects scalar rates', async () => {
+  const ctx = makeCtx(`m = BinnedPoissonProcess(rates = 1.0)\n`);
+  await assert.rejects(ctx.getMeasure('m'), /rates must be a vector/);
+});
+
+test('BinnedPoissonProcess: rejects empty rates', async () => {
+  const ctx = makeCtx(`
+rates = zeros(0)
+m = BinnedPoissonProcess(rates = rates)
+`);
+  await assert.rejects(ctx.getMeasure('m'), /rates must be non-empty/);
+});
