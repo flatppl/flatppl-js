@@ -19,6 +19,8 @@
 // SAMPLEABLE_DISTRIBUTIONS) — never on derivations or the
 // orchestrator core, so there is no back-edge.
 
+import type { IRNode } from './engine-types';
+
 const { lowerExpr } = require('./lower.ts');
 const { signatureOf } = require('./signatures.ts');
 const {
@@ -1273,7 +1275,7 @@ function liftInlineSubexpressions(bindings: any) {
  * not 100% sure the evaluator handles, so the orchestrator can short-
  * circuit before involving the worker.
  */
-function isEvaluable(ir: any): boolean {
+function isEvaluable(ir: IRNode | null | undefined): boolean {
   if (!ir) return false;
   switch (ir.kind) {
     case 'lit':         return typeof ir.value === 'number' || typeof ir.value === 'boolean';
