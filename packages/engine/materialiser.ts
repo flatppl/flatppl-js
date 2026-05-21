@@ -59,7 +59,7 @@
 // materialiser stays pure-async and side-effect-free apart from
 // what those callbacks do.
 
-import type { EmpiricalMeasure } from './engine-types';
+import type { DerivationBase, EmpiricalMeasure } from './engine-types';
 
 const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
@@ -326,7 +326,7 @@ function measureFromReply(reply: any, count: any, extras: any) {
 // Per-kind handlers
 // =====================================================================
 
-function matSample(name: any, d: any, ctx: any) {
+function matSample(name: string, d: DerivationBase, ctx: any) {
   return collectRefArrays(d.distIR, ctx.fixedValues, ctx.getMeasure)
     .then((refArrays) => ctx.sendWorker({
       type: 'sampleN',
@@ -348,14 +348,14 @@ function matSample(name: any, d: any, ctx: any) {
     });
 }
 
-function matAlias(d: any, ctx: any) {
+function matAlias(d: DerivationBase, ctx: any) {
   // Alias: same measure record — reference equality is intentional so
   // click-flipping between a variate and its measure is free, and the
   // shared logWeights ref preserves propagateLogWeights's dedupe contract.
   return ctx.getMeasure(d.from);
 }
 
-function matEvaluate(d: any, ctx: any) {
+function matEvaluate(d: DerivationBase, ctx: any) {
   // Deterministic transform of variates. Per-atom: c_i = f(parents_i).
   // logWeights propagate via joint IS (sum independent events, dedupe
   // shared via reference identity). logTotalmass follows from the
@@ -430,7 +430,7 @@ function isFunctionLikeBinding(binding: any) {
   }
 }
 
-function matPushfwd(name: any, d: any, ctx: any) {
+function matPushfwd(name: string, d: DerivationBase, ctx: any) {
   // pushfwd(f, M): the pushforward of M through function f. Per spec
   // §06, samples are { f(x) : x ~ M }. We get M's samples via the
   // recursive getMeasure, then run one batched evaluateN over f's
@@ -501,7 +501,7 @@ function resolveFnBody(binding: any, bindings: any) {
   return { body: binding.ir.body, paramName: params[0] };
 }
 
-function matArray(d: any) {
+function matArray(d: DerivationBase) {
   // Static array literal — values verbatim, no sampling, no worker
   // round-trip. Length equals the array's literal length, NOT the
   // sample count; downstream plot dispatches by mode for this kind.
@@ -513,7 +513,7 @@ function matArray(d: any) {
   }));
 }
 
-function matWeighted(d: any, ctx: any) {
+function matWeighted(d: DerivationBase, ctx: any) {
   // weighted(w, base) / logweighted(lw, base): shift each parent
   // atom's logWeight by log(w_i) (or lw_i directly). totalmass scales
   // by the average weight; the empirical log-total-mass is
@@ -570,7 +570,7 @@ function matWeighted(d: any, ctx: any) {
   });
 }
 
-function matNormalize(d: any, ctx: any) {
+function matNormalize(d: DerivationBase, ctx: any) {
   // normalize(base): shift weights so they sum to 1 (logTotalmass = 0).
   return ctx.getMeasure(d.from).then((parent: any) => {
     const lifted = empirical.materialiseUniform(parent);
@@ -584,7 +584,7 @@ function matNormalize(d: any, ctx: any) {
   });
 }
 
-function matIid(name: any, d: any, ctx: any) {
+function matIid(name: string, d: DerivationBase, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. The worker's sampleN takes an optional repeat=k.
   // Parameters are pinned per atom (refArrays), so iid samples within
@@ -618,7 +618,7 @@ function matIid(name: any, d: any, ctx: any) {
     });
 }
 
-function matKernelBroadcast(name: any, d: any, ctx: any) {
+function matKernelBroadcast(name: string, d: DerivationBase, ctx: any) {
   // broadcast(Dist, c1, c2, …) — array-valued independent-product
   // measure (spec §04). Element j of every atom is drawn from
   // Dist(params_j), where params_j is the j-th element of each
@@ -764,7 +764,7 @@ function matKernelBroadcast(name: any, d: any, ctx: any) {
   });
 }
 
-function matTuple(d: any, ctx: any) {
+function matTuple(d: DerivationBase, ctx: any) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
   // in elems. Top-level logWeights is the join of components'
@@ -784,7 +784,7 @@ function matTuple(d: any, ctx: any) {
   });
 }
 
-function matRecord(d: any, ctx: any) {
+function matRecord(d: DerivationBase, ctx: any) {
   // Multivariate (record / joint): each field's source binding gets
   // materialised; assembled into a record-shaped Measure (SoA — one
   // sub-measure per field). Top-level logWeights is the join across
@@ -809,7 +809,7 @@ function matRecord(d: any, ctx: any) {
   });
 }
 
-function matSuperpose(name: any, d: any, ctx: any) {
+function matSuperpose(name: string, d: DerivationBase, ctx: any) {
   // Superpose: concat parents' samples + logWeights, systematic-
   // resample to ctx.sampleCount. Mass-faithful: result's totalmass
   // equals the sum of parents' totalmasses (logSumExp of their
@@ -852,7 +852,7 @@ function matSuperpose(name: any, d: any, ctx: any) {
   });
 }
 
-function matSelect(name: any, d: any, ctx: any) {
+function matSelect(name: string, d: DerivationBase, ctx: any) {
   // Discrete-selector mixture generation (engine-concepts §11): the
   // SAMPLING half of the shared select core (density is walkSelect).
   // Eval-all-branches-then-gather — draw every branch's full N-atom
@@ -924,7 +924,7 @@ function matSelect(name: any, d: any, ctx: any) {
   });
 }
 
-function matBayesupdate(d: any, ctx: any) {
+function matBayesupdate(d: DerivationBase, ctx: any) {
   // Reweight the prior atoms by per-atom log-likelihood. Per spec:
   //   posterior = bayesupdate(L, prior),  L = likelihoodof(K, obs)
   // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs).
@@ -1037,7 +1037,7 @@ function setBoundsForMat(setDescr: any) {
  * to 1000). Configurable per host: the VS Code extension exposes it
  * as a setting; the web gallery uses the default.
  */
-function matTruncate(d: any, ctx: any) {
+function matTruncate(d: DerivationBase, ctx: any) {
   return ctx.getMeasure(d.from).then((parent: any) => {
     const N = ctx.sampleCount;
     const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
@@ -1177,7 +1177,7 @@ function matTruncate(d: any, ctx: any) {
   });
 }
 
-function matTotalmass(d: any, ctx: any) {
+function matTotalmass(d: DerivationBase, ctx: any) {
   // totalmass(M): per spec §06, scalar mass of a (possibly
   // unnormalized) measure. The orchestrator tracks each measure's
   // logTotalmass through every materialisation step (algebraic
@@ -1199,7 +1199,7 @@ function matTotalmass(d: any, ctx: any) {
   });
 }
 
-function matMvNormal(name: any, d: any, ctx: any) {
+function matMvNormal(name: string, d: DerivationBase, ctx: any) {
   // Phase 6 of the shape-explicit refactor.
   //
   // MvNormal(mu, cov) — per spec §08, samples are n-vectors with
@@ -1376,7 +1376,7 @@ function resolveRuntimeWeights(measureIR: any, ctx: any) {
   });
 }
 
-function matLogdensityof(d: any, ctx: any) {
+function matLogdensityof(d: DerivationBase, ctx: any) {
   // Per spec §sec:posterior: broadcast logdensityof over prior atoms.
   // For each atom i of M, evaluate logp(obs | M_i). Produces a per-i
   // value (a scalar binding) — no logWeights, no totalmass mutation.
@@ -1535,7 +1535,7 @@ function matLogdensityof(d: any, ctx: any) {
   });
 }
 
-function matBroadcastLogdensity(d: any, ctx: any) {
+function matBroadcastLogdensity(d: DerivationBase, ctx: any) {
   // broadcast(logdensityof, M, pts) = [logdensityof(M, p) ∀ p∈pts].
   //
   // FAST PATH (engine-concepts §11/§12; flatppl-js is the EAGER
@@ -1663,7 +1663,7 @@ const KIND_HANDLERS = {
   jointchain:   (name: any, d: any, ctx: any) => matJointchain(name, d, ctx),
 };
 
-function matJointchain(name: any, d: any, ctx: any) {
+function matJointchain(name: string, d: DerivationBase, ctx: any) {
   // First-class jointchain/kchain materialisation (consume/rest
   // consolidation step 2b). Mirrors the spec §06 stochastic-node
   // equivalence WITHOUT the inlineChainOps AST rewrite:
