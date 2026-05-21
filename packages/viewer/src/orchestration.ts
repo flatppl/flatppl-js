@@ -18,7 +18,7 @@ import { updatePlotForBinding } from './render-plot.js';
  * regardless of which one the user clicked first.
  */
 import { enterModuleView, focusNode } from './dag.js';
-export function nameSeed(ctx, name) {
+export function nameSeed(ctx: any, name: any) {
   var h = 2166136261;
   for (var i = 0; i < name.length; i++) {
     h = h ^ name.charCodeAt(i);
@@ -27,7 +27,7 @@ export function nameSeed(ctx, name) {
   return (h ^ ctx.rootSeed) >>> 0;
 }
 
-export function applySourceUpdate(ctx, msg) {
+export function applySourceUpdate(ctx: any, msg: any) {
   var sourceChanged = (msg.source !== ctx.currentSource);
   // Track the surface-syntax variant of the in-memory source so
   // (a) processSource picks the right grammar and (b) persist
@@ -90,7 +90,7 @@ export function applySourceUpdate(ctx, msg) {
   }
 }
 
-export function resizeAllEchartsInPlot(ctx) {
+export function resizeAllEchartsInPlot(ctx: any) {
   var root = document.getElementById('plot-content');
   if (!root) return;
   var nodes = root.querySelectorAll('div');
@@ -104,7 +104,7 @@ export function resizeAllEchartsInPlot(ctx) {
   if (rootInst) try { rootInst.resize(); } catch (_) {}
 }
 
-export function resizeAndFitCy(ctx) {
+export function resizeAndFitCy(ctx: any) {
   if (!ctx.cy) return;
   // requestAnimationFrame so the layout pass that triggered the
   // resize has settled before we ask cytoscape for the new size.
