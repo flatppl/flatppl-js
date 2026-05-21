@@ -5,6 +5,7 @@
 import type {
   DerivationsState as EngineDerivationsState,
   EmpiricalMeasure as EngineEmpiricalMeasure,
+  HistogramResult as EngineHistogramResult,
 } from '@flatppl/engine/engine-types';
 
 // Ambient declarations for the viewer's host environment.
@@ -245,7 +246,10 @@ export interface Ctx {
    *  engine's shape is reused so the engine and viewer agree on the
    *  empirical-measure contract — see engine-types.d.ts EmpiricalMeasure. */
   measureCache: Map<string, EngineEmpiricalMeasure>;
-  histogramCache: Map<string, any>;
+  /** Per-binding histogram cache. The viewer keys by name + discrete
+   *  flag; values come from histogram.integerHistogram /
+   *  freedmanDiaconisHistogram. See engine-types HistogramResult. */
+  histogramCache: Map<string, EngineHistogramResult>;
   /** Cached auto-fit ranges, keyed by `${planName}|${kwarg}|D=${domainName}`.
    *  `fromAuto: true` indicates the range was computed by resolveSweepRange
    *  rather than user-set. */

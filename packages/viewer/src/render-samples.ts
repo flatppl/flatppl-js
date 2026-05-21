@@ -192,7 +192,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // rebuildDerivations and configUpdate (sampleCount change)
   // clear it.
   var histKey = name + '|' + (opts.discrete ? 'd' : 'c');
-  var hist = ctx.histogramCache.get(histKey);
+  let hist = ctx.histogramCache.get(histKey);
   if (!hist) {
     // Pass logWeights through so weighted measures (post
     // weighted/bayesupdate/normalize) render their bars
@@ -202,8 +202,9 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     hist = opts.discrete
       ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
       : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
-    ctx.histogramCache.set(histKey, hist);
+    ctx.histogramCache.set(histKey, hist!);
   }
+  const histR = hist!;
   var staleGuard = opts.staleGuard || function() { return true; };
   // Scalar histogram path renders once (no internal rerenders), so
   // we resolve the toolbar thunk to a static Element here. The
@@ -228,10 +229,10 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     // quantile-derived grid which can extend past the bars
     // (and into impossible regions, e.g. x<0 for Exponential).
     var range;
-    if (hist.binEdges && hist.binEdges.length > 1) {
-      range = [hist.binEdges[0], hist.binEdges[hist.binEdges.length - 1]];
-    } else if (hist.support) {
-      range = [hist.support[0], hist.support[1]];
+    if (histR.binEdges && histR.binEdges.length > 1) {
+      range = [histR.binEdges[0], histR.binEdges[histR.binEdges.length - 1]];
+    } else if (histR.support) {
+      range = [histR.support[0], histR.support[1]];
     }
     const densOpts: { gridPoints: number; range?: number[] } = { gridPoints: 256 };
     if (range) densOpts.range = range;
