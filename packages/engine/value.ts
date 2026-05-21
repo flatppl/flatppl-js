@@ -172,7 +172,7 @@ function numel(shape) {
 // level; throws on ragged structure. Empty array → shape=[0]; nested
 // empties (e.g. [[]]) → shape=[1, 0].
 function inferShapeFromNested(arr) {
-  const shape = [];
+  const shape: number[] = [];
   let cur = arr;
   while (Array.isArray(cur)) {
     shape.push(cur.length);

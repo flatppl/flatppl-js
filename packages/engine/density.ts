@@ -800,7 +800,7 @@ function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   }
   // Per-branch log-weights (constant in the observation point; may
   // depend on params/per-atom refs). null ⇒ raw superpose (all 0).
-  let lwArr = null;
+  let lwArr: Float64Array[] | null = null;
   if (ir.logweights != null) {
     const lw = ir.logweights;
     if (!Array.isArray(lw) || lw.length !== K) {

@@ -61,7 +61,7 @@ function signatureOf(name, bindings) {
   const sources     = ir.paramSources|| [];
   const inputTypes  = (t && t.inputs)|| [];
 
-  const inputs = [];
+  const inputs: any[] = [];
   for (let i = 0; i < params.length; i++) {
     // typeinfer's inferReification stores boundary types via
     // expr.kwargs lookup, but the lowered functionof IR doesn't carry
@@ -186,7 +186,7 @@ function signatureOfLikelihood(b, bindings) {
 //                 input — UI may need to drill in for record sources)
 function distributeAxes(signature) {
   if (!signature || !Array.isArray(signature.inputs)) return [];
-  const out = [];
+  const out: any[] = [];
   for (const input of signature.inputs) {
     walkType(input.type || null, [], (path, leafType) => {
       const label = formatAxisLabel(input.kwargName, path);
@@ -311,7 +311,7 @@ function formatAxisLabel(kwargName, path) {
  */
 function enumerateOutputLeaves(outputType) {
   if (!outputType) return [];
-  const out = [];
+  const out: any[] = [];
   walkType(outputType, [], (path, leafType) => {
     out.push({
       key: formatAxisLabel('', path) || '<scalar>',
