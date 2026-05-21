@@ -135,7 +135,7 @@ export function resolveSweepRange(ctx: Ctx, axis: any) {
   var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
     axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
   if (descriptor && descriptor.kind === 'empirical') {
-    return getMeasure(ctx, descriptor.name).then(function(m) {
+    return getMeasure(ctx, descriptor.name).then(function(m: any) {
       if (m && m.samples && m.samples.length > 0) {
         var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
         if (range && range[0] < range[1]) return range;
@@ -154,7 +154,7 @@ export function applyRememberedSelections(ctx: Ctx, plan: any) {
   if (!plan) return;
   var mem = ctx.planMemoryByName.get(plan.name);
   if (!mem) return;
-  var axisKwargs = new Set();
+  var axisKwargs = new Set<any>();
   if (plan.axes) {
     for (var i = 0; i < plan.axes.length; i++) {
       if (plan.axes[i].kwargName) axisKwargs.add(plan.axes[i].kwargName);
@@ -162,24 +162,24 @@ export function applyRememberedSelections(ctx: Ctx, plan: any) {
   }
   if (mem.sweepKey
       && plan.axes
-      && plan.axes.some(function(a) { return a.key === mem.sweepKey; })) {
+      && plan.axes.some(function(a: any) { return a.key === mem.sweepKey; })) {
     plan.sweepKey = mem.sweepKey;
   }
   if (mem.outputKey
       && plan.outputs
-      && plan.outputs.some(function(o) { return o.key === mem.outputKey; })) {
+      && plan.outputs.some(function(o: any) { return o.key === mem.outputKey; })) {
     plan.outputKey = mem.outputKey;
   }
   plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
   plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
   if (mem.presetName != null
       && plan.matchedPresets
-      && plan.matchedPresets.some(function(p) { return p.name === mem.presetName; })) {
+      && plan.matchedPresets.some(function(p: any) { return p.name === mem.presetName; })) {
     plan.presetName = mem.presetName;
   }
   if (mem.domainName != null
       && plan.matchedDomains
-      && plan.matchedDomains.some(function(d) { return d.name === mem.domainName; })) {
+      && plan.matchedDomains.some(function(d: any) { return d.name === mem.domainName; })) {
     plan.domainName = mem.domainName;
   }
 }
@@ -197,7 +197,7 @@ export function rememberPlanSelections(ctx: Ctx, plan: any) {
 }
 
 export function computeAutoValues(ctx: Ctx, plan: any) {
-  var out = {};
+  var out: Record<string, any> = {};
   var axes = plan.axes || [];
   for (var i = 0; i < axes.length; i++) {
     var ax = axes[i];

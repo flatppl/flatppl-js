@@ -352,7 +352,7 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
       }
       dims.push(d.value);
     }
-    var k = dims.reduce(function(p, n) { return p * n; }, 1);
+    var k = dims.reduce(function(p: any, n: any) { return p * n; }, 1);
     // Leaf-distribution inner: use sampleN's `repeat` so the per-
     // atom refArrays line up — atom i gets refArrays[i], then k
     // independent draws share it. Mirrors getMeasure's iid path.
@@ -361,12 +361,12 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
     // atom index — out-of-bounds for i >= count).
     var SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
     if (inner.kind === 'call' && SAMPLEABLE && SAMPLEABLE.has(inner.op)) {
-      return collectRefArrays(ctx, inner).then(function(refArrays) {
+      return collectRefArrays(ctx, inner).then(function(refArrays: any) {
         return sendWorker(ctx, {
           type: 'sampleN', ir: inner, count: count, repeat: k,
           refArrays: refArrays, seed: seed,
         });
-      }).then(function(reply) {
+      }).then(function(reply: any) {
         return FlatPPLEngine.empirical.arrayMeasure(reply.samples, dims, null);
       });
     }
@@ -380,13 +380,13 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
     });
   }
   if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {
-    var fieldNames = ir.fields.map(function(f) { return f.name; });
-    var fieldIRs = ir.fields.map(function(f) { return f.value; });
-    return Promise.all(fieldIRs.map(function(v, i) {
+    var fieldNames = ir.fields.map(function(f: any) { return f.name; });
+    var fieldIRs = ir.fields.map(function(f: any) { return f.value; });
+    return Promise.all(fieldIRs.map(function(v: any, i: any) {
       return materialiseConcreteMeasure(ctx, v, count,
         seed != null ? (seed ^ (i + 1) * 0x9e3779b1) : null);
-    })).then(function(subs) {
-      var fields = {};
+    })).then(function(subs: any) {
+      var fields: Record<string, any> = {};
       for (var i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
       return FlatPPLEngine.empirical.recordMeasure(fields, null);
     });
@@ -398,12 +398,12 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
   // — same mechanism getMeasure uses for closed-measure
   // sampling. Fixed-phase refs flow through the worker's session
   // env, so collectRefArrays drops them.
-  return collectRefArrays(ctx, ir).then(function(refArrays) {
+  return collectRefArrays(ctx, ir).then(function(refArrays: any) {
     return sendWorker(ctx, {
       type: 'sampleN', ir: ir, count: count, seed: seed,
       refArrays: refArrays,
     });
-  }).then(function(reply) {
+  }).then(function(reply: any) {
     // Phase 8: hand-built Measures populate `.value` for
     // consistency with materialiser-produced ones.
     var data = reply.samples;

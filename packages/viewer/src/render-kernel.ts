@@ -19,10 +19,10 @@ import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
   showPlotMessage(ctx, 'Loading…', { hint: true });
   var planForCall = plan;
-  getMeasure(ctx, plan.name).then(function(measure) {
+  getMeasure(ctx, plan.name).then(function(measure: any) {
     if (ctx.currentPlotPlan !== planForCall) return;
     renderConstantRecord(ctx, measure, plan.name);
-  }).catch(function(err) {
+  }).catch(function(err: any) {
     if (ctx.currentPlotPlan !== planForCall) return;
     showPlotMessage(ctx, 'Failed to load <strong>' + esc(plan.name) + '</strong>: '
       + esc(err && err.message || String(err)));
@@ -34,7 +34,7 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   if (!planAny || planAny.mode !== 'kernel-sample') return;
   const plan: KernelSamplePlan = planAny;
   var sig = plan.signature;
-  var inputByKwarg = {};
+  var inputByKwarg: Record<string, any> = {};
   for (var k = 0; k < sig.inputs.length; k++) {
     inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
   }
@@ -87,7 +87,7 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // deterministic deps and rewrites self.<param> → %local.<param>;
   // substituteLocals replaces %local refs with their concrete env
   // values. Result: a self-contained measure IR with no refs.
-  var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
+  var paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
   // We can do most of the IR work synchronously, but we need
   // the binding-source samples first to fill env entries.
   showPlotMessage(ctx, 'Sampling…', { cancellable: true, hint: true });

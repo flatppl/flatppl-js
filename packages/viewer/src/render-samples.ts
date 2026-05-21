@@ -44,7 +44,7 @@ export function renderArrayStepPlot(ctx: Ctx, arr: any) {
   // measure, so the frame skips the N+ESS readout. (A future
   // refinement could surface "length: n" in the toolbar instead.)
   renderPlotFrame(ctx, {
-    chartCallback: function(chartHost) {
+    chartCallback: function(chartHost: any) {
       ctx.plotEchart = echarts.init(chartHost);
       var zoomOpts = plotZoomOptions(fg);
       ctx.plotEchart.setOption({
@@ -237,7 +237,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     const densOpts: { gridPoints: number; range?: number[] } = { gridPoints: 256 };
     if (range) densOpts.range = range;
     return sendWorker(ctx, { type: 'density', ir: opts.analyticalIR, opts: densOpts })
-      .then(function(densReply) {
+      .then(function(densReply: any) {
         if (!staleGuard()) return;
         renderSamplesAndDensity(ctx, 
           { samples: samples, histogram: hist, density: densReply, measure: measure },
@@ -316,7 +316,7 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
       name: 'samples',
       type: 'custom',
       data: rects,
-      renderItem: function(_params, api) {
+      renderItem: function(_params: any, api: any) {
         var pt = api.value(0); // unused — we use the explicit edges below
         var rec = api.value(2); // also unused; we close over rects instead
         // Use the data point reference rather than pt/rec so this
@@ -382,7 +382,7 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
   renderPlotFrame(ctx, {
     measure: reply.measure,
     toolbarControls: plan && plan.toolbarControls ? plan.toolbarControls : null,
-    chartCallback: function(chartHost) {
+    chartCallback: function(chartHost: any) {
       ctx.plotEchart = echarts.init(chartHost);
       var zoomOpts2 = plotZoomOptions(fg);
       ctx.plotEchart.setOption({
