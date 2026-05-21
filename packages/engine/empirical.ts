@@ -55,7 +55,7 @@
  * @param {Float64Array | number[]} arr
  * @returns {number}
  */
-function logSumExp(arr) {
+function logSumExp(arr: ArrayLike<number>) {
   const n = arr.length;
   if (n === 0) return -Infinity;
   let max = arr[0];
@@ -81,7 +81,7 @@ function logSumExp(arr) {
  * @param {{ samples: Float64Array, logWeights: Float64Array | null }} measure
  * @returns {number}
  */
-function totalLogMass(measure) {
+function totalLogMass(measure: any) {
   if (!measure || !measure.logWeights) return 0;
   return logSumExp(measure.logWeights);
 }
@@ -104,7 +104,7 @@ function totalLogMass(measure) {
  * @param {{ samples: Float64Array, logWeights: Float64Array | null }} measure
  * @returns {number}
  */
-function effectiveSampleSize(measure) {
+function effectiveSampleSize(measure: any) {
   const w = measure && measure.logWeights;
   if (!w) return measure.samples.length;
   const N = w.length;
@@ -130,7 +130,7 @@ function effectiveSampleSize(measure) {
  * @param {{ samples: Float64Array, logWeights: Float64Array | null }} measure
  * @returns {{ samples: Float64Array, logWeights: Float64Array }}
  */
-function materialiseUniform(measure) {
+function materialiseUniform(measure: any) {
   if (measure.logWeights) return measure;
   const N = measure.samples.length;
   const w = new Float64Array(N);
@@ -170,7 +170,7 @@ function materialiseUniform(measure) {
  * @param {Iterable<{logWeights: Float64Array | null}>} parents
  * @returns {Float64Array | null}
  */
-function propagateLogWeights(parents) {
+function propagateLogWeights(parents: Iterable<any>) {
   const seen = new Set();
   const unique: Float64Array[] = [];
   for (const p of parents) {
@@ -215,7 +215,7 @@ function propagateLogWeights(parents) {
  *                                   exactly once
  * @returns {Int32Array} length-n array of source indices in [0, N)
  */
-function systematicResample(logWeights, n, prng) {
+function systematicResample(logWeights: ArrayLike<number>, n: number, prng: () => number) {
   const N = logWeights.length;
   if (N === 0) throw new Error('systematicResample: source measure has no atoms');
   if (n <= 0) throw new Error(`systematicResample: n must be > 0 (got ${n})`);
@@ -262,7 +262,7 @@ function systematicResample(logWeights, n, prng) {
  * @param {() => number} prng        called n times
  * @returns {Int32Array}
  */
-function multinomialResample(logWeights, n, prng) {
+function multinomialResample(logWeights: ArrayLike<number>, n: number, prng: () => number) {
   const N = logWeights.length;
   if (N === 0) throw new Error('multinomialResample: source measure has no atoms');
   if (n <= 0) throw new Error(`multinomialResample: n must be > 0 (got ${n})`);
@@ -325,12 +325,12 @@ function multinomialResample(logWeights, n, prng) {
 // already-materialised sub-measures.
 
 /** Build a record-shaped measure. `fields` is `{name: subMeasure}`. */
-function recordMeasure(fields, logWeights) {
+function recordMeasure(fields: any, logWeights: any) {
   return { shape: 'record', fields, logWeights: logWeights || null };
 }
 
 /** Build a tuple-shaped measure. `elems` is `[subMeasure, ...]`. */
-function tupleMeasure(elems, logWeights) {
+function tupleMeasure(elems: any, logWeights: any) {
   return { shape: 'tuple', elems, logWeights: logWeights || null };
 }
 
@@ -344,11 +344,11 @@ function tupleMeasure(elems, logWeights) {
  * contract see a coherent shape. `.value.data` shares storage with
  * `.samples` — no allocation overhead.
  */
-function arrayMeasure(samples, dims, logWeights) {
+function arrayMeasure(samples: any, dims: any, logWeights: any) {
   const m: any = { shape: 'array', samples, dims, logWeights: logWeights || null };
   if (samples && dims && dims.length > 0
       && samples.BYTES_PER_ELEMENT !== undefined) {
-    const total = dims.reduce(function (p, n) { return p * n; }, 1);
+    const total = dims.reduce(function (p: number, n: number) { return p * n; }, 1);
     const N = total > 0 ? (samples.length / total) : 0;
     m.value = { shape: [N | 0].concat(dims), data: samples };
   }
@@ -356,7 +356,7 @@ function arrayMeasure(samples, dims, logWeights) {
 }
 
 /** Effective shape — back-compat shim. Untagged measures are scalar. */
-function shapeOf(measure) {
+function shapeOf(measure: any) {
   return (measure && measure.shape) || 'scalar';
 }
 
@@ -403,7 +403,7 @@ function shapeOf(measure) {
  *        (already shifted by threshold, all > 0). Need not be sorted.
  * @returns {number} k̂; NaN if fit cannot be computed (degenerate input).
  */
-function gpdShapeZhangStephens(exceedances) {
+function gpdShapeZhangStephens(exceedances: ArrayLike<number>) {
   const n = exceedances.length;
   if (n < 2) return NaN;
   const x = Float64Array.from(exceedances);
@@ -482,7 +482,7 @@ function gpdShapeZhangStephens(exceedances) {
  *        Need not be normalised; absolute scale doesn't affect k̂.
  * @returns {number} k̂; NaN on degenerate input or failed fit.
  */
-function paretoKHat(weights) {
+function paretoKHat(weights: ArrayLike<number>) {
   const N = weights.length;
   if (N < 5) return NaN;
   const M = Math.max(5, Math.min(Math.floor(N / 5), Math.floor(3 * Math.sqrt(N))));
@@ -503,7 +503,7 @@ function paretoKHat(weights) {
  * For N ≥ 10⁴, k★ ≈ 0.7 (the canonical fixed bound).
  * For smaller N, k★ tightens — at N=100, k★ = 0.5.
  */
-function paretoKThreshold(N) {
+function paretoKThreshold(N: number) {
   if (N <= 10) return -Infinity;
   return Math.min(0.7, 1 - 1 / Math.log10(N));
 }
@@ -523,7 +523,7 @@ function paretoKThreshold(N) {
  * @param {number} dof — degrees of freedom (≥ 1).
  * @returns {{ label, ess, ratio, kHat, wmax, dof, N }}
  */
-function importanceSamplingQuality(measure, dof) {
+function importanceSamplingQuality(measure: any, dof: number) {
   const D = Math.max(1, dof | 0);
   const N = measureAtomCount(measure);
   if (N === 0) {
@@ -625,7 +625,7 @@ function importanceSamplingQuality(measure, dof) {
 }
 
 // Internal: walk a measure to find any sub-measure's atom count.
-function measureAtomCount(measure) {
+function measureAtomCount(measure: any): number {
   if (!measure) return 0;
   if (measure.fields) {
     const ks = Object.keys(measure.fields);
@@ -636,7 +636,7 @@ function measureAtomCount(measure) {
   }
   if (measure.samples) {
     if (measure.dims && measure.dims.length > 0) {
-      const stride = measure.dims.reduce((p, n) => p * n, 1);
+      const stride = measure.dims.reduce((p: number, n: number) => p * n, 1);
       return stride > 0 ? measure.samples.length / stride : 0;
     }
     return measure.samples.length;
@@ -681,7 +681,7 @@ function measureAtomCount(measure) {
  * needs proportionally more effective samples to clear the green/
  * yellow bands.
  */
-function estimateDof(measure) {
+function estimateDof(measure: any): number {
   if (!measure) return 1;
   if (measure.fields) {
     let d = 0;
@@ -695,7 +695,7 @@ function estimateDof(measure) {
   }
   if (measure.samples) {
     if (measure.dims && measure.dims.length > 0) {
-      const stride = measure.dims.reduce((p, n) => p * n, 1);
+      const stride = measure.dims.reduce((p: number, n: number) => p * n, 1);
       const N = stride > 0 ? measure.samples.length / stride : 0;
       // Count per-slot variance. A slot with all-equal values across
       // atoms contributes 0 DOF (degenerate / Dirac-like).
@@ -710,7 +710,7 @@ function estimateDof(measure) {
   return 1;
 }
 
-function slotVaries(samples, N, stride, s) {
+function slotVaries(samples: ArrayLike<number>, N: number, stride: number, s: number) {
   if (N < 2) return false;
   const v0 = samples[s];
   for (let i = 1; i < N; i++) {
