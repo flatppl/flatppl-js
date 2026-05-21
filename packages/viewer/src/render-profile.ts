@@ -36,7 +36,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // likelihood bindings.
   var mode = sig.kind === 'function' ? 'function' : 'logdensity';
   // Build paramName ↔ kwargName index for env construction.
-  var inputByKwarg = {};
+  var inputByKwarg: Record<string, any> = {};
   for (var k = 0; k < sig.inputs.length; k++) {
     inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
   }
@@ -60,7 +60,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // overrides) covers — so when the user picks a preset, we
   // don't even fetch the source binding.
   var active = activePresetFor(ctx, plan);
-  var fixedEnv = {};
+  var fixedEnv: Record<string, any> = {};
   const nonSweptBindingSources: Array<{ paramName: string; sourceName: string }> = [];
   for (var a2 = 0; a2 < axes.length; a2++) {
     if (axes[a2].key === plan.sweepKey) continue;
@@ -121,7 +121,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // step) — the plot is flat because the swept axis never reaches
   // the leaf. inlineForProfile inlines `a`'s IR into the body and
   // rewrites self.theta1 → %local.theta1.
-  var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
+  var paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
   ir = FlatPPLEngine.orchestrator.inlineForProfile(
     ir, paramNames, ctx.derivationsState!.bindings, ctx.derivationsState!.derivations);
   var POINT_COUNT = 200;
@@ -158,7 +158,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     var cached = ctx.profileRangeCache.get(cacheKey);
     rangePromise = cached
       ? Promise.resolve([cached.lo, cached.hi])
-      : resolveSweepRange(ctx, sweepAxis).then(function(r) {
+      : resolveSweepRange(ctx, sweepAxis).then(function(r: any) {
           ctx.profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
           return r;
         });
@@ -592,7 +592,7 @@ export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: Profi
   renderPlotFrame(ctx, {
     toolbarControls: buildProfileControls(ctx, plan, range),
     bottomRow:       buildProfileBottomRow(ctx, plan, range),
-    chartCallback: function(chartHost) {
+    chartCallback: function(chartHost: any) {
       ctx.plotEchart = echarts.init(chartHost);
       var zoomOpts = plotZoomOptions(fg);
       ctx.plotEchart.setOption({
@@ -632,7 +632,7 @@ export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: Profi
           borderWidth: 1,
           padding: [3, 6],
           textStyle: { color: fg, fontSize: 11 },
-          formatter: function(params) {
+          formatter: function(params: any) {
             if (!params || !params.length) return '';
             var x = params[0].axisValue;
             return sweepAxis.label + ' = ' + formatScalar(x);
@@ -681,7 +681,7 @@ export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: Profi
       // pinned this axis's value for when they switch the
       // sweep direction to another axis. The under-plot axis
       // name picks up `(default = V)` immediately.
-      ctx.plotEchart.getZr().on('click', function(ev) {
+      ctx.plotEchart.getZr().on('click', function(ev: any) {
         var pt = [ev.offsetX, ev.offsetY];
         if (!ctx.plotEchart.containPixel('grid', pt)) return;
         // xAxisIndex finder takes a scalar pixel and returns a

@@ -18,7 +18,7 @@ import { $, esc } from './util.js';
  * "semantically invalid" message and the DAG's red error border.
  */
 import { cancelAllSampling } from './worker.js';
-export function errorsForBinding(ctx, bindingName) {
+export function errorsForBinding(ctx: any, bindingName: any) {
   if (!bindingName || !ctx.currentState || !ctx.currentState.data
       || !ctx.currentState.data.nodes) return null;
   var nodes = ctx.currentState.data.nodes;
@@ -34,7 +34,7 @@ export function errorsForBinding(ctx, bindingName) {
  * single-chart views need a clean slate so their content fills
  * the pane without inheriting a stale grid.
  */
-export function resetPlotContentStyle(ctx) {
+export function resetPlotContentStyle(ctx: any) {
   var el = $('plot-content');
   el.style.display = '';
   el.style.gridTemplateColumns = '';
@@ -64,7 +64,7 @@ export function showPlotMessage(ctx: any, html: string, options?: { cancellable?
   }
 }
 
-export function makeActionButton(ctx, iconKey, title) {
+export function makeActionButton(ctx: any, iconKey: any, title: any) {
   var b = document.createElement('button');
   b.type = 'button';
   b.title = title;
@@ -87,7 +87,7 @@ export function makeActionButton(ctx, iconKey, title) {
   return b;
 }
 
-export function setPlotEnabled(ctx, enabled) {
+export function setPlotEnabled(ctx: any, enabled: any) {
   ctx.plotEnabled = !!enabled;
   var plot    = $('plot-panel');
   var graph   = $('graph-panel');
@@ -159,7 +159,7 @@ export function setPlotEnabled(ctx, enabled) {
  *                      writes its chart DOM (echarts.init,
  *                      grid layout, etc.) directly into it.
  */
-export function renderPlotFrame(ctx, opts) {
+export function renderPlotFrame(ctx: any, opts: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   var el = $('plot-content');
@@ -232,7 +232,7 @@ export function renderPlotFrame(ctx, opts) {
  * The font-size auto-shrinks for long renderings (record(...) with
  * many fields) so the value still fits within the pane.
  */
-export function renderTextValue(ctx, bindingName, text) {
+export function renderTextValue(ctx: any, bindingName: any, text: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   var el = $('plot-content');
