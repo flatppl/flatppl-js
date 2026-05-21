@@ -16,9 +16,12 @@
   },
   "scripts": {
     "test": "node --test 'test/*.test.js'",
-    "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info 'test/*.test.js'",
+    "test:coverage": "c8 --reporter=lcov --reporter=text-summary --include='*.ts' --exclude='*.d.ts' --exclude='test/**' --reports-dir=coverage node --test 'test/*.test.js'",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "c8": "^10.0.0"
   },
   "engines": {
     "node": ">=18"
