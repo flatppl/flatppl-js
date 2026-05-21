@@ -43,6 +43,8 @@
 // %local refs resolve against this stack; %self refs against the
 // module's binding map.
 
+import type { IRNode } from './engine-types';
+
 const T = require('./types.ts');
 const builtins = require('./builtins.ts');
 
@@ -117,7 +119,7 @@ function inferTypes(loweredModule: any) {
  *                        inside `expr` resolves through this.
  * @returns inferred type of `expr` in that scope
  */
-function inferExprInScope(loweredModule: any, expr: any, paramTypes: any) {
+function inferExprInScope(loweredModule: any, expr: IRNode, paramTypes: any) {
   const ctx = createInferenceContext(loweredModule);
   const scopes = paramTypes ? [paramTypes] : [];
   return ctx.inferExpr(expr, scopes);
