@@ -1,18 +1,25 @@
-// @ts-check
 // @flatppl/viewer — preset + domain override stores (Phase 4d).
 //
 // Persistent ctx.presetOverrides / ctx.domainOverrides maps and the
 // helpers that read/mutate them. Stable across binding navigation;
 // reconciled in rebuildDerivations against current source values.
+//
+// The `plan` parameter on these helpers is intentionally `any`: most
+// touch fields shared only by ProfilePlan / KernelSamplePlan
+// (presetName, matchedPresets, …), and some are called on the full
+// Plan union where TS's narrowing-by-mode would reject those reads.
+// Per-call narrowing happens at the renderer boundary (render-profile,
+// render-kernel) — this file stays cross-mode.
 
+import type { Ctx } from './types';
 import { getMeasure } from './engine-facade.js';
 import { defaultRangeForLeafType, defaultValueForLeafType, filterOverrideToAxes, rangeFromSetDescriptor } from './util.js';
-export function overrideEntryFor(ctx, plan) {
+export function overrideEntryFor(ctx: Ctx, plan: any) {
   if (plan.presetName == null) return plan.autoOverride;
   return ctx.presetOverrides.get(plan.presetName) || null;
 }
 
-export function hasOverrides(ctx, plan) {
+export function hasOverrides(ctx: Ctx, plan: any) {
   var e = overrideEntryFor(ctx, plan);
   if (!e) return false;
   var v = e.values || {};
@@ -22,7 +29,7 @@ export function hasOverrides(ctx, plan) {
   return false;
 }
 
-export function setOverrideFor(ctx, plan, entry) {
+export function setOverrideFor(ctx: Ctx, plan: any, entry: any) {
   if (plan.presetName == null) {
     plan.autoOverride = entry;
     return;
@@ -34,7 +41,7 @@ export function setOverrideFor(ctx, plan, entry) {
   }
 }
 
-export function ensureOverrideFor(ctx, plan) {
+export function ensureOverrideFor(ctx: Ctx, plan: any) {
   var existing = overrideEntryFor(ctx, plan);
   if (existing) {
     existing.values = Object.assign({}, existing.values || {});
@@ -43,7 +50,7 @@ export function ensureOverrideFor(ctx, plan) {
   return { values: {} };
 }
 
-export function activePresetFor(ctx, plan) {
+export function activePresetFor(ctx: Ctx, plan: any) {
   var baseValues = baseValuesFor(ctx, plan);
   var entry = overrideEntryFor(ctx, plan);
   if (!entry) return { values: baseValues };
@@ -52,7 +59,7 @@ export function activePresetFor(ctx, plan) {
   };
 }
 
-export function baseValuesFor(ctx, plan) {
+export function baseValuesFor(ctx: Ctx, plan: any) {
   if (plan.presetName != null && plan.matchedPresets) {
     for (var i = 0; i < plan.matchedPresets.length; i++) {
       if (plan.matchedPresets[i].name === plan.presetName) {
@@ -63,12 +70,12 @@ export function baseValuesFor(ctx, plan) {
   return {};
 }
 
-export function domainOverrideEntryFor(ctx, plan) {
+export function domainOverrideEntryFor(ctx: Ctx, plan: any) {
   if (plan.domainName == null) return plan.domainAutoOverride || null;
   return ctx.domainOverrides.get(plan.domainName) || null;
 }
 
-export function ensureDomainOverrideFor(ctx, plan) {
+export function ensureDomainOverrideFor(ctx: Ctx, plan: any) {
   var existing = domainOverrideEntryFor(ctx, plan);
   if (existing) {
     existing.ranges = Object.assign({}, existing.ranges || {});
@@ -77,7 +84,7 @@ export function ensureDomainOverrideFor(ctx, plan) {
   return { ranges: {} };
 }
 
-export function setDomainOverrideFor(ctx, plan, entry) {
+export function setDomainOverrideFor(ctx: Ctx, plan: any, entry: any) {
   if (plan.domainName == null) {
     plan.domainAutoOverride = entry;
     return;
@@ -89,13 +96,13 @@ export function setDomainOverrideFor(ctx, plan, entry) {
   }
 }
 
-export function hasDomainOverrides(ctx, plan) {
+export function hasDomainOverrides(ctx: Ctx, plan: any) {
   var e = domainOverrideEntryFor(ctx, plan);
   if (!e || !e.ranges) return false;
   return Object.keys(e.ranges).length > 0;
 }
 
-export function baseRangesFor(ctx, plan) {
+export function baseRangesFor(ctx: Ctx, plan: any) {
   if (plan.domainName != null && plan.matchedDomains) {
     for (var i = 0; i < plan.matchedDomains.length; i++) {
       if (plan.matchedDomains[i].name === plan.domainName) {
@@ -106,14 +113,14 @@ export function baseRangesFor(ctx, plan) {
   return {};
 }
 
-export function activeDomainRangesFor(ctx, plan) {
+export function activeDomainRangesFor(ctx: Ctx, plan: any) {
   var base = baseRangesFor(ctx, plan);
   var entry = domainOverrideEntryFor(ctx, plan);
   if (!entry || !entry.ranges) return Object.assign({}, base);
   return Object.assign({}, base, entry.ranges);
 }
 
-export function activeFixedNamesFor(ctx, plan) {
+export function activeFixedNamesFor(ctx: Ctx, plan: any) {
   if (plan.presetName != null && plan.matchedPresets) {
     for (var i = 0; i < plan.matchedPresets.length; i++) {
       if (plan.matchedPresets[i].name === plan.presetName) {
@@ -124,7 +131,7 @@ export function activeFixedNamesFor(ctx, plan) {
   return new Set();
 }
 
-export function resolveSweepRange(ctx, axis) {
+export function resolveSweepRange(ctx: Ctx, axis: any) {
   var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
     axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
   if (descriptor && descriptor.kind === 'empirical') {
@@ -143,7 +150,7 @@ export function resolveSweepRange(ctx, axis) {
   return Promise.resolve(defaultRangeForLeafType(axis.leafType));
 }
 
-export function applyRememberedSelections(ctx, plan) {
+export function applyRememberedSelections(ctx: Ctx, plan: any) {
   if (!plan) return;
   var mem = ctx.planMemoryByName.get(plan.name);
   if (!mem) return;
@@ -177,7 +184,7 @@ export function applyRememberedSelections(ctx, plan) {
   }
 }
 
-export function rememberPlanSelections(ctx, plan) {
+export function rememberPlanSelections(ctx: Ctx, plan: any) {
   if (!plan || !plan.name) return;
   ctx.planMemoryByName.set(plan.name, {
     sweepKey: plan.sweepKey || null,
@@ -189,7 +196,7 @@ export function rememberPlanSelections(ctx, plan) {
   });
 }
 
-export function computeAutoValues(ctx, plan) {
+export function computeAutoValues(ctx: Ctx, plan: any) {
   var out = {};
   var axes = plan.axes || [];
   for (var i = 0; i < axes.length; i++) {
