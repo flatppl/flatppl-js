@@ -72,6 +72,81 @@ export interface VsCodeApi {
 // Imported via JSDoc `@import { Ctx } from './types'` in source modules,
 // or referenced as `import('./types').Ctx`.
 
+// --- Plot Plan discriminated union ---
+//
+// buildPlotPlan() in plot-plan.ts returns one of six concrete plan
+// shapes, each with a literal `mode` tag. Consumers — render-frame /
+// render-plot / render-controls / render-kernel / render-profile /
+// render-samples / persist / overrides — dispatch on mode. The union
+// captures the structural difference (e.g. only 'profile' has
+// sweepKey / outputs); the per-mode interfaces share PlanBase.
+//
+// Most interior fields are still `any` for v1 — they reference engine
+// types (signatures, axes, presets, domains, IR) that don't yet have a
+// shared TS-typed surface. Tightening them is the next per-module
+// follow-up after the Plan typedef itself lands.
+
+export interface PlanBase {
+  name: string;
+}
+
+export interface ProfilePlan extends PlanBase {
+  mode: 'profile';
+  signature: any;
+  axes: any[];
+  sweepKey: string;
+  matchedPresets: any[];
+  presetName: string | null;
+  outputs: any[];
+  outputKey: string | null;
+  autoOverride: any;
+  matchedDomains: any[];
+  domainName: string | null;
+  domainAutoOverride: any;
+  /** Set lazily by buildProfileControls when the user picks a y-cutoff. */
+  yCutoff?: number;
+}
+
+export interface KernelSamplePlan extends PlanBase {
+  mode: 'kernel-sample';
+  signature: any;
+  axes: any[];
+  matchedPresets: any[];
+  presetName: string | null;
+  autoOverride: any;
+  matchedDomains: any[];
+  domainName: string | null;
+  domainAutoOverride: any;
+}
+
+export interface SamplesPlan extends PlanBase {
+  mode: 'samples';
+  discrete: boolean;
+  analyticalIR: any | null;
+}
+
+export interface ArrayPlan extends PlanBase {
+  mode: 'array';
+}
+
+export interface FixedScalarPlan extends PlanBase {
+  mode: 'fixed-scalar';
+  discrete: boolean;
+}
+
+export interface FixedRecordPlan extends PlanBase {
+  mode: 'fixed-record';
+}
+
+/** Discriminated union over the six plan modes buildPlotPlan emits. */
+export type Plan =
+  | ProfilePlan
+  | KernelSamplePlan
+  | SamplesPlan
+  | ArrayPlan
+  | FixedScalarPlan
+  | FixedRecordPlan;
+
 /**
  * Per-mount context object. Every closure-captured state used by the
  * pre-Phase-4 IIFE was moved onto this object in Phase 3; Phase 4 then
@@ -133,7 +208,7 @@ export interface Ctx {
   currentLoweredModule: any;
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
-  currentPlotPlan: any;
+  currentPlotPlan: Plan | null;
   /** Per-record-binding selection map (Phase-4 fix migrated this onto ctx). */
   recordSelection: Map<string, any> | null;
   rootSeed: number;
