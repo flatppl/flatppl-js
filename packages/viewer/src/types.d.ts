@@ -147,6 +147,16 @@ export type Plan =
   | FixedScalarPlan
   | FixedRecordPlan;
 
+/** Per-record-binding selection state set up by renderRecordMarginals. */
+export interface RecordSelection {
+  bindingName: string;
+  mode: 'correlations' | 'marginals';
+  /** Per-axis selection (correlations mode) — list of axis keys. */
+  selected: string[];
+  /** Group-level selection (marginals mode) — list of group keys. */
+  marginalGroups: string[];
+}
+
 /**
  * Per-mount context object. Every closure-captured state used by the
  * pre-Phase-4 IIFE was moved onto this object in Phase 3; Phase 4 then
@@ -209,15 +219,18 @@ export interface Ctx {
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
   currentPlotPlan: Plan | null;
-  /** Per-record-binding selection map (Phase-4 fix migrated this onto ctx). */
-  recordSelection: Map<string, any> | null;
+  /** Per-record-binding selection state (Phase-4 fix migrated this onto ctx). */
+  recordSelection: RecordSelection | null;
   rootSeed: number;
 
   // ---- caches ----
+  /** Output of buildDerivations: bindings, derivations, fixedValues, discrete. */
   derivationsState: any;
   measureCache: Map<string, any>;
   histogramCache: Map<string, any>;
-  profileRangeCache: Map<string, any>;
+  /** Cached auto-fit ranges, keyed by `${planName}|${kwarg}|D=${domainName}`. */
+  profileRangeCache: Map<string, { lo: number; hi: number }>;
+  /** Memoised plan-selection state per binding name. */
   planMemoryByName: Map<string, any>;
   presetOverrides: Map<string, any>;
   domainOverrides: Map<string, any>;
