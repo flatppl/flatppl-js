@@ -23,7 +23,7 @@
  * @param {string} id
  * @returns {HTMLElement}
  */
-export function $(id) {
+export function $(id: string): HTMLElement {
   var el = document.getElementById(id);
   if (!el) throw new Error('viewer: missing #' + id + ' (template/accessor drift?)');
   return el;
@@ -35,11 +35,11 @@ export function $(id) {
 // `FlatPPLEngine.orchestrator` namespaces — same pattern the rest of
 // the viewer uses for the engine bundle). Safe to test in isolation,
 // safe to import from any other viewer module.
-export function esc(s) {
+export function esc(s: any) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-export function truncateExpr(expr) {
+export function truncateExpr(expr: any) {
   if (!expr) return '';
   // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
   var arrMatch = expr.match(/^\\[(.+)\\]$/);
@@ -68,20 +68,20 @@ export function truncateExpr(expr) {
  * the scalar value as text instead. The check is O(n) but n=5000
  * floats is sub-millisecond.
  */
-export function samplesAreConstant(samples) {
+export function samplesAreConstant(samples: any) {
   if (!samples || samples.length === 0) return false;
   var v = samples[0];
   for (var i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
   return true;
 }
 
-export function formatScalar(v) {
+export function formatScalar(v: any) {
   if (!Number.isFinite(v)) return String(v);
   if (Number.isInteger(v)) return String(v);
   return String(parseFloat(v.toPrecision(4)));
 }
 
-export function formatComplexScalar(re, im) {
+export function formatComplexScalar(re: any, im: any) {
   var imv = im === 0 ? 0 : im;            // normalise -0 → 0
   var sign = imv < 0 ? ' - ' : ' + ';
   return formatScalar(re) + sign + formatScalar(Math.abs(imv)) + ' i';
@@ -100,7 +100,7 @@ export function complexReBadge() {
   return b;
 }
 
-export function formatArrayParts(parts, fullLength, maxShown) {
+export function formatArrayParts(parts: any, fullLength: any, maxShown: any) {
   var max = maxShown == null ? 8 : maxShown;
   var n = parts.length;
   if (fullLength == null) fullLength = n;
@@ -113,7 +113,7 @@ export function formatArrayParts(parts, fullLength, maxShown) {
   return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
 }
 
-export function formatArrayWithEllipsis(values, maxShown) {
+export function formatArrayWithEllipsis(values: any, maxShown: any) {
   var parts = new Array(values.length);
   for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
   return formatArrayParts(parts, values.length, maxShown);
@@ -134,7 +134,7 @@ export function formatArrayWithEllipsis(values, maxShown) {
  * gets a placeholder "<op>(…)" so the surface form stays
  * legible without claiming false precision.
  */
-export function formatIRValue(ir) {
+export function formatIRValue(ir: any): any {
   if (!ir) return '?';
   if (ir.kind === 'lit')   return formatScalar(ir.value);
   if (ir.kind === 'const') return ir.name; // pi / e / inf / true / false
@@ -173,7 +173,7 @@ export function formatIRValue(ir) {
   return '?';
 }
 
-export function formatValue(v, opts) {
+export function formatValue(v: any, opts: any) {
   if (typeof v === 'number')  return formatScalar(v);
   if (typeof v === 'boolean') return String(v);
   if (typeof v === 'string')  return JSON.stringify(v);
@@ -212,7 +212,7 @@ export function formatValue(v, opts) {
   return String(v);
 }
 
-export function formatLogTotalmass(logTotalmass) {
+export function formatLogTotalmass(logTotalmass: any) {
   if (!Number.isFinite(logTotalmass)) {
     return logTotalmass === -Infinity ? '0 (zero mass)' : null;
   }
@@ -233,7 +233,7 @@ export function formatLogTotalmass(logTotalmass) {
  * Tooltip text for the quality-readout span. Spells out the
  * diagnostic ingredients so a hover gives the full picture.
  */
-export function qualityTooltip(q) {
+export function qualityTooltip(q: any) {
   var parts = [
     'Importance-sampling quality: ' + q.label,
     '',
@@ -252,7 +252,7 @@ export function qualityTooltip(q) {
   return parts.join('\n');
 }
 
-export function measureAtomCount(measure) {
+export function measureAtomCount(measure: any): any {
   // Record / tuple measures have no top-level .samples; pull
   // length from any sub-measure's samples — all components share
   // the same atom count by construction.
@@ -270,7 +270,7 @@ export function measureAtomCount(measure) {
   // dims=[]) and pass through unchanged.
   if (measure.samples) {
     if (measure.dims && measure.dims.length > 0) {
-      var stride = measure.dims.reduce(function(p, n) { return p * n; }, 1);
+      var stride = measure.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
       return stride > 0 ? measure.samples.length / stride : 0;
     }
     return measure.samples.length;
@@ -278,12 +278,12 @@ export function measureAtomCount(measure) {
   return 0;
 }
 
-export function formatCount(n) {
+export function formatCount(n: any) {
   // Integer-formatted count with thousands separators.
   return Math.round(n).toLocaleString('en-US');
 }
 
-export function formatSampleCount(n) {
+export function formatSampleCount(n: any) {
   if (n > 0 && Math.floor(n) === n) {
     var lg = Math.log10(n);
     if (lg >= 2 && Number.isInteger(lg)) {
@@ -298,7 +298,7 @@ export function formatSampleCount(n) {
   return formatCount(n);
 }
 
-export function hexToRgba(hex, alpha) {
+export function hexToRgba(hex: any, alpha: any) {
   var m = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!m) return hex;
   var n = parseInt(m[1], 16);
@@ -317,7 +317,7 @@ export function hexToRgba(hex, alpha) {
  * so empirical.js stays dep-free of rng.js — visualPanel does
  * the wiring at the call site.
  */
-export function makeMainThreadPrng(seed) {
+export function makeMainThreadPrng(seed: any) {
   var state = FlatPPLEngine.rng.stateFromKey(seed);
   return function() {
     var pair = FlatPPLEngine.rng.nextUniform(state);
@@ -339,7 +339,7 @@ export function makeMainThreadPrng(seed) {
  *
  * Returned fresh each call so the caller can pass to setOption.
  */
-export function plotZoomOptions(fg) {
+export function plotZoomOptions(fg: any) {
   return {
     dataZoom: [
       { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
@@ -400,7 +400,7 @@ export function listScalarAxes(measure: any): Array<{ key: string; label: string
     }
     if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
       // Total inner stride per atom = prod(dims).
-      var k = m.dims.reduce(function(p, n) { return p * n; }, 1);
+      var k = m.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
       var N = m.samples.length / k;
       for (var slot = 0; slot < k; slot++) {
         // Stride-extract slot j across atoms.
@@ -439,9 +439,9 @@ export function listScalarAxes(measure: any): Array<{ key: string; label: string
  * Dirac(value = inline-call), or a non-degenerate sample step).
  * The caller then falls through to the existing dispatch.
  */
-export function resolveMeasureAlias(name, derivations, bindings) {
+export function resolveMeasureAlias(name: any, derivations: any, bindings: any) {
   if (!derivations || !bindings) return null;
-  var seen = new Set();
+  var seen = new Set<any>();
   var cur = name;
   while (cur && !seen.has(cur)) {
     seen.add(cur);
@@ -479,7 +479,7 @@ export function domainBoundsText(kwargOrder: string[], ranges: Record<string, { 
   return parts.length ? parts.join(', ') : '(no range)';
 }
 
-export function isPersistableSetField(v) {
+export function isPersistableSetField(v: any) {
   if (!v) return false;
   if (v.type === 'CallExpr' && v.callee && v.callee.name === 'interval'
       && Array.isArray(v.args) && v.args.length === 2
@@ -493,7 +493,7 @@ export function isPersistableSetField(v) {
 // FlatPPL domain may use, e.g. `cartprod(x = reals, y = posreals)`).
 // Used by isPersistableSetField above. Defined as a module-private
 // const — not exported because no other module reads it.
-const KNOWN_NAMED_SETS = {
+const KNOWN_NAMED_SETS: Record<string, number> = {
   reals: 1, posreals: 1, nonnegreals: 1, unitinterval: 1,
   integers: 1, posintegers: 1, nonnegintegers: 1, booleans: 1,
 };
@@ -506,7 +506,7 @@ export function presetValuesText(values: unknown): string {
   return text;
 }
 
-export function defaultValueForLeafType(leafType) {
+export function defaultValueForLeafType(leafType: any) {
   if (!leafType) return 0;
   if (leafType.kind === 'scalar') {
     if (leafType.prim === 'integer') return 0;
@@ -516,14 +516,14 @@ export function defaultValueForLeafType(leafType) {
   return 0;
 }
 
-export function defaultRangeForLeafType(leafType) {
+export function defaultRangeForLeafType(leafType: any) {
   if (leafType && leafType.kind === 'scalar' && leafType.prim === 'integer') {
     return [-10, 10];
   }
   return [-5, 5];
 }
 
-export function rangeFromSetDescriptor(descriptor) {
+export function rangeFromSetDescriptor(descriptor: any) {
   if (!descriptor) return null;
   switch (descriptor.kind) {
     case 'interval':       return [descriptor.lo, descriptor.hi];
@@ -539,10 +539,10 @@ export function rangeFromSetDescriptor(descriptor) {
   }
 }
 
-export function filterOverrideToAxes(override, axisKwargs, key) {
+export function filterOverrideToAxes(override: any, axisKwargs: any, key: any) {
   if (!override) return null;
   var src = override[key] || {};
-  var dst = {};
+  var dst: Record<string, any> = {};
   var kept = false;
   for (var k in src) {
     if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
@@ -556,8 +556,8 @@ export function filterOverrideToAxes(override, axisKwargs, key) {
   return out;
 }
 
-export function bubbleMemberIds(r, allReifications) {
-  var ids = {};
+export function bubbleMemberIds(r: any, allReifications: any) {
+  var ids: Record<string, boolean> = {};
   for (var i = 0; i < r.kernel.length; i++) ids[r.kernel[i]] = true;
   for (var j = 0; j < allReifications.length; j++) {
     var r2 = allReifications[j];
