@@ -18,7 +18,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   // path → source-text. Map preserves insertion order, which the
   // app uses to render the "Unsaved" section in the order entries
   // were created.
@@ -26,7 +26,7 @@
 
   // Listeners notified when an entry is added / removed / updated.
   // The app subscribes once at boot to re-render the file tree.
-  var listeners = new Set();
+  var listeners = new Set<() => void>();
 
   function emit() {
     listeners.forEach(function (fn) {

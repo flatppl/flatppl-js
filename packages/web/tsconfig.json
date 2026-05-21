@@ -1,0 +1,42 @@
+{
+  "// purpose":
+    "Type-checks the @flatppl/web gallery shell. esbuild stays the build",
+  "// rationale":
+    "pipeline (it strips types per-file in build.mjs); tsc here is a",
+  "//":
+    "lint-only step run via `npm run typecheck`.",
+
+  "// note":
+    "The src/*.ts files are loaded as plain <script> tags (NOT modules)",
+  "// note2":
+    "and share globals via window.FlatPPLWeb*. No ES module graph; each",
+  "// note3":
+    "file is its own IIFE. tsc treats them as scripts (no top-level",
+  "// note4":
+    "imports/exports needed) and uses src/globals.d.ts for the shared",
+  "// note5":
+    "ambient declarations.",
+
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "es2020",
+    "moduleResolution": "bundler",
+    "lib": ["es2020", "dom", "dom.iterable"],
+
+    "noEmit": true,
+
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "useUnknownInCatchVariables": false,
+
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -35,7 +35,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   var BUNDLE_URL = 'vendor/codemirror.min.js';
   var loadPromise = null;
 

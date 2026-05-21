@@ -24,7 +24,7 @@
 
 'use strict';
 
-(function (globalScope) {
+(function (globalScope: any) {
   /** Parse the current location.hash into { model, target }. */
   function parseHash() {
     var raw = (globalScope.location && globalScope.location.hash) || '';
