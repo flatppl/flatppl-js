@@ -268,7 +268,7 @@ function computeSubDAG(bindings, nodeName) {
   }
 
   const visited = new Map();
-  const edges = [];
+  const edges: any[] = [];
 
   function visit(name, useEffective?) {
     if (visited.has(name)) return;
@@ -328,8 +328,8 @@ function computeSubDAG(bindings, nodeName) {
     // Skipped for fn-like bindings (their reification has no scope), and
     // for transitive visits to disintegration results (they appear as
     // plain nodes in someone else's trace).
-    let inlineExprDeps = null;
-    let inlineExprId = null;
+    let inlineExprDeps: any = null;
+    let inlineExprId: string | null = null;
     if ((b.type === 'lawof' || b.type === 'functionof' || b.type === 'kernelof')
         && !isFnLike(bindings, name)
         && (useEffective || !b.disintegrateRole)
@@ -633,7 +633,7 @@ function applyScopeLocalPhases(visited, reifications, bindings) {
  * reification semantics rather than naive ancestor walks.
  */
 function computeReifications(bindings, visited, rootName) {
-  const out = [];
+  const out: any[] = [];
   for (const [name] of visited) {
     if (name.indexOf(':') !== -1) continue; // skip synthetic nodes
     const b = bindings.get(name);
@@ -783,9 +783,9 @@ function computeFullDAG(bindings) {
   // Union sub-DAGs by name / edge-key. A binding visited from two
   // different leaves shouldn't appear twice; nor should an edge.
   const nodesByName = new Map();
-  const edges = [];
+  const edges: any[] = [];
   const edgeKeys = new Set();
-  const reifications = [];
+  const reifications: any[] = [];
   const reifNames = new Set();
 
   for (const root of roots) {
