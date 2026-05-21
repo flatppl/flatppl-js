@@ -44,7 +44,7 @@
 // ir-shared, lift, signatures), so the orchestrator's facade
 // re-bind is a one-way edge.
 
-import type { IRNode } from './engine-types';
+import type { BindingInfo, IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
@@ -73,7 +73,7 @@ const {
  *   discrete:    { [name: string]: boolean },  // resolved-leaf discreteness
  * }}
  */
-function buildDerivations(bindings: any) {
+function buildDerivations(bindings: Map<string, BindingInfo>) {
   // Pre-pass: lift inline subexpressions so every measure-arg position
   // is a bare ref and every value-arg is evaluable. After lifting, the
   // classifier below handles all forms uniformly — there's no special
@@ -279,7 +279,7 @@ function buildDerivations(bindings: any) {
             // Not a sample-shape derivation — fall through to
             // value-binding treatment below.
           }
-          if (isMeasureBinding(dep)) {
+          if (dep && isMeasureBinding(dep)) {
             // Synthetic anon with measure-construction IR but no
             // derivation entry (e.g. dropped during cascade-prune):
             // recurse through the raw IR and hope distribution
@@ -297,8 +297,8 @@ function buildDerivations(bindings: any) {
 
       for (const r of valueRefs) {
         const dep = bindings.get(r);
-        if (dep.phase != null && dep.phase !== 'fixed') { depsReady = false; break; }
-        if (!fixedValues.has(r))                         { depsReady = false; break; }
+        if (dep && dep.phase != null && dep.phase !== 'fixed') { depsReady = false; break; }
+        if (!fixedValues.has(r))                                { depsReady = false; break; }
         env[r] = fixedValues.get(r);
       }
       if (!depsReady) continue;
@@ -509,7 +509,7 @@ function buildDerivations(bindings: any) {
  * NOT a sample. This is what gives variates and their measures the
  * same cached samples.
  */
-function classifyDerivation(binding: any, bindings: any) {
+function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingInfo>) {
   if (!binding || !binding.node || !binding.node.value) return null;
 
   // Read the lowered IR cached by liftInlineSubexpressions. The IR is
@@ -625,7 +625,8 @@ function classifyDerivation(binding: any, bindings: any) {
     // combinators are involved). The lowered IR tells us *which* op
     // we're matching; the AST tells us which operands are measures.
     const ast = binding.node.value;
-    if (rhsIR && rhsIR.kind === 'call' && (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op]) {
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op != null
+        && (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op]) {
       const result = (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op](rhsIR, ast, bindings);
       if (result) return result;
     }
