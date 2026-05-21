@@ -32,7 +32,7 @@ const {
  *   null                           — couldn't resolve; UI falls back
  *                                    to default range for the leaf type
  */
-function resolveAxisBaseSet(source, bindings) {
+function resolveAxisBaseSet(source: any, bindings: any) {
   if (!source) return null;
   // Anonymous placeholder boundaries (`par = _par_`) aren't bound to
   // any elementof — per spec they're equivalent to
@@ -95,7 +95,7 @@ function resolveAxisBaseSet(source, bindings) {
  * Future work (deferred): unify nested record / array preset
  * shapes against record-input signatures.
  */
-function findMatchingPresets(signature, bindings) {
+function findMatchingPresets(signature: any, bindings: any) {
   if (!signature || !bindings || !Array.isArray(signature.inputs)) return [];
   const expected = new Set();
   for (const inp of signature.inputs) {
@@ -114,7 +114,7 @@ function findMatchingPresets(signature, bindings) {
     const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
     if (fields.length !== expected.size) continue;
     let allMatch = true;
-    const values = {};
+    const values: Record<string, any> = {};
     const fixedNames = new Set();
     for (const f of fields) {
       if (!expected.has(f.name)) { allMatch = false; break; }
@@ -181,7 +181,7 @@ function findMatchingPresets(signature, bindings) {
  * Future work (deferred): cartpow for vector inputs; unwrapping
  * fixed(...) wrappers around set fields.
  */
-function findMatchingDomains(signature, bindings) {
+function findMatchingDomains(signature: any, bindings: any) {
   if (!signature || !bindings || !Array.isArray(signature.inputs)) return [];
   const expected = new Set();
   for (const inp of signature.inputs) {
@@ -194,8 +194,8 @@ function findMatchingDomains(signature, bindings) {
     const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
     if (fields.length !== expected.size) continue;
     let allMatch = true;
-    const ranges = {};
-    const setNames = {};
+    const ranges: Record<string, any> = {};
+    const setNames: Record<string, any> = {};
     for (const f of fields) {
       if (!expected.has(f.name)) { allMatch = false; break; }
       // Chase a single ref through lifted __anon bindings so the
@@ -242,7 +242,7 @@ function findMatchingDomains(signature, bindings) {
  * thinnest tails. Used by the profile-plot UI to set an axis range
  * from a binding-source backref's empirical samples.
  */
-function fourSigmaQuantileRange(samples) {
+function fourSigmaQuantileRange(samples: ArrayLike<number>) {
   if (!samples || samples.length === 0) return null;
   if (samples.length === 1) return [samples[0], samples[0]];
   const sorted = Float64Array.from(samples);
@@ -281,13 +281,13 @@ function fourSigmaQuantileRange(samples) {
  * single fixed value — the plot shows a flat line because the swept
  * axis doesn't reach the leaf distributions.
  */
-function inlineForProfile(ir, paramNames, bindings, derivations) {
+function inlineForProfile(ir: any, paramNames: any, bindings: any, derivations: any) {
   if (!ir) return ir;
   const paramSet = new Set(paramNames || []);
   const visiting = new Set();
   return walk(ir);
 
-  function walk(node) {
+  function walk(node: any): any {
     if (node == null || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(walk);
     if (node.kind === 'ref' && node.ns === 'self') {
@@ -320,7 +320,7 @@ function inlineForProfile(ir, paramNames, bindings, derivations) {
           || (!drv && target && target.type === 'call' && target.ir);
         if (isEvaluate && target && target.ir) {
           visiting.add(node.name);
-          const expanded = walk(target.ir);
+          const expanded: any = walk(target.ir);
           visiting.delete(node.name);
           return expanded;
         }
@@ -331,7 +331,7 @@ function inlineForProfile(ir, paramNames, bindings, derivations) {
     // Recurse into structural children: args, fields, kwargs, body.
     const out = { ...node };
     if (Array.isArray(node.args))   out.args   = node.args.map(walk);
-    if (Array.isArray(node.fields)) out.fields = node.fields.map(f => ({ ...f, value: walk(f.value) }));
+    if (Array.isArray(node.fields)) out.fields = node.fields.map((f: any) => ({ ...f, value: walk(f.value) }));
     if (node.kwargs && typeof node.kwargs === 'object') {
       out.kwargs = {};
       for (const k in node.kwargs) out.kwargs[k] = walk(node.kwargs[k]);

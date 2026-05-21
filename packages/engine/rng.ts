@@ -65,7 +65,7 @@
 //
 // Returns [hi, lo] where each is a uint32 (non-negative double).
 
-function mulhilo32(a, b) {
+function mulhilo32(a: number, b: number) {
   const aL = a & 0xFFFF;
   const aH = a >>> 16;
   const bL = b & 0xFFFF;
@@ -124,7 +124,7 @@ const PHILOX_W_32_1 = 0xBB67AE85;
 //   C'[2] = hi0 ⊕ C[3] ⊕ K[1]
 //   C'[3] = lo0
 
-function philox4x32Round(c0, c1, c2, c3, k0, k1) {
+function philox4x32Round(c0: number, c1: number, c2: number, c3: number, k0: number, k1: number) {
   const [hi0, lo0] = mulhilo32(PHILOX_M_4x32_0, c0);
   const [hi1, lo1] = mulhilo32(PHILOX_M_4x32_1, c2);
   return [
@@ -147,7 +147,7 @@ function philox4x32Round(c0, c1, c2, c3, k0, k1) {
 // have known statistical weaknesses; 10 is the de facto cross-library
 // default (cuRAND, PyTorch, TF, NumPy, …).
 
-function philox4x32_10(counter, key) {
+function philox4x32_10(counter: ArrayLike<number>, key: ArrayLike<number>) {
   let c0 = counter[0] >>> 0;
   let c1 = counter[1] >>> 0;
   let c2 = counter[2] >>> 0;
@@ -205,7 +205,7 @@ function philox4x32_10(counter, key) {
 // `bytes` may be any iterable of integers in [0, 255] (Array, Uint8Array,
 // Buffer). Values outside that range are masked.
 
-function seedFromBytes(bytes) {
+function seedFromBytes(bytes: Iterable<number>) {
   let h = 0xcbf29ce484222325n;       // FNV offset basis (64-bit)
   const PRIME = 0x100000001b3n;      // FNV prime (64-bit)
   for (const b of bytes) {
@@ -225,7 +225,7 @@ function seedFromBytes(bytes) {
 // Build a state from an explicit (k0, k1) key. Mostly for tests and
 // for callers that want full control over the cipher key derivation.
 
-function stateFromKey(k0, k1) {
+function stateFromKey(k0: number, k1: number) {
   return {
     key:      [k0 >>> 0, k1 >>> 0],
     counter:  [0, 0, 0, 0],
@@ -238,7 +238,7 @@ function stateFromKey(k0, k1) {
 // is the low word). Pure: returns a new array; the original is left
 // alone so callers' captured states remain valid.
 
-function incrementCounter(counter) {
+function incrementCounter(counter: ArrayLike<number>) {
   const out = [counter[0], counter[1], counter[2], counter[3]];
   for (let i = 0; i < 4; i++) {
     out[i] = (out[i] + 1) >>> 0;
@@ -254,7 +254,7 @@ function incrementCounter(counter) {
 // the cipher with the current counter, advances the counter, and starts
 // reading from the new block.
 
-function nextUint32(state) {
+function nextUint32(state: any) {
   let { key, counter, block, blockIdx } = state;
 
   if (blockIdx >= 4) {
@@ -281,7 +281,7 @@ function nextUint32(state) {
 // plenty; the rare sampler that needs 53 bits can synthesize it from
 // two consecutive uint32s.
 
-function nextUniform(state) {
+function nextUniform(state: any) {
   const [u, s] = nextUint32(state) as [number, any];
   return [u / 0x100000000, s];
 }
@@ -312,7 +312,7 @@ function nextUniform(state) {
 
 const PHILOX_MAGIC = [0x50, 0x58, 0x31, 0x30]; // "PX10"
 
-function bytesFromState(state) {
+function bytesFromState(state: any) {
   const out = new Array(24);
   for (let i = 0; i < 4; i++) out[i] = PHILOX_MAGIC[i];
   writeU32BE(out, 4,  state.key[0]);
@@ -323,7 +323,7 @@ function bytesFromState(state) {
   return out;
 }
 
-function stateFromBytes(bytes) {
+function stateFromBytes(bytes: Iterable<number>) {
   const arr = Array.from(bytes, (b: any) => (b as number) & 0xff);
   if (arr.length < 24) {
     throw new Error(
@@ -346,14 +346,14 @@ function stateFromBytes(bytes) {
   };
 }
 
-function writeU32BE(out, off, v) {
+function writeU32BE(out: number[], off: number, v: number) {
   out[off    ] = (v >>> 24) & 0xff;
   out[off + 1] = (v >>> 16) & 0xff;
   out[off + 2] = (v >>>  8) & 0xff;
   out[off + 3] = (v       ) & 0xff;
 }
 
-function readU32BE(arr, off) {
+function readU32BE(arr: ArrayLike<number>, off: number) {
   return (((arr[off] << 24) | (arr[off + 1] << 16)
         | (arr[off + 2] << 8) |  arr[off + 3]) >>> 0);
 }
