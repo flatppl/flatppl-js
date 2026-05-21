@@ -9,6 +9,8 @@
 // ZERO internal callers in orchestrator (only reached via the public
 // API) — the facade re-bind exists purely for module.exports parity.
 
+import type { IRNode } from './engine-types';
+
 const { quantileSorted } = require('./histogram.ts');
 const {
   resolveConstant,
@@ -281,7 +283,7 @@ function fourSigmaQuantileRange(samples: ArrayLike<number>) {
  * single fixed value — the plot shows a flat line because the swept
  * axis doesn't reach the leaf distributions.
  */
-function inlineForProfile(ir: any, paramNames: any, bindings: any, derivations: any) {
+function inlineForProfile(ir: IRNode | null | undefined, paramNames: any, bindings: any, derivations: any) {
   if (!ir) return ir;
   const paramSet = new Set(paramNames || []);
   const visiting = new Set();
