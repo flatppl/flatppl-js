@@ -4,7 +4,7 @@ const { isKnownName, MEASURE_PRODUCING } = require('./builtins.ts');
 const AST = require('./ast.ts');
 // Lazy require to avoid a circular load (disintegrate requires analyzer).
 let _disintegratePlan: ((...a: any[]) => any) | null = null;
-function disintegratePlan(...args) {
+function disintegratePlan(...args: any[]) {
   if (!_disintegratePlan) _disintegratePlan = require('./disintegrate.ts').disintegratePlan;
   return _disintegratePlan!(...args);
 }
@@ -23,7 +23,7 @@ function disintegratePlan(...args) {
  * @param {Map} bindings - bindings map (for Identifier resolution)
  * @param {Set} [seen] - cycle guard
  */
-function isMeasureExpr(node, bindings, seen?) {
+function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
   if (!node) return false;
   if (!seen) seen = new Set();
   switch (node.type) {
@@ -55,7 +55,7 @@ function isMeasureExpr(node, bindings, seen?) {
 /**
  * Classify a statement by examining the RHS expression.
  */
-function classifyStatement(valueNode) {
+function classifyStatement(valueNode: any) {
   if (!valueNode) return 'call';
 
   if (valueNode.type === 'CallExpr' && valueNode.callee.type === 'Identifier') {
@@ -90,7 +90,7 @@ function classifyStatement(valueNode) {
  * Validate argument structure of special operations.
  * Returns an array of diagnostics.
  */
-function validateSpecialOperation(valueNode) {
+function validateSpecialOperation(valueNode: any) {
   if (!valueNode || valueNode.type !== 'CallExpr') return [];
   if (!valueNode.callee || valueNode.callee.type !== 'Identifier') return [];
 
@@ -199,11 +199,11 @@ function validateSpecialOperation(valueNode) {
  * Skips keyword argument names (the 'name' in KeywordArg is not a reference).
  * Returns { deps: Set<string>, callDeps: Set<string> }.
  */
-function collectDeps(node, definedNames) {
-  const deps = new Set();
-  const callDeps = new Set();
+function collectDeps(node: any, definedNames: Set<string>) {
+  const deps = new Set<string>();
+  const callDeps = new Set<string>();
 
-  function walk(node, isCallee) {
+  function walk(node: any, isCallee: boolean) {
     if (!node) return;
 
     switch (node.type) {
@@ -254,13 +254,13 @@ function collectDeps(node, definedNames) {
  * Placeholders resolve to their inner name. (lawof is unary and has no
  * boundary kwargs.)
  */
-function extractBoundaries(valueNode) {
+function extractBoundaries(valueNode: any) {
   if (!valueNode || valueNode.type !== 'CallExpr') return null;
   const callee = valueNode.callee;
   if (!callee || callee.type !== 'Identifier') return null;
   if (callee.name !== 'functionof' && callee.name !== 'kernelof') return null;
 
-  const boundaries = new Map();
+  const boundaries = new Map<string, string>();
   const args = valueNode.args;
 
   // Skip first arg (the expression to reify), process keyword args
@@ -302,7 +302,7 @@ function extractBoundaries(valueNode) {
  * For 'joint', each field's expression is an arbitrary measure expression
  * (typically a CallExpr like Normal(...) or a measure-algebra construction).
  */
-function extractJointFields(valueNode) {
+function extractJointFields(valueNode: any) {
   if (!valueNode || valueNode.type !== 'CallExpr') return null;
   if (!valueNode.callee || valueNode.callee.type !== 'Identifier') return null;
 
@@ -319,7 +319,7 @@ function extractJointFields(valueNode) {
       return null;
     }
 
-    const fields = new Map();
+    const fields = new Map<string, any>();
     for (const arg of firstArg.args) {
       if (arg.type !== 'KeywordArg') return null; // not statically resolvable
       if (arg.value.type !== 'Identifier') return null; // can't trace back to a node name
@@ -331,7 +331,7 @@ function extractJointFields(valueNode) {
   // ----- Tier 2: joint(name1 = M1, ...) keyword form -----
   if (valueNode.callee.name === 'joint') {
     if (valueNode.args.length === 0) return null;
-    const fields = new Map();
+    const fields = new Map<string, any>();
     for (const arg of valueNode.args) {
       if (arg.type !== 'KeywordArg') return null; // positional joint not statically inspectable here
       fields.set(arg.name, arg.value); // arbitrary measure expression
@@ -346,7 +346,7 @@ function extractJointFields(valueNode) {
   // boundary inputs (see dag.js).
   if (valueNode.callee.name === 'jointchain') {
     if (valueNode.args.length === 0) return null;
-    const fields = new Map();
+    const fields = new Map<string, any>();
     for (const arg of valueNode.args) {
       if (arg.type !== 'KeywordArg') return null;
       fields.set(arg.name, arg.value);
@@ -372,7 +372,7 @@ function extractJointFields(valueNode) {
  * @param {Map} bindingMap - already-built bindings map (for joint lookup)
  * @returns {{ kernelName, priorName, selectorFields, jointName, jointKind, jointFields, selectorLoc } | null}
  */
-function detectDisintegration(stmt, bindingMap) {
+function detectDisintegration(stmt: any, bindingMap: any) {
   if (stmt.type !== 'AssignStatement') return null;
   if (stmt.names.length !== 2) return null;
   if (stmt.value.type !== 'CallExpr') return null;
@@ -425,7 +425,7 @@ function detectDisintegration(stmt, bindingMap) {
  * statement's literal RHS. Used by disintegration to render synthesized
  * kernel/prior expressions naturally.
  */
-function attachEffectiveRhs(binding, effectiveValue, definedNames) {
+function attachEffectiveRhs(binding: any, effectiveValue: any, definedNames: Set<string>) {
   binding.effectiveValue = effectiveValue;
   const { deps, callDeps } = collectDeps(effectiveValue, definedNames);
   // Self-references are never deps for rendering purposes.
@@ -444,7 +444,7 @@ function attachEffectiveRhs(binding, effectiveValue, definedNames) {
  * keeps its own identity (LHS name, source location) but shares the
  * target's effective semantics.
  */
-function attachDelegate(binding, targetName, bindings) {
+function attachDelegate(binding: any, targetName: string, bindings: any) {
   const target = bindings.get(targetName);
   if (!target || !target.node || !target.node.value) return;
   binding.effectiveValue    = target.node.value;
@@ -469,7 +469,7 @@ function attachDelegate(binding, targetName, bindings) {
  *     emits the spec-compliant keyword in the AST; we mirror it on
  *     the binding type so the renderer's tether label matches.
  */
-function kernelTypeForPlan(plan, bindings) {
+function kernelTypeForPlan(plan: any, bindings: any) {
   if (plan.kind === 'delegate') {
     const target = bindings.get(plan.kernel.binding);
     if (target && (target.type === 'functionof' || target.type === 'kernelof')) {
@@ -530,7 +530,7 @@ function kernelTypeForPlan(plan, bindings) {
  * calls). This stays inside the analyzer's existing phase machinery
  * — no separate "alias-chasing" infrastructure.
  */
-function phaseOfDegenerateDraw(drawArg, bindings, phaseOf) {
+function phaseOfDegenerateDraw(drawArg: any, bindings: any, phaseOf: any) {
   if (!drawArg) return null;
   // Inline form: draw(Dirac(...)) or draw(lawof(...)).
   const inlinePhase = degenerateMeasurePhase(drawArg, bindings, phaseOf);
@@ -548,7 +548,7 @@ function phaseOfDegenerateDraw(drawArg, bindings, phaseOf) {
 // Returns the phase of the value wrapped by a Dirac / lawof
 // expression, or null if the expression isn't a recognised
 // degenerate measure form. Internal helper for phaseOfDegenerateDraw.
-function degenerateMeasurePhase(ast, bindings, phaseOf) {
+function degenerateMeasurePhase(ast: any, bindings: any, phaseOf: any) {
   if (!ast || ast.type !== 'CallExpr' || !ast.callee
       || ast.callee.type !== 'Identifier') return null;
   const op = ast.callee.name;
@@ -586,7 +586,7 @@ function degenerateMeasurePhase(ast, bindings, phaseOf) {
 // take the max over their args. Used by the degenerate-draw
 // sharpening — kept tiny and local since the analysis is best-
 // effort (returning a too-conservative phase is safe).
-function phaseOfAstExpr(ast, bindings, phaseOf) {
+function phaseOfAstExpr(ast: any, bindings: any, phaseOf: any): string {
   if (!ast) return 'fixed';
   if (ast.type === 'Identifier') {
     return bindings.has(ast.name) ? phaseOf(ast.name) : 'fixed';
@@ -605,11 +605,11 @@ function phaseOfAstExpr(ast, bindings, phaseOf) {
   return 'fixed';
 }
 
-function computePhases(bindings) {
-  const phases = new Map();
-  const visiting = new Set();
+function computePhases(bindings: any) {
+  const phases = new Map<string, string>();
+  const visiting = new Set<string>();
 
-  function calleeName(b) {
+  function calleeName(b: any) {
     const v = b && b.node && b.node.value;
     if (v && v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier') {
       return v.callee.name;
@@ -617,7 +617,7 @@ function computePhases(bindings) {
     return null;
   }
 
-  function maxPhase(a, b) {
+  function maxPhase(a: string, b: string) {
     if (a === 'stochastic' || b === 'stochastic') return 'stochastic';
     if (a === 'parameterized' || b === 'parameterized') return 'parameterized';
     return 'fixed';
@@ -631,9 +631,9 @@ function computePhases(bindings) {
   // those leaves are reached through a draw. Recursively walks deps,
   // collapsing 'stochastic' verdicts to 'fixed' along the way and
   // surfacing only the highest non-stochastic phase.
-  const absorbedCache = new Map();
-  function absorbedPhaseOf(name) {
-    if (absorbedCache.has(name)) return absorbedCache.get(name);
+  const absorbedCache = new Map<string, string>();
+  function absorbedPhaseOf(name: string): string {
+    if (absorbedCache.has(name)) return absorbedCache.get(name)!;
     const b = bindings.get(name);
     if (!b)                          { absorbedCache.set(name, 'fixed');         return 'fixed'; }
     const cn = calleeName(b);
@@ -648,8 +648,8 @@ function computePhases(bindings) {
     return phase;
   }
 
-  function phaseOf(name) {
-    if (phases.has(name)) return phases.get(name);
+  function phaseOf(name: string): string {
+    if (phases.has(name)) return phases.get(name)!;
     if (visiting.has(name)) return 'fixed'; // cycle (shouldn't occur in valid code)
     visiting.add(name);
 
@@ -661,7 +661,7 @@ function computePhases(bindings) {
     }
 
     const cn = calleeName(b);
-    let phase;
+    let phase: string;
     if (cn === 'draw') {
       // Spec identities: draw(Dirac(value=e)) ≡ e, and lawof of a
       // value-typed e is Dirac(value=e), so draw(lawof(e)) ≡ e too.
@@ -728,7 +728,7 @@ function computePhases(bindings) {
  * draws — e.g. `s = 2 * draw(m)` should classify s as stochastic
  * even though the binding's top-level callee is `mul`, not `draw`.
  */
-function rhsContainsInlineDraw(node) {
+function rhsContainsInlineDraw(node: any): boolean {
   if (!node || typeof node !== 'object') return false;
   if (node.type === 'CallExpr' && node.callee
       && node.callee.type === 'Identifier') {
@@ -788,12 +788,12 @@ function rhsContainsInlineDraw(node) {
  * @param {Set<string>} boundaryNames
  * @returns {Map<string, 'fixed' | 'parameterized' | 'stochastic'>}
  */
-function computePhasesForScope(bindings, boundaryNames) {
+function computePhasesForScope(bindings: any, boundaryNames: Set<string>) {
   if (!boundaryNames || boundaryNames.size === 0) return computePhases(bindings);
-  const phases = new Map();
-  const visiting = new Set();
+  const phases = new Map<string, string>();
+  const visiting = new Set<string>();
 
-  function calleeName(b) {
+  function calleeName(b: any) {
     const v = b && b.node && b.node.value;
     if (v && v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier') {
       return v.callee.name;
@@ -801,14 +801,14 @@ function computePhasesForScope(bindings, boundaryNames) {
     return null;
   }
 
-  function maxPhase(a, b) {
+  function maxPhase(a: string, b: string) {
     if (a === 'stochastic' || b === 'stochastic') return 'stochastic';
     if (a === 'parameterized' || b === 'parameterized') return 'parameterized';
     return 'fixed';
   }
 
-  function phaseOf(name) {
-    if (phases.has(name)) return phases.get(name);
+  function phaseOf(name: string): string {
+    if (phases.has(name)) return phases.get(name)!;
     // Boundary cut: a kwarg of the enclosing reification. The phase
     // walk stops here — the value gets supplied at call time, so by
     // construction the body sees it as a parameter.
@@ -827,7 +827,7 @@ function computePhasesForScope(bindings, boundaryNames) {
     }
 
     const cn = calleeName(b);
-    let phase;
+    let phase: string;
     if (cn === 'draw') {
       // Same degenerate-draw sharpening as in computePhases — see
       // its comment for the rationale (draw(Dirac(value=e)) ≡ e).
@@ -875,8 +875,8 @@ function computePhasesForScope(bindings, boundaryNames) {
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
-function validateIndexing(node, diagnostics) {
-  function checkIndex(idx, indexOp) {
+function validateIndexing(node: any, diagnostics: any[]) {
+  function checkIndex(idx: any, indexOp: string) {
     const minIdx = (indexOp === 'get0') ? 0 : 1;
     const baseLabel = (indexOp === 'get0')
       ? 'FlatPPY uses 0-based indexing (indices start at 0)'
@@ -903,7 +903,7 @@ function validateIndexing(node, diagnostics) {
     }
   }
 
-  function walk(node) {
+  function walk(node: any) {
     if (!node) return;
     if (node.type === 'IndexExpr') {
       walk(node.object);
@@ -940,9 +940,9 @@ function validateIndexing(node, diagnostics) {
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
-function validateHolesAndPlaceholders(node, diagnostics) {
+function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
   // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof)
-  function walk(node, scope) {
+  function walk(node: any, scope: string) {
     if (!node) return;
     switch (node.type) {
       case 'Hole':
@@ -1004,7 +1004,7 @@ function validateHolesAndPlaceholders(node, diagnostics) {
 /**
  * Reconstruct the RHS expression as source text from the original source.
  */
-function sliceSource(source, loc) {
+function sliceSource(source: string, loc: any) {
   const lines = source.split('\n');
   if (loc.start.line === loc.end.line) {
     return lines[loc.start.line].slice(loc.start.col, loc.end.col);
@@ -1021,9 +1021,9 @@ function sliceSource(source, loc) {
  * Find all identifier references in an expression and their locations.
  * Used by definition/hover providers to find what's under the cursor.
  */
-function collectIdentRefs(node) {
+function collectIdentRefs(node: any) {
   const refs: any[] = [];
-  function walk(node) {
+  function walk(node: any) {
     if (!node) return;
     if (node.type === 'Identifier') { refs.push(node); return; }
     if (node.type === 'CallExpr') { walk(node.callee); for (const a of node.args) walk(a); }
@@ -1045,7 +1045,7 @@ function collectIdentRefs(node) {
  * @param {object} ast - Program AST node
  * @param {string} source - original source text (for expression slicing)
  */
-function analyze(ast, source) {
+function analyze(ast: any, source: string) {
   const diagnostics: any[] = [];
   const bindings = new Map<string, any>();
   const symbols: any[] = [];
@@ -1099,7 +1099,7 @@ function analyze(ast, source) {
     for (const nameNode of stmt.names) {
       const info = {
         name: nameNode.name,
-        names: stmt.names.map(n => n.name),
+        names: stmt.names.map((n: any) => n.name),
         line: stmt.loc.start.line,
         rhs,
         type: stmtType,
@@ -1111,7 +1111,7 @@ function analyze(ast, source) {
       bindings.set(nameNode.name, info);
 
       // Build symbol for outline
-      const kindMap = {
+      const kindMap: Record<string, string> = {
         draw: 'Variable', input: 'Variable', call: 'Variable',
         lawof: 'Function', functionof: 'Function', kernelof: 'Function', fn: 'Function',
         likelihood: 'Variable', bayesupdate: 'Variable',
@@ -1223,7 +1223,7 @@ function analyze(ast, source) {
   for (const stmt of ast.body) {
     if (stmt.type !== 'AssignStatement') continue;
     if (!stmt.names || stmt.names.length < 2) continue;
-    const groupBindings = stmt.names.map(n => bindings.get(n.name)).filter(Boolean);
+    const groupBindings = stmt.names.map((n: any) => bindings.get(n.name)).filter(Boolean);
     if (groupBindings.length === 0) continue;
     // Skip groups owned by another pass. Two markers cover the cases:
     //   - effectiveValue set: a prior rewrite (resolved disintegrate)
@@ -1233,7 +1233,7 @@ function analyze(ast, source) {
     //     either way the binding's RHS is a `disintegrate(...)` call
     //     that isn't tuple-typed, so a tuple_get rewrite would just
     //     produce a type error.
-    if (groupBindings.some(b => b.effectiveValue || b.disintegratePlan)) continue;
+    if (groupBindings.some((b: any) => b.effectiveValue || b.disintegratePlan)) continue;
 
     const sloc = stmt.loc && stmt.loc.start
       ? `${stmt.loc.start.line + 1}:${stmt.loc.start.col + 1}`
@@ -1381,7 +1381,7 @@ function analyze(ast, source) {
  * and any name that doesn't match one of the canonical regular-expression
  * patterns from the spec (`docs/04-design.md#sec:binding-names`).
  */
-function isValidBindingName(name) {
+function isValidBindingName(name: any) {
   if (typeof name !== 'string' || name.length === 0) return false;
   if (name === 'self' || name === 'base') return false;
   if (name === '_') return false; // discard, not a renameable target
@@ -1397,7 +1397,7 @@ function isValidBindingName(name) {
  * Test whether a string is a valid placeholder source token (with surrounding
  * underscores, e.g. `_par_`).
  */
-function isValidPlaceholderText(text) {
+function isValidPlaceholderText(text: any) {
   return typeof text === 'string'
       && /^_[A-Za-z]([A-Za-z0-9_]*[A-Za-z0-9])?_$/.test(text);
 }
@@ -1424,8 +1424,8 @@ function isValidPlaceholderText(text) {
  *   shares the same nearest enclosing `functionof`/`lawof` scope.
  *   Each loc covers the full `_name_` source span.
  */
-function planRename(ast, bindings, line, col) {
-  function inLoc(loc) {
+function planRename(ast: any, bindings: any, line: number, col: number) {
+  function inLoc(loc: any) {
     return loc && loc.start.line <= line && line <= loc.end.line
         && (loc.start.line < line || col >= loc.start.col)
         && (line < loc.end.line || col <= loc.end.col);
@@ -1458,7 +1458,7 @@ function planRename(ast, bindings, line, col) {
   return null;
 }
 
-function planBindingRename(ast, bindings, name) {
+function planBindingRename(ast: any, bindings: any, name: string) {
   const binding = bindings.get(name);
   if (!binding) return null;
 
@@ -1473,9 +1473,9 @@ function planBindingRename(ast, bindings, name) {
   return { kind: 'binding', oldName: name, targetLoc: binding.nameLoc, locs };
 }
 
-function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
+function planPlaceholderRename(scopeCallExpr: any, name: string, targetLoc: any) {
   const locs: any[] = [];
-  function walk(node) {
+  function walk(node: any) {
     if (!node) return;
     if (node.type === 'Placeholder') {
       if (node.name === name) locs.push(node.loc);
@@ -1515,9 +1515,9 @@ function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
  * Tracks the nearest enclosing functionof/kernelof CallExpr as the
  * placeholder scope.
  */
-function findCursorTargetInExpr(root, inLoc) {
+function findCursorTargetInExpr(root: any, inLoc: any) {
   let result: any = null;
-  function walk(node, scope) {
+  function walk(node: any, scope: any) {
     if (!node || result) return;
     if (node.type === 'Identifier' && inLoc(node.loc)) {
       result = { kind: 'identifier', name: node.name, loc: node.loc };
@@ -1566,8 +1566,8 @@ function findCursorTargetInExpr(root, inLoc) {
  * @param {number} col - 0-based cursor column
  * @returns {Array<Loc>} innermost first
  */
-function findEnclosingRanges(ast, line, col) {
-  function inLoc(loc) {
+function findEnclosingRanges(ast: any, line: number, col: number) {
+  function inLoc(loc: any) {
     return loc && loc.start.line <= line && line <= loc.end.line
         && (loc.start.line < line || col >= loc.start.col)
         && (line < loc.end.line || col <= loc.end.col);
@@ -1575,7 +1575,7 @@ function findEnclosingRanges(ast, line, col) {
 
   const ranges: any[] = []; // outermost first; we'll reverse at the end
 
-  function walk(node) {
+  function walk(node: any) {
     if (!node) return;
     // Program has no .loc — descend into body without recording a range.
     if (node.type === 'Program') {

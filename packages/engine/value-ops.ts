@@ -50,7 +50,7 @@ const {
 // the tag.
 //
 // `_isCx(a, b)` — does this op need the complex path?
-function _isCx(a, b) {
+function _isCx(a: any, b: any) {
   return isComplexValue(a) || (b !== undefined && isComplexValue(b));
 }
 
@@ -61,7 +61,7 @@ function _isCx(a, b) {
 // bit must be carried forward when the governing operand was a
 // transpose view. `swapped` true ⇒ tag 'T' (pure transpose, conj
 // already folded), else canonical 'N'.
-function _packCx(re, im, shape, swapped) {
+function _packCx(re: any, im: any, shape: any, swapped: any) {
   const v = complexValue(re, im, shape);
   if (swapped) v.t = 'T';
   return v;
@@ -81,8 +81,8 @@ function _packCx(re, im, shape, swapped) {
 // These two helpers compute the linear index for a logical (i, j)
 // position in O(1) without allocation.
 
-function _matIdxN(i, j, n) { return i * n + j; }
-function _matIdxT(i, j, m) { return j * m + i; }
+function _matIdxN(i: any, j: any, n: any) { return i * n + j; }
+function _matIdxT(i: any, j: any, m: any) { return j * m + i; }
 
 // ---------------------------------------------------------------------
 // mul — shape-dispatched multiplication
@@ -95,7 +95,7 @@ function _matIdxT(i, j, m) { return j * m + i; }
 // operand(s) and falls through to the generic dense path — correctness
 // never depends on a fast-path existing). Real diagonals only; a
 // complex diagonal returns null → densify (rare; cov is real).
-function _diagMul(a, b) {
+function _diagMul(a: any, b: any) {
   const aD = valueLib.isDiagStored(a) && !a.im;
   const bD = valueLib.isDiagStored(b) && !b.im;
   if (!aD && !bD) return null;
@@ -173,7 +173,7 @@ function _diagMul(a, b) {
   return null;   // not fast-pathed → caller densifies
 }
 
-function mul(a, b) {
+function mul(a: any, b: any) {
   if (!isValue(a) || !isValue(b)) {
     throw new Error('value-ops.mul: both operands must be Values');
   }
@@ -217,7 +217,7 @@ function mul(a, b) {
 }
 
 // scalar (JS number) × Value (any shape) → Value with same shape and tag.
-function _scalarBroadcastMul(s, v) {
+function _scalarBroadcastMul(s: any, v: any) {
   const out = new Float64Array(v.data.length);
   for (let i = 0; i < v.data.length; i++) out[i] = s * v.data[i];
   const r: any = { shape: v.shape.slice(), data: out };
@@ -232,7 +232,7 @@ function _scalarBroadcastMul(s, v) {
 // commutative, so the re/im formula is order-independent. The array
 // operand governs output shape and transpose orientation; conjugation
 // of both operands is resolved by readComplex up front.
-function _complexScalarBroadcastMul(a, b) {
+function _complexScalarBroadcastMul(a: any, b: any) {
   const aScalar = a.shape.length === 0;
   const scalarV = aScalar ? a : b;
   const arrV    = aScalar ? b : a;
@@ -250,7 +250,7 @@ function _complexScalarBroadcastMul(a, b) {
 }
 
 // vector × vector → scalar (inner) or matrix (outer), depending on tags.
-function _vecVecMul(u, v) {
+function _vecVecMul(u: any, v: any) {
   const uSwapped = isTransposeView(u);
   const vSwapped = isTransposeView(v);
   // Klein-4 vec×vec rules (real-valued; conjugation no-op):
@@ -273,7 +273,7 @@ function _vecVecMul(u, v) {
 // Both vectors must have the same length.
 // For complex (when implemented) the row's conjugate bit determines
 // whether to conjugate u's entries on read.
-function _innerProduct(u, v) {
+function _innerProduct(u: any, v: any) {
   const k = u.shape[0];
   if (v.shape[0] !== k) {
     throw new Error('mul: inner-product vector length mismatch (' +
@@ -285,7 +285,7 @@ function _innerProduct(u, v) {
 }
 
 // Outer product: u (column, tag N or C) × v (row, tag T or A) → matrix [m, n].
-function _outerProduct(u, v) {
+function _outerProduct(u: any, v: any) {
   const m = u.shape[0], n = v.shape[0];
   const out = new Float64Array(m * n);
   for (let i = 0; i < m; i++) {
@@ -299,7 +299,7 @@ function _outerProduct(u, v) {
 // Matrix tag may be any of {N,T,A,C}; vector must be column-oriented
 // (tag N or C; transposed/row vectors aren't valid right operands of
 // matrix multiplication per spec §07).
-function _matVecMul(A, v) {
+function _matVecMul(A: any, v: any) {
   const [m, n] = A.shape;
   if (v.shape[0] !== n) {
     throw new Error(
@@ -335,7 +335,7 @@ function _matVecMul(A, v) {
 
 // vector(k) × matrix(k, p) → vector(p). Only valid if the vector is
 // row-oriented (tag T or A). Result is a row vector (tag T).
-function _vecMatMul(u, B) {
+function _vecMatMul(u: any, B: any) {
   if (!isTransposeView(u)) {
     throw new Error(
       'mul: (column vector) * matrix is not defined; ' +
@@ -375,7 +375,7 @@ function _vecMatMul(u, B) {
 
 // matrix(m, n) × matrix(n, p) → matrix(m, p). Tags read via index
 // permutation (BLAS gemm-flag style); output is canonical (tag N).
-function _matMatMul(A, B) {
+function _matMatMul(A: any, B: any) {
   const [m, n] = A.shape;
   const [bRows, p] = B.shape;
   if (bRows !== n) {
@@ -449,7 +449,7 @@ function _matMatMul(A, B) {
 // Mixed real×complex works transparently: readComplex on a real Value
 // yields a zero imaginary buffer.
 
-function _cxVecVecMul(u, v) {
+function _cxVecVecMul(u: any, v: any) {
   const uSwapped = isTransposeView(u);
   const vSwapped = isTransposeView(v);
   if (uSwapped && !vSwapped) return _cxInnerProduct(u, v);
@@ -463,7 +463,7 @@ function _cxVecVecMul(u, v) {
     'mul: transpose(v1) * transpose(v2) is not defined (two row vectors)');
 }
 
-function _cxInnerProduct(u, v) {
+function _cxInnerProduct(u: any, v: any) {
   const k = u.shape[0];
   if (v.shape[0] !== k) {
     throw new Error('mul: inner-product vector length mismatch (' +
@@ -479,7 +479,7 @@ function _cxInnerProduct(u, v) {
   return _packCx([sr], [si], [], false);
 }
 
-function _cxOuterProduct(u, v) {
+function _cxOuterProduct(u: any, v: any) {
   const m = u.shape[0], n = v.shape[0];
   const cu = readComplex(u), cv = readComplex(v);
   const re = new Float64Array(m * n), im = new Float64Array(m * n);
@@ -494,7 +494,7 @@ function _cxOuterProduct(u, v) {
   return _packCx(re, im, [m, n], false);
 }
 
-function _cxMatVecMul(A, v) {
+function _cxMatVecMul(A: any, v: any) {
   const [m, n] = A.shape;
   if (v.shape[0] !== n) {
     throw new Error('mul: matrix×vector dimension mismatch (' +
@@ -521,7 +521,7 @@ function _cxMatVecMul(A, v) {
   return _packCx(re, im, [m], false);
 }
 
-function _cxVecMatMul(u, B) {
+function _cxVecMatMul(u: any, B: any) {
   if (!isTransposeView(u)) {
     throw new Error('mul: (column vector) * matrix is not defined; ' +
       'mul requires matrix on the left of a column vector or ' +
@@ -553,7 +553,7 @@ function _cxVecMatMul(u, B) {
   return _packCx(re, im, [p], true);
 }
 
-function _cxMatMatMul(A, B) {
+function _cxMatMatMul(A: any, B: any) {
   const [m, n] = A.shape;
   const [bRows, p] = B.shape;
   if (bRows !== n) {
@@ -604,7 +604,7 @@ function _cxMatMatMul(A, B) {
 // rules are identical to the real path; broadcast handled by treating
 // the missing im of a real operand as an implicit zero buffer (which
 // readComplex already supplies).
-function _complexLinearBinop(scalarFn, a, b, opName) {
+function _complexLinearBinop(scalarFn: any, a: any, b: any, opName: any) {
   const sa = a.shape, sb = b.shape;
   const ca = readComplex(a), cb = readComplex(b);
   // scalar ∘ scalar
@@ -652,8 +652,8 @@ function _complexLinearBinop(scalarFn, a, b, opName) {
   return _packCx(re, im, sa, isTransposeView(a));
 }
 
-function _makeElementwiseBinop(scalarFn, opName) {
-  return function elementwiseBinop(a, b) {
+function _makeElementwiseBinop(scalarFn: any, opName: any) {
+  return function elementwiseBinop(a: any, b: any) {
     if (!isValue(a) || !isValue(b)) {
       throw new Error('value-ops.' + opName + ': both operands must be Values');
     }
@@ -715,7 +715,7 @@ function _makeElementwiseBinop(scalarFn, opName) {
 // scalar (JS number) + Value (any shape) → Value, with elementwise
 // broadcast. `scalarLeft` is true iff the scalar was the LHS operand
 // (important for non-commutative `sub`).
-function _scalarBroadcastBinop(scalarFn, s, v, scalarLeft) {
+function _scalarBroadcastBinop(scalarFn: any, s: any, v: any, scalarLeft: any) {
   const out = new Float64Array(v.data.length);
   if (scalarLeft) {
     for (let i = 0; i < v.data.length; i++) out[i] = scalarFn(s, v.data[i]);
@@ -728,8 +728,8 @@ function _scalarBroadcastBinop(scalarFn, s, v, scalarLeft) {
   return r;
 }
 
-const add = _makeElementwiseBinop((a, b) => a + b, 'add');
-const sub = _makeElementwiseBinop((a, b) => a - b, 'sub');
+const add = _makeElementwiseBinop((a: any, b: any) => a + b, 'add');
+const sub = _makeElementwiseBinop((a: any, b: any) => a - b, 'sub');
 
 // =====================================================================
 // neg — pointwise negation
@@ -738,7 +738,7 @@ const sub = _makeElementwiseBinop((a, b) => a - b, 'sub');
 // Tag and shape are preserved; data is allocated fresh (caller may
 // mutate the input independently after this returns).
 
-function neg(a) {
+function neg(a: any) {
   if (!isValue(a)) throw new Error('value-ops.neg: argument must be a Value');
   if (valueLib.isDiagStored(a) && !a.im) {           // -diag stays diag
     const d = new Float64Array(a.data.length);
@@ -781,7 +781,7 @@ function neg(a) {
 // support 1-D (vectors → flat JS array) and 2-D (matrices → nested
 // JS array) shapes — the ranks the linalg ops accept.
 
-function _valueToNested(v) {
+function _valueToNested(v: any) {
   if (!isValue(v)) throw new Error('_valueToNested: not a Value');
   // Structured Values (vector-backed diag, future tri/sym) must be
   // materialized before nested indexing — the raw buffer is not a
@@ -823,7 +823,7 @@ function _valueToNested(v) {
     JSON.stringify(v.shape) + ')');
 }
 
-function _nestedToValue(nested) {
+function _nestedToValue(nested: any) {
   if (Array.isArray(nested) && nested.length > 0 && Array.isArray(nested[0])) {
     const m = nested.length, n = nested[0].length;
     const data = new Float64Array(m * n);
@@ -875,7 +875,7 @@ function _nestedToValue(nested) {
 // matrix(m, n) × shape=[N, n] → shape=[N, m]. Atom-major output;
 // per-atom matvec with shared matrix. Tag on the matrix is honoured
 // (BLAS gemm-flag style).
-function _matBatchedVecMul(A, V, N) {
+function _matBatchedVecMul(A: any, V: any, N: any) {
   const [m, n] = A.shape;
   if (V.shape.length !== 2 || V.shape[0] !== N || V.shape[1] !== n) {
     throw new Error(
@@ -916,7 +916,7 @@ function _matBatchedVecMul(A, V, N) {
 // Complex atom-batched matrix × shape=[N, n] → complex shape=[N, m].
 // Per-atom matvec with a shared (possibly transposed/adjoint) matrix;
 // readComplex folds the matrix's conj bit (Hermitian for adjoint(A)).
-function _cxMatBatchedVecMul(A, V, N) {
+function _cxMatBatchedVecMul(A: any, V: any, N: any) {
   const [m, n] = A.shape;
   if (V.shape.length !== 2 || V.shape[0] !== N || V.shape[1] !== n) {
     throw new Error(
@@ -951,7 +951,7 @@ function _cxMatBatchedVecMul(A, V, N) {
 // value, applied via a binary scalar fn. `batched` has shape=[N, ...rest];
 // `indep` must have shape=rest (same orientation). Result has the
 // batched shape.
-function _atomBroadcastBinop(scalarFn, batched, indep, N, swapArgs, opName) {
+function _atomBroadcastBinop(scalarFn: any, batched: any, indep: any, N: any, swapArgs: any, opName: any) {
   if (batched.shape[0] !== N) {
     throw new Error(opName + 'N: leading axis (' + batched.shape[0] +
       ') is not the atom count N=' + N);
@@ -1021,7 +1021,7 @@ function _atomBroadcastBinop(scalarFn, batched, indep, N, swapArgs, opName) {
 
 // Atom-batched marker: leading axis is the atom count AND there is a
 // non-trivial per-atom shape (rank ≥ 2).
-function _hasAtomAxis(v, N) {
+function _hasAtomAxis(v: any, N: any) {
   return v.shape.length >= 2 && v.shape[0] === N;
 }
 
@@ -1029,7 +1029,7 @@ function _hasAtomAxis(v, N) {
 // matrix × shape=[N, n] case to _matBatchedVecMul; otherwise delegates
 // to the atom-indep `mul` (which already handles scalar broadcast,
 // matmul, matvec etc. correctly when neither operand has an atom axis).
-function mulN(a, b, N) {
+function mulN(a: any, b: any, N: any) {
   if (!isValue(a) || !isValue(b)) {
     throw new Error('value-ops.mulN: both operands must be Values');
   }
@@ -1075,8 +1075,8 @@ function mulN(a, b, N) {
 // addN / subN: atom-aware. Handles the atom-indep + atom-batched
 // broadcast that MvNormal's `mu + L*z` needs (mu is atom-indep,
 // L*z is atom-batched).
-function _makeAtomAwareBinop(scalarFn, atomIndepImpl, opName) {
-  return function atomAwareBinop(a, b, N) {
+function _makeAtomAwareBinop(scalarFn: any, atomIndepImpl: any, opName: any) {
+  return function atomAwareBinop(a: any, b: any, N: any) {
     if (!isValue(a) || !isValue(b)) {
       throw new Error('value-ops.' + opName + 'N: both operands must be Values');
     }
@@ -1097,13 +1097,13 @@ function _makeAtomAwareBinop(scalarFn, atomIndepImpl, opName) {
   };
 }
 
-const addN = _makeAtomAwareBinop((x, y) => x + y, add, 'add');
-const subN = _makeAtomAwareBinop((x, y) => x - y, sub, 'sub');
+const addN = _makeAtomAwareBinop((x: any, y: any) => x + y, add, 'add');
+const subN = _makeAtomAwareBinop((x: any, y: any) => x - y, sub, 'sub');
 
 // negN: pointwise — the atom-indep neg already iterates over the
 // whole data buffer regardless of rank, so atom-batched values are
 // handled correctly without extra plumbing.
-function negN(a, _N) {
+function negN(a: any, _N: any) {
   return neg(a);
 }
 
