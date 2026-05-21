@@ -107,6 +107,8 @@
 // undefined-variable diagnostics separately. The IR pass doesn't perform
 // name resolution beyond local-vs-self.)
 
+import type { IRNode } from './engine-types';
+
 const builtins = require('./builtins.ts');
 
 const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS } = builtins;
@@ -123,7 +125,7 @@ const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS } = builtin
  * @param {Set<string>} [ctx.localScope] - names currently bound as `%local`
  * @returns {object} IR-JSON expression
  */
-function lowerExpr(node: any, ctx?: any) {
+function lowerExpr(node: any, ctx?: any): IRNode {
   ctx = ctx || { localScope: null };
   return _lowerExpr(node, ctx);
 }
@@ -131,7 +133,7 @@ function lowerExpr(node: any, ctx?: any) {
 /**
  * Lower an AssignStatement's RHS. Convenience wrapper around `lowerExpr`.
  */
-function lowerBinding(stmt: any, ctx?: any) {
+function lowerBinding(stmt: any, ctx?: any): IRNode {
   if (!stmt || stmt.type !== 'AssignStatement') {
     throw new Error(`lower: expected AssignStatement, got ${stmt?.type}`);
   }
@@ -189,7 +191,7 @@ const MODULE_LOAD_FORMS = new Set([
 // ---------------------------------------------------------------------
 // Core dispatch
 
-function _lowerExpr(node: any, ctx: any): any {
+function _lowerExpr(node: any, ctx: any): IRNode {
   switch (node.type) {
     case 'NumberLiteral': {
       // Preserve the lexical integer-vs-real distinction. JS Numbers
@@ -303,7 +305,7 @@ function _lowerExpr(node: any, ctx: any): any {
   }
 }
 
-function _lowerIdentifier(node: any, ctx: any) {
+function _lowerIdentifier(node: any, ctx: any): IRNode {
   const { name, loc } = node;
 
   // 1. %local scope wins (innermost reified scope's params).
