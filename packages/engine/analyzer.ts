@@ -189,6 +189,272 @@ function validateSpecialOperation(valueNode: any) {
       }
       break;
     }
+
+    // ---- Measure-algebra binary ops: M and one other operand --------
+    case 'weighted':
+    case 'logweighted':
+    case 'truncate':
+    case 'pushfwd':
+    case 'bayesupdate':
+    case 'likelihoodof':
+    case 'joint_likelihood':
+    case 'densityof':
+    case 'logdensityof': {
+      // Two positional args (weight/set/fn/likelihood/obs, measure).
+      // Order varies per op but the shape (positional pair, no kwargs)
+      // is uniform.
+      if (args.length !== 2) {
+        diags.push({ severity: 'error', message: `${name}() takes exactly two arguments`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'totalmass': {
+      // totalmass(M) — single positional measure.
+      if (args.length !== 1) {
+        diags.push({ severity: 'error', message: `totalmass() takes exactly one argument`, loc: valueNode.loc });
+      } else if (args[0].type === 'KeywordArg') {
+        diags.push({ severity: 'error', message: `totalmass() argument must be a positional expression`, loc: args[0].loc });
+      }
+      break;
+    }
+
+    // ---- Variadic-positional measure ops -----------------------------
+    case 'superpose':
+    case 'fchain': {
+      // N components, all positional.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `${name}() requires at least two arguments`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    // ---- Mixed positional/kwarg measure ops --------------------------
+    case 'joint':
+    case 'jointchain':
+    case 'kchain': {
+      // Two forms: all-positional or all-kwarg. Mixed is rejected so
+      // the classifier sees one shape per call site.
+      // `joint(x = M)` (1-arg kwarg form) is the canonical "relabel-as"
+      // shape — accept it. jointchain/kchain need at least 2 components.
+      const minArgs = (name === 'joint') ? 1 : 2;
+      if (args.length < minArgs) {
+        diags.push({ severity: 'error', message: `${name}() requires at least ${minArgs === 1 ? 'one argument' : 'two arguments'}`, loc: valueNode.loc });
+        break;
+      }
+      const allKw  = args.every((a: any) => a.type === 'KeywordArg');
+      const allPos = args.every((a: any) => a.type !== 'KeywordArg');
+      if (!allKw && !allPos) {
+        diags.push({
+          severity: 'error',
+          message: `${name}() arguments must be either all positional or all keyword (name = value), not mixed`,
+          loc: valueNode.loc,
+        });
+      }
+      break;
+    }
+
+    case 'iid': {
+      // iid(M, n) or iid(M, dims...) — first arg is measure, rest are
+      // integer dims. All positional.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `iid() requires at least two arguments (measure, dim)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `iid() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    // ---- Function-typed special ops ---------------------------------
+    case 'bijection': {
+      // bijection(f, f_inv, logvolume) — three positional args.
+      if (args.length !== 3) {
+        diags.push({
+          severity: 'error',
+          message: `bijection() takes exactly three arguments (f, f_inv, logvolume)`,
+          loc: valueNode.loc,
+        });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `bijection() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'broadcasted': {
+      // broadcasted(f) — curried single-fn form (returns a callable).
+      if (args.length !== 1) {
+        diags.push({ severity: 'error', message: `broadcasted() takes exactly one argument`, loc: valueNode.loc });
+      } else if (args[0].type === 'KeywordArg') {
+        diags.push({ severity: 'error', message: `broadcasted() argument must be positional`, loc: args[0].loc });
+      }
+      break;
+    }
+
+    case 'broadcast': {
+      // broadcast(f, args...) — first arg is the head (function /
+      // distribution / measure op); collection args follow positionally
+      // or by kwarg (matching the callee's signature). Minimum 2 args.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `broadcast() requires at least two arguments (head, collection)`, loc: valueNode.loc });
+      } else if (args[0].type === 'KeywordArg') {
+        diags.push({ severity: 'error', message: `broadcast() first argument must be a positional head expression`, loc: args[0].loc });
+      }
+      break;
+    }
+
+    case 'reduce':
+    case 'scan': {
+      // reduce(f, init, xs) / scan(f, init, xs) — three positional args.
+      if (args.length !== 3) {
+        diags.push({ severity: 'error', message: `${name}() takes exactly three arguments (f, init, xs)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'checked': {
+      // checked(value, condition=...) — single positional + `condition` kwarg.
+      if (args.length === 0) {
+        diags.push({ severity: 'error', message: `checked() requires a value argument`, loc: valueNode.loc });
+        break;
+      }
+      if (args[0].type === 'KeywordArg') {
+        diags.push({ severity: 'error', message: `checked() first argument must be a positional value`, loc: args[0].loc });
+      }
+      for (let i = 1; i < args.length; i++) {
+        if (args[i].type !== 'KeywordArg') {
+          diags.push({ severity: 'error', message: `checked() takes only keyword arguments after the value`, loc: args[i].loc });
+        }
+      }
+      break;
+    }
+
+    // ---- Composite constructors --------------------------------------
+    case 'record':
+    case 'table': {
+      // record(name = expr, ...) / table(name = expr, ...) — all keyword.
+      if (args.length === 0) {
+        diags.push({ severity: 'error', message: `${name}() requires at least one field`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type !== 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes keyword arguments only (name = value)`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'tuple':
+    case 'vector': {
+      // tuple(a, b, ...) / vector(...) — all positional.
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    // ---- Disintegration ----------------------------------------------
+    case 'disintegrate': {
+      // disintegrate(name, joint_measure) — first arg names the
+      // disintegration target(s): either a single string literal
+      // ("obs") or an array of string literals (["obs1", "obs2"]) for
+      // multi-field disintegration. Second arg is the joint measure.
+      if (args.length !== 2) {
+        diags.push({ severity: 'error', message: `disintegrate() takes exactly two arguments (name, joint)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `disintegrate() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      if (args.length > 0 && args[0].type !== 'KeywordArg') {
+        const first = args[0];
+        const okString = first.type === 'StringLiteral';
+        const okArray  = first.type === 'ArrayLiteral'
+          && Array.isArray(first.elements)
+          && first.elements.every((e: any) => e && e.type === 'StringLiteral');
+        if (!okString && !okArray) {
+          diags.push({
+            severity: 'error',
+            message: `disintegrate() first argument must be a string literal or an array of string literals naming the disintegration target(s)`,
+            loc: first.loc,
+          });
+        }
+      }
+      break;
+    }
+
+    // ---- Set constructors --------------------------------------------
+    case 'interval': {
+      // interval(lo, hi) — two positional.
+      if (args.length !== 2) {
+        diags.push({ severity: 'error', message: `interval() takes exactly two arguments (lo, hi)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `interval() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'cartprod': {
+      // cartprod(S1, S2, ...) — at least 2 positional set expressions.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `cartprod() requires at least two arguments`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `cartprod() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'cartpow': {
+      // cartpow(S, n) — two positional (set, integer).
+      if (args.length !== 2) {
+        diags.push({ severity: 'error', message: `cartpow() takes exactly two arguments (set, n)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `cartpow() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'stdsimplex': {
+      // stdsimplex(n) — single positional integer.
+      if (args.length !== 1) {
+        diags.push({ severity: 'error', message: `stdsimplex() takes exactly one argument (n)`, loc: valueNode.loc });
+      } else if (args[0].type === 'KeywordArg') {
+        diags.push({ severity: 'error', message: `stdsimplex() argument must be positional`, loc: args[0].loc });
+      }
+      break;
+    }
   }
 
   return diags;
