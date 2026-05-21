@@ -32,7 +32,7 @@ export function measureIsConstant(ctx: Ctx, m: any): boolean {
     // Atom-major SoA: stride k = prod(dims) per atom. The whole
     // array is constant iff slot s has the same value at every
     // atom, for every s in [0, k).
-    var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
+    var stride = m.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
     if (stride === 0) return true;
     var N = m.samples.length / stride;
     for (var s = 0; s < stride; s++) {
@@ -76,7 +76,7 @@ export function formatConstantMeasure(ctx: Ctx, m: any): string {
     return '(' + eparts.join(', ') + ')';
   }
   if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
-    var stride = m.dims.reduce(function(p, n) { return p * n; }, 1);
+    var stride = m.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
     return formatValue(m.samples.subarray(0, stride), undefined);
   }
   if (m.samples instanceof Float64Array && m.samples.length > 0) {
@@ -109,7 +109,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   // its boundary insets between groups. Same definition both
   // places — kept here so selection state and rendering stay in
   // sync via a single source of truth.
-  function axisGroupKey(label) {
+  function axisGroupKey(label: any) {
     var i = label.lastIndexOf('[');
     return i >= 0 ? label.slice(0, i) : label;
   }
@@ -129,18 +129,18 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     ctx.recordSelection = {
       bindingName: bindingName,
       mode: 'correlations',
-      selected: axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a) { return a.key; }),
+      selected: axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a: any) { return a.key; }),
       marginalGroups: allGroups.slice(),
     };
   } else {
     // Drop any selections that no longer exist (rare — defensive).
-    var present = {}; axes.forEach(function(a) { present[a.key] = true; });
-    ctx.recordSelection!.selected = ctx.recordSelection!.selected.filter(function(k) { return present[k]; });
+    var present: Record<string, boolean> = {}; axes.forEach(function(a: any) { present[a.key] = true; });
+    ctx.recordSelection!.selected = ctx.recordSelection!.selected.filter(function(k: any) { return present[k]; });
     if (!ctx.recordSelection!.marginalGroups) ctx.recordSelection!.marginalGroups = allGroups.slice();
     else {
-      var presentGroups = {}; allGroups.forEach(function(g) { presentGroups[g] = true; });
+      var presentGroups: Record<string, boolean> = {}; allGroups.forEach(function(g: any) { presentGroups[g] = true; });
       ctx.recordSelection!.marginalGroups = ctx.recordSelection!.marginalGroups.filter(
-        function(g) { return presentGroups[g]; });
+        function(g: any) { return presentGroups[g]; });
       if (ctx.recordSelection!.marginalGroups.length === 0) ctx.recordSelection!.marginalGroups = allGroups.slice();
     }
   }
@@ -168,11 +168,11 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       // Marginals mode: filter axes by selected groups (group =
       // axis label's prefix before any "[k]"). Default is all
       // groups → full axis list; users uncheck to narrow.
-      var selSet = {};
-      (ctx.recordSelection!.marginalGroups || allGroups).forEach(function(g) {
+      var selSet: Record<string, boolean> = {};
+      (ctx.recordSelection!.marginalGroups || allGroups).forEach(function(g: any) {
         selSet[g] = true;
       });
-      var picked = axes.filter(function(a) { return selSet[axisGroupKey(a.label)]; });
+      var picked = axes.filter(function(a: any) { return selSet[axisGroupKey(a.label)]; });
       renderDensityStrips(ctx, chartHostRef, measure, bindingName, picked);
     } else {
       renderCornerGrid(ctx, chartHostRef, measure, bindingName);
@@ -192,7 +192,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     renderPlotFrame(ctx, {
       measure: measure,
       toolbarControls: toolbarControls,
-      chartCallback: function(chartHost) {
+      chartCallback: function(chartHost: any) {
         chartHostRef = chartHost;
         rerenderChart();
       },
@@ -224,7 +224,7 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
   modeGroup.style.display = 'flex';
   modeGroup.style.gap = '0.25em';
 
-  function makeModeBtn(modeKey, label, title) {
+  function makeModeBtn(modeKey: any, label: any, title: any) {
     var b = document.createElement('button');
     b.textContent = label;
     b.title = title;
@@ -490,7 +490,7 @@ export function renderAxisDropdown(ctx: Ctx, axes: any[], onChange: () => void) 
     if (!open) {
       // One-shot outside-click handler — registers on this open,
       // tears itself down on close so we don't accumulate handlers.
-      var off = function(ev2) {
+      var off = function(ev2: any) {
         if (panel.contains(ev2.target) || btn.contains(ev2.target)) return;
         panel.style.display = 'none';
         document.removeEventListener('click', off, true);
@@ -595,7 +595,7 @@ export function renderGroupDropdown(ctx: Ctx, groups: string[], onChange: () => 
     var open = panel.style.display !== 'none';
     panel.style.display = open ? 'none' : 'block';
     if (!open) {
-      var off = function(ev2) {
+      var off = function(ev2: any) {
         if (panel.contains(ev2.target) || btn.contains(ev2.target)) return;
         panel.style.display = 'none';
         document.removeEventListener('click', off, true);
