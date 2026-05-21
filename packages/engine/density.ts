@@ -57,6 +57,8 @@
 //     supplies a closure over `orchestrator.expandMeasureIR(name,
 //     derivations)`.
 
+import type { IRNode } from './engine-types';
+
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
 
@@ -244,7 +246,7 @@ function consumeField(value: any, name: any) {
 //     duplicated structurally.
 //   - Returns the (atom-independent) `rest` of `value`.
 
-function logDensityConsumeN(ir: any, value: any, refArrays: any, count: any, opts: any) {
+function logDensityConsumeN(ir: IRNode, value: any, refArrays: any, count: any, opts: any) {
   opts = opts || {};
   const N = count | 0;
   if (N <= 0) throw new Error('density: count must be positive');
