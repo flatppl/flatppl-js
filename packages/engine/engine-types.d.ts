@@ -67,6 +67,12 @@ export interface Value {
 export interface IRBase {
   loc?: any;
   meta?: any;
+  /** Escape hatch: engine internals attach a handful of extension fields
+   *  (originLoc, lowerError, dependsOn, …) onto IR nodes as they pass
+   *  through the pipeline. Allowing `any` here keeps the discriminated-
+   *  union narrowing intact while leaving room for those incremental
+   *  annotations. Tighten field-by-field as each consumer is adopted. */
+  [extra: string]: any;
 }
 
 export interface IRLit extends IRBase {
