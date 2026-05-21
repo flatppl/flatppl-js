@@ -9,6 +9,11 @@ node_modules/
 packages/vscode-extension/lib/
 packages/vscode-extension/grammars/
 packages/vscode-extension/THIRD-PARTY-LICENSES.md
+# Transpiled outputs of build-vendor.mjs's source-build step
+# (extension.ts / src/visualPanel.ts → .js, loaded by VS Code's Node
+# host). The .ts files are the source of truth.
+packages/vscode-extension/extension.js
+packages/vscode-extension/src/visualPanel.js
 
 # Local symlinks created for the embed-test page (see
 # packages/viewer/embed-test.html for the recipe). Source of truth

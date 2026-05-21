@@ -214,7 +214,7 @@ function blockAt(hostDoc, position) {
 // result, baseLine)` shifts result ranges to host coords (identity for
 // range-less results like completion items). Returns null/[] outside a
 // block so the host language's own provider is unaffected.
-function embedPositional(vscode, impl, method, remap, emptyValue) {
+function embedPositional(vscode, impl, method, remap, emptyValue?) {
   return {
     [method](document, position, ...rest) {
       const at = blockAt(document, position);
