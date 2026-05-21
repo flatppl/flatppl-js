@@ -123,7 +123,7 @@ const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS } = builtin
  * @param {Set<string>} [ctx.localScope] - names currently bound as `%local`
  * @returns {object} IR-JSON expression
  */
-function lowerExpr(node, ctx) {
+function lowerExpr(node: any, ctx?: any) {
   ctx = ctx || { localScope: null };
   return _lowerExpr(node, ctx);
 }
@@ -131,7 +131,7 @@ function lowerExpr(node, ctx) {
 /**
  * Lower an AssignStatement's RHS. Convenience wrapper around `lowerExpr`.
  */
-function lowerBinding(stmt, ctx) {
+function lowerBinding(stmt: any, ctx?: any) {
   if (!stmt || stmt.type !== 'AssignStatement') {
     throw new Error(`lower: expected AssignStatement, got ${stmt?.type}`);
   }
@@ -141,7 +141,7 @@ function lowerBinding(stmt, ctx) {
 // ---------------------------------------------------------------------
 // Operator → builtin-name mapping
 
-const BIN_OP_MAP = {
+const BIN_OP_MAP: Record<string, string> = {
   '+':  'add',
   '-':  'sub',
   '*':  'mul',
@@ -155,7 +155,7 @@ const BIN_OP_MAP = {
   'in': 'in',
 };
 
-const UN_OP_MAP = {
+const UN_OP_MAP: Record<string, string> = {
   '-': 'neg',
   '+': 'pos',
 };
@@ -189,7 +189,7 @@ const MODULE_LOAD_FORMS = new Set([
 // ---------------------------------------------------------------------
 // Core dispatch
 
-function _lowerExpr(node, ctx) {
+function _lowerExpr(node: any, ctx: any): any {
   switch (node.type) {
     case 'NumberLiteral': {
       // Preserve the lexical integer-vs-real distinction. JS Numbers
@@ -249,7 +249,7 @@ function _lowerExpr(node, ctx) {
       return {
         kind: 'call',
         op:   'vector',
-        args: node.elements.map(e => _lowerExpr(e, ctx)),
+        args: node.elements.map((e: any) => _lowerExpr(e, ctx)),
         loc:  node.loc,
       };
 
@@ -258,7 +258,7 @@ function _lowerExpr(node, ctx) {
       return {
         kind: 'call',
         op:   'tuple',
-        args: node.elements.map(e => _lowerExpr(e, ctx)),
+        args: node.elements.map((e: any) => _lowerExpr(e, ctx)),
         loc:  node.loc,
       };
 
@@ -278,7 +278,7 @@ function _lowerExpr(node, ctx) {
         op:   node.indexOp || 'get',
         args: [
           _lowerExpr(node.object, ctx),
-          ...node.indices.map(i => _lowerExpr(i, ctx)),
+          ...node.indices.map((i: any) => _lowerExpr(i, ctx)),
         ],
         loc: node.loc,
       };
@@ -303,7 +303,7 @@ function _lowerExpr(node, ctx) {
   }
 }
 
-function _lowerIdentifier(node, ctx) {
+function _lowerIdentifier(node: any, ctx: any) {
   const { name, loc } = node;
 
   // 1. %local scope wins (innermost reified scope's params).
@@ -338,7 +338,7 @@ function _lowerIdentifier(node, ctx) {
 // in the materialiser) applies unchanged — no new runtime surface. This
 // is also the single place that knows the operator→builtin map
 // (BIN_OP_MAP / UN_OP_MAP); the parser never duplicates it.
-function _synthOpFunctionof(opName, arity) {
+function _synthOpFunctionof(opName: string, arity: number) {
   const params: any[] = [], paramKwargs: any[] = [], paramSources: any[] = [], bodyArgs: any[] = [];
   for (let i = 1; i <= arity; i++) {
     const p = `_arg${i}_`;
@@ -354,12 +354,12 @@ function _synthOpFunctionof(opName, arity) {
   };
 }
 
-function _lowerBinaryExpr(node, ctx) {
+function _lowerBinaryExpr(node: any, ctx: any): any {
   const op = BIN_OP_MAP[node.op];
   if (!op) {
     throw new Error(`lower: unknown binary operator '${node.op}'`);
   }
-  const args = [_lowerExpr(node.left, ctx), _lowerExpr(node.right, ctx)];
+  const args: any[] = [_lowerExpr(node.left, ctx), _lowerExpr(node.right, ctx)];
   if (node.broadcast) {
     return {
       kind: 'call', op: 'broadcast',
@@ -370,12 +370,12 @@ function _lowerBinaryExpr(node, ctx) {
   return { kind: 'call', op, args, loc: node.loc };
 }
 
-function _lowerUnaryExpr(node, ctx) {
+function _lowerUnaryExpr(node: any, ctx: any): any {
   const op = UN_OP_MAP[node.op];
   if (!op) {
     throw new Error(`lower: unknown unary operator '${node.op}'`);
   }
-  const args = [_lowerExpr(node.operand, ctx)];
+  const args: any[] = [_lowerExpr(node.operand, ctx)];
   if (node.broadcast) {
     return {
       kind: 'call', op: 'broadcast',
@@ -386,7 +386,7 @@ function _lowerUnaryExpr(node, ctx) {
   return { kind: 'call', op, args, loc: node.loc };
 }
 
-function _lowerCallExpr(node, ctx) {
+function _lowerCallExpr(node: any, ctx: any): any {
   if (!node.callee || node.callee.type !== 'Identifier') {
     // Higher-order or computed callees aren't part of the FlatPPL surface
     // grammar today. If we ever add them, they'd lower with a
@@ -419,7 +419,7 @@ function _lowerCallExpr(node, ctx) {
   // Built-in names are listed in `builtins.ALL_KNOWN`.
 
   const args: any[] = [];
-  const kwargs = {};
+  const kwargs: Record<string, any> = {};
   let hasKwargs = false;
   for (const arg of node.args) {
     if (arg.type === 'KeywordArg') {
@@ -455,7 +455,7 @@ function _lowerCallExpr(node, ctx) {
 //     kernel-broadcast in the materialiser still sees the bare name;
 //   • user functions / `fn(…)` / `functionof(…)` — not bare
 //     Identifiers in BUILTIN_FUNCTIONS, lowered as before.
-function _lowerBroadcast(node, ctx) {
+function _lowerBroadcast(node: any, ctx: any) {
   const calleeArg = node.args && node.args[0];
   if (!calleeArg) {
     // `broadcast()` — invalid; let the evaluator raise the proper
@@ -463,7 +463,7 @@ function _lowerBroadcast(node, ctx) {
     return { kind: 'call', op: 'broadcast', loc: node.loc };
   }
   const posArgs: any[] = [];
-  const kwargs = {};
+  const kwargs: Record<string, any> = {};
   const kwOrder: string[] = [];
   let hasKwargs = false;
   for (const arg of node.args.slice(1)) {
@@ -475,7 +475,7 @@ function _lowerBroadcast(node, ctx) {
       posArgs.push(_lowerExpr(arg, ctx));
     }
   }
-  let head;
+  let head: any;
   if (calleeArg.type === 'Identifier'
       && BUILTIN_FUNCTIONS.has(calleeArg.name)) {
     const arity = hasKwargs ? kwOrder.length : posArgs.length;
@@ -510,7 +510,7 @@ function _lowerBroadcast(node, ctx) {
 // the surface kwarg name (used by callers at callsites). They differ for
 // placeholder-form params and coincide for identifier-form params.
 
-function _lowerReification(op, node, ctx) {
+function _lowerReification(op: string, node: any, ctx: any): any {
   const args = node.args;
   if (args.length === 0) {
     throw new Error(`lower: ${op} requires at least one argument (the body)`);
@@ -535,8 +535,8 @@ function _lowerReification(op, node, ctx) {
     if (arg.type !== 'KeywordArg') {
       throw new Error(`lower: ${op} parameters must be keyword args (got ${arg.type})`);
     }
-    let paramName;
-    let source;
+    let paramName: string;
+    let source: any;
     if (arg.value.type === 'Identifier') {
       paramName = arg.value.name;
       source = { kind: 'binding', name: arg.value.name };
@@ -559,7 +559,7 @@ function _lowerReification(op, node, ctx) {
   for (const p of params) innerLocal.add(p);
   const innerCtx = { ...ctx, localScope: innerLocal };
 
-  let body = _lowerExpr(args[0], innerCtx);
+  let body: any = _lowerExpr(args[0], innerCtx);
 
   // kernelof(x, kw) ≡ functionof(lawof(x), kw) per spec §sec:kernelof
   // line 421-422. The boundary substitution applies BEFORE the inner
@@ -595,7 +595,7 @@ function _lowerReification(op, node, ctx) {
 // `_argN_`, count holes, then synthesize the equivalent functionof
 // IR with `params` / `paramKwargs` matching the holes' indices.
 
-function _lowerFn(node, ctx) {
+function _lowerFn(node: any, ctx: any) {
   if (node.args.length !== 1 || node.args[0].type === 'KeywordArg') {
     throw new Error(`lower: fn() requires exactly one expression argument`);
   }
@@ -608,14 +608,14 @@ function _lowerFn(node, ctx) {
   // isn't touched — other consumers (DAG render, source diagnostics)
   // still see the user's `fn(_)` form.
   let counter = 0;
-  function rewriteHoles(astNode) {
+  function rewriteHoles(astNode: any): any {
     if (astNode == null || typeof astNode !== 'object') return astNode;
     if (Array.isArray(astNode)) return astNode.map(rewriteHoles);
     if (astNode.type === 'Hole') {
       counter++;
       return { type: 'Placeholder', name: 'arg' + counter, loc: astNode.loc };
     }
-    const out = {};
+    const out: Record<string, any> = {};
     for (const k in astNode) out[k] = rewriteHoles(astNode[k]);
     return out;
   }
@@ -656,7 +656,7 @@ function _lowerFn(node, ctx) {
 // shape: `fields: [{name, value}, …]` for the keyword half (preserving
 // source order), `args: […]` for any positional half.
 
-function _lowerFieldsForm(op, node, ctx) {
+function _lowerFieldsForm(op: string, node: any, ctx: any) {
   const args: any[] = [];
   const fields: any[] = [];
   for (const arg of node.args) {
@@ -682,9 +682,9 @@ function _lowerFieldsForm(op, node, ctx) {
 //
 // `standard_module(name, version)` — purely positional (just the path/version).
 
-function _lowerModuleLoad(op, node, ctx) {
+function _lowerModuleLoad(op: string, node: any, ctx: any) {
   const args: any[] = [];
-  const assigns = {};
+  const assigns: Record<string, any> = {};
   let hasAssigns = false;
   for (const arg of node.args) {
     if (arg.type === 'KeywordArg') {
