@@ -97,13 +97,13 @@ const DEFAULT_TAG   = 'N';
 
 // Klein-4 tag transitions, computed from the (swapped, conjugated) bit
 // representation. Pre-computed for cheap dispatch.
-const _TAG_TRANSPOSE = { N: 'T', T: 'N', A: 'C', C: 'A' };
-const _TAG_ADJOINT   = { N: 'A', T: 'C', A: 'N', C: 'T' };
-const _TAG_CONJUGATE = { N: 'C', T: 'A', A: 'T', C: 'N' };
+const _TAG_TRANSPOSE: Record<string, string> = { N: 'T', T: 'N', A: 'C', C: 'A' };
+const _TAG_ADJOINT: Record<string, string>   = { N: 'A', T: 'C', A: 'N', C: 'T' };
+const _TAG_CONJUGATE: Record<string, string> = { N: 'C', T: 'A', A: 'T', C: 'N' };
 // Effective bits (used by consumers that need to know "should I treat
 // the data as transposed?" without caring about conjugation).
-const _TAG_SWAPPED    = { N: false, T: true,  A: true,  C: false };
-const _TAG_CONJUGATED = { N: false, T: false, A: true,  C: true  };
+const _TAG_SWAPPED: Record<string, boolean>    = { N: false, T: true,  A: true,  C: false };
+const _TAG_CONJUGATED: Record<string, boolean> = { N: false, T: false, A: true,  C: true  };
 
 // ---------------------------------------------------------------------
 // Structured-matrix tag (`struct` — ORTHOGONAL to the Klein-4 tag)
@@ -150,7 +150,7 @@ const ST_DENSE = ST_OCC_MASK;                        // 7
 
 // transpose / adjoint structure transition: swap LOWER↔UPPER, keep the
 // diagonal bit and all refinements. conjugate leaves struct unchanged.
-function _structTranspose(s) {
+function _structTranspose(s: number) {
   let r = s & ~(ST_LOWER | ST_UPPER);
   if (s & ST_LOWER) r |= ST_UPPER;
   if (s & ST_UPPER) r |= ST_LOWER;
@@ -162,7 +162,7 @@ function _structTranspose(s) {
 // ---------------------------------------------------------------------
 
 // Number of elements implied by a shape array. `[]` (scalar) → 1.
-function numel(shape) {
+function numel(shape: ArrayLike<number>) {
   let n = 1;
   for (let i = 0; i < shape.length; i++) n *= shape[i];
   return n;
@@ -171,7 +171,7 @@ function numel(shape) {
 // Infer shape from a nested JS Array. Validates rectangularity at every
 // level; throws on ragged structure. Empty array → shape=[0]; nested
 // empties (e.g. [[]]) → shape=[1, 0].
-function inferShapeFromNested(arr) {
+function inferShapeFromNested(arr: any) {
   const shape: number[] = [];
   let cur = arr;
   while (Array.isArray(cur)) {
@@ -202,7 +202,7 @@ function inferShapeFromNested(arr) {
 // Flatten a (possibly nested) JS Array into a Float64Array in row-major
 // order. Caller has already validated rectangularity via
 // `inferShapeFromNested`.
-function flattenNested(arr, out, offset, depth, shape) {
+function flattenNested(arr: any, out: any, offset: number, depth: number, shape: ArrayLike<number>) {
   if (depth === shape.length) {
     out[offset] = +arr;
     return offset + 1;
@@ -217,16 +217,16 @@ function flattenNested(arr, out, offset, depth, shape) {
 // Accessors
 // ---------------------------------------------------------------------
 
-function getShape(v) { return v.shape; }
-function getData(v)  { return v.data; }
-function getDType(v) { return v.dtype || DEFAULT_DTYPE; }
-function getTag(v)   { return v.t || DEFAULT_TAG; }
+function getShape(v: any) { return v.shape; }
+function getData(v: any)  { return v.data; }
+function getDType(v: any) { return v.dtype || DEFAULT_DTYPE; }
+function getTag(v: any): string   { return v.t || DEFAULT_TAG; }
 
 // Tag bit extractors. Use these in dispatch code rather than equality
 // against the four state strings — they make "is this view swapped?"
 // and "is this view conjugated?" clear at the call site.
-function isTransposeView(v) { return _TAG_SWAPPED[getTag(v)]; }
-function isConjugateView(v) { return _TAG_CONJUGATED[getTag(v)]; }
+function isTransposeView(v: any) { return _TAG_SWAPPED[getTag(v)]; }
+function isConjugateView(v: any) { return _TAG_CONJUGATED[getTag(v)]; }
 
 // Storage shape — the dimensions of the underlying Float64Array as laid
 // out in memory, before applying the transpose tag. For a Value with
@@ -239,7 +239,7 @@ function isConjugateView(v) { return _TAG_CONJUGATED[getTag(v)]; }
 // atom for atom-batched matrices: shape=[N, m, n] with t='T' is
 // observationally an atom-batched matrix where every atom's m×n slice
 // is transposed to n×m.
-function _dataShape(v) {
+function _dataShape(v: any) {
   if (v.shape.length < 2) return v.shape;
   if (!isTransposeView(v)) return v.shape;
   const out = v.shape.slice();
@@ -253,14 +253,14 @@ function _dataShape(v) {
 // Structural predicate: is `v` a Value-shaped object? Cheap check used
 // by polymorphic dispatch sites (e.g. broadcast helpers in sampler.js)
 // to distinguish Value inputs from bare JS numbers / Float64Arrays.
-function isValue(v) {
+function isValue(v: any) {
   return v != null && typeof v === 'object'
     && Array.isArray(v.shape)
     && v.data instanceof Float64Array;
 }
 
 // Is `v` batched along an outer axis of size N?
-function isBatched(v, N) {
+function isBatched(v: any, N: number) {
   return v.shape.length > 0 && v.shape[0] === N;
 }
 
@@ -277,7 +277,7 @@ function isBatched(v, N) {
 // batched matrices shape=[N, m, n]) have their last two axes swapped,
 // matching the NumPy/JAX/PyTorch convention. This means transpose is
 // per-atom on atom-batched matrices: [N, m, n] → [N, n, m].
-function _swappedShape(shape) {
+function _swappedShape(shape: number[]) {
   if (shape.length < 2) return shape.slice();
   const out = shape.slice();
   const last = out.length - 1;
@@ -290,7 +290,7 @@ function _swappedShape(shape) {
 // transpose(v): toggles the swapped bit; flips shape entries for
 // rank-≥2 values. For scalars (rank 0) transpose is identity; for
 // vectors (rank 1) transpose toggles the tag without changing shape.
-function transpose(v) {
+function transpose(v: any) {
   if (!isValue(v)) throw new Error('transpose: argument is not a Value');
   const newTag = _TAG_TRANSPOSE[getTag(v)];
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
@@ -309,7 +309,7 @@ function transpose(v) {
 // the same as transpose. For real-valued data the conjugate bit is a
 // no-op observationally but the tag tracks it for correctness once
 // complex values arrive.
-function adjoint(v) {
+function adjoint(v: any) {
   if (!isValue(v)) throw new Error('adjoint: argument is not a Value');
   const newTag = _TAG_ADJOINT[getTag(v)];
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
@@ -322,7 +322,7 @@ function adjoint(v) {
 
 // conjugate(v): toggles only the conjugate bit; shape unchanged.
 // Real-valued no-op (still tag-tracked).
-function conjugate(v) {
+function conjugate(v: any) {
   if (!isValue(v)) throw new Error('conjugate: argument is not a Value');
   const newTag = _TAG_CONJUGATE[getTag(v)];
   const out: any = { shape: v.shape.slice(), data: v.data, t: newTag };
@@ -342,18 +342,18 @@ function conjugate(v) {
 // row_gram → sym, …) and their fast-paths land as pure additions.
 
 // Full bitmask (absent ⇒ dense; explicit 0 ⇒ all-zero matrix).
-function getStruct(v) {
+function getStruct(v: any) {
   return (v && v.struct !== undefined) ? v.struct : ST_DENSE;
 }
 // Occupancy sub-mask (low 3 bits).
-function structOcc(v) { return getStruct(v) & ST_OCC_MASK; }
+function structOcc(v: any) { return getStruct(v) & ST_OCC_MASK; }
 
 // Occupancy predicates. `isDiagStruct` is occupancy-diagonal-only; a
 // diag Value is additionally vector-backed (data length = m, not m²) —
 // `isDiagStored` is the storage-level check used before raw indexing.
-function isDenseStruct(v) { return structOcc(v) === ST_DENSE; }
-function isDiagStruct(v)  { return structOcc(v) === ST_DIAG; }
-function isDiagStored(v) {
+function isDenseStruct(v: any) { return structOcc(v) === ST_DENSE; }
+function isDiagStruct(v: any)  { return structOcc(v) === ST_DIAG; }
+function isDiagStored(v: any) {
   return isValue(v) && (v.struct & ST_OCC_MASK) === ST_DIAG
     && v.shape.length === 2 && v.shape[0] === v.shape[1]
     && v.data.length === v.shape[0];
@@ -363,7 +363,7 @@ function isDiagStored(v) {
 // m-vector diagonal (O(m) storage). Complex via parallel `im` (the
 // diagonal of a complex diagonal matrix). This is the one vector-backed
 // structured form (everything else is dense + flag in v1).
-function diagMatrix(diagVec, imVec) {
+function diagMatrix(diagVec: any, imVec?: any) {
   const d = diagVec instanceof Float64Array ? diagVec : Float64Array.from(diagVec);
   const m = d.length;
   const out: any = { shape: [m, m], data: d, struct: ST_DIAG };
@@ -384,7 +384,7 @@ function diagMatrix(diagVec, imVec) {
 // existing. Dense input is returned unchanged (no copy). Only the
 // vector-backed `diag` form needs real expansion in v1; flagged-dense
 // structures (tri/sym, later) just drop the flag.
-function densify(v) {
+function densify(v: any) {
   if (!isValue(v)) throw new Error('densify: argument is not a Value');
   if (v.struct === undefined || (v.struct & ST_OCC_MASK) === ST_DENSE) {
     return v;
@@ -441,7 +441,7 @@ function densify(v) {
 
 // Is `v` a complex Value? Cheap structural check used by op dispatch to
 // route the (re, im) buffer-wise algebra.
-function isComplexValue(v) {
+function isComplexValue(v: any) {
   return v != null && typeof v === 'object'
     && v.dtype === 'complex'
     && Array.isArray(v.shape)
@@ -451,13 +451,13 @@ function isComplexValue(v) {
 
 // Raw stored imaginary buffer (tag-'N' interpretation), or null for a
 // real Value. Prefer readComplex when you need the logical value.
-function getImag(v) { return (v && v.im instanceof Float64Array) ? v.im : null; }
+function getImag(v: any) { return (v && v.im instanceof Float64Array) ? v.im : null; }
 
 // Complex Value constructor. `re` and `im` are array-likes of equal
 // length; `shape` defaults to [length] (atom-batched scalar / vector,
 // disambiguated by the caller's N exactly like the real constructors).
 // Borrows Float64Array storage when given; copies otherwise.
-function complexValue(re, im, shape) {
+function complexValue(re: any, im: any, shape?: any) {
   const reD = re instanceof Float64Array ? re : Float64Array.from(re);
   const imD = im instanceof Float64Array ? im : Float64Array.from(im);
   if (reD.length !== imD.length) {
@@ -479,7 +479,7 @@ function complexValue(re, im, shape) {
 // The negation allocates a fresh buffer only when conjugated — the lazy
 // conj cost is realized here, at the one consumer that needs it. For a
 // real Value the imaginary part is an implicit zero buffer.
-function readComplex(v) {
+function readComplex(v: any) {
   if (!isComplexValue(v)) {
     return { re: v.data, im: new Float64Array(v.data.length) };
   }
@@ -494,7 +494,7 @@ function readComplex(v) {
 // ---------------------------------------------------------------------
 
 // Atom-indep scalar. `x` must be a JS number (or coercible).
-function scalar(x) {
+function scalar(x: any) {
   const data = new Float64Array(1);
   data[0] = +x;
   return { shape: [], data: data };
@@ -502,19 +502,19 @@ function scalar(x) {
 
 // Atom-batched scalar from an array-like of length N. Borrows
 // Float64Array storage when given; otherwise copies into one.
-function batchedScalar(arr) {
+function batchedScalar(arr: any) {
   const data = arr instanceof Float64Array ? arr : Float64Array.from(arr);
   return { shape: [data.length], data: data };
 }
 
 // Atom-indep vector (length k). Returned shape=[k].
-function vector(data) {
+function vector(data: any) {
   const out = data instanceof Float64Array ? data : Float64Array.from(data);
   return { shape: [out.length], data: out };
 }
 
 // Atom-batched vector. `flatData` length must be N*k; shape=[N, k].
-function batchedVector(flatData, k) {
+function batchedVector(flatData: any, k: number) {
   const data = flatData instanceof Float64Array ? flatData : Float64Array.from(flatData);
   if (data.length % k !== 0) {
     throw new Error('batchedVector: data length ' + data.length + ' not divisible by k=' + k);
@@ -524,7 +524,7 @@ function batchedVector(flatData, k) {
 }
 
 // Atom-indep matrix m×n. flatData row-major; length must equal m*n.
-function matrix(flatData, m, n) {
+function matrix(flatData: any, m: number, n: number) {
   const data = flatData instanceof Float64Array ? flatData : Float64Array.from(flatData);
   if (data.length !== m * n) {
     throw new Error('matrix: data length ' + data.length + ' != m*n = ' + (m * n));
@@ -534,7 +534,7 @@ function matrix(flatData, m, n) {
 
 // Atom-batched matrix. flatData atom-major over row-major slices.
 // length must be N*m*n.
-function batchedMatrix(flatData, m, n) {
+function batchedMatrix(flatData: any, m: number, n: number) {
   const data = flatData instanceof Float64Array ? flatData : Float64Array.from(flatData);
   if (data.length % (m * n) !== 0) {
     throw new Error('batchedMatrix: data length ' + data.length +
@@ -546,7 +546,7 @@ function batchedMatrix(flatData, m, n) {
 
 // Generic shape constructor — last resort when none of the typed
 // constructors fit. Validates that data length matches numel(shape).
-function withShape(flatData, shape) {
+function withShape(flatData: any, shape: number[]) {
   const data = flatData instanceof Float64Array ? flatData : Float64Array.from(flatData);
   const expected = numel(shape);
   if (data.length !== expected) {
@@ -566,7 +566,7 @@ function withShape(flatData, shape) {
 //   - Float64Array                             → shape=[length]
 //   - typed array (other)                      → shape=[length] after copy to F64
 //   - nested JS Array                          → row-major shape inferred
-function asValue(x) {
+function asValue(x: any): any {
   if (x === null || x === undefined) {
     throw new Error('asValue: null/undefined is not a value');
   }
@@ -600,7 +600,7 @@ function asValue(x) {
 // Extract a JS number from a shape=[] Value. Strict: anything else
 // throws. Use for engine-API-boundary conversions where the caller has
 // asserted scalarity.
-function asScalar(v) {
+function asScalar(v: any) {
   if (!v || !Array.isArray(v.shape) || !(v.data instanceof Float64Array)) {
     throw new Error('asScalar: argument is not a Value');
   }
@@ -612,7 +612,7 @@ function asScalar(v) {
 
 // Extract the underlying Float64Array(N) of a shape=[N] batched scalar.
 // Strict: any other shape (including [] or [N, k]) throws.
-function asBatch(v, N) {
+function asBatch(v: any, N: number) {
   if (!v || !Array.isArray(v.shape) || !(v.data instanceof Float64Array)) {
     throw new Error('asBatch: argument is not a Value');
   }
