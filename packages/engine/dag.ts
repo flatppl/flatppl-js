@@ -6,7 +6,7 @@ const { extractBoundaries, collectDeps, isMeasureExpr, computePhasesForScope } =
 // just the literal RHS; for disintegration results that have a
 // synthesized Plan, it returns the Plan's expression so the renderer
 // can treat them as bona-fide kernelof/lawof bindings.
-function eff(b) {
+function eff(b: any) {
   if (!b) return { value: null, deps: [], callDeps: [] };
   return {
     value:    b.effectiveValue    != null ? b.effectiveValue    : (b.node && b.node.value),
@@ -20,7 +20,7 @@ function eff(b) {
 //   'kernel'  — kernelof(x, ...) or functionof(measure, ...): a Markov kernel
 //   'function'— functionof(value, ...): a deterministic function
 //   'lambda'  — fn(...): a lambda
-function reificationKind(binding, bindings) {
+function reificationKind(binding: any, bindings: any) {
   if (!binding) return null;
   switch (binding.type) {
     case 'lawof':     return 'measure';
@@ -47,7 +47,7 @@ function reificationKind(binding, bindings) {
   }
 }
 
-function firstPositionalArg(callExpr) {
+function firstPositionalArg(callExpr: any) {
   if (!callExpr || !callExpr.args) return null;
   for (const arg of callExpr.args) {
     if (arg.type !== 'KeywordArg') return arg;
@@ -56,7 +56,7 @@ function firstPositionalArg(callExpr) {
 }
 
 // Collect every Placeholder reference (in `_name_` form) under an AST subtree.
-function collectPlaceholders(node, out) {
+function collectPlaceholders(node: any, out: Set<any>) {
   if (!node) return;
   if (node.type === 'Placeholder') {
     out.add('_' + (node.name || '') + '_');
@@ -85,9 +85,9 @@ function collectPlaceholders(node, out) {
 // Render an AST node to a short source-like string. Used both for node
 // labels (with default short maxLen) and hover tooltips (with a longer
 // maxLen). Recurses into compound expressions; truncates with "…".
-function renderExprShort(node, maxLen) {
+function renderExprShort(node: any, maxLen: number) {
   if (maxLen == null) maxLen = 24;
-  function r(n) {
+  function r(n: any): any {
     if (!n) return '';
     switch (n.type) {
       case 'Identifier':     return n.name;
@@ -159,9 +159,9 @@ function renderExprShort(node, maxLen) {
  *   * Reification scopes (functionof / kernelof / fn bodies) belong
  *     to a different namespace; we don't recurse into them.
  */
-function collectWrappedRefs(binding) {
-  const wrapped = new Map();
-  const direct = new Set();
+function collectWrappedRefs(binding: any) {
+  const wrapped = new Map<string, any>();
+  const direct = new Set<string>();
   if (!binding || !binding.node || !binding.node.value) {
     return { wrapped, direct };
   }
@@ -181,7 +181,7 @@ function collectWrappedRefs(binding) {
   return { wrapped, direct };
 }
 
-function classifyRefUsages(node, wrapped, direct, currentWrapper) {
+function classifyRefUsages(node: any, wrapped: Map<string, any>, direct: Set<string>, currentWrapper: any) {
   if (!node || typeof node !== 'object') return;
 
   if (node.type === 'Identifier') {
@@ -244,7 +244,7 @@ function classifyRefUsages(node, wrapped, direct, currentWrapper) {
   // refs, slice-all) carry no Identifier children we care about.
 }
 
-function computeSubDAG(bindings, nodeName) {
+function computeSubDAG(bindings: any, nodeName: string) {
   const binding = bindings.get(nodeName);
   if (!binding) return { nodes: [], edges: [] };
 
@@ -270,7 +270,7 @@ function computeSubDAG(bindings, nodeName) {
   const visited = new Map();
   const edges: any[] = [];
 
-  function visit(name, useEffective?) {
+  function visit(name: string, useEffective?: boolean) {
     if (visited.has(name)) return;
     const b = bindings.get(name);
     // Effective-RHS overlays apply only at the inspection root. Transitive
@@ -293,7 +293,7 @@ function computeSubDAG(bindings, nodeName) {
     // the plot pane can show a "semantically invalid" message
     // instead of a generic "not plottable".
     const errorDiags = b && b.diagnostics
-      ? b.diagnostics.filter(d => d.severity === 'error')
+      ? b.diagnostics.filter((d: any) => d.severity === 'error')
       : null;
 
     visited.set(name, {
@@ -520,23 +520,23 @@ function computeSubDAG(bindings, nodeName) {
  * (placeholder / hole IDs with `:` from reification scopes) keep
  * their bubbles — those are a different category.
  */
-function dissolveInternalIntermediates(nodes, edges) {
-  const internal = new Set();
+function dissolveInternalIntermediates(nodes: any[], edges: any[]) {
+  const internal = new Set<string>();
   for (const n of nodes) {
     if (n.id && n.id.charAt(0) === '%') internal.add(n.id);
   }
   if (internal.size === 0) return nodes;
   // Bucket edges by their internal-node endpoint.
-  const incoming = new Map(); // M -> [edges where target === M]
-  const outgoing = new Map(); // M -> [edges where source === M]
+  const incoming = new Map<string, any[]>(); // M -> [edges where target === M]
+  const outgoing = new Map<string, any[]>(); // M -> [edges where source === M]
   for (const e of edges) {
     if (internal.has(e.target)) {
       if (!incoming.has(e.target)) incoming.set(e.target, []);
-      incoming.get(e.target).push(e);
+      incoming.get(e.target)!.push(e);
     }
     if (internal.has(e.source)) {
       if (!outgoing.has(e.source)) outgoing.set(e.source, []);
-      outgoing.get(e.source).push(e);
+      outgoing.get(e.source)!.push(e);
     }
   }
   // Splice in→out edges for each internal node, preserving the
@@ -560,7 +560,7 @@ function dissolveInternalIntermediates(nodes, edges) {
       edges.splice(i, 1);
     }
   }
-  return nodes.filter((n) => !internal.has(n.id));
+  return nodes.filter((n: any) => !internal.has(n.id));
 }
 
 /**
@@ -580,7 +580,7 @@ function dissolveInternalIntermediates(nodes, edges) {
  * are skipped: their phase is hardcoded at construction and isn't a
  * function of source bindings.
  */
-function applyScopeLocalPhases(visited, reifications, bindings) {
+function applyScopeLocalPhases(visited: Map<string, any>, reifications: any[], bindings: any) {
   if (!reifications || reifications.length === 0) return;
 
   // Per-reification boundary set. extractBoundaries returns Map<argName, varName>;
@@ -600,7 +600,7 @@ function applyScopeLocalPhases(visited, reifications, bindings) {
   // kernels enclose smaller ones — sort by kernel size descending.
   // (Two unrelated reifications can have any order; their kernels
   // don't overlap so writes don't conflict.)
-  const ordered = reifications.slice().sort((a, b) => b.kernel.length - a.kernel.length);
+  const ordered = reifications.slice().sort((a: any, b: any) => b.kernel.length - a.kernel.length);
 
   // For each reification, accumulate the union of its own boundaries
   // plus all enclosing reifications' boundaries, then compute scope-
@@ -632,7 +632,7 @@ function applyScopeLocalPhases(visited, reifications, bindings) {
  * its kernel. Boundary inputs stop the trace, so kernels respect the
  * reification semantics rather than naive ancestor walks.
  */
-function computeReifications(bindings, visited, rootName) {
+function computeReifications(bindings: any, visited: Map<string, any>, rootName: string) {
   const out: any[] = [];
   for (const [name] of visited) {
     if (name.indexOf(':') !== -1) continue; // skip synthetic nodes
@@ -647,7 +647,7 @@ function computeReifications(bindings, visited, rootName) {
     if (b.disintegrateRole && name !== rootName) continue;
 
     const kernel = kernelNames(bindings, name);
-    const visibleKernel = new Set();
+    const visibleKernel = new Set<any>();
     for (const k of kernel) if (visited.has(k)) visibleKernel.add(k);
     // Include synthetic nodes (anon expression target, placeholder boundaries)
     // belonging to this reification.
@@ -669,7 +669,7 @@ function computeReifications(bindings, visited, rootName) {
     if (visited.has(syntheticTargetId)) {
       targets = [syntheticTargetId];
     } else {
-      targets = (e.deps || []).filter(d => !boundaryVars.has(d) && visited.has(d));
+      targets = (e.deps || []).filter((d: any) => !boundaryVars.has(d) && visited.has(d));
     }
 
     const kind = reificationKind(b, bindings);
@@ -683,7 +683,7 @@ function computeReifications(bindings, visited, rootName) {
 // is determined at compile time (literals and computations over literals).
 // Such a reification has no meaningful runtime scope to enclose; we render
 // it as just the hexagon (like `fn`), with no bubble or synthetic children.
-function isFnLike(bindings, bindingName) {
+function isFnLike(bindings: any, bindingName: string) {
   const b = bindings.get(bindingName);
   if (!b) return false;
   if (b.type !== 'lawof' && b.type !== 'functionof' && b.type !== 'kernelof') return false;
@@ -696,16 +696,16 @@ function isFnLike(bindings, bindingName) {
   return true;
 }
 
-function kernelNames(bindings, bindingName) {
+function kernelNames(bindings: any, bindingName: string) {
   const binding = bindings.get(bindingName);
-  if (!binding) return new Set();
-  let boundaryVars = new Set();
+  if (!binding) return new Set<string>();
+  let boundaryVars = new Set<any>();
   if (binding.type === 'functionof' || binding.type === 'kernelof') {
     const boundaries = extractBoundaries(eff(binding).value);
     if (boundaries) boundaryVars = new Set(boundaries.values());
   }
-  const visited = new Set();
-  function visit(name, useEffective) {
+  const visited = new Set<string>();
+  function visit(name: string, useEffective: boolean) {
     if (visited.has(name)) return;
     visited.add(name);
     if (boundaryVars.has(name)) return;
@@ -733,7 +733,7 @@ function kernelNames(bindings, bindingName) {
  * @param {number} line - 0-based line number
  * @param {number} [col] - optional 0-based column number
  */
-function findBindingAtLine(bindings, line, col) {
+function findBindingAtLine(bindings: any, line: number, col?: number) {
   if (col != null) {
     for (const b of bindings.values()) {
       const nl = b.nameLoc;
@@ -765,7 +765,7 @@ function findBindingAtLine(bindings, line, col) {
  * @param {Map} bindings
  * @returns {{ nodes: object[], edges: object[], reifications: object[] }}
  */
-function computeFullDAG(bindings) {
+function computeFullDAG(bindings: any) {
   if (!bindings || bindings.size === 0) {
     return { nodes: [], edges: [], reifications: [] };
   }
