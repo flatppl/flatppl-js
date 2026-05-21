@@ -1,5 +1,7 @@
 'use strict';
 
+import type { IRNode } from './engine-types';
+
 // =====================================================================
 // traceeval.js — pure-sampling walker for FlatPPL measure expressions
 // =====================================================================
@@ -61,7 +63,7 @@
 
 const samplerLib = require('./sampler.ts');
 
-function walk(state: any, ir: any, env: any, opts: any) {
+function walk(state: any, ir: IRNode, env: any, opts: any) {
   opts = opts || {};
   const ctx = {
     resolveRef: opts.resolveMeasureRef || null,
