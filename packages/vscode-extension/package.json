@@ -16,11 +16,14 @@
   },
   "main": "./extension.js",
   "scripts": {
-    "build:vendor": "node ./build-vendor.mjs",
-    "watch:vendor": "node ./build-vendor.mjs --watch"
+    "build:vendor":    "node ./build-vendor.mjs",
+    "watch:vendor":    "node ./build-vendor.mjs --watch",
+    "typecheck":       "tsc -p tsconfig.json",
+    "typecheck:watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {
     "@flatppl/engine": "*",
+    "@types/vscode": "^1.75.0",
     "esbuild": "^0.28.0",
     "cytoscape": "^3.30.4",
     "@dagrejs/dagre": "^3.0.0",

@@ -107,6 +107,38 @@ const viewerPkg = join(here, '..', 'viewer');
 await syncGrammars();
 
 // ---------------------------------------------------------------------
+// 2b. Transpile the extension's own TypeScript sources into the CommonJS
+//     .js files VS Code's Node host loads at runtime. The package.json
+//     `main` field points at `./extension.js`, and extension.ts has a
+//     `require('./src/visualPanel')` that resolves to `./src/visualPanel.js`
+//     — so the .ts sources need a `.js` sibling next to them.
+//
+// We deliberately do NOT bundle: one .ts → one .js preserves the existing
+// require graph (extension.js → ./lib/engine.min.js; visualPanel.js →
+// ../lib/engine.min.js) and keeps esbuild.transform purely type-stripping.
+// The two outputs are gitignored — regenerated on every build.
+
+const EXTENSION_TS_SOURCES = [
+  { in: 'extension.ts',       out: 'extension.js' },
+  { in: 'src/visualPanel.ts', out: 'src/visualPanel.js' },
+];
+
+for (const { in: inRel, out: outRel } of EXTENSION_TS_SOURCES) {
+  const src = await readFile(join(here, inRel), 'utf8');
+  const result = await esbuild.transform(src, {
+    loader: 'ts',
+    // engines.vscode = ^1.75 ships Node 16+; pin the target so newer
+    // language features don't slip past the runtime.
+    target: 'node16',
+    format: 'cjs',
+    sourcefile: inRel,
+  });
+  await mkdir(dirname(join(here, outRel)), { recursive: true });
+  await writeFile(join(here, outRel), result.code);
+  console.log(`  transpiled ${inRel} -> ${outRel}`);
+}
+
+// ---------------------------------------------------------------------
 // 3. Bundle the FlatPPL engine into a single browser-loadable IIFE so the
 //    webview can run the same parser/analyzer/DAG logic the extension
 //    host uses. The engine source lives in ../engine/ (workspace sibling)

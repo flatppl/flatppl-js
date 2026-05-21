@@ -1,0 +1,50 @@
+{
+  "// purpose":
+    "Type-checks the VS Code extension's TypeScript modules. esbuild",
+  "// rationale":
+    "stays the build pipeline (build-vendor.mjs strips types per-file);",
+  "//":
+    "tsc here is a lint-only step run via `npm run typecheck`.",
+
+  "// note":
+    "The extension is loaded by VS Code's Node host (CommonJS). Source",
+  "// note2":
+    "files use `const x = require(...)` rather than ES imports — this",
+  "// note3":
+    "tsconfig keeps that shape (module: commonjs) and uses",
+  "// note4":
+    "esModuleInterop so `const vscode = require('vscode')` still picks",
+  "// note5":
+    "up the @types/vscode declarations.",
+
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "node16",
+    "moduleResolution": "node16",
+    "lib": ["es2020"],
+    "types": ["node", "vscode"],
+
+    "noEmit": true,
+
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "useUnknownInCatchVariables": false,
+
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": [
+    "extension.ts",
+    "src/**/*.ts",
+    "types/**/*.d.ts"
+  ]
+}

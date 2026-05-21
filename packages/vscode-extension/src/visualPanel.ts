@@ -19,6 +19,19 @@ class FlatPPLPanel {
   static currentPanel = undefined;
   static viewType = 'flatpplPanel';
 
+  // Class fields used as bag-of-state by the legacy constructor /
+  // updateSource path. Declared `any` so the migration stays a pure
+  // type-stripping pass; tighten incrementally if/when the panel
+  // surface is reworked.
+  _panel: any;
+  _context: any;
+  _sourceUri: any;
+  _navUri: any;
+  _navBaseLine: any;
+  _readOnly: any;
+  _webviewReady: any;
+  _pendingMessages: any;
+
   static createOrShow(context) {
     const column = vscode.ViewColumn.Beside;
     if (FlatPPLPanel.currentPanel) {
@@ -179,7 +192,7 @@ class FlatPPLPanel {
    * webview and means one engine codebase serves both the VS Code panel
    * and the future standalone web preview.
    */
-  updateSource(source, targetName, sourceUri, pushHistory, opts) {
+  updateSource(source, targetName, sourceUri, pushHistory, opts?) {
     if (opts && opts.readOnly) {
       // Embedded cursor-follow: re-center on a binding while keeping
       // the snapshot read-only (write-back stays refused) and the
