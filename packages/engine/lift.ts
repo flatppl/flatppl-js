@@ -70,7 +70,7 @@ const {
  * params come via kwargs, all of type 'value'); their kwargs are
  * handled separately in the visitor.
  */
-function argSignature(op, numArgs) {
+function argSignature(op: string, numArgs: number): string[] | null {
   if (op === 'draw')                              return ['measure'];
   if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
   if (op === 'normalize')                         return ['measure'];
@@ -142,7 +142,7 @@ function argSignature(op, numArgs) {
  * Currently every op we know about that takes kwargs uses them for
  * value parameters — distribution constructors and arithmetic.
  */
-function opUsesValueKwargs(op) {
+function opUsesValueKwargs(op: string) {
   return SAMPLEABLE_DISTRIBUTIONS.has(op) || EVALUABLE_OPS.has(op);
 }
 
@@ -152,7 +152,7 @@ function opUsesValueKwargs(op) {
  * appear after lifting; we don't redirect to the analyzer because
  * pulling it in here would create a cycle.
  */
-function inferSyntheticType(astNode) {
+function inferSyntheticType(astNode: any) {
   if (!astNode) return 'call';
   if (astNode.type === 'CallExpr' && astNode.callee && astNode.callee.type === 'Identifier') {
     switch (astNode.callee.name) {
@@ -227,7 +227,7 @@ const PLACEHOLDER_SUB_PREFIX = '@placeholder:';
  * affected bindings, we deep-clone the node so the original AST stays
  * pristine for editor diagnostics and round-trip rendering.
  */
-function canonicalizeImplicitBoundaries(bindings) {
+function canonicalizeImplicitBoundaries(bindings: any) {
   if (!bindings || bindings.size === 0) return bindings;
   const out: Map<string, any> = new Map(bindings);
 
@@ -239,7 +239,7 @@ function canonicalizeImplicitBoundaries(bindings) {
     const args = callExpr.args || [];
     if (args.length === 0) continue;
     // Already has explicit boundary kwargs → don't auto-promote.
-    if (args.slice(1).some((a) => a && a.type === 'KeywordArg')) continue;
+    if (args.slice(1).some((a: any) => a && a.type === 'KeywordArg')) continue;
 
     const bodyAst = args[0];
     if (!bodyAst) continue;
@@ -251,7 +251,7 @@ function canonicalizeImplicitBoundaries(bindings) {
     // body refs to that name resolve normally through self-scope,
     // and the boundary kwarg's surface name matches the spec's
     // "leaf nodes become the inputs of the reified callable" wording.
-    const newKwargs = leaves.map((leafName) => ({
+    const newKwargs = leaves.map((leafName: any) => ({
       type: 'KeywordArg',
       name: leafName,
       value: { type: 'Identifier', name: leafName, loc: bodyAst.loc || null },
@@ -276,7 +276,7 @@ function canonicalizeImplicitBoundaries(bindings) {
  * signatureOf used to do internally; centralised here so the
  * canonicalize pass is the single source of truth.
  */
-function bfsImplicitElementofLeavesAst(bodyAst, bindings) {
+function bfsImplicitElementofLeavesAst(bodyAst: any, bindings: any) {
   const seen = new Set();
   const leaves: any[] = [];
   const queue: any[] = [];
@@ -295,7 +295,7 @@ function bfsImplicitElementofLeavesAst(bodyAst, bindings) {
     if (b.node && b.node.value) collectIds(b.node.value, queue);
   }
   return leaves;
-  function collectIds(node, into) {
+  function collectIds(node: any, into: any[]) {
     if (node == null || typeof node !== 'object') return;
     if (Array.isArray(node)) { for (const c of node) collectIds(c, into); return; }
     if (node.type === 'Identifier') into.push(node.name);
@@ -303,7 +303,7 @@ function bfsImplicitElementofLeavesAst(bodyAst, bindings) {
   }
 }
 
-function liftInlineSubexpressions(bindings) {
+function liftInlineSubexpressions(bindings: any) {
   // Canonicalise implicit-boundary functionof / kernelof first.
   // After this, the lifted IR carries explicit ir.params, so every
   // downstream consumer (signatureOf, inlineOnce, _lowerReification)
@@ -313,14 +313,14 @@ function liftInlineSubexpressions(bindings) {
   const out: Map<string, any> = new Map(bindings);
   let counter = 0;
   function freshName() {
-    let n;
+    let n: string;
     do { n = '__anon' + (counter++); } while (out.has(n));
     return n;
   }
-  function makeIdent(name, loc) {
+  function makeIdent(name: string, loc: any) {
     return { type: 'Identifier', name, loc: loc || null };
   }
-  function makeSyntheticBinding(name, ast) {
+  function makeSyntheticBinding(name: string, ast: any) {
     return {
       name,
       names: [name],
@@ -399,10 +399,10 @@ function liftInlineSubexpressions(bindings) {
   }
   return out;
 
-  function cloneAst(node) {
+  function cloneAst(node: any): any {
     if (node == null || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(cloneAst);
-    const copy = {};
+    const copy: Record<string, any> = {};
     for (const k in node) copy[k] = cloneAst(node[k]);
     return copy;
   }
@@ -413,7 +413,7 @@ function liftInlineSubexpressions(bindings) {
   // recursive with visit() through their internal `visit(astArg)` call
   // — that's how deep nesting flattens out one anon at a time.
 
-  function visit(astNode) {
+  function visit(astNode: any) {
     if (!astNode) return;
     if (astNode.type === 'BinaryExpr') {
       astNode.left  = liftValue(astNode.left);
@@ -481,7 +481,7 @@ function liftInlineSubexpressions(bindings) {
   // b = 2 * _))` — without this guard, the record's kwarg lifting
   // would pull each hole-containing kwarg into a separate anon
   // binding and clear the function's parameter list.
-  function containsHoleOrPlaceholder(astNode) {
+  function containsHoleOrPlaceholder(astNode: any): boolean {
     if (!astNode || typeof astNode !== 'object') return false;
     if (astNode.type === 'Hole' || astNode.type === 'Placeholder') return true;
     for (const k of Object.keys(astNode)) {
@@ -495,7 +495,7 @@ function liftInlineSubexpressions(bindings) {
     return false;
   }
 
-  function liftMeasure(astArg) {
+  function liftMeasure(astArg: any) {
     if (!astArg) return astArg;
     astArg = inlineUserCall(astArg);
     visit(astArg);
@@ -506,7 +506,7 @@ function liftInlineSubexpressions(bindings) {
     return makeIdent(name, astArg.loc);
   }
 
-  function liftValue(astArg) {
+  function liftValue(astArg: any) {
     if (!astArg) return astArg;
     astArg = inlineUserCall(astArg);
     visit(astArg);
@@ -528,7 +528,7 @@ function liftInlineSubexpressions(bindings) {
     return astArg;
   }
 
-  function liftMeasureOrValue(astArg) {
+  function liftMeasureOrValue(astArg: any) {
     // lawof's argument can be either; lift any non-trivial expression
     // for uniformity (visit recurses into it first to handle nested
     // measure-arg positions).
@@ -556,7 +556,7 @@ function liftInlineSubexpressions(bindings) {
   // bottoming out on the function's body. Bodies are deep-cloned
   // per call site so different invocations don't share mutated trees.
 
-  function inlineUserCall(astArg) {
+  function inlineUserCall(astArg: any) {
     // Iterate to a fixed point — inlined body might itself be (or
     // contain at its root) another user call (chained: f then g),
     // a jointchain that rewrites to a joint of further user calls,
@@ -604,7 +604,7 @@ function liftInlineSubexpressions(bindings) {
    *
    * Mirrors inlineFchain in shape.
    */
-  function inlineBroadcasted(astArg) {
+  function inlineBroadcasted(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr' || !astArg.callee) return astArg;
     let bcCall: any = null;
     if (astArg.callee.type === 'CallExpr'
@@ -622,7 +622,7 @@ function liftInlineSubexpressions(bindings) {
       }
     }
     if (!bcCall) return astArg;
-    const fns = (bcCall.args || []).filter(a => a && a.type !== 'KeywordArg');
+    const fns = (bcCall.args || []).filter((a: any) => a && a.type !== 'KeywordArg');
     if (fns.length !== 1) return astArg;
     const fArg = fns[0];
 
@@ -630,7 +630,7 @@ function liftInlineSubexpressions(bindings) {
     // the synthesized fn. Kwargs aren't supported through broadcasted
     // today (the user would write them through plain broadcast).
     const callerArgs = astArg.args || [];
-    const posArgs = callerArgs.filter(a => a && a.type !== 'KeywordArg');
+    const posArgs = callerArgs.filter((a: any) => a && a.type !== 'KeywordArg');
     if (posArgs.length === 0) return astArg;
     const holes = new Array(posArgs.length);
     for (let i = 0; i < posArgs.length; i++) {
@@ -670,7 +670,7 @@ function liftInlineSubexpressions(bindings) {
    * kernelof / bijection binding; inline `fn(...)` / `functionof(...)`
    * shapes get hoisted to anon bindings here.
    */
-  function inlinePushfwdLift(astArg) {
+  function inlinePushfwdLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'pushfwd') return astArg;
@@ -697,7 +697,7 @@ function liftInlineSubexpressions(bindings) {
    * and treat it as a constant). Inline fn / functionof shapes get
    * hoisted to anon bindings; bare identifiers stay as-is.
    */
-  function inlineBijectionLift(astArg) {
+  function inlineBijectionLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'bijection') return astArg;
@@ -717,7 +717,7 @@ function liftInlineSubexpressions(bindings) {
     return astArg;
   }
 
-  function inlineFilterLift(astArg) {
+  function inlineFilterLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'filter') return astArg;
@@ -745,7 +745,7 @@ function liftInlineSubexpressions(bindings) {
    * call as a normal evaluate node, so once logdensityof has a
    * derivation, densityof inherits the cascade for free.
    */
-  function inlineDensityof(astArg) {
+  function inlineDensityof(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'densityof') return astArg;
@@ -780,7 +780,7 @@ function liftInlineSubexpressions(bindings) {
    * applied just classifies as unsupported — fchain bindings are
    * function values, not measures).
    */
-  function inlineFchain(astArg) {
+  function inlineFchain(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee) return astArg;
     let fchainCall: any = null;
@@ -799,7 +799,7 @@ function liftInlineSubexpressions(bindings) {
       }
     }
     if (!fchainCall) return astArg;
-    const fns = (fchainCall.args || []).filter(a => a && a.type !== 'KeywordArg');
+    const fns = (fchainCall.args || []).filter((a: any) => a && a.type !== 'KeywordArg');
     if (fns.length === 0) return astArg;
     // Build f1(args), then f2(f1(args)), …, fN(…). Each fn[i] becomes
     // a callee — must be an Identifier so inlineOnce can substitute.
@@ -807,7 +807,7 @@ function liftInlineSubexpressions(bindings) {
       if (!f || f.type !== 'Identifier') return astArg;
     }
     const callerArgs = (astArg.args || []).map(cloneAst);
-    let result = {
+    let result: any = {
       type: 'CallExpr',
       callee: cloneAst(fns[0]),
       args: callerArgs,
@@ -844,7 +844,7 @@ function liftInlineSubexpressions(bindings) {
    * through (and ends up "not derivable" if no other classifier handles
    * it).
    */
-  function inlineRelabel(astArg) {
+  function inlineRelabel(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'relabel') return astArg;
@@ -865,8 +865,8 @@ function liftInlineSubexpressions(bindings) {
     if (names.length === 0) return astArg;
 
     const loc = astArg.loc;
-    const kw = (name, value) => ({ type: 'KeywordArg', name, value, loc });
-    const recordCall = (kwargs) => ({
+    const kw = (name: string, value: any) => ({ type: 'KeywordArg', name, value, loc });
+    const recordCall = (kwargs: any) => ({
       type: 'CallExpr',
       callee: { type: 'Identifier', name: 'record', loc },
       args: kwargs, loc,
@@ -877,16 +877,16 @@ function liftInlineSubexpressions(bindings) {
     if (argExpr.type === 'ArrayLiteral') {
       const argElems = argExpr.elements || argExpr.elems || [];
       if (argElems.length !== names.length) return astArg;
-      return recordCall(names.map((n, i) => kw(n, argElems[i])));
+      return recordCall(names.map((n: string, i: number) => kw(n, argElems[i])));
     }
 
     // Inline record(...) source: rename by position.
     if (argExpr.type === 'CallExpr' && argExpr.callee
         && argExpr.callee.type === 'Identifier' && argExpr.callee.name === 'record'
         && Array.isArray(argExpr.args)) {
-      const recArgs = argExpr.args.filter(a => a && a.type === 'KeywordArg');
+      const recArgs = argExpr.args.filter((a: any) => a && a.type === 'KeywordArg');
       if (recArgs.length !== names.length) return astArg;
-      return recordCall(names.map((n, i) => kw(n, recArgs[i].value)));
+      return recordCall(names.map((n: string, i: number) => kw(n, recArgs[i].value)));
     }
 
     // Identifier pointing at another binding. Look up the binding's
@@ -906,12 +906,12 @@ function liftInlineSubexpressions(bindings) {
       if (targetAst && targetAst.type === 'ArrayLiteral') {
         const targetElems = targetAst.elements || targetAst.elems || [];
         if (targetElems.length !== names.length) return astArg;
-        return recordCall(names.map((n, i) => kw(n, targetElems[i])));
+        return recordCall(names.map((n: string, i: number) => kw(n, targetElems[i])));
       }
       if (targetAst && targetAst.type === 'CallExpr' && targetAst.callee
           && targetAst.callee.type === 'Identifier' && targetAst.callee.name === 'record'
           && Array.isArray(targetAst.args)) {
-        const targetKwargs = targetAst.args.filter(a => a && a.type === 'KeywordArg');
+        const targetKwargs = targetAst.args.filter((a: any) => a && a.type === 'KeywordArg');
         if (targetKwargs.length !== names.length) return astArg;
         // Reuse the source record's kwarg VALUES verbatim (they're
         // already lifted to Identifier refs after the source binding
@@ -919,7 +919,7 @@ function liftInlineSubexpressions(bindings) {
         // outer visit pass). Synthesising FieldAccess (src.a) instead
         // would force the lowerer to introduce get_field nodes that
         // no measure-op classifier handles, breaking the cascade.
-        return recordCall(names.map((n, i) => kw(n, targetKwargs[i].value)));
+        return recordCall(names.map((n: string, i: number) => kw(n, targetKwargs[i].value)));
       }
       // Identifier pointing at neither — fall through.
     }
@@ -932,7 +932,7 @@ function liftInlineSubexpressions(bindings) {
     return astArg;
   }
 
-  function inlineOnce(astArg) {
+  function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     const fnName = astArg.callee.name;
@@ -1018,7 +1018,7 @@ function liftInlineSubexpressions(bindings) {
     //   - anything else (complex boundary expr) → use the surface
     //     name as a fallback; real boundary surgery deferred.
     const surfaceOrder: any[] = [];
-    const internalForSurface = {};
+    const internalForSurface: Record<string, any> = {};
     for (let i = 1; i < fnAst.args.length; i++) {
       const a = fnAst.args[i];
       if (a.type !== 'KeywordArg') continue;
@@ -1070,19 +1070,19 @@ function liftInlineSubexpressions(bindings) {
       if (arg0.type === 'CallExpr' && arg0.callee
           && arg0.callee.type === 'Identifier'
           && arg0.callee.name === 'record') {
-        const fieldNames = new Set();
+        const fieldNames = new Set<string>();
         for (const f of (arg0.args || [])) {
           if (f.type === 'KeywordArg') fieldNames.add(f.name);
         }
-        if (surfaceOrder.every(n => fieldNames.has(n))) {
-          splatted = (arg0.args || []).filter(f => f.type === 'KeywordArg');
+        if (surfaceOrder.every((n: string) => fieldNames.has(n))) {
+          splatted = (arg0.args || []).filter((f: any) => f.type === 'KeywordArg');
         }
       } else if (arg0.type === 'Identifier') {
         const recBinding = out.get(arg0.name);
         const t = recBinding && recBinding.inferredType;
         if (t && t.kind === 'record' && t.fields
-            && surfaceOrder.every(n => n in t.fields)) {
-          splatted = surfaceOrder.map(name => ({
+            && surfaceOrder.every((n: string) => n in t.fields)) {
+          splatted = surfaceOrder.map((name: string) => ({
             type: 'KeywordArg',
             name,
             value: { type: 'FieldAccess', object: cloneAst(arg0), field: name, loc: arg0.loc },
@@ -1123,7 +1123,7 @@ function liftInlineSubexpressions(bindings) {
     // other bindings), the closure is empty and this collapses to a
     // pure body-level substitution — same as the pre-closure-walk
     // behaviour.
-    const boundaries = new Set();
+    const boundaries = new Set<string>();
     for (const k in argMap) boundaries.add(k);
 
     const closure = computeClosure(bodyAst, boundaries);
@@ -1183,11 +1183,11 @@ function liftInlineSubexpressions(bindings) {
    * through their operands without special-casing — substitution
    * propagates through any tree shape.
    */
-  function computeClosure(bodyAst, boundaries) {
+  function computeClosure(bodyAst: any, boundaries: Set<string>) {
     const closure = new Set<string>();
     const visiting = new Set<string>();
 
-    function walk(name) {
+    function walk(name: string) {
       if (closure.has(name) || visiting.has(name)) return;
       if (boundaries.has(name)) return;          // boundary, will be substituted
       // Look up in the post-lift map first so lift-introduced anons
@@ -1206,7 +1206,7 @@ function liftInlineSubexpressions(bindings) {
       collectRefsAst(b.node && b.node.value);
       visiting.delete(name);
     }
-    function collectRefsAst(node) {
+    function collectRefsAst(node: any) {
       if (node == null || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) collectRefsAst(c); return; }
       if (node.type === 'Identifier') walk(node.name);
@@ -1216,9 +1216,9 @@ function liftInlineSubexpressions(bindings) {
     return Array.from(closure);
   }
 
-  function substituteIdents(ast, sub) {
+  function substituteIdents(ast: any, sub: any): any {
     if (ast == null || typeof ast !== 'object') return ast;
-    if (Array.isArray(ast)) return ast.map(c => substituteIdents(c, sub));
+    if (Array.isArray(ast)) return ast.map((c: any) => substituteIdents(c, sub));
     if (ast.type === 'Identifier' && sub[ast.name]) {
       // Replace with a clone of the substitute so mutations to either
       // side don't bleed across the boundary.
@@ -1230,7 +1230,7 @@ function liftInlineSubexpressions(bindings) {
       // Identifier substitutions when both shapes appear in the body.
       return cloneAst(sub[PLACEHOLDER_SUB_PREFIX + ast.name]);
     }
-    const out = {};
+    const out: Record<string, any> = {};
     for (const k in ast) out[k] = substituteIdents(ast[k], sub);
     return out;
   }
@@ -1239,25 +1239,25 @@ function liftInlineSubexpressions(bindings) {
   // corresponding positional arg. Holes whose `positional[i]` is
   // undefined stay as Hole (unbound — caller's responsibility to
   // flag the missing arg).
-  function substituteHolesPositional(ast, positional) {
+  function substituteHolesPositional(ast: any, positional: any[]) {
     let i = 0;
-    function walk(node) {
+    function walk(node: any): any {
       if (node == null || typeof node !== 'object') return node;
       if (Array.isArray(node)) return node.map(walk);
       if (node.type === 'Hole') {
         const arg = positional[i++];
         return arg ? cloneAst(arg) : node;
       }
-      const out = {};
+      const out: Record<string, any> = {};
       for (const k in node) out[k] = walk(node[k]);
       return out;
     }
     return walk(ast);
   }
 
-  function countHoles(ast) {
+  function countHoles(ast: any) {
     let n = 0;
-    (function walk(node) {
+    (function walk(node: any) {
       if (node == null || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
       if (node.type === 'Hole') { n++; return; }
@@ -1273,7 +1273,7 @@ function liftInlineSubexpressions(bindings) {
  * not 100% sure the evaluator handles, so the orchestrator can short-
  * circuit before involving the worker.
  */
-function isEvaluable(ir) {
+function isEvaluable(ir: any): boolean {
   if (!ir) return false;
   switch (ir.kind) {
     case 'lit':         return typeof ir.value === 'number' || typeof ir.value === 'boolean';
