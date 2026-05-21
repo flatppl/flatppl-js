@@ -26,7 +26,9 @@ packages/viewer/vendor/
 # `npm run build` (or `npm run watch`) under packages/web/ to refresh.
 packages/web/dist/
 
-# Coverage reports from `npm run test:coverage` (Node's built-in
-# --experimental-test-coverage with the lcov reporter). Uploaded to
-# Codecov by the CI workflow; not committed.
+# Coverage reports from `npm run test:coverage` (c8 — Node's built-in
+# --experimental-test-coverage doesn't instrument type-stripped .ts,
+# so the lcov.info ended up empty; c8 reads V8-coverage directly and
+# produces real per-file data). Uploaded to Codecov by the CI workflow;
+# not committed.
 packages/*/coverage/
