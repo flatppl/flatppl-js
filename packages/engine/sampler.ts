@@ -171,7 +171,7 @@ const randDirac = {
 // Lebesgue); pdf returns 1/0 indicator so density-overlay calls
 // don't crash, but viewer-side fixed-Dirac rendering bypasses this
 // and renders the surface form as text.
-function DiracCtor(value) {
+function DiracCtor(this: any, value) {
   this.value = +value;
   this.mean = +value;
   this.variance = 0;
@@ -181,7 +181,7 @@ function DiracCtor(value) {
 DiracCtor.prototype.pdf      = function(x) { return x === this.value ? 1 : 0; };
 DiracCtor.prototype.logpdf   = function(x) { return x === this.value ? 0 : -Infinity; };
 DiracCtor.prototype.cdf      = function(x) { return x < this.value ? 0 : 1; };
-DiracCtor.prototype.quantile = function(_p) { return this.value; };
+DiracCtor.prototype.quantile = function(this: any, _p) { return this.value; };
 
 // ---------------------------------------------------------------------
 // Synthetic Logistic and Weibull distributions
@@ -227,27 +227,27 @@ const randLogistic = {
   },
 };
 
-function LogisticCtor(mu, s) {
+function LogisticCtor(this: any, mu, s) {
   this.mu = +mu; this.s = +s;
   this.mean = +mu;
   this.variance = (s * s) * (Math.PI * Math.PI) / 3;
   this.stdev = Math.sqrt(this.variance);
   this.support = [-Infinity, Infinity];
 }
-LogisticCtor.prototype.pdf = function (x) {
+LogisticCtor.prototype.pdf = function(this: any, x) {
   const z = (x - this.mu) / this.s;
   const ez = Math.exp(-z);
   const denom = 1 + ez;
   return ez / (this.s * denom * denom);
 };
-LogisticCtor.prototype.logpdf = function (x) {
+LogisticCtor.prototype.logpdf = function(this: any, x) {
   const z = (x - this.mu) / this.s;
   return -z - Math.log(this.s) - 2 * Math.log(1 + Math.exp(-z));
 };
-LogisticCtor.prototype.cdf = function (x) {
+LogisticCtor.prototype.cdf = function(this: any, x) {
   return 1 / (1 + Math.exp(-(x - this.mu) / this.s));
 };
-LogisticCtor.prototype.quantile = function (p) {
+LogisticCtor.prototype.quantile = function(this: any, p) {
   if (p <= 0) return -Infinity;
   if (p >= 1) return Infinity;
   return this.mu + this.s * Math.log(p / (1 - p));
@@ -282,7 +282,7 @@ const randWeibull = {
   },
 };
 
-function WeibullCtor(shape, scale) {
+function WeibullCtor(this: any, shape, scale) {
   // FlatPPL spec names: shape (k), scale (λ).
   this.k = +shape; this.lambda = +scale;
   // Mean = λ · Γ(1 + 1/k); variance = λ² · (Γ(1 + 2/k) − Γ(1 + 1/k)²).
@@ -291,13 +291,13 @@ function WeibullCtor(shape, scale) {
   // back to quantile-based bounds.
   this.support = [0, Infinity];
 }
-WeibullCtor.prototype.pdf = function (x) {
+WeibullCtor.prototype.pdf = function(this: any, x) {
   if (x < 0) return 0;
   if (x === 0) return this.k === 1 ? 1 / this.lambda : (this.k > 1 ? 0 : Infinity);
   const z = x / this.lambda;
   return (this.k / this.lambda) * Math.pow(z, this.k - 1) * Math.exp(-Math.pow(z, this.k));
 };
-WeibullCtor.prototype.logpdf = function (x) {
+WeibullCtor.prototype.logpdf = function(this: any, x) {
   if (x < 0) return -Infinity;
   if (x === 0) {
     if (this.k === 1) return -Math.log(this.lambda);
@@ -308,11 +308,11 @@ WeibullCtor.prototype.logpdf = function (x) {
        + (this.k - 1) * Math.log(z)
        - Math.pow(z, this.k);
 };
-WeibullCtor.prototype.cdf = function (x) {
+WeibullCtor.prototype.cdf = function(this: any, x) {
   if (x <= 0) return 0;
   return 1 - Math.exp(-Math.pow(x / this.lambda, this.k));
 };
-WeibullCtor.prototype.quantile = function (p) {
+WeibullCtor.prototype.quantile = function(this: any, p) {
   if (p <= 0) return 0;
   if (p >= 1) return Infinity;
   return this.lambda * Math.pow(-Math.log(1 - p), 1 / this.k);
@@ -373,16 +373,16 @@ const randGeneralizedNormal = {
   },
 };
 
-function GeneralizedNormalCtor(mean, alpha, beta) {
+function GeneralizedNormalCtor(this: any, mean, alpha, beta) {
   this.mean  = +mean;
   this.alpha = +alpha;
   this.beta  = +beta;
   this.support = [-Infinity, Infinity];
 }
-GeneralizedNormalCtor.prototype.pdf = function (x) {
+GeneralizedNormalCtor.prototype.pdf = function(this: any, x) {
   return Math.exp(this.logpdf(x));
 };
-GeneralizedNormalCtor.prototype.logpdf = function (x) {
+GeneralizedNormalCtor.prototype.logpdf = function(this: any, x) {
   const a = this.alpha, b = this.beta;
   const z = Math.abs(x - this.mean) / a;
   return Math.log(b) - Math.log(2 * a) - stdlibGammaln(1 / b) - Math.pow(z, b);
@@ -428,17 +428,17 @@ const randInverseGamma = {
   },
 };
 
-function InverseGammaCtor(shape, scale) {
+function InverseGammaCtor(this: any, shape, scale) {
   this.shape = +shape;
   this.scale = +scale;
   this.support = [0, Infinity];
 }
-InverseGammaCtor.prototype.pdf = function (x) {
+InverseGammaCtor.prototype.pdf = function(this: any, x) {
   if (x <= 0) return 0;
   // β^α / Γ(α) · x^(-α-1) · exp(-β/x)
   return Math.exp(this.logpdf(x));
 };
-InverseGammaCtor.prototype.logpdf = function (x) {
+InverseGammaCtor.prototype.logpdf = function(this: any, x) {
   if (x <= 0) return -Infinity;
   const a = this.shape, b = this.scale;
   return a * Math.log(b) - stdlibGammaln(a) - (a + 1) * Math.log(x) - b / x;
@@ -522,30 +522,30 @@ const randCategorical0 = {
   },
 };
 
-function CategoricalCtor(p) {
+function CategoricalCtor(this: any, p) {
   this.p = p;
   this.support = [1, p.length];
 }
-CategoricalCtor.prototype.pmf = function (k) {
+CategoricalCtor.prototype.pmf = function(this: any, k) {
   const idx = (k | 0) - 1;
   return (idx < 0 || idx >= this.p.length) ? 0 : this.p[idx];
 };
-CategoricalCtor.prototype.logpmf = function (k) { return _catLogpmf(k, this.p, 1); };
+CategoricalCtor.prototype.logpmf = function(this: any, k) { return _catLogpmf(k, this.p, 1); };
 // .pdf as alias so density() — which dispatches on `discrete` flag — works.
 CategoricalCtor.prototype.pdf    = function (k) { return this.pmf(k); };
-CategoricalCtor.prototype.logpdf = function (k) { return this.logpmf(k); };
+CategoricalCtor.prototype.logpdf = function(this: any, k) { return this.logpmf(k); };
 
-function Categorical0Ctor(p) {
+function Categorical0Ctor(this: any, p) {
   this.p = p;
   this.support = [0, p.length - 1];
 }
-Categorical0Ctor.prototype.pmf = function (k) {
+Categorical0Ctor.prototype.pmf = function(this: any, k) {
   const idx = k | 0;
   return (idx < 0 || idx >= this.p.length) ? 0 : this.p[idx];
 };
-Categorical0Ctor.prototype.logpmf = function (k) { return _catLogpmf(k, this.p, 0); };
+Categorical0Ctor.prototype.logpmf = function(this: any, k) { return _catLogpmf(k, this.p, 0); };
 Categorical0Ctor.prototype.pdf    = function (k) { return this.pmf(k); };
-Categorical0Ctor.prototype.logpdf = function (k) { return this.logpmf(k); };
+Categorical0Ctor.prototype.logpdf = function(this: any, k) { return this.logpmf(k); };
 
 function logpdfCategorical(x, p)  { return _catLogpmf(x, p, 1); }
 function logpdfCategorical0(x, p) { return _catLogpmf(x, p, 0); }
