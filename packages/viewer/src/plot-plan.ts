@@ -243,7 +243,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   var sourceName = resolveMeasureAlias(name, ctx.derivationsState.derivations,
                                        ctx.currentBindings);
   if (sourceName && sourceName !== name) {
-    var sourceBinding = ctx.currentBindings.get(sourceName);
+    var sourceBinding = ctx.currentBindings!.get(sourceName);
     if (sourceBinding) {
       var sourcePlan = buildPlotPlan(ctx, sourceBinding);
       if (sourcePlan) {

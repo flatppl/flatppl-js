@@ -161,6 +161,24 @@ export interface DerivationBase {
   [extra: string]: any;
 }
 
+/**
+ * The output shape of `buildDerivations(bindings)` — the canonical
+ * orchestrator surface every consumer (viewer Ctx.derivationsState,
+ * materialiser dispatch, density walker) reads through.
+ *
+ * `bindings` is the post-lift binding Map (some lifts inject extra
+ * synthetic bindings). `derivations` is keyed by binding name; values
+ * are loose for now (DerivationBase) — see DerivationKind for the
+ * tag inventory. `fixedValues` is the pre-eval cache for fixed-phase
+ * bindings; `discrete` is per-name resolved-leaf discreteness.
+ */
+export interface DerivationsState {
+  bindings: Map<string, any>;
+  derivations: Record<string, DerivationBase>;
+  fixedValues: Map<string, any>;
+  discrete: Record<string, boolean>;
+}
+
 // ---------------------------------------------------------------------
 // EmpiricalMeasure (engine-concepts §2)
 // ---------------------------------------------------------------------

@@ -58,7 +58,7 @@ export function canPersistActive(ctx: Ctx, plan: any): boolean {
 
 export function buildPersistedPresetLine(ctx: Ctx, plan: any): string {
   var active = activePresetFor(ctx, plan);
-  var b = ctx.currentBindings.get(plan.presetName);
+  var b = ctx.currentBindings!.get(plan.presetName);
   var srcArgs = b.node.value.args || [];
   const parts: string[] = [];
   for (var i = 0; i < srcArgs.length; i++) {
@@ -89,7 +89,7 @@ export function persistActive(ctx: Ctx, plan: any): void {
 }
 
 export function persistNamedPreset(ctx: Ctx, plan: any): void {
-  var b = ctx.currentBindings.get(plan.presetName);
+  var b = ctx.currentBindings!.get(plan.presetName);
   var newText = buildPersistedPresetLine(ctx, plan);
   try {
     ctx.host.editSource({
@@ -211,7 +211,7 @@ export function persistDomain(ctx: Ctx, plan: any): void {
 }
 
 export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
-  var b = ctx.currentBindings.get(plan.domainName);
+  var b = ctx.currentBindings!.get(plan.domainName);
   var srcArgs = b.node.value.args || [];
   var override = domainOverrideEntryFor(ctx, plan);
   var or = (override && override.ranges) || {};
@@ -231,7 +231,7 @@ export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
 }
 
 export function persistNamedDomain(ctx: Ctx, plan: any): void {
-  var b = ctx.currentBindings.get(plan.domainName);
+  var b = ctx.currentBindings!.get(plan.domainName);
   var newText = buildPersistedDomainLine(ctx, plan);
   try {
     ctx.host.editSource({

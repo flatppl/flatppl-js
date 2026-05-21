@@ -127,7 +127,7 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
     }
     var ir = sig.body;
     ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
-      ir, ctx.derivationsState.derivations);
+      ir, ctx.derivationsState!.derivations);
     // expandMeasureRefsInIR fails closed for refs whose derivation
     // was pruned by buildDerivations (e.g. `x` here, because its
     // distIR depends on the parameterized `mu`). The kernel-sample
@@ -136,12 +136,12 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
     // bindings fallback to recover from binding.ir directly.
     if (ir && ir.kind === 'ref' && ir.ns === 'self') {
       var expanded = FlatPPLEngine.orchestrator.expandMeasureIR(
-        ir.name, ctx.derivationsState.derivations,
-        undefined, ctx.derivationsState.bindings);
+        ir.name, ctx.derivationsState!.derivations,
+        undefined, ctx.derivationsState!.bindings);
       if (expanded) ir = expanded;
     }
     ir = FlatPPLEngine.orchestrator.inlineForProfile(
-      ir, paramNames, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
+      ir, paramNames, ctx.derivationsState!.bindings, ctx.derivationsState!.derivations);
     ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
 
     // Captured self-refs (outer-scope stochastic / fixed bindings
