@@ -17,7 +17,7 @@ function parse(tokens, variant) {
   // existing call sites that pass only `tokens` working.
   const v = variant || require('./variants.ts').FLATPPL;
 
-  const diagnostics = [];
+  const diagnostics: any[] = [];
   let pos = 0;
 
   function peek() { return tokens[pos]; }
@@ -397,7 +397,7 @@ function parse(tokens, variant) {
     // Array literal [a, b, c]
     if (at(T.LBRACKET)) {
       const lbracket = advance(); // [
-      const elements = [];
+      const elements: any[] = [];
       if (!at(T.RBRACKET)) {
         elements.push(parseExpr());
         while (at(T.COMMA)) {
@@ -425,7 +425,7 @@ function parse(tokens, variant) {
   }
 
   function parseArgList() {
-    const args = [];
+    const args: any[] = [];
     if (at(T.RPAREN)) return args;
 
     // FlatPPJ allows a Julia-style semicolon separator that switches
@@ -515,7 +515,7 @@ function parse(tokens, variant) {
   }
 
   function parseIndexList() {
-    const indices = [];
+    const indices: any[] = [];
     indices.push(parseIndexArg());
     while (at(T.COMMA)) {
       advance();
@@ -573,7 +573,7 @@ function parse(tokens, variant) {
       }
     }
 
-    const names = [];
+    const names: any[] = [];
     checkReservedName(peek());
     names.push(AST.Identifier(peek().value, peek().loc));
     advance();
@@ -636,8 +636,8 @@ function parse(tokens, variant) {
   // --- Program ---
 
   function parseProgram() {
-    const body = [];
-    const comments = [];
+    const body: any[] = [];
+    const comments: any[] = [];
 
     skipNewlines();
     while (!at(T.EOF)) {
