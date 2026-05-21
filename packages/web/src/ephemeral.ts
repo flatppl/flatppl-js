@@ -35,24 +35,24 @@
   }
 
   /** True iff `path` was added to the ephemeral store this session. */
-  function has(path) { return store.has(path); }
+  function has(path: any) { return store.has(path); }
 
   /** Get the source text for `path`, or undefined when not stored. */
-  function get(path) { return store.get(path); }
+  function get(path: any) { return store.get(path); }
 
   /** Snapshot of every ephemeral entry, in insertion order. Returns
       an array of `{ path, text }` so the caller can render them
       without mutating the underlying map. */
   function list() {
     var out: any[] = [];
-    store.forEach(function (text, path) { out.push({ path: path, text: text }); });
+    store.forEach(function (text: any, path: any) { out.push({ path: path, text: text }); });
     return out;
   }
 
   /** Stash a new ephemeral entry. Overwrites any previous entry at
       the same path silently — the caller is responsible for
       collision-avoidance (use `nextUntitled` for default names). */
-  function add(path, text) {
+  function add(path: any, text: any) {
     store.set(path, text);
     emit();
   }
@@ -61,20 +61,20 @@
       path isn't in the store (the editor's onChange fires for every
       keystroke; we don't want it to silently re-introduce a deleted
       file). */
-  function update(path, text) {
+  function update(path: any, text: any) {
     if (!store.has(path)) return;
     store.set(path, text);
     // Don't emit — content changes shouldn't redraw the tree.
   }
 
   /** Drop an entry. */
-  function remove(path) {
+  function remove(path: any) {
     if (!store.delete(path)) return;
     emit();
   }
 
   /** Subscribe to add/remove events. Returns an unsubscribe function. */
-  function subscribe(fn) {
+  function subscribe(fn: any) {
     listeners.add(fn);
     return function () { listeners.delete(fn); };
   }
@@ -84,7 +84,7 @@
       visually in any path-sorted display AND don't collide with
       real `demo/`, `examples/` paths. The numeric suffix
       increments past any path already in the store. */
-  function nextUntitled(extension) {
+  function nextUntitled(extension: any) {
     var ext = extension || '.flatppl';
     var n = 1;
     for (;;) {

@@ -36,7 +36,7 @@
    * Returns the text on success; throws on network/HTTP error.
    * Cached on first success.
    */
-  async function fetchSource(url) {
+  async function fetchSource(url: any) {
     if (sourceCache.has(url)) return sourceCache.get(url);
 
     var response;
@@ -60,7 +60,7 @@
    * implementation (which will populate `sources` with transitive
    * `.flatppl` deps).
    */
-  async function resolveBundle(primaryPath) {
+  async function resolveBundle(primaryPath: any) {
     // Ephemeral (unsaved) sources live in an in-memory store the
     // user populates via the gallery's "+ New file" button. Consult
     // it before the network so an ephemeral path resolves without
@@ -93,7 +93,7 @@
    * re-fetches. Useful when something on the host signals that a
    * file has changed (e.g. a future "reload" button).
    */
-  function invalidate(pathOrUrl) {
+  function invalidate(pathOrUrl: any) {
     var url;
     try { url = new URL(pathOrUrl, document.baseURI).href; }
     catch (_) { url = pathOrUrl; }

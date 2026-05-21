@@ -54,7 +54,7 @@
       undefined as "fall back to FlatPPL". Wraps the engine's
       variantForPath helper so any future detection rules land in
       one place. */
-  function variantIdForPath(path) {
+  function variantIdForPath(path: any) {
     if (!window.FlatPPLEngine || !window.FlatPPLEngine.variants) return undefined;
     var v = window.FlatPPLEngine.variants.variantForPath(path);
     return v ? v.id : undefined;
@@ -74,7 +74,7 @@
    * landing in subsequent steps). If the engine isn't ready yet, we
    * fall back to plain text so the pane stays useful.
    */
-  function showSource(text, label) {
+  function showSource(text: any, label?: any) {
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
     // Playground mode: write through the CodeMirror editor instead
     // of the read-only <pre>. The editor's setSource is silent (no
@@ -116,7 +116,7 @@
   /** Tiny debounce: collapse rapid calls into one delayed call.
       Used by the playground's onChange path so the viewer re-renders
       after the user pauses typing rather than on every keystroke. */
-  function debounce(fn, ms) {
+  function debounce(fn: any, ms: any) {
     var t: any = null;
     return function () {
       var args = arguments;
@@ -132,7 +132,7 @@
     try { return window.localStorage && window.localStorage.getItem(EDIT_STORAGE_KEY) === '1'; }
     catch (_) { return false; }
   }
-  function writeEditPref(on) {
+  function writeEditPref(on: any) {
     try { if (window.localStorage) window.localStorage.setItem(EDIT_STORAGE_KEY, on ? '1' : '0'); }
     catch (_) {}
   }
@@ -170,7 +170,7 @@
       editor and restores the read-only <pre> in place with whatever
       text was in the editor (so user edits survive a toggle off+on
       within the same session). */
-  async function setEditMode(on) {
+  async function setEditMode(on: any) {
     var toggleBtn = document.getElementById('edit-toggle');
     var sourcePane = document.getElementById('source-pane');
     if (on === !!playgroundEditor) {
@@ -204,7 +204,7 @@
       var initial = lastRenderedSource != null ? lastRenderedSource : '';
       playgroundEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
         initialSource: initial,
-        onChange: debounce(function (text) {
+        onChange: debounce(function (text: any) {
           if (!viewer) return;
           var cur = window.FlatPPLWebRouter.parseHash();
           // Push edits back into the ephemeral store so they survive
@@ -217,7 +217,7 @@
           viewer.update(text, cur.target || null,
             { variant: variantIdForPath(cur.model) });
         }, 250),
-        onNavigate: function (name) {
+        onNavigate: function (name: any) {
           var cur = window.FlatPPLWebRouter.parseHash();
           window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
         },
@@ -248,7 +248,7 @@
       content didn't change. Lets binding-click navigation (which only
       changes the focused target, not the source) avoid an innerHTML
       rewrite and the brief flicker that would come with it. */
-  function showSourceIfChanged(text, label) {
+  function showSourceIfChanged(text: any, label?: any) {
     if (text === lastRenderedSource) {
       if (sourceHeader) sourceHeader.textContent = label || 'Source';
       return;
@@ -256,7 +256,7 @@
     showSource(text, label);
   }
 
-  function showError(label, err) {
+  function showError(label: any, err: any) {
     var msg = '# Error\n# ' + (err && err.message || String(err));
     showSource(msg, label || 'error');
     if (viewer && typeof viewer.update === 'function') viewer.update(msg);
@@ -266,7 +266,7 @@
       the left pane. Ephemeral entries (created via "+ New file") get
       their own section above the manifest so the unsaved files are
       easy to find regardless of how many manifest entries there are. */
-  function renderTree(currentModel) {
+  function renderTree(currentModel: any) {
     if (!fileTree) return;
     fileTree.innerHTML = '';
 
@@ -322,7 +322,7 @@
       A one-line comment is friendlier than an empty buffer — the
       user can delete it or build from it. The variant comes from
       the file extension; the engine handles the rest. */
-  function starterSourceFor(path) {
+  function starterSourceFor(path: any) {
     return '# ' + path + ' — new ephemeral file (session-only, not saved to disk).\n';
   }
 
@@ -330,7 +330,7 @@
       gallery accepts: strip surrounding whitespace, prepend `new/`
       if missing, append a default extension when none of the three
       known surface-variant extensions are present. */
-  function normalizeEphemeralPath(raw) {
+  function normalizeEphemeralPath(raw: any) {
     var s = String(raw || '').trim();
     if (!s) return null;
     if (s.indexOf('/') === -1) s = 'new/' + s;
@@ -353,7 +353,7 @@
     if (!path) return;
     // Collision check across both the manifest and the ephemeral store.
     var collidesWithManifest = manifest && manifest.entries
-      && manifest.entries.some(function (e) { return e.path === path; });
+      && manifest.entries.some(function (e: any) { return e.path === path; });
     if (eph.has(path) || collidesWithManifest) {
       window.alert('Path already exists: ' + path);
       return;
@@ -365,12 +365,12 @@
     window.FlatPPLWebRouter.navigateTo({ model: path });
   }
 
-  function onTreeClick(ev) {
+  function onTreeClick(ev: any) {
     var path = ev.currentTarget.dataset.path;
     if (path) window.FlatPPLWebRouter.navigateTo({ model: path });
   }
 
-  async function applyState(state) {
+  async function applyState(state: any) {
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
 
@@ -451,7 +451,7 @@
       encodes both the model and the focused binding). Walks up from
       ev.target so clicks on the text inside a span hit the same
       handler as clicks on the span itself. */
-  function onSourceClick(ev) {
+  function onSourceClick(ev: any) {
     var el = ev.target;
     while (el && el !== sourceView) {
       if (el.dataset && el.dataset.binding) {
@@ -572,7 +572,7 @@
     // is the source of truth for navigation state, no per-tab storage
     // needed yet.
     var webHost = {
-      revealSourceLine: function (line) {
+      revealSourceLine: function (line: any) {
         // Playground mode: scroll the CodeMirror editor and place
         // the cursor at the start of the target line.
         if (playgroundEditor && typeof playgroundEditor.revealLine === 'function') {
@@ -594,7 +594,7 @@
         el.offsetWidth;
         el.classList.add('src-line-flash');
       },
-      setTitle: function (name) {
+      setTitle: function (name: any) {
         // Reflect the focused binding in the browser tab; the model
         // name still leads the title.
         var cur = window.FlatPPLWebRouter.parseHash();
@@ -609,7 +609,7 @@
           stale target out of the hash. The router de-dupes
           identical hashes, so the call is a no-op when no state
           change is needed. */
-      setTarget: function (name) {
+      setTarget: function (name: any) {
         var cur = window.FlatPPLWebRouter.parseHash();
         window.FlatPPLWebRouter.navigateTo({
           model: cur.model,
@@ -624,7 +624,7 @@
           or cancelled. Returns Promise<string|null>. Validation
           uses the engine's isValidBindingName (shared with the
           extension host) so the rules don't drift. */
-      promptForName: function (args) {
+      promptForName: function (args: any) {
         var FE = window.FlatPPLEngine;
         var existing = new Set(args.existingNames || []);
         var current = args.suggested || 'preset';
@@ -653,7 +653,7 @@
           re-renders the viewer via the debounced refresh; the
           rebuildDerivations reconciliation drops any matching
           override on the next pass. */
-      editSource: function (args) {
+      editSource: function (args: any) {
         if (!playgroundEditor) return Promise.resolve(false);
         var src = playgroundEditor.getSource();
         if (args.range) {
@@ -661,7 +661,7 @@
           for (var i = 0; i < src.length; i++) {
             if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
           }
-          function offsetOf(loc) {
+          function offsetOf(loc: any) {
             var ls = lineStarts[loc.line];
             return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
           }

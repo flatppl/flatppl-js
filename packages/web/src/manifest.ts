@@ -35,7 +35,7 @@
   var MANIFEST_URL = 'models.json';
 
   /** Strip everything before the last '/' from a path. */
-  function basename(p) {
+  function basename(p: any) {
     var i = p.lastIndexOf('/');
     return i < 0 ? p : p.slice(i + 1);
   }
@@ -47,7 +47,7 @@
    * yields an empty array. Unknown top-level fields are preserved
    * for forward compatibility.
    */
-  function normalize(raw) {
+  function normalize(raw: any) {
     var out: { title: string; entries: any[] } = {
       title:   typeof raw.title === 'string' ? raw.title : 'FlatPPL',
       entries: [],
@@ -72,7 +72,7 @@
    * (for the gallery, missing manifest is non-fatal — fall back to
    * the inline-source path or a "no models" placeholder).
    */
-  async function load(url) {
+  async function load(url?: any) {
     url = url || MANIFEST_URL;
     var response;
     try {
