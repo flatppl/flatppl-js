@@ -5,6 +5,7 @@
 // materialiseConcreteMeasure has done the substitution.
 // renderFixedRecord handles a record-shaped fixed-phase value.
 
+import type { Ctx, FixedRecordPlan, KernelSamplePlan } from './types';
 import { nameSeed } from './orchestration.js';
 import { materialiseConcreteMeasure } from './plot-plan.js';
 import { buildPresetControl } from './render-controls.js';
@@ -15,7 +16,7 @@ import { showPlotMessage } from './render-frame.js';
 import { renderConstantRecord } from './render-record.js';
 import { defaultValueForLeafType, esc } from './util.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
-export function renderFixedRecord(ctx, plan) {
+export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
   showPlotMessage(ctx, 'Loading…', { hint: true });
   var planForCall = plan;
   getMeasure(ctx, plan.name).then(function(measure) {
@@ -28,9 +29,10 @@ export function renderFixedRecord(ctx, plan) {
   });
 }
 
-export function renderKernelSampleForCurrent(ctx) {
-  var plan = ctx.currentPlotPlan;
-  if (!plan || plan.mode !== 'kernel-sample') return;
+export function renderKernelSampleForCurrent(ctx: Ctx) {
+  const planAny = ctx.currentPlotPlan;
+  if (!planAny || planAny.mode !== 'kernel-sample') return;
+  const plan: KernelSamplePlan = planAny;
   var sig = plan.signature;
   var inputByKwarg = {};
   for (var k = 0; k < sig.inputs.length; k++) {
@@ -161,7 +163,7 @@ export function renderKernelSampleForCurrent(ctx) {
   });
 }
 
-export function renderKernelSampleMeasure(ctx, measure, plan) {
+export function renderKernelSampleMeasure(ctx: Ctx, measure: any, plan: KernelSamplePlan) {
   // Always wire the input-selection toolbar when the plan has
   // axes — the "auto" option still carries useful information
   // even without user-declared presets, and the control stays
