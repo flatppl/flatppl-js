@@ -339,7 +339,7 @@ function _lowerIdentifier(node, ctx) {
 // is also the single place that knows the operator→builtin map
 // (BIN_OP_MAP / UN_OP_MAP); the parser never duplicates it.
 function _synthOpFunctionof(opName, arity) {
-  const params = [], paramKwargs = [], paramSources = [], bodyArgs = [];
+  const params: any[] = [], paramKwargs: any[] = [], paramSources: any[] = [], bodyArgs: any[] = [];
   for (let i = 1; i <= arity; i++) {
     const p = `_arg${i}_`;
     params.push(p);
@@ -418,7 +418,7 @@ function _lowerCallExpr(node, ctx) {
   // for IR purposes the head-shape distinction (op vs target) is enough.
   // Built-in names are listed in `builtins.ALL_KNOWN`.
 
-  const args = [];
+  const args: any[] = [];
   const kwargs = {};
   let hasKwargs = false;
   for (const arg of node.args) {
@@ -462,9 +462,9 @@ function _lowerBroadcast(node, ctx) {
     // "no function argument" error (parity with the old path).
     return { kind: 'call', op: 'broadcast', loc: node.loc };
   }
-  const posArgs = [];
+  const posArgs: any[] = [];
   const kwargs = {};
-  const kwOrder = [];
+  const kwOrder: string[] = [];
   let hasKwargs = false;
   for (const arg of node.args.slice(1)) {
     if (arg.type === 'KeywordArg') {
@@ -519,8 +519,8 @@ function _lowerReification(op, node, ctx) {
     throw new Error(`lower: ${op}'s first argument must be the body, not a kwarg`);
   }
 
-  const params = [];
-  const paramKwargs = [];
+  const params: any[] = [];
+  const paramKwargs: any[] = [];
   // paramSources records the structural origin of each boundary kwarg
   // so downstream UI (profile-plot auto-range) can resolve it to an
   // empirical range or a set restriction *retroactively* — at plot
@@ -529,7 +529,7 @@ function _lowerReification(op, node, ctx) {
   // getMeasure(name) for 'binding' sources to compute a 4-σ-quantile
   // range; for 'placeholder' sources it consults the corresponding
   // elementof binding's set restriction.
-  const paramSources = [];
+  const paramSources: any[] = [];
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg.type !== 'KeywordArg') {
@@ -625,7 +625,7 @@ function _lowerFn(node, ctx) {
   // Build a synthesized `functionof(<body>, arg1=_arg1_, …)` AST and
   // delegate to the existing reification lowering. One code path,
   // no duplicate scope-tracking logic.
-  const kwargs = [];
+  const kwargs: any[] = [];
   for (let i = 1; i <= numHoles; i++) {
     kwargs.push({
       type: 'KeywordArg',
@@ -657,8 +657,8 @@ function _lowerFn(node, ctx) {
 // source order), `args: […]` for any positional half.
 
 function _lowerFieldsForm(op, node, ctx) {
-  const args = [];
-  const fields = [];
+  const args: any[] = [];
+  const fields: any[] = [];
   for (const arg of node.args) {
     if (arg.type === 'KeywordArg') {
       fields.push({ name: arg.name, value: _lowerExpr(arg.value, ctx) });
@@ -683,7 +683,7 @@ function _lowerFieldsForm(op, node, ctx) {
 // `standard_module(name, version)` — purely positional (just the path/version).
 
 function _lowerModuleLoad(op, node, ctx) {
-  const args = [];
+  const args: any[] = [];
   const assigns = {};
   let hasAssigns = false;
   for (const arg of node.args) {
