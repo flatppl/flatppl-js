@@ -44,7 +44,32 @@
 // ir-shared, lift, signatures), so the orchestrator's facade
 // re-bind is a one-way edge.
 
-import type { BindingInfo, DerivationBase, IRNode } from './engine-types';
+import type {
+  BindingInfo,
+  Derivation,
+  DerivationAlias,
+  DerivationArray,
+  DerivationBase,
+  DerivationBayesupdate,
+  DerivationBroadcastLogdensity,
+  DerivationEvaluate,
+  DerivationIid,
+  DerivationJointchain,
+  DerivationKernelBroadcast,
+  DerivationLogdensityof,
+  DerivationMvNormal,
+  DerivationNormalize,
+  DerivationPushfwd,
+  DerivationRecord,
+  DerivationSample,
+  DerivationSelect,
+  DerivationSuperpose,
+  DerivationTotalmass,
+  DerivationTruncate,
+  DerivationTuple,
+  DerivationWeighted,
+  IRNode,
+} from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
@@ -509,7 +534,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
  * NOT a sample. This is what gives variates and their measures the
  * same cached samples.
  */
-function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingInfo>) {
+function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingInfo>): Derivation | null {
   if (!binding || !binding.node || !binding.node.value) return null;
 
   // Read the lowered IR cached by liftInlineSubexpressions. The IR is
@@ -711,7 +736,7 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
 // in MEASURE_OP_CLASSIFIERS plus the corresponding handler function;
 // no edits to the dispatch loop in classifyDerivation.
 
-function classifyWeighted(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyWeighted(rhsIR: IRNode, ast: any, bindings: any): DerivationWeighted | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const weightAst = ast.args[0];
   const baseAst   = ast.args[1];
@@ -733,7 +758,7 @@ function classifyWeighted(rhsIR: IRNode, ast: any, bindings: any) {
   return null;
 }
 
-function classifyLogWeighted(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyLogWeighted(rhsIR: IRNode, ast: any, bindings: any): DerivationWeighted | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const weightAst = ast.args[0];
   const baseAst   = ast.args[1];
@@ -752,7 +777,7 @@ function classifyLogWeighted(rhsIR: IRNode, ast: any, bindings: any) {
   return null;
 }
 
-function classifyNormalize(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyNormalize(rhsIR: IRNode, ast: any, bindings: any): DerivationNormalize | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
   const baseAst = ast.args[0];
   const baseName = resolveMeasureBaseName(baseAst, bindings);
@@ -760,7 +785,7 @@ function classifyNormalize(rhsIR: IRNode, ast: any, bindings: any) {
   return { kind: 'normalize', from: baseName };
 }
 
-function classifySuperpose(rhsIR: IRNode, ast: any, bindings: any) {
+function classifySuperpose(rhsIR: IRNode, ast: any, bindings: any): DerivationSuperpose | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
   const fromNames: any[] = [];
   for (let i = 0; i < rhsIR.args.length; i++) {
@@ -844,7 +869,7 @@ function resolveCategoricalP(ir: any, bindings: any, seen: any) {
 // (null) unless the container is a vector/tuple of self-refs AND the
 // index resolves to a closed-form Categorical — plain deterministic
 // `xs[k]` indexing is untouched.
-function classifyStochasticIndex(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyStochasticIndex(rhsIR: IRNode, ast: any, bindings: any): DerivationSelect | null {
   if (rhsIR.op !== 'get' || !Array.isArray(rhsIR.args)
       || rhsIR.args.length !== 2) return null;
   const containerIR = rhsIR.args[0];
@@ -903,7 +928,7 @@ function classifyStochasticIndex(rhsIR: IRNode, ast: any, bindings: any) {
 // conditions are documented deferrals; classifyIfelse returns null
 // for them, so value-valued ifelse stays on the evaluator path
 // untouched.
-function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelect | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 3) return null;
   if (!ast || !Array.isArray(ast.args) || ast.args.length !== 3) return null;
   // A branch is either a NAMED measure binding (resolveMeasureBaseName)
@@ -922,7 +947,7 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any) {
   const aB = resolveBranch(ast.args[1], rhsIR.args[1]);
   const bB = resolveBranch(ast.args[2], rhsIR.args[2]);
   if (!aB || !bB) return null;
-  const call = (op: any, args: any) => ({ kind: 'call', op, args });
+  const call = (op: any, args: any): IRNode => ({ kind: 'call', op, args });
   const lit1 = { kind: 'lit', value: 1 };
   // Realised selector for SAMPLING (matSelect): the condition binding
   // — a {0,1} Bernoulli variate. Density only needs the per-branch
@@ -992,7 +1017,7 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any) {
 // joint to the same `tuple` derivation kind used for array literals
 // of measure refs; downstream matTuple materialises a positional
 // EmpiricalMeasure (SoA across the components).
-function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */) {
+function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */): DerivationRecord | DerivationTuple | null {
   if (Array.isArray(rhsIR.fields) && rhsIR.fields.length > 0) {
     const fields: Record<string, any> = {};
     for (const f of rhsIR.fields) {
@@ -1015,7 +1040,7 @@ function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */) {
   return null;
 }
 
-function classifyIid(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyIid(rhsIR: IRNode, ast: any, bindings: any): DerivationIid | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
@@ -1041,7 +1066,7 @@ function classifyIid(rhsIR: IRNode, ast: any, bindings: any) {
 // follow-ups (TODO §04). Per-element shape resolution + sampling
 // happens in matKernelBroadcast (length K is data-driven, resolved at
 // materialise time — unlike iid's static integer dims).
-function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationKernelBroadcast | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
   const k = rhsIR.args[0];
   // Bare distribution-constructor kernel, not shadowed by a binding.
@@ -1065,7 +1090,7 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any) {
 // single-point logdensityof over the points — tractable M ⇒ no
 // sampling. The principled FlatPIR-codegen path can later replace
 // this with tests + this reference under it.
-function classifyBroadcastLogdensity(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyBroadcastLogdensity(rhsIR: IRNode, ast: any, bindings: any): DerivationBroadcastLogdensity | null {
   if (rhsIR.op !== 'broadcast' || !Array.isArray(rhsIR.args)
       || rhsIR.args.length !== 3) return null;
   const fIR = rhsIR.args[0];
@@ -1086,7 +1111,7 @@ function classifyBroadcastLogdensity(rhsIR: IRNode, ast: any, bindings: any) {
 // pts). Try the logdensity form first; fall back to kernel-broadcast
 // (which only matches a bare SAMPLEABLE head, so the two never
 // collide).
-function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationBroadcastLogdensity | DerivationKernelBroadcast | null {
   return classifyBroadcastLogdensity(rhsIR, ast, bindings)
       || classifyKernelBroadcast(rhsIR, ast, bindings);
 }
@@ -1107,7 +1132,7 @@ function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any) {
 //     (x is itself a variate) are deferred — they require encoding
 //     the observation into refArrays per atom, an extra path the
 //     materialiser doesn't yet take.
-function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): DerivationLogdensityof | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const Mref   = rhsIR.args[0];
   const obsIR  = rhsIR.args[1];
@@ -1129,7 +1154,7 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any) {
  * N atoms. Supported when M is a self-ref to a measure binding the
  * orchestrator can materialise (anything expandMeasureIR handles).
  */
-function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any): DerivationTotalmass | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
   const Mref = rhsIR.args[0];
   if (!isSelfRef(Mref)) return null;
@@ -1151,7 +1176,7 @@ function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any) {
  *     named real / integer / boolean sets. Dynamic sets defer to a
  *     future pass — they'd require per-atom set membership evaluation.
  */
-function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any): DerivationTruncate | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
@@ -1174,7 +1199,7 @@ function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any) {
 // pushfwd's f-position lift signature (see signatureOf) lifts inline
 // fn / functionof shapes to anon bindings, so by the time we classify
 // here both args are self-refs.
-function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any) {
+function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPushfwd | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const fIR = rhsIR.args[0];
   const mIR = rhsIR.args[1];
@@ -1228,7 +1253,7 @@ function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any) {
  * classify" → the binding surfaces an error rather than being
  * silently mis-handled).
  */
-function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any) {
+function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): DerivationJointchain | null {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
   const marginalize = (rhsIR.op === 'kchain');
@@ -2387,7 +2412,7 @@ function expandMeasurePos(node: any, derivations: any, visited: any) {
 // without introducing a new IR-evaluator call. Future work: lift
 // this into a true AST rewrite once we have a worker primitive that
 // directly evaluates `logdensityof` calls inside arithmetic IR.
-function classifyBayesupdate(binding: any, bindings: any) {
+function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate | null {
   // Walk the L→K chain through cached IR rather than AST. The lowerer
   // canonicalises kernelof → functionof and fn → functionof, so we
   // only need to check for op === 'functionof' here regardless of
