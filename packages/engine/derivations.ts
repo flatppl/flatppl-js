@@ -431,7 +431,7 @@ function buildDerivations(bindings) {
   // vanished — instead of the user hitting a confusing plot-time
   // error far from the cause. The broader stochastic-side overloading
   // is real debt tracked for the derivation-kind unification refactor.
-  const diagnostics = [];
+  const diagnostics: any[] = [];
   const OBJECT_BINDING_TYPES = new Set([
     'input', 'functionof', 'fn', 'kernelof', 'bijection', 'lawof',
     'likelihood',
@@ -636,7 +636,7 @@ function classifyDerivation(binding, bindings) {
     // arrays, refs, computed entries) can be added later.
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'vector'
         && Array.isArray(rhsIR.args) && rhsIR.args.length > 0) {
-      const values = [];
+      const values: any[] = [];
       let allNumericLits = true;
       for (const a of rhsIR.args) {
         if (a && a.kind === 'lit' && typeof a.value === 'number') {
@@ -657,7 +657,7 @@ function classifyDerivation(binding, bindings) {
       // analogue of recordMeasure, but positional). Each ref must
       // have a derivation.
       let allRefs = true;
-      const elems = [];
+      const elems: any[] = [];
       for (const a of rhsIR.args) {
         if (a && a.kind === 'ref' && a.ns === 'self') {
           elems.push(a.name);
@@ -759,7 +759,7 @@ function classifyNormalize(rhsIR, ast, bindings) {
 
 function classifySuperpose(rhsIR, ast, bindings) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
-  const fromNames = [];
+  const fromNames: any[] = [];
   for (let i = 0; i < rhsIR.args.length; i++) {
     const baseName = resolveMeasureBaseName(ast.args[i], bindings);
     if (baseName == null) return null;
@@ -852,7 +852,7 @@ function classifyStochasticIndex(rhsIR, ast, bindings) {
   const cb = bindings.get(containerIR.name);
   if (!cb || !cb.ir || cb.ir.kind !== 'call' || cb.ir.op !== 'vector'
       || !Array.isArray(cb.ir.args) || cb.ir.args.length === 0) return null;
-  const branches = [];
+  const branches: any[] = [];
   for (const el of cb.ir.args) {
     if (!el || el.kind !== 'ref' || el.ns !== 'self') return null;
     branches.push({ ref: el.name });
@@ -868,7 +868,7 @@ function classifyStochasticIndex(rhsIR, ast, bindings) {
   const pIR = cat.pIR;
   const litVec = (pIR.kind === 'call' && pIR.op === 'vector'
     && Array.isArray(pIR.args) && pIR.args.length === K) ? pIR.args : null;
-  const logweightIRs = [];
+  const logweightIRs: any[] = [];
   for (let k = 0; k < K; k++) {
     const elem = litVec
       ? litVec[k]
@@ -1002,7 +1002,7 @@ function classifyRecordOrJoint(rhsIR /*, ast, bindings */) {
     // Positional joint: every arg must already be a self-ref to a
     // measure binding (liftInlineSubexpressions lifts inline measure
     // expressions into anon bindings before classification).
-    const elems = [];
+    const elems: any[] = [];
     for (const a of rhsIR.args) {
       if (!a || a.kind !== 'ref' || a.ns !== 'self') return null;
       elems.push(a.name);
@@ -1016,7 +1016,7 @@ function classifyIid(rhsIR, ast, bindings) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
-  const dims = [];
+  const dims: number[] = [];
   for (let i = 1; i < rhsIR.args.length; i++) {
     const n = resolveConstant(rhsIR.args[i], bindings, new Set());
     if (n == null || !Number.isInteger(n) || n <= 0) return null;
@@ -1276,7 +1276,7 @@ function classifyJointchain(rhsIR, ast, bindings?, opts?) {
     return null;
   };
 
-  const steps = [];
+  const steps: any[] = [];
   for (let i = 0; i < comps.length; i++) {
     const d = describe(comps[i]);
     if (!d) return null;                            // shape not covered
@@ -1593,7 +1593,7 @@ function closedFormLogTotalmass(ir, bindings) {
   if (op === 'select') {
     const br = ir.branches || [];
     if (br.length === 0) return null;
-    const terms = [];
+    const terms: any[] = [];
     for (let k = 0; k < br.length; k++) {
       const b = closedFormLogTotalmass(br[k], bindings);
       if (b == null) return null;
@@ -1668,7 +1668,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         };
       }
       case 'record': {
-        const fields = [];
+        const fields: any[] = [];
         for (const k in d.fields) {
           const inner = expandMeasureIR(d.fields[k], derivations, next, bindings);
           if (!inner) return null;
@@ -1690,7 +1690,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
       case 'tuple': {
         // Positional joint(M1, M2, ...) — args = [inner_M1, inner_M2, ...].
         // Walker dispatches the positional-args branch of walkJoint.
-        const argsIR = [];
+        const argsIR: any[] = [];
         for (const n of d.elems) {
           const inner = expandMeasureIR(n, derivations, next, bindings);
           if (!inner) return null;
@@ -1708,7 +1708,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // (spec), so every branch consumes the same observation; the
         // walker asserts identical consumption. This is the discrete
         // sibling of the kchain MC marginal — but EXACT (no −logN).
-        const branches = [];
+        const branches: any[] = [];
         for (const n of d.fromNames) {
           const inner = expandMeasureIR(n, derivations, next, bindings);
           if (!inner) return null;
@@ -1725,7 +1725,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // Bernoulli condition). Marginalising selector ⇒ walkSelect
         // logsumexp_k(logw_k + logp_branch_k) — the exact mixture
         // density.
-        const branches = [];
+        const branches: any[] = [];
         for (const b of d.branches) {
           let inner = null;
           if (b && b.ref != null) {
@@ -2103,7 +2103,7 @@ function implicitKernelSignature(name, bindings, derivations) {
   // actual parametric leaf — same logic as signatureOf's auto-promote.
   const seen = new Set();
   const queue = Array.from(collectSelfRefs(body));
-  const elementofRefs = [];
+  const elementofRefs: any[] = [];
   while (queue.length > 0) {
     const refName = queue.shift();
     if (seen.has(refName)) continue;
@@ -2121,7 +2121,7 @@ function implicitKernelSignature(name, bindings, derivations) {
       for (const inner of collectSelfRefs(target.ir)) queue.push(inner);
     }
   }
-  const inputs = [];
+  const inputs: any[] = [];
   for (const refName of elementofRefs) {
     const target = bindings.get(refName);
     inputs.push({
@@ -2188,7 +2188,7 @@ function implicitFunctionSignature(name, bindings, derivations) {
   // BFS for parametric leaves, same shape as implicitKernelSignature.
   const seen = new Set();
   const queue = Array.from(collectSelfRefs(body));
-  const elementofRefs = [];
+  const elementofRefs: any[] = [];
   while (queue.length > 0) {
     const refName = queue.shift();
     if (seen.has(refName)) continue;
@@ -2203,7 +2203,7 @@ function implicitFunctionSignature(name, bindings, derivations) {
       for (const inner of collectSelfRefs(target.ir)) queue.push(inner);
     }
   }
-  const inputs = [];
+  const inputs: any[] = [];
   for (const refName of elementofRefs) {
     const target = bindings.get(refName);
     inputs.push({
