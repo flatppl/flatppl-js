@@ -276,7 +276,7 @@ function logDensityConsumeN(ir: IRNode, value: any, refArrays: any, count: any, 
 // extra copy when no env-threading is active above us. Composite
 // walkers grow the overlay copy-on-write when adding env-threaded
 // values.
-function walkAcc(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   if (ir.kind === 'ref' && ir.ns === 'self') {
     const resolver = opts.resolveMeasureRef;
     if (typeof resolver !== 'function') {
@@ -293,7 +293,7 @@ function walkAcc(ir: any, value: any, refArrays: any, N: any, opts: any, acc: an
     throw new Error('density: unsupported IR kind \'' + ir.kind + '\'');
   }
   const op = ir.op;
-  const handler: any = (OP_HANDLERS as any)[op];
+  const handler: any = op != null ? (OP_HANDLERS as any)[op] : null;
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
 
   // Leaf distribution — the only kind not in OP_HANDLERS (because
@@ -306,7 +306,7 @@ function walkAcc(ir: any, value: any, refArrays: any, N: any, opts: any, acc: an
 
 // ---- Per-op handlers (the in-place accumulators) --------------------
 
-function walkLeaf(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // The only per-atom work in the entire walk: consume one entry from
   // the value, then loop atoms resolving params and adding logpdf to
   // acc[i]. consumeScalar is atom-independent (head + rest are derived
@@ -417,7 +417,7 @@ function walkLeaf(ir: any, value: any, refArrays: any, N: any, opts: any, acc: a
   return rest;
 }
 
-function walkWeighted(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // weighted(w, base): adds log(w) per atom. Recurse into base first
   // (with the same acc), then add log(w_i). Negative or zero weights
   // collapse the atom's logp to -Infinity.
@@ -427,7 +427,7 @@ function walkWeighted(ir: any, value: any, refArrays: any, N: any, opts: any, ac
   return rest;
 }
 
-function walkLogWeighted(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // logweighted(g, base): adds g directly per atom. -Infinity is
   // permitted; NaN is left as-is (callers detect downstream).
   const gIR = ir.args[0];
@@ -436,7 +436,7 @@ function walkLogWeighted(ir: any, value: any, refArrays: any, N: any, opts: any,
   return rest;
 }
 
-function walkTruncate(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // truncate(M, S): indicator(S) × base density. Per spec §06 this does
   // NOT normalise — density inside S equals base density; outside S
   // it's -Infinity. The consumed scalar is atom-independent (lives in
@@ -455,7 +455,7 @@ function walkTruncate(ir: any, value: any, refArrays: any, N: any, opts: any, ac
   return rest;
 }
 
-function walkNormalize(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // normalize(base) = base / totalmass(base). Density shifts by
   // -log(totalmass(base)). The caller supplies the parent's
   // logTotalmass via opts.measureLogTotalmass — atom-independent today;
@@ -469,7 +469,7 @@ function walkNormalize(ir: any, value: any, refArrays: any, N: any, opts: any, a
   return rest;
 }
 
-function walkJointFieldsOrPositional(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // record / kwarg-joint: ir.fields = [{name, value: subIR, source?}, …].
   // Consume named fields in declared order; env-thread each consumed
   // head into the overlay so later fields' leaf-kwarg refs to f.name /
@@ -528,7 +528,7 @@ function walkJointFieldsOrPositional(ir: any, value: any, refArrays: any, N: any
   throw new Error('density: joint with neither fields nor args');
 }
 
-function walkIid(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // iid(M, n): n copies of M's footprint. Count `n` is atom-independent
   // — it's a value-position expression typically of fixed phase. We
   // evaluate against baseEnv (no per-atom or overlay coverage); if a
@@ -554,7 +554,7 @@ function walkJointchainStub() {
     + 'record/joint by expandMeasureIR before reaching density');
 }
 
-function walkPushfwd(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // pushfwd(f, M) density per spec §06: requires f to be a
   // `bijection(f, f_inv, logvolume)` annotation so we have an inverse
   // and a Jacobian volume element. Then:
@@ -685,7 +685,7 @@ function selectBranchRefClass(ir: any, depth: any) {
   return null;
 }
 
-function walkSelect(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // select(branches, logweights): the discrete-selector mixture — the
   // EXACT (finite, no −logN) discrete sibling of the kchain MC
   // marginal. Density:
@@ -880,7 +880,7 @@ const OP_HANDLERS = {
 // Atom-batched mu / cov (per-atom parameter pinning) is deferred —
 // it'd require a per-atom Cholesky which doesn't arise in current
 // engine usage (matMvNormal materialises against atom-indep params).
-function walkMvNormal(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function walkMvNormal(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   const kwargs = ir.kwargs || {};
   if (!kwargs.mu || !kwargs.cov) {
     throw new Error('density: MvNormal requires mu and cov kwargs');
