@@ -1,3 +1,9 @@
+// Type-only imports from the engine package — pulled in via the
+// cross-package subpath. `import type` is erased at runtime, so the
+// viewer bundle stays decoupled from the engine bundle at build time;
+// the types just sharpen our Ctx field declarations below.
+import type { EmpiricalMeasure as EngineEmpiricalMeasure } from '@flatppl/engine/engine-types';
+
 // Ambient declarations for the viewer's host environment.
 //
 // The viewer is a browser IIFE bundle loaded into a webview (VS Code) or
@@ -226,7 +232,11 @@ export interface Ctx {
   // ---- caches ----
   /** Output of buildDerivations: bindings, derivations, fixedValues, discrete. */
   derivationsState: any;
-  measureCache: Map<string, any>;
+  /** Atom-major samples keyed by binding name; sub-fields populated per
+   *  measure shape (scalar / array / record / tuple / complex). The
+   *  engine's shape is reused so the engine and viewer agree on the
+   *  empirical-measure contract — see engine-types.d.ts EmpiricalMeasure. */
+  measureCache: Map<string, EngineEmpiricalMeasure>;
   histogramCache: Map<string, any>;
   /** Cached auto-fit ranges, keyed by `${planName}|${kwarg}|D=${domainName}`.
    *  `fromAuto: true` indicates the range was computed by resolveSweepRange
