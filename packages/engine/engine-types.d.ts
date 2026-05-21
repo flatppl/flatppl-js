@@ -147,7 +147,9 @@ export type DerivationKind =
   | 'broadcast_logdensity'
   | 'select'
   | 'kernelbroadcast'
-  | 'mvnormal';
+  | 'mvnormal'
+  | 'dirichlet'
+  | 'multinomial';
 
 /**
  * Base derivation shape. Each per-kind interface below extends this
@@ -349,6 +351,20 @@ export interface DerivationMvNormal {
   distIR: IRNode;
 }
 
+/** Dirichlet(alpha) — atom is a probability simplex vector. */
+export interface DerivationDirichlet {
+  kind: 'dirichlet';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** Multinomial(n, p) — atom is a length-K integer count vector. */
+export interface DerivationMultinomial {
+  kind: 'multinomial';
+  name?: string;
+  distIR: IRNode;
+}
+
 /** Discriminated union over every kind buildDerivations may emit. */
 export type Derivation =
   | DerivationAlias
@@ -370,7 +386,9 @@ export type Derivation =
   | DerivationBroadcastLogdensity
   | DerivationSelect
   | DerivationKernelBroadcast
-  | DerivationMvNormal;
+  | DerivationMvNormal
+  | DerivationDirichlet
+  | DerivationMultinomial;
 
 // ---------------------------------------------------------------------
 // BindingInfo (engine/analyzer.ts → ParsedModule.bindings entries)

@@ -65,11 +65,13 @@ import type {
   DerivationBase,
   DerivationBayesupdate,
   DerivationBroadcastLogdensity,
+  DerivationDirichlet,
   DerivationEvaluate,
   DerivationIid,
   DerivationJointchain,
   DerivationKernelBroadcast,
   DerivationLogdensityof,
+  DerivationMultinomial,
   DerivationMvNormal,
   DerivationNormalize,
   DerivationPushfwd,
@@ -1309,6 +1311,192 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
   });
 }
 
+// =====================================================================
+// matDirichlet — atom-batched probability-simplex draws
+// =====================================================================
+//
+// Spec §08: Dirichlet(alpha = [a_1, ..., a_K]). Atom is a length-K
+// probability vector summing to 1. Per-coord rep: g_k ~ Gamma(a_k, 1)
+// independently across coords, then x = g / sum(g) (l1-normalize).
+//
+// Implementation: K worker calls (one per coord) each drawing N gamma
+// variates; combine into atom-major shape=[N, K] + l1-normalize per
+// atom. Per-coord seeds are derived from `name + '|' + k` so a
+// resample of just one coord doesn't shift the others.
+//
+// alpha must be atom-independent (literal vector or fixed-phase
+// binding). Per-atom alpha (a vector that varies across N atoms) is
+// deferred — it requires per-atom Gamma parameters, which the worker's
+// sampleN doesn't broadcast through.
+function matDirichlet(name: string, d: DerivationDirichlet, ctx: any): Promise<EmpiricalMeasure> {
+  const distIR = d.distIR as any;
+  const alphaIR = (distIR.kwargs && distIR.kwargs.alpha)
+    || (distIR.args && distIR.args[0]);
+  if (!alphaIR) {
+    return Promise.reject(new Error('Dirichlet: requires alpha argument'));
+  }
+  const alphaVal = orchestrator.resolveIRToValue(alphaIR, ctx.bindings, ctx.fixedValues);
+  if (alphaVal == null) {
+    return Promise.reject(new Error('Dirichlet: cannot resolve alpha (per-atom alpha deferred)'));
+  }
+  const alphaValue = valueLib.asValue(alphaVal);
+  if (alphaValue.shape.length !== 1) {
+    return Promise.reject(new Error(
+      'Dirichlet: alpha must be a vector, got shape=' + JSON.stringify(alphaValue.shape)));
+  }
+  const K = alphaValue.shape[0];
+  if (K === 0) {
+    return Promise.reject(new Error('Dirichlet: alpha must be non-empty'));
+  }
+  for (let k = 0; k < K; k++) {
+    if (!(alphaValue.data[k] > 0)) {
+      return Promise.reject(new Error(
+        'Dirichlet: alpha[' + k + '] = ' + alphaValue.data[k] + ' must be positive'));
+    }
+  }
+  const N = ctx.sampleCount;
+  // K parallel worker calls — one Gamma(alpha_k, 1) per coord. Each
+  // returns Float64Array(N).
+  const promises: Promise<any>[] = [];
+  for (let k = 0; k < K; k++) {
+    const gammaIR = {
+      kind: 'call', op: 'Gamma',
+      kwargs: {
+        shape: { kind: 'lit', value: alphaValue.data[k] },
+        rate:  { kind: 'lit', value: 1 },
+      },
+    };
+    promises.push(ctx.sendWorker({
+      type: 'sampleN', ir: gammaIR, count: N,
+      refArrays: {},
+      seed: nameSeed(name + '|' + k, ctx.rootSeed),
+    }));
+  }
+  return Promise.all(promises).then((replies: any[]) => {
+    // Stitch K Float64Array(N)s into atom-major shape=[N, K] + l1-norm.
+    const data = new Float64Array(N * K);
+    for (let i = 0; i < N; i++) {
+      let sum = 0;
+      for (let k = 0; k < K; k++) {
+        const v = replies[k].samples[i];
+        data[i * K + k] = v;
+        sum += v;
+      }
+      // sum > 0 with probability 1 for positive-shape Gammas, but be
+      // defensive against numerical edge cases (tiny shape parameters
+      // can return exact 0).
+      const inv = sum > 0 ? 1 / sum : 0;
+      for (let k = 0; k < K; k++) data[i * K + k] *= inv;
+    }
+    const result: any = { shape: [N, K], data };
+    return measureFromValue(result, {
+      logWeights: null,
+      logTotalmass: 0,
+      n_eff: N,
+    });
+  });
+}
+
+// =====================================================================
+// matMultinomial — atom-batched K-vector count draws
+// =====================================================================
+//
+// Spec §08: Multinomial(n, p) — n iid Categorical(p) draws aggregated
+// into a length-K count vector (K = length(p)). Atom is shape=[K]
+// non-negative integers summing to n.
+//
+// Implementation: per atom, draw n Categorical1(p) samples and count
+// per category. The Categorical1 sampler is in REGISTRY (the spec-
+// shape 1-indexed Categorical); we evaluate the IR once per atom
+// because n + p are atom-independent. Per-atom shared rng state via
+// nameSeed + per-atom interleaving.
+//
+// n and p must be atom-independent (literal / fixed-phase). Per-atom
+// parameters deferred — same constraint as MvNormal / Dirichlet.
+function matMultinomial(name: string, d: DerivationMultinomial, ctx: any): Promise<EmpiricalMeasure> {
+  const distIR = d.distIR as any;
+  const nIR = (distIR.kwargs && distIR.kwargs.n)
+    || (distIR.args && distIR.args[0]);
+  const pIR = (distIR.kwargs && distIR.kwargs.p)
+    || (distIR.args && distIR.args[1]);
+  if (!nIR || !pIR) {
+    return Promise.reject(new Error('Multinomial: requires n and p arguments'));
+  }
+  const nVal = orchestrator.resolveIRToValue(nIR, ctx.bindings, ctx.fixedValues);
+  const pVal = orchestrator.resolveIRToValue(pIR, ctx.bindings, ctx.fixedValues);
+  if (typeof nVal !== 'number' || !Number.isInteger(nVal) || nVal < 0) {
+    return Promise.reject(new Error('Multinomial: n must be a non-negative integer'));
+  }
+  const pValue = valueLib.asValue(pVal);
+  if (pValue.shape.length !== 1) {
+    return Promise.reject(new Error(
+      'Multinomial: p must be a vector, got shape=' + JSON.stringify(pValue.shape)));
+  }
+  const K = pValue.shape[0];
+  if (K === 0) {
+    return Promise.reject(new Error('Multinomial: p must be non-empty'));
+  }
+  // Validate p: non-negative, normalises to 1.
+  let pSum = 0;
+  for (let k = 0; k < K; k++) {
+    if (!(pValue.data[k] >= 0)) {
+      return Promise.reject(new Error(
+        'Multinomial: p[' + k + '] = ' + pValue.data[k] + ' must be non-negative'));
+    }
+    pSum += pValue.data[k];
+  }
+  if (!(pSum > 0)) {
+    return Promise.reject(new Error('Multinomial: p must sum to > 0'));
+  }
+  const N = ctx.sampleCount;
+  const n = nVal | 0;
+  // Issue n*N Categorical draws (one worker call yielding a flat
+  // Float64Array of length n*N), then aggregate per atom into K-vector
+  // counts. Using Categorical (1-indexed) per spec — we subtract 1 for
+  // the 0-based count-vector slot. Worker stays uniform: one large
+  // sampleN call rather than N separate per-atom calls.
+  const catIR: any = {
+    kind: 'call', op: 'Categorical',
+    kwargs: { p: { kind: 'lit-vec', value: Array.from(pValue.data) } },
+  };
+  // Re-inject p as a literal array of lits the worker can read.
+  catIR.kwargs.p = {
+    kind: 'call', op: 'vector',
+    args: Array.from(pValue.data, (v) => ({ kind: 'lit', value: v })),
+  };
+  if (n === 0) {
+    // Zero-count atom: every K-slot is 0. Skip the sample round-trip.
+    const data = new Float64Array(N * K);
+    const result: any = { shape: [N, K], data };
+    return Promise.resolve(measureFromValue(result, {
+      logWeights: null,
+      logTotalmass: 0,
+      n_eff: N,
+    }));
+  }
+  return ctx.sendWorker({
+    type: 'sampleN', ir: catIR, count: N * n,
+    refArrays: {},
+    seed: nameSeed(name, ctx.rootSeed),
+  }).then((reply: any) => {
+    const draws = reply.samples; // Float64Array(N*n), each in 1..K
+    const data = new Float64Array(N * K);
+    for (let i = 0; i < N; i++) {
+      const base = i * n;
+      for (let j = 0; j < n; j++) {
+        const cat = (draws[base + j] | 0) - 1;  // 1-indexed → 0-indexed
+        if (cat >= 0 && cat < K) data[i * K + cat] += 1;
+      }
+    }
+    const result: any = { shape: [N, K], data };
+    return measureFromValue(result, {
+      logWeights: null,
+      logTotalmass: 0,
+      n_eff: N,
+    });
+  });
+}
+
 // Walk an expanded measure IR collecting every `select` node that
 // still carries an unresolved runtime-weight spec (`weightsFrom`).
 // engine-concepts §11: a non-closed-form selector condition yields a
@@ -1679,6 +1867,8 @@ const KIND_HANDLERS = {
   truncate:     (name: any, d: any, ctx: any) => matTruncate(d, ctx),
   pushfwd:      (name: any, d: any, ctx: any) => matPushfwd(name, d, ctx),
   mvnormal:     (name: any, d: any, ctx: any) => matMvNormal(name, d, ctx),
+  dirichlet:    (name: any, d: any, ctx: any) => matDirichlet(name, d, ctx),
+  multinomial:  (name: any, d: any, ctx: any) => matMultinomial(name, d, ctx),
   // jointchain/kchain first-class kind (the only path; legacy
   // inlineChainOps deleted). matJointchain samples the base then
   // applies each kernel step structurally; marginalize ⇒ keep only
