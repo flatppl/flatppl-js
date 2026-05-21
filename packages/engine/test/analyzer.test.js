@@ -142,6 +142,107 @@ f = functionof(a + b, a, b)
   assert.ok(diagnostics.some(d => /keyword/i.test(d.message)));
 });
 
+// validateSpecialOperation completion coverage — each case wired in
+// analyzer.ts. These are structural shape checks (positional vs
+// keyword, fixed-vs-variadic argument count). The test bodies use
+// inline source so each one stays self-contained and the failure
+// message + offending source live in one place.
+
+test('analyzer: weighted/logweighted/truncate/pushfwd take exactly 2 positional args', () => {
+  for (const op of ['weighted', 'logweighted', 'truncate', 'pushfwd']) {
+    const wrongCount = process(`m = ${op}(1)\n`);
+    assert.ok(wrongCount.diagnostics.some(d => /takes exactly two/.test(d.message)), op + ' wrongCount');
+    const withKwarg = process(`m = ${op}(a = 1, b = 2)\n`);
+    assert.ok(withKwarg.diagnostics.some(d => /positional/i.test(d.message)), op + ' kwarg');
+  }
+});
+
+test('analyzer: superpose / fchain require at least 2 positional args', () => {
+  for (const op of ['superpose', 'fchain']) {
+    const tooFew = process(`m = ${op}(a)\n`);
+    assert.ok(tooFew.diagnostics.some(d => /at least two/.test(d.message)), op + ' tooFew');
+  }
+});
+
+test('analyzer: joint/jointchain/kchain reject mixed positional+keyword', () => {
+  for (const op of ['joint', 'jointchain', 'kchain']) {
+    const mixed = process(`m = ${op}(a, b = c)\n`);
+    assert.ok(mixed.diagnostics.some(d => /all positional or all keyword/.test(d.message)),
+              op + ' mixed');
+  }
+});
+
+test('analyzer: joint(x = M) (single-kwarg form) is valid', () => {
+  const { diagnostics } = process(`
+a = elementof(reals)
+m = joint(obs = a)
+`);
+  assert.ok(!diagnostics.some(d => /joint\(\)/.test(d.message)));
+});
+
+test('analyzer: iid requires at least 2 positional args', () => {
+  assert.ok(process(`m = iid(M)\n`).diagnostics.some(d => /at least two/.test(d.message)));
+  assert.ok(process(`m = iid(M, n = 3)\n`).diagnostics.some(d => /positional/i.test(d.message)));
+});
+
+test('analyzer: bijection takes exactly 3 positional args', () => {
+  assert.ok(process(`b = bijection(f, g)\n`).diagnostics.some(d => /takes exactly three/.test(d.message)));
+  assert.ok(process(`b = bijection(f = a, g = b, h = c)\n`).diagnostics.some(d => /positional/i.test(d.message)));
+});
+
+test('analyzer: broadcasted takes exactly 1 positional arg', () => {
+  assert.ok(process(`f = broadcasted(a, b)\n`).diagnostics.some(d => /takes exactly one/.test(d.message)));
+});
+
+test('analyzer: broadcast requires positional head + at least 1 more arg', () => {
+  assert.ok(process(`x = broadcast(Normal)\n`).diagnostics.some(d => /at least two/.test(d.message)));
+  assert.ok(process(`x = broadcast(f = Normal, mu = 1)\n`).diagnostics.some(d => /positional head/.test(d.message)));
+});
+
+test('analyzer: reduce / scan take exactly 3 positional args', () => {
+  for (const op of ['reduce', 'scan']) {
+    assert.ok(process(`y = ${op}(f, init)\n`).diagnostics.some(d => /takes exactly three/.test(d.message)),
+              op + ' tooFew');
+  }
+});
+
+test('analyzer: checked takes positional value + kwargs after', () => {
+  assert.ok(process(`y = checked()\n`).diagnostics.some(d => /requires a value/.test(d.message)));
+  assert.ok(process(`y = checked(x, y)\n`).diagnostics.some(d => /only keyword arguments/.test(d.message)));
+});
+
+test('analyzer: record / table require keyword args only', () => {
+  for (const op of ['record', 'table']) {
+    const pos = process(`r = ${op}(a, b)\n`);
+    assert.ok(pos.diagnostics.some(d => /keyword arguments only/.test(d.message)), op + ' positional');
+    const empty = process(`r = ${op}()\n`);
+    assert.ok(empty.diagnostics.some(d => /at least one field/.test(d.message)), op + ' empty');
+  }
+});
+
+test('analyzer: tuple / vector take positional args only', () => {
+  for (const op of ['tuple', 'vector']) {
+    assert.ok(process(`v = ${op}(a = 1)\n`).diagnostics.some(d => /positional/i.test(d.message)),
+              op + ' kwarg');
+  }
+});
+
+test('analyzer: disintegrate first arg must be string literal or array of string literals', () => {
+  const okString = process(`a, b = disintegrate("obs", joint_model)\njoint_model = elementof(reals)\n`);
+  assert.ok(!okString.diagnostics.some(d => /disintegrate/.test(d.message)));
+  const okArray = process(`a, b = disintegrate(["o1", "o2"], joint_model)\njoint_model = elementof(reals)\n`);
+  assert.ok(!okArray.diagnostics.some(d => /disintegrate/.test(d.message)));
+  const badIdent = process(`a, b = disintegrate(some_var, m)\nsome_var = "obs"\nm = elementof(reals)\n`);
+  assert.ok(badIdent.diagnostics.some(d => /string literal or an array of string literals/.test(d.message)));
+});
+
+test('analyzer: interval / cartpow / stdsimplex set constructors', () => {
+  assert.ok(process(`s = interval(0)\n`).diagnostics.some(d => /takes exactly two/.test(d.message)));
+  assert.ok(process(`s = cartpow(reals)\n`).diagnostics.some(d => /takes exactly two/.test(d.message)));
+  assert.ok(process(`s = cartprod(reals)\n`).diagnostics.some(d => /at least two/.test(d.message)));
+  assert.ok(process(`s = stdsimplex()\n`).diagnostics.some(d => /takes exactly one/.test(d.message)));
+});
+
 test('analyzer: builds symbols from bindings', () => {
   const { symbols } = process(`
 a = elementof(reals)
