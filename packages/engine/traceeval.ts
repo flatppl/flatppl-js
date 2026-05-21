@@ -72,7 +72,7 @@ function walk(state: any, ir: IRNode, env: any, opts: any) {
   return walkInner(state, ir, env, ctx);
 }
 
-function walkInner(state: any, ir: any, env: any, ctx: any): any {
+function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
   // Self-ref to another measure binding. The orchestrator passes a
   // resolver so we can dereference without baking the binding map
   // into this module.
@@ -107,7 +107,7 @@ function walkInner(state: any, ir: any, env: any, ctx: any): any {
   // Dispatch through MEASURE_OP_WALKERS. Adding a new measure-algebra
   // walker (pushfwd, truncate, …) is one entry here plus the handler
   // function — no edits to walkInner itself.
-  const handler: any = (MEASURE_OP_WALKERS as any)[op];
+  const handler: any = op != null ? (MEASURE_OP_WALKERS as any)[op] : null;
   if (handler) return handler(state, ir, env, ctx);
   throw new Error(
     `traceeval: op '${op}' is not a measure expression we can ` +
@@ -116,7 +116,7 @@ function walkInner(state: any, ir: any, env: any, ctx: any): any {
   );
 }
 
-function walkLeaf(state: any, ir: any, env: any, ctx: any) {
+function walkLeaf(state: any, ir: IRNode, env: any, ctx: any) {
   // Pre-fill env with any value-position refs in the kwargs that
   // aren't already known. The leaf's distribution params (`mu = ref a`,
   // `sigma = ref b`, …) may reference bindings the caller hasn't
@@ -132,7 +132,7 @@ function walkLeaf(state: any, ir: any, env: any, ctx: any) {
   return { value, state: prng.getState() };
 }
 
-function walkJoint(state: any, ir: any, env: any, ctx: any) {
+function walkJoint(state: any, ir: IRNode, env: any, ctx: any) {
   // Two surface forms:
   //   * kwarg-joint / record: ir.fields = [{ name, value }, ...].
   //     Output value is a record keyed by field name.
@@ -163,7 +163,7 @@ function walkJoint(state: any, ir: any, env: any, ctx: any) {
   throw new Error('traceeval: joint with neither fields nor args');
 }
 
-function walkIid(state: any, ir: any, env: any, ctx: any) {
+function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
   // iid(M, n): n iid draws of measure M sharing params. Inner env is
   // shared — params do NOT change across the n inner draws (that's
   // what makes it 'iid' vs a vectorised call with per-index params).
@@ -189,7 +189,7 @@ function walkIid(state: any, ir: any, env: any, ctx: any) {
 
 // weighted / logweighted: sampling is a pure pass-through. The weight
 // only affects density, which lives in density.js.
-function walkWeightedPassThrough(state: any, ir: any, env: any, ctx: any): any {
+function walkWeightedPassThrough(state: any, ir: IRNode, env: any, ctx: any): any {
   const args = ir.args || [];
   if (args.length !== 2) {
     throw new Error(`traceeval: weighted/logweighted expected 2 args, got ${args.length}`);
@@ -201,7 +201,7 @@ function walkWeightedPassThrough(state: any, ir: any, env: any, ctx: any): any {
 // `lawof(draw(M)) ≡ M` (and the dual). Either may appear surfaced in
 // inline forms the orchestrator hasn't yet canonicalised; we unwrap
 // here so callers don't need to do it upstream.
-function walkUnwrap(state: any, ir: any, env: any, ctx: any): any {
+function walkUnwrap(state: any, ir: IRNode, env: any, ctx: any): any {
   const args = ir.args || [];
   if (args.length !== 1) {
     throw new Error(`traceeval: ${ir.op} expected 1 arg, got ${args.length}`);
