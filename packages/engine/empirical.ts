@@ -172,7 +172,7 @@ function materialiseUniform(measure) {
  */
 function propagateLogWeights(parents) {
   const seen = new Set();
-  const unique = [];
+  const unique: Float64Array[] = [];
   for (const p of parents) {
     if (!p || !p.logWeights) continue;
     if (seen.has(p.logWeights)) continue;

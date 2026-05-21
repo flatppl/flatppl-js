@@ -498,7 +498,7 @@ function unifyArith(a, b, subst) {
   if (a.kind === 'array' && b.kind === 'array') {
     if (a.rank !== b.rank) return null;
     if (a.shape.length !== b.shape.length) return null;
-    const shape = [];
+    const shape: any[] = [];
     for (let i = 0; i < a.shape.length; i++) {
       const ai = a.shape[i], bi = b.shape[i];
       if (ai === '%dynamic' || bi === '%dynamic') {

@@ -102,7 +102,7 @@ function findMatchingPresets(signature, bindings) {
     if (inp.kwargName) expected.add(inp.kwargName);
   }
   if (expected.size === 0) return [];
-  const out = [];
+  const out: any[] = [];
   for (const [name, b] of bindings) {
     if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'record') continue;
     // record's IR carries fields (FIELD_FORM in lower.js), not kwargs.
@@ -188,7 +188,7 @@ function findMatchingDomains(signature, bindings) {
     if (inp.kwargName) expected.add(inp.kwargName);
   }
   if (expected.size === 0) return [];
-  const out = [];
+  const out: any[] = [];
   for (const [name, b] of bindings) {
     if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'cartprod') continue;
     const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
