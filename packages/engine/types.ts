@@ -48,16 +48,16 @@
 // =====================================================================
 
 function deferred()     { return { kind: 'deferred' }; }
-function failed(reason) { return { kind: 'failed', reason }; }
+function failed(reason: any) { return { kind: 'failed', reason }; }
 function any()          { return { kind: 'any' }; }
 
 /** Scalar type. `prim` ∈ {'real','integer','boolean','complex','string'}. */
-function scalar(prim)   { return { kind: 'scalar', prim }; }
+function scalar(prim: any)   { return { kind: 'scalar', prim }; }
 
 /** Array type. `rank` is a positive integer literal. `shape` is an array
  *  of length `rank`; each entry is a positive integer or '%dynamic'.
  *  `elem` is the element type (a Type, often scalar). */
-function array(rank, shape, elem) { return { kind: 'array', rank, shape, elem }; }
+function array(rank: any, shape: any, elem: any) { return { kind: 'array', rank, shape, elem }; }
 
 /** Transposed-vector type (spec §03; FlatPIR `%tvector`).
  *  Distinct from `array(1, [length], elem)`: the spec formalises
@@ -71,21 +71,21 @@ function array(rank, shape, elem) { return { kind: 'array', rank, shape, elem };
  *
  *  At runtime the orientation is captured by the Klein-4 tag on Value
  *  (engine/value.js); type-level we use this distinct constructor. */
-function tvector(length, elem) { return { kind: 'tvector', length, elem }; }
+function tvector(length: any, elem: any) { return { kind: 'tvector', length, elem }; }
 
 /** Record type. `fields` is a plain object mapping field name → Type. */
-function record(fields) { return { kind: 'record', fields }; }
+function record(fields: any) { return { kind: 'record', fields }; }
 
 /** Tuple type. `elems` is an array of element Types (length ≥ 2 per spec). */
-function tuple(elems)   { return { kind: 'tuple', elems }; }
+function tuple(elems: any)   { return { kind: 'tuple', elems }; }
 
 /** Closed measure over a value domain. */
-function measure(domain) { return { kind: 'measure', domain }; }
+function measure(domain: any) { return { kind: 'measure', domain }; }
 
 /** Type variable, used inside polymorphic signatures (e.g. weighted's T).
  *  `id` is a string identifier; instantiation gives every signature a
  *  fresh batch of variables so two call sites can't accidentally share. */
-function tvar(id)       { return { kind: 'var', id }; }
+function tvar(id: any)       { return { kind: 'var', id }; }
 
 /** User-defined function. `inputs` is an array of `{name, type}` for
  *  the function's parameters; `result` is the body's inferred type.
@@ -99,13 +99,13 @@ function tvar(id)       { return { kind: 'var', id }; }
  *  we add full polymorphism, this stays type-checked: `result` becomes
  *  the *generic* result of the body, and call-site inference
  *  specialises it. */
-function funcType(inputs, result)   { return { kind: 'function', inputs, result }; }
+function funcType(inputs: any, result: any)   { return { kind: 'function', inputs, result }; }
 
 /** User-defined transition kernel. Same shape as a function but the
  *  result type is always a measure (per spec §sec:functionof-measure:
  *  a functionof with a measure body is a kernel). Named to avoid
  *  collision with the `fn` and `kernelof` built-in surface forms. */
-function kernelType(inputs, result) { return { kind: 'kernel',   inputs, result }; }
+function kernelType(inputs: any, result: any) { return { kind: 'kernel',   inputs, result }; }
 
 /**
  * Opaque RNG-state type (per spec §sec:random / §03 `rngstates`):
@@ -136,7 +136,7 @@ const RNGSTATE = rngstate();
  * Structural type equality. Recursively compares the discriminator and
  * all child types. NB: shape entries '%dynamic' compare by string.
  */
-function equal(a, b) {
+function equal(a: any, b: any): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   if (a.kind !== b.kind) return false;
@@ -196,7 +196,7 @@ function equal(a, b) {
  * unresolved variables in place. Used after unification to materialise a
  * call's result type from its signature.
  */
-function substitute(t, subst) {
+function substitute(t: any, subst: Map<any, any>): any {
   if (!t) return t;
   if (t.kind === 'var') {
     const v = subst.get(t.id);
@@ -205,15 +205,15 @@ function substitute(t, subst) {
   if (t.kind === 'array')   return array(t.rank, t.shape.slice(), substitute(t.elem, subst));
   if (t.kind === 'tvector') return tvector(t.length, substitute(t.elem, subst));
   if (t.kind === 'measure') return measure(substitute(t.domain, subst));
-  if (t.kind === 'tuple')   return tuple(t.elems.map(e => substitute(e, subst)));
+  if (t.kind === 'tuple')   return tuple(t.elems.map((e: any) => substitute(e, subst)));
   if (t.kind === 'record') {
-    const out = {};
+    const out: Record<string, any> = {};
     for (const k in t.fields) out[k] = substitute(t.fields[k], subst);
     return record(out);
   }
   if (t.kind === 'function' || t.kind === 'kernel') {
     return { kind: t.kind,
-      inputs: t.inputs.map(i => ({ name: i.name, type: substitute(i.type, subst) })),
+      inputs: t.inputs.map((i: any) => ({ name: i.name, type: substitute(i.type, subst) })),
       result: substitute(t.result, subst) };
   }
   return t;
@@ -227,7 +227,7 @@ function substitute(t, subst) {
  * — once inference fails on a subterm, every dependent unification fails
  * too, propagating the error.
  */
-function unify(a, b, subst) {
+function unify(a: any, b: any, subst: any): any {
   if (!subst) subst = new Map();
   a = walk(a, subst);
   b = walk(b, subst);
@@ -307,22 +307,22 @@ function unify(a, b, subst) {
 // Scalar promotion lattice (least → most permissive). Used by unify's
 // scalar case to admit canonical embeddings (booleans ⊂ integers ⊂
 // reals → complexes) without a separate subtype-check pass.
-const SCALAR_RANK = { boolean: 0, integer: 1, real: 2, complex: 3 };
-function canPromote(from, to) {
+const SCALAR_RANK: Record<string, number> = { boolean: 0, integer: 1, real: 2, complex: 3 };
+function canPromote(from: any, to: any) {
   return SCALAR_RANK[from] != null && SCALAR_RANK[to] != null
     && SCALAR_RANK[from] <= SCALAR_RANK[to];
 }
 
 // Walk a type one level — replace it with its substitution if it's a
 // variable that's been bound. Stops at the first non-variable.
-function walk(t, subst) {
+function walk(t: any, subst: any) {
   while (t && t.kind === 'var' && subst.has(t.id)) t = subst.get(t.id);
   return t;
 }
 
 // Bind a type variable to a concrete type, with an occurs check to avoid
 // constructing infinite types.
-function bind(id, t, subst) {
+function bind(id: any, t: any, subst: any) {
   if (t.kind === 'var' && t.id === id) return subst;
   if (occurs(id, t, subst)) return null;
   const next = new Map(subst);
@@ -330,13 +330,13 @@ function bind(id, t, subst) {
   return next;
 }
 
-function occurs(id, t, subst) {
+function occurs(id: any, t: any, subst: any): boolean {
   t = walk(t, subst);
   if (t.kind === 'var') return t.id === id;
   if (t.kind === 'measure') return occurs(id, t.domain, subst);
   if (t.kind === 'array') return occurs(id, t.elem, subst);
-  if (t.kind === 'tuple') return t.elems.some(e => occurs(id, e, subst));
-  if (t.kind === 'record') return Object.values(t.fields).some(f => occurs(id, f, subst));
+  if (t.kind === 'tuple') return t.elems.some((e: any) => occurs(id, e, subst));
+  if (t.kind === 'record') return Object.values(t.fields).some((f: any) => occurs(id, f, subst));
   return false;
 }
 
@@ -364,7 +364,7 @@ function occurs(id, t, subst) {
  * a separate concern and would belong in a dedicated `showSExpr`
  * helper if needed.
  */
-function show(t) {
+function show(t: any): string {
   if (!t) return '<null>';
   switch (t.kind) {
     case 'deferred': return 'deferred';
@@ -385,7 +385,7 @@ function show(t) {
   return '<unknown>';
 }
 
-function showMeasure(t) {
+function showMeasure(t: any): string {
   // Drop the domain when it's an unresolved type variable — "measure"
   // reads better than "measure over any". Keep it whenever the
   // domain is concrete or compound.
@@ -393,9 +393,9 @@ function showMeasure(t) {
   return 'measure over ' + show(t.domain);
 }
 
-function showArray(t) {
-  const concrete = t.shape.every(d => d !== '%dynamic');
-  const elem = show(t.elem);
+function showArray(t: any): string {
+  const concrete = t.shape.every((d: any) => d !== '%dynamic');
+  const elem: any = show(t.elem);
   if (t.rank === 1) {
     return concrete ? 'array of ' + elem + ' (length ' + t.shape[0] + ')'
                     : 'array of ' + elem;
@@ -404,22 +404,22 @@ function showArray(t) {
                   : t.rank + 'd array of ' + elem;
 }
 
-function showRecord(t) {
+function showRecord(t: any): string {
   const ks = Object.keys(t.fields);
   if (ks.length === 0) return 'record';
-  return 'record with fields ' + ks.map(k => k + ': ' + show(t.fields[k])).join(', ');
+  return 'record with fields ' + ks.map((k: string) => k + ': ' + show(t.fields[k])).join(', ');
 }
 
-function showCallable(label, t) {
+function showCallable(label: string, t: any): string {
   // "function f(par: real) → real" reads naturally next to a user
   // identifier (the function's name surfaces from context). Kernels
   // get the same shape with the result type as a measure.
-  const params = t.inputs.map(i => i.name + ': ' + show(i.type)).join(', ');
+  const params = t.inputs.map((i: any) => i.name + ': ' + show(i.type)).join(', ');
   return label + '(' + params + ') → ' + show(t.result);
 }
 
 /** Whether `t` is a measure type (or one that resolves to a measure). */
-function isMeasure(t) {
+function isMeasure(t: any) {
   return t != null && t.kind === 'measure';
 }
 
@@ -433,7 +433,7 @@ function isMeasure(t) {
  * hasn't classified the type yet — we don't want to emit a spurious
  * "not a value" error before the type is known.
  */
-function isValue(t) {
+function isValue(t: any) {
   if (t == null) return false;
   switch (t.kind) {
     case 'scalar':
@@ -449,7 +449,7 @@ function isValue(t) {
 }
 
 /** Whether `t` is a user-defined callable (function or kernel). */
-function isCallable(t) {
+function isCallable(t: any) {
   return t != null && (t.kind === 'function' || t.kind === 'kernel');
 }
 
@@ -467,7 +467,7 @@ function isCallable(t) {
  * shapes. The caller wraps this in its diagnostic emission. We don't
  * unify "tuple", "record", "measure" etc. — those aren't numeric.
  */
-function unifyArith(a, b, subst) {
+function unifyArith(a: any, b: any, subst: any): any {
   if (!subst) subst = new Map();
   a = walk(a, subst);
   b = walk(b, subst);
@@ -484,7 +484,7 @@ function unifyArith(a, b, subst) {
     // Pick the wider as the expected, narrower as actual — that's
     // the direction in which unify's directional canPromote check
     // succeeds. The join becomes the result type.
-    let wider, narrower;
+    let wider: any, narrower: any;
     if (aRank != null && bRank != null && aRank >= bRank) { wider = a; narrower = b; }
     else if (aRank != null && bRank != null)              { wider = b; narrower = a; }
     else if (aRank != null) { wider = a; narrower = b; }
@@ -509,19 +509,19 @@ function unifyArith(a, b, subst) {
         shape.push(ai);
       }
     }
-    const elemR = unifyArith(a.elem, b.elem, subst);
+    const elemR: any = unifyArith(a.elem, b.elem, subst);
     if (elemR == null) return null;
     return { result: array(a.rank, shape, elemR.result), subst: elemR.subst };
   }
   // Broadcast: scalar with array → result is the array with element
   // type unified with the scalar.
   if (a.kind === 'scalar' && b.kind === 'array') {
-    const elemR = unifyArith(a, b.elem, subst);
+    const elemR: any = unifyArith(a, b.elem, subst);
     if (elemR == null) return null;
     return { result: array(b.rank, b.shape.slice(), elemR.result), subst: elemR.subst };
   }
   if (a.kind === 'array' && b.kind === 'scalar') {
-    const elemR = unifyArith(a.elem, b, subst);
+    const elemR: any = unifyArith(a.elem, b, subst);
     if (elemR == null) return null;
     return { result: array(a.rank, a.shape.slice(), elemR.result), subst: elemR.subst };
   }
@@ -547,13 +547,13 @@ function unifyArith(a, b, subst) {
 // Helper for distribution constructors — every parameterised real-valued
 // scalar distribution has the same signature shape (kwargs are values,
 // result is a real-valued measure). Reduces repetition below.
-function realDistKwargs(kwargs) {
+function realDistKwargs(kwargs: any) {
   return { args: null, kwargs, result: measure(REAL) };
 }
-function intDistKwargs(kwargs) {
+function intDistKwargs(kwargs: any) {
   return { args: null, kwargs, result: measure(INTEGER) };
 }
-function boolDistKwargs(kwargs) {
+function boolDistKwargs(kwargs: any) {
   return { args: null, kwargs, result: measure(BOOLEAN) };
 }
 
@@ -998,8 +998,8 @@ function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }
 // (call A's 'T_0' must not unify with call B's 'T_0').
 let FRESH_COUNTER = 0;
 
-function signatureOf(opName) {
-  const f = SIGNATURE_FACTORIES[opName];
+function signatureOf(opName: string) {
+  const f = (SIGNATURE_FACTORIES as any)[opName];
   if (!f) return null;
   // Re-key the signature's type variables so two call sites can't share
   // unification state. The module-level FRESH_COUNTER guarantees
@@ -1008,7 +1008,7 @@ function signatureOf(opName) {
   // result still bind to the same fresh variable).
   const sig = f();
   const sub = new Map();
-  function fresh(t) {
+  function fresh(t: any): any {
     if (!t) return t;
     if (t.kind === 'var') {
       let m = sub.get(t.id);
@@ -1022,15 +1022,15 @@ function signatureOf(opName) {
     if (t.kind === 'array')   return array(t.rank, t.shape.slice(), fresh(t.elem));
     if (t.kind === 'tuple')   return tuple(t.elems.map(fresh));
     if (t.kind === 'record') {
-      const out = {};
+      const out: Record<string, any> = {};
       for (const k in t.fields) out[k] = fresh(t.fields[k]);
       return record(out);
     }
     return t;
   }
-  const out = {
+  const out: any = {
     args:     sig.args ? sig.args.map(fresh) : sig.args,
-    kwargs:   {},
+    kwargs:   {} as Record<string, any>,
     result:   fresh(sig.result),
     variadic: sig.variadic || null,
     special:  sig.special  || null,
@@ -1040,7 +1040,7 @@ function signatureOf(opName) {
 }
 
 /** Whether this op has a known signature. */
-function hasSignature(opName) {
+function hasSignature(opName: string) {
   return Object.prototype.hasOwnProperty.call(SIGNATURE_FACTORIES, opName);
 }
 
