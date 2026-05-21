@@ -1636,7 +1636,7 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
   return null;
 }
 
-function expandMeasureIR(name: any, derivations: any, visited?: any, bindings?: any): any {
+function expandMeasureIR(name: string, derivations: any, visited?: any, bindings?: any): IRNode | null {
   visited = visited || new Set();
   if (visited.has(name)) return null;
   const next = new Set(visited); next.add(name);
@@ -2290,7 +2290,7 @@ function _expandMeasureIRStructural(ir: any, derivations: any, visited: any, bin
  *   - iid's first arg (the inner measure)
  *   - weighted / logweighted's second arg (the base measure)
  */
-function expandMeasureRefsInIR(ir: any, derivations: any, visited: any) {
+function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited: any): IRNode | null {
   visited = visited || new Set();
   if (!ir) return ir;
   // Top-level ref to a measure binding: expand via the same
