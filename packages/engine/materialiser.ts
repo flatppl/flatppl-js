@@ -709,7 +709,7 @@ function matKernelBroadcast(name: any, d: any, ctx: any) {
     try {
       L = sampler._internal.ARITH_OPS.lower_cholesky(cov);  // diag(σ), O(n)
     } catch (err) {
-      return Promise.reject(new Error('broadcast(Normal): ' + err.message));
+      return Promise.reject(new Error('broadcast(Normal): ' + (err as any).message));
     }
     const stdNormalIR = {
       kind: 'call', op: 'Normal',
@@ -1256,7 +1256,7 @@ function matMvNormal(name: any, d: any, ctx: any) {
   try {
     L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
   } catch (err) {
-    return Promise.reject(new Error('MvNormal: ' + err.message));
+    return Promise.reject(new Error('MvNormal: ' + (err as any).message));
   }
   // Draw N × n standard normals. Use the worker to get a Float64Array
   // of length N*n; we treat it as the atom-major shape=[N, n] buffer.

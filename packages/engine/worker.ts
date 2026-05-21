@@ -561,7 +561,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
         default:
           throw new Error(`unknown message type: ${msg.type}`);
       }
-    } catch (err) {
+    } catch (err: any) {
       return {
         type: 'error',
         id,
