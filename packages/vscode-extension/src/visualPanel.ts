@@ -16,7 +16,7 @@ function variantIdFromUri(_uri) {
 }
 
 class FlatPPLPanel {
-  static currentPanel = undefined;
+  static currentPanel: any = undefined;
   static viewType = 'flatpplPanel';
 
   // Class fields used as bag-of-state by the legacy constructor /

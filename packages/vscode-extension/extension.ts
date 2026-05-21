@@ -59,7 +59,7 @@ function findEmbeddedBlocks(text) {
   // Group 1: Python triple/triple-single after `flatppl( [raw]?`.
   // Group 2: Julia `"""` or `"` immediately after `flatppl`.
   const re = /\bflatppl\s*(?:\(\s*(?:[rRbB]{1,2})?\s*("""|''')|("""|"))/g;
-  const blocks = [];
+  const blocks: any[] = [];
   let m;
   while ((m = re.exec(text)) !== null) {
     const delim = m[1] || m[2];
@@ -118,7 +118,7 @@ function pickBindingForCursor(bindings, line, char) {
   if (at) return at;
   const all = [...bindings.values()];
   if (all.length === 0) return null;
-  let next = null;
+  let next: any = null;
   for (const b of all) {
     if (b.line >= line && (!next || b.line < next.line)) next = b;
   }
@@ -289,7 +289,7 @@ function activate(context) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
   let cachedVersion = -1;
-  let cachedResult = null;
+  let cachedResult: any = null;
 
   // Diagnostic collection for FlatPPL errors/warnings
   const diagCollection = vscode.languages.createDiagnosticCollection('flatppl');
@@ -408,9 +408,9 @@ function activate(context) {
   // diagnostics added in a later commit). Disarm tears it all down.
   // So Python/Julia users who never opt in pay nothing.
   let embeddedArmed = false;
-  let embeddedDisposables = [];
-  let embeddedFollow;          // the single active cursor-follow listener
-  let embeddedFollowTimer;
+  let embeddedDisposables: any[] = [];
+  let embeddedFollow: any;     // the single active cursor-follow listener
+  let embeddedFollowTimer: any;
   const embeddedDiagTimers = new Map();   // uriString → debounce timeout
 
   function isEmbeddingHost(doc) {
@@ -428,7 +428,7 @@ function activate(context) {
     const text = doc.getText();
     const blocks = findEmbeddedBlocks(text);
     if (blocks.length === 0) { diagCollection.delete(doc.uri); return; }
-    const out = [];
+    const out: any[] = [];
     for (const block of blocks) {
       const baseLine = doc.positionAt(block.start).line;
       let diags;
@@ -519,7 +519,7 @@ function activate(context) {
       // each shifted by its own host base line.
       vscode.languages.registerDocumentSymbolProvider(EMB, {
         provideDocumentSymbols(document) {
-          const out = [];
+          const out: any[] = [];
           for (const b of findEmbeddedBlocks(document.getText())) {
             const baseLine = document.positionAt(b.start).line;
             const vdoc = makeBlockDoc(vscode, document, b);
@@ -569,7 +569,7 @@ function activate(context) {
   // across native .flatppl and embedded Python/Julia — parsing only,
   // no side effects (arming/following is runViz's job). One resolver
   // ⇒ the two surfaces and the follower can't drift.
-  function resolveVizTarget(editor, mode) {
+  function resolveVizTarget(editor, mode): any {
     if (!editor) return { kind: 'none', error: 'No active editor.' };
     const doc = editor.document;
     if (isFlatPPLDoc(doc)) {
@@ -871,7 +871,7 @@ function activate(context) {
   };
 
   function makeBuiltinCompletions() {
-    const items = [];
+    const items: any[] = [];
 
     // Special forms
     for (const name of builtins.SPECIAL_OPERATIONS) {

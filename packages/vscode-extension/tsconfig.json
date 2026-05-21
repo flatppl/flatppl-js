@@ -20,13 +20,13 @@
   "// strict-overrides":
     "Initial post-migration state — strict: true plus targeted off-",
   "// strict-overrides.2":
-    "overrides for the two flags with backlog: noImplicitAny (~166",
+    "override for the remaining flag with backlog: noImplicitAny",
   "// strict-overrides.3":
-    "sites) and strictNullChecks (~36 sites — mostly around the",
+    "(~166 sites — most go through the vendored engine.min.js ambient",
   "// strict-overrides.4":
-    "vendored engine.min.js typed any, and FlatPPLPanel state).",
+    "typed any). strictNullChecks landed earlier; same ratchet pattern",
   "// strict-overrides.5":
-    "Each is a future ratchet, same pattern as the engine's pass.",
+    "as the engine's pass.",
 
   "compilerOptions": {
     "target": "es2020",
@@ -39,7 +39,6 @@
 
     "strict": true,
     "noImplicitAny": false,
-    "strictNullChecks": false,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
