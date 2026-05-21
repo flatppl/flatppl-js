@@ -36,16 +36,16 @@ const ast = require('./ast.ts');
 const { collectDeps, isMeasureExpr } = require('./analyzer.ts');
 
 // Minimal AST construction helpers, all stamped with synthLoc(source).
-function mkIdent(name, source)        { return ast.Identifier(name, ast.synthLoc(source)); }
-function mkString(value, source)      { return ast.StringLiteral(value, JSON.stringify(value), ast.synthLoc(source)); }
-function mkArray(elements, source)    { return ast.ArrayLiteral(elements, ast.synthLoc(source)); }
-function mkKwArg(name, value, source) { return ast.KeywordArg(name, value, ast.synthLoc(source)); }
-function mkCall(name, args, source)   {
+function mkIdent(name: any, source: any)        { return ast.Identifier(name, ast.synthLoc(source)); }
+function mkString(value: any, source: any)      { return ast.StringLiteral(value, JSON.stringify(value), ast.synthLoc(source)); }
+function mkArray(elements: any, source: any)    { return ast.ArrayLiteral(elements, ast.synthLoc(source)); }
+function mkKwArg(name: any, value: any, source: any) { return ast.KeywordArg(name, value, ast.synthLoc(source)); }
+function mkCall(name: any, args: any, source: any)   {
   return ast.CallExpr(mkIdent(name, source), args, ast.synthLoc(source));
 }
 
 // Plan constructors.
-function delegate(kernelBinding, priorBinding) {
+function delegate(kernelBinding: any, priorBinding: any) {
   return {
     kind: 'delegate',
     kernel: { binding: kernelBinding },
@@ -53,11 +53,11 @@ function delegate(kernelBinding, priorBinding) {
   };
 }
 
-function synthesized(kernelExpr, priorExpr) {
+function synthesized(kernelExpr: any, priorExpr: any) {
   return { kind: 'synthesized', kernel: kernelExpr, prior: priorExpr };
 }
 
-function unsupported(reason, blockingNode, detail?) {
+function unsupported(reason: any, blockingNode: any, detail?: any) {
   return { kind: 'unsupported', reason, blockingNode, detail: detail || null };
 }
 
@@ -67,7 +67,7 @@ function unsupported(reason, blockingNode, detail?) {
 // disintegrate("name", joint)   -> ['name']
 // disintegrate(["a", "b"], j)   -> ['a', 'b']
 // Returns null if the selector isn't a static string-or-string-array.
-function normaliseSelector(selectorAst) {
+function normaliseSelector(selectorAst: any) {
   if (!selectorAst) return null;
   if (selectorAst.type === 'StringLiteral') return [selectorAst.value];
   if (selectorAst.type === 'ArrayLiteral') {
@@ -83,7 +83,7 @@ function normaliseSelector(selectorAst) {
 
 // Try to read the field map from `record(name = expr, ...)`.
 // Returns Map<name, expr> or null if the call isn't a static record.
-function tryRecord(node) {
+function tryRecord(node: any) {
   if (!node || node.type !== 'CallExpr') return null;
   if (!node.callee || node.callee.type !== 'Identifier' || node.callee.name !== 'record') return null;
   const fields = new Map();
@@ -98,7 +98,7 @@ function tryRecord(node) {
 // field names, or [] if the structure isn't statically resolvable. Used to
 // match selectors against jointchain components and to recognise positional
 // joints whose components carry implicit names.
-function namedOutputFields(node, bindings, seen?) {
+function namedOutputFields(node: any, bindings: any, seen?: any) {
   if (!node) return [];
   if (!seen) seen = new Set();
   if (node.type === 'Identifier') {
@@ -113,15 +113,15 @@ function namedOutputFields(node, bindings, seen?) {
   }
   const callee = node.callee.name;
   if (callee === 'lawof' || callee === 'kernelof' || callee === 'functionof') {
-    const firstArg = node.args.find(a => a.type !== 'KeywordArg');
+    const firstArg = node.args.find((a: any) => a.type !== 'KeywordArg');
     if (!firstArg) return [];
     const rec = tryRecord(firstArg);
     if (rec) return [...rec.keys()];
     return namedOutputFields(firstArg, bindings, seen);
   }
   if (callee === 'joint' || callee === 'jointchain') {
-    if (node.args.length > 0 && node.args.every(a => a.type === 'KeywordArg')) {
-      return node.args.map(a => a.name);
+    if (node.args.length > 0 && node.args.every((a: any) => a.type === 'KeywordArg')) {
+      return node.args.map((a: any) => a.name);
     }
     return [];
   }
@@ -142,10 +142,10 @@ function namedOutputFields(node, bindings, seen?) {
 // binding names reachable. Stops at unbound names. Used by the
 // `lawof(record(...))` slice-and-rebuild for the admissibility check and
 // for boundary-set computation.
-function collectAncestorNames(node, bindings) {
+function collectAncestorNames(node: any, bindings: any) {
   const result = new Set();
   const definedNames = new Set(bindings.keys());
-  function visit(name) {
+  function visit(name: any) {
     if (result.has(name)) return;
     result.add(name);
     const b = bindings.get(name);
@@ -160,7 +160,7 @@ function collectAncestorNames(node, bindings) {
 
 // === Top-level dispatcher ==========================================
 
-function disintegratePlan(joint, selector, bindings, ctx) {
+function disintegratePlan(joint: any, selector: any, bindings: any, ctx: any): any {
   ctx = ctx || { seen: new Set(), source: null };
 
   // Unwrap Identifiers (cycle-guarded).
@@ -233,7 +233,7 @@ function disintegratePlan(joint, selector, bindings, ctx) {
 // check enforces the structural condition that makes the channel realisable
 // without integration (Pearl-style factorization).
 
-function ruleLawof(node, selector, bindings, ctx) {
+function ruleLawof(node: any, selector: any, bindings: any, ctx: any) {
   if (node.args.length !== 1) {
     return unsupported('lawof must be unary', node);
   }
@@ -312,7 +312,7 @@ function ruleLawof(node, selector, bindings, ctx) {
   return synthesized(kernelExpr, priorExpr);
 }
 
-function nameOf(rec, varName) {
+function nameOf(rec: any, varName: any) {
   for (const [f, v] of rec) if (v.type === 'Identifier' && v.name === varName) return f;
   return varName;
 }
@@ -324,14 +324,14 @@ function nameOf(rec, varName) {
 // of prior values) is correct because of the independence — Cho-Jacobs
 // section on parallel composition.
 
-function ruleJoint(node, selector, bindings, ctx) {
+function ruleJoint(node: any, selector: any, bindings: any, ctx: any) {
   // Only the keyword form is structurally tractable as written. Positional
   // joint(M1, M2, ...) merges variates via `cat`; without explicit field
   // names there's nothing for the selector to match.
   if (node.args.length === 0) {
     return unsupported('empty joint()', node);
   }
-  if (!node.args.every(a => a.type === 'KeywordArg')) {
+  if (!node.args.every((a: any) => a.type === 'KeywordArg')) {
     return unsupported(
       'positional joint(M1, M2, ...) has no structural disintegration rule (use joint(name=M, ...) for selector matching)',
       node);
@@ -345,8 +345,8 @@ function ruleJoint(node, selector, bindings, ctx) {
       return unsupported(`selector '${s}' is not a field of joint(...)`, node);
     }
   }
-  const selectedNames = node.args.filter(a => selector.includes(a.name));
-  const unselectedNames = node.args.filter(a => !selector.includes(a.name));
+  const selectedNames = node.args.filter((a: any) => selector.includes(a.name));
+  const unselectedNames = node.args.filter((a: any) => !selector.includes(a.name));
   if (selectedNames.length === 0) {
     return unsupported('selector matches no joint fields', node);
   }
@@ -357,10 +357,10 @@ function ruleJoint(node, selector, bindings, ctx) {
   // Each side is a fresh joint(...) over its share. Reuse the original
   // value sub-expressions verbatim — they still type-check as measures.
   const kernelExpr = mkCall('joint',
-    selectedNames.map(a => mkKwArg(a.name, a.value, ctx.source)),
+    selectedNames.map((a: any) => mkKwArg(a.name, a.value, ctx.source)),
     ctx.source);
   const priorExpr = mkCall('joint',
-    unselectedNames.map(a => mkKwArg(a.name, a.value, ctx.source)),
+    unselectedNames.map((a: any) => mkKwArg(a.name, a.value, ctx.source)),
     ctx.source);
 
   return synthesized(kernelExpr, priorExpr);
@@ -372,12 +372,12 @@ function ruleJoint(node, selector, bindings, ctx) {
 // suffix of the chain — otherwise we'd be inverting the dependency order
 // and would need analytic reasoning, not structural rewriting.
 
-function ruleJointchain(node, selector, bindings, ctx) {
+function ruleJointchain(node: any, selector: any, bindings: any, ctx: any) {
   if (node.args.length === 0) {
     return unsupported('empty jointchain()', node);
   }
-  const allKeyword = node.args.every(a => a.type === 'KeywordArg');
-  const allPositional = node.args.every(a => a.type !== 'KeywordArg');
+  const allKeyword = node.args.every((a: any) => a.type === 'KeywordArg');
+  const allPositional = node.args.every((a: any) => a.type !== 'KeywordArg');
 
   if (allKeyword) {
     return jointchainKeyword(node, selector, bindings, ctx);
@@ -388,8 +388,8 @@ function ruleJointchain(node, selector, bindings, ctx) {
   return unsupported('jointchain mixing keyword and positional args', node);
 }
 
-function jointchainKeyword(node, selector, bindings, ctx) {
-  const fieldNames = node.args.map(a => a.name);
+function jointchainKeyword(node: any, selector: any, bindings: any, ctx: any) {
+  const fieldNames = node.args.map((a: any) => a.name);
 
   for (const s of selector) {
     if (!fieldNames.includes(s)) {
@@ -398,7 +398,7 @@ function jointchainKeyword(node, selector, bindings, ctx) {
   }
 
   // Suffix check: every selected field must appear at the tail.
-  const firstSelectedIdx = fieldNames.findIndex(f => selector.includes(f));
+  const firstSelectedIdx = fieldNames.findIndex((f: any) => selector.includes(f));
   if (firstSelectedIdx < 0) {
     return unsupported('selector matches no jointchain fields', node);
   }
@@ -420,10 +420,10 @@ function jointchainKeyword(node, selector, bindings, ctx) {
   // A jointchain of one element is just that element.
   const kernelBody = (kernelArgs.length === 1)
     ? kernelArgs[0].value
-    : mkCall('jointchain', kernelArgs.map(a => mkKwArg(a.name, a.value, ctx.source)), ctx.source);
+    : mkCall('jointchain', kernelArgs.map((a: any) => mkKwArg(a.name, a.value, ctx.source)), ctx.source);
   const priorExpr  = (priorArgs.length === 1)
     ? priorArgs[0].value
-    : mkCall('jointchain', priorArgs.map(a => mkKwArg(a.name, a.value, ctx.source)), ctx.source);
+    : mkCall('jointchain', priorArgs.map((a: any) => mkKwArg(a.name, a.value, ctx.source)), ctx.source);
 
   // Wrap kernel side as a parametric kernel. The chain's implicit
   // "earlier-field-as-input" semantics is encoded as explicit
@@ -438,7 +438,7 @@ function jointchainKeyword(node, selector, bindings, ctx) {
   // measure-typed body uses `functionof` instead, which produces a
   // kernel when its body is a measure. wrapAsKernelOrFunctionOf picks
   // the right one based on isMeasureExpr.
-  const kernelExpr = wrapAsKernelOrFunctionOf(kernelBody, priorArgs.map(a => a.name), bindings, ctx);
+  const kernelExpr = wrapAsKernelOrFunctionOf(kernelBody, priorArgs.map((a: any) => a.name), bindings, ctx);
   return synthesized(kernelExpr, priorExpr);
 }
 
@@ -451,7 +451,7 @@ function jointchainKeyword(node, selector, bindings, ctx) {
 // `kernelof`'s first arg must not be a measure. Both forms produce a
 // kernel here (since the result is a parameterised measure-or-stochastic-
 // value), but only the spec-compliant keyword is emitted.
-function wrapAsKernelOrFunctionOf(body, boundaryNames, bindings, ctx) {
+function wrapAsKernelOrFunctionOf(body: any, boundaryNames: any, bindings: any, ctx: any) {
   if (boundaryNames.length === 0) return body;
   const args = [body];
   for (const n of boundaryNames) {
@@ -468,8 +468,8 @@ function wrapAsKernelOrFunctionOf(body, boundaryNames, bindings, ctx) {
 // fields exactly equals the selector. If the components are bare
 // Identifiers, emit a Delegate plan referencing them by name; otherwise
 // synthesize.
-function jointchainPositional(node, selector, bindings, ctx) {
-  const components = node.args.map(arg => ({
+function jointchainPositional(node: any, selector: any, bindings: any, ctx: any) {
+  const components = node.args.map((arg: any) => ({
     arg,
     fields: namedOutputFields(arg, bindings),
   }));
@@ -489,7 +489,7 @@ function jointchainPositional(node, selector, bindings, ctx) {
   }
 
   // Find the first component that has any selector-matching field.
-  const firstHitIdx = components.findIndex(c => c.fields.some(f => selector.includes(f)));
+  const firstHitIdx = components.findIndex((c: any) => c.fields.some((f: any) => selector.includes(f)));
   if (firstHitIdx < 0) {
     return unsupported('selector matches no jointchain component', node);
   }
@@ -501,7 +501,7 @@ function jointchainPositional(node, selector, bindings, ctx) {
   // (all its fields in selector). Before the split, no component may
   // contribute any field to the selector.
   for (let i = 0; i < firstHitIdx; i++) {
-    if (components[i].fields.some(f => selector.includes(f))) {
+    if (components[i].fields.some((f: any) => selector.includes(f))) {
       return unsupported('non-suffix split in positional jointchain', node.args[i]);
     }
   }
@@ -543,9 +543,9 @@ function jointchainPositional(node, selector, bindings, ctx) {
   // jointchain. The kernel side is wrapped in kernelof(...) with the
   // prior-side fields as boundary inputs, matching the keyword-form
   // treatment.
-  function build(side) {
+  function build(side: any) {
     if (side.length === 1) return side[0].arg;
-    return mkCall('jointchain', side.map(c => c.arg), ctx.source);
+    return mkCall('jointchain', side.map((c: any) => c.arg), ctx.source);
   }
   const priorBoundaryNames: any[] = [];
   let priorFieldsAllKnown = true;
@@ -574,7 +574,7 @@ function jointchainPositional(node, selector, bindings, ctx) {
 // users won't write it, and the dispatcher would already have unwrapped
 // any Identifier alias before reaching this rule.
 
-function ruleChain(node, selector, bindings, ctx) {
+function ruleChain(node: any, selector: any, bindings: any, ctx: any) {
   void selector; void bindings; void ctx;
   return unsupported(
     "'kchain' has no structural disintegration rule", node,
@@ -590,7 +590,7 @@ function ruleChain(node, selector, bindings, ctx) {
 // scalar measure can't be split — there's only one variate — so we let
 // the recursive call return Unsupported with the right reason.)
 
-function ruleRelabel(node, selector, bindings, ctx) {
+function ruleRelabel(node: any, selector: any, bindings: any, ctx: any) {
   if (node.args.length !== 2) {
     return unsupported('relabel must take (measure, [names])', node);
   }
@@ -614,10 +614,10 @@ function ruleRelabel(node, selector, bindings, ctx) {
       && inner.callee && inner.callee.type === 'Identifier'
       && (inner.callee.name === 'joint' || inner.callee.name === 'jointchain')
       && inner.args.length === names.length
-      && inner.args.every(a => a.type !== 'KeywordArg')) {
+      && inner.args.every((a: any) => a.type !== 'KeywordArg')) {
     const lifted = ast.CallExpr(
       inner.callee,
-      inner.args.map((a, i) => mkKwArg(names[i], a, ctx.source)),
+      inner.args.map((a: any, i: any) => mkKwArg(names[i], a, ctx.source)),
       ast.synthLoc(ctx.source),
     );
     return disintegratePlan(lifted, selector, bindings, ctx);
@@ -672,7 +672,7 @@ function ruleRelabel(node, selector, bindings, ctx) {
 //
 // Both fall to Unsupported with detailed reasons.
 
-function rulePushfwd(node, selector, bindings, ctx) {
+function rulePushfwd(node: any, selector: any, bindings: any, ctx: any) {
   void selector; void bindings; void ctx;
   if (node.args.length !== 2) {
     return unsupported('pushfwd must take (f, M)', node);
