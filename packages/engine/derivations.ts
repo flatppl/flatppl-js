@@ -646,6 +646,26 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
         && normalizedRhsIR.op === 'Multinomial') {
       return { kind: 'multinomial', distIR: normalizedRhsIR };
     }
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'Wishart') {
+      return { kind: 'wishart', distIR: normalizedRhsIR };
+    }
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'InverseWishart') {
+      return { kind: 'inversewishart', distIR: normalizedRhsIR };
+    }
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'LKJCholesky') {
+      return { kind: 'lkjcholesky', distIR: normalizedRhsIR };
+    }
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'LKJ') {
+      return { kind: 'lkj', distIR: normalizedRhsIR };
+    }
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'BinnedPoissonProcess') {
+      return { kind: 'binnedpoissonprocess', distIR: normalizedRhsIR };
+    }
 
     // Measure-algebra ops dispatch through MEASURE_OP_CLASSIFIERS
     // below. Each entry is one tightly-scoped handler that decides the
