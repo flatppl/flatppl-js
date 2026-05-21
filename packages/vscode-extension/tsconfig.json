@@ -17,17 +17,6 @@
   "// note5":
     "up the @types/vscode declarations.",
 
-  "// strict-overrides":
-    "Initial post-migration state — strict: true plus targeted off-",
-  "// strict-overrides.2":
-    "override for the remaining flag with backlog: noImplicitAny",
-  "// strict-overrides.3":
-    "(~166 sites — most go through the vendored engine.min.js ambient",
-  "// strict-overrides.4":
-    "typed any). strictNullChecks landed earlier; same ratchet pattern",
-  "// strict-overrides.5":
-    "as the engine's pass.",
-
   "compilerOptions": {
     "target": "es2020",
     "module": "node16",
@@ -38,7 +27,6 @@
     "noEmit": true,
 
     "strict": true,
-    "noImplicitAny": false,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,

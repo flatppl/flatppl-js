@@ -29,11 +29,11 @@ const { FlatPPLPanel } = require('./src/visualPanel');
 // cc81e4b removed FlatPPY/FlatPPJ); embedded FlatPPL inside Python/
 // Julia is handled by injection grammars, not separate language IDs.
 const FLATPPL_LANGS = new Set(['flatppl']);
-function isFlatPPLDoc(document) {
+function isFlatPPLDoc(document: any) {
   return document != null && FLATPPL_LANGS.has(document.languageId);
 }
 // One canonical FlatPPL surface syntax (flatppl-design cc81e4b).
-function variantIdForDoc(_document) {
+function variantIdForDoc(_document: any) {
   return 'flatppl';
 }
 
@@ -55,7 +55,7 @@ function variantIdForDoc(_document) {
 // goes through it, so the embedding-recognition rule lives in exactly
 // one place and stays in lockstep with the injection grammars.
 // Returns ALL blocks: { start, end, source } with absolute offsets.
-function findEmbeddedBlocks(text) {
+function findEmbeddedBlocks(text: any) {
   // Group 1: Python triple/triple-single after `flatppl( [raw]?`.
   // Group 2: Julia `"""` or `"` immediately after `flatppl`.
   const re = /\bflatppl\s*(?:\(\s*(?:[rRbB]{1,2})?\s*("""|''')|("""|"))/g;
@@ -75,7 +75,7 @@ function findEmbeddedBlocks(text) {
 // The block at `cursorOffset`; else the sole block; else the last
 // block starting before the cursor; else null. Pure cursor-pick over
 // findEmbeddedBlocks (scan and pick kept orthogonal).
-function extractEmbeddedFlatPPL(text, cursorOffset) {
+function extractEmbeddedFlatPPL(text: any, cursorOffset: any) {
   const blocks = findEmbeddedBlocks(text);
   if (blocks.length === 0) return null;
   const hit = blocks.find(b => cursorOffset >= b.start && cursorOffset <= b.end);
@@ -93,9 +93,9 @@ function extractEmbeddedFlatPPL(text, cursorOffset) {
 // the canonical embedding opens `"""` then a newline, so content
 // lines sit at their natural columns; a same-line-as-delim opening
 // would be off only in column on the first line (documented edge).
-function engineToVsDiagnostics(vscode, diagnostics, lineOffset) {
+function engineToVsDiagnostics(vscode: any, diagnostics: any, lineOffset: any) {
   const off = lineOffset || 0;
-  return diagnostics.map(d => {
+  return diagnostics.map((d: any) => {
     const range = new vscode.Range(
       d.loc.start.line + off, d.loc.start.col,
       d.loc.end.line + off, d.loc.end.col
@@ -113,7 +113,7 @@ function engineToVsDiagnostics(vscode, diagnostics, lineOffset) {
 // line; else the last binding; else null (only when there are none).
 // One selection rule shared by the native cursor view and the
 // embedded cursor follower so they can never drift apart.
-function pickBindingForCursor(bindings, line, char) {
+function pickBindingForCursor(bindings: any, line: any, char: any) {
   const at = findBindingAtLine(bindings, line, char);
   if (at) return at;
   const all = [...bindings.values()];
@@ -146,15 +146,15 @@ const _WORD_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
 // what the FlatPPL providers touch: getText([range]), positionAt,
 // offsetAt, lineAt, getWordRangeAtPosition, uri/version/languageId,
 // plus __embeddedSource so parsedFor parses the block (not the host).
-function makeBlockDoc(vscode, hostDoc, block) {
+function makeBlockDoc(vscode: any, hostDoc: any, block: any) {
   const src = block.source;
   const lineStart = [0];
   for (let i = 0; i < src.length; i++) if (src[i] === '\n') lineStart.push(i + 1);
-  const offsetAt = (pos) => {
+  const offsetAt = (pos: any) => {
     const ls = lineStart[Math.max(0, Math.min(pos.line, lineStart.length - 1))] || 0;
     return Math.min(ls + pos.character, src.length);
   };
-  const positionAt = (off) => {
+  const positionAt = (off: any) => {
     off = Math.max(0, Math.min(off, src.length));
     let lo = 0, hi = lineStart.length - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (lineStart[m] <= off) lo = m; else hi = m - 1; }
@@ -168,11 +168,11 @@ function makeBlockDoc(vscode, hostDoc, block) {
     lineCount: lineStart.length,
     offsetAt,
     positionAt,
-    getText(range) {
+    getText(range: any) {
       if (!range) return src;
       return src.slice(offsetAt(range.start), offsetAt(range.end));
     },
-    lineAt(lineOrPos) {
+    lineAt(lineOrPos: any) {
       const line = typeof lineOrPos === 'number' ? lineOrPos : lineOrPos.line;
       const a = lineStart[line] || 0;
       const b = line + 1 < lineStart.length ? lineStart[line + 1] - 1 : src.length;
@@ -180,7 +180,7 @@ function makeBlockDoc(vscode, hostDoc, block) {
       return { lineNumber: line, text,
         range: new vscode.Range(line, 0, line, text.length) };
     },
-    getWordRangeAtPosition(pos) {
+    getWordRangeAtPosition(pos: any) {
       const lineText = this.lineAt(pos.line).text;
       _WORD_RE.lastIndex = 0;
       let m;
@@ -194,14 +194,14 @@ function makeBlockDoc(vscode, hostDoc, block) {
   };
 }
 
-function _shiftRange(vscode, r, dl) {
+function _shiftRange(vscode: any, r: any, dl: any) {
   return new vscode.Range(
     r.start.line + dl, r.start.character, r.end.line + dl, r.end.character);
 }
 
 // Block whose content contains `position` (host coords) + the host
 // line where it starts. Null when the cursor isn't in any block.
-function blockAt(hostDoc, position) {
+function blockAt(hostDoc: any, position: any) {
   const blocks = findEmbeddedBlocks(hostDoc.getText());
   if (blocks.length === 0) return null;
   const off = hostDoc.offsetAt(position);
@@ -214,9 +214,9 @@ function blockAt(hostDoc, position) {
 // result, baseLine)` shifts result ranges to host coords (identity for
 // range-less results like completion items). Returns null/[] outside a
 // block so the host language's own provider is unaffected.
-function embedPositional(vscode, impl, method, remap, emptyValue?) {
+function embedPositional(vscode: any, impl: any, method: any, remap: any, emptyValue?: any) {
   return {
-    [method](document, position, ...rest) {
+    [method](document: any, position: any, ...rest: any[]) {
       const at = blockAt(document, position);
       if (!at) return emptyValue !== undefined ? emptyValue : null;
       const vdoc = makeBlockDoc(vscode, document, at.block);
@@ -228,21 +228,21 @@ function embedPositional(vscode, impl, method, remap, emptyValue?) {
   };
 }
 
-const remapHover = (vscode, h, dl) => new vscode.Hover(
+const remapHover = (vscode: any, h: any, dl: any) => new vscode.Hover(
   h.contents, h.range ? _shiftRange(vscode, h.range, dl) : undefined);
 
-function _remapSymbol(vscode, s, dl) {
+function _remapSymbol(vscode: any, s: any, dl: any) {
   const out = new vscode.DocumentSymbol(
     s.name, s.detail, s.kind,
     _shiftRange(vscode, s.range, dl),
     _shiftRange(vscode, s.selectionRange, dl));
   if (s.children && s.children.length) {
-    out.children = s.children.map(c => _remapSymbol(vscode, c, dl));
+    out.children = s.children.map((c: any) => _remapSymbol(vscode, c, dl));
   }
   return out;
 }
 
-function _remapSelectionRange(vscode, sr, dl) {
+function _remapSelectionRange(vscode: any, sr: any, dl: any): any {
   return new vscode.SelectionRange(
     _shiftRange(vscode, sr.range, dl),
     sr.parent ? _remapSelectionRange(vscode, sr.parent, dl) : undefined);
@@ -250,23 +250,23 @@ function _remapSelectionRange(vscode, sr, dl) {
 
 // Location.uri is already the host uri (the shim's uri === hostDoc's);
 // only the range needs shifting back into host coordinates.
-const _remapLocation = (vscode, loc, dl) =>
+const _remapLocation = (vscode: any, loc: any, dl: any) =>
   new vscode.Location(loc.uri, _shiftRange(vscode, loc.range, dl));
 
 // definition → Location | Location[] (our impl: single or null).
-const remapDefinition = (vscode, res, dl) => Array.isArray(res)
+const remapDefinition = (vscode: any, res: any, dl: any) => Array.isArray(res)
   ? res.map(l => _remapLocation(vscode, l, dl))
   : _remapLocation(vscode, res, dl);
 
-const remapReferences = (vscode, res, dl) =>
-  res.map(l => _remapLocation(vscode, l, dl));
+const remapReferences = (vscode: any, res: any, dl: any) =>
+  res.map((l: any) => _remapLocation(vscode, l, dl));
 
-const remapHighlights = (vscode, res, dl) => res.map(h =>
+const remapHighlights = (vscode: any, res: any, dl: any) => res.map((h: any) =>
   new vscode.DocumentHighlight(_shiftRange(vscode, h.range, dl), h.kind));
 
 // prepareRename → { range, placeholder }: shift the range, keep the
 // placeholder text.
-const remapPrepareRename = (vscode, res, dl) => ({
+const remapPrepareRename = (vscode: any, res: any, dl: any) => ({
   range: _shiftRange(vscode, res.range, dl),
   placeholder: res.placeholder,
 });
@@ -275,7 +275,7 @@ const remapPrepareRename = (vscode, res, dl) => ({
 // coordinates. The uri is already the host doc's (the shim's uri ===
 // hostDoc's), so only the line offset changes — the rename writes
 // back into the .py/.jl at the correct lines within the block.
-function remapWorkspaceEdit(vscode, edit, dl) {
+function remapWorkspaceEdit(vscode: any, edit: any, dl: any) {
   const out = new vscode.WorkspaceEdit();
   for (const [uri, edits] of edit.entries()) {
     for (const te of edits) {
@@ -285,7 +285,7 @@ function remapWorkspaceEdit(vscode, edit, dl) {
   return out;
 }
 
-function activate(context) {
+function activate(context: any) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
   let cachedVersion = -1;
@@ -300,7 +300,7 @@ function activate(context) {
   // correct before anything is armed.
   vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
 
-  function getParsed(document) {
+  function getParsed(document: any) {
     const uri = document.uri.toString();
     if (uri === cachedUri && document.version === cachedVersion) return cachedResult;
 
@@ -326,7 +326,7 @@ function activate(context) {
   // owned by publishEmbeddedDiagnostics). This single indirection lets
   // every native provider serve embedded blocks unchanged — the only
   // edit to a provider body is getParsed → parsedFor.
-  function parsedFor(document) {
+  function parsedFor(document: any) {
     if (document && typeof document.__embeddedSource === 'string') {
       return processSource(document.__embeddedSource, { variant: 'flatppl' });
     }
@@ -351,7 +351,7 @@ function activate(context) {
   // call; the readOnly/navOrigin opts flow straight through.
   // opts: { source, mode:'binding'|'module', targetName?, sourceUri?,
   //         readOnly?, navOrigin?, pushHistory? }
-  function renderToPanel(opts) {
+  function renderToPanel(opts: any) {
     const wasNew = !FlatPPLPanel.currentPanel;
     FlatPPLPanel.createOrShow(context);
     if (wasNew) {
@@ -372,7 +372,7 @@ function activate(context) {
     }
   }
 
-  function showDAGForCursor(editor, pushHistory) {
+  function showDAGForCursor(editor: any, pushHistory: any) {
     if (!editor || !isFlatPPLDoc(editor.document)) return false;
     const { bindings } = getParsed(editor.document);
     const pos = editor.selection.active;
@@ -413,7 +413,7 @@ function activate(context) {
   let embeddedFollowTimer: any;
   const embeddedDiagTimers = new Map();   // uriString → debounce timeout
 
-  function isEmbeddingHost(doc) {
+  function isEmbeddingHost(doc: any) {
     return doc && (doc.languageId === 'python' || doc.languageId === 'julia');
   }
 
@@ -423,7 +423,7 @@ function activate(context) {
   // are parsed independently and their diagnostics unioned. Same
   // diagCollection as native .flatppl — keyed by host uri, disjoint
   // from .flatppl uris, so no conflict. No blocks ⇒ clear (stale).
-  function publishEmbeddedDiagnostics(doc) {
+  function publishEmbeddedDiagnostics(doc: any) {
     if (!isEmbeddingHost(doc)) return;
     const text = doc.getText();
     const blocks = findEmbeddedBlocks(text);
@@ -444,7 +444,7 @@ function activate(context) {
 
   // Debounced per-doc refresh (cheap regex scan + parse only when
   // armed; opt-in, so uninterested users never reach here).
-  function scheduleEmbeddedDiagnostics(doc) {
+  function scheduleEmbeddedDiagnostics(doc: any) {
     if (!isEmbeddingHost(doc)) return;
     const key = doc.uri.toString();
     clearTimeout(embeddedDiagTimers.get(key));
@@ -473,9 +473,9 @@ function activate(context) {
     const EMB = EMBEDDING_HOST_SELECTOR;
     embeddedDisposables.push(
       // Diagnostics.
-      vscode.workspace.onDidChangeTextDocument(e => scheduleEmbeddedDiagnostics(e.document)),
-      vscode.workspace.onDidOpenTextDocument(d => publishEmbeddedDiagnostics(d)),
-      vscode.workspace.onDidCloseTextDocument(d => {
+      vscode.workspace.onDidChangeTextDocument((e: any) => scheduleEmbeddedDiagnostics(e.document)),
+      vscode.workspace.onDidOpenTextDocument((d: any) => publishEmbeddedDiagnostics(d)),
+      vscode.workspace.onDidCloseTextDocument((d: any) => {
         if (isEmbeddingHost(d)) diagCollection.delete(d.uri);
       }),
       // Position-based, reuse impls via the shim.
@@ -483,7 +483,7 @@ function activate(context) {
         embedPositional(vscode, hoverImpl, 'provideHover', remapHover)),
       vscode.languages.registerCompletionItemProvider(EMB,
         embedPositional(vscode, completionImpl, 'provideCompletionItems',
-          (_v, r) => r, /* emptyValue (additive, don't suppress host) */ [])),
+          (_v: any, r: any) => r, /* emptyValue (additive, don't suppress host) */ [])),
       vscode.languages.registerDefinitionProvider(EMB,
         embedPositional(vscode, defImpl, 'provideDefinition', remapDefinition)),
       vscode.languages.registerReferenceProvider(EMB,
@@ -494,7 +494,7 @@ function activate(context) {
       // the host .py/.jl at block-shifted ranges. Outside a block we
       // decline (undefined/null) so the host language's rename runs.
       vscode.languages.registerRenameProvider(EMB, {
-        prepareRename(document, position) {
+        prepareRename(document: any, position: any) {
           const at = blockAt(document, position);
           if (!at) return undefined;
           const vdoc = makeBlockDoc(vscode, document, at.block);
@@ -504,7 +504,7 @@ function activate(context) {
           return res == null ? res
             : remapPrepareRename(vscode, res, at.baseLine);
         },
-        provideRenameEdits(document, position, newName) {
+        provideRenameEdits(document: any, position: any, newName: any) {
           const at = blockAt(document, position);
           if (!at) return null;
           const vdoc = makeBlockDoc(vscode, document, at.block);
@@ -518,7 +518,7 @@ function activate(context) {
       // Document symbols: no position — union every block's outline,
       // each shifted by its own host base line.
       vscode.languages.registerDocumentSymbolProvider(EMB, {
-        provideDocumentSymbols(document) {
+        provideDocumentSymbols(document: any) {
           const out: any[] = [];
           for (const b of findEmbeddedBlocks(document.getText())) {
             const baseLine = document.positionAt(b.start).line;
@@ -532,8 +532,8 @@ function activate(context) {
       }),
       // Selection range: per requested position, in its own block.
       vscode.languages.registerSelectionRangeProvider(EMB, {
-        provideSelectionRanges(document, positions) {
-          return positions.map(pos => {
+        provideSelectionRanges(document: any, positions: any) {
+          return positions.map((pos: any) => {
             const at = blockAt(document, pos);
             if (!at) return null;
             const vdoc = makeBlockDoc(vscode, document, at.block);
@@ -569,7 +569,7 @@ function activate(context) {
   // across native .flatppl and embedded Python/Julia — parsing only,
   // no side effects (arming/following is runViz's job). One resolver
   // ⇒ the two surfaces and the follower can't drift.
-  function resolveVizTarget(editor, mode): any {
+  function resolveVizTarget(editor: any, mode: any): any {
     if (!editor) return { kind: 'none', error: 'No active editor.' };
     const doc = editor.document;
     if (isFlatPPLDoc(doc)) {
@@ -615,11 +615,11 @@ function activate(context) {
   // Lazy (user already opted in), self-disposes when the panel is
   // gone, replaced on re-arm. Reuses resolveVizTarget + renderToPanel
   // so the follow path is identical to the command path.
-  function armEmbeddedFollower(hostUri) {
+  function armEmbeddedFollower(hostUri: any) {
     const hostUriStr = hostUri.toString();
     if (embeddedFollow) embeddedFollow.dispose();
     let lastName = ' ';
-    embeddedFollow = vscode.window.onDidChangeTextEditorSelection(ev => {
+    embeddedFollow = vscode.window.onDidChangeTextEditorSelection((ev: any) => {
       if (!FlatPPLPanel.currentPanel) {
         embeddedFollow.dispose(); embeddedFollow = undefined; return;
       }
@@ -643,7 +643,7 @@ function activate(context) {
   // Shared body of the two visualize commands. Native and embedded
   // differ only in resolveVizTarget; embedded additionally auto-arms
   // and follows.
-  function runViz(mode) {
+  function runViz(mode: any) {
     const r = resolveVizTarget(vscode.window.activeTextEditor, mode);
     if (r.kind === 'none') {
       vscode.window.showInformationMessage(r.error);
@@ -681,10 +681,10 @@ function activate(context) {
 
   // --- Live DAG update on cursor move ---
 
-  let updateTimeout;
+  let updateTimeout: any;
   let lastShownName = '';
 
-  const selectionListener = vscode.window.onDidChangeTextEditorSelection(e => {
+  const selectionListener = vscode.window.onDidChangeTextEditorSelection((e: any) => {
     if (!FlatPPLPanel.currentPanel) return;
     if (!isFlatPPLDoc(e.textEditor.document)) return;
 
@@ -717,9 +717,9 @@ function activate(context) {
 
   // --- Re-parse on document change (for diagnostics + visualizer) ---
 
-  let changePushTimeout;
+  let changePushTimeout: any;
 
-  const changeListener = vscode.workspace.onDidChangeTextDocument(e => {
+  const changeListener = vscode.workspace.onDidChangeTextDocument((e: any) => {
     if (!isFlatPPLDoc(e.document)) return;
     getParsed(e.document);
 
@@ -742,7 +742,7 @@ function activate(context) {
 
   // --- Parse on open ---
 
-  const openListener = vscode.workspace.onDidOpenTextDocument(doc => {
+  const openListener = vscode.workspace.onDidOpenTextDocument((doc: any) => {
     if (isFlatPPLDoc(doc)) {
       getParsed(doc);
     }
@@ -751,7 +751,7 @@ function activate(context) {
   // --- Go-to-definition ---
 
   const defImpl = {
-    provideDefinition(document, position) {
+    provideDefinition(document: any, position: any) {
       const { bindings } = parsedFor(document);
       const wordRange = document.getWordRangeAtPosition(position);
       if (!wordRange) return null;
@@ -768,7 +768,7 @@ function activate(context) {
   // --- Hover ---
 
   const hoverImpl = {
-    provideHover(document, position) {
+    provideHover(document: any, position: any) {
       const { bindings } = parsedFor(document);
       const wordRange = document.getWordRangeAtPosition(position);
       if (!wordRange) return null;
@@ -797,15 +797,15 @@ function activate(context) {
   // --- Document symbols (outline) ---
 
   const symbolImpl = {
-    provideDocumentSymbols(document) {
+    provideDocumentSymbols(document: any) {
       const { symbols } = parsedFor(document);
-      const kindMap = {
+      const kindMap: Record<string, any> = {
         Variable: vscode.SymbolKind.Variable,
         Function: vscode.SymbolKind.Function,
         Constant: vscode.SymbolKind.Constant,
         Module: vscode.SymbolKind.Module,
       };
-      return symbols.map(s => new vscode.DocumentSymbol(
+      return symbols.map((s: any) => new vscode.DocumentSymbol(
         s.name,
         s.type,
         kindMap[s.kind] || vscode.SymbolKind.Variable,
@@ -821,7 +821,7 @@ function activate(context) {
 
   // Snippets for built-in distributions: typing the name and accepting the
   // suggestion drops in a placeholder list of standard parameters.
-  const DIST_SNIPPETS = {
+  const DIST_SNIPPETS: Record<string, string> = {
     Normal: 'Normal(mu = ${1:0.0}, sigma = ${2:1.0})',
     Exponential: 'Exponential(rate = ${1:1.0})',
     Uniform: 'Uniform(support = ${1:reals})',
@@ -853,7 +853,7 @@ function activate(context) {
   };
 
   // Snippets for special operations — drop in a body placeholder.
-  const SPECIAL_SNIPPETS = {
+  const SPECIAL_SNIPPETS: Record<string, string> = {
     elementof: 'elementof(${1:reals})',
     external: 'external(${1:reals})',
     draw: 'draw(${1})',
@@ -941,7 +941,7 @@ function activate(context) {
   const builtinCompletions = makeBuiltinCompletions();
 
   const completionImpl = {
-    provideCompletionItems(document, position) {
+    provideCompletionItems(document: any, position: any) {
       const { bindings } = parsedFor(document);
       const items = [...builtinCompletions];
 
@@ -963,7 +963,7 @@ function activate(context) {
 
   // --- Rename provider (F2) ---
 
-  function locToRange(loc) {
+  function locToRange(loc: any) {
     return new vscode.Range(
       loc.start.line, loc.start.col,
       loc.end.line, loc.end.col
@@ -971,7 +971,7 @@ function activate(context) {
   }
 
   const renameImpl = {
-    prepareRename(document, position) {
+    prepareRename(document: any, position: any) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) {
@@ -986,7 +986,7 @@ function activate(context) {
       };
     },
 
-    provideRenameEdits(document, position, newName) {
+    provideRenameEdits(document: any, position: any, newName: any) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) return null;
@@ -1022,7 +1022,7 @@ function activate(context) {
   // --- Find All References (Shift+F12) ---
 
   const referenceImpl = {
-    provideReferences(document, position, refContext) {
+    provideReferences(document: any, position: any, refContext: any) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) return null;
@@ -1032,7 +1032,7 @@ function activate(context) {
       if (plan.kind === 'binding' && refContext && refContext.includeDeclaration === false) {
         locs = locs.slice(1);
       }
-      return locs.map(loc => new vscode.Location(document.uri, locToRange(loc)));
+      return locs.map((loc: any) => new vscode.Location(document.uri, locToRange(loc)));
     }
   };
   const referenceProvider = vscode.languages.registerReferenceProvider(
@@ -1041,11 +1041,11 @@ function activate(context) {
   // --- Document Highlight (auto, when cursor is on an identifier) ---
 
   const highlightImpl = {
-    provideDocumentHighlights(document, position) {
+    provideDocumentHighlights(document: any, position: any) {
       const { ast, bindings } = parsedFor(document);
       const plan = planRename(ast, bindings, position.line, position.character);
       if (!plan) return null;
-      return plan.locs.map((loc, i) => {
+      return plan.locs.map((loc: any, i: any) => {
         // For bindings: first loc is the LHS definition (Write); rest are refs (Read).
         // For placeholders: all are textually equivalent (Text).
         let kind = vscode.DocumentHighlightKind.Text;
@@ -1064,9 +1064,9 @@ function activate(context) {
   // --- Selection Range (Shift+Alt+→ to expand selection) ---
 
   const selectionRangeImpl = {
-    provideSelectionRanges(document, positions) {
+    provideSelectionRanges(document: any, positions: any) {
       const { ast } = parsedFor(document);
-      return positions.map(pos => {
+      return positions.map((pos: any) => {
         const ranges = findEnclosingRanges(ast, pos.line, pos.character);
         if (ranges.length === 0) {
           // Fall back to the word range so VS Code's default still works.
@@ -1087,7 +1087,7 @@ function activate(context) {
 
   // --- Clean up diagnostics on close ---
 
-  const closeListener = vscode.workspace.onDidCloseTextDocument(doc => {
+  const closeListener = vscode.workspace.onDidCloseTextDocument((doc: any) => {
     diagCollection.delete(doc.uri);
   });
 
@@ -1098,7 +1098,7 @@ function activate(context) {
 
   // Push configuration changes to a live panel. Filter to our own
   // namespace so unrelated settings don't trigger a webview round-trip.
-  const configListener = vscode.workspace.onDidChangeConfiguration(e => {
+  const configListener = vscode.workspace.onDidChangeConfiguration((e: any) => {
     if (!e.affectsConfiguration('flatppl.visualization')) return;
     if (FlatPPLPanel.currentPanel) {
       FlatPPLPanel.currentPanel.updateConfig(readVisualizationConfig());
