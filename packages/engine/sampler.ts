@@ -125,7 +125,7 @@ const logpmfPoisson     = require('@stdlib/stats-base-dists-poisson-logpmf');
 // Bernoulli ships pmf only — wrap with Math.log. For two atoms this is
 // numerically fine; if stdlib adds -logpmf-bernoulli in the future we
 // can switch over without touching callers.
-function logpmfBernoulli(x, p) {
+function logpmfBernoulli(x: any, p: any) {
   return Math.log(pmfBernoulli(x, p));
 }
 
@@ -157,7 +157,7 @@ const randDirac = {
     if (args.length === 1 && args[0] && typeof args[0] === 'object'
         && ('prng' in args[0] || 'seed' in args[0])) {
       // Parametric: per-call (value).
-      return function parametricDiracSampler(value) { return +value; };
+      return function parametricDiracSampler(value: any) { return +value; };
     }
     // Static: factory(value, opts) — closure returns value.
     const value = +args[0];
@@ -171,17 +171,17 @@ const randDirac = {
 // Lebesgue); pdf returns 1/0 indicator so density-overlay calls
 // don't crash, but viewer-side fixed-Dirac rendering bypasses this
 // and renders the surface form as text.
-function DiracCtor(this: any, value) {
+function DiracCtor(this: any, value: any) {
   this.value = +value;
   this.mean = +value;
   this.variance = 0;
   this.stdev = 0;
   this.support = [+value, +value];
 }
-DiracCtor.prototype.pdf      = function(x) { return x === this.value ? 1 : 0; };
-DiracCtor.prototype.logpdf   = function(x) { return x === this.value ? 0 : -Infinity; };
-DiracCtor.prototype.cdf      = function(x) { return x < this.value ? 0 : 1; };
-DiracCtor.prototype.quantile = function(this: any, _p) { return this.value; };
+DiracCtor.prototype.pdf      = function(x: any) { return x === this.value ? 1 : 0; };
+DiracCtor.prototype.logpdf   = function(x: any) { return x === this.value ? 0 : -Infinity; };
+DiracCtor.prototype.cdf      = function(x: any) { return x < this.value ? 0 : 1; };
+DiracCtor.prototype.quantile = function(this: any, _p: any) { return this.value; };
 
 // ---------------------------------------------------------------------
 // Synthetic Logistic and Weibull distributions
@@ -195,7 +195,7 @@ DiracCtor.prototype.quantile = function(this: any, _p) { return this.value; };
 // when the prng emits the very boundary; an ~eps-thin band is
 // statistically harmless at any practical sample count.
 
-function uClip(u) {
+function uClip(u: any) {
   if (u <= 0)            return Number.EPSILON;
   if (u >= 1 - 1e-16)    return 1 - Number.EPSILON;
   return u;
@@ -214,7 +214,7 @@ const randLogistic = {
     const prng = opts.prng || Math.random;
     if (args.length === 1 && args[0] === opts) {
       // Parametric: returned closure takes (mu, s) per call.
-      return function parametricLogisticSampler(mu, s) {
+      return function parametricLogisticSampler(mu: any, s: any) {
         const u = uClip(prng());
         return +mu + (+s) * Math.log(u / (1 - u));
       };
@@ -227,32 +227,32 @@ const randLogistic = {
   },
 };
 
-function LogisticCtor(this: any, mu, s) {
+function LogisticCtor(this: any, mu: any, s: any) {
   this.mu = +mu; this.s = +s;
   this.mean = +mu;
   this.variance = (s * s) * (Math.PI * Math.PI) / 3;
   this.stdev = Math.sqrt(this.variance);
   this.support = [-Infinity, Infinity];
 }
-LogisticCtor.prototype.pdf = function(this: any, x) {
+LogisticCtor.prototype.pdf = function(this: any, x: any) {
   const z = (x - this.mu) / this.s;
   const ez = Math.exp(-z);
   const denom = 1 + ez;
   return ez / (this.s * denom * denom);
 };
-LogisticCtor.prototype.logpdf = function(this: any, x) {
+LogisticCtor.prototype.logpdf = function(this: any, x: any) {
   const z = (x - this.mu) / this.s;
   return -z - Math.log(this.s) - 2 * Math.log(1 + Math.exp(-z));
 };
-LogisticCtor.prototype.cdf = function(this: any, x) {
+LogisticCtor.prototype.cdf = function(this: any, x: any) {
   return 1 / (1 + Math.exp(-(x - this.mu) / this.s));
 };
-LogisticCtor.prototype.quantile = function(this: any, p) {
+LogisticCtor.prototype.quantile = function(this: any, p: any) {
   if (p <= 0) return -Infinity;
   if (p >= 1) return Infinity;
   return this.mu + this.s * Math.log(p / (1 - p));
 };
-function logpdfLogistic(x, mu, s) {
+function logpdfLogistic(x: any, mu: any, s: any) {
   const z = (x - mu) / s;
   return -z - Math.log(s) - 2 * Math.log(1 + Math.exp(-z));
 }
@@ -269,7 +269,7 @@ const randWeibull = {
                   && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
     const prng = opts.prng || Math.random;
     if (args.length === 1 && args[0] === opts) {
-      return function parametricWeibullSampler(k, lambda) {
+      return function parametricWeibullSampler(k: any, lambda: any) {
         const u = uClip(prng());
         return (+lambda) * Math.pow(-Math.log(1 - u), 1 / (+k));
       };
@@ -282,7 +282,7 @@ const randWeibull = {
   },
 };
 
-function WeibullCtor(this: any, shape, scale) {
+function WeibullCtor(this: any, shape: any, scale: any) {
   // FlatPPL spec names: shape (k), scale (λ).
   this.k = +shape; this.lambda = +scale;
   // Mean = λ · Γ(1 + 1/k); variance = λ² · (Γ(1 + 2/k) − Γ(1 + 1/k)²).
@@ -291,13 +291,13 @@ function WeibullCtor(this: any, shape, scale) {
   // back to quantile-based bounds.
   this.support = [0, Infinity];
 }
-WeibullCtor.prototype.pdf = function(this: any, x) {
+WeibullCtor.prototype.pdf = function(this: any, x: any) {
   if (x < 0) return 0;
   if (x === 0) return this.k === 1 ? 1 / this.lambda : (this.k > 1 ? 0 : Infinity);
   const z = x / this.lambda;
   return (this.k / this.lambda) * Math.pow(z, this.k - 1) * Math.exp(-Math.pow(z, this.k));
 };
-WeibullCtor.prototype.logpdf = function(this: any, x) {
+WeibullCtor.prototype.logpdf = function(this: any, x: any) {
   if (x < 0) return -Infinity;
   if (x === 0) {
     if (this.k === 1) return -Math.log(this.lambda);
@@ -308,16 +308,16 @@ WeibullCtor.prototype.logpdf = function(this: any, x) {
        + (this.k - 1) * Math.log(z)
        - Math.pow(z, this.k);
 };
-WeibullCtor.prototype.cdf = function(this: any, x) {
+WeibullCtor.prototype.cdf = function(this: any, x: any) {
   if (x <= 0) return 0;
   return 1 - Math.exp(-Math.pow(x / this.lambda, this.k));
 };
-WeibullCtor.prototype.quantile = function(this: any, p) {
+WeibullCtor.prototype.quantile = function(this: any, p: any) {
   if (p <= 0) return 0;
   if (p >= 1) return Infinity;
   return this.lambda * Math.pow(-Math.log(1 - p), 1 / this.k);
 };
-function logpdfWeibull(x, k, lambda) {
+function logpdfWeibull(x: any, k: any, lambda: any) {
   if (x < 0) return -Infinity;
   if (x === 0) {
     if (k === 1) return -Math.log(lambda);
@@ -355,7 +355,7 @@ const randGeneralizedNormal = {
     const prng = opts.prng || Math.random;
     if (args.length === 1 && args[0] === opts) {
       const inner = randGamma.factory({ prng });
-      return function parametricGenNormalSampler(mean, alpha, beta) {
+      return function parametricGenNormalSampler(mean: any, alpha: any, beta: any) {
         const y = inner(1 / beta, 1);        // Gamma(1/β, rate=1)
         const r = prng() < 0.5 ? -1 : 1;
         return mean + r * alpha * Math.pow(y, 1 / beta);
@@ -373,21 +373,21 @@ const randGeneralizedNormal = {
   },
 };
 
-function GeneralizedNormalCtor(this: any, mean, alpha, beta) {
+function GeneralizedNormalCtor(this: any, mean: any, alpha: any, beta: any) {
   this.mean  = +mean;
   this.alpha = +alpha;
   this.beta  = +beta;
   this.support = [-Infinity, Infinity];
 }
-GeneralizedNormalCtor.prototype.pdf = function(this: any, x) {
+GeneralizedNormalCtor.prototype.pdf = function(this: any, x: any) {
   return Math.exp(this.logpdf(x));
 };
-GeneralizedNormalCtor.prototype.logpdf = function(this: any, x) {
+GeneralizedNormalCtor.prototype.logpdf = function(this: any, x: any) {
   const a = this.alpha, b = this.beta;
   const z = Math.abs(x - this.mean) / a;
   return Math.log(b) - Math.log(2 * a) - stdlibGammaln(1 / b) - Math.pow(z, b);
 };
-function logpdfGeneralizedNormal(x, mean, alpha, beta) {
+function logpdfGeneralizedNormal(x: any, mean: any, alpha: any, beta: any) {
   const z = Math.abs(x - mean) / alpha;
   return Math.log(beta) - Math.log(2 * alpha)
        - stdlibGammaln(1 / beta) - Math.pow(z, beta);
@@ -416,7 +416,7 @@ const randInverseGamma = {
       // Build one parametric Gamma factory bound to prng; invoke
       // it per call with the right (shape, rate) pair.
       const inner = randGamma.factory({ prng });
-      return function parametricInverseGammaSampler(shape, scale) {
+      return function parametricInverseGammaSampler(shape: any, scale: any) {
         const y = inner(+shape, +scale);  // Gamma(shape, rate=scale)
         return 1 / y;
       };
@@ -428,22 +428,22 @@ const randInverseGamma = {
   },
 };
 
-function InverseGammaCtor(this: any, shape, scale) {
+function InverseGammaCtor(this: any, shape: any, scale: any) {
   this.shape = +shape;
   this.scale = +scale;
   this.support = [0, Infinity];
 }
-InverseGammaCtor.prototype.pdf = function(this: any, x) {
+InverseGammaCtor.prototype.pdf = function(this: any, x: any) {
   if (x <= 0) return 0;
   // β^α / Γ(α) · x^(-α-1) · exp(-β/x)
   return Math.exp(this.logpdf(x));
 };
-InverseGammaCtor.prototype.logpdf = function(this: any, x) {
+InverseGammaCtor.prototype.logpdf = function(this: any, x: any) {
   if (x <= 0) return -Infinity;
   const a = this.shape, b = this.scale;
   return a * Math.log(b) - stdlibGammaln(a) - (a + 1) * Math.log(x) - b / x;
 };
-function logpdfInverseGamma(x, shape, scale) {
+function logpdfInverseGamma(x: any, shape: any, scale: any) {
   if (x <= 0) return -Infinity;
   return shape * Math.log(scale)
        - stdlibGammaln(shape)
@@ -466,7 +466,7 @@ function logpdfInverseGamma(x, shape, scale) {
 // l1unit / softmax upstream when starting from logits or unnormalized
 // weights.
 
-function _catSample(p, prng, offset) {
+function _catSample(p: any, prng: any, offset: any) {
   let u = prng();
   if (u <= 0) u = Number.EPSILON;
   if (u >= 1) u = 1 - Number.EPSILON;
@@ -479,7 +479,7 @@ function _catSample(p, prng, offset) {
   return (p.length - 1) + offset;
 }
 
-function _catLogpmf(k, p, offset) {
+function _catLogpmf(k: any, p: any, offset: any) {
   const idx = (k | 0) - offset;
   if (idx < 0 || idx >= p.length) return -Infinity;
   const pi = p[idx];
@@ -495,7 +495,7 @@ const randCategorical = {
                   && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
     const prng = opts.prng || Math.random;
     if (args.length === 1 && args[0] === opts) {
-      return function parametricCategoricalSampler(p) {
+      return function parametricCategoricalSampler(p: any) {
         return _catSample(p, prng, 1);
       };
     }
@@ -513,7 +513,7 @@ const randCategorical0 = {
                   && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
     const prng = opts.prng || Math.random;
     if (args.length === 1 && args[0] === opts) {
-      return function parametricCategorical0Sampler(p) {
+      return function parametricCategorical0Sampler(p: any) {
         return _catSample(p, prng, 0);
       };
     }
@@ -522,35 +522,35 @@ const randCategorical0 = {
   },
 };
 
-function CategoricalCtor(this: any, p) {
+function CategoricalCtor(this: any, p: any) {
   this.p = p;
   this.support = [1, p.length];
 }
-CategoricalCtor.prototype.pmf = function(this: any, k) {
+CategoricalCtor.prototype.pmf = function(this: any, k: any) {
   const idx = (k | 0) - 1;
   return (idx < 0 || idx >= this.p.length) ? 0 : this.p[idx];
 };
-CategoricalCtor.prototype.logpmf = function(this: any, k) { return _catLogpmf(k, this.p, 1); };
+CategoricalCtor.prototype.logpmf = function(this: any, k: any) { return _catLogpmf(k, this.p, 1); };
 // .pdf as alias so density() — which dispatches on `discrete` flag — works.
-CategoricalCtor.prototype.pdf    = function (k) { return this.pmf(k); };
-CategoricalCtor.prototype.logpdf = function(this: any, k) { return this.logpmf(k); };
+CategoricalCtor.prototype.pdf    = function (k: any) { return this.pmf(k); };
+CategoricalCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 
-function Categorical0Ctor(this: any, p) {
+function Categorical0Ctor(this: any, p: any) {
   this.p = p;
   this.support = [0, p.length - 1];
 }
-Categorical0Ctor.prototype.pmf = function(this: any, k) {
+Categorical0Ctor.prototype.pmf = function(this: any, k: any) {
   const idx = k | 0;
   return (idx < 0 || idx >= this.p.length) ? 0 : this.p[idx];
 };
-Categorical0Ctor.prototype.logpmf = function(this: any, k) { return _catLogpmf(k, this.p, 0); };
-Categorical0Ctor.prototype.pdf    = function (k) { return this.pmf(k); };
-Categorical0Ctor.prototype.logpdf = function(this: any, k) { return this.logpmf(k); };
+Categorical0Ctor.prototype.logpmf = function(this: any, k: any) { return _catLogpmf(k, this.p, 0); };
+Categorical0Ctor.prototype.pdf    = function (k: any) { return this.pmf(k); };
+Categorical0Ctor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 
-function logpdfCategorical(x, p)  { return _catLogpmf(x, p, 1); }
-function logpdfCategorical0(x, p) { return _catLogpmf(x, p, 0); }
+function logpdfCategorical(x: any, p: any)  { return _catLogpmf(x, p, 1); }
+function logpdfCategorical0(x: any, p: any) { return _catLogpmf(x, p, 0); }
 
-function logpdfDirac(x, value) {
+function logpdfDirac(x: any, value: any) {
   return x === value ? 0 : -Infinity;
 }
 
@@ -607,7 +607,7 @@ const REGISTRY = {
     Ctor:     Uniform,
     randFn:   randUniform,
     logpdfFn: logpdfUniform,
-    customResolveParams: function (measureIR, env) {
+    customResolveParams: function (measureIR: any, env: any) {
       const kwargs = measureIR.kwargs || {};
       const positional = measureIR.args || [];
       const supportIR = ('support' in kwargs) ? kwargs.support
@@ -780,7 +780,7 @@ const REGISTRY = {
  * samples directly via `rand` or need a higher-level path (e.g.,
  * importance sampling for posterior measures).
  */
-function isKnownDistribution(name) {
+function isKnownDistribution(name: any) {
   return Object.prototype.hasOwnProperty.call(REGISTRY, name);
 }
 
@@ -801,7 +801,7 @@ function listDistributions() {
  * check `isKnownDistribution(op)` first when they expect non-builtin
  * measures (or use `canSample()`).
  */
-function rand(state, measureIR, env) {
+function rand(state: any, measureIR: any, env: any) {
   const entry = lookupDistribution(measureIR);
   const params = resolveParams(measureIR, entry, env);
 
@@ -835,7 +835,7 @@ function rand(state, measureIR, env) {
  * construction time. The orchestrator's per-i ref path should keep
  * calling rand() per draw, or rebuild the sampler per chunk.
  */
-function makeSampler(state, measureIR, env) {
+function makeSampler(state: any, measureIR: any, env: any) {
   const entry = lookupDistribution(measureIR);
   const params = resolveParams(measureIR, entry, env);
   const prng = makePhiloxPrngAdapter(state);
@@ -873,12 +873,12 @@ function makeSampler(state, measureIR, env) {
  *                                to the caller after a batch.
  *   }
  */
-function makeParametricSampler(state, measureIR) {
+function makeParametricSampler(state: any, measureIR: any) {
   const entry = lookupDistribution(measureIR);
   const prng = makePhiloxPrngAdapter(state);
   const sampler = entry.randFn.factory({ prng });
   return {
-    drawWith(env) {
+    drawWith(env: any) {
       const params = resolveParams(measureIR, entry, env);
       return sampler(...params);
     },
@@ -894,7 +894,7 @@ function makeParametricSampler(state, measureIR) {
  * Useful when a caller wants more than density curves (e.g. plot
  * range determination, posterior summaries).
  */
-function makeAnalytical(measureIR, env) {
+function makeAnalytical(measureIR: any, env: any) {
   const entry = lookupDistribution(measureIR);
   const params = resolveParams(measureIR, entry, env);
   return new entry.Ctor(...params);
@@ -917,7 +917,7 @@ function makeAnalytical(measureIR, env) {
  * to support if narrower). For discrete (counting) distributions, xs
  * is the integer atoms in that quantile range.
  */
-function density(measureIR, env, opts) {
+function density(measureIR: any, env: any, opts: any) {
   opts = opts || {};
   const entry = lookupDistribution(measureIR);
   const dist = makeAnalytical(measureIR, env);
@@ -993,7 +993,7 @@ function density(measureIR, env, opts) {
  * forms it doesn't understand — those need the orchestrator to provide
  * pre-resolved values in env.
  */
-function evaluateExpr(ir, env) {
+function evaluateExpr(ir: any, env: any): any {
   switch (ir.kind) {
     case 'lit':
       return ir.value;
@@ -1041,14 +1041,14 @@ function evaluateExpr(ir, env) {
 // (vector/matrix/record builders typically take atom-indep inputs);
 // future batched-non-scalar rewrites would eliminate the fallback.
 
-function evaluateExprN(ir, refArrays, count, baseEnv, opts) {
+function evaluateExprN(ir: any, refArrays: any, count: any, baseEnv: any, opts: any) {
   const N = count | 0;
   if (N <= 0) throw new Error('evaluateExprN: count must be positive');
   const overlay = (opts && opts.overlay) || null;
   return _evalN(ir, refArrays || null, N, baseEnv || {}, overlay);
 }
 
-function _evalN(ir, refArrays, N, baseEnv, overlay) {
+function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   switch (ir.kind) {
     case 'lit':
       return ir.value;
@@ -1071,7 +1071,7 @@ function _evalN(ir, refArrays, N, baseEnv, overlay) {
       const op = ir.op;
       // Scalar-batched dispatch.
       if (op in ARITH_OPS_N) {
-        const args = (ir.args || []).map(a => _evalN(a, refArrays, N, baseEnv, overlay));
+        const args = (ir.args || []).map((a: any) => _evalN(a, refArrays, N, baseEnv, overlay));
         return ARITH_OPS_N[op](args, N);
       }
       // Phase 7a: batched approximation functions. Each has the shape
@@ -1104,7 +1104,7 @@ function _evalN(ir, refArrays, N, baseEnv, overlay) {
 // `null` / `undefined` result.
 const _BATCH_FELL_THROUGH = Symbol('batch-fell-through');
 
-function _batchedApproximation(op, ir, refArrays, N, baseEnv, overlay) {
+function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const kw = ir.kwargs || {};
   // Each op has the same coefficient-class + x shape; pull both.
   let coeffsIR, xIR, edgesIR;
@@ -1216,7 +1216,7 @@ function _batchedApproximation(op, ir, refArrays, N, baseEnv, overlay) {
   return out;
 }
 
-function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
+function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
   // Fast path: nothing varies per atom AND overlay is empty → one shot.
@@ -1244,11 +1244,11 @@ function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
       const shape = v.shape;
       const data = v.data;
       if (shape.length === 1) {
-        accessors[j] = (i) => data[i];
+        accessors[j] = (i: any) => data[i];
       } else {
         const tailDims = shape.slice(1);
-        const tailLen = tailDims.reduce((a, b) => a * b, 1);
-        accessors[j] = (i) => ({
+        const tailLen = tailDims.reduce((a: any, b: any) => a * b, 1);
+        accessors[j] = (i: any) => ({
           shape: tailDims,
           data: data.subarray(i * tailLen, (i + 1) * tailLen),
         });
@@ -1257,7 +1257,7 @@ function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
       // Back-compat: refArrays passed directly as a Float64Array (by
       // tests / external callers that haven't migrated to Values).
       const arr = v;
-      accessors[j] = (i) => arr[i];
+      accessors[j] = (i: any) => arr[i];
     }
   }
   const out = new Array(N);
@@ -1330,7 +1330,7 @@ function _perAtomFallback(ir, refArrays, N, baseEnv, overlay) {
   return out;
 }
 
-function resolveConst(name) {
+function resolveConst(name: any) {
   switch (name) {
     case 'pi':  return Math.PI;
     case 'e':   return Math.E;
@@ -1359,43 +1359,43 @@ function resolveConst(name) {
 // extension lands when a concrete use case demands it; for now scalar
 // complex values are sufficient for the spec §07 operator set.
 
-function _isComplex(v) {
+function _isComplex(v: any) {
   return v != null && typeof v === 'object'
     && typeof v.re === 'number' && typeof v.im === 'number';
 }
 
-function _toComplex(v) {
+function _toComplex(v: any) {
   if (_isComplex(v)) return v;
   if (typeof v === 'number') return { re: v, im: 0 };
   if (typeof v === 'boolean') return { re: v ? 1 : 0, im: 0 };
   throw new Error('cannot promote ' + typeof v + ' to complex');
 }
 
-function _cAdd(a, b) { return { re: a.re + b.re, im: a.im + b.im }; }
-function _cSub(a, b) { return { re: a.re - b.re, im: a.im - b.im }; }
-function _cNeg(a)    { return { re: -a.re,       im: -a.im }; }
-function _cMul(a, b) {
+function _cAdd(a: any, b: any) { return { re: a.re + b.re, im: a.im + b.im }; }
+function _cSub(a: any, b: any) { return { re: a.re - b.re, im: a.im - b.im }; }
+function _cNeg(a: any)    { return { re: -a.re,       im: -a.im }; }
+function _cMul(a: any, b: any) {
   return { re: a.re * b.re - a.im * b.im,
            im: a.re * b.im + a.im * b.re };
 }
-function _cDiv(a, b) {
+function _cDiv(a: any, b: any) {
   const d = b.re * b.re + b.im * b.im;
   return { re: (a.re * b.re + a.im * b.im) / d,
            im: (a.im * b.re - a.re * b.im) / d };
 }
-function _cConj(a)   { return { re: a.re, im: -a.im }; }
-function _cAbs(a)    { return Math.hypot(a.re, a.im); }
-function _cAbs2(a)   { return a.re * a.re + a.im * a.im; }
-function _cExp(z) {
+function _cConj(a: any)   { return { re: a.re, im: -a.im }; }
+function _cAbs(a: any)    { return Math.hypot(a.re, a.im); }
+function _cAbs2(a: any)   { return a.re * a.re + a.im * a.im; }
+function _cExp(z: any) {
   const r = Math.exp(z.re);
   return { re: r * Math.cos(z.im), im: r * Math.sin(z.im) };
 }
-function _cLog(z) {
+function _cLog(z: any) {
   // Principal branch: arg ∈ (-π, π] per spec §07.
   return { re: Math.log(Math.hypot(z.re, z.im)),
            im: Math.atan2(z.im, z.re) };
 }
-function _cSqrt(z) {
+function _cSqrt(z: any) {
   // Principal branch.
   if (z.im === 0 && z.re >= 0) return { re: Math.sqrt(z.re), im: 0 };
   const r = Math.hypot(z.re, z.im);
@@ -1405,12 +1405,12 @@ function _cSqrt(z) {
   const sign = z.im >= 0 ? 1 : -1;
   return { re: reOut, im: sign * Math.sqrt((r - z.re) / 2) };
 }
-function _cPow(base, exp) {
+function _cPow(base: any, exp: any) {
   // z^w = exp(w · log(z)), principal branch (spec §07).
   return _cExp(_cMul(exp, _cLog(base)));
 }
 
-function resolveRef(ir, env) {
+function resolveRef(ir: any, env: any) {
   // Both 'self' and '%local' references look up by name in the same env.
   // Cross-module refs (ns = <module>) would require the orchestrator to
   // populate env with the appropriate scoped values; we don't distinguish.
@@ -1428,7 +1428,7 @@ function resolveRef(ir, env) {
 // N). Used by mul / add / sub dispatchers to route shape-aware paths.
 // Bare JS numbers and bare Float64Arrays are NOT rich; they pass
 // through the existing scalar-broadcast helpers.
-function _isShapeRich(v, N?) {
+function _isShapeRich(v: any, N?: any) {
   if (!valueLib.isValue(v)) return false;
   const r = v.shape.length;
   if (r === 0) return false;                    // atom-indep scalar
@@ -1446,7 +1446,7 @@ function _isShapeRich(v, N?) {
 // shape-rich Value path stays real-only for now; per-atom complex
 // Values are deferred (storage decision: separate re/im Float64Arrays
 // in Value.im — lands when needed).
-function _shapeAwareBinop(opName, scalarFn, a, b, complexFn) {
+function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn: any) {
   if (_isComplex(a) || _isComplex(b)) {
     return complexFn(_toComplex(a), _toComplex(b));
   }
@@ -1462,8 +1462,8 @@ function _shapeAwareBinop(opName, scalarFn, a, b, complexFn) {
 }
 
 const ARITH_OPS = {
-  add: (a, b) => _shapeAwareBinop('add', (x, y) => x + y, a, b, _cAdd),
-  sub: (a, b) => _shapeAwareBinop('sub', (x, y) => x - y, a, b, _cSub),
+  add: (a: any, b: any) => _shapeAwareBinop('add', (x: any, y: any) => x + y, a, b, _cAdd),
+  sub: (a: any, b: any) => _shapeAwareBinop('sub', (x: any, y: any) => x - y, a, b, _cSub),
   // mul: shape-dispatched. Bare scalars stay on the JS-multiply fast
   // path; Value inputs with rank ≥ 1 (vectors / matrices, with
   // Klein-4 transpose tag respected) route to value-ops.mul. The
@@ -1477,7 +1477,7 @@ const ARITH_OPS = {
   //     construction below).
   //   - evaluateExpr (single-point) hits ARITH_OPS.mul directly. If
   //     either arg is a shape-rich Value it dispatches here.
-  mul: (a, b) => {
+  mul: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cMul(_toComplex(a), _toComplex(b));
     }
@@ -1497,20 +1497,20 @@ const ARITH_OPS = {
     }
     return a * b;
   },
-  div: (a, b) => {
+  div: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cDiv(_toComplex(a), _toComplex(b));
     }
     return a / b;
   },
-  divide: (a, b) => {
+  divide: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cDiv(_toComplex(a), _toComplex(b));
     }
     return a / b;
   },
-  mod: (a, b) => a % b,
-  neg: a => {
+  mod: (a: any, b: any) => a % b,
+  neg: (a: any) => {
     if (_isComplex(a)) return _cNeg(a);
     if (valueLib.isValue(a)) {
       if (_isShapeRich(a)) return valueOps.neg(a);
@@ -1518,30 +1518,30 @@ const ARITH_OPS = {
     }
     return -a;
   },
-  pos: a => _isComplex(a) ? a : +a,
+  pos: (a: any) => _isComplex(a) ? a : +a,
   // Common unary maths — extend EVALUABLE_OPS in orchestrator.js
   // alongside any addition here so the static gate matches. Complex
   // arguments dispatch to the complex helpers (spec §07: exp / log /
   // sqrt / abs / abs2 extend naturally; sin/cos defer until needed).
-  abs:   a => _isComplex(a) ? _cAbs(a) : Math.abs(a),
-  abs2:  a => _isComplex(a) ? _cAbs2(a) : a * a,
-  exp:   a => _isComplex(a) ? _cExp(a) : Math.exp(a),
-  log:   a => _isComplex(a) ? _cLog(a) : Math.log(a),
-  log10: a => Math.log10(a),
-  sqrt:  a => _isComplex(a) ? _cSqrt(a) : Math.sqrt(a),
-  sin:   a => Math.sin(a),
-  cos:   a => Math.cos(a),
-  floor: a => Math.floor(a),
-  ceil:  a => Math.ceil(a),
-  round: a => Math.round(a),
-  pow:   (a, b) => {
+  abs:   (a: any) => _isComplex(a) ? _cAbs(a) : Math.abs(a),
+  abs2:  (a: any) => _isComplex(a) ? _cAbs2(a) : a * a,
+  exp:   (a: any) => _isComplex(a) ? _cExp(a) : Math.exp(a),
+  log:   (a: any) => _isComplex(a) ? _cLog(a) : Math.log(a),
+  log10: (a: any) => Math.log10(a),
+  sqrt:  (a: any) => _isComplex(a) ? _cSqrt(a) : Math.sqrt(a),
+  sin:   (a: any) => Math.sin(a),
+  cos:   (a: any) => Math.cos(a),
+  floor: (a: any) => Math.floor(a),
+  ceil:  (a: any) => Math.ceil(a),
+  round: (a: any) => Math.round(a),
+  pow:   (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cPow(_toComplex(a), _toComplex(b));
     }
     return Math.pow(a, b);
   },
   // Complex constructor + accessors (spec §03 / §07).
-  complex: (re, im) => {
+  complex: (re: any, im: any) => {
     // Two-arg constructor: complex(re, im) → {re, im}. (One-arg form
     // `complex(x)` is the scalar restrictor — identity if already
     // complex; lift if real.)
@@ -1552,59 +1552,59 @@ const ARITH_OPS = {
     }
     return { re: +re, im: +im };
   },
-  real: z => _isComplex(z) ? z.re : +z,
-  imag: z => _isComplex(z) ? z.im : 0,
-  conj: z => _isComplex(z) ? _cConj(z) : +z,
-  cis: theta => ({ re: Math.cos(+theta), im: Math.sin(+theta) }),
+  real: (z: any) => _isComplex(z) ? z.re : +z,
+  imag: (z: any) => _isComplex(z) ? z.im : 0,
+  conj: (z: any) => _isComplex(z) ? _cConj(z) : +z,
+  cis: (theta: any) => ({ re: Math.cos(+theta), im: Math.sin(+theta) }),
   // Binary scalar reductions (spec §07). Distinct from the variadic
   // `maximum` / `minimum` reductions, which take an array argument.
-  min:   (a, b) => Math.min(a, b),
-  max:   (a, b) => Math.max(a, b),
+  min:   (a: any, b: any) => Math.min(a, b),
+  max:   (a: any, b: any) => Math.max(a, b),
   // Special functions: gamma function family and link functions (spec
   // §07 "Elementary functions"). Domain checks are minimal here —
   // stdlib returns NaN / Infinity for out-of-domain inputs which the
   // caller can detect via isfinite / isnan.
-  gamma:     a => stdlibGamma(a),
-  loggamma:  a => stdlibGammaln(a),
+  gamma:     (a: any) => stdlibGamma(a),
+  loggamma:  (a: any) => stdlibGammaln(a),
   // Link functions:
   //   logit(p)    = log(p / (1−p))                            on (0,1)
   //   invlogit(x) = 1 / (1 + exp(−x))                         on ℝ
   //   probit(p)   = Φ⁻¹(p)  via the erfcinv identity          on (0,1)
   //   invprobit(x)= Φ(x)    via the erfc identity             on ℝ
   // probit and invprobit reach ±∞ at the endpoints (spec §07).
-  logit:     p => Math.log(p / (1 - p)),
-  invlogit:  x => 1 / (1 + Math.exp(-x)),
-  probit:    p => -Math.SQRT2 * stdlibErfcinv(2 * p),
-  invprobit: x => 0.5 * stdlibErfc(-x / Math.SQRT2),
+  logit:     (p: any) => Math.log(p / (1 - p)),
+  invlogit:  (x: any) => 1 / (1 + Math.exp(-x)),
+  probit:    (p: any) => -Math.SQRT2 * stdlibErfcinv(2 * p),
+  invprobit: (x: any) => 0.5 * stdlibErfc(-x / Math.SQRT2),
   // Comparison ops produce booleans (per spec §07). Spec preserves
   // strict typing — no implicit numeric→boolean cast — so the
   // operands are treated as reals and the result is JS boolean.
-  lt:      (a, b) => a < b,
-  le:      (a, b) => a <= b,
-  gt:      (a, b) => a > b,
-  ge:      (a, b) => a >= b,
-  equal:   (a, b) => a === b,
-  unequal: (a, b) => a !== b,
+  lt:      (a: any, b: any) => a < b,
+  le:      (a: any, b: any) => a <= b,
+  gt:      (a: any, b: any) => a > b,
+  ge:      (a: any, b: any) => a >= b,
+  equal:   (a: any, b: any) => a === b,
+  unequal: (a: any, b: any) => a !== b,
   // Predicates over reals.
-  isfinite: a => Number.isFinite(a),
-  isinf:    a => !Number.isNaN(a) && !Number.isFinite(a),
-  isnan:    a => Number.isNaN(a),
-  iszero:   a => a === 0,
+  isfinite: (a: any) => Number.isFinite(a),
+  isinf:    (a: any) => !Number.isNaN(a) && !Number.isFinite(a),
+  isnan:    (a: any) => Number.isNaN(a),
+  iszero:   (a: any) => a === 0,
   // Logic / conditionals (spec §07). FlatPPL booleans are strict — we
   // don't coerce truthy values, the typeinfer pass already requires
   // boolean operands. lxor is exclusive-or; ifelse is the conditional
   // expression returning the first or second branch by cond.
-  land:    (a, b) => a && b,
-  lor:     (a, b) => a || b,
-  lxor:    (a, b) => a !== b,
-  lnot:    a => !a,
-  ifelse:  (c, a, b) => c ? a : b,
+  land:    (a: any, b: any) => a && b,
+  lor:     (a: any, b: any) => a || b,
+  lxor:    (a: any, b: any) => a !== b,
+  lnot:    (a: any) => !a,
+  ifelse:  (c: any, a: any, b: any) => c ? a : b,
   // Vector constructor — turns positional args into a JS array.
   // Lower than the typed Float64Array path used for materialised
   // measures: this is for inline `[a, b, c]` literals that surface
   // as (call vector (lit …) (lit …) …) IR. Reductions below take
   // these arrays directly.
-  vector: (...xs) => xs,
+  vector: (...xs: any[]) => xs,
   // cat(...) — structural concatenation per spec §07. Three shape
   // classes; mixing is a runtime error (the type checker rejects
   // most mixes statically but the runtime check guards programmatic
@@ -1617,7 +1617,7 @@ const ARITH_OPS = {
   // rowstack(vs) — turn a vector of vectors into a matrix where the
   // input vectors become rows. colstack does the same but as columns.
   // Spec §07. All input vectors must have the same length.
-  rowstack: vs => {
+  rowstack: (vs: any) => {
     if (!Array.isArray(vs) || vs.length === 0) return [];
     const n = vs[0].length;
     for (let i = 1; i < vs.length; i++) {
@@ -1630,7 +1630,7 @@ const ARITH_OPS = {
     for (let i = 0; i < vs.length; i++) out[i] = vs[i].slice();
     return out;
   },
-  colstack: vs => {
+  colstack: (vs: any) => {
     if (!Array.isArray(vs) || vs.length === 0) return [];
     const n = vs[0].length;
     for (let i = 1; i < vs.length; i++) {
@@ -1661,7 +1661,7 @@ const ARITH_OPS = {
   //
   // Matrices in legacy form are nested JS arrays (row-major):
   // M[i][j] is row i, col j. Vectors are flat JS arrays.
-  transpose: M => {
+  transpose: (M: any) => {
     if (valueLib.isValue(M)) return valueLib.transpose(M);  // O(1) tag flip
     if (!Array.isArray(M) || M.length === 0) return [];
     const rows = M.length, cols = M[0].length;
@@ -1675,11 +1675,11 @@ const ARITH_OPS = {
   },
   // adjoint = conjugate transpose. For real matrices = transpose.
   // (Complex support deferred — but the tag tracks it.)
-  adjoint: M => {
+  adjoint: (M: any) => {
     if (valueLib.isValue(M)) return valueLib.adjoint(M);  // O(1) tag flip
     return ARITH_OPS.transpose(M);
   },
-  trace: M => {
+  trace: (M: any): any => {
     if (valueLib.isDiagStored(M) && !M.im) {           // O(n): Σ diagonal
       let s = 0; for (let i = 0; i < M.data.length; i++) s += M.data[i];
       return valueLib.scalar(s);
@@ -1700,14 +1700,14 @@ const ARITH_OPS = {
   // Produces the vector-backed `diag` structured Value (O(m) storage);
   // every diag-aware op fast-paths it, anything else densify()s. A
   // complex diagonal carries its imaginary part on the same vector.
-  diagmat: v => {
+  diagmat: (v: any) => {
     if (valueLib.isValue(v)) {
       const vec = v.shape.length === 1 ? v : valueLib.asValue(valueOps._valueToNested(v));
       return valueLib.diagMatrix(vec.data, vec.im);
     }
     return valueLib.diagMatrix(v instanceof Float64Array ? v : Float64Array.from(v));
   },
-  self_outer: v => {
+  self_outer: (v: any): any => {
     if (valueLib.isValue(v)) {
       return valueOps._nestedToValue(ARITH_OPS.self_outer(valueOps._valueToNested(v)));
     }
@@ -1722,7 +1722,7 @@ const ARITH_OPS = {
   },
   // det(A): determinant via LU with partial pivoting. Returns 0 for
   // singular matrices. O(n³).
-  det: A => {
+  det: (A: any): any => {
     if (valueLib.isDiagStored(A) && !A.im) {           // O(n): ∏ diagonal
       let p = 1; for (let i = 0; i < A.data.length; i++) p *= A.data[i];
       return valueLib.scalar(p);
@@ -1737,7 +1737,7 @@ const ARITH_OPS = {
   },
   // logabsdet(A): log |det(A)|. Computed alongside det via the LU
   // decomposition to keep numerical stability on near-singular inputs.
-  logabsdet: A => {
+  logabsdet: (A: any): any => {
     if (valueLib.isDiagStored(A) && !A.im) {           // O(n): Σ log|diag|
       let s = 0; for (let i = 0; i < A.data.length; i++) s += Math.log(Math.abs(A.data[i]));
       return valueLib.scalar(s);
@@ -1752,7 +1752,7 @@ const ARITH_OPS = {
   },
   // inv(A): matrix inverse via Gauss-Jordan with partial pivoting. O(n³).
   // Throws on singular matrices.
-  inv: A => {
+  inv: (A: any): any => {
     if (valueLib.isDiagStored(A) && !A.im) {           // O(n): reciprocal
       const d = new Float64Array(A.data.length);
       for (let i = 0; i < d.length; i++) {
@@ -1771,7 +1771,7 @@ const ARITH_OPS = {
   },
   // linsolve(A, b): solve A x = b for x. b may be a vector (returns
   // vector) or a matrix (returns matrix, solved column-by-column).
-  linsolve: (A, b) => {
+  linsolve: (A: any, b: any): any => {
     // Diagonal A: x = b ⊘ diag, O(n), no factorization. Vector b only
     // (the MvNormal/whitening case); matrix b densifies via the
     // generic path below.
@@ -1800,7 +1800,7 @@ const ARITH_OPS = {
   },
   // lower_cholesky(A): lower-triangular L with A = L L^T for symmetric
   // positive-definite A. Throws if A is not PD.
-  lower_cholesky: A => {
+  lower_cholesky: (A: any): any => {
     if (valueLib.isDiagStored(A) && !A.im) {
       // A diagonal PD matrix is its own Cholesky structure: L = √diag,
       // still diagonal (lower-triangular). O(n), no factorization.
@@ -1830,11 +1830,11 @@ const ARITH_OPS = {
   // which folds the Klein-4 conj+swap tags at dispatch (no transpose
   // or conjugate materialisation). Useful for LKJ ↔ LKJCholesky
   // conversions and Gram-matrix priors.
-  row_gram: A => {
+  row_gram: (A: any) => {
     if (valueLib.isValue(A)) return valueOps.mul(A, valueLib.adjoint(A));
     return _matmul(A, ARITH_OPS.transpose(A));
   },
-  col_gram: A => {
+  col_gram: (A: any) => {
     if (valueLib.isValue(A)) return valueOps.mul(valueLib.adjoint(A), A);
     return _matmul(ARITH_OPS.transpose(A), A);
   },
@@ -1847,7 +1847,7 @@ const ARITH_OPS = {
   // dimorder doesn't imply memory layout in FlatPPL — it only
   // specifies how the flat data is unpacked into the n-D shape. The
   // result is a nested JS array.
-  array: (data, size, dimorder) => {
+  array: (data: any, size: any, dimorder: any) => {
     const n = size.length;
     if (dimorder.length !== n) {
       throw new Error('array: dimorder length ' + dimorder.length
@@ -1866,15 +1866,15 @@ const ARITH_OPS = {
     // get the n-D coordinate.
     //   k = ∑ c[dimorder[i] - 1] · stride_in_dimorder
     // where the slowest-varying axis is dimorder[0].
-    function makeShape(level) {
+    function makeShape(level: any) {
       if (level === n) return 0;
       const out = new Array(size[level]);
       for (let i = 0; i < size[level]; i++) out[i] = makeShape(level + 1);
       return out;
     }
     const result = makeShape(0);
-    function setAt(coord, value) {
-      let cur = result;
+    function setAt(coord: any, value: any) {
+      let cur: any = result;
       for (let level = 0; level < n - 1; level++) cur = cur[coord[level]];
       cur[coord[n - 1]] = value;
     }
@@ -1904,9 +1904,9 @@ const ARITH_OPS = {
   },
   // fill(x, n, m, ...) — n-D array of shape `n × m × ...` filled with x.
   // Returns nested JS arrays for 2-D+; flat array for 1-D. Spec §07.
-  fill: (x, ...dims) => {
+  fill: (x: any, ...dims: any[]) => {
     if (dims.length === 0) return +x;
-    function build(level) {
+    function build(level: any) {
       const n = dims[level] | 0;
       const out = new Array(n);
       if (level === dims.length - 1) {
@@ -1919,9 +1919,9 @@ const ARITH_OPS = {
     return build(0);
   },
   // zeros / ones — convenience wrappers around fill. Spec §07.
-  zeros: (...dims) => {
+  zeros: (...dims: any[]) => {
     if (dims.length === 0) return 0;
-    function build(level) {
+    function build(level: any) {
       const n = dims[level] | 0;
       const out = new Array(n);
       if (level === dims.length - 1) {
@@ -1933,9 +1933,9 @@ const ARITH_OPS = {
     }
     return build(0);
   },
-  ones: (...dims) => {
+  ones: (...dims: any[]) => {
     if (dims.length === 0) return 1;
-    function build(level) {
+    function build(level: any) {
       const n = dims[level] | 0;
       const out = new Array(n);
       if (level === dims.length - 1) {
@@ -1949,7 +1949,7 @@ const ARITH_OPS = {
   },
   // eye(n) — n × n identity matrix. Spec §07.
   // eye(n) → n×n identity, as a vector-backed diag of ones.
-  eye: n => {
+  eye: (n: any) => {
     const k = n | 0;
     if (k <= 0) return [];
     const d = new Float64Array(k);
@@ -1958,7 +1958,7 @@ const ARITH_OPS = {
   },
   // onehot(i, n) — length-n basis vector with 1 at position i (1-based
   // per FlatPPL convention). Spec §07.
-  onehot: (i, n) => {
+  onehot: (i: any, n: any) => {
     const idx = i | 0;
     const k = n | 0;
     if (k <= 0) return [];
@@ -1972,20 +1972,20 @@ const ARITH_OPS = {
   // Scalar restrictors (spec §07). Identity at runtime; static typing
   // catches domain violations at type-check time when they're
   // discernible. The runtime versions check the obvious cases.
-  boolean: x => {
+  boolean: (x: any) => {
     if (x === true || x === false) return x;
     if (x === 0) return false;
     if (x === 1) return true;
     throw new Error('boolean: value ' + x + ' is not a boolean');
   },
-  integer: x => {
+  integer: (x: any) => {
     if (Number.isInteger(x)) return x;
     throw new Error('integer: value ' + x + ' is not an integer');
   },
   // linspace(from, to, n) — endpoint-inclusive range of n real numbers
   // evenly spaced from `from` to `to`. n=1 returns [from]; both endpoints
   // are included exactly (not computed via accumulating step). Spec §07.
-  linspace: (from, to, n) => {
+  linspace: (from: any, to: any, n: any) => {
     const k = n | 0;
     if (k <= 0) return [];
     if (k === 1) return [+from];
@@ -2002,7 +2002,7 @@ const ARITH_OPS = {
   // extlinspace(from, to, n) — like linspace but with -inf and +inf
   // prepended/appended. Useful for overflow-bin definitions in binned
   // analyses. Spec §07.
-  extlinspace: (from, to, n) => {
+  extlinspace: (from: any, to: any, n: any) => {
     const k = n | 0;
     if (k <= 0) return [-Infinity, Infinity];
     const out = new Array(k + 2);
@@ -2020,7 +2020,7 @@ const ARITH_OPS = {
   // positive integer (equal-size groups) or a vector of positive
   // integers (custom group sizes). Spec §07. Returns a vector of
   // sub-vectors (JS arrays of JS arrays).
-  partition: (xs, spec) => {
+  partition: (xs: any, spec: any) => {
     const n = xs.length;
     if (typeof spec === 'number') {
       const k = spec | 0;
@@ -2058,7 +2058,7 @@ const ARITH_OPS = {
   },
   // reverse(xs) — reverse element order in a vector. Tables defer for
   // now (no canonical table runtime yet).
-  reverse: xs => {
+  reverse: (xs: any) => {
     if (xs && xs.BYTES_PER_ELEMENT) {
       // Typed array — slice and reverse to keep type, but Float64Array's
       // reverse is in-place. Make a copy first.
@@ -2082,8 +2082,8 @@ const ARITH_OPS = {
   // NumPy/Julia axis insertion in `broadcast` (spec commit 87c9be1):
   // addaxes(b,1,0) gives NumPy-style alignment, addaxes(b,0,1)
   // Julia-style — the engine never picks for the user.
-  addaxes: (A, nLeading, nTrailing) => {
-    const _intAxis = (x, what) => {
+  addaxes: (A: any, nLeading: any, nTrailing: any) => {
+    const _intAxis = (x: any, what: any) => {
       const n = (x && Array.isArray(x.shape) && x.data) ? x.data[0] : +x;
       if (!Number.isInteger(n) || n < 0) {
         throw new Error('addaxes: ' + what +
@@ -2111,7 +2111,7 @@ const ARITH_OPS = {
     if (v.im instanceof Float64Array) out.im = v.im;     // complex rides along
     return out;
   },
-  cat: (...xs) => {
+  cat: (...xs: any[]) => {
     if (xs.length === 0) return [];
     const first = xs[0];
     if (typeof first === 'number') {
@@ -2126,7 +2126,7 @@ const ARITH_OPS = {
       return out;
     }
     if (first && typeof first === 'object') {
-      const out = {};
+      const out: Record<string, any> = {};
       for (let j = 0; j < xs.length; j++) {
         const r = xs[j];
         for (const k in r) {
@@ -2152,26 +2152,26 @@ const ARITH_OPS = {
   //   maximum = max x[i]   (Math.max would .apply-blow-stack at length 1e6)
   //   minimum = min x[i]
   //   var     = mean( (x - mean)² )  — population variance, divisor N
-  sum:     a => { const arr = _arrLike(a); let s = 0;
+  sum:     (a: any) => { const arr = _arrLike(a); let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i]; return s; },
-  mean:    a => { const arr = _arrLike(a); let s = 0;
+  mean:    (a: any) => { const arr = _arrLike(a); let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; },
-  prod:    a => { const arr = _arrLike(a); let p = 1;
+  prod:    (a: any) => { const arr = _arrLike(a); let p = 1;
     for (let i = 0; i < arr.length; i++) p *= arr[i]; return p; },
-  length:  a => _arrLike(a).length,
-  maximum: a => {
+  length:  (a: any) => _arrLike(a).length,
+  maximum: (a: any) => {
     const arr = _arrLike(a);
     let m = -Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
     return m;
   },
-  minimum: a => {
+  minimum: (a: any) => {
     const arr = _arrLike(a);
     let m = Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
     return m;
   },
-  var: a => {
+  var: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return 0;
@@ -2185,19 +2185,19 @@ const ARITH_OPS = {
   // Norms and normalization (spec §07). All take a single vector
   // argument. Numerically stable forms — logsumexp uses the standard
   // shift-by-max trick so exp doesn't overflow on large entries.
-  l1norm: a => {
+  l1norm: (a: any) => {
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
     return s;
   },
-  l2norm: a => {
+  l2norm: (a: any) => {
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     return Math.sqrt(s);
   },
-  l1unit: a => {
+  l1unit: (a: any) => {
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
@@ -2206,7 +2206,7 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / s;
     return out;
   },
-  l2unit: a => {
+  l2unit: (a: any) => {
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
@@ -2216,7 +2216,7 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / r;
     return out;
   },
-  logsumexp: a => {
+  logsumexp: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return -Infinity;
@@ -2227,7 +2227,7 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
     return m + Math.log(s);
   },
-  softmax: a => {
+  softmax: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return [];
@@ -2245,7 +2245,7 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) exps[i] /= s;
     return exps;
   },
-  logsoftmax: a => {
+  logsoftmax: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) return [];
@@ -2267,7 +2267,7 @@ const ARITH_OPS = {
 // through Float64Array / JS array. Used by reductions (sum, mean,
 // l1norm, etc.) so they handle Value inputs uniformly without
 // branching on every loop iteration.
-function _arrLike(v) {
+function _arrLike(v: any) {
   if (valueLib.isValue(v)) return v.data;
   return v;
 }
@@ -2349,7 +2349,7 @@ const _SCALAR_PRIM_ARITY = {
 
 const isValueObj = valueLib.isValue;
 
-function isBatch(v, N) {
+function isBatch(v: any, N: any) {
   if (v == null) return false;
   // Bare Float64Array of length N (legacy path; also catches any
   // typed array with matching length — same as before).
@@ -2366,7 +2366,7 @@ function isBatch(v, N) {
 }
 
 // Underlying Float64Array for a batched input (either bare or wrapped).
-function _batchData(v) {
+function _batchData(v: any) {
   return v instanceof Float64Array ? v : v.data;
 }
 
@@ -2374,17 +2374,17 @@ function _batchData(v) {
 // Bare arrays / non-batched arrays return unchanged — the scalar fn
 // receives them as-is (legacy behaviour: garbage-in-garbage-out for
 // shape mismatches at the scalar layer).
-function _scalarVal(v) {
+function _scalarVal(v: any) {
   if (isValueObj(v) && v.shape.length === 0) return v.data[0];
   return v;
 }
 
 // Any input is a Value? Triggers Value-wrapped output.
-function _anyValue1(a)       { return isValueObj(a); }
-function _anyValue2(a, b)    { return isValueObj(a) || isValueObj(b); }
-function _anyValue3(a, b, c) { return isValueObj(a) || isValueObj(b) || isValueObj(c); }
+function _anyValue1(a: any)       { return isValueObj(a); }
+function _anyValue2(a: any, b: any)    { return isValueObj(a) || isValueObj(b); }
+function _anyValue3(a: any, b: any, c: any) { return isValueObj(a) || isValueObj(b) || isValueObj(c); }
 
-function broadcast1(fn, a, N) {
+function broadcast1(fn: any, a: any, N: any) {
   const wantValue = _anyValue1(a);
   if (!isBatch(a, N)) {
     const r = fn(_scalarVal(a));
@@ -2396,7 +2396,7 @@ function broadcast1(fn, a, N) {
   return wantValue ? valueLib.batchedScalar(out) : out;
 }
 
-function broadcast2(fn, a, b, N) {
+function broadcast2(fn: any, a: any, b: any, N: any) {
   const aB = isBatch(a, N), bB = isBatch(b, N);
   const wantValue = _anyValue2(a, b);
   if (!aB && !bB) {
@@ -2417,7 +2417,7 @@ function broadcast2(fn, a, b, N) {
   return wantValue ? valueLib.batchedScalar(out) : out;
 }
 
-function broadcast3(fn, a, b, c, N) {
+function broadcast3(fn: any, a: any, b: any, c: any, N: any) {
   const aB = isBatch(a, N), bB = isBatch(b, N), cB = isBatch(c, N);
   const wantValue = _anyValue3(a, b, c);
   if (!aB && !bB && !cB) {
@@ -2442,14 +2442,14 @@ function broadcast3(fn, a, b, c, N) {
 // when all inputs are atom-independent (the count=1 fast path).
 const ARITH_OPS_N: any = {};
 for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
-  const arity = _SCALAR_PRIM_ARITY[op];
-  const fn = ARITH_OPS[op];
+  const arity = (_SCALAR_PRIM_ARITY as any)[op];
+  const fn = (ARITH_OPS as any)[op];
   if (typeof fn !== 'function') {
     throw new Error(`ARITH_OPS_N: scalar primitive '${op}' has no ARITH_OPS entry`);
   }
-  if (arity === 1) ARITH_OPS_N[op] = (args, N) => broadcast1(fn, args[0], N);
-  else if (arity === 2) ARITH_OPS_N[op] = (args, N) => broadcast2(fn, args[0], args[1], N);
-  else if (arity === 3) ARITH_OPS_N[op] = (args, N) => broadcast3(fn, args[0], args[1], args[2], N);
+  if (arity === 1) ARITH_OPS_N[op] = (args: any, N: any) => broadcast1(fn, args[0], N);
+  else if (arity === 2) ARITH_OPS_N[op] = (args: any, N: any) => broadcast2(fn, args[0], args[1], N);
+  else if (arity === 3) ARITH_OPS_N[op] = (args: any, N: any) => broadcast3(fn, args[0], args[1], args[2], N);
   else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
 }
 
@@ -2466,16 +2466,16 @@ for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
 // per-atom shapes correctly. `_isShapeRich` (rank ≥ 1, leading dim ≠ N)
 // excludes batched scalars (shape=[N]) which stay on broadcast2; an
 // additional `_hasAtomAxis` check picks up shape=[N, k…] inputs.
-function _shapeAwareCandidate(v, N) {
+function _shapeAwareCandidate(v: any, N: any) {
   if (!valueLib.isValue(v)) return false;
   const r = v.shape.length;
   if (r === 0) return false;
   if (r === 1 && v.shape[0] === N) return false;  // batched scalar (Phase 1)
   return true;  // shape-rich OR atom-batched non-scalar
 }
-function _wrapShapeAwareBinopN(opName, opNameN) {
+function _wrapShapeAwareBinopN(opName: any, opNameN: any) {
   const fallback = ARITH_OPS_N[opName];
-  return (args, N) => {
+  return (args: any, N: any) => {
     const a = args[0], b = args[1];
     if (_shapeAwareCandidate(a, N) || _shapeAwareCandidate(b, N)) {
       return valueOps[opNameN](valueLib.asValue(a), valueLib.asValue(b), N);
@@ -2487,7 +2487,7 @@ ARITH_OPS_N.mul = _wrapShapeAwareBinopN('mul', 'mulN');
 ARITH_OPS_N.add = _wrapShapeAwareBinopN('add', 'addN');
 ARITH_OPS_N.sub = _wrapShapeAwareBinopN('sub', 'subN');
 const _negBroadcast = ARITH_OPS_N.neg;
-ARITH_OPS_N.neg = (args, N) => {
+ARITH_OPS_N.neg = (args: any, N: any) => {
   const a = args[0];
   if (_shapeAwareCandidate(a, N)) return valueOps.negN(valueLib.asValue(a), N);
   return _negBroadcast(args, N);
@@ -2521,7 +2521,7 @@ ARITH_OPS_N.neg = (args, N) => {
 // {re, im} or a complex Value). Constructors (complex / cis) force the
 // complex path explicitly at their registration site, since their
 // inputs are real but the output is complex.
-function _cxInPlay(args) {
+function _cxInPlay(args: any) {
   for (let i = 0; i < args.length; i++) {
     const v = args[i];
     if (_isComplex(v) || valueLib.isComplexValue(v)) return true;
@@ -2532,7 +2532,7 @@ function _cxInPlay(args) {
 // Per-arg accessor: returns a function i → (number | {re, im}) plus an
 // `atomBatched` flag. Mirrors isBatch/_scalarVal/_batchData but is
 // complex-aware and rejects shape-rich complex (handled elsewhere).
-function _cxArgAccessor(v, N) {
+function _cxArgAccessor(v: any, N: any) {
   if (_isComplex(v)) return { batched: false, at: () => v };
   if (valueLib.isComplexValue(v)) {
     if (v.shape.length === 0) {
@@ -2542,7 +2542,7 @@ function _cxArgAccessor(v, N) {
     }
     if (v.shape.length === 1 && v.shape[0] === N) {
       const c = valueLib.readComplex(v);   // resolves conj once
-      return { batched: true, at: (i) => ({ re: c.re[i], im: c.im[i] }) };
+      return { batched: true, at: (i: any) => ({ re: c.re[i], im: c.im[i] }) };
     }
     // Shape-rich complex is handled by _cxElementwise before any
     // accessor is built; reaching here would be a dispatch bug.
@@ -2553,12 +2553,12 @@ function _cxArgAccessor(v, N) {
   if (valueLib.isValue(v)) {
     if (v.shape.length === 0) { const s = v.data[0]; return { batched: false, at: () => s }; }
     if (v.shape.length === 1 && v.shape[0] === N) {
-      const d = v.data; return { batched: true, at: (i) => d[i] };
+      const d = v.data; return { batched: true, at: (i: any) => d[i] };
     }
     const s0 = v.data[0]; return { batched: false, at: () => s0 };
   }
   if (v instanceof Float64Array && v.length === N) {
-    return { batched: true, at: (i) => v[i] };
+    return { batched: true, at: (i: any) => v[i] };
   }
   const s = (typeof v === 'boolean') ? (v ? 1 : 0) : +v;
   return { batched: false, at: () => s };
@@ -2578,26 +2578,26 @@ function _cxArgAccessor(v, N) {
 // their wrapper routes shape-rich operands to the complex-aware
 // value-ops path first. This covers the unary / constructor / scalar-
 // op-over-vector cases that the value-ops shape dispatch doesn't.
-function _cxRichArgGetter(v) {
+function _cxRichArgGetter(v: any) {
   if (_isComplex(v)) return () => v;
   if (valueLib.isComplexValue(v)) {
     const c = valueLib.readComplex(v);
     if (c.re.length === 1) { const z = { re: c.re[0], im: c.im[0] }; return () => z; }
-    return (i) => ({ re: c.re[i], im: c.im[i] });
+    return (i: any) => ({ re: c.re[i], im: c.im[i] });
   }
   if (valueLib.isValue(v)) {
     if (v.data.length === 1) { const s = v.data[0]; return () => s; }
-    const d = v.data; return (i) => d[i];
+    const d = v.data; return (i: any) => d[i];
   }
   if (v instanceof Float64Array) {
     if (v.length === 1) { const s = v[0]; return () => s; }
-    return (i) => v[i];
+    return (i: any) => v[i];
   }
   const s = (typeof v === 'boolean') ? (v ? 1 : 0) : +v;
   return () => s;
 }
 
-function _cxElementwise(fn, args, shape, swapped) {
+function _cxElementwise(fn: any, args: any, shape: any, swapped: any) {
   let M = 1;
   for (let d = 0; d < shape.length; d++) M *= shape[d];
   const get = args.map(_cxRichArgGetter);
@@ -2624,7 +2624,7 @@ function _cxElementwise(fn, args, shape, swapped) {
 // Is `v` a shape-rich Value for the complex path — a per-atom
 // vector/matrix (rank ≥ 2) or an atom-indep vector (rank 1, length ≠ N
 // and > 1)? Batched scalars (shape=[N]) and scalars are NOT rich.
-function _cxIsRich(v, N) {
+function _cxIsRich(v: any, N: any) {
   if (!valueLib.isValue(v)) return false;
   const r = v.shape.length;
   if (r === 0) return false;
@@ -2632,7 +2632,7 @@ function _cxIsRich(v, N) {
   return true;
 }
 
-function _cxBroadcast(fn, args, N) {
+function _cxBroadcast(fn: any, args: any, N: any) {
   // Shape-rich elementwise (per-atom vectors/matrices, atom-indep
   // vectors). The first rich arg governs the output shape + swapped
   // bit; remaining shape-rich args must match its element count.
@@ -2686,10 +2686,10 @@ function _cxBroadcast(fn, args, N) {
 // the complex-aware value-ops path. So: shape-rich → realEntry
 // (value-ops); else complex scalar → _cxBroadcast; else real scalar →
 // realEntry (zero-alloc).
-function _cxOrRealShapeAware(opName) {
+function _cxOrRealShapeAware(opName: any) {
   const realEntry = ARITH_OPS_N[opName];
-  const prim = ARITH_OPS[opName];
-  return (args, N) => {
+  const prim = (ARITH_OPS as any)[opName];
+  return (args: any, N: any) => {
     for (let i = 0; i < args.length; i++) {
       if (_shapeAwareCandidate(args[i], N)) return realEntry(args, N);
     }
@@ -2705,10 +2705,10 @@ for (const op of ['add', 'sub', 'mul', 'neg']) {
 // _cxBroadcast (which itself raises a clear guard for shape-rich
 // complex — better than silently producing NaN). Otherwise the
 // existing real broadcast entry is preserved unchanged.
-function _cxOrReal(opName) {
+function _cxOrReal(opName: any) {
   const realEntry = ARITH_OPS_N[opName];
-  const prim = ARITH_OPS[opName];
-  return (args, N) => _cxInPlay(args)
+  const prim = (ARITH_OPS as any)[opName];
+  return (args: any, N: any) => _cxInPlay(args)
     ? _cxBroadcast(prim, args, N)
     : realEntry(args, N);
 }
@@ -2724,8 +2724,8 @@ for (const op of ['div', 'divide', 'pos', 'pow',
 // complex Value for the constructors (complex / cis) and for complex
 // inputs. Arity is taken from the IR args length at call time.
 for (const op of ['complex', 'real', 'imag', 'conj', 'cis']) {
-  const prim = ARITH_OPS[op];
-  ARITH_OPS_N[op] = (args, N) => _cxBroadcast(prim, args, N);
+  const prim = (ARITH_OPS as any)[op];
+  ARITH_OPS_N[op] = (args: any, N: any) => _cxBroadcast(prim, args, N);
 }
 
 // =====================================================================
@@ -2738,7 +2738,7 @@ for (const op of ['complex', 'real', 'imag', 'conj', 'cis']) {
 // (on and above diagonal) in a single n×n array. piv[i] holds the row
 // at row i after permutation; sign tracks the parity of row swaps so
 // the caller can recover det(A) = sign · prod(diag(U)).
-function _luDecomp(A) {
+function _luDecomp(A: any) {
   const n = A.length;
   // Deep-copy A so the caller's matrix isn't mutated.
   const LU = new Array(n);
@@ -2773,7 +2773,7 @@ function _luDecomp(A) {
   return { LU, piv, sign };
 }
 
-function _detLU(A) {
+function _detLU(A: any) {
   const { LU, sign } = _luDecomp(A);
   if (sign === 0) return 0;
   const n = LU.length;
@@ -2782,7 +2782,7 @@ function _detLU(A) {
   return det;
 }
 
-function _logAbsDetLU(A) {
+function _logAbsDetLU(A: any) {
   const { LU, sign } = _luDecomp(A);
   if (sign === 0) return -Infinity;
   const n = LU.length;
@@ -2794,12 +2794,12 @@ function _logAbsDetLU(A) {
 // Solve A · x = b given the LU factorization. b may be a vector or a
 // row-major matrix. Forward substitution (L) followed by backward
 // substitution (U).
-function _linsolveLU(A, b) {
+function _linsolveLU(A: any, b: any) {
   const { LU, piv, sign } = _luDecomp(A);
   if (sign === 0) throw new Error('linsolve: matrix is singular');
   const n = LU.length;
   const isMat = Array.isArray(b[0]);
-  function solveOne(bvec) {
+  function solveOne(bvec: any) {
     // Apply permutation.
     const y = new Array(n);
     for (let i = 0; i < n; i++) y[i] = bvec[piv[i]];
@@ -2841,7 +2841,7 @@ function _linsolveLU(A, b) {
 // Gauss-Jordan inverse. Slightly less numerically stable than
 // "linsolve(A, I)" for large matrices but fine at the FlatPPL target
 // sizes. We use the LU-based form for symmetry with linsolve.
-function _invGaussJordan(A) {
+function _invGaussJordan(A: any) {
   const n = A.length;
   // Solve A X = I via the LU path.
   const I = new Array(n);
@@ -2856,7 +2856,7 @@ function _invGaussJordan(A) {
 // Cholesky factorization for symmetric positive-definite A. Returns
 // lower-triangular L with A = L · L^T. Diagonal entries are positive.
 // Standard recursion (Cholesky-Banachiewicz form).
-function _cholesky(A) {
+function _cholesky(A: any) {
   const n = A.length;
   const L = new Array(n);
   for (let i = 0; i < n; i++) L[i] = new Array(n).fill(0);
@@ -2879,7 +2879,7 @@ function _cholesky(A) {
 }
 
 // Matrix-matrix multiplication. Handles non-square shapes.
-function _matmul(A, B) {
+function _matmul(A: any, B: any) {
   const arows = A.length;
   if (arows === 0) return [];
   const acols = A[0].length;
@@ -2905,8 +2905,8 @@ function _matmul(A, B) {
 // Helper: build a one-pass reducer that loops over array indices.
 // Avoids repeated Array.prototype.reduce overhead for tight inner
 // loops on large literal arrays.
-function reduce(step, init) {
-  return arr => {
+function reduce(step: any, init: any) {
+  return (arr: any) => {
     let acc = init;
     for (let i = 0; i < arr.length; i++) acc = step(acc, arr[i]);
     return acc;
@@ -2918,7 +2918,7 @@ function reduce(step, init) {
 // `interval(lo, hi)` and the named real sets. Anything else throws
 // — richer set descriptors live behind orchestrator.parseSetIR, which
 // the sampler intentionally doesn't depend on.
-function regionBoundsFromIR(ir, env) {
+function regionBoundsFromIR(ir: any, env: any) {
   if (!ir) throw new Error('regionBoundsFromIR: missing IR');
   if (ir.kind === 'call' && ir.op === 'interval'
       && Array.isArray(ir.args) && ir.args.length === 2) {
@@ -2942,7 +2942,7 @@ function regionBoundsFromIR(ir, env) {
 // fn / functionof / kernelof binding. The orchestrator's pre-eval
 // attaches env.__resolveFnBody for the ref path; the inline path
 // reads `body` / `params` directly off the functionof IR.
-function _resolveFn(fnIR, env) {
+function _resolveFn(fnIR: any, env: any) {
   if (!fnIR) return null;
   if (fnIR.kind === 'ref' && fnIR.ns === 'self') {
     if (typeof env.__resolveFnBody !== 'function') return null;
@@ -2980,7 +2980,7 @@ function _resolveFn(fnIR, env) {
 //
 // Result is a nested JS array of the broadcast shape (1-D → a flat
 // JS array, matching the rest of the value-evaluator's array forms).
-function _broadcastApply(fn, inputs, env) {
+function _broadcastApply(fn: any, inputs: any, env: any): any {
   const P = fn.params.length;
   const slots = new Array(P);
   for (let i = 0; i < P; i++) {
@@ -3062,7 +3062,7 @@ function _broadcastApply(fn, inputs, env) {
   for (let p = 0, k = 0; p < P; p++) collOf[p] = slots[p].coll ? k++ : -1;
 
   const idx = new Array(rank).fill(0);
-  function recur(axis) {
+  function recur(axis: any): any {
     if (axis === rank) {
       for (let p = 0; p < P; p++) {
         if (collOf[p] < 0) { elemEnv[fn.params[p]] = slots[p].val; continue; }
@@ -3085,11 +3085,11 @@ function _broadcastApply(fn, inputs, env) {
   return recur(0);
 }
 
-function evaluateCall(ir, env) {
+function evaluateCall(ir: any, env: any): any {
   const op = ir.op;
   if (op in ARITH_OPS) {
-    const args = (ir.args || []).map(a => evaluateExpr(a, env));
-    return ARITH_OPS[op](...args);
+    const args = (ir.args || []).map((a: any) => evaluateExpr(a, env));
+    return (ARITH_OPS as any)[op](...args);
   }
   // tuple_get(<tuple-expr>, <slot lit>) — engine-internal projection
   // emitted by the analyzer's multi-LHS rewriter. Evaluates the tuple
@@ -3100,8 +3100,8 @@ function evaluateCall(ir, env) {
     if (args.length !== 2) {
       throw new Error(`evaluateExpr: tuple_get expects 2 args, got ${args.length}`);
     }
-    const t = evaluateExpr(args[0], env);
-    const i = evaluateExpr(args[1], env) | 0;
+    const t: any = evaluateExpr(args[0], env);
+    const i: any = evaluateExpr(args[1], env) | 0;
     if (!Array.isArray(t)) {
       throw new Error(`evaluateExpr: tuple_get target is not an array (got ${typeof t})`);
     }
@@ -3111,7 +3111,7 @@ function evaluateCall(ir, env) {
   // `(a, b, ...)` literals and as an intermediate value when downstream
   // code projects via tuple_get.
   if (op === 'tuple') {
-    return (ir.args || []).map(a => evaluateExpr(a, env));
+    return (ir.args || []).map((a: any) => evaluateExpr(a, env));
   }
   // fixed(x) — identity at runtime. Spec §03 value types: "fixed(x)
   // is semantically identical to identity(x) during FlatPPL code
@@ -3132,8 +3132,8 @@ function evaluateCall(ir, env) {
     if (args.length !== 2) {
       throw new Error(`evaluateExpr: get_field expects 2 args, got ${args.length}`);
     }
-    const obj = evaluateExpr(args[0], env);
-    const key = args[1] && args[1].kind === 'lit' ? args[1].value : evaluateExpr(args[1], env);
+    const obj: any = evaluateExpr(args[0], env);
+    const key: any = args[1] && args[1].kind === 'lit' ? args[1].value : evaluateExpr(args[1], env);
     if (obj == null || typeof obj !== 'object') {
       throw new Error(`evaluateExpr: get_field target is not a record (got ${typeof obj})`);
     }
@@ -3155,16 +3155,16 @@ function evaluateCall(ir, env) {
       throw new Error(`evaluateExpr: ${op} expects a container and at least one selector`);
     }
     const oneBased = (op === 'get');
-    const container = evaluateExpr(args[0], env);
+    const container: any = evaluateExpr(args[0], env);
     // `all` (axis slice) is a selector token, not a value — keep it as
     // a sentinel; every other selector evaluates to an index / key /
     // subset array.
     const ALL = Symbol('all');
-    const sels = args.slice(1).map((a) =>
+    const sels = args.slice(1).map((a: any) =>
       (a && a.kind === 'const' && a.name === 'all')
         ? ALL : evaluateExpr(a, env));
-    const isArrayLike = (c) => Array.isArray(c) || ArrayBuffer.isView(c);
-    const applyGet = (c, ss) => {
+    const isArrayLike = (c: any) => Array.isArray(c) || ArrayBuffer.isView(c);
+    const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;
       const s = ss[0], rest = ss.slice(1);
       if (s === ALL) {                       // whole axis: map over it
@@ -3181,11 +3181,11 @@ function evaluateCall(ir, env) {
         // otherwise an array subset along this axis.
         if (s.every((e) => typeof e === 'string')
             && c != null && typeof c === 'object' && !isArrayLike(c)) {
-          const r = {};
+          const r: Record<string, any> = {};
           for (const k of s) r[k] = applyGet(c[k], rest);
           return r;
         }
-        return s.map((si) => applyGet(c, [si, ...rest]));
+        return s.map((si: any) => applyGet(c, [si, ...rest]));
       }
       if (typeof s === 'string') {           // record field
         if (c == null || typeof c !== 'object' || isArrayLike(c)) {
@@ -3229,7 +3229,7 @@ function evaluateCall(ir, env) {
     // Bernstein basis on [0, 1]: f(x) = Σ_{k=0..n} a_k · C(n, k) · x^k · (1-x)^{n-k}
     // where n = length(coefficients) - 1. Numerically stable for x ∈ [0,1].
     const kw = ir.kwargs || {};
-    const coeffs = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
+    const coeffs: any = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
                                            : evaluateExpr(ir.args[0], env);
     const x = kw.x != null ? evaluateExpr(kw.x, env)
                            : evaluateExpr(ir.args[1], env);
@@ -3321,7 +3321,7 @@ function evaluateCall(ir, env) {
       }
       for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
     }
-    const inputs = sources.map(s => evaluateExpr(s, env));
+    const inputs: any = sources.map(s => evaluateExpr(s, env));
     return _broadcastApply(fn, inputs, env);
   }
   if (op === 'reduce') {
@@ -3337,7 +3337,7 @@ function evaluateCall(ir, env) {
     if (!fn || fn.params.length !== 2) {
       throw new Error('reduce: function arg must be a binary function');
     }
-    const xs = evaluateExpr(args[1], env);
+    const xs: any = evaluateExpr(args[1], env);
     if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
       throw new Error('reduce: xs must be a vector');
     }
@@ -3345,7 +3345,7 @@ function evaluateCall(ir, env) {
       throw new Error('reduce: empty vector has no initial value');
     }
     const elemEnv = Object.assign({}, env);
-    let acc = xs[0];
+    let acc: any = xs[0];
     for (let i = 1; i < xs.length; i++) {
       elemEnv[fn.params[0]] = acc;
       elemEnv[fn.params[1]] = xs[i];
@@ -3367,11 +3367,11 @@ function evaluateCall(ir, env) {
       throw new Error('scan: function arg must be a binary function');
     }
     const init = evaluateExpr(args[1], env);
-    const xs   = evaluateExpr(args[2], env);
+    const xs: any   = evaluateExpr(args[2], env);
     if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
       throw new Error('scan: xs must be a vector');
     }
-    const out = new Array(xs.length);
+    const out: any = new Array(xs.length);
     const elemEnv = Object.assign({}, env);
     let acc = init;
     for (let i = 0; i < xs.length; i++) {
@@ -3419,7 +3419,7 @@ function evaluateCall(ir, env) {
     // Multi-D case (bins is a record of edge vectors): not yet
     // supported — falls through to an explicit error.
     const kw = ir.kwargs || {};
-    const bins = kw.bins != null ? evaluateExpr(kw.bins, env)
+    const bins: any = kw.bins != null ? evaluateExpr(kw.bins, env)
                                  : evaluateExpr(ir.args[0], env);
     const data = kw.data != null ? evaluateExpr(kw.data, env)
                                  : evaluateExpr(ir.args[1], env);
@@ -3427,9 +3427,9 @@ function evaluateCall(ir, env) {
         || (bins.length > 0 && typeof bins[0] !== 'number')) {
       throw new Error('bincounts: multi-dimensional binning not yet supported');
     }
-    const n = bins.length - 1;
+    const n: any = bins.length - 1;
     if (n < 0) throw new Error('bincounts: bins must have at least 1 edge');
-    const counts = new Array(n).fill(0);
+    const counts: any = new Array(n).fill(0);
     const last = n - 1;
     const lo = bins[0], hi = bins[n];
     for (let i = 0; i < data.length; i++) {
@@ -3452,7 +3452,7 @@ function evaluateCall(ir, env) {
     const kw = ir.kwargs || {};
     const edges  = kw.edges  != null ? evaluateExpr(kw.edges,  env)
                                      : evaluateExpr(ir.args[0], env);
-    const values = kw.values != null ? evaluateExpr(kw.values, env)
+    const values: any = kw.values != null ? evaluateExpr(kw.values, env)
                                      : evaluateExpr(ir.args[1], env);
     const x      = kw.x      != null ? evaluateExpr(kw.x,      env)
                                      : evaluateExpr(ir.args[2], env);
@@ -3474,7 +3474,7 @@ function evaluateCall(ir, env) {
   // (lowered from surface `record(a=x, b=y)`). Field values are
   // evaluated; keys are static names from the fields array.
   if (op === 'record' && Array.isArray(ir.fields)) {
-    const out = {};
+    const out: Record<string, any> = {};
     for (const f of ir.fields) out[f.name] = evaluateExpr(f.value, env);
     return out;
   }
@@ -3485,7 +3485,7 @@ function evaluateCall(ir, env) {
     if (args.length !== 1) {
       throw new Error(`evaluateExpr: rnginit expects 1 arg, got ${args.length}`);
     }
-    const seed = evaluateExpr(args[0], env);
+    const seed: any = evaluateExpr(args[0], env);
     if (!isByteVector(seed)) {
       throw new Error(`evaluateExpr: rnginit seed must be a byte vector (array of integers in 0..255)`);
     }
@@ -3498,7 +3498,7 @@ function evaluateCall(ir, env) {
     if (args.length !== 1) {
       throw new Error(`evaluateExpr: rngstate expects 1 arg, got ${args.length}`);
     }
-    const bytes = evaluateExpr(args[0], env);
+    const bytes: any = evaluateExpr(args[0], env);
     if (!isByteVector(bytes)) {
       throw new Error(`evaluateExpr: rngstate bytes must be a byte vector (array of integers in 0..255)`);
     }
@@ -3528,7 +3528,7 @@ function evaluateCall(ir, env) {
 // Predicate guarding rnginit / rngstate: argument must be an iterable of
 // integers in [0, 255]. Float64Arrays whose entries happen to be small
 // integers are also accepted.
-function isByteVector(x) {
+function isByteVector(x: any) {
   if (!x || typeof x !== 'object' || typeof x.length !== 'number') return false;
   for (let i = 0; i < x.length; i++) {
     const v = x[i];
@@ -3547,12 +3547,12 @@ function getTraceeval() {
   return _traceeval;
 }
 
-function evaluateRand(ir, env) {
+function evaluateRand(ir: any, env: any): any {
   const args = ir.args || [];
   if (args.length !== 2) {
     throw new Error(`evaluateExpr: rand expects 2 args (state, measure), got ${args.length}`);
   }
-  const state = evaluateExpr(args[0], env);
+  const state: any = evaluateExpr(args[0], env);
   if (!state || typeof state !== 'object' || !state.key || !state.counter) {
     throw new Error(`evaluateExpr: rand's first arg must be an rngstate (got ${typeof state})`);
   }
@@ -3575,18 +3575,18 @@ function evaluateRand(ir, env) {
   if (env && typeof env.__resolveValueRef === 'function') {
     opts.resolveValueRef = env.__resolveValueRef;
   }
-  const r = getTraceeval().walk(state, args[1], env, opts);
+  const r: any = getTraceeval().walk(state, args[1], env, opts);
   return [r.value, r.state];
 }
 
-function lookupDistribution(measureIR) {
+function lookupDistribution(measureIR: any) {
   if (!measureIR || measureIR.kind !== 'call') {
     throw new Error(
       `sampler: expected a measure call IR, got kind=${measureIR?.kind}`
     );
   }
   const name = measureIR.op;
-  const entry = REGISTRY[name];
+  const entry = (REGISTRY as any)[name];
   if (!entry) {
     throw new Error(
       `sampler: '${name}' is not a known distribution (or not yet implemented). ` +
@@ -3596,7 +3596,7 @@ function lookupDistribution(measureIR) {
   return entry;
 }
 
-function resolveParams(measureIR, entry, env) {
+function resolveParams(measureIR: any, entry: any, env: any) {
   // Hook for distributions whose surface params aren't directly
   // evaluable as numerics (e.g. Uniform(support = interval(lo, hi)),
   // where the `support` arg is a set IR rather than a value). The
@@ -3641,7 +3641,7 @@ function resolveParams(measureIR, entry, env) {
 // state when sampling completes — preserving end-to-end functional
 // state-threading at the public API.
 
-function makePhiloxPrngAdapter(initialState) {
+function makePhiloxPrngAdapter(initialState: any) {
   let state = initialState;
   function prng() {
     const [u, next] = rng.nextUniform(state);
@@ -3650,7 +3650,7 @@ function makePhiloxPrngAdapter(initialState) {
   }
   prng.getState = () => state;
   // Also expose a reset hook for tests.
-  prng._setState = (s) => { state = s; };
+  prng._setState = (s: any) => { state = s; };
   return prng;
 }
 
@@ -3658,7 +3658,7 @@ function makePhiloxPrngAdapter(initialState) {
 // Misc helpers
 // =====================================================================
 
-function readSupport(dist) {
+function readSupport(dist: any) {
   // stdlib distributions expose `support` as either a getter or an array.
   // Some return objects like { lower, upper } — we normalize to [lo, hi].
   const s = dist.support;
