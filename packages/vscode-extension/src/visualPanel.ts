@@ -11,7 +11,7 @@ const { isValidBindingName, variants } = require('../lib/engine.min.js');
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
     single call sites stay stable. */
-function variantIdFromUri(_uri) {
+function variantIdFromUri(_uri: any) {
   return 'flatppl';
 }
 
@@ -32,7 +32,7 @@ class FlatPPLPanel {
   _webviewReady: any;
   _pendingMessages: any;
 
-  static createOrShow(context) {
+  static createOrShow(context: any) {
     const column = vscode.ViewColumn.Beside;
     if (FlatPPLPanel.currentPanel) {
       // Don't steal focus from the editor when the panel updates.
@@ -54,7 +54,7 @@ class FlatPPLPanel {
     FlatPPLPanel.currentPanel = new FlatPPLPanel(panel, context);
   }
 
-  constructor(panel, context) {
+  constructor(panel: any, context: any) {
     this._panel = panel;
     this._context = context;
     this._sourceUri = null;
@@ -70,7 +70,7 @@ class FlatPPLPanel {
     this._panel.onDidDispose(() => {
       FlatPPLPanel.currentPanel = undefined;
     });
-    this._panel.webview.onDidReceiveMessage(msg => {
+    this._panel.webview.onDidReceiveMessage((msg: any) => {
       if (msg.type === 'webviewReady') {
         this._webviewReady = true;
         for (const m of this._pendingMessages) this._panel.webview.postMessage(m);
@@ -94,7 +94,7 @@ class FlatPPLPanel {
         vscode.window.showTextDocument(uri, {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: false,
-        }).then(editor => {
+        }).then((editor: any) => {
           const pos = new vscode.Position(line, 0);
           editor.selection = new vscode.Selection(pos, pos);
           editor.revealRange(
@@ -127,7 +127,7 @@ class FlatPPLPanel {
       }
       if (msg.type === 'editSource' && this._sourceUri != null) {
         const uri = this._sourceUri;
-        vscode.workspace.openTextDocument(uri).then(doc => {
+        vscode.workspace.openTextDocument(uri).then((doc: any) => {
           const edit = new vscode.WorkspaceEdit();
           if (msg.range) {
             const range = new vscode.Range(
@@ -141,18 +141,18 @@ class FlatPPLPanel {
             const sep = text.length === 0 || text.endsWith('\n') ? '' : '\n';
             edit.insert(uri, endPos, sep + msg.newText + '\n');
           }
-          return vscode.workspace.applyEdit(edit).then(success => {
+          return vscode.workspace.applyEdit(edit).then((success: any) => {
             if (!success) return null;
             return vscode.workspace.openTextDocument(uri);
           });
-        }).then(doc => {
+        }).then((doc: any) => {
           if (!doc) return;
           this.updateSource(doc.getText(), null, this._sourceUri, false);
         });
       }
       if (msg.type === 'promptForName') {
         const existing = new Set(msg.existingNames || []);
-        const validate = (raw) => {
+        const validate = (raw: any) => {
           const trimmed = (raw || '').trim();
           if (!trimmed) return 'Name required';
           if (!isValidBindingName(trimmed)) {
@@ -165,7 +165,7 @@ class FlatPPLPanel {
           prompt: 'Save current values as a new preset',
           value: msg.suggested || 'preset',
           validateInput: validate,
-        }).then(raw => {
+        }).then((raw: any) => {
           const name = raw ? raw.trim() : null;
           this._post({ type: 'promptForNameResponse', nonce: msg.nonce, name: name || null });
         });
@@ -173,7 +173,7 @@ class FlatPPLPanel {
     });
   }
 
-  _post(msg) {
+  _post(msg: any) {
     if (this._webviewReady) {
       this._panel.webview.postMessage(msg);
     } else {
@@ -192,7 +192,7 @@ class FlatPPLPanel {
    * webview and means one engine codebase serves both the VS Code panel
    * and the future standalone web preview.
    */
-  updateSource(source, targetName, sourceUri, pushHistory, opts?) {
+  updateSource(source: any, targetName: any, sourceUri: any, pushHistory: any, opts?: any) {
     if (opts && opts.readOnly) {
       // Embedded cursor-follow: re-center on a binding while keeping
       // the snapshot read-only (write-back stays refused) and the
@@ -231,7 +231,7 @@ class FlatPPLPanel {
    * on receipt if numbers like sampleCount have changed — cached
    * arrays were sized to the old count and can't be reused.
    */
-  updateConfig(config) {
+  updateConfig(config: any) {
     this._post({ type: 'configUpdate', config });
   }
 
@@ -245,7 +245,7 @@ class FlatPPLPanel {
    * mode. The webview pushes a history entry when pushHistory is
    * true so the back-button can return to a prior single-binding view.
    */
-  showModule(source, sourceUri, pushHistory, readOnly, navOrigin) {
+  showModule(source: any, sourceUri: any, pushHistory: any, readOnly: any, navOrigin: any) {
     if (readOnly) {
       // Embedded FlatPPL (extracted from a Python/Julia host string):
       // a read-only snapshot. Clear _sourceUri so the DAG-rename
