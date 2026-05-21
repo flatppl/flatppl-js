@@ -20,11 +20,11 @@
   "// strict-overrides":
     "Initial post-migration state — strict: true plus targeted off-",
   "// strict-overrides.2":
-    "overrides for the two flags with backlog: noImplicitAny (~177",
+    "overrides for the remaining flag with backlog: noImplicitAny",
   "// strict-overrides.3":
-    "sites) and strictNullChecks (~75 DOM-lookup sites). Each is a",
+    "(~177 sites). strictNullChecks landed earlier; same ratchet",
   "// strict-overrides.4":
-    "future ratchet, same pattern as the engine's noImplicitAny pass.",
+    "pattern as the engine's noImplicitAny pass.",
 
   "compilerOptions": {
     "target": "es2020",
@@ -36,7 +36,6 @@
 
     "strict": true,
     "noImplicitAny": false,
-    "strictNullChecks": false,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,

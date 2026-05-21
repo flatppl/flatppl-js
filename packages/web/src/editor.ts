@@ -37,7 +37,7 @@
 
 (function (globalScope: any) {
   var BUNDLE_URL = 'vendor/codemirror.min.js';
-  var loadPromise = null;
+  var loadPromise: Promise<any> | null = null;
 
   function loadBundle() {
     if (globalScope.FlatPPLEditorBundle) return Promise.resolve(globalScope.FlatPPLEditorBundle);
@@ -114,7 +114,7 @@
     function buildDecorations(view) {
       if (!FE || !B) return Decoration.none;
       var text = view.state.doc.toString();
-      var bindings = null;
+      var bindings: Set<unknown> | null = null;
       try {
         var processed = FE.processSource(text);
         if (processed && processed.bindings) {
@@ -124,7 +124,7 @@
 
       var tokens = FE.tokenize(text).tokens || [];
       var lineStarts = computeLineStarts(text);
-      var ranges = [];
+      var ranges: any[] = [];
       for (var i = 0; i < tokens.length; i++) {
         var tok = tokens[i];
         if (tok.type === 'EOF' || tok.type === 'NEWLINE') continue;
@@ -133,7 +133,7 @@
         if (to <= from) continue;
 
         var cls;
-        var attrs = null;
+        var attrs: { 'data-binding': any } | null = null;
         if (tok.type === 'IDENT') {
           cls = classifyIdentifier(tok.value, bindings, B);
           if (bindings && bindings.has(tok.value)) {
@@ -242,7 +242,7 @@
       mousedown: function (ev) {
         if (!(ev.ctrlKey || ev.metaKey)) return false;
         var t = ev.target;
-        var name = null;
+        var name: any = null;
         while (t) {
           if (t.dataset && t.dataset.binding) { name = t.dataset.binding; break; }
           t = t.parentNode;
@@ -278,14 +278,14 @@
     // suppress repeats so the router doesn't see a flood of
     // identical navigateTo calls when the cursor sits on a single
     // identifier across multiple updates.
-    var lastCursorBinding = null;
+    var lastCursorBinding: any = null;
 
     function bindingAtCursor() {
       var FE = globalScope.FlatPPLEngine;
       if (!FE) return null;
       var head = view.state.selection.main.head;
       var doc = view.state.doc.toString();
-      var bindings = null;
+      var bindings: Set<unknown> | null = null;
       try {
         var processed = FE.processSource(doc);
         if (processed && processed.bindings) {

@@ -47,7 +47,7 @@
 
   /** Serialize { model, target } back to a hash string (no leading #). */
   function serialize(state) {
-    var parts = [];
+    var parts: string[] = [];
     if (state.model)  parts.push('model=' + encodeURIComponent(state.model));
     if (state.target) parts.push('target=' + encodeURIComponent(state.target));
     return parts.join('&');
@@ -67,7 +67,7 @@
     globalScope.location.hash = next;
   }
 
-  var changeListeners = [];
+  var changeListeners: Array<(state: any) => void> = [];
 
   /** Register a callback fired on every hash navigation. */
   function onChange(fn) {
@@ -76,7 +76,7 @@
 
   // De-dupe consecutive identical states so a single in-place
   // hash assignment doesn't trigger a duplicate callback.
-  var lastSerialized = null;
+  var lastSerialized: string | null = null;
   function emitIfChanged() {
     var state = parseHash();
     var ser = serialize(state);

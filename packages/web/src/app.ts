@@ -29,24 +29,24 @@
     '',
   ].join('\n');
 
-  var sourceView   = null;
-  var sourceHeader = null;
-  var fileTree     = null;
-  var titleEl      = null;
-  var viewer       = null;
-  var manifest     = null;
+  var sourceView:   any = null;
+  var sourceHeader: any = null;
+  var fileTree:     any = null;
+  var titleEl:      any = null;
+  var viewer:       any = null;
+  var manifest:     any = null;
 
   // Playground state. `playgroundEditor` is the EditorHandle returned
   // by FlatPPLWebEditor.mountEditor, present only in playground mode.
   // showSource / showSourceIfChanged switch their write path through
   // this when set.
-  var playgroundEditor = null;
+  var playgroundEditor: any = null;
 
   // The source string currently rendered in the source pane. Used by
   // showSourceIfChanged to skip the full innerHTML rewrite (and the
   // CSS / repaint flash that comes with it) when the user is only
   // navigating between bindings inside the same file.
-  var lastRenderedSource = null;
+  var lastRenderedSource: string | null = null;
 
   /** Map a model path's extension to a surface-syntax variant id
       ('flatppl' / 'flatppy' / 'flatppj'). Returns undefined for an
@@ -64,7 +64,7 @@
   // playground mode: rewriting the editor's content on every target-
   // change would wipe user edits and reset the cursor to the start
   // of the file.
-  var lastModel = null;
+  var lastModel: string | null = null;
 
   /**
    * Push text into the source pane. When the engine is available
@@ -91,7 +91,7 @@
     var cur = window.FlatPPLWebRouter
       ? window.FlatPPLWebRouter.parseHash() : { model: null };
     var variantId = variantIdForPath(cur.model);
-    var bindings = null;
+    var bindings: Set<unknown> | null = null;
     if (FE && typeof FE.processSource === 'function') {
       try {
         var processed = FE.processSource(text, { variant: variantId });
@@ -117,7 +117,7 @@
       Used by the playground's onChange path so the viewer re-renders
       after the user pauses typing rather than on every keystroke. */
   function debounce(fn, ms) {
-    var t = null;
+    var t: any = null;
     return function () {
       var args = arguments;
       if (t) clearTimeout(t);
@@ -504,7 +504,7 @@
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;
     }
-    var missing = [];
+    var missing: string[] = [];
     if (!window.FlatPPLWebResolver) missing.push('resolver');
     if (!window.FlatPPLWebRouter)   missing.push('router');
     if (!window.FlatPPLWebManifest) missing.push('manifest');

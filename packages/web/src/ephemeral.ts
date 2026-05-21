@@ -44,7 +44,7 @@
       an array of `{ path, text }` so the caller can render them
       without mutating the underlying map. */
   function list() {
-    var out = [];
+    var out: any[] = [];
     store.forEach(function (text, path) { out.push({ path: path, text: text }); });
     return out;
   }
