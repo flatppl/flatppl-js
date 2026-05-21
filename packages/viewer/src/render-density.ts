@@ -26,7 +26,7 @@ import { colorForBinding } from './palette.js';
 import { nameSeed } from './orchestration.js';
 import { listScalarAxes, makeMainThreadPrng } from './util.js';
 import { formatScalar } from './util.js';
-export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) {
+export function renderDensityStrips(ctx: any, hostEl: any, measure: any, bindingName: any, axesArg: any) {
   hostEl.innerHTML = '';
   // Marginals mode passes the full axis list (no selection cap); we
   // fall back to listScalarAxes for legacy callers.
@@ -48,7 +48,7 @@ export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) 
   var histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
   // Per-axis FD histograms + global y range.
-  var hists = axes.map(function(a) {
+  var hists = axes.map(function(a: any) {
     return FlatPPLEngine.histogram.freedmanDiaconisHistogram(a.samples, histOptsBase);
   });
   // Per-axis peak densities: a tightly-concentrated marginal has
@@ -98,11 +98,11 @@ export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) 
   // visible gap separates groups (a full empty slot was too
   // wide). axisGroup extracts the prefix before any trailing
   // "[…]" — same-group axes share that prefix.
-  function axisGroup(label) {
+  function axisGroup(label: any) {
     var i = label.lastIndexOf('[');
     return i >= 0 ? label.slice(0, i) : label;
   }
-  var groups = axes.map(function(a) { return axisGroup(a.label); });
+  var groups = axes.map(function(a: any) { return axisGroup(a.label); });
   // Per-axis gap flags. Boundary cells (group differs from
   // neighbour) shrink on the gap side; the renderer reads these
   // off the rect data. GAP_FRACTION is the inset depth as a
@@ -126,7 +126,7 @@ export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) 
       });
     }
   }
-  var catLabels = axes.map(function(a) { return a.label; });
+  var catLabels = axes.map(function(a: any) { return a.label; });
   var seriesColor = color;
   var ec = echarts.init(chartDiv);
   ec.setOption({
@@ -157,7 +157,7 @@ export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) 
     series: [{
       type: 'custom',
       data: data,
-      renderItem: function(_p, api) {
+      renderItem: function(_p: any, api: any) {
         var d = data[_p.dataIndex];
         var density = d.value[2];
         // Column-centred horizontal extent: ~70% of slot width.
@@ -207,10 +207,10 @@ export function renderDensityStrips(ctx, hostEl, measure, bindingName, axesArg) 
  * div whose contents we replace; it must be a flex/block child
  * with a fixed height so the inner grid expands correctly.
  */
-export function renderCornerGrid(ctx, hostEl, measure, bindingName) {
+export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingName: any) {
   hostEl.innerHTML = '';
   var axes = listScalarAxes(measure)
-    .filter(function(a) { return ctx.recordSelection.selected.indexOf(a.key) >= 0; });
+    .filter(function(a: any) { return ctx.recordSelection.selected.indexOf(a.key) >= 0; });
   var n = axes.length;
   if (n === 0) {
     var empty = document.createElement('div');
@@ -287,7 +287,7 @@ export function renderCornerGrid(ctx, hostEl, measure, bindingName) {
   // Per-cell builder: chart container only — no internal label,
   // axis names live on the grid edges. (Plot row r, plot col c
   // → grid row r+1, grid col c+2 because of the two label tracks.)
-  function makeCell(row, col) {
+  function makeCell(row: any, col: any) {
     var cell = document.createElement('div');
     cell.style.gridRow    = (row + 1) + ' / span 1';
     cell.style.gridColumn = (col + 2) + ' / span 1';
@@ -310,7 +310,7 @@ export function renderCornerGrid(ctx, hostEl, measure, bindingName) {
   // setOption renders synchronously, but resize-triggered
   // re-renders pick up the wrong data and the upper cells go
   // blank.)
-  function renderDiagonalCell(inner, rects, color) {
+  function renderDiagonalCell(inner: any, rects: any, color: any) {
     var ec1 = echarts.init(inner);
     ec1.setOption({
       backgroundColor: 'transparent',
@@ -333,7 +333,7 @@ export function renderCornerGrid(ctx, hostEl, measure, bindingName) {
       series: [{
         type: 'custom',
         data: rects,
-        renderItem: function(_p, api) {
+        renderItem: function(_p: any, api: any) {
           var d = rects[_p.dataIndex];
           var lt = api.coord([d.x0, d.value[1]]);
           var rb = api.coord([d.x1, 0]);

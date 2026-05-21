@@ -13,7 +13,7 @@ import { updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding } from './render-frame.js';
-export function showNodeInfo(ctx, d) {
+export function showNodeInfo(ctx: any, d: any) {
   var phase = d.phase || 'unknown';
   var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
   var unsupportedRow = '';
@@ -51,7 +51,7 @@ export function showNodeInfo(ctx, d) {
     + errorRow;
 }
 
-export function updateHeader(ctx, data) {
+export function updateHeader(ctx: any, data: any) {
   var el = $('header-expr');
   // Module view: no per-node target; just label the view.
   if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
@@ -69,20 +69,20 @@ export function updateHeader(ctx, data) {
     + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
 }
 
-export function updateBackBtn(ctx) {
+export function updateBackBtn(ctx: any) {
   $('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
 }
 
-export function teardownBubbles(ctx) {
+export function teardownBubbles(ctx: any) {
   if (!ctx.bb) return;
-  ctx.bb.getPaths().forEach(function(p) {
+  ctx.bb.getPaths().forEach(function(p: any) {
     p.update = function() {};
     ctx.bb.removePath(p);
   });
-  ctx.cy.elements().forEach(function(el) { el.removeScratch('bubbleSets'); });
+  ctx.cy.elements().forEach(function(el: any) { el.removeScratch('bubbleSets'); });
 }
 
-export function initCy(ctx) {
+export function initCy(ctx: any) {
   ctx.cy = cytoscape({
     container: $('cy'),
     style: [
@@ -218,7 +218,7 @@ export function initCy(ctx) {
         // to read the target node.
         selector: 'edge[edgeType = "tether"]',
         style: {
-          'line-color': function(ele) { return ele.target().data('color') || '#aaa'; },
+          'line-color': function(ele: any) { return ele.target().data('color') || '#aaa'; },
           'opacity': 0.6,
           'width': 1.5,
           'target-arrow-shape': 'none',
@@ -226,7 +226,7 @@ export function initCy(ctx) {
           'label': 'data(tetherLabel)',
           'font-size': '10px',
           'font-style': 'italic',
-          'color': function(ele) { return ele.target().data('color') || '#aaa'; },
+          'color': function(ele: any) { return ele.target().data('color') || '#aaa'; },
           // Full text opacity overrides the edge's 0.6 — the line stays
           // faint, the label reads as bright as a node label.
           'text-opacity': 1,
@@ -244,7 +244,7 @@ export function initCy(ctx) {
           'text-background-padding': '2px',
           'text-background-shape': 'roundrectangle',
           'text-border-width': 1,
-          'text-border-color': function(ele) { return ele.target().data('color') || '#aaa'; },
+          'text-border-color': function(ele: any) { return ele.target().data('color') || '#aaa'; },
           'text-border-opacity': 0.6,
         }
       },
@@ -286,7 +286,7 @@ export function initCy(ctx) {
   // selection rather than the DAG's terminal target so users can
   // explore the graph node-by-node and read each binding's
   // distribution in place.
-  ctx.cy.on('tap', 'node', function(evt) {
+  ctx.cy.on('tap', 'node', function(evt: any) {
     var oe = evt.originalEvent;
     if (oe && (oe.ctrlKey || oe.metaKey)) {
       var line = evt.target.data('line');
@@ -306,7 +306,7 @@ export function initCy(ctx) {
     updatePlotForBinding(ctx, d.id);
   });
 
-  ctx.cy.on('tap', function(evt) {
+  ctx.cy.on('tap', function(evt: any) {
     if (evt.target === ctx.cy) {
       $('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
     }
@@ -316,7 +316,7 @@ export function initCy(ctx) {
   // webview owns the parsed bindings and recomputes the sub-DAG itself
   // (no host round-trip). Title sync to the editor still goes via a
   // postMessage to the host since the title is on the VS Code panel.
-  ctx.cy.on('dbltap', 'node', function(evt) {
+  ctx.cy.on('dbltap', 'node', function(evt: any) {
     var nodeId = evt.target.data('id');
     // Don't drill into synthetic nodes (placeholder/hole inputs).
     if (nodeId.indexOf(':') !== -1) return;
@@ -325,7 +325,7 @@ export function initCy(ctx) {
   });
 
   var tip = $('tooltip');
-  ctx.cy.on('mouseover', 'node', function(evt) {
+  ctx.cy.on('mouseover', 'node', function(evt: any) {
     var d = evt.target.data();
     var expr = d.expr || '';
     if (!expr) return;
@@ -348,7 +348,7 @@ export function initCy(ctx) {
   });
 }
 
-export function drawReificationLassos(ctx, data) {
+export function drawReificationLassos(ctx: any, data: any) {
   if (!ctx.bb || !data.reifications) return;
   teardownBubbles(ctx);
 
@@ -367,7 +367,7 @@ export function drawReificationLassos(ctx, data) {
     }
     // Hidden edges (visibility:hidden) can return undefined endpoints,
     // which silently corrupts bubblesets' potential field — exclude.
-    var edges = ctx.cy.edges().filter(function(e) {
+    var edges = ctx.cy.edges().filter(function(e: any) {
       return nodes.contains(e.source())
         && nodes.contains(e.target())
         && !e.data('hidden');
@@ -389,7 +389,7 @@ export function drawReificationLassos(ctx, data) {
   }
 }
 
-export function renderDAG(ctx, data) {
+export function renderDAG(ctx: any, data: any) {
   if (!ctx.cy) initCy(ctx);
   updateHeader(ctx, data);
 
@@ -402,7 +402,7 @@ export function renderDAG(ctx, data) {
   // treatment, so synthesized bindings like prior2 =
   // lawof(disintegrate(...)) (no internal scope, no bubble
   // drawn) render with the default solid measure style.
-  var reifAnchorNames = {};
+  var reifAnchorNames: Record<string, boolean> = {};
   if (data.reifications) {
     for (var ra = 0; ra < data.reifications.length; ra++) {
       reifAnchorNames[data.reifications[ra].name] = true;
@@ -460,8 +460,8 @@ export function renderDAG(ctx, data) {
   //   - else (boundary arg or other kernel member): fully hide; the
   //     bubble already conveys that flow. Edge is kept in cy so dagre
   //     uses it for layout.
-  var reifMembers = {}; // reifName -> {memberId: true}
-  var reifTargets = {}; // reifName -> {targetId: true}
+  var reifMembers: Record<string, Record<string, boolean>> = {}; // reifName -> {memberId: true}
+  var reifTargets: Record<string, Record<string, boolean>> = {}; // reifName -> {targetId: true}
   if (data.reifications) {
     for (var ri = 0; ri < data.reifications.length; ri++) {
       var rf = data.reifications[ri];
@@ -475,7 +475,7 @@ export function renderDAG(ctx, data) {
 
   // Map binding name -> binding type, used to label tether edges with
   // the reification keyword (lawof / functionof / kernelof / fn).
-  var typeByName = {};
+  var typeByName: Record<string, string> = {};
   for (var ni = 0; ni < data.nodes.length; ni++) {
     typeByName[data.nodes[ni].id] = data.nodes[ni].type;
   }
@@ -531,7 +531,7 @@ export function renderDAG(ctx, data) {
 
   // Show details for the target node automatically (the cursor is already
   // on it in the source). Falls back to the hint if no target is present.
-  var target = data.nodes.find(function(n) { return n.isTarget; });
+  var target = data.nodes.find(function(n: any) { return n.isTarget; });
   if (target) {
     showNodeInfo(ctx, {
       label: target.label || target.id,
@@ -551,7 +551,7 @@ export function renderDAG(ctx, data) {
  * binding in document order (the same default the extension ctx.host used
  * before this refactor).
  */
-export function focusNode(ctx, targetName, pushHistory) {
+export function focusNode(ctx: any, targetName: any, pushHistory: any) {
   if (!ctx.currentBindings) return;
   // No targetName supplied → prefer keeping the current focus.
   // This is the path used by source-only updates from the host
@@ -611,7 +611,7 @@ export function focusNode(ctx, targetName, pushHistory) {
  * focused binding here. Pushes onto ctx.history when requested and
  * the previous view wasn't already the module view.
  */
-export function enterModuleView(ctx, pushHistory) {
+export function enterModuleView(ctx: any, pushHistory: any) {
   if (!ctx.currentBindings) return;
   var dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
   if (!dagData || dagData.nodes.length === 0) return;
