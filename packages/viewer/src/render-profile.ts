@@ -112,7 +112,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   }
   if (mode === 'logdensity') {
     ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
-      ir, ctx.derivationsState.derivations);
+      ir, ctx.derivationsState!.derivations);
   }
   // Propagate the swept axis (and other params) through transitive
   // deterministic deps. Without this, e.g. sweeping `theta1` in a
@@ -123,7 +123,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // rewrites self.theta1 → %local.theta1.
   var paramNames = sig.inputs.map(function(inp) { return inp.paramName; });
   ir = FlatPPLEngine.orchestrator.inlineForProfile(
-    ir, paramNames, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
+    ir, paramNames, ctx.derivationsState!.bindings, ctx.derivationsState!.derivations);
   var POINT_COUNT = 200;
   showPlotMessage(ctx, 'Profiling…', { cancellable: true, hint: true });
   var planForCall = plan;
@@ -215,7 +215,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     var observed;
     if (sig.obsIR != null) {
       observed = FlatPPLEngine.orchestrator.resolveIRToValue(
-        sig.obsIR, ctx.derivationsState.bindings, ctx.derivationsState.fixedValues);
+        sig.obsIR, ctx.derivationsState!.bindings, ctx.derivationsState!.fixedValues);
     }
     return sendWorker(ctx, {
       type: 'profileN',

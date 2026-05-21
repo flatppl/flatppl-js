@@ -2,7 +2,10 @@
 // cross-package subpath. `import type` is erased at runtime, so the
 // viewer bundle stays decoupled from the engine bundle at build time;
 // the types just sharpen our Ctx field declarations below.
-import type { EmpiricalMeasure as EngineEmpiricalMeasure } from '@flatppl/engine/engine-types';
+import type {
+  DerivationsState as EngineDerivationsState,
+  EmpiricalMeasure as EngineEmpiricalMeasure,
+} from '@flatppl/engine/engine-types';
 
 // Ambient declarations for the viewer's host environment.
 //
@@ -220,7 +223,9 @@ export interface Ctx {
   plotEchart: any;
   plotEnabled: boolean;
   currentSource: string | null;
-  currentBindings: any;
+  /** Engine's binding map from processSource — Map<name, BindingInfo>.
+   *  Null at boot before the first source loads. */
+  currentBindings: Map<string, any> | null;
   currentLoweredModule: any;
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
@@ -230,8 +235,11 @@ export interface Ctx {
   rootSeed: number;
 
   // ---- caches ----
-  /** Output of buildDerivations: bindings, derivations, fixedValues, discrete. */
-  derivationsState: any;
+  /** Output of buildDerivations — bindings, derivations, fixedValues,
+   *  discrete. See engine-types.d.ts DerivationsState. Null at boot
+   *  before the first source is loaded; populated by mountViewer's
+   *  applySourceUpdate path. */
+  derivationsState: EngineDerivationsState | null;
   /** Atom-major samples keyed by binding name; sub-fields populated per
    *  measure shape (scalar / array / record / tuple / complex). The
    *  engine's shape is reused so the engine and viewer agree on the
