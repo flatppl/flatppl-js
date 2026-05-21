@@ -27,6 +27,8 @@
 // A leaf w.r.t. the orchestrator split: depends only on ir-shared
 // (isSelfRef, resolveIRToValue).
 
+import type { IRNode } from './engine-types';
+
 const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS } = require('./ir-shared.ts');
 
 function signatureOf(name: string, bindings: any): any {
@@ -101,9 +103,9 @@ const KNOWN_MEASURE_OPS = new Set([
   // joint / lawof anyway.
 ]);
 
-function bodyImpliesKernel(body: any, bindings: any): boolean {
+function bodyImpliesKernel(body: IRNode | null | undefined, bindings: any): boolean {
   if (!body) return false;
-  if (body.kind === 'call') {
+  if (body.kind === 'call' && body.op != null) {
     if (KNOWN_MEASURE_OPS.has(body.op))                  return true;
     if (SAMPLEABLE_DISTRIBUTIONS.has(body.op))           return true;
   }
