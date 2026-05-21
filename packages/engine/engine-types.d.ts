@@ -150,10 +150,11 @@ export type DerivationKind =
   | 'mvnormal';
 
 /**
- * Base derivation shape — every kind has at minimum `kind` + `name`.
- * Per-kind fields vary (distIR / args / steps / branches / etc.); a
- * full discriminated union is the per-kind tightening work that
- * lands alongside materialiser per-kind handler refactors.
+ * Base derivation shape. Each per-kind interface below extends this
+ * and refines `kind` to the literal tag plus declares its own
+ * fields. The `Derivation` union below is the canonical consumer
+ * type; `DerivationBase` is kept for cross-mode walkers that
+ * intentionally don't narrow (e.g. derivationRefsValid).
  */
 export interface DerivationBase {
   kind: DerivationKind;
@@ -164,6 +165,212 @@ export interface DerivationBase {
   name?: string;
   [extra: string]: any;
 }
+
+// Per-kind derivation interfaces. Field shapes mirror the classifier
+// + materialiser-builder sites in derivations.ts / materialiser.ts;
+// see those files for the semantic meaning of each field. The
+// universal `name?` is set when the derivation belongs to a named
+// binding (i.e. it's keyed by name in the buildDerivations output);
+// internal synthesised derivations the materialiser builds in flight
+// omit it.
+
+/** Alias to another binding — shares samples / logWeights / metadata. */
+export interface DerivationAlias {
+  kind: 'alias';
+  name?: string;
+  from: string;
+}
+
+/** Numeric array literal (e.g. `xs = [1, 2, 3]`). */
+export interface DerivationArray {
+  kind: 'array';
+  name?: string;
+  values: number[];
+}
+
+/** Positional joint over named-binding refs — tuple shape. */
+export interface DerivationTuple {
+  kind: 'tuple';
+  name?: string;
+  elems: string[];
+}
+
+/** Record-typed joint over named-binding refs. */
+export interface DerivationRecord {
+  kind: 'record';
+  name?: string;
+  /** Field name → referenced binding name. */
+  fields: Record<string, string>;
+}
+
+/** Sample N draws from `distIR` per atom (the universal leaf). */
+export interface DerivationSample {
+  kind: 'sample';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** Element-wise deterministic evaluation of `ir` over upstream sample arrays. */
+export interface DerivationEvaluate {
+  kind: 'evaluate';
+  name?: string;
+  ir: IRNode;
+}
+
+/**
+ * Weighted variant — either a closed-form log-shift (`logShift`) or an
+ * arbitrary weight expression (`weightIR`). `isLog` distinguishes the
+ * surface `weighted(w, M)` (linear) from `logweighted(lw, M)` (already
+ * log-domain) at materialise time.
+ */
+export interface DerivationWeighted {
+  kind: 'weighted';
+  name?: string;
+  from: string;
+  logShift?: number;
+  weightIR?: IRNode;
+  isLog?: boolean;
+}
+
+/** Normalise `from` measure by dividing through its totalmass. */
+export interface DerivationNormalize {
+  kind: 'normalize';
+  name?: string;
+  from: string;
+}
+
+/** Mixture-of-measures (`superpose`). */
+export interface DerivationSuperpose {
+  kind: 'superpose';
+  name?: string;
+  fromNames: string[];
+}
+
+/** IID measure: `iid(M, n)` — atom-major buffer of shape [N, n]. */
+export interface DerivationIid {
+  kind: 'iid';
+  name?: string;
+  from: string;
+  /** Per-axis sizes (multi-axis iid is single-axis today, dims = [n]). */
+  dims: number[];
+}
+
+/** Truncate `from` measure to `setDescr`. */
+export interface DerivationTruncate {
+  kind: 'truncate';
+  name?: string;
+  from: string;
+  setDescr: any;
+}
+
+/** Pushforward of `from` measure through function-binding `fnRef`. */
+export interface DerivationPushfwd {
+  kind: 'pushfwd';
+  name?: string;
+  from: string;
+  fnRef: string;
+}
+
+/** Bayesian update — posterior = importance-reweighted prior. */
+export interface DerivationBayesupdate {
+  kind: 'bayesupdate';
+  name?: string;
+  from: string;
+  /** Likelihood-kernel body source: a named binding (bodyName) or
+   *  inline call IR (bodyIR). Exactly one is set. */
+  bodyName: string | null;
+  bodyIR: IRNode | null;
+  obsIR: IRNode;
+}
+
+/** `logdensityof(M, x)` — evaluate density at fixed observation `x`. */
+export interface DerivationLogdensityof {
+  kind: 'logdensityof';
+  name?: string;
+  measureName: string;
+  obsIR: IRNode;
+}
+
+/** `totalmass(M)` — surface measure's tracked totalmass as scalar value. */
+export interface DerivationTotalmass {
+  kind: 'totalmass';
+  name?: string;
+  measureName: string;
+}
+
+/** `broadcast(logdensityof, M, points)` — vectorised density. */
+export interface DerivationBroadcastLogdensity {
+  kind: 'broadcast_logdensity';
+  name?: string;
+  measureName: string;
+  pointsIR: IRNode;
+}
+
+/** First-class jointchain / kchain (engine-concepts §10 consume/rest). */
+export interface DerivationJointchain {
+  kind: 'jointchain';
+  name?: string;
+  /** kchain ⇒ true (keep last only); jointchain ⇒ false. */
+  marginalize: boolean;
+  /** Kwarg form ⇒ field names; positional ⇒ null. */
+  labels: string[] | null;
+  steps: any[];
+}
+
+/** Discrete-selector mixture (`select` IR, also reached by ifelse/get). */
+export interface DerivationSelect {
+  kind: 'select';
+  name?: string;
+  branches: any[];
+  /** Per-branch log-weights (closed-form) or null when weights are
+   *  computed at materialise time from a runtime selector. */
+  logweightIRs: IRNode[] | null;
+  selectorRef?: string | null;
+  selectorBase?: number;
+  marginalize?: boolean;
+  mode?: string;
+  /** Spec for runtime-computed weights when logweightIRs is null. */
+  runtimeWeights?: { ref: string; K: number; base: number };
+}
+
+/** Stochastic kernel-broadcast (`broadcast(Normal, mus, sigmas)`). */
+export interface DerivationKernelBroadcast {
+  kind: 'kernelbroadcast';
+  name?: string;
+  distOp: string;
+  argIRs: IRNode[];
+  kwargIRs: Record<string, IRNode> | null;
+}
+
+/** MvNormal via Cholesky factorisation of `distIR`'s covariance. */
+export interface DerivationMvNormal {
+  kind: 'mvnormal';
+  name?: string;
+  distIR: IRNode;
+}
+
+/** Discriminated union over every kind buildDerivations may emit. */
+export type Derivation =
+  | DerivationAlias
+  | DerivationArray
+  | DerivationTuple
+  | DerivationRecord
+  | DerivationSample
+  | DerivationEvaluate
+  | DerivationWeighted
+  | DerivationNormalize
+  | DerivationSuperpose
+  | DerivationIid
+  | DerivationJointchain
+  | DerivationTruncate
+  | DerivationPushfwd
+  | DerivationBayesupdate
+  | DerivationLogdensityof
+  | DerivationTotalmass
+  | DerivationBroadcastLogdensity
+  | DerivationSelect
+  | DerivationKernelBroadcast
+  | DerivationMvNormal;
 
 // ---------------------------------------------------------------------
 // BindingInfo (engine/analyzer.ts → ParsedModule.bindings entries)
@@ -237,7 +444,7 @@ export interface BindingInfo {
  */
 export interface DerivationsState {
   bindings: Map<string, BindingInfo>;
-  derivations: Record<string, DerivationBase>;
+  derivations: Record<string, Derivation>;
   fixedValues: Map<string, any>;
   discrete: Record<string, boolean>;
 }
