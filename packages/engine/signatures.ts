@@ -29,7 +29,7 @@
 
 const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS } = require('./ir-shared.ts');
 
-function signatureOf(name, bindings) {
+function signatureOf(name: string, bindings: any): any {
   if (!bindings) return null;
   const b = bindings.get(name);
   if (!b) return null;
@@ -50,7 +50,7 @@ function signatureOf(name, bindings) {
   // a body that's itself a measure-op call. Otherwise (or when the
   // body resolution fails) default to function.
   const t = b.inferredType;
-  let kind;
+  let kind: string;
   if (t && t.kind === 'function')      kind = 'function';
   else if (t && t.kind === 'kernel')   kind = 'kernel';
   else if (b.type === 'kernelof')      kind = 'kernel';
@@ -101,7 +101,7 @@ const KNOWN_MEASURE_OPS = new Set([
   // joint / lawof anyway.
 ]);
 
-function bodyImpliesKernel(body, bindings) {
+function bodyImpliesKernel(body: any, bindings: any): boolean {
   if (!body) return false;
   if (body.kind === 'call') {
     if (KNOWN_MEASURE_OPS.has(body.op))                  return true;
@@ -124,7 +124,7 @@ function bodyImpliesKernel(body, bindings) {
 // Returns null if the source can't be resolved (e.g. placeholder
 // without a corresponding elementof binding) — caller falls back
 // to typeinfer's per-call type (typically 'any').
-function resolveSourceType(source, bindings) {
+function resolveSourceType(source: any, bindings: any) {
   if (!source || !bindings) return null;
   const target = bindings.get(source.name);
   if (!target || !target.inferredType) return null;
@@ -142,7 +142,7 @@ function resolveSourceType(source, bindings) {
 // eval has populated fixedValues, so an observation that's a draw
 // / rand result / any other dynamically-computed value works the
 // same as an inline literal.
-function signatureOfLikelihood(b, bindings) {
+function signatureOfLikelihood(b: any, bindings: any): any {
   const ir = b.ir;
   if (!ir || ir.op !== 'likelihoodof' || !Array.isArray(ir.args) || ir.args.length !== 2) {
     return null;
@@ -150,7 +150,7 @@ function signatureOfLikelihood(b, bindings) {
   const Kref  = ir.args[0];
   const obsIR = ir.args[1];
   if (!isSelfRef(Kref) || !bindings.has(Kref.name)) return null;
-  const inner = signatureOf(Kref.name, bindings);
+  const inner: any = signatureOf(Kref.name, bindings);
   if (!inner) return null;
   return {
     kind: 'likelihood',
@@ -184,11 +184,11 @@ function signatureOfLikelihood(b, bindings) {
 //   - leafType:   the scalar / dynamic-array type at the leaf
 //   - source:     paramSources entry for the input (the *whole*
 //                 input — UI may need to drill in for record sources)
-function distributeAxes(signature) {
+function distributeAxes(signature: any) {
   if (!signature || !Array.isArray(signature.inputs)) return [];
   const out: any[] = [];
   for (const input of signature.inputs) {
-    walkType(input.type || null, [], (path, leafType) => {
+    walkType(input.type || null, [], (path: any, leafType: any) => {
       const label = formatAxisLabel(input.kwargName, path);
       out.push({
         key: label,
@@ -203,7 +203,7 @@ function distributeAxes(signature) {
   return out;
 }
 
-function walkType(type, path, emit) {
+function walkType(type: any, path: any[], emit: (p: any[], t: any) => void) {
   if (!type) return;
   if (type.kind === 'scalar') return emit(path, type);
   // Unrestricted placeholder boundaries (`fn(_)` / `_par_ =
@@ -225,7 +225,7 @@ function walkType(type, path, emit) {
     return;
   }
   if (type.kind === 'array' && Array.isArray(type.shape)) {
-    if (type.shape.some(d => d === '%dynamic')) {
+    if (type.shape.some((d: any) => d === '%dynamic')) {
       // Dynamic shape: surface a single axis at this level, marked
       // by leafType so the UI can refuse to plot or ask the user
       // for a concrete shape via a preset.
@@ -238,7 +238,7 @@ function walkType(type, path, emit) {
   // (the UI shouldn't be asked to sweep them).
 }
 
-function walkArraySlots(arrayType, path, emit) {
+function walkArraySlots(arrayType: any, path: any[], emit: (p: any[], t: any) => void) {
   const dims = arrayType.shape;
   let total = 1;
   for (const d of dims) total *= d;
@@ -264,19 +264,19 @@ function walkArraySlots(arrayType, path, emit) {
  * leaves %local refs not in env intact too (defensive — caller
  * should populate env for every param before calling this).
  */
-function substituteLocals(ir, env) {
+function substituteLocals(ir: any, env: any): any {
   if (ir == null || typeof ir !== 'object') return ir;
-  if (Array.isArray(ir)) return ir.map(function(x) { return substituteLocals(x, env); });
+  if (Array.isArray(ir)) return ir.map(function(x: any) { return substituteLocals(x, env); });
   if (ir.kind === 'ref' && ir.ns === '%local'
       && Object.prototype.hasOwnProperty.call(env, ir.name)) {
     return { kind: 'lit', value: env[ir.name], numType: 'real', loc: ir.loc };
   }
-  const out = {};
+  const out: any = {};
   for (const k in ir) out[k] = substituteLocals(ir[k], env);
   return out;
 }
 
-function formatAxisLabel(kwargName, path) {
+function formatAxisLabel(kwargName: string, path: any[]) {
   let s = kwargName || '';
   for (const seg of path) {
     if (typeof seg === 'string')          s += '.' + seg;
@@ -309,10 +309,10 @@ function formatAxisLabel(kwargName, path) {
  * consumes the same path shape to pull the matching sub-IR out
  * of the body.
  */
-function enumerateOutputLeaves(outputType) {
+function enumerateOutputLeaves(outputType: any) {
   if (!outputType) return [];
   const out: any[] = [];
-  walkType(outputType, [], (path, leafType) => {
+  walkType(outputType, [], (path: any, leafType: any) => {
     out.push({
       key: formatAxisLabel('', path) || '<scalar>',
       label: formatAxisLabel('', path),
@@ -340,7 +340,7 @@ function enumerateOutputLeaves(outputType) {
  * doesn't match the type's shape — should never happen on a
  * type-checked module, but defensive).
  */
-function extractOutputIR(bodyIR, path) {
+function extractOutputIR(bodyIR: any, path: any[]) {
   if (!path || path.length === 0) return bodyIR || null;
   let cur = bodyIR;
   for (const seg of path) {
@@ -348,7 +348,7 @@ function extractOutputIR(bodyIR, path) {
     if (typeof seg === 'string') {
       // Record field. body.fields = [{name, value}, …]
       if (!Array.isArray(cur.fields)) return null;
-      const f = cur.fields.find(x => x && x.name === seg);
+      const f = cur.fields.find((x: any) => x && x.name === seg);
       if (!f) return null;
       cur = f.value;
       continue;

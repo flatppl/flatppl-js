@@ -32,20 +32,20 @@ const T = {
   EOF: 'EOF',
 };
 
-function token(type, value, startLine, startCol, endLine, endCol): any {
+function token(type: string, value: any, startLine: number, startCol: number, endLine: number, endCol: number): any {
   return {
     type, value,
     loc: { start: { line: startLine, col: startCol }, end: { line: endLine, col: endCol } },
   };
 }
 
-function isAlpha(ch) { return /[a-zA-Z]/.test(ch); }
-function isDigit(ch) { return /[0-9]/.test(ch); }
-function isHexDigit(ch) { return /[0-9a-fA-F]/.test(ch); }
-function isAlphaNum(ch) { return /[a-zA-Z0-9]/.test(ch); }
-function isIdentStart(ch) { return isAlpha(ch) || ch === '_'; }
-function isIdentChar(ch) { return isAlphaNum(ch) || ch === '_'; }
-function isWhitespace(ch) { return ch === ' ' || ch === '\t' || ch === '\r'; }
+function isAlpha(ch: string) { return /[a-zA-Z]/.test(ch); }
+function isDigit(ch: string) { return /[0-9]/.test(ch); }
+function isHexDigit(ch: string) { return /[0-9a-fA-F]/.test(ch); }
+function isAlphaNum(ch: string) { return /[a-zA-Z0-9]/.test(ch); }
+function isIdentStart(ch: string) { return isAlpha(ch) || ch === '_'; }
+function isIdentChar(ch: string) { return isAlphaNum(ch) || ch === '_'; }
+function isWhitespace(ch: string) { return ch === ' ' || ch === '\t' || ch === '\r'; }
 
 /**
  * Tokenize FlatPPL source text into an array of tokens.
@@ -56,7 +56,7 @@ function isWhitespace(ch) { return ch === ' ' || ch === '\t' || ch === '\r'; }
  * later commits in this series. `variant` is accepted (and ignored)
  * starting now so call sites can pass it without churn.
  */
-function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
+function tokenize(source: string, variant: any) {  // eslint-disable-line no-unused-vars
   const tokens: any[] = [];
   const diagnostics: any[] = [];
   let pos = 0;
@@ -64,13 +64,13 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
   let col = 0;
   let depth = 0; // paren/bracket nesting depth
 
-  function peek(offset) { return source[pos + (offset || 0)] || ''; }
+  function peek(offset: number) { return source[pos + (offset || 0)] || ''; }
   function advance() {
     const ch = source[pos++];
     if (ch === '\n') { line++; col = 0; } else { col++; }
     return ch;
   }
-  function at(offset?) { return pos + (offset || 0) < source.length ? source[pos + (offset || 0)] : ''; }
+  function at(offset?: number) { return pos + (offset || 0) < source.length ? source[pos + (offset || 0)] : ''; }
 
   while (pos < source.length) {
     const startLine = line, startCol = col;
@@ -257,11 +257,11 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
     // the parser, since `(` and identifier-starts are not operator
     // chars below.
     if (ch === '.') {
-      const DOT_OPS_3 = {
+      const DOT_OPS_3: Record<string, string> = {
         '.==': T.EQEQ, '.!=': T.NEQ, '.<=': T.LTE, '.>=': T.GTE,
         '.&&': T.AMPAMP, '.||': T.PIPEPIPE,
       };
-      const DOT_OPS_2 = {
+      const DOT_OPS_2: Record<string, string> = {
         '.<': T.LT, '.>': T.GT, '.+': T.PLUS, '.-': T.MINUS,
         '.*': T.STAR, './': T.SLASH, '.^': T.CARET, '.!': T.BANG,
       };
@@ -280,7 +280,7 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
     }
 
     // Single-character tokens
-    const singleMap = {
+    const singleMap: Record<string, string> = {
       '(': T.LPAREN, ')': T.RPAREN,
       '[': T.LBRACKET, ']': T.RBRACKET,
       ',': T.COMMA, ';': T.SEMI,
