@@ -214,6 +214,26 @@ export interface EmpiricalMeasure {
   dtype?: 'complex' | 'f64';
 }
 
+// ---------------------------------------------------------------------
+// Histogram (engine/histogram.ts)
+// ---------------------------------------------------------------------
+//
+// Output of integerHistogram / freedmanDiaconisHistogram — the two
+// estimators the viewer consumes for sample-mode plots. `reference`
+// discriminates: counting (discrete bars, no binEdges/binWidth) vs
+// lebesgue (continuous bins).
+
+export interface HistogramResult {
+  xs: Float64Array;
+  ys: Float64Array;
+  support: number[];
+  reference: 'counting' | 'lebesgue';
+  /** Bin edges (lebesgue only — length === xs.length + 1). */
+  binEdges?: Float64Array;
+  /** Common bin width (lebesgue only). */
+  binWidth?: number;
+}
+
 // Module — must export something for TS to treat as a module file
 // (otherwise the `declare global` block would be in a script context).
 // All declarations above are already exported; this is harmless.
