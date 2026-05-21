@@ -66,7 +66,7 @@
     }
   }
 
-  function saveState(state) {
+  function saveState(state: any) {
     try {
       if (globalScope.localStorage) {
         globalScope.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -74,7 +74,7 @@
     } catch (_) { /* quota / disabled — ignore */ }
   }
 
-  function clamp(n, lo, hi, fallback) {
+  function clamp(n: any, lo: any, hi: any, fallback: any) {
     if (typeof n !== 'number' || !isFinite(n)) return fallback;
     if (n < lo) return lo;
     if (n > hi) return hi;
@@ -85,7 +85,7 @@
       include drag-handle children, registers click + drag listeners,
       and applies the persisted state. Returns an object with
       { toggleFiles, isCollapsed }. */
-  function install(opts) {
+  function install(opts: any) {
     opts = opts || {};
     var app          = document.getElementById('app');
     var filesPane    = document.getElementById('files-pane');
@@ -107,7 +107,7 @@
     sourcePane.parentNode!.insertBefore(handleFS, sourcePane);
     viewerPane.parentNode!.insertBefore(handleSV, viewerPane);
 
-    function createHandle(id) {
+    function createHandle(id: any) {
       var el = document.createElement('div');
       el.className = 'resize-handle';
       el.dataset.resize = id;
@@ -136,13 +136,13 @@
 
     // Drag handlers.
     [handleFS, handleSV].forEach(function (handle) {
-      handle.addEventListener('mousedown', function (ev) {
+      handle.addEventListener('mousedown', function (ev: any) {
         ev.preventDefault();
         startDrag(handle.dataset.resize, ev.clientX);
       });
     });
 
-    function startDrag(which, startX) {
+    function startDrag(which: any, startX: any) {
       // Capture starting metrics so the drag is purely additive.
       var rect = app!.getBoundingClientRect();
       var totalW = rect.width;
@@ -158,7 +158,7 @@
       var startSourceFrac = state.sourceFrac;
       var startViewerFrac = state.viewerFrac;
 
-      function onMove(mv) {
+      function onMove(mv: any) {
         var dx = mv.clientX - startX;
         if (which === 'files-source' && !state.collapsed) {
           // Adjust the file-pane width directly.

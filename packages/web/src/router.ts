@@ -29,7 +29,7 @@
   function parseHash() {
     var raw = (globalScope.location && globalScope.location.hash) || '';
     if (raw.charAt(0) === '#') raw = raw.slice(1);
-    var out = { model: null, target: null };
+    var out: { model: string | null; target: string | null } = { model: null, target: null };
     if (!raw) return out;
     var parts = raw.split('&');
     for (var i = 0; i < parts.length; i++) {
@@ -46,7 +46,7 @@
   }
 
   /** Serialize { model, target } back to a hash string (no leading #). */
-  function serialize(state) {
+  function serialize(state: any) {
     var parts: string[] = [];
     if (state.model)  parts.push('model=' + encodeURIComponent(state.model));
     if (state.target) parts.push('target=' + encodeURIComponent(state.target));
@@ -60,7 +60,7 @@
    * future router behaviour (e.g. push-vs-replace history entries)
    * has one place to live.
    */
-  function navigateTo(state) {
+  function navigateTo(state: any) {
     var next = serialize(state);
     var current = (globalScope.location.hash || '').replace(/^#/, '');
     if (next === current) return;
@@ -70,7 +70,7 @@
   var changeListeners: Array<(state: any) => void> = [];
 
   /** Register a callback fired on every hash navigation. */
-  function onChange(fn) {
+  function onChange(fn: any) {
     changeListeners.push(fn);
   }
 

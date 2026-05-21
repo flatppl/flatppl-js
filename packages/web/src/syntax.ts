@@ -36,7 +36,7 @@
     'true', 'false', 'True', 'False',
   ]);
 
-  function classifyIdentifier(name, bindings, B) {
+  function classifyIdentifier(name: any, bindings: any, B: any) {
     if (KEYWORD_NAMES.has(name))        return 'tok-keyword';
     if (bindings && bindings.has(name)) return 'tok-ident-binding';
     if (B.isSpecialOperation(name))     return 'tok-special';
@@ -61,7 +61,7 @@
     'TILDE', 'CARET', 'AMPAMP', 'PIPEPIPE', 'BANG',
   ]);
 
-  function classifyToken(tok) {
+  function classifyToken(tok: any) {
     var t = tok.type;
     if (t === 'COMMENT')     return 'tok-comment';
     if (t === 'STRING')      return 'tok-string';
@@ -75,7 +75,7 @@
   // Build a mapping line-index → char offset of that line's start so
   // we can convert the tokenizer's (line, col) positions to source
   // offsets in O(1).
-  function computeLineStarts(src) {
+  function computeLineStarts(src: any) {
     var starts = [0];
     for (var i = 0; i < src.length; i++) {
       if (src.charCodeAt(i) === 10 /* \n */) starts.push(i + 1);
@@ -83,8 +83,8 @@
     return starts;
   }
 
-  function escape(s) {
-    return s.replace(/[&<>]/g, function (ch) {
+  function escape(s: any) {
+    return s.replace(/[&<>]/g, function (ch: any) {
       if (ch === '&') return '&amp;';
       if (ch === '<') return '&lt;';
       if (ch === '>') return '&gt;';
@@ -104,7 +104,7 @@
    *        can target them without re-tokenizing on click.
    * @returns {string} HTML safe to insert via innerHTML
    */
-  function highlight(source, bindings, opts) {
+  function highlight(source: any, bindings: any, opts: any) {
     var FE = globalScope.FlatPPLEngine;
     if (!FE || typeof FE.tokenize !== 'function') {
       // Engine missing — degrade gracefully to escaped raw text so
@@ -122,7 +122,7 @@
     var tokens = tokenizeResult.tokens || [];
     var lineStarts = computeLineStarts(source);
 
-    function offsetOf(line, col) {
+    function offsetOf(line: any, col: any) {
       var ls = lineStarts[line];
       return (typeof ls === 'number' ? ls : 0) + col;
     }
@@ -143,7 +143,7 @@
     // Render token at index `tk` into its classified span. Returns the
     // HTML string; uses `bindings` to decide which idents get the
     // data-binding hook for cross-pane navigation.
-    function renderToken(tok) {
+    function renderToken(tok: any) {
       var start = offsetOf(tok.loc.start.line, tok.loc.start.col);
       var end   = offsetOf(tok.loc.end.line,   tok.loc.end.col);
       var cls, extraAttr = '';

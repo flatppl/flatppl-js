@@ -59,7 +59,7 @@
   // Mirrors syntax.js classifyIdentifier — kept independent so
   // editor.js doesn't depend on syntax.js (which targets the
   // read-only pane). Same logic, different output sink.
-  function classifyIdentifier(name, bindings, B) {
+  function classifyIdentifier(name: any, bindings: any, B: any) {
     if (bindings && bindings.has(name)) return 'tok-ident-binding';
     if (B.isSpecialOperation(name))     return 'tok-special';
     if (B.MEASURE_OPS.has(name))        return 'tok-mop';
@@ -73,7 +73,7 @@
     return 'tok-ident';
   }
 
-  function classifyToken(tok) {
+  function classifyToken(tok: any) {
     var t = tok.type;
     if (t === 'COMMENT')     return 'tok-comment';
     if (t === 'STRING')      return 'tok-string';
@@ -88,7 +88,7 @@
     return 'tok-punct';
   }
 
-  function computeLineStarts(src) {
+  function computeLineStarts(src: any) {
     var starts = [0];
     for (var i = 0; i < src.length; i++) {
       if (src.charCodeAt(i) === 10 /* \n */) starts.push(i + 1);
@@ -96,7 +96,7 @@
     return starts;
   }
 
-  function offsetOf(loc, lineStarts) {
+  function offsetOf(loc: any, lineStarts: any) {
     var ls = lineStarts[loc.line];
     return (typeof ls === 'number' ? ls : 0) + loc.col;
   }
@@ -105,13 +105,13 @@
       bundle so this module doesn't import CodeMirror directly
       (which would force the gallery to depend on it even in
       non-playground mode). */
-  function makeHighlightPlugin(bundle) {
+  function makeHighlightPlugin(bundle: any) {
     var ViewPlugin = bundle.ViewPlugin;
     var Decoration = bundle.Decoration;
     var FE = globalScope.FlatPPLEngine;
     var B = FE && FE.builtins;
 
-    function buildDecorations(view) {
+    function buildDecorations(view: any) {
       if (!FE || !B) return Decoration.none;
       var text = view.state.doc.toString();
       var bindings: Set<unknown> | null = null;
@@ -168,7 +168,7 @@
   /** Build a small EditorView.theme matching the gallery's dark
       palette so the editor blends with the surrounding panes
       instead of importing a separate CodeMirror theme. */
-  function makeTheme(bundle) {
+  function makeTheme(bundle: any) {
     return bundle.EditorView.theme({
       '&': {
         height: '100%',
@@ -195,7 +195,7 @@
     }, { dark: true });
   }
 
-  function mountEditor(container, opts) {
+  function mountEditor(container: any, opts: any) {
     opts = opts || {};
     var bundle = globalScope.FlatPPLEditorBundle;
     if (!bundle) {
@@ -219,7 +219,7 @@
     //   no-op then; selectionSet wouldn't fire). Works equally for
     //   LHS and RHS binding spans — the destination is the LHS in
     //   both cases.
-    function jumpToBindingDefinition(name) {
+    function jumpToBindingDefinition(name: any) {
       var FE = globalScope.FlatPPLEngine;
       if (!FE) return;
       var doc = view.state.doc.toString();
@@ -239,7 +239,7 @@
     }
 
     var domEventHandlers = {
-      mousedown: function (ev) {
+      mousedown: function (ev: any) {
         if (!(ev.ctrlKey || ev.metaKey)) return false;
         var t = ev.target;
         var name: any = null;
@@ -307,7 +307,7 @@
       return null;
     }
 
-    var docChangeListener = bundle.EditorView.updateListener.of(function (u) {
+    var docChangeListener = bundle.EditorView.updateListener.of(function (u: any) {
       if (suppressOnChange) return;
       if (u.docChanged && typeof opts.onChange === 'function') {
         opts.onChange(u.state.doc.toString());
@@ -354,7 +354,7 @@
     var view = new bundle.EditorView({ state: state, parent: container });
 
     return {
-      setSource: function (text) {
+      setSource: function (text: any) {
         if (text === view.state.doc.toString()) return;
         suppressOnChange = true;
         try {
@@ -372,7 +372,7 @@
           line's start. The DAG → source flow (host.revealSourceLine
           on Ctrl-click of a DAG node) lands here in playground
           mode. */
-      revealLine: function (line) {
+      revealLine: function (line: any) {
         var totalLines = view.state.doc.lines;
         // CodeMirror's doc.line() is 1-indexed; the engine and our
         // read-only pane are 0-indexed. Translate + clamp.
@@ -402,7 +402,7 @@
           wherever the user last clicked in the editor) and
           synchronously route a navigateTo to that binding,
           overriding whatever node the viewer actually has focus on. */
-      replaceRange: function (from, to, text) {
+      replaceRange: function (from: any, to: any, text: any) {
         suppressNavigate = true;
         try {
           view.dispatch({
