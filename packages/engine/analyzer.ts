@@ -3,10 +3,10 @@
 const { isKnownName, MEASURE_PRODUCING } = require('./builtins.ts');
 const AST = require('./ast.ts');
 // Lazy require to avoid a circular load (disintegrate requires analyzer).
-let _disintegratePlan = null;
+let _disintegratePlan: ((...a: any[]) => any) | null = null;
 function disintegratePlan(...args) {
   if (!_disintegratePlan) _disintegratePlan = require('./disintegrate.ts').disintegratePlan;
-  return _disintegratePlan(...args);
+  return _disintegratePlan!(...args);
 }
 
 /**
@@ -96,7 +96,7 @@ function validateSpecialOperation(valueNode) {
 
   const name = valueNode.callee.name;
   const args = valueNode.args;
-  const diags = [];
+  const diags: any[] = [];
 
   switch (name) {
     case 'functionof':
@@ -268,7 +268,7 @@ function extractBoundaries(valueNode) {
     const arg = args[i];
     if (arg.type === 'KeywordArg') {
       const argName = arg.name;
-      let varName = null;
+      let varName: string | null = null;
       if (arg.value.type === 'Identifier') {
         varName = arg.value.name;
       } else if (arg.value.type === 'Placeholder') {
@@ -384,7 +384,7 @@ function detectDisintegration(stmt, bindingMap) {
   const jointArg = stmt.value.args[1];
 
   // Parse selector
-  let selectorFields = null;
+  let selectorFields: string[] | null = null;
   if (selectorArg.type === 'StringLiteral') {
     selectorFields = [selectorArg.value];
   } else if (selectorArg.type === 'ArrayLiteral') {
@@ -1022,7 +1022,7 @@ function sliceSource(source, loc) {
  * Used by definition/hover providers to find what's under the cursor.
  */
 function collectIdentRefs(node) {
-  const refs = [];
+  const refs: any[] = [];
   function walk(node) {
     if (!node) return;
     if (node.type === 'Identifier') { refs.push(node); return; }
@@ -1046,10 +1046,10 @@ function collectIdentRefs(node) {
  * @param {string} source - original source text (for expression slicing)
  */
 function analyze(ast, source) {
-  const diagnostics = [];
-  const bindings = new Map();
-  const symbols = [];
-  const definedNames = new Set();
+  const diagnostics: any[] = [];
+  const bindings = new Map<string, any>();
+  const symbols: any[] = [];
+  const definedNames = new Set<string>();
 
   // First pass: collect all defined names
   for (const stmt of ast.body) {
@@ -1152,7 +1152,7 @@ function analyze(ast, source) {
     // Compute the structural-disintegration Plan first; downstream tagging
     // depends on whether the rewriter could resolve the joint structurally.
     const jointBinding = bindings.get(info.jointName);
-    let plan = null;
+    let plan: any = null;
     if (jointBinding && jointBinding.node && jointBinding.node.value) {
       plan = disintegratePlan(
         jointBinding.node.value, info.selectorFields, bindings,
@@ -1474,7 +1474,7 @@ function planBindingRename(ast, bindings, name) {
 }
 
 function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
-  const locs = [];
+  const locs: any[] = [];
   function walk(node) {
     if (!node) return;
     if (node.type === 'Placeholder') {
@@ -1516,7 +1516,7 @@ function planPlaceholderRename(scopeCallExpr, name, targetLoc) {
  * placeholder scope.
  */
 function findCursorTargetInExpr(root, inLoc) {
-  let result = null;
+  let result: any = null;
   function walk(node, scope) {
     if (!node || result) return;
     if (node.type === 'Identifier' && inLoc(node.loc)) {
@@ -1573,7 +1573,7 @@ function findEnclosingRanges(ast, line, col) {
         && (line < loc.end.line || col <= loc.end.col);
   }
 
-  const ranges = []; // outermost first; we'll reverse at the end
+  const ranges: any[] = []; // outermost first; we'll reverse at the end
 
   function walk(node) {
     if (!node) return;
