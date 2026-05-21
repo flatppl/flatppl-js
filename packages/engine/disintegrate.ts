@@ -71,7 +71,7 @@ function normaliseSelector(selectorAst) {
   if (!selectorAst) return null;
   if (selectorAst.type === 'StringLiteral') return [selectorAst.value];
   if (selectorAst.type === 'ArrayLiteral') {
-    const out = [];
+    const out: any[] = [];
     for (const el of selectorAst.elements) {
       if (el.type !== 'StringLiteral') return null;
       out.push(el.value);
@@ -127,7 +127,7 @@ function namedOutputFields(node, bindings, seen?) {
   }
   if (callee === 'relabel') {
     if (node.args.length >= 2 && node.args[1].type === 'ArrayLiteral') {
-      const out = [];
+      const out: any[] = [];
       for (const el of node.args[1].elements) {
         if (el.type === 'StringLiteral') out.push(el.value);
       }
@@ -547,7 +547,7 @@ function jointchainPositional(node, selector, bindings, ctx) {
     if (side.length === 1) return side[0].arg;
     return mkCall('jointchain', side.map(c => c.arg), ctx.source);
   }
-  const priorBoundaryNames = [];
+  const priorBoundaryNames: any[] = [];
   let priorFieldsAllKnown = true;
   for (const c of priorComps) {
     if (c.fields.length === 0) { priorFieldsAllKnown = false; break; }
@@ -599,7 +599,7 @@ function ruleRelabel(node, selector, bindings, ctx) {
   if (namesArg.type !== 'ArrayLiteral') {
     return unsupported('relabel names argument must be an array literal', namesArg);
   }
-  const names = [];
+  const names: any[] = [];
   for (const el of namesArg.elements) {
     if (el.type !== 'StringLiteral') {
       return unsupported('relabel names must be string literals', el);
@@ -633,7 +633,7 @@ function ruleRelabel(node, selector, bindings, ctx) {
     // names (positionally) and recurse.
     const reverseMap = new Map();
     for (let i = 0; i < names.length; i++) reverseMap.set(names[i], innerFields[i]);
-    const translated = [];
+    const translated: any[] = [];
     for (const s of selector) {
       const t = reverseMap.get(s);
       if (t == null) {
