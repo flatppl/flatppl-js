@@ -44,7 +44,7 @@
 // ir-shared, lift, signatures), so the orchestrator's facade
 // re-bind is a one-way edge.
 
-import type { BindingInfo, IRNode } from './engine-types';
+import type { BindingInfo, DerivationBase, IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
@@ -1328,7 +1328,7 @@ const MEASURE_OP_CLASSIFIERS = {
  * has a derivation. Aliases / weighted / normalize just check the
  * target.
  */
-function derivationRefsValid(d: any, derivations: any, bindings: any, fixedValues: any) {
+function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<string, BindingInfo>, fixedValues: any) {
   // A name is "resolvable downstream" if there's a derivation for it
   // (the materialiser knows how to compute samples) OR it has a
   // fixed-phase value the worker resolves through its session env.
