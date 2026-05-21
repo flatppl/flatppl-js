@@ -17,6 +17,15 @@
   "// note5":
     "ambient declarations.",
 
+  "// strict-overrides":
+    "Initial post-migration state — strict: true plus targeted off-",
+  "// strict-overrides.2":
+    "overrides for the two flags with backlog: noImplicitAny (~177",
+  "// strict-overrides.3":
+    "sites) and strictNullChecks (~75 DOM-lookup sites). Each is a",
+  "// strict-overrides.4":
+    "future ratchet, same pattern as the engine's noImplicitAny pass.",
+
   "compilerOptions": {
     "target": "es2020",
     "module": "es2020",
@@ -25,13 +34,12 @@
 
     "noEmit": true,
 
-    "strict": false,
+    "strict": true,
     "noImplicitAny": false,
     "strictNullChecks": false,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "useUnknownInCatchVariables": false,
 
     "esModuleInterop": true,
     "resolveJsonModule": true,

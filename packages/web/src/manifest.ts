@@ -77,7 +77,7 @@
     var response;
     try {
       response = await fetch(url);
-    } catch (e) {
+    } catch (e: any) {
       throw new Error('Network error fetching ' + url + ': ' + (e && e.message || e));
     }
     if (!response.ok) {
@@ -86,7 +86,7 @@
     var text = await response.text();
     var raw;
     try { raw = JSON.parse(text); }
-    catch (e) { throw new Error('Manifest parse error at ' + url + ': ' + e.message); }
+    catch (e: any) { throw new Error('Manifest parse error at ' + url + ': ' + e.message); }
     return normalize(raw);
   }
 

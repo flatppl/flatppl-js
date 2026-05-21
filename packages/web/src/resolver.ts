@@ -42,7 +42,7 @@
     var response;
     try {
       response = await fetch(url);
-    } catch (e) {
+    } catch (e: any) {
       throw new Error('Network error fetching ' + url + ': ' + (e && e.message || e));
     }
     if (!response.ok) {

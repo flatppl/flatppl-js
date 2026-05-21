@@ -187,7 +187,7 @@
       }
       try {
         await window.FlatPPLWebEditor.loadBundle();
-      } catch (e) {
+      } catch (e: any) {
         console.warn('[@flatppl/web] CodeMirror load failed — staying read-only:', e && e.message);
         return;
       }
@@ -692,7 +692,7 @@
       if (titleEl && manifest.title) {
         titleEl.textContent = manifest.title;
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[@flatppl/web] manifest load failed (non-fatal):', err.message);
       manifest = null;
     }
