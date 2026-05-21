@@ -173,7 +173,7 @@ const {
  *   unsupported?: { reason: string },
  * }}
  */
-function buildSampleChain(targetName, bindings) {
+function buildSampleChain(targetName: string, bindings: any) {
   if (!bindings || !bindings.has(targetName)) {
     return { unsupported: { reason: `unknown binding '${targetName}'` } };
   }
@@ -185,7 +185,7 @@ function buildSampleChain(targetName, bindings) {
   // Track per-binding diagnostics so the first hit aborts cleanly.
   let unsupported: { reason: string } | null = null;
 
-  function visit(name) {
+  function visit(name: string) {
     if (unsupported) return;
     if (visited.has(name)) return;
     if (visiting.has(name)) {
@@ -307,7 +307,7 @@ function buildSampleChain(targetName, bindings) {
  *   { kind: 'skip' }              — measure alias; deps walked, no
  *                                    chain step produced for this name
  */
-function classifyForChain(binding, rhsIR, bindings) {
+function classifyForChain(binding: any, rhsIR: any, bindings: any) {
   // Canonicalise lawof / positional-Dirac into Dirac(value=...) so
   // every branch below can reason in a single normalized form.
   rhsIR = normalizeMeasureIR(rhsIR, bindings);
@@ -401,7 +401,7 @@ function classifyForChain(binding, rhsIR, bindings) {
  * @param {Set<string>} seen  cycle guard — names currently being chased
  * @returns {object | null}
  */
-function resolveMeasure(ir, bindings, seen) {
+function resolveMeasure(ir: any, bindings: any, seen: Set<string>): any {
   if (!ir) return null;
   // Canonicalise on the way in: lawof of fixed-phase value and
   // positional-Dirac become Dirac(value=...) so the SAMPLEABLE check

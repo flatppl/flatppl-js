@@ -65,7 +65,7 @@ const lower = require('./lower.ts');
  *                                 was lowered from. Optional only for
  *                                 unit tests; production code always sets it.
  */
-function loweredModule(opts) {
+function loweredModule(opts?: any) {
   opts = opts || {};
   return {
     bindings: new Map(),       // name → LoweredBinding (insertion-ordered)
@@ -81,7 +81,7 @@ function loweredModule(opts) {
  * produced (lifted inline subexpressions, scope-materialised copies)
  * so DAG display can render them differently from user bindings.
  */
-function loweredBinding(name, rhs, opts) {
+function loweredBinding(name: string, rhs: any, opts?: any) {
   opts = opts || {};
   return {
     name,
@@ -110,7 +110,7 @@ function loweredBinding(name, rhs, opts) {
  * @param {Map} parsedBindings - analyzer output, Map<name, BindingInfo>.
  * @returns {object} a LoweredModule.
  */
-function lowerToModule(parsedBindings) {
+function lowerToModule(parsedBindings: Map<string, any>) {
   const m = loweredModule({ source: parsedBindings });
   for (const [name, binding] of parsedBindings) {
     if (!binding.node || !binding.node.value) continue;
@@ -147,12 +147,12 @@ function lowerToModule(parsedBindings) {
 // =====================================================================
 
 /** Whether `expr` is a call to a built-in op named `op`. */
-function isBuiltinCall(expr, op) {
+function isBuiltinCall(expr: any, op: string) {
   return expr && expr.kind === 'call' && expr.op === op;
 }
 
 /** Whether `expr` is a reference. */
-function isRef(expr) {
+function isRef(expr: any) {
   return expr && expr.kind === 'ref';
 }
 
@@ -161,7 +161,7 @@ function isRef(expr) {
  * the call node; return value is ignored. Used by inference passes that
  * need to annotate every call with meta, not just the outermost.
  */
-function walkCalls(expr, visit) {
+function walkCalls(expr: any, visit: (e: any) => void) {
   if (!expr || typeof expr !== 'object') return;
   if (expr.kind === 'call') {
     if (expr.args)   for (const a of expr.args) walkCalls(a, visit);
@@ -177,7 +177,7 @@ function walkCalls(expr, visit) {
  * if not already present. Mirrors FlatPIR's (%meta type phase) where
  * each slot may be %deferred, a concrete value, or (%failed reason).
  */
-function setMeta(expr, type, phase) {
+function setMeta(expr: any, type: any, phase: any) {
   if (!expr.meta) expr.meta = {};
   if (type  != null) expr.meta.type  = type;
   if (phase != null) expr.meta.phase = phase;

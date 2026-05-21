@@ -43,7 +43,7 @@
  * @param {number} [opts.maxBins=200]
  * @param {number} [opts.minBins=8]
  */
-function freedmanDiaconisHistogram(samples, opts: { logWeights?: any; trimQ?: number; minBins?: number; maxBins?: number; [k: string]: any } = {}) {
+function freedmanDiaconisHistogram(samples: ArrayLike<number>, opts: { logWeights?: any; trimQ?: number; minBins?: number; maxBins?: number; [k: string]: any } = {}) {
   const n = samples.length;
   if (n === 0) {
     return {
@@ -60,7 +60,8 @@ function freedmanDiaconisHistogram(samples, opts: { logWeights?: any; trimQ?: nu
   // indices by value. For unweighted: sort the values directly (no
   // weight bookkeeping needed). Quantile lookups happen against the
   // sorted view in both cases.
-  let sorted, sortedW;
+  let sorted: Float64Array;
+  let sortedW: Float64Array | undefined;
   if (weighted) {
     const norm = normaliseWeights(lw);
     const idx = new Int32Array(n);
@@ -81,8 +82,8 @@ function freedmanDiaconisHistogram(samples, opts: { logWeights?: any; trimQ?: nu
 
   const trimQ = opts.trimQ != null ? opts.trimQ : 0.005;
   const qFn = weighted
-    ? (q) => weightedQuantileSorted(sorted, sortedW, q)
-    : (q) => quantileSorted(sorted, q);
+    ? (q: number) => weightedQuantileSorted(sorted, sortedW!, q)
+    : (q: number) => quantileSorted(sorted, q);
   const lo = qFn(trimQ);
   const hi = qFn(1 - trimQ);
   if (!(hi > lo)) {
@@ -178,7 +179,7 @@ function freedmanDiaconisHistogram(samples, opts: { logWeights?: any; trimQ?: nu
  * @param {object} [opts]
  * @param {Float64Array} [opts.logWeights]
  */
-function integerHistogram(samples, opts: { logWeights?: any; [k: string]: any } = {}) {
+function integerHistogram(samples: ArrayLike<number>, opts: { logWeights?: any; [k: string]: any } = {}) {
   const n = samples.length;
   if (n === 0) {
     return { xs: new Float64Array(0), ys: new Float64Array(0), support: [0, 0], reference: 'counting' };
@@ -231,7 +232,7 @@ function integerHistogram(samples, opts: { logWeights?: any; [k: string]: any } 
  * a stack. The duplication with empirical.logSumExp's stability trick
  * is small (~10 lines) and lets the two modules evolve independently.
  */
-function normaliseWeights(logWeights) {
+function normaliseWeights(logWeights: ArrayLike<number>) {
   const n = logWeights.length;
   if (n === 0) return new Float64Array(0);
   let max = logWeights[0];
@@ -266,7 +267,7 @@ function normaliseWeights(logWeights) {
  * normaliseWeights produces the per-atom weights in the original
  * order; sort with index indirection to preserve the pairing.
  */
-function weightedQuantileSorted(sortedSamples, sortedNormWeights, q) {
+function weightedQuantileSorted(sortedSamples: ArrayLike<number>, sortedNormWeights: ArrayLike<number>, q: number) {
   const n = sortedSamples.length;
   if (n === 0) return NaN;
   if (n === 1) return sortedSamples[0];
@@ -291,7 +292,7 @@ function weightedQuantileSorted(sortedSamples, sortedNormWeights, q) {
  * Sorted-array quantile via linear interpolation. Caller passes an
  * already-sorted typed array.
  */
-function quantileSorted(sorted, q) {
+function quantileSorted(sorted: ArrayLike<number>, q: number) {
   const n = sorted.length;
   if (n === 0) return NaN;
   if (n === 1) return sorted[0];
@@ -302,7 +303,7 @@ function quantileSorted(sorted, q) {
   return sorted[i] * (1 - f) + sorted[i + 1] * f;
 }
 
-function meanSd(samples) {
+function meanSd(samples: ArrayLike<number>) {
   const n = samples.length;
   if (n === 0) return { mean: NaN, sd: NaN };
   let s = 0;
