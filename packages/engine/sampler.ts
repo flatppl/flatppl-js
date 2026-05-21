@@ -64,6 +64,8 @@
 // boundary — the IR keeps the spec names, the sampler's stdlib calls use
 // the translated names. See `PARAM_TRANSLATION` below for the full table.
 
+import type { IRNode } from './engine-types';
+
 const rng = require('./rng.ts');
 const valueLib = require('./value.ts');
 const valueOps = require('./value-ops.ts');
@@ -993,7 +995,7 @@ function density(measureIR: any, env: any, opts: any) {
  * forms it doesn't understand — those need the orchestrator to provide
  * pre-resolved values in env.
  */
-function evaluateExpr(ir: any, env: any): any {
+function evaluateExpr(ir: IRNode, env: any): any {
   switch (ir.kind) {
     case 'lit':
       return ir.value;
@@ -1041,7 +1043,7 @@ function evaluateExpr(ir: any, env: any): any {
 // (vector/matrix/record builders typically take atom-indep inputs);
 // future batched-non-scalar rewrites would eliminate the fallback.
 
-function evaluateExprN(ir: any, refArrays: any, count: any, baseEnv: any, opts: any) {
+function evaluateExprN(ir: IRNode, refArrays: any, count: any, baseEnv: any, opts: any) {
   const N = count | 0;
   if (N <= 0) throw new Error('evaluateExprN: count must be positive');
   const overlay = (opts && opts.overlay) || null;
