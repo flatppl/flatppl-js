@@ -153,15 +153,15 @@
     }
 
     return ViewPlugin.fromClass(
-      function (view) {
+      function (this: any, view: any) {
         this.decorations = buildDecorations(view);
-        this.update = function (u) {
+        this.update = function (this: any, u: any) {
           if (u.docChanged || u.viewportChanged) {
             this.decorations = buildDecorations(u.view);
           }
         };
       },
-      { decorations: function (v) { return v.decorations; } }
+      { decorations: function (v: any) { return v.decorations; } }
     );
   }
 
