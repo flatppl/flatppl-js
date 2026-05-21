@@ -74,7 +74,7 @@ const valueLib     = require('./value.ts');
  * independent so two unrelated bindings stay independent regardless
  * of which the user materialises first.
  */
-function nameSeed(name, rootSeed) {
+function nameSeed(name: any, rootSeed: any) {
   let h = 2166136261;
   for (let i = 0; i < name.length; i++) {
     h = h ^ name.charCodeAt(i);
@@ -88,7 +88,7 @@ function nameSeed(name, rootSeed) {
  * shape empirical.systematicResample / multinomialResample expect.
  * One closure per call; the state mutates internally.
  */
-function makeMainThreadPrng(seed) {
+function makeMainThreadPrng(seed: any) {
   let state = rng.stateFromKey(seed);
   return function () {
     const pair = rng.nextUniform(state);
@@ -104,7 +104,7 @@ function makeMainThreadPrng(seed) {
  * flow through the worker's session env, NOT refArrays (which would
  * try to slice them per-atom and feed the worker an undefined entry).
  */
-function collectRefArrays(ir, fixedValues, getMeasure) {
+function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
   const refs = orchestrator.collectSelfRefs(ir);
   const names: string[] = [];
   refs.forEach((n: string) => {
@@ -146,7 +146,7 @@ function collectRefArrays(ir, fixedValues, getMeasure) {
  * Returns null for shapes we can't surface (rngstate, opaque
  * objects); the caller falls through to derivation-based dispatch.
  */
-function fixedValueToMeasure(v, sampleCount) {
+function fixedValueToMeasure(v: any, sampleCount: any) {
   if (typeof v === 'number' && Number.isFinite(v)) {
     const arr = new Float64Array(sampleCount);
     arr.fill(v);
@@ -203,7 +203,7 @@ function fixedValueToMeasure(v, sampleCount) {
  * the first element's length for tuples, 0 for empty. Used by per-kind
  * handlers that need to allocate a sibling array of the same length.
  */
-function measureN(m) {
+function measureN(m: any) {
   if (!m) return 0;
   if (m.samples) return m.samples.length;
   if (m.fields) {
@@ -231,11 +231,11 @@ function measureN(m) {
  * back to building one from `.samples` and `.dims` (works for
  * pre-migration handlers).
  */
-function valueOf(m) {
+function valueOf(m: any) {
   if (!m) return null;
   if (m.value != null) return m.value;
   if (!m.samples) return null;
-  const N = m.samples.length / (m.dims ? m.dims.reduce((a, b) => a * b, 1) : 1);
+  const N = m.samples.length / (m.dims ? m.dims.reduce((a: any, b: any) => a * b, 1) : 1);
   const shape = m.dims ? [N | 0].concat(m.dims) : [m.samples.length];
   return { shape: shape, data: m.samples };
 }
@@ -246,7 +246,7 @@ function valueOf(m) {
  * `measureFromValue(batchedScalar(samples), extras)` — the most common
  * call shape in the handler migrations.
  */
-function scalarMeasureN(samples, extras) {
+function scalarMeasureN(samples: any, extras: any) {
   return measureFromValue(valueLib.batchedScalar(samples), extras);
 }
 
@@ -262,7 +262,7 @@ function scalarMeasureN(samples, extras) {
  *   measureFromValue({shape: [N, k], data: …})        → k-vector-atom Measure
  *   measureFromValue({shape: [N, m, n], data: …})     → matrix-atom Measure
  */
-function measureFromValue(v, extras) {
+function measureFromValue(v: any, extras: any) {
   if (!valueLib.isValue(v)) {
     throw new Error('measureFromValue: argument is not a Value');
   }
@@ -311,7 +311,7 @@ function measureFromValue(v, extras) {
  * with `reply.samples` into a planar complex Value; `reply.dims`
  * (present for vector-output ops) becomes the per-atom shape.
  */
-function measureFromReply(reply, count, extras) {
+function measureFromReply(reply: any, count: any, extras: any) {
   const dims = reply.dims;
   const shape = dims ? [count | 0].concat(dims) : [reply.samples.length];
   const v = reply.imag
@@ -324,7 +324,7 @@ function measureFromReply(reply, count, extras) {
 // Per-kind handlers
 // =====================================================================
 
-function matSample(name, d, ctx) {
+function matSample(name: any, d: any, ctx: any) {
   return collectRefArrays(d.distIR, ctx.fixedValues, ctx.getMeasure)
     .then((refArrays) => ctx.sendWorker({
       type: 'sampleN',
@@ -346,21 +346,21 @@ function matSample(name, d, ctx) {
     });
 }
 
-function matAlias(d, ctx) {
+function matAlias(d: any, ctx: any) {
   // Alias: same measure record — reference equality is intentional so
   // click-flipping between a variate and its measure is free, and the
   // shared logWeights ref preserves propagateLogWeights's dedupe contract.
   return ctx.getMeasure(d.from);
 }
 
-function matEvaluate(d, ctx) {
+function matEvaluate(d: any, ctx: any) {
   // Deterministic transform of variates. Per-atom: c_i = f(parents_i).
   // logWeights propagate via joint IS (sum independent events, dedupe
   // shared via reference identity). logTotalmass follows from the
   // resulting logWeights; n_eff is min(parents') as a fast bound.
   const refs = orchestrator.collectSelfRefs(d.ir);
   const parentNames: string[] = [];
-  refs.forEach((n) => {
+  refs.forEach((n: any) => {
     if (ctx.fixedValues && ctx.fixedValues.has(n)) return;
     parentNames.push(n);
   });
@@ -386,7 +386,7 @@ function matEvaluate(d, ctx) {
       ir: d.ir,
       count: ctx.sampleCount,
       refArrays: refArrays,
-    }).then((reply) => {
+    }).then((reply: any) => {
       const lw = empirical.propagateLogWeights(parentMeasures);
       let n_eff = ctx.sampleCount;
       for (const p of parentMeasures) {
@@ -415,7 +415,7 @@ function matEvaluate(d, ctx) {
 // density / sample dispatch time. matLogdensityof / matBayesupdate use
 // this to filter such refs out of their "materialise the parents"
 // pre-pass; the parents that ARE values still need materialising.
-function isFunctionLikeBinding(binding) {
+function isFunctionLikeBinding(binding: any) {
   if (!binding) return false;
   switch (binding.type) {
     case 'fn':
@@ -428,7 +428,7 @@ function isFunctionLikeBinding(binding) {
   }
 }
 
-function matPushfwd(name, d, ctx) {
+function matPushfwd(name: any, d: any, ctx: any) {
   // pushfwd(f, M): the pushforward of M through function f. Per spec
   // §06, samples are { f(x) : x ~ M }. We get M's samples via the
   // recursive getMeasure, then run one batched evaluateN over f's
@@ -448,7 +448,7 @@ function matPushfwd(name, d, ctx) {
     return Promise.reject(new Error(`pushfwd: function binding '${d.fnRef}' has no callable body`
       + ` (type=${fBinding.type})`));
   }
-  return ctx.getMeasure(d.from).then((M) => {
+  return ctx.getMeasure(d.from).then((M: any) => {
     if (!M.samples) {
       return Promise.reject(new Error(`pushfwd: base measure '${d.from}' is not scalar `
         + `(record/tuple/iid not yet supported for first-class pushfwd materialisation)`));
@@ -458,7 +458,7 @@ function matPushfwd(name, d, ctx) {
       ir: fnInfo.body,
       count: M.samples.length,
       refArrays: { [fnInfo.paramName]: M.samples },
-    }).then((reply) => {
+    }).then((reply: any) => {
       return measureFromReply(reply, M.samples.length, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
@@ -475,7 +475,7 @@ function matPushfwd(name, d, ctx) {
 // preserves the inner function); we follow that ref to the actual
 // function binding's body. Returns { body, paramName } or null when
 // the binding isn't function-shaped.
-function resolveFnBody(binding, bindings) {
+function resolveFnBody(binding: any, bindings: any) {
   if (!binding) return null;
   if (binding.type === 'bijection') {
     // The bijection's first arg is the forward function f. Follow
@@ -499,7 +499,7 @@ function resolveFnBody(binding, bindings) {
   return { body: binding.ir.body, paramName: params[0] };
 }
 
-function matArray(d) {
+function matArray(d: any) {
   // Static array literal — values verbatim, no sampling, no worker
   // round-trip. Length equals the array's literal length, NOT the
   // sample count; downstream plot dispatches by mode for this kind.
@@ -511,12 +511,12 @@ function matArray(d) {
   }));
 }
 
-function matWeighted(d, ctx) {
+function matWeighted(d: any, ctx: any) {
   // weighted(w, base) / logweighted(lw, base): shift each parent
   // atom's logWeight by log(w_i) (or lw_i directly). totalmass scales
   // by the average weight; the empirical log-total-mass is
   // logSumExp(resulting logWeights).
-  return ctx.getMeasure(d.from).then((parent) => {
+  return ctx.getMeasure(d.from).then((parent: any) => {
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
     const w = new Float64Array(N);
@@ -568,9 +568,9 @@ function matWeighted(d, ctx) {
   });
 }
 
-function matNormalize(d, ctx) {
+function matNormalize(d: any, ctx: any) {
   // normalize(base): shift weights so they sum to 1 (logTotalmass = 0).
-  return ctx.getMeasure(d.from).then((parent) => {
+  return ctx.getMeasure(d.from).then((parent: any) => {
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
     const lse = empirical.logSumExp(lifted.logWeights);
@@ -582,7 +582,7 @@ function matNormalize(d, ctx) {
   });
 }
 
-function matIid(name, d, ctx) {
+function matIid(name: any, d: any, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. The worker's sampleN takes an optional repeat=k.
   // Parameters are pinned per atom (refArrays), so iid samples within
@@ -595,7 +595,7 @@ function matIid(name, d, ctx) {
   if (!distIR) {
     return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
   }
-  const k = d.dims.reduce((p, n) => p * n, 1);
+  const k = d.dims.reduce((p: any, n: any) => p * n, 1);
   return collectRefArrays(distIR, ctx.fixedValues, ctx.getMeasure)
     .then((refArrays) => ctx.sendWorker({
       type: 'sampleN', ir: distIR, count: ctx.sampleCount, repeat: k,
@@ -616,7 +616,7 @@ function matIid(name, d, ctx) {
     });
 }
 
-function matKernelBroadcast(name, d, ctx) {
+function matKernelBroadcast(name: any, d: any, ctx: any) {
   // broadcast(Dist, c1, c2, …) — array-valued independent-product
   // measure (spec §04). Element j of every atom is drawn from
   // Dist(params_j), where params_j is the j-th element of each
@@ -681,7 +681,7 @@ function matKernelBroadcast(name, d, ctx) {
   }
   const N = ctx.sampleCount;
   // j-th element of a collection arg (scalar / length-1 → broadcast).
-  const elemAt = (v, j) => {
+  const elemAt = (v: any, j: any) => {
     const len = v.shape.length === 0 ? 1 : v.shape[0];
     return v.data[len === 1 ? 0 : j];
   };
@@ -718,7 +718,7 @@ function matKernelBroadcast(name, d, ctx) {
     return ctx.sendWorker({
       type: 'sampleN', ir: stdNormalIR, count: N, repeat: K,
       refArrays: {}, seed: nameSeed(name, ctx.rootSeed),
-    }).then((reply) => {
+    }).then((reply: any) => {
       const z = { shape: [N, K], data: reply.samples };     // [N,K] atom-major
       const Lz = valueOps.mulN(L, z, N);                     // diag·z, O(N·n)
       const result = valueOps.addN({ shape: [K], data: muVec }, Lz, N);
@@ -735,7 +735,7 @@ function matKernelBroadcast(name, d, ctx) {
   for (let j = 0; j < K; j++) {
     const jj = j;
     chain = chain.then(() => {
-      const kwargs = {};
+      const kwargs: Record<string, any> = {};
       for (const pn of pnames) {
         kwargs[pn] = { kind: 'lit', value: elemAt(srcByParam[pn], jj) };
       }
@@ -744,7 +744,7 @@ function matKernelBroadcast(name, d, ctx) {
         type: 'sampleN', ir: distIR, count: N,
         refArrays: {},
         seed: nameSeed(name + ':' + jj, ctx.rootSeed),
-      }).then((reply) => { cols[jj] = reply.samples; });
+      }).then((reply: any) => { cols[jj] = reply.samples; });
     });
   }
   return chain.then(() => {
@@ -762,7 +762,7 @@ function matKernelBroadcast(name, d, ctx) {
   });
 }
 
-function matTuple(d, ctx) {
+function matTuple(d: any, ctx: any) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
   // in elems. Top-level logWeights is the join of components'
@@ -782,7 +782,7 @@ function matTuple(d, ctx) {
   });
 }
 
-function matRecord(d, ctx) {
+function matRecord(d: any, ctx: any) {
   // Multivariate (record / joint): each field's source binding gets
   // materialised; assembled into a record-shaped Measure (SoA — one
   // sub-measure per field). Top-level logWeights is the join across
@@ -807,7 +807,7 @@ function matRecord(d, ctx) {
   });
 }
 
-function matSuperpose(name, d, ctx) {
+function matSuperpose(name: any, d: any, ctx: any) {
   // Superpose: concat parents' samples + logWeights, systematic-
   // resample to ctx.sampleCount. Mass-faithful: result's totalmass
   // equals the sum of parents' totalmasses (logSumExp of their
@@ -850,7 +850,7 @@ function matSuperpose(name, d, ctx) {
   });
 }
 
-function matSelect(name, d, ctx) {
+function matSelect(name: any, d: any, ctx: any) {
   // Discrete-selector mixture generation (engine-concepts §11): the
   // SAMPLING half of the shared select core (density is walkSelect).
   // Eval-all-branches-then-gather — draw every branch's full N-atom
@@ -883,7 +883,7 @@ function matSelect(name, d, ctx) {
   // Each branch is a named measure binding ({ ref }) or an inline
   // sampleable-distribution leaf ({ ir }); sample the latter directly
   // via the worker (the matSample path) — no binding to fetch.
-  const branchP = branchEntries.map((b, bi) => {
+  const branchP = branchEntries.map((b: any, bi: any) => {
     if (b && b.ref != null) return ctx.getMeasure(b.ref);
     return collectRefArrays(b.ir, ctx.fixedValues, ctx.getMeasure)
       .then((refArrays) => ctx.sendWorker({
@@ -922,7 +922,7 @@ function matSelect(name, d, ctx) {
   });
 }
 
-function matBayesupdate(d, ctx) {
+function matBayesupdate(d: any, ctx: any) {
   // Reweight the prior atoms by per-atom log-likelihood. Per spec:
   //   posterior = bayesupdate(L, prior),  L = likelihoodof(K, obs)
   // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs).
@@ -934,7 +934,7 @@ function matBayesupdate(d, ctx) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
   const valueRefs: string[] = [];
-  orchestrator.collectSelfRefs(bodyIR).forEach((n) => {
+  orchestrator.collectSelfRefs(bodyIR).forEach((n: any) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     valueRefs.push(n);
   });
@@ -960,7 +960,7 @@ function matBayesupdate(d, ctx) {
         refArrays: refArrays,
         observed: observed,
         tally: 'clamped',
-      }).then((reply) => {
+      }).then((reply: any) => {
         const N = measureN(parent);
         const existingLW = parent.logWeights;
         const uniformLW = -Math.log(N);
@@ -992,7 +992,7 @@ function matBayesupdate(d, ctx) {
  * materialiser's filter-only fallback path; returns null for set
  * kinds the materialiser doesn't yet support (integers / booleans).
  */
-function setBoundsForMat(setDescr) {
+function setBoundsForMat(setDescr: any) {
   if (!setDescr) return null;
   switch (setDescr.kind) {
     case 'interval':    return [+setDescr.lo, +setDescr.hi];
@@ -1035,8 +1035,8 @@ function setBoundsForMat(setDescr) {
  * to 1000). Configurable per host: the VS Code extension exposes it
  * as a setting; the web gallery uses the default.
  */
-function matTruncate(d, ctx) {
-  return ctx.getMeasure(d.from).then((parent) => {
+function matTruncate(d: any, ctx: any) {
+  return ctx.getMeasure(d.from).then((parent: any) => {
     const N = ctx.sampleCount;
     const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
     const bounds = setBoundsForMat(d.setDescr);
@@ -1065,7 +1065,7 @@ function matTruncate(d, ctx) {
           count: N,
           mode: 'cdf',
           seed: seed,
-        }).then((reply) => scalarMeasureN(reply.samples, {
+        }).then((reply: any) => scalarMeasureN(reply.samples, {
           logWeights: null,
           logTotalmass: parentLTM + reply.logShift,
           n_eff: reply.n_eff,
@@ -1175,7 +1175,7 @@ function matTruncate(d, ctx) {
   });
 }
 
-function matTotalmass(d, ctx) {
+function matTotalmass(d: any, ctx: any) {
   // totalmass(M): per spec §06, scalar mass of a (possibly
   // unnormalized) measure. The orchestrator tracks each measure's
   // logTotalmass through every materialisation step (algebraic
@@ -1184,7 +1184,7 @@ function matTotalmass(d, ctx) {
   // exposes that as a per-atom scalar value — broadcast since we
   // track a single ensemble logTotalmass per measure today; per-atom
   // tracking is a separate refinement.
-  return ctx.getMeasure(d.measureName).then((m) => {
+  return ctx.getMeasure(d.measureName).then((m: any) => {
     const N = ctx.sampleCount;
     const tm = Math.exp(typeof m.logTotalmass === 'number' ? m.logTotalmass : 0);
     const samples = new Float64Array(N);
@@ -1197,7 +1197,7 @@ function matTotalmass(d, ctx) {
   });
 }
 
-function matMvNormal(name, d, ctx) {
+function matMvNormal(name: any, d: any, ctx: any) {
   // Phase 6 of the shape-explicit refactor.
   //
   // MvNormal(mu, cov) — per spec §08, samples are n-vectors with
@@ -1269,7 +1269,7 @@ function matMvNormal(name, d, ctx) {
     type: 'sampleN', ir: stdNormalIR, count: N, repeat: n,
     refArrays: {},
     seed: nameSeed(name, ctx.rootSeed),
-  }).then((reply) => {
+  }).then((reply: any) => {
     // z is shape=[N, n] atom-major. Build the Value.
     const z = { shape: [N, n], data: reply.samples };
     // L * z: shape=[N, n] (per-atom matvec via mulN). Then add mu
@@ -1297,7 +1297,7 @@ function matMvNormal(name, d, ctx) {
 // materialisation instead of by classify. Generic deep walk over all
 // object/array child slots so it finds selects nested anywhere
 // (branches, weighted/normalize wrappers, jointchain steps, …).
-function collectRuntimeWeightNodes(node, out, seen) {
+function collectRuntimeWeightNodes(node: any, out: any, seen: any) {
   if (!node || typeof node !== 'object') return;
   if (seen.has(node)) return;
   seen.add(node);
@@ -1328,14 +1328,14 @@ function collectRuntimeWeightNodes(node, out, seen) {
 // ensemble-reduction weights" capability — MC-weight ifelse is its
 // first consumer; future ensemble-weighted selects reuse it
 // unchanged.
-function resolveRuntimeWeights(measureIR, ctx) {
+function resolveRuntimeWeights(measureIR: any, ctx: any) {
   const nodes: any[] = [];
   collectRuntimeWeightNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return Promise.resolve(measureIR);
   const refNames = Array.from(new Set(nodes.map((n) => n.weightsFrom.ref)));
   return Promise.all(refNames.map(ctx.getMeasure)).then((measures) => {
-    const byName = {};
-    refNames.forEach((nm, i) => { byName[nm] = measures[i]; });
+    const byName: Record<string, any> = {};
+    refNames.forEach((nm: string, i: number) => { byName[nm] = measures[i]; });
     for (const node of nodes) {
       const spec = node.weightsFrom;
       const M = byName[spec.ref];
@@ -1374,7 +1374,7 @@ function resolveRuntimeWeights(measureIR, ctx) {
   });
 }
 
-function matLogdensityof(d, ctx) {
+function matLogdensityof(d: any, ctx: any) {
   // Per spec §sec:posterior: broadcast logdensityof over prior atoms.
   // For each atom i of M, evaluate logp(obs | M_i). Produces a per-i
   // value (a scalar binding) — no logWeights, no totalmass mutation.
@@ -1411,7 +1411,7 @@ function matLogdensityof(d, ctx) {
   return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
   const valueRefs: string[] = [];
   const fixedRefs: any[] = [];
-  orchestrator.collectSelfRefs(measureIR).forEach((n) => {
+  orchestrator.collectSelfRefs(measureIR).forEach((n: any) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     // Walker-threaded names: a ref that is neither a binding nor a
     // fixed value is a synthetic joint step-variate name introduced by
@@ -1498,7 +1498,7 @@ function matLogdensityof(d, ctx) {
     // host-provided session env.
     let setEnvP = Promise.resolve();
     if (fixedRefs.length > 0) {
-      const fixedEnv = {};
+      const fixedEnv: Record<string, any> = {};
       for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
       setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
     }
@@ -1533,7 +1533,7 @@ function matLogdensityof(d, ctx) {
   });
 }
 
-function matBroadcastLogdensity(d, ctx) {
+function matBroadcastLogdensity(d: any, ctx: any) {
   // broadcast(logdensityof, M, pts) = [logdensityof(M, p) ∀ p∈pts].
   //
   // FAST PATH (engine-concepts §11/§12; flatppl-js is the EAGER
@@ -1591,7 +1591,7 @@ function matBroadcastLogdensity(d, ctx) {
   if (batchable) {
     let setEnvP = Promise.resolve();
     if (fixedRefs.length > 0) {
-      const fixedEnv = {};
+      const fixedEnv: Record<string, any> = {};
       for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
       setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
     }
@@ -1635,33 +1635,33 @@ function matBroadcastLogdensity(d, ctx) {
 // =====================================================================
 
 const KIND_HANDLERS = {
-  alias:        (name, d, ctx) => matAlias(d, ctx),
-  sample:       (name, d, ctx) => matSample(name, d, ctx),
-  evaluate:     (name, d, ctx) => matEvaluate(d, ctx),
-  array:        (name, d) =>      matArray(d),
-  weighted:     (name, d, ctx) => matWeighted(d, ctx),
-  normalize:    (name, d, ctx) => matNormalize(d, ctx),
-  iid:          (name, d, ctx) => matIid(name, d, ctx),
-  kernelbroadcast: (name, d, ctx) => matKernelBroadcast(name, d, ctx),
-  broadcast_logdensity: (name, d, ctx) => matBroadcastLogdensity(d, ctx),
-  tuple:        (name, d, ctx) => matTuple(d, ctx),
-  record:       (name, d, ctx) => matRecord(d, ctx),
-  superpose:    (name, d, ctx) => matSuperpose(name, d, ctx),
-  select:       (name, d, ctx) => matSelect(name, d, ctx),
-  bayesupdate:  (name, d, ctx) => matBayesupdate(d, ctx),
-  logdensityof: (name, d, ctx) => matLogdensityof(d, ctx),
-  totalmass:    (name, d, ctx) => matTotalmass(d, ctx),
-  truncate:     (name, d, ctx) => matTruncate(d, ctx),
-  pushfwd:      (name, d, ctx) => matPushfwd(name, d, ctx),
-  mvnormal:     (name, d, ctx) => matMvNormal(name, d, ctx),
+  alias:        (name: any, d: any, ctx: any) => matAlias(d, ctx),
+  sample:       (name: any, d: any, ctx: any) => matSample(name, d, ctx),
+  evaluate:     (name: any, d: any, ctx: any) => matEvaluate(d, ctx),
+  array:        (name: any, d: any) =>      matArray(d),
+  weighted:     (name: any, d: any, ctx: any) => matWeighted(d, ctx),
+  normalize:    (name: any, d: any, ctx: any) => matNormalize(d, ctx),
+  iid:          (name: any, d: any, ctx: any) => matIid(name, d, ctx),
+  kernelbroadcast: (name: any, d: any, ctx: any) => matKernelBroadcast(name, d, ctx),
+  broadcast_logdensity: (name: any, d: any, ctx: any) => matBroadcastLogdensity(d, ctx),
+  tuple:        (name: any, d: any, ctx: any) => matTuple(d, ctx),
+  record:       (name: any, d: any, ctx: any) => matRecord(d, ctx),
+  superpose:    (name: any, d: any, ctx: any) => matSuperpose(name, d, ctx),
+  select:       (name: any, d: any, ctx: any) => matSelect(name, d, ctx),
+  bayesupdate:  (name: any, d: any, ctx: any) => matBayesupdate(d, ctx),
+  logdensityof: (name: any, d: any, ctx: any) => matLogdensityof(d, ctx),
+  totalmass:    (name: any, d: any, ctx: any) => matTotalmass(d, ctx),
+  truncate:     (name: any, d: any, ctx: any) => matTruncate(d, ctx),
+  pushfwd:      (name: any, d: any, ctx: any) => matPushfwd(name, d, ctx),
+  mvnormal:     (name: any, d: any, ctx: any) => matMvNormal(name, d, ctx),
   // jointchain/kchain first-class kind (the only path; legacy
   // inlineChainOps deleted). matJointchain samples the base then
   // applies each kernel step structurally; marginalize ⇒ keep only
   // the last step's variate(s).
-  jointchain:   (name, d, ctx) => matJointchain(name, d, ctx),
+  jointchain:   (name: any, d: any, ctx: any) => matJointchain(name, d, ctx),
 };
 
-function matJointchain(name, d, ctx) {
+function matJointchain(name: any, d: any, ctx: any) {
   // First-class jointchain/kchain materialisation (consume/rest
   // consolidation step 2b). Mirrors the spec §06 stochastic-node
   // equivalence WITHOUT the inlineChainOps AST rewrite:
@@ -1714,7 +1714,7 @@ function matJointchain(name, d, ctx) {
     : ctx.sendWorker({
         type: 'sampleN', ir: base.measureIR, count: ctx.sampleCount,
         refArrays: {}, seed: nameSeed(name + ':jc0', ctx.rootSeed),
-      }).then((r) => measureFromReply(r, ctx.sampleCount,
+      }).then((r: any) => measureFromReply(r, ctx.sampleCount,
         { logTotalmass: 0, n_eff: ctx.sampleCount }));
 
   return Promise.resolve(baseP).then((M0) => {
@@ -1741,7 +1741,7 @@ function matJointchain(name, d, ctx) {
     // contributes one leaf per field, a leaf-dist body one unnamed
     // leaf. One nesting level (the obs_dist=joint(y=Normal) shape);
     // deeper composites are a clean follow-up.
-    const kernelLeaves = (kstep, fallbackName) => {
+    const kernelLeaves = (kstep: any, fallbackName: any) => {
       let f = kstep.kernelIR;
       if (!f && kstep.ref != null) {
         const kb = ctx.bindings && ctx.bindings.get(kstep.ref);
@@ -1764,7 +1764,7 @@ function matJointchain(name, d, ctx) {
       if (body.kind === 'call'
           && (body.op === 'joint' || body.op === 'record')
           && Array.isArray(body.fields)) {
-        leaves = body.fields.map((fl) => ({ name: fl.name, ir: fl.value }));
+        leaves = body.fields.map((fl: any) => ({ name: fl.name, ir: fl.value }));
       } else {
         leaves = [{ name: fallbackName, ir: body }];
       }
@@ -1776,12 +1776,12 @@ function matJointchain(name, d, ctx) {
     // by that name (auto-splat). A lone HOLE param (single, unmatched)
     // ⇒ rewire to the prior cat: ref(p0) for one prior, vector(p0,…)
     // for ≥2; bind each via a synthetic scalar refArray.
-    const PRIOR = (j) => '__jc$' + j;
-    const bindLeaf = (leafIR, params) => {
+    const PRIOR = (j: any) => '__jc$' + j;
+    const bindLeaf = (leafIR: any, params: any) => {
       const refArrays: any = {};
-      const named = params.filter((p) =>
+      const named = params.filter((p: any) =>
         priorVars.some((v) => v.name === p));
-      const holes = params.filter((p) => named.indexOf(p) === -1);
+      const holes = params.filter((p: any) => named.indexOf(p) === -1);
       for (const p of named) {
         const v = priorVars.find((q) => q.name === p);
         refArrays[p] = v.m.samples;
@@ -1797,7 +1797,7 @@ function matJointchain(name, d, ctx) {
         const k = catVars.length;
         for (let j = 0; j < k; j++) refArrays[PRIOR(j)] = catVars[j].m.samples;
         const param = holes[0];
-        const sub = (node) => {
+        const sub: any = (node: any) => {
           if (node == null || typeof node !== 'object') return node;
           if (Array.isArray(node)) return node.map(sub);
           if (node.kind === 'ref'
@@ -1810,7 +1810,7 @@ function matJointchain(name, d, ctx) {
               args: catVars.map((_, j) =>
                 ({ kind: 'ref', ns: 'self', name: PRIOR(j) })) };
           }
-          const out = {};
+          const out: Record<string, any> = {};
           for (const key in node) out[key] = sub(node[key]);
           return out;
         };
@@ -1865,7 +1865,7 @@ function matJointchain(name, d, ctx) {
                 reps = cIR.value | 0;
               } else {
                 try {
-                  const env = {};
+                  const env: Record<string, any> = {};
                   if (ctx.fixedValues) {
                     for (const [k2, v2] of ctx.fixedValues) env[k2] = v2;
                   }
@@ -1915,7 +1915,7 @@ function matJointchain(name, d, ctx) {
               type: 'sampleN', ir: bound.ir, count: N,
               refArrays: bound.refArrays,
               seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootSeed),
-            }).then((reply) => {
+            }).then((reply: any) => {
               const Mi = measureFromReply(reply, N, {
                 logWeights: priorVars[0].m.logWeights,
                 logTotalmass: 0, n_eff: priorVars[0].m.n_eff,
@@ -2005,7 +2005,7 @@ function matJointchain(name, d, ctx) {
  * its own, so the recursion through ctx.getMeasure must short-circuit
  * already-computed measures.
  */
-function materialiseMeasure(name, ctx) {
+function materialiseMeasure(name: any, ctx: any) {
   // Fixed-phase short-circuit. The orchestrator's pre-eval may have
   // computed a value (a scalar from a deterministic expression, an
   // array from rand, a record from a literal). Synthesize the measure
@@ -2018,7 +2018,7 @@ function materialiseMeasure(name, ctx) {
   }
   const d = ctx.derivations[name];
   if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
-  const handler = KIND_HANDLERS[d.kind];
+  const handler = (KIND_HANDLERS as any)[d.kind];
   if (!handler) {
     return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
   }
