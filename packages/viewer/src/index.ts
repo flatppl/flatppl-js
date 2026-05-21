@@ -15,7 +15,7 @@
 import { mount } from './main.js';
 
 /** @type {FlatPPLViewerGlobal} */
-var FlatPPLViewer;
+var FlatPPLViewer: FlatPPLViewerGlobal;
 if (typeof window !== 'undefined') {
   FlatPPLViewer = (window.FlatPPLViewer = window.FlatPPLViewer || {});
 } else if (typeof globalThis !== 'undefined') {

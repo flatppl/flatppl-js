@@ -27,7 +27,7 @@
  * @param {{ kind?: string; type?: string; phase?: 'stochastic'|'parameterized'|'fixed' }} node
  * @returns {string}
  */
-export function resolveNodeColor(ctx, node) {
+export function resolveNodeColor(ctx: any, node: any) {
   if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
   if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
   var ts = (node.type && ctx.TYPE_STYLE[node.type]) || ctx.TYPE_STYLE.unknown;
@@ -42,7 +42,7 @@ export function resolveNodeColor(ctx, node) {
  * @param {string} bindingName
  * @returns {string}
  */
-export function colorForBinding(ctx, bindingName) {
+export function colorForBinding(ctx: any, bindingName: any) {
   if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
     var nodes = ctx.currentState.data.nodes;
     for (var i = 0; i < nodes.length; i++) {

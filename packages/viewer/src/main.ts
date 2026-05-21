@@ -1332,7 +1332,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     var startPlotPx  = plot.getBoundingClientRect().height;
     var combinedPx = startGraphPx + startPlotPx;
     var MIN_PX = 80;
-    function onMove(mv) {
+    function onMove(mv: any) {
       var dy = mv.clientY - startY;
       var newGraph = startGraphPx + dy;
       var newPlot  = startPlotPx  - dy;
@@ -1567,7 +1567,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // target-only steps within one model.
   // dispose() is a placeholder for now.
   return {
-    update: function(source, target, opts) {
+    update: function(source: any, target: any, opts: any) {
       applySourceUpdate(ctx, {
         source: source,
         targetName: target,
