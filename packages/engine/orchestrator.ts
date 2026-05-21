@@ -180,10 +180,10 @@ function buildSampleChain(targetName, bindings) {
 
   const visited = new Set();    // names already placed into `order`
   const visiting = new Set();   // names currently on the DFS stack (cycle guard)
-  const order = [];             // topologically-ordered chain steps
+  const order: any[] = [];             // topologically-ordered chain steps
 
   // Track per-binding diagnostics so the first hit aborts cleanly.
-  let unsupported = null;
+  let unsupported: { reason: string } | null = null;
 
   function visit(name) {
     if (unsupported) return;
