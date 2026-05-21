@@ -59,6 +59,8 @@
 // materialiser stays pure-async and side-effect-free apart from
 // what those callbacks do.
 
+import type { EmpiricalMeasure } from './engine-types';
+
 const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
 const rng          = require('./rng.ts');
@@ -2005,7 +2007,7 @@ function matJointchain(name: any, d: any, ctx: any) {
  * its own, so the recursion through ctx.getMeasure must short-circuit
  * already-computed measures.
  */
-function materialiseMeasure(name: any, ctx: any) {
+function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // Fixed-phase short-circuit. The orchestrator's pre-eval may have
   // computed a value (a scalar from a deterministic expression, an
   // array from rand, a record from a literal). Synthesize the measure
