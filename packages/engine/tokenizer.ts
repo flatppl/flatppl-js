@@ -57,8 +57,8 @@ function isWhitespace(ch) { return ch === ' ' || ch === '\t' || ch === '\r'; }
  * starting now so call sites can pass it without churn.
  */
 function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
-  const tokens = [];
-  const diagnostics = [];
+  const tokens: any[] = [];
+  const diagnostics: any[] = [];
   let pos = 0;
   let line = 0;
   let col = 0;
@@ -267,7 +267,7 @@ function tokenize(source, variant) {  // eslint-disable-line no-unused-vars
       };
       const three = ch + at(1) + at(2);
       const two = ch + at(1);
-      let lexeme = null, ttype = null;
+      let lexeme: string | null = null, ttype: any = null;
       if (DOT_OPS_3[three]) { lexeme = three; ttype = DOT_OPS_3[three]; }
       else if (DOT_OPS_2[two]) { lexeme = two; ttype = DOT_OPS_2[two]; }
       if (lexeme) {
