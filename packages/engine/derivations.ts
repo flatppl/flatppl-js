@@ -71,7 +71,7 @@ const {
  *   discrete:    { [name: string]: boolean },  // resolved-leaf discreteness
  * }}
  */
-function buildDerivations(bindings) {
+function buildDerivations(bindings: any) {
   // Pre-pass: lift inline subexpressions so every measure-arg position
   // is a bare ref and every value-arg is evaluable. After lifting, the
   // classifier below handles all forms uniformly — there's no special
@@ -165,7 +165,7 @@ function buildDerivations(bindings) {
   // anonymous lift-introduced bindings or any case expandMeasureIR
   // can't resolve, fall back to the raw lowered IR — those tend to
   // already be primitive distribution calls that traceeval handles.
-  function resolveMeasureRef(refName) {
+  function resolveMeasureRef(refName: any) {
     const expanded = expandMeasureIR(refName, derivations);
     if (expanded) return expanded;
     const b = bindings.get(refName);
@@ -178,7 +178,7 @@ function buildDerivations(bindings) {
   //      yet but whose IR head is a measure-producing op — exactly
   //      the `MEASURE_PRODUCING` set the surface analyzer uses, so we
   //      reuse it rather than maintaining a parallel list.
-  function isMeasureBinding(b) {
+  function isMeasureBinding(b: any) {
     if (!b) return false;
     const t = b.inferredType;
     if (t && (t.kind === 'measure' || t.kind === 'function' || t.kind === 'kernel')) return true;
@@ -232,7 +232,7 @@ function buildDerivations(bindings) {
       const valueRefs = new Set<string>();
       const deferredRefs = new Set();
 
-      function collectFor(walkIr, inMeasureContext) {
+      function collectFor(walkIr: any, inMeasureContext: any) {
         const refs = collectSelfRefs(walkIr);
         for (const r of refs) {
           if (!bindings.has(r)) continue;
@@ -315,7 +315,7 @@ function buildDerivations(bindings) {
       // so resolved values are cached implicitly — two refs to the
       // same name share one draw.
       const traceeval = require('./traceeval.ts');
-      function localResolveValueRef(refName, state) {
+      function localResolveValueRef(refName: any, state: any) {
         if (env[refName] !== undefined) return [env[refName], state];
         if (fixedValues.has(refName)) {
           env[refName] = fixedValues.get(refName);
@@ -361,7 +361,7 @@ function buildDerivations(bindings) {
       // data. The sampler's evaluateCall picks up this hook to
       // resolve a binding name to its (body IR + parameter name)
       // pair when the binding is a unary fn / functionof / kernelof.
-      env.__resolveFnBody = function (bname) {
+      env.__resolveFnBody = function (bname: any) {
         const fb = bindings.get(bname);
         if (!fb || (fb.type !== 'fn' && fb.type !== 'functionof'
                     && fb.type !== 'kernelof')) {
@@ -436,7 +436,7 @@ function buildDerivations(bindings) {
     'input', 'functionof', 'fn', 'kernelof', 'bijection', 'lawof',
     'likelihood',
   ]);
-  function bindingLoc(name) {
+  function bindingLoc(name: any) {
     const b = bindings.get(name);
     return (b && b.node && b.node.loc) || undefined;
   }
@@ -507,7 +507,7 @@ function buildDerivations(bindings) {
  * NOT a sample. This is what gives variates and their measures the
  * same cached samples.
  */
-function classifyDerivation(binding, bindings) {
+function classifyDerivation(binding: any, bindings: any) {
   if (!binding || !binding.node || !binding.node.value) return null;
 
   // Read the lowered IR cached by liftInlineSubexpressions. The IR is
@@ -623,8 +623,8 @@ function classifyDerivation(binding, bindings) {
     // combinators are involved). The lowered IR tells us *which* op
     // we're matching; the AST tells us which operands are measures.
     const ast = binding.node.value;
-    if (rhsIR && rhsIR.kind === 'call' && MEASURE_OP_CLASSIFIERS[rhsIR.op]) {
-      const result = MEASURE_OP_CLASSIFIERS[rhsIR.op](rhsIR, ast, bindings);
+    if (rhsIR && rhsIR.kind === 'call' && (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op]) {
+      const result = (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op](rhsIR, ast, bindings);
       if (result) return result;
     }
     // Numeric array literal: lowered to (call vector lit lit ...).
@@ -708,7 +708,7 @@ function classifyDerivation(binding, bindings) {
 // in MEASURE_OP_CLASSIFIERS plus the corresponding handler function;
 // no edits to the dispatch loop in classifyDerivation.
 
-function classifyWeighted(rhsIR, ast, bindings) {
+function classifyWeighted(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const weightAst = ast.args[0];
   const baseAst   = ast.args[1];
@@ -730,7 +730,7 @@ function classifyWeighted(rhsIR, ast, bindings) {
   return null;
 }
 
-function classifyLogWeighted(rhsIR, ast, bindings) {
+function classifyLogWeighted(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const weightAst = ast.args[0];
   const baseAst   = ast.args[1];
@@ -749,7 +749,7 @@ function classifyLogWeighted(rhsIR, ast, bindings) {
   return null;
 }
 
-function classifyNormalize(rhsIR, ast, bindings) {
+function classifyNormalize(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
   const baseAst = ast.args[0];
   const baseName = resolveMeasureBaseName(baseAst, bindings);
@@ -757,7 +757,7 @@ function classifyNormalize(rhsIR, ast, bindings) {
   return { kind: 'normalize', from: baseName };
 }
 
-function classifySuperpose(rhsIR, ast, bindings) {
+function classifySuperpose(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
   const fromNames: any[] = [];
   for (let i = 0; i < rhsIR.args.length; i++) {
@@ -775,7 +775,7 @@ function classifySuperpose(rhsIR, ast, bindings) {
 // form (comparisons of continuous RVs, arbitrary boolean expressions,
 // …) — classifyIfelse then declines, leaving the MC-estimated-weight
 // fallback as a documented follow-up (engine-concepts §11).
-function resolveBernoulliP(ir, bindings, seen) {
+function resolveBernoulliP(ir: any, bindings: any, seen: any) {
   if (!ir || seen.size > 64) return null;
   if (ir.kind === 'ref' && ir.ns === 'self') {
     if (seen.has(ir.name)) return null;
@@ -803,7 +803,7 @@ function resolveBernoulliP(ir, bindings, seen) {
 // to the Categorical call. null when not a closed-form Categorical
 // index (→ classifyStochasticIndex declines; plain value indexing
 // stays a deterministic `get`).
-function resolveCategoricalP(ir, bindings, seen) {
+function resolveCategoricalP(ir: any, bindings: any, seen: any) {
   if (!ir || seen.size > 64) return null;
   if (ir.kind === 'ref' && ir.ns === 'self') {
     if (seen.has(ir.name)) return null;
@@ -841,7 +841,7 @@ function resolveCategoricalP(ir, bindings, seen) {
 // (null) unless the container is a vector/tuple of self-refs AND the
 // index resolves to a closed-form Categorical — plain deterministic
 // `xs[k]` indexing is untouched.
-function classifyStochasticIndex(rhsIR, ast, bindings) {
+function classifyStochasticIndex(rhsIR: any, ast: any, bindings: any) {
   if (rhsIR.op !== 'get' || !Array.isArray(rhsIR.args)
       || rhsIR.args.length !== 2) return null;
   const containerIR = rhsIR.args[0];
@@ -900,7 +900,7 @@ function classifyStochasticIndex(rhsIR, ast, bindings) {
 // conditions are documented deferrals; classifyIfelse returns null
 // for them, so value-valued ifelse stays on the evaluator path
 // untouched.
-function classifyIfelse(rhsIR, ast, bindings) {
+function classifyIfelse(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 3) return null;
   if (!ast || !Array.isArray(ast.args) || ast.args.length !== 3) return null;
   // A branch is either a NAMED measure binding (resolveMeasureBaseName)
@@ -909,7 +909,7 @@ function classifyIfelse(rhsIR, ast, bindings) {
   // measures stay unsupported here (use named bindings for those);
   // value-valued ifelse resolves to null on both and stays on the
   // evaluator path. Unified branch shape: { ref } | { ir }.
-  const resolveBranch = (astArg, irArg) => {
+  const resolveBranch = (astArg: any, irArg: any) => {
     const nm = resolveMeasureBaseName(astArg, bindings);
     if (nm != null) return { ref: nm };
     if (irArg && irArg.kind === 'call'
@@ -919,7 +919,7 @@ function classifyIfelse(rhsIR, ast, bindings) {
   const aB = resolveBranch(ast.args[1], rhsIR.args[1]);
   const bB = resolveBranch(ast.args[2], rhsIR.args[2]);
   if (!aB || !bB) return null;
-  const call = (op, args) => ({ kind: 'call', op, args });
+  const call = (op: any, args: any) => ({ kind: 'call', op, args });
   const lit1 = { kind: 'lit', value: 1 };
   // Realised selector for SAMPLING (matSelect): the condition binding
   // — a {0,1} Bernoulli variate. Density only needs the per-branch
@@ -989,9 +989,9 @@ function classifyIfelse(rhsIR, ast, bindings) {
 // joint to the same `tuple` derivation kind used for array literals
 // of measure refs; downstream matTuple materialises a positional
 // EmpiricalMeasure (SoA across the components).
-function classifyRecordOrJoint(rhsIR /*, ast, bindings */) {
+function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */) {
   if (Array.isArray(rhsIR.fields) && rhsIR.fields.length > 0) {
-    const fields = {};
+    const fields: Record<string, any> = {};
     for (const f of rhsIR.fields) {
       if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
       fields[f.name] = f.value.name;
@@ -1012,7 +1012,7 @@ function classifyRecordOrJoint(rhsIR /*, ast, bindings */) {
   return null;
 }
 
-function classifyIid(rhsIR, ast, bindings) {
+function classifyIid(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
@@ -1038,7 +1038,7 @@ function classifyIid(rhsIR, ast, bindings) {
 // follow-ups (TODO §04). Per-element shape resolution + sampling
 // happens in matKernelBroadcast (length K is data-driven, resolved at
 // materialise time — unlike iid's static integer dims).
-function classifyKernelBroadcast(rhsIR, ast, bindings) {
+function classifyKernelBroadcast(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
   const k = rhsIR.args[0];
   // Bare distribution-constructor kernel, not shadowed by a binding.
@@ -1062,7 +1062,7 @@ function classifyKernelBroadcast(rhsIR, ast, bindings) {
 // single-point logdensityof over the points — tractable M ⇒ no
 // sampling. The principled FlatPIR-codegen path can later replace
 // this with tests + this reference under it.
-function classifyBroadcastLogdensity(rhsIR, ast, bindings) {
+function classifyBroadcastLogdensity(rhsIR: any, ast: any, bindings: any) {
   if (rhsIR.op !== 'broadcast' || !Array.isArray(rhsIR.args)
       || rhsIR.args.length !== 3) return null;
   const fIR = rhsIR.args[0];
@@ -1083,7 +1083,7 @@ function classifyBroadcastLogdensity(rhsIR, ast, bindings) {
 // pts). Try the logdensity form first; fall back to kernel-broadcast
 // (which only matches a bare SAMPLEABLE head, so the two never
 // collide).
-function classifyBroadcast(rhsIR, ast, bindings) {
+function classifyBroadcast(rhsIR: any, ast: any, bindings: any) {
   return classifyBroadcastLogdensity(rhsIR, ast, bindings)
       || classifyKernelBroadcast(rhsIR, ast, bindings);
 }
@@ -1104,7 +1104,7 @@ function classifyBroadcast(rhsIR, ast, bindings) {
 //     (x is itself a variate) are deferred — they require encoding
 //     the observation into refArrays per atom, an extra path the
 //     materialiser doesn't yet take.
-function classifyLogdensityof(rhsIR, ast, bindings) {
+function classifyLogdensityof(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const Mref   = rhsIR.args[0];
   const obsIR  = rhsIR.args[1];
@@ -1126,7 +1126,7 @@ function classifyLogdensityof(rhsIR, ast, bindings) {
  * N atoms. Supported when M is a self-ref to a measure binding the
  * orchestrator can materialise (anything expandMeasureIR handles).
  */
-function classifyTotalmass(rhsIR, ast, bindings) {
+function classifyTotalmass(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 1) return null;
   const Mref = rhsIR.args[0];
   if (!isSelfRef(Mref)) return null;
@@ -1148,7 +1148,7 @@ function classifyTotalmass(rhsIR, ast, bindings) {
  *     named real / integer / boolean sets. Dynamic sets defer to a
  *     future pass — they'd require per-atom set membership evaluation.
  */
-function classifyTruncate(rhsIR, ast, bindings) {
+function classifyTruncate(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
@@ -1171,7 +1171,7 @@ function classifyTruncate(rhsIR, ast, bindings) {
 // pushfwd's f-position lift signature (see signatureOf) lifts inline
 // fn / functionof shapes to anon bindings, so by the time we classify
 // here both args are self-refs.
-function classifyPushfwd(rhsIR, ast, bindings) {
+function classifyPushfwd(rhsIR: any, ast: any, bindings: any) {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const fIR = rhsIR.args[0];
   const mIR = rhsIR.args[1];
@@ -1225,7 +1225,7 @@ function classifyPushfwd(rhsIR, ast, bindings) {
  * classify" → the binding surfaces an error rather than being
  * silently mis-handled).
  */
-function classifyJointchain(rhsIR, ast, bindings?, opts?) {
+function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any) {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
   const marginalize = (rhsIR.op === 'kchain');
@@ -1243,8 +1243,8 @@ function classifyJointchain(rhsIR, ast, bindings?, opts?) {
   // positional to `args:[…]`.
   let comps, labels;
   if (Array.isArray(rhsIR.fields) && rhsIR.fields.length >= 2) {
-    labels = rhsIR.fields.map((f) => f.name);
-    comps = rhsIR.fields.map((f) => f.value);
+    labels = rhsIR.fields.map((f: any) => f.name);
+    comps = rhsIR.fields.map((f: any) => f.value);
   } else if (Array.isArray(rhsIR.args) && rhsIR.args.length >= 2) {
     labels = null;
     comps = rhsIR.args;
@@ -1257,7 +1257,7 @@ function classifyJointchain(rhsIR, ast, bindings?, opts?) {
   //   { kernelIR }                 inline functionof
   //   { measureIR }                inline measure call
   // or null if it's none of these.
-  const describe = (ir) => {
+  const describe = (ir: any) => {
     if (!ir) return null;
     if (ir.kind === 'ref' && ir.ns === 'self' && bindings.has(ir.name)) {
       const b = bindings.get(ir.name);
@@ -1325,7 +1325,7 @@ const MEASURE_OP_CLASSIFIERS = {
  * has a derivation. Aliases / weighted / normalize just check the
  * target.
  */
-function derivationRefsValid(d, derivations, bindings, fixedValues) {
+function derivationRefsValid(d: any, derivations: any, bindings: any, fixedValues: any) {
   // A name is "resolvable downstream" if there's a derivation for it
   // (the materialiser knows how to compute samples) OR it has a
   // fixed-phase value the worker resolves through its session env.
@@ -1335,7 +1335,7 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   // mu=get_field(ref(rp), "theta1"), …) classified as 'sample' would
   // cascade-prune the moment the orchestrator dropped rp's
   // derivation (it's a record, not numeric — pre-eval drops those).
-  function resolvable(name) {
+  function resolvable(name: any) {
     if (Object.prototype.hasOwnProperty.call(derivations, name)) return true;
     if (fixedValues && fixedValues.has(name)) return true;
     return false;
@@ -1446,7 +1446,7 @@ function derivationRefsValid(d, derivations, bindings, fixedValues) {
   return true;
 }
 
-function isDiscreteAt(name, derivations, visited?) {
+function isDiscreteAt(name: any, derivations: any, visited?: any) {
   visited = visited || new Set();
   if (visited.has(name)) return false; // cycle guard
   visited.add(name);
@@ -1494,7 +1494,7 @@ function isDiscreteAt(name, derivations, visited?) {
  * Returns null if the chain doesn't bottom out on a sample step
  * (e.g. it's an evaluate-only binding) or if a cycle is hit.
  */
-function leafSampleIR(name, derivations, visited) {
+function leafSampleIR(name: any, derivations: any, visited: any) {
   visited = visited || new Set();
   if (visited.has(name)) return null;
   visited.add(name);
@@ -1537,11 +1537,11 @@ function leafSampleIR(name, derivations, visited) {
  * (missing binding, non-functionof IR) — callers treat null as "not
  * available, density not tractable for this binding".
  */
-function resolveBijectionMeta(bij, bindings) {
+function resolveBijectionMeta(bij: any, bindings: any) {
   // Read body + paramName from a functionof binding. arity=1 returns
   // a fn-with-param; arity=0 returns a fn-with-null-paramName (a
   // closed-form constant — `fn(log(2.0))` is the canonical example).
-  function fnBodyOf(bindingName, allowConst) {
+  function fnBodyOf(bindingName: any, allowConst: any) {
     const b = bindings.get(bindingName);
     if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'functionof') return null;
     const params = b.ir.params || [];
@@ -1573,7 +1573,7 @@ function resolveBijectionMeta(bij, bindings) {
 // walkLogWeighted (engine-concepts §11; "totalmass is a first-class
 // node concern"). All stdlib leaf distributions are normalized (unit
 // mass); weighted/superpose/iid compose multiplicatively/additively.
-function closedFormLogTotalmass(ir, bindings) {
+function closedFormLogTotalmass(ir: any, bindings: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
@@ -1581,13 +1581,13 @@ function closedFormLogTotalmass(ir, bindings) {
   if (op === 'logweighted') {
     const g = resolveConstant(ir.args[0], bindings || new Map(), new Set());
     if (g == null || !Number.isFinite(g)) return null;
-    const b = closedFormLogTotalmass(ir.args[1], bindings);
+    const b: any = closedFormLogTotalmass(ir.args[1], bindings);
     return b == null ? null : g + b;
   }
   if (op === 'weighted') {
     const w = resolveConstant(ir.args[0], bindings || new Map(), new Set());
     if (w == null || !(w > 0) || !Number.isFinite(w)) return null;
-    const b = closedFormLogTotalmass(ir.args[1], bindings);
+    const b: any = closedFormLogTotalmass(ir.args[1], bindings);
     return b == null ? null : Math.log(w) + b;
   }
   if (op === 'select') {
@@ -1612,7 +1612,7 @@ function closedFormLogTotalmass(ir, bindings) {
     return m + Math.log(s);
   }
   if (op === 'joint' || op === 'record') {
-    const comps = Array.isArray(ir.fields) ? ir.fields.map((f) => f.value)
+    const comps = Array.isArray(ir.fields) ? ir.fields.map((f: any) => f.value)
       : (Array.isArray(ir.args) ? ir.args : null);
     if (!comps) return null;
     let acc = 0;
@@ -1624,7 +1624,7 @@ function closedFormLogTotalmass(ir, bindings) {
     return acc;
   }
   if (op === 'iid' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const inner = closedFormLogTotalmass(ir.args[0], bindings);
+    const inner: any = closedFormLogTotalmass(ir.args[0], bindings);
     if (inner == null) return null;
     const n = resolveConstant(ir.args[1], bindings || new Map(), new Set());
     if (n == null || !Number.isFinite(n)) return null;
@@ -1634,7 +1634,7 @@ function closedFormLogTotalmass(ir, bindings) {
   return null;
 }
 
-function expandMeasureIR(name, derivations, visited?, bindings?) {
+function expandMeasureIR(name: any, derivations: any, visited?: any, bindings?: any): any {
   visited = visited || new Set();
   if (visited.has(name)) return null;
   const next = new Set(visited); next.add(name);
@@ -1654,14 +1654,14 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // (walkMvNormal in density.js OP_HANDLERS).
         return d.distIR;
       case 'iid': {
-        const inner = expandMeasureIR(d.from, derivations, next, bindings);
+        const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
         // dims is a multi-dim shape; flatten to a single iid count.
         // The walker's iid case handles the n-shape uniformly via
         // observed length — multi-dim observations would need to be
         // flattened to match (1D arrays). For typical bayesupdate the
         // dims are 1D and obs is a flat array, which already matches.
-        const total = d.dims.reduce((a, b) => a * b, 1);
+        const total = d.dims.reduce((a: any, b: any) => a * b, 1);
         return {
           kind: 'call', op: 'iid',
           args: [inner, { kind: 'lit', value: total }],
@@ -1777,9 +1777,9 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         if (steps.length < 2) return null;
         const base = steps[0];
         if (base.kernel || base.ref == null) return null;
-        const baseIR = expandMeasureIR(base.ref, derivations, next, bindings);
+        const baseIR: any = expandMeasureIR(base.ref, derivations, next, bindings);
         if (!baseIR) return null;
-        const vname = (i) => (d.labels && d.labels[i]) || ('s' + i);
+        const vname = (i: any) => (d.labels && d.labels[i]) || ('s' + i);
 
         // Resolve a kernel step to { params, body } and EXPAND the
         // body. The "closure walk" the legacy inlineChainOps did by
@@ -1795,7 +1795,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // env-threading (its leaf ref already carries that name); a
         // lone HOLE/placeholder param (the `fn(…_…)` case, single
         // param, no matching prior field) is rewired to the prior cat.
-        const kernelExpand = (kstep) => {
+        const kernelExpand = (kstep: any) => {
           let f = kstep.kernelIR;
           if (!f && kstep.ref != null) {
             const kb = bindings && bindings.get(kstep.ref);
@@ -1814,11 +1814,11 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // Spread a (record/joint) measure IR into its named field
         // descriptors (preserving `source` for env-threading); a
         // scalar measure IR contributes one field under `fallback`.
-        const spreadFields = (ir, fallback, src) => {
+        const spreadFields = (ir: any, fallback: any, src: any) => {
           if (ir && ir.kind === 'call'
               && (ir.op === 'joint' || ir.op === 'record')
               && Array.isArray(ir.fields)) {
-            return ir.fields.map((fl) => ({
+            return ir.fields.map((fl: any) => ({
               name: fl.name, value: fl.value,
               source: fl.source != null ? fl.source : fl.name,
             }));
@@ -1827,8 +1827,8 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         };
         // Rewire a lone hole/placeholder param to the prior cat: one
         // prior ⇒ ref(prior_0); ≥2 ⇒ vector(ref prior_0, …).
-        const rewireHole = (body, param, priorNames) => {
-          const sub = (node) => {
+        const rewireHole = (body: any, param: any, priorNames: any) => {
+          const sub: any = (node: any) => {
             if (node == null || typeof node !== 'object') return node;
             if (Array.isArray(node)) return node.map(sub);
             if (node.kind === 'ref'
@@ -1839,10 +1839,10 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
                   loc: node.loc };
               }
               return { kind: 'call', op: 'vector',
-                args: priorNames.map((nm) => ({ kind: 'ref', ns: 'self',
+                args: priorNames.map((nm: any) => ({ kind: 'ref', ns: 'self',
                   name: nm, loc: node.loc })) };
             }
-            const out = {};
+            const out: Record<string, any> = {};
             for (const k in node) out[k] = sub(node[k]);
             return out;
           };
@@ -1853,7 +1853,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // for free; a single unmatched param is a hole bound to the
         // prior cat; an unmatched param in a multi-param kernel is
         // unsupported (clean null).
-        const bindKernel = (ke, priorNames) => {
+        const bindKernel = (ke: any, priorNames: any) => {
           let body = ke.body;
           for (const p of ke.params) {
             if (priorNames.indexOf(p) === -1) {
@@ -1866,7 +1866,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
 
         // Flatten all step variates left-associatively into one joint.
         const outFields = spreadFields(baseIR, vname(0), base.ref);
-        const priorNames = outFields.map((f) => f.name);
+        const priorNames = outFields.map((f: any) => f.name);
 
         if (d.marginalize) {
           // kchain: marginal of the LAST step's variate(s); the prior
@@ -1943,7 +1943,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
           && (baseIR.op === 'joint' || baseIR.op === 'record')
           && Array.isArray(baseIR.fields);
         if (!d.labels && !baseIsRecord) {
-          const positionalArgs = [baseIR];
+          const positionalArgs: any = [baseIR];
           const positionalPriorNames = ['s0'];
           for (let i = 1; i < steps.length; i++) {
             const ke = kernelExpand(steps[i]);
@@ -1969,7 +1969,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         return { kind: 'call', op: 'joint', fields: outFields };
       }
       case 'weighted': {
-        const inner = expandMeasureIR(d.from, derivations, next, bindings);
+        const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
         if (d.weightIR) {
           // Per-i weight expression — the walker resolves its refs
@@ -1995,7 +1995,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // a probability mixture has Z=1 ⇒ a 0-shift no-op; an
         // unnormalized base shifts every atom by −log Z). Reuses
         // walkLogWeighted — no opts/worker plumbing, exact density.
-        const inner = expandMeasureIR(d.from, derivations, next, bindings);
+        const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
         const logZ = closedFormLogTotalmass(inner, bindings);
         if (logZ != null && Number.isFinite(logZ)) {
@@ -2018,9 +2018,9 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
         // body+paramName OR scalar) as a side-property on the call IR
         // so density.walkPushfwd can compute the pushforward density
         // without round-tripping through a resolver callback.
-        const inner = expandMeasureIR(d.from, derivations, next, bindings);
+        const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
-        const out = {
+        const out: any = {
           kind: 'call', op: 'pushfwd',
           args: [{ kind: 'ref', ns: 'self', name: d.fnRef }, inner],
         };
@@ -2075,7 +2075,7 @@ function expandMeasureIR(name, derivations, visited?, bindings?) {
  * the ones whose target binding has type='input' (elementof /
  * external).
  */
-function implicitKernelSignature(name, bindings, derivations) {
+function implicitKernelSignature(name: any, bindings: any, derivations: any) {
   if (!bindings) return null;
   // Fire for anything that produces samples or measures: either
   // stochastic phase (a draw / iid draw whose value varies) or a
@@ -2162,7 +2162,7 @@ function implicitKernelSignature(name, bindings, derivations) {
  * binding, has no .ir, or has no parametric ancestors (the regular
  * fixed-value or function-binding path handles those).
  */
-function implicitFunctionSignature(name, bindings, derivations) {
+function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
   if (!bindings) return null;
   const subject = bindings.get(name);
   if (!subject || subject.phase !== 'parameterized' || !subject.ir) return null;
@@ -2224,7 +2224,7 @@ function implicitFunctionSignature(name, bindings, derivations) {
   };
 }
 
-function _expandMeasureIRStructural(ir, derivations, visited, bindings) {
+function _expandMeasureIRStructural(ir: any, derivations: any, visited: any, bindings: any): any {
   if (!ir) return null;
   if (ir.kind === 'ref' && ir.ns === 'self') {
     return expandMeasureIR(ir.name, derivations, visited, bindings);
@@ -2238,14 +2238,14 @@ function _expandMeasureIRStructural(ir, derivations, visited, bindings) {
   }
   // iid(measure, n, ...) — recurse on the measure operand.
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
-    const inner = _expandMeasureIRStructural(ir.args[0], derivations, visited, bindings);
+    const inner: any = _expandMeasureIRStructural(ir.args[0], derivations, visited, bindings);
     if (!inner) return null;
     return { kind: 'call', op: 'iid', args: [inner].concat(ir.args.slice(1)), loc: ir.loc };
   }
   // record / joint / jointchain — recurse on each field's measure.
   if ((ir.op === 'record' || ir.op === 'joint' || ir.op === 'jointchain')
       && Array.isArray(ir.fields)) {
-    const fields = ir.fields.map(f => ({
+    const fields = ir.fields.map((f: any) => ({
       ...f, value: _expandMeasureIRStructural(f.value, derivations, visited, bindings),
     }));
     return { kind: 'call', op: ir.op, fields, loc: ir.loc };
@@ -2253,7 +2253,7 @@ function _expandMeasureIRStructural(ir, derivations, visited, bindings) {
   // weighted / logweighted — recurse on the measure-position arg.
   if ((ir.op === 'weighted' || ir.op === 'logweighted')
       && Array.isArray(ir.args) && ir.args.length === 2) {
-    const inner = _expandMeasureIRStructural(ir.args[1], derivations, visited, bindings);
+    const inner: any = _expandMeasureIRStructural(ir.args[1], derivations, visited, bindings);
     if (!inner) return null;
     return { kind: 'call', op: ir.op, args: [ir.args[0], inner], loc: ir.loc };
   }
@@ -2288,7 +2288,7 @@ function _expandMeasureIRStructural(ir, derivations, visited, bindings) {
  *   - iid's first arg (the inner measure)
  *   - weighted / logweighted's second arg (the base measure)
  */
-function expandMeasureRefsInIR(ir, derivations, visited) {
+function expandMeasureRefsInIR(ir: any, derivations: any, visited: any) {
   visited = visited || new Set();
   if (!ir) return ir;
   // Top-level ref to a measure binding: expand via the same
@@ -2314,7 +2314,7 @@ function expandMeasureRefsInIR(ir, derivations, visited) {
   }
   const out = { ...ir };
   if (Array.isArray(ir.fields)) {
-    out.fields = ir.fields.map(f => ({
+    out.fields = ir.fields.map((f: any) => ({
       ...f,
       value: expandMeasurePos(f.value, derivations, visited),
     }));
@@ -2335,7 +2335,7 @@ function expandMeasureRefsInIR(ir, derivations, visited) {
   return out;
 }
 
-function expandMeasurePos(node, derivations, visited) {
+function expandMeasurePos(node: any, derivations: any, visited: any) {
   if (node && node.kind === 'ref' && node.ns === 'self') {
     const expanded = expandMeasureIR(node.name, derivations, visited);
     return expanded || node;
@@ -2384,7 +2384,7 @@ function expandMeasurePos(node, derivations, visited) {
 // without introducing a new IR-evaluator call. Future work: lift
 // this into a true AST rewrite once we have a worker primitive that
 // directly evaluates `logdensityof` calls inside arithmetic IR.
-function classifyBayesupdate(binding, bindings) {
+function classifyBayesupdate(binding: any, bindings: any) {
   // Walk the L→K chain through cached IR rather than AST. The lowerer
   // canonicalises kernelof → functionof and fn → functionof, so we
   // only need to check for op === 'functionof' here regardless of

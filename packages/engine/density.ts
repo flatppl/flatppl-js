@@ -65,7 +65,7 @@ const valueLib   = require('./value.ts');
 // =====================================================================
 
 /** True iff `rest` is null/undefined or an empty container. */
-function isEmptyRest(rest) {
+function isEmptyRest(rest: any) {
   if (rest == null) return true;
   if (typeof rest === 'number') return false;
   if (rest && rest.BYTES_PER_ELEMENT && typeof rest.length === 'number') {
@@ -86,7 +86,7 @@ function isEmptyRest(rest) {
  *   - typed array / plain array of length ≥ 1 → element [0] as head,
  *     remaining as rest (a Float64Array subarray view or array slice)
  */
-function consumeScalar(value) {
+function consumeScalar(value: any) {
   if (value == null) {
     throw new Error('density: scalar leaf has no entry to consume (value exhausted)');
   }
@@ -144,7 +144,7 @@ function consumeScalar(value) {
  * Records / shape>1 Values are not consumable as a vector — the caller
  * should structurally walk those first.
  */
-function consumeVector(value, n) {
+function consumeVector(value: any, n: any) {
   if (value == null) {
     throw new Error('density: vector leaf has no entry to consume (value exhausted)');
   }
@@ -204,7 +204,7 @@ function consumeVector(value, n) {
  * Throws when the key isn't present — the caller's shape didn't match
  * the measure's declared fields.
  */
-function consumeField(value, name) {
+function consumeField(value: any, name: any) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || value.BYTES_PER_ELEMENT) {
     throw new Error('density: cannot consume named field \''
@@ -214,7 +214,7 @@ function consumeField(value, name) {
     throw new Error('density: record missing field \'' + name + '\'');
   }
   const head = value[name];
-  const rest = {};
+  const rest: Record<string, any> = {};
   for (const k in value) {
     if (k !== name && Object.prototype.hasOwnProperty.call(value, k)) rest[k] = value[k];
   }
@@ -244,7 +244,7 @@ function consumeField(value, name) {
 //     duplicated structurally.
 //   - Returns the (atom-independent) `rest` of `value`.
 
-function logDensityConsumeN(ir, value, refArrays, count, opts) {
+function logDensityConsumeN(ir: any, value: any, refArrays: any, count: any, opts: any) {
   opts = opts || {};
   const N = count | 0;
   if (N <= 0) throw new Error('density: count must be positive');
@@ -274,7 +274,7 @@ function logDensityConsumeN(ir, value, refArrays, count, opts) {
 // extra copy when no env-threading is active above us. Composite
 // walkers grow the overlay copy-on-write when adding env-threaded
 // values.
-function walkAcc(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkAcc(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   if (ir.kind === 'ref' && ir.ns === 'self') {
     const resolver = opts.resolveMeasureRef;
     if (typeof resolver !== 'function') {
@@ -291,7 +291,7 @@ function walkAcc(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
     throw new Error('density: unsupported IR kind \'' + ir.kind + '\'');
   }
   const op = ir.op;
-  const handler = OP_HANDLERS[op];
+  const handler: any = (OP_HANDLERS as any)[op];
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
 
   // Leaf distribution — the only kind not in OP_HANDLERS (because
@@ -304,7 +304,7 @@ function walkAcc(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
 
 // ---- Per-op handlers (the in-place accumulators) --------------------
 
-function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkLeaf(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // The only per-atom work in the entire walk: consume one entry from
   // the value, then loop atoms resolving params and adding logpdf to
   // acc[i]. consumeScalar is atom-independent (head + rest are derived
@@ -325,7 +325,7 @@ function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   // overlay/baseEnv-resolved param path is kept for generality.)
   if (opts.pointsBatched) {
     const pv = value;
-    const ptAt = valueLib.isValue(pv) ? (i) => pv.data[i] : (i) => pv[i];
+    const ptAt = valueLib.isValue(pv) ? (i: any) => pv.data[i] : (i: any) => pv[i];
     if (refNames.length === 0 && !overlayKeys) {
       const params = samplerLib.resolveParams(ir, entry, baseEnv);
       for (let i = 0; i < N; i++) {
@@ -380,19 +380,19 @@ function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
       const shape = v.shape;
       if (shape.length === 1) {
         const data = v.data;
-        accessors[j] = (i) => data[i];
+        accessors[j] = (i: any) => data[i];
       } else {
         const tailDims = shape.slice(1);
-        const tailLen = tailDims.reduce((a, b) => a * b, 1);
+        const tailLen = tailDims.reduce((a: any, b: any) => a * b, 1);
         const data = v.data;
-        accessors[j] = (i) => ({
+        accessors[j] = (i: any) => ({
           shape: tailDims,
           data: data.subarray(i * tailLen, (i + 1) * tailLen),
         });
       }
     } else {
       const arr = v;
-      accessors[j] = (i) => arr[i];
+      accessors[j] = (i: any) => arr[i];
     }
   }
   // Apply the (atom-independent) overlay once outside the loop —
@@ -415,26 +415,26 @@ function walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   return rest;
 }
 
-function walkWeighted(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkWeighted(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // weighted(w, base): adds log(w) per atom. Recurse into base first
   // (with the same acc), then add log(w_i). Negative or zero weights
   // collapse the atom's logp to -Infinity.
   const wIR = ir.args[0];
-  const rest = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
+  const rest: any = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
   applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, addLogW);
   return rest;
 }
 
-function walkLogWeighted(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkLogWeighted(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // logweighted(g, base): adds g directly per atom. -Infinity is
   // permitted; NaN is left as-is (callers detect downstream).
   const gIR = ir.args[0];
-  const rest = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
+  const rest: any = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
   applyAtomScalar(gIR, refArrays, N, baseEnv, overlay, acc, addRaw);
   return rest;
 }
 
-function walkTruncate(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkTruncate(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // truncate(M, S): indicator(S) × base density. Per spec §06 this does
   // NOT normalise — density inside S equals base density; outside S
   // it's -Infinity. The consumed scalar is atom-independent (lives in
@@ -453,7 +453,7 @@ function walkTruncate(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   return rest;
 }
 
-function walkNormalize(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkNormalize(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // normalize(base) = base / totalmass(base). Density shifts by
   // -log(totalmass(base)). The caller supplies the parent's
   // logTotalmass via opts.measureLogTotalmass — atom-independent today;
@@ -467,7 +467,7 @@ function walkNormalize(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   return rest;
 }
 
-function walkJointFieldsOrPositional(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkJointFieldsOrPositional(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // record / kwarg-joint: ir.fields = [{name, value: subIR, source?}, …].
   // Consume named fields in declared order; env-thread each consumed
   // head into the overlay so later fields' leaf-kwarg refs to f.name /
@@ -526,7 +526,7 @@ function walkJointFieldsOrPositional(ir, value, refArrays, N, opts, acc, baseEnv
   throw new Error('density: joint with neither fields nor args');
 }
 
-function walkIid(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkIid(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // iid(M, n): n copies of M's footprint. Count `n` is atom-independent
   // — it's a value-position expression typically of fixed phase. We
   // evaluate against baseEnv (no per-atom or overlay coverage); if a
@@ -552,7 +552,7 @@ function walkJointchainStub() {
     + 'record/joint by expandMeasureIR before reaching density');
 }
 
-function walkPushfwd(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkPushfwd(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // pushfwd(f, M) density per spec §06: requires f to be a
   // `bijection(f, f_inv, logvolume)` annotation so we have an inverse
   // and a Jacobian volume element. Then:
@@ -629,7 +629,7 @@ function walkPushfwd(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
 // to assert that every select branch consumed the SAME observation
 // footprint — components of a superpose/mixture/ifelse share one
 // variate space (spec §06), so their rests must agree.
-function restSize(r) {
+function restSize(r: any) {
   if (r == null) return 0;
   if (typeof r === 'number') return 1;
   if (valueLib.isValue(r)) return r.data.length;
@@ -650,7 +650,7 @@ function restSize(r) {
 // case. weighted/logweighted/normalize/truncate/pushfwd don't change
 // the reference measure (they scale / restrict / bijection-map), so
 // recurse into the base; a nested select inherits its branches'.
-function selectBranchRefClass(ir, depth) {
+function selectBranchRefClass(ir: any, depth: any) {
   if (!ir || ir.kind !== 'call' || (depth | 0) > 64) return null;
   const op = ir.op;
   if (op === 'Dirac') return 'noncontinuous';   // atomic point mass
@@ -683,7 +683,7 @@ function selectBranchRefClass(ir, depth) {
   return null;
 }
 
-function walkSelect(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkSelect(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // select(branches, logweights): the discrete-selector mixture — the
   // EXACT (finite, no −logN) discrete sibling of the kchain MC
   // marginal. Density:
@@ -878,7 +878,7 @@ const OP_HANDLERS = {
 // Atom-batched mu / cov (per-atom parameter pinning) is deferred —
 // it'd require a per-atom Cholesky which doesn't arise in current
 // engine usage (matMvNormal materialises against atom-indep params).
-function walkMvNormal(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
+function walkMvNormal(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   const kwargs = ir.kwargs || {};
   if (!kwargs.mu || !kwargs.cov) {
     throw new Error('density: MvNormal requires mu and cov kwargs');
@@ -934,7 +934,7 @@ function walkMvNormal(ir, value, refArrays, N, opts, acc, baseEnv, overlay) {
   return rest;
 }
 
-function applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, combine) {
+function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay: any, acc: any, combine: any) {
   const result = samplerLib.evaluateExprN(
     wIR, refArrays || null, N, baseEnv,
     overlay ? { overlay } : undefined);
@@ -947,11 +947,11 @@ function applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, combine) {
   for (let i = 0; i < N; i++) combine(acc, i, +result[i]);
 }
 
-function addLogW(acc, i, w) {
+function addLogW(acc: any, i: any, w: any) {
   if (!(w > 0)) acc[i] = -Infinity;
   else acc[i] += Math.log(w);
 }
-function addRaw(acc, i, v) {
+function addRaw(acc: any, i: any, v: any) {
   acc[i] += v;
 }
 
@@ -965,7 +965,7 @@ function addRaw(acc, i, v) {
  * callers want, and the same shape as the worker.logDensityN message
  * reply.
  */
-function logDensityN(ir, value, refArrays, count, opts) {
+function logDensityN(ir: any, value: any, refArrays: any, count: any, opts: any) {
   const { logps, rest } = logDensityConsumeN(ir, value, refArrays, count, opts);
   if (!isEmptyRest(rest)) {
     throw new Error('logDensityN: value has unconsumed leftover after walking IR'
@@ -978,7 +978,7 @@ function logDensityN(ir, value, refArrays, count, opts) {
  * Single-point consume — count=1 wrapper. Returns { logp, rest } in
  * the same shape as the original logDensityConsume API.
  */
-function logDensityConsume(ir, value, env, opts) {
+function logDensityConsume(ir: any, value: any, env: any, opts: any) {
   const callOpts = env ? Object.assign({}, opts || {}, { baseEnv: env }) : opts;
   const { logps, rest } = logDensityConsumeN(ir, value, null, 1, callOpts);
   return { logp: logps[0], rest };
@@ -989,7 +989,7 @@ function logDensityConsume(ir, value, env, opts) {
  * Float64Array(1) allocation is the only single-point overhead vs the
  * batched form.
  */
-function logDensity(ir, value, env, opts) {
+function logDensity(ir: any, value: any, env: any, opts: any) {
   const callOpts = env ? Object.assign({}, opts || {}, { baseEnv: env }) : opts;
   return logDensityN(ir, value, null, 1, callOpts)[0];
 }
@@ -998,7 +998,7 @@ function logDensity(ir, value, env, opts) {
 // Local helpers — set-membership for truncate, scalar back-inference.
 // =====================================================================
 
-function inferConsumedScalar(value, rest) {
+function inferConsumedScalar(value: any, rest: any) {
   // For truncate(M, S) where M is scalar-leaf-like: the head consumed
   // by the recursive call is value[0]. We recover it cheaply rather
   // than threading it through the return shape.
@@ -1008,7 +1008,7 @@ function inferConsumedScalar(value, rest) {
   return null;
 }
 
-function inSet(x, setDescr) {
+function inSet(x: any, setDescr: any) {
   if (!setDescr) return true;
   switch (setDescr.kind) {
     case 'interval':    return x >= +setDescr.lo && x <= +setDescr.hi;
