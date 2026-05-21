@@ -479,7 +479,7 @@ const EVALUABLE_OPS = new Set([
  *                 lawof rewrite by letting us check the phase of a
  *                 ref-arg. Without it, lawof passes through unchanged.
  */
-function normalizeMeasureIR(ir: any, bindings: any) {
+function normalizeMeasureIR(ir: IRNode | null | undefined, bindings: any): IRNode | null | undefined {
   if (!ir || ir.kind !== 'call') return ir;
   if (ir.op === 'lawof'
       && Array.isArray(ir.args) && ir.args.length === 1

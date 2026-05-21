@@ -50,6 +50,8 @@
 // lower.js minimal: the visualizer can choose whether to import the
 // orchestrator at all.
 
+import type { IRNode } from './engine-types';
+
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
@@ -307,7 +309,7 @@ function buildSampleChain(targetName: string, bindings: any) {
  *   { kind: 'skip' }              — measure alias; deps walked, no
  *                                    chain step produced for this name
  */
-function classifyForChain(binding: any, rhsIR: any, bindings: any) {
+function classifyForChain(binding: any, rhsIR: IRNode | null, bindings: any) {
   // Canonicalise lawof / positional-Dirac into Dirac(value=...) so
   // every branch below can reason in a single normalized form.
   rhsIR = normalizeMeasureIR(rhsIR, bindings);
@@ -401,13 +403,14 @@ function classifyForChain(binding: any, rhsIR: any, bindings: any) {
  * @param {Set<string>} seen  cycle guard — names currently being chased
  * @returns {object | null}
  */
-function resolveMeasure(ir: any, bindings: any, seen: Set<string>): any {
+function resolveMeasure(ir: IRNode | null, bindings: any, seen: Set<string>): IRNode | null {
   if (!ir) return null;
   // Canonicalise on the way in: lawof of fixed-phase value and
   // positional-Dirac become Dirac(value=...) so the SAMPLEABLE check
   // below — and every downstream consumer of the returned IR — sees
   // a single shape per measure-equivalence class.
   ir = normalizeMeasureIR(ir, bindings);
+  if (!ir) return null;
   if (ir.kind === 'call' && ir.op && SAMPLEABLE_DISTRIBUTIONS.has(ir.op)) {
     return ir;
   }
