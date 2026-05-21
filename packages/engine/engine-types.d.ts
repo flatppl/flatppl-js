@@ -161,6 +161,65 @@ export interface DerivationBase {
   [extra: string]: any;
 }
 
+// ---------------------------------------------------------------------
+// BindingInfo (engine/analyzer.ts → ParsedModule.bindings entries)
+// ---------------------------------------------------------------------
+//
+// What the analyzer attaches to each `name → BindingInfo` map entry.
+// The shape is incrementally tightened: required fields land here as
+// they're stabilised; the [extra: string]: any escape hatch holds the
+// fields engine internals attach in flight (effectiveValue,
+// originLoc, synthetic, dependsOn, bijection, …).
+
+/**
+ * Statement classification emitted by `analyzer.classifyStatement` —
+ * the canonical shape tag every binding carries. Per-binding code
+ * branches on this string discriminator.
+ */
+export type BindingType =
+  | 'call'           // RHS is a call expression / op invocation
+  | 'literal'        // RHS is a literal value (number, string, boolean, array, record)
+  | 'draw'           // RHS is `draw(<measure>)` — stochastic variate
+  | 'lawof'          // RHS is `lawof(<expr>)` — measure-of-variate
+  | 'input'          // RHS is `elementof(<set>)` or `external(<type>)`
+  | 'functionof'     // RHS is a function reification
+  | 'kernelof'       // RHS is a kernel reification
+  | 'fn'             // RHS is `fn(<expr-with-holes>)` shorthand
+  | 'bijection'      // RHS is `bijection(f, f_inv, logvolume)`
+  | 'likelihood'     // RHS is `likelihoodof(<kernel>, <obs>)`
+  | 'bayesupdate'    // RHS is `bayesupdate(<likelihood>, <prior>)`
+  | 'module'         // RHS is `load_module` / `standard_module`
+  | 'data';          // RHS is `load_data(<source>, <valueset>)`
+
+/**
+ * Binding stored in the analyzer's `bindings` Map. Every binding has at
+ * minimum `name` + `type` + `node`. The cached lowered IR (`ir`) is
+ * populated by liftInlineSubexpressions before classification; the
+ * inferred type + phase land later in the pipeline.
+ *
+ * Most engine modules read these via the index signature for now (the
+ * shape grows over time; promoting more fields to first-class lives in
+ * the incremental tightening). Tightening order matches the
+ * classifier-side narrowing roadmap.
+ */
+export interface BindingInfo {
+  name: string;
+  type: BindingType;
+  /** AST node — the AssignStatement this binding was lowered from. */
+  node?: any;
+  /** Lowered IR (post liftInlineSubexpressions). Cached for fast reads. */
+  ir?: IRNode;
+  /** Effective RHS AST (multi-LHS pass attaches a per-name projection). */
+  effectiveValue?: any;
+  /** Inferred type (typeinfer.ts output). */
+  inferredType?: any;
+  /** Phase: 'fixed' | 'parameterized' | 'stochastic'. */
+  phase?: 'fixed' | 'parameterized' | 'stochastic';
+  /** Bijection metadata for bijection-typed bindings. */
+  bijection?: { fName: string; fInvName: string; logVolume: any };
+  [extra: string]: any;
+}
+
 /**
  * The output shape of `buildDerivations(bindings)` — the canonical
  * orchestrator surface every consumer (viewer Ctx.derivationsState,
@@ -173,7 +232,7 @@ export interface DerivationBase {
  * bindings; `discrete` is per-name resolved-leaf discreteness.
  */
 export interface DerivationsState {
-  bindings: Map<string, any>;
+  bindings: Map<string, BindingInfo>;
   derivations: Record<string, DerivationBase>;
   fixedValues: Map<string, any>;
   discrete: Record<string, boolean>;
