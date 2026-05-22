@@ -31,7 +31,7 @@
   // `in` is the membership comparison operator in all three variants;
   // `true`/`false`/`True`/`False` are boolean keywords (variant-
   // specific spelling, but treated uniformly by the highlighter).
-  var KEYWORD_NAMES = new Set([
+  const KEYWORD_NAMES = new Set([
     'and', 'or', 'not', 'in',
     'true', 'false', 'True', 'False',
   ]);
@@ -54,7 +54,7 @@
   // Token types that map to the generic operator class. Includes the
   // new variant operators: TILDE (`~`), CARET (`^`), AMPAMP (`&&`),
   // PIPEPIPE (`||`), BANG (`!`). SEMI (`;`) is treated as punctuation.
-  var OP_TOKEN_TYPES = new Set([
+  const OP_TOKEN_TYPES = new Set([
     'EQUALS', 'EQEQ', 'NEQ',
     'LT', 'GT', 'LTE', 'GTE',
     'PLUS', 'MINUS', 'STAR', 'SLASH',
@@ -62,7 +62,7 @@
   ]);
 
   function classifyToken(tok: any) {
-    var t = tok.type;
+    const t = tok.type;
     if (t === 'COMMENT')     return 'tok-comment';
     if (t === 'STRING')      return 'tok-string';
     if (t === 'NUMBER')      return 'tok-number';
@@ -76,8 +76,8 @@
   // we can convert the tokenizer's (line, col) positions to source
   // offsets in O(1).
   function computeLineStarts(src: any) {
-    var starts = [0];
-    for (var i = 0; i < src.length; i++) {
+    const starts = [0];
+    for (let i = 0; i < src.length; i++) {
       if (src.charCodeAt(i) === 10 /* \n */) starts.push(i + 1);
     }
     return starts;
@@ -105,7 +105,7 @@
    * @returns {string} HTML safe to insert via innerHTML
    */
   function highlight(source: any, bindings: any, opts: any) {
-    var FE = globalScope.FlatPPLEngine;
+    const FE = globalScope.FlatPPLEngine;
     if (!FE || typeof FE.tokenize !== 'function') {
       // Engine missing — degrade gracefully to escaped raw text so
       // the pane still shows something useful.
@@ -115,15 +115,15 @@
     // itself is variant-agnostic for the operator set we currently
     // care about (it always emits TILDE / AMPAMP / etc), but passing
     // the variant keeps the public API future-proof.
-    var variant = FE.variants && FE.variants.resolveVariant
+    const variant = FE.variants && FE.variants.resolveVariant
       ? FE.variants.resolveVariant(opts) : undefined;
-    var B = FE.builtins;
-    var tokenizeResult = FE.tokenize(source, variant);
-    var tokens = tokenizeResult.tokens || [];
-    var lineStarts = computeLineStarts(source);
+    const B = FE.builtins;
+    const tokenizeResult = FE.tokenize(source, variant);
+    const tokens = tokenizeResult.tokens || [];
+    const lineStarts = computeLineStarts(source);
 
     function offsetOf(line: any, col: any) {
-      var ls = lineStarts[line];
+      const ls = lineStarts[line];
       return (typeof ls === 'number' ? ls : 0) + col;
     }
 
@@ -131,11 +131,11 @@
     // construction (strings end at \n, comments end at \n, numbers
     // never contain whitespace), so a single map keyed by start.line
     // is enough to drive a per-line wrapper layer.
-    var tokensByLine = new Map();
-    for (var t = 0; t < tokens.length; t++) {
-      var tk = tokens[t];
+    const tokensByLine = new Map();
+    for (let t = 0; t < tokens.length; t++) {
+      const tk = tokens[t];
       if (tk.type === 'EOF' || tk.type === 'NEWLINE') continue;
-      var ln = tk.loc.start.line;
+      const ln = tk.loc.start.line;
       if (!tokensByLine.has(ln)) tokensByLine.set(ln, []);
       tokensByLine.get(ln).push(tk);
     }
@@ -144,9 +144,9 @@
     // HTML string; uses `bindings` to decide which idents get the
     // data-binding hook for cross-pane navigation.
     function renderToken(tok: any) {
-      var start = offsetOf(tok.loc.start.line, tok.loc.start.col);
-      var end   = offsetOf(tok.loc.end.line,   tok.loc.end.col);
-      var cls, extraAttr = '';
+      const start = offsetOf(tok.loc.start.line, tok.loc.start.col);
+      const end   = offsetOf(tok.loc.end.line,   tok.loc.end.col);
+      let cls, extraAttr = '';
       if (tok.type === 'IDENT') {
         cls = classifyIdentifier(tok.value, bindings, B);
         if (bindings && bindings.has(tok.value)) {
@@ -166,24 +166,24 @@
     // Compute the total line count. lineStarts has one entry per line;
     // a trailing newline produces an empty final line which we still
     // wrap so its `data-line` attribute exists for scroll lookups.
-    var totalLines = lineStarts.length;
+    let totalLines = lineStarts.length;
     if (source.length === 0) totalLines = 1;
 
-    var out: string[] = [];
-    for (var line = 0; line < totalLines; line++) {
-      var lineStart = lineStarts[line];
+    const out: string[] = [];
+    for (let line = 0; line < totalLines; line++) {
+      const lineStart = lineStarts[line];
       // Position of the trailing \n, or source.length for the last line.
-      var nextLineStart = (line + 1 < lineStarts.length) ? lineStarts[line + 1] : source.length + 1;
-      var lineContentEnd = (nextLineStart > source.length) ? source.length : nextLineStart - 1;
+      const nextLineStart = (line + 1 < lineStarts.length) ? lineStarts[line + 1] : source.length + 1;
+      const lineContentEnd = (nextLineStart > source.length) ? source.length : nextLineStart - 1;
 
       out.push('<span class="src-line" data-line="' + line + '">');
 
-      var pos = lineStart;
-      var lineTokens = tokensByLine.get(line) || [];
-      for (var j = 0; j < lineTokens.length; j++) {
-        var tok = lineTokens[j];
-        var ts = offsetOf(tok.loc.start.line, tok.loc.start.col);
-        var te = offsetOf(tok.loc.end.line,   tok.loc.end.col);
+      let pos = lineStart;
+      const lineTokens = tokensByLine.get(line) || [];
+      for (let j = 0; j < lineTokens.length; j++) {
+        const tok = lineTokens[j];
+        const ts = offsetOf(tok.loc.start.line, tok.loc.start.col);
+        const te = offsetOf(tok.loc.end.line,   tok.loc.end.col);
         if (ts > pos) out.push(escape(source.slice(pos, ts)));
         out.push(renderToken(tok));
         pos = te;

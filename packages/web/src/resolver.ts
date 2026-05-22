@@ -29,7 +29,7 @@
   // URL → fetched text. Conservative cache: never expires within a
   // session (the user reloads the page if they edit a file on disk).
   // The browser's HTTP cache backs this for cross-page reuse.
-  var sourceCache = new Map();
+  const sourceCache = new Map();
 
   /**
    * Fetch a single .flatppl source by URL.
@@ -39,7 +39,7 @@
   async function fetchSource(url: any) {
     if (sourceCache.has(url)) return sourceCache.get(url);
 
-    var response;
+    let response;
     try {
       response = await fetch(url);
     } catch (e: any) {
@@ -48,7 +48,7 @@
     if (!response.ok) {
       throw new Error(response.status + ' ' + response.statusText + ' at ' + url);
     }
-    var text = await response.text();
+    const text = await response.text();
     sourceCache.set(url, text);
     return text;
   }
@@ -68,7 +68,7 @@
     // shape compatible with everything else (variantForPath picks
     // the right syntax, the router round-trips it through the
     // URL hash, the editor mounts on it).
-    var eph = globalScope.FlatPPLWebEphemeral;
+    const eph = globalScope.FlatPPLWebEphemeral;
     if (eph && eph.has && eph.has(primaryPath)) {
       return {
         primaryPath: primaryPath,
@@ -77,8 +77,8 @@
         sources: Object.create(null),
       };
     }
-    var url = new URL(primaryPath, document.baseURI).href;
-    var primarySource = await fetchSource(url);
+    const url = new URL(primaryPath, document.baseURI).href;
+    const primarySource = await fetchSource(url);
     return {
       primaryPath: primaryPath,
       primaryUrl: url,
@@ -94,7 +94,7 @@
    * file has changed (e.g. a future "reload" button).
    */
   function invalidate(pathOrUrl: any) {
-    var url;
+    let url;
     try { url = new URL(pathOrUrl, document.baseURI).href; }
     catch (_) { url = pathOrUrl; }
     sourceCache.delete(url);

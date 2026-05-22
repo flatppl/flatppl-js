@@ -22,11 +22,11 @@
   // path → source-text. Map preserves insertion order, which the
   // app uses to render the "Unsaved" section in the order entries
   // were created.
-  var store = new Map();
+  const store = new Map();
 
   // Listeners notified when an entry is added / removed / updated.
   // The app subscribes once at boot to re-render the file tree.
-  var listeners = new Set<() => void>();
+  const listeners = new Set<() => void>();
 
   function emit() {
     listeners.forEach(function (fn) {
@@ -44,7 +44,7 @@
       an array of `{ path, text }` so the caller can render them
       without mutating the underlying map. */
   function list() {
-    var out: any[] = [];
+    const out: any[] = [];
     store.forEach(function (text: any, path: any) { out.push({ path: path, text: text }); });
     return out;
   }
@@ -85,10 +85,10 @@
       real `demo/`, `examples/` paths. The numeric suffix
       increments past any path already in the store. */
   function nextUntitled(extension: any) {
-    var ext = extension || '.flatppl';
-    var n = 1;
+    const ext = extension || '.flatppl';
+    let n = 1;
     for (;;) {
-      var candidate = 'new/untitled-' + n + ext;
+      const candidate = 'new/untitled-' + n + ext;
       if (!store.has(candidate)) return candidate;
       n += 1;
     }
