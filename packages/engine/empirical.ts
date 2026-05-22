@@ -730,6 +730,6 @@ module.exports = {
   // Multivariate
   recordMeasure, tupleMeasure, arrayMeasure, shapeOf,
   // Importance-sampling diagnostics
-  paretoKHat, paretoKThreshold, gpdShapeZhangStephens,
+  paretoKHat, paretoKThreshold,
   importanceSamplingQuality, estimateDof,
 };

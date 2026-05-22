@@ -1892,7 +1892,6 @@ function findEnclosingRanges(ast: any, line: number, col: number) {
 module.exports = {
   analyze, classifyStatement, collectDeps,
   extractBoundaries, extractJointFields, detectDisintegration,
-  validateHolesAndPlaceholders,
   computePhases, computePhasesForScope, isMeasureExpr,
   collectIdentRefs, sliceSource,
   planRename, isValidBindingName, isValidPlaceholderText,

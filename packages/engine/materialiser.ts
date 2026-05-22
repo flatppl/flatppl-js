@@ -2670,5 +2670,4 @@ module.exports = {
   // Phase 4 helpers — Value ↔ Measure bridges.
   valueOf,
   measureFromValue,
-  measureN,
 };
