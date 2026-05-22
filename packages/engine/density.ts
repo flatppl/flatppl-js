@@ -93,7 +93,7 @@ function consumeScalar(value: any) {
     throw new Error('density: scalar leaf has no entry to consume (value exhausted)');
   }
   if (typeof value === 'number') return { head: value, rest: null };
-  // Shape-explicit Value (Phase 5): a rank-1 Value behaves like a
+  // Shape-explicit Value: a rank-1 Value behaves like a
   // typed array; rank-0 yields head and a null rest. Higher-rank
   // Values (matrix observations) can't be consumed by a scalar leaf.
   if (valueLib.isValue(value)) {
@@ -132,7 +132,7 @@ function consumeScalar(value: any) {
 
 /**
  * Pull the leading n-vector off a value, used by multivariate leaves
- * (MvNormal in Phase 6, Dirichlet in follow-ups). Returns:
+ * (MvNormal today; Dirichlet/Wishart/LKJ etc. via their direct mat* paths). Returns:
  *
  *   { head: Float64Array(n) or Value shape=[n], rest }
  *
@@ -371,7 +371,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   // win over per-atom refs.
   //
   // refArrays entries are either Float64Array (scalar-atom parent) or
-  // Value (Phase 7b vector-atom parent). Pre-compute the access
+  // Value (vector-atom parent). Pre-compute the access
   // pattern so the inner loop stays branch-free.
   const callEnv = Object.assign({}, baseEnv);
   const accessors = new Array(refNames.length);
@@ -855,7 +855,7 @@ const OP_HANDLERS = {
 // precedence (overlay > refArrays > baseEnv) but enforced inside
 // evaluateExprN.
 // =====================================================================
-// MvNormal — closed-form multivariate Normal density (Phase 6)
+// MvNormal — closed-form multivariate Normal density
 // =====================================================================
 //
 // Per spec §08: MvNormal(mu, cov) is the n-variate normal with mean

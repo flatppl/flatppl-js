@@ -8,36 +8,26 @@
 // materialiseMeasure(name, ctx) returns a Promise<Measure> describing
 // the binding's empirical distribution.
 //
-// The Measure record is the EmpiricalMeasure shape from empirical.js
-// extended with two scalar metadata fields, plus an internal Value
-// view (shape-explicit refactor, Phase 4):
+// EmpiricalMeasure (engine-types.d.ts) shape:
 //
-//   { samples:      Float64Array,             // per-atom values (legacy view)
-//     value?:       Value,                    // shape-explicit view (Phase 4)
+//   { samples:      Float64Array,             // per-atom values (scalar-leaf view)
+//     value?:       Value,                    // shape-explicit view
 //     logWeights:   Float64Array | null,      // null = uniform 1/N
 //     logTotalmass: number,                   // default 0 (= totalmass 1)
 //     n_eff:        number,                   // default = samples.length
 //     fields?:      { name → Measure },       // record/joint shape
 //     elems?:       Measure[],                // tuple shape
 //     shape?:       'record' | 'tuple' | 'array',  // kind discriminator (string)
-//     dims?:        number[],                 // legacy intrinsic-dim suffix for
+//     dims?:        number[],                 // intrinsic-dim suffix for
 //                                             //   vector-atom measures (matIid)
 //     ... }
 //
-// **Phase 4 contract.** The internal `.value` field carries the
-// shape-explicit Value (see engine/value.js) for scalar-leaf measures
-// — i.e. measures whose atoms are real-valued and not records/tuples.
+// `.value` carries the shape-explicit Value (see engine/value.ts) for
+// scalar-leaf measures — atoms are real-valued and not records/tuples.
 // `.value.shape` includes the leading N (atom count) axis: shape=[N]
 // for scalar atoms, shape=[N, k] for k-vector atoms (matIid), etc.
-// `.value.data` shares storage with the legacy `.samples` Float64Array
-// (no copy). The Klein-4 transpose tag is preserved through value-ops
-// dispatch.
-//
-// Phase 4a (this commit) introduces the helpers `valueOf(m)` and
-// `measureFromValue(v, extras)` plus documents the contract. The
-// handlers themselves still produce the legacy shape; Phase 4b
-// migrates each handler to populate `.value` and the consumers
-// (density.js Phase 5, MvNormal Phase 6) start reading via `valueOf`.
+// `.value.data` shares storage with `.samples` (no copy). The Klein-4
+// transpose tag is preserved through value-ops dispatch.
 //
 // `logTotalmass` is on the log scale so deep compositions (iid^n,
 // chain of weighted, …) stay representable when raw totalmass would
@@ -146,20 +136,17 @@ function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
   return Promise.all(names.map(getMeasure)).then((measures: any[]) => {
     const out: any = {};
     for (let i = 0; i < names.length; i++) {
-      // Phase 8: refArrays uniformly carry Values internally. Phase 4b
-      // ensures every scalar-leaf Measure has a populated `.value`
-      // (shape=[N] for scalar atoms, shape=[N, ...dims] for vector
-      // atoms). Consumers — _perAtomFallback / walkLeaf accessors,
-      // broadcast helpers — assume Value inputs and dispatch on shape.
-      // The legacy "Float64Array for scalar-atom parents" path is gone;
-      // the uniform Value type is the single internal contract.
+      // refArrays uniformly carry Values internally. Every scalar-leaf
+      // Measure has a populated `.value` (shape=[N] for scalar atoms,
+      // shape=[N, ...dims] for vector atoms). Consumers
+      // (_perAtomFallback / walkLeaf accessors, broadcast helpers)
+      // assume Value inputs and dispatch on shape.
       const m = measures[i];
       if (m.value) {
         out[names[i]] = m.value;
       } else if (m.samples) {
-        // Defensive: pre-Phase-4b measures (shouldn't exist post-
-        // migration, but guard for hand-crafted Measure inputs in
-        // tests that bypass the materialiser).
+        // Defensive: hand-crafted Measure inputs in tests that bypass
+        // the materialiser may omit `.value`.
         out[names[i]] = valueLib.batchedScalar(m.samples);
       } else {
         // No data at all — shouldn't happen for scalar-leaf measures.
@@ -247,9 +234,9 @@ function measureN(m: any) {
 }
 
 /**
- * Return a Value view of a scalar-leaf measure (Phase 4 helper). The
- * Value's `data` SHARES STORAGE with `m.samples` — no copy. Shape is
- * computed from the legacy `.dims` suffix:
+ * Return a Value view of a scalar-leaf measure. The Value's `data`
+ * SHARES STORAGE with `m.samples` — no copy. Shape is computed from
+ * the `.dims` suffix:
  *
  *   m.dims = undefined         → shape = [N]            (scalar atoms)
  *   m.dims = [k]               → shape = [N, k]         (k-vector atoms)
@@ -257,11 +244,7 @@ function measureN(m: any) {
  *
  * Returns `null` for measures without a top-level `.samples` field
  * (records / tuples — call `valueOf` on a field or element of those
- * instead).
- *
- * Prefers `m.value` if already populated (Phase 4b migration); falls
- * back to building one from `.samples` and `.dims` (works for
- * pre-migration handlers).
+ * instead). Prefers a pre-populated `m.value` if present.
  */
 function valueOf(m: any) {
   if (!m) return null;
@@ -399,10 +382,8 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
   return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
     const refArrays: any = {};
     for (let i = 0; i < parentNames.length; i++) {
-      // Phase 8: uniform Value refArrays internally. Mirrors
-      // collectRefArrays. Phase 4b populates `.value` on every
-      // scalar-leaf parent; we fall back to wrapping `.samples`
-      // defensively for pre-migration measures.
+      // Uniform Value refArrays internally — mirror collectRefArrays.
+      // Wrap `.samples` defensively for hand-crafted measures.
       const m = parentMeasures[i];
       if (m.value) {
         refArrays[parentNames[i]] = m.value;
@@ -429,10 +410,10 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
       // right answer for a deterministic transform of normalized
       // probability variates; weighted inputs propagate their mass.
       const logTotalmass = lw ? empirical.logSumExp(lw) : 0;
-      // Phase 7c: vector-output ops (softmax / l1unit / l2unit /
-      // logsoftmax) produce reply.dims; complex-valued transforms
-      // produce reply.imag. measureFromReply handles both (and the
-      // plain scalar-real case) uniformly.
+      // Vector-output ops (softmax / l1unit / l2unit / logsoftmax)
+      // produce reply.dims; complex-valued transforms produce
+      // reply.imag. measureFromReply handles both (and the plain
+      // scalar-real case) uniformly.
       return measureFromReply(reply, ctx.sampleCount, {
         logWeights: lw,
         logTotalmass: logTotalmass,
@@ -1230,8 +1211,6 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
 }
 
 function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
-  // Phase 6 of the shape-explicit refactor.
-  //
   // MvNormal(mu, cov) — per spec §08, samples are n-vectors with
   // x ~ Normal_n(mu, cov). Implementation routes through the spec
   // equivalence  pushfwd(fn(mu + L*_), iid(Normal(0,1), n))  but
@@ -2667,7 +2646,7 @@ module.exports = {
   collectRefArrays,
   nameSeed,
   makeMainThreadPrng,
-  // Phase 4 helpers — Value ↔ Measure bridges.
+  // Value ↔ Measure bridges.
   valueOf,
   measureFromValue,
 };

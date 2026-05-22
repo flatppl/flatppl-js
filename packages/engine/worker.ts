@@ -90,7 +90,7 @@ const rngLib = require('./rng.ts');
 const samplerLib = require('./sampler.ts');
 const densityLib = require('./density.ts');
 
-// Phase 8: refArrays now uniformly carry Values (post-Phase-7b/8
+// refArrays uniformly carry Values internally (post-
 // unification). Worker handlers like sampleN / truncateSampleN read
 // refArrays per-atom via `refArrays[k][i]` and only need the scalar
 // per-atom value, not shape metadata. Unwrap Values to their data
@@ -142,7 +142,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
     const id = msg.id;
     // Normalise refArrays at the worker boundary: shape=[N] Values
     // unwrap to bare Float64Arrays so handler hot loops stay simple.
-    // Phase 8: this is the boundary between the engine's internal
+    // This is the boundary between the engine's internal
     // Value contract and the worker's bytes-friendly index path.
     if (msg && msg.refArrays) msg = { ...msg, refArrays: _unwrapRefArrays(msg.refArrays) };
     try {
@@ -304,7 +304,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
                 && result.im && result.im.BYTES_PER_ELEMENT !== undefined) {
               imag = result.im;
             }
-            // Phase 7c: Value result (shape-tagged). Atom-batched
+            // Value result (shape-tagged). Atom-batched
             // scalar (shape=[N]) returns the data buffer; vector-atom
             // (shape=[N, k]) returns the flat data + dims so the
             // materialiser can mark the resulting Measure as

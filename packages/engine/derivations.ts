@@ -632,8 +632,7 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
     // handlers (matMvNormal etc.) — they produce vector atoms
     // (shape=[N, n]) rather than scalar atoms, and use closed-form
     // density walkers (walkMvNormal etc.) instead of the per-leaf
-    // logpdf dispatch in walkLeaf. Added as Phase 6 of the shape-
-    // explicit refactor.
+    // logpdf dispatch in walkLeaf. 
     if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
         && normalizedRhsIR.op === 'MvNormal') {
       return { kind: 'mvnormal', distIR: normalizedRhsIR };
@@ -1152,7 +1151,7 @@ function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationBr
 // the same primitive that drives bayesupdate's reweight, just exposed
 // as a scalar binding rather than folded into a posterior.
 //
-// Supported shape (Phase 1):
+// Supported shape:
 //   - M is a self-ref to a measure binding (sample / record / iid /
 //     algebraic combinator chain — anything expandMeasureIR handles).
 //   - x is resolvable to a concrete JS value (literal, array binding,
@@ -1196,7 +1195,7 @@ function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any): DerivationTo
  * NOT normalize — the resulting measure carries M(S) as its
  * totalmass, which the materialiser surfaces via logTotalmass.
  *
- * Supported shape (Phase 1):
+ * Supported shape:
  *   - M is a self-ref to a measure binding (anything resolveMeasureBaseName
  *     accepts; the materialiser walks the parent measure for samples).
  *   - S is a literal set expression parseSetIR can lift to a structural
@@ -1704,7 +1703,7 @@ function expandMeasureIR(name: string, derivations: any, visited?: any, bindings
         // in its kwargs are value refs (per-i params).
         return d.distIR;
       case 'mvnormal':
-        // Multivariate sampleable distribution (Phase 6). Same
+        // Multivariate sampleable distribution. Same
         // treatment as 'sample': return the IR verbatim; the density
         // walker has a dedicated handler keyed on the op name
         // (walkMvNormal in density.js OP_HANDLERS).

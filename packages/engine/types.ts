@@ -9,7 +9,7 @@
 // classification (was: isMeasureExpr, MEASURE_PRODUCING, the
 // orchestrator's argSignature, etc.).
 //
-// Scope (this commit, Phase 1)
+// Scope
 // ============================
 // Implemented categories:
 //   %deferred, (%failed reason), %any, (%scalar prim), (%array rank shape elem),
