@@ -23,10 +23,10 @@
 'use strict';
 
 (function (globalScope: any) {
-  var STORAGE_KEY = 'flatppl-web-layout-v1';
+  const STORAGE_KEY = 'flatppl-web-layout-v1';
 
   // Sane defaults — match the original step-1.2 grid.
-  var DEFAULTS = Object.freeze({
+  const DEFAULTS = Object.freeze({
     filesWidth: 240,
     sourceFrac: 1.0,
     viewerFrac: 1.5,
@@ -34,11 +34,11 @@
   });
 
   // Width clamps so the user can't drag a pane to disappear.
-  var MIN_FILES_WIDTH  = 120;
-  var MAX_FILES_WIDTH  = 600;
-  var MIN_PANE_PX      = 200;   // applied to source / viewer post-handle
+  const MIN_FILES_WIDTH  = 120;
+  const MAX_FILES_WIDTH  = 600;
+  const MIN_PANE_PX      = 200;   // applied to source / viewer post-handle
 
-  var HANDLE_PX = 5;
+  const HANDLE_PX = 5;
 
   // Mutable layout state. Object.freeze on DEFAULTS would otherwise
   // make `Object.assign({}, DEFAULTS)` infer as Readonly<…>, breaking
@@ -52,9 +52,9 @@
 
   function loadState(): LayoutState {
     try {
-      var raw = globalScope.localStorage && globalScope.localStorage.getItem(STORAGE_KEY);
+      const raw = globalScope.localStorage && globalScope.localStorage.getItem(STORAGE_KEY);
       if (!raw) return Object.assign({}, DEFAULTS) as LayoutState;
-      var parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw);
       return {
         filesWidth: clamp(parsed.filesWidth, MIN_FILES_WIDTH, MAX_FILES_WIDTH, DEFAULTS.filesWidth),
         sourceFrac: clamp(parsed.sourceFrac, 0.2, 10,            DEFAULTS.sourceFrac),
@@ -87,28 +87,28 @@
       { toggleFiles, isCollapsed }. */
   function install(opts: any) {
     opts = opts || {};
-    var app          = document.getElementById('app');
-    var filesPane    = document.getElementById('files-pane');
-    var sourcePane   = document.getElementById('source-pane');
-    var viewerPane   = document.getElementById('viewer-pane');
-    var toggleButton = opts.toggleButton || null;
+    const app          = document.getElementById('app');
+    const filesPane    = document.getElementById('files-pane');
+    const sourcePane   = document.getElementById('source-pane');
+    const viewerPane   = document.getElementById('viewer-pane');
+    const toggleButton = opts.toggleButton || null;
     if (!app || !filesPane || !sourcePane || !viewerPane) {
       console.warn('[@flatppl/web] layout.install: required elements missing');
       return null;
     }
 
-    var state = loadState();
+    const state = loadState();
 
     // Insert two drag handles into the grid: one between files and
     // source, one between source and viewer. Each is a thin element
     // the user can grab to redistribute width.
-    var handleFS = createHandle('files-source');
-    var handleSV = createHandle('source-viewer');
+    const handleFS = createHandle('files-source');
+    const handleSV = createHandle('source-viewer');
     sourcePane.parentNode!.insertBefore(handleFS, sourcePane);
     viewerPane.parentNode!.insertBefore(handleSV, viewerPane);
 
     function createHandle(id: any) {
-      var el = document.createElement('div');
+      const el = document.createElement('div');
       el.className = 'resize-handle';
       el.dataset.resize = id;
       el.title = 'Drag to resize';
@@ -116,8 +116,8 @@
     }
 
     function applyGrid() {
-      var filesPart = state.collapsed ? '0px' : (state.filesWidth + 'px');
-      var handleFSPart = state.collapsed ? '0px' : (HANDLE_PX + 'px');
+      const filesPart = state.collapsed ? '0px' : (state.filesWidth + 'px');
+      const handleFSPart = state.collapsed ? '0px' : (HANDLE_PX + 'px');
       app!.style.gridTemplateColumns =
         filesPart + ' ' +
         handleFSPart + ' ' +
@@ -144,36 +144,36 @@
 
     function startDrag(which: any, startX: any) {
       // Capture starting metrics so the drag is purely additive.
-      var rect = app!.getBoundingClientRect();
-      var totalW = rect.width;
+      const rect = app!.getBoundingClientRect();
+      const totalW = rect.width;
       // Width consumed by file pane + first handle (px-sized).
-      var fixedPx = (state.collapsed ? 0 : state.filesWidth + HANDLE_PX);
+      const fixedPx = (state.collapsed ? 0 : state.filesWidth + HANDLE_PX);
       // Width consumed by the second handle.
-      var trailingPx = HANDLE_PX;
+      const trailingPx = HANDLE_PX;
       // The source + viewer share (totalW - fixedPx - trailingPx).
       // We map that to fr-units 1.0 baseline so total fr =
       // sourceFrac + viewerFrac.
-      var totalFr = state.sourceFrac + state.viewerFrac;
-      var startFilesW = state.filesWidth;
-      var startSourceFrac = state.sourceFrac;
-      var startViewerFrac = state.viewerFrac;
+      const totalFr = state.sourceFrac + state.viewerFrac;
+      const startFilesW = state.filesWidth;
+      const startSourceFrac = state.sourceFrac;
+      const startViewerFrac = state.viewerFrac;
 
       function onMove(mv: any) {
-        var dx = mv.clientX - startX;
+        const dx = mv.clientX - startX;
         if (which === 'files-source' && !state.collapsed) {
           // Adjust the file-pane width directly.
           state.filesWidth = clamp(startFilesW + dx, MIN_FILES_WIDTH, MAX_FILES_WIDTH, startFilesW);
         } else if (which === 'source-viewer') {
           // Convert dx (px) to fr (relative to source+viewer area).
-          var area = totalW - fixedPx - trailingPx;
+          const area = totalW - fixedPx - trailingPx;
           if (area <= 0) return;
-          var frPerPx = totalFr / area;
-          var newSourceFrac = startSourceFrac + dx * frPerPx;
-          var newViewerFrac = startViewerFrac - dx * frPerPx;
+          const frPerPx = totalFr / area;
+          let newSourceFrac = startSourceFrac + dx * frPerPx;
+          let newViewerFrac = startViewerFrac - dx * frPerPx;
           // Apply min-width clamp by converting back: each pane must
           // be ≥ MIN_PANE_PX of pixel width.
-          var sourcePx = newSourceFrac / totalFr * area;
-          var viewerPx = newViewerFrac / totalFr * area;
+          const sourcePx = newSourceFrac / totalFr * area;
+          const viewerPx = newViewerFrac / totalFr * area;
           if (sourcePx < MIN_PANE_PX) {
             newSourceFrac = MIN_PANE_PX / area * totalFr;
             newViewerFrac = totalFr - newSourceFrac;

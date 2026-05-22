@@ -27,15 +27,15 @@
 (function (globalScope: any) {
   /** Parse the current location.hash into { model, target }. */
   function parseHash() {
-    var raw = (globalScope.location && globalScope.location.hash) || '';
+    let raw = (globalScope.location && globalScope.location.hash) || '';
     if (raw.charAt(0) === '#') raw = raw.slice(1);
-    var out: { model: string | null; target: string | null } = { model: null, target: null };
+    const out: { model: string | null; target: string | null } = { model: null, target: null };
     if (!raw) return out;
-    var parts = raw.split('&');
-    for (var i = 0; i < parts.length; i++) {
-      var eq = parts[i].indexOf('=');
+    const parts = raw.split('&');
+    for (let i = 0; i < parts.length; i++) {
+      const eq = parts[i].indexOf('=');
       if (eq <= 0) continue;
-      var key = parts[i].slice(0, eq);
+      const key = parts[i].slice(0, eq);
       var val;
       try { val = decodeURIComponent(parts[i].slice(eq + 1)); }
       catch (_) { val = parts[i].slice(eq + 1); }
@@ -47,7 +47,7 @@
 
   /** Serialize { model, target } back to a hash string (no leading #). */
   function serialize(state: any) {
-    var parts: string[] = [];
+    const parts: string[] = [];
     if (state.model)  parts.push('model=' + encodeURIComponent(state.model));
     if (state.target) parts.push('target=' + encodeURIComponent(state.target));
     return parts.join('&');
@@ -61,13 +61,13 @@
    * has one place to live.
    */
   function navigateTo(state: any) {
-    var next = serialize(state);
-    var current = (globalScope.location.hash || '').replace(/^#/, '');
+    const next = serialize(state);
+    const current = (globalScope.location.hash || '').replace(/^#/, '');
     if (next === current) return;
     globalScope.location.hash = next;
   }
 
-  var changeListeners: Array<(state: any) => void> = [];
+  const changeListeners: Array<(state: any) => void> = [];
 
   /** Register a callback fired on every hash navigation. */
   function onChange(fn: any) {
@@ -76,13 +76,13 @@
 
   // De-dupe consecutive identical states so a single in-place
   // hash assignment doesn't trigger a duplicate callback.
-  var lastSerialized: string | null = null;
+  let lastSerialized: string | null = null;
   function emitIfChanged() {
-    var state = parseHash();
-    var ser = serialize(state);
+    const state = parseHash();
+    const ser = serialize(state);
     if (ser === lastSerialized) return;
     lastSerialized = ser;
-    for (var i = 0; i < changeListeners.length; i++) {
+    for (let i = 0; i < changeListeners.length; i++) {
       try { changeListeners[i](state); }
       catch (e) { console.error('[@flatppl/web] router listener error:', e); }
     }

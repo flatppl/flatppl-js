@@ -32,11 +32,11 @@
   // Override at boot if a host wants a different filename
   // (e.g. for a multi-gallery deploy that selects between
   // `index/<topic>.json` files).
-  var MANIFEST_URL = 'models.json';
+  const MANIFEST_URL = 'models.json';
 
   /** Strip everything before the last '/' from a path. */
   function basename(p: any) {
-    var i = p.lastIndexOf('/');
+    const i = p.lastIndexOf('/');
     return i < 0 ? p : p.slice(i + 1);
   }
 
@@ -48,13 +48,13 @@
    * for forward compatibility.
    */
   function normalize(raw: any) {
-    var out: { title: string; entries: any[] } = {
+    const out: { title: string; entries: any[] } = {
       title:   typeof raw.title === 'string' ? raw.title : 'FlatPPL',
       entries: [],
     };
     if (Array.isArray(raw.entries)) {
-      for (var i = 0; i < raw.entries.length; i++) {
-        var e = raw.entries[i];
+      for (let i = 0; i < raw.entries.length; i++) {
+        const e = raw.entries[i];
         if (!e || typeof e.path !== 'string') continue;
         out.entries.push({
           path: e.path,
@@ -74,7 +74,7 @@
    */
   async function load(url?: any) {
     url = url || MANIFEST_URL;
-    var response;
+    let response;
     try {
       response = await fetch(url);
     } catch (e: any) {
@@ -83,8 +83,8 @@
     if (!response.ok) {
       throw new Error(response.status + ' ' + response.statusText + ' at ' + url);
     }
-    var text = await response.text();
-    var raw;
+    const text = await response.text();
+    let raw;
     try { raw = JSON.parse(text); }
     catch (e: any) { throw new Error('Manifest parse error at ' + url + ': ' + e.message); }
     return normalize(raw);

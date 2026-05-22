@@ -36,14 +36,14 @@
 'use strict';
 
 (function (globalScope: any) {
-  var BUNDLE_URL = 'vendor/codemirror.min.js';
-  var loadPromise: Promise<any> | null = null;
+  const BUNDLE_URL = 'vendor/codemirror.min.js';
+  let loadPromise: Promise<any> | null = null;
 
   function loadBundle() {
     if (globalScope.FlatPPLEditorBundle) return Promise.resolve(globalScope.FlatPPLEditorBundle);
     if (loadPromise) return loadPromise;
     loadPromise = new Promise(function (resolve, reject) {
-      var s = document.createElement('script');
+      const s = document.createElement('script');
       s.src = BUNDLE_URL;
       s.async = true;
       s.onload = function () {
@@ -74,7 +74,7 @@
   }
 
   function classifyToken(tok: any) {
-    var t = tok.type;
+    const t = tok.type;
     if (t === 'COMMENT')     return 'tok-comment';
     if (t === 'STRING')      return 'tok-string';
     if (t === 'NUMBER')      return 'tok-number';
@@ -89,15 +89,15 @@
   }
 
   function computeLineStarts(src: any) {
-    var starts = [0];
-    for (var i = 0; i < src.length; i++) {
+    const starts = [0];
+    for (let i = 0; i < src.length; i++) {
       if (src.charCodeAt(i) === 10 /* \n */) starts.push(i + 1);
     }
     return starts;
   }
 
   function offsetOf(loc: any, lineStarts: any) {
-    var ls = lineStarts[loc.line];
+    const ls = lineStarts[loc.line];
     return (typeof ls === 'number' ? ls : 0) + loc.col;
   }
 
@@ -106,34 +106,34 @@
       (which would force the gallery to depend on it even in
       non-playground mode). */
   function makeHighlightPlugin(bundle: any) {
-    var ViewPlugin = bundle.ViewPlugin;
-    var Decoration = bundle.Decoration;
-    var FE = globalScope.FlatPPLEngine;
-    var B = FE && FE.builtins;
+    const ViewPlugin = bundle.ViewPlugin;
+    const Decoration = bundle.Decoration;
+    const FE = globalScope.FlatPPLEngine;
+    const B = FE && FE.builtins;
 
     function buildDecorations(view: any) {
       if (!FE || !B) return Decoration.none;
-      var text = view.state.doc.toString();
-      var bindings: Set<unknown> | null = null;
+      const text = view.state.doc.toString();
+      let bindings: Set<unknown> | null = null;
       try {
-        var processed = FE.processSource(text);
+        const processed = FE.processSource(text);
         if (processed && processed.bindings) {
           bindings = new Set(processed.bindings.keys());
         }
       } catch (_) { bindings = null; }
 
-      var tokens = FE.tokenize(text).tokens || [];
-      var lineStarts = computeLineStarts(text);
-      var ranges: any[] = [];
-      for (var i = 0; i < tokens.length; i++) {
-        var tok = tokens[i];
+      const tokens = FE.tokenize(text).tokens || [];
+      const lineStarts = computeLineStarts(text);
+      const ranges: any[] = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i];
         if (tok.type === 'EOF' || tok.type === 'NEWLINE') continue;
-        var from = offsetOf(tok.loc.start, lineStarts);
-        var to   = offsetOf(tok.loc.end,   lineStarts);
+        const from = offsetOf(tok.loc.start, lineStarts);
+        const to   = offsetOf(tok.loc.end,   lineStarts);
         if (to <= from) continue;
 
         var cls;
-        var attrs: { 'data-binding': any } | null = null;
+        let attrs: { 'data-binding': any } | null = null;
         if (tok.type === 'IDENT') {
           cls = classifyIdentifier(tok.value, bindings, B);
           if (bindings && bindings.has(tok.value)) {
@@ -197,7 +197,7 @@
 
   function mountEditor(container: any, opts: any) {
     opts = opts || {};
-    var bundle = globalScope.FlatPPLEditorBundle;
+    const bundle = globalScope.FlatPPLEditorBundle;
     if (!bundle) {
       throw new Error('FlatPPLEditorBundle missing — call loadBundle() first');
     }
@@ -220,17 +220,17 @@
     //   LHS and RHS binding spans — the destination is the LHS in
     //   both cases.
     function jumpToBindingDefinition(name: any) {
-      var FE = globalScope.FlatPPLEngine;
+      const FE = globalScope.FlatPPLEngine;
       if (!FE) return;
-      var doc = view.state.doc.toString();
-      var processed;
+      const doc = view.state.doc.toString();
+      let processed;
       try { processed = FE.processSource(doc); } catch (_) { return; }
       if (!processed || !processed.bindings || !processed.bindings.has(name)) return;
-      var b = processed.bindings.get(name);
-      var nameLoc = b && b.nameLoc && b.nameLoc.start;
+      const b = processed.bindings.get(name);
+      const nameLoc = b && b.nameLoc && b.nameLoc.start;
       if (!nameLoc) return;
-      var lineStarts = computeLineStarts(doc);
-      var pos = (lineStarts[nameLoc.line] || 0) + (nameLoc.col || 0);
+      const lineStarts = computeLineStarts(doc);
+      const pos = (lineStarts[nameLoc.line] || 0) + (nameLoc.col || 0);
       view.dispatch({
         selection: { anchor: pos },
         effects: bundle.EditorView.scrollIntoView(pos, { y: 'center' }),
@@ -238,11 +238,11 @@
       view.focus();
     }
 
-    var domEventHandlers = {
+    const domEventHandlers = {
       mousedown: function (ev: any) {
         if (!(ev.ctrlKey || ev.metaKey)) return false;
-        var t = ev.target;
-        var name: any = null;
+        let t = ev.target;
+        let name: any = null;
         while (t) {
           if (t.dataset && t.dataset.binding) { name = t.dataset.binding; break; }
           t = t.parentNode;
@@ -263,7 +263,7 @@
     // firing onChange here would cause a redundant re-render. User-
     // typed changes still fire normally because suppressOnChange is
     // only set during dispatch and restored immediately after.
-    var suppressOnChange = false;
+    let suppressOnChange = false;
     // Suppress cursor-driven navigation specifically. Used by
     // replaceRange (host.editSource on the persist path): the doc
     // changed but no user cursor movement happened — the cursor
@@ -273,33 +273,33 @@
     // want onChange to fire (so the viewer re-renders with the
     // new source), it just doesn't want to be misread as user
     // cursor navigation.
-    var suppressNavigate = false;
+    let suppressNavigate = false;
     // Last reported binding name from cursor-driven navigation. We
     // suppress repeats so the router doesn't see a flood of
     // identical navigateTo calls when the cursor sits on a single
     // identifier across multiple updates.
-    var lastCursorBinding: any = null;
+    let lastCursorBinding: any = null;
 
     function bindingAtCursor() {
-      var FE = globalScope.FlatPPLEngine;
+      const FE = globalScope.FlatPPLEngine;
       if (!FE) return null;
-      var head = view.state.selection.main.head;
-      var doc = view.state.doc.toString();
-      var bindings: Set<unknown> | null = null;
+      const head = view.state.selection.main.head;
+      const doc = view.state.doc.toString();
+      let bindings: Set<unknown> | null = null;
       try {
-        var processed = FE.processSource(doc);
+        const processed = FE.processSource(doc);
         if (processed && processed.bindings) {
           bindings = new Set(processed.bindings.keys());
         }
       } catch (_) { return null; }
       if (!bindings) return null;
-      var tokens = FE.tokenize(doc).tokens || [];
-      var lineStarts = computeLineStarts(doc);
-      for (var i = 0; i < tokens.length; i++) {
-        var tok = tokens[i];
+      const tokens = FE.tokenize(doc).tokens || [];
+      const lineStarts = computeLineStarts(doc);
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i];
         if (tok.type !== 'IDENT') continue;
-        var from = offsetOf(tok.loc.start, lineStarts);
-        var to   = offsetOf(tok.loc.end,   lineStarts);
+        const from = offsetOf(tok.loc.start, lineStarts);
+        const to   = offsetOf(tok.loc.end,   lineStarts);
         if (head >= from && head <= to && bindings.has(tok.value)) {
           return tok.value;
         }
@@ -307,7 +307,7 @@
       return null;
     }
 
-    var docChangeListener = bundle.EditorView.updateListener.of(function (u: any) {
+    const docChangeListener = bundle.EditorView.updateListener.of(function (u: any) {
       if (suppressOnChange) return;
       if (u.docChanged && typeof opts.onChange === 'function') {
         opts.onChange(u.state.doc.toString());
@@ -323,7 +323,7 @@
       if ((u.selectionSet || u.docChanged)
           && !suppressNavigate
           && typeof opts.onNavigate === 'function') {
-        var binding = bindingAtCursor();
+        const binding = bindingAtCursor();
         if (binding !== lastCursorBinding) {
           lastCursorBinding = binding;
           if (binding) opts.onNavigate(binding);
@@ -331,7 +331,7 @@
       }
     });
 
-    var state = bundle.EditorState.create({
+    const state = bundle.EditorState.create({
       doc: typeof opts.initialSource === 'string' ? opts.initialSource : '',
       extensions: [
         bundle.lineNumbers(),
@@ -373,11 +373,11 @@
           on Ctrl-click of a DAG node) lands here in playground
           mode. */
       revealLine: function (line: any) {
-        var totalLines = view.state.doc.lines;
+        const totalLines = view.state.doc.lines;
         // CodeMirror's doc.line() is 1-indexed; the engine and our
         // read-only pane are 0-indexed. Translate + clamp.
-        var n = Math.max(1, Math.min(((line | 0) + 1), totalLines));
-        var info = view.state.doc.line(n);
+        const n = Math.max(1, Math.min(((line | 0) + 1), totalLines));
+        const info = view.state.doc.line(n);
         view.dispatch({
           selection: { anchor: info.from },
           effects: bundle.EditorView.scrollIntoView(info.from, { y: 'center' }),

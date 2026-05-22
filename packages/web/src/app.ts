@@ -20,7 +20,7 @@
 'use strict';
 
 (function () {
-  var FALLBACK_SOURCE = [
+  const FALLBACK_SOURCE = [
     '# @flatppl/web — open with #model=path/to/file.flatppl to load a real model.',
     'mu = elementof(reals)',
     'sigma = elementof(interval(0.0, inf))',
@@ -29,24 +29,24 @@
     '',
   ].join('\n');
 
-  var sourceView:   any = null;
-  var sourceHeader: any = null;
-  var fileTree:     any = null;
-  var titleEl:      any = null;
-  var viewer:       any = null;
-  var manifest:     any = null;
+  let sourceView:   any = null;
+  let sourceHeader: any = null;
+  let fileTree:     any = null;
+  let titleEl:      any = null;
+  let viewer:       any = null;
+  let manifest:     any = null;
 
   // Playground state. `playgroundEditor` is the EditorHandle returned
   // by FlatPPLWebEditor.mountEditor, present only in playground mode.
   // showSource / showSourceIfChanged switch their write path through
   // this when set.
-  var playgroundEditor: any = null;
+  let playgroundEditor: any = null;
 
   // The source string currently rendered in the source pane. Used by
   // showSourceIfChanged to skip the full innerHTML rewrite (and the
   // CSS / repaint flash that comes with it) when the user is only
   // navigating between bindings inside the same file.
-  var lastRenderedSource: string | null = null;
+  let lastRenderedSource: string | null = null;
 
   /** Map a model path's extension to a surface-syntax variant id
       ('flatppl' / 'flatppy' / 'flatppj'). Returns undefined for an
@@ -56,7 +56,7 @@
       one place. */
   function variantIdForPath(path: any) {
     if (!window.FlatPPLEngine || !window.FlatPPLEngine.variants) return undefined;
-    var v = window.FlatPPLEngine.variants.variantForPath(path);
+    const v = window.FlatPPLEngine.variants.variantForPath(path);
     return v ? v.id : undefined;
   }
   // The currently loaded model path, so we can short-circuit when a
@@ -64,7 +64,7 @@
   // playground mode: rewriting the editor's content on every target-
   // change would wipe user edits and reset the cursor to the start
   // of the file.
-  var lastModel: string | null = null;
+  let lastModel: string | null = null;
 
   /**
    * Push text into the source pane. When the engine is available
@@ -87,14 +87,14 @@
       return;
     }
     if (!sourceView) return;
-    var FE = window.FlatPPLEngine;
-    var cur = window.FlatPPLWebRouter
+    const FE = window.FlatPPLEngine;
+    const cur = window.FlatPPLWebRouter
       ? window.FlatPPLWebRouter.parseHash() : { model: null };
-    var variantId = variantIdForPath(cur.model);
-    var bindings: Set<unknown> | null = null;
+    const variantId = variantIdForPath(cur.model);
+    let bindings: Set<unknown> | null = null;
     if (FE && typeof FE.processSource === 'function') {
       try {
-        var processed = FE.processSource(text, { variant: variantId });
+        const processed = FE.processSource(text, { variant: variantId });
         if (processed && processed.bindings) {
           bindings = new Set(processed.bindings.keys());
         }
@@ -117,9 +117,9 @@
       Used by the playground's onChange path so the viewer re-renders
       after the user pauses typing rather than on every keystroke. */
   function debounce(fn: any, ms: any) {
-    var t: any = null;
+    let t: any = null;
     return function () {
-      var args = arguments;
+      const args = arguments;
       if (t) clearTimeout(t);
       t = setTimeout(function () { t = null; fn.apply(null, args); }, ms);
     };
@@ -127,7 +127,7 @@
 
   // Edit-mode state, persisted across reloads (only when the deploy
   // allows editing in the first place — see EDIT_STORAGE_KEY).
-  var EDIT_STORAGE_KEY = 'flatppl-web-edit-on';
+  const EDIT_STORAGE_KEY = 'flatppl-web-edit-on';
   function readEditPref() {
     try { return window.localStorage && window.localStorage.getItem(EDIT_STORAGE_KEY) === '1'; }
     catch (_) { return false; }
@@ -146,8 +146,8 @@
       applyState writes into the editor (when restored to "on")
       rather than briefly flashing the read-only <pre>. */
   function setupEditToggle() {
-    var cfg = window.__FLATPPL_CONFIG__ || {};
-    var toggleBtn = document.getElementById('edit-toggle');
+    const cfg = window.__FLATPPL_CONFIG__ || {};
+    const toggleBtn = document.getElementById('edit-toggle');
     if (!toggleBtn) return Promise.resolve();
     if (!cfg.allowEdit) {
       // Stays `hidden`; never appears in the toolbar. The CodeMirror
@@ -171,8 +171,8 @@
       text was in the editor (so user edits survive a toggle off+on
       within the same session). */
   async function setEditMode(on: any) {
-    var toggleBtn = document.getElementById('edit-toggle');
-    var sourcePane = document.getElementById('source-pane');
+    const toggleBtn = document.getElementById('edit-toggle');
+    const sourcePane = document.getElementById('source-pane');
     if (on === !!playgroundEditor) {
       // Already in the requested state; sync the button visuals
       // just in case (e.g. on first boot when persisted state is
@@ -192,8 +192,8 @@
         return;
       }
       if (!sourceView) return;
-      var paneBody = sourceView.parentNode;
-      var editorContainer = document.getElementById('source-editor');
+      const paneBody = sourceView.parentNode;
+      let editorContainer = document.getElementById('source-editor');
       if (!editorContainer) {
         editorContainer = document.createElement('div');
         editorContainer.id = 'source-editor';
@@ -201,12 +201,12 @@
       }
       sourceView.style.display = 'none';
       if (sourcePane) sourcePane.classList.add('playground');
-      var initial = lastRenderedSource != null ? lastRenderedSource : '';
+      const initial = lastRenderedSource != null ? lastRenderedSource : '';
       playgroundEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
         initialSource: initial,
         onChange: debounce(function (text: any) {
           if (!viewer) return;
-          var cur = window.FlatPPLWebRouter.parseHash();
+          const cur = window.FlatPPLWebRouter.parseHash();
           // Push edits back into the ephemeral store so they survive
           // navigation away and back to the same path. update() is a
           // no-op for paths not in the store, so this is safe for
@@ -218,7 +218,7 @@
             { variant: variantIdForPath(cur.model) });
         }, 250),
         onNavigate: function (name: any) {
-          var cur = window.FlatPPLWebRouter.parseHash();
+          const cur = window.FlatPPLWebRouter.parseHash();
           window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
         },
       });
@@ -230,10 +230,10 @@
       // the <pre> again. The <pre> picks up whatever the user typed
       // — read-only mode preserves the last state, no edits are
       // discarded by the toggle alone.
-      var currentText = playgroundEditor.getSource();
+      const currentText = playgroundEditor.getSource();
       try { playgroundEditor.destroy(); } catch (_) {}
       playgroundEditor = null;
-      var ed = document.getElementById('source-editor');
+      const ed = document.getElementById('source-editor');
       if (ed && ed.parentNode) ed.parentNode.removeChild(ed);
       if (sourcePane) sourcePane.classList.remove('playground');
       if (sourceView) sourceView.style.display = '';
@@ -257,7 +257,7 @@
   }
 
   function showError(label: any, err: any) {
-    var msg = '# Error\n# ' + (err && err.message || String(err));
+    const msg = '# Error\n# ' + (err && err.message || String(err));
     showSource(msg, label || 'error');
     if (viewer && typeof viewer.update === 'function') viewer.update(msg);
   }
@@ -270,18 +270,18 @@
     if (!fileTree) return;
     fileTree.innerHTML = '';
 
-    var eph = window.FlatPPLWebEphemeral;
-    var ephEntries = (eph && eph.list) ? eph.list() : [];
+    const eph = window.FlatPPLWebEphemeral;
+    const ephEntries = (eph && eph.list) ? eph.list() : [];
     if (ephEntries.length > 0) {
-      var ephHeader = document.createElement('div');
+      const ephHeader = document.createElement('div');
       ephHeader.className = 'file-list-header';
       ephHeader.textContent = 'Unsaved';
       fileTree.appendChild(ephHeader);
-      var ephUl = document.createElement('ul');
+      const ephUl = document.createElement('ul');
       ephUl.className = 'file-list';
-      for (var i = 0; i < ephEntries.length; i++) {
-        var ent = ephEntries[i];
-        var li = document.createElement('li');
+      for (let i = 0; i < ephEntries.length; i++) {
+        const ent = ephEntries[i];
+        const li = document.createElement('li');
         li.className = 'file-list-item file-list-item--ephemeral';
         if (ent.path === currentModel) li.classList.add('selected');
         li.textContent = ent.path.replace(/^new\//, '');
@@ -295,18 +295,18 @@
 
     if (!manifest || manifest.entries.length === 0) {
       if (ephEntries.length === 0) {
-        var p = document.createElement('div');
+        const p = document.createElement('div');
         p.className = 'pane-placeholder';
         p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
         fileTree.appendChild(p);
       }
       return;
     }
-    var ul = document.createElement('ul');
+    const ul = document.createElement('ul');
     ul.className = 'file-list';
-    for (var j = 0; j < manifest.entries.length; j++) {
-      var entry = manifest.entries[j];
-      var li2 = document.createElement('li');
+    for (let j = 0; j < manifest.entries.length; j++) {
+      const entry = manifest.entries[j];
+      const li2 = document.createElement('li');
       li2.className = 'file-list-item';
       if (entry.path === currentModel) li2.classList.add('selected');
       li2.textContent = entry.title;
@@ -331,7 +331,7 @@
       if missing, append a default extension when none of the three
       known surface-variant extensions are present. */
   function normalizeEphemeralPath(raw: any) {
-    var s = String(raw || '').trim();
+    let s = String(raw || '').trim();
     if (!s) return null;
     if (s.indexOf('/') === -1) s = 'new/' + s;
     if (!/\.flatppl$/i.test(s)) s = s + '.flatppl';
@@ -343,16 +343,16 @@
       ephemeral store, and navigate to the new path. Auto-enables
       edit mode so the user can start typing immediately. */
   async function onNewFileClick() {
-    var eph = window.FlatPPLWebEphemeral;
+    const eph = window.FlatPPLWebEphemeral;
     if (!eph) return;
-    var defaultPath = eph.nextUntitled('.flatppl');
-    var raw = window.prompt(
+    const defaultPath = eph.nextUntitled('.flatppl');
+    const raw = window.prompt(
       'New ephemeral file (session-only). Path:', defaultPath);
     if (raw == null) return;
-    var path = normalizeEphemeralPath(raw);
+    const path = normalizeEphemeralPath(raw);
     if (!path) return;
     // Collision check across both the manifest and the ephemeral store.
-    var collidesWithManifest = manifest && manifest.entries
+    const collidesWithManifest = manifest && manifest.entries
       && manifest.entries.some(function (e: any) { return e.path === path; });
     if (eph.has(path) || collidesWithManifest) {
       window.alert('Path already exists: ' + path);
@@ -366,7 +366,7 @@
   }
 
   function onTreeClick(ev: any) {
-    var path = ev.currentTarget.dataset.path;
+    const path = ev.currentTarget.dataset.path;
     if (path) window.FlatPPLWebRouter.navigateTo({ model: path });
   }
 
@@ -378,7 +378,7 @@
     // outside edit mode. Auto-enable edit mode when navigating to
     // one (gated by allowEdit so a strictly read-only deploy still
     // can't unlock editing through a hash-link).
-    var ephRef = window.FlatPPLWebEphemeral;
+    const ephRef = window.FlatPPLWebEphemeral;
     if (ephRef && state.model && ephRef.has(state.model)
         && !playgroundEditor
         && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
@@ -394,11 +394,11 @@
     // The surface-syntax variant follows the model path's extension
     // (.flatppl / .flatppy / .flatppj). The viewer reads this on
     // every update so persist write-back emits matching syntax.
-    var variantId = variantIdForPath(state.model);
+    const variantId = variantIdForPath(state.model);
 
     if (state.model === lastModel) {
       if (viewer) {
-        var liveText = playgroundEditor
+        const liveText = playgroundEditor
           ? playgroundEditor.getSource()
           : (lastRenderedSource || '');
         // pushHistory: true — target-only navigation within one model
@@ -429,7 +429,7 @@
     }
     showSourceIfChanged('# Loading ' + state.model + ' …', state.model);
     try {
-      var bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
       showSourceIfChanged(bundle.primarySource, state.model);
       if (viewer) viewer.update(bundle.primarySource, state.target || null,
         { variant: variantId });
@@ -452,11 +452,11 @@
       ev.target so clicks on the text inside a span hit the same
       handler as clicks on the span itself. */
   function onSourceClick(ev: any) {
-    var el = ev.target;
+    let el = ev.target;
     while (el && el !== sourceView) {
       if (el.dataset && el.dataset.binding) {
-        var name = el.dataset.binding;
-        var cur = window.FlatPPLWebRouter.parseHash();
+        const name = el.dataset.binding;
+        const cur = window.FlatPPLWebRouter.parseHash();
         window.FlatPPLWebRouter.navigateTo({
           model: cur.model,
           target: name,
@@ -481,8 +481,8 @@
     // become history entries the user can walk through. The
     // browser controls the history cap (~50 entries on most
     // browsers); we don't try to override it.
-    var backBtn = document.getElementById('nav-back');
-    var fwdBtn  = document.getElementById('nav-forward');
+    const backBtn = document.getElementById('nav-back');
+    const fwdBtn  = document.getElementById('nav-forward');
     if (backBtn) backBtn.addEventListener('click', function () { window.history.back(); });
     if (fwdBtn)  fwdBtn.addEventListener('click',  function () { window.history.forward(); });
 
@@ -492,10 +492,10 @@
     // host.setTarget hook keeps URL = viewer focus in sync, so
     // there's no longer a divergent-state case that needed an
     // explicit viewer.update fallback.
-    var showModuleBtn = document.getElementById('show-module-btn');
+    const showModuleBtn = document.getElementById('show-module-btn');
     if (showModuleBtn) {
       showModuleBtn.addEventListener('click', function () {
-        var cur = window.FlatPPLWebRouter.parseHash();
+        const cur = window.FlatPPLWebRouter.parseHash();
         window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: null });
       });
     }
@@ -504,7 +504,7 @@
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;
     }
-    var missing: string[] = [];
+    const missing: string[] = [];
     if (!window.FlatPPLWebResolver) missing.push('resolver');
     if (!window.FlatPPLWebRouter)   missing.push('router');
     if (!window.FlatPPLWebManifest) missing.push('manifest');
@@ -535,19 +535,19 @@
     // gate as edit mode, since creating a file is meaningless when
     // editing is disabled. Subscribing to ephemeral changes here
     // keeps the file tree in sync as entries get added.
-    var newFileBtn = document.getElementById('new-file-btn');
+    const newFileBtn = document.getElementById('new-file-btn');
     if (newFileBtn && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
       newFileBtn.hidden = false;
       newFileBtn.addEventListener('click', onNewFileClick);
     }
     if (window.FlatPPLWebEphemeral && window.FlatPPLWebEphemeral.subscribe) {
       window.FlatPPLWebEphemeral.subscribe(function () {
-        var cur = window.FlatPPLWebRouter.parseHash();
+        const cur = window.FlatPPLWebRouter.parseHash();
         renderTree(cur.model);
       });
     }
 
-    var viewerRoot = document.getElementById('flatppl-viewer-root');
+    const viewerRoot = document.getElementById('flatppl-viewer-root');
 
     // Web host adapter for the viewer. The viewer calls these
     // host-side hooks for IDE-only concerns it can't perform itself
@@ -571,7 +571,7 @@
     // saveState / loadState are intentionally omitted — the URL hash
     // is the source of truth for navigation state, no per-tab storage
     // needed yet.
-    var webHost = {
+    const webHost = {
       revealSourceLine: function (line: any) {
         // Playground mode: scroll the CodeMirror editor and place
         // the cursor at the start of the target line.
@@ -581,8 +581,8 @@
         }
         // Read-only mode: scroll + flash the pre-rendered .src-line.
         if (!sourceView) return;
-        var sel = '.src-line[data-line="' + line + '"]';
-        var el = sourceView.querySelector(sel);
+        const sel = '.src-line[data-line="' + line + '"]';
+        const el = sourceView.querySelector(sel);
         if (!el) return;
         el.scrollIntoView({ block: 'center', behavior: 'smooth' });
         // Re-trigger the CSS animation by toggling the class with a
@@ -590,15 +590,15 @@
         // on the same line both flash.
         el.classList.remove('src-line-flash');
         // Force reflow.
-        // eslint-disable-next-line no-unused-expressions
+         
         el.offsetWidth;
         el.classList.add('src-line-flash');
       },
       setTitle: function (name: any) {
         // Reflect the focused binding in the browser tab; the model
         // name still leads the title.
-        var cur = window.FlatPPLWebRouter.parseHash();
-        var modelLabel = cur.model ? ('FlatPPL: ' + cur.model) : 'FlatPPL';
+        const cur = window.FlatPPLWebRouter.parseHash();
+        const modelLabel = cur.model ? ('FlatPPL: ' + cur.model) : 'FlatPPL';
         document.title = name ? (modelLabel + ' / ' + name) : modelLabel;
       },
       /** Mirror the viewer's internal focus into the URL so the
@@ -610,7 +610,7 @@
           identical hashes, so the call is a no-op when no state
           change is needed. */
       setTarget: function (name: any) {
-        var cur = window.FlatPPLWebRouter.parseHash();
+        const cur = window.FlatPPLWebRouter.parseHash();
         window.FlatPPLWebRouter.navigateTo({
           model: cur.model,
           target: name || null,
@@ -625,13 +625,13 @@
           uses the engine's isValidBindingName (shared with the
           extension host) so the rules don't drift. */
       promptForName: function (args: any) {
-        var FE = window.FlatPPLEngine;
-        var existing = new Set(args.existingNames || []);
-        var current = args.suggested || 'preset';
+        const FE = window.FlatPPLEngine;
+        const existing = new Set(args.existingNames || []);
+        let current = args.suggested || 'preset';
         for (;;) {
-          var raw = window.prompt('Save current values as a new preset. Name:', current);
+          const raw = window.prompt('Save current values as a new preset. Name:', current);
           if (raw == null) return Promise.resolve(null);
-          var name = raw.trim();
+          const name = raw.trim();
           if (!name) { current = raw; continue; }
           if (FE && typeof FE.isValidBindingName === 'function'
               && !FE.isValidBindingName(name)) {
@@ -655,21 +655,21 @@
           override on the next pass. */
       editSource: function (args: any) {
         if (!playgroundEditor) return Promise.resolve(false);
-        var src = playgroundEditor.getSource();
+        const src = playgroundEditor.getSource();
         if (args.range) {
-          var lineStarts = [0];
-          for (var i = 0; i < src.length; i++) {
+          const lineStarts = [0];
+          for (let i = 0; i < src.length; i++) {
             if (src.charCodeAt(i) === 10) lineStarts.push(i + 1);
           }
           function offsetOf(loc: any) {
-            var ls = lineStarts[loc.line];
+            const ls = lineStarts[loc.line];
             return (typeof ls === 'number' ? ls : 0) + (loc.col || 0);
           }
-          var from = offsetOf(args.range.start);
-          var to   = offsetOf(args.range.end);
+          const from = offsetOf(args.range.start);
+          const to   = offsetOf(args.range.end);
           playgroundEditor.replaceRange(from, to, args.newText);
         } else {
-          var sep = src.length === 0 || src.charAt(src.length - 1) === '\n' ? '' : '\n';
+          const sep = src.length === 0 || src.charAt(src.length - 1) === '\n' ? '' : '\n';
           playgroundEditor.replaceRange(src.length, src.length,
             sep + args.newText + '\n');
         }
@@ -702,7 +702,7 @@
     // First render: if the URL specifies a model, that wins. Otherwise
     // pick the first manifest entry as the default selection so the
     // gallery shows something real on a bare visit.
-    var initial = window.FlatPPLWebRouter.parseHash();
+    const initial = window.FlatPPLWebRouter.parseHash();
     if (!initial.model && manifest && manifest.entries.length > 0) {
       window.FlatPPLWebRouter.navigateTo({ model: manifest.entries[0].path });
     } else {
