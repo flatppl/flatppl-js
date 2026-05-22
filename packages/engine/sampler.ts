@@ -1076,7 +1076,7 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
         const args = (ir.args || []).map((a: any) => _evalN(a, refArrays, N, baseEnv, overlay));
         return ARITH_OPS_N[op](args, N);
       }
-      // Phase 7a: batched approximation functions. Each has the shape
+      // Batched approximation functions. Each has the shape
       // (atom-indep coefficients/edges/values, per-atom x). If x batches
       // (Float64Array(N) or Value shape=[N]), collapse the per-atom JS-
       // call overhead into a single tight inner loop. Otherwise fall
@@ -1095,7 +1095,7 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   }
 }
 
-// Phase 7a: batched approximation function dispatch (polynomial /
+// Batched approximation function dispatch (polynomial /
 // bernstein / stepwise). Each takes atom-indep coefficient-class
 // arguments and a per-atom x; if x batches, we run one tight Horner /
 // Bernstein-basis / stepwise loop over the entire N-atom batch
@@ -1212,7 +1212,7 @@ function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv
       out[i] = v;
     }
   }
-  // Preserve Phase 1 "same kind as inputs" semantics: if xVal was a
+  // Same "kind as inputs" semantics: if xVal was a
   // Value, return a Value; if it was a bare Float64Array, return one.
   if (valueLib.isValue(xVal)) return valueLib.batchedScalar(out);
   return out;
@@ -1231,10 +1231,10 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
   if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) {
     callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
   }
-  // Pre-compute per-ref accessors. Phase 8: refArrays uniformly carry
-  // Values internally (post unification); legacy Float64Array entries
-  // are accepted as a back-compat path for tests that pass refArrays
-  // directly. shape=[N] (scalar atoms) → `i => data[i]`; shape=[N,
+  // Pre-compute per-ref accessors. refArrays uniformly carry Values
+  // internally; bare Float64Array entries are accepted as a back-
+  // compat path for tests that pass refArrays directly.
+  // shape=[N] (scalar atoms) → `i => data[i]`; shape=[N,
   // ...rest] (vector / matrix atoms) → atom i is a length-prod(rest)
   // sub-Value (subarray view). Computing the access pattern once per
   // ref keeps the inner N-atom loop branch-free.
@@ -1285,7 +1285,7 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
     for (let i = 0; i < N; i++) arr[i] = +out[i];
     return arr;
   }
-  // Phase 7c: per-atom uniform-length numeric array outputs (e.g.
+  // Per-atom uniform-length numeric array outputs (e.g.
   // softmax / l1unit / l2unit / logsoftmax on per-atom inputs) pack
   // atom-major into a Value shape=[N, k]. Detect uniform shape across
   // atoms; non-uniform results stay as a JS array of per-atom values
@@ -1438,7 +1438,7 @@ function _isShapeRich(v: any, N?: any) {
   return true;
 }
 
-// Phase 2c: shape-aware add/sub/neg dispatcher (used inline in the
+// Shape-aware add/sub/neg dispatcher (used inline in the
 // ARITH_OPS table below). Same logic as the mul dispatcher: if either
 // operand carries an intrinsic vector/matrix shape, route to
 // value-ops; otherwise stay on the scalar JS fast path.
@@ -1649,7 +1649,7 @@ const ARITH_OPS = {
     return out;
   },
   // ---- Linear algebra (spec §07) ------------------------------------
-  // Phase 3 of the shape-explicit refactor: ops dispatch on Value
+  // Ops dispatch on Value
   // inputs. Value path bridges through nested-array form for the
   // matrix-decomposition algorithms (atom-indep one-shot ops; the
   // realloc cost is negligible against the algorithm work). transpose
@@ -1658,7 +1658,7 @@ const ARITH_OPS = {
   //
   // Legacy nested-JS-array inputs continue to work unchanged — the
   // existing linear-algebra test suite exercises them via the IR
-  // pipeline. Once materialisers (Phase 4) produce Values, the
+  // pipeline. Materialisers produce Values, so the
   // Value path becomes the default.
   //
   // Matrices in legacy form are nested JS arrays (row-major):
@@ -2145,7 +2145,7 @@ const ARITH_OPS = {
       + (typeof first) + ')');
   },
   // Reductions over an array. Operate on JS arrays / TypedArrays /
-  // Values (Phase 7b) alike. `_arrLike` unwraps the underlying
+  // Values (Value inputs) alike. `_arrLike` unwraps the underlying
   // indexable form. Spec semantics:
   //   sum     = Σ x[i]
   //   mean    = sum / N
@@ -2325,7 +2325,7 @@ const _SCALAR_PRIM_ARITY = {
 // scalar (when ALL inputs are scalar — the single-point fast path with
 // no allocation) or Float64Array(N) (when any input is batched).
 //
-// Polymorphic on Value inputs (Phase 1 of the shape-explicit refactor;
+// Polymorphic on Value inputs (
 // see TODO-flatppl-js.md and engine/value.js). Each input may be:
 //
 //   - a bare JS number / boolean              (atom-indep scalar; legacy)
@@ -2455,13 +2455,13 @@ for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
   else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
 }
 
-// Phase 2b/2c/2d: shape-aware mul / add / sub / neg take precedence over
+// Shape-aware mul / add / sub / neg take precedence over
 // the broadcast{1,2}-based dispatch when any operand carries an
 // intrinsic vector/matrix shape (Value with rank ≥ 1 whose leading
 // dim isn't the atom count). Bare scalars and batched scalars
 // (shape=[N]) stay on the scalar broadcast path.
 //
-// Phase 2d adds the atom-batched cross — when either operand has a
+// Atom-batched cross: when either operand has a
 // leading N-sized axis with rank ≥ 2 (e.g. shape=[N, k] per-atom
 // vector, shape=[N, m, n] per-atom matrix), route through the …N
 // variants (`valueOps.mulN`, `valueOps.addN`, etc.) which dispatch
@@ -2472,7 +2472,7 @@ function _shapeAwareCandidate(v: any, N: any) {
   if (!valueLib.isValue(v)) return false;
   const r = v.shape.length;
   if (r === 0) return false;
-  if (r === 1 && v.shape[0] === N) return false;  // batched scalar (Phase 1)
+  if (r === 1 && v.shape[0] === N) return false;  // batched scalar
   return true;  // shape-rich OR atom-batched non-scalar
 }
 function _wrapShapeAwareBinopN(opName: any, opNameN: any) {

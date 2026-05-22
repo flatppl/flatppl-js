@@ -532,7 +532,7 @@ export interface EmpiricalMeasure {
   n_eff: number;
 
   // ---- shape-rich variants ----
-  /** Shape-tagged Value view (Phase 4b — populated on every scalar-leaf measure). */
+  /** Shape-tagged Value view (populated on every scalar-leaf measure). */
   value?: Value;
   /** Inner-array shape for atom-batched-vector measures (matIid, MvNormal). */
   dims?: number[];

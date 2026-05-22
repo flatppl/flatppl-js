@@ -767,13 +767,13 @@ function neg(a: any) {
 }
 
 // =====================================================================
-// Value ↔ nested-JS-array bridges (Phase 3)
+// Value ↔ nested-JS-array bridges
 // =====================================================================
 //
 // The legacy linear-algebra implementations in sampler.js (Cholesky,
 // LU, Gauss–Jordan, etc.) operate on nested JS arrays `M[i][j]`. To
 // expose those ops on Values without re-implementing each algorithm
-// on flat Float64Arrays (per the TODO Phase 3 plan — these are atom-
+// on flat Float64Arrays (these are atom-
 // indep one-shot ops where reallocation cost is negligible), we
 // provide thin bridges: `_valueToNested` materialises a Value into
 // nested form, honouring the Klein-4 transpose tag via index
@@ -845,7 +845,7 @@ function _nestedToValue(nested: any) {
 }
 
 // =====================================================================
-// Atom-batched cross (Phase 2d)
+// Atom-batched cross
 // =====================================================================
 //
 // When an operand carries a leading axis of size N (the atom count),
@@ -867,7 +867,7 @@ function _nestedToValue(nested: any) {
 //                                              the atom-indep add)
 //   - pointwise neg               → works at any rank via atom-indep neg
 //
-// Deferred (uncommon today; lands as Phase 6 / 7 needs surface):
+// Deferred (uncommon today; lands when a use-case surfaces):
 //   - shape=[N, m, n] × shape=[N, n]    (atom-batched matrix × vector)
 //   - shape=[N] (batched scalar) ⊙ shape=[N, k]
 //   - per-atom matrix × per-atom matrix
@@ -1065,7 +1065,7 @@ function mulN(a: any, b: any, N: any) {
   }
   // Atom-indep case.
   if (!aBatched && !bBatched) return mul(a, b);
-  // Other atom-batched cases land in Phase 6 / 7 as needed.
+  // Other atom-batched cases land when needed.
   throw new Error(
     'mulN: unsupported atom-batched shape combination ' +
     JSON.stringify(a.shape) + ' × ' + JSON.stringify(b.shape) +

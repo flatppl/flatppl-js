@@ -78,7 +78,7 @@ function resolveAxisBaseSet(source: any, bindings: any) {
  * populate its preset-point dropdown — selecting one fills fixedEnv
  * with its values for non-swept axes.
  *
- * Match rule (Phase 1 — strict, top-level scalars only):
+ * Match rule (strict — top-level scalars only):
  *   - b.ir.op === 'record'
  *   - the set of record kwarg names equals the set of signature
  *     input kwargNames (no missing inputs, no extra record fields)

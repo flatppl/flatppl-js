@@ -339,10 +339,10 @@ function tupleMeasure(elems: any, logWeights: any) {
  * `samples[i*stride + j]` is atom i's j-th element. `dims` records
  * the per-atom shape (e.g. `[10]` for `iid(M, 10)`).
  *
- * Phase 8: also populate `.value` (the shape-tagged Value view) so
- * downstream consumers using the Phase 4+ valueOf/measureFromValue
- * contract see a coherent shape. `.value.data` shares storage with
- * `.samples` — no allocation overhead.
+ * Also populates `.value` (the shape-tagged Value view) so downstream
+ * consumers using the valueOf/measureFromValue contract see a coherent
+ * shape. `.value.data` shares storage with `.samples` — no allocation
+ * overhead.
  */
 function arrayMeasure(samples: any, dims: any, logWeights: any) {
   const m: any = { shape: 'array', samples, dims, logWeights: logWeights || null };

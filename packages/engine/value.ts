@@ -10,7 +10,7 @@
 // describing the dimensions, and an optional `dtype` slot reserved for
 // future backend tagging (TF.js / typed-tensor swaps).
 //
-// Design choices (see TODO-flatppl-js.md Phase 0 + ARCHITECTURE.md
+// Design choices (see TODO-flatppl-js.md + ARCHITECTURE.md
 // invariant #2):
 //
 //   - **Uniform storage.** Every shape uses Float64Array; even
