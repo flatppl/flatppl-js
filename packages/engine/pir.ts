@@ -146,16 +146,6 @@ function lowerToModule(parsedBindings: Map<string, any>) {
 // Read helpers
 // =====================================================================
 
-/** Whether `expr` is a call to a built-in op named `op`. */
-function isBuiltinCall(expr: any, op: string) {
-  return expr && expr.kind === 'call' && expr.op === op;
-}
-
-/** Whether `expr` is a reference. */
-function isRef(expr: any) {
-  return expr && expr.kind === 'ref';
-}
-
 /**
  * Walk every call in `expr` (depth-first, post-order). Visitor receives
  * the call node; return value is ignored. Used by inference passes that
@@ -184,7 +174,7 @@ function setMeta(expr: any, type: any, phase: any) {
 }
 
 module.exports = {
-  loweredModule, loweredBinding,
+  loweredModule,
   lowerToModule,
-  isBuiltinCall, isRef, walkCalls, setMeta,
+  walkCalls, setMeta,
 };

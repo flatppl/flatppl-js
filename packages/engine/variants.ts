@@ -47,8 +47,6 @@ const FLATPPL = Object.freeze({
   reservedAtBinding: new Set(['in', 'true', 'false']),
 });
 
-const EXTENSION_MAP = Object.freeze({ '.flatppl': FLATPPL });
-
 /**
  * Always canonical FlatPPL. Retained for call-site compatibility;
  * `null`/empty path returns null (no path), any other path → FlatPPL.
@@ -80,7 +78,6 @@ function resolveVariant(opts: any) {
 
 module.exports = {
   FLATPPL,
-  EXTENSION_MAP,
   variantForPath,
   resolveVariant,
 };

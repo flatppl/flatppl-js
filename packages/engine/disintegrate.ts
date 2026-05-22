@@ -37,8 +37,6 @@ const { collectDeps, isMeasureExpr } = require('./analyzer.ts');
 
 // Minimal AST construction helpers, all stamped with synthLoc(source).
 function mkIdent(name: any, source: any)        { return ast.Identifier(name, ast.synthLoc(source)); }
-function mkString(value: any, source: any)      { return ast.StringLiteral(value, JSON.stringify(value), ast.synthLoc(source)); }
-function mkArray(elements: any, source: any)    { return ast.ArrayLiteral(elements, ast.synthLoc(source)); }
 function mkKwArg(name: any, value: any, source: any) { return ast.KeywordArg(name, value, ast.synthLoc(source)); }
 function mkCall(name: any, args: any, source: any)   {
   return ast.CallExpr(mkIdent(name, source), args, ast.synthLoc(source));
@@ -62,24 +60,6 @@ function unsupported(reason: any, blockingNode: any, detail?: any) {
 }
 
 // === Selector / field utilities ====================================
-
-// Normalise a selector AST argument to an array of field names.
-// disintegrate("name", joint)   -> ['name']
-// disintegrate(["a", "b"], j)   -> ['a', 'b']
-// Returns null if the selector isn't a static string-or-string-array.
-function normaliseSelector(selectorAst: any) {
-  if (!selectorAst) return null;
-  if (selectorAst.type === 'StringLiteral') return [selectorAst.value];
-  if (selectorAst.type === 'ArrayLiteral') {
-    const out: any[] = [];
-    for (const el of selectorAst.elements) {
-      if (el.type !== 'StringLiteral') return null;
-      out.push(el.value);
-    }
-    return out;
-  }
-  return null;
-}
 
 // Try to read the field map from `record(name = expr, ...)`.
 // Returns Map<name, expr> or null if the call isn't a static record.
@@ -687,8 +667,8 @@ module.exports = {
   // Plan constructors (exported for the renderer / tests).
   delegate, synthesized, unsupported,
   // AST helpers (handy for tests).
-  mkIdent, mkString, mkArray, mkKwArg, mkCall,
+  mkIdent, mkKwArg, mkCall,
   // Introspection helpers (re-exported in case other engine pieces grow
   // to need them — e.g., visualization for kernel/function distinction).
-  namedOutputFields, tryRecord, normaliseSelector,
+  namedOutputFields, tryRecord,
 };
