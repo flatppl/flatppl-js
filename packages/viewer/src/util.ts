@@ -1,4 +1,4 @@
-// @flatppl/viewer — pure utility/formatter module (Phase 4b).
+// @flatppl/viewer — pure utility/formatter module —
 
 /**
  * Get an element by ID from the viewer's DOM skeleton, throwing if
@@ -11,7 +11,7 @@
  * Throwing here surfaces the drift at the call site with a useful
  * message, instead of emitting `Cannot read property 'X' of null`
  * deep inside a handler somewhere downstream — exactly the bug class
- * that bit us across the post-Phase-4 fixes (5113732 / 7174cf1 /
+ * that bit us across the Ctx-migration fixes (
  * 3435094). It also lets TypeScript narrow the return to `HTMLElement`
  * so every call site loses its `if (el) {...}` boilerplate.
  *

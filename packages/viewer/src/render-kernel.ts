@@ -1,4 +1,4 @@
-// @flatppl/viewer — kernel-sample renderers (Phase 4f).
+// @flatppl/viewer — kernel-sample renderers —
 //
 // renderKernelSampleForCurrent is the entry; renderKernelSample-
 // Measure renders an in-memory empirical measure after

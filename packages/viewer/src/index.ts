@@ -1,7 +1,7 @@
-// @flatppl/viewer entry — Phase 4.
+// @flatppl/viewer entry
 //
 // Bundles main.js into a browser global (window.FlatPPLViewer.mount)
-// and wires DOMContentLoaded auto-mount, preserving the pre-Phase-4
+// and wires DOMContentLoaded auto-mount, preserving the pre-decomposition
 // contract exactly: `global.FlatPPLViewer = global.FlatPPLViewer || {}`
 // merge semantics (does not clobber a pre-existing object the host
 // may have populated), single mount property assignment, and the

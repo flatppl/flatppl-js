@@ -1,4 +1,4 @@
-// @flatppl/viewer — preset + domain control popovers (Phase 4f).
+// @flatppl/viewer — preset + domain control popovers —
 //
 // buildPresetControl / buildDomainControl construct the
 // codicon-buttoned popover UIs above the plot pane that let users

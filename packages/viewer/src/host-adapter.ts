@@ -1,4 +1,4 @@
-// @flatppl/viewer — default VS Code webview host adapter (Phase 4g).
+// @flatppl/viewer — default VS Code webview host adapter —
 //
 // VS Code permits acquireVsCodeApi() at most once per webview, so
 // cachedVscodeApi gates it across multiple mount() calls. The

@@ -510,6 +510,9 @@ export interface DerivationsState {
   derivations: Record<string, Derivation>;
   fixedValues: Map<string, any>;
   discrete: Record<string, boolean>;
+  /** Classifier diagnostics surfaced by buildDerivations (e.g.
+   *  fixed-phase dead ends). Empty when nothing to report. */
+  diagnostics?: Array<{ message: string; [extra: string]: any }>;
 }
 
 // ---------------------------------------------------------------------

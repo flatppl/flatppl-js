@@ -1,5 +1,5 @@
 // @ts-check
-// @flatppl/viewer — DOM templates + CSS injection (Phase 4g).
+// @flatppl/viewer — DOM templates + CSS injection —
 //
 // VIEWER_CSS is injected once into <head>; VIEWER_BODY_HTML is the
 // markup mount() drops into its container. ensureCssInjected is

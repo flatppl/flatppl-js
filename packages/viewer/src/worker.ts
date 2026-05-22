@@ -1,5 +1,5 @@
 // @ts-check
-// @flatppl/viewer — sampler-worker subsystem (Phase 4c).
+// @flatppl/viewer — sampler-worker subsystem —
 //
 // Spawns the Web Worker from ctx.SAMPLER_WORKER_URL on first use,
 // multiplexes requests by id through ctx.pendingRequests, and
@@ -19,7 +19,9 @@
  * spawn the worker from a same-origin blob: URL. This pattern is
  * also documented in the official VS Code webview samples.
  */
-export function ensureSamplerWorker(ctx: any) {
+import type { Ctx } from './types';
+
+export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
@@ -64,7 +66,7 @@ export function ensureSamplerWorker(ctx: any) {
   return ctx.samplerWorkerPromise;
 }
 
-export function wireWorker(ctx: any, w: any) {
+export function wireWorker(ctx: Ctx, w: any) {
   w.addEventListener('message', function(ev: any) {
     const reply = ev.data;
     if (!reply || reply.id == null) return;
@@ -90,12 +92,12 @@ export function wireWorker(ctx: any, w: any) {
   });
 }
 
-export function sendWorkerNow(ctx: any, w: any, msg: any) {
+export function sendWorkerNow(ctx: Ctx, w: any, msg: any) {
   const id = ++ctx.samplerReqId;
   w.postMessage(Object.assign({ id: id }, msg));
 }
 
-export function sendWorker(ctx: any, msg: any) {
+export function sendWorker(ctx: Ctx, msg: any) {
   return ensureSamplerWorker(ctx).then(function(w: any) {
     const id = ++ctx.samplerReqId;
     const wrapped = Object.assign({ id: id }, msg);
@@ -116,7 +118,7 @@ export function sendWorker(ctx: any, msg: any) {
  * ensureSamplerWorker(). Cheap enough that we don't bother
  * keeping a "warm" worker around.
  */
-export function cancelAllSampling(ctx: any) {
+export function cancelAllSampling(ctx: Ctx) {
   if (ctx.samplerWorker) {
     try { ctx.samplerWorker.terminate(); } catch (_) {}
     ctx.samplerWorker = null;

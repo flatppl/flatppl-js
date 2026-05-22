@@ -1,5 +1,5 @@
 // @ts-check
-// @flatppl/viewer — plot-pane frame + per-binding errors (Phase 4d).
+// @flatppl/viewer — plot-pane frame + per-binding errors —
 //
 // setPlotEnabled toggles the plot pane; renderPlotFrame builds the
 // stable toolbar + chart-host scaffold every renderer fills.
@@ -18,7 +18,8 @@ import { $, esc } from './util.js';
  * "semantically invalid" message and the DAG's red error border.
  */
 import { cancelAllSampling } from './worker.js';
-export function errorsForBinding(ctx: any, bindingName: any) {
+import type { Ctx } from './types';
+export function errorsForBinding(ctx: Ctx, bindingName: any) {
   if (!bindingName || !ctx.currentState || !ctx.currentState.data
       || !ctx.currentState.data.nodes) return null;
   const nodes = ctx.currentState.data.nodes;
@@ -34,7 +35,7 @@ export function errorsForBinding(ctx: any, bindingName: any) {
  * single-chart views need a clean slate so their content fills
  * the pane without inheriting a stale grid.
  */
-export function resetPlotContentStyle(ctx: any) {
+export function resetPlotContentStyle(ctx: Ctx) {
   const el = $('plot-content');
   el.style.display = '';
   el.style.gridTemplateColumns = '';
@@ -45,7 +46,7 @@ export function resetPlotContentStyle(ctx: any) {
   el.style.flexDirection = '';
 }
 
-export function showPlotMessage(ctx: any, html: string, options?: { cancellable?: boolean; hint?: boolean }) {
+export function showPlotMessage(ctx: Ctx, html: string, options?: { cancellable?: boolean; hint?: boolean }) {
   if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
   resetPlotContentStyle(ctx);
   const el = $('plot-content');
@@ -58,13 +59,13 @@ export function showPlotMessage(ctx: any, html: string, options?: { cancellable?
   el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
   if (cancellable) {
     const btn = document.getElementById('plot-stop-btn');
-    // Wrap to bind ctx — Phase 3 added ctx as first param, but the
+    // Wrap to bind ctx — the
     // click handler invokes its callback with the MouseEvent.
     if (btn) btn.addEventListener('click', function () { cancelAllSampling(ctx); });
   }
 }
 
-export function makeActionButton(ctx: any, iconKey: any, title: any) {
+export function makeActionButton(ctx: Ctx, iconKey: any, title: any) {
   const b = document.createElement('button');
   b.type = 'button';
   b.title = title;
@@ -87,7 +88,7 @@ export function makeActionButton(ctx: any, iconKey: any, title: any) {
   return b;
 }
 
-export function setPlotEnabled(ctx: any, enabled: any) {
+export function setPlotEnabled(ctx: Ctx, enabled: any) {
   ctx.plotEnabled = !!enabled;
   const plot    = $('plot-panel');
   const graph   = $('graph-panel');
@@ -159,7 +160,7 @@ export function setPlotEnabled(ctx: any, enabled: any) {
  *                      writes its chart DOM (echarts.init,
  *                      grid layout, etc.) directly into it.
  */
-export function renderPlotFrame(ctx: any, opts: any) {
+export function renderPlotFrame(ctx: Ctx, opts: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   const el = $('plot-content');
@@ -232,7 +233,7 @@ export function renderPlotFrame(ctx: any, opts: any) {
  * The font-size auto-shrinks for long renderings (record(...) with
  * many fields) so the value still fits within the pane.
  */
-export function renderTextValue(ctx: any, bindingName: any, text: any) {
+export function renderTextValue(ctx: Ctx, bindingName: any, text: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   const el = $('plot-content');

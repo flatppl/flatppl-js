@@ -1,8 +1,8 @@
-// @flatppl/viewer main module — Phase 4 first cut.
+// @flatppl/viewer main module
 //
 // All IIFE-scope content (the hoisted 117 functions + the mount
 // definition + per-mount-constants prologue inside mount) lives
-// here as ES module top-level. Phase 4 will progressively split
+// here as ES module top-level.will progressively split
 // this into the module map documented in the header below.
 //
 // The only export this module needs to surface is `mount`; the
@@ -11,7 +11,7 @@
 
 
 
-  // Layout markup + stylesheet for the viewer. Phase 2b moves
+  // Layout markup + stylesheet for the viewer. The next pass moves
   // them out of the host page into here so any container can
   // host the viewer without the host having to know the
   // internal DOM shape. The CSS goes once into <head>; the
@@ -200,13 +200,11 @@ import { defaultVscodeHost } from './host-adapter.js';
   // missing methods become no-ops cleanly.
 
 // -------------------------------------------------------------
-// Hoisted pure utilities (decomposition Phase 3 / leaf L2).
+// Hoisted pure utilities (leaf L2).
 // Each of these is a pure function: no references to per-mount
 // ctx state and no calls to in-mount-only helpers. JS function-
 // declaration hoisting keeps in-mount callers working unchanged
-// (they reach these by the normal scope chain). When Phase 4
-// splits viewer.js into modules, this block becomes format.js /
-// util.js, exported as ES modules.
+// (they reach these by the normal scope chain).
 // -------------------------------------------------------------
 
 
@@ -230,12 +228,12 @@ import { defaultVscodeHost } from './host-adapter.js';
 
 
 // -------------------------------------------------------------
-// Hoisted ctx-taking utilities (decomposition Phase 3b.2).
+// Hoisted ctx-taking utilities.
 // Each takes `ctx` (the per-mount state container) as its first
 // parameter; every call site in this file has been updated to
 // pass ctx. In-mount callers reach ctx via lexical capture (the
 // `var ctx = {}` at the top of mount()); IIFE-scope callers
-// pass their own ctx parameter through. Phase 4 will turn this
+// pass their own ctx parameter through.will turn this
 // block into ES modules (palette.js / engine-facade.js / etc.).
 // -------------------------------------------------------------
 
@@ -249,7 +247,7 @@ import { defaultVscodeHost } from './host-adapter.js';
 
 
 // -------------------------------------------------------------
-// Hoisted L3 engine facade + L4 worker subgroup (Phase 3d).
+// Hoisted L3 engine facade + L4 worker subgroup.
 // Each takes ctx as first param; in-file call sites have been
 // updated to pass ctx. Two callback sites (getMeasure and
 // sendWorker passed to FlatPPLEngine.materialiser as 1-arg
@@ -266,7 +264,7 @@ import { defaultVscodeHost } from './host-adapter.js';
 
 
 
-// ---- Hoisted L4 override store + plot-frame helpers (Phase 3e) ----
+// ---- Hoisted L4 override store + plot-frame helpers ----
 
 
 
@@ -286,7 +284,7 @@ import { defaultVscodeHost } from './host-adapter.js';
 
 
 
-// ---- Hoisted leaf batch (Phase 3f) — header/info, leaf defaults,
+// ---- Hoisted leaf batch — header/info, leaf defaults,
 //      persist-helpers, plan-memory, bubble teardown ----
 
 
@@ -309,9 +307,9 @@ import { defaultVscodeHost } from './host-adapter.js';
 
 
 // ===================================================================
-// Hoisted L4–L7 (Phase 3 finale). Every function takes ctx as first
+// Hoisted L4–L7. Every function takes ctx as first
 // parameter; in-mount callers reach ctx via lexical capture, all
-// other callers pass it through. Phase 4 turns this block into ES
+// other callers pass it through.turns this block into ES
 // modules grouped by responsibility (derivations / renderers / dag
 // / orchestration / etc.).
 // ===================================================================
@@ -370,11 +368,11 @@ import { defaultVscodeHost } from './host-adapter.js';
 export function mount(container: HTMLElement, opts?: import('./types').MountOpts) {
     opts = opts || {};
 
-    // Per-mount state container (decomposition Phase 2). Every
-    // captured mutable/shared identifier migrates onto `ctx` so the
-    // nested functions stop relying on lexical capture and can be
-    // hoisted out of mount() (Phase 3) and split into ES modules
-    // (Phase 4). `ctx` is declared at the very top of mount so it's
+    // Per-mount state container. Every
+    // captured mutable/shared identifier sits on `ctx` so the nested
+    // functions don't rely on lexical capture and the implementation
+    // is free to live in its own ES module. `ctx` is declared at the
+    // very top of mount so it's
     // initialized BEFORE any `ctx.X = …` assignment in the prologue;
     // var-hoisting alone wouldn't suffice because the assignment
     // `ctx = {}` is what makes ctx an object, and the prologue's
@@ -517,7 +515,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   };
 
 
-  // G1 DAG/state (decomposition Phase 2 — on ctx).
+  // G1 DAG/state (on ctx).
   ctx.cy = null;
   ctx.bb = null;
   ctx.history = [];
@@ -577,13 +575,13 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // can multiplex multiple in-flight requests cleanly.
   // ---------------------------------------------------------------
 
-  // G3 worker state (decomposition Phase 2 — on ctx).
+  // G3 worker state (on ctx).
   ctx.samplerWorker = null;
   ctx.samplerWorkerPromise = null;   // Promise<Worker> while spawn is in-flight
   ctx.samplerWorkerError = null;     // last spawn error, surfaced in the UI
   ctx.samplerReqId = 0;
   ctx.pendingRequests = new Map(); // id → { resolve, reject }
-  // G2 plot control (decomposition Phase 2 — on ctx). Decls are
+  // G2 plot control (on ctx). Decls are
   // scattered across mount() — the other three live further down
   // near their first use; collected onto ctx incrementally.
   ctx.plotEchart = null;
@@ -1112,7 +1110,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // ===================================================================
 
   // KNOWN_NAMED_SETS moved into util.js alongside its sole consumer
-  // isPersistableSetField (Phase 4g). Phase 4b's extraction missed
+  // isPersistableSetField — the extraction missed
   // the cross-module reference; nothing exercised it until the
   // persist-domain path would have been triggered.
 
@@ -1507,7 +1505,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // up its own listener. Falls back to window.resize where
   // ResizeObserver isn't available (older webview hosts).
   if (typeof ResizeObserver === 'function') {
-    // Wrap to bind ctx — Phase 3 parameterised these on ctx, but the
+    // Wrap to bind ctx — the
     // ResizeObserver / window resize callbacks invoke their handlers
     // with no args, so the bare function reference would receive
     // `undefined` as ctx and throw.
