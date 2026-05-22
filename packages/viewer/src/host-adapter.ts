@@ -43,10 +43,10 @@ export function defaultVscodeHost(): HostAdapter {
     // window.prompt is unavailable in webviews, and edits go
     // through vscode.workspace.applyEdit.
     promptForName: function(args: any) {
-      var nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      const nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       return new Promise(function(resolve) {
         function listener(event: any) {
-          var m = event.data;
+          const m = event.data;
           if (!m || m.type !== 'promptForNameResponse' || m.nonce !== nonce) return;
           window.removeEventListener('message', listener);
           resolve(m.name || null);

@@ -36,11 +36,11 @@ export function ensureSamplerWorker(ctx: any) {
         e instanceof Error ? e.message : e);
     }
     if (!w) {
-      var resp = await fetch(ctx.SAMPLER_WORKER_URL);
+      const resp = await fetch(ctx.SAMPLER_WORKER_URL);
       if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status + ' ' + resp.statusText);
-      var src = await resp.text();
-      var blob = new Blob([src], { type: 'application/javascript' });
-      var url = URL.createObjectURL(blob);
+      const src = await resp.text();
+      const blob = new Blob([src], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
       w = new Worker(url);
       // The blob URL only needs to live until the Worker has parsed
       // its source — revoke after a short delay so the URL isn't
@@ -66,9 +66,9 @@ export function ensureSamplerWorker(ctx: any) {
 
 export function wireWorker(ctx: any, w: any) {
   w.addEventListener('message', function(ev: any) {
-    var reply = ev.data;
+    const reply = ev.data;
     if (!reply || reply.id == null) return;
-    var p = ctx.pendingRequests.get(reply.id);
+    const p = ctx.pendingRequests.get(reply.id);
     if (!p) return;
     ctx.pendingRequests.delete(reply.id);
     if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
@@ -80,7 +80,7 @@ export function wireWorker(ctx: any, w: any) {
     // may be dead. Reject all and reset so a future request can retry
     // the spawn.
     console.error('FlatPPL sampler worker error:', e.message || e);
-    for (var entry of ctx.pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
+    for (const entry of ctx.pendingRequests.values()) entry.reject(new Error(e.message || 'worker crashed'));
     ctx.pendingRequests.clear();
     try { w.terminate(); } catch (_) {}
     if (ctx.samplerWorker === w) {
@@ -91,14 +91,14 @@ export function wireWorker(ctx: any, w: any) {
 }
 
 export function sendWorkerNow(ctx: any, w: any, msg: any) {
-  var id = ++ctx.samplerReqId;
+  const id = ++ctx.samplerReqId;
   w.postMessage(Object.assign({ id: id }, msg));
 }
 
 export function sendWorker(ctx: any, msg: any) {
   return ensureSamplerWorker(ctx).then(function(w: any) {
-    var id = ++ctx.samplerReqId;
-    var wrapped = Object.assign({ id: id }, msg);
+    const id = ++ctx.samplerReqId;
+    const wrapped = Object.assign({ id: id }, msg);
     return new Promise(function(resolve, reject) {
       ctx.pendingRequests.set(id, { resolve: resolve, reject: reject });
       w.postMessage(wrapped);
@@ -122,9 +122,9 @@ export function cancelAllSampling(ctx: any) {
     ctx.samplerWorker = null;
     ctx.samplerWorkerPromise = null;
   }
-  var entries = ctx.pendingRequests.values();
+  const entries = ctx.pendingRequests.values();
   ctx.pendingRequests = new Map();
-  for (var entry of entries) {
+  for (const entry of entries) {
     try { entry.reject(new Error('cancelled')); } catch (_) {}
   }
 }

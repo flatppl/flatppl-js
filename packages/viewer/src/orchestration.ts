@@ -19,8 +19,8 @@ import { updatePlotForBinding } from './render-plot.js';
  */
 import { enterModuleView, focusNode } from './dag.js';
 export function nameSeed(ctx: any, name: any) {
-  var h = 2166136261;
-  for (var i = 0; i < name.length; i++) {
+  let h = 2166136261;
+  for (let i = 0; i < name.length; i++) {
     h = h ^ name.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
@@ -28,7 +28,7 @@ export function nameSeed(ctx: any, name: any) {
 }
 
 export function applySourceUpdate(ctx: any, msg: any) {
-  var sourceChanged = (msg.source !== ctx.currentSource);
+  const sourceChanged = (msg.source !== ctx.currentSource);
   // Track the surface-syntax variant of the in-memory source so
   // (a) processSource picks the right grammar and (b) persist
   // write-back chooses matching syntax (e.g. `True` vs `true`).
@@ -39,7 +39,7 @@ export function applySourceUpdate(ctx: any, msg: any) {
   if (sourceChanged) {
     ctx.currentSource = msg.source;
     try {
-      var result = FlatPPLEngine.processSource(msg.source,
+      const result = FlatPPLEngine.processSource(msg.source,
         { variant: ctx.currentVariantId });
       ctx.currentBindings = result.bindings;
       ctx.currentLoweredModule = result.loweredModule;
@@ -76,7 +76,7 @@ export function applySourceUpdate(ctx: any, msg: any) {
   // sub-DAG root, losing any divergent single-tap selection.
   // Capture currentPlotBindingName here and restore it after
   // focusNode finishes.
-  var preservedPlotBinding = null;
+  let preservedPlotBinding = null;
   if (sourceChanged && ctx.currentPlotBindingName
       && ctx.currentState
       && ctx.currentPlotBindingName !== ctx.currentState.targetName) {
@@ -91,16 +91,16 @@ export function applySourceUpdate(ctx: any, msg: any) {
 }
 
 export function resizeAllEchartsInPlot(ctx: any) {
-  var root = document.getElementById('plot-content');
+  const root = document.getElementById('plot-content');
   if (!root) return;
-  var nodes = root.querySelectorAll('div');
-  for (var i = 0; i < nodes.length; i++) {
-    var inst = echarts.getInstanceByDom(nodes[i]);
+  const nodes = root.querySelectorAll('div');
+  for (let i = 0; i < nodes.length; i++) {
+    const inst = echarts.getInstanceByDom(nodes[i]);
     if (inst) try { inst.resize(); } catch (_) {}
   }
   // The root itself may host a single chart (samples / array /
   // profile single-line modes) — resize that too.
-  var rootInst = echarts.getInstanceByDom(root);
+  const rootInst = echarts.getInstanceByDom(root);
   if (rootInst) try { rootInst.resize(); } catch (_) {}
 }
 

@@ -29,7 +29,7 @@ export function getMeasure(ctx: any, name: any) {
   // samples + logWeights + logTotalmass + n_eff, and returns the
   // Measure record. Recursion is handled by passing getMeasure
   // itself back in so child materialisations hit the same cache.
-  var promise = FlatPPLEngine.materialiser.materialiseMeasure(name, {
+  const promise = FlatPPLEngine.materialiser.materialiseMeasure(name, {
     derivations: ctx.derivationsState.derivations,
     bindings:    ctx.derivationsState.bindings,
     fixedValues: ctx.derivationsState.fixedValues,
@@ -53,7 +53,7 @@ export function fixedValueToMeasure(ctx: any, v: any) {
 }
 
 export function collectRefArrays(ctx: any, ir: any) {
-  var fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
+  const fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
   return FlatPPLEngine.materialiser.collectRefArrays(
     ir, fv, function (n: any) { return getMeasure(ctx, n); });
 }

@@ -24,7 +24,7 @@
  * @returns {HTMLElement}
  */
 export function $(id: string): HTMLElement {
-  var el = document.getElementById(id);
+  const el = document.getElementById(id);
   if (!el) throw new Error('viewer: missing #' + id + ' (template/accessor drift?)');
   return el;
 }
@@ -42,12 +42,12 @@ export function esc(s: any) {
 export function truncateExpr(expr: any) {
   if (!expr) return '';
   // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
-  var arrMatch = expr.match(/^\\[(.+)\\]$/);
+  const arrMatch = expr.match(/^\\[(.+)\\]$/);
   if (arrMatch) {
-    var items = arrMatch[1].split(/\\s*,\\s*/);
+    const items = arrMatch[1].split(/\\s*,\\s*/);
     if (items.length > 6) {
-      var head = items.slice(0, 3).join(', ');
-      var tail = items.slice(-3).join(', ');
+      const head = items.slice(0, 3).join(', ');
+      const tail = items.slice(-3).join(', ');
       return '[' + head + ', \u2026, ' + tail + ']';
     }
   }
@@ -70,8 +70,8 @@ export function truncateExpr(expr: any) {
  */
 export function samplesAreConstant(samples: any) {
   if (!samples || samples.length === 0) return false;
-  var v = samples[0];
-  for (var i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
+  const v = samples[0];
+  for (let i = 1; i < samples.length; i++) if (samples[i] !== v) return false;
   return true;
 }
 
@@ -82,13 +82,13 @@ export function formatScalar(v: any) {
 }
 
 export function formatComplexScalar(re: any, im: any) {
-  var imv = im === 0 ? 0 : im;            // normalise -0 → 0
-  var sign = imv < 0 ? ' - ' : ' + ';
+  const imv = im === 0 ? 0 : im;            // normalise -0 → 0
+  const sign = imv < 0 ? ' - ' : ' + ';
   return formatScalar(re) + sign + formatScalar(Math.abs(imv)) + ' i';
 }
 
 export function complexReBadge() {
-  var b = document.createElement('span');
+  const b = document.createElement('span');
   b.textContent = 'complex — showing Re(z)';
   b.title = 'This binding is complex-valued; the histogram is its '
     + 'real part. Modulus / Im / Argand views are planned.';
@@ -101,21 +101,21 @@ export function complexReBadge() {
 }
 
 export function formatArrayParts(parts: any, fullLength: any, maxShown: any) {
-  var max = maxShown == null ? 8 : maxShown;
-  var n = parts.length;
+  const max = maxShown == null ? 8 : maxShown;
+  const n = parts.length;
   if (fullLength == null) fullLength = n;
   if (n <= max) return '[' + parts.join(', ') + ']';
-  var headN = 3, tailN = 1;
-  var head = parts.slice(0, headN);
-  var tail = parts.slice(n - tailN, n);
+  const headN = 3, tailN = 1;
+  const head = parts.slice(0, headN);
+  const tail = parts.slice(n - tailN, n);
   // No "(length N)" suffix — see formatValue array branch for
   // rationale. Keeping both array-formatters in sync.
   return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
 }
 
 export function formatArrayWithEllipsis(values: any, maxShown: any) {
-  var parts = new Array(values.length);
-  for (var i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
+  const parts = new Array(values.length);
+  for (let i = 0; i < values.length; i++) parts[i] = formatScalar(values[i]);
   return formatArrayParts(parts, values.length, maxShown);
 }
 
@@ -149,8 +149,8 @@ export function formatIRValue(ir: any): any {
   }
   if (ir.kind === 'call' && ir.op === 'record') {
     const entries: string[] = [];
-    var kwargs = ir.kwargs || {};
-    for (var k in kwargs) {
+    const kwargs = ir.kwargs || {};
+    for (const k in kwargs) {
       entries.push(k + ' = ' + formatIRValue(kwargs[k]));
     }
     return 'record(' + entries.join(', ') + ')';
@@ -164,10 +164,10 @@ export function formatIRValue(ir: any): any {
     // pretty-print of unknown ops.
     const parts: string[] = [];
     if (Array.isArray(ir.args)) {
-      for (var i = 0; i < ir.args.length; i++) parts.push(formatIRValue(ir.args[i]));
+      for (let i = 0; i < ir.args.length; i++) parts.push(formatIRValue(ir.args[i]));
     }
-    var kw = ir.kwargs || {};
-    for (var k2 in kw) parts.push(k2 + ' = ' + formatIRValue(kw[k2]));
+    const kw = ir.kwargs || {};
+    for (const k2 in kw) parts.push(k2 + ' = ' + formatIRValue(kw[k2]));
     return ir.op + '(' + parts.join(', ') + ')';
   }
   return '?';
@@ -178,20 +178,23 @@ export function formatValue(v: any, opts: any) {
   if (typeof v === 'boolean') return String(v);
   if (typeof v === 'string')  return JSON.stringify(v);
   if (v == null)              return 'null';
-  var isArrayLike = Array.isArray(v) || ArrayBuffer.isView(v);
+  // Note: keep as `let`, not `const` — `const` makes TS treat this as a
+  // narrowing alias (any → any[] | ArrayBufferView) which then breaks the
+  // generic-indexing v[i] and v.length uses below.
+  let isArrayLike = Array.isArray(v) || ArrayBuffer.isView(v);
   if (isArrayLike) {
-    var len = v.length;
-    var max = (opts && opts.maxArray) || 8;
+    const len = v.length;
+    const max = (opts && opts.maxArray) || 8;
     if (len <= max) {
-      var parts = new Array(len);
-      for (var i = 0; i < len; i++) parts[i] = formatValue(v[i], opts);
+      const parts = new Array(len);
+      for (let i = 0; i < len; i++) parts[i] = formatValue(v[i], opts);
       return '[' + parts.join(', ') + ']';
     }
-    var headN = 3, tailN = 1;
-    var head = new Array(headN);
-    for (var hi = 0; hi < headN; hi++) head[hi] = formatValue(v[hi], opts);
-    var tail = new Array(tailN);
-    for (var ti = 0; ti < tailN; ti++) {
+    const headN = 3, tailN = 1;
+    const head = new Array(headN);
+    for (let hi = 0; hi < headN; hi++) head[hi] = formatValue(v[hi], opts);
+    const tail = new Array(tailN);
+    for (let ti = 0; ti < tailN; ti++) {
       tail[ti] = formatValue(v[len - tailN + ti], opts);
     }
     // Ellipsis form drops the explicit "(length N)" suffix —
@@ -202,9 +205,9 @@ export function formatValue(v: any, opts: any) {
     return '[' + head.join(', ') + ', …, ' + tail.join(', ') + ']';
   }
   if (typeof v === 'object') {
-    var keys = Object.keys(v);
-    var entries = new Array(keys.length);
-    for (var k = 0; k < keys.length; k++) {
+    const keys = Object.keys(v);
+    const entries = new Array(keys.length);
+    for (let k = 0; k < keys.length; k++) {
       entries[k] = keys[k] + ' = ' + formatValue(v[keys[k]], opts);
     }
     return 'record(' + entries.join(', ') + ')';
@@ -222,7 +225,7 @@ export function formatLogTotalmass(logTotalmass: any) {
   // that, render in exp(...) form which stays meaningful at any
   // scale.
   if (Math.abs(logTotalmass) <= 12) {
-    var linear = Math.exp(logTotalmass);
+    const linear = Math.exp(logTotalmass);
     if (linear >= 0.01 && linear < 10000) return linear.toPrecision(4);
     return linear.toExponential(3);
   }
@@ -234,7 +237,7 @@ export function formatLogTotalmass(logTotalmass: any) {
  * diagnostic ingredients so a hover gives the full picture.
  */
 export function qualityTooltip(q: any) {
-  var parts = [
+  const parts = [
     'Importance-sampling quality: ' + q.label,
     '',
     'Kish ESS: ' + Math.round(q.ess).toLocaleString('en-US')
@@ -257,7 +260,7 @@ export function measureAtomCount(measure: any): any {
   // length from any sub-measure's samples — all components share
   // the same atom count by construction.
   if (measure.fields) {
-    var anyKey = Object.keys(measure.fields)[0];
+    const anyKey = Object.keys(measure.fields)[0];
     return anyKey ? measureAtomCount(measure.fields[anyKey]) : 0;
   }
   if (Array.isArray(measure.elems) && measure.elems.length > 0) {
@@ -270,7 +273,7 @@ export function measureAtomCount(measure: any): any {
   // dims=[]) and pass through unchanged.
   if (measure.samples) {
     if (measure.dims && measure.dims.length > 0) {
-      var stride = measure.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
+      const stride = measure.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
       return stride > 0 ? measure.samples.length / stride : 0;
     }
     return measure.samples.length;
@@ -285,11 +288,11 @@ export function formatCount(n: any) {
 
 export function formatSampleCount(n: any) {
   if (n > 0 && Math.floor(n) === n) {
-    var lg = Math.log10(n);
+    const lg = Math.log10(n);
     if (lg >= 2 && Number.isInteger(lg)) {
-      var sup = '';
-      var s = String(lg);
-      for (var i = 0; i < s.length; i++) {
+      let sup = '';
+      const s = String(lg);
+      for (let i = 0; i < s.length; i++) {
         sup += '⁰¹²³⁴⁵⁶⁷⁸⁹'[+s[i]];
       }
       return '10' + sup;
@@ -299,10 +302,10 @@ export function formatSampleCount(n: any) {
 }
 
 export function hexToRgba(hex: any, alpha: any) {
-  var m = /^#([0-9a-f]{6})$/i.exec(hex);
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!m) return hex;
-  var n = parseInt(m[1], 16);
-  var r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
   return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
 }
 
@@ -318,9 +321,9 @@ export function hexToRgba(hex: any, alpha: any) {
  * the wiring at the call site.
  */
 export function makeMainThreadPrng(seed: any) {
-  var state = FlatPPLEngine.rng.stateFromKey(seed);
+  let state = FlatPPLEngine.rng.stateFromKey(seed);
   return function() {
-    var pair = FlatPPLEngine.rng.nextUniform(state);
+    const pair = FlatPPLEngine.rng.nextUniform(state);
     state = pair[1];
     return pair[0];
   };
@@ -383,7 +386,7 @@ export function listScalarAxes(measure: any): Array<{ key: string; label: string
   const out: Array<{ key: string; label: string; samples: Float64Array }> = [];
   function walk(m: any, prefix: string): void {
     if (m.fields) {
-      var ks = Object.keys(m.fields);
+      const ks = Object.keys(m.fields);
       for (var i = 0; i < ks.length; i++) {
         walk(m.fields[ks[i]], prefix ? (prefix + '.' + ks[i]) : ks[i]);
       }
@@ -392,7 +395,7 @@ export function listScalarAxes(measure: any): Array<{ key: string; label: string
     if (m.shape === 'tuple' && Array.isArray(m.elems)) {
       // Positional analogue of record. 1-indexed component
       // labels per FlatPPL convention (xs[1], xs[2], ...).
-      for (var ti = 0; ti < m.elems.length; ti++) {
+      for (let ti = 0; ti < m.elems.length; ti++) {
         var label = (prefix ? prefix : '') + '[' + (ti + 1) + ']';
         walk(m.elems[ti], label);
       }
@@ -400,11 +403,11 @@ export function listScalarAxes(measure: any): Array<{ key: string; label: string
     }
     if (m.shape === 'array' && m.samples instanceof Float64Array && m.dims) {
       // Total inner stride per atom = prod(dims).
-      var k = m.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
-      var N = m.samples.length / k;
-      for (var slot = 0; slot < k; slot++) {
+      const k = m.dims.reduce(function(p: any, n: any) { return p * n; }, 1);
+      const N = m.samples.length / k;
+      for (let slot = 0; slot < k; slot++) {
         // Stride-extract slot j across atoms.
-        var col = new Float64Array(N);
+        const col = new Float64Array(N);
         for (var i = 0; i < N; i++) col[i] = m.samples[i * k + slot];
         // 1-indexed labels per FlatPPL convention.
         var label = (prefix ? prefix : '') + '[' + (slot + 1) + ']';
@@ -441,11 +444,11 @@ export function listScalarAxes(measure: any): Array<{ key: string; label: string
  */
 export function resolveMeasureAlias(name: any, derivations: any, bindings: any) {
   if (!derivations || !bindings) return null;
-  var seen = new Set<any>();
-  var cur = name;
+  const seen = new Set<any>();
+  let cur = name;
   while (cur && !seen.has(cur)) {
     seen.add(cur);
-    var d = derivations[cur];
+    const d = derivations[cur];
     if (!d) return null;
     if (d.kind === 'alias') { cur = d.from; continue; }
     // Engine-canonicalised Dirac with a ref to a known binding
@@ -454,7 +457,7 @@ export function resolveMeasureAlias(name: any, derivations: any, bindings: any) 
     if (d.kind === 'sample' && d.distIR
         && d.distIR.kind === 'call' && d.distIR.op === 'Dirac'
         && d.distIR.kwargs && d.distIR.kwargs.value) {
-      var v = d.distIR.kwargs.value;
+      const v = d.distIR.kwargs.value;
       if (v.kind === 'ref' && v.ns === 'self' && bindings.has(v.name)) {
         cur = v.name;
         continue;
@@ -467,9 +470,9 @@ export function resolveMeasureAlias(name: any, derivations: any, bindings: any) 
 
 export function domainBoundsText(kwargOrder: string[], ranges: Record<string, { lo: number; hi: number }> | null | undefined, setNames: Record<string, string> | null | undefined): string {
   const parts: string[] = [];
-  for (var i = 0; i < kwargOrder.length; i++) {
-    var k = kwargOrder[i];
-    var r = ranges && ranges[k];
+  for (let i = 0; i < kwargOrder.length; i++) {
+    const k = kwargOrder[i];
+    const r = ranges && ranges[k];
     if (r) {
       parts.push(k + ' ∈ [' + formatScalar(r.lo) + ', ' + formatScalar(r.hi) + ']');
     } else if (setNames && setNames[k]) {
@@ -499,7 +502,7 @@ const KNOWN_NAMED_SETS: Record<string, number> = {
 };
 
 export function presetValuesText(values: unknown): string {
-  var text = formatValue(values, undefined);
+  const text = formatValue(values, undefined);
   if (text.indexOf('record(') === 0 && text.charAt(text.length - 1) === ')') {
     return text.slice('record('.length, -1);
   }
@@ -541,28 +544,28 @@ export function rangeFromSetDescriptor(descriptor: any) {
 
 export function filterOverrideToAxes(override: any, axisKwargs: any, key: any) {
   if (!override) return null;
-  var src = override[key] || {};
-  var dst: Record<string, any> = {};
-  var kept = false;
-  for (var k in src) {
+  const src = override[key] || {};
+  const dst: Record<string, any> = {};
+  let kept = false;
+  for (const k in src) {
     if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
     if (!axisKwargs.has(k)) continue;
     dst[k] = src[k];
     kept = true;
   }
   if (!kept) return null;
-  var out = Object.assign({}, override);
+  const out = Object.assign({}, override);
   out[key] = dst;
   return out;
 }
 
 export function bubbleMemberIds(r: any, allReifications: any) {
-  var ids: Record<string, boolean> = {};
-  for (var i = 0; i < r.kernel.length; i++) ids[r.kernel[i]] = true;
-  for (var j = 0; j < allReifications.length; j++) {
-    var r2 = allReifications[j];
+  const ids: Record<string, boolean> = {};
+  for (let i = 0; i < r.kernel.length; i++) ids[r.kernel[i]] = true;
+  for (let j = 0; j < allReifications.length; j++) {
+    const r2 = allReifications[j];
     if (r2 === r || !ids[r2.name]) continue;
-    for (var k = 0; k < r2.kernel.length; k++) ids[r2.kernel[k]] = true;
+    for (let k = 0; k < r2.kernel.length; k++) ids[r2.kernel[k]] = true;
   }
   return ids;
 }

@@ -281,7 +281,7 @@ export var VIEWER_BODY_HTML = `
 var cssInjected = false;
 export function ensureCssInjected() {
   if (cssInjected) return;
-  var styleEl = document.createElement('style');
+  const styleEl = document.createElement('style');
   styleEl.setAttribute('data-flatppl-viewer-css', '');
   styleEl.textContent = VIEWER_CSS;
   document.head.appendChild(styleEl);

@@ -22,13 +22,13 @@ import { plotZoomOptions, samplesAreConstant } from './util.js';
 type SamplesPlanHint = { mode?: string; toolbarControls?: any } | null;
 
 export function renderArrayStepPlot(ctx: Ctx, arr: any) {
-  var fg = getComputedStyle(document.body).color || '#ccc';
-  var n = arr.length;
+  const fg = getComputedStyle(document.body).color || '#ccc';
+  const n = arr.length;
   // Build piecewise-constant step data: each value v at index i
   // contributes two points (i, v) and (i+1, v). echarts then
   // draws segments connecting consecutive entries.
-  var stepData = new Array(n * 2);
-  for (var i = 0; i < n; i++) {
+  const stepData = new Array(n * 2);
+  for (let i = 0; i < n; i++) {
     stepData[2 * i]     = [i, arr[i]];
     stepData[2 * i + 1] = [i + 1, arr[i]];
   }
@@ -37,16 +37,16 @@ export function renderArrayStepPlot(ctx: Ctx, arr: any) {
   // palette the DAG view paints. For literal arrays that's the
   // shared phaseFixed grey (post the literal-color unification);
   // for other shapes it picks up the node.kind overrides.
-  var color = colorForBinding(ctx, ctx.currentPlotBindingName);
-  var distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'array';
-  var arrayLegendLabel = n + ' values';
+  const color = colorForBinding(ctx, ctx.currentPlotBindingName);
+  const distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'array';
+  const arrayLegendLabel = n + ' values';
   // No measure passed — fixed array data isn't a sampled empirical
   // measure, so the frame skips the N+ESS readout. (A future
   // refinement could surface "length: n" in the toolbar instead.)
   renderPlotFrame(ctx, {
     chartCallback: function(chartHost: any) {
       ctx.plotEchart = echarts.init(chartHost);
-      var zoomOpts = plotZoomOptions(fg);
+      const zoomOpts = plotZoomOptions(fg);
       ctx.plotEchart.setOption({
         animation: false,
         dataZoom: zoomOpts.dataZoom,
@@ -136,7 +136,7 @@ export function renderArrayStepPlot(ctx: Ctx, arr: any) {
  *                      stale plot across binding navigation.
  */
 export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
-  var name = opts.name;
+  const name = opts.name;
   // Multivariate measure (record / tuple / array shapes): route
   // to the corner / 2D-strip renderer.
   if (measure.shape === 'record' || measure.shape === 'tuple' || measure.shape === 'array') {
@@ -156,7 +156,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     renderRecordMarginals(ctx, measure, name, opts.toolbarControls);
     return;
   }
-  var samples = measure.samples;
+  const samples = measure.samples;
   // Complex-valued binding (engine sets dtype:'complex' + .imag,
   // planar with .samples = Re). v1 renders the real part — honest
   // about it via a toolbar badge — rather than silently showing
@@ -165,7 +165,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // follow-up (TODO-flatppl-js.md §03); the badge is the seam
   // they'll grow from. Array/record-shaped complex (per-atom
   // vectors) keep their existing corner rendering of Re for now.
-  var isComplex = measure.dtype === 'complex'
+  const isComplex = measure.dtype === 'complex'
     && measure.imag instanceof Float64Array;
   // Array-mode: skip histogram + density entirely; the data
   // is a fixed-length sequence to plot as index→value, not
@@ -191,26 +191,26 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // instant. Cache lives only as long as the underlying measure:
   // rebuildDerivations and configUpdate (sampleCount change)
   // clear it.
-  var histKey = name + '|' + (opts.discrete ? 'd' : 'c');
+  const histKey = name + '|' + (opts.discrete ? 'd' : 'c');
   let hist = ctx.histogramCache.get(histKey);
   if (!hist) {
     // Pass logWeights through so weighted measures (post
     // weighted/bayesupdate/normalize) render their bars
     // correctly. For unweighted measures this is null and the
     // histogram takes its fast count/N path.
-    var histOpts = measure.logWeights ? { logWeights: measure.logWeights } : {};
+    const histOpts = measure.logWeights ? { logWeights: measure.logWeights } : {};
     hist = opts.discrete
       ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
       : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
     ctx.histogramCache.set(histKey, hist!);
   }
   const histR = hist!;
-  var staleGuard = opts.staleGuard || function() { return true; };
+  const staleGuard = opts.staleGuard || function() { return true; };
   // Scalar histogram path renders once (no internal rerenders), so
   // we resolve the toolbar thunk to a static Element here. The
   // record-marginals path above keeps the thunk so each rebuild
   // produces fresh DOM.
-  var resolvedToolbar = typeof opts.toolbarControls === 'function'
+  let resolvedToolbar = typeof opts.toolbarControls === 'function'
     ? opts.toolbarControls()
     : opts.toolbarControls;
   // Complex scalar bindings carry no toolbar of their own — surface
@@ -228,7 +228,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     // first/last bin edges. Otherwise the curve uses its own
     // quantile-derived grid which can extend past the bars
     // (and into impossible regions, e.g. x<0 for Exponential).
-    var range;
+    let range;
     if (histR.binEdges && histR.binEdges.length > 1) {
       range = [histR.binEdges[0], histR.binEdges[histR.binEdges.length - 1]];
     } else if (histR.support) {
@@ -269,7 +269,7 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
     return;
   }
 
-  var fg = getComputedStyle(document.body).color || '#ccc';
+  const fg = getComputedStyle(document.body).color || '#ccc';
 
   // Look up the binding's DAG-view color so the plot reads as
   // belonging to the same node the user is hovering on the graph.
@@ -277,11 +277,11 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
   // node.kind override that maps a measure-typed binding to the
   // lawof blue rather than the generic 'call' grey. See
   // colorForBinding above.
-  var color = colorForBinding(ctx, ctx.currentPlotBindingName);
+  const color = colorForBinding(ctx, ctx.currentPlotBindingName);
 
-  var hist = reply.histogram;
-  var dens = reply.density;
-  var discrete = (hist && hist.reference === 'counting');
+  const hist = reply.histogram;
+  const dens = reply.density;
+  const discrete = (hist && hist.reference === 'counting');
 
   // Empirical histogram bars. For continuous, echarts' bar series
   // doesn't naturally do equal-width bars on a value xAxis; we use
@@ -289,9 +289,9 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
   // at their actual x positions and widths regardless of zoom.
   // For discrete, the simpler bar series with categoryGap=40% gives
   // the spaced "lollipop"-ish look standard for pmfs.
-  var samplesSeries;
+  let samplesSeries;
   if (discrete) {
-    var pairs = new Array(hist.xs.length);
+    const pairs = new Array(hist.xs.length);
     for (var i = 0; i < hist.xs.length; i++) pairs[i] = [hist.xs[i], hist.ys[i]];
     samplesSeries = {
       name: 'samples',
@@ -317,15 +317,15 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
       type: 'custom',
       data: rects,
       renderItem: function(_params: any, api: any) {
-        var pt = api.value(0); // unused — we use the explicit edges below
-        var rec = api.value(2); // also unused; we close over rects instead
+        const pt = api.value(0); // unused — we use the explicit edges below
+        const rec = api.value(2); // also unused; we close over rects instead
         // Use the data point reference rather than pt/rec so this
         // closure stays compatible with echarts' value indexing across
         // versions. api.coord maps [x, y] data → pixel coordinates.
-        var idx = _params.dataIndex;
-        var d = rects[idx];
-        var lt = api.coord([d.x0, d.value[1]]);  // left-top corner
-        var rb = api.coord([d.x1, 0]);           // right-bottom corner
+        const idx = _params.dataIndex;
+        const d = rects[idx];
+        const lt = api.coord([d.x0, d.value[1]]);  // left-top corner
+        const rb = api.coord([d.x1, 0]);           // right-bottom corner
         return {
           type: 'rect',
           shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
@@ -341,8 +341,8 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
   // renders as scatter dots at integer atoms; continuous as a line.
   let densitySeries: any = null;
   if (dens && dens.xs && dens.xs.length > 0) {
-    var dPairs = new Array(dens.xs.length);
-    for (var j = 0; j < dens.xs.length; j++) dPairs[j] = [dens.xs[j], dens.ys[j]];
+    const dPairs = new Array(dens.xs.length);
+    for (let j = 0; j < dens.xs.length; j++) dPairs[j] = [dens.xs[j], dens.ys[j]];
     if (discrete) {
       densitySeries = {
         name: 'density',
@@ -369,10 +369,10 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
   // smears mass past the support, which mis-suggests density where
   // there is none. See worker.js.)
   samplesSeries.name = 'samples';
-  var series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
-  var legendData = densitySeries ? ['samples', 'density'] : ['samples'];
+  const series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
+  const legendData = densitySeries ? ['samples', 'density'] : ['samples'];
 
-  var distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'distribution';
+  const distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'distribution';
 
   // Frame owns the N + ESS readout (in the toolbar above the
   // chart). Pass reply.measure so the frame can compute it; the
@@ -384,7 +384,7 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
     toolbarControls: plan && plan.toolbarControls ? plan.toolbarControls : null,
     chartCallback: function(chartHost: any) {
       ctx.plotEchart = echarts.init(chartHost);
-      var zoomOpts2 = plotZoomOptions(fg);
+      const zoomOpts2 = plotZoomOptions(fg);
       ctx.plotEchart.setOption({
         animation: false,
         dataZoom: zoomOpts2.dataZoom,

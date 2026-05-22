@@ -30,7 +30,7 @@ export function canPersistActive(ctx: Ctx, plan: any): boolean {
     return typeof ctx.host.promptForName === 'function';
   }
   if (!ctx.currentBindings) return false;
-  var b = ctx.currentBindings.get(plan.presetName);
+  const b = ctx.currentBindings.get(plan.presetName);
   if (!b || !b.node || !b.node.value
       || b.node.value.type !== 'CallExpr'
       || !b.node.value.callee
@@ -42,11 +42,11 @@ export function canPersistActive(ctx: Ctx, plan: any): boolean {
   // edit-in-place writable; canPersist returns false so the
   // toolbar hides the button rather than offering a broken
   // write-back.
-  var args = b.node.value.args || [];
-  for (var i = 0; i < args.length; i++) {
-    var a = args[i];
+  const args = b.node.value.args || [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
     if (a.type !== 'KeywordArg' || !a.value) return false;
-    var v = a.value;
+    let v = a.value;
     if (v.type === 'CallExpr' && v.callee && v.callee.name === 'fixed'
         && Array.isArray(v.args) && v.args.length === 1) {
       v = v.args[0];
@@ -57,22 +57,22 @@ export function canPersistActive(ctx: Ctx, plan: any): boolean {
 }
 
 export function buildPersistedPresetLine(ctx: Ctx, plan: any): string {
-  var active = activePresetFor(ctx, plan);
-  var b = ctx.currentBindings!.get(plan.presetName);
-  var srcArgs = b.node.value.args || [];
+  const active = activePresetFor(ctx, plan);
+  const b = ctx.currentBindings!.get(plan.presetName);
+  const srcArgs = b.node.value.args || [];
   const parts: string[] = [];
-  for (var i = 0; i < srcArgs.length; i++) {
-    var sa = srcArgs[i];
-    var kwarg = sa.name;
-    var srcVal = sa.value;
-    var wasFixed = srcVal && srcVal.type === 'CallExpr'
+  for (let i = 0; i < srcArgs.length; i++) {
+    const sa = srcArgs[i];
+    const kwarg = sa.name;
+    const srcVal = sa.value;
+    const wasFixed = srcVal && srcVal.type === 'CallExpr'
                  && srcVal.callee && srcVal.callee.name === 'fixed';
-    var innerSrc = wasFixed ? srcVal.args[0] : srcVal;
-    var override = active.values
+    const innerSrc = wasFixed ? srcVal.args[0] : srcVal;
+    const override = active.values
                 && Object.prototype.hasOwnProperty.call(active.values, kwarg);
-    var v = override ? active.values[kwarg]
+    const v = override ? active.values[kwarg]
                      : (innerSrc && innerSrc.value);
-    var text = formatScalarForSource(ctx, v);
+    let text = formatScalarForSource(ctx, v);
     if (wasFixed) text = 'fixed(' + text + ')';
     parts.push(kwarg + ' = ' + text);
   }
@@ -89,8 +89,8 @@ export function persistActive(ctx: Ctx, plan: any): void {
 }
 
 export function persistNamedPreset(ctx: Ctx, plan: any): void {
-  var b = ctx.currentBindings!.get(plan.presetName);
-  var newText = buildPersistedPresetLine(ctx, plan);
+  const b = ctx.currentBindings!.get(plan.presetName);
+  const newText = buildPersistedPresetLine(ctx, plan);
   try {
     ctx.host.editSource({
       range: {
@@ -110,21 +110,21 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
     console.warn('[viewer] persist auto: ctx.host missing promptForName / editSource');
     return;
   }
-  var autoValues = computeAutoValues(ctx, plan);
-  var override = plan.autoOverride;
-  var combined = Object.assign({}, autoValues, (override && override.values) || {});
+  const autoValues = computeAutoValues(ctx, plan);
+  const override = plan.autoOverride;
+  const combined = Object.assign({}, autoValues, (override && override.values) || {});
   const parts: string[] = [];
-  for (var k in combined) {
+  for (const k in combined) {
     if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
-    var v = combined[k];
+    const v = combined[k];
     if (!Number.isFinite(v)) continue;
     parts.push(k + ' = ' + formatScalarForSource(ctx, v));
   }
   if (parts.length === 0) return;
   const existingNames: string[] = [];
   if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b: unknown, n: string) { existingNames.push(n); });
-  var pairsText = parts.join(', ');
-  var suggested = (plan.name || 'inputs') + '_default';
+  const pairsText = parts.join(', ');
+  const suggested = (plan.name || 'inputs') + '_default';
   Promise.resolve(ctx.host.promptForName({
     suggested: suggested,
     existingNames: existingNames,
@@ -151,11 +151,11 @@ export function setFieldToSource(ctx: Ctx, v: any): string {
 export function defaultSetSourceForKwarg(ctx: Ctx, plan: any, kwargName: string): string {
   if (!plan.axes) return 'reals';
   const matching: any[] = [];
-  for (var i = 0; i < plan.axes.length; i++) {
+  for (let i = 0; i < plan.axes.length; i++) {
     if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
   }
   if (matching.length !== 1) return 'reals';  // non-scalar — defer
-  var bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
   let d: any = null;
   try {
     d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(matching[0].source, bindings);
@@ -187,14 +187,14 @@ export function canPersistDomain(ctx: Ctx, plan: any): boolean {
     return typeof ctx.host.promptForName === 'function';
   }
   if (!ctx.currentBindings) return false;
-  var b = ctx.currentBindings.get(plan.domainName);
+  const b = ctx.currentBindings.get(plan.domainName);
   if (!b || !b.node || !b.node.value
       || b.node.value.type !== 'CallExpr'
       || !b.node.value.callee
       || b.node.value.callee.name !== 'cartprod') return false;
-  var args = b.node.value.args || [];
-  for (var i = 0; i < args.length; i++) {
-    var a = args[i];
+  const args = b.node.value.args || [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
     if (a.type !== 'KeywordArg' || !a.value) return false;
     if (!isPersistableSetField(a.value)) return false;
   }
@@ -211,14 +211,14 @@ export function persistDomain(ctx: Ctx, plan: any): void {
 }
 
 export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
-  var b = ctx.currentBindings!.get(plan.domainName);
-  var srcArgs = b.node.value.args || [];
-  var override = domainOverrideEntryFor(ctx, plan);
-  var or = (override && override.ranges) || {};
+  const b = ctx.currentBindings!.get(plan.domainName);
+  const srcArgs = b.node.value.args || [];
+  const override = domainOverrideEntryFor(ctx, plan);
+  const or = (override && override.ranges) || {};
   const parts: string[] = [];
-  for (var i = 0; i < srcArgs.length; i++) {
-    var sa = srcArgs[i];
-    var kwarg = sa.name;
+  for (let i = 0; i < srcArgs.length; i++) {
+    const sa = srcArgs[i];
+    const kwarg = sa.name;
     if (Object.prototype.hasOwnProperty.call(or, kwarg)) {
       parts.push(kwarg + ' = interval('
         + formatScalarForSource(ctx, or[kwarg].lo) + ', '
@@ -231,8 +231,8 @@ export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
 }
 
 export function persistNamedDomain(ctx: Ctx, plan: any): void {
-  var b = ctx.currentBindings!.get(plan.domainName);
-  var newText = buildPersistedDomainLine(ctx, plan);
+  const b = ctx.currentBindings!.get(plan.domainName);
+  const newText = buildPersistedDomainLine(ctx, plan);
   try {
     ctx.host.editSource({
       range: {
@@ -252,8 +252,8 @@ export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
     console.warn('[viewer] persist domain auto: ctx.host missing promptForName / editSource');
     return;
   }
-  var override = plan.domainAutoOverride;
-  var ranges = (override && override.ranges) || {};
+  const override = plan.domainAutoOverride;
+  const ranges = (override && override.ranges) || {};
   // Enumerate every signature input so the resulting cartprod has
   // full shape coverage. Per-kwarg precedence:
   //   1. user override range          → interval(lo, hi)
@@ -265,19 +265,19 @@ export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
   // Step 2 means an axis the user looked at but never edited
   // still persists with its observed bounds rather than being
   // weakened to the natural set.
-  var inputs = (plan.signature && plan.signature.inputs) || [];
+  const inputs = (plan.signature && plan.signature.inputs) || [];
   const parts: string[] = [];
-  for (var i = 0; i < inputs.length; i++) {
-    var kw = inputs[i].kwargName;
+  for (let i = 0; i < inputs.length; i++) {
+    const kw = inputs[i].kwargName;
     if (!kw) continue;
-    var r = Object.prototype.hasOwnProperty.call(ranges, kw) ? ranges[kw] : null;
+    const r = Object.prototype.hasOwnProperty.call(ranges, kw) ? ranges[kw] : null;
     if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
       parts.push(kw + ' = interval('
         + formatScalarForSource(ctx, r.lo) + ', '
         + formatScalarForSource(ctx, r.hi) + ')');
       continue;
     }
-    var cached = ctx.profileRangeCache.get(
+    const cached = ctx.profileRangeCache.get(
       plan.name + '|' + kw + '|D=' + (plan.domainName || ''));
     if (cached && Number.isFinite(cached.lo) && Number.isFinite(cached.hi)) {
       parts.push(kw + ' = interval('
@@ -290,8 +290,8 @@ export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
   if (parts.length === 0) return;
   const existingNames: string[] = [];
   if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b: unknown, n: string) { existingNames.push(n); });
-  var pairsText = parts.join(', ');
-  var suggested = (plan.name || 'domain') + '_domain';
+  const pairsText = parts.join(', ');
+  const suggested = (plan.name || 'domain') + '_domain';
   Promise.resolve(ctx.host.promptForName({
     suggested: suggested,
     existingNames: existingNames,
