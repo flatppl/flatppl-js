@@ -1,4 +1,4 @@
-// @flatppl/viewer — profile-plot renderer family (Phase 4e).
+// @flatppl/viewer — profile-plot renderer family —
 //
 // renderProfilePlotForCurrent is the entry; buildProfileControls
 // + buildProfileBottomRow build the axis-selector and lo/hi inputs;
@@ -228,7 +228,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       observed: observed,
       tally: 'clamped',
     });
-  }).then(function(reply) {
+  }).then(function(reply: any) {
     if (!reply) return;
     if (ctx.currentPlotPlan !== planForCall) return;
     renderProfileLine(ctx, reply.samples, rangeRef[0], plan, sweepAxis);

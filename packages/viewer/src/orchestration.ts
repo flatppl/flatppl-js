@@ -1,5 +1,5 @@
 // @ts-check
-// @flatppl/viewer — orchestration / source updates / nameSeed (Phase 4f).
+// @flatppl/viewer — orchestration / source updates / nameSeed —
 //
 // applySourceUpdate processes a sourceUpdate or showModule message:
 // re-parses the source, rebuilds derivations, re-renders the DAG,
@@ -18,7 +18,8 @@ import { updatePlotForBinding } from './render-plot.js';
  * regardless of which one the user clicked first.
  */
 import { enterModuleView, focusNode } from './dag.js';
-export function nameSeed(ctx: any, name: any) {
+import type { Ctx } from './types';
+export function nameSeed(ctx: Ctx, name: any) {
   let h = 2166136261;
   for (let i = 0; i < name.length; i++) {
     h = h ^ name.charCodeAt(i);
@@ -27,7 +28,7 @@ export function nameSeed(ctx: any, name: any) {
   return (h ^ ctx.rootSeed) >>> 0;
 }
 
-export function applySourceUpdate(ctx: any, msg: any) {
+export function applySourceUpdate(ctx: Ctx, msg: any) {
   const sourceChanged = (msg.source !== ctx.currentSource);
   // Track the surface-syntax variant of the in-memory source so
   // (a) processSource picks the right grammar and (b) persist
@@ -90,7 +91,7 @@ export function applySourceUpdate(ctx: any, msg: any) {
   }
 }
 
-export function resizeAllEchartsInPlot(ctx: any) {
+export function resizeAllEchartsInPlot(ctx: Ctx) {
   const root = document.getElementById('plot-content');
   if (!root) return;
   const nodes = root.querySelectorAll('div');
@@ -104,7 +105,7 @@ export function resizeAllEchartsInPlot(ctx: any) {
   if (rootInst) try { rootInst.resize(); } catch (_) {}
 }
 
-export function resizeAndFitCy(ctx: any) {
+export function resizeAndFitCy(ctx: Ctx) {
   if (!ctx.cy) return;
   // requestAnimationFrame so the layout pass that triggered the
   // resize has settled before we ask cytoscape for the new size.

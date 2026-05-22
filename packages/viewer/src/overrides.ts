@@ -1,4 +1,4 @@
-// @flatppl/viewer — preset + domain override stores (Phase 4d).
+// @flatppl/viewer — preset + domain override stores —
 //
 // Persistent ctx.presetOverrides / ctx.domainOverrides maps and the
 // helpers that read/mutate them. Stable across binding navigation;

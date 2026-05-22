@@ -1,4 +1,4 @@
-// @flatppl/viewer — record/sample-stats renderers (Phase 4e).
+// @flatppl/viewer — record/sample-stats renderers —
 //
 // renderRecordMarginals + renderRecordToolbar drive the correlations/
 // marginals view modes for record-shaped measures; renderAxisDropdown

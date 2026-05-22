@@ -1,4 +1,4 @@
-// @flatppl/viewer — density-strip + corner-grid renderers (Phase 4e).
+// @flatppl/viewer — density-strip + corner-grid renderers —
 //
 // renderDensityStrips lays out one density column per axis (the
 // marginals view); renderCornerGrid is the NxN matrix view
@@ -26,7 +26,8 @@ import { colorForBinding } from './palette.js';
 import { nameSeed } from './orchestration.js';
 import { listScalarAxes, makeMainThreadPrng } from './util.js';
 import { formatScalar } from './util.js';
-export function renderDensityStrips(ctx: any, hostEl: any, measure: any, bindingName: any, axesArg: any) {
+import type { Ctx } from './types';
+export function renderDensityStrips(ctx: Ctx, hostEl: any, measure: any, bindingName: any, axesArg: any) {
   hostEl.innerHTML = '';
   // Marginals mode passes the full axis list (no selection cap); we
   // fall back to listScalarAxes for legacy callers.
@@ -207,10 +208,10 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
  * div whose contents we replace; it must be a flex/block child
  * with a fixed height so the inner grid expands correctly.
  */
-export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingName: any) {
+export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingName: any) {
   hostEl.innerHTML = '';
   const axes = listScalarAxes(measure)
-    .filter(function(a: any) { return ctx.recordSelection.selected.indexOf(a.key) >= 0; });
+    .filter(function(a: any) { return ctx.recordSelection!.selected.indexOf(a.key) >= 0; });
   const n = axes.length;
   if (n === 0) {
     const empty = document.createElement('div');

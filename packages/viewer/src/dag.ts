@@ -1,4 +1,4 @@
-// @flatppl/viewer — DAG (cytoscape) layer (Phase 4e).
+// @flatppl/viewer — DAG (cytoscape) layer —
 //
 // initCy builds the cytoscape instance + style stanzas + tap/dbltap/
 // hover/zoom handlers; renderDAG repopulates from a parsed module's
@@ -13,7 +13,8 @@ import { updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding } from './render-frame.js';
-export function showNodeInfo(ctx: any, d: any) {
+import type { Ctx } from './types';
+export function showNodeInfo(ctx: Ctx, d: any) {
   const phase = d.phase || 'unknown';
   const phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
   let unsupportedRow = '';
@@ -51,7 +52,7 @@ export function showNodeInfo(ctx: any, d: any) {
     + errorRow;
 }
 
-export function updateHeader(ctx: any, data: any) {
+export function updateHeader(ctx: Ctx, data: any) {
   const el = $('header-expr');
   // Module view: no per-node target; just label the view.
   if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
@@ -69,11 +70,11 @@ export function updateHeader(ctx: any, data: any) {
     + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
 }
 
-export function updateBackBtn(ctx: any) {
+export function updateBackBtn(ctx: Ctx) {
   $('back-btn').style.display = ctx.history.length > 0 ? 'block' : 'none';
 }
 
-export function teardownBubbles(ctx: any) {
+export function teardownBubbles(ctx: Ctx) {
   if (!ctx.bb) return;
   ctx.bb.getPaths().forEach(function(p: any) {
     p.update = function() {};
@@ -82,7 +83,7 @@ export function teardownBubbles(ctx: any) {
   ctx.cy.elements().forEach(function(el: any) { el.removeScratch('bubbleSets'); });
 }
 
-export function initCy(ctx: any) {
+export function initCy(ctx: Ctx) {
   ctx.cy = cytoscape({
     container: $('cy'),
     style: [
@@ -348,7 +349,7 @@ export function initCy(ctx: any) {
   });
 }
 
-export function drawReificationLassos(ctx: any, data: any) {
+export function drawReificationLassos(ctx: Ctx, data: any) {
   if (!ctx.bb || !data.reifications) return;
   teardownBubbles(ctx);
 
@@ -389,7 +390,7 @@ export function drawReificationLassos(ctx: any, data: any) {
   }
 }
 
-export function renderDAG(ctx: any, data: any) {
+export function renderDAG(ctx: Ctx, data: any) {
   if (!ctx.cy) initCy(ctx);
   updateHeader(ctx, data);
 
@@ -551,7 +552,7 @@ export function renderDAG(ctx: any, data: any) {
  * binding in document order (the same default the extension ctx.host used
  * before this refactor).
  */
-export function focusNode(ctx: any, targetName: any, pushHistory: any) {
+export function focusNode(ctx: Ctx, targetName: any, pushHistory: any) {
   if (!ctx.currentBindings) return;
   // No targetName supplied → prefer keeping the current focus.
   // This is the path used by source-only updates from the host
@@ -611,7 +612,7 @@ export function focusNode(ctx: any, targetName: any, pushHistory: any) {
  * focused binding here. Pushes onto ctx.history when requested and
  * the previous view wasn't already the module view.
  */
-export function enterModuleView(ctx: any, pushHistory: any) {
+export function enterModuleView(ctx: Ctx, pushHistory: any) {
   if (!ctx.currentBindings) return;
   const dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
   if (!dagData || dagData.nodes.length === 0) return;

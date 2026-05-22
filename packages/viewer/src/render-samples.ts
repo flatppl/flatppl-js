@@ -1,4 +1,4 @@
-// @flatppl/viewer — samples / empirical / array renderers (Phase 4e).
+// @flatppl/viewer — samples / empirical / array renderers —
 //
 // renderArrayStepPlot draws a fixed-length numeric array as a step
 // plot; renderEmpiricalMeasure renders the sample histogram + density

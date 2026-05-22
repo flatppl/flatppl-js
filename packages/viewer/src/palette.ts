@@ -1,5 +1,5 @@
 // @ts-check
-// @flatppl/viewer — palette-driven node colour helpers (Phase 4c).
+// @flatppl/viewer — palette-driven node colour helpers —
 //
 // resolveNodeColor / colorForBinding look up colours from the
 // per-mount ctx.PALETTE / ctx.PHASE_COLORS / ctx.TYPE_STYLE objects
@@ -27,12 +27,14 @@
  * @param {{ kind?: string; type?: string; phase?: 'stochastic'|'parameterized'|'fixed' }} node
  * @returns {string}
  */
-export function resolveNodeColor(ctx: any, node: any) {
+import type { Ctx } from './types';
+
+export function resolveNodeColor(ctx: Ctx, node: any) {
   if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
   if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
   const ts = (node.type && ctx.TYPE_STYLE[node.type]) || ctx.TYPE_STYLE.unknown;
   if (node.type === 'draw' || node.type === 'call') {
-    return (node.phase && ctx.PHASE_COLORS[node.phase]) || ts.color;
+    return (node.phase && (ctx.PHASE_COLORS as any)[node.phase]) || ts.color;
   }
   return ts.color;
 }
@@ -42,7 +44,7 @@ export function resolveNodeColor(ctx: any, node: any) {
  * @param {string} bindingName
  * @returns {string}
  */
-export function colorForBinding(ctx: any, bindingName: any) {
+export function colorForBinding(ctx: Ctx, bindingName: any) {
   if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
     const nodes = ctx.currentState.data.nodes;
     for (let i = 0; i < nodes.length; i++) {

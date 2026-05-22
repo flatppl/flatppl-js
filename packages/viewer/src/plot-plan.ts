@@ -1,4 +1,4 @@
-// @flatppl/viewer — plot plan builder + concrete materialiser (Phase 4f).
+// @flatppl/viewer — plot plan builder + concrete materialiser —
 //
 // buildPlotPlan inspects a binding's derivation + signature to
 // produce the routing record renderers consume (mode: 'analytical'
@@ -404,7 +404,7 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
       refArrays: refArrays,
     });
   }).then(function(reply: any) {
-    // Phase 8: hand-built Measures populate `.value` for
+    // Hand-built Measures populate `.value` for
     // consistency with materialiser-produced ones.
     const data = reply.samples;
     return {

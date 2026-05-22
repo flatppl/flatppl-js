@@ -168,21 +168,17 @@ export interface RecordSelection {
 }
 
 /**
- * Per-mount context object. Every closure-captured state used by the
- * pre-Phase-4 IIFE was moved onto this object in Phase 3; Phase 4 then
- * split the file into modules that all take a `ctx` parameter.
+ * Per-mount context object. All viewer state lives here; every module
+ * function that needs it takes `ctx` as its first or last parameter
+ * (style varies per module — see each module's own JSDoc). Never
+ * reach for it through a closure that wasn't passed in.
  *
- * The contract: ONE ctx per call to mount(). Every module function that
- * needs viewer state takes `ctx` as its first or last parameter (style
- * varies per module — see each module's own JSDoc); never reach for it
- * through a closure that wasn't passed in.
- *
- * v1 (this commit) leaves most fields permissive (`any`) so the JS
- * modules don't light up red at once. Tighten per-field as modules are
- * converted — the high-value fields are the ones whose Phase-4 misuse
- * caused the post-decomposition fixes (recordSelection, formatScalar,
- * etc. — see CONVENTIONS.md and the post-Phase-4 commit messages
- * 5113732 / 7174cf1 / 3435094 for the bug class TS catches).
+ * The contract: ONE ctx per call to mount(). Field tightening from
+ * `any` is incremental — the high-value fields (recordSelection,
+ * Plan-typed currentPlotPlan, EmpiricalMeasure-typed measureCache,
+ * etc.) have already been narrowed; the rest carry the
+ * `[extra: string]: any` escape hatch until each consumer is
+ * tightened.
  */
 export interface Ctx {
   // ---- host adapter ----
@@ -231,7 +227,7 @@ export interface Ctx {
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
   currentPlotPlan: Plan | null;
-  /** Per-record-binding selection state (Phase-4 fix migrated this onto ctx). */
+  /** Per-record-binding selection state. */
   recordSelection: RecordSelection | null;
   rootSeed: number;
 

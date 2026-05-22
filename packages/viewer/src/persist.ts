@@ -1,4 +1,4 @@
-// @flatppl/viewer — persist-to-source (Phase 4d).
+// @flatppl/viewer — persist-to-source —
 //
 // Builds source-text edits (preset binding lines, domain cartprod
 // lines) and applies them via host.editSource. Pure of DOM until

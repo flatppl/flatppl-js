@@ -1,5 +1,5 @@
 // @ts-check
-// @flatppl/viewer — engine facade (Phase 4c).
+// @flatppl/viewer — engine facade —
 //
 // Thin per-mount wrappers around FlatPPLEngine.materialiser.
 // getMeasure memoises materialised EmpiricalMeasures in
@@ -13,14 +13,15 @@
 // sendWorker is imported from ./worker.js.
 
 import { sendWorker } from './worker.js';
+import type { Ctx } from './types';
 
-export function tryGetMeasure(ctx: any, name: any) {
+export function tryGetMeasure(ctx: Ctx, name: any) {
   return getMeasure(ctx, name).then(
     function(m: any) { return m; },
     function(_err: any) { return null; });
 }
 
-export function getMeasure(ctx: any, name: any) {
+export function getMeasure(ctx: Ctx, name: any) {
   if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
   if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
   // All per-kind materialisation lives in the engine — the viewer's
@@ -48,11 +49,11 @@ export function getMeasure(ctx: any, name: any) {
   return promise;
 }
 
-export function fixedValueToMeasure(ctx: any, v: any) {
+export function fixedValueToMeasure(ctx: Ctx, v: any) {
   return FlatPPLEngine.materialiser.fixedValueToMeasure(v, ctx.SAMPLE_COUNT);
 }
 
-export function collectRefArrays(ctx: any, ir: any) {
+export function collectRefArrays(ctx: Ctx, ir: any) {
   const fv = ctx.derivationsState && ctx.derivationsState.fixedValues;
   return FlatPPLEngine.materialiser.collectRefArrays(
     ir, fv, function (n: any) { return getMeasure(ctx, n); });

@@ -1,4 +1,4 @@
-// @flatppl/viewer — derivation rebuild (Phase 4f).
+// @flatppl/viewer — derivation rebuild —
 //
 // rebuildDerivations parses the current source via
 // FlatPPLEngine.orchestrator, builds the derivations map + fixed
@@ -8,7 +8,8 @@
 
 import { sendWorkerNow } from './worker.js';
 import { ensureSamplerWorker } from './worker.js';
-export function rebuildDerivations(ctx: any) {
+import type { Ctx } from './types';
+export function rebuildDerivations(ctx: Ctx) {
   if (!ctx.currentBindings) {
     ctx.derivationsState = null;
     ctx.measureCache = new Map();
@@ -51,7 +52,7 @@ export function rebuildDerivations(ctx: any) {
   //     prunes the override automatically.
   //   - If the override is empty after pruning, retire it.
   ctx.presetOverrides.forEach(function(entry: any, name: any) {
-    const b = ctx.currentBindings.get(name);
+    const b = ctx.currentBindings!.get(name);
     let curValues: Record<string, number> | null = null;
     // analyzer.classifyStatement only returns 'literal' for
     // primitive literal RHS (NumberLiteral etc.); record(...)
@@ -116,7 +117,7 @@ export function rebuildDerivations(ctx: any) {
   //     unbounded source.
   //   - If the override is empty after pruning, retire it.
   ctx.domainOverrides.forEach(function(entry: any, name: any) {
-    const b = ctx.currentBindings.get(name);
+    const b = ctx.currentBindings!.get(name);
     let sourceKwargs: Set<string> | null = null;
     let sourceIntervals: Record<string, { lo: number; hi: number }> | null = null;
     if (b && b.node && b.node.value

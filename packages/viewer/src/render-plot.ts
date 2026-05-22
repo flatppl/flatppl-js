@@ -1,4 +1,4 @@
-// @flatppl/viewer — top-of-stack plot dispatchers (Phase 4f).
+// @flatppl/viewer — top-of-stack plot dispatchers —
 //
 // renderPlotForCurrent is the per-binding plot router (samples /
 // density / corner / profile / array / kernel-sample), dispatching
@@ -16,7 +16,8 @@ import { renderProfilePlotForCurrent } from './render-profile.js';
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
-export function renderPlotForCurrent(ctx: any) {
+import type { Ctx } from './types';
+export function renderPlotForCurrent(ctx: Ctx) {
   // The plot panel stays mounted whenever plotEnabled is true. When
   // the focused binding isn't plottable (lawof, modules, etc.) we
   // still show *something* — a "Not plottable" message — so the
@@ -95,7 +96,12 @@ export function renderPlotForCurrent(ctx: any) {
   // operations (per-i ref chains under huge sample counts).
   const arrayMode = ctx.currentPlotPlan.mode === 'array';
   showPlotMessage(ctx, arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
-  const planForCall = ctx.currentPlotPlan;
+  // Cast to any: the remaining plan modes here (samples / array /
+  // fixed-scalar) have differing fields; renderEmpiricalMeasure
+  // dispatches on opts.mode inside, so reading `.discrete` /
+  // `.analyticalIR` from an ArrayPlan (where they're absent and
+  // unused) is benign.
+  const planForCall: any = ctx.currentPlotPlan;
 
   // Cache hit avoids the worker entirely. We still defer through
   // a microtask so the UI flush is uniform and the stale-reply
@@ -128,7 +134,7 @@ export function renderPlotForCurrent(ctx: any) {
     });
 }
 
-export function updatePlotForBinding(ctx: any, bindingName: string | null) {
+export function updatePlotForBinding(ctx: Ctx, bindingName: string | null) {
   // Snapshot the outgoing plan first — the user may have
   // mutated it since it was first built (selected a different
   // preset, edited an override value, picked a sweep axis).
@@ -136,7 +142,9 @@ export function updatePlotForBinding(ctx: any, bindingName: string | null) {
   // captures same-binding edits in time for applyRemembered…
   // to restore them onto the rebuilt plan below.
   rememberPlanSelections(ctx, ctx.currentPlotPlan);
-  const binding = ctx.currentBindings ? ctx.currentBindings.get(bindingName) : null;
+  const binding = ctx.currentBindings && bindingName != null
+    ? ctx.currentBindings.get(bindingName)
+    : null;
   const plan = buildPlotPlan(ctx, binding);
   // Restore user-driven plan state across rebuilds — both same-
   // binding rebuilds (source edit) and cross-binding navigation
