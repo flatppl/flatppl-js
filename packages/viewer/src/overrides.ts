@@ -20,10 +20,10 @@ export function overrideEntryFor(ctx: Ctx, plan: any) {
 }
 
 export function hasOverrides(ctx: Ctx, plan: any) {
-  var e = overrideEntryFor(ctx, plan);
+  const e = overrideEntryFor(ctx, plan);
   if (!e) return false;
-  var v = e.values || {};
-  for (var k in v) {
+  const v = e.values || {};
+  for (const k in v) {
     if (Object.prototype.hasOwnProperty.call(v, k)) return true;
   }
   return false;
@@ -42,7 +42,7 @@ export function setOverrideFor(ctx: Ctx, plan: any, entry: any) {
 }
 
 export function ensureOverrideFor(ctx: Ctx, plan: any) {
-  var existing = overrideEntryFor(ctx, plan);
+  const existing = overrideEntryFor(ctx, plan);
   if (existing) {
     existing.values = Object.assign({}, existing.values || {});
     return existing;
@@ -51,8 +51,8 @@ export function ensureOverrideFor(ctx: Ctx, plan: any) {
 }
 
 export function activePresetFor(ctx: Ctx, plan: any) {
-  var baseValues = baseValuesFor(ctx, plan);
-  var entry = overrideEntryFor(ctx, plan);
+  const baseValues = baseValuesFor(ctx, plan);
+  const entry = overrideEntryFor(ctx, plan);
   if (!entry) return { values: baseValues };
   return {
     values: Object.assign({}, baseValues, entry.values || {}),
@@ -61,7 +61,7 @@ export function activePresetFor(ctx: Ctx, plan: any) {
 
 export function baseValuesFor(ctx: Ctx, plan: any) {
   if (plan.presetName != null && plan.matchedPresets) {
-    for (var i = 0; i < plan.matchedPresets.length; i++) {
+    for (let i = 0; i < plan.matchedPresets.length; i++) {
       if (plan.matchedPresets[i].name === plan.presetName) {
         return plan.matchedPresets[i].values || {};
       }
@@ -76,7 +76,7 @@ export function domainOverrideEntryFor(ctx: Ctx, plan: any) {
 }
 
 export function ensureDomainOverrideFor(ctx: Ctx, plan: any) {
-  var existing = domainOverrideEntryFor(ctx, plan);
+  const existing = domainOverrideEntryFor(ctx, plan);
   if (existing) {
     existing.ranges = Object.assign({}, existing.ranges || {});
     return existing;
@@ -97,14 +97,14 @@ export function setDomainOverrideFor(ctx: Ctx, plan: any, entry: any) {
 }
 
 export function hasDomainOverrides(ctx: Ctx, plan: any) {
-  var e = domainOverrideEntryFor(ctx, plan);
+  const e = domainOverrideEntryFor(ctx, plan);
   if (!e || !e.ranges) return false;
   return Object.keys(e.ranges).length > 0;
 }
 
 export function baseRangesFor(ctx: Ctx, plan: any) {
   if (plan.domainName != null && plan.matchedDomains) {
-    for (var i = 0; i < plan.matchedDomains.length; i++) {
+    for (let i = 0; i < plan.matchedDomains.length; i++) {
       if (plan.matchedDomains[i].name === plan.domainName) {
         return plan.matchedDomains[i].ranges || {};
       }
@@ -114,15 +114,15 @@ export function baseRangesFor(ctx: Ctx, plan: any) {
 }
 
 export function activeDomainRangesFor(ctx: Ctx, plan: any) {
-  var base = baseRangesFor(ctx, plan);
-  var entry = domainOverrideEntryFor(ctx, plan);
+  const base = baseRangesFor(ctx, plan);
+  const entry = domainOverrideEntryFor(ctx, plan);
   if (!entry || !entry.ranges) return Object.assign({}, base);
   return Object.assign({}, base, entry.ranges);
 }
 
 export function activeFixedNamesFor(ctx: Ctx, plan: any) {
   if (plan.presetName != null && plan.matchedPresets) {
-    for (var i = 0; i < plan.matchedPresets.length; i++) {
+    for (let i = 0; i < plan.matchedPresets.length; i++) {
       if (plan.matchedPresets[i].name === plan.presetName) {
         return plan.matchedPresets[i].fixedNames || new Set();
       }
@@ -132,12 +132,12 @@ export function activeFixedNamesFor(ctx: Ctx, plan: any) {
 }
 
 export function resolveSweepRange(ctx: Ctx, axis: any) {
-  var descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
+  const descriptor = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
     axis.source, ctx.derivationsState && ctx.derivationsState.bindings);
   if (descriptor && descriptor.kind === 'empirical') {
     return getMeasure(ctx, descriptor.name).then(function(m: any) {
       if (m && m.samples && m.samples.length > 0) {
-        var range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
+        const range = FlatPPLEngine.orchestrator.fourSigmaQuantileRange(m.samples);
         if (range && range[0] < range[1]) return range;
       }
       return defaultRangeForLeafType(axis.leafType);
@@ -145,18 +145,18 @@ export function resolveSweepRange(ctx: Ctx, axis: any) {
       return defaultRangeForLeafType(axis.leafType);
     });
   }
-  var fromDescriptor = rangeFromSetDescriptor(descriptor);
+  const fromDescriptor = rangeFromSetDescriptor(descriptor);
   if (fromDescriptor) return Promise.resolve(fromDescriptor);
   return Promise.resolve(defaultRangeForLeafType(axis.leafType));
 }
 
 export function applyRememberedSelections(ctx: Ctx, plan: any) {
   if (!plan) return;
-  var mem = ctx.planMemoryByName.get(plan.name);
+  const mem = ctx.planMemoryByName.get(plan.name);
   if (!mem) return;
-  var axisKwargs = new Set<any>();
+  const axisKwargs = new Set<any>();
   if (plan.axes) {
-    for (var i = 0; i < plan.axes.length; i++) {
+    for (let i = 0; i < plan.axes.length; i++) {
       if (plan.axes[i].kwargName) axisKwargs.add(plan.axes[i].kwargName);
     }
   }
@@ -197,14 +197,14 @@ export function rememberPlanSelections(ctx: Ctx, plan: any) {
 }
 
 export function computeAutoValues(ctx: Ctx, plan: any) {
-  var out: Record<string, any> = {};
-  var axes = plan.axes || [];
-  for (var i = 0; i < axes.length; i++) {
-    var ax = axes[i];
-    var def = defaultValueForLeafType(ax.leafType);
+  const out: Record<string, any> = {};
+  const axes = plan.axes || [];
+  for (let i = 0; i < axes.length; i++) {
+    const ax = axes[i];
+    let def = defaultValueForLeafType(ax.leafType);
     if (ax.source && ax.source.kind === 'binding'
         && ctx.measureCache && ctx.measureCache.has(ax.source.name)) {
-      var m = ctx.measureCache.get(ax.source.name);
+      const m = ctx.measureCache.get(ax.source.name);
       if (m && m.samples && m.samples.length > 0) def = m.samples[0];
     }
     out[ax.kwargName] = def;

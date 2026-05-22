@@ -18,7 +18,7 @@ import { defaultValueForLeafType, esc } from './util.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
   showPlotMessage(ctx, 'Loading…', { hint: true });
-  var planForCall = plan;
+  const planForCall = plan;
   getMeasure(ctx, plan.name).then(function(measure: any) {
     if (ctx.currentPlotPlan !== planForCall) return;
     renderConstantRecord(ctx, measure, plan.name);
@@ -33,14 +33,14 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   const planAny = ctx.currentPlotPlan;
   if (!planAny || planAny.mode !== 'kernel-sample') return;
   const plan: KernelSamplePlan = planAny;
-  var sig = plan.signature;
-  var inputByKwarg: Record<string, any> = {};
-  for (var k = 0; k < sig.inputs.length; k++) {
+  const sig = plan.signature;
+  const inputByKwarg: Record<string, any> = {};
+  for (let k = 0; k < sig.inputs.length; k++) {
     inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
   }
   // Restrict (for now) to top-level scalar inputs — same limit
   // as the function/likelihood profile path.
-  for (var ai = 0; ai < plan.axes.length; ai++) {
+  for (let ai = 0; ai < plan.axes.length; ai++) {
     if (plan.axes[ai].path && plan.axes[ai].path.length > 0) {
       showPlotMessage(ctx, 'Kernel plot: record / array inputs not yet supported '
         + '— try a kernel with scalar inputs only.',
@@ -48,12 +48,12 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
       return;
     }
   }
-  var active = activePresetFor(ctx, plan);
+  const active = activePresetFor(ctx, plan);
   // Cache key embeds the active preset's values directly so two
   // states of the same preset (with vs. without overrides, or
   // two different override sets) don't collide on cached
   // samples. Stable JSON suffices for our short kwarg lists.
-  var cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '')
+  const cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '')
     + '|' + JSON.stringify(active.values || {});
   // Build the input env (paramName → number). Auto values for
   // axes not covered by the active preset (incl. modified
@@ -61,9 +61,9 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // aware defaults for placeholder sources).
   const env: Record<string, number | boolean> = {};
   const bindingSourceLookups: Array<{ paramName: string; sourceName: string }> = [];
-  for (var a = 0; a < plan.axes.length; a++) {
-    var ax = plan.axes[a];
-    var inp = inputByKwarg[ax.kwargName];
+  for (let a = 0; a < plan.axes.length; a++) {
+    const ax = plan.axes[a];
+    const inp = inputByKwarg[ax.kwargName];
     if (!inp) continue;
     if (active.values && Object.prototype.hasOwnProperty.call(active.values, ax.kwargName)) {
       env[inp.paramName] = active.values[ax.kwargName];
@@ -87,11 +87,11 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // deterministic deps and rewrites self.<param> → %local.<param>;
   // substituteLocals replaces %local refs with their concrete env
   // values. Result: a self-contained measure IR with no refs.
-  var paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
+  const paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
   // We can do most of the IR work synchronously, but we need
   // the binding-source samples first to fill env entries.
   showPlotMessage(ctx, 'Sampling…', { cancellable: true, hint: true });
-  var planForCall = plan;
+  const planForCall = plan;
   // Cache hit: use previously-sampled measure directly.
   if (ctx.measureCache.has(cacheKey)) {
     return Promise.resolve(ctx.measureCache.get(cacheKey)).then(function(m) {
@@ -119,13 +119,13 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   Promise.all(bindingSourceLookups.map(function(s) {
     return tryGetMeasure(ctx, s.sourceName);
   })).then(function(srcMeasures) {
-    for (var i = 0; i < bindingSourceLookups.length; i++) {
-      var sm = srcMeasures[i];
+    for (let i = 0; i < bindingSourceLookups.length; i++) {
+      const sm = srcMeasures[i];
       if (sm && sm.samples && sm.samples.length > 0) {
         env[bindingSourceLookups[i].paramName] = sm.samples[0];
       }
     }
-    var ir = sig.body;
+    let ir = sig.body;
     ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
       ir, ctx.derivationsState!.derivations);
     // expandMeasureRefsInIR fails closed for refs whose derivation
@@ -135,7 +135,7 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
     // so it still needs the structural shape. Re-run with the
     // bindings fallback to recover from binding.ir directly.
     if (ir && ir.kind === 'ref' && ir.ns === 'self') {
-      var expanded = FlatPPLEngine.orchestrator.expandMeasureIR(
+      const expanded = FlatPPLEngine.orchestrator.expandMeasureIR(
         ir.name, ctx.derivationsState!.derivations,
         undefined, ctx.derivationsState!.bindings);
       if (expanded) ir = expanded;
@@ -168,12 +168,12 @@ export function renderKernelSampleMeasure(ctx: Ctx, measure: any, plan: KernelSa
   // axes — the "auto" option still carries useful information
   // even without user-declared presets, and the control stays
   // visible across bindings for consistency.
-  var hasAxes = plan.axes && plan.axes.length > 0;
+  const hasAxes = plan.axes && plan.axes.length > 0;
   // Kernel-sample renders a histogram of empirical draws with an
   // auto-fit x-axis range — the Domain selector (which drives a
   // swept x-axis range) doesn't apply here, so we only mount the
   // Inputs control.
-  var toolbarBuilder = hasAxes
+  const toolbarBuilder = hasAxes
     ? function() {
         return buildPresetControl(ctx, plan, function() {
           renderKernelSampleForCurrent(ctx);

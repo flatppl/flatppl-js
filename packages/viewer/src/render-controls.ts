@@ -20,7 +20,7 @@ type ControlEntry = {
 type OutsideClickHandler = ((ev: MouseEvent) => void) | null;
 
 export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
-  var frag = document.createDocumentFragment();
+  const frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;
 
   // One row per preset name (auto plus each named preset). The
@@ -30,16 +30,16 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   // changes plan.presetName; the override store decides whether
   // the row reads as modified.
   const entries: ControlEntry[] = [];
-  var presets = plan.matchedPresets || [];
-  var autoValues = computeAutoValues(ctx, plan);
+  const presets = plan.matchedPresets || [];
+  const autoValues = computeAutoValues(ctx, plan);
 
   function buildEntry(name: string | null, baseValues: any, isAuto: boolean): ControlEntry {
-    var entryOverride = (name == null) ? plan.autoOverride : ctx.presetOverrides.get(name);
-    var modified = !!(entryOverride && entryOverride.values
+    const entryOverride = (name == null) ? plan.autoOverride : ctx.presetOverrides.get(name);
+    const modified = !!(entryOverride && entryOverride.values
       && Object.keys(entryOverride.values).length > 0);
-    var combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
-    var displayName = isAuto ? 'auto' : name;
-    var tag = modified ? ' (modified)' : '';
+    const combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
+    const displayName = isAuto ? 'auto' : name;
+    const tag = modified ? ' (modified)' : '';
     return {
       name: name,
       modified: modified,
@@ -49,28 +49,28 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   }
 
   entries.push(buildEntry(null, autoValues, true));
-  for (var pi = 0; pi < presets.length; pi++) {
+  for (let pi = 0; pi < presets.length; pi++) {
     entries.push(buildEntry(presets[pi].name, presets[pi].values || {}, false));
   }
 
   function isActive(entry: ControlEntry): boolean { return entry.name === plan.presetName; }
   let activeEntry: ControlEntry | null = null;
-  for (var k = 0; k < entries.length; k++) {
+  for (let k = 0; k < entries.length; k++) {
     if (isActive(entries[k])) { activeEntry = entries[k]; break; }
   }
   if (!activeEntry) activeEntry = entries[0];
 
-  var wrap = document.createElement('span');
+  const wrap = document.createElement('span');
   wrap.style.position = 'relative';
   wrap.style.display = 'inline-flex';
   wrap.style.alignItems = 'center';
   wrap.style.gap = '0.3em';
 
-  var lbl = document.createElement('label');
+  const lbl = document.createElement('label');
   lbl.textContent = 'Inputs:';
   lbl.style.opacity = '0.6';
 
-  var btn = document.createElement('button');
+  const btn = document.createElement('button');
   btn.type = 'button';
   btn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
   btn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
@@ -83,7 +83,7 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   btn.textContent = activeEntry.shortLabel + '  ▾';
   btn.title = activeEntry.longLabel;
 
-  var panel = document.createElement('div');
+  const panel = document.createElement('div');
   panel.style.position = 'absolute';
   panel.style.top = 'calc(100% + 4px)';
   panel.style.left = '0';
@@ -125,7 +125,7 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   });
 
   entries.forEach(function(entry) {
-    var row = document.createElement('div');
+    const row = document.createElement('div');
     row.textContent = entry.longLabel;
     row.style.padding = '0.25em 0.6em';
     row.style.cursor = 'pointer';
@@ -165,10 +165,10 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   // through onChange. The dropdown row's "(modified)" tag then
   // disappears with no further user action.
   if (hasOverrides(ctx, plan)) {
-    var actionGroup = document.createElement('span');
+    const actionGroup = document.createElement('span');
     actionGroup.style.display = 'inline-flex';
     actionGroup.style.gap = '2px';
-    var resetBtn = makeActionButton(ctx, 'discard', 'Reset preset to source values');
+    const resetBtn = makeActionButton(ctx, 'discard', 'Reset preset to source values');
     resetBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
       setOverrideFor(ctx, plan, null);
@@ -188,8 +188,8 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
     // needs host.editSource; 'save-as' additionally needs
     // host.promptForName.
     if (canPersistActive(ctx, plan)) {
-      var isSaveAs = (plan.presetName == null);
-      var persistBtn = makeActionButton(ctx, 
+      const isSaveAs = (plan.presetName == null);
+      const persistBtn = makeActionButton(ctx, 
         isSaveAs ? 'save-as' : 'save',
         isSaveAs
           ? 'Save as new preset binding'
@@ -207,39 +207,39 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
 }
 
 export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
-  var frag = document.createDocumentFragment();
+  const frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;
 
-  var domains = plan.matchedDomains || [];
+  const domains = plan.matchedDomains || [];
   // kwarg display order: take it from plan.signature.inputs so
   // every entry — including modifications — reads in the same
   // order as the source signature, regardless of which kwargs
   // got user overrides.
-  var inputs = (plan.signature && plan.signature.inputs) || [];
+  const inputs = (plan.signature && plan.signature.inputs) || [];
   const kwargOrder: string[] = [];
-  for (var ki = 0; ki < inputs.length; ki++) {
+  for (let ki = 0; ki < inputs.length; ki++) {
     if (inputs[ki].kwargName) kwargOrder.push(inputs[ki].kwargName);
   }
 
   function buildEntry(name: string | null, baseRanges: any, baseSetNames: any, isAuto: boolean): ControlEntry {
-    var entryOverride = (name == null)
+    const entryOverride = (name == null)
       ? plan.domainAutoOverride
       : ctx.domainOverrides.get(name);
-    var modified = !!(entryOverride && entryOverride.ranges
+    const modified = !!(entryOverride && entryOverride.ranges
       && Object.keys(entryOverride.ranges).length > 0);
-    var combinedRanges = Object.assign({}, baseRanges,
+    const combinedRanges = Object.assign({}, baseRanges,
       (entryOverride && entryOverride.ranges) || {});
     // User overrides shadow source named-set fields: drop those
     // entries from setNames so the kwarg renders with the
     // bounded interval rather than both.
-    var combinedSetNames = Object.assign({}, baseSetNames);
-    for (var k in combinedRanges) {
+    const combinedSetNames = Object.assign({}, baseSetNames);
+    for (const k in combinedRanges) {
       if (Object.prototype.hasOwnProperty.call(combinedRanges, k)) {
         delete combinedSetNames[k];
       }
     }
-    var displayName = isAuto ? 'auto' : name;
-    var tag = modified ? ' (modified)' : '';
+    const displayName = isAuto ? 'auto' : name;
+    const tag = modified ? ' (modified)' : '';
     return {
       name: name,
       modified: modified,
@@ -251,7 +251,7 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
 
   const entries: ControlEntry[] = [];
   entries.push(buildEntry(null, {}, {}, true));
-  for (var di = 0; di < domains.length; di++) {
+  for (let di = 0; di < domains.length; di++) {
     entries.push(buildEntry(
       domains[di].name,
       domains[di].ranges || {},
@@ -261,22 +261,22 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
 
   function isActive(entry: ControlEntry): boolean { return entry.name === plan.domainName; }
   let activeEntry: ControlEntry | null = null;
-  for (var k = 0; k < entries.length; k++) {
+  for (let k = 0; k < entries.length; k++) {
     if (isActive(entries[k])) { activeEntry = entries[k]; break; }
   }
   if (!activeEntry) activeEntry = entries[0];
 
-  var wrap = document.createElement('span');
+  const wrap = document.createElement('span');
   wrap.style.position = 'relative';
   wrap.style.display = 'inline-flex';
   wrap.style.alignItems = 'center';
   wrap.style.gap = '0.3em';
 
-  var lbl = document.createElement('label');
+  const lbl = document.createElement('label');
   lbl.textContent = 'Domain:';
   lbl.style.opacity = '0.6';
 
-  var btn = document.createElement('button');
+  const btn = document.createElement('button');
   btn.type = 'button';
   btn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
   btn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
@@ -289,7 +289,7 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
   btn.textContent = activeEntry.shortLabel + '  ▾';
   btn.title = activeEntry.longLabel;
 
-  var panel = document.createElement('div');
+  const panel = document.createElement('div');
   panel.style.position = 'absolute';
   panel.style.top = 'calc(100% + 4px)';
   panel.style.left = '0';
@@ -329,7 +329,7 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
   });
 
   entries.forEach(function(entry) {
-    var row = document.createElement('div');
+    const row = document.createElement('div');
     row.textContent = entry.longLabel;
     row.style.padding = '0.25em 0.6em';
     row.style.cursor = 'pointer';
@@ -363,10 +363,10 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
   // grouped in a tight inline-flex span so they read as one
   // pair rather than picking up the toolbar's wider gap.
   if (hasDomainOverrides(ctx, plan)) {
-    var actionGroup = document.createElement('span');
+    const actionGroup = document.createElement('span');
     actionGroup.style.display = 'inline-flex';
     actionGroup.style.gap = '2px';
-    var resetBtn = makeActionButton(ctx, 'discard', 'Reset domain to source ranges');
+    const resetBtn = makeActionButton(ctx, 'discard', 'Reset domain to source ranges');
     resetBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
       setDomainOverrideFor(ctx, plan, null);
@@ -375,8 +375,8 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
     actionGroup.appendChild(resetBtn);
 
     if (canPersistDomain(ctx, plan)) {
-      var isSaveAs = (plan.domainName == null);
-      var persistBtn = makeActionButton(ctx, 
+      const isSaveAs = (plan.domainName == null);
+      const persistBtn = makeActionButton(ctx, 
         isSaveAs ? 'save-as' : 'save',
         isSaveAs
           ? 'Save as new cartprod domain binding'

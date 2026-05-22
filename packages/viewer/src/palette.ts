@@ -30,7 +30,7 @@
 export function resolveNodeColor(ctx: any, node: any) {
   if (node.kind === 'kernel')  return ctx.TYPE_STYLE.kernelof.color;
   if (node.kind === 'measure') return ctx.TYPE_STYLE.lawof.color;
-  var ts = (node.type && ctx.TYPE_STYLE[node.type]) || ctx.TYPE_STYLE.unknown;
+  const ts = (node.type && ctx.TYPE_STYLE[node.type]) || ctx.TYPE_STYLE.unknown;
   if (node.type === 'draw' || node.type === 'call') {
     return (node.phase && ctx.PHASE_COLORS[node.phase]) || ts.color;
   }
@@ -44,8 +44,8 @@ export function resolveNodeColor(ctx: any, node: any) {
  */
 export function colorForBinding(ctx: any, bindingName: any) {
   if (ctx.currentState && ctx.currentState.data && ctx.currentState.data.nodes) {
-    var nodes = ctx.currentState.data.nodes;
-    for (var i = 0; i < nodes.length; i++) {
+    const nodes = ctx.currentState.data.nodes;
+    for (let i = 0; i < nodes.length; i++) {
       if (nodes[i].id === bindingName) return resolveNodeColor(ctx, nodes[i]);
     }
   }
@@ -53,6 +53,6 @@ export function colorForBinding(ctx: any, bindingName: any) {
   // possible during config-update reflows). currentBindings has
   // .type but not .kind/.phase, so resolveNodeColor naturally
   // degrades to the type colour.
-  var binding = ctx.currentBindings && ctx.currentBindings.get(bindingName);
+  const binding = ctx.currentBindings && ctx.currentBindings.get(bindingName);
   return resolveNodeColor(ctx, { type: (binding && binding.type) || 'draw' });
 }

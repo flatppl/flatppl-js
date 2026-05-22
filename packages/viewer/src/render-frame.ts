@@ -21,8 +21,8 @@ import { cancelAllSampling } from './worker.js';
 export function errorsForBinding(ctx: any, bindingName: any) {
   if (!bindingName || !ctx.currentState || !ctx.currentState.data
       || !ctx.currentState.data.nodes) return null;
-  var nodes = ctx.currentState.data.nodes;
-  for (var i = 0; i < nodes.length; i++) {
+  const nodes = ctx.currentState.data.nodes;
+  for (let i = 0; i < nodes.length; i++) {
     if (nodes[i].id === bindingName) return nodes[i].errors || null;
   }
   return null;
@@ -35,7 +35,7 @@ export function errorsForBinding(ctx: any, bindingName: any) {
  * the pane without inheriting a stale grid.
  */
 export function resetPlotContentStyle(ctx: any) {
-  var el = $('plot-content');
+  const el = $('plot-content');
   el.style.display = '';
   el.style.gridTemplateColumns = '';
   el.style.gridTemplateRows = '';
@@ -48,16 +48,16 @@ export function resetPlotContentStyle(ctx: any) {
 export function showPlotMessage(ctx: any, html: string, options?: { cancellable?: boolean; hint?: boolean }) {
   if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
   resetPlotContentStyle(ctx);
-  var el = $('plot-content');
-  var cancellable = options && options.cancellable;
-  var hint       = options && options.hint;
-  var stopHtml = cancellable
+  const el = $('plot-content');
+  const cancellable = options && options.cancellable;
+  const hint       = options && options.hint;
+  const stopHtml = cancellable
     ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
     : '';
-  var cls = hint ? ' class="hint"' : '';
+  const cls = hint ? ' class="hint"' : '';
   el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
   if (cancellable) {
-    var btn = document.getElementById('plot-stop-btn');
+    const btn = document.getElementById('plot-stop-btn');
     // Wrap to bind ctx — Phase 3 added ctx as first param, but the
     // click handler invokes its callback with the MouseEvent.
     if (btn) btn.addEventListener('click', function () { cancelAllSampling(ctx); });
@@ -65,7 +65,7 @@ export function showPlotMessage(ctx: any, html: string, options?: { cancellable?
 }
 
 export function makeActionButton(ctx: any, iconKey: any, title: any) {
-  var b = document.createElement('button');
+  const b = document.createElement('button');
   b.type = 'button';
   b.title = title;
   b.setAttribute('aria-label', title);
@@ -89,10 +89,10 @@ export function makeActionButton(ctx: any, iconKey: any, title: any) {
 
 export function setPlotEnabled(ctx: any, enabled: any) {
   ctx.plotEnabled = !!enabled;
-  var plot    = $('plot-panel');
-  var graph   = $('graph-panel');
-  var divider = $('plot-divider');
-  var btn     = $('plot-toggle');
+  const plot    = $('plot-panel');
+  const graph   = $('graph-panel');
+  const divider = $('plot-divider');
+  const btn     = $('plot-toggle');
   plot.classList.toggle('hidden', !ctx.plotEnabled);
   graph.classList.toggle('full',  !ctx.plotEnabled);
   divider.classList.toggle('hidden', !ctx.plotEnabled);
@@ -162,7 +162,7 @@ export function setPlotEnabled(ctx: any, enabled: any) {
 export function renderPlotFrame(ctx: any, opts: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
-  var el = $('plot-content');
+  const el = $('plot-content');
   el.innerHTML = '';
   el.style.display = 'flex';
   el.style.flexDirection = 'column';
@@ -170,10 +170,10 @@ export function renderPlotFrame(ctx: any, opts: any) {
   el.style.boxSizing = 'border-box';
   el.style.gap = '8px';
 
-  var hasToolbarLeft = opts.toolbarControls != null;
-  var hasMeasureStats = opts.measure != null;
+  const hasToolbarLeft = opts.toolbarControls != null;
+  const hasMeasureStats = opts.measure != null;
   if (hasToolbarLeft || hasMeasureStats) {
-    var bar = document.createElement('div');
+    const bar = document.createElement('div');
     bar.className = 'plot-frame-toolbar';
     bar.style.display = 'flex';
     bar.style.flexWrap = 'wrap';
@@ -191,7 +191,7 @@ export function renderPlotFrame(ctx: any, opts: any) {
       // margin-left:auto on the spacer pushes the stats readout
       // to the right edge regardless of how many controls are
       // on the left.
-      var spacer = document.createElement('div');
+      const spacer = document.createElement('div');
       spacer.style.marginLeft = 'auto';
       bar.appendChild(spacer);
       bar.appendChild(renderSampleStats(ctx, opts.measure));
@@ -199,7 +199,7 @@ export function renderPlotFrame(ctx: any, opts: any) {
     el.appendChild(bar);
   }
 
-  var chartHost = document.createElement('div');
+  const chartHost = document.createElement('div');
   chartHost.style.flex = '1 1 auto';
   chartHost.style.minHeight = '0';
   chartHost.style.minWidth = '0';
@@ -212,7 +212,7 @@ export function renderPlotFrame(ctx: any, opts: any) {
   // otherwise sit. Other plot types pass nothing and get the
   // previous layout (chart fills remaining height).
   if (opts.bottomRow) {
-    var bottom = document.createElement('div');
+    const bottom = document.createElement('div');
     bottom.style.flexShrink = '0';
     bottom.appendChild(opts.bottomRow);
     el.appendChild(bottom);
@@ -235,8 +235,8 @@ export function renderPlotFrame(ctx: any, opts: any) {
 export function renderTextValue(ctx: any, bindingName: any, text: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
-  var el = $('plot-content');
-  var name = bindingName ? esc(bindingName) : '';
+  const el = $('plot-content');
+  const name = bindingName ? esc(bindingName) : '';
   // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero
   // 36px treatment so the value pops as the answer. Composite
   // values (records, multi-element arrays, Dirac wrappers around
@@ -246,8 +246,8 @@ export function renderTextValue(ctx: any, bindingName: any, text: any) {
   // which catches both "record(a = 1.5, …)" (long) and
   // "[1.2, 3.4, 5.1, …, 3.9]" (medium). Short Dirac wraps like
   // "Dirac(5)" stay big.
-  var composite = text.length > 16 && /[(\[]/.test(text);
-  var valueClass = composite ? 'value composite' : 'value';
+  const composite = text.length > 16 && /[(\[]/.test(text);
+  const valueClass = composite ? 'value composite' : 'value';
   el.innerHTML =
     '<div class="scalar-display">'
     + (name ? '<div class="name">' + name + '</div>' : '')

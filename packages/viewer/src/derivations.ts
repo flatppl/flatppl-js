@@ -23,8 +23,8 @@ export function rebuildDerivations(ctx: any) {
     // error far from its cause. buildDerivations only emits the
     // unambiguous fixed-phase-dead-end case (an engine gap on a
     // deterministic expression), so any entry here is actionable.
-    var bdiags = (ctx.derivationsState && ctx.derivationsState.diagnostics) || [];
-    for (var bi = 0; bi < bdiags.length; bi++) {
+    const bdiags = (ctx.derivationsState && ctx.derivationsState.diagnostics) || [];
+    for (let bi = 0; bi < bdiags.length; bi++) {
       console.warn('FlatPPL: ' + bdiags[bi].message);
     }
   } catch (e) {
@@ -51,7 +51,7 @@ export function rebuildDerivations(ctx: any) {
   //     prunes the override automatically.
   //   - If the override is empty after pruning, retire it.
   ctx.presetOverrides.forEach(function(entry: any, name: any) {
-    var b = ctx.currentBindings.get(name);
+    const b = ctx.currentBindings.get(name);
     let curValues: Record<string, number> | null = null;
     // analyzer.classifyStatement only returns 'literal' for
     // primitive literal RHS (NumberLiteral etc.); record(...)
@@ -69,11 +69,11 @@ export function rebuildDerivations(ctx: any) {
       // otherwise persist-time reconciliation would not see the
       // override's value matching source and would fail to prune.
       curValues = {};
-      var args = b.node.value.args || [];
-      for (var ai = 0; ai < args.length; ai++) {
-        var arg = args[ai];
+      const args = b.node.value.args || [];
+      for (let ai = 0; ai < args.length; ai++) {
+        const arg = args[ai];
         if (arg.type !== 'KeywordArg' || !arg.value) continue;
-        var v = arg.value;
+        let v = arg.value;
         if (v.type === 'CallExpr' && v.callee && v.callee.name === 'fixed'
             && Array.isArray(v.args) && v.args.length === 1) {
           v = v.args[0];
@@ -87,8 +87,8 @@ export function rebuildDerivations(ctx: any) {
       ctx.presetOverrides.delete(name);
       return;
     }
-    var vs = entry.values || {};
-    for (var k in vs) {
+    const vs = entry.values || {};
+    for (const k in vs) {
       if (!Object.prototype.hasOwnProperty.call(vs, k)) continue;
       if (!Object.prototype.hasOwnProperty.call(curValues, k)) {
         delete vs[k];                          // kwarg gone
@@ -116,7 +116,7 @@ export function rebuildDerivations(ctx: any) {
   //     unbounded source.
   //   - If the override is empty after pruning, retire it.
   ctx.domainOverrides.forEach(function(entry: any, name: any) {
-    var b = ctx.currentBindings.get(name);
+    const b = ctx.currentBindings.get(name);
     let sourceKwargs: Set<string> | null = null;
     let sourceIntervals: Record<string, { lo: number; hi: number }> | null = null;
     if (b && b.node && b.node.value
@@ -124,12 +124,12 @@ export function rebuildDerivations(ctx: any) {
         && b.node.value.callee.name === 'cartprod') {
       sourceKwargs = new Set();
       sourceIntervals = {};
-      var args = b.node.value.args || [];
-      for (var ai = 0; ai < args.length; ai++) {
-        var arg = args[ai];
+      const args = b.node.value.args || [];
+      for (let ai = 0; ai < args.length; ai++) {
+        const arg = args[ai];
         if (arg.type !== 'KeywordArg' || !arg.value) continue;
         sourceKwargs.add(arg.name);
-        var ic = arg.value;
+        const ic = arg.value;
         if (ic.type === 'CallExpr' && ic.callee
             && ic.callee.name === 'interval'
             && Array.isArray(ic.args) && ic.args.length === 2
@@ -145,8 +145,8 @@ export function rebuildDerivations(ctx: any) {
       ctx.domainOverrides.delete(name);
       return;
     }
-    var rs = entry.ranges || {};
-    for (var k in rs) {
+    const rs = entry.ranges || {};
+    for (const k in rs) {
       if (!Object.prototype.hasOwnProperty.call(rs, k)) continue;
       if (!sourceKwargs.has(k)) {
         delete rs[k];                                // kwarg gone
@@ -173,7 +173,7 @@ export function rebuildDerivations(ctx: any) {
   // from the previous source can't leak into the new one).
   if (ctx.derivationsState && ctx.derivationsState.fixedValues
       && ctx.derivationsState.fixedValues.size > 0) {
-    var envObj: Record<string, any> = {};
+    const envObj: Record<string, any> = {};
     ctx.derivationsState.fixedValues.forEach(function(v: any, k: any) { envObj[k] = v; });
     ensureSamplerWorker(ctx).then(function(w: any) {
       sendWorkerNow(ctx, w, { type: 'setEnv', env: envObj, merge: false });

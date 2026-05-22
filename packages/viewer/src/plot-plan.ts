@@ -12,7 +12,7 @@ import { sendWorker } from './worker.js';
 import { resolveMeasureAlias } from './util.js';
 export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan | null {
   if (!binding || !ctx.derivationsState) return null;
-  var name = binding.name;
+  const name = binding.name;
 
   // Callable bindings (function / kernel / fn / likelihood) don't
   // get a derivation kind — they're functions, not random
@@ -25,13 +25,13 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   if (binding.type === 'functionof' || binding.type === 'fn'
       || binding.type === 'kernelof' || binding.type === 'likelihood') {
     if (!ctx.derivationsState.bindings) return null;
-    var sig = FlatPPLEngine.orchestrator.signatureOf(name, ctx.derivationsState.bindings);
+    const sig = FlatPPLEngine.orchestrator.signatureOf(name, ctx.derivationsState.bindings);
     if (!sig || !sig.body) return null;
-    var axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
+    const axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
     if (axes.length === 0) return null;
-    var presets = FlatPPLEngine.orchestrator.findMatchingPresets(
+    const presets = FlatPPLEngine.orchestrator.findMatchingPresets(
       sig, ctx.derivationsState.bindings);
-    var domains = FlatPPLEngine.orchestrator.findMatchingDomains(
+    const domains = FlatPPLEngine.orchestrator.findMatchingDomains(
       sig, ctx.derivationsState.bindings);
     // On-demand specialize the output type at this synthetic call
     // site: scope = {paramName → input type}. typeinfer's
@@ -43,12 +43,12 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // gives one entry per scalar leaf the user can pick from.
     let outputs: any[] = [];
     try {
-      var paramTypes = new Map();
-      for (var ii = 0; ii < sig.inputs.length; ii++) {
+      const paramTypes = new Map();
+      for (let ii = 0; ii < sig.inputs.length; ii++) {
         paramTypes.set(sig.inputs[ii].paramName,
                        sig.inputs[ii].type || { kind: 'any' });
       }
-      var specOutType = sig.body && ctx.currentLoweredModule
+      const specOutType = sig.body && ctx.currentLoweredModule
         ? FlatPPLEngine.typeinfer.inferExprInScope(
             ctx.currentLoweredModule, sig.body, paramTypes)
         : (sig.output && sig.output.type) || null;
@@ -61,7 +61,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // Default to the first leaf — single entry with empty path
     // for scalar outputs, so the existing pipeline works
     // unchanged.
-    var outputKey = outputs.length > 0 ? outputs[0].key : null;
+    const outputKey = outputs.length > 0 ? outputs[0].key : null;
     // Kernels (sig.kind === 'kernel') don't get a swept-axis
     // profile plot — there's nothing to "sweep" without an
     // observation. Instead we treat them like other measure
@@ -113,12 +113,12 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     };
   }
 
-  var d = ctx.derivationsState.derivations[name];
+  const d = ctx.derivationsState.derivations[name];
   // A binding with no derivation can still be plottable when the
   // orchestrator's pre-eval pass put a value in fixedValues
   // (typically a record / array from rand). The phase-driven
   // dispatch below routes those by inferredType alone.
-  var fixedValues = ctx.derivationsState.fixedValues;
+  const fixedValues = ctx.derivationsState.fixedValues;
   // Or — and this is the implicit-kernelof escape hatch — a
   // stochastic binding can have its derivation pruned because
   // its distIR depends on a parameterized (elementof) ancestor.
@@ -143,14 +143,14 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // here (they'd be in fixedValues or have a derivation); fall
     // through to "Not plottable".
     if (binding.phase === 'stochastic') {
-      var implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
+      const implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
         name, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
       if (implicitSig && implicitSig.inputs.length > 0) {
-        var iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
+        const iAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitSig);
         if (iAxes.length > 0) {
-          var iPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
+          const iPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
             implicitSig, ctx.derivationsState.bindings);
-          var iDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
+          const iDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
             implicitSig, ctx.derivationsState.bindings);
           return {
             name: name,
@@ -167,18 +167,18 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
         }
       }
     } else if (binding.phase === 'parameterized') {
-      var implicitFnSig = FlatPPLEngine.orchestrator.implicitFunctionSignature(
+      const implicitFnSig = FlatPPLEngine.orchestrator.implicitFunctionSignature(
         name, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
       if (implicitFnSig && implicitFnSig.inputs.length > 0) {
-        var fAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitFnSig);
+        const fAxes = FlatPPLEngine.orchestrator.distributeAxes(implicitFnSig);
         if (fAxes.length > 0) {
-          var fPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
+          const fPresets = FlatPPLEngine.orchestrator.findMatchingPresets(
             implicitFnSig, ctx.derivationsState.bindings);
-          var fDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
+          const fDomains = FlatPPLEngine.orchestrator.findMatchingDomains(
             implicitFnSig, ctx.derivationsState.bindings);
-          var fOutputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(
+          const fOutputs = FlatPPLEngine.orchestrator.enumerateOutputLeaves(
             implicitFnSig.output && implicitFnSig.output.type);
-          var fOutputKey = fOutputs.length > 0 ? fOutputs[0].key : null;
+          const fOutputKey = fOutputs.length > 0 ? fOutputs[0].key : null;
           return {
             name: name,
             mode: 'profile',
@@ -199,7 +199,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     }
     return null;
   }
-  var discrete = !!ctx.derivationsState.discrete[name];
+  const discrete = !!ctx.derivationsState.discrete[name];
 
   // Phase-driven dispatch (per spec §sec:phases):
   //   'stochastic'   → atoms vary across i; histogram / corner plot.
@@ -216,9 +216,9 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   // Records/tuples with phase='fixed' get text directly (no
   // measureIsConstant walk — phase has already classified them as
   // deterministic).
-  var phase = binding.phase;
-  var inferredType = binding.inferredType;
-  var typeKind = inferredType && inferredType.kind;
+  const phase = binding.phase;
+  const inferredType = binding.inferredType;
+  const typeKind = inferredType && inferredType.kind;
 
   // Resolve through measure-equivalence aliases — applies
   // regardless of phase. The principle is "plot by what the
@@ -240,14 +240,14 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   // bindings (the common case — Normal samples, posterior,
   // function bindings, etc.) resolveMeasureAlias returns null
   // and we fall through to the regular dispatch below.
-  var sourceName = resolveMeasureAlias(name, ctx.derivationsState.derivations,
+  const sourceName = resolveMeasureAlias(name, ctx.derivationsState.derivations,
                                        ctx.currentBindings);
   if (sourceName && sourceName !== name) {
-    var sourceBinding = ctx.currentBindings!.get(sourceName);
+    const sourceBinding = ctx.currentBindings!.get(sourceName);
     if (sourceBinding) {
-      var sourcePlan = buildPlotPlan(ctx, sourceBinding);
+      const sourcePlan = buildPlotPlan(ctx, sourceBinding);
       if (sourcePlan) {
-        var aliased = Object.assign({}, sourcePlan);
+        const aliased = Object.assign({}, sourcePlan);
         aliased.name = name;
         return aliased;
       }
@@ -283,9 +283,9 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // histogram. Tightening dotted-broadcast typeinfer would also
     // fix it at the source; this fallback hardens the viewer
     // against every present and future loose-typeinfer case.
-    var fvMap = ctx.derivationsState.fixedValues;
-    var fvVal = fvMap && fvMap.has(name) ? fvMap.get(name) : undefined;
-    var isFlatNumericVec = Array.isArray(fvVal) && fvVal.length > 0
+    const fvMap = ctx.derivationsState.fixedValues;
+    const fvVal = fvMap && fvMap.has(name) ? fvMap.get(name) : undefined;
+    const isFlatNumericVec = Array.isArray(fvVal) && fvVal.length > 0
       && fvVal.every(function (e) {
         return typeof e === 'number' || typeof e === 'boolean';
       });
@@ -317,14 +317,14 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   // measure with stochastic ancestors will still reach this
   // branch and be filtered by the all-literal-kwargs gate below,
   // not the phase check; that's intentional.)
-  var analyticalIR = null;
+  let analyticalIR = null;
   if (binding.phase !== 'stochastic') {
-    var leafIR = FlatPPLEngine.orchestrator.leafSampleIR(name, ctx.derivationsState.derivations);
+    const leafIR = FlatPPLEngine.orchestrator.leafSampleIR(name, ctx.derivationsState.derivations);
     if (leafIR && leafIR.kind === 'call' && leafIR.op
         && (!leafIR.args || leafIR.args.length === 0)) {
-      var allLit = true;
-      var kw = leafIR.kwargs || {};
-      for (var k in kw) {
+      let allLit = true;
+      const kw = leafIR.kwargs || {};
+      for (const k in kw) {
         if (kw[k].kind !== 'lit') { allLit = false; break; }
       }
       if (allLit) analyticalIR = leafIR;
@@ -343,23 +343,23 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
     return materialiseConcreteMeasure(ctx, ir.args[0], count, seed);
   }
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
-    var inner = ir.args[0];
+    const inner = ir.args[0];
     const dims: number[] = [];
-    for (var di = 1; di < ir.args.length; di++) {
-      var d = ir.args[di];
+    for (let di = 1; di < ir.args.length; di++) {
+      const d = ir.args[di];
       if (!d || d.kind !== 'lit' || !Number.isInteger(d.value)) {
         return Promise.reject(new Error('materialiseConcreteMeasure: iid dim must be integer literal'));
       }
       dims.push(d.value);
     }
-    var k = dims.reduce(function(p: any, n: any) { return p * n; }, 1);
+    const k = dims.reduce(function(p: any, n: any) { return p * n; }, 1);
     // Leaf-distribution inner: use sampleN's `repeat` so the per-
     // atom refArrays line up — atom i gets refArrays[i], then k
     // independent draws share it. Mirrors getMeasure's iid path.
     // Naive recursion with count*k would mis-index refArrays
     // (only `count` entries available, repeated k times by the
     // atom index — out-of-bounds for i >= count).
-    var SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
+    const SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
     if (inner.kind === 'call' && SAMPLEABLE && SAMPLEABLE.has(inner.op)) {
       return collectRefArrays(ctx, inner).then(function(refArrays: any) {
         return sendWorker(ctx, {
@@ -380,14 +380,14 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
     });
   }
   if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {
-    var fieldNames = ir.fields.map(function(f: any) { return f.name; });
-    var fieldIRs = ir.fields.map(function(f: any) { return f.value; });
+    const fieldNames = ir.fields.map(function(f: any) { return f.name; });
+    const fieldIRs = ir.fields.map(function(f: any) { return f.value; });
     return Promise.all(fieldIRs.map(function(v: any, i: any) {
       return materialiseConcreteMeasure(ctx, v, count,
         seed != null ? (seed ^ (i + 1) * 0x9e3779b1) : null);
     })).then(function(subs: any) {
-      var fields: Record<string, any> = {};
-      for (var i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
+      const fields: Record<string, any> = {};
+      for (let i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
       return FlatPPLEngine.empirical.recordMeasure(fields, null);
     });
   }
@@ -406,7 +406,7 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
   }).then(function(reply: any) {
     // Phase 8: hand-built Measures populate `.value` for
     // consistency with materialiser-produced ones.
-    var data = reply.samples;
+    const data = reply.samples;
     return {
       samples: data,
       value: { shape: [data.length], data: data },

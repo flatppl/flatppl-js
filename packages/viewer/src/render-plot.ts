@@ -30,12 +30,12 @@ export function renderPlotForCurrent(ctx: any) {
   // circuit on errors before sampling, otherwise we'd render a
   // valid-looking empty histogram with NaN samples instead of
   // the actionable diagnostic.
-  var name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
-  var typeErrors = errorsForBinding(ctx, ctx.currentPlotBindingName);
+  const name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
+  const typeErrors = errorsForBinding(ctx, ctx.currentPlotBindingName);
   if (typeErrors && typeErrors.length > 0) {
-    var msg = '<strong>' + name + '</strong> is semantically invalid:'
+    let msg = '<strong>' + name + '</strong> is semantically invalid:'
       + '<ul>';
-    for (var i = 0; i < typeErrors.length; i++) {
+    for (let i = 0; i < typeErrors.length; i++) {
       msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
     }
     msg += '</ul>';
@@ -93,9 +93,9 @@ export function renderPlotForCurrent(ctx: any) {
   // round-trip), so a Stop button is pointless for it. Sampling
   // mode shows the Stop button so the user can abort long
   // operations (per-i ref chains under huge sample counts).
-  var arrayMode = ctx.currentPlotPlan.mode === 'array';
+  const arrayMode = ctx.currentPlotPlan.mode === 'array';
   showPlotMessage(ctx, arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
-  var planForCall = ctx.currentPlotPlan;
+  const planForCall = ctx.currentPlotPlan;
 
   // Cache hit avoids the worker entirely. We still defer through
   // a microtask so the UI flush is uniform and the stale-reply
@@ -115,11 +115,11 @@ export function renderPlotForCurrent(ctx: any) {
     })
     .catch(function(err) {
       if (ctx.currentPlotPlan !== planForCall) return;
-      var msg = err && err.message ? err.message : String(err);
+      const msg = err && err.message ? err.message : String(err);
       if (msg === 'cancelled') {
         // User clicked Stop. Make the message actionable rather
         // than dead-end so they know how to retry.
-        var name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
+        const name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
         showPlotMessage(ctx, 'Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
       } else {
         // Real errors are actionable; not italic/dimmed.
@@ -136,8 +136,8 @@ export function updatePlotForBinding(ctx: any, bindingName: string | null) {
   // captures same-binding edits in time for applyRemembered…
   // to restore them onto the rebuilt plan below.
   rememberPlanSelections(ctx, ctx.currentPlotPlan);
-  var binding = ctx.currentBindings ? ctx.currentBindings.get(bindingName) : null;
-  var plan = buildPlotPlan(ctx, binding);
+  const binding = ctx.currentBindings ? ctx.currentBindings.get(bindingName) : null;
+  const plan = buildPlotPlan(ctx, binding);
   // Restore user-driven plan state across rebuilds — both same-
   // binding rebuilds (source edit) and cross-binding navigation
   // (click away and back). pendingPresetName / pendingDomainName
@@ -151,7 +151,7 @@ export function updatePlotForBinding(ctx: any, bindingName: string | null) {
   if (plan && (plan.mode === 'profile' || plan.mode === 'kernel-sample')) {
     const p: any = plan;
     if (ctx.pendingPresetName != null) {
-      var pn = ctx.pendingPresetName;
+      const pn = ctx.pendingPresetName;
       ctx.pendingPresetName = null;
       if (p.matchedPresets
           && p.matchedPresets.some(function(pe: any) { return pe.name === pn; })) {
@@ -159,7 +159,7 @@ export function updatePlotForBinding(ctx: any, bindingName: string | null) {
       }
     }
     if (ctx.pendingDomainName != null) {
-      var dn = ctx.pendingDomainName;
+      const dn = ctx.pendingDomainName;
       ctx.pendingDomainName = null;
       if (p.matchedDomains
           && p.matchedDomains.some(function(d: any) { return d.name === dn; })) {

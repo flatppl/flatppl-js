@@ -477,7 +477,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // #info .phase-* tag rules pick them up without a duplicate hex
   // literal in the stylesheet.
   (function bindPaletteToCss() {
-    var s = document.documentElement.style;
+    const s = document.documentElement.style;
     s.setProperty('--phase-stochastic',    ctx.PALETTE.phaseStochastic);
     s.setProperty('--phase-parameterized', ctx.PALETTE.phaseParameterized);
     s.setProperty('--phase-fixed',         ctx.PALETTE.phaseFixed);
@@ -1325,17 +1325,17 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   $('plot-divider').addEventListener('mousedown', function (ev) {
     if (!ctx.plotEnabled) return;
     ev.preventDefault();
-    var graph = $('graph-panel');
-    var plot  = $('plot-panel');
-    var startY = ev.clientY;
-    var startGraphPx = graph.getBoundingClientRect().height;
-    var startPlotPx  = plot.getBoundingClientRect().height;
-    var combinedPx = startGraphPx + startPlotPx;
-    var MIN_PX = 80;
+    const graph = $('graph-panel');
+    const plot  = $('plot-panel');
+    const startY = ev.clientY;
+    const startGraphPx = graph.getBoundingClientRect().height;
+    const startPlotPx  = plot.getBoundingClientRect().height;
+    const combinedPx = startGraphPx + startPlotPx;
+    const MIN_PX = 80;
     function onMove(mv: any) {
-      var dy = mv.clientY - startY;
-      var newGraph = startGraphPx + dy;
-      var newPlot  = startPlotPx  - dy;
+      const dy = mv.clientY - startY;
+      let newGraph = startGraphPx + dy;
+      let newPlot  = startPlotPx  - dy;
       if (newGraph < MIN_PX) { newGraph = MIN_PX; newPlot = combinedPx - MIN_PX; }
       if (newPlot  < MIN_PX) { newPlot  = MIN_PX; newGraph = combinedPx - MIN_PX; }
       // Use flex-basis in px so the two panes' relative split is
@@ -1437,12 +1437,12 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   //     mount)
 
   window.addEventListener('message', function(event) {
-    var msg = event.data;
+    const msg = event.data;
     if (!msg) return;
 
     if (msg.type === 'configUpdate') {
       // The host pushed updated visualization settings.
-      var cfg = msg.config || {};
+      const cfg = msg.config || {};
 
       // sampleCount: drop every cached EmpiricalMeasure on change
       // (each was sized to the old SAMPLE_COUNT and can't be reused)
@@ -1511,8 +1511,8 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // ResizeObserver / window resize callbacks invoke their handlers
     // with no args, so the bare function reference would receive
     // `undefined` as ctx and throw.
-    var plotResizeObserver = new ResizeObserver(function () { resizeAllEchartsInPlot(ctx); });
-    var plotRoot = document.getElementById('plot-content');
+    const plotResizeObserver = new ResizeObserver(function () { resizeAllEchartsInPlot(ctx); });
+    const plotRoot = document.getElementById('plot-content');
     if (plotRoot) plotResizeObserver.observe(plotRoot);
   } else {
     window.addEventListener('resize', function () { resizeAllEchartsInPlot(ctx); });
@@ -1528,8 +1528,8 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // window.resize, which cytoscape already handles internally; the
   // standalone web host (CSS Grid + flex) needs the explicit observer.
   if (typeof ResizeObserver === 'function') {
-    var cyResizeObserver = new ResizeObserver(function () { resizeAndFitCy(ctx); });
-    var cyRoot = document.getElementById('cy');
+    const cyResizeObserver = new ResizeObserver(function () { resizeAndFitCy(ctx); });
+    const cyRoot = document.getElementById('cy');
     if (cyRoot) cyResizeObserver.observe(cyRoot);
   } else {
     window.addEventListener('resize', function () { resizeAndFitCy(ctx); });

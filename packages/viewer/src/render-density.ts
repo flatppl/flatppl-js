@@ -30,10 +30,10 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
   hostEl.innerHTML = '';
   // Marginals mode passes the full axis list (no selection cap); we
   // fall back to listScalarAxes for legacy callers.
-  var axes = axesArg || listScalarAxes(measure);
-  var n = axes.length;
+  const axes = axesArg || listScalarAxes(measure);
+  const n = axes.length;
   if (n === 0) {
-    var empty = document.createElement('div');
+    const empty = document.createElement('div');
     empty.textContent = 'No scalar axes to plot.';
     empty.style.opacity = '0.5';
     empty.style.padding = '24px';
@@ -42,13 +42,13 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
     return;
   }
 
-  var fg = getComputedStyle(document.body).color || '#ccc';
-  var color = colorForBinding(ctx, bindingName);
-  var logWeights = measure.logWeights;
-  var histOptsBase = logWeights ? { logWeights: logWeights } : {};
+  const fg = getComputedStyle(document.body).color || '#ccc';
+  const color = colorForBinding(ctx, bindingName);
+  const logWeights = measure.logWeights;
+  const histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
   // Per-axis FD histograms + global y range.
-  var hists = axes.map(function(a: any) {
+  const hists = axes.map(function(a: any) {
     return FlatPPLEngine.histogram.freedmanDiaconisHistogram(a.samples, histOptsBase);
   });
   // Per-axis peak densities: a tightly-concentrated marginal has
@@ -56,20 +56,20 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
   // binwidth ≈ 1 in either case), so a single global peak makes
   // broad columns look near-empty. Normalising each column to
   // its own peak keeps every column's shape readable.
-  var yMin = Infinity, yMax = -Infinity;
-  var peakDensities = new Array(hists.length);
-  for (var i = 0; i < hists.length; i++) {
-    var h = hists[i];
+  let yMin = Infinity, yMax = -Infinity;
+  const peakDensities = new Array(hists.length);
+  for (let i = 0; i < hists.length; i++) {
+    const h = hists[i];
     peakDensities[i] = 0;
     if (!h.binEdges || h.binEdges.length === 0) continue;
     if (h.binEdges[0] < yMin) yMin = h.binEdges[0];
     if (h.binEdges[h.binEdges.length - 1] > yMax) yMax = h.binEdges[h.binEdges.length - 1];
-    for (var j = 0; j < h.ys.length; j++) {
+    for (let j = 0; j < h.ys.length; j++) {
       if (h.ys[j] > peakDensities[i]) peakDensities[i] = h.ys[j];
     }
   }
   if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
-    var info = document.createElement('div');
+    const info = document.createElement('div');
     info.textContent = 'No variation across selected axes.';
     info.style.opacity = '0.5';
     info.style.padding = '24px';
@@ -85,7 +85,7 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
   hostEl.style.gridTemplateColumns = '';
   hostEl.style.gridTemplateRows = '';
   hostEl.innerHTML = '';
-  var chartDiv = document.createElement('div');
+  const chartDiv = document.createElement('div');
   chartDiv.style.width = '100%';
   chartDiv.style.height = '100%';
   hostEl.appendChild(chartDiv);
@@ -99,26 +99,26 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
   // wide). axisGroup extracts the prefix before any trailing
   // "[…]" — same-group axes share that prefix.
   function axisGroup(label: any) {
-    var i = label.lastIndexOf('[');
+    const i = label.lastIndexOf('[');
     return i >= 0 ? label.slice(0, i) : label;
   }
-  var groups = axes.map(function(a: any) { return axisGroup(a.label); });
+  const groups = axes.map(function(a: any) { return axisGroup(a.label); });
   // Per-axis gap flags. Boundary cells (group differs from
   // neighbour) shrink on the gap side; the renderer reads these
   // off the rect data. GAP_FRACTION is the inset depth as a
   // fraction of bandSize — 0.18 gives a ~36% combined visible
   // gap between groups (much tighter than a full empty slot)
   // while still leaving the bulk of the column for the data.
-  var GAP_FRACTION = 0.18;
+  const GAP_FRACTION = 0.18;
   // Build the rect data: one entry per (axis_idx, bin) pair.
   // Each entry carries [axis_idx, bin_y_center, density] plus
   // the bin's [lo, hi] and per-side gap insets.
   const data: Array<{ value: number[]; edges: number[]; gapLeft: boolean; gapRight: boolean }> = [];
-  for (var ai2 = 0; ai2 < hists.length; ai2++) {
-    var hh = hists[ai2];
-    var gapLeft  = (ai2 > 0)             && groups[ai2] !== groups[ai2 - 1];
-    var gapRight = (ai2 < axes.length-1) && groups[ai2] !== groups[ai2 + 1];
-    for (var bi = 0; bi < hh.ys.length; bi++) {
+  for (let ai2 = 0; ai2 < hists.length; ai2++) {
+    const hh = hists[ai2];
+    const gapLeft  = (ai2 > 0)             && groups[ai2] !== groups[ai2 - 1];
+    const gapRight = (ai2 < axes.length-1) && groups[ai2] !== groups[ai2 + 1];
+    for (let bi = 0; bi < hh.ys.length; bi++) {
       data.push({
         value: [ai2, hh.xs[bi], hh.ys[bi]],
         edges: [hh.binEdges[bi], hh.binEdges[bi + 1]],
@@ -126,9 +126,9 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
       });
     }
   }
-  var catLabels = axes.map(function(a: any) { return a.label; });
-  var seriesColor = color;
-  var ec = echarts.init(chartDiv);
+  const catLabels = axes.map(function(a: any) { return a.label; });
+  const seriesColor = color;
+  const ec = echarts.init(chartDiv);
   ec.setOption({
     backgroundColor: 'transparent',
     animation: false,
@@ -158,12 +158,12 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
       type: 'custom',
       data: data,
       renderItem: function(_p: any, api: any) {
-        var d = data[_p.dataIndex];
-        var density = d.value[2];
+        const d = data[_p.dataIndex];
+        const density = d.value[2];
         // Column-centred horizontal extent: ~70% of slot width.
-        var cx = api.coord([d.value[0], (d.edges[0] + d.edges[1]) / 2]);
-        var top = api.coord([d.value[0], d.edges[1]]);
-        var bot = api.coord([d.value[0], d.edges[0]]);
+        const cx = api.coord([d.value[0], (d.edges[0] + d.edges[1]) / 2]);
+        const top = api.coord([d.value[0], d.edges[1]]);
+        const bot = api.coord([d.value[0], d.edges[0]]);
         // ECharts category axes give bandWidth via api.size.
         // Use the full band width so adjacent columns share
         // their edges — the marginal strips read as a continuous
@@ -172,17 +172,17 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
         // boundary cell by GAP_FRACTION of bandSize on the gap
         // side, so different-prefix axes get a small visible
         // separator without a full empty column.
-        var bandSize = api.size([1, 0])[0];
-        var leftEdge  = cx[0] - bandSize * 0.5
+        const bandSize = api.size([1, 0])[0];
+        const leftEdge  = cx[0] - bandSize * 0.5
                       + (d.gapLeft  ? bandSize * GAP_FRACTION : 0);
-        var rightEdge = cx[0] + bandSize * 0.5
+        const rightEdge = cx[0] + bandSize * 0.5
                       - (d.gapRight ? bandSize * GAP_FRACTION : 0);
         // Opacity scales linearly with density relative to the
         // PER-AXIS peak — concentrated and broad marginals both
         // read at full intensity at their mode rather than the
         // broad ones fading under a tightly-concentrated peer.
-        var axisPeak = peakDensities[d.value[0]];
-        var opacity = axisPeak > 0
+        const axisPeak = peakDensities[d.value[0]];
+        const opacity = axisPeak > 0
           ? Math.max(0.04, 0.85 * density / axisPeak)
           : 0;
         return {
@@ -209,11 +209,11 @@ export function renderDensityStrips(ctx: any, hostEl: any, measure: any, binding
  */
 export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingName: any) {
   hostEl.innerHTML = '';
-  var axes = listScalarAxes(measure)
+  const axes = listScalarAxes(measure)
     .filter(function(a: any) { return ctx.recordSelection.selected.indexOf(a.key) >= 0; });
-  var n = axes.length;
+  const n = axes.length;
   if (n === 0) {
-    var empty = document.createElement('div');
+    const empty = document.createElement('div');
     empty.textContent = 'Select at least one axis to plot.';
     empty.style.opacity = '0.5';
     empty.style.padding = '24px';
@@ -222,10 +222,10 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
     return;
   }
 
-  var fg = getComputedStyle(document.body).color || '#ccc';
-  var color = colorForBinding(ctx, bindingName);
-  var logWeights = measure.logWeights;
-  var histOptsBase = logWeights ? { logWeights: logWeights } : {};
+  const fg = getComputedStyle(document.body).color || '#ccc';
+  const color = colorForBinding(ctx, bindingName);
+  const logWeights = measure.logWeights;
+  const histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
   // Grid layout with two extra tracks: a leftmost column for
   // vertical y-axis labels (one per plot row), and a bottom row
@@ -249,8 +249,8 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
   // track) at row r+1, naming the variable on the y-axis of
   // every cell in that row. Rotated 90deg counterclockwise so
   // it reads bottom-up.
-  for (var yi = 0; yi < n; yi++) {
-    var ylab = document.createElement('div');
+  for (let yi = 0; yi < n; yi++) {
+    const ylab = document.createElement('div');
     ylab.textContent = axes[yi].label;
     ylab.style.gridColumn = '1 / span 1';
     ylab.style.gridRow = (yi + 1) + ' / span 1';
@@ -271,8 +271,8 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
   // at column c+2 (skipping the leftmost y-label track),
   // naming the variable on the x-axis of every cell in that
   // column.
-  for (var xi = 0; xi < n; xi++) {
-    var xlab = document.createElement('div');
+  for (let xi = 0; xi < n; xi++) {
+    const xlab = document.createElement('div');
     xlab.textContent = axes[xi].label;
     xlab.style.gridColumn = (xi + 2) + ' / span 1';
     xlab.style.gridRow = (n + 1) + ' / span 1';
@@ -288,7 +288,7 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
   // axis names live on the grid edges. (Plot row r, plot col c
   // → grid row r+1, grid col c+2 because of the two label tracks.)
   function makeCell(row: any, col: any) {
-    var cell = document.createElement('div');
+    const cell = document.createElement('div');
     cell.style.gridRow    = (row + 1) + ' / span 1';
     cell.style.gridColumn = (col + 2) + ' / span 1';
     cell.style.minHeight = '0';
@@ -311,7 +311,7 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
   // re-renders pick up the wrong data and the upper cells go
   // blank.)
   function renderDiagonalCell(inner: any, rects: any, color: any) {
-    var ec1 = echarts.init(inner);
+    const ec1 = echarts.init(inner);
     ec1.setOption({
       backgroundColor: 'transparent',
       animation: false,
@@ -334,9 +334,9 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
         type: 'custom',
         data: rects,
         renderItem: function(_p: any, api: any) {
-          var d = rects[_p.dataIndex];
-          var lt = api.coord([d.x0, d.value[1]]);
-          var rb = api.coord([d.x1, 0]);
+          const d = rects[_p.dataIndex];
+          const lt = api.coord([d.x0, d.value[1]]);
+          const rb = api.coord([d.x1, 0]);
           return {
             type: 'rect',
             shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
@@ -347,12 +347,12 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
       }],
     });
   }
-  for (var i = 0; i < n; i++) {
-    var samples = axes[i].samples;
-    var inner = makeCell(i, i);
-    var hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
+  for (let i = 0; i < n; i++) {
+    const samples = axes[i].samples;
+    const inner = makeCell(i, i);
+    const hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
     const rects: Array<{ value: number[]; x0: number; x1: number }> = [];
-    for (var k = 0; k < hist.xs.length; k++) {
+    for (let k = 0; k < hist.xs.length; k++) {
       rects.push({
         value: [hist.xs[k], hist.ys[k]],
         x0: hist.binEdges[k],
@@ -382,37 +382,37 @@ export function renderCornerGrid(ctx: any, hostEl: any, measure: any, bindingNam
   //     weight subset that visualises the actual posterior.
   //     Per-binding seeded PRNG keeps the resample deterministic
   //     across re-renders.
-  var anyN = axes[0].samples.length;
-  var maxPoints = 20000;
-  var indices;
+  const anyN = axes[0].samples.length;
+  const maxPoints = 20000;
+  let indices;
   if (measure.logWeights) {
-    var nOut = Math.min(anyN, maxPoints);
-    var rsPrng = makeMainThreadPrng(nameSeed(ctx, bindingName + ':scatter'));
+    const nOut = Math.min(anyN, maxPoints);
+    const rsPrng = makeMainThreadPrng(nameSeed(ctx, bindingName + ':scatter'));
     indices = FlatPPLEngine.empirical.systematicResample(
       measure.logWeights, nOut, rsPrng);
   } else {
-    var stride = anyN > maxPoints ? Math.ceil(anyN / maxPoints) : 1;
-    var len = Math.ceil(anyN / stride);
+    const stride = anyN > maxPoints ? Math.ceil(anyN / maxPoints) : 1;
+    const len = Math.ceil(anyN / stride);
     indices = new Int32Array(len);
-    for (var ii = 0, jj = 0; ii < anyN; ii += stride, jj++) indices[jj] = ii;
+    for (let ii = 0, jj = 0; ii < anyN; ii += stride, jj++) indices[jj] = ii;
   }
   // Pre-build one positional list per axis to avoid repeated
   // .samples lookups in the inner loop below.
-  var cols = axes.map(function(a) { return a.samples; });
+  const cols = axes.map(function(a) { return a.samples; });
 
-  for (var row = 1; row < n; row++) {
-    for (var col = 0; col < row; col++) {
-      var xCol = cols[col], yCol = cols[row];
-      var inner2 = makeCell(row, col);
-      var pts = new Array(indices.length);
-      for (var p = 0; p < indices.length; p++) {
-        var idx = indices[p];
+  for (let row = 1; row < n; row++) {
+    for (let col = 0; col < row; col++) {
+      const xCol = cols[col], yCol = cols[row];
+      const inner2 = makeCell(row, col);
+      const pts = new Array(indices.length);
+      for (let p = 0; p < indices.length; p++) {
+        const idx = indices[p];
         pts[p] = [xCol[idx], yCol[idx]];
       }
       // Point opacity scales with point count — denser data
       // gets more transparency so clouds don't saturate.
-      var alpha = Math.max(0.05, Math.min(0.6, 800 / pts.length));
-      var ec2 = echarts.init(inner2);
+      const alpha = Math.max(0.05, Math.min(0.6, 800 / pts.length));
+      const ec2 = echarts.init(inner2);
       ec2.setOption({
         backgroundColor: 'transparent',
         animation: false,

@@ -33,7 +33,7 @@ FlatPPLViewer.mount = mount;
 // themselves. The vscode-extension's _getHtml() includes the marker,
 // so existing webview behaviour is preserved.
 function autoMountIfMarkerPresent() {
-  var marker = (typeof document !== 'undefined')
+  const marker = (typeof document !== 'undefined')
     ? document.getElementById('flatppl-viewer-root')
     : null;
   // FlatPPLViewer.mount is typed as optional (a host could in principle

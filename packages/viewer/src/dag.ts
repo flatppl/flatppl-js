@@ -14,11 +14,11 @@ import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding } from './render-frame.js';
 export function showNodeInfo(ctx: any, d: any) {
-  var phase = d.phase || 'unknown';
-  var phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
-  var unsupportedRow = '';
+  const phase = d.phase || 'unknown';
+  const phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
+  let unsupportedRow = '';
   if (d.unsupported) {
-    var msg = 'disintegration unresolved: ' + esc(d.unsupportedReason || '');
+    let msg = 'disintegration unresolved: ' + esc(d.unsupportedReason || '');
     if (d.unsupportedDetail) msg += ' — ' + esc(d.unsupportedDetail);
     unsupportedRow = '<div class="expr" style="color:#FF8A65;">' + msg + '</div>';
   }
@@ -26,10 +26,10 @@ export function showNodeInfo(ctx: any, d: any) {
   // the visual link reads at a glance. Each diagnostic gets its own
   // line — a single binding can pick up several mismatches if its
   // RHS has multiple bad arg positions.
-  var errorRow = '';
-  var errors = errorsForBinding(ctx, d.id);
+  let errorRow = '';
+  const errors = errorsForBinding(ctx, d.id);
   if (errors && errors.length > 0) {
-    for (var i = 0; i < errors.length; i++) {
+    for (let i = 0; i < errors.length; i++) {
       errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
     }
   }
@@ -39,7 +39,7 @@ export function showNodeInfo(ctx: any, d: any) {
   // the same axis. The inferred FlatPIR type/shape carries
   // strictly richer information (structural result type) and
   // takes that pill's slot.
-  var inferTag = d.inferredType
+  const inferTag = d.inferredType
     ? '<span class="infer">' + esc(d.inferredType) + '</span>'
     : '';
   $('info').innerHTML =
@@ -52,19 +52,19 @@ export function showNodeInfo(ctx: any, d: any) {
 }
 
 export function updateHeader(ctx: any, data: any) {
-  var el = $('header-expr');
+  const el = $('header-expr');
   // Module view: no per-node target; just label the view.
   if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
     el.innerHTML = '<span class="target-name">module</span>';
     return;
   }
   let target: any = null;
-  for (var i = 0; i < data.nodes.length; i++) {
+  for (let i = 0; i < data.nodes.length; i++) {
     if (data.nodes[i].isTarget) { target = data.nodes[i]; break; }
   }
   if (!target) { el.innerHTML = ''; return; }
-  var name = target.label || target.id;
-  var expr = truncateExpr(target.expr);
+  const name = target.label || target.id;
+  const expr = truncateExpr(target.expr);
   el.innerHTML = '<span class="target-name">' + esc(name) + '</span>'
     + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
 }
@@ -269,7 +269,7 @@ export function initCy(ctx: any) {
     // on update. Workaround: tear down and rebuild all paths on drag
     // release, rAF-batched. Updates skipped during drag for snappiness.
     ctx.bb = ctx.cy.bubbleSets({ interactive: false });
-    var bbRedrawScheduled = false;
+    let bbRedrawScheduled = false;
     ctx.cy.on('free', 'node', function() {
       if (!ctx.bb || bbRedrawScheduled || !ctx.currentState) return;
       bbRedrawScheduled = true;
@@ -287,15 +287,15 @@ export function initCy(ctx: any) {
   // explore the graph node-by-node and read each binding's
   // distribution in place.
   ctx.cy.on('tap', 'node', function(evt: any) {
-    var oe = evt.originalEvent;
+    const oe = evt.originalEvent;
     if (oe && (oe.ctrlKey || oe.metaKey)) {
-      var line = evt.target.data('line');
+      const line = evt.target.data('line');
       if (line >= 0) {
         if (ctx.host.revealSourceLine) ctx.host.revealSourceLine(line);
       }
       return;
     }
-    var d = evt.target.data();
+    const d = evt.target.data();
     showNodeInfo(ctx, d);
     // Always re-target the plot to whatever the user clicked. For
     // synthetic nodes (anonymous inline expressions, placeholders,
@@ -317,24 +317,24 @@ export function initCy(ctx: any) {
   // (no host round-trip). Title sync to the editor still goes via a
   // postMessage to the host since the title is on the VS Code panel.
   ctx.cy.on('dbltap', 'node', function(evt: any) {
-    var nodeId = evt.target.data('id');
+    const nodeId = evt.target.data('id');
     // Don't drill into synthetic nodes (placeholder/hole inputs).
     if (nodeId.indexOf(':') !== -1) return;
     focusNode(ctx, nodeId, /* pushHistory */ true);
     if (ctx.host.setTitle) ctx.host.setTitle(nodeId);
   });
 
-  var tip = $('tooltip');
+  const tip = $('tooltip');
   ctx.cy.on('mouseover', 'node', function(evt: any) {
-    var d = evt.target.data();
-    var expr = d.expr || '';
+    const d = evt.target.data();
+    const expr = d.expr || '';
     if (!expr) return;
     tip.textContent = d.label ? (d.label + ' = ' + expr) : expr;
     tip.style.display = 'block';
-    var pos = evt.renderedPosition;
-    var cRect = $('cy').getBoundingClientRect();
-    var tx = pos.x + cRect.left + 12;
-    var ty = pos.y + cRect.top - 30;
+    const pos = evt.renderedPosition;
+    const cRect = $('cy').getBoundingClientRect();
+    let tx = pos.x + cRect.left + 12;
+    let ty = pos.y + cRect.top - 30;
     if (tx + tip.offsetWidth > cRect.right - 8) tx = cRect.right - tip.offsetWidth - 8;
     if (ty < cRect.top + 4) ty = pos.y + cRect.top + 16;
     tip.style.left = tx + 'px';
@@ -352,27 +352,27 @@ export function drawReificationLassos(ctx: any, data: any) {
   if (!ctx.bb || !data.reifications) return;
   teardownBubbles(ctx);
 
-  for (var k = 0; k < data.reifications.length; k++) {
-    var r = data.reifications[k];
+  for (let k = 0; k < data.reifications.length; k++) {
+    const r = data.reifications[k];
     if (r.kernel.length < 2) continue;
     if (!ctx.TYPE_STYLE[r.type]) continue;
     // Same colour the bubble's reification node would get — keeps
     // bubble fill, bubble stroke, and node fill in lockstep.
-    var bubbleColor = resolveNodeColor(ctx, r);
+    const bubbleColor = resolveNodeColor(ctx, r);
 
-    var memberIds = bubbleMemberIds(r, data.reifications);
+    const memberIds = bubbleMemberIds(r, data.reifications);
     var nodes = ctx.cy.collection();
-    for (var memId in memberIds) {
+    for (const memId in memberIds) {
       nodes = nodes.union(ctx.cy.getElementById(memId));
     }
     // Hidden edges (visibility:hidden) can return undefined endpoints,
     // which silently corrupts bubblesets' potential field — exclude.
-    var edges = ctx.cy.edges().filter(function(e: any) {
+    const edges = ctx.cy.edges().filter(function(e: any) {
       return nodes.contains(e.source())
         && nodes.contains(e.target())
         && !e.data('hidden');
     });
-    var avoid = ctx.cy.nodes().difference(nodes);
+    const avoid = ctx.cy.nodes().difference(nodes);
 
     ctx.bb.addPath(nodes, edges, avoid, {
       // virtualEdges: connect spatially-disconnected member groups via
@@ -402,32 +402,32 @@ export function renderDAG(ctx: any, data: any) {
   // treatment, so synthesized bindings like prior2 =
   // lawof(disintegrate(...)) (no internal scope, no bubble
   // drawn) render with the default solid measure style.
-  var reifAnchorNames: Record<string, boolean> = {};
+  const reifAnchorNames: Record<string, boolean> = {};
   if (data.reifications) {
-    for (var ra = 0; ra < data.reifications.length; ra++) {
+    for (let ra = 0; ra < data.reifications.length; ra++) {
       reifAnchorNames[data.reifications[ra].name] = true;
     }
   }
 
-  for (var i = 0; i < data.nodes.length; i++) {
-    var node = data.nodes[i];
-    var ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
+  for (let i = 0; i < data.nodes.length; i++) {
+    const node = data.nodes[i];
+    const ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
 
     // Shape: type-driven (carries the structural info — what *kind*
     // of binding this is). The engine-computed reification kind
     // overrides for "functionof acting on a measure → render as a
     // kernel" so the user sees a kernel regardless of which
     // keyword they wrote.
-    var shape = ts.shape;
+    let shape = ts.shape;
     if (node.kind === 'kernel')      shape = 'round-hexagon';
     else if (node.kind === 'measure') shape = 'round-rectangle';
 
-    var color = resolveNodeColor(ctx, node);
+    const color = resolveNodeColor(ctx, node);
     // Anonymous nodes (inline-expression targets) have label === ''
     // deliberately and show their expression on hover only. Others
     // fall back to their id.
-    var displayLabel = node.label === '' ? '' : (node.label || node.id);
-    var width = displayLabel === ''
+    const displayLabel = node.label === '' ? '' : (node.label || node.id);
+    const width = displayLabel === ''
       ? 60
       : Math.max(displayLabel.length * 9 + 24, 60);
     elements.push({
@@ -460,31 +460,31 @@ export function renderDAG(ctx: any, data: any) {
   //   - else (boundary arg or other kernel member): fully hide; the
   //     bubble already conveys that flow. Edge is kept in cy so dagre
   //     uses it for layout.
-  var reifMembers: Record<string, Record<string, boolean>> = {}; // reifName -> {memberId: true}
-  var reifTargets: Record<string, Record<string, boolean>> = {}; // reifName -> {targetId: true}
+  const reifMembers: Record<string, Record<string, boolean>> = {}; // reifName -> {memberId: true}
+  const reifTargets: Record<string, Record<string, boolean>> = {}; // reifName -> {targetId: true}
   if (data.reifications) {
-    for (var ri = 0; ri < data.reifications.length; ri++) {
-      var rf = data.reifications[ri];
+    for (let ri = 0; ri < data.reifications.length; ri++) {
+      const rf = data.reifications[ri];
       reifMembers[rf.name] = {};
-      for (var mi = 0; mi < rf.kernel.length; mi++) reifMembers[rf.name][rf.kernel[mi]] = true;
+      for (let mi = 0; mi < rf.kernel.length; mi++) reifMembers[rf.name][rf.kernel[mi]] = true;
       reifTargets[rf.name] = {};
-      var ts2 = rf.targets || [];
-      for (var ti = 0; ti < ts2.length; ti++) reifTargets[rf.name][ts2[ti]] = true;
+      const ts2 = rf.targets || [];
+      for (let ti = 0; ti < ts2.length; ti++) reifTargets[rf.name][ts2[ti]] = true;
     }
   }
 
   // Map binding name -> binding type, used to label tether edges with
   // the reification keyword (lawof / functionof / kernelof / fn).
-  var typeByName: Record<string, string> = {};
-  for (var ni = 0; ni < data.nodes.length; ni++) {
+  const typeByName: Record<string, string> = {};
+  for (let ni = 0; ni < data.nodes.length; ni++) {
     typeByName[data.nodes[ni].id] = data.nodes[ni].type;
   }
 
-  for (var j = 0; j < data.edges.length; j++) {
-    var edge = data.edges[j];
-    var edgeType = edge.edgeType || 'data';
-    var hidden = false;
-    var membersForTarget = reifMembers[edge.target];
+  for (let j = 0; j < data.edges.length; j++) {
+    const edge = data.edges[j];
+    let edgeType = edge.edgeType || 'data';
+    let hidden = false;
+    const membersForTarget = reifMembers[edge.target];
     if (membersForTarget && membersForTarget[edge.source] && edge.source !== edge.target) {
       if (reifTargets[edge.target] && reifTargets[edge.target][edge.source]) {
         edgeType = 'tether';
@@ -492,9 +492,9 @@ export function renderDAG(ctx: any, data: any) {
         hidden = true;
       }
     }
-    var tetherLabel = '';
+    let tetherLabel = '';
     if (edgeType === 'tether') {
-      var t = typeByName[edge.target];
+      const t = typeByName[edge.target];
       if (t === 'lawof' || t === 'functionof' || t === 'kernelof' || t === 'fn') {
         tetherLabel = t;
       }
@@ -531,7 +531,7 @@ export function renderDAG(ctx: any, data: any) {
 
   // Show details for the target node automatically (the cursor is already
   // on it in the source). Falls back to the hint if no target is present.
-  var target = data.nodes.find(function(n: any) { return n.isTarget; });
+  const target = data.nodes.find(function(n: any) { return n.isTarget; });
   if (target) {
     showNodeInfo(ctx, {
       label: target.label || target.id,
@@ -569,7 +569,7 @@ export function focusNode(ctx: any, targetName: any, pushHistory: any) {
       targetName = allNames[allNames.length - 1];
     }
   }
-  var dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName);
+  const dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName);
   if (!dagData || dagData.nodes.length === 0) return;
 
   // History grows only when (a) the caller asked us to push, and
@@ -613,7 +613,7 @@ export function focusNode(ctx: any, targetName: any, pushHistory: any) {
  */
 export function enterModuleView(ctx: any, pushHistory: any) {
   if (!ctx.currentBindings) return;
-  var dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
+  const dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
   if (!dagData || dagData.nodes.length === 0) return;
 
   if (pushHistory && ctx.currentState && ctx.currentState.targetName !== ctx.MODULE_TARGET) {
