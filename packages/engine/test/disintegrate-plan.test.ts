@@ -58,6 +58,26 @@ fk, pr = disintegrate(["obs"], joint_model)
     'lawof(record(theta1 = theta1, theta2 = theta2))');
 });
 
+test('Plan: lawof(record) with bare-string selector → bare-value kernel body', () => {
+  // Spec §06 lines 550-551: `"b"` selects the bare value. For the
+  // lawof-record shape, the kernel body becomes the bare variate
+  // reference (no record wrap), and the kernel still threads boundary
+  // inputs for the unselected fields.
+  const src = `
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+theta2 = draw(Normal(mu = 0.0, sigma = 1.0))
+obs = draw(Normal(mu = theta1, sigma = theta2))
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+fk, pr = disintegrate("obs", joint_model)
+`;
+  const plan = planFor(src, 'fk');
+  assert.equal(plan.kind, 'synthesized');
+  assert.equal(render(plan.kernel),
+    'kernelof(obs, theta1 = theta1, theta2 = theta2)');
+  assert.equal(render(plan.prior),
+    'lawof(record(theta1 = theta1, theta2 = theta2))');
+});
+
 test('Plan: lawof(record) admissibility: selected feeding into unselected → Unsupported', () => {
   // 'a' is selected; 'b' = transform of 'a' is unselected. Disintegrating
   // 'a' would require integrating against a deterministic chain — refused.
@@ -74,7 +94,10 @@ fk, pr = disintegrate("a", joint_model)
 
 // --- v1: joint(kw) ---------------------------------------------------
 
-test('Plan: joint(kw) → synthesized joint kernel + joint prior', () => {
+test('Plan: joint(kw) with bare-string selector → bare-value kernel', () => {
+  // Spec §06 lines 550-551: `"b"` selects the BARE VALUE, so the kernel
+  // produces samples of theta1 directly (no record wrap). Prior shape
+  // is independent of the selector form.
   const src = `
 mu_p = elementof(reals)
 joint_indep = joint(
@@ -86,9 +109,48 @@ fk, pr = disintegrate("theta1", joint_indep)
   const plan = planFor(src, 'fk');
   assert.equal(plan.kind, 'synthesized');
   assert.equal(render(plan.kernel),
+    'Normal(mu = mu_p, sigma = 1.0)');
+  assert.equal(render(plan.prior),
+    'joint(theta2 = Exponential(rate = 1.0))');
+});
+
+test('Plan: joint(kw) with array selector → record-shaped kernel', () => {
+  // Spec §06 lines 550-551: `["b"]` selects a `record(b = ...)`, so the
+  // kernel produces single-field-record samples (semantically distinct
+  // from the bare-value form above).
+  const src = `
+mu_p = elementof(reals)
+joint_indep = joint(
+    theta1 = Normal(mu = mu_p, sigma = 1.0),
+    theta2 = Exponential(rate = 1.0)
+)
+fk, pr = disintegrate(["theta1"], joint_indep)
+`;
+  const plan = planFor(src, 'fk');
+  assert.equal(plan.kind, 'synthesized');
+  assert.equal(render(plan.kernel),
     'joint(theta1 = Normal(mu = mu_p, sigma = 1.0))');
   assert.equal(render(plan.prior),
     'joint(theta2 = Exponential(rate = 1.0))');
+});
+
+test('Plan: joint(kw) multi-field selector → record kernel (bare-flag inapplicable)', () => {
+  // The bare-vs-record selector distinction is only meaningful when the
+  // selector picks exactly one field. Multi-field selector always
+  // produces record-shaped kernel.
+  const src = `
+mu_p = elementof(reals)
+joint_indep = joint(
+    theta1 = Normal(mu = mu_p, sigma = 1.0),
+    theta2 = Exponential(rate = 1.0),
+    theta3 = Normal(mu = 0.0, sigma = 1.0)
+)
+fk, pr = disintegrate(["theta1", "theta2"], joint_indep)
+`;
+  const plan = planFor(src, 'fk');
+  assert.equal(plan.kind, 'synthesized');
+  assert.equal(render(plan.kernel),
+    'joint(theta1 = Normal(mu = mu_p, sigma = 1.0), theta2 = Exponential(rate = 1.0))');
 });
 
 // --- v1: jointchain(kw) suffix -------------------------------------

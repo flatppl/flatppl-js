@@ -429,9 +429,14 @@ function isMeasure(t: any) {
  * records, tuples (whose elements are themselves value-typed). The
  * spec calls these "value types" in §sec:valuetypes.
  *
- * %deferred and %any are accepted because in those cases inference
- * hasn't classified the type yet — we don't want to emit a spurious
- * "not a value" error before the type is known.
+ * %deferred, %any, and free type variables (`kind === 'var'`) are
+ * accepted because in those cases inference hasn't classified the
+ * type yet — we don't want to emit a spurious "not a value" error
+ * before the type is known. A free type variable typically arises
+ * from a partially-inferred operation (e.g. broadcast's return type
+ * when its inputs' types aren't fully concrete); the variable will
+ * eventually unify with a concrete type, and the most common case
+ * is value-typed (draws, deterministic value computations).
  */
 function isValue(t: any) {
   if (t == null) return false;
@@ -443,6 +448,7 @@ function isValue(t: any) {
     case 'tuple':
     case 'deferred':
     case 'any':
+    case 'var':
       return true;
   }
   return false;

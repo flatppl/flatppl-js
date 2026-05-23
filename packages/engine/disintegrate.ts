@@ -696,11 +696,24 @@ function synthesizeLawofRecord(decomp: Decomposition, partition: Partition, ctx:
   const priorExpr = mkCall('lawof',
     [mkCall('record', priorRecordArgs, ctx.source)], ctx.source);
 
-  // kernel = kernelof(record(selected fields, original variate refs),
-  //                   <unselected name>=<variate>, ...)
-  const kernelRecordArgs = partition.selected.map(s =>
-    mkKwArg(s.name, mkIdent(recordVar.get(s.name)!, ctx.source), ctx.source));
-  const kernelArgs: any[] = [mkCall('record', kernelRecordArgs, ctx.source)];
+  // kernel = kernelof(<body>, <unselected name>=<variate>, ...).
+  // Body shape depends on the selector form (spec §06):
+  //   - bare-string selector `"b"` AND exactly one selected field
+  //     → body is the bare variate `mkIdent(varname)`, so the kernel
+  //       produces bare-value samples.
+  //   - any other case (multi-field selector, or singleton-record `["b"]`)
+  //     → body is `record(selected fields with their variate refs)`.
+  const bareSingleton = !!ctx.selectorBareString && partition.selected.length === 1;
+  let kernelBody: any;
+  if (bareSingleton) {
+    const s = partition.selected[0];
+    kernelBody = mkIdent(recordVar.get(s.name)!, ctx.source);
+  } else {
+    const kernelRecordArgs = partition.selected.map(s =>
+      mkKwArg(s.name, mkIdent(recordVar.get(s.name)!, ctx.source), ctx.source));
+    kernelBody = mkCall('record', kernelRecordArgs, ctx.source);
+  }
+  const kernelArgs: any[] = [kernelBody];
   for (const u of partition.unselected) {
     kernelArgs.push(mkKwArg(u.name, mkIdent(recordVar.get(u.name)!, ctx.source), ctx.source));
   }
@@ -708,13 +721,22 @@ function synthesizeLawofRecord(decomp: Decomposition, partition: Partition, ctx:
 }
 
 function synthesizeJoint(decomp: Decomposition, partition: Partition, ctx: any) {
-  // Both sides stay as joint(...) — including single-field joints.
-  // A single-field `joint(name = M)` is NOT semantically `M`; it's
-  // `relabel(M, [name])`, a measure over single-field records. The
-  // shape difference matters for downstream type/density use.
-  const kernelExpr = mkCall('joint',
-    partition.selected.map(s => mkKwArg(s.name, s.expr, ctx.source)),
-    ctx.source);
+  // Kernel shape depends on the selector form per spec §06:
+  //   - bare-string `"b"` AND single selected field → kernel is the
+  //     bare measure for that field (no record wrap).
+  //   - array `["b"]` or multi-field selector → kernel is
+  //     `joint(selected fields)`, a record measure.
+  // Note: `joint(name = M)` is NOT the same measure as M — it's
+  // `relabel(M, [name])`, a single-field record measure. So
+  // unwrapping is a real shape change driven by the selector form.
+  // Prior shape is independent of the selector form (per spec, the
+  // selector describes the kernel's output, not the marginal).
+  const bareSingleton = !!ctx.selectorBareString && partition.selected.length === 1;
+  const kernelExpr = bareSingleton
+    ? partition.selected[0].expr
+    : mkCall('joint',
+        partition.selected.map(s => mkKwArg(s.name, s.expr, ctx.source)),
+        ctx.source);
   const priorExpr = mkCall('joint',
     partition.unselected.map(u => mkKwArg(u.name, u.expr, ctx.source)),
     ctx.source);

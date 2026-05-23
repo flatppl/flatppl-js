@@ -200,39 +200,37 @@ fk, pr = disintegrate(["b"], J)
     'bare-string and array selectors produce same plan kind');
 });
 
-test('spec-coverage GAP: bare-string selector should produce bare-value kernel output', () => {
-  // Spec §06: `disintegrate("b", joint)` should produce a kernel whose
-  // OUTPUT is the bare variate `b`, while `disintegrate(["b"], joint)`
-  // should produce a kernel whose output is `record(b = ...)`.
-  //
-  // The engine's analyzer normalises both selector forms to a
-  // string[] (analyzer.detectDisintegration line ~797), so the kernel
-  // synthesis always emits record-shaped output. The bare-vs-record
-  // distinction is lost.
-  //
-  // This is a pre-existing analyzer-layer gap, not introduced by the
-  // 2026-05-23 decompose-based disintegrate rewrite. Closing it
-  // requires teaching the analyzer to preserve the selector's surface
-  // shape, then teaching the synthesize step to emit differently.
-  //
-  // Pin: bare-string and array selectors should currently produce the
-  // SAME kernel AST (the record-shaped form). When that's no longer
-  // true, this test fires and the gap is closed.
+test('spec-coverage PASS: bare-string vs array selector produces differently-shaped kernels', () => {
+  // Spec §06 lines 550-551: `"b"` selects the bare value (kernel emits
+  // the variate directly), `["b"]` selects a `record(b = ...)` (kernel
+  // emits single-field-record). Closed 2026-05-23: analyzer preserves
+  // the surface shape via `selectorBareString`, threaded into
+  // disintegrate's ctx; synthesizeJoint and synthesizeLawofRecord
+  // honour the flag.
   const ctx = processSource(`
 M1 = Normal(mu = 0, sigma = 1)
 M2 = Exponential(rate = 1)
 J = joint(a = M1, b = M2)
   `);
-  // Direct probe of both selector forms at the rewriter level (both
-  // come in as ['b'] regardless of surface, so the rewriter can't
-  // differentiate).
   const planBare  = disintegratePlan(ctx.bindings.get('J').node.value, ['b'],
-    ctx.bindings, { seen: new Set(), source: 'J' });
+    ctx.bindings, { seen: new Set(), source: 'J', selectorBareString: true });
   const planArray = disintegratePlan(ctx.bindings.get('J').node.value, ['b'],
-    ctx.bindings, { seen: new Set(), source: 'J' });
-  // Both planned outputs structurally identical — known gap.
-  assert.equal(JSON.stringify(planBare.kernel), JSON.stringify(planArray.kernel),
-    'bare-string and array selectors currently produce identical kernels — known gap (analyzer normalisation drops the distinction)');
+    ctx.bindings, { seen: new Set(), source: 'J', selectorBareString: false });
+  // Both succeed structurally.
+  assert.equal(planBare.kind, 'synthesized');
+  assert.equal(planArray.kind, 'synthesized');
+  // Kernel shapes DIFFER per the selector form.
+  // Bare: kernel is just the variate's measure expression (no joint wrap).
+  assert.equal(planBare.kernel.type, 'Identifier',
+    'bare-string selector → kernel is the bare measure ref');
+  assert.equal((planBare.kernel as any).name, 'M2');
+  // Array: kernel is `joint(b = M2)`, a single-field-record measure.
+  assert.equal(planArray.kernel.type, 'CallExpr');
+  assert.equal((planArray.kernel as any).callee.name, 'joint',
+    'array selector → kernel is joint(...) wrapping the field');
+  // Prior shape is independent of selector form.
+  assert.equal(JSON.stringify(planBare.prior), JSON.stringify(planArray.prior),
+    'prior shape is independent of selector form');
 });
 
 // ---------------------------------------------------------------------
