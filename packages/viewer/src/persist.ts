@@ -124,7 +124,7 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
   const existingNames: string[] = [];
   if (ctx.currentBindings) ctx.currentBindings.forEach(function(_b: unknown, n: string) { existingNames.push(n); });
   const pairsText = parts.join(', ');
-  const suggested = (plan.name || 'inputs') + '_default';
+  const suggested = (plan.name || 'inputs') + '_input';
   Promise.resolve(ctx.host.promptForName({
     suggested: suggested,
     existingNames: existingNames,
