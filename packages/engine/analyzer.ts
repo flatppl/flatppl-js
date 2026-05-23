@@ -525,55 +525,137 @@ function validateSpecialOperation(valueNode: any) {
 /**
  * Walk an expression tree and collect referenced identifiers.
  * Skips keyword argument names (the 'name' in KeywordArg is not a reference).
- * Returns { deps: Set<string>, callDeps: Set<string> }.
+ *
+ * For `functionof` / `kernelof` calls, refs are partitioned along the
+ * spec's two-scope semantics (engine-concepts §8):
+ *   - **body refs** are identifier refs inside the reification's body
+ *     (the first positional arg) that name an outer-scope binding
+ *     and are NOT shadowed by a boundary kwarg. These are the
+ *     closure captures the body actually computes against.
+ *   - **paramSource refs** are identifier refs in the kwarg RHS
+ *     positions of the reification. These name the binding whose
+ *     `valueset` declares the formal's domain (spec §sec:functionof:
+ *     "functionof effectively substitutes each boundary node a with
+ *     an input node elementof(valueset(a))"). They are real outer-
+ *     scope refs but their phase / value does not flow through the
+ *     function's result — the call site binds the formal to its own
+ *     argument.
+ *
+ * The body-internal occurrences of boundary names are excluded from
+ * deps entirely (they correspond to the IR's `ns:'%local'` refs after
+ * lowering). Refs that fall in neither bucket (everything else,
+ * including nested non-reification calls) go into the default bucket
+ * and contribute to `deps`.
+ *
+ * Returns { deps, callDeps, bodyDeps, paramSourceDeps }. `deps` is the
+ * union of bodyDeps + paramSourceDeps + other refs, preserving the
+ * existing contract for callers that don't care about the split.
  */
 function collectDeps(node: any, definedNames: Set<string>) {
   const deps = new Set<string>();
   const callDeps = new Set<string>();
+  const bodyDeps = new Set<string>();
+  const paramSourceDeps = new Set<string>();
 
-  function walk(node: any, isCallee: boolean) {
+  // localStack tracks the formal-parameter names of every enclosing
+  // reification. An Identifier whose name is on the stack is a
+  // body-internal reference to a formal — it lowers to `ns:'%local'`
+  // and is NOT a dep at the outer-scope level.
+  const localStack: Set<string>[] = [];
+
+  function isLocal(name: string): boolean {
+    for (let i = localStack.length - 1; i >= 0; i--) {
+      if (localStack[i].has(name)) return true;
+    }
+    return false;
+  }
+
+  // bucket controls which secondary set an Identifier add lands in.
+  // For non-reification bindings everything is 'body' (closure captures
+  // and direct refs are indistinguishable, and bodyDeps mirrors deps).
+  // Reification walking flips to 'paramSource' for kwarg RHS expressions.
+  function add(name: string, isCallee: boolean, bucket: 'body' | 'paramSource') {
+    deps.add(name);
+    if (isCallee) callDeps.add(name);
+    if (bucket === 'body') bodyDeps.add(name);
+    else paramSourceDeps.add(name);
+  }
+
+  function walk(node: any, isCallee: boolean, bucket: 'body' | 'paramSource') {
     if (!node) return;
 
     switch (node.type) {
       case 'Identifier':
-        if (definedNames.has(node.name)) {
-          deps.add(node.name);
-          if (isCallee) callDeps.add(node.name);
-        }
+        if (isLocal(node.name)) return;       // %local ref — body's own formal
+        if (definedNames.has(node.name)) add(node.name, isCallee, bucket);
         break;
       case 'BinaryExpr':
-        walk(node.left, false);
-        walk(node.right, false);
+        walk(node.left, false, bucket);
+        walk(node.right, false, bucket);
         break;
       case 'UnaryExpr':
-        walk(node.operand, false);
+        walk(node.operand, false, bucket);
         break;
-      case 'CallExpr':
-        walk(node.callee, true);
-        for (const arg of node.args) walk(arg, false);
+      case 'CallExpr': {
+        const callee = node.callee;
+        const isReif = callee && callee.type === 'Identifier'
+          && (callee.name === 'functionof' || callee.name === 'kernelof');
+        if (isReif) {
+          // Two-scope walk. First collect the formal-parameter names
+          // declared by this reification's kwargs (boundary names per
+          // spec §sec:functionof). The body's body-internal refs to
+          // these names are %local and excluded from deps.
+          const formals = new Set<string>();
+          for (let i = 1; i < node.args.length; i++) {
+            const arg = node.args[i];
+            if (arg && arg.type === 'KeywordArg' && arg.value) {
+              if (arg.value.type === 'Identifier') formals.add(arg.value.name);
+              else if (arg.value.type === 'Placeholder') formals.add('_' + arg.value.name + '_');
+            }
+          }
+          // Walk the body (first positional arg) under the formal-name
+          // local scope, tagging refs as 'body' so they land in bodyDeps.
+          localStack.push(formals);
+          const body = node.args[0];
+          if (body && body.type !== 'KeywordArg') walk(body, false, 'body');
+          localStack.pop();
+          // Walk the kwarg RHS expressions without the local scope,
+          // tagging them as 'paramSource' so they land in paramSourceDeps.
+          for (let i = 1; i < node.args.length; i++) {
+            const arg = node.args[i];
+            if (arg && arg.type === 'KeywordArg') walk(arg.value, false, 'paramSource');
+          }
+          // The reification callee itself (`functionof` / `kernelof`)
+          // is a built-in name; nothing to add. (Skipped because the
+          // bare-symbol callee isn't a definedNames entry anyway.)
+        } else {
+          walk(node.callee, true, bucket);
+          for (const arg of node.args) walk(arg, false, bucket);
+        }
         break;
+      }
       case 'IndexExpr':
-        walk(node.object, false);
-        for (const idx of node.indices) walk(idx, false);
+        walk(node.object, false, bucket);
+        for (const idx of node.indices) walk(idx, false, bucket);
         break;
       case 'FieldAccess':
-        walk(node.object, false);
+        walk(node.object, false, bucket);
         break;
       case 'ArrayLiteral':
       case 'TupleLiteral':
-        for (const el of node.elements) walk(el, false);
+        for (const el of node.elements) walk(el, false, bucket);
         break;
       case 'KeywordArg':
         // Only walk the value, not the keyword name
-        walk(node.value, false);
+        walk(node.value, false, bucket);
         break;
       // Leaf nodes: NumberLiteral, StringLiteral, BoolLiteral,
       // ConstantRef, SetRef, Placeholder, Hole, SliceAll — no deps
     }
   }
 
-  walk(node, false);
-  return { deps, callDeps };
+  walk(node, false, 'body');
+  return { deps, callDeps, bodyDeps, paramSourceDeps };
 }
 
 /**
@@ -951,43 +1033,24 @@ function computePhases(bindings: any) {
     return 'fixed';
   }
 
-  // Identifier names referenced by a function-typed binding's kwargs —
-  // i.e. its formal parameters. Returns the empty set for non-function
-  // bindings, for fn (placeholder `_`, not a binding ref), and for kwargs
-  // whose value isn't a bare Identifier (per spec the rhs is the formal
-  // parameter's value-set declaration, conventionally an elementof name).
-  function formalParamRefs(b: any): Set<string> {
-    const out = new Set<string>();
-    const cn = calleeName(b);
-    if (cn !== 'functionof' && cn !== 'kernelof') return out;
-    const v = b && b.node && b.node.value;
-    if (!v || !Array.isArray(v.args)) return out;
-    for (const arg of v.args) {
-      if (arg && arg.type === 'KeywordArg'
-          && arg.value && arg.value.type === 'Identifier'
-          && typeof arg.value.name === 'string') {
-        out.add(arg.value.name);
-      }
-    }
-    return out;
-  }
-
   // Per spec §sec:lawof line 309-314 ("lawof absorbs stochasticity
   // into the reified law rather than propagating it outward"), some
   // ops *absorb* stochastic ancestors — the result is a deterministic
   // measure / function / kernel whose phase depends only on the
   // parameterized leaves of its ancestor closure, not on whether
-  // those leaves are reached through a draw. Recursively walks deps,
-  // collapsing 'stochastic' verdicts to 'fixed' along the way and
-  // surfacing only the highest non-stochastic phase.
+  // those leaves are reached through a draw. Recursively walks
+  // body-deps, collapsing 'stochastic' verdicts to 'fixed' along the
+  // way and surfacing only the highest non-stochastic phase.
   //
-  // Function-body refs to a function's own formal parameters are
-  // excluded from the walk: the parameters get a concrete value at
-  // every call site, so any `elementof` declared in the kwargs is
-  // already substituted out by the time we'd read the call's result.
-  // (Without this, `f = functionof(c * _par, par = _par); a = f(par = beta1)`
-  // — where `_par = elementof(reals)` — would propagate parameterized
-  // through a's ancestor closure even though _par has been bound out.)
+  // The walker reads `bodyDeps` (engine-concepts §8.2) rather than
+  // `deps`. For non-reification bindings the two sets coincide; for
+  // `functionof` / `kernelof` they differ — the kwarg RHS refs
+  // (paramSources) are real outer-scope refs but they declare formal
+  // parameters' value-sets, not the function's result. Walking them
+  // would propagate the formal's elementof phase through any
+  // downstream `rand` / `lawof`, mis-classifying calls like
+  // `a = f(par = beta1); rand(state, lawof(a))` as parameterized
+  // even when beta1 (the call's argument) is fixed.
   const absorbedCache = new Map<string, string>();
   function absorbedPhaseOf(name: string): string {
     if (absorbedCache.has(name)) return absorbedCache.get(name)!;
@@ -996,10 +1059,9 @@ function computePhases(bindings: any) {
     const cn = calleeName(b);
     if (cn === 'elementof')          { absorbedCache.set(name, 'parameterized'); return 'parameterized'; }
     if (cn === 'external')           { absorbedCache.set(name, 'fixed');         return 'fixed'; }
-    const formals = formalParamRefs(b);
+    const deps = (b.bodyDeps != null) ? b.bodyDeps : b.deps;
     let phase = 'fixed';
-    for (const dep of b.deps) {
-      if (formals.has(dep)) continue;
+    for (const dep of deps) {
       phase = maxPhase(phase, absorbedPhaseOf(dep));
       if (phase === 'parameterized') break;
     }
@@ -1433,13 +1495,15 @@ function analyze(ast: any, source: string) {
     diagnostics.push(...validateSpecialOperation(stmt.value));
     validateHolesAndPlaceholders(stmt.value, diagnostics);
     validateIndexing(stmt.value, diagnostics);
-    const { deps, callDeps } = collectDeps(stmt.value, definedNames);
+    const { deps, callDeps, bodyDeps, paramSourceDeps } = collectDeps(stmt.value, definedNames);
     const rhs = sliceSource(source, stmt.value.loc);
 
     // Remove self-references
     for (const nameNode of stmt.names) {
       deps.delete(nameNode.name);
       callDeps.delete(nameNode.name);
+      bodyDeps.delete(nameNode.name);
+      paramSourceDeps.delete(nameNode.name);
     }
 
     // Check for undefined references
@@ -1464,6 +1528,14 @@ function analyze(ast: any, source: string) {
         type: stmtType,
         deps: [...deps],
         callDeps: [...callDeps],
+        // For functionof / kernelof bindings these split out the body's
+        // closure captures from the kwarg-RHS value-set declarations
+        // (engine-concepts §8.2). For non-reification bindings the body
+        // bucket carries everything and paramSource is empty. Walkers
+        // that need the spec's two-scope semantics (absorbedPhaseOf,
+        // future inlineOnce cleanup) consume `bodyDeps`.
+        bodyDeps: [...bodyDeps],
+        paramSourceDeps: [...paramSourceDeps],
         node: stmt,
         nameLoc: nameNode.loc,
       };
