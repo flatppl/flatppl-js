@@ -667,20 +667,40 @@ function createInferenceContext(loweredModule: any) {
     // integer literal. Refs to integer-typed bindings remain
     // %dynamic for now (full constant folding via resolveConstant
     // could be promoted from orchestrator if we want).
-    const dims: number[] = [];
-    for (let i = 1; i < args.length; i++) {
-      const dT = inferExpr(args[i], scopes);
-      // Type-check: each dim must be integer-promotable.
+    //
+    // New spec: arg 1 may be a single positive int OR a vector of
+    // positive ints. The vector-literal form (lowered as `vector(...)`)
+    // is unpacked into per-axis dims here so downstream shape checks
+    // see concrete dims. A non-literal vector falls through to a
+    // single dynamic-rank axis (best we can do statically).
+    const dims: any[] = [];
+    let dimArgs = args.slice(1);
+    if (dimArgs.length === 1
+      && dimArgs[0].kind === 'call'
+      && dimArgs[0].op === 'vector'
+      && Array.isArray(dimArgs[0].args)) {
+      dimArgs = dimArgs[0].args;
+    }
+    for (let i = 0; i < dimArgs.length; i++) {
+      const arg = dimArgs[i];
+      const dT = inferExpr(arg, scopes);
+      // Type-check: each dim must be integer-promotable. Allow an
+      // integer-array second arg too (the non-literal vector case).
       const s = T.unify(T.INTEGER, dT, new Map());
       if (s == null) {
+        // Permit `iid(M, sizes)` where `sizes` is an integer array.
+        if (dimArgs.length === 1 && dT && dT.kind === 'array') {
+          dims.push('%dynamic');
+          continue;
+        }
         diagnostics.push({
           severity: 'error',
-          message: 'iid: dim ' + i + ' expects integer, got ' + T.show(dT),
-          loc: args[i].loc,
+          message: 'iid: dim ' + (i + 1) + ' expects integer, got ' + T.show(dT),
+          loc: arg.loc,
         });
         return T.failed('iid bad dim');
       }
-      dims.push(literalIntFromIR(args[i]) != null ? literalIntFromIR(args[i]) : '%dynamic');
+      dims.push(literalIntFromIR(arg) != null ? literalIntFromIR(arg) : '%dynamic');
     }
     const rank = dims.length;
     return T.measure(T.array(rank, dims, measureT.domain));

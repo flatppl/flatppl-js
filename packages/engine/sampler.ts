@@ -1904,51 +1904,14 @@ const ARITH_OPS = {
     }
     return result;
   },
-  // fill(x, n, m, ...) — n-D array of shape `n × m × ...` filled with x.
-  // Returns nested JS arrays for 2-D+; flat array for 1-D. Spec §07.
-  fill: (x: any, ...dims: any[]) => {
-    if (dims.length === 0) return +x;
-    function build(level: any) {
-      const n = dims[level] | 0;
-      const out = new Array(n);
-      if (level === dims.length - 1) {
-        for (let i = 0; i < n; i++) out[i] = x;
-      } else {
-        for (let i = 0; i < n; i++) out[i] = build(level + 1);
-      }
-      return out;
-    }
-    return build(0);
-  },
+  // fill(x, size) — array of shape `size` filled with x. `size` is
+  // either a positive integer (1-D shape) or a vector of positive
+  // integers (multi-axis shape). Returns nested JS arrays for 2-D+;
+  // flat array for 1-D. Spec §07.
+  fill: (x: any, size: any) => _buildFilled(_sizeAsDims(size), x),
   // zeros / ones — convenience wrappers around fill. Spec §07.
-  zeros: (...dims: any[]) => {
-    if (dims.length === 0) return 0;
-    function build(level: any) {
-      const n = dims[level] | 0;
-      const out = new Array(n);
-      if (level === dims.length - 1) {
-        for (let i = 0; i < n; i++) out[i] = 0;
-      } else {
-        for (let i = 0; i < n; i++) out[i] = build(level + 1);
-      }
-      return out;
-    }
-    return build(0);
-  },
-  ones: (...dims: any[]) => {
-    if (dims.length === 0) return 1;
-    function build(level: any) {
-      const n = dims[level] | 0;
-      const out = new Array(n);
-      if (level === dims.length - 1) {
-        for (let i = 0; i < n; i++) out[i] = 1;
-      } else {
-        for (let i = 0; i < n; i++) out[i] = build(level + 1);
-      }
-      return out;
-    }
-    return build(0);
-  },
+  zeros: (size: any) => _buildFilled(_sizeAsDims(size), 0),
+  ones: (size: any) => _buildFilled(_sizeAsDims(size), 1),
   // eye(n) — n × n identity matrix. Spec §07.
   // eye(n) → n×n identity, as a vector-backed diag of ones.
   eye: (n: any) => {
@@ -2160,7 +2123,27 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; },
   prod:    (a: any) => { const arr = _arrLike(a); let p = 1;
     for (let i = 0; i < arr.length; i++) p *= arr[i]; return p; },
-  length:  (a: any) => _arrLike(a).length,
+  lengthof: (a: any) => _arrLike(a).length,
+  // sizeof returns a length-rank vector of the array's per-axis dimensions.
+  // For 1-D vectors/typed arrays this is `[lengthof(a)]`; for shape-tagged
+  // Values, return a copy of the shape. Spec §07.
+  sizeof: (a: any) => {
+    if (valueLib.isValue(a)) return Array.from(a.shape);
+    if (a == null) return [0];
+    if (typeof a === 'number') return [];
+    if (a.BYTES_PER_ELEMENT && typeof a.length === 'number') return [a.length];
+    if (Array.isArray(a)) {
+      // Nested array → walk the all-equal-length spine to derive shape.
+      const dims: number[] = [];
+      let cur = a;
+      while (Array.isArray(cur)) {
+        dims.push(cur.length);
+        cur = cur[0];
+      }
+      return dims;
+    }
+    return [];
+  },
   maximum: (a: any) => {
     const arr = _arrLike(a);
     let m = -Infinity;
@@ -2272,6 +2255,49 @@ const ARITH_OPS = {
 function _arrLike(v: any) {
   if (valueLib.isValue(v)) return v.data;
   return v;
+}
+
+// _sizeAsDims: normalize a `size` argument (per spec §07: positive int
+// or vector of positive ints) to a JS number[] of axis lengths.
+function _sizeAsDims(size: any): number[] {
+  if (typeof size === 'number') {
+    if (!Number.isInteger(size) || size < 0) {
+      throw new Error('size must be a non-negative integer, got ' + size);
+    }
+    return [size];
+  }
+  let arr: any = size;
+  if (valueLib.isValue(arr)) arr = arr.data;
+  if (arr && arr.BYTES_PER_ELEMENT && typeof arr.length === 'number') {
+    arr = Array.from(arr as ArrayLike<number>);
+  }
+  if (!Array.isArray(arr)) {
+    throw new Error('size must be an integer or vector of integers');
+  }
+  const dims: number[] = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) {
+    const n = arr[i];
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error('size: axis ' + (i + 1) + ' is not a non-negative integer (got ' + n + ')');
+    }
+    dims[i] = n as number;
+  }
+  return dims;
+}
+
+// _buildFilled: nested JS array of shape `dims` with every leaf set to
+// `value`. 1-D case yields a flat JS array.
+function _buildFilled(dims: number[], value: any): any {
+  if (dims.length === 0) return value;
+  const n = dims[0];
+  const rest = dims.slice(1);
+  const out = new Array(n);
+  if (rest.length === 0) {
+    for (let i = 0; i < n; i++) out[i] = value;
+  } else {
+    for (let i = 0; i < n; i++) out[i] = _buildFilled(rest, value);
+  }
+  return out;
 }
 
 // =====================================================================

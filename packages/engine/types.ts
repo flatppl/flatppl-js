@@ -909,7 +909,11 @@ const SIGNATURE_FACTORIES = {
   sum:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   mean:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   prod:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  length:  () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
+  lengthof: () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
+  // sizeof returns the shape vector of an array; length of the result
+  // is the rank of the input. Static result-length is left dynamic
+  // because the input rank isn't always statically known.
+  sizeof:   () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
   // Population variance (divisor N — not N-1). maximum/minimum on an
   // array; pluralised to avoid collision with the binary `min` / `max`
   // built-ins (per spec §07).
