@@ -1290,7 +1290,7 @@ f = functionof(combined)
   assert.equal(sig.kind, 'function');
   assert.equal(sig.inputs.length, 3);
 
-  const byName = {};
+  const byName: any = {};
   for (const inp of sig.inputs) byName[inp.paramName] = inp;
   assert.ok(byName.a && byName.b && byName.k,
     'expected a, b, k all surfaced as inputs (got: '
@@ -1727,7 +1727,7 @@ pars2 = record(theta1 = 0.5, theta2 = 2.0)
   const sig = signatureOf('f', lifted);
   const presets = findMatchingPresets(sig, lifted);
   assert.equal(presets.length, 2);
-  const byName = {};
+  const byName: any = {};
   for (const p of presets) byName[p.name] = p;
   assert.deepEqual(byName.pars1.values, { theta1: 1.4, theta2: 1.0 });
   assert.deepEqual(byName.pars2.values, { theta1: 0.5, theta2: 2.0 });
@@ -1774,7 +1774,7 @@ stochastic   = record(mu = mu)
   const presets = findMatchingPresets(sig, lifted);
   const names = presets.map((p: any) => p.name).sort();
   assert.deepEqual(names, ['arith', 'lit_value', 'named_const', 'neg_lit']);
-  const byName = {};
+  const byName: any = {};
   for (const p of presets) byName[p.name] = p;
   assert.equal(byName.named_const.values.mu,  5.0);
   assert.equal(byName.lit_value.values.mu,    1.5);
@@ -1841,7 +1841,7 @@ wider  = cartprod(theta1 = interval(-10, 10), theta2 = interval(0, 20))
   const sig = signatureOf('f', lifted);
   const doms = findMatchingDomains(sig, lifted);
   assert.equal(doms.length, 2);
-  const byName = {};
+  const byName: any = {};
   for (const d of doms) byName[d.name] = d;
   assert.deepEqual(byName.search.ranges,
     { theta1: { lo: -3, hi: 3 }, theta2: { lo: 0, hi: 5 } });
@@ -1895,7 +1895,7 @@ fully_open = cartprod(theta1 = reals, theta2 = posreals)
   const lifted = liftInlineSubexpressions(bindings);
   const sig = signatureOf('f', lifted);
   const doms = findMatchingDomains(sig, lifted);
-  const byName = {};
+  const byName: any = {};
   for (const d of doms) byName[d.name] = d;
   assert.deepEqual(byName.mixed.ranges,   { theta1: { lo: -4, hi: 4 } });
   assert.deepEqual(byName.mixed.setNames, { theta2: 'reals' });
@@ -2691,7 +2691,7 @@ test('enumerateOutputLeaves: record output → one entry per field', () => {
   const t = { kind: 'record', fields: { a: T.REAL, b: T.INTEGER } };
   const leaves = enumerateOutputLeaves(t);
   assert.equal(leaves.length, 2);
-  const byPath = {};
+  const byPath: any = {};
   for (const L of leaves) byPath[L.path.join('.')] = L;
   assert.ok(byPath['a'] && T.equal(byPath['a'].leafType, T.REAL));
   assert.ok(byPath['b'] && T.equal(byPath['b'].leafType, T.INTEGER));

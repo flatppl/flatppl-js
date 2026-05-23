@@ -329,7 +329,7 @@ M = Categorical(p = [0.5, 0.3, 0.2])
 x = draw(M)
 `, { sampleCount: 8192 });
   const m = await ctx.getMeasure('x');
-  const counts = { 1: 0, 2: 0, 3: 0 };
+  const counts: any = { 1: 0, 2: 0, 3: 0 };
   for (let i = 0; i < m.samples.length; i++) {
     const k = m.samples[i] | 0;
     assert.ok(k >= 1 && k <= 3, 'atom ' + i + ' must be in {1, 2, 3}, got ' + m.samples[i]);

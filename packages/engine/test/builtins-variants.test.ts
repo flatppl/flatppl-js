@@ -82,7 +82,7 @@ test('builtins: name-sets are non-overlapping pairwise (sanity)', () => {
   // RESERVED is disjoint from every other set — accidentally bridging
   // them is a real bug class (a binding called `self` should be flagged
   // by the analyzer, not collide with a distribution name).
-  const sets = {
+  const sets: any = {
     CONSTANTS:        builtins.CONSTANTS,
     BOOL_LITERALS:    builtins.BOOL_LITERALS,
     SETS:             builtins.SETS,

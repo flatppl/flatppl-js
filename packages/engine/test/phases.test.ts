@@ -7,7 +7,7 @@ const { computeSubDAG } = require('../dag.ts');
 
 function phasesOf(src: any) {
   const { bindings } = processSource(src);
-  const result = {};
+  const result: any = {};
   for (const [name, b] of bindings) result[name] = b.phase;
   return result;
 }
@@ -15,22 +15,22 @@ function phasesOf(src: any) {
 // --- Per-spec direct rules ---
 
 test('phase: draw is stochastic', () => {
-  const p = phasesOf('x = draw(Normal(mu = 0, sigma = 1))\n');
+  const p: any = phasesOf('x = draw(Normal(mu = 0, sigma = 1))\n');
   assert.equal(p.x, 'stochastic');
 });
 
 test('phase: elementof is parameterized', () => {
-  const p = phasesOf('x = elementof(reals)\n');
+  const p: any = phasesOf('x = elementof(reals)\n');
   assert.equal(p.x, 'parameterized');
 });
 
 test('phase: external is fixed', () => {
-  const p = phasesOf('x = external(reals)\n');
+  const p: any = phasesOf('x = external(reals)\n');
   assert.equal(p.x, 'fixed');
 });
 
 test('phase: literal is fixed', () => {
-  const p = phasesOf('x = 1.5\narr = [1, 2, 3]\n');
+  const p: any = phasesOf('x = 1.5\narr = [1, 2, 3]\n');
   assert.equal(p.x, 'fixed');
   assert.equal(p.arr, 'fixed');
 });
@@ -39,7 +39,7 @@ test('phase: literal is fixed', () => {
 
 test('phase: propagates stochastic through deterministic operations', () => {
   // a = f(theta1) where theta1 is draw → a is stochastic
-  const p = phasesOf(`
+  const p: any = phasesOf(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 a = 2 * theta1 + 5
 b = a + 1
@@ -50,7 +50,7 @@ b = a + 1
 });
 
 test('phase: parameterized propagates through deterministic ops', () => {
-  const p = phasesOf(`
+  const p: any = phasesOf(`
 mu_p = elementof(reals)
 a = mu_p + 1
 b = a * 2
@@ -61,7 +61,7 @@ b = a * 2
 });
 
 test('phase: stochastic dominates over parameterized', () => {
-  const p = phasesOf(`
+  const p: any = phasesOf(`
 mu_p = elementof(reals)
 theta1 = draw(Normal(mu = mu_p, sigma = 1))
 a = mu_p + theta1
@@ -71,7 +71,7 @@ a = mu_p + theta1
 });
 
 test('phase: parameterized dominates over fixed', () => {
-  const p = phasesOf(`
+  const p: any = phasesOf(`
 n = external(integers)
 mu_p = elementof(reals)
 a = mu_p + n
@@ -88,7 +88,7 @@ test('phase: bayesian_inference_2 fixture has correct phases', () => {
   const path = require('node:path');
   const src = fs.readFileSync(
     path.join(__dirname, 'fixtures', 'bayesian_inference_2.flatppl'), 'utf8');
-  const p = phasesOf(src);
+  const p: any = phasesOf(src);
 
   // Stochastic chain
   assert.equal(p.theta1, 'stochastic');
@@ -167,7 +167,7 @@ obs    = draw(Normal(mu = beta1, sigma = 1))
 fk     = functionof(obs, theta1 = theta1, theta2 = theta2)
 `);
   const dag = computeSubDAG(bindings, 'fk');
-  const byId = new Map(dag.nodes.map((n: any) => [n.id, n]));
+  const byId: any = new Map(dag.nodes.map((n: any) => [n.id, n]));
   // Inside the kernel: theta2 and beta1 cut by the boundary.
   assert.equal(byId.get('theta2').phase, 'parameterized');
   assert.equal(byId.get('beta1').phase,  'parameterized');

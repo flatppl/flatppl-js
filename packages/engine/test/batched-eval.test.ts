@@ -182,7 +182,7 @@ test('evaluateExprN: every scalar primitive dispatches via ARITH_OPS_N', () => {
   // logit / probit need (0, 1); we feed 0.5.
   // ifelse arity=3 (cond, then, else).
   // boolean / integer accept the exact values 0/1 → 0/1.
-  const cases = {
+  const cases: any = {
     add: [a, b], sub: [a, b], mul: [a, b], div: [a, b], mod: [a, b],
     neg: [a], pos: [a], pow: [a, b],
     abs: [a], abs2: [a], exp: [b], log: [a], log10: [a],
@@ -200,13 +200,13 @@ test('evaluateExprN: every scalar primitive dispatches via ARITH_OPS_N', () => {
 
   for (const op of Object.keys(cases)) {
     const args = cases[op].map((_: any, i: any) => ({ kind: 'ref', ns: 'self', name: `_p${i}` }));
-    const refArrays = {};
+    const refArrays: any = {};
     cases[op].forEach((arr: any, i: any) => { refArrays[`_p${i}`] = arr; });
     const ir = { kind: 'call', op, args };
     let r;
     try {
       r = sampler.evaluateExprN(ir, refArrays, 1, {});
-    } catch (e) {
+    } catch (e: any) {
       assert.fail(`scalar prim '${op}' dispatch failed: ${e.message}`);
     }
     assert.ok(r && r.BYTES_PER_ELEMENT && r.length === 1,

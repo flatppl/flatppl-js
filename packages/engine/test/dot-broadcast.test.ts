@@ -47,7 +47,7 @@ function lowerExpr(expr: any) {
 function stripLoc(x: any) {
   if (Array.isArray(x)) return x.map(stripLoc);
   if (x && typeof x === 'object') {
-    const o = {};
+    const o: any = {};
     for (const k of Object.keys(x)) if (k !== 'loc') o[k] = stripLoc(x[k]);
     return o;
   }
