@@ -9,12 +9,12 @@ const assert = require('node:assert/strict');
 
 const { processSource, types: T } = require('..');
 
-function infer(src) {
+function infer(src: any) {
   const { bindings, diagnostics } = processSource(src);
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   return { bindings, errors };
 }
-function typeOf(bindings, name) {
+function typeOf(bindings: any, name: any) {
   return bindings.get(name).inferredType;
 }
 
@@ -198,7 +198,7 @@ test('joint: a value-typed kwarg is a structural error', () => {
     x = draw(a)
     j = joint(p = a, q = x)
   `);
-  assert.ok(errors.some(e => /joint kwarg "q" expects a measure/.test(e.message)));
+  assert.ok(errors.some((e: any) => /joint kwarg "q" expects a measure/.test(e.message)));
 });
 
 // =====================================================================
@@ -274,7 +274,7 @@ test('arithmetic: shape mismatch is a diagnostic', () => {
     ys = [1.0, 2.0]
     out = xs + ys
   `);
-  assert.ok(errors.some(e => /not numerically compatible/.test(e.message)));
+  assert.ok(errors.some((e: any) => /not numerically compatible/.test(e.message)));
 });
 
 test('arithmetic: comparisons return boolean of the broadcast shape', () => {
@@ -325,7 +325,7 @@ test('iid: non-measure first arg is a type error', () => {
   const { errors } = infer(`
     obs_dist = iid(1.0, 10)
   `);
-  assert.ok(errors.some(e => /iid: arg 1 expects a measure/.test(e.message)));
+  assert.ok(errors.some((e: any) => /iid: arg 1 expects a measure/.test(e.message)));
 });
 
 test('elementof(cartprod): kwargs form → record', () => {
@@ -422,7 +422,7 @@ test('multi-LHS rand: each name gets the projected element type', () => {
     random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
   `);
   // Type errors break the whole spec example, so guard hard.
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
 
   const rstate = loweredModule.bindings.get('rstate');
@@ -462,7 +462,7 @@ test('multi-LHS rand: chained rand calls keep type+phase consistent', () => {
     random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
     more_random_data, rstate3 = rand(rstate2, iid(Exponential(1), 5))
   `);
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
 
   // All bindings fixed-phase per spec: "If their inputs have fixed
@@ -478,7 +478,7 @@ test('multi-LHS tuple literal: each name gets the element type', () => {
   const { loweredModule, diagnostics } = processSource(`
     a, b = (1, 2.5)
   `);
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
 
   const a = loweredModule.bindings.get('a');
@@ -502,7 +502,7 @@ test('multi-LHS preserves disintegrate semantics (no tuple_get rewrite)', () => 
   `);
   // No type-system errors involving tuple_get — the multi-LHS
   // rewriter must NOT touch disintegrate result bindings.
-  const tupleGetErrs = diagnostics.filter(d =>
+  const tupleGetErrs = diagnostics.filter((d: any) =>
     d.severity === 'error' && /tuple_get/.test(d.message));
   assert.deepEqual(tupleGetErrs, [], 'disintegrate must not be rewritten as tuple_get');
   // Disintegrate bindings should not carry a tuple_get effectiveValue

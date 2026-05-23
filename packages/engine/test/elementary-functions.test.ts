@@ -8,9 +8,9 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-function lit(v)        { return { kind: 'lit', value: v }; }
-function call(op, ...args) { return { kind: 'call', op, args }; }
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+function lit(v: any)        { return { kind: 'lit', value: v }; }
+function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
 // =====================================================================
 // gamma / loggamma

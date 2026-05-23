@@ -24,7 +24,7 @@ const {
   isComplexValue,
 } = value;
 
-function reim(v) {
+function reim(v: any) {
   const c = readComplex(v);
   return [Array.from(c.re), Array.from(c.im)];
 }

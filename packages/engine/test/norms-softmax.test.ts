@@ -9,12 +9,12 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-function lit(v)        { return { kind: 'lit', value: v }; }
-function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
-function call(op, v)   { return { kind: 'call', op, args: [v] }; }
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+function lit(v: any)        { return { kind: 'lit', value: v }; }
+function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
+function call(op: any, v: any)   { return { kind: 'call', op, args: [v] }; }
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
-function arrClose(a, b, tol) {
+function arrClose(a: any, b: any, tol: any) {
   tol = tol == null ? 1e-12 : tol;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -93,7 +93,7 @@ test('softmax: uniform input ⇒ uniform output', () => {
 
 test('softmax: sums to 1', () => {
   const r = ev(call('softmax', vec(1.0, 2.0, 3.0, 0.5)));
-  const sum = r.reduce((s, v) => s + v, 0);
+  const sum = r.reduce((s: any, v: any) => s + v, 0);
   assert.ok(Math.abs(sum - 1) < 1e-12);
 });
 
@@ -107,7 +107,7 @@ test('logsoftmax: exp ∘ logsoftmax = softmax', () => {
   const v = vec(0.5, -1.0, 2.0, 0.25);
   const ls = ev(call('logsoftmax', v));
   const s  = ev(call('softmax', v));
-  const expLs = ls.map(x => Math.exp(x));
+  const expLs = ls.map((x: any) => Math.exp(x));
   assert.ok(arrClose(expLs, s, 1e-12));
 });
 

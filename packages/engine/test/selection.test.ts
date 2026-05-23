@@ -3,13 +3,13 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource, findEnclosingRanges } = require('../index.ts');
 
-function rangesAt(src, line, col) {
+function rangesAt(src: any, line: any, col: any) {
   const { ast } = processSource(src);
   return findEnclosingRanges(ast, line, col);
 }
 
-function spans(ranges) {
-  return ranges.map(r => `${r.start.line}:${r.start.col}-${r.end.line}:${r.end.col}`);
+function spans(ranges: any) {
+  return ranges.map((r: any) => `${r.start.line}:${r.start.col}-${r.end.line}:${r.end.col}`);
 }
 
 test('findEnclosingRanges: empty file returns empty array', () => {

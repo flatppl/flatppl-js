@@ -16,16 +16,16 @@ const density = require('../density.ts');
 
 // Convenience IR constructors — keeps the asserts focused on the
 // density math rather than IR plumbing.
-function lit(v)        { return { kind: 'lit', value: v }; }
-function refSelf(name) { return { kind: 'ref', ns: 'self', name }; }
-function Normal(mu, sigma) {
+function lit(v: any)        { return { kind: 'lit', value: v }; }
+function refSelf(name: any) { return { kind: 'ref', ns: 'self', name }; }
+function Normal(mu: any, sigma: any) {
   return { kind: 'call', op: 'Normal',
     kwargs: { mu: lit(mu), sigma: lit(sigma) } };
 }
-function Exponential(rate) {
+function Exponential(rate: any) {
   return { kind: 'call', op: 'Exponential', kwargs: { rate: lit(rate) } };
 }
-function callOp(op, args, fields) {
+function callOp(op: any, args: any, fields: any) {
   const ir = { kind: 'call', op };
   if (args)   ir.args   = args;
   if (fields) ir.fields = fields;
@@ -92,7 +92,7 @@ test('density: logweighted(-1, Normal) at 0 adds -1 directly (no log call)', () 
 
 test('density: truncate(Normal, posreals) at +0.5 keeps base density', () => {
   const ir = callOp('truncate', [Normal(0, 1), { kind: 'const', name: 'posreals' }]);
-  const opts = { parseSet: (setIR) => ({ kind: 'posreals' }) };
+  const opts = { parseSet: (setIR: any) => ({ kind: 'posreals' }) };
   const logp = density.logDensity(ir, 0.5, {}, opts);
   const expected = -0.5 * LOG_TWO_PI - 0.5 * 0.5 / 2;
   assert.ok(Math.abs(logp - expected) < 1e-12);
@@ -100,7 +100,7 @@ test('density: truncate(Normal, posreals) at +0.5 keeps base density', () => {
 
 test('density: truncate(Normal, posreals) at -0.5 returns -Infinity', () => {
   const ir = callOp('truncate', [Normal(0, 1), { kind: 'const', name: 'posreals' }]);
-  const opts = { parseSet: (setIR) => ({ kind: 'posreals' }) };
+  const opts = { parseSet: (setIR: any) => ({ kind: 'posreals' }) };
   const logp = density.logDensity(ir, -0.5, {}, opts);
   assert.equal(logp, -Infinity);
 });
@@ -211,12 +211,12 @@ test('density: weighted(c, iid(N, n)) propagates log(c) once', () => {
 //   log p(x) = logsumexp_k ( logw_k + log p_{branch_k}(x) )
 // =====================================================================
 
-function sel(branches, logweights) {
+function sel(branches: any, logweights: any) {
   const ir = { kind: 'call', op: 'select', branches };
   ir.logweights = logweights || null;
   return ir;
 }
-function nLogp(x, mu, sigma) {
+function nLogp(x: any, mu: any, sigma: any) {
   return -Math.log(sigma) - 0.5 * LOG_TWO_PI
     - (x - mu) * (x - mu) / (2 * sigma * sigma);
 }
@@ -317,7 +317,7 @@ test('density: select consumes one scalar (rest threads to sibling)', () => {
 test('density: measure ref dispatch via resolveMeasureRef opt', () => {
   const ir = callOp('joint', [refSelf('Mref'), Normal(0, 1)]);
   const opts = {
-    resolveMeasureRef: (name) => name === 'Mref' ? Normal(0, 1) : null,
+    resolveMeasureRef: (name: any) => name === 'Mref' ? Normal(0, 1) : null,
   };
   const logp = density.logDensity(ir, [0, 0], {}, opts);
   assert.ok(Math.abs(logp - 2 * STD_NORMAL_LOGP_AT_ZERO) < 1e-12);

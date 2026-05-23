@@ -41,7 +41,7 @@ const {
 
 // BigInt reference: slow but unambiguously correct. Used to check
 // mulhilo32 across many random inputs.
-function mulhilo32_bigint(a, b) {
+function mulhilo32_bigint(a: any, b: any) {
   const product = BigInt(a >>> 0) * BigInt(b >>> 0);
   return [
     Number((product >> 32n) & 0xffffffffn),
@@ -351,7 +351,7 @@ test('stream-vs-cipher equivalence: 100 stream values match 25 cipher blocks', (
 // content-addressed cache relies on.
 
 test('reproducibility: same seed → same stream, every time', () => {
-  function takeN(seed, n) {
+  function takeN(seed: any, n: any) {
     let state = seedFromBytes(seed);
     const out = [];
     for (let i = 0; i < n; i++) {

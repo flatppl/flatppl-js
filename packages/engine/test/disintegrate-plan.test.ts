@@ -16,7 +16,7 @@ const { disintegratePlan } = disintegrate;
 // Render a small AST node (the kernel/prior expressions returned in
 // 'synthesized' plans) to a canonical string so tests can assert on shape
 // without caring about loc info.
-function render(node) {
+function render(node: any) {
   if (!node) return '';
   switch (node.type) {
     case 'Identifier':    return node.name;
@@ -30,9 +30,9 @@ function render(node) {
   }
 }
 
-function planFor(src, bindingName) {
+function planFor(src: any, bindingName: any) {
   const { bindings, diagnostics } = processSource(src);
-  const errs = diagnostics.filter(d => d.severity === 'error');
+  const errs = diagnostics.filter((d: any) => d.severity === 'error');
   assert.equal(errs.length, 0, `errors: ${JSON.stringify(errs)}`);
   const b = bindings.get(bindingName);
   assert.ok(b, `no binding named ${bindingName}`);
@@ -148,7 +148,7 @@ joint_model = jointchain(prior, forward_kernel)
 fk, pr = disintegrate(["forward_kernel"], joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
-  const errs = diagnostics.filter(d => d.severity === 'error');
+  const errs = diagnostics.filter((d: any) => d.severity === 'error');
   assert.equal(errs.length, 0, `errors: ${JSON.stringify(errs)}`);
   // detectDisintegration only matches when each selector field appears in
   // namedOutputFields of some component. forward_kernel has no statically
@@ -271,7 +271,7 @@ const UNSUPPORTED_FIXTURE = path.join(__dirname, 'fixtures', 'disintegrate-unsup
 test('Unsupported fixture: parses cleanly and produces expected plan kinds', () => {
   const src = fs.readFileSync(UNSUPPORTED_FIXTURE, 'utf8');
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   // Synthesized: lawof(record(a=a, b=b)) selecting "b".
   assert.equal(bindings.get('fk_ok').disintegratePlan.kind, 'synthesized');
@@ -302,14 +302,14 @@ test('Unsupported fixture: dag node carries unsupported marker + reason', () => 
   // Resolved cases: no unsupported marker.
   for (const name of ['fk_ok', 'fk_del']) {
     const dag = computeSubDAG(bindings, name);
-    const root = dag.nodes.find(n => n.id === name);
+    const root = dag.nodes.find((n: any) => n.id === name);
     assert.ok(!root.unsupported, `${name} should not carry unsupported marker`);
   }
 
   // Unresolved cases: marker + reason present, surfaced for the renderer.
   for (const name of ['fk_chain', 'fk_lead']) {
     const dag = computeSubDAG(bindings, name);
-    const root = dag.nodes.find(n => n.id === name);
+    const root = dag.nodes.find((n: any) => n.id === name);
     assert.equal(root.unsupported, true, `${name} should carry unsupported marker`);
     assert.ok(root.unsupportedReason && root.unsupportedReason.length > 0,
       `${name} should carry a reason string`);
@@ -329,7 +329,7 @@ fk, pr = disintegrate(["a"], joint_model)
   const plan = planFor(src, 'fk');
   assert.equal(plan.kind, 'synthesized');
   // Walk plan.kernel and plan.prior; every node's loc should be synthetic.
-  function check(node) {
+  function check(node: any) {
     if (!node || typeof node !== 'object') return;
     if (node.loc) {
       assert.equal(node.loc.synthetic, true,

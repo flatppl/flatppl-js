@@ -340,7 +340,7 @@ const { paretoKHat, paretoKThreshold, importanceSamplingQuality,
 
 // Deterministic Pareto sampler: F⁻¹(u) = (1-u)^(-1/α) - 1 has shape
 // k̂ = 1/α for the GPD. Use an LCG for reproducibility.
-function paretoSamples(alpha, n, seed) {
+function paretoSamples(alpha: any, n: any, seed: any) {
   let s = (seed || 1) >>> 0;
   const out = new Float64Array(n);
   for (let i = 0; i < n; i++) {

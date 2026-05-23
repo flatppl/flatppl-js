@@ -27,7 +27,7 @@ function synthLoc() {
   return { start: { line: -1, col: -1 }, end: { line: -1, col: -1 }, synthetic: true };
 }
 
-function distIR(op, kwargs) {
+function distIR(op: any, kwargs: any) {
   const out = {};
   for (const [k, v] of Object.entries(kwargs)) {
     out[k] = { kind: 'lit', value: v, loc: synthLoc() };
@@ -35,7 +35,7 @@ function distIR(op, kwargs) {
   return { kind: 'call', op, kwargs: out, loc: synthLoc() };
 }
 
-function refIR(name) {
+function refIR(name: any) {
   return { kind: 'ref', ns: 'self', name, loc: synthLoc() };
 }
 
@@ -281,17 +281,17 @@ test('entry shim: full round-trip via worker_threads (init, sample, density, dis
   const worker = new Worker(entry);
 
   // Helper: send msg, await first reply matching id.
-  function rpc(msg) {
+  function rpc(msg: any) {
     return new Promise((resolve, reject) => {
       const id = (msg.id != null) ? msg.id : Math.floor(Math.random() * 1e9);
       const wrapped = { ...msg, id };
-      const onMsg = (reply) => {
+      const onMsg = (reply: any) => {
         if (reply.id !== id) return;
         worker.off('message', onMsg);
         worker.off('error', onErr);
         resolve(reply);
       };
-      const onErr = (e) => {
+      const onErr = (e: any) => {
         worker.off('message', onMsg);
         worker.off('error', onErr);
         reject(e);
@@ -587,14 +587,14 @@ test('logDensityN: joint observed clamps per-field, sums logpdfs', () => {
 // the runtime evaluator is shared.
 // =====================================================================
 
-function unaryOpIR(op, x) {
+function unaryOpIR(op: any, x: any) {
   return {
     kind: 'call', op,
     args: [{ kind: 'lit', value: x, loc: synthLoc() }],
     loc: synthLoc(),
   };
 }
-function binaryOpIR(op, a, b) {
+function binaryOpIR(op: any, a: any, b: any) {
   return {
     kind: 'call', op,
     args: [
@@ -646,7 +646,7 @@ test('eval ops: logic ops (land / lor / lxor / lnot)', () => {
 
 test('eval ops: ifelse picks the right branch', () => {
   const w = createWorkerHandler();
-  const ir = (cond, a, b) => ({
+  const ir = (cond: any, a: any, b: any) => ({
     kind: 'call', op: 'ifelse',
     args: [
       { kind: 'lit', value: cond, loc: synthLoc() },
@@ -691,14 +691,14 @@ test('eval ops: mod / abs2', () => {
 // numerical correctness of var (population), and edge cases.
 // =====================================================================
 
-function vectorOfLits(values) {
+function vectorOfLits(values: any) {
   return {
     kind: 'call', op: 'vector',
-    args: values.map(v => ({ kind: 'lit', value: v, loc: synthLoc() })),
+    args: values.map((v: any) => ({ kind: 'lit', value: v, loc: synthLoc() })),
     loc: synthLoc(),
   };
 }
-function reductionIR(op, values) {
+function reductionIR(op: any, values: any) {
   return {
     kind: 'call', op,
     args: [vectorOfLits(values)],
@@ -1007,7 +1007,7 @@ test('evaluateN: abs2 of a complex ref → real reply (no imag)', () => {
 
 test('evaluateN: spec §03 amplitude — abs2(A_sig*coupling + A_bkg)', () => {
   const w = createWorkerHandler();
-  const ref = (n) => ({ kind: 'ref', ns: 'self', name: n, loc: synthLoc() });
+  const ref = (n: any) => ({ kind: 'ref', ns: 'self', name: n, loc: synthLoc() });
   const ir = {
     kind: 'call', op: 'abs2',
     args: [{

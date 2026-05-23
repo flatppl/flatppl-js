@@ -13,9 +13,9 @@ const assert = require('node:assert/strict');
 const sampler = require('../sampler.ts');
 const { processSource, orchestrator } = require('..');
 
-const lit = (v) => ({ kind: 'lit', value: v });
-const get = (op, c, ...sel) => ({ kind: 'call', op, args: [lit(c), ...sel] });
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+const lit = (v: any) => ({ kind: 'lit', value: v });
+const get = (op: any, c: any, ...sel: any[]) => ({ kind: 'call', op, args: [lit(c), ...sel] });
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
 test('get: 1-based element, multi-dim, all-slice, subset, record', () => {
   assert.equal(ev(get('get', [10, 20, 30], lit(2))), 20);

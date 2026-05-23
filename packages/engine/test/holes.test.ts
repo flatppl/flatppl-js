@@ -3,8 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
 
-function errors(src) {
-  return processSource(src).diagnostics.filter(d => d.severity === 'error');
+function errors(src: any) {
+  return processSource(src).diagnostics.filter((d: any) => d.severity === 'error');
 }
 
 // --- Hole (_) ---
@@ -19,18 +19,18 @@ test('hole: multiple holes inside fn(...) all valid', () => {
 
 test('hole: error when used outside fn', () => {
   const errs = errors('x = _ + 1\n');
-  assert.ok(errs.some(d => /Hole.*fn/.test(d.message)));
+  assert.ok(errs.some((d: any) => /Hole.*fn/.test(d.message)));
 });
 
 test('hole: error when used inside functionof', () => {
   // _ is hole-only-in-fn; placeholder _x_ is for functionof
   const errs = errors('f = functionof(_ * 2, x = _x_)\n');
-  assert.ok(errs.some(d => /Hole.*fn/.test(d.message)));
+  assert.ok(errs.some((d: any) => /Hole.*fn/.test(d.message)));
 });
 
 test('hole: error when used inside kernelof', () => {
   const errs = errors('m = kernelof(_, x = _x_)\n');
-  assert.ok(errs.some(d => /Hole.*fn/.test(d.message)));
+  assert.ok(errs.some((d: any) => /Hole.*fn/.test(d.message)));
 });
 
 test('hole: nested fn — inner fn redefines the hole scope', () => {
@@ -50,13 +50,13 @@ test('placeholder: valid inside kernelof', () => {
 
 test('placeholder: error when used outside reification', () => {
   const errs = errors('x = _par_ * 2\n');
-  assert.ok(errs.some(d => /Placeholder.*functionof.*kernelof/.test(d.message)));
+  assert.ok(errs.some((d: any) => /Placeholder.*functionof.*kernelof/.test(d.message)));
 });
 
 test('placeholder: error when used inside fn', () => {
   // fn allows holes only, not placeholders.
   const errs = errors('f = fn(_par_ + _)\n');
-  assert.ok(errs.some(d => /Placeholder.*functionof.*kernelof/.test(d.message)));
+  assert.ok(errs.some((d: any) => /Placeholder.*functionof.*kernelof/.test(d.message)));
 });
 
 // --- LHS underscore is fine (not a hole or placeholder per parser) ---

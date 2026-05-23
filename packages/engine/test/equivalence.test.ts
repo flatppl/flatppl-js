@@ -29,7 +29,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 1024;
 const ROOT_SEED    = 12345;
 
-function makeCtx(source) {
+function makeCtx(source: any) {
   const lifted = processSource(source);
   const built = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -39,26 +39,26 @@ function makeCtx(source) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => Promise.resolve(worker.handle(msg)),
+    sendWorker:  (msg: any) => Promise.resolve(worker.handle(msg)),
     sampleCount: SAMPLE_COUNT,
     rootSeed:    ROOT_SEED,
   };
   return ctx;
 }
 
-function mean(arr) {
+function mean(arr: any) {
   let s = 0;
   for (let i = 0; i < arr.length; i++) s += arr[i];
   return s / arr.length;
 }
 
-function variance(arr) {
+function variance(arr: any) {
   const m = mean(arr);
   let s = 0;
   for (let i = 0; i < arr.length; i++) {

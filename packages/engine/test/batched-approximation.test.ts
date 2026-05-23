@@ -15,11 +15,11 @@ const assert = require('node:assert/strict');
 const sampler = require('../sampler.ts');
 const valueLib = require('..').value;
 
-const lit = v => ({ kind: 'lit', value: v });
-const ref = n => ({ kind: 'ref', ns: 'self', name: n });
-const litArr = arr => ({ kind: 'call', op: 'vector', args: arr.map(lit) });
+const lit = (v: any) => ({ kind: 'lit', value: v });
+const ref = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
+const litArr = (arr: any) => ({ kind: 'call', op: 'vector', args: arr.map(lit) });
 
-function close(a, b, tol) {
+function close(a: any, b: any, tol: any) {
   tol = tol == null ? 1e-12 : tol;
   return Math.abs(a - b) <= tol;
 }

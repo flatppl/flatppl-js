@@ -11,9 +11,9 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-function lit(v)   { return { kind: 'lit', value: v }; }
-function vec(...vs) { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
-function call(op, kwargs) { return { kind: 'call', op, kwargs }; }
+function lit(v: any)   { return { kind: 'lit', value: v }; }
+function vec(...vs: any[]) { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
+function call(op: any, kwargs: any) { return { kind: 'call', op, kwargs }; }
 
 // =====================================================================
 // polynomial: Σ a_i · x^i (power-series basis)
@@ -189,10 +189,10 @@ test('bincounts: rejects multi-dimensional binning (record bins)', () => {
 // selectbins: keep counts for bins whose interval intersects region
 // =====================================================================
 
-function interval(lo, hi) {
+function interval(lo: any, hi: any) {
   return { kind: 'call', op: 'interval', args: [lit(lo), lit(hi)] };
 }
-function constSet(name) { return { kind: 'const', name }; }
+function constSet(name: any) { return { kind: 'const', name }; }
 
 test('selectbins: interior region keeps only intersecting bins', () => {
   // edges [0, 1, 2, 3, 4] → bins [0,1] [1,2] [2,3] [3,4]

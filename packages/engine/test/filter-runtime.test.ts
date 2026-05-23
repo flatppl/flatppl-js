@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
 const orchestrator = require('../orchestrator.ts');
 
-function buildFixed(source) {
+function buildFixed(source: any) {
   const lifted = processSource(source);
   return orchestrator.buildDerivations(lifted.bindings);
 }
