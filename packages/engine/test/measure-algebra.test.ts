@@ -248,7 +248,7 @@ function materialise(name: any, bindings: any, opts?: any) {
         // weights — we materialise each component (unifying their
         // weight arrays via materialiseUniform) and sum log-weights
         // index-aligned. Uniform components contribute -log(N) each.
-        const fields = {};
+        const fields: any = {};
         const componentArrays = [];
         for (const fname in d.fields) {
           const sub = go(d.fields[fname]);
@@ -299,7 +299,7 @@ function materialise(name: any, bindings: any, opts?: any) {
 
   function collectRefArrays(ir: any) {
     const refs = orchestrator.collectSelfRefs(ir);
-    const out = {};
+    const out: any = {};
     refs.forEach((n: any) => { out[n] = go(n).samples; });
     return out;
   }

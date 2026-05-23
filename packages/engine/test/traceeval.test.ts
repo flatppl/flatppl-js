@@ -17,7 +17,7 @@ const rng = require('../rng.ts');
 const lit  = (v: any) => ({ kind: 'lit', value: v });
 const ref  = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
 const dist = (op: any, kwargs: any) => {
-  const out = {};
+  const out: any = {};
   for (const [k, v] of Object.entries(kwargs)) out[k] = (typeof v === 'object' && v !== null && v.kind) ? v : lit(v);
   return { kind: 'call', op, kwargs: out };
 };

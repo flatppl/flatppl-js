@@ -23,7 +23,7 @@ const rng = require('../rng.ts');
 // Helper: build a distribution call IR from a name + kwargs (numeric values
 // only, lifted to lit nodes).
 function distIR(op: any, kwargs: any) {
-  const out = {};
+  const out: any = {};
   for (const [k, v] of Object.entries(kwargs)) {
     out[k] = { kind: 'lit', value: v, loc: synthLoc() };
   }
@@ -228,7 +228,7 @@ test('rand: arithmetic in parameters is resolved', () => {
 });
 
 test('rand: throws on unbound ref', () => {
-  const ir = distIR('Normal', { mu: 0, sigma: 1 });
+  const ir: any = distIR('Normal', { mu: 0, sigma: 1 });
   ir.kwargs.mu = refIR('not_in_env');
   const state = rng.seedFromBytes([1]);
   assert.throws(
@@ -449,7 +449,7 @@ test('makeParametricSampler: factory built once across many draws', () => {
   const N = 50_000;
   const state = rng.stateFromKey(123);
   const s = sampler.makeParametricSampler(state, ir);
-  const env = {};
+  const env: any = {};
   const t0 = Date.now();
   for (let i = 0; i < N; i++) {
     env.mu = i * 0.001;
@@ -472,7 +472,7 @@ test('makeParametricSampler: factory built once across many draws', () => {
 
 function lit(v: any)   { return { kind: 'lit', value: v, loc: synthLoc() }; }
 function call(op: any, args: any, kwargs?: any) {
-  const out = { kind: 'call', op, loc: synthLoc() };
+  const out: any = { kind: 'call', op, loc: synthLoc() };
   if (args && args.length)             out.args   = args;
   if (kwargs && Object.keys(kwargs).length) out.kwargs = kwargs;
   return out;

@@ -28,7 +28,7 @@ function synthLoc() {
 }
 
 function distIR(op: any, kwargs: any) {
-  const out = {};
+  const out: any = {};
   for (const [k, v] of Object.entries(kwargs)) {
     out[k] = { kind: 'lit', value: v, loc: synthLoc() };
   }
@@ -303,15 +303,15 @@ test('entry shim: full round-trip via worker_threads (init, sample, density, dis
   }
 
   try {
-    const ready = await rpc({ type: 'init', seed: 99 });
+    const ready: any = await rpc({ type: 'init', seed: 99 });
     assert.equal(ready.type, 'ready');
 
-    const samples = await rpc({ type: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 25 });
+    const samples: any = await rpc({ type: 'sample', ir: distIR('Normal', { mu: 0, sigma: 1 }), count: 25 });
     assert.equal(samples.type, 'samples');
     assert.equal(samples.samples.length, 25);
     assert.ok(samples.samples instanceof Float64Array);
 
-    const dens = await rpc({ type: 'density', ir: distIR('Exponential', { rate: 2 }) });
+    const dens: any = await rpc({ type: 'density', ir: distIR('Exponential', { rate: 2 }) });
     assert.equal(dens.type, 'density');
     assert.equal(dens.reference, 'lebesgue');
     assert.ok(dens.xs.length > 0);
@@ -893,7 +893,7 @@ test('entry shim: error replies survive postMessage', async () => {
   const entry = join(__dirname, '..', 'worker-entry.ts');
   const worker = new Worker(entry);
   try {
-    const reply = await new Promise((resolve, reject) => {
+    const reply: any = await new Promise((resolve, reject) => {
       worker.once('message', resolve);
       worker.once('error', reject);
       worker.postMessage({ type: 'banana', id: 42 });

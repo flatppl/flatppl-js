@@ -173,7 +173,7 @@ function loadMinimal(file: any) {
 
 function userBindings(parsed: any) {
   // Skip anonymous lift-introduced names; we care about user bindings.
-  const out = {};
+  const out: any = {};
   for (const [n, b] of parsed.bindings) {
     if (n.startsWith('__anon')) continue;
     out[n] = { type: b.type, phase: b.phase,
@@ -291,7 +291,7 @@ test('integration: minimal — phases line up with what the model semantics impl
     kernel_input: 'fixed',
     dist:         'fixed',
   };
-  const actual = {};
+  const actual: any = {};
   for (const k in expected) actual[k] = bindings.get(k) && bindings.get(k).phase;
   assert.deepEqual(actual, expected);
 });
