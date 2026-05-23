@@ -18,7 +18,7 @@ const lit  = (v: any) => ({ kind: 'lit', value: v });
 const ref  = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
 const dist = (op: any, kwargs: any) => {
   const out: any = {};
-  for (const [k, v] of Object.entries(kwargs)) out[k] = (typeof v === 'object' && v !== null && v.kind) ? v : lit(v);
+  for (const [k, v] of Object.entries(kwargs)) out[k] = (typeof v === 'object' && v !== null && (v as any).kind) ? v : lit(v);
   return { kind: 'call', op, kwargs: out };
 };
 const joint = (fields: any) => ({

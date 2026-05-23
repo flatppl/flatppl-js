@@ -16,7 +16,7 @@ const { disintegratePlan } = disintegrate;
 // Render a small AST node (the kernel/prior expressions returned in
 // 'synthesized' plans) to a canonical string so tests can assert on shape
 // without caring about loc info.
-function render(node: any) {
+function render(node: any): any {
   if (!node) return '';
   switch (node.type) {
     case 'Identifier':    return node.name;

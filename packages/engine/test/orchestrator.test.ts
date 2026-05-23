@@ -1015,7 +1015,7 @@ result = f(v)
     seen.add(n);
     const b = bindings.get(n);
     if (!b || !b.ir) continue;
-    const refs = new Set();
+    const refs: Set<any> = new Set();
     walkRefs(b.ir, refs);
     for (const r of refs) {
       // Implicit substitution should have replaced `mu` everywhere
@@ -1057,7 +1057,7 @@ y = f(x)
     seen.add(n);
     const b = bindings.get(n);
     if (!b || !b.ir) continue;
-    const refs = new Set();
+    const refs: Set<any> = new Set();
     walkRefs(b.ir, refs);
     for (const r of refs) {
       assert.notEqual(r, 'a',

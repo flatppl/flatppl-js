@@ -44,7 +44,7 @@ function lowerExpr(expr: any) {
 // Structural IR equality, ignoring source `loc` (differing column
 // offsets between sugar and its explicit form are expected and
 // irrelevant — only the lowered structure must match).
-function stripLoc(x: any) {
+function stripLoc(x: any): any {
   if (Array.isArray(x)) return x.map(stripLoc);
   if (x && typeof x === 'object') {
     const o: any = {};
