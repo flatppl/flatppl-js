@@ -29,7 +29,7 @@ const sampler = require('../sampler.ts');
 const { scalar, vector, matrix, transpose, adjoint, getTag } = valueLib;
 const { ARITH_OPS } = sampler._internal;
 
-function close(a: any, b: any, tol: any) {
+function close(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
   return Math.abs(a - b) <= tol;
 }

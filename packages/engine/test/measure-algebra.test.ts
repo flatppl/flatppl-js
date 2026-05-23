@@ -108,7 +108,7 @@ function makeMainThreadPrng(seed: any) {
  * @param {Map}    bindings
  * @param {{ rootSeed?: number, sampleCount?: number, cache?: Map }} [opts]
  */
-function materialise(name: any, bindings: any, opts: any) {
+function materialise(name: any, bindings: any, opts?: any) {
   opts = opts || {};
   const rootSeed     = opts.rootSeed    != null ? opts.rootSeed    : 12345;
   const sampleCount  = opts.sampleCount != null ? opts.sampleCount : SAMPLE_COUNT;
