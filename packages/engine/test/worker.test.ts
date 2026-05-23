@@ -714,9 +714,9 @@ test('reductions: sum / mean / prod over a literal array', () => {
   assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('prod', xs), count: 1 }).samples[0], 24);
 });
 
-test('reductions: length over a literal array', () => {
+test('reductions: lengthof over a literal array', () => {
   const w = createWorkerHandler();
-  const r = w.handle({ type: 'evaluateN', ir: reductionIR('length', [10, 20, 30, 40, 50]), count: 1 });
+  const r = w.handle({ type: 'evaluateN', ir: reductionIR('lengthof', [10, 20, 30, 40, 50]), count: 1 });
   assert.equal(r.samples[0], 5);
 });
 

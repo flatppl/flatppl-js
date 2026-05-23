@@ -59,11 +59,11 @@ test('sum: works on Value just like on Float64Array', () => {
   assert.equal(ARITH_OPS.sum([1, 2, 3, 4]), 10);
 });
 
-test('mean / prod / length on Value', () => {
+test('mean / prod / lengthof on Value', () => {
   const v = valueLib.vector([2, 4, 6, 8]);
   assert.equal(ARITH_OPS.mean(v), 5);
   assert.equal(ARITH_OPS.prod(v), 384);
-  assert.equal(ARITH_OPS.length(v), 4);
+  assert.equal(ARITH_OPS.lengthof(v), 4);
 });
 
 test('maximum / minimum on Value', () => {
@@ -177,12 +177,12 @@ mx = maximum(xs)
   }
 });
 
-test('Phase 7b: length on vector-atom returns dim per atom', async () => {
+test('Phase 7b: lengthof on vector-atom returns dim per atom', async () => {
   // Each atom's intrinsic length is the dims size — 5 in this case.
   // The reduction gives a scalar per atom; broadcast to all atoms.
   const ctx = makeCtx(`
 xs = iid(Normal(mu=0.0, sigma=1.0), 5)
-n = length(xs)
+n = lengthof(xs)
 `);
   const m = await ctx.getMeasure('n');
   for (let i = 0; i < SAMPLE_COUNT; i++) assert.equal(m.samples[i], 5);

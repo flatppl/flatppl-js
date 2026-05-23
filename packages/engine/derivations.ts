@@ -1071,9 +1071,21 @@ function classifyIid(rhsIR: IRNode, ast: any, bindings: any): DerivationIid | nu
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
+  // New spec: iid(M, size) where size is a positive int or vector of
+  // positive ints. Legacy form accepts variadic positional ints. The
+  // single-vector-literal case (lowered as `vector(...)` IRCall) is
+  // unpacked into per-axis dims.
   const dims: number[] = [];
-  for (let i = 1; i < rhsIR.args.length; i++) {
-    const n = resolveConstant(rhsIR.args[i], bindings, new Set());
+  const tail = rhsIR.args.slice(1);
+  let nodes: IRNode[] = tail;
+  if (tail.length === 1
+    && tail[0].kind === 'call'
+    && (tail[0] as any).op === 'vector'
+    && Array.isArray((tail[0] as any).args)) {
+    nodes = (tail[0] as any).args;
+  }
+  for (const node of nodes) {
+    const n = resolveConstant(node, bindings, new Set());
     if (n == null || !Number.isInteger(n) || n <= 0) return null;
     dims.push(n);
   }

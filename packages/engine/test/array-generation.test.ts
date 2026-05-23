@@ -100,8 +100,8 @@ test('fill(x, n) ⇒ length-n array of x', () => {
   assert.deepEqual(ev(call('fill', lit(3), lit(4))), [3, 3, 3, 3]);
 });
 
-test('fill(x, n, m) ⇒ n × m nested array', () => {
-  assert.deepEqual(ev(call('fill', lit(0), lit(2), lit(3))),
+test('fill(x, [n, m]) ⇒ n × m nested array', () => {
+  assert.deepEqual(ev(call('fill', lit(0), call('vector', lit(2), lit(3)))),
     [[0, 0, 0], [0, 0, 0]]);
 });
 
@@ -111,8 +111,8 @@ test('zeros(n) ⇒ vector of zeros; ones(n) ⇒ vector of ones', () => {
 });
 
 test('zeros / ones: multi-dimensional', () => {
-  assert.deepEqual(ev(call('zeros', lit(2), lit(2))), [[0, 0], [0, 0]]);
-  assert.deepEqual(ev(call('ones',  lit(2), lit(2))), [[1, 1], [1, 1]]);
+  assert.deepEqual(ev(call('zeros', call('vector', lit(2), lit(2)))), [[0, 0], [0, 0]]);
+  assert.deepEqual(ev(call('ones',  call('vector', lit(2), lit(2)))), [[1, 1], [1, 1]]);
 });
 
 test('eye(n) ⇒ n × n identity (vector-backed diag structure)', () => {
