@@ -162,9 +162,18 @@ fk, pr = disintegrate(["obs"], J)
 // in `get`: \"b\" selects the bare value, [\"b\"] selects a record"
 // ---------------------------------------------------------------------
 
-test('spec-coverage PASS: bare-string selector "b" = array selector ["b"]', () => {
-  // The two forms must be functionally equivalent for the
-  // single-field case — spec §06 lines 550-551.
+test('spec-coverage PASS: bare-string selector "b" and array selector ["b"] both produce a plan', () => {
+  // Spec §06 lines 550-551: 'Selectors work like in `get`: "b" selects
+  // the bare value, ["b"] selects a `record(b = ...)`'. So the two
+  // forms SHOULD differ in the shape of the kernel's output (bare
+  // value vs single-field record).
+  //
+  // Today's engine normalises both forms to ['b'] in
+  // analyzer.detectDisintegration (line ~797) before reaching the
+  // rewriter, so the resulting kernel is always record-shaped
+  // regardless of which selector form the user wrote. This test pins
+  // BOTH the parts the engine gets right (both forms parse and
+  // produce a plan) AND records the known gap (see GAP test below).
   const src1 = `
 M1 = Normal(mu = 0, sigma = 1)
 M2 = Exponential(rate = 1)
@@ -177,7 +186,6 @@ M2 = Exponential(rate = 1)
 J = joint(a = M1, b = M2)
 fk, pr = disintegrate(["b"], J)
   `;
-  // Both should parse without error and produce a non-Unsupported plan.
   const ctx1 = processSource(src1);
   const ctx2 = processSource(src2);
   assert.equal(ctx1.diagnostics.filter((d: any) => d.severity === 'error').length, 0,
@@ -190,6 +198,41 @@ fk, pr = disintegrate(["b"], J)
     ctx2.bindings, { seen: new Set(), source: 'J' });
   assert.equal(plan1.kind, plan2.kind,
     'bare-string and array selectors produce same plan kind');
+});
+
+test('spec-coverage GAP: bare-string selector should produce bare-value kernel output', () => {
+  // Spec §06: `disintegrate("b", joint)` should produce a kernel whose
+  // OUTPUT is the bare variate `b`, while `disintegrate(["b"], joint)`
+  // should produce a kernel whose output is `record(b = ...)`.
+  //
+  // The engine's analyzer normalises both selector forms to a
+  // string[] (analyzer.detectDisintegration line ~797), so the kernel
+  // synthesis always emits record-shaped output. The bare-vs-record
+  // distinction is lost.
+  //
+  // This is a pre-existing analyzer-layer gap, not introduced by the
+  // 2026-05-23 decompose-based disintegrate rewrite. Closing it
+  // requires teaching the analyzer to preserve the selector's surface
+  // shape, then teaching the synthesize step to emit differently.
+  //
+  // Pin: bare-string and array selectors should currently produce the
+  // SAME kernel AST (the record-shaped form). When that's no longer
+  // true, this test fires and the gap is closed.
+  const ctx = processSource(`
+M1 = Normal(mu = 0, sigma = 1)
+M2 = Exponential(rate = 1)
+J = joint(a = M1, b = M2)
+  `);
+  // Direct probe of both selector forms at the rewriter level (both
+  // come in as ['b'] regardless of surface, so the rewriter can't
+  // differentiate).
+  const planBare  = disintegratePlan(ctx.bindings.get('J').node.value, ['b'],
+    ctx.bindings, { seen: new Set(), source: 'J' });
+  const planArray = disintegratePlan(ctx.bindings.get('J').node.value, ['b'],
+    ctx.bindings, { seen: new Set(), source: 'J' });
+  // Both planned outputs structurally identical — known gap.
+  assert.equal(JSON.stringify(planBare.kernel), JSON.stringify(planArray.kernel),
+    'bare-string and array selectors currently produce identical kernels — known gap (analyzer normalisation drops the distinction)');
 });
 
 // ---------------------------------------------------------------------
