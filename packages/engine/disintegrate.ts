@@ -606,14 +606,24 @@ function partitionVariates(decomp: Decomposition, selector: string[], node: any)
 // constructed without integration — the selected value would need to be
 // available when sampling the unselected.) The chain-suffix constraint
 // for jointchain follows from this as a special case.
+//
+// For jointchain shapes the dependency encoding is **conservative**:
+// each variate is taken to depend on ALL prior variates (matching the
+// chain's "all-previous-fields available as inputs" semantics, even
+// when a particular kernel doesn't actually read all of them). A more
+// precise analysis — inspecting each kernel's formal kwargs to see
+// which prior fields it really uses — is feasible at admissibility
+// time but would require a synthesis-side counterpart to narrow the
+// kernel's boundary inputs per its actual formals; without that, the
+// kernel-side wrap (`kernelof(<kernel>, ...)`) tries to lawof a
+// kernel-typed body and the typechecker rejects it. Deferred — the
+// audit pins the non-suffix case as Unsupported. See TODO-flatppl-js
+// "Architectural cleanups" §3a.
 function admissibilityCheck(decomp: Decomposition, partition: Partition, node: any): { ok: true } | { kind: 'unsupported', reason: string, blockingNode: any, detail?: string } {
   const selectedNames = new Set(partition.selected.map(v => v.name));
   for (const u of partition.unselected) {
     for (const dep of u.deps) {
       if (selectedNames.has(dep)) {
-        // Pinpoint the blocking node — for lawof-record we have the
-        // original record entry, for jointchain the chain-component
-        // expression. Use u.expr as the closest available locus.
         return unsupported(
           decomp.kind === 'jointchain'
             ? 'selector does not pick a contiguous suffix of the chain — non-suffix disintegration of a chain is not structural'
