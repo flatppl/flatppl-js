@@ -586,8 +586,17 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
 
   // 'lawof' is the dual of 'draw' for our purposes: lawof(<ref>) is
   // the measure that ref's variate is drawn from, so its samples
-  // coincide with the ref's samples. lawof(<complex expr>) (e.g.
-  // lawof(record(...))) is multivariate and unplottable today.
+  // coincide with the ref's samples.
+  //
+  // The binding.type === 'lawof' tag identifies surface-level
+  // lawof(...) bindings AND `disintegrate(...)` result prior bindings
+  // (the analyzer tags both with type='lawof' in pass 3). The
+  // disintegrate-result prior's effective RHS may be a non-lawof
+  // measure expression — e.g. `joint(inner = inner)` synthesised
+  // by the joint-shape decomposition. So when the IR isn't a
+  // straight lawof, fall through to the MEASURE_OP_CLASSIFIERS
+  // dispatch (joint, jointchain, etc.) below so the prior gets the
+  // appropriate derivation kind.
   if (binding.type === 'lawof') {
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'lawof'
         && rhsIR.args && rhsIR.args.length === 1) {
@@ -595,11 +604,13 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
       if (arg.kind === 'ref' && arg.ns === 'self' && bindings.has(arg.name)) {
         return { kind: 'alias', from: arg.name };
       }
+      // lawof(<non-ref>) — falls through to the generic dispatch.
     }
-    return null;
+    // Fall through to MEASURE_OP_CLASSIFIERS for non-lawof IR shapes
+    // produced by disintegrate's effective-value rewrite.
   }
 
-  if (binding.type === 'call' || binding.type === 'literal') {
+  if (binding.type === 'call' || binding.type === 'literal' || binding.type === 'lawof') {
     // Canonicalise lawof / positional-Dirac before the SAMPLEABLE
     // check, so e.g. `m = Dirac(observed_data)` (positional) and
     // `m = lawof(some_value_binding)` (with value_binding fixed)
