@@ -142,7 +142,7 @@ test('broadcast(Normal,…) closed-form: per-element var + independence', async 
     'mu = [0.0, 0.0, 0.0]\n' +
     'sg = [1.0, 3.0, 0.5]\n' +
     'r ~ broadcast(Normal, mu, sg)\n', 'r', N);
-  const mean = [0, 0, 0], col = [[], [], []];
+  const mean = [0, 0, 0], col: any[][] = [[], [], []];
   for (let i = 0; i < N; i++) for (let j = 0; j < K; j++) {
     const x = m.samples[i * K + j]; col[j].push(x); mean[j] += x / N;
   }

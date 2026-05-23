@@ -119,7 +119,7 @@ function materialise(name: any, bindings: any, opts?: any) {
   const { derivations } = orchestrator.buildDerivations(bindings);
   return go(name);
 
-  function go(name: any) {
+  function go(name: any): any {
     if (cache.has(name)) return cache.get(name);
     const d = derivations[name];
     if (!d) throw new Error(`no derivation for '${name}'`);

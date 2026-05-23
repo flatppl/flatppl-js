@@ -146,7 +146,7 @@ test('walkCalls: visits every call depth-first, post-order', () => {
     y = Normal(mu = x + 2, sigma = 1)
   `);
   const r = m.bindings.get('y').rhs;
-  const visited = [];
+  const visited: any[] = [];
   pir.walkCalls(r, (c: any) => visited.push(c.op));
   // add (inner) before Normal (outer)
   assert.deepEqual(visited, ['add', 'Normal']);

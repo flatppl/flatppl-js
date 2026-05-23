@@ -611,7 +611,7 @@ test('eval ops: comparison ops produce booleans cast to numbers', () => {
   // downstream code that uses the value as a boolean (ifelse,
   // logical ops) does the typecast back implicitly.
   const w = createWorkerHandler();
-  const cases = [
+  const cases: any[] = [
     ['lt',      [1, 2], 1],  ['lt',      [2, 1], 0],
     ['le',      [2, 2], 1],  ['le',      [3, 2], 0],
     ['gt',      [3, 2], 1],  ['gt',      [2, 3], 0],
@@ -627,7 +627,7 @@ test('eval ops: comparison ops produce booleans cast to numbers', () => {
 
 test('eval ops: logic ops (land / lor / lxor / lnot)', () => {
   const w = createWorkerHandler();
-  const cases = [
+  const cases: any[] = [
     ['land', [true,  true ], 1],  ['land', [true,  false], 0],
     ['land', [false, true ], 0],  ['land', [false, false], 0],
     ['lor',  [true,  false], 1],  ['lor',  [false, false], 0],
