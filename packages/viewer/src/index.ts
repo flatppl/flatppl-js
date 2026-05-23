@@ -11,16 +11,17 @@
 // the global merge below is explicit). Both packages/viewer/build.mjs
 // and packages/vscode-extension/build-vendor.mjs use this entry.
 
-// @ts-check
 import { mount } from './main.js';
 
-/** @type {FlatPPLViewerGlobal} */
 var FlatPPLViewer: FlatPPLViewerGlobal;
 if (typeof window !== 'undefined') {
   FlatPPLViewer = (window.FlatPPLViewer = window.FlatPPLViewer || {});
 } else if (typeof globalThis !== 'undefined') {
-  // @ts-ignore — globalThis is loosely typed without DOM lib here.
-  FlatPPLViewer = (globalThis.FlatPPLViewer = globalThis.FlatPPLViewer || {});
+  // globalThis isn't typed with FlatPPLViewer (the augmentation in
+  // types.d.ts targets Window only); cast through `any` so the
+  // non-browser branch compiles.
+  const gt = globalThis as any;
+  FlatPPLViewer = (gt.FlatPPLViewer = gt.FlatPPLViewer || {});
 } else {
   FlatPPLViewer = {};
 }
