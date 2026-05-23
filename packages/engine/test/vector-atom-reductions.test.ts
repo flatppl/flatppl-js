@@ -17,7 +17,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 16;
 const ROOT_SEED = 0xCAFE1234;
 
-function makeCtx(source) {
+function makeCtx(source: any) {
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -27,13 +27,13 @@ function makeCtx(source) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => {
+    sendWorker:  (msg: any) => {
       const reply = worker.handle(msg);
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);

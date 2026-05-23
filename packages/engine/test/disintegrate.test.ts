@@ -12,7 +12,7 @@ joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
 forward_kernel, prior = disintegrate(["obs"], joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   // Kernel result is a Markov kernel; prior result is a measure.
   assert.equal(bindings.get('forward_kernel').type, 'kernelof');
@@ -20,26 +20,26 @@ forward_kernel, prior = disintegrate(["obs"], joint_model)
 
   // forward_kernel sub-DAG: target=obs, boundaries=theta1, theta2
   const fk = computeSubDAG(bindings, 'forward_kernel');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   assert.ok(fkIds.has('forward_kernel'));
   assert.ok(fkIds.has('obs'));
   assert.ok(fkIds.has('theta1'));
   assert.ok(fkIds.has('theta2'));
   // theta1, theta2 must be boundaries
-  assert.equal(fk.nodes.find(n => n.id === 'theta1').isBoundary, true);
-  assert.equal(fk.nodes.find(n => n.id === 'theta2').isBoundary, true);
+  assert.equal(fk.nodes.find((n: any) => n.id === 'theta1').isBoundary, true);
+  assert.equal(fk.nodes.find((n: any) => n.id === 'theta2').isBoundary, true);
   // forward_kernel must be the target
-  assert.equal(fk.nodes.find(n => n.id === 'forward_kernel').isTarget, true);
+  assert.equal(fk.nodes.find((n: any) => n.id === 'forward_kernel').isTarget, true);
 
   // prior sub-DAG: targets=theta1, theta2, no boundaries
   const pr = computeSubDAG(bindings, 'prior');
-  const prIds = new Set(pr.nodes.map(n => n.id));
+  const prIds = new Set(pr.nodes.map((n: any) => n.id));
   assert.ok(prIds.has('prior'));
   assert.ok(prIds.has('theta1'));
   assert.ok(prIds.has('theta2'));
   // theta1, theta2 in prior should NOT be boundaries
-  assert.equal(pr.nodes.find(n => n.id === 'theta1').isBoundary, false);
-  assert.equal(pr.nodes.find(n => n.id === 'theta2').isBoundary, false);
+  assert.equal(pr.nodes.find((n: any) => n.id === 'theta1').isBoundary, false);
+  assert.equal(pr.nodes.find((n: any) => n.id === 'theta2').isBoundary, false);
   // prior should NOT contain obs (it was the kernel target, marginalized away)
   assert.ok(!prIds.has('obs'));
 });
@@ -52,15 +52,15 @@ joint_model = lawof(record(a = a, b = b))
 fk, pr = disintegrate("b", joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   const fk = computeSubDAG(bindings, 'fk');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   assert.ok(fkIds.has('b'));
-  assert.equal(fk.nodes.find(n => n.id === 'a').isBoundary, true);
+  assert.equal(fk.nodes.find((n: any) => n.id === 'a').isBoundary, true);
 
   const pr = computeSubDAG(bindings, 'pr');
-  const prIds = new Set(pr.nodes.map(n => n.id));
+  const prIds = new Set(pr.nodes.map((n: any) => n.id));
   assert.ok(prIds.has('a'));
   assert.ok(!prIds.has('b'));
 });
@@ -76,23 +76,23 @@ joint_model = lawof(record(gamma = gamma, obs = obs))
 fk, pr = disintegrate("obs", joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   // forward_kernel: target=obs; boundary=gamma (unselected); mu reachable as
   // a parametric input ancestor.
   const fk = computeSubDAG(bindings, 'fk');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   assert.ok(fkIds.has('obs'));
-  assert.equal(fk.nodes.find(n => n.id === 'gamma').isBoundary, true);
+  assert.equal(fk.nodes.find((n: any) => n.id === 'gamma').isBoundary, true);
   assert.ok(fkIds.has('mu'));
 
   // prior: target=gamma; mu reachable as parametric ancestor (gamma's
   // distribution doesn't actually use mu in this fixture, but if it did
   // the prior would expose it).
   const pr = computeSubDAG(bindings, 'pr');
-  const prIds = new Set(pr.nodes.map(n => n.id));
+  const prIds = new Set(pr.nodes.map((n: any) => n.id));
   assert.ok(prIds.has('gamma'));
-  assert.equal(pr.nodes.find(n => n.id === 'gamma').isBoundary, false);
+  assert.equal(pr.nodes.find((n: any) => n.id === 'gamma').isBoundary, false);
 });
 
 test('disintegrate: fall back to plain trace when joint is non-lawof', () => {
@@ -106,11 +106,11 @@ fk, pr = disintegrate("x", joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
   // No errors expected (semantic intractability is a runtime concern, not a static error)
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   // fk should at least include itself and the joint binding (plain dep trace)
   const fk = computeSubDAG(bindings, 'fk');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   assert.ok(fkIds.has('fk'));
   assert.ok(fkIds.has('joint_model'));
 });
@@ -126,20 +126,20 @@ joint_model = lawof(record(a = a, b = b, c = c))
 fk, pr = disintegrate(["a", "b"], joint_model)
 `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   // fk: targets a, b; boundary c
   const fk = computeSubDAG(bindings, 'fk');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   assert.ok(fkIds.has('a'));
   assert.ok(fkIds.has('b'));
-  assert.equal(fk.nodes.find(n => n.id === 'c').isBoundary, true);
+  assert.equal(fk.nodes.find((n: any) => n.id === 'c').isBoundary, true);
 
   // pr: target c
   const pr = computeSubDAG(bindings, 'pr');
-  const prIds = new Set(pr.nodes.map(n => n.id));
+  const prIds = new Set(pr.nodes.map((n: any) => n.id));
   assert.ok(prIds.has('c'));
-  assert.equal(pr.nodes.find(n => n.id === 'c').isBoundary, false);
+  assert.equal(pr.nodes.find((n: any) => n.id === 'c').isBoundary, false);
   // a, b should not be in pr at all
   assert.ok(!prIds.has('a'));
   assert.ok(!prIds.has('b'));
@@ -153,7 +153,7 @@ joint_model = lawof(record(a = a))
 fk, pr = disintegrate("z", joint_model)
 `;
   const { diagnostics } = processSource(src);
-  assert.ok(diagnostics.some(d => /selector|field|'z'/i.test(d.message)));
+  assert.ok(diagnostics.some((d: any) => /selector|field|'z'/i.test(d.message)));
 });
 
 // --- Fixture-based: complex multi-disintegration scenarios ---
@@ -165,7 +165,7 @@ const FIXTURE = path.join(__dirname, 'fixtures', 'disintegrate-complex.flatppl')
 test('disintegrate (complex fixture): parses without errors', () => {
   const src = fs.readFileSync(FIXTURE, 'utf8');
   const { diagnostics } = processSource(src);
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.equal(errors.length, 0, `errors: ${JSON.stringify(errors)}`);
 });
 
@@ -173,7 +173,7 @@ test('disintegrate (complex fixture): single-field kernel — unselected fields 
   const src = fs.readFileSync(FIXTURE, 'utf8');
   const { bindings } = processSource(src);
   const fk = computeSubDAG(bindings, 'fk_a');
-  const ids = new Set(fk.nodes.map(n => n.id));
+  const ids = new Set(fk.nodes.map((n: any) => n.id));
 
   // Target obs1 reachable. Unselected fields theta1, theta2, obs2 become
   // explicit boundary inputs of the kernel — the trace stops there, so
@@ -181,7 +181,7 @@ test('disintegrate (complex fixture): single-field kernel — unselected fields 
   // particular kernel sub-DAG.
   assert.ok(ids.has('obs1'));
   for (const b of ['theta1', 'theta2', 'obs2']) {
-    const node = fk.nodes.find(n => n.id === b);
+    const node = fk.nodes.find((n: any) => n.id === b);
     assert.ok(node, `missing boundary ${b}`);
     assert.equal(node.isBoundary, true, `${b} should be boundary`);
   }
@@ -192,16 +192,16 @@ test('disintegrate (complex fixture): multi-field kernel and matching prior', ()
   const { bindings } = processSource(src);
 
   const fk = computeSubDAG(bindings, 'fk_b');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   // Both selected fields appear as targets (their nodes traced through)
   for (const t of ['obs1', 'obs2']) assert.ok(fkIds.has(t));
   // Unselected fields become boundaries
   for (const b of ['theta1', 'theta2']) {
-    assert.equal(fk.nodes.find(n => n.id === b).isBoundary, true);
+    assert.equal(fk.nodes.find((n: any) => n.id === b).isBoundary, true);
   }
 
   const pr = computeSubDAG(bindings, 'pr_b');
-  const prIds = new Set(pr.nodes.map(n => n.id));
+  const prIds = new Set(pr.nodes.map((n: any) => n.id));
   // Prior has theta1, theta2 as targets; obs1, obs2 should not appear at all
   for (const t of ['theta1', 'theta2']) assert.ok(prIds.has(t));
   for (const x of ['obs1', 'obs2']) assert.ok(!prIds.has(x));
@@ -215,7 +215,7 @@ test('disintegrate (complex fixture): no-input joint produces clean prior', () =
   const src = fs.readFileSync(FIXTURE, 'utf8');
   const { bindings } = processSource(src);
   const pr = computeSubDAG(bindings, 'pr_c');
-  const ids = new Set(pr.nodes.map(n => n.id));
+  const ids = new Set(pr.nodes.map((n: any) => n.id));
   // theta1 is the unselected field -> target; obs1 is excluded.
   assert.ok(ids.has('theta1'));
   assert.ok(!ids.has('obs1'));
@@ -238,7 +238,7 @@ test('disintegrate (complex fixture): chain-based joint falls back to plain trac
 
   // Sub-DAG just walks through joint_chained as a dep.
   const dag = computeSubDAG(bindings, 'fk_d');
-  const ids = new Set(dag.nodes.map(n => n.id));
+  const ids = new Set(dag.nodes.map((n: any) => n.id));
   assert.ok(ids.has('joint_chained'));
 });
 
@@ -254,7 +254,7 @@ joint_indep = joint(
 fk, pr = disintegrate("theta1", joint_indep)
 `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   // Kernel result is a Markov kernel parameterised over a measure-typed
   // body (Normal(...)) — surface keyword is `functionof` per spec
   // §sec:kernelof: `kernelof(x, ...)` requires `x` to NOT be a measure.
@@ -277,7 +277,7 @@ fk, pr = disintegrate("theta1", joint_indep)
 `;
   const { bindings } = processSource(src);
   const fk = computeSubDAG(bindings, 'fk');
-  const ids = new Set(fk.nodes.map(n => n.id));
+  const ids = new Set(fk.nodes.map((n: any) => n.id));
   // mu_p is the only module-level node referenced by Normal(mu = mu_p, sigma = 1)
   assert.ok(ids.has('mu_p'), 'kernel should include mu_p as ancestor');
   // Ensure NO "boundary" annotation — joint components are independent
@@ -298,7 +298,7 @@ fk, pr = disintegrate("theta1", joint_indep)
 `;
   const { bindings } = processSource(src);
   const pr = computeSubDAG(bindings, 'pr');
-  const ids = new Set(pr.nodes.map(n => n.id));
+  const ids = new Set(pr.nodes.map((n: any) => n.id));
   // theta2's M depends only on rate_p; mu_p should NOT be in the prior's DAG
   assert.ok(ids.has('rate_p'));
   assert.ok(!ids.has('mu_p'), 'prior should not contain selected-only deps');
@@ -318,14 +318,14 @@ fk, pr = disintegrate(["f1", "f2"], m)
 `;
   const { bindings } = processSource(src);
   const fk = computeSubDAG(bindings, 'fk');
-  const fkIds = new Set(fk.nodes.map(n => n.id));
+  const fkIds = new Set(fk.nodes.map((n: any) => n.id));
   // Kernel has deps from f1 and f2 (a, b) but NOT c
   assert.ok(fkIds.has('a'));
   assert.ok(fkIds.has('b'));
   assert.ok(!fkIds.has('c'));
 
   const pr = computeSubDAG(bindings, 'pr');
-  const prIds = new Set(pr.nodes.map(n => n.id));
+  const prIds = new Set(pr.nodes.map((n: any) => n.id));
   assert.ok(prIds.has('c'));
   assert.ok(!prIds.has('a'));
   assert.ok(!prIds.has('b'));
@@ -343,7 +343,7 @@ m = jointchain(
 fk, pr = disintegrate("b", m)
 `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   assert.equal(bindings.get('fk').disintegrateRole.jointKind, 'jointchain');
   // Body of the synthesized kernel is a measure (Normal(...)) so the
   // surface keyword is `functionof`, not `kernelof` (spec §sec:kernelof).
@@ -362,9 +362,9 @@ fk, pr = disintegrate("b", m)
 `;
   const { bindings } = processSource(src);
   const fk = computeSubDAG(bindings, 'fk');
-  const ids = new Set(fk.nodes.map(n => n.id));
+  const ids = new Set(fk.nodes.map((n: any) => n.id));
   // Synthetic boundary 'a' for the kernel
-  const aBoundary = fk.nodes.find(n => n.id === 'fk:a');
+  const aBoundary = fk.nodes.find((n: any) => n.id === 'fk:a');
   assert.ok(aBoundary, 'expected synthetic boundary node fk:a');
   assert.equal(aBoundary.label, 'a');
   assert.equal(aBoundary.isBoundary, true);

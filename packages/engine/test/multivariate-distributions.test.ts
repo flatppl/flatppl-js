@@ -14,7 +14,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 4096;
 const ROOT_SEED    = 0xCAFEBEEF;
 
-function makeCtx(source) {
+function makeCtx(source: any) {
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -24,13 +24,13 @@ function makeCtx(source) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => {
+    sendWorker:  (msg: any) => {
       const reply = worker.handle(msg);
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);
@@ -41,7 +41,7 @@ function makeCtx(source) {
   return ctx;
 }
 
-function atomMean(samples, K) {
+function atomMean(samples: any, K: any) {
   const N = samples.length / K;
   const out = new Float64Array(K);
   for (let i = 0; i < N; i++) {
@@ -240,14 +240,14 @@ m = Multinomial(n = 10, p = p)
 // Wishart
 // =====================================================================
 
-function matrixAtom(samples, atom, n) {
+function matrixAtom(samples: any, atom: any, n: any) {
   // Extract atom's n×n matrix from atom-major shape=[N, n, n] storage.
   const out = new Float64Array(n * n);
   for (let i = 0; i < n * n; i++) out[i] = samples[atom * n * n + i];
   return out;
 }
 
-function matrixMean(samples, n) {
+function matrixMean(samples: any, n: any) {
   const N = samples.length / (n * n);
   const out = new Float64Array(n * n);
   for (let atom = 0; atom < N; atom++) {

@@ -149,7 +149,7 @@ test('round-trip: measureFromValue then valueOf returns the same value', () => {
 const { processSource, orchestrator } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
 
-function makeCtx(source) {
+function makeCtx(source: any) {
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -159,14 +159,14 @@ function makeCtx(source) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const materialiser = require('../materialiser.ts');
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => Promise.resolve(worker.handle(msg)),
+    sendWorker:  (msg: any) => Promise.resolve(worker.handle(msg)),
     sampleCount: 256,
     rootSeed:    0xC0DECAFE,
   };

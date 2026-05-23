@@ -33,7 +33,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 1024;
 const ROOT_SEED    = 0xB1737CFC;
 
-function makeCtx(source, opts) {
+function makeCtx(source: any, opts: any) {
   opts = opts || {};
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);
@@ -44,13 +44,13 @@ function makeCtx(source, opts) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => {
+    sendWorker:  (msg: any) => {
       const reply = worker.handle(msg);
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);
@@ -184,8 +184,8 @@ LN_b = pushfwd(fn(exp(_)), M)
     assert.ok(a.samples[i] > 0, 'bijection-pushed sample non-positive: ' + a.samples[i]);
   }
   // Means within MC tolerance of each other and of analytic E[exp(N(0,1))] = √e.
-  const meanA = a.samples.reduce((s, v) => s + v, 0) / a.samples.length;
-  const meanB = b.samples.reduce((s, v) => s + v, 0) / b.samples.length;
+  const meanA = a.samples.reduce((s: any, v: any) => s + v, 0) / a.samples.length;
+  const meanB = b.samples.reduce((s: any, v: any) => s + v, 0) / b.samples.length;
   assert.ok(Math.abs(meanA - Math.exp(0.5)) < 0.1,
     'bijection-path mean off: got ' + meanA);
   assert.ok(Math.abs(meanB - Math.exp(0.5)) < 0.1,

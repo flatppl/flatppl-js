@@ -5,7 +5,7 @@ const { processSource, computePhases } = require('../index.ts');
 const { computePhasesForScope } = require('../analyzer.ts');
 const { computeSubDAG } = require('../dag.ts');
 
-function phasesOf(src) {
+function phasesOf(src: any) {
   const { bindings } = processSource(src);
   const result = {};
   for (const [name, b] of bindings) result[name] = b.phase;
@@ -167,7 +167,7 @@ obs    = draw(Normal(mu = beta1, sigma = 1))
 fk     = functionof(obs, theta1 = theta1, theta2 = theta2)
 `);
   const dag = computeSubDAG(bindings, 'fk');
-  const byId = new Map(dag.nodes.map(n => [n.id, n]));
+  const byId = new Map(dag.nodes.map((n: any) => [n.id, n]));
   // Inside the kernel: theta2 and beta1 cut by the boundary.
   assert.equal(byId.get('theta2').phase, 'parameterized');
   assert.equal(byId.get('beta1').phase,  'parameterized');
@@ -184,9 +184,9 @@ fk     = functionof(obs, theta1 = theta1, theta2 = theta2)
 // its signature — the user's intent is malformed. The analyzer emits
 // an error so the silent-wrong-result path is short-circuited.
 
-function diagsFor(src) {
+function diagsFor(src: any) {
   const { diagnostics } = processSource(src);
-  return diagnostics.filter((d) => /Boundary input/.test(d.message));
+  return diagnostics.filter((d: any) => /Boundary input/.test(d.message));
 }
 
 test('boundary-phase: literal binding as boundary kwarg → error', () => {
@@ -262,7 +262,7 @@ f = functionof(c1 + c2 + mu, a = c1, b = c2, m = mu)
 `);
   // Two errors: on c1 and c2. mu is parametric, no error.
   assert.equal(diags.length, 2);
-  const targets = diags.map((d) => d.message.match(/references '(\w+)'/)[1]).sort();
+  const targets = diags.map((d: any) => d.message.match(/references '(\w+)'/)[1]).sort();
   assert.deepEqual(targets, ['c1', 'c2']);
 });
 

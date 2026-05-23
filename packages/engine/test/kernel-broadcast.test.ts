@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator, materialiser } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
 
-function materialise(src, target, sampleCount) {
+function materialise(src: any, target: any, sampleCount: any) {
   const lifted = processSource(src);
   const built = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -21,13 +21,13 @@ function materialise(src, target, sampleCount) {
     derivations: built.derivations,
     bindings: built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure: (n) => {
+    getMeasure: (n: any) => {
       if (cache.has(n)) return cache.get(n);
       const p = materialiser.materialiseMeasure(n, ctx);
       cache.set(n, p);
       return p;
     },
-    sendWorker: (m) => {
+    sendWorker: (m: any) => {
       const r = worker.handle(m);
       return r && r.type === 'error'
         ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
@@ -38,7 +38,7 @@ function materialise(src, target, sampleCount) {
   return ctx.getMeasure(target);
 }
 
-function colMean(m, K, j, N) {
+function colMean(m: any, K: any, j: any, N: any) {
   let s = 0;
   for (let i = 0; i < N; i++) s += m.samples[i * K + j];
   return s / N;

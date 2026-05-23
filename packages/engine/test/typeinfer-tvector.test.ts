@@ -10,12 +10,12 @@ const assert = require('node:assert/strict');
 
 const { processSource, types: T } = require('..');
 
-function infer(src) {
+function infer(src: any) {
   const { bindings, diagnostics } = processSource(src);
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   return { bindings, errors };
 }
-function typeOf(bindings, name) {
+function typeOf(bindings: any, name: any) {
   return bindings.get(name).inferredType;
 }
 

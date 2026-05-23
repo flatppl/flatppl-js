@@ -22,7 +22,7 @@ const rng = require('../rng.ts');
 
 // Helper: build a distribution call IR from a name + kwargs (numeric values
 // only, lifted to lit nodes).
-function distIR(op, kwargs) {
+function distIR(op: any, kwargs: any) {
   const out = {};
   for (const [k, v] of Object.entries(kwargs)) {
     out[k] = { kind: 'lit', value: v, loc: synthLoc() };
@@ -35,13 +35,13 @@ function synthLoc() {
 }
 
 // Helper: ref node for env-resolved params.
-function refIR(name) {
+function refIR(name: any) {
   return { kind: 'ref', ns: 'self', name, loc: synthLoc() };
 }
 
 // Helper: take N samples, return a Float64Array. Reseeds from same state
 // every call so it's deterministic and repeatable.
-function takeN(measureIR, env, n, seed = [1, 2, 3]) {
+function takeN(measureIR: any, env: any, n: any, seed = [1, 2, 3]) {
   let state = rng.seedFromBytes(seed);
   const out = new Float64Array(n);
   for (let i = 0; i < n; i++) {
@@ -470,8 +470,8 @@ test('makeParametricSampler: factory built once across many draws', () => {
 // builds an opaque rngstate from a byte seed; rand threads state
 // through measure draws via traceeval.
 
-function lit(v)   { return { kind: 'lit', value: v, loc: synthLoc() }; }
-function call(op, args, kwargs) {
+function lit(v: any)   { return { kind: 'lit', value: v, loc: synthLoc() }; }
+function call(op: any, args: any, kwargs: any) {
   const out = { kind: 'call', op, loc: synthLoc() };
   if (args && args.length)             out.args   = args;
   if (kwargs && Object.keys(kwargs).length) out.kwargs = kwargs;

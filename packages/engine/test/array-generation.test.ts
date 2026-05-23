@@ -8,10 +8,10 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-function lit(v)        { return { kind: 'lit', value: v }; }
-function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
-function call(op, ...args) { return { kind: 'call', op, args }; }
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+function lit(v: any)        { return { kind: 'lit', value: v }; }
+function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
+function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
 // =====================================================================
 // linspace
@@ -211,7 +211,7 @@ test('array: 3-D shape (2×2×2, row-major)', () => {
 // rowstack / colstack
 // =====================================================================
 
-function vov(...rows) {
+function vov(...rows: any[]) {
   return { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) };
 }
 

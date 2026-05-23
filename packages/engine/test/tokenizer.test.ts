@@ -3,11 +3,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { tokenize, T } = require('../tokenizer.ts');
 
-function tokenTypes(src) {
-  return tokenize(src).tokens.filter(t => t.type !== T.EOF).map(t => t.type);
+function tokenTypes(src: any) {
+  return tokenize(src).tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
 }
-function tokenValues(src) {
-  return tokenize(src).tokens.filter(t => t.type !== T.EOF).map(t => t.value);
+function tokenValues(src: any) {
+  return tokenize(src).tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.value);
 }
 
 test('tokenizer: empty input', () => {
@@ -71,14 +71,14 @@ test('tokenizer: punctuation', () => {
 
 test('tokenizer: string literal with escapes', () => {
   const { tokens, diagnostics } = tokenize('s = "a\\nb\\tc\\\\d\\"e"');
-  const stringTok = tokens.find(t => t.type === T.STRING);
+  const stringTok = tokens.find((t: any) => t.type === T.STRING);
   assert.equal(stringTok.value, 'a\nb\tc\\d"e');
   assert.equal(diagnostics.length, 0);
 });
 
 test('tokenizer: string with \\r and \\0 escapes', () => {
   const { tokens, diagnostics } = tokenize('s = "a\\rb\\0c"');
-  const stringTok = tokens.find(t => t.type === T.STRING);
+  const stringTok = tokens.find((t: any) => t.type === T.STRING);
   assert.equal(stringTok.value, 'a\rb\0c');
   assert.equal(diagnostics.length, 0);
 });
@@ -91,7 +91,7 @@ test('tokenizer: invalid escape sequence is a diagnostic', () => {
 
 test('tokenizer: unterminated string is a diagnostic', () => {
   const { diagnostics } = tokenize('s = "abc');
-  assert.ok(diagnostics.some(d => /Unterminated/.test(d.message)));
+  assert.ok(diagnostics.some((d: any) => /Unterminated/.test(d.message)));
 });
 
 test('tokenizer: comment', () => {
@@ -127,7 +127,7 @@ test('tokenizer: source locations are 0-based', () => {
 
 test('tokenizer: location after newline', () => {
   const { tokens } = tokenize('a = 1\nbc = 2');
-  const bcTok = tokens.find(t => t.type === T.IDENT && t.value === 'bc');
+  const bcTok = tokens.find((t: any) => t.type === T.IDENT && t.value === 'bc');
   assert.equal(bcTok.loc.start.line, 1);
   assert.equal(bcTok.loc.start.col, 0);
 });
@@ -186,6 +186,6 @@ test('tokenizer: variant argument is accepted (no-op for now)', () => {
   // FlatPPY doesn't use `~` — the parser will reject it later. The
   // tokenizer still emits TILDE so the parser can produce a clear
   // location-bearing diagnostic.
-  const types = tokens.filter(t => t.type !== T.EOF).map(t => t.type);
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
   assert.deepEqual(types, [T.IDENT, T.TILDE, T.IDENT]);
 });

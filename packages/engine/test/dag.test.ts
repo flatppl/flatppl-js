@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource, computeSubDAG, findBindingAtLine } = require('../index.ts');
 
-function dagOf(src, target) {
+function dagOf(src: any, target: any) {
   const { bindings } = processSource(src);
   return computeSubDAG(bindings, target);
 }
@@ -15,7 +15,7 @@ b = elementof(reals)
 c = a + b
 d = c * 2
 `, 'd');
-  const ids = dag.nodes.map(n => n.id).sort();
+  const ids = dag.nodes.map((n: any) => n.id).sort();
   assert.deepEqual(ids, ['a', 'b', 'c', 'd']);
 });
 
@@ -24,9 +24,9 @@ test('dag: target flag is set on the requested node', () => {
 a = elementof(reals)
 b = a * 2
 `, 'b');
-  const target = dag.nodes.find(n => n.isTarget);
+  const target = dag.nodes.find((n: any) => n.isTarget);
   assert.equal(target.id, 'b');
-  assert.ok(!dag.nodes.find(n => n.id === 'a').isTarget);
+  assert.ok(!dag.nodes.find((n: any) => n.id === 'a').isTarget);
 });
 
 test('dag: unknown node returns empty', () => {
@@ -43,10 +43,10 @@ theta = src * 2
 x = draw(Normal(mu = theta, sigma = 1))
 m = kernelof(x, theta = theta)
 `, 'm');
-  const ids = dag.nodes.map(n => n.id).sort();
+  const ids = dag.nodes.map((n: any) => n.id).sort();
   assert.deepEqual(ids, ['m', 'theta', 'x']);
   // theta should be marked as boundary
-  const thetaNode = dag.nodes.find(n => n.id === 'theta');
+  const thetaNode = dag.nodes.find((n: any) => n.id === 'theta');
   assert.equal(thetaNode.isBoundary, true);
 });
 
@@ -56,7 +56,7 @@ v = elementof(reals)
 y = v * 2
 m = kernelof(y, alpha = v)
 `, 'm');
-  const vNode = dag.nodes.find(n => n.id === 'v');
+  const vNode = dag.nodes.find((n: any) => n.id === 'v');
   assert.equal(vNode.isBoundary, true);
   assert.equal(vNode.label, 'alpha');
 });
@@ -67,8 +67,8 @@ f = fn(_ * 2)
 y = elementof(reals)
 z = f(y)
 `, 'z');
-  const fEdge = dag.edges.find(e => e.source === 'f' && e.target === 'z');
-  const yEdge = dag.edges.find(e => e.source === 'y' && e.target === 'z');
+  const fEdge = dag.edges.find((e: any) => e.source === 'f' && e.target === 'z');
+  const yEdge = dag.edges.find((e: any) => e.source === 'y' && e.target === 'z');
   assert.equal(fEdge.edgeType, 'call');
   assert.equal(yEdge.edgeType, 'data');
 });
@@ -82,7 +82,7 @@ test('dag: synthetic boundary nodes for placeholder boundaries', () => {
 x = elementof(reals)
 f = functionof(x * _par_, par = _par_)
 `, 'f');
-  const synth = dag.nodes.find(n => n.id === 'f:par');
+  const synth = dag.nodes.find((n: any) => n.id === 'f:par');
   assert.ok(synth);
   assert.equal(synth.label, '_par_');
   assert.equal(synth.isBoundary, true);
@@ -92,7 +92,7 @@ test('dag: fn renders as a bare hexagon — no synthetic hole nodes', () => {
   const dag = dagOf(`
 g = fn(_ + _)
 `, 'g');
-  const holes = dag.nodes.filter(n => n.id.startsWith('g:_'));
+  const holes = dag.nodes.filter((n: any) => n.id.startsWith('g:_'));
   assert.equal(holes.length, 0);
 });
 
@@ -108,14 +108,14 @@ obs = draw(iid(Normal(mu = a, sigma = b), 10))
 model = kernelof(record(obs = obs), theta1 = theta1, theta2 = theta2)
 `;
   const dag = dagOf(src, 'model');
-  const ids = new Set(dag.nodes.map(n => n.id));
+  const ids = new Set(dag.nodes.map((n: any) => n.id));
   // Should include obs, a, b, f_a, f_b, theta1, theta2 (boundaries)
   for (const id of ['model', 'obs', 'a', 'b', 'f_a', 'f_b', 'theta1', 'theta2']) {
     assert.ok(ids.has(id), `missing ${id}`);
   }
   // theta1, theta2 must be boundaries
   for (const name of ['theta1', 'theta2']) {
-    assert.equal(dag.nodes.find(n => n.id === name).isBoundary, true);
+    assert.equal(dag.nodes.find((n: any) => n.id === name).isBoundary, true);
   }
 });
 
@@ -172,13 +172,13 @@ test('dag: multi-LHS %mlhs nodes are dissolved from the rendered DAG', () => {
 rstate = rnginit([1, 2, 3, 4])
 data, _ = rand(rstate, Normal(mu = 0, sigma = 1))
 `, 'data');
-  const ids = dag.nodes.map((n) => n.id);
-  assert.ok(!ids.some((id) => id && id.charAt(0) === '%'),
+  const ids = dag.nodes.map((n: any) => n.id);
+  assert.ok(!ids.some((id: any) => id && id.charAt(0) === '%'),
     `expected no %-prefixed nodes in the DAG; got: ${ids.join(', ')}`);
   // data should reach rstate directly — the synthetic intermediate's
   // incoming edge fans through.
   const hasRstateEdge = dag.edges.some(
-    (e) => e.source === 'rstate' && e.target === 'data');
+    (e: any) => e.source === 'rstate' && e.target === 'data');
   assert.ok(hasRstateEdge,
     'dissolved %mlhs should produce a direct edge from rstate to data');
 });
@@ -191,6 +191,6 @@ a = elementof(reals)
 b = a + 1
 c = b * 2
 `, 'c');
-  const ids = dag.nodes.map((n) => n.id).sort();
+  const ids = dag.nodes.map((n: any) => n.id).sort();
   assert.deepEqual(ids, ['a', 'b', 'c']);
 });

@@ -3,8 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
 
-function errors(src) {
-  return processSource(src).diagnostics.filter(d => d.severity === 'error');
+function errors(src: any) {
+  return processSource(src).diagnostics.filter((d: any) => d.severity === 'error');
 }
 
 // --- Valid 1-based indices ---
@@ -29,29 +29,29 @@ test('indexing: runtime expression x[i] is allowed (not a literal)', () => {
 
 test('indexing: x[0] is an error', () => {
   const errs = errors('a = [1, 2, 3]\nb = a[0]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 test('indexing: matrix M[0, 1] is an error', () => {
   const errs = errors('M = rowstack([[1,2],[3,4]])\nx = M[0, 1]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 test('indexing: slice with zero index A[:, 0] is an error', () => {
   const errs = errors('A = rowstack([[1,2],[3,4]])\nx = A[:, 0]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 // --- Invalid: negative index ---
 
 test('indexing: x[-1] is an error', () => {
   const errs = errors('a = [1, 2, 3]\nb = a[-1]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 test('indexing: x[-3] is an error', () => {
   const errs = errors('a = [1, 2, 3]\nb = a[-3]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 // --- Edge cases ---
@@ -59,13 +59,13 @@ test('indexing: x[-3] is an error', () => {
 test('indexing: nested IndexExpr — both checked', () => {
   // a[b[0]] — outer index `b[0]` is runtime; inner `0` is the literal violator
   const errs = errors('b = [1, 2]\na = [3, 4]\nx = a[b[0]]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 test('indexing: integer-valued real (e.g. 0.0) is also flagged', () => {
   // 0.0 is parsed as a NumberLiteral(0); Number.isInteger(0) is true.
   const errs = errors('a = [1, 2, 3]\nb = a[0.0]\n');
-  assert.ok(errs.some(d => /1-based|index/.test(d.message)));
+  assert.ok(errs.some((d: any) => /1-based|index/.test(d.message)));
 });
 
 test('indexing: existing fixture files still parse cleanly', () => {
@@ -83,6 +83,6 @@ test('indexing: existing fixture files still parse cleanly', () => {
   for (const f of fixtures) {
     const src = fs.readFileSync(path.join(__dirname, 'fixtures', f), 'utf8');
     const errs = errors(src);
-    assert.equal(errs.length, 0, `${f} produced errors: ${JSON.stringify(errs.map(d => d.message))}`);
+    assert.equal(errs.length, 0, `${f} produced errors: ${JSON.stringify(errs.map((d: any) => d.message))}`);
   }
 });

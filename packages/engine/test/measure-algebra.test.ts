@@ -40,7 +40,7 @@ const { createWorkerHandler } = require('../worker.ts');
 // jointchain/kchain tests below so they exercise the first-class
 // consolidation end-to-end (the file's older sync go()/materialise()
 // helper predates several derivation kinds, incl. kind:'jointchain').
-function materialiseReal(src, target, sampleCount) {
+function materialiseReal(src: any, target: any, sampleCount: any) {
   const built = orchestrator.buildDerivations(processSource(src).bindings);
   const worker = createWorkerHandler();
   worker.handle({ type: 'init', seed: 4242 });
@@ -49,13 +49,13 @@ function materialiseReal(src, target, sampleCount) {
     derivations: built.derivations,
     bindings: built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure: (n) => {
+    getMeasure: (n: any) => {
       if (cache.has(n)) return cache.get(n);
       const p = materialiser.materialiseMeasure(n, ctx);
       cache.set(n, p);
       return p;
     },
-    sendWorker: (m) => {
+    sendWorker: (m: any) => {
       const r = worker.handle(m);
       return r && r.type === 'error'
         ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
@@ -71,7 +71,7 @@ const SAMPLE_COUNT = 2048;
 // Per-binding seed: same FNV-1a hash mix as visualPanel.nameSeed,
 // so test results are deterministic and match what the extension
 // would compute for the same source.
-function nameSeed(name, rootSeed) {
+function nameSeed(name: any, rootSeed: any) {
   let h = 2166136261;
   for (let i = 0; i < name.length; i++) {
     h = h ^ name.charCodeAt(i);
@@ -85,7 +85,7 @@ function nameSeed(name, rootSeed) {
 // makeMainThreadPrng but uses Math.random as a stable fallback if
 // rng.nextUniform isn't accessible. We use rng so superpose draws are
 // reproducible across test runs.
-function makeMainThreadPrng(seed) {
+function makeMainThreadPrng(seed: any) {
   const rng = require('../rng.ts');
   let state = rng.stateFromKey(seed);
   return () => {
@@ -108,7 +108,7 @@ function makeMainThreadPrng(seed) {
  * @param {Map}    bindings
  * @param {{ rootSeed?: number, sampleCount?: number, cache?: Map }} [opts]
  */
-function materialise(name, bindings, opts) {
+function materialise(name: any, bindings: any, opts: any) {
   opts = opts || {};
   const rootSeed     = opts.rootSeed    != null ? opts.rootSeed    : 12345;
   const sampleCount  = opts.sampleCount != null ? opts.sampleCount : SAMPLE_COUNT;
@@ -119,7 +119,7 @@ function materialise(name, bindings, opts) {
   const { derivations } = orchestrator.buildDerivations(bindings);
   return go(name);
 
-  function go(name) {
+  function go(name: any) {
     if (cache.has(name)) return cache.get(name);
     const d = derivations[name];
     if (!d) throw new Error(`no derivation for '${name}'`);
@@ -231,7 +231,7 @@ function materialise(name, bindings, opts) {
         const distIR = orchestrator.leafSampleIR(d.from, derivations);
         if (!distIR) throw new Error("iid: can't resolve leaf sample IR for " + d.from);
         const refArrays = collectRefArrays(distIR);
-        const k = d.dims.reduce((p, n) => p * n, 1);
+        const k = d.dims.reduce((p: any, n: any) => p * n, 1);
         const reply = worker.handle({
           type: 'sampleN', ir: distIR, count: sampleCount, repeat: k,
           refArrays,
@@ -297,10 +297,10 @@ function materialise(name, bindings, opts) {
     return m;
   }
 
-  function collectRefArrays(ir) {
+  function collectRefArrays(ir: any) {
     const refs = orchestrator.collectSelfRefs(ir);
     const out = {};
-    refs.forEach(n => { out[n] = go(n).samples; });
+    refs.forEach((n: any) => { out[n] = go(n).samples; });
     return out;
   }
 }
@@ -309,7 +309,7 @@ function materialise(name, bindings, opts) {
 // Helpers for measure-equality assertions
 // =====================================================================
 
-function arraysClose(a, b, tol) {
+function arraysClose(a: any, b: any, tol: any) {
   tol = tol == null ? 1e-12 : tol;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -318,13 +318,13 @@ function arraysClose(a, b, tol) {
   return true;
 }
 
-function assertSameSamples(a, b, msg) {
+function assertSameSamples(a: any, b: any, msg: any) {
   assert.equal(a.samples.length, b.samples.length, (msg || '') + ' (samples length)');
   assert.ok(arraysClose(a.samples, b.samples, 0),
     (msg || '') + ' (samples not bit-equal)');
 }
 
-function assertSameLogWeights(a, b, tol, msg) {
+function assertSameLogWeights(a: any, b: any, tol: any, msg: any) {
   const la = a.logWeights, lb = b.logWeights;
   if (la == null && lb == null) return;
   // null = uniform: replace with explicit -log(N) for the comparison.
@@ -349,7 +349,7 @@ test('identity: lawof(draw(m)) ≡ m — both lawof and draw alias share the par
     m_again = lawof(x)
   `;
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   const cache = new Map();
   const m       = materialise('m_dist',  bindings, { cache });
   const x       = materialise('x',       bindings, { cache });
@@ -491,7 +491,7 @@ test('identity: normalize(superpose(m, m)) ≡ normalize(m) — statistical equi
   assert.ok(Math.abs(empirical.totalLogMass(PS)) < 1e-10);
   // Compare weighted means and SDs — they should match the underlying
   // distribution (mu=2, sigma=0.5) up to Monte-Carlo noise.
-  function weightedMeanSd(meas) {
+  function weightedMeanSd(meas: any) {
     const lifted = empirical.materialiseUniform(meas);
     let totW = 0, mean = 0, m2 = 0;
     for (let i = 0; i < lifted.samples.length; i++) {
@@ -974,7 +974,7 @@ test('iid: with a single-atom shape (n=1) is essentially the inner measure', () 
   assert.equal(single.samples.length, 128);
   // Independent seeds (different binding names → different seeds)
   // so samples won't be identical, but the marginal stats agree.
-  function mean(arr) { let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; }
+  function mean(arr: any) { let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; }
   assert.ok(Math.abs(mean(direct.samples) - mean(single.samples)) < 0.2);
 });
 

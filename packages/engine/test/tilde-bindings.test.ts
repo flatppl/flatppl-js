@@ -8,13 +8,13 @@ const assert = require('node:assert/strict');
 
 const { processSource } = require('../index.ts');
 
-function parseOK(src, opts) {
+function parseOK(src: any, opts: any) {
   const r = processSource(src, opts);
   // The minimal tilde snippets in these tests reference undefined
   // names (M, Normal, …) just to keep them short. Ignore analyzer
   // "Undefined variable" warnings — they aren't the parse-level
   // failures these tests are checking for.
-  const errors = r.diagnostics.filter(d =>
+  const errors = r.diagnostics.filter((d: any) =>
     d.severity === 'error'
     || (d.severity === 'warning' && !/Undefined variable/.test(d.message)));
   assert.deepEqual(errors, [], 'expected no parse errors, got: '
@@ -22,7 +22,7 @@ function parseOK(src, opts) {
   return r;
 }
 
-function firstBindingValue(r, name) {
+function firstBindingValue(r: any, name: any) {
   const b = r.bindings.get(name);
   assert.ok(b, `expected binding ${name}`);
   return b.node.value;

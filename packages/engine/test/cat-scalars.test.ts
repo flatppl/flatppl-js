@@ -14,9 +14,9 @@ const assert = require('node:assert/strict');
 
 const { processSource } = require('../index.ts');
 
-function parseOK(src, opts) {
+function parseOK(src: any, opts: any) {
   const r = processSource(src, opts);
-  const errors = r.diagnostics.filter(d => d.severity === 'error');
+  const errors = r.diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errors, [], 'expected no parse errors, got: '
     + JSON.stringify(errors));
   return r;

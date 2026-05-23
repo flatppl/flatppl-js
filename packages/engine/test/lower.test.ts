@@ -30,13 +30,13 @@ const { parse } = require('../parser.ts');
 const { lowerExpr, lowerBinding } = require('../lower.ts');
 
 // Parse a single binding `<name> = <expr>` and return the lowered RHS.
-function lowerOne(source) {
+function lowerOne(source: any) {
   const { tokens } = tokenize(source);
   const { ast, diagnostics } = parse(tokens);
-  const errors = diagnostics.filter(d => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.equal(errors.length, 0, `parse errors: ${JSON.stringify(errors)}`);
   // First AssignStatement; lowerBinding handles the unwrap.
-  const stmt = ast.body.find(s => s.type === 'AssignStatement');
+  const stmt = ast.body.find((s: any) => s.type === 'AssignStatement');
   assert.ok(stmt, 'no AssignStatement in source');
   return lowerBinding(stmt);
 }
@@ -198,7 +198,7 @@ test('lower: array literal [1, 2, 3] → (vector 1 2 3)', () => {
   assert.equal(ir.kind, 'call');
   assert.equal(ir.op, 'vector');
   assert.equal(ir.args.length, 3);
-  assert.deepEqual(ir.args.map(a => a.value), [1, 2, 3]);
+  assert.deepEqual(ir.args.map((a: any) => a.value), [1, 2, 3]);
 });
 
 test('lower: nested array', () => {
@@ -206,7 +206,7 @@ test('lower: nested array', () => {
   assert.equal(ir.op, 'vector');
   assert.equal(ir.args.length, 2);
   assert.equal(ir.args[0].op, 'vector');
-  assert.deepEqual(ir.args[0].args.map(a => a.value), [1, 2]);
+  assert.deepEqual(ir.args[0].args.map((a: any) => a.value), [1, 2]);
 });
 
 // =====================================================================
@@ -284,7 +284,7 @@ test('lower: joint(a = M, b = N) — keyword form, ordered fields', () => {
 test('lower: jointchain keyword form preserves order', () => {
   const ir = lowerOne('x = jointchain(a = M1, b = K1, c = K2)');
   assert.equal(ir.op, 'jointchain');
-  assert.equal(ir.fields.map(f => f.name).join(','), 'a,b,c');
+  assert.equal(ir.fields.map((f: any) => f.name).join(','), 'a,b,c');
 });
 
 // =====================================================================
@@ -475,7 +475,7 @@ test('lower: every IR node carries a loc field', () => {
   const ir = lowerOne(`
     x = Normal(mu = a + 1, sigma = [1, 2, 3])
   `);
-  function check(node) {
+  function check(node: any) {
     if (!node || typeof node !== 'object') return;
     if (node.kind) {
       assert.ok(node.loc, `node ${node.kind} missing loc`);
@@ -516,7 +516,7 @@ test('lower: lawof(record(...)) joint measure', () => {
   const rec = ir.args[0];
   assert.equal(rec.op, 'record');
   assert.equal(rec.fields.length, 3);
-  assert.deepEqual(rec.fields.map(f => f.name), ['theta1', 'theta2', 'obs']);
+  assert.deepEqual(rec.fields.map((f: any) => f.name), ['theta1', 'theta2', 'obs']);
 });
 
 test('lower: pure determinism — same source twice yields equal IR', () => {

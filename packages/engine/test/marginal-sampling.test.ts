@@ -36,7 +36,7 @@ const N = 50000;  // sample count
 
 // -- statistics ---------------------------------------------------------
 
-function meanVar(samples) {
+function meanVar(samples: any) {
   let m = 0;
   for (let i = 0; i < samples.length; i++) m += samples[i];
   m /= samples.length;
@@ -75,7 +75,7 @@ kernel = kernelof(x, mu = mu)
 // the viewer's getMeasure + materialiseConcreteMeasure do for a leaf
 // distribution: collect refs, recursively sample each, then sample
 // the target distribution with the resolved refArrays.
-function sampleClosed(wh, distIR, derivations, count, seed) {
+function sampleClosed(wh: any, distIR: any, derivations: any, count: any, seed: any) {
   const refs = Array.from(orchestrator.collectSelfRefs(distIR));
   const refPromises = refs.map((name, i) => {
     const innerIR = orchestrator.leafSampleIR(name, derivations);
@@ -136,7 +136,7 @@ x = draw(Normal(mu = 0, sigma = sigma))
 // refArrays for the captured `sigma`.
 // =====================================================================
 
-function sampleKernelAtMu(muVal, seed) {
+function sampleKernelAtMu(muVal: any, seed: any) {
   const { bindings, derivations } = buildModel();
   const wh = createWorkerHandler();
   wh.handle({ type: 'init', seed: 1 });
@@ -145,7 +145,7 @@ function sampleKernelAtMu(muVal, seed) {
   const sig = orchestrator.signatureOf('kernel', bindings);
   assert.equal(sig.kind, 'kernel');
   assert.equal(sig.inputs.length, 1);
-  const paramNames = sig.inputs.map((inp) => inp.paramName);
+  const paramNames = sig.inputs.map((inp: any) => inp.paramName);
 
   // 2. Expand the body. expandMeasureRefsInIR strips lawof and tries
   //    to expand the inner ref via derivations; x's derivation is

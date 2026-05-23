@@ -27,7 +27,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 8192;
 const ROOT_SEED    = 0xC10D5F;  // distinct from other test files
 
-function makeCtx(source) {
+function makeCtx(source: any) {
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -37,13 +37,13 @@ function makeCtx(source) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => {
+    sendWorker:  (msg: any) => {
       const reply = worker.handle(msg);
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);
@@ -58,20 +58,20 @@ function makeCtx(source) {
 // Statistics helpers — operate on Float64Array samples, optional logW
 // =====================================================================
 
-function unweightedMean(xs) {
+function unweightedMean(xs: any) {
   let s = 0;
   for (let i = 0; i < xs.length; i++) s += xs[i];
   return s / xs.length;
 }
 
-function unweightedVar(xs) {
+function unweightedVar(xs: any) {
   const m = unweightedMean(xs);
   let s = 0;
   for (let i = 0; i < xs.length; i++) s += (xs[i] - m) * (xs[i] - m);
   return s / xs.length;
 }
 
-function unweightedCov(xs, ys) {
+function unweightedCov(xs: any, ys: any) {
   const mx = unweightedMean(xs);
   const my = unweightedMean(ys);
   let s = 0;
@@ -80,7 +80,7 @@ function unweightedCov(xs, ys) {
 }
 
 // Weighted statistics with logWeights normalised by their logSumExp.
-function weightedMean(xs, logW) {
+function weightedMean(xs: any, logW: any) {
   if (!logW) return unweightedMean(xs);
   let lse = -Infinity;
   for (let i = 0; i < logW.length; i++) {
@@ -95,7 +95,7 @@ function weightedMean(xs, logW) {
   return num / den;
 }
 
-function weightedVar(xs, logW) {
+function weightedVar(xs: any, logW: any) {
   if (!logW) return unweightedVar(xs);
   const m = weightedMean(xs, logW);
   let lse = -Infinity;
@@ -239,7 +239,7 @@ posterior = bayesupdate(L, prior)
 // the kchain MC marginal). Closed-form Normal references.
 // =====================================================================
 
-function normalLogpdf(x, mu, sigma) {
+function normalLogpdf(x: any, mu: any, sigma: any) {
   return -Math.log(sigma) - 0.5 * Math.log(2 * Math.PI)
     - (x - mu) * (x - mu) / (2 * sigma * sigma);
 }

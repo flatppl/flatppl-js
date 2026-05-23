@@ -22,7 +22,7 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator } = require('..');
 const R = orchestrator.resolveIRToValue;
 
-function ctxFor(src) {
+function ctxFor(src: any) {
   const built = orchestrator.buildDerivations(processSource(src).bindings);
   return { bindings: built.bindings, fixedValues: built.fixedValues };
 }

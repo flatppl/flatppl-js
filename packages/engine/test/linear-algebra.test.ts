@@ -11,13 +11,13 @@ const assert = require('node:assert/strict');
 const sampler = require('../sampler.ts');
 const valueLib = require('../value.ts');
 
-function lit(v)        { return { kind: 'lit', value: v }; }
-function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
-function mat(...rows)  { return { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) }; }
-function call(op, ...args) { return { kind: 'call', op, args }; }
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+function lit(v: any)        { return { kind: 'lit', value: v }; }
+function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
+function mat(...rows: any[])  { return { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) }; }
+function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
-function matClose(A, B, tol) {
+function matClose(A: any, B: any, tol: any) {
   tol = tol == null ? 1e-12 : tol;
   if (A.length !== B.length) return false;
   for (let i = 0; i < A.length; i++) {

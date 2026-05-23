@@ -23,7 +23,7 @@ const ROOT_SEED    = 12345;
  * worker handler + one promise cache, mirroring how the viewer's
  * getMeasure works.
  */
-function makeCtx(source, opts) {
+function makeCtx(source: any, opts: any) {
   opts = opts || {};
   const lifted = processSource(source);
   // buildDerivations returns the LIFTED bindings map (including the
@@ -39,13 +39,13 @@ function makeCtx(source, opts) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => {
+    sendWorker:  (msg: any) => {
       const reply = worker.handle(msg);
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);
@@ -208,7 +208,7 @@ x = draw(U)
     assert.ok(m.samples[i] >= 0 && m.samples[i] <= 1,
       'atom ' + i + ' should lie in [0, 1], got ' + m.samples[i]);
   }
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   assert.ok(Math.abs(mean - 0.5) < 0.05,
     'mean of Uniform(0, 1) should be ≈ 0.5, got ' + mean);
 });
@@ -248,7 +248,7 @@ M = GeneralizedNormal(mean = 0.0, alpha = 1.4142135623730951, beta = 2.0)
 x = draw(M)
 `, { sampleCount: 16384 });
   const m = await ctx.getMeasure('x');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   let ss = 0;
   for (const v of m.samples) ss += (v - mean) * (v - mean);
   const variance = ss / m.samples.length;
@@ -264,7 +264,7 @@ M = GeneralizedNormal(mean = 0.0, alpha = 1.0, beta = 1.0)
 x = draw(M)
 `, { sampleCount: 16384 });
   const m = await ctx.getMeasure('x');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   let ss = 0;
   for (const v of m.samples) ss += (v - mean) * (v - mean);
   const variance = ss / m.samples.length;
@@ -301,7 +301,7 @@ x = draw(M)
   let neg = 0;
   for (let i = 0; i < m.samples.length; i++) if (m.samples[i] <= 0) neg++;
   assert.equal(neg, 0, 'all InverseGamma atoms must be > 0');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   assert.ok(Math.abs(mean - 1.0) < 0.1,
     'mean should be ≈ 1, got ' + mean);
 });
@@ -389,7 +389,7 @@ M = Logistic(mu = 0.0, s = 1.0)
 x = draw(M)
 `, { sampleCount: 8192 });
   const m = await ctx.getMeasure('x');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   let ss = 0;
   for (const v of m.samples) ss += (v - mean) * (v - mean);
   const variance = ss / m.samples.length;
@@ -421,7 +421,7 @@ x = draw(M)
   let neg = 0;
   for (let i = 0; i < m.samples.length; i++) if (m.samples[i] < 0) neg++;
   assert.equal(neg, 0, 'all Weibull atoms should be ≥ 0');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   const expected = Math.sqrt(Math.PI) / 2;   // λ · Γ(1 + 1/k) at k=2, λ=1
   assert.ok(Math.abs(mean - expected) < 0.05,
     'mean should be ≈ √π/2, got ' + mean);
@@ -481,7 +481,7 @@ ln = pushfwd(fn(exp(_)), M)
     if (m.samples[i] < 0) neg++;
   }
   assert.equal(neg, 0, 'all pushfwd-through-exp atoms should be positive');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   assert.ok(Math.abs(mean - Math.exp(0.5)) < 0.1,
     'mean should be ≈ exp(½), got ' + mean);
 });
@@ -492,7 +492,7 @@ M = Normal(mu = 0.0, sigma = 1.0)
 shifted = pushfwd(fn(2.0 * _ + 1.0), M)
 `, { sampleCount: 4096 });
   const m = await ctx.getMeasure('shifted');
-  const mean = m.samples.reduce((s, v) => s + v, 0) / m.samples.length;
+  const mean = m.samples.reduce((s: any, v: any) => s + v, 0) / m.samples.length;
   // Analytic mean = 2·0 + 1 = 1; variance = 4·1 = 4 → sd = 2.
   assert.ok(Math.abs(mean - 1.0) < 0.15,
     'mean should be ≈ 1, got ' + mean);
@@ -549,7 +549,7 @@ J = joint(Normal(mu = 0.0, sigma = 1.0), Exponential(rate = 1.0))
     'positional joint should classify two component refs after lifting');
 });
 
-function mean(arr) {
+function mean(arr: any) {
   let s = 0;
   for (let i = 0; i < arr.length; i++) s += arr[i];
   return s / arr.length;
@@ -687,7 +687,7 @@ predictive = kchain(prior, forward_kernel)
   const ys = m.samples
     || (m.fields && m.fields.y && m.fields.y.samples);
   assert.ok(ys && ys.length > 0, 'kchain yields K-body variate y');
-  const mean = ys.reduce((a, b) => a + b, 0) / ys.length;
+  const mean = ys.reduce((a: any, b: any) => a + b, 0) / ys.length;
   let v = 0; for (const x of ys) v += (x - mean) ** 2; v /= ys.length;
   assert.ok(Math.abs(mean) < 0.12, 'y marginal mean ≈ 0, got ' + mean);
   assert.ok(Math.abs(v - 2.0) < 0.35, 'y marginal var ≈ 2, got ' + v);

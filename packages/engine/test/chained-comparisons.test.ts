@@ -9,9 +9,9 @@ const assert = require('node:assert/strict');
 
 const { processSource } = require('../index.ts');
 
-function parseRHS(src, opts) {
+function parseRHS(src: any, opts: any) {
   const r = processSource(src, opts);
-  const errors = r.diagnostics.filter(d =>
+  const errors = r.diagnostics.filter((d: any) =>
     d.severity === 'error'
     || (d.severity === 'warning' && !/Undefined variable/.test(d.message)));
   assert.deepEqual(errors, [], 'expected no parse errors, got: '

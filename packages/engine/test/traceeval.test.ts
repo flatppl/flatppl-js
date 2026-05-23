@@ -14,20 +14,20 @@ const traceeval = require('../traceeval.ts');
 const rng = require('../rng.ts');
 
 // Helpers — minimal IR builders so the tests read like specs.
-const lit  = (v) => ({ kind: 'lit', value: v });
-const ref  = (n) => ({ kind: 'ref', ns: 'self', name: n });
-const dist = (op, kwargs) => {
+const lit  = (v: any) => ({ kind: 'lit', value: v });
+const ref  = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
+const dist = (op: any, kwargs: any) => {
   const out = {};
   for (const [k, v] of Object.entries(kwargs)) out[k] = (typeof v === 'object' && v !== null && v.kind) ? v : lit(v);
   return { kind: 'call', op, kwargs: out };
 };
-const joint = (fields) => ({
+const joint = (fields: any) => ({
   kind: 'call', op: 'joint',
   fields: Object.entries(fields).map(([name, value]) => ({ name, value })),
 });
-const iid       = (M, n) => ({ kind: 'call', op: 'iid',         args: [M, lit(n)] });
-const weighted  = (w, M) => ({ kind: 'call', op: 'weighted',    args: [(typeof w === 'object' && w.kind) ? w : lit(w), M] });
-const logweight = (g, M) => ({ kind: 'call', op: 'logweighted', args: [(typeof g === 'object' && g.kind) ? g : lit(g), M] });
+const iid       = (M: any, n: any) => ({ kind: 'call', op: 'iid',         args: [M, lit(n)] });
+const weighted  = (w: any, M: any) => ({ kind: 'call', op: 'weighted',    args: [(typeof w === 'object' && w.kind) ? w : lit(w), M] });
+const logweight = (g: any, M: any) => ({ kind: 'call', op: 'logweighted', args: [(typeof g === 'object' && g.kind) ? g : lit(g), M] });
 
 const STD_NORMAL = dist('Normal', { mu: 0, sigma: 1 });
 const EXP1       = dist('Exponential', { rate: 1 });
@@ -140,7 +140,7 @@ test('walk: resolveMeasureRef dereferences self-refs in measure positions', () =
   const namedM = STD_NORMAL;
   const M = joint({ a: ref('mybinding') });
   const r = traceeval.walk(rng.stateFromKey(1), M, {}, {
-    resolveMeasureRef: (name) => name === 'mybinding' ? namedM : null,
+    resolveMeasureRef: (name: any) => name === 'mybinding' ? namedM : null,
   });
   assert.equal(typeof r.value.a, 'number');
 });

@@ -17,7 +17,7 @@ const sampler = require('../sampler.ts');
 const V = require('../variants.ts').FLATPPL;
 
 // Evaluate a single FlatPPL expression through the real pipeline.
-function ev(expr) {
+function ev(expr: any) {
   const { tokens } = tokenize('R = ' + expr, { variant: 'flatppl' });
   const parsed = parse(tokens, V);
   assert.deepEqual(parsed.diagnostics || [], [],
@@ -27,16 +27,16 @@ function ev(expr) {
 }
 
 // Parse a statement; return { node, diagnostics }.
-function parseStmt(src) {
+function parseStmt(src: any) {
   const { tokens } = tokenize(src, { variant: 'flatppl' });
   const parsed = parse(tokens, V);
   return {
     node: parsed.ast.body[0],
-    diags: (parsed.diagnostics || []).map((d) => d.message),
+    diags: (parsed.diagnostics || []).map((d: any) => d.message),
   };
 }
 
-function lowerExpr(expr) {
+function lowerExpr(expr: any) {
   const { tokens } = tokenize('R = ' + expr, { variant: 'flatppl' });
   return lower.lowerBinding(parse(tokens, V).ast.body[0], {});
 }
@@ -44,7 +44,7 @@ function lowerExpr(expr) {
 // Structural IR equality, ignoring source `loc` (differing column
 // offsets between sugar and its explicit form are expected and
 // irrelevant — only the lowered structure must match).
-function stripLoc(x) {
+function stripLoc(x: any) {
   if (Array.isArray(x)) return x.map(stripLoc);
   if (x && typeof x === 'object') {
     const o = {};
@@ -235,5 +235,5 @@ test('all dotted operator lexemes tokenize with the dotted marker', () => {
   // maximal munch: `.<=` is one token, not `.<` then `=`
   const { tokens } = tokenize('a .<= b', { variant: 'flatppl' });
   assert.equal(tokens[1].type, 'LTE');
-  assert.equal(tokens.filter((t) => t.type !== 'EOF').length, 3);
+  assert.equal(tokens.filter((t: any) => t.type !== 'EOF').length, 3);
 });

@@ -5,7 +5,7 @@ const {
   processSource, planRename, isValidBindingName, isValidPlaceholderText,
 } = require('../index.ts');
 
-function plan(src, line, col) {
+function plan(src: any, line: any, col: any) {
   const { ast, bindings } = processSource(src);
   return planRename(ast, bindings, line, col);
 }

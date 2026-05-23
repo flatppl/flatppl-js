@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { tokenize } = require('../tokenizer.ts');
 const { parse } = require('../parser.ts');
 
-function parseSrc(src) {
+function parseSrc(src: any) {
   return parse(tokenize(src).tokens);
 }
 
@@ -40,14 +40,14 @@ test('parser: simple binding', () => {
 test('parser: decomposition', () => {
   const { ast } = parseSrc('a, b, c = something');
   const stmt = ast.body[0];
-  assert.deepEqual(stmt.names.map(n => n.name), ['a', 'b', 'c']);
+  assert.deepEqual(stmt.names.map((n: any) => n.name), ['a', 'b', 'c']);
 });
 
 test('parser: decomposition with bare _', () => {
   const { ast, diagnostics } = parseSrc('value, _ = f()');
   assert.equal(diagnostics.length, 0);
   const stmt = ast.body[0];
-  assert.deepEqual(stmt.names.map(n => n.name), ['value', '_']);
+  assert.deepEqual(stmt.names.map((n: any) => n.name), ['value', '_']);
 });
 
 test('parser: bare _ as LHS', () => {
@@ -111,7 +111,7 @@ test('parser: function call with mixed args', () => {
 
 test('parser: positional after kwarg is an error', () => {
   const { diagnostics } = parseSrc('x = f(a = 1, b)');
-  assert.ok(diagnostics.some(d =>
+  assert.ok(diagnostics.some((d: any) =>
     d.severity === 'error' && /Positional.*keyword/.test(d.message)));
 });
 
@@ -180,7 +180,7 @@ test('parser: parenthesised expression (single value)', () => {
 
 test('parser: single-element tuple (a,) is an error', () => {
   const { diagnostics } = parseSrc('x = (a,)');
-  assert.ok(diagnostics.some(d =>
+  assert.ok(diagnostics.some((d: any) =>
     d.severity === 'error' && /at least two/.test(d.message)));
 });
 
@@ -226,7 +226,7 @@ test('parser: error recovery skips to next line', () => {
   const { ast, diagnostics } = parseSrc('x = ?\ny = 1');
   assert.ok(diagnostics.length > 0);
   // The y=1 statement should still appear
-  assert.ok(ast.body.some(s => s.type === 'AssignStatement'
+  assert.ok(ast.body.some((s: any) => s.type === 'AssignStatement'
     && s.names[0].name === 'y'));
 });
 
@@ -237,7 +237,7 @@ test('parser: error recovery skips to next line', () => {
 test('parser: in/true/false are reserved at binding LHS', () => {
   for (const name of ['in', 'true', 'false']) {
     const { diagnostics } = parseSrc(name + ' = 1');
-    assert.ok(diagnostics.some(d => d.severity === 'error'
+    assert.ok(diagnostics.some((d: any) => d.severity === 'error'
       && /reserved name/.test(d.message)),
       `'${name} = 1' should be rejected (reserved)`);
   }
@@ -246,12 +246,12 @@ test('parser: in/true/false are reserved at binding LHS', () => {
 test('parser: and/or/not/True/False are NOT reserved (FlatPPY rule gone)', () => {
   for (const name of ['and', 'or', 'not', 'True', 'False']) {
     const { diagnostics } = parseSrc(name + ' = 1');
-    assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0,
+    assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0,
       `'${name} = 1' should parse (no longer reserved)`);
   }
 });
 
 test('parser: true/false still usable as boolean literals; in as operator', () => {
-  assert.equal(parseSrc('x = true').diagnostics.filter(d => d.severity === 'error').length, 0);
-  assert.equal(parseSrc('y = a in S').diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(parseSrc('x = true').diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  assert.equal(parseSrc('y = a in S').diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 });

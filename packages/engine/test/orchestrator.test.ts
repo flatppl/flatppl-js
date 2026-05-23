@@ -31,7 +31,7 @@ const {
   _internal: { isEvaluable, classifyForChain },
 } = require('../orchestrator.ts');
 
-function chainOf(source, target) {
+function chainOf(source: any, target: any) {
   const { bindings } = processSource(source);
   return buildSampleChain(target, bindings);
 }
@@ -147,7 +147,7 @@ y  = draw(Normal(mu = s, sigma = 1))
   const r = chainOf(src, 'y');
   assert.equal(r.unsupported, undefined);
   assert.equal(r.chain.length, 3);
-  const names = r.chain.map(s => s.name);
+  const names = r.chain.map((s: any) => s.name);
   assert.deepEqual(names, ['mu', 's', 'y']);
   assert.equal(r.chain[0].kind, 'sample');
   assert.equal(r.chain[1].kind, 'evaluate');
@@ -174,10 +174,10 @@ c  = a + b
 `;
   const r = chainOf(src, 'c');
   // Even though both a and b depend on mu, mu must appear exactly once.
-  const muCount = r.chain.filter(s => s.name === 'mu').length;
+  const muCount = r.chain.filter((s: any) => s.name === 'mu').length;
   assert.equal(muCount, 1);
   // c depends on both a and b — both should precede c.
-  const idx = name => r.chain.findIndex(s => s.name === name);
+  const idx = (name: any) => r.chain.findIndex((s: any) => s.name === name);
   assert.ok(idx('mu') < idx('a'));
   assert.ok(idx('mu') < idx('b'));
   assert.ok(idx('a') < idx('c'));
@@ -267,7 +267,7 @@ test('isEvaluable: literals, refs, consts, evaluable ops', () => {
 // buildDerivations — main-thread sample-cache key/derivation map
 // =====================================================================
 
-function derivationsOf(source) {
+function derivationsOf(source: any) {
   const { bindings } = processSource(source);
   return buildDerivations(bindings);
 }
@@ -819,7 +819,7 @@ f = functionof(combined, a = a)
   const rewritten = canonicalizeImplicitBoundaries(bindings);
   const fNode = rewritten.get('f').node.value;
   // One explicit kwarg, NOT two (no extra promotion of b).
-  const kwargs = fNode.args.slice(1).filter((a) => a.type === 'KeywordArg');
+  const kwargs = fNode.args.slice(1).filter((a: any) => a.type === 'KeywordArg');
   assert.equal(kwargs.length, 1);
   assert.equal(kwargs[0].name, 'a');
   // No implicitBoundaries tag — the rewrite didn't fire.
@@ -835,7 +835,7 @@ K = kernelof(y)
   const rewritten = canonicalizeImplicitBoundaries(bindings);
   const kNode = rewritten.get('K').node.value;
   // K's body refs y → mu, so mu is the implicit boundary.
-  const kwargs = kNode.args.slice(1).filter((a) => a.type === 'KeywordArg');
+  const kwargs = kNode.args.slice(1).filter((a: any) => a.type === 'KeywordArg');
   assert.equal(kwargs.length, 1);
   assert.equal(kwargs[0].name, 'mu');
 });
@@ -862,7 +862,7 @@ f = functionof(combo)
 `);
   const rewritten = canonicalizeImplicitBoundaries(bindings);
   const fNode = rewritten.get('f').node.value;
-  const kwargs = fNode.args.slice(1).filter((a) => a.type === 'KeywordArg');
+  const kwargs = fNode.args.slice(1).filter((a: any) => a.type === 'KeywordArg');
   // Only `mu` — `ext` is fixed-phase, must not appear.
   assert.equal(kwargs.length, 1);
   assert.equal(kwargs[0].name, 'mu');
@@ -957,7 +957,7 @@ z = f(x, y)
   assert.equal(z.ir.kind, 'ref');
   const addAnon = bindings.get(z.ir.name);
   assert.equal(addAnon.ir.op, 'add');
-  const names = addAnon.ir.args.map((arg) => arg.kind === 'ref' ? arg.name : null);
+  const names = addAnon.ir.args.map((arg: any) => arg.kind === 'ref' ? arg.name : null);
   // Both elementof leaves were substituted — no lingering 'a' or 'b'.
   assert.ok(!names.includes('a') && !names.includes('b'),
     `add args still reference unsubstituted elementof leaves: ${names.join(', ')}`);
@@ -980,7 +980,7 @@ g = f(5)
   assert.equal(g.ir.kind, 'call');
   assert.equal(g.ir.op, 'mul');
   // arg[1] is the substituted literal 5.
-  const argLit = g.ir.args.find((a) => a.kind === 'lit');
+  const argLit = g.ir.args.find((a: any) => a.kind === 'lit');
   assert.ok(argLit, 'expected a literal arg after substitution');
   assert.equal(argLit.value, 5);
 });
@@ -1001,7 +1001,7 @@ result = f(v)
   // but we DO assert there are no lingering refs to `mu` in any
   // of result's transitive closure anons — that would mean the
   // substitution missed a path.
-  function walkRefs(ir, out) {
+  function walkRefs(ir: any, out: any) {
     if (!ir || typeof ir !== 'object') return;
     if (ir.kind === 'ref' && ir.ns === 'self') out.add(ir.name);
     if (ir.args) for (const a of ir.args) walkRefs(a, out);
@@ -1042,7 +1042,7 @@ y = f(x)
 `);
   // Walk y's closure: every ref should be either a substituted leaf
   // (x), the external ref (ext), or an internal anon. NO refs to `a`.
-  function walkRefs(ir, out) {
+  function walkRefs(ir: any, out: any) {
     if (!ir || typeof ir !== 'object') return;
     if (ir.kind === 'ref' && ir.ns === 'self') out.add(ir.name);
     if (ir.args) for (const a of ir.args) walkRefs(a, out);
@@ -1112,7 +1112,7 @@ test('leafSampleIR: returns null for evaluate-only chains', () => {
 test('chain: self-reference detected (defensive — analyzer normally rejects)', () => {
   // Manually construct a fake binding map with a cycle.
   const bindings = new Map();
-  const stub = (name, deps) => ({
+  const stub = (name: any, deps: any) => ({
     name, deps: new Set(deps), type: 'call',
     node: { type: 'AssignStatement', value: { type: 'Identifier', name: 'x', loc: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } } } },
   });
@@ -1130,7 +1130,7 @@ test('chain: self-reference detected (defensive — analyzer normally rejects)',
 // (lower.js-side, F1) together into a single shape the viewer can
 // consume. Covers fn / functionof / kernelof / likelihoodof.
 
-function sigOf(source, name) {
+function sigOf(source: any, name: any) {
   // signatureOf reads binding.ir, which is populated by
   // liftInlineSubexpressions (the lift pass that buildDerivations
   // runs internally). Mimic that here so tests stay decoupled from
@@ -1262,7 +1262,7 @@ s = a + b
 f = functionof(s)
 `, 'f');
   assert.equal(sig.inputs.length, 2);
-  const names = sig.inputs.map((inp) => inp.paramName).sort();
+  const names = sig.inputs.map((inp: any) => inp.paramName).sort();
   assert.deepEqual(names, ['a', 'b']);
 });
 
@@ -1344,7 +1344,7 @@ f = functionof(s)
   const lifted = liftInlineSubexpressions(bindings);
   const ds = buildDerivations(lifted);
   const sig = signatureOf('f', lifted);
-  const paramNames = sig.inputs.map((inp) => inp.paramName);
+  const paramNames = sig.inputs.map((inp: any) => inp.paramName);
   assert.deepEqual(paramNames.sort(), ['a', 'b']);
 
   const out = inlineForProfile(sig.body, paramNames, ds.bindings, ds.derivations);
@@ -1441,7 +1441,7 @@ f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
 `, 'f');
   const axes = distributeAxes(sig);
   assert.equal(axes.length, 2);
-  assert.deepEqual(axes.map(a => a.label).sort(), ['theta1', 'theta2']);
+  assert.deepEqual(axes.map((a: any) => a.label).sort(), ['theta1', 'theta2']);
 });
 
 test('distributeAxes: any / deferred placeholder still emits an axis', () => {
@@ -1747,7 +1747,7 @@ correct       = record(theta1 = 1, theta2 = 2)
   const lifted = liftInlineSubexpressions(bindings);
   const sig = signatureOf('f', lifted);
   const presets = findMatchingPresets(sig, lifted);
-  assert.deepEqual(presets.map(p => p.name).sort(), ['correct']);
+  assert.deepEqual(presets.map((p: any) => p.name).sort(), ['correct']);
 });
 
 test('findMatchingPresets: accepts constant-foldable values, rejects non-constant', () => {
@@ -1772,7 +1772,7 @@ stochastic   = record(mu = mu)
   const lifted = liftInlineSubexpressions(bindings);
   const sig = signatureOf('f', lifted);
   const presets = findMatchingPresets(sig, lifted);
-  const names = presets.map(p => p.name).sort();
+  const names = presets.map((p: any) => p.name).sort();
   assert.deepEqual(names, ['arith', 'lit_value', 'named_const', 'neg_lit']);
   const byName = {};
   for (const p of presets) byName[p.name] = p;
@@ -1862,7 +1862,7 @@ correct = cartprod(theta1 = interval(-1, 1), theta2 = interval(0, 1))
   const lifted = liftInlineSubexpressions(bindings);
   const sig = signatureOf('f', lifted);
   const doms = findMatchingDomains(sig, lifted);
-  assert.deepEqual(doms.map(d => d.name).sort(), ['correct']);
+  assert.deepEqual(doms.map((d: any) => d.name).sort(), ['correct']);
 });
 
 test('findMatchingDomains: rejects degenerate / non-literal intervals', () => {
@@ -1877,7 +1877,7 @@ ref_bound  = cartprod(theta = interval(theta, 1))
   const lifted = liftInlineSubexpressions(bindings);
   const sig = signatureOf('f', lifted);
   const doms = findMatchingDomains(sig, lifted);
-  assert.deepEqual(doms.map(d => d.name).sort(), ['ok']);
+  assert.deepEqual(doms.map((d: any) => d.name).sort(), ['ok']);
 });
 
 test('findMatchingDomains: accepts named-set fields as unbounded factors', () => {
@@ -1973,7 +1973,7 @@ test('substituteLocals: walks nested args / fields', () => {
 // return both the lifted bindings and the derivations table —
 // implicitKernelSignature needs the lifted form so its expandMeasureIR
 // structural fallback can walk binding.ir.
-function bindingsAndDerivationsFor(source) {
+function bindingsAndDerivationsFor(source: any) {
   const { bindings } = processSource(source);
   const ds = buildDerivations(bindings);
   return { bindings: ds.bindings, derivations: ds.derivations };
@@ -2017,7 +2017,7 @@ x = draw(Normal(mu = mu, sigma = sigma))
   const sig = implicitKernelSignature('x', bindings, derivations);
   assert.ok(sig);
   assert.equal(sig.inputs.length, 2);
-  const names = sig.inputs.map((i) => i.paramName).sort();
+  const names = sig.inputs.map((i: any) => i.paramName).sort();
   assert.deepEqual(names, ['mu', 'sigma']);
 });
 
@@ -2033,7 +2033,7 @@ x = draw(Normal(mu = mu, sigma = ext))
   const sig = implicitKernelSignature('x', bindings, derivations);
   assert.ok(sig);
   // Only mu — ext is fixed-phase and must NOT be an input.
-  const names = sig.inputs.map((i) => i.paramName);
+  const names = sig.inputs.map((i: any) => i.paramName);
   assert.deepEqual(names, ['mu']);
 });
 
@@ -2065,7 +2065,7 @@ x = draw(Normal(mu = 0, sigma = resolution))
 `);
   const sig = implicitKernelSignature('x', bindings, derivations);
   assert.ok(sig, 'expected a kernel signature even with derived intermediates');
-  const names = sig.inputs.map((i) => i.paramName);
+  const names = sig.inputs.map((i: any) => i.paramName);
   assert.ok(names.includes('mu'),
     `expected 'mu' among inputs; got ${names.join(', ')}`);
 });
@@ -2164,7 +2164,7 @@ combo = a^2 + b^2
   const sig = implicitFunctionSignature('combo', bindings, derivations);
   assert.ok(sig);
   assert.equal(sig.inputs.length, 2);
-  const names = sig.inputs.map((i) => i.paramName).sort();
+  const names = sig.inputs.map((i: any) => i.paramName).sort();
   assert.deepEqual(names, ['a', 'b']);
 });
 
@@ -2223,7 +2223,7 @@ outer = inner * inner
 `);
   const sig = implicitFunctionSignature('outer', bindings, derivations);
   assert.ok(sig);
-  const names = sig.inputs.map((i) => i.paramName);
+  const names = sig.inputs.map((i: any) => i.paramName);
   assert.deepEqual(names, ['mu']);
 });
 
@@ -2237,7 +2237,7 @@ combo = mu * ext
 `);
   const sig = implicitFunctionSignature('combo', bindings, derivations);
   assert.ok(sig);
-  assert.deepEqual(sig.inputs.map((i) => i.paramName), ['mu']);
+  assert.deepEqual(sig.inputs.map((i: any) => i.paramName), ['mu']);
 });
 
 test('implicitFunctionSignature: bindings=null → null', () => {
@@ -2269,7 +2269,7 @@ mu2 = mu^2
 // Helper: build a bindings Map from { name → ir } and an empty
 // derivations table. Returns the result of expandMeasureIR walking
 // the named binding's .ir structurally.
-function expandStructural(name, bindingMap) {
+function expandStructural(name: any, bindingMap: any) {
   const bindings = new Map();
   for (const k in bindingMap) bindings.set(k, { ir: bindingMap[k] });
   return expandMeasureIR(name, {}, undefined, bindings);
@@ -2514,7 +2514,7 @@ y  = draw(Dirac(value = mu))
 `, 'y');
   assert.equal(r.unsupported, undefined);
   // Two steps: mu (evaluate) and y (evaluate via the rewrite).
-  assert.deepEqual(r.chain.map(s => s.name), ['mu', 'y']);
+  assert.deepEqual(r.chain.map((s: any) => s.name), ['mu', 'y']);
   assert.equal(r.chain[1].kind, 'evaluate');
   // The override IR is the ref to mu.
   assert.equal(r.chain[1].ir.kind, 'ref');
@@ -2530,7 +2530,7 @@ x = draw(Normal(mu = 0, sigma = 1))
 y = draw(Dirac(value = x))
 `, 'y');
   assert.equal(r.unsupported, undefined);
-  assert.deepEqual(r.chain.map(s => s.name), ['x', 'y']);
+  assert.deepEqual(r.chain.map((s: any) => s.name), ['x', 'y']);
   assert.equal(r.chain[0].kind, 'sample');
   assert.equal(r.chain[1].kind, 'evaluate');
   assert.equal(r.chain[1].ir.kind, 'ref');
@@ -2615,7 +2615,7 @@ some_lit = 5.0
 y = draw(Dirac(some_lit))
 `, 'y');
   assert.equal(r.unsupported, undefined);
-  const yStep = r.chain.find(s => s.name === 'y');
+  const yStep = r.chain.find((s: any) => s.name === 'y');
   assert.ok(yStep);
   assert.equal(yStep.kind, 'evaluate');
 });
@@ -2631,7 +2631,7 @@ m = lawof(some_lit)
 y = draw(m)
 `, 'y');
   assert.equal(r.unsupported, undefined);
-  const yStep = r.chain.find(s => s.name === 'y');
+  const yStep = r.chain.find((s: any) => s.name === 'y');
   assert.ok(yStep);
   assert.equal(yStep.kind, 'evaluate');
 });
@@ -2717,7 +2717,7 @@ test('enumerateOutputLeaves: nested record-in-record', () => {
   const leaves = enumerateOutputLeaves(t);
   // inner.x, inner.y, flag — three scalar leaves total.
   assert.equal(leaves.length, 3);
-  const labels = leaves.map(L => L.label).sort();
+  const labels = leaves.map((L: any) => L.label).sort();
   assert.deepEqual(labels, ['.flag', '.inner.x', '.inner.y']);
 });
 
@@ -3064,7 +3064,7 @@ test('auto-splat: forward_kernel(rand_pars) drives end-to-end rand chain', () =>
     rp, rs2 = rand(rs, prior)
     ro, _ = rand(rs2, forward_kernel(rp))
   `);
-  const errs = diagnostics.filter(d => d.severity === 'error');
+  const errs = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errs, [], `unexpected errors: ${JSON.stringify(errs)}`);
 
   const { fixedValues } = buildDerivations(bindings);
@@ -3088,7 +3088,7 @@ test('auto-splat: inline record(...) call splats fields', () => {
     d = elementof(reals)
     y = f(record(a = 3, b = 4))
   `);
-  const errs = diagnostics.filter(d => d.severity === 'error');
+  const errs = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errs, [], `unexpected errors: ${JSON.stringify(errs)}`);
 });
 
@@ -3112,7 +3112,7 @@ test('diagnostics: fixed-phase dead end is surfaced (named at the cause)', () =>
     'xs = [1.0, 2.0, 3.0]\n' +
     'ys = bcadd(xs, 1.0)\n');
   const { diagnostics } = buildDerivations(bindings);
-  const dead = diagnostics.filter(d => d.severity === 'error'
+  const dead = diagnostics.filter((d: any) => d.severity === 'error'
     && /Fixed-phase binding 'bcadd' produced no value/.test(d.message));
   assert.equal(dead.length, 1, 'bcadd flagged once as fixed-phase dead end');
   assert.ok(dead[0].loc, 'diagnostic carries a source location');

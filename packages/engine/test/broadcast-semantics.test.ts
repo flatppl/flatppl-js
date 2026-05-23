@@ -11,14 +11,14 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-const ref = (n) => ({ kind: 'ref', ns: 'self', name: n });
-const lit = (v) => ({ kind: 'lit', value: v });
-const addaxes = (a, l, t) =>
+const ref = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
+const lit = (v: any) => ({ kind: 'lit', value: v });
+const addaxes = (a: any, l: any, t: any) =>
   ({ kind: 'call', op: 'addaxes', args: [a, lit(l), lit(t)] });
-const fnOf = (params, body) =>
+const fnOf = (params: any, body: any) =>
   ({ kind: 'call', op: 'functionof', params: params, body: body });
-const bc = (...a) => ({ kind: 'call', op: 'broadcast', args: a });
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+const bc = (...a: any[]) => ({ kind: 'call', op: 'broadcast', args: a });
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
 const addAB = fnOf(['a', 'b'],
   { kind: 'call', op: 'add', args: [ref('a'), ref('b')] });

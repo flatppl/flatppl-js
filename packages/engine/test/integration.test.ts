@@ -26,7 +26,7 @@ for (const name of PARSE_FIXTURES) {
   test(`integration: ${name} parses without errors`, () => {
     const src = fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8');
     const { diagnostics } = processSource(src, { path: name });
-    const errors = diagnostics.filter(d => d.severity === 'error');
+    const errors = diagnostics.filter((d: any) => d.severity === 'error');
     if (errors.length > 0) {
       for (const e of errors) {
         console.error(`  line ${e.loc.start.line + 1}: ${e.message}`);
@@ -40,14 +40,14 @@ test('integration: bayesian_inference_1 forward_kernel DAG includes correct ance
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_1.flatppl'), 'utf8');
   const { bindings } = processSource(src);
   const dag = computeSubDAG(bindings, 'forward_kernel');
-  const ids = new Set(dag.nodes.map(n => n.id));
+  const ids = new Set(dag.nodes.map((n: any) => n.id));
   // Must include kernel target (obs), boundaries (theta1, theta2),
   // and the deterministic chain (a, b, f_a, f_b)
   for (const id of ['forward_kernel', 'obs', 'a', 'b', 'f_a', 'f_b', 'theta1', 'theta2']) {
     assert.ok(ids.has(id), `missing ${id}`);
   }
-  assert.equal(dag.nodes.find(n => n.id === 'theta1').isBoundary, true);
-  assert.equal(dag.nodes.find(n => n.id === 'theta2').isBoundary, true);
+  assert.equal(dag.nodes.find((n: any) => n.id === 'theta1').isBoundary, true);
+  assert.equal(dag.nodes.find((n: any) => n.id === 'theta2').isBoundary, true);
 });
 
 // --- bayesian_inference_3: structural disintegration via positional
@@ -56,7 +56,7 @@ test('integration: bayesian_inference_1 forward_kernel DAG includes correct ance
 test('integration: bayesian_inference_3 disintegration produces Delegate plans', () => {
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
   const { bindings, diagnostics } = processSource(src);
-  assert.equal(diagnostics.filter(d => d.severity === 'error').length, 0);
+  assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
   // The disintegrate(["obs"], joint_model) statement should resolve via
   // the jointchain-positional rule into a Delegate identifying the kernel
@@ -87,10 +87,10 @@ test('integration: bayesian_inference_3 forward_kernel2 sub-DAG mirrors forward_
   // Strip the root-id difference and the synthetic ":target" anon node
   // (different bubble owners → different synthetic ids), then compare
   // the set of "real" binding ancestors reached.
-  const realIds = (dag, root) => new Set(
+  const realIds = (dag: any, root: any) => new Set(
     dag.nodes
-      .filter(n => n.id !== root && !n.id.includes(':'))
-      .map(n => n.id)
+      .filter((n: any) => n.id !== root && !n.id.includes(':'))
+      .map((n: any) => n.id)
   );
   assert.deepEqual(
     [...realIds(fk2Dag, 'forward_kernel2')].sort(),
@@ -98,8 +98,8 @@ test('integration: bayesian_inference_3 forward_kernel2 sub-DAG mirrors forward_
     'forward_kernel2 should reach the same module-level ancestors as forward_kernel');
 
   // Boundaries are the same (theta1, theta2).
-  const fk2Boundaries  = fk2Dag.nodes.filter(n => n.isBoundary).map(n => n.id).sort();
-  const fkBoundaries   = fkDag.nodes.filter(n => n.isBoundary).map(n => n.id).sort();
+  const fk2Boundaries  = fk2Dag.nodes.filter((n: any) => n.isBoundary).map((n: any) => n.id).sort();
+  const fkBoundaries   = fkDag.nodes.filter((n: any) => n.isBoundary).map((n: any) => n.id).sort();
   assert.deepEqual(fk2Boundaries, fkBoundaries);
 });
 
@@ -166,12 +166,12 @@ test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () 
 //   - record auto-splat at the kernel call site (dist = kernel(kernel_input))
 // =====================================================================
 
-function loadMinimal(file) {
+function loadMinimal(file: any) {
   const src = fs.readFileSync(path.join(FIXTURES_DIR, file), 'utf8');
   return processSource(src, { path: file });
 }
 
-function userBindings(parsed) {
+function userBindings(parsed: any) {
   // Skip anonymous lift-introduced names; we care about user bindings.
   const out = {};
   for (const [n, b] of parsed.bindings) {
@@ -184,9 +184,9 @@ function userBindings(parsed) {
 
 test('integration: minimal.flatppl parses without errors', () => {
   const { diagnostics } = loadMinimal('minimal.flatppl');
-  const errors = diagnostics.filter((d) => d.severity === 'error');
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.equal(errors.length, 0,
-    `minimal.flatppl: ${errors.length} errors (${errors.map((e) => e.message).join('; ')})`);
+    `minimal.flatppl: ${errors.length} errors (${errors.map((e: any) => e.message).join('; ')})`);
 });
 
 test('integration: minimal — f_sqrt auto-promotes `a` as its single input', () => {
@@ -212,7 +212,7 @@ test('integration: minimal — sigma is computed via implicit boundary substitut
   const { bindings } = loadMinimal('minimal.flatppl');
   const ds = buildDerivations(bindings);
   // Walk sigma's transitive closure for any lingering 'a' refs.
-  function walk(name, seen) {
+  function walk(name: any, seen: any) {
     if (seen.has(name)) return;
     seen.add(name);
     const b = ds.bindings.get(name);
@@ -304,12 +304,12 @@ test('integration: bayesian_inference_3 posterior view uses the literal source s
   const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
   const { bindings } = processSource(src);
   const dag = computeSubDAG(bindings, 'posterior');
-  const ids = new Set(dag.nodes.map(n => n.id));
+  const ids = new Set(dag.nodes.map((n: any) => n.id));
   for (const id of ['posterior', 'L', 'forward_kernel2', 'prior2', 'joint_model', 'prior', 'forward_kernel']) {
     assert.ok(ids.has(id), `missing ${id} from posterior trace`);
   }
   // Disintegration results don't get bubbles in this view.
-  const reifNames = new Set(dag.reifications.map(r => r.name));
+  const reifNames = new Set(dag.reifications.map((r: any) => r.name));
   assert.ok(!reifNames.has('forward_kernel2'), 'forward_kernel2 should not get a bubble here');
   assert.ok(!reifNames.has('prior2'),          'prior2 should not get a bubble here');
   // The user-written prior and forward_kernel still get bubbles.

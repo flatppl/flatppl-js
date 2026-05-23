@@ -15,7 +15,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 4096;
 const ROOT_SEED    = 0xCAFEBEEF;
 
-function makeCtx(source) {
+function makeCtx(source: any) {
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -25,13 +25,13 @@ function makeCtx(source) {
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name) => {
+    getMeasure:  (name: any) => {
       if (cache.has(name)) return cache.get(name);
       const p = materialiser.materialiseMeasure(name, ctx);
       cache.set(name, p);
       return p;
     },
-    sendWorker:  (msg) => {
+    sendWorker:  (msg: any) => {
       const reply = worker.handle(msg);
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);
@@ -42,7 +42,7 @@ function makeCtx(source) {
   return ctx;
 }
 
-function vecMean(samples, n) {
+function vecMean(samples: any, n: any) {
   // Per-component mean across atom axis. samples is atom-major
   // shape=[N, n]; returns length-n array.
   const N = samples.length / n;
@@ -54,7 +54,7 @@ function vecMean(samples, n) {
   return out;
 }
 
-function vecCov(samples, mean, n) {
+function vecCov(samples: any, mean: any, n: any) {
   // Sample covariance matrix from atom-batched vector samples.
   const N = samples.length / n;
   const out = new Float64Array(n * n);
@@ -154,7 +154,7 @@ m = MvNormal(mu = mu, cov = sigma)
 //   Σ⁻¹ = (1/|Σ|) [[c, -b], [-b, a]]
 //   Mahalanobis = (1/|Σ|) (c·(x0-mu0)² - 2b·(x0-mu0)(x1-mu1) + a·(x1-mu1)²)
 
-function mvnormalLogpdf2D(x, mu, cov) {
+function mvnormalLogpdf2D(x: any, mu: any, cov: any) {
   const [a, b, c] = [cov[0][0], cov[0][1], cov[1][1]];
   const det = a * c - b * b;
   const d0 = x[0] - mu[0], d1 = x[1] - mu[1];
@@ -227,7 +227,7 @@ lp = logdensityof(m, [${x[0]}, ${x[1]}])
 `);
   const lp = await ctx.getMeasure('lp');
   // Sum of independent 1-D normal logpdfs:
-  function logN(x, mu, var_) {
+  function logN(x: any, mu: any, var_: any) {
     return -0.5 * Math.log(2 * Math.PI * var_) - (x - mu) * (x - mu) / (2 * var_);
   }
   const expected = logN(x[0], mu[0], a) + logN(x[1], mu[1], c);

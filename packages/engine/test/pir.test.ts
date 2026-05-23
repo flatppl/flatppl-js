@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const pir = require('../pir.ts');
 
-function lowered(src) {
+function lowered(src: any) {
   const { bindings } = processSource(src);
   return pir.lowerToModule(bindings);
 }
@@ -147,7 +147,7 @@ test('walkCalls: visits every call depth-first, post-order', () => {
   `);
   const r = m.bindings.get('y').rhs;
   const visited = [];
-  pir.walkCalls(r, c => visited.push(c.op));
+  pir.walkCalls(r, (c: any) => visited.push(c.op));
   // add (inner) before Normal (outer)
   assert.deepEqual(visited, ['add', 'Normal']);
 });

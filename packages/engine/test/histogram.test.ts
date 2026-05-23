@@ -154,7 +154,7 @@ test('freedmanDiaconisHistogram: uniform weights produce approximately the same 
   const b = freedmanDiaconisHistogram(xs, { logWeights: lw });
   assert.ok(Math.abs(a.xs.length - b.xs.length) <= 2, 'bin counts within ±2');
   // Total area within rounding; both should integrate to ~1 (= 1 - 2·trimQ).
-  function area(h) {
+  function area(h: any) {
     let s = 0;
     for (let i = 0; i < h.ys.length; i++) s += h.ys[i] * h.binWidth;
     return s;
@@ -162,7 +162,7 @@ test('freedmanDiaconisHistogram: uniform weights produce approximately the same 
   assert.ok(Math.abs(area(a) - area(b)) < 0.01,
     `areas: unweighted ${area(a)}, weighted ${area(b)}`);
   // Peak in the same neighbourhood (≈ 0 for standard normal).
-  function peakX(h) {
+  function peakX(h: any) {
     let imax = 0;
     for (let i = 1; i < h.ys.length; i++) if (h.ys[i] > h.ys[imax]) imax = i;
     return h.xs[imax];

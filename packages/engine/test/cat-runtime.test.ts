@@ -13,14 +13,14 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-function lit(v)        { return { kind: 'lit', value: v }; }
-function vec(...vs)    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
-function rec(...kvs)   {
+function lit(v: any)        { return { kind: 'lit', value: v }; }
+function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
+function rec(...kvs: any[])   {
   return { kind: 'call', op: 'record',
     fields: kvs.map(([k, v]) => ({ name: k, value: lit(v) })) };
 }
-function call(op, ...args) { return { kind: 'call', op, args }; }
-const ev = (ir) => sampler.evaluateExpr(ir, {});
+function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
+const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
 // =====================================================================
 // All-scalar form

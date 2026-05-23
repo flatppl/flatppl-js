@@ -19,9 +19,9 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 
-const lit = v => ({ kind: 'lit', value: v });
-const ref = n => ({ kind: 'ref', ns: 'self', name: n });
-const call = (op, ...args) => ({ kind: 'call', op, args });
+const lit = (v: any) => ({ kind: 'lit', value: v });
+const ref = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
+const call = (op: any, ...args: any[]) => ({ kind: 'call', op, args });
 
 // =====================================================================
 // Broadcast semantics — scalar arith with per-atom refs
@@ -199,9 +199,9 @@ test('evaluateExprN: every scalar primitive dispatches via ARITH_OPS_N', () => {
   };
 
   for (const op of Object.keys(cases)) {
-    const args = cases[op].map((_, i) => ({ kind: 'ref', ns: 'self', name: `_p${i}` }));
+    const args = cases[op].map((_: any, i: any) => ({ kind: 'ref', ns: 'self', name: `_p${i}` }));
     const refArrays = {};
-    cases[op].forEach((arr, i) => { refArrays[`_p${i}`] = arr; });
+    cases[op].forEach((arr: any, i: any) => { refArrays[`_p${i}`] = arr; });
     const ir = { kind: 'call', op, args };
     let r;
     try {

@@ -15,7 +15,7 @@ const { buildDerivations } = orchestrator;
 
 // Materialise `target` from `src` via the real materialiser. Mirrors
 // the kernel-broadcast test harness.
-function materialise(src, target, sampleCount) {
+function materialise(src: any, target: any, sampleCount: any) {
   const lifted = processSource(src);
   const built = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
@@ -25,13 +25,13 @@ function materialise(src, target, sampleCount) {
     derivations: built.derivations,
     bindings: built.bindings,
     fixedValues: built.fixedValues || new Map(),
-    getMeasure: (n) => {
+    getMeasure: (n: any) => {
       if (cache.has(n)) return cache.get(n);
       const p = materialiser.materialiseMeasure(n, ctx);
       cache.set(n, p);
       return p;
     },
-    sendWorker: (m) => {
+    sendWorker: (m: any) => {
       const r = worker.handle(m);
       return r && r.type === 'error'
         ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
@@ -42,11 +42,11 @@ function materialise(src, target, sampleCount) {
   return ctx.getMeasure(target);
 }
 
-function meanOf(arr) {
+function meanOf(arr: any) {
   let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i];
   return s / arr.length;
 }
-function varOf(arr) {
+function varOf(arr: any) {
   const m = meanOf(arr); let s = 0;
   for (let i = 0; i < arr.length; i++) s += (arr[i] - m) ** 2;
   return s / arr.length;
@@ -55,7 +55,7 @@ function varOf(arr) {
 // First-class jointchain is unconditional (the migration flag is
 // gone). Retained as a thin identity wrapper so the structural test
 // bodies below stay grouped/readable without churn.
-function withFirstClass(fn) { return fn(); }
+function withFirstClass(fn: any) { return fn(); }
 
 const KDEF =
   'M = Normal(mu = 0.0, sigma = 1.0)\n' +
@@ -107,7 +107,7 @@ test('flag ON: kwarg form carries labels (record-shaped)', () => {
     const d = derivations['jc'];
     assert.equal(d.kind, 'jointchain');
     assert.deepEqual(d.labels, ['p', 'q']);
-    assert.deepEqual(d.steps.map((s) => s.var), ['p', 'q']);
+    assert.deepEqual(d.steps.map((s: any) => s.var), ['p', 'q']);
     assert.deepEqual(d.steps[1].inputs, ['p']);
   });
 });
@@ -239,7 +239,7 @@ test('matJointchain 2b-ext: N-ary jointchain (3-step) retains (a0,a1,a2)', async
 
 // ---- 2c: density (consume/rest via expandMeasureIR) ----
 const LOG2PI = Math.log(2 * Math.PI);
-const normLogpdf = (x, mu, sig) =>
+const normLogpdf = (x: any, mu: any, sig: any) =>
   -0.5 * LOG2PI - Math.log(sig) - ((x - mu) ** 2) / (2 * sig * sig);
 
 test('density 2c: kchain marginal logdensity ≈ Normal(0, sqrt2)', async () => {

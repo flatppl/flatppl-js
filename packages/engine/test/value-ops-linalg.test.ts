@@ -29,12 +29,12 @@ const sampler = require('../sampler.ts');
 const { scalar, vector, matrix, transpose, adjoint, getTag } = valueLib;
 const { ARITH_OPS } = sampler._internal;
 
-function close(a, b, tol) {
+function close(a: any, b: any, tol: any) {
   tol = tol == null ? 1e-12 : tol;
   return Math.abs(a - b) <= tol;
 }
 
-function dataClose(a, b, tol) {
+function dataClose(a: any, b: any, tol: any) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (!close(a[i], b[i], tol)) return false;
   return true;
