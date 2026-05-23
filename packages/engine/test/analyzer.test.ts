@@ -211,13 +211,26 @@ test('analyzer: checked takes positional value + kwargs after', () => {
   assert.ok(process(`y = checked(x, y)\n`).diagnostics.some((d: any) => /only keyword arguments/.test(d.message)));
 });
 
-test('analyzer: record / table require keyword args only', () => {
-  for (const op of ['record', 'table']) {
-    const pos = process(`r = ${op}(a, b)\n`);
-    assert.ok(pos.diagnostics.some((d: any) => /keyword arguments only/.test(d.message)), op + ' positional');
-    const empty = process(`r = ${op}()\n`);
-    assert.ok(empty.diagnostics.some((d: any) => /at least one field/.test(d.message)), op + ' empty');
-  }
+test('analyzer: record requires keyword args only', () => {
+  const pos = process(`r = record(a, b)\n`);
+  assert.ok(pos.diagnostics.some((d: any) => /keyword arguments only/.test(d.message)));
+  const empty = process(`r = record()\n`);
+  assert.ok(empty.diagnostics.some((d: any) => /at least one field/.test(d.message)));
+});
+
+test('analyzer: table accepts kwarg columns OR a single positional record', () => {
+  // table(col = [...], ...) — kwarg form
+  const kw = process(`a = elementof(reals)\nb = elementof(reals)\nt = table(x = [1, 2], y = [3, 4])\n`);
+  assert.ok(!kw.diagnostics.some((d: any) => /table/.test(d.message)));
+  // table(r) — record-promotion form
+  const oneArg = process(`r = record(x = [1, 2], y = [3, 4])\nt = table(r)\n`);
+  assert.ok(!oneArg.diagnostics.some((d: any) => /table/.test(d.message)));
+  // table(a, b) — multi positional NOT allowed
+  const multiPos = process(`t = table(a, b)\n`);
+  assert.ok(multiPos.diagnostics.some((d: any) => /single positional record or column keyword/.test(d.message)));
+  // table() — empty
+  const empty = process(`t = table()\n`);
+  assert.ok(empty.diagnostics.some((d: any) => /requires at least one column/.test(d.message)));
 });
 
 test('analyzer: tuple / vector take positional args only', () => {
@@ -241,6 +254,17 @@ test('analyzer: interval / cartpow / stdsimplex set constructors', () => {
   assert.ok(process(`s = cartpow(reals)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
   assert.ok(process(`s = cartprod(reals)\n`).diagnostics.some((d: any) => /at least two/.test(d.message)));
   assert.ok(process(`s = stdsimplex()\n`).diagnostics.some((d: any) => /takes exactly one/.test(d.message)));
+});
+
+test('analyzer: cartprod accepts both positional and keyword forms', () => {
+  // Spec / fixture form: cartprod(name1 = S1, name2 = S2, ...). Same
+  // dual-form discipline as joint / jointchain.
+  const kw = process(`s = cartprod(theta1 = interval(-3, 3), theta2 = interval(0, 2))\n`);
+  assert.ok(!kw.diagnostics.some((d: any) => /cartprod/.test(d.message)));
+  const pos = process(`s = cartprod(reals, posreals)\n`);
+  assert.ok(!pos.diagnostics.some((d: any) => /cartprod/.test(d.message)));
+  const mixed = process(`s = cartprod(reals, name = posreals)\n`);
+  assert.ok(mixed.diagnostics.some((d: any) => /all positional or all keyword/.test(d.message)));
 });
 
 test('analyzer: builds symbols from bindings', () => {

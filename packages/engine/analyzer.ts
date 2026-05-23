@@ -350,15 +350,36 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     // ---- Composite constructors --------------------------------------
-    case 'record':
-    case 'table': {
-      // record(name = expr, ...) / table(name = expr, ...) — all keyword.
+    case 'record': {
+      // record(name = expr, ...) — all keyword.
       if (args.length === 0) {
-        diags.push({ severity: 'error', message: `${name}() requires at least one field`, loc: valueNode.loc });
+        diags.push({ severity: 'error', message: `record() requires at least one field`, loc: valueNode.loc });
       }
       for (const arg of args) {
         if (arg.type !== 'KeywordArg') {
-          diags.push({ severity: 'error', message: `${name}() takes keyword arguments only (name = value)`, loc: arg.loc });
+          diags.push({ severity: 'error', message: `record() takes keyword arguments only (name = value)`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'table': {
+      // Two forms (spec §03):
+      //   table(col1 = [...], col2 = [...])   — column kwargs (canonical)
+      //   table(r)                            — promote a record-of-equal-
+      //                                          length-vectors to a table
+      if (args.length === 0) {
+        diags.push({ severity: 'error', message: `table() requires at least one column (or a record argument)`, loc: valueNode.loc });
+        break;
+      }
+      // Single positional arg → record-promotion form. OK.
+      if (args.length === 1 && args[0].type !== 'KeywordArg') {
+        break;
+      }
+      // Otherwise: all kwargs required.
+      for (const arg of args) {
+        if (arg.type !== 'KeywordArg') {
+          diags.push({ severity: 'error', message: `table() takes either a single positional record or column keyword arguments (name = value)`, loc: arg.loc });
         }
       }
       break;
@@ -421,14 +442,23 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'cartprod': {
-      // cartprod(S1, S2, ...) — at least 2 positional set expressions.
+      // Two forms (same as joint / jointchain / kchain):
+      //   cartprod(S1, S2, ...)                  — positional
+      //   cartprod(name1 = S1, name2 = S2, ...)  — named (labels each axis)
+      // Mixed is rejected. cartprod is a FIELD_FORM in lower.ts so the
+      // named form lowers with `fields: [{name, value}, ...]`.
       if (args.length < 2) {
         diags.push({ severity: 'error', message: `cartprod() requires at least two arguments`, loc: valueNode.loc });
+        break;
       }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `cartprod() takes positional arguments only`, loc: arg.loc });
-        }
+      const allKw  = args.every((a: any) => a.type === 'KeywordArg');
+      const allPos = args.every((a: any) => a.type !== 'KeywordArg');
+      if (!allKw && !allPos) {
+        diags.push({
+          severity: 'error',
+          message: `cartprod() arguments must be either all positional or all keyword (name = value), not mixed`,
+          loc: valueNode.loc,
+        });
       }
       break;
     }
