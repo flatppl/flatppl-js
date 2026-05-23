@@ -15,8 +15,8 @@
     "directory": "packages/engine"
   },
   "scripts": {
-    "test": "node --test 'test/*.test.js'",
-    "test:coverage": "c8 --reporter=lcov --reporter=text-summary --include='*.ts' --exclude='*.d.ts' --exclude='test/**' --reports-dir=coverage node --test 'test/*.test.js'",
+    "test": "node --test 'test/*.test.ts'",
+    "test:coverage": "c8 --reporter=lcov --reporter=text-summary --include='*.ts' --exclude='*.d.ts' --exclude='test/**' --reports-dir=coverage node --test 'test/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch"
   },
