@@ -793,10 +793,17 @@ function detectDisintegration(stmt: any, bindingMap: any) {
   const selectorArg = stmt.value.args[0];
   const jointArg = stmt.value.args[1];
 
-  // Parse selector
+  // Parse selector. Per spec §06 lines 550-551, the surface form
+  // matters: `"b"` selects the **bare value** (kernel yields the
+  // variate directly), `["b"]` selects a **single-field record**
+  // (kernel yields `record(b = ...)`). We preserve the distinction
+  // via `selectorBareString`; downstream `disintegratePlan` reads it
+  // when synthesising the kernel shape.
   let selectorFields: string[] | null = null;
+  let selectorBareString = false;
   if (selectorArg.type === 'StringLiteral') {
     selectorFields = [selectorArg.value];
+    selectorBareString = true;
   } else if (selectorArg.type === 'ArrayLiteral') {
     selectorFields = [];
     for (const el of selectorArg.elements) {
@@ -822,6 +829,7 @@ function detectDisintegration(stmt: any, bindingMap: any) {
     kernelName: stmt.names[0].name,
     priorName: stmt.names[1].name,
     selectorFields,
+    selectorBareString,
     jointName: jointArg.name,
     jointKind:   jointInfo ? jointInfo.kind   : null,
     jointFields: jointInfo ? jointInfo.fields : null,
@@ -1587,7 +1595,8 @@ function analyze(ast: any, source: string) {
     if (jointBinding && jointBinding.node && jointBinding.node.value) {
       plan = disintegratePlan(
         jointBinding.node.value, info.selectorFields, bindings,
-        { seen: new Set(), source: info.jointName });
+        { seen: new Set(), source: info.jointName,
+          selectorBareString: info.selectorBareString });
     }
 
     const kernel = bindings.get(info.kernelName);
