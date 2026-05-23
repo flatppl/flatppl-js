@@ -305,14 +305,13 @@ fk, pr = disintegrate(["b"], J)
     'jointchain non-suffix selector is currently Unsupported (gap)');
 });
 
-test('spec-coverage GAP: nested joint(joint(...), ...) classifies but inner prior derivation fails', () => {
+test('spec-coverage PASS: nested joint(joint(...), ...) — prior classifies as joint-record', () => {
   // joint(inner = joint(a=A, b=B), c=C) — nested factorization is
-  // still explicit in the DAG. The current rule handles the outer
-  // joint and selector["c"], producing a synthesized prior
-  // `joint(inner = inner)` — a single-field joint that the orchestrator's
-  // classifier doesn't recognize as an alias of `inner`. So the plan
-  // succeeds but the prior binding gets no derivation. This is the
-  // concrete coverage gap surfaced by the audit; pinned here.
+  // explicit in the DAG. The decompose-based rewriter produces a
+  // synthesized prior `joint(inner = inner)`, and the orchestrator's
+  // classifier now handles it via MEASURE_OP_CLASSIFIERS' joint
+  // entry (the fall-through enabled when the disintegrate-result
+  // prior's IR is a non-lawof shape, 2026-05-23). Gap closed.
   const src = `
 A = Normal(mu = 0, sigma = 1)
 B = Normal(mu = 0, sigma = 1)
@@ -324,12 +323,11 @@ fk, pr = disintegrate(["c"], outer)
   const plan = planOf(src, 'outer', ['c']);
   assert.equal(plan.kind, 'synthesized',
     'outer plan synthesizes (the disintegrate.ts rule fires)');
-  // But the synthesized prior is `joint(inner = inner)` — a degenerate
-  // single-field joint — and the orchestrator's classifier doesn't
-  // collapse this into an alias of `inner`. So no derivation.
   const { derivations } = classifyOf(src);
-  // Pin the gap: when this fires (derivation exists), update the
-  // test to assert.ok(derivations.pr) and document the fix.
-  assert.equal(derivations.pr, undefined,
-    'single-field synthesized prior currently does not classify — known gap');
+  assert.ok(derivations.pr,
+    'synthesized prior `joint(inner = inner)` now classifies as a record derivation');
+  // The derivation kind for `joint(name=ref)` is `record` per the
+  // existing classifyRecordOrJoint rule: a single-field record
+  // measure wrapping the bound ref.
+  assert.equal(derivations.pr.kind, 'record');
 });
