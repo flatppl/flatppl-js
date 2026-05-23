@@ -197,7 +197,6 @@ function validateSpecialOperation(valueNode: any) {
     case 'pushfwd':
     case 'bayesupdate':
     case 'likelihoodof':
-    case 'joint_likelihood':
     case 'densityof':
     case 'logdensityof': {
       // Two positional args (weight/set/fn/likelihood/obs, measure).
@@ -209,6 +208,19 @@ function validateSpecialOperation(valueNode: any) {
       for (const arg of args) {
         if (arg.type === 'KeywordArg') {
           diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'joint_likelihood': {
+      // joint_likelihood(L1, L2, ...) — combine ≥2 likelihoods (spec §06).
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `joint_likelihood() requires at least two arguments`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `joint_likelihood() takes positional arguments only`, loc: arg.loc });
         }
       }
       break;
@@ -318,32 +330,52 @@ function validateSpecialOperation(valueNode: any) {
       break;
     }
 
-    case 'reduce':
-    case 'scan': {
-      // reduce(f, init, xs) / scan(f, init, xs) — three positional args.
-      if (args.length !== 3) {
-        diags.push({ severity: 'error', message: `${name}() takes exactly three arguments (f, init, xs)`, loc: valueNode.loc });
+    case 'reduce': {
+      // reduce(f, xs) — two positional args (spec §07).
+      if (args.length !== 2) {
+        diags.push({ severity: 'error', message: `reduce() takes exactly two arguments (f, xs)`, loc: valueNode.loc });
       }
       for (const arg of args) {
         if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+          diags.push({ severity: 'error', message: `reduce() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+
+    case 'scan': {
+      // scan(f, init, xs) — three positional args (spec §07).
+      if (args.length !== 3) {
+        diags.push({ severity: 'error', message: `scan() takes exactly three arguments (f, init, xs)`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `scan() takes positional arguments only`, loc: arg.loc });
         }
       }
       break;
     }
 
     case 'checked': {
-      // checked(value, condition=...) — single positional + `condition` kwarg.
+      // checked(value, condition=...) OR checked(value=..., condition=...).
+      // Per spec §07 the canonical form uses keyword arguments
+      // (`value = ..., condition = ...`); the positional-value variant
+      // `checked(value_expr, condition = ...)` is also accepted.
       if (args.length === 0) {
-        diags.push({ severity: 'error', message: `checked() requires a value argument`, loc: valueNode.loc });
+        diags.push({ severity: 'error', message: `checked() requires value and condition arguments`, loc: valueNode.loc });
         break;
       }
-      if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `checked() first argument must be a positional value`, loc: args[0].loc });
-      }
-      for (let i = 1; i < args.length; i++) {
-        if (args[i].type !== 'KeywordArg') {
-          diags.push({ severity: 'error', message: `checked() takes only keyword arguments after the value`, loc: args[i].loc });
+      // After any positional arg, every following arg must be a kwarg.
+      let sawKwarg = false;
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          sawKwarg = true;
+        } else if (sawKwarg) {
+          diags.push({
+            severity: 'error',
+            message: `checked() positional arguments must come before keyword arguments`,
+            loc: arg.loc,
+          });
         }
       }
       break;

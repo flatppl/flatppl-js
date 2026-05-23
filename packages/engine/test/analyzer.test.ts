@@ -199,16 +199,34 @@ test('analyzer: broadcast requires positional head + at least 1 more arg', () =>
   assert.ok(process(`x = broadcast(f = Normal, mu = 1)\n`).diagnostics.some((d: any) => /positional head/.test(d.message)));
 });
 
-test('analyzer: reduce / scan take exactly 3 positional args', () => {
-  for (const op of ['reduce', 'scan']) {
-    assert.ok(process(`y = ${op}(f, init)\n`).diagnostics.some((d: any) => /takes exactly three/.test(d.message)),
-              op + ' tooFew');
-  }
+test('analyzer: reduce / scan take their spec-mandated positional counts', () => {
+  // reduce(f, xs) — 2 positional; scan(f, init, xs) — 3 positional.
+  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
+  assert.ok(process(`y = reduce(f, xs, init)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
+  assert.ok(process(`y = scan(f, init)\n`).diagnostics.some((d: any) => /takes exactly three/.test(d.message)));
 });
 
-test('analyzer: checked takes positional value + kwargs after', () => {
-  assert.ok(process(`y = checked()\n`).diagnostics.some((d: any) => /requires a value/.test(d.message)));
-  assert.ok(process(`y = checked(x, y)\n`).diagnostics.some((d: any) => /only keyword arguments/.test(d.message)));
+test('analyzer: checked accepts both calling forms', () => {
+  // Per spec §07: canonical form is checked(value = ..., condition = ...);
+  // checked(value_expr, condition = ...) is also accepted.
+  assert.ok(process(`y = checked()\n`).diagnostics.some((d: any) => /requires value and condition/.test(d.message)));
+  const allKw = process(`a = 1\nb = true\ny = checked(value = a, condition = b)\n`);
+  assert.ok(!allKw.diagnostics.some((d: any) => /checked/.test(d.message)));
+  const mixed = process(`a = 1\nb = true\ny = checked(a, condition = b)\n`);
+  assert.ok(!mixed.diagnostics.some((d: any) => /checked/.test(d.message)));
+  // Reject positional-after-keyword (ill-formed).
+  assert.ok(process(`y = checked(condition = b, a)\n`)
+    .diagnostics.some((d: any) => /positional arguments must come before keyword/.test(d.message)));
+});
+
+test('analyzer: joint_likelihood is variadic (≥2 positional)', () => {
+  // Spec §06: joint_likelihood(L1, L2, ...).
+  const ok2 = process(`L = joint_likelihood(L1, L2)\n`);
+  assert.ok(!ok2.diagnostics.some((d: any) => /joint_likelihood/.test(d.message)));
+  const ok3 = process(`L = joint_likelihood(L1, L2, L3)\n`);
+  assert.ok(!ok3.diagnostics.some((d: any) => /joint_likelihood/.test(d.message)));
+  assert.ok(process(`L = joint_likelihood(L1)\n`).diagnostics.some((d: any) => /at least two/.test(d.message)));
+  assert.ok(process(`L = joint_likelihood(L1, name = L2)\n`).diagnostics.some((d: any) => /positional/i.test(d.message)));
 });
 
 test('analyzer: record requires keyword args only', () => {
