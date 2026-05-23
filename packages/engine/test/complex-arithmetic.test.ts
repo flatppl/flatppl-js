@@ -25,11 +25,11 @@ const lit = (v: any) => ({ kind: 'lit', value: v });
 const cnst = (n: any) => ({ kind: 'const', name: n });
 const call = (op: any, ...args: any[]) => ({ kind: 'call', op, args });
 
-function close(a: any, b: any, tol: any) {
+function close(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
   return Math.abs(a - b) <= tol;
 }
-function cclose(a: any, b: any, tol: any) {
+function cclose(a: any, b: any, tol?: any) {
   return close(a.re, b.re, tol) && close(a.im, b.im, tol);
 }
 

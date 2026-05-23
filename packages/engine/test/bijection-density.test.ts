@@ -33,7 +33,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 1024;
 const ROOT_SEED    = 0xB1737CFC;
 
-function makeCtx(source: any, opts: any) {
+function makeCtx(source: any, opts?: any) {
   opts = opts || {};
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);

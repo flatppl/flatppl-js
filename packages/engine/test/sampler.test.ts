@@ -471,7 +471,7 @@ test('makeParametricSampler: factory built once across many draws', () => {
 // through measure draws via traceeval.
 
 function lit(v: any)   { return { kind: 'lit', value: v, loc: synthLoc() }; }
-function call(op: any, args: any, kwargs: any) {
+function call(op: any, args: any, kwargs?: any) {
   const out = { kind: 'call', op, loc: synthLoc() };
   if (args && args.length)             out.args   = args;
   if (kwargs && Object.keys(kwargs).length) out.kwargs = kwargs;

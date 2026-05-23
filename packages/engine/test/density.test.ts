@@ -25,7 +25,7 @@ function Normal(mu: any, sigma: any) {
 function Exponential(rate: any) {
   return { kind: 'call', op: 'Exponential', kwargs: { rate: lit(rate) } };
 }
-function callOp(op: any, args: any, fields: any) {
+function callOp(op: any, args: any, fields?: any) {
   const ir = { kind: 'call', op };
   if (args)   ir.args   = args;
   if (fields) ir.fields = fields;

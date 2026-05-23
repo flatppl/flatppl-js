@@ -17,7 +17,7 @@ function mat(...rows: any[])  { return { kind: 'call', op: 'vector', args: rows.
 function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
 const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
-function matClose(A: any, B: any, tol: any) {
+function matClose(A: any, B: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
   if (A.length !== B.length) return false;
   for (let i = 0; i < A.length; i++) {

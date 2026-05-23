@@ -23,7 +23,7 @@ const ROOT_SEED    = 12345;
  * worker handler + one promise cache, mirroring how the viewer's
  * getMeasure works.
  */
-function makeCtx(source: any, opts: any) {
+function makeCtx(source: any, opts?: any) {
   opts = opts || {};
   const lifted = processSource(source);
   // buildDerivations returns the LIFTED bindings map (including the

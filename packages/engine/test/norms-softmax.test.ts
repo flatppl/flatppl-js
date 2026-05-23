@@ -14,7 +14,7 @@ function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.ma
 function call(op: any, v: any)   { return { kind: 'call', op, args: [v] }; }
 const ev = (ir: any) => sampler.evaluateExpr(ir, {});
 
-function arrClose(a: any, b: any, tol: any) {
+function arrClose(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {

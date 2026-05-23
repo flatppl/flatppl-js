@@ -19,7 +19,7 @@ const lit = (v: any) => ({ kind: 'lit', value: v });
 const ref = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
 const litArr = (arr: any) => ({ kind: 'call', op: 'vector', args: arr.map(lit) });
 
-function close(a: any, b: any, tol: any) {
+function close(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
   return Math.abs(a - b) <= tol;
 }
