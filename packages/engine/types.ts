@@ -931,8 +931,16 @@ const SIGNATURE_FACTORIES = {
   // array; pluralised to avoid collision with the binary `min` / `max`
   // built-ins (per spec §07).
   var:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  std:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   maximum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   minimum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  // Cumulative reductions (spec §07): scan-style — output array of the
+  // same length as input. Result rank/length tracked as dynamic since
+  // static input shape isn't always known.
+  cumsum:  () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                     result: array(1, ['%dynamic'], REAL) }),
+  cumprod: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                     result: array(1, ['%dynamic'], REAL) }),
   // Norms and softmax family (spec §07). Single vector argument.
   // *norm / logsumexp produce a scalar; *unit / softmax / logsoftmax
   // produce a vector of the same length.

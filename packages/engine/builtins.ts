@@ -102,7 +102,8 @@ const BUILTIN_FUNCTIONS = new Set([
   'linsolve', 'lower_cholesky',
   'row_gram', 'col_gram', 'self_outer', 'diagmat',
   // Reductions
-  'sum', 'mean', 'var', 'prod', 'maximum', 'minimum', 'lengthof', 'sizeof',
+  'sum', 'mean', 'var', 'std', 'prod', 'maximum', 'minimum', 'lengthof', 'sizeof',
+  'cumsum', 'cumprod',
   // Norms and normalization
   'l1norm', 'l2norm', 'l1unit', 'l2unit',
   'logsumexp', 'softmax', 'logsoftmax',

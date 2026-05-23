@@ -2180,6 +2180,36 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
     return v / n;
   },
+  // Spec §07 reductions (added for the new stdlib sweep). `std` is the
+  // sqrt of the population variance (matches `var` above — no Bessel
+  // correction). `cumsum`/`cumprod` return arrays of the input length.
+  std: (a: any) => {
+    const arr = _arrLike(a);
+    const n = arr.length;
+    if (n === 0) return 0;
+    let s = 0;
+    for (let i = 0; i < n; i++) s += arr[i];
+    const mu = s / n;
+    let v = 0;
+    for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
+    return Math.sqrt(v / n);
+  },
+  cumsum: (a: any) => {
+    const arr = _arrLike(a);
+    const n = arr.length;
+    const out = new Array(n);
+    let s = 0;
+    for (let i = 0; i < n; i++) { s += arr[i]; out[i] = s; }
+    return out;
+  },
+  cumprod: (a: any) => {
+    const arr = _arrLike(a);
+    const n = arr.length;
+    const out = new Array(n);
+    let p = 1;
+    for (let i = 0; i < n; i++) { p *= arr[i]; out[i] = p; }
+    return out;
+  },
   // Norms and normalization (spec §07). All take a single vector
   // argument. Numerically stable forms — logsumexp uses the standard
   // shift-by-max trick so exp doesn't overflow on large entries.
