@@ -951,6 +951,27 @@ function computePhases(bindings: any) {
     return 'fixed';
   }
 
+  // Identifier names referenced by a function-typed binding's kwargs —
+  // i.e. its formal parameters. Returns the empty set for non-function
+  // bindings, for fn (placeholder `_`, not a binding ref), and for kwargs
+  // whose value isn't a bare Identifier (per spec the rhs is the formal
+  // parameter's value-set declaration, conventionally an elementof name).
+  function formalParamRefs(b: any): Set<string> {
+    const out = new Set<string>();
+    const cn = calleeName(b);
+    if (cn !== 'functionof' && cn !== 'kernelof') return out;
+    const v = b && b.node && b.node.value;
+    if (!v || !Array.isArray(v.args)) return out;
+    for (const arg of v.args) {
+      if (arg && arg.type === 'KeywordArg'
+          && arg.value && arg.value.type === 'Identifier'
+          && typeof arg.value.name === 'string') {
+        out.add(arg.value.name);
+      }
+    }
+    return out;
+  }
+
   // Per spec §sec:lawof line 309-314 ("lawof absorbs stochasticity
   // into the reified law rather than propagating it outward"), some
   // ops *absorb* stochastic ancestors — the result is a deterministic
@@ -959,6 +980,14 @@ function computePhases(bindings: any) {
   // those leaves are reached through a draw. Recursively walks deps,
   // collapsing 'stochastic' verdicts to 'fixed' along the way and
   // surfacing only the highest non-stochastic phase.
+  //
+  // Function-body refs to a function's own formal parameters are
+  // excluded from the walk: the parameters get a concrete value at
+  // every call site, so any `elementof` declared in the kwargs is
+  // already substituted out by the time we'd read the call's result.
+  // (Without this, `f = functionof(c * _par, par = _par); a = f(par = beta1)`
+  // — where `_par = elementof(reals)` — would propagate parameterized
+  // through a's ancestor closure even though _par has been bound out.)
   const absorbedCache = new Map<string, string>();
   function absorbedPhaseOf(name: string): string {
     if (absorbedCache.has(name)) return absorbedCache.get(name)!;
@@ -967,8 +996,10 @@ function computePhases(bindings: any) {
     const cn = calleeName(b);
     if (cn === 'elementof')          { absorbedCache.set(name, 'parameterized'); return 'parameterized'; }
     if (cn === 'external')           { absorbedCache.set(name, 'fixed');         return 'fixed'; }
+    const formals = formalParamRefs(b);
     let phase = 'fixed';
     for (const dep of b.deps) {
+      if (formals.has(dep)) continue;
       phase = maxPhase(phase, absorbedPhaseOf(dep));
       if (phase === 'parameterized') break;
     }

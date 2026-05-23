@@ -108,6 +108,36 @@ test('phase: bayesian_inference_2 fixture has correct phases', () => {
   assert.equal(p.observed_data, 'fixed');
 });
 
+// Regression: absorbedPhaseOf (the walker behind lawof / rand) must
+// not propagate `parameterized` through a function's formal-parameter
+// references — those have a concrete value supplied at the call site,
+// so any `elementof` declared on a kwarg is substituted out by the
+// time the call site's result is read. Pre-fix, `f = functionof(c*_par,
+// par = _par)` with `_par = elementof(reals)` made every `rand(...)`
+// of a downstream measure read as `parameterized`, which blocked
+// pre-evaluation and surfaced as "matEvaluate: parent X has neither
+// .value nor .samples" at plot time.
+test('phase: absorbed walk skips function formal-params (elementof under functionof)', () => {
+  const p: any = phasesOf(`
+_par = elementof(reals)
+c = 2.5
+f = functionof(c * _par, par = _par)
+beta1 = 2.0
+a = f(par = beta1)
+obs_dist = Normal(mu = a, sigma = 1)
+rstate0 = rnginit([1,2,3,4])
+sample, _ = rand(rstate0, obs_dist)
+`);
+  // _par alone is parameterized — it's an elementof.
+  assert.equal(p._par, 'parameterized');
+  // The function value itself is fixed.
+  assert.equal(p.f, 'fixed');
+  // rand absorbs stochasticity; _par lives only inside f's body and
+  // is bound at the call site (f(par = beta1)), so the rand result is
+  // fixed — not parameterized.
+  assert.equal(p.sample, 'fixed');
+});
+
 // --- computePhases as a standalone function ---
 
 test('phase: computePhases works on already-built bindings', () => {
