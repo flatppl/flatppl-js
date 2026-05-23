@@ -82,8 +82,11 @@ const BUILTIN_FUNCTIONS = new Set([
   // Scalar restrictions/constructors
   'boolean', 'integer', 'real', 'complex', 'string', 'imag',
   // Elementary math
-  'exp', 'log', 'log10', 'pow', 'sqrt', 'abs', 'abs2',
-  'sin', 'cos',
+  'exp', 'log', 'log10', 'log1p', 'expm1', 'pow', 'sqrt', 'abs', 'abs2',
+  'sin', 'cos', 'tan',
+  'asin', 'acos', 'atan', 'atan2',
+  'sinh', 'cosh', 'tanh',
+  'asinh', 'acosh', 'atanh',
   'min', 'max', 'floor', 'ceil', 'round',
   'div', 'mod',
   'conj', 'cis',
