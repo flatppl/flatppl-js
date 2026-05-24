@@ -24,7 +24,10 @@ const SETS = new Set([
   'posintegers', 'nonnegintegers', 'integers',
   'booleans', 'complexes',
   'rngstates', 'anything',
-  'all', // axis selector
+  // Axis selector keywords (spec §05 reserved words; surface forms
+  // `:` and `!` lower to these). `all` selects an entire axis; `only`
+  // selects the unique element of a length-1 axis.
+  'all', 'only',
 ]);
 
 // Set constructors (callables that build sets)

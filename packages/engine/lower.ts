@@ -226,6 +226,12 @@ function _lowerExpr(node: any, ctx: any): IRNode {
       // The `:` slice marker. Per spec, lowers to bare `all`.
       return { kind: 'const', name: 'all', loc: node.loc };
 
+    case 'SliceOnly':
+      // The `!` singleton-axis marker (spec §07). Lowers to bare
+      // `only` — same shape as `all` so the evaluator's `get` op can
+      // dispatch on the sentinel.
+      return { kind: 'const', name: 'only', loc: node.loc };
+
     case 'Hole':
       return { kind: 'hole', loc: node.loc };
 
