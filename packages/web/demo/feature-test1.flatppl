@@ -11,7 +11,7 @@ theta2 = draw(theta2_dist)
 c = 2.5
 _par = elementof(reals)
 
-f_a = functionof(c * _par, par = _par)
+f_a = par -> c * par
 f_b = fn(abs(_) * _)
 
 # Deterministic transform
