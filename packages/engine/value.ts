@@ -253,7 +253,11 @@ function _dataShape(v: any) {
 // Structural predicate: is `v` a Value-shaped object? Cheap check used
 // by polymorphic dispatch sites (e.g. broadcast helpers in sampler.js)
 // to distinguish Value inputs from bare JS numbers / Float64Arrays.
-function isValue(v: any) {
+//
+// Type predicate (`v is Value`) — TS narrows callers automatically:
+//   if (valueLib.isValue(x)) { /* x is now typed as Value */ }
+import type { Value as _ValueType } from './engine-types';
+function isValue(v: any): v is _ValueType {
   return v != null && typeof v === 'object'
     && Array.isArray(v.shape)
     && v.data instanceof Float64Array;
@@ -354,7 +358,7 @@ function structOcc(v: any) { return getStruct(v) & ST_OCC_MASK; }
 function isDenseStruct(v: any) { return structOcc(v) === ST_DENSE; }
 function isDiagStruct(v: any)  { return structOcc(v) === ST_DIAG; }
 function isDiagStored(v: any) {
-  return isValue(v) && (v.struct & ST_OCC_MASK) === ST_DIAG
+  return isValue(v) && ((v.struct ?? 0) & ST_OCC_MASK) === ST_DIAG
     && v.shape.length === 2 && v.shape[0] === v.shape[1]
     && v.data.length === v.shape[0];
 }
@@ -440,8 +444,10 @@ function densify(v: any) {
 // keep paying nothing for the conj bit (no one reads "logical im").
 
 // Is `v` a complex Value? Cheap structural check used by op dispatch to
-// route the (re, im) buffer-wise algebra.
-function isComplexValue(v: any) {
+// route the (re, im) buffer-wise algebra. Type predicate narrows callers
+// so `v.im` reads after `if (isComplexValue(v))` need no `!` assertion.
+type _ComplexValue = _ValueType & { dtype: 'complex'; im: Float64Array };
+function isComplexValue(v: any): v is _ComplexValue {
   return v != null && typeof v === 'object'
     && v.dtype === 'complex'
     && Array.isArray(v.shape)

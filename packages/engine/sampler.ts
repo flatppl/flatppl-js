@@ -2708,42 +2708,106 @@ const ARITH_OPS = {
     throw new Error('cat: unsupported argument shape (got '
       + (typeof first) + ')');
   },
-  // Reductions over an array. Operate on JS arrays / TypedArrays /
-  // Values (Value inputs) alike. `_arrLike` unwraps the underlying
-  // indexable form. Spec semantics:
-  //   sum     = Σ x[i]
-  //   mean    = sum / N
-  //   prod    = Π x[i]
-  //   length  = N
-  //   maximum = max x[i]   (Math.max would .apply-blow-stack at length 1e6)
-  //   minimum = min x[i]
-  //   var     = mean( (x - mean)² )  — population variance, divisor N
-  sum:     (a: any) => { const arr = _arrLike(a); let s = 0;
-    for (let i = 0; i < arr.length; i++) s += arr[i]; return s; },
-  mean:    (a: any) => { const arr = _arrLike(a); let s = 0;
-    for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; },
-  prod:    (a: any) => { const arr = _arrLike(a); let p = 1;
-    for (let i = 0; i < arr.length; i++) p *= arr[i]; return p; },
-  lengthof: (a: any) => _arrLike(a).length,
-  // sizeof returns a length-rank vector of the array's per-axis dimensions.
-  // For 1-D vectors/typed arrays this is `[lengthof(a)]`; for shape-tagged
-  // Values, return a copy of the shape. Spec §07.
+  // Reductions over an array. Spec §07:
+  //   sum / mean / prod  — real or complex arrays (any rank)
+  //   var / std          — real arrays (any rank)
+  //   maximum / minimum  — real arrays (any rank)
+  //   lengthof           — vectors, tables
+  //   sizeof             — vectors, arrays (any rank)
+  // For complex Values the reduction operates on the parallel re/im
+  // buffers (applying the conjugation bit lazily where needed). All
+  // reductions flatten over EVERY entry, so multi-dim inputs reduce
+  // to a single scalar.
+  sum: (a: any) => {
+    if (valueLib.isComplexValue(a)) {
+      const cplx = valueLib.readComplex(a);
+      let sR = 0, sI = 0;
+      for (let i = 0; i < cplx.re.length; i++) {
+        sR += cplx.re[i]; sI += cplx.im[i];
+      }
+      return { re: sR, im: sI };
+    }
+    const arr = _arrLike(a);
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i];
+    return s;
+  },
+  mean: (a: any) => {
+    if (valueLib.isComplexValue(a)) {
+      const cplx = valueLib.readComplex(a);
+      const n = cplx.re.length;
+      let sR = 0, sI = 0;
+      for (let i = 0; i < n; i++) { sR += cplx.re[i]; sI += cplx.im[i]; }
+      return { re: sR / n, im: sI / n };
+    }
+    const arr = _arrLike(a);
+    let s = 0;
+    for (let i = 0; i < arr.length; i++) s += arr[i];
+    return s / arr.length;
+  },
+  prod: (a: any) => {
+    if (valueLib.isComplexValue(a)) {
+      const cplx = valueLib.readComplex(a);
+      let pR = 1, pI = 0;
+      for (let i = 0; i < cplx.re.length; i++) {
+        const r = cplx.re[i], j = cplx.im[i];
+        const nR = pR * r - pI * j;
+        const nI = pR * j + pI * r;
+        pR = nR; pI = nI;
+      }
+      return { re: pR, im: pI };
+    }
+    const arr = _arrLike(a);
+    let p = 1;
+    for (let i = 0; i < arr.length; i++) p *= arr[i];
+    return p;
+  },
+  // lengthof(x) per spec §07: "number of elements (vector) / rows
+  // (table)". Vectors are rank-1 arrays — for shape-explicit Values
+  // we use shape[0]. Tables (record-of-columns) aren't yet first-class
+  // in the engine runtime; if a record-like value reaches here we
+  // return the first field's length, matching the spec's "rows" notion.
+  lengthof: (a: any) => {
+    if (valueLib.isValue(a)) return a.shape.length === 0 ? 1 : a.shape[0];
+    if (a && !Array.isArray(a) && typeof a === 'object'
+        && a.BYTES_PER_ELEMENT === undefined) {
+      // Record-of-columns ⇒ table. Length is the row count = first column's length.
+      for (const k in a) {
+        if (!Object.prototype.hasOwnProperty.call(a, k)) continue;
+        const col = a[k];
+        if (valueLib.isValue(col)) return col.shape[0];
+        if (col && typeof col.length === 'number') return col.length;
+      }
+      return 0;
+    }
+    return _arrLike(a).length;
+  },
+  // sizeof returns a length-rank vector of the array's per-axis
+  // dimensions. For 1-D vectors/typed arrays this is `[lengthof(a)]`;
+  // for shape-tagged Values, the dims come from the shape. Spec §07.
+  // Returned as a rank-1 Value per the engine-concepts §2.1 contract.
   sizeof: (a: any) => {
-    if (valueLib.isValue(a)) return Array.from(a.shape);
-    if (a == null) return [0];
-    if (typeof a === 'number') return [];
-    if (a.BYTES_PER_ELEMENT && typeof a.length === 'number') return [a.length];
+    function _packDims(dims: number[]): any {
+      const out = new Float64Array(dims.length);
+      for (let i = 0; i < dims.length; i++) out[i] = dims[i];
+      return { shape: [dims.length], data: out };
+    }
+    if (valueLib.isValue(a)) return _packDims(a.shape);
+    if (a == null) return _packDims([0]);
+    if (typeof a === 'number') return _packDims([]);
+    if (a.BYTES_PER_ELEMENT && typeof a.length === 'number') {
+      return _packDims([a.length]);
+    }
     if (Array.isArray(a)) {
-      // Nested array → walk the all-equal-length spine to derive shape.
       const dims: number[] = [];
-      let cur = a;
+      let cur: any = a;
       while (Array.isArray(cur)) {
         dims.push(cur.length);
         cur = cur[0];
       }
-      return dims;
+      return _packDims(dims);
     }
-    return [];
+    return _packDims([]);
   },
   maximum: (a: any) => {
     const arr = _arrLike(a);
