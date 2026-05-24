@@ -530,6 +530,46 @@ C = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])
 `);
   const m = await expectPlottable(ctx, 'C');
   assert.equal(m.samples.length, 4);
+  // C is the actual matrix product: [[19, 22], [43, 50]]
+  assert.deepEqual(Array.from(m.samples), [19, 22, 43, 50]);
+});
+
+test('materialise: matrix * matrix via overloaded * is matrix multiplication', async () => {
+  // Regression: `D = A * B` for two nested-array matrices previously
+  // evaluated to NaN because the nested operands fell through ARITH_OPS.mul's
+  // scalar JS fast path. _promoteNestedToValue now converts them to
+  // Values so value-ops.mul (matrix × matrix) takes over — same result
+  // as the aggregate-based matmul above.
+  const { ctx } = makeMatCtx(`
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B = rowstack([[5.0, 6.0], [7.0, 8.0]])
+D = A * B
+`);
+  const m = await expectPlottable(ctx, 'D');
+  assert.equal(m.samples.length, 4);
+  assert.deepEqual(Array.from(m.samples), [19, 22, 43, 50]);
+});
+
+test('materialise: matrix + matrix is elementwise', async () => {
+  const { ctx } = makeMatCtx(`
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B = rowstack([[5.0, 6.0], [7.0, 8.0]])
+E = A + B
+`);
+  const m = await expectPlottable(ctx, 'E');
+  assert.equal(m.samples.length, 4);
+  assert.deepEqual(Array.from(m.samples), [6, 8, 10, 12]);
+});
+
+test('materialise: matrix - matrix is elementwise', async () => {
+  const { ctx } = makeMatCtx(`
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B = rowstack([[5.0, 6.0], [7.0, 8.0]])
+F = A - B
+`);
+  const m = await expectPlottable(ctx, 'F');
+  assert.equal(m.samples.length, 4);
+  assert.deepEqual(Array.from(m.samples), [-4, -4, -4, -4]);
 });
 
 // ---------------------------------------------------------------------

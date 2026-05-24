@@ -1928,10 +1928,37 @@ function _isShapeRich(v: any, N?: any) {
 // shape-rich Value path stays real-only for now; per-atom complex
 // Values are deferred (storage decision: separate re/im Float64Arrays
 // in Value.im — lands when needed).
+// Promote a nested numeric array (e.g. produced by `rowstack`) to a
+// shape-explicit Value so the value-ops shape-dispatch fires. Returns
+// the operand unchanged if not a nested-numeric array. Without this,
+// `A * B` between two 2D nested arrays falls through to the scalar
+// JS path and yields NaN (multiplying two arrays as numbers).
+function _promoteNestedToValue(v: any) {
+  if (!Array.isArray(v) || v.length === 0) return v;
+  // Detect rank-2 nested numeric (rows of equal-length numeric arrays).
+  if (Array.isArray(v[0])) {
+    const n = v[0].length;
+    for (let i = 0; i < v.length; i++) {
+      const row = v[i];
+      if (!Array.isArray(row) || row.length !== n) return v;
+      for (let j = 0; j < n; j++) {
+        const t = typeof row[j];
+        if (t !== 'number' && t !== 'boolean') return v;
+      }
+    }
+    return valueOps._nestedToValue(v);
+  }
+  return v;
+}
+
 function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn: any) {
   if (_isComplex(a) || _isComplex(b)) {
     return complexFn(_toComplex(a), _toComplex(b));
   }
+  // Promote nested-numeric matrices (from rowstack / array literals)
+  // to Values so shape dispatch reaches value-ops.
+  a = _promoteNestedToValue(a);
+  b = _promoteNestedToValue(b);
   if (valueLib.isValue(a) || valueLib.isValue(b)) {
     if (_isShapeRich(a) || _isShapeRich(b)) {
       return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
@@ -1963,16 +1990,16 @@ const ARITH_OPS = {
     if (_isComplex(a) || _isComplex(b)) {
       return _cMul(_toComplex(a), _toComplex(b));
     }
+    // Nested-numeric matrix operands → Values, so value-ops.mul's
+    // shape dispatch (matrix×matrix, matrix×vector, scalar×anything)
+    // takes over. Without this, two nested matrices fall to the
+    // bare-scalar path and `a * b` returns NaN.
+    a = _promoteNestedToValue(a);
+    b = _promoteNestedToValue(b);
     if (valueLib.isValue(a) || valueLib.isValue(b)) {
-      // Route to value-ops only when at least one operand has
-      // intrinsic shape; otherwise keep the scalar JS fast path
-      // (Value shape=[] inputs get unwrapped by _scalarVal above and
-      // never reach here in that form).
       if (_isShapeRich(a) || _isShapeRich(b)) {
         return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
       }
-      // Both are atom-indep scalars (one wrapped, one bare or both
-      // wrapped). Unwrap and multiply.
       const av = valueLib.isValue(a) ? a.data[0] : a;
       const bv = valueLib.isValue(b) ? b.data[0] : b;
       return av * bv;
