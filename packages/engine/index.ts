@@ -40,10 +40,22 @@ const perfConfig = require('./perf-config.ts');
  *   - opts.path    — source path; the extension picks the variant when
  *                    opts.variant is absent. Defaults to FlatPPL when
  *                    nothing else is supplied.
- * Returns { ast, bindings, symbols, diagnostics, variant }.
+ *   - opts.bundle  — module bundle for multi-file models (spec §04
+ *                    load_module). Shape:
+ *                      { sources: { [path: string]: text: string } }
+ *                    The engine consumes pre-resolved .flatppl text;
+ *                    async I/O is the host's responsibility (VS Code:
+ *                    vscode.workspace.fs; web: fetch). Defaults to an
+ *                    empty bundle when omitted. Architectural decisions
+ *                    locked 2026-05-10 (see TODO-flatppl-js.md
+ *                    "Multi-file models").
+ * Returns { ast, bindings, symbols, diagnostics, variant, bundle }.
  */
-function processSource(source: string, opts: any) {
+function processSource(source: string, opts?: any) {
   const variant = variants.resolveVariant(opts);
+  // Normalise the bundle to its canonical shape — every downstream
+  // consumer can read `bundle.sources` without null-guarding.
+  const bundle = _normaliseBundle(opts && opts.bundle);
   const { tokens, diagnostics: tokenDiags } = tokenize(source, variant);
   const { ast, diagnostics: parseDiags } = parse(tokens, variant);
   const { bindings, loweredModule, diagnostics: analyzeDiags, symbols }
@@ -57,7 +69,24 @@ function processSource(source: string, opts: any) {
   // polymorphic function at a specific call site — module-level
   // inference produces best-effort with `any` inputs, which under-
   // specifies in general).
-  return { ast, bindings, loweredModule, symbols, diagnostics, variant };
+  return { ast, bindings, loweredModule, symbols, diagnostics, variant, bundle };
+}
+
+// Canonicalise the bundle: accept undefined / empty / partial shapes
+// and always return { sources: Record<string, string> }. Subsequent
+// passes can read bundle.sources directly without conditional checks.
+function _normaliseBundle(b: any): { sources: Record<string, string> } {
+  if (!b || typeof b !== 'object') return { sources: {} };
+  const sources: Record<string, string> = {};
+  if (b.sources && typeof b.sources === 'object') {
+    for (const k in b.sources) {
+      if (Object.prototype.hasOwnProperty.call(b.sources, k)
+          && typeof b.sources[k] === 'string') {
+        sources[k] = b.sources[k];
+      }
+    }
+  }
+  return { sources };
 }
 
 module.exports = {

@@ -63,14 +63,44 @@ Each layer is independently testable. The test suite exercises this:
 
 ## Public entry: `index.js`
 
-`processSource(source)` runs tokenize → parse → analyze and returns
-`{ ast, bindings, loweredModule, symbols, diagnostics }`. This is the
-extension-host-side entry point and the one most callers want.
+`processSource(source, opts?)` runs tokenize → parse → analyze and returns
+`{ ast, bindings, loweredModule, symbols, diagnostics, variant, bundle }`. This
+is the extension-host-side entry point and the one most callers want.
+
+`opts` accepts:
+- `variant` — `'flatppl' | 'flatppy' | 'flatppj'` or a variant object; wins
+  over `path`.
+- `path` — source path; the extension picks the variant from this.
+- `bundle` — module-source bundle for multi-file models (spec §04
+  `load_module`). Shape: `{ sources: { [path: string]: text: string } }`.
+  Pre-resolved `.flatppl` deps. The engine pipeline stays **synchronous**;
+  async I/O is the host's responsibility (vscode-extension uses
+  `vscode.workspace.fs`; the standalone web host uses `fetch()`).
+  Defaults to an empty bundle.
 
 **Important:** `sampler.js` and `worker.js` are deliberately **not** re-exported —
 they pull in ~1 MB of stdlib distribution code and are only needed inside the
 worker bundle. Code on the extension host or main webview thread that needs to
 sample drives the worker via postMessage. See `engine/index.js:20-25`.
+
+### Multi-file models (architectural decisions locked 2026-05-10)
+
+- **Engine pipeline stays sync.** `processSource(src, { bundle })` takes
+  pre-resolved `.flatppl` source text. Async I/O lives in the host layer
+  above the engine.
+- **Eager bundling for `.flatppl` sources, lazy fetching for data.**
+  Module sources are needed by every analysis pass; data values flow
+  through a separate `dataResolver(path)` callback (sampler/plot only).
+- **Modules don't flatten.** Each loaded module compiles to its own
+  `LoweredModule`; cross-module access (`mod.x`) lowers to `(ref mod x)`.
+  The viewer navigates between module DAGs (click-to-enter).
+- **Standard modules are engine-provided.** `standard_module(name, compat)`
+  resolves to a registry of JS-implemented bindings, not `.flatppl` text.
+
+Currently implemented: bundle-shape API plumbing only — `processSource`
+accepts and forwards the bundle. The cross-module reference resolution,
+`load_module` end-to-end, and standard-module registry are tracked as
+separate items in `TODO-flatppl-js.md` under "Multi-file models".
 
 ---
 
