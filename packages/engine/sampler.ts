@@ -3159,21 +3159,45 @@ function _evalAggregate(ir: any, env: any): any {
 }
 
 // ---------------------------------------------------------------------
-// Specialiser: matrix multiplication
-//   aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])  ≡  mul(A, B)
-//   aggregate(sum, [.i, .k], B[.j, .k] * A[.i, .j])  ≡  mul(A, B)
-// (scalar multiplication is commutative, so either factor order matches;
-//  the assignment of axes to matrix dims is what fixes the result.)
+// Helper for the matmul-family specialisers below: dispatch the
+// nested-array or shape-rich-Value matrix product. Optionally
+// transposes either operand before the multiplication. For shape-
+// rich Values the transpose is a free Klein-4 tag flip; for nested
+// arrays it's `ARITH_OPS.transpose`.
+// ---------------------------------------------------------------------
+function _matmulDispatch(A: any, B: any, transA: boolean, transB: boolean): any {
+  if (valueLib.isValue(A) || valueLib.isValue(B)) {
+    let aV = valueLib.asValue(A);
+    let bV = valueLib.asValue(B);
+    if (transA) aV = valueLib.transpose(aV);
+    if (transB) bV = valueLib.transpose(bV);
+    return valueOps.mul(aV, bV);
+  }
+  const aN = transA ? (ARITH_OPS as any).transpose(A) : A;
+  const bN = transB ? (ARITH_OPS as any).transpose(B) : B;
+  return _matmul(aN, bN);
+}
+
+// ---------------------------------------------------------------------
+// Specialiser: matmul family (4 transpose variants)
+//
+//   aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])   ≡  A · B
+//   aggregate(sum, [.i, .k], A[.j, .i] * B[.j, .k])   ≡  Aᵀ · B
+//   aggregate(sum, [.i, .k], A[.i, .j] * B[.k, .j])   ≡  A · Bᵀ
+//   aggregate(sum, [.i, .k], A[.j, .i] * B[.k, .j])   ≡  Aᵀ · Bᵀ
+//
+// Each operand's axes can be in either order; the matcher determines
+// which dim each axis name occupies and sets a transpose flag.
+// Scalar multiplication is commutative, so either factor order in
+// the `mul` body matches the same logical product.
 // ---------------------------------------------------------------------
 AGGREGATE_PATTERNS.push({
-  name: 'matmul',
+  name: 'matmul-family',
   match(ir: any, _env: any): any {
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
-    // Reduction must be `sum`.
     if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
-    // Output axes: exactly two, both axis-refs, distinct names.
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 2) return null;
@@ -3181,27 +3205,244 @@ AGGREGATE_PATTERNS.push({
     const iName = outAxes[0].name;
     const kName = outAxes[1].name;
     if (iName === kName) return null;
-    // Body: `mul(get(A, .i, .j), get(B, .j, .k))` — or with factors
-    // swapped. `get0` is rejected here for simplicity (the 1-based
-    // FlatPPL/FlatPPJ shape is the canonical matmul lowering).
+    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
+    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
+
+    // A's standard matmul layout is `A[.i, .j]` — output dim first,
+    // reduce dim second; transposed is `A[.j, .i]`. B's standard is
+    // `B[.j, .k]` — reduce dim first, output dim second; transposed
+    // is `B[.k, .j]`. The two operands have ASYMMETRIC "normal"
+    // conventions, so they get separate classifiers.
+    function classifyA(fac: any):
+      { src: any; trans: boolean; jName: string } | null
+    {
+      if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
+      if (!fac.args || fac.args.length !== 3) return null;
+      const s0 = fac.args[1], s1 = fac.args[2];
+      if (!s0 || s0.kind !== 'axis') return null;
+      if (!s1 || s1.kind !== 'axis') return null;
+      if (s0.name === iName) return { src: fac.args[0], trans: false, jName: s1.name };
+      if (s1.name === iName) return { src: fac.args[0], trans: true,  jName: s0.name };
+      return null;
+    }
+    function classifyB(fac: any):
+      { src: any; trans: boolean; jName: string } | null
+    {
+      if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
+      if (!fac.args || fac.args.length !== 3) return null;
+      const s0 = fac.args[1], s1 = fac.args[2];
+      if (!s0 || s0.kind !== 'axis') return null;
+      if (!s1 || s1.kind !== 'axis') return null;
+      if (s1.name === kName) return { src: fac.args[0], trans: false, jName: s0.name };
+      if (s0.name === kName) return { src: fac.args[0], trans: true,  jName: s1.name };
+      return null;
+    }
+
+    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+    // Try assigning (f1=A, f2=B), then (f1=B, f2=A).
+    for (const [fA, fB] of [[f1, f2], [f2, f1]]) {
+      const ca = classifyA(fA);
+      const cb = classifyB(fB);
+      if (!ca || !cb) continue;
+      // Same reduction axis from both sides.
+      if (ca.jName !== cb.jName) continue;
+      if (ca.jName === iName || ca.jName === kName) continue;
+      return { aIR: ca.src, bIR: cb.src, transA: ca.trans, transB: cb.trans };
+    }
+    return null;
+  },
+  execute(_ir: any, env: any, match: any): any {
+    const A = evaluateExpr(match.aIR, env);
+    const B = evaluateExpr(match.bIR, env);
+    return _matmulDispatch(A, B, match.transA, match.transB);
+  },
+});
+
+// ---------------------------------------------------------------------
+// Specialiser: matrix-vector multiplication (incl. transposed-A variant)
+//
+//   aggregate(sum, [.i], A[.i, .j] * v[.j])   ≡  A · v
+//   aggregate(sum, [.i], A[.j, .i] * v[.j])   ≡  Aᵀ · v
+//
+// The single output axis owns A's first or second dim depending on
+// which side `.i` appears; the shared axis (.j) iterates over A's
+// other dim and over v.
+// ---------------------------------------------------------------------
+AGGREGATE_PATTERNS.push({
+  name: 'matvec',
+  match(ir: any, _env: any): any {
+    const args = ir.args || [];
+    if (args.length !== 3) return null;
+    const [fIR, axesIR, bodyIR] = args;
+    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const outAxes = axesIR.args || [];
+    if (outAxes.length !== 1) return null;
+    if (outAxes[0].kind !== 'axis') return null;
+    const iName = outAxes[0].name;
     if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
     if (!bodyIR.args || bodyIR.args.length !== 2) return null;
     const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
-    // Try `(get(A,.i,.j), get(B,.j,.k))` first, then the swap.
-    const cand = [[f1, f2], [f2, f1]];
-    for (const [aGet, bGet] of cand) {
+    // The matrix factor has rank-2 indexing (3 args to `get`); the
+    // vector factor has rank-1 indexing (2 args). Try both orderings.
+    for (const [matGet, vecGet] of [[f1, f2], [f2, f1]]) {
+      if (!matGet || matGet.kind !== 'call' || matGet.op !== 'get') continue;
+      if (!vecGet || vecGet.kind !== 'call' || vecGet.op !== 'get') continue;
+      if (!matGet.args || matGet.args.length !== 3) continue;
+      if (!vecGet.args || vecGet.args.length !== 2) continue;
+      const mS = [matGet.args[1], matGet.args[2]];
+      const vS = vecGet.args[1];
+      if (mS[0].kind !== 'axis' || mS[1].kind !== 'axis') continue;
+      if (!vS || vS.kind !== 'axis') continue;
+      const jName = vS.name;
+      if (jName === iName) continue;
+      // Determine A's orientation: which dim is .i, which is .j?
+      let transA = false;
+      if (mS[0].name === iName && mS[1].name === jName) transA = false;
+      else if (mS[0].name === jName && mS[1].name === iName) transA = true;
+      else continue;
+      return { aIR: matGet.args[0], vIR: vecGet.args[0], transA };
+    }
+    return null;
+  },
+  execute(_ir: any, env: any, match: any): any {
+    const A = evaluateExpr(match.aIR, env);
+    const v = evaluateExpr(match.vIR, env);
+    if (valueLib.isValue(A) || valueLib.isValue(v)) {
+      let aV = valueLib.asValue(A);
+      if (match.transA) aV = valueLib.transpose(aV);
+      return valueOps.mul(aV, valueLib.asValue(v));
+    }
+    // Nested-array matvec.
+    const Ax = match.transA ? (ARITH_OPS as any).transpose(A) : A;
+    const m = Ax.length;
+    const n = Ax[0].length;
+    const out = new Float64Array(m);
+    for (let i = 0; i < m; i++) {
+      let s = 0;
+      const row = Ax[i];
+      for (let j = 0; j < n; j++) s += row[j] * v[j];
+      out[i] = s;
+    }
+    return out;
+  },
+});
+
+// ---------------------------------------------------------------------
+// Specialiser: outer product
+//
+//   aggregate(<any>, [.i, .j], u[.i] * v[.j])   ≡  u · vᵀ (outer)
+//
+// No reduce axes → the reduction function is irrelevant (every
+// "reduction" is over a single value). The broadcast-reduce default
+// produces the right answer but materialises a `_broadcastTo` copy;
+// the specialiser computes the outer product directly into one pass.
+// ---------------------------------------------------------------------
+AGGREGATE_PATTERNS.push({
+  name: 'outer-product',
+  match(ir: any, _env: any): any {
+    const args = ir.args || [];
+    if (args.length !== 3) return null;
+    const [_fIR, axesIR, bodyIR] = args;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const outAxes = axesIR.args || [];
+    if (outAxes.length !== 2) return null;
+    if (outAxes[0].kind !== 'axis' || outAxes[1].kind !== 'axis') return null;
+    const iName = outAxes[0].name;
+    const jName = outAxes[1].name;
+    if (iName === jName) return null;
+    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
+    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
+    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+    // Two rank-1 indexings, one on `.i` one on `.j`.
+    for (const [uGet, vGet] of [[f1, f2], [f2, f1]]) {
+      if (!uGet || uGet.kind !== 'call' || uGet.op !== 'get') continue;
+      if (!vGet || vGet.kind !== 'call' || vGet.op !== 'get') continue;
+      if (!uGet.args || uGet.args.length !== 2) continue;
+      if (!vGet.args || vGet.args.length !== 2) continue;
+      const us = uGet.args[1], vs = vGet.args[1];
+      if (!us || us.kind !== 'axis' || us.name !== iName) continue;
+      if (!vs || vs.kind !== 'axis' || vs.name !== jName) continue;
+      return { uIR: uGet.args[0], vIR: vGet.args[0] };
+    }
+    return null;
+  },
+  execute(_ir: any, env: any, match: any): any {
+    const u = evaluateExpr(match.uIR, env);
+    const v = evaluateExpr(match.vIR, env);
+    // Direct outer product into a nested array. The Value-typed path
+    // (atom-batched) routes through valueOps.mul which handles outer
+    // via the tvector tag (vector × transposed-vector → matrix per
+    // spec §07 linear-algebra rules).
+    if (valueLib.isValue(u) || valueLib.isValue(v)) {
+      const uV = valueLib.asValue(u);
+      const vV = valueLib.asValue(v);
+      // Outer = uV (col) · transpose(vV) (row). transpose() flips the
+      // Klein-4 tag; valueOps.mul then dispatches to outer.
+      return valueOps.mul(uV, valueLib.transpose(vV));
+    }
+    const m = u.length, n = v.length;
+    const out: any[] = new Array(m);
+    for (let i = 0; i < m; i++) {
+      const row = new Float64Array(n);
+      const ui = u[i];
+      for (let j = 0; j < n; j++) row[j] = ui * v[j];
+      out[i] = row;
+    }
+    return out;
+  },
+});
+
+// ---------------------------------------------------------------------
+// Specialiser: batched matmul
+//
+//   aggregate(sum, [.b, .i, .k],
+//             A[.b, .i, .j] * B[.b, .j, .k])  ≡ per-batch A·B
+//
+// Common in atom-batched contexts (sampler runs aggregate per
+// atom; the leading axis broadcasts the per-atom data). Avoids the
+// full O(Nb · Ni · Nj · Nk) broadcast intermediate the default
+// would build — at most O(Nb · max(Ni·Nj, Nj·Nk, Ni·Nk)) per
+// stage.
+// ---------------------------------------------------------------------
+AGGREGATE_PATTERNS.push({
+  name: 'batched-matmul',
+  match(ir: any, _env: any): any {
+    const args = ir.args || [];
+    if (args.length !== 3) return null;
+    const [fIR, axesIR, bodyIR] = args;
+    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const outAxes = axesIR.args || [];
+    if (outAxes.length !== 3) return null;
+    if (outAxes[0].kind !== 'axis' || outAxes[1].kind !== 'axis'
+        || outAxes[2].kind !== 'axis') return null;
+    const bName = outAxes[0].name;
+    const iName = outAxes[1].name;
+    const kName = outAxes[2].name;
+    if (bName === iName || iName === kName || bName === kName) return null;
+    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
+    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
+    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+    for (const [aGet, bGet] of [[f1, f2], [f2, f1]]) {
       if (!aGet || aGet.kind !== 'call' || aGet.op !== 'get') continue;
       if (!bGet || bGet.kind !== 'call' || bGet.op !== 'get') continue;
-      if (!aGet.args || aGet.args.length !== 3) continue;
-      if (!bGet.args || bGet.args.length !== 3) continue;
-      const aSels = aGet.args.slice(1);
-      const bSels = bGet.args.slice(1);
-      if (aSels[0].kind !== 'axis' || aSels[0].name !== iName) continue;
-      if (aSels[1].kind !== 'axis') continue;
-      const jName = aSels[1].name;
-      if (jName === iName || jName === kName) continue;
-      if (bSels[0].kind !== 'axis' || bSels[0].name !== jName) continue;
-      if (bSels[1].kind !== 'axis' || bSels[1].name !== kName) continue;
+      if (!aGet.args || aGet.args.length !== 4) continue;
+      if (!bGet.args || bGet.args.length !== 4) continue;
+      const aSels = [aGet.args[1], aGet.args[2], aGet.args[3]];
+      const bSels = [bGet.args[1], bGet.args[2], bGet.args[3]];
+      if (aSels.some((s: any) => !s || s.kind !== 'axis')) continue;
+      if (bSels.some((s: any) => !s || s.kind !== 'axis')) continue;
+      // Canonical layout: A[.b, .i, .j], B[.b, .j, .k]. (Other
+      // permutations are an extension; this matcher targets the
+      // typical case.)
+      if (aSels[0].name !== bName) continue;
+      if (aSels[1].name !== iName) continue;
+      if (bSels[0].name !== bName) continue;
+      if (bSels[2].name !== kName) continue;
+      const jName = aSels[2].name;
+      if (jName === bName || jName === iName || jName === kName) continue;
+      if (bSels[1].name !== jName) continue;
       return { aIR: aGet.args[0], bIR: bGet.args[0] };
     }
     return null;
@@ -3209,17 +3450,121 @@ AGGREGATE_PATTERNS.push({
   execute(_ir: any, env: any, match: any): any {
     const A = evaluateExpr(match.aIR, env);
     const B = evaluateExpr(match.bIR, env);
-    // Both operands are matrices. Dispatch by representation:
-    // shape-rich Value → value-ops.mul (handles atom-batched and
-    // Klein-4 transpose tags); nested JS arrays → the file-local
-    // `_matmul` helper (the same one row_gram / col_gram use).
-    // ARITH_OPS.mul only does scalar multiplication for plain JS
-    // values — it would NaN out on matrix operands, so we don't
-    // route through it here.
-    if (valueLib.isValue(A) || valueLib.isValue(B)) {
-      return valueOps.mul(valueLib.asValue(A), valueLib.asValue(B));
+    // Per-batch nested-array matmul. (Value-typed batched matmul
+    // would go through valueOps with the batch axis as leading dim;
+    // for v0.1 the nested-array path covers the typical user case.)
+    const Nb = A.length;
+    const out: any[] = new Array(Nb);
+    for (let b = 0; b < Nb; b++) {
+      out[b] = _matmul(A[b], B[b]);
     }
-    return _matmul(A, B);
+    return out;
+  },
+});
+
+// ---------------------------------------------------------------------
+// Specialiser: pure axis reduction (single source, no arithmetic)
+//
+//   aggregate(f, [out_axes…], get(arr, sels…))
+//
+// Common pattern: column sums, row means, axis-wise max/min, etc.
+// All seven reductions are supported via _AGGREGATE_REDUCTIONS. The
+// fast path applies the reduction along each non-output dim directly
+// on the source — no broadcast intermediate, no per-axis lift.
+// ---------------------------------------------------------------------
+AGGREGATE_PATTERNS.push({
+  name: 'pure-axis-reduction',
+  match(ir: any, _env: any): any {
+    const args = ir.args || [];
+    if (args.length !== 3) return null;
+    const [fIR, axesIR, bodyIR] = args;
+    const fname = (fIR && fIR.kind === 'ref' && fIR.name) || null;
+    if (!fname || !_AGGREGATE_REDUCTIONS[fname]) return null;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const outAxes = axesIR.args || [];
+    if (outAxes.length < 1) return null;
+    const outAxisNames: string[] = [];
+    for (const a of outAxes) {
+      if (!a || a.kind !== 'axis') return null;
+      outAxisNames.push(a.name);
+    }
+    // Body must be a single get / get0 — no arithmetic.
+    if (!bodyIR || bodyIR.kind !== 'call') return null;
+    if (bodyIR.op !== 'get' && bodyIR.op !== 'get0') return null;
+    if (!bodyIR.args || bodyIR.args.length < 2) return null;
+    // Every selector must be an axis ref (no `only`/`all`/integer in
+    // this fast path — those would require pre-applying selectors,
+    // which the broadcast-reduce default does already).
+    const sels = bodyIR.args.slice(1);
+    const selAxisAt: Record<string, number> = {};
+    for (let k = 0; k < sels.length; k++) {
+      const s = sels[k];
+      if (!s || s.kind !== 'axis') return null;
+      if (s.name in selAxisAt) return null;  // same axis twice = diagonal extraction (not this fast path)
+      selAxisAt[s.name] = k;
+    }
+    // Every output axis must be present in the body's selectors.
+    for (const a of outAxisNames) if (!(a in selAxisAt)) return null;
+    return { srcIR: bodyIR.args[0], fname, outAxisNames, selAxisAt, numSourceDims: sels.length };
+  },
+  execute(_ir: any, env: any, match: any): any {
+    const src = evaluateExpr(match.srcIR, env);
+    const flat = _toFlat(src);
+    const sourceShape = flat.shape;
+    const sourceStrides = _rowMajorStrides(sourceShape);
+    const reduce = _AGGREGATE_REDUCTIONS[match.fname];
+
+    // Determine per-output-cell traversal: iterate output axes,
+    // for each (output-coord) reduce across the remaining dims.
+    const outDimSizes = match.outAxisNames.map(
+      (a: string) => sourceShape[match.selAxisAt[a]]);
+    const outSize = outDimSizes.reduce((p: number, n: number) => p * n, 1);
+    const outStrides = match.outAxisNames.map(
+      (a: string) => sourceStrides[match.selAxisAt[a]]);
+
+    // Reduce axes = source dims not in output_axes.
+    const reduceDims: { sourceDim: number; size: number }[] = [];
+    const inOutput = new Set(match.outAxisNames);
+    for (const a of Object.keys(match.selAxisAt)) {
+      if (!inOutput.has(a)) {
+        const d = match.selAxisAt[a];
+        reduceDims.push({ sourceDim: d, size: sourceShape[d] });
+      }
+    }
+    const reduceSize = reduceDims.reduce(
+      (p: number, x: any) => p * x.size, 1);
+
+    const outData = new Float64Array(outSize);
+    const tmp = new Float64Array(reduceSize);
+    const outCoord = new Array(match.outAxisNames.length).fill(0);
+    const redCoord = new Array(reduceDims.length).fill(0);
+    for (let i = 0; i < outSize; i++) {
+      let baseOff = 0;
+      for (let k = 0; k < outCoord.length; k++) baseOff += outCoord[k] * outStrides[k];
+      // Reduce over the reduce-dims at this output cell.
+      for (let r = 0; r < reduceDims.length; r++) redCoord[r] = 0;
+      for (let r = 0; r < reduceSize; r++) {
+        let off = baseOff;
+        for (let k = 0; k < reduceDims.length; k++) {
+          off += redCoord[k] * sourceStrides[reduceDims[k].sourceDim];
+        }
+        tmp[r] = flat.data[off];
+        // Increment redCoord (last dim fastest).
+        for (let k = reduceDims.length - 1; k >= 0; k--) {
+          redCoord[k]++;
+          if (redCoord[k] < reduceDims[k].size) break;
+          redCoord[k] = 0;
+        }
+      }
+      outData[i] = +reduce(tmp);
+      // Increment outCoord.
+      for (let k = outCoord.length - 1; k >= 0; k--) {
+        outCoord[k]++;
+        if (outCoord[k] < outDimSizes[k]) break;
+        outCoord[k] = 0;
+      }
+    }
+    return _flatToNested(outData, outDimSizes);
   },
 });
 
