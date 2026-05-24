@@ -95,7 +95,10 @@ export function renderPlotForCurrent(ctx: Ctx) {
   // mode shows the Stop button so the user can abort long
   // operations (per-i ref chains under huge sample counts).
   const arrayMode = ctx.currentPlotPlan.mode === 'array';
-  showPlotMessage(ctx, arrayMode ? 'Loading…' : 'Sampling…', { cancellable: !arrayMode, hint: true });
+  const matrixMode = ctx.currentPlotPlan.mode === 'matrix';
+  showPlotMessage(ctx,
+    (arrayMode || matrixMode) ? 'Loading…' : 'Sampling…',
+    { cancellable: !(arrayMode || matrixMode), hint: true });
   // Cast to any: the remaining plan modes here (samples / array /
   // fixed-scalar) have differing fields; renderEmpiricalMeasure
   // dispatches on opts.mode inside, so reading `.discrete` /
@@ -115,6 +118,8 @@ export function renderPlotForCurrent(ctx: Ctx) {
         mode: planForCall.mode,
         discrete: planForCall.discrete,
         analyticalIR: planForCall.analyticalIR,
+        // MatrixPlan carries .shape; benign undefined for other modes.
+        shape: planForCall.shape,
         toolbarControls: null,
         staleGuard: function() { return ctx.currentPlotPlan === planForCall; },
       });
