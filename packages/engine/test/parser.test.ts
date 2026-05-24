@@ -44,16 +44,22 @@ test('parser: decomposition', () => {
 });
 
 test('parser: decomposition with bare _', () => {
+  // Per spec §04: each `_` LHS lowers to a distinct auto-generated
+  // private name (the `__discard_N` convention). The discard name
+  // is namespaced so multi-LHS `value, _ = f()` doesn't trip the
+  // duplicate-name check and `_, _ = …` is two distinct bindings.
   const { ast, diagnostics } = parseSrc('value, _ = f()');
   assert.equal(diagnostics.length, 0);
   const stmt = ast.body[0];
-  assert.deepEqual(stmt.names.map((n: any) => n.name), ['value', '_']);
+  assert.equal(stmt.names.length, 2);
+  assert.equal(stmt.names[0].name, 'value');
+  assert.match(stmt.names[1].name, /^__discard_/);
 });
 
 test('parser: bare _ as LHS', () => {
   const { ast, diagnostics } = parseSrc('_ = f()');
   assert.equal(diagnostics.length, 0);
-  assert.equal(ast.body[0].names[0].name, '_');
+  assert.match(ast.body[0].names[0].name, /^__discard_/);
 });
 
 test('parser: arithmetic precedence', () => {
