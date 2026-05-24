@@ -136,3 +136,67 @@ x = restrict(prior, 42)
 `);
   assert.ok(errs.some((d: any) => /field names could not be determined statically/.test(d.message)));
 });
+
+// ---------------------------------------------------------------------
+// restrict(M, x_ident) where x is a binding ref to a record literal
+// — the analyzer follows the identifier to its defining `record(...)`
+// and extracts field names. Previously this dead-ended with
+// "field names could not be determined statically" (TODO line 173).
+// ---------------------------------------------------------------------
+
+test('restrict: positional identifier referencing a record literal resolves', () => {
+  const src = `
+prior = joint(mu = Normal(mu = 0, sigma = 1), sigma = Exponential(rate = 1))
+obs = record(sigma = 0.8)
+restricted = restrict(prior, obs)
+`;
+  const errs = errors(src);
+  assert.deepEqual(errs.map((d: any) => d.message), [],
+    'identifier-typed observation should resolve via the defining record literal');
+});
+
+test('restrict: identifier-resolution expansion produces the same shape as inline', () => {
+  // Build the model two ways and confirm the analyzer reaches the
+  // same binding structure for `restricted`.
+  const A = processSource(`
+prior = joint(mu = Normal(mu = 0, sigma = 1), sigma = Exponential(rate = 1))
+obs = record(sigma = 0.8)
+restricted = restrict(prior, obs)
+`);
+  const B = processSource(`
+prior = joint(mu = Normal(mu = 0, sigma = 1), sigma = Exponential(rate = 1))
+restricted = restrict(prior, record(sigma = 0.8))
+`);
+  assert.deepEqual(A.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  assert.deepEqual(B.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  // Both should produce a bayesupdate-typed `restricted` binding.
+  assert.equal(A.bindings.get('restricted').type, 'bayesupdate');
+  assert.equal(B.bindings.get('restricted').type, 'bayesupdate');
+});
+
+test('restrict: cycle in identifier resolution (r = r) does not infinite-loop', () => {
+  // Pathological self-reference: the resolver's seen-set guards against
+  // infinite recursion; the analyzer reports the field-name diagnostic.
+  const src = `
+prior = joint(mu = Normal(mu = 0, sigma = 1))
+r = r
+x = restrict(prior, r)
+`;
+  // We just need this to terminate (not infinite-loop) with some error.
+  const errs = errors(src);
+  // The classifier surfaces an error one way or another; cycle in r,
+  // unknown record fields, etc. — what we pin is "doesn't hang".
+  assert.ok(errs.length > 0, 'self-referential identifier should surface an error');
+});
+
+test('restrict: identifier referencing a non-record binding → clean diagnostic', () => {
+  const src = `
+prior = joint(mu = Normal(mu = 0, sigma = 1))
+xs = [1.0, 2.0]   # not a record
+x = restrict(prior, xs)
+`;
+  const errs = errors(src);
+  assert.ok(errs.some((d: any) =>
+    /field names could not be determined statically/.test(d.message)),
+    'non-record identifier should produce the static field-names diagnostic');
+});
