@@ -26,6 +26,7 @@ const T = {
   AMPAMP: 'AMPAMP',     // && (FlatPPL/FlatPPJ logical AND)
   PIPEPIPE: 'PIPEPIPE', // || (FlatPPL/FlatPPJ logical OR)
   BANG: 'BANG',         // !  (FlatPPL/FlatPPJ logical NOT)
+  ARROW: 'ARROW',       // -> (lambda; spec §05 Lambda syntax)
 
   NEWLINE: 'NEWLINE',
   COMMENT: 'COMMENT',
@@ -239,6 +240,14 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     if (ch === '|' && at(1) === '|') {
       advance(); advance();
       tokens.push(token(T.PIPEPIPE, '||', startLine, startCol, line, col));
+      continue;
+    }
+    // `->` — lambda arrow. Must be checked before the single-char `-`
+    // path. Per spec §05 Lambda syntax, `(arg, …) -> expr` lowers to
+    // `functionof(expr-with-placeholders, arg = _arg_, …)`.
+    if (ch === '-' && at(1) === '>') {
+      advance(); advance();
+      tokens.push(token(T.ARROW, '->', startLine, startCol, line, col));
       continue;
     }
 
