@@ -10,6 +10,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 const ref = (n: any) => ({ kind: 'ref', ns: 'self', name: n });
 const lit = (v: any) => ({ kind: 'lit', value: v });
@@ -18,7 +19,8 @@ const addaxes = (a: any, l: any, t: any) =>
 const fnOf = (params: any, body: any) =>
   ({ kind: 'call', op: 'functionof', params: params, body: body });
 const bc = (...a: any[]) => ({ kind: 'call', op: 'broadcast', args: a });
-const ev = (ir: any) => sampler.evaluateExpr(ir, {});
+const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
+const ev = (ir: any) => toJS(evRaw(ir));
 
 const addAB = fnOf(['a', 'b'],
   { kind: 'call', op: 'add', args: [ref('a'), ref('b')] });

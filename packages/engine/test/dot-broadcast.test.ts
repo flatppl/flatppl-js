@@ -15,15 +15,18 @@ const assert = require('node:assert/strict');
 const { tokenize, parse, lower } = require('..');
 const sampler = require('../sampler.ts');
 const V = require('../variants.ts').FLATPPL;
+const { toJS } = require('./_value-helpers.ts');
 
 // Evaluate a single FlatPPL expression through the real pipeline.
+// Returns the JS view (toJS) so test literal-array expectations stay
+// readable across the §2.1 Value-producer migration.
 function ev(expr: any) {
   const { tokens } = tokenize('R = ' + expr, { variant: 'flatppl' });
   const parsed = parse(tokens, V);
   assert.deepEqual(parsed.diagnostics || [], [],
     'unexpected parse diagnostics for: ' + expr);
   const ir = lower.lowerBinding(parsed.ast.body[0], {});
-  return sampler.evaluateExpr(ir, {});
+  return toJS(sampler.evaluateExpr(ir, {}));
 }
 
 // Parse a statement; return { node, diagnostics }.
@@ -77,7 +80,8 @@ test('dotted unary minus → broadcast(neg, …)', () => {
 });
 
 test('dotted unary not → broadcast(lnot, …)', () => {
-  assert.deepEqual(ev('.! [true, false, true]'), [false, true, false]);
+  // Booleans coerce to 1/0 in the §2.1 flat-pack convention.
+  assert.deepEqual(ev('.! [true, false, true]'), [0, 1, 0]);
 });
 
 // --- dotted exponent / comparisons / logical --------------------------
@@ -89,10 +93,12 @@ test('dotted ^ → broadcast(pow, …) (right-assoc preserved)', () => {
 });
 
 test('dotted comparisons produce elementwise booleans', () => {
-  assert.deepEqual(ev('[1.0,2.0,3.0] .< [3.0,2.0,9.0]'), [true, false, true]);
-  assert.deepEqual(ev('[1.0,2.0,3.0] .>= [3.0,2.0,1.0]'), [false, true, true]);
-  assert.deepEqual(ev('[1.0,2.0,3.0] .== [1.0,9.0,3.0]'), [true, false, true]);
-  assert.deepEqual(ev('[1.0,2.0,3.0] .!= [1.0,9.0,3.0]'), [false, true, false]);
+  // Booleans coerce to 1/0 when flat-packed into a shape-explicit Value
+  // (engine-concepts §2.1) — same convention `land`/`lor` already use.
+  assert.deepEqual(ev('[1.0,2.0,3.0] .< [3.0,2.0,9.0]'), [1, 0, 1]);
+  assert.deepEqual(ev('[1.0,2.0,3.0] .>= [3.0,2.0,1.0]'), [0, 1, 1]);
+  assert.deepEqual(ev('[1.0,2.0,3.0] .== [1.0,9.0,3.0]'), [1, 0, 1]);
+  assert.deepEqual(ev('[1.0,2.0,3.0] .!= [1.0,9.0,3.0]'), [0, 1, 0]);
 });
 
 test('dotted logical &&/|| (numeric land/lor, like plain)', () => {
@@ -118,8 +124,8 @@ test('nested / chained broadcast expressions', () => {
   // comparison chain: a .< b .<= c  →  land(a .< b, b .<= c); each
   // comparison broadcasts (→ length-1 arrays), the land combiner is
   // the plain (scalar-callee) land applied elementwise.
-  assert.deepEqual(ev('[1.0] .< [2.0] .<= [2.0]'), [true]);
-  assert.deepEqual(ev('[1.0] .< [2.0] .<= [0.0]'), [false]);
+  assert.deepEqual(ev('[1.0] .< [2.0] .<= [2.0]'), [1]);
+  assert.deepEqual(ev('[1.0] .< [2.0] .<= [0.0]'), [0]);
 });
 
 test('mixed plain + dotted in one expression', () => {

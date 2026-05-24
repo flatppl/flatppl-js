@@ -4711,6 +4711,17 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
   for (let p = 0, k = 0; p < P; p++) collOf[p] = slots[p].coll ? k++ : -1;
 
   const idx = new Array(rank).fill(0);
+  // Flat row-major pack of leaf evaluations + a sticky "all numeric"
+  // flag. If the body of `fn` returns only finite numbers / booleans
+  // for every cell, the broadcast result is a shape-explicit Value
+  // (engine-concepts §2.1) — same convention as `vector(...)`,
+  // `fill(...)`, etc. If any cell returns a non-numeric value
+  // (e.g. a complex object, a record), we fall back to the legacy
+  // nested-JS-array form.
+  const total = bshape.reduce((a: number, b: number) => a * b, 1);
+  const flat = new Float64Array(total);
+  let allNumeric = true;
+  let pos = 0;
   function recur(axis: any): any {
     if (axis === rank) {
       for (let p = 0; p < P; p++) {
@@ -4727,11 +4738,26 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
     const out = new Array(bshape[axis]);
     for (let i = 0; i < bshape[axis]; i++) {
       idx[axis] = i;
-      out[i] = recur(axis + 1);
+      const child: any = recur(axis + 1);
+      out[i] = child;
+      if (axis === rank - 1) {
+        // Leaf level — `child` is one cell's value.
+        if (allNumeric) {
+          const t = typeof child;
+          if (t === 'number') flat[pos] = child;
+          else if (t === 'boolean') flat[pos] = child ? 1 : 0;
+          else allNumeric = false;
+          pos++;
+        }
+      }
     }
     return out;
   }
-  return recur(0);
+  const nested = recur(0);
+  if (allNumeric && total === pos) {
+    return { shape: bshape.slice(), data: flat };
+  }
+  return nested;
 }
 
 function evaluateCall(ir: any, env: any): any {
@@ -4818,13 +4844,56 @@ function evaluateCall(ir: any, env: any): any {
       if (a && a.kind === 'const' && a.name === 'only') return ONLY;
       return evaluateExpr(a, env);
     });
-    const isArrayLike = (c: any) => Array.isArray(c) || ArrayBuffer.isView(c);
+    const isArrayLike = (c: any) => Array.isArray(c) || ArrayBuffer.isView(c)
+                                  || valueLib.isValue(c);
+    // Slice a Value along its leading axis. Rank-1 returns a scalar
+    // number; rank≥2 returns a Value of one rank lower (sharing the
+    // underlying data — no copy when the rest of the shape is
+    // contiguous in row-major order, which is the engine's convention).
+    function _sliceLeading(v: any, idx: number): any {
+      let dense = v;
+      if (v.t === 'T' || v.t === 'A' || v.struct !== undefined) {
+        dense = valueLib.densify(v);
+        // densify preserves the transpose tag; for indexing we need
+        // physical contiguous-leading-axis data, so apply the tag
+        // (rare path — only matters when M came in as transpose-tagged).
+        if (dense.t === 'T' || dense.t === 'A') {
+          // For rank-2 only — apply transpose physically.
+          const m = dense.shape[dense.shape.length - 2];
+          const n = dense.shape[dense.shape.length - 1];
+          if (dense.shape.length === 2) {
+            const src = dense.data;
+            const out = new Float64Array(m * n);
+            for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+              out[i * n + j] = src[j * m + i];
+            }
+            dense = { shape: [m, n], data: out };
+          }
+        }
+      }
+      const shape = dense.shape;
+      if (shape.length === 1) {
+        return dense.data[idx];   // scalar number
+      }
+      const tail = shape.slice(1);
+      const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
+      const sub = dense.data.subarray(idx * tailLen, (idx + 1) * tailLen);
+      return { shape: tail, data: sub };
+    }
     const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;
       const s = ss[0], rest = ss.slice(1);
       if (s === ALL) {                       // whole axis: map over it
         if (!isArrayLike(c)) {
           throw new Error(`evaluateExpr: ${op} ':' axis-slice target is not an array`);
+        }
+        // For shape-explicit Value, slice along the leading axis and
+        // recurse the rest of the selectors over each row.
+        if (valueLib.isValue(c)) {
+          const n = c.shape[0];
+          const out: any[] = [];
+          for (let i = 0; i < n; i++) out.push(applyGet(_sliceLeading(c, i), rest));
+          return out;
         }
         const ca = c as any;
         const out: any[] = [];
@@ -4835,12 +4904,25 @@ function evaluateCall(ir: any, env: any): any {
         if (!isArrayLike(c)) {
           throw new Error(`evaluateExpr: ${op} '!' (only) axis target is not an array`);
         }
+        if (valueLib.isValue(c)) {
+          if (c.shape[0] !== 1) {
+            throw new Error(`evaluateExpr: ${op}(..., only, ...) requires the indexed `
+              + `axis to have length 1, got length ${c.shape[0]}`);
+          }
+          return applyGet(_sliceLeading(c, 0), rest);
+        }
         const ca = c as any;
         if (ca.length !== 1) {
           throw new Error(`evaluateExpr: ${op}(..., only, ...) requires the indexed `
             + `axis to have length 1, got length ${ca.length}`);
         }
         return applyGet(ca[0], rest);
+      }
+      // Value-typed subset selectors arise from `[i, j, k]` literals
+      // that lower to `vector(...)` and now produce a rank-1 Value.
+      // Unwrap to its data view.
+      if (valueLib.isValue(s) && s.shape.length === 1) {
+        return Array.from(s.data).map((si: any) => applyGet(c, [si, ...rest]));
       }
       if (Array.isArray(s)) {                // subset selection
         // All-string subset of a record → a sub-record (spec §07);
@@ -4863,9 +4945,17 @@ function evaluateCall(ir: any, env: any): any {
         if (!isArrayLike(c)) {
           throw new Error(`evaluateExpr: ${op} index target is not an array (got ${typeof c})`);
         }
-        const ca = c as any;
         const sn = s as number | boolean;
         const idx = (oneBased ? ((sn as number) | 0) - 1 : ((sn as number) | 0));
+        if (valueLib.isValue(c)) {
+          const len = c.shape[0];
+          if (idx < 0 || idx >= len) {
+            throw new Error(`evaluateExpr: ${op} index ${sn} out of `
+              + `bounds for length ${len}`);
+          }
+          return applyGet(_sliceLeading(c, idx), rest);
+        }
+        const ca = c as any;
         if (idx < 0 || idx >= ca.length) {
           throw new Error(`evaluateExpr: ${op} index ${oneBased ? sn : sn} out of `
             + `bounds for length ${ca.length}`);

@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 
 const { processSource } = require('../index.ts');
 const orchestrator = require('../orchestrator.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function buildFixed(source: any) {
   const lifted = processSource(source);
@@ -25,7 +26,7 @@ test('filter: fn(_ > 0) keeps positive elements', () => {
 data = [1.0, -2.5, 3.0, -4.0, 5.0]
 result = filter(fn(_ > 0.0), data)
 `);
-  assert.deepEqual(r.fixedValues.get('result'), [1.0, 3.0, 5.0]);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), [1.0, 3.0, 5.0]);
 });
 
 test('filter: in-range predicate keeps interior values', () => {
@@ -43,7 +44,7 @@ in_range = functionof(land(_x_ >= lo, _x_ <= hi), x = _x_)
 data = [-5.0, 2.5, 7.5, 12.0, 9.9]
 result = filter(in_range, data)
 `);
-  assert.deepEqual(r.fixedValues.get('result'), [2.5, 7.5, 9.9]);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), [2.5, 7.5, 9.9]);
 });
 
 test('filter: empty data ⇒ empty result', () => {
@@ -51,7 +52,7 @@ test('filter: empty data ⇒ empty result', () => {
 data = []
 result = filter(fn(_ > 0.0), data)
 `);
-  assert.deepEqual(r.fixedValues.get('result'), []);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), []);
 });
 
 test('filter: predicate always-false ⇒ empty result', () => {
@@ -59,7 +60,7 @@ test('filter: predicate always-false ⇒ empty result', () => {
 data = [1.0, 2.0, 3.0]
 result = filter(fn(_ > 100.0), data)
 `);
-  assert.deepEqual(r.fixedValues.get('result'), []);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), []);
 });
 
 test('filter: predicate always-true ⇒ original vector', () => {
@@ -67,7 +68,7 @@ test('filter: predicate always-true ⇒ original vector', () => {
 data = [1.0, 2.0, 3.0]
 result = filter(fn(_ > -100.0), data)
 `);
-  assert.deepEqual(r.fixedValues.get('result'), [1.0, 2.0, 3.0]);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), [1.0, 2.0, 3.0]);
 });
 
 // =====================================================================
@@ -84,7 +85,7 @@ result = filter(is_positive, data)
   // We define `x` as a separate fixed binding because functionof's
   // boundary x = x captures the binding by name. The predicate body
   // references the bound parameter, not the module-level x.
-  assert.deepEqual(r.fixedValues.get('result'), [1.0, 2.0]);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), [1.0, 2.0]);
 });
 
 // =====================================================================
@@ -99,7 +100,7 @@ threshold = 2.0
 data = [1.0, 2.0, 3.0, 4.0]
 result = filter(fn(_ > threshold), data)
 `);
-  assert.deepEqual(r.fixedValues.get('result'), [3.0, 4.0]);
+  assert.deepEqual(toJS(r.fixedValues.get('result')), [3.0, 4.0]);
 });
 
 // =====================================================================
@@ -143,7 +144,7 @@ test('scan(fn(_ + _), 0, [1, 2, 3, 4]) ⇒ [1, 3, 6, 10]', () => {
 data = [1.0, 2.0, 3.0, 4.0]
 cumsum = scan(fn(_ + _), 0.0, data)
 `);
-  assert.deepEqual(r.fixedValues.get('cumsum'), [1, 3, 6, 10]);
+  assert.deepEqual(toJS(r.fixedValues.get('cumsum')), [1, 3, 6, 10]);
 });
 
 test('scan: empty data ⇒ empty result', () => {
@@ -151,7 +152,7 @@ test('scan: empty data ⇒ empty result', () => {
 data = []
 cumsum = scan(fn(_ + _), 0.0, data)
 `);
-  assert.deepEqual(r.fixedValues.get('cumsum'), []);
+  assert.deepEqual(toJS(r.fixedValues.get('cumsum')), []);
 });
 
 test('scan: cumulative max (max(acc, x))', () => {
@@ -159,7 +160,7 @@ test('scan: cumulative max (max(acc, x))', () => {
 data = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0]
 running_max = scan(fn(max(_, _)), 0.0, data)
 `);
-  assert.deepEqual(r.fixedValues.get('running_max'), [3, 3, 4, 4, 5, 9, 9]);
+  assert.deepEqual(toJS(r.fixedValues.get('running_max')), [3, 3, 4, 4, 5, 9, 9]);
 });
 
 // =====================================================================
@@ -171,7 +172,7 @@ test('broadcast: unary positional ⇒ map over single array', () => {
 xs = [1.0, 2.0, 3.0, 4.0]
 ys = broadcast(fn(_ * 2.0 + 1.0), xs)
 `);
-  assert.deepEqual(r.fixedValues.get('ys'), [3, 5, 7, 9]);
+  assert.deepEqual(toJS(r.fixedValues.get('ys')), [3, 5, 7, 9]);
 });
 
 test('broadcast: binary positional ⇒ zip-map over two arrays', () => {
@@ -180,7 +181,7 @@ xs = [1.0, 2.0, 3.0]
 ys = [10.0, 20.0, 30.0]
 sums = broadcast(fn(_ + _), xs, ys)
 `);
-  assert.deepEqual(r.fixedValues.get('sums'), [11, 22, 33]);
+  assert.deepEqual(toJS(r.fixedValues.get('sums')), [11, 22, 33]);
 });
 
 test('broadcast: closure over fixed-phase scalar', () => {
@@ -189,7 +190,7 @@ scale = 10.0
 xs = [1.0, 2.0, 3.0]
 ys = broadcast(fn(scale * _), xs)
 `);
-  assert.deepEqual(r.fixedValues.get('ys'), [10, 20, 30]);
+  assert.deepEqual(toJS(r.fixedValues.get('ys')), [10, 20, 30]);
 });
 
 test('broadcast: empty input ⇒ empty output', () => {
@@ -197,7 +198,7 @@ test('broadcast: empty input ⇒ empty output', () => {
 xs = []
 ys = broadcast(fn(_ + 1.0), xs)
 `);
-  assert.deepEqual(r.fixedValues.get('ys'), []);
+  assert.deepEqual(toJS(r.fixedValues.get('ys')), []);
 });
 
 test('broadcasted(f): direct application becomes broadcast', () => {
@@ -206,7 +207,7 @@ xs = [1.0, 2.0, 3.0]
 ys = [10.0, 20.0, 30.0]
 sums = broadcasted(add)(xs, ys)
 `);
-  assert.deepEqual(r.fixedValues.get('sums'), [11, 22, 33]);
+  assert.deepEqual(toJS(r.fixedValues.get('sums')), [11, 22, 33]);
 });
 
 test('broadcasted(f): via named binding (HEP-style bcadd / bcmul)', () => {
@@ -219,7 +220,7 @@ bkg = [10.0, 20.0, 30.0]
 expected = bcadd(bcmul([mu, mu, mu], sig), bkg)
 `);
   // bcmul([2,2,2], [1,2,3]) = [2, 4, 6]; bcadd with [10, 20, 30] = [12, 24, 36]
-  assert.deepEqual(r.fixedValues.get('expected'), [12, 24, 36]);
+  assert.deepEqual(toJS(r.fixedValues.get('expected')), [12, 24, 36]);
 });
 
 test('broadcast: length mismatch ⇒ pre-eval silently skips on throw', () => {
@@ -240,6 +241,6 @@ region_data = filter(in_region, data)
 counts = bincounts([2.0, 3.0, 4.0, 5.0], region_data)
 `);
   // region_data = [2.5, 3.5, 4.5]; bins [2,3] [3,4] [4,5] → [1, 1, 1]
-  assert.deepEqual(r.fixedValues.get('region_data'), [2.5, 3.5, 4.5]);
-  assert.deepEqual(r.fixedValues.get('counts'), [1, 1, 1]);
+  assert.deepEqual(toJS(r.fixedValues.get('region_data')), [2.5, 3.5, 4.5]);
+  assert.deepEqual(toJS(r.fixedValues.get('counts')), [1, 1, 1]);
 });

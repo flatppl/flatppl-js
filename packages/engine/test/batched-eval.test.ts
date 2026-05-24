@@ -142,9 +142,12 @@ test('evaluateExprN: vector(...) of scalar refs returns Value shape=[N, 2]', () 
 
 test('evaluateExprN: vector(...) of atom-indep inputs returns one shared array', () => {
   // No per-atom refs touch the subtree → fast path, single evaluation.
+  // Post-§2.1 migration: vector(...) emits a shape-explicit Value.
   const r = sampler.evaluateExprN(call('vector', lit(1), lit(2), lit(3)),
     null, 5, {});
-  assert.deepEqual(r, [1, 2, 3]);
+  assert.ok(r && r.shape && r.data, 'returns a shape-explicit Value');
+  assert.deepEqual(r.shape, [3]);
+  assert.deepEqual(Array.from(r.data), [1, 2, 3]);
 });
 
 // =====================================================================

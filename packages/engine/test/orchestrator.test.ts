@@ -3150,17 +3150,22 @@ test('fixed dotted-broadcast array == literal fixed array (viewer-routing contra
     'dbkg = [3.0, 7.0]\n' +
     'tau = (bkg ./ dbkg) .^ 2\n');
   const { fixedValues } = buildDerivations(bindings);
-  // Both pre-evaluate to flat numeric JS arrays — the exact signal the
-  // viewer's fixed-phase array-mode fallback keys on.
+  // Both pre-evaluate to shape-explicit rank-1 Values per spec §03 /
+  // engine-concepts §2.1. The viewer's fixed-phase array-mode path
+  // accepts either a flat JS array or a rank-1 Value (the new
+  // canonical form).
   const dbkg = fixedValues.get('dbkg');
   const tau = fixedValues.get('tau');
+  const valueLib = require('../value.ts');
   for (const [nm, v] of [['dbkg', dbkg], ['tau', tau]]) {
-    assert.ok(Array.isArray(v) && v.length === 2
-      && v.every(e => typeof e === 'number' && Number.isFinite(e)),
-      `${nm} should be a flat finite numeric vector, got ${JSON.stringify(v)}`);
+    assert.ok(valueLib.isValue(v) && v.shape.length === 1 && v.shape[0] === 2,
+      `${nm} should be a rank-1 Value of length 2, got ${JSON.stringify(v)}`);
+    assert.ok(Array.from((v as any).data).every(
+      (e: any) => typeof e === 'number' && Number.isFinite(e)),
+      `${nm} entries must be finite numbers`);
   }
-  assert.ok(Math.abs(tau[0] - (50 / 3) ** 2) < 1e-9);
-  assert.ok(Math.abs(tau[1] - (52 / 7) ** 2) < 1e-9);
+  assert.ok(Math.abs((tau as any).data[0] - (50 / 3) ** 2) < 1e-9);
+  assert.ok(Math.abs((tau as any).data[1] - (52 / 7) ** 2) < 1e-9);
   // tau's loose static type is exactly why the viewer can't route on it.
   assert.equal(bindings.get('tau').inferredType.kind, 'deferred');
   assert.equal(bindings.get('dbkg').inferredType.kind, 'array');

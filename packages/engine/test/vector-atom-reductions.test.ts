@@ -90,18 +90,21 @@ test('logsumexp on Value', () => {
   assert.ok(Math.abs(ARITH_OPS.logsumexp(v) - Math.log(1 + Math.E)) < 1e-12);
 });
 
-test('l1unit / l2unit on Value (return JS arrays)', () => {
+test('l1unit / l2unit on Value (return Values)', () => {
   const v = valueLib.vector([3, 4]);
   const u = ARITH_OPS.l2unit(v);
-  assert.ok(Math.abs(u[0] - 0.6) < 1e-12);
-  assert.ok(Math.abs(u[1] - 0.8) < 1e-12);
+  // Returns a shape-explicit Value (engine-concepts §2.1).
+  assert.deepEqual(u.shape, [2]);
+  assert.ok(Math.abs(u.data[0] - 0.6) < 1e-12);
+  assert.ok(Math.abs(u.data[1] - 0.8) < 1e-12);
 });
 
 test('softmax / logsoftmax on Value', () => {
   const v = valueLib.vector([0, 0]);
   const s = ARITH_OPS.softmax(v);
-  assert.ok(Math.abs(s[0] - 0.5) < 1e-12);
-  assert.ok(Math.abs(s[1] - 0.5) < 1e-12);
+  assert.deepEqual(s.shape, [2]);
+  assert.ok(Math.abs(s.data[0] - 0.5) < 1e-12);
+  assert.ok(Math.abs(s.data[1] - 0.5) < 1e-12);
 });
 
 // =====================================================================

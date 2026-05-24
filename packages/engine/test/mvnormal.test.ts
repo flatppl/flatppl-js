@@ -78,7 +78,7 @@ function vecCov(samples: any, mean: any, n: any) {
 test('MvNormal: classifier recognises and produces vector atoms', async () => {
   const ctx = makeCtx(`
 mu = [1.0, 2.0]
-sigma = [[1.0, 0.0], [0.0, 1.0]]
+sigma = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
   const m = await ctx.getMeasure('m');
@@ -92,7 +92,7 @@ m = MvNormal(mu = mu, cov = sigma)
 test('MvNormal: empirical mean ≈ mu (identity cov)', async () => {
   const ctx = makeCtx(`
 mu = [3.0, -2.0]
-sigma = [[1.0, 0.0], [0.0, 1.0]]
+sigma = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
   const m = await ctx.getMeasure('m');
@@ -106,7 +106,7 @@ test('MvNormal: empirical covariance ≈ cov (non-trivial off-diag)', async () =
   // cov = [[2, 1], [1, 3]]. Should hold approximately.
   const ctx = makeCtx(`
 mu = [0.0, 0.0]
-sigma = [[2.0, 1.0], [1.0, 3.0]]
+sigma = rowstack([[2.0, 1.0], [1.0, 3.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
   const m = await ctx.getMeasure('m');
@@ -125,7 +125,7 @@ test('MvNormal: error on non-PD cov', async () => {
   // [[1, 2], [2, 1]] has eigenvalues 3, -1; not positive definite.
   const ctx = makeCtx(`
 mu = [0.0, 0.0]
-sigma = [[1.0, 2.0], [2.0, 1.0]]
+sigma = rowstack([[1.0, 2.0], [2.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
   await assert.rejects(ctx.getMeasure('m'), /MvNormal:.*positive definite/i);
@@ -134,7 +134,7 @@ m = MvNormal(mu = mu, cov = sigma)
 test('MvNormal: dim mismatch error mu vs cov', async () => {
   const ctx = makeCtx(`
 mu = [0.0, 0.0]
-sigma = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+sigma = rowstack([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
   await assert.rejects(ctx.getMeasure('m'),
@@ -166,7 +166,7 @@ test('walkMvNormal: density at observation point matches closed form (identity c
   // x = [1, 2], mu = [0, 0], cov = I → logpdf = -log(2π) - ½ (1+4) = -log(2π) - 2.5
   const ctx = makeCtx(`
 mu = [0.0, 0.0]
-sigma = [[1.0, 0.0], [0.0, 1.0]]
+sigma = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 lp = logdensityof(m, [1.0, 2.0])
 `);
@@ -188,7 +188,7 @@ test('walkMvNormal: density at multiple points (correlated cov)', async () => {
   for (const [x, mu] of cases) {
     const ctx = makeCtx(`
 mu = [${mu[0]}, ${mu[1]}]
-sigma = [[2.0, 1.0], [1.0, 3.0]]
+sigma = rowstack([[2.0, 1.0], [1.0, 3.0]])
 m = MvNormal(mu = mu, cov = sigma)
 lp = logdensityof(m, [${x[0]}, ${x[1]}])
 `);
@@ -204,7 +204,7 @@ test('walkMvNormal: 3-D identity case', async () => {
   // x = [1, 1, 1], mu = 0, cov = I → logpdf = -1.5 log(2π) - 1.5
   const ctx = makeCtx(`
 mu = [0.0, 0.0, 0.0]
-sigma = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+sigma = rowstack([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 lp = logdensityof(m, [1.0, 1.0, 1.0])
 `);
@@ -221,7 +221,7 @@ test('walkMvNormal: density consistent with marginal Normals when cov is diagona
   const x = [1.5, -0.5], mu = [0.0, 1.0];
   const ctx = makeCtx(`
 mu = [${mu[0]}, ${mu[1]}]
-sigma = [[${a}, 0.0], [0.0, ${c}]]
+sigma = rowstack([[${a}, 0.0], [0.0, ${c}]])
 m = MvNormal(mu = mu, cov = sigma)
 lp = logdensityof(m, [${x[0]}, ${x[1]}])
 `);

@@ -500,8 +500,37 @@ function unifyArith(a: any, b: any, subst: any): any {
     return { result: wider, subst: s2 };
   }
   // Both arrays — shapes must match (with %dynamic flexibility);
-  // element types unify as numerics.
+  // element types unify as numerics. unifyArith is used for
+  // elementwise / broadcast arithmetic (add / sub / and so on);
+  // matrix×vector / matrix×matrix dispatch for `*` lives in the
+  // dedicated inferMul path (or, until added, the runtime
+  // value-ops.mul handles them and typeinfer leaves the result
+  // as `deferred`).
   if (a.kind === 'array' && b.kind === 'array') {
+    // Cross-rank LA dispatch (spec §07 linear algebra). Accept:
+    //   - rank-2 × rank-1   → rank-1 (matvec)
+    //   - rank-1 × rank-2   → rank-1 (vecmat)
+    //   - rank-2 × rank-2   → rank-2 (matmul)
+    // The result rank differs from operand ranks; element type
+    // still unifies numerically.
+    if (a.rank === 2 && b.rank === 1) {
+      const elemR: any = unifyArith(a.elem, b.elem, subst);
+      if (elemR == null) return null;
+      return { result: array(1, ['%dynamic'], elemR.result), subst: elemR.subst };
+    }
+    if (a.rank === 1 && b.rank === 2) {
+      const elemR: any = unifyArith(a.elem, b.elem, subst);
+      if (elemR == null) return null;
+      return { result: array(1, ['%dynamic'], elemR.result), subst: elemR.subst };
+    }
+    if (a.rank === 2 && b.rank === 2) {
+      const elemR: any = unifyArith(a.elem, b.elem, subst);
+      if (elemR == null) return null;
+      // Result is rank-2 with the outer dims of A and inner of B
+      // (preserving %dynamic where appropriate).
+      const m = a.shape[0], n = b.shape[1];
+      return { result: array(2, [m, n], elemR.result), subst: elemR.subst };
+    }
     if (a.rank !== b.rank) return null;
     if (a.shape.length !== b.shape.length) return null;
     const shape: any[] = [];
@@ -933,22 +962,29 @@ const SIGNATURE_FACTORIES = {
   ifelse: () => ({ args: [BOOLEAN, tvar('T'), tvar('T')], kwargs: {}, result: tvar('T') }),
 
   // ---- Reductions / norms ------------------------------------------
-  sum:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  mean:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  prod:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  lengthof: () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
+  // Per spec §07: sum / mean / prod accept "real/complex arrays";
+  // var / std / maximum / minimum accept "real arrays". Arrays here
+  // means ANY rank (rank-1 vectors, rank-2 matrices, n-D tensors),
+  // reduced over ALL entries to a scalar. Use `any()` for the slot
+  // so the typechecker doesn't reject rank-2+ inputs.
+  // (Complex support: deferred — runtime branches on Value.dtype.)
+  sum:     () => ({ args: [any()], kwargs: {}, result: REAL }),
+  mean:    () => ({ args: [any()], kwargs: {}, result: REAL }),
+  prod:    () => ({ args: [any()], kwargs: {}, result: REAL }),
+  // lengthof: vectors / tables (spec §07). Vectors are rank-1 arrays;
+  // tables are records-of-columns. `any()` accepts both — the runtime
+  // resolves the right notion of "length".
+  lengthof: () => ({ args: [any()], kwargs: {}, result: INTEGER }),
   // sizeof returns the shape vector of an array; length of the result
   // is the rank of the input. Per spec §07 sizeof accepts arrays of
-  // ANY rank — multi-dim sizeof(M) returns a vector of dims, so the
-  // input slot uses `any()` instead of constraining to rank 1.
+  // ANY rank — multi-dim sizeof(M) returns a vector of dims.
   sizeof:   () => ({ args: [any()], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
-  // Population variance (divisor N — not N-1). maximum/minimum on an
-  // array; pluralised to avoid collision with the binary `min` / `max`
-  // built-ins (per spec §07).
-  var:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  std:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  maximum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  minimum: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  // Population variance (divisor N — not N-1). maximum/minimum on
+  // any-rank real array (spec §07).
+  var:     () => ({ args: [any()], kwargs: {}, result: REAL }),
+  std:     () => ({ args: [any()], kwargs: {}, result: REAL }),
+  maximum: () => ({ args: [any()], kwargs: {}, result: REAL }),
+  minimum: () => ({ args: [any()], kwargs: {}, result: REAL }),
   // Cumulative reductions (spec §07): scan-style — output array of the
   // same length as input. Result rank/length tracked as dynamic since
   // static input shape isn't always known.
