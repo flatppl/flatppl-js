@@ -213,16 +213,24 @@ function fixedValueToMeasure(v: any, sampleCount: any) {
       { logWeights: null, logTotalmass: 0, n_eff: sampleCount });
   }
   // Shape-explicit Value (e.g. produced by `eye(n)`, `diagmat`,
-  // transpose / lower_cholesky chains): densify if compact and bridge
-  // through measureFromValue. The dense Value's shape becomes
-  // [N=outer, ...dims]; for a fixed K-vector or KxK matrix that's
-  // the whole shape — no separate atom axis. The viewer's array-mode
-  // path reads .samples (which measureFromValue exposes as the flat
-  // data view).
+  // transpose / lower_cholesky chains). A fixed-phase Value is ONE
+  // value, not an atom-batched measure: shape=[3, 3] means "a single
+  // 3x3 matrix", not "3 atoms of 3-vector". If we passed it through
+  // measureFromValue with its native rank, the viewer would dispatch
+  // to the multivariate corner-plot path (renderRecordMarginals)
+  // which would mis-label the matrix entries as "samples".
+  // Flatten to a 1D scalar measure (length = prod(shape)) so the
+  // viewer's array-mode step plot renders the values. A proper
+  // rank-2+ heatmap renderer would preserve the matrix structure
+  // visually — tracked as a follow-up.
   if (valueLib.isValue(v)) {
     const dense = valueLib.densify(v);
-    return measureFromValue(dense,
-      { logWeights: null, logTotalmass: 0, n_eff: dense.shape[0] });
+    const flat = dense.data instanceof Float64Array
+      ? dense.data
+      : Float64Array.from(dense.data);
+    return scalarMeasureN(flat, {
+      logWeights: null, logTotalmass: 0, n_eff: flat.length,
+    });
   }
   // Complex scalar `z = complex(re, im)` materialises as { re, im }.
   // Bridge to a planar complex Value of shape=[1] so the viewer's
@@ -265,20 +273,21 @@ function fixedValueToMeasure(v: any, sampleCount: any) {
         { logWeights: null, logTotalmass: 0, n_eff: samples.length });
     }
     // Rank-≥2 numeric array (e.g. fixed-phase 2D matrix from
-    // `rand(state, iid(N, [3, 3]))`). The outer entries are
-    // numeric sub-arrays; we detect this recursively and flatten to
-    // a single Float64Array with the shape recorded in `dims`. This
-    // mirrors how matIid produces vector/matrix-atom measures and
-    // keeps the viewer's array-mode plot working — without it, the
-    // `elems` fallback below would treat each row as a separate
-    // tuple component and `samples` ends up undefined.
+    // `rand(state, iid(N, [3, 3]))`). A single fixed multi-dim value
+    // is NOT an atom-batched measure (shape=[3, 3] means "a 3x3
+    // matrix", not "3 atoms of 3-vector"). Flatten to a 1D scalar
+    // measure of length prod(shape) so the viewer renders it as a
+    // step plot of the values, not as a misleading "N samples of
+    // a k-vector" corner plot. The multi-dim structure is lost in
+    // the plot — a heatmap renderer for rank≥2 fixed arrays is a
+    // tracked follow-up.
     const nested = _classifyNestedNumeric(v);
     if (nested) {
       const flat = new Float64Array(nested.size);
       _flattenInto(v, flat, 0);
-      return measureFromValue(
-        { shape: nested.shape, data: flat },
-        { logWeights: null, logTotalmass: 0, n_eff: nested.shape[0] });
+      return scalarMeasureN(flat, {
+        logWeights: null, logTotalmass: 0, n_eff: nested.size,
+      });
     }
     const elems = new Array(v.length);
     for (let ei = 0; ei < v.length; ei++) elems[ei] = fixedValueToMeasure(v[ei], sampleCount);

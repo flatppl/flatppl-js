@@ -74,31 +74,39 @@ test('materialise: flat boolean array', async () => {
 // Multi-dim numeric arrays — the bug class fixed by 256455a
 // ---------------------------------------------------------------------
 
-test('materialise: 2D nested array via rand+iid', async () => {
+test('materialise: 2D nested array via rand+iid renders as flat samples (not atom-batched)', async () => {
+  // Critical invariant: a fixed multi-dim value is ONE value, not an
+  // atom-batched measure. Flat samples + no .dims / .shape='array'
+  // marker → viewer's array-mode step plot, NOT the multivariate
+  // corner-plot dispatch.
   const { ctx } = makeMatCtx(`
 rstate = rnginit([1,2,3,4])
 A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
 `);
   const m = await expectPlottable(ctx, 'A');
   assert.equal(m.samples.length, 9);
-  assert.deepEqual(m.value.shape, [3, 3]);
+  assert.equal(m.shape, undefined,
+    'fixed multi-dim must not carry shape=\'array\' (would route to corner plot)');
+  assert.equal(m.dims, undefined,
+    'fixed multi-dim must not carry .dims (would mis-label as atom-batched)');
 });
 
-test('materialise: 3D nested array via rand+iid', async () => {
+test('materialise: 3D nested array flattens to 24 values', async () => {
   const { ctx } = makeMatCtx(`
 rstate = rnginit([1,2,3,4])
 B, _ = rand(rstate, iid(Normal(0,1), [2, 3, 4]))
 `);
   const m = await expectPlottable(ctx, 'B');
   assert.equal(m.samples.length, 24);
-  assert.deepEqual(m.value.shape, [2, 3, 4]);
+  assert.equal(m.shape, undefined);
+  assert.equal(m.dims, undefined);
 });
 
 test('materialise: 2D matrix literal via rowstack', async () => {
   const { ctx } = makeMatCtx(`M = rowstack([[1.0, 2.0], [3.0, 4.0]])`);
   const m = await expectPlottable(ctx, 'M');
   assert.equal(m.samples.length, 4);
-  assert.deepEqual(m.value.shape, [2, 2]);
+  assert.equal(m.shape, undefined);
 });
 
 // ---------------------------------------------------------------------
@@ -116,7 +124,6 @@ test('materialise: fill(value, [m, n]) multi-axis', async () => {
   const { ctx } = makeMatCtx('xs = fill(2.5, [3, 3])');
   const m = await expectPlottable(ctx, 'xs');
   assert.equal(m.samples.length, 9);
-  assert.deepEqual(m.value.shape, [3, 3]);
   for (let i = 0; i < 9; i++) assert.equal(m.samples[i], 2.5);
 });
 
@@ -124,21 +131,18 @@ test('materialise: zeros([m, n]) multi-axis', async () => {
   const { ctx } = makeMatCtx('xs = zeros([3, 3])');
   const m = await expectPlottable(ctx, 'xs');
   assert.equal(m.samples.length, 9);
-  assert.deepEqual(m.value.shape, [3, 3]);
 });
 
 test('materialise: ones([m, n]) multi-axis', async () => {
   const { ctx } = makeMatCtx('xs = ones([2, 3])');
   const m = await expectPlottable(ctx, 'xs');
   assert.equal(m.samples.length, 6);
-  assert.deepEqual(m.value.shape, [2, 3]);
 });
 
 test('materialise: eye(n) identity matrix', async () => {
   const { ctx } = makeMatCtx('I = eye(3)');
   const m = await expectPlottable(ctx, 'I');
   assert.equal(m.samples.length, 9);
-  assert.deepEqual(m.value.shape, [3, 3]);
   // Diagonal = 1, off-diagonal = 0
   for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
     assert.equal(m.samples[i * 3 + j], i === j ? 1 : 0);
@@ -303,7 +307,6 @@ L = lower_cholesky(M)
 `);
   const m = await expectPlottable(ctx, 'L');
   assert.equal(m.samples.length, 4);
-  assert.deepEqual(m.value.shape, [2, 2]);
 });
 
 test('materialise: transpose of a matrix', async () => {
@@ -313,7 +316,6 @@ T = transpose(M)
 `);
   const m = await expectPlottable(ctx, 'T');
   assert.equal(m.samples.length, 6);
-  assert.deepEqual(m.value.shape, [3, 2]);
 });
 
 test('materialise: inv of an SPD matrix', async () => {
@@ -329,7 +331,6 @@ test('materialise: diagmat from a vector', async () => {
   const { ctx } = makeMatCtx('D = diagmat([1.0, 2.0, 3.0])');
   const m = await expectPlottable(ctx, 'D');
   assert.equal(m.samples.length, 9);
-  assert.deepEqual(m.value.shape, [3, 3]);
 });
 
 // ---------------------------------------------------------------------
@@ -394,14 +395,12 @@ test('materialise: fill(value, [m, n, p]) rank-3', async () => {
   const { ctx } = makeMatCtx('xs = fill(7.0, [2, 3, 4])');
   const m = await expectPlottable(ctx, 'xs');
   assert.equal(m.samples.length, 24);
-  assert.deepEqual(m.value.shape, [2, 3, 4]);
 });
 
 test('materialise: zeros([m, n, p]) rank-3', async () => {
   const { ctx } = makeMatCtx('xs = zeros([2, 3, 4])');
   const m = await expectPlottable(ctx, 'xs');
   assert.equal(m.samples.length, 24);
-  assert.deepEqual(m.value.shape, [2, 3, 4]);
 });
 
 // ---------------------------------------------------------------------
@@ -531,7 +530,6 @@ C = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])
 `);
   const m = await expectPlottable(ctx, 'C');
   assert.equal(m.samples.length, 4);
-  assert.deepEqual(m.value.shape, [2, 2]);
 });
 
 // ---------------------------------------------------------------------
