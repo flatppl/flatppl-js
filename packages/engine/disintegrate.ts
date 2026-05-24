@@ -71,6 +71,7 @@
 
 const ast = require('./ast.ts');
 const { collectDeps, isMeasureExpr } = require('./analyzer.ts');
+const perfConfig = require('./perf-config.ts');
 
 // ---------------------------------------------------------------------
 // AST construction helpers
@@ -850,9 +851,13 @@ function disintegratePlan(joint: any, selector: any, bindings: any, ctx: any): a
   }
 
   // 4. Delegate if the user already wrote the factorization out as
-  // distinct binding refs.
-  const del = tryDelegate(decomp, partition);
-  if (del) return del;
+  // distinct binding refs. Gated by the `disintegrate.delegate`
+  // optimisation toggle so equivalence tests can force the
+  // synthesize path through the dual-mode runner.
+  if (perfConfig.getOptimization('disintegrate.delegate')) {
+    const del = tryDelegate(decomp, partition);
+    if (del) return del;
+  }
 
   // 5. Synthesize.
   return synthesizePlan(decomp, partition, bindings, ctx);

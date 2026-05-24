@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
 const sampler = require('../sampler.ts');
 const lowerMod = require('../lower.ts');
+const { inBothModes } = require('./_perf-helpers.ts');
 
 function errors(src: string) {
   return processSource(src).diagnostics.filter(
@@ -82,11 +83,17 @@ C[.i, .j] := A[.i, .j]
 // Semantic correctness — matmul equivalence (spec §04 example 1)
 // ---------------------------------------------------------------------
 
-test('aggregate: matrix multiplication agrees with `mul` (spec §04 example 1)', () => {
+// Matrix multiplication is THE motivating use case for the aggregate
+// pattern table — the matmul specialiser dispatches this shape to
+// the `mul` op directly. Run in BOTH modes so the specialiser
+// (opt=on) and the nested-loop interpreter (opt=off) are pinned to
+// agree on the same numeric output. Any future regression where the
+// specialiser drifts from the general loop fails both variants
+// here.
+inBothModes('aggregate: matrix multiplication agrees with `mul` (spec §04 example 1)',
+  'aggregate', () => {
   // Spec §04: C = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])
   // ≡ standard A·B matmul.
-  // Run via direct evaluateExpr against a hand-built env so we test
-  // the contraction semantics in isolation.
   const A = [[1, 2, 3], [4, 5, 6]];
   const B = [[7, 8], [9, 10], [11, 12]];
   // Expected matmul:
@@ -94,12 +101,29 @@ test('aggregate: matrix multiplication agrees with `mul` (spec §04 example 1)',
   // = [[58, 64], [139, 154]]
   const src = 'C_agg = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])';
   const got = evalAggregateRHS(src, 'C_agg', { A, B });
-  // 2-D output → nested-array form (per _evalAggregateGeneral).
+  // 2-D output: nested-array form in both modes (matmul specialiser
+  // returns plain JS arrays of plain JS arrays; general loop
+  // returns plain JS arrays of Float64Array). Element-access syntax
+  // `got[i][j]` works on both, which is what we assert.
   assert.equal(got.length, 2);
   assert.equal(got[0].length, 2);
   assert.equal(got[0][0], 58);
   assert.equal(got[0][1], 64);
   assert.equal(got[1][0], 139);
+  assert.equal(got[1][1], 154);
+});
+
+// Same equivalence test with the multiplicative operands swapped —
+// the matmul specialiser must recognise both `A[.i,.j] * B[.j,.k]`
+// and `B[.j,.k] * A[.i,.j]` (scalar multiplication is commutative;
+// the result is still A·B).
+inBothModes('aggregate: matmul with operand order swapped — same result',
+  'aggregate', () => {
+  const A = [[1, 2, 3], [4, 5, 6]];
+  const B = [[7, 8], [9, 10], [11, 12]];
+  const src = 'C_agg = aggregate(sum, [.i, .k], B[.j, .k] * A[.i, .j])';
+  const got = evalAggregateRHS(src, 'C_agg', { A, B });
+  assert.equal(got[0][0], 58);
   assert.equal(got[1][1], 154);
 });
 

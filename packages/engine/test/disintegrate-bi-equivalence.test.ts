@@ -33,6 +33,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
 const { liftInlineSubexpressions } = require('../orchestrator.ts');
+const { inBothModes } = require('./_perf-helpers.ts');
 
 const examplesRoot = path.join(__dirname, '..', '..', '..', '..',
   'flatppl-examples', 'examples');
@@ -104,7 +105,15 @@ function ifaceOf(ir: any): any {
   };
 }
 
-test('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disintegrate) — structural interface', () => {
+// BI1 vs BI2 structural-interface tests run under both
+// `disintegrate.delegate=on` (BI2's disintegrate(["obs"], joint) hits
+// the delegate path and returns the existing forward_kernel binding
+// directly) and `=off` (the synthesize path emits fresh AST). Both
+// must produce a forward_kernel whose interface matches BI1's
+// direct kernelof. The feature-test1 SAME-MODULE test above tests
+// delegate-path-specific output equality and stays single-mode.
+inBothModes('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disintegrate) — structural interface',
+  'disintegrate.delegate', () => {
   const bi1Src = loadIfPresent('bayesian_inference_1.flatppl');
   const bi2Src = loadIfPresent('bayesian_inference_2.flatppl');
   if (!bi1Src || !bi2Src) {
@@ -149,7 +158,8 @@ test('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disintegrate)
     'forward_kernel kernel-interface matches between BI1 and BI2');
 });
 
-test('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)', () => {
+inBothModes('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)',
+  'disintegrate.delegate', () => {
   const bi1Src = loadIfPresent('bayesian_inference_1.flatppl');
   const bi2Src = loadIfPresent('bayesian_inference_2.flatppl');
   if (!bi1Src || !bi2Src) return;
@@ -167,7 +177,8 @@ test('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)', () => {
     'prior IR has the same top-level op (lawof) in BI1 and BI2');
 });
 
-test('BI1 posterior derivation kind = BI2 posterior derivation kind', () => {
+inBothModes('BI1 posterior derivation kind = BI2 posterior derivation kind',
+  'disintegrate.delegate', () => {
   const bi1Src = loadIfPresent('bayesian_inference_1.flatppl');
   const bi2Src = loadIfPresent('bayesian_inference_2.flatppl');
   if (!bi1Src || !bi2Src) return;

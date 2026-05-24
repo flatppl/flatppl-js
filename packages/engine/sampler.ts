@@ -69,6 +69,7 @@ import type { IRNode } from './engine-types';
 const rng = require('./rng.ts');
 const valueLib = require('./value.ts');
 const valueOps = require('./value-ops.ts');
+const perfConfig = require('./perf-config.ts');
 
 // Math special functions from stdlib for gamma / loggamma / erf-based
 // probit / invprobit. The straight-JS variants (logit, invlogit, min,
@@ -3122,23 +3123,102 @@ function _collectInScopeAxisNames(exprIR: any): Set<string> {
   return names;
 }
 
-// Pattern table — empty in v0.1. Each entry: {name, match(ir,env): boolean,
-// execute(ir, env): result}. Specializers can short-circuit common
-// shapes (matmul, dot-product, transpose-matmul, outer product, ...)
-// with BLAS-style ops; the general interpreter is the fallback and
-// correctness oracle.
+// Pattern table — each entry recognises a specific aggregate shape
+// and dispatches to an accelerated implementation. Tried in order;
+// first match wins. The general interpreter (`_evalAggregateGeneral`)
+// is the fallback AND the correctness oracle that every specialiser
+// must match. Run tests with `perf-config.setOptimization('aggregate',
+// false)` to force the general path and verify equivalence.
+//
+// Each entry has the shape:
+//   match(ir, env): match-state | null
+//   execute(ir, env, match): result
+// where `match` may carry pre-extracted IR refs (e.g. the two factor
+// arrays for matmul) so `execute` doesn't have to re-walk the IR.
 const AGGREGATE_PATTERNS: Array<{
   name: string;
-  match: (ir: any, env: any) => boolean;
-  execute: (ir: any, env: any) => any;
+  match: (ir: any, env: any) => any;
+  execute: (ir: any, env: any, match: any) => any;
 }> = [];
 
 function _evalAggregate(ir: any, env: any): any {
-  for (const p of AGGREGATE_PATTERNS) {
-    if (p.match(ir, env)) return p.execute(ir, env);
+  // Pattern dispatch is gated by the `aggregate` optimisation toggle.
+  // When disabled, every aggregate flows through the general nested-
+  // loop interpreter so the equivalence tests (`inBothModes`) can
+  // verify each specialiser agrees with the reference path.
+  if (perfConfig.getOptimization('aggregate')) {
+    for (const p of AGGREGATE_PATTERNS) {
+      const m = p.match(ir, env);
+      if (m) return p.execute(ir, env, m);
+    }
   }
   return _evalAggregateGeneral(ir, env);
 }
+
+// ---------------------------------------------------------------------
+// Specialiser: matrix multiplication
+//   aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])  ≡  mul(A, B)
+//   aggregate(sum, [.i, .k], B[.j, .k] * A[.i, .j])  ≡  mul(A, B)
+// (scalar multiplication is commutative, so either factor order matches;
+//  the assignment of axes to matrix dims is what fixes the result.)
+// ---------------------------------------------------------------------
+AGGREGATE_PATTERNS.push({
+  name: 'matmul',
+  match(ir: any, _env: any): any {
+    const args = ir.args || [];
+    if (args.length !== 3) return null;
+    const [fIR, axesIR, bodyIR] = args;
+    // Reduction must be `sum`.
+    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    // Output axes: exactly two, both axis-refs, distinct names.
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const outAxes = axesIR.args || [];
+    if (outAxes.length !== 2) return null;
+    if (outAxes[0].kind !== 'axis' || outAxes[1].kind !== 'axis') return null;
+    const iName = outAxes[0].name;
+    const kName = outAxes[1].name;
+    if (iName === kName) return null;
+    // Body: `mul(get(A, .i, .j), get(B, .j, .k))` — or with factors
+    // swapped. `get0` is rejected here for simplicity (the 1-based
+    // FlatPPL/FlatPPJ shape is the canonical matmul lowering).
+    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
+    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
+    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+    // Try `(get(A,.i,.j), get(B,.j,.k))` first, then the swap.
+    const cand = [[f1, f2], [f2, f1]];
+    for (const [aGet, bGet] of cand) {
+      if (!aGet || aGet.kind !== 'call' || aGet.op !== 'get') continue;
+      if (!bGet || bGet.kind !== 'call' || bGet.op !== 'get') continue;
+      if (!aGet.args || aGet.args.length !== 3) continue;
+      if (!bGet.args || bGet.args.length !== 3) continue;
+      const aSels = aGet.args.slice(1);
+      const bSels = bGet.args.slice(1);
+      if (aSels[0].kind !== 'axis' || aSels[0].name !== iName) continue;
+      if (aSels[1].kind !== 'axis') continue;
+      const jName = aSels[1].name;
+      if (jName === iName || jName === kName) continue;
+      if (bSels[0].kind !== 'axis' || bSels[0].name !== jName) continue;
+      if (bSels[1].kind !== 'axis' || bSels[1].name !== kName) continue;
+      return { aIR: aGet.args[0], bIR: bGet.args[0] };
+    }
+    return null;
+  },
+  execute(_ir: any, env: any, match: any): any {
+    const A = evaluateExpr(match.aIR, env);
+    const B = evaluateExpr(match.bIR, env);
+    // Both operands are matrices. Dispatch by representation:
+    // shape-rich Value → value-ops.mul (handles atom-batched and
+    // Klein-4 transpose tags); nested JS arrays → the file-local
+    // `_matmul` helper (the same one row_gram / col_gram use).
+    // ARITH_OPS.mul only does scalar multiplication for plain JS
+    // values — it would NaN out on matrix operands, so we don't
+    // route through it here.
+    if (valueLib.isValue(A) || valueLib.isValue(B)) {
+      return valueOps.mul(valueLib.asValue(A), valueLib.asValue(B));
+    }
+    return _matmul(A, B);
+  },
+});
 
 // Map reduction name → ARITH_OPS implementation.
 const _AGGREGATE_REDUCTIONS: Record<string, (a: any) => number> = {

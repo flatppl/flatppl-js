@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
 const sampler = require('../sampler.ts');
 const lowerMod = require('../lower.ts');
+const { inBothModes } = require('./_perf-helpers.ts');
 
 function errors(src: string) {
   return processSource(src).diagnostics.filter(
@@ -241,7 +242,8 @@ test('only: aggregate runtime error if a non-singleton dim is indexed with `!`',
 //      aggregate shapes to broadcast (or BLAS) calls equivalently.
 // ---------------------------------------------------------------------
 
-test('broadcast/aggregate equivalence: element-wise binary scalar op', () => {
+inBothModes('broadcast/aggregate equivalence: element-wise binary scalar op',
+  'aggregate', () => {
   // broadcast((a,b) -> a*b, A, B) for length-n vectors A, B
   // ≡ aggregate(sum, [.i], A[.i] * B[.i])
   const A = [1, 2, 3, 4];
@@ -253,7 +255,8 @@ test('broadcast/aggregate equivalence: element-wise binary scalar op', () => {
   assert.deepEqual([...got], [10, 40, 90, 160]);
 });
 
-test('broadcast/aggregate equivalence: element-wise unary', () => {
+inBothModes('broadcast/aggregate equivalence: element-wise unary',
+  'aggregate', () => {
   // broadcast(x -> x*x, A) ≡ aggregate(sum, [.i], A[.i] * A[.i])
   const A = [1, 2, 3, 4];
   const got = evalRHS(
@@ -262,7 +265,8 @@ test('broadcast/aggregate equivalence: element-wise unary', () => {
   assert.deepEqual([...got], [1, 4, 9, 16]);
 });
 
-test('broadcast/aggregate equivalence: outer product via independent axes', () => {
+inBothModes('broadcast/aggregate equivalence: outer product via independent axes',
+  'aggregate', () => {
   // No broadcasting trick needed — independent axes naturally give
   // the outer product. `aggregate(sum, [.i, .j], A[.i] * B[.j])`
   // ≡ A * Bᵀ (outer product).
@@ -280,7 +284,8 @@ test('broadcast/aggregate equivalence: outer product via independent axes', () =
   assert.equal(got[2][1], 60);
 });
 
-test('broadcast/aggregate equivalence: row-vector broadcast (singleton on first axis)', () => {
+inBothModes('broadcast/aggregate equivalence: row-vector broadcast (singleton on first axis)',
+  'aggregate', () => {
   // A shape [3, 4]; b shape [1, 4]; broadcast row-wise.
   //   broadcast((a,b) -> a + b, A, B) where B = addaxes(v, 1, 0)
   //   ≡ aggregate(sum, [.i, .j], A[.i, .j] + B[!, .j])
@@ -294,7 +299,8 @@ test('broadcast/aggregate equivalence: row-vector broadcast (singleton on first 
   assert.equal(got[2][3], 412);
 });
 
-test('broadcast/aggregate equivalence: scalar-Value broadcast (rank-1 length-1)', () => {
+inBothModes('broadcast/aggregate equivalence: scalar-Value broadcast (rank-1 length-1)',
+  'aggregate', () => {
   // A scalar wrapped as a shape-[1] vector broadcasts uniformly.
   //   s shape [1]; broadcast((a,s) -> a*s, A, s) ≡ A * s[0]
   //   aggregate variant: aggregate(sum, [.i, .j], A[.i, .j] * s[!])
@@ -310,7 +316,8 @@ test('broadcast/aggregate equivalence: scalar-Value broadcast (rank-1 length-1)'
   assert.equal(got[1][1], 28);
 });
 
-test('broadcast/aggregate equivalence: doubly-singleton broadcast', () => {
+inBothModes('broadcast/aggregate equivalence: doubly-singleton broadcast',
+  'aggregate', () => {
   // A shape [2, 3]; scalar wrapped as [1, 1]; broadcast every element.
   //   aggregate(sum, [.i, .j], A[.i, .j] + s[!, !])
   const A = [[1, 2, 3], [4, 5, 6]];
@@ -322,7 +329,8 @@ test('broadcast/aggregate equivalence: doubly-singleton broadcast', () => {
   assert.equal(got[1][2], 16);
 });
 
-test('broadcast/aggregate equivalence: bilinear form (matrix-vec-vec contraction)', () => {
+inBothModes('broadcast/aggregate equivalence: bilinear form (matrix-vec-vec contraction)',
+  'aggregate', () => {
   // Quadratic form xᵀ A y, fully reduced:
   //   q = aggregate(sum, [.dummy], x[.i] * A[.i, .j] * y[.j] * vec[.dummy])
   // requires at least one output axis (spec). Use a length-1 dummy
@@ -344,7 +352,8 @@ test('broadcast/aggregate equivalence: bilinear form (matrix-vec-vec contraction
   assert.equal(q[0], 219);
 });
 
-test('broadcast/aggregate equivalence: explicit reduction (sum over axis)', () => {
+inBothModes('broadcast/aggregate equivalence: explicit reduction (sum over axis)',
+  'aggregate', () => {
   // sum(A, axis=0): aggregate(sum, [.j], A[.i, .j]) — reduces over .i.
   const A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
   // Column sums: [12, 15, 18]
@@ -430,7 +439,8 @@ C[.i, .k] := A[.i, .j] * B[.j, .k]
   assert.equal(cT.shape[1], 4, `axis .k length: ${cT.shape[1]}`);
 });
 
-test('broadcast/aggregate equivalence: := shorthand matrix multiplication', () => {
+inBothModes('broadcast/aggregate equivalence: := shorthand matrix multiplication',
+  'aggregate', () => {
   // C[.i,.k] := A[.i,.j] * B[.j,.k]   — classic matmul.
   const A = [[1, 2], [3, 4]];
   const B = [[5, 6], [7, 8]];
