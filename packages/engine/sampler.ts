@@ -2001,6 +2001,10 @@ const ARITH_OPS = {
     return -a;
   },
   pos: (a: any) => _isComplex(a) ? a : +a,
+  // identity(x): returns x unchanged. Spec §07 — first-class function
+  // form is useful as a default `f` argument (e.g. pushfwd(identity, M)
+  // ≡ M) and as a placeholder during interactive editing.
+  identity: (a: any) => a,
   // Common unary maths — extend EVALUABLE_OPS in orchestrator.js
   // alongside any addition here so the static gate matches. Complex
   // arguments dispatch to the complex helpers (spec §07: exp / log /

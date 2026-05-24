@@ -365,6 +365,7 @@ const EVALUABLE_OPS = new Set([
   // sides together when adding ops (the static gate must match the
   // worker's evaluator).
   'add', 'sub', 'mul', 'div', 'divide', 'mod', 'neg', 'pos',
+  'identity',
   'abs', 'abs2', 'exp', 'log', 'log10', 'log1p', 'expm1', 'sqrt',
   'sin', 'cos', 'tan',
   'asin', 'acos', 'atan', 'atan2',

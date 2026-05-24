@@ -688,6 +688,8 @@ const SIGNATURE_FACTORIES = {
   pow:    () => arith2(),
   neg:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   pos:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  // identity(x) — polymorphic spec §07 identity (T → T).
+  identity: () => ({ args: [tvar('T')], kwargs: {}, result: tvar('T') }),
   abs:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   abs2:   () => ({ args: [REAL], kwargs: {}, result: REAL }),
   exp:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
