@@ -10,12 +10,21 @@ const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
 const valueLib = require('../value.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function lit(v: any)        { return { kind: 'lit', value: v }; }
 function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
-function mat(...rows: any[])  { return { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) }; }
+// Per spec §03, a literal nested-vector `[[…],[…]]` is a vector-of-
+// vectors, NOT a matrix — `rowstack` is the explicit lift to rank-2.
+// Use `rowstack(vector(vector(…), vector(…)))` so the matrix ops here
+// see a proper matrix Value.
+function mat(...rows: any[]) {
+  const vov = { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) };
+  return { kind: 'call', op: 'rowstack', args: [vov] };
+}
 function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
-const ev = (ir: any) => sampler.evaluateExpr(ir, {});
+const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
+const ev = (ir: any) => toJS(evRaw(ir));
 
 function matClose(A: any, B: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
@@ -59,7 +68,7 @@ test('trace: rejects non-square matrix', () => {
 // =====================================================================
 
 test('diagmat: vector → vector-backed diagonal structure', () => {
-  const D = ev(call('diagmat', vec(1, 2, 3)));
+  const D = evRaw(call('diagmat', vec(1, 2, 3)));
   assert.ok(valueLib.isDiagStored(D), 'diagmat yields a diag Value');
   assert.deepEqual(Array.from(D.data), [1, 2, 3], 'stores the diagonal');
   assert.deepEqual(Array.from(valueLib.densify(D).data),

@@ -7,11 +7,17 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function lit(v: any)        { return { kind: 'lit', value: v }; }
 function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
 function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
-const ev = (ir: any) => sampler.evaluateExpr(ir, {});
+// Producers now emit shape-explicit Values per the engine-concepts §2.1
+// contract; `ev` returns the JS-shaped view for readable deepEqual
+// assertions. `evRaw` is the underlying Value when shape/data probing
+// is needed.
+const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
+const ev = (ir: any) => toJS(evRaw(ir));
 
 // =====================================================================
 // linspace
@@ -116,7 +122,7 @@ test('zeros / ones: multi-dimensional', () => {
 });
 
 test('eye(n) ⇒ n × n identity (vector-backed diag structure)', () => {
-  const I = ev(call('eye', lit(3)));
+  const I = evRaw(call('eye', lit(3)));
   assert.ok(valueLib.isDiagStored(I), 'eye is a diag Value, not dense');
   assert.deepEqual(I.shape, [3, 3]);
   assert.deepEqual(Array.from(I.data), [1, 1, 1], 'stores the diagonal');
@@ -221,13 +227,13 @@ test('rowstack: input vectors become rows of a rank-2 matrix Value', () => {
   // JS array — that's what lets `mul`/`add`/`sub` dispatch through
   // valueOps. Without it (the v0.1 prerelease behavior), `A * B` of
   // two rowstack outputs evaluated to NaN.
-  const r = ev(call('rowstack', vov([1, 2, 3], [4, 5, 6])));
+  const r = evRaw(call('rowstack', vov([1, 2, 3], [4, 5, 6])));
   assert.deepEqual(r.shape, [2, 3]);
   assert.deepEqual(Array.from(r.data), [1, 2, 3, 4, 5, 6]);
 });
 
 test('colstack: input vectors become columns of a rank-2 matrix Value', () => {
-  const r = ev(call('colstack', vov([1, 2, 3], [4, 5, 6])));
+  const r = evRaw(call('colstack', vov([1, 2, 3], [4, 5, 6])));
   assert.deepEqual(r.shape, [3, 2]);
   // column-major in: [1,2,3] becomes col 0, [4,5,6] becomes col 1
   // row-major out:   [1, 4, 2, 5, 3, 6]
@@ -251,14 +257,14 @@ test('colstack: mismatched column lengths ⇒ runtime error', () => {
 const valueLib = require('../value.ts');
 
 test('addaxes(A, 2, 1): inserts leading/trailing singular axes', () => {
-  const r = ev(call('addaxes', vec(1, 2, 3), lit(2), lit(1)));
+  const r = evRaw(call('addaxes', vec(1, 2, 3), lit(2), lit(1)));
   assert.deepEqual(r.shape, [1, 1, 3, 1]);
   assert.deepEqual(Array.from(r.data), [1, 2, 3]);
   assert.equal(valueLib.numel(r.shape), r.data.length);
 });
 
 test('addaxes(A, 0, 0): identity shape, same content', () => {
-  const r = ev(call('addaxes', vec(5, 6), lit(0), lit(0)));
+  const r = evRaw(call('addaxes', vec(5, 6), lit(0), lit(0)));
   assert.deepEqual(r.shape, [2]);
   assert.deepEqual(Array.from(r.data), [5, 6]);
 });
@@ -276,8 +282,8 @@ test('addaxes is zero-copy: result shares the input buffer', () => {
 test('addaxes: NumPy- vs Julia-style alignment is explicit', () => {
   // A length-3 vector lifted to a row (1,3) vs a column (3,1) — the
   // engine never picks; the user states it via addaxes.
-  const numpyRow = ev(call('addaxes', vec(1, 2, 3), lit(1), lit(0)));
-  const juliaCol = ev(call('addaxes', vec(1, 2, 3), lit(0), lit(1)));
+  const numpyRow = evRaw(call('addaxes', vec(1, 2, 3), lit(1), lit(0)));
+  const juliaCol = evRaw(call('addaxes', vec(1, 2, 3), lit(0), lit(1)));
   assert.deepEqual(numpyRow.shape, [1, 3]);
   assert.deepEqual(juliaCol.shape, [3, 1]);
 });
