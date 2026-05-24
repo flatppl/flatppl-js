@@ -96,6 +96,15 @@ export interface IRHole extends IRBase {
 }
 
 /**
+ * Axis label `.name` (spec §05 Axis names; FlatPIR `(%axis name)`).
+ * Legal only inside an aggregate(...) call; the analyzer enforces.
+ */
+export interface IRAxis extends IRBase {
+  kind: 'axis';
+  name: string;
+}
+
+/**
  * Call IR — built-in (uses `op`) or user-defined (uses `target`).
  * Field forms (record, joint, jointchain, cartprod, table) carry
  * `fields: [{name, value}, …]`. Module-load forms carry `assigns`.
@@ -121,7 +130,7 @@ export interface IRCall extends IRBase {
   selectorBase?: number | null;
 }
 
-export type IRNode = IRLit | IRConst | IRRef | IRHole | IRCall;
+export type IRNode = IRLit | IRConst | IRRef | IRHole | IRAxis | IRCall;
 
 // ---------------------------------------------------------------------
 // Derivation kinds (engine/derivations.ts → buildDerivations output)

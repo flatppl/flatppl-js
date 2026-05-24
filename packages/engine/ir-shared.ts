@@ -445,6 +445,12 @@ const EVALUABLE_OPS = new Set([
   'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer',
   'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
   'row_gram', 'col_gram',
+  // Multi-axis aggregation (spec §04 §sec:aggregate). Pure
+  // deterministic value op — phase joins its inputs. The materialiser
+  // dispatches through a pattern table with a nested-loop interpreter
+  // as fallback; both surface here through the standard `evaluate`
+  // derivation.
+  'aggregate',
 ]);
 
 // =====================================================================

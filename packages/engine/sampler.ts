@@ -1003,10 +1003,24 @@ function evaluateExpr(ir: IRNode, env: any): any {
       return resolveConst(ir.name);
     case 'ref':
       return resolveRef(ir, env);
+    case 'axis': {
+      // Axis labels are bound by the enclosing aggregate(...) iteration
+      // through `env.__axisEnv` (a per-iteration map). The analyzer
+      // enforces that axes only appear inside an aggregate; outside that
+      // scope env.__axisEnv is absent and we throw — matches the
+      // "axes are not values" invariant of spec §05.
+      const axisEnv = env && env.__axisEnv;
+      const name = (ir as any).name;
+      if (!axisEnv || !(name in axisEnv)) {
+        throw new Error(`evaluateExpr: axis '.${name}' is not in scope ` +
+          `(legal only inside aggregate(...))`);
+      }
+      return axisEnv[name];
+    }
     case 'call':
       return evaluateCall(ir, env);
     default:
-      throw new Error(`evaluateExpr: unsupported IR node kind '${ir.kind}'`);
+      throw new Error(`evaluateExpr: unsupported IR node kind '${(ir as any).kind}'`);
   }
 }
 
@@ -3011,6 +3025,227 @@ function regionBoundsFromIR(ir: any, env: any) {
     + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');
 }
 
+// =====================================================================
+// aggregate(f_reduction, output_axes, expr) — spec §04 §sec:aggregate
+// =====================================================================
+//
+// Multi-axis tensor contraction. Phase = join of input phases (this
+// runs per-atom via the standard per-atom-fallback path; no batching
+// at this layer in v0.1).
+//
+// Architecture: AGGREGATE_PATTERNS is a list of pattern specializers
+// tried in order — each gets the parsed aggregate IR and either
+// returns a result (the specialized fast path) or `null` (no match,
+// try the next). The default fallback is _evalAggregateGeneral, a
+// nested-loop interpreter over the full Cartesian product of axis
+// values. v0.1 ships with no specializers; matmul / dot-product / etc.
+// land as additions to the table.
+
+// Axis length inference walks the IR looking for the FIRST get(...) or
+// get0(...) whose selector slot k is an axis ref; the length of that
+// axis is then the length of the container's dim-k. Walk stops at
+// nested aggregate boundaries — those have their own axis scope.
+function _inferAggregateAxisLengths(exprIR: any, axisNames: string[], env: any) {
+  const lengths: Record<string, number> = {};
+  function _shapeOf(val: any): number[] | null {
+    if (val == null) return null;
+    if (typeof val === 'number' || typeof val === 'boolean') return [];
+    if (Array.isArray(val)) {
+      // Nested-array form: shape from outer length + recurse for inner.
+      const inner: number[] = [];
+      if (val.length > 0 && Array.isArray(val[0])) {
+        const tail = _shapeOf(val[0]);
+        if (tail) for (const x of tail) inner.push(x);
+      }
+      return [val.length, ...inner];
+    }
+    if (val && (val as any).BYTES_PER_ELEMENT) return [(val as any).length];
+    if (val && Array.isArray((val as any).shape)) return (val as any).shape;
+    return null;
+  }
+  function walk(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.kind === 'call' && n.op === 'aggregate') return;   // inner scope
+    if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
+      const args = n.args || [];
+      const container = args[0];
+      const sels = args.slice(1);
+      let containerVal: any = undefined;
+      for (let k = 0; k < sels.length; k++) {
+        const s = sels[k];
+        if (s && s.kind === 'axis' && !(s.name in lengths)) {
+          if (containerVal === undefined) {
+            try { containerVal = evaluateExpr(container, env); }
+            catch (_) { containerVal = null; }
+          }
+          if (containerVal == null) continue;
+          const shape = _shapeOf(containerVal);
+          if (shape && typeof shape[k] === 'number') {
+            lengths[s.name] = shape[k];
+          }
+        }
+      }
+    }
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'kind' || k === 'op' || k === 'name' || k === 'ns') continue;
+      walk(n[k]);
+    }
+  }
+  walk(exprIR);
+  // Verify every needed axis got a length; raise a clear error if not.
+  const missing = axisNames.filter((a: string) => !(a in lengths));
+  if (missing.length > 0) {
+    throw new Error(
+      `aggregate: could not infer length of axis ${missing.map((a: string) => '.' + a).join(', ')} ` +
+      `— each axis must index a known array at least once in expr`);
+  }
+  return lengths;
+}
+
+// Collect axis names that appear in expr, NOT descending into nested
+// aggregate(...) bodies (each aggregate has its own closed axis scope
+// per spec §05).
+function _collectInScopeAxisNames(exprIR: any): Set<string> {
+  const names = new Set<string>();
+  function walk(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.kind === 'axis') { names.add(n.name); return; }
+    if (n.kind === 'call' && n.op === 'aggregate') return;
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'kind' || k === 'op' || k === 'name' || k === 'ns') continue;
+      walk(n[k]);
+    }
+  }
+  walk(exprIR);
+  return names;
+}
+
+// Pattern table — empty in v0.1. Each entry: {name, match(ir,env): boolean,
+// execute(ir, env): result}. Specializers can short-circuit common
+// shapes (matmul, dot-product, transpose-matmul, outer product, ...)
+// with BLAS-style ops; the general interpreter is the fallback and
+// correctness oracle.
+const AGGREGATE_PATTERNS: Array<{
+  name: string;
+  match: (ir: any, env: any) => boolean;
+  execute: (ir: any, env: any) => any;
+}> = [];
+
+function _evalAggregate(ir: any, env: any): any {
+  for (const p of AGGREGATE_PATTERNS) {
+    if (p.match(ir, env)) return p.execute(ir, env);
+  }
+  return _evalAggregateGeneral(ir, env);
+}
+
+// Map reduction name → ARITH_OPS implementation.
+const _AGGREGATE_REDUCTIONS: Record<string, (a: any) => number> = {
+  sum:     (a: any) => (ARITH_OPS as any).sum(a),
+  prod:    (a: any) => (ARITH_OPS as any).prod(a),
+  mean:    (a: any) => (ARITH_OPS as any).mean(a),
+  var:     (a: any) => (ARITH_OPS as any).var(a),
+  std:     (a: any) => (ARITH_OPS as any).std(a),
+  maximum: (a: any) => (ARITH_OPS as any).maximum(a),
+  minimum: (a: any) => (ARITH_OPS as any).minimum(a),
+};
+
+function _evalAggregateGeneral(ir: any, env: any): any {
+  const args = ir.args || [];
+  if (args.length !== 3) {
+    throw new Error(`aggregate: expected 3 args, got ${args.length}`);
+  }
+  const [fIR, axesIR, exprIR] = args;
+
+  // Reduction name — the IR is a self-ref to a builtin reduction.
+  const fname = (fIR.kind === 'ref' && fIR.name) || (fIR.kind === 'const' && fIR.name);
+  const reduce = fname && _AGGREGATE_REDUCTIONS[fname];
+  if (!reduce) {
+    throw new Error(`aggregate: unknown reduction '${fname}'`);
+  }
+
+  // output_axes — ArrayLiteral lowers to `vector(...)` call; pull the
+  // axis names in declared order.
+  if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
+    throw new Error('aggregate: output_axes must be an array literal of axis names');
+  }
+  const outAxes = (axesIR.args || []).map((a: any) => {
+    if (a.kind !== 'axis') {
+      throw new Error('aggregate: output_axes entries must be axis names (.name)');
+    }
+    return a.name;
+  });
+
+  // Collect all axis names in expr (skipping nested aggregates).
+  const usedAxes = _collectInScopeAxisNames(exprIR);
+  // Reduce-over axes = used \ output (preserve declaration order).
+  const reduceAxes: string[] = [];
+  for (const a of usedAxes) if (!outAxes.includes(a)) reduceAxes.push(a);
+
+  // Infer lengths for every axis appearing in expr (from the first
+  // get/get0 indexing that uses it).
+  const allAxes = [...outAxes, ...reduceAxes];
+  const lengths = _inferAggregateAxisLengths(exprIR, allAxes, env);
+
+  // Build inner env that inherits the outer one and adds an axis-env
+  // map for axis-name resolution during the contraction loop.
+  const axisEnv: Record<string, number> = Object.assign(
+    {}, env && env.__axisEnv);
+  const innerEnv = Object.assign({}, env);
+  innerEnv.__axisEnv = axisEnv;
+
+  const outShape = outAxes.map((a: string) => lengths[a]);
+  const outSize = outShape.reduce((p: number, n: number) => p * n, 1);
+  const reduceShape = reduceAxes.map((a: string) => lengths[a]);
+  const reduceSize = reduceShape.reduce((p: number, n: number) => p * n, 1);
+
+  function setAxisCoords(idx: number, names: string[], shape: number[]) {
+    for (let k = names.length - 1; k >= 0; k--) {
+      const dim = shape[k];
+      // 1-based: axis value substitutes into `get` selector slots
+      // which spec defines as 1-based (`get0` is the 0-based variant).
+      axisEnv[names[k]] = (idx % dim) + 1;
+      idx = (idx / dim) | 0;
+    }
+  }
+
+  const outData = new Float64Array(outSize);
+  const tmp = new Float64Array(reduceSize > 0 ? reduceSize : 1);
+  for (let outIdx = 0; outIdx < outSize; outIdx++) {
+    setAxisCoords(outIdx, outAxes, outShape);
+    if (reduceSize === 0) {
+      // No reduce axes — expr depends only on output axes; single eval.
+      outData[outIdx] = +evaluateExpr(exprIR, innerEnv);
+      continue;
+    }
+    for (let rIdx = 0; rIdx < reduceSize; rIdx++) {
+      setAxisCoords(rIdx, reduceAxes, reduceShape);
+      tmp[rIdx] = +evaluateExpr(exprIR, innerEnv);
+    }
+    outData[outIdx] = +reduce(tmp);
+  }
+
+  // 1-D output → return as a plain Float64Array (matches conventions
+  // for vector-typed builtin outputs like `linspace`). Multi-D → return
+  // as a nested JS array so `get(M, i, j)` flows through naturally.
+  if (outShape.length === 1) return outData;
+  function buildNested(start: number, shape: number[]): any {
+    if (shape.length === 1) {
+      const out = new Float64Array(shape[0]);
+      for (let i = 0; i < shape[0]; i++) out[i] = outData[start + i];
+      return out;
+    }
+    const stride = shape.slice(1).reduce((p, n) => p * n, 1);
+    const out: any[] = new Array(shape[0]);
+    for (let i = 0; i < shape[0]; i++) {
+      out[i] = buildNested(start + i * stride, shape.slice(1));
+    }
+    return out;
+  }
+  return buildNested(0, outShape);
+}
+
 // Resolve a function-positional argument used by higher-order ops
 // (filter, reduce, scan) into { body, params } regardless of whether
 // the IR is an inline `functionof(...)` call or a self-ref to a named
@@ -3162,6 +3397,9 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
 
 function evaluateCall(ir: any, env: any): any {
   const op = ir.op;
+  if (op === 'aggregate') {
+    return _evalAggregate(ir, env);
+  }
   if (op in ARITH_OPS) {
     const args = (ir.args || []).map((a: any) => evaluateExpr(a, env));
     return (ARITH_OPS as any)[op](...args);

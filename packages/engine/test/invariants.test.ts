@@ -99,6 +99,10 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   // function's body per element rather than fitting the positional-
   // spread ARITH_OPS shape.
   'filter', 'reduce', 'scan', 'broadcast',
+  // Multi-axis aggregation (spec §04 §sec:aggregate). Dispatched by
+  // evaluateCall via a dedicated case that walks the axis-name iteration
+  // and reduces with one of the seven order-invariant reductions.
+  'aggregate',
 ]);
 
 test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () => {

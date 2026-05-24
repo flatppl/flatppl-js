@@ -523,6 +523,22 @@ function parse(tokens: any[], variant: any) {
       return AST.Identifier(tok.value, tok.loc);
     }
 
+    // AxisRef `.name` at the START of a Primary (spec §05 Axis names).
+    // Distinguished from FieldAccess `expr.name` (handled in parsePostfix)
+    // by position: a `.name` token sequence appearing where a Primary is
+    // expected is an axis label; the same sequence appearing after a
+    // postfix-able expression is field access. Per spec §05 closing
+    // notes: "A `.Name` token is `FieldAccess` when it follows a
+    // `Postfix`-able expression, and `Axis` otherwise (at the start of
+    // a `Primary`)."
+    if (at(T.DOT) && tokens[pos + 1] && tokens[pos + 1].type === T.IDENT) {
+      const dotTok = advance();
+      const nameTok = advance();
+      return AST.AxisRef(nameTok.value,
+        AST.loc(dotTok.loc.start.line, dotTok.loc.start.col,
+                nameTok.loc.end.line, nameTok.loc.end.col));
+    }
+
     // Parenthesized expression or tuple literal: (expr) | (expr, expr [, expr...])
     if (at(T.LPAREN)) {
       const lparen = advance(); // (
@@ -691,6 +707,69 @@ function parse(tokens: any[], variant: any) {
     return parseExpr();
   }
 
+  // Look ahead past `Name [` for the AggregateBinding shape:
+  //   IDENT LBRACKET DOT IDENT (COMMA DOT IDENT)* RBRACKET COLON_EQ
+  // Returns true only if that exact sequence matches; otherwise false
+  // so the regular Binding/Decomposition path proceeds.
+  function lookaheadIsAggregateBinding() {
+    let i = pos + 2;  // skip IDENT then LBRACKET
+    if (!tokens[i] || tokens[i].type !== T.DOT) return false;
+    while (i < tokens.length) {
+      if (!tokens[i] || tokens[i].type !== T.DOT) return false;
+      i++;
+      if (!tokens[i] || tokens[i].type !== T.IDENT) return false;
+      i++;
+      if (tokens[i] && tokens[i].type === T.COMMA) {
+        i++;
+        continue;
+      }
+      if (tokens[i] && tokens[i].type === T.RBRACKET) {
+        return tokens[i + 1] != null && tokens[i + 1].type === T.COLON_EQ;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  // Parse `Name [ .axis (, .axis)* ] := Expression`. The lookahead has
+  // already confirmed the shape; we consume tokens and desugar
+  // at parse time to `Name = aggregate(sum, [Axis, ...], Expression)`
+  // so downstream passes see only the canonical CallExpr form.
+  function parseAggregateBinding() {
+    const nameTok = advance();              // IDENT
+    advance();                              // [
+    const axes: any[] = [];
+    while (at(T.DOT)) {
+      const dotTok = advance();
+      const axisNameTok = advance();
+      axes.push(AST.AxisRef(axisNameTok.value,
+        AST.loc(dotTok.loc.start.line, dotTok.loc.start.col,
+                axisNameTok.loc.end.line, axisNameTok.loc.end.col)));
+      if (at(T.COMMA)) advance();
+    }
+    expect(T.RBRACKET);
+    expect(T.COLON_EQ);
+    const body = parseExpr();
+    const stmtLoc = AST.loc(
+      nameTok.loc.start.line, nameTok.loc.start.col,
+      body.loc.end.line, body.loc.end.col);
+
+    // Build the canonical desugar:
+    //   <name> = aggregate(sum, [ax1, ax2, ...], <body>)
+    const aggCall = AST.CallExpr(
+      AST.Identifier('aggregate', stmtLoc),
+      [
+        AST.Identifier('sum', stmtLoc),
+        AST.ArrayLiteral(axes, stmtLoc),
+        body,
+      ],
+      stmtLoc);
+    return AST.AssignStatement(
+      [AST.Identifier(nameTok.value, nameTok.loc)],
+      aggCall,
+      stmtLoc);
+  }
+
   // --- Statement parsing ---
 
   function parseStatement() {
@@ -708,6 +787,20 @@ function parse(tokens: any[], variant: any) {
       });
       skipToNewline();
       return AST.ErrorStatement(startTok.value, startTok.loc);
+    }
+
+    // AggregateBinding (spec §05 Axis names + §04 §sec:aggregate):
+    //   Name "[" Axis ("," Axis)* "]" ":=" Expression
+    // Lowers at parse time to:
+    //   Name "=" aggregate(sum, [Axis, ...], Expression)
+    // Recognised by lookahead: after the leading Name, peek for `[`
+    // then a sequence of `.IDENT` (axis) tokens separated by commas,
+    // then `]` `:=`. If the pattern doesn't match we fall through to
+    // the normal Binding/Tilde/Decomposition parse. The lookahead is
+    // bounded by the closing bracket, so it stays cheap.
+    if (at(T.IDENT) && tokens[pos + 1] && tokens[pos + 1].type === T.LBRACKET
+        && lookaheadIsAggregateBinding()) {
+      return parseAggregateBinding();
     }
 
     // Collect LHS names: name1, name2, ... = rhs. Reserved names

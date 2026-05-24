@@ -74,6 +74,14 @@ function Hole(loc: any) {
   return { type: 'Hole', loc };
 }
 
+// AxisRef: `.name` axis label used by `aggregate` (spec §05 Axis names).
+// Distinguished from FieldAccess (which is `.name` AFTER a postfix-able
+// expression — those have a parent object). An AxisRef appears at the
+// start of a Primary; it carries no parent.
+function AxisRef(name: any, loc: any) {
+  return { type: 'AxisRef', name, loc };
+}
+
 function ArrayLiteral(elements: any, loc: any) {
   return { type: 'ArrayLiteral', elements, loc };
 }
@@ -118,7 +126,7 @@ module.exports = {
   loc, synthLoc,
   Program, AssignStatement, ErrorStatement, Comment,
   Identifier, NumberLiteral, StringLiteral, BoolLiteral,
-  ConstantRef, SetRef, Placeholder, Hole,
+  ConstantRef, SetRef, Placeholder, Hole, AxisRef,
   ArrayLiteral, TupleLiteral, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, FieldAccess,
   KeywordArg, SliceAll,

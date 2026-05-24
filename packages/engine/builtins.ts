@@ -52,6 +52,13 @@ const SPECIAL_OPERATIONS = new Set([
   'load_module', 'standard_module', 'load_data',
   // Higher-order
   'broadcast', 'broadcasted', 'reduce', 'scan',
+  // Multi-axis aggregation (spec §04 §sec:aggregate): three distinguished
+  // inputs (reduction function, output_axes array, expr). Not an ordinary
+  // function — the second arg contains symbolic axis labels and the third
+  // contains expressions that bind those labels lexically. Its own
+  // derivation kind in derivations.ts; materialiser dispatches via a
+  // pattern table with a general nested-loop interpreter as fallback.
+  'aggregate',
   // Function composition / annotation
   'fchain', 'bijection',
   // Assertions

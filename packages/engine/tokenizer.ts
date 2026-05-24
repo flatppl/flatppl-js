@@ -27,6 +27,7 @@ const T = {
   PIPEPIPE: 'PIPEPIPE', // || (FlatPPL/FlatPPJ logical OR)
   BANG: 'BANG',         // !  (FlatPPL/FlatPPJ logical NOT)
   ARROW: 'ARROW',       // -> (lambda; spec §05 Lambda syntax)
+  COLON_EQ: 'COLON_EQ', // := (aggregate shorthand; spec §05 Axis names)
 
   NEWLINE: 'NEWLINE',
   COMMENT: 'COMMENT',
@@ -248,6 +249,14 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     if (ch === '-' && at(1) === '>') {
       advance(); advance();
       tokens.push(token(T.ARROW, '->', startLine, startCol, line, col));
+      continue;
+    }
+    // `:=` — aggregate shorthand (spec §05 Axis names). Must be checked
+    // before the single-char `:` (used for slicing). `C[.i, .k] := expr`
+    // lowers to `C = aggregate(sum, [.i, .k], expr)`.
+    if (ch === ':' && at(1) === '=') {
+      advance(); advance();
+      tokens.push(token(T.COLON_EQ, ':=', startLine, startCol, line, col));
       continue;
     }
 

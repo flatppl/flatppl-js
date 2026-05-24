@@ -330,6 +330,95 @@ function validateSpecialOperation(valueNode: any) {
       break;
     }
 
+    case 'aggregate': {
+      // aggregate(f_reduction, output_axes, expr) — spec §04 §sec:aggregate.
+      // Three distinguished positional inputs, no kwargs.
+      if (args.length !== 3) {
+        diags.push({
+          severity: 'error',
+          message: `aggregate() takes exactly three arguments (f_reduction, output_axes, expr)`,
+          loc: valueNode.loc,
+        });
+        break;
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({
+            severity: 'error',
+            message: `aggregate() takes positional arguments only`,
+            loc: arg.loc,
+          });
+        }
+      }
+      // First arg: one of the seven order-invariant reductions.
+      const fArg = args[0];
+      const ALLOWED_REDUCTIONS = new Set([
+        'sum', 'prod', 'mean', 'var', 'std', 'maximum', 'minimum',
+      ]);
+      if (fArg.type !== 'Identifier' || !ALLOWED_REDUCTIONS.has(fArg.name)) {
+        diags.push({
+          severity: 'error',
+          message: `aggregate()'s first argument must be one of: `
+            + `sum, prod, mean, var, std, maximum, minimum`,
+          loc: fArg.loc,
+        });
+      }
+      // Second arg: non-empty array literal of distinct AxisRef.
+      const oaArg = args[1];
+      if (oaArg.type !== 'ArrayLiteral') {
+        diags.push({
+          severity: 'error',
+          message: `aggregate()'s second argument must be an array literal `
+            + `of axis names (e.g. [.i, .k])`,
+          loc: oaArg.loc,
+        });
+      } else if (oaArg.elements.length === 0) {
+        diags.push({
+          severity: 'error',
+          message: `aggregate() requires at least one output axis`,
+          loc: oaArg.loc,
+        });
+      } else {
+        const seen = new Set<string>();
+        const declared: string[] = [];
+        for (const el of oaArg.elements) {
+          if (el.type !== 'AxisRef') {
+            diags.push({
+              severity: 'error',
+              message: `aggregate() output_axes entries must be axis names (.name)`,
+              loc: el.loc,
+            });
+            continue;
+          }
+          if (seen.has(el.name)) {
+            diags.push({
+              severity: 'error',
+              message: `aggregate() output_axes contains duplicate axis '.${el.name}'`,
+              loc: el.loc,
+            });
+          }
+          seen.add(el.name);
+          declared.push(el.name);
+        }
+        // Third arg: every declared output axis must appear at least once
+        // in expr (per spec). Walk expr collecting axis-name usage.
+        const exprArg = args[2];
+        if (exprArg) {
+          const used = collectAxisRefs(exprArg);
+          for (const name of declared) {
+            if (!used.has(name)) {
+              diags.push({
+                severity: 'error',
+                message: `aggregate(): output axis '.${name}' does not appear in expr`,
+                loc: oaArg.loc,
+              });
+            }
+          }
+        }
+      }
+      break;
+    }
+
     case 'reduce': {
       // reduce(f, xs) — two positional args (spec §07).
       if (args.length !== 2) {
@@ -1370,7 +1459,7 @@ function validateIndexing(node: any, diagnostics: any[]) {
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
 function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
-  // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof)
+  // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof), 'aggregate'
   function walk(node: any, scope: string) {
     if (!node) return;
     switch (node.type) {
@@ -1392,11 +1481,25 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
           });
         }
         return;
+      case 'AxisRef':
+        // Per spec §05 Axis names: an axis label `.name` is legal only
+        // inside an enclosing aggregate(...) — as an entry of output_axes,
+        // as an `[...]` index in the body, or as a binder on the LHS of
+        // `:=` (which the parser desugars to `aggregate(...)`).
+        if (scope !== 'aggregate') {
+          diagnostics.push({
+            severity: 'error',
+            message: `Axis name '.${node.name}' may only appear inside aggregate(...)`,
+            loc: node.loc,
+          });
+        }
+        return;
       case 'CallExpr': {
         let inner = scope;
         if (node.callee && node.callee.type === 'Identifier') {
           if (node.callee.name === 'fn') inner = 'fn';
           else if (node.callee.name === 'functionof' || node.callee.name === 'kernelof') inner = 'reify';
+          else if (node.callee.name === 'aggregate') inner = 'aggregate';
         }
         walk(node.callee, scope);
         for (const a of node.args) walk(a, inner);
@@ -1428,6 +1531,26 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
     }
   }
   walk(node, 'normal');
+}
+
+/**
+ * Walk an AST collecting all distinct axis-ref names that appear in it.
+ * Used by `validateSpecialOperation` for `aggregate` to verify each
+ * declared output axis is actually referenced in the expr.
+ */
+function collectAxisRefs(node: any): Set<string> {
+  const names = new Set<string>();
+  function walk(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    if (n.type === 'AxisRef') { names.add(n.name); return; }
+    for (const k of Object.keys(n)) {
+      if (k === 'loc') continue;
+      walk(n[k]);
+    }
+  }
+  walk(node);
+  return names;
 }
 
 /**
