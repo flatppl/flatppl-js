@@ -78,6 +78,7 @@ const stdlibGamma    = require('@stdlib/math-base-special-gamma');
 const stdlibGammaln  = require('@stdlib/math-base-special-gammaln');
 const stdlibErfc     = require('@stdlib/math-base-special-erfc');
 const stdlibErfcinv  = require('@stdlib/math-base-special-erfcinv');
+const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
 
 // Distribution constructors (analytical PDF/CDF/quantile/mean/etc.)
 const Normal      = require('@stdlib/stats-base-dists-normal-ctor');
@@ -455,6 +456,413 @@ function logpdfInverseGamma(x: any, shape: any, scale: any) {
 }
 
 // ---------------------------------------------------------------------
+// Synthetic ChiSquared
+// ---------------------------------------------------------------------
+//
+// Spec §08: ChiSquared(k) — equivalent to Gamma(k/2, rate=0.5). We
+// delegate sampling to stdlib's randGamma (consistent with the existing
+// Gamma path) rather than the separate `random-base-chisquare` module
+// so the prng-thread is identical. Density is the standard closed form.
+
+const randChiSquared = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      const inner = randGamma.factory({ prng });
+      return function parametricChiSquaredSampler(k: any) {
+        return inner(k / 2, 0.5);
+      };
+    }
+    const k = +args[0];
+    const inner = randGamma.factory(k / 2, 0.5, { prng });
+    return function staticChiSquaredSampler() { return inner(); };
+  },
+};
+
+function ChiSquaredCtor(this: any, k: any) {
+  this.k = +k;
+  this.mean = +k;
+  this.variance = 2 * (+k);
+  this.stdev = Math.sqrt(this.variance);
+  this.support = [0, Infinity];
+}
+ChiSquaredCtor.prototype.pdf = function(this: any, x: any) {
+  return Math.exp(this.logpdf(x));
+};
+ChiSquaredCtor.prototype.logpdf = function(this: any, x: any) {
+  if (x <= 0) return -Infinity;
+  const k = this.k;
+  return -(k / 2) * Math.LN2 - stdlibGammaln(k / 2)
+       + (k / 2 - 1) * Math.log(x) - x / 2;
+};
+function logpdfChiSquared(x: any, k: any) {
+  if (x <= 0) return -Infinity;
+  return -(k / 2) * Math.LN2 - stdlibGammaln(k / 2)
+       + (k / 2 - 1) * Math.log(x) - x / 2;
+}
+
+// ---------------------------------------------------------------------
+// Synthetic VonMises
+// ---------------------------------------------------------------------
+//
+// Spec §08: VonMises(mu, kappa). Circular distribution on the real line
+// (we evaluate density on R with 2π-periodicity; samples come out in
+// (μ − π, μ + π]).
+//   pdf  =  exp(κ cos(x − μ)) / (2π · I₀(κ))
+//
+// Sampling: Best & Fisher (1979) rejection algorithm — the standard
+// approach.  We compute I₀(κ) via a Chebyshev approximation (Abramowitz
+// & Stegun 9.8.1/9.8.2) — accurate to ~1.7e−7 across all κ ≥ 0, which
+// is fine for density evaluation and visualisation.
+
+function logBesselI0(x: any) {
+  // Returns log(I_0(|x|)). Uses A&S 9.8.1 for |x| < 3.75 (gives I_0
+  // directly; ax small) and A&S 9.8.2 for |x| ≥ 3.75 (gives
+  // exp(-|x|) · √|x| · I_0 — log it out).
+  const ax = Math.abs(+x);
+  if (ax < 3.75) {
+    const t = (ax / 3.75); const t2 = t * t;
+    const I0 = 1
+      + t2 * (3.5156229
+      + t2 * (3.0899424
+      + t2 * (1.2067492
+      + t2 * (0.2659732
+      + t2 * (0.0360768
+      + t2 * 0.0045813)))));
+    return Math.log(I0);
+  }
+  const y = 3.75 / ax;
+  const poly = 0.39894228
+    + y * (0.01328592
+    + y * (0.00225319
+    + y * (-0.00157565
+    + y * (0.00916281
+    + y * (-0.02057706
+    + y * (0.02635537
+    + y * (-0.01647633
+    + y * 0.00392377)))))));
+  // I_0(ax) = exp(ax) / sqrt(ax) · poly  ⇒  log = ax − 0.5 log(ax) + log(poly)
+  return ax - 0.5 * Math.log(ax) + Math.log(poly);
+}
+
+function _vmDraw(mu: any, kappa: any, prng: any) {
+  // Best-Fisher (1979) rejection sampler. Falls back to Uniform on
+  // [μ−π, μ+π] when κ is essentially zero.
+  const k = +kappa;
+  const m = +mu;
+  if (k < 1e-8) {
+    // ~uniform on (μ−π, μ+π]
+    return m + (prng() - 0.5) * 2 * Math.PI;
+  }
+  const a = 1 + Math.sqrt(1 + 4 * k * k);
+  const b = (a - Math.sqrt(2 * a)) / (2 * k);
+  const r = (1 + b * b) / (2 * b);
+  for (let i = 0; i < 1000; i++) {
+    const u1 = prng();
+    const z = Math.cos(Math.PI * u1);
+    const f = (1 + r * z) / (r + z);
+    const c = k * (r - f);
+    const u2 = prng();
+    if (u2 < c * (2 - c) || u2 <= c * Math.exp(1 - c)) {
+      const u3 = prng();
+      const sign = (u3 - 0.5) < 0 ? -1 : 1;
+      // Map to (μ − π, μ + π]
+      return m + sign * Math.acos(f);
+    }
+  }
+  // Pathological: fall back to mean
+  return m;
+}
+
+const randVonMises = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricVonMisesSampler(mu: any, kappa: any) {
+        return _vmDraw(mu, kappa, prng);
+      };
+    }
+    const mu = +args[0], kappa = +args[1];
+    return function staticVonMisesSampler() { return _vmDraw(mu, kappa, prng); };
+  },
+};
+
+function VonMisesCtor(this: any, mu: any, kappa: any) {
+  this.mu = +mu;
+  this.kappa = +kappa;
+  this.mean = +mu;
+  // canonical fundamental domain
+  this.support = [+mu - Math.PI, +mu + Math.PI];
+}
+VonMisesCtor.prototype.pdf = function(this: any, x: any) {
+  return Math.exp(this.logpdf(x));
+};
+VonMisesCtor.prototype.logpdf = function(this: any, x: any) {
+  const k = this.kappa;
+  return k * Math.cos(x - this.mu)
+       - Math.log(2 * Math.PI) - logBesselI0(k);
+};
+function logpdfVonMises(x: any, mu: any, kappa: any) {
+  return kappa * Math.cos(x - mu)
+       - Math.log(2 * Math.PI) - logBesselI0(kappa);
+}
+
+// ---------------------------------------------------------------------
+// Synthetic Laplace
+// ---------------------------------------------------------------------
+//
+// Spec §08: Laplace(location, scale).
+//   pdf = exp(−|x − μ|/b) / (2b)
+//   cdf = 1/2 · (1 + sgn(x − μ)·(1 − exp(−|x − μ|/b)))
+//   Q(p) = μ − b · sgn(p − 1/2) · log(1 − 2·|p − 1/2|)
+
+const randLaplace = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    function draw(mu: any, b: any) {
+      const u = prng() - 0.5;
+      // sgn(u) · log(1 − 2|u|), inverted: x = μ − b·sgn(u)·log(1−2|u|)
+      const s = u < 0 ? -1 : 1;
+      const a = 1 - 2 * Math.abs(u);
+      const ac = a < Number.EPSILON ? Number.EPSILON : a;
+      return (+mu) - (+b) * s * Math.log(ac);
+    }
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricLaplaceSampler(mu: any, b: any) { return draw(mu, b); };
+    }
+    const mu = +args[0], b = +args[1];
+    return function staticLaplaceSampler() { return draw(mu, b); };
+  },
+};
+
+function LaplaceCtor(this: any, location: any, scale: any) {
+  this.mu = +location;
+  this.b = +scale;
+  this.mean = +location;
+  this.variance = 2 * (+scale) * (+scale);
+  this.stdev = Math.sqrt(this.variance);
+  this.support = [-Infinity, Infinity];
+}
+LaplaceCtor.prototype.pdf = function(this: any, x: any) {
+  return Math.exp(-Math.abs(x - this.mu) / this.b) / (2 * this.b);
+};
+LaplaceCtor.prototype.logpdf = function(this: any, x: any) {
+  return -Math.log(2 * this.b) - Math.abs(x - this.mu) / this.b;
+};
+LaplaceCtor.prototype.cdf = function(this: any, x: any) {
+  const z = (x - this.mu) / this.b;
+  return z < 0 ? 0.5 * Math.exp(z) : 1 - 0.5 * Math.exp(-z);
+};
+LaplaceCtor.prototype.quantile = function(this: any, p: any) {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  const u = p - 0.5;
+  const s = u < 0 ? -1 : 1;
+  return this.mu - this.b * s * Math.log(1 - 2 * Math.abs(u));
+};
+function logpdfLaplace(x: any, location: any, scale: any) {
+  return -Math.log(2 * scale) - Math.abs(x - location) / scale;
+}
+
+// ---------------------------------------------------------------------
+// Synthetic Geometric
+// ---------------------------------------------------------------------
+//
+// Spec §08: Geometric(p) — number of failures k ∈ {0, 1, ...} until the
+// first success in Bernoulli(p) trials.
+//   pmf  = p · (1 − p)^k
+//   cdf  = 1 − (1 − p)^(k+1)
+//   Q(u) = ⌊log(1 − u) / log(1 − p)⌋
+//
+// p = 1 degenerates to k = 0 a.s.; p = 0 has no finite k (deferred — we
+// throw if p ≤ 0).
+
+const randGeometric = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    function draw(p: any) {
+      const pp = +p;
+      if (pp <= 0) throw new Error('Geometric: p must be > 0');
+      if (pp >= 1) return 0;
+      const u = uClip(prng());
+      return Math.floor(Math.log(1 - u) / Math.log(1 - pp));
+    }
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricGeometricSampler(p: any) { return draw(p); };
+    }
+    const p = +args[0];
+    return function staticGeometricSampler() { return draw(p); };
+  },
+};
+
+function GeometricCtor(this: any, p: any) {
+  this.p = +p;
+  this.mean = (1 - this.p) / this.p;
+  this.variance = (1 - this.p) / (this.p * this.p);
+  this.stdev = Math.sqrt(this.variance);
+  this.support = [0, Infinity];
+}
+GeometricCtor.prototype.pmf = function(this: any, k: any) {
+  const ki = k | 0;
+  if (ki < 0 || ki !== +k) return 0;
+  return this.p * Math.pow(1 - this.p, ki);
+};
+GeometricCtor.prototype.logpmf = function(this: any, k: any) {
+  const ki = k | 0;
+  if (ki < 0 || ki !== +k) return -Infinity;
+  return Math.log(this.p) + ki * Math.log1p(-this.p);
+};
+GeometricCtor.prototype.pdf    = function(k: any) { return this.pmf(k); };
+GeometricCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
+function logpdfGeometric(x: any, p: any) {
+  const ki = x | 0;
+  if (ki < 0 || ki !== +x) return -Infinity;
+  return Math.log(p) + ki * Math.log1p(-p);
+}
+
+// ---------------------------------------------------------------------
+// Synthetic NegativeBinomial / NegativeBinomial2
+// ---------------------------------------------------------------------
+//
+// Spec §08:
+//   NegativeBinomial(alpha, beta)  — shape α, rate β
+//     pmf(k)  =  C(k+α-1, α-1) · (β/(β+1))^α · (1/(β+1))^k  for k ≥ 0
+//
+//   NegativeBinomial2(mu, psi)     — mean μ, overdispersion ψ
+//     pmf(k)  =  C(k+ψ-1, k) · (μ/(μ+ψ))^k · (ψ/(μ+ψ))^ψ    for k ≥ 0
+//
+// Both parameterisations agree at  α ↔ ψ , β ↔ ψ/μ . We sample via
+// the standard Gamma-Poisson mixture:
+//     λ ~ Gamma(α, rate=β)   (or Gamma(ψ, rate=ψ/μ))
+//     k ~ Poisson(λ)
+//
+// We use stdlib's randGamma and randPoisson for the inner draws —
+// both already prng-threaded.
+
+const randNegativeBinomial = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    const innerGamma   = randGamma.factory({ prng });
+    const innerPoisson = randPoisson.factory({ prng });
+    function draw(alpha: any, beta: any) {
+      const lambda = innerGamma(+alpha, +beta);
+      return innerPoisson(lambda);
+    }
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricNBSampler(alpha: any, beta: any) { return draw(alpha, beta); };
+    }
+    const alpha = +args[0], beta = +args[1];
+    return function staticNBSampler() { return draw(alpha, beta); };
+  },
+};
+
+function NegativeBinomialCtor(this: any, alpha: any, beta: any) {
+  this.alpha = +alpha;
+  this.beta = +beta;
+  // mean = α / β; variance = α(β+1)/β²
+  this.mean = this.alpha / this.beta;
+  this.variance = this.alpha * (this.beta + 1) / (this.beta * this.beta);
+  this.stdev = Math.sqrt(this.variance);
+  this.support = [0, Infinity];
+}
+NegativeBinomialCtor.prototype.pmf = function(this: any, k: any) {
+  return Math.exp(this.logpmf(k));
+};
+NegativeBinomialCtor.prototype.logpmf = function(this: any, k: any) {
+  return _logpmfNegativeBinomial(k, this.alpha, this.beta);
+};
+NegativeBinomialCtor.prototype.pdf    = function(k: any) { return this.pmf(k); };
+NegativeBinomialCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
+function _logpmfNegativeBinomial(k: any, alpha: any, beta: any) {
+  const ki = k | 0;
+  if (ki < 0 || ki !== +k) return -Infinity;
+  // log C(k+α-1, α-1) + α log(β/(β+1)) + k log(1/(β+1))
+  return stdlibBinomcoefln(ki + alpha - 1, alpha - 1)
+       + alpha * (Math.log(beta) - Math.log(beta + 1))
+       - ki * Math.log(beta + 1);
+}
+function logpdfNegativeBinomial(x: any, alpha: any, beta: any) {
+  return _logpmfNegativeBinomial(x, alpha, beta);
+}
+
+const randNegativeBinomial2 = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    const innerGamma   = randGamma.factory({ prng });
+    const innerPoisson = randPoisson.factory({ prng });
+    function draw(mu: any, psi: any) {
+      // Reparam: shape = ψ, rate = ψ/μ
+      const lambda = innerGamma(+psi, (+psi) / (+mu));
+      return innerPoisson(lambda);
+    }
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricNB2Sampler(mu: any, psi: any) { return draw(mu, psi); };
+    }
+    const mu = +args[0], psi = +args[1];
+    return function staticNB2Sampler() { return draw(mu, psi); };
+  },
+};
+
+function NegativeBinomial2Ctor(this: any, mu: any, psi: any) {
+  this.mu = +mu;
+  this.psi = +psi;
+  this.mean = +mu;
+  // variance = μ + μ²/ψ
+  this.variance = (+mu) + (+mu) * (+mu) / (+psi);
+  this.stdev = Math.sqrt(this.variance);
+  this.support = [0, Infinity];
+}
+NegativeBinomial2Ctor.prototype.pmf = function(this: any, k: any) {
+  return Math.exp(this.logpmf(k));
+};
+NegativeBinomial2Ctor.prototype.logpmf = function(this: any, k: any) {
+  return _logpmfNegativeBinomial2(k, this.mu, this.psi);
+};
+NegativeBinomial2Ctor.prototype.pdf    = function(k: any) { return this.pmf(k); };
+NegativeBinomial2Ctor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
+function _logpmfNegativeBinomial2(k: any, mu: any, psi: any) {
+  const ki = k | 0;
+  if (ki < 0 || ki !== +k) return -Infinity;
+  // log C(k+ψ-1, k) + k log(μ/(μ+ψ)) + ψ log(ψ/(μ+ψ))
+  return stdlibBinomcoefln(ki + psi - 1, ki)
+       + ki * (Math.log(mu) - Math.log(mu + psi))
+       + psi * (Math.log(psi) - Math.log(mu + psi));
+}
+function logpdfNegativeBinomial2(x: any, mu: any, psi: any) {
+  return _logpmfNegativeBinomial2(x, mu, psi);
+}
+
+// ---------------------------------------------------------------------
 // Synthetic Categorical / Categorical0
 // ---------------------------------------------------------------------
 //
@@ -728,6 +1136,63 @@ const REGISTRY = {
     Ctor:     InverseGammaCtor,
     randFn:   randInverseGamma,
     logpdfFn: logpdfInverseGamma,
+  },
+  ChiSquared: {
+    // Spec: ChiSquared(k) — equivalent to Gamma(k/2, 0.5).
+    params:   ['k'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     ChiSquaredCtor,
+    randFn:   randChiSquared,
+    logpdfFn: logpdfChiSquared,
+  },
+  VonMises: {
+    // Spec: VonMises(mu, kappa). Best-Fisher rejection sampler;
+    // density via Chebyshev-approx I_0.
+    params:   ['mu', 'kappa'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     VonMisesCtor,
+    randFn:   randVonMises,
+    logpdfFn: logpdfVonMises,
+  },
+  Laplace: {
+    // Spec: Laplace(location, scale). Inverse-CDF sampler.
+    params:   ['location', 'scale'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     LaplaceCtor,
+    randFn:   randLaplace,
+    logpdfFn: logpdfLaplace,
+  },
+  Geometric: {
+    // Spec: Geometric(p) — number of failures until first success.
+    params:   ['p'],
+    aliases:  {},
+    discrete: true,
+    Ctor:     GeometricCtor,
+    randFn:   randGeometric,
+    logpdfFn: logpdfGeometric,
+  },
+  NegativeBinomial: {
+    // Spec: NegativeBinomial(alpha, beta) — shape α, rate β.
+    // Sampled via Gamma-Poisson mixture.
+    params:   ['alpha', 'beta'],
+    aliases:  {},
+    discrete: true,
+    Ctor:     NegativeBinomialCtor,
+    randFn:   randNegativeBinomial,
+    logpdfFn: logpdfNegativeBinomial,
+  },
+  NegativeBinomial2: {
+    // Spec: NegativeBinomial2(mu, psi) — mean μ, overdispersion ψ.
+    // Sampled via Gamma-Poisson mixture with shape=ψ, rate=ψ/μ.
+    params:   ['mu', 'psi'],
+    aliases:  {},
+    discrete: true,
+    Ctor:     NegativeBinomial2Ctor,
+    randFn:   randNegativeBinomial2,
+    logpdfFn: logpdfNegativeBinomial2,
   },
   Categorical: {
     // Categorical(p): discrete uniform-or-not over {1, …, length(p)}.

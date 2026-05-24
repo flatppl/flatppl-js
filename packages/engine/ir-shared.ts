@@ -327,8 +327,9 @@ const NAMED_SET_NAMES = new Set([
 const SAMPLEABLE_DISTRIBUTIONS = new Set([
   'Normal', 'Exponential', 'Uniform', 'Logistic', 'Weibull',
   'LogNormal', 'Beta', 'Gamma', 'InverseGamma',
-  'GeneralizedNormal',
+  'GeneralizedNormal', 'ChiSquared', 'VonMises', 'Laplace',
   'Cauchy', 'StudentT', 'Bernoulli', 'Binomial', 'Poisson',
+  'Geometric', 'NegativeBinomial', 'NegativeBinomial2',
   'Categorical', 'Categorical0',
   // Dirac is degenerate (zero entropy): the sampler emits the
   // 'value' kwarg verbatim N times. Listed here so measure-alias
@@ -345,6 +346,7 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
 // integer-histogram density estimation.
 const DISCRETE_DISTRIBUTIONS = new Set([
   'Bernoulli', 'Binomial', 'Poisson',
+  'Geometric', 'NegativeBinomial', 'NegativeBinomial2',
   'Categorical', 'Categorical0',
 ]);
 
