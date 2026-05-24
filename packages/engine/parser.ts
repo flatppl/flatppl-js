@@ -66,39 +66,71 @@ function parse(tokens: any[], variant: any) {
   // variant.
   function parseExpr(): any {
     // Lambda sits at the top of Expression (lowest precedence) per spec
-    // §05 Lambda syntax. Disambiguation rule (spec §05 closing notes):
-    // a lambda is well-formed only when the parenthesised content is a
-    // non-empty list of bare `Name`s followed by `)` then `->`. We
-    // peek without consuming; if the pattern doesn't match we fall
-    // through to parseOr unchanged.
+    // §05 Lambda syntax. Two surface forms:
+    //   • Single-arg, bare: `name -> expr`            (no parens)
+    //   • Multi-arg, parenthesised: `(n1, n2, ...) -> expr` (≥ 2 names)
+    // The single-arg parenthesised form `(name) -> expr` is explicitly
+    // NOT valid per spec §05 — paren-form lambdas require two or more
+    // names. We peek without consuming; if neither pattern matches we
+    // fall through to parseOr unchanged.
+    if (at(T.IDENT) && tokens[pos + 1] && tokens[pos + 1].type === T.ARROW) {
+      return parseSingleArgLambda();
+    }
     if (at(T.LPAREN) && lookaheadIsLambdaParams()) {
       return parseLambda();
     }
     return parseOr();
   }
 
-  // Look ahead from a `(` to determine if it opens a lambda parameter
-  // list. The parens must contain at least one bare Name; commas
-  // separate names; trailing comma not permitted; the closing `)` must
-  // be immediately followed by `->`. Returns false on any deviation so
-  // a non-lambda parse path can proceed normally.
+  // Look ahead from a `(` to determine if it opens a multi-arg lambda
+  // parameter list. The parens must contain TWO OR MORE bare Names per
+  // spec §05 (single-arg paren form is rejected); commas separate
+  // names; trailing comma not permitted; the closing `)` must be
+  // immediately followed by `->`. Returns false on any deviation so a
+  // non-lambda parse path can proceed normally.
   function lookaheadIsLambdaParams() {
     if (!at(T.LPAREN)) return false;
     let i = pos + 1;  // first token after `(`
     if (tokens[i] && tokens[i].type !== T.IDENT) return false;
+    let nameCount = 0;
     while (i < tokens.length) {
       if (!tokens[i] || tokens[i].type !== T.IDENT) return false;
       i++;
+      nameCount++;
       if (tokens[i] && tokens[i].type === T.COMMA) {
         i++;
         continue;
       }
       if (tokens[i] && tokens[i].type === T.RPAREN) {
+        // Spec §05: paren-form lambdas require ≥ 2 names. A bare
+        // `(name) -> ...` is not a lambda; it's a parenthesised
+        // identifier followed by a stray `->` (a parse error).
+        if (nameCount < 2) return false;
         return tokens[i + 1] != null && tokens[i + 1].type === T.ARROW;
       }
       return false;
     }
     return false;
+  }
+
+  // Single-arg lambda: `name -> expr`. By the time we get here, the
+  // top-level lookahead has already confirmed the next two tokens are
+  // IDENT then ARROW. We delegate the heavy lifting (capture-avoiding
+  // arg→placeholder rewrite, kwarg synthesis) to parseLambda by
+  // building the parameter list inline.
+  function parseSingleArgLambda(): any {
+    const t = advance();  // IDENT
+    advance();            // ARROW
+    const body = parseExpr();
+    const llocEnd = body.loc;
+    const lloc = AST.loc(t.loc.start.line, t.loc.start.col,
+                         llocEnd.end.line, llocEnd.end.col);
+    const argSet = new Set([t.value]);
+    const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
+    return AST.CallExpr(
+      AST.Identifier('functionof', lloc),
+      [rewritten, AST.KeywordArg(t.value, AST.Placeholder(t.value, t.loc), t.loc)],
+      lloc);
   }
 
   // Parse `(arg1, arg2, ...) -> expr`. By the time we get here,
