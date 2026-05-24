@@ -877,6 +877,18 @@ const SIGNATURE_FACTORIES = {
   bandedmat:      () => ({ args: [array(1, ['%dynamic'], REAL), INTEGER],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  // Spec §07 signal-processing: 1-D valid-mode convolution &
+  // cross-correlation. Both take two rank-1 vectors, return a
+  // rank-1 vector of length lengthof(v) − lengthof(kernel) + 1
+  // (dynamic in our type system).
+  conv:           () => ({ args: [array(1, ['%dynamic'], REAL),
+                                  array(1, ['%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(1, ['%dynamic'], REAL) }),
+  crosscorr:      () => ({ args: [array(1, ['%dynamic'], REAL),
+                                  array(1, ['%dynamic'], REAL)],
+                           kwargs: {},
+                           result: array(1, ['%dynamic'], REAL) }),
 
   // linspace(from, to, n) — endpoint-inclusive evenly-spaced vector.
   // extlinspace adds ±∞ overflow edges. Both produce real vectors.
