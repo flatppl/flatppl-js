@@ -164,27 +164,88 @@ function walkJoint(state: any, ir: IRNode, env: any, ctx: any) {
 }
 
 function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
-  // iid(M, n): n iid draws of measure M sharing params. Inner env is
-  // shared — params do NOT change across the n inner draws (that's
-  // what makes it 'iid' vs a vectorised call with per-index params).
+  // iid(M, size): per spec §06, `size` is either a positive integer
+  // (1-D length) or a vector of positive integers (multi-axis shape).
+  // We draw prod(size) iid samples from M sharing params and reshape
+  // into a nested array of the requested shape.
+  //
+  // Inner env is shared — params do NOT change across the inner
+  // draws (that's what makes it 'iid' vs a vectorised call with
+  // per-index params).
   const args = ir.args || [];
   if (args.length !== 2) {
-    throw new Error(`traceeval: iid expected 2 args (measure, count), got ${args.length}`);
+    throw new Error(`traceeval: iid expected 2 args (measure, size), got ${args.length}`);
   }
   const M = args[0];
-  // iid count may reference bindings (e.g. `iid(M, n)` where n is a
+  // size may reference bindings (e.g. `iid(M, n)` where n is a
   // fixed-phase value binding) — pre-fill before evaluating.
   state = fillEnvFromRefs(state, args[1], env, ctx);
-  const n = samplerLib.evaluateExpr(args[1], env) | 0;
-  if (n < 0) throw new Error(`traceeval: iid count must be non-negative, got ${n}`);
-  const out = new Array(n);
+  const sizeVal: any = samplerLib.evaluateExpr(args[1], env);
+  const dims = _sizeAsDims(sizeVal);
+  const total = dims.reduce((p: number, n: number) => p * n, 1);
+  // Sequential draws: total `total` samples threading state.
+  const flat = new Array(total);
   let st = state;
-  for (let j = 0; j < n; j++) {
+  for (let j = 0; j < total; j++) {
     const r = walkInner(st, M, env, ctx);
-    out[j] = r.value;
+    flat[j] = r.value;
     st = r.state;
   }
-  return { value: out, state: st };
+  // 1-D shape returns the flat array directly (matches the prior
+  // single-int behaviour). Multi-axis shapes get reshaped into
+  // nested JS arrays.
+  const value = (dims.length <= 1) ? flat : _reshapeNested(flat, dims);
+  return { value, state: st };
+}
+
+// Normalise a size argument to a number[] of axis lengths. Accepts
+// a positive integer, a JS array, a Float64Array, or a shape-rich
+// Value. Mirrors sampler.ts `_sizeAsDims` (kept duplicated to avoid
+// a circular import — sampler ↔ traceeval).
+function _sizeAsDims(size: any): number[] {
+  if (typeof size === 'number') {
+    if (!Number.isInteger(size) || size < 0) {
+      throw new Error('iid: size must be a non-negative integer, got ' + size);
+    }
+    return [size];
+  }
+  let arr: any = size;
+  if (arr && typeof arr === 'object' && arr.shape && arr.data) arr = arr.data;
+  if (arr && arr.BYTES_PER_ELEMENT && typeof arr.length === 'number') {
+    arr = Array.from(arr as ArrayLike<number>);
+  }
+  if (!Array.isArray(arr)) {
+    throw new Error('iid: size must be an integer or vector of integers, got '
+      + (typeof size));
+  }
+  const dims: number[] = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) {
+    const n = arr[i];
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error('iid: size axis ' + (i + 1)
+        + ' is not a non-negative integer (got ' + n + ')');
+    }
+    dims[i] = n as number;
+  }
+  return dims;
+}
+
+// Reshape a flat JS array of length prod(dims) into a nested JS
+// array of shape `dims` (row-major). Each leaf is the original
+// scalar / value; for purely numeric inputs the result is a nested
+// array of plain JS numbers (matching the existing nested-array
+// representation used elsewhere in the engine).
+function _reshapeNested(flat: any[], dims: number[]): any {
+  if (dims.length === 0) return flat[0];
+  if (dims.length === 1) return flat;
+  const n = dims[0];
+  const innerDims = dims.slice(1);
+  const innerSize = innerDims.reduce((p, n) => p * n, 1);
+  const out: any[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = _reshapeNested(flat.slice(i * innerSize, (i + 1) * innerSize), innerDims);
+  }
+  return out;
 }
 
 // weighted / logweighted: sampling is a pure pass-through. The weight

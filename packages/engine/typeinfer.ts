@@ -1134,7 +1134,20 @@ function createInferenceContext(loweredModule: any) {
       case 'cartpow': {
         const inner: any = setValueType(expr.args[0], scopes);
         if (inner == null) return null;
-        const dims = (expr.args || []).slice(1).map((a: any) =>
+        // Per spec §03 sets: cartpow(S, size) where size is a
+        // positive integer (1-D) or a vector of positive integers
+        // (multi-axis shape). Vector form lowers to `vector(...)`
+        // — unpack it the same way `iid` does, so the result type
+        // carries one dim per axis rather than collapsing into a
+        // single rank-1 dynamic shape.
+        let dimArgs: any[] = (expr.args || []).slice(1);
+        if (dimArgs.length === 1
+            && dimArgs[0].kind === 'call'
+            && dimArgs[0].op === 'vector'
+            && Array.isArray(dimArgs[0].args)) {
+          dimArgs = dimArgs[0].args;
+        }
+        const dims = dimArgs.map((a: any) =>
           (a.kind === 'lit' && Number.isInteger(a.value)) ? a.value : '%dynamic');
         return T.array(dims.length, dims, inner);
       }

@@ -529,17 +529,33 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
 }
 
 function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  // iid(M, n): n copies of M's footprint. Count `n` is atom-independent
-  // — it's a value-position expression typically of fixed phase. We
-  // evaluate against baseEnv (no per-atom or overlay coverage); if a
-  // user pattern needs per-atom counts, we'd switch to ragged storage
-  // and that's a separate refactor.
+  // iid(M, size): prod(size) copies of M's footprint. Size is
+  // atom-independent — a value-position expression typically of
+  // fixed phase, per spec §06 a positive integer (1-D length) or a
+  // vector of positive integers (multi-axis shape). We evaluate
+  // against baseEnv (no per-atom or overlay coverage); if a user
+  // pattern needs per-atom sizes, ragged storage would be a
+  // separate refactor.
   const args = ir.args || [];
   if (args.length !== 2) throw new Error('density: iid expected 2 args, got ' + args.length);
-  const n = +samplerLib.evaluateExpr(args[1], baseEnv) | 0;
-  if (n < 0) throw new Error('density: iid count negative: ' + n);
+  const sizeVal: any = samplerLib.evaluateExpr(args[1], baseEnv);
+  let total = 0;
+  if (typeof sizeVal === 'number') {
+    total = sizeVal | 0;
+  } else if (sizeVal && typeof sizeVal === 'object') {
+    let arr: any = sizeVal;
+    if (arr.shape && arr.data) arr = arr.data;
+    if (arr.BYTES_PER_ELEMENT && typeof arr.length === 'number') {
+      total = 1;
+      for (let i = 0; i < arr.length; i++) total *= (arr[i] | 0);
+    } else if (Array.isArray(arr)) {
+      total = 1;
+      for (let i = 0; i < arr.length; i++) total *= (arr[i] | 0);
+    }
+  }
+  if (total < 0) throw new Error('density: iid size negative: ' + total);
   let cur = value;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < total; i++) {
     cur = walkAcc(args[0], cur, refArrays, N, opts, acc, baseEnv, overlay);
   }
   return cur;
