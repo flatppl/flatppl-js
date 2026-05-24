@@ -186,16 +186,35 @@ function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
   // Sequential draws: total `total` samples threading state.
   const flat = new Array(total);
   let st = state;
+  let allNumeric = true;
   for (let j = 0; j < total; j++) {
     const r = walkInner(st, M, env, ctx);
     flat[j] = r.value;
+    const t = typeof r.value;
+    if (t !== 'number' && t !== 'boolean') allNumeric = false;
     st = r.state;
   }
-  // 1-D shape returns the flat array directly (matches the prior
-  // single-int behaviour). Multi-axis shapes get reshaped into
-  // nested JS arrays.
-  const value = (dims.length <= 1) ? flat : _reshapeNested(flat, dims);
-  return { value, state: st };
+  // 1-D shape with scalar atoms: return the flat JS array (matches
+  // the prior single-int behaviour — also what spec §03 calls a
+  // vector of scalars).
+  if (dims.length <= 1) return { value: flat, state: st };
+  // Multi-axis shape with scalar atoms: per spec §03 ("vectors of
+  // vectors are not interpreted as matrices implicitly") the result
+  // is an explicit rank-≥2 array, materialised as a shape-explicit
+  // Value. Without this, downstream `mul`/`add`/`sub` on
+  // `A, _ = rand(rstate, iid(Normal, [3, 3]))` would fall through
+  // valueLib.isValue and yield NaN.
+  if (allNumeric) {
+    const data = new Float64Array(total);
+    for (let j = 0; j < total; j++) data[j] = +flat[j];
+    return { value: { shape: dims.slice(), data }, state: st };
+  }
+  // Heterogeneous / structured atoms (e.g. each draw is a record or a
+  // vector from MvNormal): keep the nested-array path as the v0.1
+  // representation. A follow-up could lift these into higher-rank
+  // Values too once the consumers (density, materialiser bridges) all
+  // accept it.
+  return { value: _reshapeNested(flat, dims), state: st };
 }
 
 // Normalise a size argument to a number[] of axis lengths. Accepts
