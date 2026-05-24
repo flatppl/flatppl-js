@@ -2643,6 +2643,262 @@ const ARITH_OPS = {
     }
     throw new Error('reverse: argument must be a vector');
   },
+  // tile(A, size) — repeat A along each axis. `size` is a positive
+  // integer (rank-1 A) or a vector of positive integers (one per
+  // axis, must match A's rank). Result is a rank-equal Value with
+  // shape elementwise (A.shape * size). Spec §07.
+  tile: (A: any, size: any) => {
+    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
+    const reps = _sizeAsDims(size);
+    if (reps.length !== aV.shape.length) {
+      throw new Error('tile: size length ' + reps.length
+        + ' must match A.rank = ' + aV.shape.length);
+    }
+    const outShape = aV.shape.map((d: number, i: number) => d * reps[i]);
+    const outLen = outShape.reduce((a: number, b: number) => a * b, 1);
+    const out = new Float64Array(outLen);
+    // Row-major strides for A and out.
+    const aStrides = new Array(aV.shape.length);
+    let acc = 1;
+    for (let i = aV.shape.length - 1; i >= 0; i--) {
+      aStrides[i] = acc; acc *= aV.shape[i];
+    }
+    const oStrides = new Array(outShape.length);
+    acc = 1;
+    for (let i = outShape.length - 1; i >= 0; i--) {
+      oStrides[i] = acc; acc *= outShape[i];
+    }
+    // Walk the OUTPUT index in row-major order; for each coordinate,
+    // its position in A is (oi mod A.shape[axis]).
+    const coord = new Array(outShape.length).fill(0);
+    for (let k = 0; k < outLen; k++) {
+      let aIdx = 0;
+      for (let ax = 0; ax < outShape.length; ax++) {
+        aIdx += (coord[ax] % aV.shape[ax]) * aStrides[ax];
+      }
+      out[k] = aV.data[aIdx];
+      // Increment coord (least-significant axis first).
+      for (let ax = outShape.length - 1; ax >= 0; ax--) {
+        coord[ax]++;
+        if (coord[ax] < outShape[ax]) break;
+        coord[ax] = 0;
+      }
+    }
+    return { shape: outShape, data: out };
+  },
+  // splitblocks(A, blocksize) — split A into a nested array of
+  // equal-shaped blocks. blocksize is a scalar (rank-1 A) or a
+  // vector of positive integers (must divide A's shape elementwise).
+  // The outer-shape is A.shape ⊘ blocksize; each inner block has
+  // shape blocksize. Spec §07.
+  splitblocks: (A: any, blocksize: any) => {
+    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
+    const bs = _sizeAsDims(blocksize);
+    if (bs.length !== aV.shape.length) {
+      throw new Error('splitblocks: blocksize length ' + bs.length
+        + ' must match A.rank = ' + aV.shape.length);
+    }
+    const outerShape: number[] = [];
+    for (let i = 0; i < bs.length; i++) {
+      if (bs[i] <= 0 || aV.shape[i] % bs[i] !== 0) {
+        throw new Error('splitblocks: axis ' + i + ' size ' + aV.shape[i]
+          + ' is not divisible by blocksize ' + bs[i]);
+      }
+      outerShape.push(aV.shape[i] / bs[i]);
+    }
+    // Build nested-array structure: outer is rank=outerShape.length;
+    // each leaf is a Value of shape `bs`. Outer is a JS array of
+    // JS arrays of Values (matching the spec's "nested array of
+    // arrays" wording — true vector-of-vectors per §03).
+    const aStrides = new Array(aV.shape.length);
+    let acc = 1;
+    for (let i = aV.shape.length - 1; i >= 0; i--) {
+      aStrides[i] = acc; acc *= aV.shape[i];
+    }
+    function buildBlock(blockCoord: number[]): any {
+      const bsize = bs.reduce((a: number, b: number) => a * b, 1);
+      const data = new Float64Array(bsize);
+      const inner = new Array(bs.length).fill(0);
+      const bStrides = new Array(bs.length);
+      let ba = 1;
+      for (let i = bs.length - 1; i >= 0; i--) { bStrides[i] = ba; ba *= bs[i]; }
+      for (let k = 0; k < bsize; k++) {
+        let aIdx = 0;
+        for (let ax = 0; ax < bs.length; ax++) {
+          aIdx += (blockCoord[ax] * bs[ax] + inner[ax]) * aStrides[ax];
+        }
+        data[k] = aV.data[aIdx];
+        for (let ax = bs.length - 1; ax >= 0; ax--) {
+          inner[ax]++;
+          if (inner[ax] < bs[ax]) break;
+          inner[ax] = 0;
+        }
+      }
+      return { shape: bs.slice(), data };
+    }
+    function buildOuter(axis: number, blockCoord: number[]): any {
+      if (axis === outerShape.length) return buildBlock(blockCoord);
+      const out: any[] = [];
+      for (let i = 0; i < outerShape[axis]; i++) {
+        blockCoord[axis] = i;
+        out.push(buildOuter(axis + 1, blockCoord));
+      }
+      return out;
+    }
+    return buildOuter(0, new Array(outerShape.length).fill(0));
+  },
+  // joinblocks(A) — inverse of splitblocks. A is a nested array of
+  // equal-shape inner Values; result is a single Value whose shape
+  // is the ELEMENTWISE PRODUCT of outer shape and inner shape (same
+  // rank required). Spec §07.
+  joinblocks: (A: any) => {
+    // Derive outer + inner shapes by walking the nested structure.
+    const outerShape: number[] = [];
+    let cur: any = A;
+    while (Array.isArray(cur)) {
+      outerShape.push(cur.length);
+      cur = cur[0];
+    }
+    if (!valueLib.isValue(cur) && !(cur && cur.BYTES_PER_ELEMENT)
+        && !Array.isArray(cur)) {
+      throw new Error('joinblocks: innermost element must be an array/Value, '
+        + 'got ' + (typeof cur));
+    }
+    const innerV = valueLib.isValue(cur) ? cur : valueLib.asValue(cur);
+    const innerShape = innerV.shape.slice();
+    if (outerShape.length !== innerShape.length) {
+      throw new Error('joinblocks: outer rank (' + outerShape.length
+        + ') must equal inner rank (' + innerShape.length + ')');
+    }
+    // Result shape is the ELEMENTWISE product (spec §07).
+    const outShape = outerShape.map((d: number, i: number) => d * innerShape[i]);
+    const outLen = outShape.reduce((a: number, b: number) => a * b, 1);
+    const out = new Float64Array(outLen);
+    // Output row-major strides.
+    const oStrides = new Array(outShape.length);
+    let acc = 1;
+    for (let i = outShape.length - 1; i >= 0; i--) {
+      oStrides[i] = acc; acc *= outShape[i];
+    }
+    function fillBlock(node: any, outerIdx: number[]) {
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) {
+          fillBlock(node[i], outerIdx.concat([i]));
+        }
+        return;
+      }
+      const block = valueLib.isValue(node) ? node : valueLib.asValue(node);
+      if (block.shape.length !== innerShape.length
+          || !block.shape.every((d: number, i: number) => d === innerShape[i])) {
+        throw new Error('joinblocks: inner blocks must all share the same '
+          + 'shape; got ' + JSON.stringify(block.shape)
+          + ' vs expected ' + JSON.stringify(innerShape));
+      }
+      // Result entry at logical coordinate
+      //   (outerIdx[ax] * innerShape[ax] + innerCoord[ax])
+      // for each axis. Walk every innerCoord and write into out.
+      const innerSize = innerShape.reduce((a: number, b: number) => a * b, 1);
+      const ic = new Array(innerShape.length).fill(0);
+      for (let k = 0; k < innerSize; k++) {
+        let pos = 0;
+        for (let ax = 0; ax < outShape.length; ax++) {
+          pos += (outerIdx[ax] * innerShape[ax] + ic[ax]) * oStrides[ax];
+        }
+        out[pos] = block.data[k];
+        for (let ax = innerShape.length - 1; ax >= 0; ax--) {
+          ic[ax]++;
+          if (ic[ax] < innerShape[ax]) break;
+          ic[ax] = 0;
+        }
+      }
+    }
+    fillBlock(A, []);
+    return { shape: outShape, data: out };
+  },
+  // blockdiagmat(mats) — block-diagonal matrix from a vector of
+  // matrices. All off-diagonal blocks are zero. Result rows/cols
+  // are the sums of input rows/cols. Spec §07.
+  blockdiagmat: (mats: any) => {
+    // Accept a JS array of matrices (vector-of-matrices per spec §07
+    // is vector-of-Value, the post-§2.1 rep) OR an empty rank-1 Value
+    // (vector(...) with no args).
+    if (valueLib.isValue(mats)) {
+      if (mats.shape.length === 1 && mats.shape[0] === 0) {
+        return { shape: [0, 0], data: new Float64Array(0) };
+      }
+      throw new Error('blockdiagmat: argument must be a vector of matrices');
+    }
+    if (!Array.isArray(mats)) {
+      throw new Error('blockdiagmat: argument must be a vector of matrices');
+    }
+    if (mats.length === 0) {
+      return { shape: [0, 0], data: new Float64Array(0) };
+    }
+    const blocks: any[] = mats.map((m: any) => {
+      const v = valueLib.isValue(m) ? valueLib.densify(m) : valueLib.asValue(m);
+      if (v.shape.length !== 2) {
+        throw new Error('blockdiagmat: each block must be a matrix, got shape='
+          + JSON.stringify(v.shape));
+      }
+      return v;
+    });
+    let totalRows = 0, totalCols = 0;
+    for (const b of blocks) { totalRows += b.shape[0]; totalCols += b.shape[1]; }
+    const out = new Float64Array(totalRows * totalCols);
+    let r0 = 0, c0 = 0;
+    for (const b of blocks) {
+      const [m, n] = b.shape;
+      for (let i = 0; i < m; i++) {
+        for (let j = 0; j < n; j++) {
+          out[(r0 + i) * totalCols + (c0 + j)] = b.data[i * n + j];
+        }
+      }
+      r0 += m; c0 += n;
+    }
+    return { shape: [totalRows, totalCols], data: out };
+  },
+  // bandedmat(v, rows) — matrix with `rows` rows where row i contains
+  // v shifted right by i (zeros elsewhere). Result is rows × (rows +
+  // length(v) - 1). Spec §07.
+  bandedmat: (v: any, rows: any) => {
+    const vV = valueLib.isValue(v) ? v : valueLib.asValue(v);
+    if (vV.shape.length !== 1) {
+      throw new Error('bandedmat: v must be a rank-1 vector');
+    }
+    const k = vV.shape[0];
+    const m = (+rows) | 0;
+    if (m <= 0) throw new Error('bandedmat: rows must be a positive integer, got ' + rows);
+    const cols = m + k - 1;
+    const out = new Float64Array(m * cols);
+    for (let i = 0; i < m; i++) {
+      for (let j = 0; j < k; j++) {
+        out[i * cols + i + j] = vV.data[j];
+      }
+    }
+    return { shape: [m, cols], data: out };
+  },
+  // diag(A, k=0) — extract the k-th diagonal of a matrix A as a
+  // vector. k=0 main diagonal, k>0 super-diagonals, k<0 sub-
+  // diagonals. Spec §07.
+  diag: (A: any, k?: any) => {
+    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
+    if (aV.shape.length !== 2) {
+      throw new Error('diag: argument must be a rank-2 matrix, got shape='
+        + JSON.stringify(aV.shape));
+    }
+    const kk = (k == null) ? 0 : (k | 0);
+    const [m, n] = aV.shape;
+    // Diagonal k starts at (i, j) = (max(-k, 0), max(k, 0)) and runs
+    // while both i < m and j < n.
+    const iStart = kk < 0 ? -kk : 0;
+    const jStart = kk > 0 ?  kk : 0;
+    const len = Math.max(0, Math.min(m - iStart, n - jStart));
+    const out = new Float64Array(len);
+    for (let t = 0; t < len; t++) {
+      out[t] = aV.data[(iStart + t) * n + (jStart + t)];
+    }
+    return { shape: [len], data: out };
+  },
   // addaxes(A, n_leading, n_trailing) — reshape A by inserting
   // n_leading singular (size-1) axes before A's axes and n_trailing
   // after (spec §07). Size-1 axes leave numel and the flat buffer

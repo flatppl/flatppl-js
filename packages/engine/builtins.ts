@@ -89,6 +89,8 @@ const BUILTIN_FUNCTIONS = new Set([
   // the parser when xs[i] is lowered under the FlatPPY surface.
   // Semantically `get0(xs, i)` ≡ `get(xs, i + 1)`.
   'get', 'get0', 'cat', 'rowstack', 'colstack', 'partition', 'reverse', 'addaxes', 'relabel',
+  // Reshaping additions (spec §07)
+  'tile', 'splitblocks', 'joinblocks',
   // Scalar restrictions/constructors
   'boolean', 'integer', 'real', 'complex', 'string', 'imag',
   // Elementary math
@@ -111,6 +113,8 @@ const BUILTIN_FUNCTIONS = new Set([
   'transpose', 'adjoint', 'det', 'logabsdet', 'inv', 'trace',
   'linsolve', 'lower_cholesky',
   'row_gram', 'col_gram', 'self_outer', 'diagmat',
+  // Diagonal extract / block-matrix constructors (spec §07)
+  'diag', 'blockdiagmat', 'bandedmat',
   // Reductions
   'sum', 'mean', 'var', 'std', 'prod', 'maximum', 'minimum', 'lengthof', 'sizeof',
   'cumsum', 'cumprod',

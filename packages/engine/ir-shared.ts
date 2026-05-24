@@ -440,6 +440,8 @@ const EVALUABLE_OPS = new Set([
   'linspace', 'extlinspace', 'partition', 'reverse', 'addaxes',
   'fill', 'zeros', 'ones', 'eye', 'onehot',
   'rowstack', 'colstack', 'array',
+  // Reshaping additions (spec §07)
+  'tile', 'splitblocks', 'joinblocks',
   // Higher-order ops (spec §04 / §07). Dispatched via dedicated cases
   // in sampler.evaluateCall (not ARITH_OPS) because they evaluate a
   // referenced function's body per element. filter takes a unary
@@ -453,6 +455,8 @@ const EVALUABLE_OPS = new Set([
   'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer',
   'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
   'row_gram', 'col_gram',
+  // Diagonal extract / block-matrix constructors (spec §07)
+  'diag', 'blockdiagmat', 'bandedmat',
   // Multi-axis aggregation (spec §04 §sec:aggregate). Pure
   // deterministic value op — phase joins its inputs. The materialiser
   // dispatches through a pattern table with a nested-loop interpreter

@@ -858,6 +858,25 @@ const SIGNATURE_FACTORIES = {
   col_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  // Spec §07 reshape additions. tile/splitblocks/joinblocks take ANY
+  // rank; their result rank matches the input. Result shape is
+  // computed at runtime; we mark it deferred / loose for now.
+  tile:           () => ({ args: [any(), any()], kwargs: {}, result: deferred() }),
+  splitblocks:    () => ({ args: [any(), any()], kwargs: {}, result: deferred() }),
+  joinblocks:     () => ({ args: [any()], kwargs: {}, result: deferred() }),
+  // Spec §07 matrix constructors / extractors.
+  // diag(A, k=0) extracts the k-th diagonal of a matrix; result is
+  // a rank-1 vector. `k` is optional (defaults to 0 per spec §07),
+  // so args is null — sampler validates arity (1 or 2) at runtime.
+  diag:           () => ({ args: null, kwargs: {},
+                           result: array(1, ['%dynamic'], REAL) }),
+  // blockdiagmat(mats) — vector-of-matrices → block-diagonal matrix.
+  // bandedmat(v, rows) — rank-1 v + integer rows → rank-2 matrix.
+  blockdiagmat:   () => ({ args: [any()], kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  bandedmat:      () => ({ args: [array(1, ['%dynamic'], REAL), INTEGER],
+                           kwargs: {},
+                           result: array(2, ['%dynamic', '%dynamic'], REAL) }),
 
   // linspace(from, to, n) — endpoint-inclusive evenly-spaced vector.
   // extlinspace adds ±∞ overflow edges. Both produce real vectors.
