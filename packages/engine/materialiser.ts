@@ -165,6 +165,46 @@ function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
  * Returns null for shapes we can't surface (rngstate, opaque
  * objects); the caller falls through to derivation-based dispatch.
  */
+// Classify a JS array as a rectangular nested numeric array (rank ≥ 2).
+// Returns { shape, size } if every leaf is a finite number / boolean and
+// every level has consistent length; null otherwise. Rank-1 numeric
+// arrays return null (handled by the dedicated allScalar branch above).
+function _classifyNestedNumeric(v: any): any {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const shape: number[] = [];
+  let cur: any = v;
+  while (Array.isArray(cur)) {
+    shape.push(cur.length);
+    cur = cur.length > 0 ? cur[0] : null;
+  }
+  if (shape.length < 2) return null;
+  // Verify rectangularity + numeric leaves.
+  let size = 1;
+  for (const d of shape) size *= d;
+  if (size === 0) return null;
+  function _check(node: any, depth: number): boolean {
+    if (depth === shape.length) {
+      const t = typeof node;
+      return (t === 'number' && Number.isFinite(node)) || t === 'boolean';
+    }
+    if (!Array.isArray(node) || node.length !== shape[depth]) return false;
+    for (let i = 0; i < node.length; i++) {
+      if (!_check(node[i], depth + 1)) return false;
+    }
+    return true;
+  }
+  return _check(v, 0) ? { shape, size } : null;
+}
+
+function _flattenInto(v: any, out: Float64Array, pos: number): number {
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) pos = _flattenInto(v[i], out, pos);
+    return pos;
+  }
+  out[pos] = v === true ? 1 : v === false ? 0 : +v;
+  return pos + 1;
+}
+
 function fixedValueToMeasure(v: any, sampleCount: any) {
   if (typeof v === 'number' && Number.isFinite(v)) {
     const arr = new Float64Array(sampleCount);
@@ -197,6 +237,22 @@ function fixedValueToMeasure(v: any, sampleCount: any) {
       }
       return scalarMeasureN(samples,
         { logWeights: null, logTotalmass: 0, n_eff: samples.length });
+    }
+    // Rank-≥2 numeric array (e.g. fixed-phase 2D matrix from
+    // `rand(state, iid(N, [3, 3]))`). The outer entries are
+    // numeric sub-arrays; we detect this recursively and flatten to
+    // a single Float64Array with the shape recorded in `dims`. This
+    // mirrors how matIid produces vector/matrix-atom measures and
+    // keeps the viewer's array-mode plot working — without it, the
+    // `elems` fallback below would treat each row as a separate
+    // tuple component and `samples` ends up undefined.
+    const nested = _classifyNestedNumeric(v);
+    if (nested) {
+      const flat = new Float64Array(nested.size);
+      _flattenInto(v, flat, 0);
+      return measureFromValue(
+        { shape: nested.shape, data: flat },
+        { logWeights: null, logTotalmass: 0, n_eff: nested.shape[0] });
     }
     const elems = new Array(v.length);
     for (let ei = 0; ei < v.length; ei++) elems[ei] = fixedValueToMeasure(v[ei], sampleCount);
