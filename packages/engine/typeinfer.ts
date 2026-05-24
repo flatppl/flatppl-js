@@ -246,6 +246,21 @@ function createInferenceContext(loweredModule: any) {
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
+      // get / get0 — unified element / subset / axis-slice / singleton
+      // access (spec §07). Shape inference here covers the array case
+      // (rank, shape, elem) precisely; the record case redirects to
+      // get_field's machinery. Static singleton-axis check (`only` /
+      // `!`): when the indexed dim's length is statically known and
+      // ≠ 1, emit a static error.
+      case 'get':
+      case 'get0':      return write(inferGet(expr, scopes), expr);
+      // Multi-axis aggregation (spec §04 §sec:aggregate). Result
+      // shape = [length(.axis) for axis in output_axes], element
+      // type follows the expr. Axis lengths come from the first
+      // get/get0 indexing position of each axis name in expr
+      // (statically-resolvable when the indexed array's shape is
+      // known).
+      case 'aggregate': return write(inferAggregate(expr, scopes), expr);
       // kernelof and fn are lowered to functionof by lower.js (per
       // spec §sec:kernelof line 421-422 and §sec:fn line 618-628),
       // so we only see functionof here.
@@ -513,6 +528,232 @@ function createInferenceContext(loweredModule: any) {
       return T.failed('tuple_get out of range');
     }
     return tupleT.elems[i];
+  }
+
+  // -------------------------------------------------------------------
+  // get / get0: array & record element / subset / slice access
+  // -------------------------------------------------------------------
+  //
+  // Shape-precise inference for the array case. For each selector
+  // position k we know exactly how it affects the result:
+  //
+  //   {const all}            — keeps dim k                (shape[k] kept)
+  //   {const only}           — drops dim k; STATIC ERROR
+  //                            if shape[k] is known and ≠ 1
+  //   {axis name}            — drops dim k                (axis env at runtime)
+  //   {lit number}           — drops dim k
+  //   {call vector …}        — subset selection: keeps dim k with
+  //                            new length = args.length
+  //   anything else (deferred selector) — conservatively drops dim k
+  //
+  // Unselected tail dims (when k < rank) are kept verbatim.
+  //
+  // The container type may be array, record, tuple, or unknown
+  // (deferred / any). The array branch is the only one that performs
+  // shape inference today; the others either redirect (record →
+  // inferGetField shape, tuple → inferTupleGet shape) or fall back
+  // to deferred. This keeps the function focused on the singleton-
+  // axis static check that motivated it without expanding the
+  // typeinfer surface across all container kinds.
+
+  function inferGet(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length < 2) {
+      return arityError(expr.op, '≥ 2', args.length, expr.loc);
+    }
+    const containerT: any = inferExpr(args[0], scopes);
+    if (containerT && containerT.kind === 'failed') return T.failed('get cascade');
+
+    // Tuple integer-index: redirect to tuple_get's existing inferrer
+    // (same shape — single integer literal selector).
+    if (containerT && containerT.kind === 'tuple'
+        && args.length === 2
+        && args[1].kind === 'lit'
+        && typeof args[1].value === 'number') {
+      return inferTupleGet(expr, scopes);
+    }
+
+    // Record single-field access: redirect to get_field's shape rule.
+    // Subset selection (array of strings) → deferred for v0.1.
+    if (containerT && containerT.kind === 'record') {
+      if (args.length === 2 && args[1].kind === 'lit'
+          && typeof args[1].value === 'string') {
+        return inferGetField(expr, scopes);
+      }
+      return T.deferred();
+    }
+
+    if (containerT && containerT.kind === 'array') {
+      // Nested arrays (`[[1,2],[3,4]]` lowers to vector(vector(…))) carry
+      // a rank-1 outer with an array-typed elem; for indexing purposes
+      // the spec treats them as a single multi-dim array (`A[i, j]` ≡
+      // `A[i][j]`). Flatten before walking the selectors.
+      const flat = _flattenArrayType(containerT);
+      const rank = flat.rank;
+      const shape = flat.shape;
+      const sels = args.slice(1);
+      if (sels.length > rank) {
+        diagnostics.push({
+          severity: 'error',
+          message: `${expr.op}: too many selectors (${sels.length}) `
+            + `for rank-${rank} array`,
+          loc: expr.loc,
+        });
+        return T.failed('get over-selected');
+      }
+      const outShape: any[] = [];
+      for (let k = 0; k < sels.length; k++) {
+        const sel = sels[k];
+        const dim = shape[k];
+        if (sel && sel.kind === 'const' && sel.name === 'all') {
+          outShape.push(dim);                        // keep dim
+          continue;
+        }
+        if (sel && sel.kind === 'const' && sel.name === 'only') {
+          // Static singleton-axis check: when the dim's length is
+          // statically known and ≠ 1, this is a static error per
+          // spec §07 "Singleton-axis indexing with `only`".
+          if (typeof dim === 'number' && dim !== 1) {
+            diagnostics.push({
+              severity: 'error',
+              message: `${expr.op}: 'only' selector requires the indexed `
+                + `axis to have length 1, got length ${dim}`,
+              loc: sel.loc || expr.loc,
+            });
+            return T.failed('only on non-singleton');
+          }
+          continue;                                   // drop dim
+        }
+        if (sel && sel.kind === 'axis') {
+          continue;                                   // drop dim (axis env at runtime)
+        }
+        if (sel && sel.kind === 'lit' && typeof sel.value === 'number') {
+          continue;                                   // drop dim (integer index)
+        }
+        if (sel && sel.kind === 'call' && sel.op === 'vector') {
+          // Subset selection — new dim length = number of vector args
+          // (or %dynamic if the args list is variadic at runtime).
+          outShape.push(Array.isArray(sel.args) ? sel.args.length : '%dynamic');
+          continue;
+        }
+        // Unrecognised selector shape — be conservative and drop the
+        // dim with a deferred length. This still keeps the rest of
+        // the array's shape information.
+        // (Falls through; no push.)
+      }
+      // Tail dims that weren't selected stay verbatim.
+      for (let k = sels.length; k < rank; k++) outShape.push(shape[k]);
+      if (outShape.length === 0) return flat.elem;
+      return T.array(outShape.length, outShape, flat.elem);
+    }
+
+    // Deferred / any / tvector / measure — no shape inference yet.
+    return T.deferred();
+  }
+
+  // Flatten nested array types so `array(1, [m], array(1, [n], T))`
+  // looks like `array(2, [m, n], T)` for the purposes of indexing
+  // (`A[i, j]` ≡ `A[i][j]`). The spec doesn't distinguish nested
+  // and flat array types at the value level — engines may use either
+  // internal representation, and surface multi-d indexing applies to
+  // both.
+  function _flattenArrayType(t: any): any {
+    if (!t || t.kind !== 'array') return t;
+    const dims: any[] = [...t.shape];
+    let elem: any = t.elem;
+    while (elem && elem.kind === 'array') {
+      for (const d of elem.shape) dims.push(d);
+      elem = elem.elem;
+    }
+    return { kind: 'array', rank: dims.length, shape: dims, elem };
+  }
+
+  // -------------------------------------------------------------------
+  // aggregate(f_reduction, output_axes, expr) — spec §04 §sec:aggregate
+  // -------------------------------------------------------------------
+  //
+  // Shape inference: the output's rank = output_axes.length; each
+  // axis's length comes from the first get/get0 indexing position in
+  // `expr` where the container's shape is statically known. When any
+  // axis length is unknown, fall back to '%dynamic' for that
+  // dimension (the rank stays known).
+  //
+  // Element type: the result type of `expr`. For the standard
+  // arithmetic-on-reals case this is REAL; for richer cases it
+  // follows whatever the body's inferred type is. The seven
+  // reductions are all scalar-in / scalar-out, so the body's element
+  // type passes through unchanged.
+
+  function inferAggregate(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 3) return T.deferred();
+    const [_fIR, axesIR, bodyIR] = args;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
+      return T.deferred();
+    }
+    const axisNames: string[] = [];
+    for (const a of axesIR.args || []) {
+      if (!a || a.kind !== 'axis') return T.deferred();
+      axisNames.push(a.name);
+    }
+    // Determine each axis's length from the body. We pre-infer all
+    // sub-call types (which fills in container shapes); then we walk
+    // the body looking for get/get0 indexings whose container type
+    // is array-typed and read the dim length at the axis-occupied
+    // position.
+    inferExpr(bodyIR, scopes);   // populate meta.type on sub-calls
+
+    const lengths: Record<string, number | '%dynamic'> = {};
+    function walk(n: any) {
+      if (!n || typeof n !== 'object') return;
+      // Don't descend into a nested aggregate — its axes are in a
+      // separate scope per spec §05.
+      if (n.kind === 'call' && n.op === 'aggregate') return;
+      if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
+        const innerArgs = n.args || [];
+        if (innerArgs.length >= 2) {
+          const container = innerArgs[0];
+          // `inferRef` doesn't write `meta.type` on its way back, so
+          // reading from `container.meta.type` misses refs. Re-infer
+          // the container directly — cheap, side-effect-free.
+          let containerT: any;
+          try { containerT = inferExpr(container, scopes); }
+          catch (_) { containerT = null; }
+          if (containerT && containerT.kind === 'array') {
+            const flat = _flattenArrayType(containerT);
+            const sels = innerArgs.slice(1);
+            for (let k = 0; k < sels.length; k++) {
+              const s = sels[k];
+              if (s && s.kind === 'axis' && !(s.name in lengths)) {
+                const dim = flat.shape[k];
+                lengths[s.name] = (typeof dim === 'number') ? dim : '%dynamic';
+              }
+            }
+          }
+        }
+      }
+      // Recurse into children — but not into the special 'op',
+      // 'name', 'ns' string fields.
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'kind' || k === 'op'
+            || k === 'name' || k === 'ns') continue;
+        const v = n[k];
+        if (v && typeof v === 'object') {
+          if (Array.isArray(v)) v.forEach(walk);
+          else walk(v);
+        }
+      }
+    }
+    walk(bodyIR);
+
+    const outShape = axisNames.map((n) =>
+      n in lengths ? lengths[n] : '%dynamic');
+    // Element type: best-effort. If we have a meta.type on the body
+    // and it's a scalar (or array of scalars), pass that through; else
+    // default to REAL (the most common contraction result type).
+    const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
+    const elemT = (bodyT && (bodyT.kind === 'scalar')) ? bodyT : T.REAL;
+    return T.array(axisNames.length, outShape, elemT);
   }
 
   function inferVector(expr: any, scopes: any) {

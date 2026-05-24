@@ -352,6 +352,84 @@ test('broadcast/aggregate equivalence: explicit reduction (sum over axis)', () =
   assert.deepEqual([...got], [12, 15, 18]);
 });
 
+// ---------------------------------------------------------------------
+// Static-shape `only` check (typeinfer)
+//
+// When the indexed array's shape is statically known and the
+// `only`-indexed dim has length ≠ 1, the analyzer emits a static
+// error BEFORE the evaluator runs. The check piggybacks on the new
+// inferGet shape-inference path which flattens nested array types.
+// ---------------------------------------------------------------------
+
+test('static only: error when literal array dim is statically not 1', () => {
+  const errs = errors('v = [1.0, 2.0, 3.0]\nx = v[!]\n');
+  assert.ok(errs.some((d: any) =>
+    /'only' selector requires the indexed axis to have length 1, got length 3/.test(d.message)),
+    `expected static-only diagnostic, got: ${errs.map((d: any) => d.message).join('; ')}`);
+});
+
+test('static only: error on the 2-D shape mismatch', () => {
+  // A is shape [2, 3]; `!` on dim 0 (length 2) errors statically.
+  const errs = errors('A = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\nx = A[!, 1]\n');
+  assert.ok(errs.some((d: any) =>
+    /'only' selector.*length 2/.test(d.message)));
+});
+
+test('static only: no error on a length-1 literal array', () => {
+  // Singleton arrays pass.
+  assert.equal(errors('v = [42.0]\nx = v[!]\n').length, 0);
+});
+
+test('static only: no error when shape is dynamic/deferred', () => {
+  // Distribution-typed arrays (or any deferred-shape source) should
+  // NOT trigger the static check — falls back to runtime.
+  // iid(Normal, n) produces a measure over arrays; binding to a
+  // draw makes the variate dynamic-shape.
+  const src = `
+n = elementof(posintegers)
+xs ~ iid(Normal(mu = 0, sigma = 1), n)
+y = xs[!]
+`;
+  // Per spec the analyzer may still warn at runtime (the indexed
+  // dim is n ≥ 2 in practice), but it can't statically prove it
+  // — verify no STATIC `only` diagnostic fires here.
+  const diags = errors(src);
+  assert.ok(!diags.some((d: any) =>
+    /'only' selector requires/.test(d.message)),
+    'no static only diagnostic for dynamic-shape source');
+});
+
+test('static only: aggregate body picks up the static check', () => {
+  // Inside aggregate, the `only` selector is validated against the
+  // indexed array's known shape — same static error.
+  const errs = errors(`
+A = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+bad = aggregate(sum, [.j], A[!, .j])
+`);
+  assert.ok(errs.some((d: any) =>
+    /'only' selector.*length 2/.test(d.message)));
+});
+
+test('static aggregate shape: output shape is the output_axes lengths', () => {
+  // C[.i, .k] := A[.i, .j] * B[.j, .k]
+  //   A shape [2, 3], B shape [3, 4] → C shape [2, 4]
+  // Verify the inferred type of C carries this exact shape.
+  const ctx = processSource(`
+A = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+B = [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]]
+C[.i, .k] := A[.i, .j] * B[.j, .k]
+`);
+  // processSource's loweredModule has already been inferred; each
+  // binding carries `.inferredType` from the module-level pass.
+  const cb = ctx.loweredModule.bindings.get('C');
+  assert.ok(cb && cb.inferredType, 'C has an inferredType');
+  const cT = cb.inferredType;
+  assert.equal(cT.kind, 'array', `expected array type, got ${cT.kind}`);
+  assert.equal(cT.rank, 2);
+  assert.equal(cT.shape[0], 2, `axis .i length: ${cT.shape[0]}`);
+  assert.equal(cT.shape[1], 4, `axis .k length: ${cT.shape[1]}`);
+});
+
 test('broadcast/aggregate equivalence: := shorthand matrix multiplication', () => {
   // C[.i,.k] := A[.i,.j] * B[.j,.k]   — classic matmul.
   const A = [[1, 2], [3, 4]];
