@@ -104,7 +104,7 @@ test('weighted(measure, measure): structurally invalid → diagnostic', () => {
     invalid = weighted(theta2_dist, theta1_dist)
   `);
   assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /weighted: arg 1 expects real, got measure over real/);
+  assert.match(errors[0].message, /weighted: arg 1 expects real or function, got measure over real/);
   assert.equal(errors[0].severity, 'error');
 });
 

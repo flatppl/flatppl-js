@@ -271,6 +271,14 @@ function createInferenceContext(loweredModule: any) {
       // return type is vector (involution); for matrices, swap dims.
       case 'transpose': return write(inferTransposeAdjoint(expr, scopes), expr);
       case 'adjoint':   return write(inferTransposeAdjoint(expr, scopes), expr);
+      // weighted / logweighted: per spec §06 the weight is a constant
+      // OR a function of the variate (returning real). The static
+      // type signature pins the scalar form; the function form is
+      // accepted here as a separate code path that still rejects
+      // measure / record / etc. weights (matching the existing
+      // "weighted(measure, measure)" reject path).
+      case 'weighted':
+      case 'logweighted': return write(inferWeighted(expr, scopes), expr);
     }
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
@@ -308,24 +316,35 @@ function createInferenceContext(loweredModule: any) {
       const got  = args.length;
       const variadic = sig.variadic === 'positional';
       const fixedN = variadic ? rawN - 1 : rawN;
-      if (variadic) {
-        if (got < fixedN) return arityError(op, '≥' + fixedN, got, expr.loc);
-      } else if (got !== rawN) {
-        return arityError(op, rawN, got, expr.loc);
-      }
-      for (let i = 0; i < fixedN; i++) {
-        const at: any = inferExpr(args[i], scopes);
-        const next = T.unify(sig.args[i], at, s);
-        if (next == null) return argError(op, i, sig.args[i], at, args[i].loc);
-        s = next;
-      }
-      if (variadic) {
-        const tail = sig.args[rawN - 1];
-        for (let i = fixedN; i < got; i++) {
+      // Pure-kwargs form is permitted (spec §05 calling conventions):
+      // every ordinary built-in accepts either positional OR keyword
+      // arg lists. If the caller used 0 positional args AND the
+      // signature lists kwargs whose names match the positional
+      // slots, skip the positional arity + type checks and rely on
+      // the kwarg loop below to validate. Mixed positional+kwarg
+      // calls go through both branches.
+      const kwargsCoverPositional =
+        got === 0 && sig.kwargs && Object.keys(sig.kwargs).length > 0;
+      if (!kwargsCoverPositional) {
+        if (variadic) {
+          if (got < fixedN) return arityError(op, '≥' + fixedN, got, expr.loc);
+        } else if (got !== rawN) {
+          return arityError(op, rawN, got, expr.loc);
+        }
+        for (let i = 0; i < fixedN; i++) {
           const at: any = inferExpr(args[i], scopes);
-          const next = T.unify(tail, at, s);
-          if (next == null) return argError(op, i, tail, at, args[i].loc);
+          const next = T.unify(sig.args[i], at, s);
+          if (next == null) return argError(op, i, sig.args[i], at, args[i].loc);
           s = next;
+        }
+        if (variadic) {
+          const tail = sig.args[rawN - 1];
+          for (let i = fixedN; i < got; i++) {
+            const at: any = inferExpr(args[i], scopes);
+            const next = T.unify(tail, at, s);
+            if (next == null) return argError(op, i, tail, at, args[i].loc);
+            s = next;
+          }
         }
       }
     }
@@ -353,6 +372,49 @@ function createInferenceContext(loweredModule: any) {
   //                          system but documented here for future extension)
   //   scalar               → error (transpose undefined on scalars)
   //   other                → deferred (unknown shape — let runtime handle)
+  // weighted(weight, base) / logweighted(weight, base) per spec §06.
+  // `weight` is a non-negative real OR a function (returning real)
+  // of the variate; `base` is a measure. The result is a measure
+  // with the base's domain. We unify the weight type against either
+  // REAL or a function type (any inputs → real result), and reject
+  // anything else (notably measures — that's a common user mistake
+  // the old signature already caught).
+  function inferWeighted(expr: any, scopes: any): any {
+    const op = expr.op;
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError(op, 2, args.length, expr.loc);
+    const wT: any = inferExpr(args[0], scopes);
+    const mT: any = inferExpr(args[1], scopes);
+    // Measure check first (matches existing diagnostic style).
+    if (!T.isMeasure(mT)) {
+      diagnostics.push({
+        severity: 'error',
+        message: op + ': arg 2 expects measure, got ' + T.show(mT),
+        loc: args[1].loc,
+      });
+      return T.failed(op + ' arg 2');
+    }
+    // Weight: accept REAL, INTEGER (promotes to real), or a function
+    // type returning a scalar. Reject measures, records, etc. Cascades
+    // (wT.kind === 'failed') are suppressed — the root error already
+    // emitted a diagnostic, no need to pile another on.
+    if (wT && wT.kind === 'failed') return T.failed(op + ' arg 1 (cascade)');
+    const isReal = wT && wT.kind === 'scalar'
+      && (wT.prim === 'real' || wT.prim === 'integer');
+    const isFunction = wT && wT.kind === 'function';
+    const isDeferred = wT && (wT.kind === 'deferred' || wT.kind === 'any'
+      || wT.kind === 'var');
+    if (!isReal && !isFunction && !isDeferred) {
+      diagnostics.push({
+        severity: 'error',
+        message: op + ': arg 1 expects real or function, got ' + T.show(wT),
+        loc: args[0].loc,
+      });
+      return T.failed(op + ' arg 1');
+    }
+    return mT;  // result is the same measure type
+  }
+
   function inferTransposeAdjoint(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);

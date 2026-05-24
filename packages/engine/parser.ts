@@ -20,6 +20,17 @@ function parse(tokens: any[], variant: any) {
   const diagnostics: any[] = [];
   let pos = 0;
 
+  // Per spec §04: "Each occurrence of `_` on the left-hand side
+  // (standalone or inside a decomposition) lowers to a distinct
+  // auto-generated private name." We emit `__discard_N` for each
+  // such occurrence so downstream passes see uniquely-named
+  // bindings, preserving the discard semantics without tripping
+  // the analyzer's duplicate-name check.
+  let discardCounter = 0;
+  function freshDiscardName() {
+    return '__discard_' + (discardCounter++);
+  }
+
   function peek() { return tokens[pos]; }
   function at(type: string) { return tokens[pos].type === type; }
   function atValue(type: string, val: any) { return tokens[pos].type === type && tokens[pos].value === val; }
@@ -836,17 +847,23 @@ function parse(tokens: any[], variant: any) {
       }
     }
 
+    // Push one LHS name, renaming bare `_` (HOLE) to a unique
+    // `__discard_N` per spec §04.
+    function pushLhsName() {
+      const tok = peek();
+      checkReservedName(tok);
+      const name = (tok.type === T.HOLE) ? freshDiscardName() : tok.value;
+      names.push(AST.Identifier(name, tok.loc));
+      advance();
+    }
+
     const names: any[] = [];
-    checkReservedName(peek());
-    names.push(AST.Identifier(peek().value, peek().loc));
-    advance();
+    pushLhsName();
 
     while (at(T.COMMA)) {
       advance(); // ,
       if (isLhsName()) {
-        checkReservedName(peek());
-        names.push(AST.Identifier(peek().value, peek().loc));
-        advance();
+        pushLhsName();
       } else {
         diagnostics.push({
           severity: 'error',

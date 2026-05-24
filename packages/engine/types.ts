@@ -609,8 +609,8 @@ const SIGNATURE_FACTORIES = {
   Dirac:     () => ({ args: null, kwargs: { value: tvar('T') }, result: measure(tvar('T')) }),
 
   // ---- Measure algebra ---------------------------------------------
-  weighted:    () => ({ args: [REAL,    measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
-  logweighted: () => ({ args: [REAL,    measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
+  weighted:    () => ({ args: [REAL, measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
+  logweighted: () => ({ args: [REAL, measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
   normalize:   () => ({ args: [measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
   superpose:   () => ({ args: [measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')), variadic: 'positional' }),
 
@@ -764,15 +764,15 @@ const SIGNATURE_FACTORIES = {
               values: array(1, ['%dynamic'], REAL), x: REAL },
     result: REAL,
   }),
-  // Array constructors (spec §07). All variadic in shape; result type
-  // stays dynamic since the shape arity varies. fill is generic over
-  // element type; zeros/ones default to real; eye/onehot are reals.
-  fill:   () => ({ args: [tvar('T')], kwargs: {},
-                   result: deferred(), variadic: 'positional' }),
-  zeros:  () => ({ args: [INTEGER], kwargs: {},
-                   result: deferred(), variadic: 'positional' }),
-  ones:   () => ({ args: [INTEGER], kwargs: {},
-                   result: deferred(), variadic: 'positional' }),
+  // Array constructors (spec §07). Per spec the `size` argument is
+  // either a positive integer (1-D length) or a vector of positive
+  // integers (multi-axis shape). The signature uses `any()` for the
+  // size slots so both forms type-check; runtime `_sizeAsDims`
+  // (sampler.ts) normalises either form. Result element type stays
+  // dynamic since the rank varies with the call.
+  fill:   () => ({ args: [tvar('T'), any()], kwargs: {}, result: deferred() }),
+  zeros:  () => ({ args: [any()], kwargs: {}, result: deferred() }),
+  ones:   () => ({ args: [any()], kwargs: {}, result: deferred() }),
   eye:    () => ({ args: [INTEGER], kwargs: { n: INTEGER },
                    result: array(2, ['%dynamic', '%dynamic'], REAL) }),
   onehot: () => ({ args: [INTEGER, INTEGER], kwargs: { i: INTEGER, n: INTEGER },
@@ -930,9 +930,10 @@ const SIGNATURE_FACTORIES = {
   prod:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   lengthof: () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: INTEGER }),
   // sizeof returns the shape vector of an array; length of the result
-  // is the rank of the input. Static result-length is left dynamic
-  // because the input rank isn't always statically known.
-  sizeof:   () => ({ args: [array(1, ['%dynamic'], any())], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
+  // is the rank of the input. Per spec §07 sizeof accepts arrays of
+  // ANY rank — multi-dim sizeof(M) returns a vector of dims, so the
+  // input slot uses `any()` instead of constraining to rank 1.
+  sizeof:   () => ({ args: [any()], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
   // Population variance (divisor N — not N-1). maximum/minimum on an
   // array; pluralised to avoid collision with the binary `min` / `max`
   // built-ins (per spec §07).

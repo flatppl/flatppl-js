@@ -2021,22 +2021,25 @@ function analyze(ast: any, source: string) {
     bindings.set(synName, synBinding);
     definedNames.add(synName);
 
-    // For each named LHS, replace its effectiveValue with a tuple_get
-    // call referring to the synthetic. attachEffectiveRhs recomputes
-    // deps so the named binding now depends only on the synthetic.
+    // Per spec §05 the decomposition is by position (or by record-
+    // field-order). Lowering depends on the RHS's shape:
+    //   - array literal / vector-producing call → `get(shared, i)`
+    //     (1-based)
+    //   - record literal → `get_field(shared, name_i)`
+    //   - tuple-producing call (rand, anything returning a tuple) →
+    //     `tuple_get(shared, i)` (0-based; engine-internal)
+    // The shape recogniser inspects the RHS AST conservatively;
+    // unrecognised forms fall back to `tuple_get`. That covers the
+    // pre-existing rand() case AND any future tuple-returning ops,
+    // while routing array/record decomposition through the standard
+    // value-access ops.
+    const decomp = _multiLHSAccessor(stmt.value, synName, synLoc, bindings);
     for (let i = 0; i < stmt.names.length; i++) {
       const nameNode = stmt.names[i];
       const b = bindings.get(nameNode.name);
       if (!b) continue;
-      const tupleGetCall = AST.CallExpr(
-        AST.Identifier('tuple_get', synLoc),
-        [
-          AST.Identifier(synName, synLoc),
-          AST.NumberLiteral(i, String(i), synLoc),
-        ],
-        synLoc,
-      );
-      attachEffectiveRhs(b, tupleGetCall, definedNames);
+      const accessorCall = decomp.makeCall(i, nameNode.name);
+      attachEffectiveRhs(b, accessorCall, definedNames);
     }
   }
 
@@ -2177,6 +2180,99 @@ function isValidPlaceholderText(text: any) {
  *   shares the same nearest enclosing `functionof`/`lawof` scope.
  *   Each loc covers the full `_name_` source span.
  */
+// Determine the per-slot accessor for a multi-LHS decomposition
+// based on the RHS's AST shape (spec §05 — "Decomposition is by
+// position. For records, the field order determines which value
+// each name receives; for arrays and tuples, positional index does.
+// This is syntactic sugar: it lowers to an assignment followed by
+// indexed or field-access bindings.").
+//
+// Returns `{ makeCall(i, lhsName): CallExpr }`. The default
+// (anything we don't structurally recognise as array / record /
+// vector) is the engine-internal `tuple_get(shared, i)` — the
+// pre-existing convention for tuple-returning calls like `rand()`.
+function _multiLHSAccessor(rhsAST: any, synName: string, synLoc: any, bindings: any) {
+  // Resolve through identifier indirections (with a cycle guard).
+  // `a, b, c = arr` where `arr = [1, 2, 3]` lets us follow `arr`'s
+  // binding to its ArrayLiteral RHS and pick the right accessor.
+  function resolveAST(node: any, seen: Set<string>): any {
+    if (!node) return node;
+    if (node.type === 'Identifier' && bindings && bindings.has(node.name)) {
+      if (seen.has(node.name)) return node;
+      seen.add(node.name);
+      const b = bindings.get(node.name);
+      const inner = b && b.node && b.node.value;
+      if (inner) return resolveAST(inner, seen);
+    }
+    return node;
+  }
+  const resolved = resolveAST(rhsAST, new Set());
+
+  // Record-shaped RHS: emit `get_field(shared, name_i)` per name.
+  if (resolved && resolved.type === 'CallExpr' && resolved.callee
+      && resolved.callee.name === 'record') {
+    const fieldNames: string[] = [];
+    for (const a of resolved.args || []) {
+      if (a && a.type === 'KeywordArg') fieldNames.push(a.name);
+    }
+    return {
+      makeCall: (i: number, lhsName: string) => AST.CallExpr(
+        AST.Identifier('get_field', synLoc),
+        [
+          AST.Identifier(synName, synLoc),
+          AST.StringLiteral(fieldNames[i] || lhsName, fieldNames[i] || lhsName, synLoc),
+        ],
+        synLoc,
+      ),
+    };
+  }
+  // Vector-shaped RHS: array literal, vector(...) call, or a call
+  // to a vector-producing distribution / measure-algebra op (often
+  // wrapped in `draw(...)` from a tilde-binding). Spec §05 says
+  // decomposition is by position; the lowered access is `get`
+  // (1-based per FlatPPL canonical indexing).
+  function vectorShaped(node: any): boolean {
+    if (!node) return false;
+    if (node.type === 'ArrayLiteral') return true;
+    if (node.type !== 'CallExpr' || !node.callee) return false;
+    const name = node.callee.name;
+    if (name === 'vector') return true;
+    if (name === 'cat') return true;
+    if (name === 'iid') return true;
+    if (name === 'draw' && node.args && node.args[0]) {
+      return vectorShaped(node.args[0]);
+    }
+    const VEC_DISTS = new Set([
+      'MvNormal', 'Dirichlet', 'Multinomial',
+      'Wishart', 'InverseWishart', 'LKJ', 'LKJCholesky',
+    ]);
+    return VEC_DISTS.has(name);
+  }
+  if (vectorShaped(resolved)) {
+    return {
+      makeCall: (i: number, _lhsName: string) => AST.CallExpr(
+        AST.Identifier('get', synLoc),
+        [
+          AST.Identifier(synName, synLoc),
+          AST.NumberLiteral(i + 1, String(i + 1), synLoc),
+        ],
+        synLoc,
+      ),
+    };
+  }
+  // Default: tuple_get (rand and other tuple-returning calls).
+  return {
+    makeCall: (i: number, _lhsName: string) => AST.CallExpr(
+      AST.Identifier('tuple_get', synLoc),
+      [
+        AST.Identifier(synName, synLoc),
+        AST.NumberLiteral(i, String(i), synLoc),
+      ],
+      synLoc,
+    ),
+  };
+}
+
 function planRename(ast: any, bindings: any, line: number, col: number) {
   function inLoc(loc: any) {
     return loc && loc.start.line <= line && line <= loc.end.line
@@ -2191,7 +2287,10 @@ function planRename(ast: any, bindings: any, line: number, col: number) {
     for (const nameNode of stmt.names) {
       if (!inLoc(nameNode.loc)) continue;
       const name = nameNode.name;
-      if (name === '_') return null; // discard binding, can't rename
+      // Per spec §04 the parser renames each bare `_` LHS to a
+      // distinct `__discard_N` synthetic — discards aren't
+      // renamable (the user can't even type the name).
+      if (name === '_' || /^__discard_/.test(name)) return null;
       if (!bindings.has(name)) return null;
       return planBindingRename(ast, bindings, name);
     }
