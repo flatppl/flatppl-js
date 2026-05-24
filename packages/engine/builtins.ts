@@ -115,6 +115,8 @@ const BUILTIN_FUNCTIONS = new Set([
   'row_gram', 'col_gram', 'self_outer', 'diagmat',
   // Diagonal extract / block-matrix constructors (spec §07)
   'diag', 'blockdiagmat', 'bandedmat',
+  // Signal-processing 1-D ops (spec §07)
+  'conv', 'crosscorr',
   // Reductions
   'sum', 'mean', 'var', 'std', 'prod', 'maximum', 'minimum', 'lengthof', 'sizeof',
   'cumsum', 'cumprod',

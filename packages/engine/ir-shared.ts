@@ -457,6 +457,8 @@ const EVALUABLE_OPS = new Set([
   'row_gram', 'col_gram',
   // Diagonal extract / block-matrix constructors (spec §07)
   'diag', 'blockdiagmat', 'bandedmat',
+  // Signal-processing 1-D ops (spec §07)
+  'conv', 'crosscorr',
   // Multi-axis aggregation (spec §04 §sec:aggregate). Pure
   // deterministic value op — phase joins its inputs. The materialiser
   // dispatches through a pattern table with a nested-loop interpreter

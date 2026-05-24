@@ -2877,6 +2877,51 @@ const ARITH_OPS = {
     }
     return { shape: [m, cols], data: out };
   },
+  // conv(v, kernel) — 1-D valid-mode convolution. Spec §07:
+  //   result_i = ⟨ v[i : i + K - 1], reverse(kernel) ⟩
+  // No padding / striding / windowing; requires lengthof(kernel)
+  // ≤ lengthof(v). Result length = lengthof(v) − K + 1.
+  conv: (v: any, kernel: any) => {
+    const vV = valueLib.isValue(v) ? v : valueLib.asValue(v);
+    const kV = valueLib.isValue(kernel) ? kernel : valueLib.asValue(kernel);
+    if (vV.shape.length !== 1 || kV.shape.length !== 1) {
+      throw new Error('conv: both arguments must be rank-1 vectors');
+    }
+    const n = vV.shape[0], K = kV.shape[0];
+    if (K > n) {
+      throw new Error('conv: kernel length (' + K + ') > vector length (' + n + ')');
+    }
+    const outLen = n - K + 1;
+    const out = new Float64Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      let s = 0;
+      // Σ v[i+j] · kernel[K-1-j]  for j=0..K-1
+      for (let j = 0; j < K; j++) s += vV.data[i + j] * kV.data[K - 1 - j];
+      out[i] = s;
+    }
+    return { shape: [outLen], data: out };
+  },
+  // crosscorr(v, kernel) — 1-D valid-mode cross-correlation. Same
+  // shape as `conv` but kernel is NOT reversed. Spec §07.
+  crosscorr: (v: any, kernel: any) => {
+    const vV = valueLib.isValue(v) ? v : valueLib.asValue(v);
+    const kV = valueLib.isValue(kernel) ? kernel : valueLib.asValue(kernel);
+    if (vV.shape.length !== 1 || kV.shape.length !== 1) {
+      throw new Error('crosscorr: both arguments must be rank-1 vectors');
+    }
+    const n = vV.shape[0], K = kV.shape[0];
+    if (K > n) {
+      throw new Error('crosscorr: kernel length (' + K + ') > vector length (' + n + ')');
+    }
+    const outLen = n - K + 1;
+    const out = new Float64Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      let s = 0;
+      for (let j = 0; j < K; j++) s += vV.data[i + j] * kV.data[j];
+      out[i] = s;
+    }
+    return { shape: [outLen], data: out };
+  },
   // diag(A, k=0) — extract the k-th diagonal of a matrix A as a
   // vector. k=0 main diagonal, k>0 super-diagonals, k<0 sub-
   // diagonals. Spec §07.
