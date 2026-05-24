@@ -92,6 +92,58 @@ A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
     errs.map((d: any) => d.message).join('; '));
 });
 
+test('iid multi-axis: fixed 2D A produces a flat-samples measure (viewer plot path)', async () => {
+  // Regression for the bug where the viewer threw
+  // "Cannot read properties of undefined (reading 'length')" when
+  // plotting A from `A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))`.
+  // Root cause: fixedValueToMeasure treated the nested 3x3 numeric
+  // array as a 3-tuple of inner arrays (elems-shape) instead of a
+  // flat numeric matrix. The viewer's array-mode renderer then read
+  // measure.samples (undefined) and blew up on .length.
+  const src = `
+rstate = rnginit([1,2,3,4])
+A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+`;
+  const { orchestrator, materialiser } = require('..');
+  const lifted = processSource(src);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const ctx = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    sampleCount: 1024,
+    getMeasure:  (n: any) => materialiser.materialiseMeasure(n, ctx),
+    sendWorker:  (_: any) => { throw new Error('should not reach worker'); },
+  };
+  const m = await ctx.getMeasure('A');
+  assert.ok(m.samples, 'A measure must expose .samples (viewer reads this)');
+  assert.equal(m.samples.length, 9,
+    'flat samples of length prod(shape) = 9; got ' + m.samples.length);
+  assert.ok(m.value, 'A measure must carry a shape-explicit Value');
+  assert.deepEqual(m.value.shape, [3, 3]);
+});
+
+test('iid multi-axis: fixed 3D A flattens to length-24 samples', async () => {
+  const src = `
+rstate = rnginit([1,2,3,4])
+B, _ = rand(rstate, iid(Normal(0,1), [2, 3, 4]))
+`;
+  const { orchestrator, materialiser } = require('..');
+  const lifted = processSource(src);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const ctx = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    sampleCount: 1024,
+    getMeasure:  (n: any) => materialiser.materialiseMeasure(n, ctx),
+    sendWorker:  (_: any) => { throw new Error('should not reach worker'); },
+  };
+  const m = await ctx.getMeasure('B');
+  assert.equal(m.samples.length, 24);
+  assert.deepEqual(m.value.shape, [2, 3, 4]);
+});
+
 // ---------------------------------------------------------------------
 // density.walk — multi-axis size in iid logdensity
 // ---------------------------------------------------------------------
