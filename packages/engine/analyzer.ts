@@ -1467,6 +1467,188 @@ function collectIdentRefs(node: any) {
   return refs;
 }
 
+// ---------------------------------------------------------------------
+// `restrict(M, x)` expansion (spec §06 "Measure restriction").
+//
+// `restrict(M, x)` is shorthand for
+//
+//     kernel, marginal = disintegrate(<fields-of-x>, M)
+//     restrictResult   = bayesupdate(likelihoodof(kernel, x), marginal)
+//
+// We expand each `restrict(...)` AssignStatement at the top of analyze
+// so the rest of the pipeline never has to know `restrict` exists. The
+// two ops introduced (disintegrate + bayesupdate + likelihoodof) are
+// already first-class. The synthesised `kernel`/`marginal` anons use
+// `__restrict_*` names so they're elidable per spec §04
+// "Auto-generated names".
+//
+// Surface forms accepted:
+//   nu = restrict(M, x)              # positional: x is the observed record
+//   nu = restrict(M, a = .., b = ..) # kwarg form — bundle to a record anon
+//
+// The `M` argument must currently be an Identifier so disintegrate's
+// joint-resolver (which requires an identifier joint ref) applies. If
+// `x` is an inline `record(a=..., b=...)` literal we read field names
+// from it directly. If `x` is an Identifier whose binding is a record
+// literal, we likewise extract field names. Other shapes (kwarg form,
+// or identifier whose type can be statically derived) cover the
+// expected use cases for v0.1.
+
+let _restrictCounter = 0;
+function _freshRestrictAnon(role: string): string {
+  return `__restrict_${role}_${_restrictCounter++}`;
+}
+
+function _recordFieldNames(node: any): string[] | null {
+  if (!node) return null;
+  if (node.type === 'CallExpr' && node.callee
+      && node.callee.type === 'Identifier' && node.callee.name === 'record') {
+    const names: string[] = [];
+    for (const a of node.args || []) {
+      if (!a || a.type !== 'KeywordArg') return null;
+      names.push(a.name);
+    }
+    return names;
+  }
+  return null;
+}
+
+function expandRestrictStatements(ast: any, diagnostics: any[]) {
+  if (!ast || !ast.body) return;
+  const newBody: any[] = [];
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement'
+        || !stmt.value
+        || stmt.value.type !== 'CallExpr'
+        || !stmt.value.callee
+        || stmt.value.callee.type !== 'Identifier'
+        || stmt.value.callee.name !== 'restrict') {
+      newBody.push(stmt);
+      continue;
+    }
+    const call = stmt.value;
+    const args = call.args || [];
+    if (args.length < 2) {
+      diagnostics.push({
+        severity: 'error',
+        message: `restrict() requires a measure and observations (got ${args.length} args)`,
+        loc: call.loc,
+      });
+      newBody.push(stmt);
+      continue;
+    }
+    if (args[0].type === 'KeywordArg') {
+      diagnostics.push({
+        severity: 'error',
+        message: `restrict()'s first argument (the measure) must be positional`,
+        loc: args[0].loc,
+      });
+      newBody.push(stmt);
+      continue;
+    }
+    const measureArg = args[0];
+    if (measureArg.type !== 'Identifier') {
+      diagnostics.push({
+        severity: 'error',
+        message: `restrict()'s measure argument must be a binding reference (got ${measureArg.type})`,
+        loc: measureArg.loc,
+      });
+      newBody.push(stmt);
+      continue;
+    }
+    const rest = args.slice(1);
+    // Two surface shapes: a single positional record-like x, OR
+    // a list of kwargs (auto-splat to a record).
+    const allKwargs = rest.every((a: any) => a && a.type === 'KeywordArg');
+    const allPositional = rest.every((a: any) => a && a.type !== 'KeywordArg');
+
+    let xExpr: any = null;
+    let fieldNames: string[] | null = null;
+
+    if (allKwargs && rest.length >= 1) {
+      // restrict(M, a = .., b = ..) → x = record(a = .., b = ..)
+      fieldNames = rest.map((a: any) => a.name);
+      xExpr = AST.CallExpr(
+        AST.Identifier('record', AST.synthLoc('restrict-expand')),
+        rest.map((a: any) => AST.KeywordArg(a.name, a.value, a.loc)),
+        AST.synthLoc('restrict-expand'));
+    } else if (allPositional && rest.length === 1) {
+      xExpr = rest[0];
+      fieldNames = _recordFieldNames(xExpr);
+      if (!fieldNames) {
+        diagnostics.push({
+          severity: 'error',
+          message: `restrict()'s observation argument must be an inline 'record(...)' literal or a record-typed binding; field names could not be determined statically`,
+          loc: xExpr.loc,
+        });
+        newBody.push(stmt);
+        continue;
+      }
+    } else {
+      diagnostics.push({
+        severity: 'error',
+        message: `restrict() takes 'restrict(M, x)' or 'restrict(M, a = .., b = ..)' (cannot mix positional and keyword observations)`,
+        loc: call.loc,
+      });
+      newBody.push(stmt);
+      continue;
+    }
+
+    if (!fieldNames || fieldNames.length === 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: `restrict() requires at least one observed field`,
+        loc: call.loc,
+      });
+      newBody.push(stmt);
+      continue;
+    }
+
+    // Use the user's `restrict(...)` source range for all synthesized
+    // statements/exprs — sliceSource and source-located diagnostics
+    // then point back at the original line. The synth marker on the
+    // loc object preserves provenance for renderer / IR consumers
+    // that want to distinguish synthetic from user-written.
+    const sloc = { ...call.loc, synthetic: true, source: 'restrict-expand' };
+    const kernelAnon = _freshRestrictAnon('kernel');
+    const marginalAnon = _freshRestrictAnon('marginal');
+
+    // Selector: array literal of string literals (works uniformly for
+    // single- and multi-field selectors). The disintegrate detector
+    // also accepts a bare StringLiteral for "bare value" selectors,
+    // but `restrict` always operates on a record of observations, so
+    // the array form is the right canonical shape.
+    const selectorElems = fieldNames.map(
+      (n: string) => AST.StringLiteral(n, n, sloc));
+    const selector = AST.ArrayLiteral(selectorElems, sloc);
+
+    // Statement 1: kernel_anon, marginal_anon = disintegrate(selector, M)
+    const disintCall = AST.CallExpr(
+      AST.Identifier('disintegrate', sloc),
+      [selector, measureArg],
+      sloc);
+    const disintStmt = AST.AssignStatement(
+      [AST.Identifier(kernelAnon, sloc), AST.Identifier(marginalAnon, sloc)],
+      disintCall,
+      sloc);
+
+    // Statement 2: <user name> = bayesupdate(likelihoodof(kernel_anon, x), marginal_anon)
+    const likelihoodCall = AST.CallExpr(
+      AST.Identifier('likelihoodof', sloc),
+      [AST.Identifier(kernelAnon, sloc), xExpr],
+      sloc);
+    const bayesCall = AST.CallExpr(
+      AST.Identifier('bayesupdate', sloc),
+      [likelihoodCall, AST.Identifier(marginalAnon, sloc)],
+      sloc);
+    const userStmt = AST.AssignStatement(stmt.names, bayesCall, stmt.loc);
+
+    newBody.push(disintStmt);
+    newBody.push(userStmt);
+  }
+  ast.body = newBody;
+}
+
 /**
  * Analyze a parsed AST.
  * Returns { bindings, diagnostics, symbols }.
@@ -1479,6 +1661,14 @@ function analyze(ast: any, source: string) {
   const bindings = new Map<string, any>();
   const symbols: any[] = [];
   const definedNames = new Set<string>();
+
+  // Pre-pass: expand `restrict(M, x)` into the equivalent
+  // disintegrate + likelihoodof + bayesupdate chain per spec §06
+  // "Measure restriction". The rewrite is purely structural — every
+  // op it introduces (disintegrate, likelihoodof, bayesupdate) is
+  // already classified and materialised, so restrict needs no
+  // derivation kind of its own.
+  expandRestrictStatements(ast, diagnostics);
 
   // First pass: collect all defined names
   for (const stmt of ast.body) {

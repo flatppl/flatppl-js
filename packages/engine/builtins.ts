@@ -151,6 +151,10 @@ const MEASURE_OPS = new Set([
   'densityof', 'logdensityof',
   // Disintegration
   'disintegrate',
+  // Measure restriction (spec §06; lowers in the analyzer to
+  // disintegrate + bayesupdate + likelihoodof, so no derivation kind
+  // of its own).
+  'restrict',
 ]);
 
 // Built-in callables that produce a measure-typed value. Used to decide
