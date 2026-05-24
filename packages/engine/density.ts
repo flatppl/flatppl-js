@@ -61,6 +61,8 @@ import type { IRNode } from './engine-types';
 
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
+const stdlibGammaln  = require('@stdlib/math-base-special-gammaln');
+const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -197,6 +199,111 @@ function consumeVector(value: any, n: any) {
   }
   throw new Error('density: cannot consume vector from value of type '
     + (typeof value));
+}
+
+/**
+ * Pull a leading n×n matrix off `value`, used by Wishart/InverseWishart/
+ * LKJ/LKJCholesky leaves. Returns { head: Value shape=[n, n], rest }.
+ * Accepts:
+ *   - Value shape=[n, n]               → head=value, rest=null
+ *   - Value shape=[n*n]                → reshape head to [n, n], rest=null
+ *   - Value shape=[k] with k > n*n     → head=Value [n, n], rest=Value [k-n*n]
+ *   - nested array of length n         → flatten + wrap
+ */
+function consumeMatrix(value: any, n: any) {
+  if (value == null) {
+    throw new Error('density: matrix leaf has no entry to consume (value exhausted)');
+  }
+  const N2 = n * n;
+  if (valueLib.isValue(value)) {
+    if (value.shape.length === 2
+        && value.shape[0] === n && value.shape[1] === n) {
+      return { head: value, rest: null };
+    }
+    if (value.shape.length === 1) {
+      const k = value.shape[0];
+      if (k < N2) {
+        throw new Error('density: matrix leaf wants ' + n + 'x' + n + ' = '
+          + N2 + ' entries, only ' + k + ' available');
+      }
+      return {
+        head: { shape: [n, n], data: value.data.subarray(0, N2) },
+        rest: k === N2 ? null
+          : { shape: [k - N2], data: value.data.subarray(N2) },
+      };
+    }
+    throw new Error('density: consumeMatrix expects a rank-1 or rank-2 Value, got shape='
+      + JSON.stringify(value.shape));
+  }
+  if (Array.isArray(value) && value.length === n && Array.isArray(value[0])) {
+    // nested array
+    const flat = new Float64Array(N2);
+    for (let i = 0; i < n; i++) {
+      const row = value[i];
+      if (!Array.isArray(row) || row.length !== n) {
+        throw new Error('density: consumeMatrix expects square ' + n + 'x' + n
+          + ', got row ' + i + ' length ' + (row && row.length));
+      }
+      for (let j = 0; j < n; j++) flat[i * n + j] = +row[j];
+    }
+    return { head: { shape: [n, n], data: flat }, rest: null };
+  }
+  if (value && value.BYTES_PER_ELEMENT && typeof value.length === 'number') {
+    if (value.length < N2) {
+      throw new Error('density: matrix leaf wants ' + N2 + ' entries, only '
+        + value.length + ' available');
+    }
+    return {
+      head: { shape: [n, n], data: value.subarray(0, N2) },
+      rest: value.length === N2 ? null : value.subarray(N2),
+    };
+  }
+  throw new Error('density: cannot consume matrix from value of type '
+    + (typeof value));
+}
+
+// log multivariate gamma function (Γ_p(a)) for natural-number p.
+//   log Γ_p(a) = (p(p-1)/4) log π + Σ_{i=1..p} log Γ(a + (1-i)/2)
+function logMvGamma(p: any, a: any) {
+  let s = (p * (p - 1) / 4) * Math.log(Math.PI);
+  for (let i = 1; i <= p; i++) {
+    s += stdlibGammaln(a + (1 - i) / 2);
+  }
+  return s;
+}
+
+// log determinant of a square matrix via lower Cholesky (returns null
+// if not positive-definite). Returns log|A| = 2 * Σ log L_ii.
+function logDetSPD(A: any) {
+  const sampler = require('./sampler.ts');
+  try {
+    const L = sampler._internal.ARITH_OPS.lower_cholesky(A);
+    const n = L.shape[0];
+    let ld = 0;
+    for (let i = 0; i < n; i++) {
+      const lii = L.data[i * n + i];
+      if (!(lii > 0)) return null;
+      ld += Math.log(lii);
+    }
+    return 2 * ld;
+  } catch {
+    return null;
+  }
+}
+
+// log trace(A · B) for n×n Values A, B (sum over i of (A·B)_{ii}).
+// Equivalent to elementwise sum(A * B^T).
+function logTraceProduct(A: any, B: any) {
+  // Not log — just trace(A · B); we name it logTraceProduct since it's
+  // used inside log densities. Return the trace itself.
+  const n = A.shape[0];
+  let tr = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      tr += A.data[i * n + j] * B.data[j * n + i];
+    }
+  }
+  return tr;
 }
 
 /**
@@ -861,6 +968,13 @@ const OP_HANDLERS = {
   pushfwd:     walkPushfwd,
   select:      walkSelect,
   MvNormal:    walkMvNormal,
+  Dirichlet:   walkDirichlet,
+  Multinomial: walkMultinomial,
+  BinnedPoissonProcess: walkBinnedPoissonProcess,
+  Wishart:        walkWishart,
+  InverseWishart: walkInverseWishart,
+  LKJ:            walkLKJ,
+  LKJCholesky:    walkLKJCholesky,
 };
 
 // ---- Per-atom scalar contribution helpers ---------------------------
@@ -948,6 +1062,311 @@ function walkMvNormal(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   let mahal2 = 0;
   for (let i = 0; i < n; i++) mahal2 += y[i] * y[i];
   const logp = logNormConst - 0.5 * mahal2;
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+// =====================================================================
+// Dirichlet — closed-form density on the standard simplex
+// =====================================================================
+//
+// Spec §08: Dirichlet(alpha) has density (w.r.t. Lebesgue on stdsimplex(n)):
+//   log p(x; α) = log Γ(Σα) − Σ log Γ(α_i) + Σ (α_i − 1) log x_i
+//
+// Like MvNormal we resolve α once atom-indep, consume the n-vector
+// observation from `value`, and broadcast a single log-density across
+// atoms. Per-atom α (atom-batched concentration) is deferred — none of
+// the engine's current callers create that shape.
+function walkDirichlet(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const kwargs = ir.kwargs || {};
+  if (!kwargs.alpha) {
+    throw new Error('density: Dirichlet requires alpha kwarg');
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  const alphaRaw = samplerLib.evaluateExpr(kwargs.alpha, env);
+  const alpha: any = valueLib.isValue(alphaRaw)
+    ? Array.from(alphaRaw.data)
+    : Array.from(alphaRaw);
+  const n = alpha.length;
+  if (n < 1) {
+    throw new Error('density: Dirichlet alpha must be non-empty');
+  }
+  let alphaSum = 0;
+  let logBeta = 0;  // log B(α) = Σ log Γ(α_i) − log Γ(Σ α_i)
+  for (let i = 0; i < n; i++) {
+    alphaSum += alpha[i];
+    logBeta  += stdlibGammaln(alpha[i]);
+  }
+  logBeta -= stdlibGammaln(alphaSum);
+  const { head: x, rest } = consumeVector(value, n);
+  // Σ (α_i − 1) log x_i. Outside the simplex (negative or non-summing-
+  // to-1 entries) the density is 0; we treat per-coord violations as
+  // -Infinity to keep walkers composable.
+  let logp = -logBeta;
+  let bad = false;
+  for (let i = 0; i < n; i++) {
+    const xi = +x[i];
+    if (xi <= 0) { bad = true; break; }
+    logp += (alpha[i] - 1) * Math.log(xi);
+  }
+  if (bad) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+// =====================================================================
+// Multinomial — closed-form count-vector density
+// =====================================================================
+//
+// Spec §08: Multinomial(n, p) density (w.r.t. iid(Counting(integers), k)):
+//   log p(x; n, p) = log n! − Σ log x_i! + Σ x_i log p_i
+//                  = log Γ(n+1) − Σ log Γ(x_i+1) + Σ x_i log p_i
+// where Σ x_i = n. Returns −∞ if the count vector doesn't sum to n or
+// has negative entries.
+function walkMultinomial(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const kwargs = ir.kwargs || {};
+  if (!('n' in kwargs) || !('p' in kwargs)) {
+    throw new Error('density: Multinomial requires n and p kwargs');
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  const nTotal = +samplerLib.evaluateExpr(kwargs.n, env);
+  const pRaw = samplerLib.evaluateExpr(kwargs.p, env);
+  const p: any = valueLib.isValue(pRaw)
+    ? Array.from(pRaw.data)
+    : Array.from(pRaw);
+  const K = p.length;
+  if (K < 1) {
+    throw new Error('density: Multinomial p must be non-empty');
+  }
+  const { head: x, rest } = consumeVector(value, K);
+  let sumX = 0;
+  let logp = stdlibGammaln(nTotal + 1);
+  let bad = false;
+  for (let i = 0; i < K; i++) {
+    const xi = +x[i];
+    if (xi < 0 || xi !== Math.round(xi)) { bad = true; break; }
+    sumX += xi;
+    logp -= stdlibGammaln(xi + 1);
+    if (xi > 0) {
+      if (p[i] <= 0) { bad = true; break; }
+      logp += xi * Math.log(p[i]);
+    }
+  }
+  if (bad || sumX !== nTotal) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+// =====================================================================
+// BinnedPoissonProcess — sum of independent Poisson log-pmfs
+// =====================================================================
+//
+// Spec §08: BinnedPoissonProcess(bins, intensity) is the pushforward of
+// PoissonProcess(intensity) through bincounts(bins, _). The matrials
+// path (matBinnedPoissonProcess) builds a per-bin rate vector and runs
+// K independent Poissons. Closed-form density for that direct form is
+// just the sum of Poisson(rate_k) log-pmfs over k. The current engine
+// shape is the direct one — `intensity` is a pre-computed per-bin rate
+// vector that we resolve once and sum over.
+function walkBinnedPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const kwargs = ir.kwargs || {};
+  // `intensity` is the per-bin rate vector. `bins` is only needed for
+  // sampling; density doesn't use it.
+  if (!kwargs.intensity) {
+    throw new Error('density: BinnedPoissonProcess requires intensity kwarg');
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  const ratesRaw = samplerLib.evaluateExpr(kwargs.intensity, env);
+  // Only the direct (per-bin-rate vector) form is supported by the
+  // density walker today. A measure-typed intensity would require
+  // integrating the intensity over each bin; that path is open.
+  const rates: any = valueLib.isValue(ratesRaw)
+    ? Array.from(ratesRaw.data)
+    : Array.isArray(ratesRaw) ? Array.from(ratesRaw) : null;
+  if (!rates) {
+    throw new Error('density: BinnedPoissonProcess intensity must be a per-bin rate vector'
+      + ' (measure-valued intensity density-evaluation is open work)');
+  }
+  const K = rates.length;
+  const { head: x, rest } = consumeVector(value, K);
+  let logp = 0;
+  let bad = false;
+  for (let k = 0; k < K; k++) {
+    const xk = +x[k];
+    const lambda = +rates[k];
+    if (xk < 0 || xk !== Math.round(xk) || lambda < 0) { bad = true; break; }
+    // Poisson log-pmf: x log λ − λ − log x!
+    if (lambda === 0) {
+      // Zero rate: only x=0 has nonzero mass.
+      if (xk !== 0) { bad = true; break; }
+      // else contributes 0 to logp
+    } else {
+      logp += xk * Math.log(lambda) - lambda - stdlibGammaln(xk + 1);
+    }
+  }
+  if (bad) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+// =====================================================================
+// Wishart — closed-form n×n SPD-matrix density
+// =====================================================================
+//
+// Spec §08:
+//   log p(X; ν, V) = (ν − n − 1)/2 · log|X|
+//                  − ½ · tr(V⁻¹ · X)
+//                  − (ν·n / 2) · log 2
+//                  − ν/2 · log|V|
+//                  − log Γ_n(ν/2)
+// where Γ_n is the multivariate gamma function. Atom-indep params,
+// shared observation (single n×n matrix from `value`).
+function walkWishart(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  return _wishartCommon(ir, value, refArrays, N, opts, acc, baseEnv, overlay,
+                         /*invert=*/false);
+}
+function walkInverseWishart(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  return _wishartCommon(ir, value, refArrays, N, opts, acc, baseEnv, overlay,
+                         /*invert=*/true);
+}
+function _wishartCommon(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, invert: any) {
+  const label = invert ? 'InverseWishart' : 'Wishart';
+  const kwargs = ir.kwargs || {};
+  if (!('nu' in kwargs) || !('scale' in kwargs)) {
+    throw new Error('density: ' + label + ' requires nu and scale kwargs');
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  const nu = +samplerLib.evaluateExpr(kwargs.nu, env);
+  const scaleRaw = samplerLib.evaluateExpr(kwargs.scale, env);
+  const sampler = require('./sampler.ts');
+  const valueOps = require('./value-ops.ts');
+  const Vmat = Array.isArray(scaleRaw) && scaleRaw.length > 0 && Array.isArray(scaleRaw[0])
+    ? valueOps._nestedToValue(scaleRaw)
+    : valueLib.asValue(scaleRaw);
+  if (Vmat.shape.length !== 2 || Vmat.shape[0] !== Vmat.shape[1]) {
+    throw new Error('density: ' + label + ' scale must be a square matrix, got shape='
+      + JSON.stringify(Vmat.shape));
+  }
+  const n = Vmat.shape[0];
+  if (!(nu > n - 1)) {
+    // Density is undefined; return -Infinity for all atoms.
+    const { rest } = consumeMatrix(value, n);
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
+  const { head: Xmat, rest } = consumeMatrix(value, n);
+  const logDetV = logDetSPD(Vmat);
+  const logDetX = logDetSPD(Xmat);
+  if (logDetV == null || logDetX == null) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
+  const Vinv = sampler._internal.ARITH_OPS.inv(Vmat);
+  // Wishart:        log p = (ν-n-1)/2 log|X| − ½ tr(V⁻¹ X) − νn/2 log2 − ν/2 log|V| − log Γ_n(ν/2)
+  // InvWishart Ψ=V: log p = ν/2 log|Ψ| − (ν+n+1)/2 log|X| − ½ tr(Ψ X⁻¹) − νn/2 log2 − log Γ_n(ν/2)
+  const logG = logMvGamma(n, nu / 2);
+  let logp: number;
+  if (!invert) {
+    const tr = logTraceProduct(Vinv, Xmat);
+    logp = (nu - n - 1) / 2 * logDetX
+         - 0.5 * tr
+         - (nu * n / 2) * Math.LN2
+         - (nu / 2) * logDetV
+         - logG;
+  } else {
+    // For InverseWishart Ψ = scale, density uses |Ψ| and tr(Ψ · X⁻¹).
+    // We need X⁻¹.
+    const Xinv = sampler._internal.ARITH_OPS.inv(Xmat);
+    const tr = logTraceProduct(Vmat, Xinv);
+    logp = (nu / 2) * logDetV
+         - (nu + n + 1) / 2 * logDetX
+         - 0.5 * tr
+         - (nu * n / 2) * Math.LN2
+         - logG;
+  }
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+// =====================================================================
+// LKJ / LKJCholesky — closed-form correlation-matrix density
+// =====================================================================
+//
+// Spec §08:
+//   LKJ(n, eta):  p(C) = c_n(η) · det(C)^(η - 1)
+//   LKJCholesky:  p(L) = c_n(η) · Π_{i=2..n} L_ii^(n − i + 2η − 2)
+//
+// Normalization constant (shared, applied as a log):
+//   c_n(η) = 2^Σ_{k=1..n-1}(2η - 2 + n - k)(n - k)
+//          · Π_{k=1..n-1} B(η + (n-k-1)/2, η + (n-k-1)/2)^(n - k)
+//
+// log c_n(η) = log2 · Σ_k (2η - 2 + n - k)(n - k)
+//            + Σ_k (n - k) · 2·log Γ(η + (n-k-1)/2) − log Γ(2η + n-k-1)
+function _logCnLKJ(n: any, eta: any) {
+  let lc = 0;
+  for (let k = 1; k <= n - 1; k++) {
+    const m = n - k;
+    lc += (2 * eta - 2 + m) * m * Math.LN2;
+    const a = eta + (m - 1) / 2;
+    lc += m * (2 * stdlibGammaln(a) - stdlibGammaln(2 * a));
+  }
+  return lc;
+}
+
+function walkLKJ(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const kwargs = ir.kwargs || {};
+  if (!('n' in kwargs) || !('eta' in kwargs)) {
+    throw new Error('density: LKJ requires n and eta kwargs');
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  const nDim = +samplerLib.evaluateExpr(kwargs.n, env);
+  const eta = +samplerLib.evaluateExpr(kwargs.eta, env);
+  const { head: C, rest } = consumeMatrix(value, nDim);
+  const ld = logDetSPD(C);
+  if (ld == null) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
+  const logp = _logCnLKJ(nDim, eta) + (eta - 1) * ld;
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+function walkLKJCholesky(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const kwargs = ir.kwargs || {};
+  if (!('n' in kwargs) || !('eta' in kwargs)) {
+    throw new Error('density: LKJCholesky requires n and eta kwargs');
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  const nDim = +samplerLib.evaluateExpr(kwargs.n, env);
+  const eta = +samplerLib.evaluateExpr(kwargs.eta, env);
+  const { head: L, rest } = consumeMatrix(value, nDim);
+  // p(L) = c_n(η) · Π_{i=2..n} L_ii^(n − i + 2η − 2)
+  // (1-indexed i = 2..n maps to 0-indexed i = 1..n-1.)
+  let logp = _logCnLKJ(nDim, eta);
+  for (let i = 1; i < nDim; i++) {
+    const lii = L.data[i * nDim + i];
+    if (!(lii > 0)) {
+      for (let k = 0; k < N; k++) acc[k] = -Infinity;
+      return rest;
+    }
+    logp += (nDim - (i + 1) + 2 * eta - 2) * Math.log(lii);
+  }
   for (let i = 0; i < N; i++) acc[i] += logp;
   return rest;
 }
