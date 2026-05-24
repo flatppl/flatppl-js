@@ -259,7 +259,7 @@ function matrixMean(samples: any, n: any) {
 
 test('Wishart: classifier recognises and produces matrix atoms', async () => {
   const ctx = makeCtx(`
-scale = [[1.0, 0.0], [0.0, 1.0]]
+scale = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = Wishart(nu = 5, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -270,7 +270,7 @@ m = Wishart(nu = 5, scale = scale)
 
 test('Wishart: every atom is symmetric', async () => {
   const ctx = makeCtx(`
-scale = [[2.0, 0.5], [0.5, 1.0]]
+scale = rowstack([[2.0, 0.5], [0.5, 1.0]])
 m = Wishart(nu = 5, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -285,7 +285,7 @@ m = Wishart(nu = 5, scale = scale)
 
 test('Wishart: every atom is positive-semidefinite (positive diagonal)', async () => {
   const ctx = makeCtx(`
-scale = [[1.0, 0.0], [0.0, 1.0]]
+scale = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = Wishart(nu = 5, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -303,7 +303,7 @@ m = Wishart(nu = 5, scale = scale)
 test('Wishart: empirical mean ≈ nu * scale', async () => {
   const nu = 10;
   const ctx = makeCtx(`
-scale = [[2.0, 0.3], [0.3, 1.0]]
+scale = rowstack([[2.0, 0.3], [0.3, 1.0]])
 m = Wishart(nu = 10, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -320,7 +320,7 @@ m = Wishart(nu = 10, scale = scale)
 
 test('Wishart: rejects nu ≤ n - 1', async () => {
   const ctx = makeCtx(`
-scale = [[1.0, 0.0], [0.0, 1.0]]
+scale = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = Wishart(nu = 1, scale = scale)
 `);
   await assert.rejects(ctx.getMeasure('m'), /must be > n - 1/);
@@ -328,7 +328,7 @@ m = Wishart(nu = 1, scale = scale)
 
 test('Wishart: rejects non-square scale', async () => {
   const ctx = makeCtx(`
-scale = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]
+scale = rowstack([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
 m = Wishart(nu = 5, scale = scale)
 `);
   await assert.rejects(ctx.getMeasure('m'), /scale must be a square matrix/);
@@ -340,7 +340,7 @@ m = Wishart(nu = 5, scale = scale)
 
 test('InverseWishart: classifier recognises and produces matrix atoms', async () => {
   const ctx = makeCtx(`
-scale = [[1.0, 0.0], [0.0, 1.0]]
+scale = rowstack([[1.0, 0.0], [0.0, 1.0]])
 m = InverseWishart(nu = 5, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -350,7 +350,7 @@ m = InverseWishart(nu = 5, scale = scale)
 
 test('InverseWishart: every atom is symmetric + SPD', async () => {
   const ctx = makeCtx(`
-scale = [[2.0, 0.5], [0.5, 1.0]]
+scale = rowstack([[2.0, 0.5], [0.5, 1.0]])
 m = InverseWishart(nu = 6, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -371,7 +371,7 @@ test('InverseWishart: empirical mean ≈ scale / (nu - n - 1)', async () => {
   // E[X] = S / (nu - n - 1) for InverseWishart(nu, S) with nu > n + 1.
   // For n=2, nu=10: scale/(10 - 2 - 1) = scale / 7.
   const ctx = makeCtx(`
-scale = [[2.0, 0.0], [0.0, 1.0]]
+scale = rowstack([[2.0, 0.0], [0.0, 1.0]])
 m = InverseWishart(nu = 10, scale = scale)
 `);
   const m = await ctx.getMeasure('m');
@@ -605,7 +605,7 @@ m = Multinomial(n = 3, p = p)
 });
 
 test('Wishart: rejects missing nu / scale', async () => {
-  await assert.rejects(makeCtx(`m = Wishart(scale = [[1.0, 0.0], [0.0, 1.0]])\n`).getMeasure('m'),
+  await assert.rejects(makeCtx(`m = Wishart(scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`).getMeasure('m'),
                        /requires nu and scale/);
   await assert.rejects(makeCtx(`m = Wishart(nu = 5)\n`).getMeasure('m'),
                        /requires nu and scale/);
@@ -613,7 +613,7 @@ test('Wishart: rejects missing nu / scale', async () => {
 
 test('Wishart: rejects non-numeric nu', async () => {
   const ctx = makeCtx(`
-scale = [[1.0, 0.0], [0.0, 1.0]]
+scale = rowstack([[1.0, 0.0], [0.0, 1.0]])
 nu = [1.0, 2.0]
 m = Wishart(nu = nu, scale = scale)
 `);
@@ -622,10 +622,10 @@ m = Wishart(nu = nu, scale = scale)
 
 test('InverseWishart: rejects same shape problems', async () => {
   await assert.rejects(
-    makeCtx(`m = InverseWishart(scale = [[1.0, 0.0], [0.0, 1.0]])\n`).getMeasure('m'),
+    makeCtx(`m = InverseWishart(scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`).getMeasure('m'),
     /requires nu and scale/);
   await assert.rejects(
-    makeCtx(`m = InverseWishart(nu = 1, scale = [[1.0, 0.0], [0.0, 1.0]])\n`).getMeasure('m'),
+    makeCtx(`m = InverseWishart(nu = 1, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`).getMeasure('m'),
     /must be > n - 1/);
 });
 

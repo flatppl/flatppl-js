@@ -160,7 +160,12 @@ function resolveIRToValue(ir: any, bindings: any, fixedValues: any) {
     }
     if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
     if (ir.kind === 'ref' && ir.ns === 'self') {
-      if (fixedValues && fixedValues.has(ir.name)) return fixedValues.get(ir.name);
+      if (fixedValues && fixedValues.has(ir.name)) {
+        // resolveIRToValue's documented output contract is plain JS
+        // (not shape-tagged Values), so the engine-concepts §2.1
+        // migration of producers to Values is invisible here.
+        return valueToPlain(fixedValues.get(ir.name));
+      }
       if (seen.has(ir.name)) {
         throw new Error(`resolveIRToValue: cycle through '${ir.name}'`);
       }
