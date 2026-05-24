@@ -127,7 +127,225 @@ inBothModes('aggregate: matmul with operand order swapped — same result',
   assert.equal(got[1][1], 154);
 });
 
-test('aggregate: weighted sum-of-squared-differences (spec §04 example 2)', () => {
+// ---------------------------------------------------------------------
+// matmul-family transpose variants — each runs in both modes so the
+// specialiser and the broadcast-reduce default must agree.
+// ---------------------------------------------------------------------
+
+inBothModes('aggregate: left-transpose matmul (Aᵀ·B)',
+  'aggregate', () => {
+  // aggregate(sum, [.i, .k], A[.j, .i] * B[.j, .k])  ≡  Aᵀ · B
+  // A's first dim is the reduce axis .j; second is the output .i.
+  const A = [[1, 4], [2, 5], [3, 6]];      // 3×2, "A is the transpose"
+  const B = [[7, 8], [9, 10], [11, 12]];   // 3×2
+  // Aᵀ shape [2, 3]; Aᵀ·B shape [2, 2]:
+  //   row 0 of Aᵀ = [1, 2, 3]; ·col0 B = 1*7+2*9+3*11 = 58
+  //   row 1 of Aᵀ = [4, 5, 6]; ·col1 B = 4*8+5*10+6*12 = 154
+  const src = 'C = aggregate(sum, [.i, .k], A[.j, .i] * B[.j, .k])';
+  const got = evalAggregateRHS(src, 'C', { A, B });
+  assert.equal(got[0][0], 58);
+  assert.equal(got[1][1], 154);
+});
+
+inBothModes('aggregate: right-transpose matmul (A·Bᵀ)',
+  'aggregate', () => {
+  // aggregate(sum, [.i, .k], A[.i, .j] * B[.k, .j])  ≡  A · Bᵀ
+  // B's first dim is the output .k; second is the reduce axis .j.
+  const A = [[1, 2, 3], [4, 5, 6]];   // 2×3
+  const B = [[7, 9, 11], [8, 10, 12]]; // 2×3 (== Bᵀ of the canonical matmul B)
+  // A · Bᵀ shape [2, 2]:
+  //   (A·Bᵀ)[0,0] = 1*7+2*9+3*11 = 58
+  //   (A·Bᵀ)[1,1] = 4*8+5*10+6*12 = 154
+  const src = 'C = aggregate(sum, [.i, .k], A[.i, .j] * B[.k, .j])';
+  const got = evalAggregateRHS(src, 'C', { A, B });
+  assert.equal(got[0][0], 58);
+  assert.equal(got[1][1], 154);
+});
+
+inBothModes('aggregate: both-transpose matmul (Aᵀ·Bᵀ)',
+  'aggregate', () => {
+  // aggregate(sum, [.i, .k], A[.j, .i] * B[.k, .j])  ≡  Aᵀ · Bᵀ
+  const A = [[1, 4], [2, 5], [3, 6]];   // 3×2; Aᵀ shape [2,3]
+  const B = [[7, 9, 11], [8, 10, 12]];  // 2×3; Bᵀ shape [3,2]
+  // Aᵀ·Bᵀ shape [2, 2]:
+  //   (Aᵀ·Bᵀ)[0,0] = 1*7+2*9+3*11 = 58
+  //   (Aᵀ·Bᵀ)[1,1] = 4*8+5*10+6*12 = 154
+  const src = 'C = aggregate(sum, [.i, .k], A[.j, .i] * B[.k, .j])';
+  const got = evalAggregateRHS(src, 'C', { A, B });
+  assert.equal(got[0][0], 58);
+  assert.equal(got[1][1], 154);
+});
+
+// ---------------------------------------------------------------------
+// matvec specialiser
+// ---------------------------------------------------------------------
+
+inBothModes('aggregate: matrix-vector multiplication (A·v)',
+  'aggregate', () => {
+  // aggregate(sum, [.i], A[.i, .j] * v[.j])  ≡  A · v
+  const A = [[1, 2, 3], [4, 5, 6]];   // 2×3
+  const v = [10, 20, 30];             // length 3
+  // A·v = [1·10+2·20+3·30, 4·10+5·20+6·30] = [140, 320]
+  const src = 'r = aggregate(sum, [.i], A[.i, .j] * v[.j])';
+  const got = evalAggregateRHS(src, 'r', { A, v });
+  assert.deepEqual([...got], [140, 320]);
+});
+
+inBothModes('aggregate: matrix-vector with operand-order swap',
+  'aggregate', () => {
+  const A = [[1, 2, 3], [4, 5, 6]];
+  const v = [10, 20, 30];
+  const src = 'r = aggregate(sum, [.i], v[.j] * A[.i, .j])';
+  const got = evalAggregateRHS(src, 'r', { A, v });
+  assert.deepEqual([...got], [140, 320]);
+});
+
+inBothModes('aggregate: transposed-A matrix-vector (Aᵀ·v)',
+  'aggregate', () => {
+  // aggregate(sum, [.i], A[.j, .i] * v[.j])  ≡  Aᵀ · v
+  const A = [[1, 4], [2, 5], [3, 6]];   // 3×2; Aᵀ shape [2, 3]
+  const v = [10, 20, 30];               // length 3
+  // Aᵀ·v: row 0 of Aᵀ = [1,2,3] → 140; row 1 = [4,5,6] → 320
+  const src = 'r = aggregate(sum, [.i], A[.j, .i] * v[.j])';
+  const got = evalAggregateRHS(src, 'r', { A, v });
+  assert.deepEqual([...got], [140, 320]);
+});
+
+// ---------------------------------------------------------------------
+// Outer-product specialiser
+// ---------------------------------------------------------------------
+
+inBothModes('aggregate: outer product (u · vᵀ)',
+  'aggregate', () => {
+  // aggregate(sum, [.i, .j], u[.i] * v[.j])  ≡  outer(u, v)
+  // (No reduce axes; the reduction is irrelevant.)
+  const u = [1, 2, 3];
+  const v = [10, 20];
+  // Outer = [[1·10, 1·20], [2·10, 2·20], [3·10, 3·20]]
+  //       = [[10, 20], [20, 40], [30, 60]]
+  const src = 'M = aggregate(sum, [.i, .j], u[.i] * v[.j])';
+  const got = evalAggregateRHS(src, 'M', { u, v });
+  assert.equal(got[0][0], 10);
+  assert.equal(got[0][1], 20);
+  assert.equal(got[1][0], 20);
+  assert.equal(got[1][1], 40);
+  assert.equal(got[2][0], 30);
+  assert.equal(got[2][1], 60);
+});
+
+// ---------------------------------------------------------------------
+// Batched matmul specialiser
+// ---------------------------------------------------------------------
+
+inBothModes('aggregate: batched matmul (per-batch A·B)',
+  'aggregate', () => {
+  // aggregate(sum, [.b, .i, .k], A[.b, .i, .j] * B[.b, .j, .k])
+  // Two batches of 2×3 × 3×2 matmul.
+  const A = [
+    [[1, 2, 3], [4, 5, 6]],          // batch 0
+    [[7, 8, 9], [10, 11, 12]],       // batch 1
+  ];
+  const B = [
+    [[1, 2], [3, 4], [5, 6]],        // batch 0
+    [[7, 8], [9, 10], [11, 12]],     // batch 1
+  ];
+  // Batch 0: [[1,2,3],[4,5,6]] · [[1,2],[3,4],[5,6]]
+  //   = [[1+6+15, 2+8+18], [4+15+30, 8+20+36]]
+  //   = [[22, 28], [49, 64]]
+  // Batch 1: [[7,8,9],[10,11,12]] · [[7,8],[9,10],[11,12]]
+  //   = [[49+72+99, 56+80+108], [70+99+132, 80+110+144]]
+  //   = [[220, 244], [301, 334]]
+  const src = 'C = aggregate(sum, [.b, .i, .k], A[.b, .i, .j] * B[.b, .j, .k])';
+  const got = evalAggregateRHS(src, 'C', { A, B });
+  assert.equal(got[0][0][0], 22);
+  assert.equal(got[0][0][1], 28);
+  assert.equal(got[0][1][0], 49);
+  assert.equal(got[0][1][1], 64);
+  assert.equal(got[1][0][0], 220);
+  assert.equal(got[1][1][1], 334);
+});
+
+// ---------------------------------------------------------------------
+// Pure axis reduction specialiser
+// ---------------------------------------------------------------------
+
+inBothModes('aggregate: pure column-sum (reduce one axis from 2D)',
+  'aggregate', () => {
+  // aggregate(sum, [.j], A[.i, .j])  ≡  sum over .i (column sums)
+  const A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+  // Column sums: [1+4+7, 2+5+8, 3+6+9] = [12, 15, 18]
+  const src = 'r = aggregate(sum, [.j], A[.i, .j])';
+  const got = evalAggregateRHS(src, 'r', { A });
+  assert.deepEqual([...got], [12, 15, 18]);
+});
+
+inBothModes('aggregate: pure row-sum (reduce other axis from 2D)',
+  'aggregate', () => {
+  // aggregate(sum, [.i], A[.i, .j])  ≡  sum over .j (row sums)
+  const A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+  // Row sums: [6, 15, 24]
+  const src = 'r = aggregate(sum, [.i], A[.i, .j])';
+  const got = evalAggregateRHS(src, 'r', { A });
+  assert.deepEqual([...got], [6, 15, 24]);
+});
+
+inBothModes('aggregate: pure multi-axis reduction from 3D',
+  'aggregate', () => {
+  // aggregate(sum, [.i], A[.i, .j, .k])  reduces .j and .k.
+  const A = [
+    [[1, 2], [3, 4]],     // i=0: total = 1+2+3+4 = 10
+    [[5, 6], [7, 8]],     // i=1: total = 5+6+7+8 = 26
+    [[9, 10], [11, 12]],  // i=2: total = 9+10+11+12 = 42
+  ];
+  const src = 'r = aggregate(sum, [.i], A[.i, .j, .k])';
+  const got = evalAggregateRHS(src, 'r', { A });
+  assert.deepEqual([...got], [10, 26, 42]);
+});
+
+inBothModes('aggregate: pure axis reduction with non-sum reduction (mean)',
+  'aggregate', () => {
+  const A = [[2, 4, 6], [10, 20, 30]];
+  // Row means: [4, 20]
+  const src = 'r = aggregate(mean, [.i], A[.i, .j])';
+  const got = evalAggregateRHS(src, 'r', { A });
+  assert.equal(got[0], 4);
+  assert.equal(got[1], 20);
+});
+
+inBothModes('aggregate: pure axis reduction with max',
+  'aggregate', () => {
+  const A = [[1, 5, 3], [9, 2, 7]];
+  // Column max: [9, 5, 7]
+  const src = 'r = aggregate(maximum, [.j], A[.i, .j])';
+  const got = evalAggregateRHS(src, 'r', { A });
+  assert.deepEqual([...got], [9, 5, 7]);
+});
+
+inBothModes('aggregate: pure axis reduction with axis order permuted',
+  'aggregate', () => {
+  // Output axes order != source dim order. The specialiser must
+  // permute dims correctly.
+  // aggregate(sum, [.j, .i], A[.i, .j, .k])  reduces .k; output is
+  // the [.j, .i] permutation of A's first two dims.
+  const A = [
+    [[1, 100], [2, 100]],    // i=0: j=0 → 101; j=1 → 102
+    [[3, 100], [4, 100]],    // i=1: j=0 → 103; j=1 → 104
+  ];
+  // Reduce .k for each (i, j): out[i][j] = A[i][j][0] + A[i][j][1]
+  //   out[0][0] = 101, out[0][1] = 102, out[1][0] = 103, out[1][1] = 104
+  // But output axes are [.j, .i] (swapped):
+  //   result[j][i] = out[i][j]
+  //   result[0][0] = 101, result[0][1] = 103, result[1][0] = 102, result[1][1] = 104
+  const src = 'r = aggregate(sum, [.j, .i], A[.i, .j, .k])';
+  const got = evalAggregateRHS(src, 'r', { A });
+  assert.equal(got[0][0], 101);
+  assert.equal(got[0][1], 103);
+  assert.equal(got[1][0], 102);
+  assert.equal(got[1][1], 104);
+});
+
+inBothModes('aggregate: weighted sum-of-squared-differences (spec §04 example 2)',
+  'aggregate', () => {
   // D = aggregate(sum, [.i, .k], (A[.i, .j] - B[.j, .k])^2 * W[.j])
   // For A shape [I,J], B shape [J,K], W shape [J]:
   //   D[i,k] = Σ_j (A[i,j] - B[j,k])^2 * W[j]
@@ -146,7 +364,8 @@ test('aggregate: weighted sum-of-squared-differences (spec §04 example 2)', () 
   assert.equal(got[1][1], 27);
 });
 
-test('aggregate: column-wise variance (spec §04 example 3)', () => {
+inBothModes('aggregate: column-wise variance (spec §04 example 3)',
+  'aggregate', () => {
   // V = aggregate(var, [.j], M[.i, .j])
   //   = [var(M[:,0]), var(M[:,1]), ...]
   // Use a matrix where each column has a known variance.
@@ -163,7 +382,8 @@ test('aggregate: column-wise variance (spec §04 example 3)', () => {
   assert.ok(Math.abs(got[1] - (200 / 3)) < 1e-10, `expected ~200/3, got ${got[1]}`);
 });
 
-test('aggregate: row-wise sum with fixed column (spec §04 example 4)', () => {
+inBothModes('aggregate: row-wise sum with fixed column (spec §04 example 4)',
+  'aggregate', () => {
   // S = aggregate(sum, [.i], A[.i, 1])
   // Just extracts column 1 (1-based) of A — no reduction since .i is
   // the sole output axis and the only axis.
@@ -175,7 +395,8 @@ test('aggregate: row-wise sum with fixed column (spec §04 example 4)', () => {
   assert.equal(got[1], 40);
 });
 
-test('aggregate: all seven reductions over a known vector', () => {
+inBothModes('aggregate: all seven reductions over a known vector',
+  'aggregate', () => {
   // 1-axis aggregate over a vector A — equivalent to reducing the
   // whole vector by f. Since the output axis .i has no reduction axis,
   // we need to reduce something. Use a 2D matrix and reduce over .j.
@@ -197,7 +418,8 @@ test('aggregate: all seven reductions over a known vector', () => {
   }
 });
 
-test('aggregate: nested aggregate composes (inner produces a matrix the outer indexes)', () => {
+inBothModes('aggregate: nested aggregate composes (inner produces a matrix the outer indexes)',
+  'aggregate', () => {
   // outer .i reduces over a literal/inner-aggregate matrix.
   // Construct outer via aggregate over an inline value won't work
   // (axis name from outer can't reach inner). The user's mental model:
