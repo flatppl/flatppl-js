@@ -1,0 +1,452 @@
+'use strict';
+
+// =====================================================================
+// pir-sexpr.ts — FlatPIR S-expression printer & reader (spec §11)
+// =====================================================================
+//
+// The engine's in-memory FlatPIR representation is JSON-shaped (see
+// pir.ts and lower.ts). Spec §11 defines a canonical S-expression
+// surface form for FlatPIR (.flatpir files). This module bridges the
+// two:
+//
+//   toSexpr(loweredModule, opts?) -> string
+//     Prints a LoweredModule as a `(%module ...)` form. Indent-pretty
+//     by default; pass { compact: true } for a single-line form.
+//
+//   fromSexpr(text) -> { module, diagnostics }
+//     Parses a `.flatpir` text into a LoweredModule. Designed to
+//     round-trip toSexpr output and to consume hand-written .flatpir.
+//
+// Not yet: cross-module loading, %meta annotations (we print the call
+// shape but no meta slot today — type/phase are computed by passes
+// that consume the in-memory IR, not the S-expr form). Adding meta
+// later is a straightforward extension; the parser already accepts it
+// (skips %meta forms it doesn't recognise).
+//
+// Spec mapping (high level):
+//   IR { kind: 'lit', value: x }      → bare literal (number / string /
+//                                       true / false / null)
+//   IR { kind: 'ref', ns, name }      → (%ref <ns> <name>)
+//   IR { kind: 'hole' }               → _
+//   IR { kind: 'const', name }        → bare symbol (pi, inf, im, etc.)
+//   IR { kind: 'axis', name }         → (%axis <name>)
+//   IR { kind: 'call', op, args,
+//         kwargs, fields, assigns,
+//         params, body }              → (<op> [%meta]? args... %kwarg...
+//                                              %field... %assign...
+//                                              %params... body?)
+
+const pir = require('./pir.ts');
+
+// =====================================================================
+// Printer
+// =====================================================================
+
+function toSexpr(mod: any, opts?: any) {
+  opts = opts || {};
+  const indent = opts.compact ? null : '  ';
+  const lines: string[] = ['(%module'];
+  // %public list
+  const publics = Array.from(mod.publicSet || []);
+  if (publics.length > 0) {
+    lines.push((indent || '') + '(%public ' + publics.join(' ') + ')');
+  }
+  // bindings
+  for (const [name, binding] of mod.bindings) {
+    const rhsText = _exprToSexpr(binding.rhs, indent ? '  ' : '');
+    if (indent) {
+      lines.push('');  // blank line between bindings
+      lines.push(indent + '(%bind ' + name + ' ' + rhsText + ')');
+    } else {
+      lines.push('(%bind ' + name + ' ' + rhsText + ')');
+    }
+  }
+  lines.push(')');
+  return indent ? lines.join('\n') : lines.join(' ');
+}
+
+function _exprToSexpr(e: any, ind: string): string {
+  if (e == null) return 'null';
+  if (typeof e !== 'object') return _atomToSexpr(e);
+  switch (e.kind) {
+    case 'lit':   return _atomToSexpr(e.value);
+    case 'hole':  return '_';
+    case 'const': return String(e.name);
+    case 'axis':  return '(%axis ' + e.name + ')';
+    case 'ref':   return '(%ref ' + e.ns + ' ' + e.name + ')';
+    case 'call':  return _callToSexpr(e, ind);
+    default:
+      throw new Error('pir-sexpr: unknown IR kind ' + JSON.stringify(e.kind));
+  }
+}
+
+function _atomToSexpr(v: any) {
+  if (v === true) return 'true';
+  if (v === false) return 'false';
+  if (v === null) return 'null';
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) {
+      if (v === Infinity)  return 'inf';
+      if (v === -Infinity) return '(neg inf)';
+      return 'nan';
+    }
+    return String(v);
+  }
+  // Anything else (an object that's not an IR node) — emit as JSON
+  // string for now; spec-strict callers can post-process.
+  return JSON.stringify(v);
+}
+
+function _callToSexpr(e: any, ind: string): string {
+  // Determine if this is a user-defined-callable call. Lower.ts emits
+  // `op: '%call'` with first arg being the ref-head for user calls;
+  // we don't gate on that yet — we just print the op as the head.
+  const parts: string[] = [e.op];
+  // Positional args
+  if (e.args) {
+    for (const a of e.args) parts.push(_exprToSexpr(a, ind));
+  }
+  // params (functionof / kernelof)
+  if (e.params && e.params.length > 0) {
+    parts.push('(%params ' + e.params.join(' ') + ')');
+  }
+  // kwargs
+  if (e.kwargs) {
+    const names = Object.keys(e.kwargs);
+    for (const k of names) {
+      parts.push('(%kwarg ' + k + ' ' + _exprToSexpr(e.kwargs[k], ind) + ')');
+    }
+  }
+  // record / joint / cartprod / table fields
+  if (e.fields) {
+    for (const f of e.fields) {
+      parts.push('(%field ' + f.name + ' ' + _exprToSexpr(f.value, ind) + ')');
+    }
+  }
+  // load_module / standard_module assigns
+  if (e.assigns) {
+    for (const a of e.assigns) {
+      parts.push('(%assign ' + a.name + ' ' + _exprToSexpr(a.value, ind) + ')');
+    }
+  }
+  // body (functionof / kernelof / fn / aggregate)
+  if (e.body) {
+    parts.push(_exprToSexpr(e.body, ind));
+  }
+  return '(' + parts.join(' ') + ')';
+}
+
+// =====================================================================
+// Reader
+// =====================================================================
+//
+// Tokenizer that recognises:
+//   ( )          — list parens
+//   ;… <eol>     — line comments
+//   "..."        — string literal (JSON escapes)
+//   123 / 1.5e2  — number literal (int vs real by lexical form)
+//   true false   — boolean literal
+//   _            — hole
+//   %name        — structural keyword (%module, %ref, %kwarg, %field,
+//                  %assign, %params, %bind, %public, %meta, %axis, %local,
+//                  %deferred, %fixed, %parameterized, %stochastic, …)
+//   name         — bare symbol (built-in op name, set name, constant)
+//
+// The parser builds the same JSON-shaped IR that lower.ts emits, plus
+// a list of bindings into a LoweredModule shape consumable by the rest
+// of the engine.
+
+function fromSexpr(text: any) {
+  const tokens = _tokenize(text);
+  const diagnostics: any[] = [];
+  let pos = 0;
+  function peek() { return tokens[pos]; }
+  function eat() { return tokens[pos++]; }
+  function eof() { return pos >= tokens.length; }
+
+  function readForm(): any {
+    if (eof()) {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unexpected EOF' });
+      return null;
+    }
+    const t = peek();
+    if (t.type === '(') return readList();
+    if (t.type === ')') {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unexpected )' });
+      eat();
+      return null;
+    }
+    eat();
+    return _atomFromToken(t);
+  }
+
+  function readList(): any {
+    eat(); // '('
+    if (eof()) {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unclosed (' });
+      return null;
+    }
+    const head = peek();
+    // Head of list determines the form.
+    if (head.type === ')') {
+      eat();
+      return [];  // empty list — invalid in spec, but parse defensively
+    }
+    if (head.type === 'sym' || head.type === '%kw' || head.type === 'str') {
+      if (head.value === '%module')   return readModuleBody();
+      if (head.value === '%bind')     return readBindForm();
+      if (head.value === '%public')   return readPublicForm();
+      if (head.value === '%ref')      return readRefForm();
+      if (head.value === '%axis')     return readAxisForm();
+      if (head.value === '%kwarg')    return readKwargForm();
+      if (head.value === '%field')    return readFieldForm();
+      if (head.value === '%assign')   return readAssignForm();
+      if (head.value === '%params')   return readParamsForm();
+      if (head.value === '%meta')     return readMetaForm();
+    }
+    // Default: parse as call (head is op name).
+    eat();
+    const op = head.value;
+    const callShape: any = { kind: 'call', op, args: [], kwargs: {} };
+    while (!eof() && peek().type !== ')') {
+      const part = readForm();
+      _absorbCallPart(callShape, part);
+    }
+    if (eof()) {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unclosed list (op ' + op + ')' });
+    } else {
+      eat();  // ')'
+    }
+    if (Object.keys(callShape.kwargs).length === 0) delete callShape.kwargs;
+    if (callShape.args.length === 0) delete callShape.args;
+    return callShape;
+  }
+
+  function readModuleBody(): any {
+    eat(); // %module
+    const mod = pir.loweredModule();
+    while (!eof() && peek().type !== ')') {
+      const sub = readForm();
+      if (sub == null) continue;
+      if (sub.__kind === 'public') {
+        for (const n of sub.names) mod.publicSet.add(n);
+      } else if (sub.__kind === 'bind') {
+        mod.bindings.set(sub.name, pir.loweredBinding(sub.name, sub.rhs));
+      } else {
+        diagnostics.push({ severity: 'error', message: 'pir-sexpr: stray form inside %module' });
+      }
+    }
+    if (eof()) {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unclosed %module' });
+    } else {
+      eat();
+    }
+    return { __kind: 'module', module: mod };
+  }
+
+  function readBindForm(): any {
+    eat(); // %bind
+    const nameTok = eat();
+    if (!nameTok || nameTok.type !== 'sym') {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: %bind expects a name' });
+      return { __kind: 'bind', name: '?', rhs: null };
+    }
+    const rhs = readForm();
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'bind', name: nameTok.value, rhs };
+  }
+
+  function readPublicForm(): any {
+    eat(); // %public
+    const names: string[] = [];
+    while (!eof() && peek().type !== ')') {
+      const t = eat();
+      if (t.type === 'sym') names.push(t.value);
+    }
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'public', names };
+  }
+
+  function readRefForm(): any {
+    eat(); // %ref
+    const ns = eat();
+    const name = eat();
+    if (peek() && peek().type === ')') eat();
+    return { kind: 'ref',
+      ns: ns ? ns.value : '?',
+      name: name ? name.value : '?' };
+  }
+
+  function readAxisForm(): any {
+    eat(); // %axis
+    const name = eat();
+    if (peek() && peek().type === ')') eat();
+    return { kind: 'axis', name: name ? name.value : '?' };
+  }
+
+  function readKwargForm(): any {
+    eat(); // %kwarg
+    const name = eat();
+    const value = readForm();
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'kwarg',
+      name: name ? name.value : '?',
+      value };
+  }
+
+  function readFieldForm(): any {
+    eat(); // %field
+    const name = eat();
+    const value = readForm();
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'field',
+      name: name ? name.value : '?',
+      value };
+  }
+
+  function readAssignForm(): any {
+    eat(); // %assign
+    const name = eat();
+    const value = readForm();
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'assign',
+      name: name ? name.value : '?',
+      value };
+  }
+
+  function readParamsForm(): any {
+    eat(); // %params
+    const names: string[] = [];
+    while (!eof() && peek().type !== ')') {
+      const t = eat();
+      if (t.type === 'sym') names.push(t.value);
+    }
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'params', names };
+  }
+
+  function readMetaForm(): any {
+    // Spec §11: (%meta <type> <phase>). We round-trip the raw forms
+    // but don't currently re-feed them to the inference pipeline.
+    eat(); // %meta
+    const typ = readForm();
+    const ph  = readForm();
+    if (peek() && peek().type === ')') eat();
+    return { __kind: 'meta', type: typ, phase: ph };
+  }
+
+  function _absorbCallPart(call: any, part: any) {
+    if (part == null) return;
+    if (part.__kind === 'kwarg')  { call.kwargs[part.name] = part.value; return; }
+    if (part.__kind === 'field')  { (call.fields ||= []).push({ name: part.name, value: part.value }); return; }
+    if (part.__kind === 'assign') { (call.assigns ||= []).push({ name: part.name, value: part.value }); return; }
+    if (part.__kind === 'params') { call.params = part.names; return; }
+    if (part.__kind === 'meta')   { call.meta = { type: part.type, phase: part.phase }; return; }
+    // The body of functionof/kernelof/fn/aggregate is the trailing
+    // non-structural expression. We treat the LAST non-structural arg
+    // as the body when the op is one of those forms; otherwise add
+    // to positional args.
+    if ((call.op === 'functionof' || call.op === 'kernelof'
+         || call.op === 'fn'        || call.op === 'aggregate')
+        && (call.params || call.fields)) {
+      call.body = part;
+      return;
+    }
+    call.args.push(part);
+  }
+
+  // ---- Top-level: parse a sequence of forms (typically one %module) --
+
+  const out: any = { module: null, diagnostics };
+  while (!eof()) {
+    const f = readForm();
+    if (f && f.__kind === 'module') {
+      out.module = f.module;
+    }
+  }
+  if (!out.module) {
+    diagnostics.push({ severity: 'warning', message: 'pir-sexpr: no %module form found' });
+  }
+  return out;
+}
+
+function _atomFromToken(t: any) {
+  if (t.type === 'str') return { kind: 'lit', value: t.value };
+  if (t.type === 'num') return { kind: 'lit', value: t.value };
+  if (t.type === 'bool') return { kind: 'lit', value: t.value };
+  if (t.type === '_') return { kind: 'hole' };
+  if (t.type === 'sym' || t.type === '%kw') {
+    return { kind: 'const', name: t.value };
+  }
+  return null;
+}
+
+// ----- Tokenizer ------------------------------------------------------
+
+function _tokenize(text: any) {
+  const tokens: any[] = [];
+  const s = String(text);
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === ';') {
+      // Comment to EOL
+      while (i < s.length && s[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '(') { tokens.push({ type: '(' }); i++; continue; }
+    if (c === ')') { tokens.push({ type: ')' }); i++; continue; }
+    if (c === '"') {
+      let j = i + 1;
+      let str = '';
+      while (j < s.length && s[j] !== '"') {
+        if (s[j] === '\\' && j + 1 < s.length) {
+          const esc = s[j + 1];
+          if (esc === 'n')      { str += '\n'; j += 2; continue; }
+          if (esc === 't')      { str += '\t'; j += 2; continue; }
+          if (esc === 'r')      { str += '\r'; j += 2; continue; }
+          if (esc === '\\')     { str += '\\'; j += 2; continue; }
+          if (esc === '"')      { str += '"';  j += 2; continue; }
+          str += esc; j += 2; continue;
+        }
+        str += s[j]; j++;
+      }
+      tokens.push({ type: 'str', value: str });
+      i = j + 1;
+      continue;
+    }
+    // Atom — read until whitespace or paren.
+    let j = i;
+    while (j < s.length) {
+      const cc = s[j];
+      if (cc === ' ' || cc === '\t' || cc === '\n' || cc === '\r'
+          || cc === '(' || cc === ')' || cc === ';') break;
+      j++;
+    }
+    const tok = s.slice(i, j);
+    i = j;
+    if (tok === '_')          { tokens.push({ type: '_' }); continue; }
+    if (tok === 'true')       { tokens.push({ type: 'bool', value: true }); continue; }
+    if (tok === 'false')      { tokens.push({ type: 'bool', value: false }); continue; }
+    // Numeric literal: matches integer or real (incl. scientific notation).
+    if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(tok)) {
+      tokens.push({ type: 'num', value: Number(tok) });
+      continue;
+    }
+    if (tok[0] === '%') {
+      tokens.push({ type: '%kw', value: tok });
+      continue;
+    }
+    tokens.push({ type: 'sym', value: tok });
+  }
+  return tokens;
+}
+
+module.exports = {
+  toSexpr,
+  fromSexpr,
+  // Exported for tests
+  _internal: { _tokenize },
+};
