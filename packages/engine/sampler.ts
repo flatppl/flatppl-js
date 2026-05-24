@@ -3469,13 +3469,16 @@ function evaluateCall(ir: any, env: any): any {
     }
     const oneBased = (op === 'get');
     const container: any = evaluateExpr(args[0], env);
-    // `all` (axis slice) is a selector token, not a value — keep it as
-    // a sentinel; every other selector evaluates to an index / key /
-    // subset array.
-    const ALL = Symbol('all');
-    const sels = args.slice(1).map((a: any) =>
-      (a && a.kind === 'const' && a.name === 'all')
-        ? ALL : evaluateExpr(a, env));
+    // `all` (axis slice) and `only` (singleton-axis selector) are
+    // selector TOKENS, not values — keep them as sentinels so applyGet
+    // can dispatch on identity rather than re-parsing a const IR.
+    const ALL  = Symbol('all');
+    const ONLY = Symbol('only');
+    const sels = args.slice(1).map((a: any) => {
+      if (a && a.kind === 'const' && a.name === 'all')  return ALL;
+      if (a && a.kind === 'const' && a.name === 'only') return ONLY;
+      return evaluateExpr(a, env);
+    });
     const isArrayLike = (c: any) => Array.isArray(c) || ArrayBuffer.isView(c);
     const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;
@@ -3488,6 +3491,17 @@ function evaluateCall(ir: any, env: any): any {
         const out: any[] = [];
         for (let i = 0; i < ca.length; i++) out.push(applyGet(ca[i], rest));
         return out;
+      }
+      if (s === ONLY) {                      // singleton axis: must be size 1
+        if (!isArrayLike(c)) {
+          throw new Error(`evaluateExpr: ${op} '!' (only) axis target is not an array`);
+        }
+        const ca = c as any;
+        if (ca.length !== 1) {
+          throw new Error(`evaluateExpr: ${op}(..., only, ...) requires the indexed `
+            + `axis to have length 1, got length ${ca.length}`);
+        }
+        return applyGet(ca[0], rest);
       }
       if (Array.isArray(s)) {                // subset selection
         // All-string subset of a record → a sub-record (spec §07);

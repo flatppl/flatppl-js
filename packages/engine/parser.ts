@@ -699,10 +699,23 @@ function parse(tokens: any[], variant: any) {
   }
 
   function parseIndexArg() {
-    // : means all (slice)
+    // : means all (slice). Surface form for the `all` axis selector
+    // (spec §07).
     if (at(T.COLON)) {
       const tok = advance();
       return AST.SliceAll(tok.loc);
+    }
+    // ! means only (singleton-axis selector; spec §07). Inside `[...]`
+    // a BANG token followed immediately by `,` or `]` is the `only`
+    // keyword; in any other position BANG is the unary logical-not
+    // operator (handled by parseUnary). One-token lookahead — same
+    // shape as the `.name` FieldAccess/Axis disambiguation.
+    if (at(T.BANG)
+        && tokens[pos + 1]
+        && (tokens[pos + 1].type === T.COMMA
+            || tokens[pos + 1].type === T.RBRACKET)) {
+      const tok = advance();
+      return AST.SliceOnly(tok.loc);
     }
     return parseExpr();
   }

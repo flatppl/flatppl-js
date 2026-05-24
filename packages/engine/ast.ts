@@ -122,6 +122,13 @@ function SliceAll(loc: any) {
   return { type: 'SliceAll', loc };
 }
 
+// SliceOnly: the `!` (or `only` keyword) singleton-axis selector
+// (spec §07 "Singleton-axis indexing"). Asserts that the indexed
+// dimension has size 1 and returns the unique element.
+function SliceOnly(loc: any) {
+  return { type: 'SliceOnly', loc };
+}
+
 module.exports = {
   loc, synthLoc,
   Program, AssignStatement, ErrorStatement, Comment,
@@ -129,5 +136,5 @@ module.exports = {
   ConstantRef, SetRef, Placeholder, Hole, AxisRef,
   ArrayLiteral, TupleLiteral, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, FieldAccess,
-  KeywordArg, SliceAll,
+  KeywordArg, SliceAll, SliceOnly,
 };
