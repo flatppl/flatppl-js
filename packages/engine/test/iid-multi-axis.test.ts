@@ -119,8 +119,11 @@ A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
   assert.ok(m.samples, 'A measure must expose .samples (viewer reads this)');
   assert.equal(m.samples.length, 9,
     'flat samples of length prod(shape) = 9; got ' + m.samples.length);
-  assert.ok(m.value, 'A measure must carry a shape-explicit Value');
-  assert.deepEqual(m.value.shape, [3, 3]);
+  // Fixed-phase multi-dim values flatten to a 1D scalar measure (no
+  // atom axis), so the viewer's array-mode step plot renders them
+  // honestly rather than mis-dispatching to the corner-plot path.
+  assert.equal(m.shape, undefined);
+  assert.equal(m.dims, undefined);
 });
 
 test('iid multi-axis: fixed 3D A flattens to length-24 samples', async () => {
@@ -141,7 +144,7 @@ B, _ = rand(rstate, iid(Normal(0,1), [2, 3, 4]))
   };
   const m = await ctx.getMeasure('B');
   assert.equal(m.samples.length, 24);
-  assert.deepEqual(m.value.shape, [2, 3, 4]);
+  assert.equal(m.shape, undefined);
 });
 
 // ---------------------------------------------------------------------
