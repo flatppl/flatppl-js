@@ -1622,7 +1622,7 @@ function _freshRestrictAnon(role: string): string {
   return `__restrict_${role}_${_restrictCounter++}`;
 }
 
-function _recordFieldNames(node: any): string[] | null {
+function _recordFieldNames(node: any, ast?: any, seen?: Set<string>): string[] | null {
   if (!node) return null;
   if (node.type === 'CallExpr' && node.callee
       && node.callee.type === 'Identifier' && node.callee.name === 'record') {
@@ -1632,6 +1632,25 @@ function _recordFieldNames(node: any): string[] | null {
       names.push(a.name);
     }
     return names;
+  }
+  // Resolve `restrict(M, x)` where `x` is a binding ref to a record
+  // construction. We look up `x`'s defining statement in the AST and
+  // recurse into its RHS. Cycle guard prevents infinite recursion on
+  // pathological inputs like `r = r`.
+  if (node.type === 'Identifier' && ast && ast.body) {
+    if (!seen) seen = new Set();
+    if (seen.has(node.name)) return null;
+    seen.add(node.name);
+    for (const stmt of ast.body) {
+      if (stmt.type !== 'AssignStatement' || !stmt.names) continue;
+      // Match single-LHS bindings and the multi-LHS case where this
+      // name appears (record-of-record etc.). The recursion only
+      // looks at the binding's RHS, so multi-LHS gives the tuple
+      // expression which probably isn't a record literal — skip.
+      if (stmt.names.length === 1 && stmt.names[0].name === node.name) {
+        return _recordFieldNames(stmt.value, ast, seen);
+      }
+    }
   }
   return null;
 }
@@ -1697,7 +1716,7 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
         AST.synthLoc('restrict-expand'));
     } else if (allPositional && rest.length === 1) {
       xExpr = rest[0];
-      fieldNames = _recordFieldNames(xExpr);
+      fieldNames = _recordFieldNames(xExpr, ast);
       if (!fieldNames) {
         diagnostics.push({
           severity: 'error',
