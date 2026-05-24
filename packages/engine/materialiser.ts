@@ -185,7 +185,7 @@ function _classifyNestedNumeric(v: any): any {
   function _check(node: any, depth: number): boolean {
     if (depth === shape.length) {
       const t = typeof node;
-      return (t === 'number' && Number.isFinite(node)) || t === 'boolean';
+      return (t === 'number' && !Number.isNaN(node)) || t === 'boolean';
     }
     if (!Array.isArray(node) || node.length !== shape[depth]) return false;
     for (let i = 0; i < node.length; i++) {
@@ -212,6 +212,30 @@ function fixedValueToMeasure(v: any, sampleCount: any) {
     return scalarMeasureN(arr,
       { logWeights: null, logTotalmass: 0, n_eff: sampleCount });
   }
+  // Shape-explicit Value (e.g. produced by `eye(n)`, `diagmat`,
+  // transpose / lower_cholesky chains): densify if compact and bridge
+  // through measureFromValue. The dense Value's shape becomes
+  // [N=outer, ...dims]; for a fixed K-vector or KxK matrix that's
+  // the whole shape — no separate atom axis. The viewer's array-mode
+  // path reads .samples (which measureFromValue exposes as the flat
+  // data view).
+  if (valueLib.isValue(v)) {
+    const dense = valueLib.densify(v);
+    return measureFromValue(dense,
+      { logWeights: null, logTotalmass: 0, n_eff: dense.shape[0] });
+  }
+  // Complex scalar `z = complex(re, im)` materialises as { re, im }.
+  // Bridge to a planar complex Value of shape=[1] so the viewer's
+  // complex-aware paths (.samples=re, .imag=im, dtype='complex') fire.
+  if (v && typeof v === 'object'
+      && typeof v.re === 'number' && typeof v.im === 'number'
+      && Object.keys(v).length === 2) {
+    const re = new Float64Array([v.re]);
+    const im = new Float64Array([v.im]);
+    const cv = valueLib.complexValue(re, im, [1]);
+    return measureFromValue(cv,
+      { logWeights: null, logTotalmass: 0, n_eff: 1 });
+  }
   if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
     const samples = Float64Array.from(v);
     return scalarMeasureN(samples,
@@ -228,7 +252,9 @@ function fixedValueToMeasure(v: any, sampleCount: any) {
     for (let i = 0; allScalar && i < v.length; i++) {
       const t = typeof v[i];
       if (t === 'boolean') continue;
-      if (t !== 'number' || !Number.isFinite(v[i])) allScalar = false;
+      // Accept finite numbers and ±Infinity (extlinspace spec §07
+      // emits ±Infinity as endpoints; NaN remains a real bug-signal).
+      if (t !== 'number' || Number.isNaN(v[i])) allScalar = false;
     }
     if (allScalar) {
       const samples = new Float64Array(v.length);
