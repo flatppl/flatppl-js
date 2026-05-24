@@ -21,6 +21,7 @@ const value = require('./value.ts');
 const types = require('./types.ts');
 const typeinfer = require('./typeinfer.ts');
 const pir = require('./pir.ts');
+const perfConfig = require('./perf-config.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
 // stdlib's distribution packages (~1 MB after bundling) and are intended
 // for the sampler-worker bundle only. Main-thread / extension-host code
@@ -75,4 +76,6 @@ module.exports = {
   rng, lower, orchestrator, histogram, empirical, materialiser, density,
   value,
   types, typeinfer, pir,
+  // Optimization toggles for dual-mode testing (engine-concepts §15).
+  perfConfig,
 };
