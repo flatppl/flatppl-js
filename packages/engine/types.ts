@@ -966,11 +966,12 @@ const SIGNATURE_FACTORIES = {
   // var / std / maximum / minimum accept "real arrays". Arrays here
   // means ANY rank (rank-1 vectors, rank-2 matrices, n-D tensors),
   // reduced over ALL entries to a scalar. Use `any()` for the slot
-  // so the typechecker doesn't reject rank-2+ inputs.
-  // (Complex support: deferred — runtime branches on Value.dtype.)
-  sum:     () => ({ args: [any()], kwargs: {}, result: REAL }),
-  mean:    () => ({ args: [any()], kwargs: {}, result: REAL }),
-  prod:    () => ({ args: [any()], kwargs: {}, result: REAL }),
+  // so the typechecker doesn't reject rank-2+ inputs. Result is
+  // marked `any()` for sum / mean / prod because complex inputs
+  // produce complex outputs — the runtime branches on Value.dtype.
+  sum:     () => ({ args: [any()], kwargs: {}, result: any() }),
+  mean:    () => ({ args: [any()], kwargs: {}, result: any() }),
+  prod:    () => ({ args: [any()], kwargs: {}, result: any() }),
   // lengthof: vectors / tables (spec §07). Vectors are rank-1 arrays;
   // tables are records-of-columns. `any()` accepts both — the runtime
   // resolves the right notion of "length".

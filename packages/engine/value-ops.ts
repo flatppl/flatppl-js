@@ -30,6 +30,7 @@
 //
 // =====================================================================
 
+import type { Value } from './engine-types';
 const valueLib = require('./value.ts');
 const {
   isValue, getTag, isTransposeView, isConjugateView,
@@ -173,7 +174,9 @@ function _diagMul(a: any, b: any) {
   return null;   // not fast-pathed → caller densifies
 }
 
-function mul(a: any, b: any) {
+function mul(a: Value, b: Value): Value {
+  // Runtime check stays — also narrows the type predicate's promise
+  // when called from `any`-typed sites that haven't migrated yet.
   if (!isValue(a) || !isValue(b)) {
     throw new Error('value-ops.mul: both operands must be Values');
   }
@@ -369,7 +372,7 @@ function _vecMatMul(u: any, B: any) {
   }
   // Result is a row vector — tag T (or A if u was A, since conjugation
   // commutes with the structural row/col identity).
-  const tagOut = (getTag(u) === 'A') ? 'A' : 'T';
+  const tagOut: 'T' | 'A' = (getTag(u) === 'A') ? 'A' : 'T';
   return { shape: [p], data: out, t: tagOut };
 }
 
@@ -738,7 +741,7 @@ const sub = _makeElementwiseBinop((a: any, b: any) => a - b, 'sub');
 // Tag and shape are preserved; data is allocated fresh (caller may
 // mutate the input independently after this returns).
 
-function neg(a: any) {
+function neg(a: Value): Value {
   if (!isValue(a)) throw new Error('value-ops.neg: argument must be a Value');
   if (valueLib.isDiagStored(a) && !a.im) {           // -diag stays diag
     const d = new Float64Array(a.data.length);
@@ -746,15 +749,17 @@ function neg(a: any) {
     return valueLib.diagMatrix(d);
   }
   if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
-  if (isComplexValue(a)) {
+  // `a` widened to `any` via densify(); re-narrow via the predicate.
+  const aA: any = a;
+  if (isComplexValue(aA)) {
     // Negate raw stored buffers and keep the full Klein-4 tag — neg
     // commutes with transpose and conjugation, so no materialization is
     // needed (mirrors the real path: stored layout + tag preserved).
-    const reO = new Float64Array(a.data.length);
-    const imO = new Float64Array(a.im.length);
-    for (let i = 0; i < reO.length; i++) reO[i] = -a.data[i];
-    for (let i = 0; i < imO.length; i++) imO[i] = -a.im[i];
-    const r: any = { shape: a.shape.slice(), data: reO, im: imO, dtype: 'complex' };
+    const reO = new Float64Array(aA.data.length);
+    const imO = new Float64Array(aA.im.length);
+    for (let i = 0; i < reO.length; i++) reO[i] = -aA.data[i];
+    for (let i = 0; i < imO.length; i++) imO[i] = -aA.im[i];
+    const r: any = { shape: aA.shape.slice(), data: reO, im: imO, dtype: 'complex' };
     if (a.t && a.t !== 'N') r.t = a.t;
     return r;
   }
