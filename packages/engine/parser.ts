@@ -574,7 +574,16 @@ function parse(tokens: any[], variant: any) {
         }
         return AST.TupleLiteral(elements, tupleLoc);
       }
-      expect(T.RPAREN);
+      const rparen = expect(T.RPAREN);
+      // Extend the inner expression's loc to include the surrounding
+      // parens so source-slice display (e.g. analyzer's binding.rhs
+      // for `E = (C - D) .^ 2`) shows the full parenthesised form
+      // rather than chopping the leading `(`.
+      if (rparen && first && first.loc) {
+        first.loc = AST.loc(
+          lparen.loc.start.line, lparen.loc.start.col,
+          rparen.loc.end.line, rparen.loc.end.col);
+      }
       return first;
     }
 

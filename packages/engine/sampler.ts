@@ -1928,37 +1928,10 @@ function _isShapeRich(v: any, N?: any) {
 // shape-rich Value path stays real-only for now; per-atom complex
 // Values are deferred (storage decision: separate re/im Float64Arrays
 // in Value.im — lands when needed).
-// Promote a nested numeric array (e.g. produced by `rowstack`) to a
-// shape-explicit Value so the value-ops shape-dispatch fires. Returns
-// the operand unchanged if not a nested-numeric array. Without this,
-// `A * B` between two 2D nested arrays falls through to the scalar
-// JS path and yields NaN (multiplying two arrays as numbers).
-function _promoteNestedToValue(v: any) {
-  if (!Array.isArray(v) || v.length === 0) return v;
-  // Detect rank-2 nested numeric (rows of equal-length numeric arrays).
-  if (Array.isArray(v[0])) {
-    const n = v[0].length;
-    for (let i = 0; i < v.length; i++) {
-      const row = v[i];
-      if (!Array.isArray(row) || row.length !== n) return v;
-      for (let j = 0; j < n; j++) {
-        const t = typeof row[j];
-        if (t !== 'number' && t !== 'boolean') return v;
-      }
-    }
-    return valueOps._nestedToValue(v);
-  }
-  return v;
-}
-
 function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn: any) {
   if (_isComplex(a) || _isComplex(b)) {
     return complexFn(_toComplex(a), _toComplex(b));
   }
-  // Promote nested-numeric matrices (from rowstack / array literals)
-  // to Values so shape dispatch reaches value-ops.
-  a = _promoteNestedToValue(a);
-  b = _promoteNestedToValue(b);
   if (valueLib.isValue(a) || valueLib.isValue(b)) {
     if (_isShapeRich(a) || _isShapeRich(b)) {
       return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
@@ -1990,16 +1963,16 @@ const ARITH_OPS = {
     if (_isComplex(a) || _isComplex(b)) {
       return _cMul(_toComplex(a), _toComplex(b));
     }
-    // Nested-numeric matrix operands → Values, so value-ops.mul's
-    // shape dispatch (matrix×matrix, matrix×vector, scalar×anything)
-    // takes over. Without this, two nested matrices fall to the
-    // bare-scalar path and `a * b` returns NaN.
-    a = _promoteNestedToValue(a);
-    b = _promoteNestedToValue(b);
     if (valueLib.isValue(a) || valueLib.isValue(b)) {
+      // Route to value-ops only when at least one operand has
+      // intrinsic shape; otherwise keep the scalar JS fast path
+      // (Value shape=[] inputs get unwrapped by _scalarVal above and
+      // never reach here in that form).
       if (_isShapeRich(a) || _isShapeRich(b)) {
         return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
       }
+      // Both are atom-indep scalars (one wrapped, one bare or both
+      // wrapped). Unwrap and multiply.
       const av = valueLib.isValue(a) ? a.data[0] : a;
       const bv = valueLib.isValue(b) ? b.data[0] : b;
       return av * bv;
@@ -2143,34 +2116,54 @@ const ARITH_OPS = {
   // rowstack(vs) — turn a vector of vectors into a matrix where the
   // input vectors become rows. colstack does the same but as columns.
   // Spec §07. All input vectors must have the same length.
+  // rowstack / colstack lift a vector-of-vectors into a true rank-2
+  // matrix. Per spec §03 "vectors of vectors are not interpreted as
+  // matrices implicitly, but can be turned into matrices explicitly
+  // using rowstack or colstack" — so the result MUST be a shape-
+  // explicit Value (rank=2), not just a nested array. Without this,
+  // `mul`/`add`/`sub` on rowstack outputs would fall through the
+  // valueLib.isValue branch and yield NaN.
   rowstack: (vs: any) => {
-    if (!Array.isArray(vs) || vs.length === 0) return [];
-    const n = vs[0].length;
-    for (let i = 1; i < vs.length; i++) {
-      if (vs[i].length !== n) {
+    if (!Array.isArray(vs) || vs.length === 0) {
+      return { shape: [0, 0], data: new Float64Array(0) };
+    }
+    // Accept either a JS array of rows (each a JS array or a rank-1
+    // Value) or a single Value that's a vector-of-vectors view.
+    const m = vs.length;
+    const firstRow = vs[0];
+    const n = valueLib.isValue(firstRow) ? firstRow.shape[firstRow.shape.length - 1]
+                                          : firstRow.length;
+    const data = new Float64Array(m * n);
+    for (let i = 0; i < m; i++) {
+      const row = vs[i];
+      const rowLen = valueLib.isValue(row) ? row.shape[row.shape.length - 1] : row.length;
+      if (rowLen !== n) {
         throw new Error('rowstack: row length mismatch at index ' + i);
       }
+      const rowData = valueLib.isValue(row) ? row.data : row;
+      for (let j = 0; j < n; j++) data[i * n + j] = +rowData[j];
     }
-    // Shallow copy each row so the caller's nested arrays are not aliased.
-    const out = new Array(vs.length);
-    for (let i = 0; i < vs.length; i++) out[i] = vs[i].slice();
-    return out;
+    return { shape: [m, n], data: data };
   },
   colstack: (vs: any) => {
-    if (!Array.isArray(vs) || vs.length === 0) return [];
-    const n = vs[0].length;
-    for (let i = 1; i < vs.length; i++) {
-      if (vs[i].length !== n) {
-        throw new Error('colstack: column length mismatch at index ' + i);
+    if (!Array.isArray(vs) || vs.length === 0) {
+      return { shape: [0, 0], data: new Float64Array(0) };
+    }
+    const cols = vs.length;
+    const firstCol = vs[0];
+    const m = valueLib.isValue(firstCol) ? firstCol.shape[firstCol.shape.length - 1]
+                                          : firstCol.length;
+    const data = new Float64Array(m * cols);
+    for (let c = 0; c < cols; c++) {
+      const col = vs[c];
+      const colLen = valueLib.isValue(col) ? col.shape[col.shape.length - 1] : col.length;
+      if (colLen !== m) {
+        throw new Error('colstack: column length mismatch at index ' + c);
       }
+      const colData = valueLib.isValue(col) ? col.data : col;
+      for (let r = 0; r < m; r++) data[r * cols + c] = +colData[r];
     }
-    const out = new Array(n);
-    for (let r = 0; r < n; r++) {
-      const row = new Array(vs.length);
-      for (let c = 0; c < vs.length; c++) row[c] = vs[c][r];
-      out[r] = row;
-    }
-    return out;
+    return { shape: [m, cols], data: data };
   },
   // ---- Linear algebra (spec §07) ------------------------------------
   // Ops dispatch on Value

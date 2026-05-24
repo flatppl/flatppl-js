@@ -43,26 +43,25 @@ function lit(v: number) { return { kind: 'lit', value: v }; }
 // traceeval.walk (used by `rand`) — multi-axis shape
 // ---------------------------------------------------------------------
 
-test('iid multi-axis: traceeval walk produces a nested array of the requested shape', () => {
+test('iid multi-axis: traceeval walk produces a rank-2 matrix Value', () => {
+  // Per spec §03 — `iid(Normal, [3, 3])` produces a rank-2 array
+  // (matrix), not a vector-of-vectors. The engine returns a shape-
+  // explicit Value so downstream `*`/`+`/`-` route through the
+  // value-ops shape dispatch (matrix multiplication for `*`).
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
   const r = traceeval.walk(state, makeIid(vec(3, 3)), {}, {});
-  assert.ok(Array.isArray(r.value), 'value is an array');
-  assert.equal(r.value.length, 3, 'outer length 3');
-  for (let i = 0; i < 3; i++) {
-    assert.ok(Array.isArray(r.value[i]) || (r.value[i] && r.value[i].length === 3),
-      `row ${i} is a length-3 inner sequence`);
-    for (let j = 0; j < 3; j++) {
-      assert.equal(typeof r.value[i][j], 'number', `entry [${i}][${j}] is a number`);
-    }
+  assert.deepEqual(r.value.shape, [3, 3], 'matrix Value with shape [3, 3]');
+  assert.equal(r.value.data.length, 9, 'flat Float64Array of length 9');
+  for (let i = 0; i < 9; i++) {
+    assert.equal(typeof r.value.data[i], 'number');
   }
 });
 
-test('iid multi-axis: rank-3 shape produces 3D nested array', () => {
+test('iid multi-axis: rank-3 shape produces rank-3 Value', () => {
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
   const r = traceeval.walk(state, makeIid(vec(2, 3, 4)), {}, {});
-  assert.equal(r.value.length, 2);
-  assert.equal(r.value[0].length, 3);
-  assert.equal(r.value[0][0].length, 4);
+  assert.deepEqual(r.value.shape, [2, 3, 4]);
+  assert.equal(r.value.data.length, 24);
 });
 
 test('iid multi-axis: scalar size still produces a flat array (back-compat)', () => {
@@ -73,12 +72,12 @@ test('iid multi-axis: scalar size still produces a flat array (back-compat)', ()
     'scalar-size form remains flat (not wrapped in an extra dim)');
 });
 
-test('iid multi-axis: zero-prod size produces an empty result', () => {
+test('iid multi-axis: zero-prod size produces an empty Value', () => {
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
   const r = traceeval.walk(state, makeIid(vec(0, 3)), {}, {});
-  // prod = 0 → no draws. The reshape walks the outer 0 first and
-  // returns []; deeper structure isn't materialised.
-  assert.equal(r.value.length, 0);
+  // prod = 0 — empty matrix. Still a shape-explicit Value.
+  assert.deepEqual(r.value.shape, [0, 3]);
+  assert.equal(r.value.data.length, 0);
 });
 
 test('iid multi-axis: end-to-end `rand(state, iid(N, [3, 3]))` parses + analyses', () => {

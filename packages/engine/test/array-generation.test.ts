@@ -215,14 +215,23 @@ function vov(...rows: any[]) {
   return { kind: 'call', op: 'vector', args: rows.map(r => vec(...r)) };
 }
 
-test('rowstack: input vectors become rows', () => {
-  assert.deepEqual(ev(call('rowstack', vov([1, 2, 3], [4, 5, 6]))),
-    [[1, 2, 3], [4, 5, 6]]);
+test('rowstack: input vectors become rows of a rank-2 matrix Value', () => {
+  // Per spec §03: rowstack lifts a vector-of-vectors to a true matrix
+  // (rank-2 array). The result is a shape-explicit Value, NOT a nested
+  // JS array — that's what lets `mul`/`add`/`sub` dispatch through
+  // valueOps. Without it (the v0.1 prerelease behavior), `A * B` of
+  // two rowstack outputs evaluated to NaN.
+  const r = ev(call('rowstack', vov([1, 2, 3], [4, 5, 6])));
+  assert.deepEqual(r.shape, [2, 3]);
+  assert.deepEqual(Array.from(r.data), [1, 2, 3, 4, 5, 6]);
 });
 
-test('colstack: input vectors become columns', () => {
-  assert.deepEqual(ev(call('colstack', vov([1, 2, 3], [4, 5, 6]))),
-    [[1, 4], [2, 5], [3, 6]]);
+test('colstack: input vectors become columns of a rank-2 matrix Value', () => {
+  const r = ev(call('colstack', vov([1, 2, 3], [4, 5, 6])));
+  assert.deepEqual(r.shape, [3, 2]);
+  // column-major in: [1,2,3] becomes col 0, [4,5,6] becomes col 1
+  // row-major out:   [1, 4, 2, 5, 3, 6]
+  assert.deepEqual(Array.from(r.data), [1, 4, 2, 5, 3, 6]);
 });
 
 test('rowstack: mismatched row lengths ⇒ runtime error', () => {
