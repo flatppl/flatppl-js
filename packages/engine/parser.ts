@@ -65,7 +65,132 @@ function parse(tokens: any[], variant: any) {
   // Logical ops lower to land / lor / lnot calls regardless of
   // variant.
   function parseExpr(): any {
+    // Lambda sits at the top of Expression (lowest precedence) per spec
+    // §05 Lambda syntax. Disambiguation rule (spec §05 closing notes):
+    // a lambda is well-formed only when the parenthesised content is a
+    // non-empty list of bare `Name`s followed by `)` then `->`. We
+    // peek without consuming; if the pattern doesn't match we fall
+    // through to parseOr unchanged.
+    if (at(T.LPAREN) && lookaheadIsLambdaParams()) {
+      return parseLambda();
+    }
     return parseOr();
+  }
+
+  // Look ahead from a `(` to determine if it opens a lambda parameter
+  // list. The parens must contain at least one bare Name; commas
+  // separate names; trailing comma not permitted; the closing `)` must
+  // be immediately followed by `->`. Returns false on any deviation so
+  // a non-lambda parse path can proceed normally.
+  function lookaheadIsLambdaParams() {
+    if (!at(T.LPAREN)) return false;
+    let i = pos + 1;  // first token after `(`
+    if (tokens[i] && tokens[i].type !== T.IDENT) return false;
+    while (i < tokens.length) {
+      if (!tokens[i] || tokens[i].type !== T.IDENT) return false;
+      i++;
+      if (tokens[i] && tokens[i].type === T.COMMA) {
+        i++;
+        continue;
+      }
+      if (tokens[i] && tokens[i].type === T.RPAREN) {
+        return tokens[i + 1] != null && tokens[i + 1].type === T.ARROW;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  // Parse `(arg1, arg2, ...) -> expr`. By the time we get here,
+  // lookaheadIsLambdaParams has confirmed the shape. We desugar at
+  // parse time to `functionof(body', arg1 = _arg1_, ...)` where
+  // body' is `expr` with every free occurrence of each `arg_i`
+  // rewritten to Placeholder('arg_i'). The functionof+Placeholder
+  // path is what `_lowerReification` already understands.
+  function parseLambda(): any {
+    const lparen = advance();  // (
+    const argNames: string[] = [];
+    const argLocs: any[] = [];
+    while (at(T.IDENT)) {
+      const t = advance();
+      argNames.push(t.value);
+      argLocs.push(t.loc);
+      if (at(T.COMMA)) advance();
+    }
+    expect(T.RPAREN);
+    expect(T.ARROW);
+    const body = parseExpr();  // right-associative: body extends as far right as possible
+    const llocEnd = body.loc;
+    const lloc = AST.loc(lparen.loc.start.line, lparen.loc.start.col,
+                         llocEnd.end.line, llocEnd.end.col);
+
+    // Capture-avoiding rewrite of free identifier refs in `body`.
+    // Skip into binders that re-bind the same name (inner lambdas
+    // already desugared to functionof, plus user-written
+    // functionof/kernelof).
+    const argSet = new Set(argNames);
+    const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
+
+    const kwargs: any[] = [];
+    for (let i = 0; i < argNames.length; i++) {
+      kwargs.push(AST.KeywordArg(
+        argNames[i],
+        AST.Placeholder(argNames[i], argLocs[i]),
+        argLocs[i]));
+    }
+    return AST.CallExpr(
+      AST.Identifier('functionof', lloc),
+      [rewritten, ...kwargs],
+      lloc);
+  }
+
+  // Replace every free `Identifier(name)` whose name is in `argSet`
+  // with `Placeholder(name)`. Skip into nested binders:
+  //   - functionof/kernelof: the kwarg LHS names are local-scope
+  //     binders for the body (args[0]); kwarg VALUES are outer-scope
+  //     refs so we still rewrite them. The body shrinks the argSet
+  //     by any kwarg name it shadows.
+  //   - fn: doesn't bind names (only `_` holes), so we descend normally.
+  function rewriteFreeIdsToPlaceholders(node: any, argSet: Set<string>): any {
+    if (node == null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) {
+      return node.map((x: any) => rewriteFreeIdsToPlaceholders(x, argSet));
+    }
+    if (node.type === 'Identifier' && argSet.has(node.name)) {
+      return AST.Placeholder(node.name, node.loc);
+    }
+    if (node.type === 'CallExpr' && node.callee
+        && node.callee.type === 'Identifier'
+        && (node.callee.name === 'functionof' || node.callee.name === 'kernelof')
+        && node.args && node.args.length > 0) {
+      // Collect shadowing names from kwarg LHS (positions 1..n).
+      const shadow = new Set<string>();
+      for (let i = 1; i < node.args.length; i++) {
+        const a = node.args[i];
+        if (a && a.type === 'KeywordArg') shadow.add(a.name);
+      }
+      // Inner body gets the reduced argSet; kwarg values stay full.
+      const bodyArg = node.args[0];
+      const innerSet = new Set<string>();
+      for (const n of argSet) if (!shadow.has(n)) innerSet.add(n);
+      const newArgs: any[] = [];
+      newArgs.push(rewriteFreeIdsToPlaceholders(bodyArg, innerSet));
+      for (let i = 1; i < node.args.length; i++) {
+        const a = node.args[i];
+        if (a && a.type === 'KeywordArg') {
+          newArgs.push({
+            ...a,
+            value: rewriteFreeIdsToPlaceholders(a.value, argSet),
+          });
+        } else {
+          newArgs.push(rewriteFreeIdsToPlaceholders(a, argSet));
+        }
+      }
+      return { ...node, args: newArgs };
+    }
+    const out: Record<string, any> = {};
+    for (const k in node) out[k] = rewriteFreeIdsToPlaceholders(node[k], argSet);
+    return out;
   }
 
   function logicalSym(kind: string) {
