@@ -3034,13 +3034,15 @@ function regionBoundsFromIR(ir: any, env: any) {
 // runs per-atom via the standard per-atom-fallback path; no batching
 // at this layer in v0.1).
 //
-// Architecture: AGGREGATE_PATTERNS is a list of pattern specializers
-// tried in order — each gets the parsed aggregate IR and either
-// returns a result (the specialized fast path) or `null` (no match,
-// try the next). The default fallback is _evalAggregateGeneral, a
-// nested-loop interpreter over the full Cartesian product of axis
-// values. v0.1 ships with no specializers; matmul / dot-product / etc.
-// land as additions to the table.
+// Architecture (engine-concepts §16):
+//   AGGREGATE_PATTERNS — list of pattern specialisers (matmul, …)
+//     tried in order; first match wins. Gated by the `aggregate`
+//     optimisation toggle.
+//   _evalAggregateBroadcastReduce — the canonical permute-reshape-
+//     broadcast-reduce einsum lowering. Default for everything the
+//     specialisers don't catch; ALSO the correctness oracle the
+//     dual-mode test runner compares specialisers against (with
+//     `aggregate=off` forcing the broadcast-reduce path).
 
 // Axis length inference walks the IR looking for the FIRST get(...) or
 // get0(...) whose selector slot k is an axis ref; the length of that
@@ -3125,10 +3127,11 @@ function _collectInScopeAxisNames(exprIR: any): Set<string> {
 
 // Pattern table — each entry recognises a specific aggregate shape
 // and dispatches to an accelerated implementation. Tried in order;
-// first match wins. The general interpreter (`_evalAggregateGeneral`)
-// is the fallback AND the correctness oracle that every specialiser
-// must match. Run tests with `perf-config.setOptimization('aggregate',
-// false)` to force the general path and verify equivalence.
+// first match wins. The broadcast-reduce default
+// (`_evalAggregateBroadcastReduce`) is the fallback AND the
+// correctness oracle that every specialiser must match. Run tests
+// with `perf-config.setOptimization('aggregate', false)` to force the
+// broadcast-reduce path and verify equivalence.
 //
 // Each entry has the shape:
 //   match(ir, env): match-state | null
@@ -3143,16 +3146,16 @@ const AGGREGATE_PATTERNS: Array<{
 
 function _evalAggregate(ir: any, env: any): any {
   // Pattern dispatch is gated by the `aggregate` optimisation toggle.
-  // When disabled, every aggregate flows through the general nested-
-  // loop interpreter so the equivalence tests (`inBothModes`) can
-  // verify each specialiser agrees with the reference path.
+  // When disabled, every aggregate flows through the broadcast-reduce
+  // default (engine-concepts §16) so equivalence tests (`inBothModes`)
+  // can verify each specialiser agrees with the canonical lowering.
   if (perfConfig.getOptimization('aggregate')) {
     for (const p of AGGREGATE_PATTERNS) {
       const m = p.match(ir, env);
       if (m) return p.execute(ir, env, m);
     }
   }
-  return _evalAggregateGeneral(ir, env);
+  return _evalAggregateBroadcastReduce(ir, env);
 }
 
 // ---------------------------------------------------------------------
@@ -3231,99 +3234,434 @@ const _AGGREGATE_REDUCTIONS: Record<string, (a: any) => number> = {
   minimum: (a: any) => (ARITH_OPS as any).minimum(a),
 };
 
-function _evalAggregateGeneral(ir: any, env: any): any {
+// =====================================================================
+// Broadcast-reduce default implementation
+// =====================================================================
+//
+// See engine-concepts §16 for the rationale. The pipeline:
+//
+//   1. Determine canonical axis order = [output_axes…, reduce_axes…].
+//   2. For each `get(arr, ...)` in expr, build an "aligned tensor": a
+//      Float64Array + shape, where the shape has one dim per canonical
+//      axis. Dims the source actually uses carry the axis's length;
+//      dims it doesn't are singletons (broadcast-stretchable).
+//      Non-axis selectors (integer / `only`) are pre-applied at this
+//      stage so the aligned tensor only carries the surviving dims.
+//   3. Lift the rest of `expr` to operate on aligned tensors. Each
+//      arithmetic op is a broadcast-elementwise sweep over the
+//      canonical-order coordinate space — one flat loop per op.
+//      Subtrees with no axis refs evaluate to scalars and broadcast
+//      as singletons.
+//   4. Tail-reduce: with canonical order putting reduce axes last,
+//      the reduction is a contiguous-block sweep over the trailing
+//      `reduceSize` cells per output slot.
+//
+// All steps are vectorised tensor primitives — the same ops every
+// accelerated backend offers. No per-axis-coord JS function-call
+// overhead.
+
+function _shapeProd(shape: number[]): number {
+  let p = 1; for (let i = 0; i < shape.length; i++) p *= shape[i]; return p;
+}
+
+// Row-major strides for a shape: stride[i] = product of shape[i+1..].
+function _rowMajorStrides(shape: number[]): number[] {
+  const N = shape.length;
+  const out = new Array(N);
+  let s = 1;
+  for (let i = N - 1; i >= 0; i--) { out[i] = s; s *= shape[i]; }
+  return out;
+}
+
+// Broadcasting strides: along any dim of size 1, the stride is 0
+// (don't advance in that dim — repeat the singleton value).
+function _broadcastStrides(srcShape: number[], outShape: number[]): number[] {
+  const N = srcShape.length;
+  const out = new Array(N);
+  let s = 1;
+  for (let i = N - 1; i >= 0; i--) {
+    out[i] = (srcShape[i] === 1) ? 0 : s;
+    s *= srcShape[i];
+  }
+  return out;
+}
+
+// Convert a nested-array (or 1-D typed array) value to {data, shape}.
+// Nested → flat: walk in row-major order. Typed-array → wraps as
+// shape=[length]. Scalar → shape=[].
+function _toFlat(val: any): { data: Float64Array; shape: number[] } {
+  if (val == null) return { data: new Float64Array([0]), shape: [] };
+  if (typeof val === 'number' || typeof val === 'boolean') {
+    return { data: new Float64Array([+val]), shape: [] };
+  }
+  if (val && (val as any).BYTES_PER_ELEMENT !== undefined) {
+    // Typed array — 1-D.
+    return { data: val as Float64Array, shape: [val.length] };
+  }
+  if (Array.isArray(val)) {
+    // Determine shape by walking the first element down.
+    const shape: number[] = [val.length];
+    let probe: any = val[0];
+    while (Array.isArray(probe)
+           || (probe && probe.BYTES_PER_ELEMENT !== undefined)) {
+      shape.push(probe.length);
+      probe = probe[0];
+    }
+    const size = _shapeProd(shape);
+    const data = new Float64Array(size);
+    let w = 0;
+    function fill(x: any) {
+      if (Array.isArray(x) || (x && x.BYTES_PER_ELEMENT !== undefined)) {
+        for (let i = 0; i < x.length; i++) fill(x[i]);
+      } else {
+        data[w++] = +x;
+      }
+    }
+    fill(val);
+    return { data, shape };
+  }
+  if (valueLib.isValue(val)) {
+    return { data: val.data as Float64Array, shape: val.shape.slice() };
+  }
+  throw new Error(`aggregate: cannot interpret value of type ${typeof val} as a tensor`);
+}
+
+// Flat data + shape → nested-JS-array (rank > 1) or Float64Array (rank
+// 1) or scalar (rank 0). Matches the existing output convention from
+// `_matmul` and the linspace family.
+function _flatToNested(data: Float64Array, shape: number[]): any {
+  if (shape.length === 0) return data[0];
+  if (shape.length === 1) return data;
+  function build(start: number, sh: number[]): any {
+    if (sh.length === 1) {
+      const out = new Float64Array(sh[0]);
+      for (let i = 0; i < sh[0]; i++) out[i] = data[start + i];
+      return out;
+    }
+    const stride = _shapeProd(sh.slice(1));
+    const out: any[] = new Array(sh[0]);
+    for (let i = 0; i < sh[0]; i++) {
+      out[i] = build(start + i * stride, sh.slice(1));
+    }
+    return out;
+  }
+  return build(0, shape);
+}
+
+// True if `node` (an IR subtree) contains any `kind: 'axis'` node.
+// Used for constant-hoisting: axis-free subtrees evaluate once and
+// broadcast as singletons. Stops at nested aggregate boundaries
+// (those have a closed axis scope per spec §05).
+function _containsAxisRef(node: any): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) {
+    for (const c of node) if (_containsAxisRef(c)) return true;
+    return false;
+  }
+  if (node.kind === 'axis') return true;
+  if (node.kind === 'call' && node.op === 'aggregate') return false;
+  for (const k of Object.keys(node)) {
+    if (k === 'loc' || k === 'kind' || k === 'op'
+        || k === 'name' || k === 'ns') continue;
+    if (_containsAxisRef(node[k])) return true;
+  }
+  return false;
+}
+
+// Build an aligned tensor for a `get(arr, sel0, sel1, …)` IR call.
+// The resulting shape has `canonicalAxes.length` dims; each is either
+// the axis's length (if this source uses that axis) or 1 (singleton,
+// broadcast-stretchable). Non-axis selectors (integer indices, `only`)
+// are pre-applied and collapse their source dim before the alignment.
+function _alignedTensorFromGet(
+  getIR: any, canonicalAxes: string[],
+  axisLengths: Record<string, number>, env: any,
+): { data: Float64Array; shape: number[] } {
+  const args = getIR.args || [];
+  const oneBased = getIR.op === 'get';
+  const arr = evaluateExpr(args[0], env);
+  const sels = args.slice(1);
+  const src = _toFlat(arr);
+  const sourceStrides = _rowMajorStrides(src.shape);
+
+  // Walk selectors. For each, decide:
+  //   - axis ref: remember this dim corresponds to a canonical axis.
+  //   - integer / 'only': collapse this dim (advance baseOffset).
+  //   - 'all': not supported in aggregate body (per §04 spec the body
+  //     uses axis names; `all`/':' would mean "keep an unnamed dim"
+  //     which has no defined semantics for the contraction).
+  const axisAt: Record<string, number> = {};   // axisName → source dim
+  let baseOffset = 0;
+  for (let k = 0; k < sels.length; k++) {
+    const s = sels[k];
+    if (s && s.kind === 'axis') {
+      axisAt[s.name] = k;
+      continue;
+    }
+    if (s && s.kind === 'const' && s.name === 'only') {
+      if (src.shape[k] !== 1) {
+        throw new Error(`aggregate: 'only' selector requires the indexed `
+          + `axis to have length 1, got length ${src.shape[k]}`);
+      }
+      // Index 0 — contributes 0 to baseOffset.
+      continue;
+    }
+    if (s && s.kind === 'const' && s.name === 'all') {
+      throw new Error(`aggregate: 'all' / ':' is not supported in an `
+        + `aggregate body; use an axis name (.name) instead`);
+    }
+    // Integer index — evaluate (1-based for `get`, 0-based for `get0`).
+    const idx = +evaluateExpr(s, env);
+    const idx0 = oneBased ? (idx | 0) - 1 : (idx | 0);
+    if (idx0 < 0 || idx0 >= src.shape[k]) {
+      throw new Error(`aggregate: index ${oneBased ? idx : idx0} out of bounds `
+        + `for axis of length ${src.shape[k]}`);
+    }
+    baseOffset += idx0 * sourceStrides[k];
+  }
+
+  // Build the aligned shape + a per-canonical-position source stride.
+  // If the canonical axis isn't in this source, the dim is singleton
+  // and contributes 0 to the source offset (broadcast).
+  const N = canonicalAxes.length;
+  const alignedShape = new Array(N);
+  const sourceStrideAt: number[] = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const axisName = canonicalAxes[i];
+    if (axisName in axisAt) {
+      alignedShape[i] = axisLengths[axisName];
+      sourceStrideAt[i] = sourceStrides[axisAt[axisName]];
+    } else {
+      alignedShape[i] = 1;
+      sourceStrideAt[i] = 0;
+    }
+  }
+
+  // Materialise the aligned tensor. Iterate output cells in row-major
+  // order with a coordinate vector; for each, compute the source
+  // offset = baseOffset + Σ coord[i] · sourceStrideAt[i].
+  const alignedSize = _shapeProd(alignedShape);
+  const out = new Float64Array(alignedSize);
+  const coord = new Array(N).fill(0);
+  for (let linear = 0; linear < alignedSize; linear++) {
+    let srcOff = baseOffset;
+    for (let i = 0; i < N; i++) srcOff += coord[i] * sourceStrideAt[i];
+    out[linear] = src.data[srcOff];
+    // Increment coord, last dim fastest.
+    for (let i = N - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < alignedShape[i]) break;
+      coord[i] = 0;
+    }
+  }
+  return { data: out, shape: alignedShape };
+}
+
+// Inline scalar implementations for the most common binary ops in
+// aggregate bodies — bypassing the ARITH_OPS dispatch saves a JS
+// function call per element in the broadcast inner loop.
+const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
+  add:    (x, y) => x + y,
+  sub:    (x, y) => x - y,
+  mul:    (x, y) => x * y,
+  div:    (x, y) => x / y,
+  divide: (x, y) => x / y,
+  pow:    (x, y) => Math.pow(x, y),
+  mod:    (x, y) => x % y,
+};
+
+const _AGG_UN: Record<string, (x: number) => number> = {
+  neg: (x) => -x,    pos: (x) => +x,
+  exp:   Math.exp,    log:   Math.log,    log10: Math.log10,
+  log1p: Math.log1p,  expm1: Math.expm1,
+  sqrt:  Math.sqrt,   abs:   Math.abs,    abs2: (x) => x * x,
+  sin:   Math.sin,    cos:   Math.cos,    tan:   Math.tan,
+  asin:  Math.asin,   acos:  Math.acos,   atan:  Math.atan,
+  sinh:  Math.sinh,   cosh:  Math.cosh,   tanh:  Math.tanh,
+  asinh: Math.asinh,  acosh: Math.acosh,  atanh: Math.atanh,
+  floor: Math.floor,  ceil:  Math.ceil,   round: Math.round,
+};
+
+// Broadcast-elementwise binary op over two aligned tensors. Each
+// already has shape canonicalAxes.length; broadcasting comes from
+// per-dim singleton vs full-length stride choice.
+function _broadcastBinary(
+  a: { data: Float64Array; shape: number[] },
+  b: { data: Float64Array; shape: number[] },
+  fn: (x: number, y: number) => number,
+): { data: Float64Array; shape: number[] } {
+  const N = a.shape.length;
+  const outShape = new Array(N);
+  for (let i = 0; i < N; i++) outShape[i] = Math.max(a.shape[i], b.shape[i]);
+  const outSize = _shapeProd(outShape);
+  const aStrides = _broadcastStrides(a.shape, outShape);
+  const bStrides = _broadcastStrides(b.shape, outShape);
+  const out = new Float64Array(outSize);
+  const coord = new Array(N).fill(0);
+  for (let linear = 0; linear < outSize; linear++) {
+    let aOff = 0, bOff = 0;
+    for (let i = 0; i < N; i++) { aOff += coord[i] * aStrides[i]; bOff += coord[i] * bStrides[i]; }
+    out[linear] = fn(a.data[aOff], b.data[bOff]);
+    for (let i = N - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < outShape[i]) break;
+      coord[i] = 0;
+    }
+  }
+  return { data: out, shape: outShape };
+}
+
+function _broadcastUnary(
+  a: { data: Float64Array; shape: number[] },
+  fn: (x: number) => number,
+): { data: Float64Array; shape: number[] } {
+  const out = new Float64Array(a.data.length);
+  for (let i = 0; i < a.data.length; i++) out[i] = fn(a.data[i]);
+  return { data: out, shape: a.shape.slice() };
+}
+
+// Lift an expression IR subtree to an aligned tensor of canonical
+// shape. Each leaf becomes either a scalar (axis-free subtree) or an
+// aligned tensor (a `get` call); each interior arithmetic op becomes
+// a broadcast-elementwise sweep.
+function _liftAggregateExpr(
+  node: any, canonicalAxes: string[],
+  axisLengths: Record<string, number>, env: any,
+): { data: Float64Array; shape: number[] } {
+  // Constant-hoist: subtree with no axis refs evaluates once and
+  // broadcasts as all-singleton.
+  if (!_containsAxisRef(node)) {
+    const v = +evaluateExpr(node, env);
+    const shape = canonicalAxes.map(() => 1);
+    return { data: new Float64Array([v]), shape };
+  }
+  // `get` / `get0`: produces an aligned tensor at this leaf.
+  if (node.kind === 'call' && (node.op === 'get' || node.op === 'get0')) {
+    return _alignedTensorFromGet(node, canonicalAxes, axisLengths, env);
+  }
+  // Binary arithmetic: lift both operands, broadcast-apply.
+  if (node.kind === 'call' && node.args && node.args.length === 2) {
+    const fn = _AGG_BIN[node.op];
+    if (fn) {
+      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env);
+      const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env);
+      return _broadcastBinary(a, b, fn);
+    }
+  }
+  // Unary scalar math.
+  if (node.kind === 'call' && node.args && node.args.length === 1) {
+    const fn = _AGG_UN[node.op];
+    if (fn) {
+      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env);
+      return _broadcastUnary(a, fn);
+    }
+  }
+  throw new Error(`aggregate: unsupported op '${node.op || node.kind}' `
+    + `in body — broadcast-reduce default supports arithmetic and `
+    + `unary math on indexed arrays. Hoist non-broadcasting subterms `
+    + `to bindings outside the aggregate.`);
+}
+
+function _evalAggregateBroadcastReduce(ir: any, env: any): any {
   const args = ir.args || [];
   if (args.length !== 3) {
     throw new Error(`aggregate: expected 3 args, got ${args.length}`);
   }
   const [fIR, axesIR, exprIR] = args;
 
-  // Reduction name — the IR is a self-ref to a builtin reduction.
-  const fname = (fIR.kind === 'ref' && fIR.name) || (fIR.kind === 'const' && fIR.name);
+  const fname = (fIR.kind === 'ref' && fIR.name)
+              || (fIR.kind === 'const' && fIR.name);
   const reduce = fname && _AGGREGATE_REDUCTIONS[fname];
-  if (!reduce) {
-    throw new Error(`aggregate: unknown reduction '${fname}'`);
-  }
+  if (!reduce) throw new Error(`aggregate: unknown reduction '${fname}'`);
 
-  // output_axes — ArrayLiteral lowers to `vector(...)` call; pull the
-  // axis names in declared order.
   if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
     throw new Error('aggregate: output_axes must be an array literal of axis names');
   }
   const outAxes = (axesIR.args || []).map((a: any) => {
-    if (a.kind !== 'axis') {
-      throw new Error('aggregate: output_axes entries must be axis names (.name)');
-    }
+    if (a.kind !== 'axis') throw new Error('aggregate: output_axes entries must be axis names (.name)');
     return a.name;
   });
 
-  // Collect all axis names in expr (skipping nested aggregates).
   const usedAxes = _collectInScopeAxisNames(exprIR);
-  // Reduce-over axes = used \ output (preserve declaration order).
   const reduceAxes: string[] = [];
   for (const a of usedAxes) if (!outAxes.includes(a)) reduceAxes.push(a);
 
-  // Infer lengths for every axis appearing in expr (from the first
-  // get/get0 indexing that uses it).
-  const allAxes = [...outAxes, ...reduceAxes];
-  const lengths = _inferAggregateAxisLengths(exprIR, allAxes, env);
+  // Canonical axis order: [output…, reduce…]. With reduce axes at the
+  // end the final reduction is a tail-reduce over a contiguous block.
+  const canonicalAxes = [...outAxes, ...reduceAxes];
+  const lengths = _inferAggregateAxisLengths(exprIR, canonicalAxes, env);
 
-  // Build inner env that inherits the outer one and adds an axis-env
-  // map for axis-name resolution during the contraction loop.
-  const axisEnv: Record<string, number> = Object.assign(
-    {}, env && env.__axisEnv);
-  const innerEnv = Object.assign({}, env);
-  innerEnv.__axisEnv = axisEnv;
-
+  // Lift the body to an aligned tensor over the full canonical shape.
+  const lifted = _liftAggregateExpr(exprIR, canonicalAxes, lengths, env);
+  // Make sure every dim is materialised (no remaining singletons that
+  // need broadcasting; the result tensor has every canonical-axis
+  // length as its dim). If the body only depended on output axes and
+  // some reduce axes were untouched, that dim is still 1 — reduce-by-
+  // singleton is a no-op for sum, multiplication by 1 for prod, etc.
+  // — we explicitly handle this below.
   const outShape = outAxes.map((a: string) => lengths[a]);
-  const outSize = outShape.reduce((p: number, n: number) => p * n, 1);
   const reduceShape = reduceAxes.map((a: string) => lengths[a]);
-  const reduceSize = reduceShape.reduce((p: number, n: number) => p * n, 1);
+  const outSize = _shapeProd(outShape);
 
-  function setAxisCoords(idx: number, names: string[], shape: number[]) {
-    for (let k = names.length - 1; k >= 0; k--) {
-      const dim = shape[k];
-      // 1-based: axis value substitutes into `get` selector slots
-      // which spec defines as 1-based (`get0` is the 0-based variant).
-      axisEnv[names[k]] = (idx % dim) + 1;
-      idx = (idx / dim) | 0;
-    }
+  // Some lifted dims may still be 1 (singleton) where the canonical
+  // dim should be `lengths[a]`. Materialise by stretching to the full
+  // shape before reducing — strictly necessary only when the
+  // reduction is non-linear in the count (e.g. mean / var / std), but
+  // doing it uniformly keeps the reduction code simple.
+  if (reduceAxes.length === 0) {
+    // No reduction needed. The output IS the lifted tensor (with any
+    // singleton dims broadcast to their full length).
+    const fullShape = outShape.slice();
+    const full = _broadcastTo(lifted, fullShape);
+    return _flatToNested(full.data, fullShape);
   }
 
+  const fullShape = canonicalAxes.map((a) => lengths[a]);
+  const full = _broadcastTo(lifted, fullShape);
+
+  // Tail-reduce: with `full.shape` = [output…, reduce…], each output
+  // cell owns a contiguous run of `reduceSize` elements in the flat
+  // buffer. Slice each run and apply the reduction.
+  const reduceSize = _shapeProd(reduceShape);
   const outData = new Float64Array(outSize);
-  const tmp = new Float64Array(reduceSize > 0 ? reduceSize : 1);
-  for (let outIdx = 0; outIdx < outSize; outIdx++) {
-    setAxisCoords(outIdx, outAxes, outShape);
-    if (reduceSize === 0) {
-      // No reduce axes — expr depends only on output axes; single eval.
-      outData[outIdx] = +evaluateExpr(exprIR, innerEnv);
-      continue;
-    }
-    for (let rIdx = 0; rIdx < reduceSize; rIdx++) {
-      setAxisCoords(rIdx, reduceAxes, reduceShape);
-      tmp[rIdx] = +evaluateExpr(exprIR, innerEnv);
-    }
-    outData[outIdx] = +reduce(tmp);
+  const tmp = new Float64Array(reduceSize);
+  for (let i = 0; i < outSize; i++) {
+    const base = i * reduceSize;
+    for (let j = 0; j < reduceSize; j++) tmp[j] = full.data[base + j];
+    outData[i] = +reduce(tmp);
   }
+  return _flatToNested(outData, outShape);
+}
 
-  // 1-D output → return as a plain Float64Array (matches conventions
-  // for vector-typed builtin outputs like `linspace`). Multi-D → return
-  // as a nested JS array so `get(M, i, j)` flows through naturally.
-  if (outShape.length === 1) return outData;
-  function buildNested(start: number, shape: number[]): any {
-    if (shape.length === 1) {
-      const out = new Float64Array(shape[0]);
-      for (let i = 0; i < shape[0]; i++) out[i] = outData[start + i];
-      return out;
-    }
-    const stride = shape.slice(1).reduce((p, n) => p * n, 1);
-    const out: any[] = new Array(shape[0]);
-    for (let i = 0; i < shape[0]; i++) {
-      out[i] = buildNested(start + i * stride, shape.slice(1));
-    }
-    return out;
+// Materialise a singleton-broadcast tensor to its full shape — copy
+// data so every dim equals its target length. After this the data
+// buffer is contiguous in row-major order over `targetShape`.
+function _broadcastTo(
+  t: { data: Float64Array; shape: number[] },
+  targetShape: number[],
+): { data: Float64Array; shape: number[] } {
+  // Fast path: already at target shape.
+  let same = true;
+  for (let i = 0; i < targetShape.length; i++) {
+    if (t.shape[i] !== targetShape[i]) { same = false; break; }
   }
-  return buildNested(0, outShape);
+  if (same) return t;
+  const N = targetShape.length;
+  const outSize = _shapeProd(targetShape);
+  const srcStrides = _broadcastStrides(t.shape, targetShape);
+  const out = new Float64Array(outSize);
+  const coord = new Array(N).fill(0);
+  for (let linear = 0; linear < outSize; linear++) {
+    let srcOff = 0;
+    for (let i = 0; i < N; i++) srcOff += coord[i] * srcStrides[i];
+    out[linear] = t.data[srcOff];
+    for (let i = N - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < targetShape[i]) break;
+      coord[i] = 0;
+    }
+  }
+  return { data: out, shape: targetShape.slice() };
 }
 
 // Resolve a function-positional argument used by higher-order ops
