@@ -175,6 +175,7 @@ function setMeta(expr: any, type: any, phase: any) {
 
 module.exports = {
   loweredModule,
+  loweredBinding,
   lowerToModule,
   walkCalls, setMeta,
 };
