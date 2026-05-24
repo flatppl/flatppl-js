@@ -22,6 +22,7 @@ const types = require('./types.ts');
 const typeinfer = require('./typeinfer.ts');
 const pir = require('./pir.ts');
 const pirSexpr = require('./pir-sexpr.ts');
+const standardModules = require('./standard-modules.ts');
 const perfConfig = require('./perf-config.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
 // stdlib's distribution packages (~1 MB after bundling) and are intended
@@ -105,7 +106,7 @@ module.exports = {
   // Lightweight sampling-stack components (no stdlib pull-in)
   rng, lower, orchestrator, histogram, empirical, materialiser, density,
   value,
-  types, typeinfer, pir, pirSexpr,
+  types, typeinfer, pir, pirSexpr, standardModules,
   // Optimization toggles for dual-mode testing (engine-concepts §15).
   perfConfig,
 };
