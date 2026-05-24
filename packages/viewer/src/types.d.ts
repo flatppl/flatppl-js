@@ -139,6 +139,11 @@ export interface ArrayPlan extends PlanBase {
   mode: 'array';
 }
 
+export interface MatrixPlan extends PlanBase {
+  mode: 'matrix';
+  shape: [number, number];   // rows, cols
+}
+
 export interface FixedScalarPlan extends PlanBase {
   mode: 'fixed-scalar';
   discrete: boolean;
@@ -148,12 +153,13 @@ export interface FixedRecordPlan extends PlanBase {
   mode: 'fixed-record';
 }
 
-/** Discriminated union over the six plan modes buildPlotPlan emits. */
+/** Discriminated union over the seven plan modes buildPlotPlan emits. */
 export type Plan =
   | ProfilePlan
   | KernelSamplePlan
   | SamplesPlan
   | ArrayPlan
+  | MatrixPlan
   | FixedScalarPlan
   | FixedRecordPlan;
 

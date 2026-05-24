@@ -91,6 +91,117 @@ export function renderArrayStepPlot(ctx: Ctx, arr: any) {
   });
 }
 
+// renderMatrixHeatmap draws a rank-2 fixed-phase array as an
+// echarts heatmap. The `samples` is the flattened (row-major)
+// length-(rows*cols) values; `shape` carries [rows, cols] from the
+// plan (derived from the binding's inferredType, which carries
+// the original 2D shape even though the engine measure flattens to
+// 1D for portability).
+export function renderMatrixHeatmap(ctx: Ctx, samples: any, shape: [number, number]) {
+  const [rows, cols] = shape;
+  const fg = getComputedStyle(document.body).color || '#ccc';
+  if (samples.length !== rows * cols) {
+    // Shouldn't happen — plot-plan gates on a statically known shape
+    // that the engine builds the binding from. Render as a fallback
+    // step plot if the contract is violated rather than crash.
+    return;
+  }
+  // Build (col, row, value) tuples for echarts heatmap. echarts
+  // expects x→col, y→row; the canonical convention for displaying a
+  // matrix is row 0 at the top, so we invert the y-axis below.
+  const data = new Array(rows * cols);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const v = samples[i * cols + j];
+      data[i * cols + j] = [j, i, v];
+      if (Number.isFinite(v)) {
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = 1; }
+  if (lo === hi) { lo -= 0.5; hi += 0.5; }
+  const distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'matrix';
+  const dimLabel = rows + '×' + cols;
+  renderPlotFrame(ctx, {
+    chartCallback: function(chartHost: any) {
+      ctx.plotEchart = echarts.init(chartHost);
+      // Diverging colormap centered at 0 when the range crosses
+      // zero (so signed matrices like a Cholesky factor's
+      // off-diagonal entries read well); otherwise a single-hue
+      // sequential ramp.
+      const crossesZero = lo < 0 && hi > 0;
+      const inRange = crossesZero
+        ? { color: ['#3b6ad6', '#f4f4f4', '#d6543b'] }
+        : { color: ['#1a1d2e', '#4b6aa8', '#a8c4e8'] };
+      const visualMap = crossesZero
+        ? {
+            min: -Math.max(Math.abs(lo), Math.abs(hi)),
+            max:  Math.max(Math.abs(lo), Math.abs(hi)),
+            calculable: true,
+            orient: 'vertical',
+            right: 6, top: 'center',
+            inRange,
+            textStyle: { color: fg, fontSize: 10 },
+          }
+        : {
+            min: lo, max: hi, calculable: true, orient: 'vertical',
+            right: 6, top: 'center',
+            inRange,
+            textStyle: { color: fg, fontSize: 10 },
+          };
+      ctx.plotEchart.setOption({
+        animation: false,
+        grid: { left: 50, right: 80, top: 30, bottom: 50, containLabel: false },
+        title: {
+          text: distLabel + '  (' + dimLabel + ')',
+          left: 'center', top: 4,
+          textStyle: { color: fg, fontSize: 13, fontWeight: 'normal' },
+        },
+        tooltip: {
+          formatter: function(p: any) {
+            const [j, i, v] = p.value;
+            return '[' + (i + 1) + ', ' + (j + 1) + ']: ' + formatScalar(v);
+          },
+        },
+        xAxis: {
+          type: 'category',
+          // Columns labelled 1..cols, FlatPPL 1-indexed convention.
+          data: Array.from({ length: cols }, (_, j) => String(j + 1)),
+          name: 'col', nameLocation: 'middle', nameGap: 24,
+          splitArea: { show: false },
+          axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick: { show: false },
+          axisLabel: { color: fg, opacity: 0.7, fontSize: 10 },
+        },
+        yAxis: {
+          type: 'category',
+          data: Array.from({ length: rows }, (_, i) => String(i + 1)),
+          inverse: true,    // row 0 at the top, matrix-display order
+          name: 'row', nameLocation: 'middle', nameGap: 24,
+          splitArea: { show: false },
+          axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+          axisTick: { show: false },
+          axisLabel: { color: fg, opacity: 0.7, fontSize: 10 },
+        },
+        visualMap,
+        series: [{
+          name: distLabel,
+          type: 'heatmap',
+          data,
+          label: { show: rows * cols <= 36, fontSize: 9,
+                   color: fg, formatter: function(p: any) {
+                     return formatScalar(p.value[2]);
+                   } },
+          itemStyle: { borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.06)' },
+        }],
+      });
+    },
+  });
+}
+
 /**
  * Single dispatch entry point for all empirical-measure plots.
  * A measure is just a nullary kernel — so kernel-sample bindings
@@ -172,6 +283,12 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // a sample of a distribution.
   if (opts.mode === 'array') {
     renderArrayStepPlot(ctx, samples);
+    return;
+  }
+  // Matrix-mode: rank-2 fixed-phase array with statically known
+  // shape. Renders as a heatmap to preserve the 2D structure.
+  if (opts.mode === 'matrix' && Array.isArray(opts.shape)) {
+    renderMatrixHeatmap(ctx, samples, opts.shape as [number, number]);
     return;
   }
   // Constant scalar samples: render as text (same path as
