@@ -8,11 +8,13 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function lit(v: any)        { return { kind: 'lit', value: v }; }
 function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
 function call(op: any, v: any)   { return { kind: 'call', op, args: [v] }; }
-const ev = (ir: any) => sampler.evaluateExpr(ir, {});
+const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
+const ev = (ir: any) => toJS(evRaw(ir));
 
 function arrClose(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;

@@ -12,6 +12,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function lit(v: any)        { return { kind: 'lit', value: v }; }
 function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
@@ -20,7 +21,8 @@ function rec(...kvs: any[])   {
     fields: kvs.map(([k, v]) => ({ name: k, value: lit(v) })) };
 }
 function call(op: any, ...args: any[]) { return { kind: 'call', op, args }; }
-const ev = (ir: any) => sampler.evaluateExpr(ir, {});
+const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
+const ev = (ir: any) => toJS(evRaw(ir));
 
 // =====================================================================
 // All-scalar form

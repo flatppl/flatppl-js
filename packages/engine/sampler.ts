@@ -878,22 +878,26 @@ function logpdfNegativeBinomial2(x: any, mu: any, psi: any) {
 // weights.
 
 function _catSample(p: any, prng: any, offset: any) {
+  // Accept Value-wrapped p (the §2.1 contract) or a bare JS / typed
+  // array.
+  const arr = valueLib.isValue(p) ? p.data : p;
   let u = prng();
   if (u <= 0) u = Number.EPSILON;
   if (u >= 1) u = 1 - Number.EPSILON;
   let cum = 0;
-  for (let i = 0; i < p.length; i++) {
-    cum += p[i];
+  for (let i = 0; i < arr.length; i++) {
+    cum += arr[i];
     if (u <= cum) return i + offset;
   }
   // Numerical drift: total may be 1 − ε. Return the last index.
-  return (p.length - 1) + offset;
+  return (arr.length - 1) + offset;
 }
 
 function _catLogpmf(k: any, p: any, offset: any) {
+  const arr = valueLib.isValue(p) ? p.data : p;
   const idx = (k | 0) - offset;
-  if (idx < 0 || idx >= p.length) return -Infinity;
-  const pi = p[idx];
+  if (idx < 0 || idx >= arr.length) return -Infinity;
+  const pi = arr[idx];
   return pi > 0 ? Math.log(pi) : -Infinity;
 }
 
@@ -1615,6 +1619,9 @@ function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv
   } catch (_) {
     return _BATCH_FELL_THROUGH;
   }
+  // Unwrap shape-explicit Value → typed-array data view.
+  if (valueLib.isValue(coeffs)) coeffs = coeffs.data;
+  if (op === 'stepwise' && valueLib.isValue(edges)) edges = edges.data;
   if (!Array.isArray(coeffs) && !(coeffs && coeffs.BYTES_PER_ELEMENT)) {
     return _BATCH_FELL_THROUGH;
   }
@@ -2103,7 +2110,27 @@ const ARITH_OPS = {
   // measures: this is for inline `[a, b, c]` literals that surface
   // as (call vector (lit …) (lit …) …) IR. Reductions below take
   // these arrays directly.
-  vector: (...xs: any[]) => xs,
+  // vector(x1, x2, ...) — per spec §03, a rank-1 array. When all
+  // entries are scalar numerics/booleans we lift to a shape-explicit
+  // Value (engine-concepts §2.1 contract); when entries are themselves
+  // vectors/records/etc. we keep a JS array of those elements —
+  // preserving the "vector of vectors" distinction from a matrix that
+  // spec §03 establishes (matrices are made explicitly via rowstack /
+  // colstack).
+  vector: (...xs: any[]) => {
+    if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
+    let allScalar = true;
+    for (let i = 0; i < xs.length; i++) {
+      const t = typeof xs[i];
+      if (t !== 'number' && t !== 'boolean') { allScalar = false; break; }
+    }
+    if (!allScalar) return xs;
+    const data = new Float64Array(xs.length);
+    for (let i = 0; i < xs.length; i++) {
+      data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
+    }
+    return { shape: [xs.length], data: data };
+  },
   // cat(...) — structural concatenation per spec §07. Three shape
   // classes; mixing is a runtime error (the type checker rejects
   // most mixes statically but the runtime check guards programmatic
@@ -2367,73 +2394,97 @@ const ARITH_OPS = {
   // specifies how the flat data is unpacked into the n-D shape. The
   // result is a nested JS array.
   array: (data: any, size: any, dimorder: any) => {
-    const n = size.length;
-    if (dimorder.length !== n) {
-      throw new Error('array: dimorder length ' + dimorder.length
+    // Spec §07 explicit rank-N constructor. Result is a shape-explicit
+    // rank-N Value per the §2.1 contract (formerly a nested JS array,
+    // which conflated rank-2 results with rank-1-of-rank-1 vector-of-
+    // vectors).
+    const sizeArr = valueLib.isValue(size) ? Array.from(size.data) : Array.from(size);
+    const doArr = valueLib.isValue(dimorder) ? Array.from(dimorder.data)
+                                              : Array.from(dimorder);
+    const dataArr = valueLib.isValue(data) ? data.data
+                  : (data && data.BYTES_PER_ELEMENT ? data : data);
+    const n = sizeArr.length;
+    if (doArr.length !== n) {
+      throw new Error('array: dimorder length ' + doArr.length
         + ' must match size length ' + n);
     }
     let total = 1;
-    for (let i = 0; i < n; i++) total *= (size[i] | 0);
-    if (data.length !== total) {
+    for (let i = 0; i < n; i++) total *= ((sizeArr[i] as number) | 0);
+    const dataLen = (dataArr as any).length;
+    if (dataLen !== total) {
       throw new Error('array: prod(size) = ' + total
-        + ' does not match data length ' + data.length);
+        + ' does not match data length ' + dataLen);
     }
-    if (n === 0) return data.length > 0 ? data[0] : null;
-    // Build nested array of the desired shape (using row-major
-    // convention internally), then traverse `data` in dimorder.
-    // For each linear index k into data, decode it via dimorder to
-    // get the n-D coordinate.
-    //   k = ∑ c[dimorder[i] - 1] · stride_in_dimorder
-    // where the slowest-varying axis is dimorder[0].
-    function makeShape(level: any) {
-      if (level === n) return 0;
-      const out = new Array(size[level]);
-      for (let i = 0; i < size[level]; i++) out[i] = makeShape(level + 1);
-      return out;
+    if (n === 0) return dataLen > 0 ? (dataArr as any)[0] : null;
+    const shape = sizeArr.map((x: any) => (x | 0));
+    // Fast path: dimorder is the identity (1, 2, ..., n) — data is
+    // already row-major in shape order.
+    let identity = true;
+    for (let i = 0; i < n; i++) {
+      if (((doArr[i] as number) | 0) !== i + 1) { identity = false; break; }
     }
-    const result = makeShape(0);
-    function setAt(coord: any, value: any) {
-      let cur: any = result;
-      for (let level = 0; level < n - 1; level++) cur = cur[coord[level]];
-      cur[coord[n - 1]] = value;
+    if (identity) {
+      const out = new Float64Array(total);
+      for (let k = 0; k < total; k++) out[k] = +(dataArr as any)[k];
+      return { shape, data: out };
     }
-    // Compute stride per axis index in dimorder. Slowest-varying axis
-    // has stride = prod of all faster axes' sizes.
+    // Permuted dimorder — decode each linear-in-input index into the
+    // output's row-major position.
     const stridesInDimorder = new Array(n);
     let strideAcc = 1;
     for (let i = n - 1; i >= 0; i--) {
-      // dimorder[i] is the (1-based) axis index for position i in
-      // the traversal; size[dimorder[i] - 1] is that axis's length.
       stridesInDimorder[i] = strideAcc;
-      strideAcc *= size[(dimorder[i] | 0) - 1];
+      strideAcc *= shape[((doArr[i] as number) | 0) - 1];
     }
+    // Row-major strides on the output shape.
+    const outStrides = new Array(n);
+    let oacc = 1;
+    for (let i = n - 1; i >= 0; i--) { outStrides[i] = oacc; oacc *= shape[i]; }
     const coord = new Array(n);
+    const out = new Float64Array(total);
     for (let k = 0; k < total; k++) {
-      // Decode k into per-axis indices via dimorder + strides.
       let rem = k;
       for (let i = 0; i < n; i++) {
-        const axis = (dimorder[i] | 0) - 1;
+        const axis = ((doArr[i] as number) | 0) - 1;
         const stride = stridesInDimorder[i];
-        coord[axis] = Math.floor(rem / stride) % size[axis];
+        coord[axis] = Math.floor(rem / stride) % shape[axis];
         rem %= stride;
       }
-      setAt(coord, data[k]);
+      let outIdx = 0;
+      for (let a = 0; a < n; a++) outIdx += coord[a] * outStrides[a];
+      out[outIdx] = +(dataArr as any)[k];
     }
-    return result;
+    return { shape, data: out };
   },
   // fill(x, size) — array of shape `size` filled with x. `size` is
   // either a positive integer (1-D shape) or a vector of positive
-  // integers (multi-axis shape). Returns nested JS arrays for 2-D+;
-  // flat array for 1-D. Spec §07.
-  fill: (x: any, size: any) => _buildFilled(_sizeAsDims(size), x),
-  // zeros / ones — convenience wrappers around fill. Spec §07.
-  zeros: (size: any) => _buildFilled(_sizeAsDims(size), 0),
-  ones: (size: any) => _buildFilled(_sizeAsDims(size), 1),
-  // eye(n) — n × n identity matrix. Spec §07.
-  // eye(n) → n×n identity, as a vector-backed diag of ones.
+  // integers (multi-axis shape). Per spec §07; result is a shape-
+  // explicit Value (engine-concepts §2.1).
+  fill: (x: any, size: any) => {
+    const dims = _sizeAsDims(size);
+    const total = dims.reduce((a, b) => a * b, 1);
+    const d = new Float64Array(total);
+    const v = (x === true) ? 1 : (x === false) ? 0 : +x;
+    d.fill(v);
+    return { shape: dims, data: d };
+  },
+  zeros: (size: any) => {
+    const dims = _sizeAsDims(size);
+    const total = dims.reduce((a, b) => a * b, 1);
+    return { shape: dims, data: new Float64Array(total) };
+  },
+  ones: (size: any) => {
+    const dims = _sizeAsDims(size);
+    const total = dims.reduce((a, b) => a * b, 1);
+    const d = new Float64Array(total);
+    d.fill(1);
+    return { shape: dims, data: d };
+  },
+  // eye(n) — n × n identity matrix. Spec §07. Returns a structured
+  // (diag-stored) Value.
   eye: (n: any) => {
     const k = n | 0;
-    if (k <= 0) return [];
+    if (k <= 0) return { shape: [0, 0], data: new Float64Array(0) };
     const d = new Float64Array(k);
     d.fill(1);
     return valueLib.diagMatrix(d);
@@ -2443,13 +2494,13 @@ const ARITH_OPS = {
   onehot: (i: any, n: any) => {
     const idx = i | 0;
     const k = n | 0;
-    if (k <= 0) return [];
+    if (k <= 0) return { shape: [0], data: new Float64Array(0) };
     if (idx < 1 || idx > k) {
       throw new Error('onehot: index ' + idx + ' out of range [1, ' + k + ']');
     }
-    const out = new Array(k);
-    for (let j = 0; j < k; j++) out[j] = (j === idx - 1) ? 1 : 0;
-    return out;
+    const data = new Float64Array(k);
+    data[idx - 1] = 1;
+    return { shape: [k], data: data };
   },
   // Scalar restrictors (spec §07). Identity at runtime; static typing
   // catches domain violations at type-check time when they're
@@ -2467,43 +2518,52 @@ const ARITH_OPS = {
   // linspace(from, to, n) — endpoint-inclusive range of n real numbers
   // evenly spaced from `from` to `to`. n=1 returns [from]; both endpoints
   // are included exactly (not computed via accumulating step). Spec §07.
+  // Result is a rank-1 Value (engine-concepts §2.1).
   linspace: (from: any, to: any, n: any) => {
     const k = n | 0;
-    if (k <= 0) return [];
-    if (k === 1) return [+from];
-    const out = new Array(k);
+    if (k <= 0) return { shape: [0], data: new Float64Array(0) };
+    const data = new Float64Array(k);
+    if (k === 1) { data[0] = +from; return { shape: [1], data }; }
     const lo = +from, hi = +to;
     for (let i = 0; i < k; i++) {
       // Use the parametric form (1−t)·lo + t·hi so the endpoints land
       // exactly on lo and hi without floating-point drift.
       const t = i / (k - 1);
-      out[i] = (1 - t) * lo + t * hi;
+      data[i] = (1 - t) * lo + t * hi;
     }
-    return out;
+    return { shape: [k], data };
   },
   // extlinspace(from, to, n) — like linspace but with -inf and +inf
   // prepended/appended. Useful for overflow-bin definitions in binned
   // analyses. Spec §07.
   extlinspace: (from: any, to: any, n: any) => {
     const k = n | 0;
-    if (k <= 0) return [-Infinity, Infinity];
-    const out = new Array(k + 2);
-    out[0] = -Infinity;
-    out[k + 1] = Infinity;
-    if (k === 1) { out[1] = +from; return out; }
+    if (k <= 0) {
+      const d0 = new Float64Array(2);
+      d0[0] = -Infinity; d0[1] = Infinity;
+      return { shape: [2], data: d0 };
+    }
+    const data = new Float64Array(k + 2);
+    data[0] = -Infinity;
+    data[k + 1] = Infinity;
+    if (k === 1) { data[1] = +from; return { shape: [k + 2], data }; }
     const lo = +from, hi = +to;
     for (let i = 0; i < k; i++) {
       const t = i / (k - 1);
-      out[i + 1] = (1 - t) * lo + t * hi;
+      data[i + 1] = (1 - t) * lo + t * hi;
     }
-    return out;
+    return { shape: [k + 2], data };
   },
   // partition(xs, spec) — split a vector into groups. spec may be a
   // positive integer (equal-size groups) or a vector of positive
   // integers (custom group sizes). Spec §07. Returns a vector of
   // sub-vectors (JS arrays of JS arrays).
+  // partition(xs, spec) — split a vector into groups. Spec §07 result
+  // is a "vector of vectors" — per spec §03 this is NOT a matrix. The
+  // runtime rep is a JS array of rank-1 Value vectors.
   partition: (xs: any, spec: any) => {
-    const n = xs.length;
+    const src = valueLib.isValue(xs) ? xs.data : xs;
+    const n = src.length;
     if (typeof spec === 'number') {
       const k = spec | 0;
       if (k <= 0) throw new Error('partition: group size must be positive, got ' + k);
@@ -2513,25 +2573,26 @@ const ARITH_OPS = {
       const groups = n / k;
       const out = new Array(groups);
       for (let g = 0; g < groups; g++) {
-        const grp = new Array(k);
-        for (let i = 0; i < k; i++) grp[i] = xs[g * k + i];
-        out[g] = grp;
+        const d = new Float64Array(k);
+        for (let i = 0; i < k; i++) d[i] = +src[g * k + i];
+        out[g] = { shape: [k], data: d };
       }
       return out;
     }
-    if (Array.isArray(spec) || (spec && spec.BYTES_PER_ELEMENT)) {
+    const specSrc = valueLib.isValue(spec) ? spec.data : spec;
+    if (Array.isArray(specSrc) || (specSrc && specSrc.BYTES_PER_ELEMENT)) {
       let total = 0;
-      for (let i = 0; i < spec.length; i++) total += (spec[i] | 0);
+      for (let i = 0; i < specSrc.length; i++) total += (specSrc[i] | 0);
       if (total !== n) {
         throw new Error('partition: spec sums to ' + total + ' but vector length is ' + n);
       }
-      const out = new Array(spec.length);
+      const out = new Array(specSrc.length);
       let cursor = 0;
-      for (let g = 0; g < spec.length; g++) {
-        const sz = spec[g] | 0;
-        const grp = new Array(sz);
-        for (let i = 0; i < sz; i++) grp[i] = xs[cursor + i];
-        out[g] = grp;
+      for (let g = 0; g < specSrc.length; g++) {
+        const sz = specSrc[g] | 0;
+        const d = new Float64Array(sz);
+        for (let i = 0; i < sz; i++) d[i] = +src[cursor + i];
+        out[g] = { shape: [sz], data: d };
         cursor += sz;
       }
       return out;
@@ -2539,14 +2600,20 @@ const ARITH_OPS = {
     throw new Error('partition: spec must be a positive integer or a vector of positive integers');
   },
   // reverse(xs) — reverse element order in a vector. Tables defer for
-  // now (no canonical table runtime yet).
+  // now (no canonical table runtime yet). Returns a rank-1 Value when
+  // the input is a flat numeric vector.
   reverse: (xs: any) => {
+    if (valueLib.isValue(xs) && xs.shape.length === 1) {
+      const n = xs.shape[0];
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) out[n - 1 - i] = xs.data[i];
+      return { shape: [n], data: out };
+    }
     if (xs && xs.BYTES_PER_ELEMENT) {
-      // Typed array — slice and reverse to keep type, but Float64Array's
-      // reverse is in-place. Make a copy first.
-      const out = new Float64Array(xs.length);
-      for (let i = 0; i < xs.length; i++) out[xs.length - 1 - i] = xs[i];
-      return out;
+      const n = xs.length;
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) out[n - 1 - i] = xs[i];
+      return { shape: [n], data: out };
     }
     if (Array.isArray(xs)) {
       const out = new Array(xs.length);
@@ -2594,18 +2661,35 @@ const ARITH_OPS = {
     return out;
   },
   cat: (...xs: any[]) => {
-    if (xs.length === 0) return [];
+    if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
     const first = xs[0];
-    if (typeof first === 'number') {
-      return xs.slice();
+    // cat(scalar, scalar, ...) → rank-1 Value (spec §07).
+    if (typeof first === 'number' || typeof first === 'boolean') {
+      const data = new Float64Array(xs.length);
+      for (let i = 0; i < xs.length; i++) {
+        data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
+      }
+      return { shape: [xs.length], data };
     }
-    if (Array.isArray(first) || (first && first.BYTES_PER_ELEMENT)) {
-      const out: any[] = [];
+    // cat(vector, vector, ...) → rank-1 Value (concatenation along
+    // the only axis). Accept any indexable (Value / Float64Array /
+    // JS array of numbers).
+    if (valueLib.isValue(first)
+        || (first && first.BYTES_PER_ELEMENT !== undefined)
+        || Array.isArray(first)) {
+      let total = 0;
       for (let j = 0; j < xs.length; j++) {
         const v = xs[j];
-        for (let i = 0; i < v.length; i++) out.push(v[i]);
+        total += valueLib.isValue(v) ? v.data.length : v.length;
       }
-      return out;
+      const out = new Float64Array(total);
+      let pos = 0;
+      for (let j = 0; j < xs.length; j++) {
+        const v = xs[j];
+        const src = valueLib.isValue(v) ? v.data : v;
+        for (let i = 0; i < src.length; i++) out[pos++] = +src[i];
+      }
+      return { shape: [total], data: out };
     }
     if (first && typeof first === 'object') {
       const out: Record<string, any> = {};
@@ -2698,21 +2782,23 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
     return Math.sqrt(v / n);
   },
+  // cumsum / cumprod — per spec §07, rank-1 results. Returned as
+  // shape-explicit Values per engine-concepts §2.1.
   cumsum: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
-    const out = new Array(n);
+    const out = new Float64Array(n);
     let s = 0;
     for (let i = 0; i < n; i++) { s += arr[i]; out[i] = s; }
-    return out;
+    return { shape: [n], data: out };
   },
   cumprod: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
-    const out = new Array(n);
+    const out = new Float64Array(n);
     let p = 1;
     for (let i = 0; i < n; i++) { p *= arr[i]; out[i] = p; }
-    return out;
+    return { shape: [n], data: out };
   },
   // Norms and normalization (spec §07). All take a single vector
   // argument. Numerically stable forms — logsumexp uses the standard
@@ -2729,14 +2815,15 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     return Math.sqrt(s);
   },
+  // l1unit / l2unit — per spec §07, rank-1 normalized vectors.
   l1unit: (a: any) => {
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
     if (s === 0) throw new Error('l1unit: zero-norm vector has no unit form');
-    const out = new Array(arr.length);
+    const out = new Float64Array(arr.length);
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / s;
-    return out;
+    return { shape: [arr.length], data: out };
   },
   l2unit: (a: any) => {
     const arr = _arrLike(a);
@@ -2744,9 +2831,9 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     if (s === 0) throw new Error('l2unit: zero-norm vector has no unit form');
     const r = Math.sqrt(s);
-    const out = new Array(arr.length);
+    const out = new Float64Array(arr.length);
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / r;
-    return out;
+    return { shape: [arr.length], data: out };
   },
   logsumexp: (a: any) => {
     const arr = _arrLike(a);
@@ -2759,28 +2846,28 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
     return m + Math.log(s);
   },
+  // softmax / logsoftmax — per spec §07, rank-1 probability /
+  // log-probability vectors. Numerically stable via the standard
+  // shift-by-max trick.
   softmax: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
-    if (n === 0) return [];
+    if (n === 0) return { shape: [0], data: new Float64Array(0) };
     let m = -Infinity;
     for (let i = 0; i < n; i++) if (arr[i] > m) m = arr[i];
     if (!Number.isFinite(m)) {
-      // All -Inf: degenerate uniform on the simplex would be the
-      // continuous limit, but emit zeros (mass shifts to nowhere).
-      // Match the standard library behavior on all-zero exp inputs.
       throw new Error('softmax: all-(-Infinity) input is undefined');
     }
-    const exps = new Array(n);
+    const exps = new Float64Array(n);
     let s = 0;
     for (let i = 0; i < n; i++) { exps[i] = Math.exp(arr[i] - m); s += exps[i]; }
     for (let i = 0; i < n; i++) exps[i] /= s;
-    return exps;
+    return { shape: [n], data: exps };
   },
   logsoftmax: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
-    if (n === 0) return [];
+    if (n === 0) return { shape: [0], data: new Float64Array(0) };
     let m = -Infinity;
     for (let i = 0; i < n; i++) if (arr[i] > m) m = arr[i];
     if (!Number.isFinite(m)) {
@@ -2789,9 +2876,9 @@ const ARITH_OPS = {
     let s = 0;
     for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
     const lse = m + Math.log(s);
-    const out = new Array(n);
+    const out = new Float64Array(n);
     for (let i = 0; i < n; i++) out[i] = arr[i] - lse;
-    return out;
+    return { shape: [n], data: out };
   },
 };
 
@@ -4795,10 +4882,12 @@ function evaluateCall(ir: any, env: any): any {
   // `x` (the evaluation point), plus `edges` for stepwise.
   if (op === 'polynomial') {
     const kw = ir.kwargs || {};
-    const coeffs = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
+    const coeffsRaw = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
                                            : evaluateExpr(ir.args[0], env);
     const x = kw.x != null ? evaluateExpr(kw.x, env)
                            : evaluateExpr(ir.args[1], env);
+    // Unwrap shape-explicit Value → underlying typed-array view.
+    const coeffs = valueLib.isValue(coeffsRaw) ? coeffsRaw.data : coeffsRaw;
     // Σ a_i · x^i, evaluated Horner-style for numerical stability.
     let acc = 0;
     for (let i = coeffs.length - 1; i >= 0; i--) acc = acc * x + coeffs[i];
@@ -4808,10 +4897,11 @@ function evaluateCall(ir: any, env: any): any {
     // Bernstein basis on [0, 1]: f(x) = Σ_{k=0..n} a_k · C(n, k) · x^k · (1-x)^{n-k}
     // where n = length(coefficients) - 1. Numerically stable for x ∈ [0,1].
     const kw = ir.kwargs || {};
-    const coeffs: any = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
+    const coeffsRaw: any = kw.coefficients != null ? evaluateExpr(kw.coefficients, env)
                                            : evaluateExpr(ir.args[0], env);
     const x = kw.x != null ? evaluateExpr(kw.x, env)
                            : evaluateExpr(ir.args[1], env);
+    const coeffs: any = valueLib.isValue(coeffsRaw) ? coeffsRaw.data : coeffsRaw;
     const n = coeffs.length - 1;
     if (n < 0) return 0;
     // Binomial coefficients via Pascal recurrence (n choose k).
@@ -4845,11 +4935,13 @@ function evaluateCall(ir: any, env: any): any {
     // crossing into orchestrator.parseSetIR territory, which the
     // sampler intentionally doesn't depend on.
     const kw = ir.kwargs || {};
-    const edges    = kw.edges    != null ? evaluateExpr(kw.edges,    env)
+    const edgesRaw    = kw.edges    != null ? evaluateExpr(kw.edges,    env)
                                          : evaluateExpr(ir.args[0],  env);
-    const regionIR = kw.region   != null ? kw.region                 : ir.args[1];
-    const counts   = kw.counts   != null ? evaluateExpr(kw.counts,   env)
+    const regionIR    = kw.region   != null ? kw.region                 : ir.args[1];
+    const countsRaw   = kw.counts   != null ? evaluateExpr(kw.counts,   env)
                                          : evaluateExpr(ir.args[2],  env);
+    const edges  = valueLib.isValue(edgesRaw)  ? edgesRaw.data  : edgesRaw;
+    const counts = valueLib.isValue(countsRaw) ? countsRaw.data : countsRaw;
     const [lo, hi] = regionBoundsFromIR(regionIR, env);
     const n = counts.length;
     if (edges.length !== n + 1) {
@@ -4916,7 +5008,8 @@ function evaluateCall(ir: any, env: any): any {
     if (!fn || fn.params.length !== 2) {
       throw new Error('reduce: function arg must be a binary function');
     }
-    const xs: any = evaluateExpr(args[1], env);
+    const xsRaw: any = evaluateExpr(args[1], env);
+    const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
     if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
       throw new Error('reduce: xs must be a vector');
     }
@@ -4946,20 +5039,24 @@ function evaluateCall(ir: any, env: any): any {
       throw new Error('scan: function arg must be a binary function');
     }
     const init = evaluateExpr(args[1], env);
-    const xs: any   = evaluateExpr(args[2], env);
+    const xsRaw: any = evaluateExpr(args[2], env);
+    const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
     if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
       throw new Error('scan: xs must be a vector');
     }
-    const out: any = new Array(xs.length);
+    // Scan result has the same length as xs and is a rank-1 vector per
+    // spec §07 — return a shape-explicit Value.
+    const n = xs.length;
+    const out: Float64Array = new Float64Array(n);
     const elemEnv = Object.assign({}, env);
     let acc = init;
-    for (let i = 0; i < xs.length; i++) {
+    for (let i = 0; i < n; i++) {
       elemEnv[fn.params[0]] = acc;
       elemEnv[fn.params[1]] = xs[i];
       acc = evaluateExpr(fn.body, elemEnv);
-      out[i] = acc;
+      out[i] = acc === true ? 1 : acc === false ? 0 : +acc;
     }
-    return out;
+    return { shape: [n], data: out };
   }
   if (op === 'filter') {
     // filter(pred, data) per spec §07. pred can be a named function
@@ -4973,19 +5070,25 @@ function evaluateCall(ir: any, env: any): any {
     if (!fn || fn.params.length !== 1) {
       throw new Error('filter: predicate must be a unary function');
     }
-    const data = evaluateExpr(args[1], env);
+    const dataRaw = evaluateExpr(args[1], env);
+    const data = valueLib.isValue(dataRaw) ? dataRaw.data : dataRaw;
     if (!Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
       throw new Error('filter: data must be a vector (got '
         + (data === null ? 'null' : typeof data) + ')');
     }
     const elemEnv = Object.assign({}, env);
-    const out: any[] = [];
+    const kept: any[] = [];
     for (let i = 0; i < data.length; i++) {
       elemEnv[fn.params[0]] = data[i];
       const keep = evaluateExpr(fn.body, elemEnv);
-      if (keep) out.push(data[i]);
+      if (keep) kept.push(data[i]);
     }
-    return out;
+    // Filter result is a rank-1 vector per spec §07 — return as Value.
+    const out = new Float64Array(kept.length);
+    for (let i = 0; i < kept.length; i++) {
+      out[i] = kept[i] === true ? 1 : kept[i] === false ? 0 : +kept[i];
+    }
+    return { shape: [kept.length], data: out };
   }
   if (op === 'bincounts') {
     // bincounts(bins, data) — count data points falling into bins.
@@ -4998,17 +5101,21 @@ function evaluateCall(ir: any, env: any): any {
     // Multi-D case (bins is a record of edge vectors): not yet
     // supported — falls through to an explicit error.
     const kw = ir.kwargs || {};
-    const bins: any = kw.bins != null ? evaluateExpr(kw.bins, env)
+    const binsRaw: any = kw.bins != null ? evaluateExpr(kw.bins, env)
                                  : evaluateExpr(ir.args[0], env);
-    const data = kw.data != null ? evaluateExpr(kw.data, env)
+    const dataRaw = kw.data != null ? evaluateExpr(kw.data, env)
                                  : evaluateExpr(ir.args[1], env);
+    const bins = valueLib.isValue(binsRaw) ? binsRaw.data : binsRaw;
+    const data = valueLib.isValue(dataRaw) ? dataRaw.data : dataRaw;
     if (!bins || typeof bins.length !== 'number'
         || (bins.length > 0 && typeof bins[0] !== 'number')) {
       throw new Error('bincounts: multi-dimensional binning not yet supported');
     }
     const n: any = bins.length - 1;
     if (n < 0) throw new Error('bincounts: bins must have at least 1 edge');
-    const counts: any = new Array(n).fill(0);
+    // Spec §07 result: rank-1 integer count vector. Returned as a
+    // shape-explicit Value (engine-concepts §2.1).
+    const counts = new Float64Array(n);
     const last = n - 1;
     const lo = bins[0], hi = bins[n];
     for (let i = 0; i < data.length; i++) {
@@ -5022,19 +5129,21 @@ function evaluateCall(ir: any, env: any): any {
         }
       }
     }
-    return counts;
+    return { shape: [n], data: counts };
   }
   if (op === 'stepwise') {
     // Piecewise constant: edges has length n+1, values has length n.
     // For x in [edges[i], edges[i+1]) return values[i]; right edge
     // is closed for the last bin.
     const kw = ir.kwargs || {};
-    const edges  = kw.edges  != null ? evaluateExpr(kw.edges,  env)
+    const edgesRaw  = kw.edges  != null ? evaluateExpr(kw.edges,  env)
                                      : evaluateExpr(ir.args[0], env);
-    const values: any = kw.values != null ? evaluateExpr(kw.values, env)
+    const valuesRaw: any = kw.values != null ? evaluateExpr(kw.values, env)
                                      : evaluateExpr(ir.args[1], env);
     const x      = kw.x      != null ? evaluateExpr(kw.x,      env)
                                      : evaluateExpr(ir.args[2], env);
+    const edges  = valueLib.isValue(edgesRaw)  ? edgesRaw.data  : edgesRaw;
+    const values: any = valueLib.isValue(valuesRaw) ? valuesRaw.data : valuesRaw;
     const n = values.length;
     if (edges.length !== n + 1) {
       throw new Error('stepwise: edges length must equal values length + 1');
@@ -5064,10 +5173,11 @@ function evaluateCall(ir: any, env: any): any {
     if (args.length !== 1) {
       throw new Error(`evaluateExpr: rnginit expects 1 arg, got ${args.length}`);
     }
-    const seed: any = evaluateExpr(args[0], env);
-    if (!isByteVector(seed)) {
+    const seedRaw: any = evaluateExpr(args[0], env);
+    if (!isByteVector(seedRaw)) {
       throw new Error(`evaluateExpr: rnginit seed must be a byte vector (array of integers in 0..255)`);
     }
+    const seed = valueLib.isValue(seedRaw) ? Array.from(seedRaw.data) : seedRaw;
     return rng.seedFromBytes(seed);
   }
   // rngstate(<bytes>) — round-trip an externally-serialized state.
@@ -5077,10 +5187,11 @@ function evaluateCall(ir: any, env: any): any {
     if (args.length !== 1) {
       throw new Error(`evaluateExpr: rngstate expects 1 arg, got ${args.length}`);
     }
-    const bytes: any = evaluateExpr(args[0], env);
-    if (!isByteVector(bytes)) {
+    const bytesRaw: any = evaluateExpr(args[0], env);
+    if (!isByteVector(bytesRaw)) {
       throw new Error(`evaluateExpr: rngstate bytes must be a byte vector (array of integers in 0..255)`);
     }
+    const bytes = valueLib.isValue(bytesRaw) ? Array.from(bytesRaw.data) : bytesRaw;
     return rng.stateFromBytes(bytes);
   }
   // rand(<state>, <measure-IR>) — generate a sample from a closed
@@ -5106,8 +5217,9 @@ function evaluateCall(ir: any, env: any): any {
 
 // Predicate guarding rnginit / rngstate: argument must be an iterable of
 // integers in [0, 255]. Float64Arrays whose entries happen to be small
-// integers are also accepted.
+// integers are also accepted; shape-explicit Values are unwrapped.
 function isByteVector(x: any) {
+  if (valueLib.isValue(x)) x = x.data;
   if (!x || typeof x !== 'object' || typeof x.length !== 'number') return false;
   for (let i = 0; i < x.length; i++) {
     const v = x[i];

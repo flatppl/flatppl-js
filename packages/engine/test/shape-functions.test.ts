@@ -10,10 +10,13 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function lit(v: any)   { return { kind: 'lit', value: v }; }
 function vec(...vs: any[]) { return { kind: 'call', op: 'vector', args: vs.map(lit) }; }
 function call(op: any, kwargs: any) { return { kind: 'call', op, kwargs }; }
+const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
+const ev = (ir: any) => toJS(evRaw(ir));
 
 // =====================================================================
 // polynomial: Σ a_i · x^i (power-series basis)
@@ -132,7 +135,7 @@ test('bincounts: simple 4-bin example', () => {
     bins: vec(0, 2.5, 5, 7.5, 10),
     data: vec(1.0, 3.0, 4.9, 5.0, 9.9),
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [1, 2, 1, 1]);
+  assert.deepEqual(ev(ir), [1, 2, 1, 1]);
 });
 
 test('bincounts: last-bin upper boundary is inclusive', () => {
@@ -141,7 +144,7 @@ test('bincounts: last-bin upper boundary is inclusive', () => {
     bins: vec(0, 1, 2),
     data: vec(2.0),  // last edge
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [0, 1]);
+  assert.deepEqual(ev(ir), [0, 1]);
 });
 
 test('bincounts: interior bin upper boundary is exclusive (next bin owns it)', () => {
@@ -151,7 +154,7 @@ test('bincounts: interior bin upper boundary is exclusive (next bin owns it)', (
     bins: vec(0, 1, 2),
     data: vec(1.0),  // interior edge
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [0, 1]);
+  assert.deepEqual(ev(ir), [0, 1]);
 });
 
 test('bincounts: out-of-range data is ignored', () => {
@@ -159,7 +162,7 @@ test('bincounts: out-of-range data is ignored', () => {
     bins: vec(0, 1, 2),
     data: vec(-1.0, 0.5, 1.5, 3.0),  // -1 and 3 fall outside
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [1, 1]);
+  assert.deepEqual(ev(ir), [1, 1]);
 });
 
 test('bincounts: empty data ⇒ all zeros', () => {
@@ -167,7 +170,7 @@ test('bincounts: empty data ⇒ all zeros', () => {
     bins: vec(0, 1, 2, 3),
     data: vec(),
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [0, 0, 0]);
+  assert.deepEqual(ev(ir), [0, 0, 0]);
 });
 
 test('bincounts: rejects multi-dimensional binning (record bins)', () => {
@@ -204,7 +207,7 @@ test('selectbins: interior region keeps only intersecting bins', () => {
     region: interval(1.5, 3.5),
     counts: vec(10, 20, 30, 40),
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [20, 30, 40]);
+  assert.deepEqual(ev(ir), [20, 30, 40]);
 });
 
 test('selectbins: region covering all bins keeps everything', () => {
@@ -213,7 +216,7 @@ test('selectbins: region covering all bins keeps everything', () => {
     region: interval(-10, 10),
     counts: vec(5, 6, 7),
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [5, 6, 7]);
+  assert.deepEqual(ev(ir), [5, 6, 7]);
 });
 
 test('selectbins: region disjoint from all bins ⇒ empty result', () => {
@@ -222,7 +225,7 @@ test('selectbins: region disjoint from all bins ⇒ empty result', () => {
     region: interval(10, 20),
     counts: vec(1, 2),
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), []);
+  assert.deepEqual(ev(ir), []);
 });
 
 test('selectbins: bin grazing region boundary counts as intersecting', () => {
@@ -234,7 +237,7 @@ test('selectbins: bin grazing region boundary counts as intersecting', () => {
     counts: vec(10, 20, 30),
   });
   // Bins [0,1] [1,2] [2,3] vs region [2,3]: bin 0 misses, bins 1, 2 touch.
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [20, 30]);
+  assert.deepEqual(ev(ir), [20, 30]);
 });
 
 test('selectbins: posreals region drops only bins entirely on the negative side', () => {
@@ -249,7 +252,7 @@ test('selectbins: posreals region drops only bins entirely on the negative side'
     region: constSet('posreals'),
     counts: vec(1, 2, 3, 4),
   });
-  assert.deepEqual(sampler.evaluateExpr(ir, {}), [2, 3, 4]);
+  assert.deepEqual(ev(ir), [2, 3, 4]);
 });
 
 test('selectbins: edges length must equal counts length + 1', () => {
