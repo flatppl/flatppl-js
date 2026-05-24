@@ -1283,6 +1283,8 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
                         return true;
     case 'ref':         // resolved against env at evaluation time.
                         return true;
+    case 'axis':        // resolved against the enclosing aggregate's axis env.
+                        return true;
     case 'call':
       if (!ir.op || !EVALUABLE_OPS.has(ir.op)) return false;
       // rand(state, measure) — the measure arg is a measure IR passed
@@ -1295,6 +1297,19 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         const args = ir.args || [];
         if (args.length !== 2) return false;
         return isEvaluable(args[0]);
+      }
+      // aggregate(f_reduction, output_axes, expr) — the second arg is
+      // always a `vector(...)` of axis refs by construction (the
+      // analyzer enforces). vector is deliberately NOT in EVALUABLE_OPS
+      // (stochastic-element arrays must stay in the kind:'array' path),
+      // so we skip the output_axes arg here and just check the
+      // reduction ref (always evaluable) + the expr (the user-written
+      // contraction body, which carries axis refs but otherwise looks
+      // like a normal value expression).
+      if (ir.op === 'aggregate') {
+        const args = ir.args || [];
+        if (args.length !== 3) return false;
+        return isEvaluable(args[0]) && isEvaluable(args[2]);
       }
       // All args / kwargs / fields must themselves be evaluable.
       // record IR uses `fields: [{name, value}, ...]` instead of args,

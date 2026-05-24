@@ -229,6 +229,14 @@ function _lowerExpr(node: any, ctx: any): IRNode {
     case 'Hole':
       return { kind: 'hole', loc: node.loc };
 
+    case 'AxisRef':
+      // Axis label `.name` (spec §05) used by `aggregate`. Per FlatPIR
+      // §11 it lowers to `(%axis <name>)`. The analyzer enforces that
+      // axes only appear inside an enclosing aggregate(...); the IR
+      // shape carries the axis name through so the materialiser can
+      // bind it to the running iteration value.
+      return { kind: 'axis', name: node.name, loc: node.loc };
+
     case 'Placeholder':
       // Inside a reified scope, surface `_x_` references the param of the
       // same name. The analyzer enforces that placeholders only appear
