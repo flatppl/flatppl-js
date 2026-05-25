@@ -31,8 +31,14 @@ const T = {
 
   NEWLINE: 'NEWLINE',
   COMMENT: 'COMMENT',
+  DOC_LINE:  'DOC_LINE',   // %md? content (line)
+  DOC_BLOCK: 'DOC_BLOCK',  // %%%md? ... %%% (multi-line)
   EOF: 'EOF',
 };
+
+// Set of recognised markup tags (spec §05 Documentation). Tags not in
+// this set are a parse error. Extend by spec amendment.
+const _MARKUP_TAGS = new Set(['md', 'typ']);
 
 function token(type: string, value: any, startLine: number, startCol: number, endLine: number, endCol: number): any {
   return {
@@ -163,6 +169,117 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
         text += advance();
       }
       tokens.push(token(T.COMMENT, text, startLine, startCol, line, col));
+      continue;
+    }
+
+    // Doc-comments (spec §05 Documentation). Lexically symmetric to
+    // plain comments — `%` line, `%%%` block, optional markup tag with
+    // no space after the leading `%` / `%%%`. Unlike comments,
+    // doc-comments emit tokens carrying the markup + content; the
+    // parser attaches them to bindings per the §04 §sec:documentation
+    // attachment rules.
+    if (ch === '%') {
+      // Block-form `%%%` (only valid at line start; same condition as
+      // `###`). The closing fence is `%%%` on its own line — content
+      // tag (`%%%md`, `%%%typ`) appears only at the opening fence.
+      if (peek(1) === '%' && peek(2) === '%'
+          && _atLineStart(tokens)) {
+        // Consume opening fence.
+        advance(); advance(); advance();
+        // Optional markup tag immediately after, no whitespace.
+        let markup = 'md';
+        let tagBuf = '';
+        while (pos < source.length && isIdentChar(at())) tagBuf += advance();
+        if (tagBuf.length > 0) {
+          if (!_MARKUP_TAGS.has(tagBuf)) {
+            diagnostics.push({
+              severity: 'error',
+              message: `Unrecognised doc-comment markup tag '${tagBuf}' `
+                + `(allowed: ${Array.from(_MARKUP_TAGS).join(', ')})`,
+              loc: { start: { line: startLine, col: startCol },
+                     end:   { line, col } },
+            });
+          } else {
+            markup = tagBuf;
+          }
+        }
+        // Skip rest of opening-fence line (trailing whitespace).
+        while (pos < source.length && at() !== '\n') advance();
+        if (at() === '\n') advance();
+        // Consume body lines until a closing `%%%` on its own line.
+        // No markup tag is permitted on the closing fence (per spec).
+        const lines: string[] = [];
+        let closed = false;
+        while (pos < source.length) {
+          // Try to recognise a closing fence at line start.
+          let p = pos;
+          while (p < source.length && (source[p] === ' ' || source[p] === '\t')) p++;
+          if (source[p] === '%' && source[p + 1] === '%' && source[p + 2] === '%'
+              && (p + 3 === source.length
+                  || source[p + 3] === '\n'
+                  || source[p + 3] === ' '
+                  || source[p + 3] === '\t')) {
+            // Consume closing fence through end-of-line.
+            while (pos < source.length && at() !== '\n') advance();
+            if (at() === '\n') advance();
+            closed = true;
+            break;
+          }
+          // Body line: capture verbatim up to the next `\n`.
+          let bodyLine = '';
+          while (pos < source.length && at() !== '\n') bodyLine += advance();
+          if (at() === '\n') advance();
+          lines.push(bodyLine);
+        }
+        if (!closed) {
+          diagnostics.push({
+            severity: 'error',
+            message: 'Unterminated doc-block: missing closing `%%%`',
+            loc: { start: { line: startLine, col: startCol },
+                   end:   { line, col } },
+          });
+        }
+        const tok = token(T.DOC_BLOCK, { markup, lines },
+          startLine, startCol, line, col);
+        tokens.push(tok);
+        // Emit a NEWLINE so the block participates in statement
+        // separation just like its `###` counterpart.
+        if (depth === 0) {
+          tokens.push(token(T.NEWLINE, '\n', line, col, line, col));
+        }
+        continue;
+      }
+      // Single-line `%` doc-comment. Terminated by `\n` or `;`.
+      advance();   // consume the leading `%`
+      // Optional markup tag immediately after, no whitespace.
+      let markup = 'md';
+      let tagBuf = '';
+      while (pos < source.length && isIdentChar(at())) tagBuf += advance();
+      if (tagBuf.length > 0) {
+        if (!_MARKUP_TAGS.has(tagBuf)) {
+          diagnostics.push({
+            severity: 'error',
+            message: `Unrecognised doc-comment markup tag '${tagBuf}' `
+              + `(allowed: ${Array.from(_MARKUP_TAGS).join(', ')})`,
+            loc: { start: { line: startLine, col: startCol },
+                   end:   { line, col } },
+          });
+        } else {
+          markup = tagBuf;
+        }
+      }
+      // Skip one space after the tag (cosmetic; spec's `%md content`
+      // shape). The content is the rest of the line / up to `;`.
+      if (at() === ' ' || at() === '\t') advance();
+      let content = '';
+      while (pos < source.length && at() !== '\n' && at() !== ';') {
+        content += advance();
+      }
+      // Right-trim trailing whitespace.
+      content = content.replace(/[ \t]+$/, '');
+      const tok = token(T.DOC_LINE, { markup, content },
+        startLine, startCol, line, col);
+      tokens.push(tok);
       continue;
     }
 

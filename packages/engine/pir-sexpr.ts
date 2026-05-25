@@ -54,11 +54,16 @@ function toSexpr(mod: any, opts?: any) {
   // bindings
   for (const [name, binding] of mod.bindings) {
     const rhsText = _exprToSexpr(binding.rhs, indent ? '  ' : '');
+    // Optional `(%doc <markup> <line>...)` trailing sub-form (spec
+    // §11 Documentation). Absent when the binding has no doc OR when
+    // the doc has zero content lines (canonical form for undocumented).
+    const docText = _docToSexpr(binding.doc);
+    const bodyText = docText ? rhsText + ' ' + docText : rhsText;
     if (indent) {
       lines.push('');  // blank line between bindings
-      lines.push(indent + '(%bind ' + name + ' ' + rhsText + ')');
+      lines.push(indent + '(%bind ' + name + ' ' + bodyText + ')');
     } else {
-      lines.push('(%bind ' + name + ' ' + rhsText + ')');
+      lines.push('(%bind ' + name + ' ' + bodyText + ')');
     }
   }
   lines.push(')');
@@ -78,6 +83,21 @@ function _exprToSexpr(e: any, ind: string): string {
     default:
       throw new Error('pir-sexpr: unknown IR kind ' + JSON.stringify(e.kind));
   }
+}
+
+// Build the optional `(%doc <markup> <line>...)` sub-form. Returns
+// the string OR null when the binding has no documented content.
+// Per spec §11: `(%doc md)` with zero content lines is semantically
+// the same as omitting the sub-form, and the absent form is canonical
+// — so we elide both no-doc bindings and zero-content `%doc md` ones.
+function _docToSexpr(doc: any): string | null {
+  if (!doc) return null;
+  const lines = Array.isArray(doc.lines) ? doc.lines : [];
+  if (lines.length === 0) return null;
+  const markup = typeof doc.markup === 'string' ? doc.markup : 'md';
+  const parts = ['%doc', markup];
+  for (const ln of lines) parts.push(JSON.stringify(ln));
+  return '(' + parts.join(' ') + ')';
 }
 
 function _atomToSexpr(v: any) {
@@ -232,7 +252,8 @@ function fromSexpr(text: any) {
       if (sub.__kind === 'public') {
         for (const n of sub.names) mod.publicSet.add(n);
       } else if (sub.__kind === 'bind') {
-        mod.bindings.set(sub.name, pir.loweredBinding(sub.name, sub.rhs));
+        mod.bindings.set(sub.name,
+          pir.loweredBinding(sub.name, sub.rhs, { doc: sub.doc || null }));
       } else {
         diagnostics.push({ severity: 'error', message: 'pir-sexpr: stray form inside %module' });
       }
@@ -253,8 +274,37 @@ function fromSexpr(text: any) {
       return { __kind: 'bind', name: '?', rhs: null };
     }
     const rhs = readForm();
+    // Optional trailing `(%doc <markup> <line>...)` sub-form.
+    let doc: any = null;
+    if (peek() && peek().type === '(') {
+      // Peek inside: head must be the `%doc` keyword (lexer emits
+      // `%`-prefixed names as type '%kw').
+      const save = pos;
+      eat(); // (
+      const headTok = peek();
+      if (headTok && headTok.type === '%kw' && headTok.value === '%doc') {
+        eat(); // %doc
+        const markupTok = peek();
+        const markup = (markupTok && markupTok.type === 'sym')
+          ? (eat() && markupTok.value) : 'md';
+        const lines: string[] = [];
+        while (!eof() && peek().type !== ')') {
+          const t = eat();
+          if (t.type === 'str') lines.push(t.value);
+          else diagnostics.push({
+            severity: 'error',
+            message: `pir-sexpr: %doc line must be a string, got ${t.type}`,
+          });
+        }
+        if (peek() && peek().type === ')') eat();
+        doc = { markup, lines };
+      } else {
+        // Not a %doc form — rewind so the outer loop sees the `(`.
+        pos = save;
+      }
+    }
     if (peek() && peek().type === ')') eat();
-    return { __kind: 'bind', name: nameTok.value, rhs };
+    return { __kind: 'bind', name: nameTok.value, rhs, doc };
   }
 
   function readPublicForm(): any {
