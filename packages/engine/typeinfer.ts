@@ -106,19 +106,16 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
  */
 function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
   const ctx = createInferenceContext(loweredModule, opts);
-  for (const [name] of loweredModule.bindings) {
-    ctx.inferBinding(name);
-    // Post-binding const-eval (interleaved with inference, populates
-    // the resolver's known-fixed cache so later shape-position
-    // lookups can find it). The resolver is responsible for any
-    // size/safety heuristics; here we just notify it the binding's
-    // type is now pinned and its RHS can in principle be evaluated.
-    const resolver = opts && opts.resolveFixed;
-    if (resolver && typeof resolver.tryEvalBinding === 'function') {
-      resolver.tryEvalBinding(name);
-    }
-  }
+  for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
   return ctx.diagnostics;
+  // NOTE: no eager post-binding const-eval pass. The resolver is
+  // demand-driven (engine-concepts §17.4) — it's invoked only from
+  // shape positions and recursively descends into refs ONLY as
+  // needed. Shape-observer short-circuits (length/lengthof/sizeof
+  // reading from inferredType) prevent the recursion from
+  // materialising expensive bindings whose value isn't actually
+  // needed for any shape. This is the "query system" / lazy-eval
+  // pattern from rustc/salsa, Haskell, Idris/Agda.
 }
 
 /**
@@ -269,6 +266,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
+      // Const-eval-driven shape inference (engine-concepts §17.4).
+      // Shape-determining producers whose result rank/shape depends
+      // on their dim arg(s). All of them consult the resolver via
+      // resolveIntegerShape / resolveIntegerVectorShape; if the dim
+      // resolves to a concrete integer (or shape vector), the result
+      // type carries that; otherwise %dynamic falls through.
+      case 'zeros':
+      case 'ones':      return write(inferZerosOnes(expr, scopes), expr);
+      case 'fill':      return write(inferFill(expr, scopes), expr);
+      case 'eye':       return write(inferEye(expr, scopes), expr);
+      case 'onehot':    return write(inferOnehot(expr, scopes), expr);
+      // rowstack/colstack of an inline vector-of-vectors literal can
+      // pin a concrete [m, n] shape — the literal carries the outer
+      // and inner lengths exactly. Without this, the resolver has
+      // to materialise the matrix to know its dims, defeating the
+      // demand-driven design when chains go through lengthof / sizeof
+      // of a rowstack output. Fall back to %dynamic for non-literal
+      // shape-of-shape inputs.
+      case 'rowstack':
+      case 'colstack': return write(inferRowstack(expr, scopes), expr);
       // get / get0 — unified element / subset / axis-slice / singleton
       // access (spec §07). Shape inference here covers the array case
       // (rank, shape, elem) precisely; the record case redirects to
@@ -1109,6 +1126,126 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     }
     const rank = dims.length;
     return T.measure(T.array(rank, dims, measureT.domain));
+  }
+
+  // Resolve a shape-position IR expression to a non-negative integer
+  // VECTOR if possible. Used by `fill`/`zeros`/`ones` whose single
+  // arg may be an integer (rank-1 result) or an integer vector
+  // (rank-N result, one dim per element). Tries literal forms first;
+  // falls back to the resolver. Returns null if neither works.
+  function resolveIntegerVectorShape(ir: any): number[] | null {
+    // Literal integer → rank-1 of that length.
+    const litInt = literalIntFromIR(ir);
+    if (litInt != null && litInt >= 0) return [litInt];
+    // Literal vector of integers → use as multi-dim shape directly.
+    if (ir && ir.kind === 'call' && ir.op === 'vector'
+        && Array.isArray(ir.args)) {
+      const dims: number[] = [];
+      for (const a of ir.args) {
+        const d = literalIntFromIR(a);
+        if (d == null || d < 0) return null;
+        dims.push(d);
+      }
+      return dims;
+    }
+    // Resolver fallback. Result is either a number (rank-1 result)
+    // or a shape-explicit Value carrying the dims (rank-N).
+    if (!resolveFixed) return null;
+    const v = resolveFixed(ir);
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return [v];
+    if (v && typeof v === 'object'
+        && Array.isArray(v.shape) && v.shape.length === 1
+        && v.data && typeof v.data.length === 'number') {
+      const dims: number[] = [];
+      for (let i = 0; i < v.data.length; i++) {
+        const d = v.data[i] | 0;
+        if (d < 0) return null;
+        dims.push(d);
+      }
+      return dims;
+    }
+    return null;
+  }
+
+  // fill(value, shape) — result element type matches value's type;
+  // result shape from the shape arg (integer → rank-1; vector → rank-N).
+  function inferFill(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError('fill', 2, args.length, expr.loc);
+    const vT = inferExpr(args[0], scopes);
+    const dims = resolveIntegerVectorShape(args[1]);
+    const elem = (vT && vT.kind === 'scalar') ? vT : T.REAL;
+    if (dims == null) return T.deferred();
+    return T.array(dims.length, dims, elem);
+  }
+
+  // zeros(shape) / ones(shape) — real-valued; same shape rule as fill.
+  function inferZerosOnes(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);
+    const dims = resolveIntegerVectorShape(args[0]);
+    if (dims == null) return T.deferred();
+    return T.array(dims.length, dims, T.REAL);
+  }
+
+  // eye(n) / eye(n=n) — n×n identity matrix.
+  function inferEye(expr: any, scopes: any) {
+    const args = expr.args || [];
+    const kwargs = expr.kwargs || {};
+    const sizeIR = (args.length > 0) ? args[0]
+      : (kwargs.n != null ? kwargs.n : null);
+    if (!sizeIR) return arityError('eye', 1, args.length, expr.loc);
+    const n = resolveIntegerShape(sizeIR);
+    if (n == null) return T.array(2, ['%dynamic', '%dynamic'], T.REAL);
+    return T.array(2, [n, n], T.REAL);
+  }
+
+  // rowstack(vector_of_vectors) / colstack(vector_of_vectors). When
+  // the input is an inline vector(vector(...), vector(...), ...)
+  // literal, both dims are static — emit the precise [m, n] shape.
+  // (`colstack` swaps which dim is rows vs cols but the *type-level*
+  // shape is the same since both axes are dense real.)
+  function inferRowstack(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 1) return T.deferred();
+    const outerIR = args[0];
+    // Inline literal? Read m = outer length, n = inner length(0).
+    if (outerIR && outerIR.kind === 'call' && outerIR.op === 'vector'
+        && Array.isArray(outerIR.args)) {
+      const m = outerIR.args.length;
+      if (m === 0) return T.array(2, [0, 0], T.REAL);
+      const first = outerIR.args[0];
+      if (first && first.kind === 'call' && first.op === 'vector'
+          && Array.isArray(first.args)) {
+        const n = first.args.length;
+        // Confirm every row has the same length statically.
+        for (let i = 1; i < m; i++) {
+          const row = outerIR.args[i];
+          if (!row || row.kind !== 'call' || row.op !== 'vector'
+              || !Array.isArray(row.args) || row.args.length !== n) {
+            return T.array(2, ['%dynamic', '%dynamic'], T.REAL);
+          }
+        }
+        return T.array(2, [m, n], T.REAL);
+      }
+    }
+    // Non-literal outer: fall back to %dynamic (the existing
+    // SIGNATURE_FACTORIES behaviour).
+    return T.array(2, ['%dynamic', '%dynamic'], T.REAL);
+  }
+
+  // onehot(i, n) — length-n vector with a 1 at position i, 0
+  // elsewhere. The result shape's length comes from n; the value of
+  // i doesn't affect the type.
+  function inferOnehot(expr: any, scopes: any) {
+    const args = expr.args || [];
+    const kwargs = expr.kwargs || {};
+    const nIR = (args.length >= 2) ? args[1]
+      : (kwargs.n != null ? kwargs.n : null);
+    if (!nIR) return arityError('onehot', 2, args.length, expr.loc);
+    const n = resolveIntegerShape(nIR);
+    if (n == null) return T.array(1, ['%dynamic'], T.REAL);
+    return T.array(1, [n], T.REAL);
   }
 
   function literalIntFromIR(ir: any) {

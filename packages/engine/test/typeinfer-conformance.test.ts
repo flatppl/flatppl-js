@@ -218,6 +218,156 @@ s = sizeof(M)
 // Cycle protection still fires when const-eval would otherwise loop
 // =====================================================================
 
+// =====================================================================
+// Demand-driven const-eval: shape inference never materialises bindings
+// whose value isn't needed (engine-concepts §17.4 lazy-evaluation pattern).
+// =====================================================================
+
+test('demand-driven: zeros/fill/ones/eye fold their dim args via the resolver', () => {
+  // The user's motivating example, now end-to-end: shape inference
+  // chains through `prod(sizeof(B))` to give v its concrete shape,
+  // without B ever being evaluated. (B aliases A here for clarity;
+  // the const-eval pass intercepts sizeof(B) and reads from B's
+  // type — A's value never reached.)
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+B = A
+sz = sizeof(B)
+n = prod(sz)
+n2 = n + n
+v = zeros(n2)
+`);
+  const errors = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errors, []);
+  const lb = r.loweredModule.bindings.get('v');
+  // sz = [2, 3]; n = 6; n2 = 12; v = zeros(12) → array([12], real).
+  assert.equal(lb.inferredType.kind, 'array');
+  assert.deepEqual(lb.inferredType.shape, [12]);
+});
+
+test('demand-driven: sizeof(B) never invokes B\'s value-mode eval (proof via spy)', () => {
+  // Hardest-edge proof: monkey-patch sampler.evaluateExpr to record
+  // every IR op it sees. If the short-circuit works, evaluating
+  // `sizeof(<ref>)` never delegates to the value evaluator on that
+  // ref's RHS — the recursive walk reads from the inferredType
+  // instead.
+  const engine = require('../index.ts');
+  const fixedEval = require('../fixed-eval.ts');
+  const typeinfer = require('../typeinfer.ts');
+  const sampler = require('../sampler.ts');
+
+  const r = engine.processSource(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+M = iid(Normal(mu = 0.0, sigma = 1.0), lengthof(A))
+`);
+
+  // Spy on sampler.evaluateExpr — count every call.
+  const realEval = sampler.evaluateExpr;
+  let opsSeen: string[] = [];
+  (sampler as any).evaluateExpr = function spy(ir: any, env: any) {
+    if (ir && ir.kind === 'call') opsSeen.push(ir.op);
+    return realEval.call(sampler, ir, env);
+  };
+  try {
+    const lm = r.loweredModule;
+    const resolver = fixedEval.makeResolver({ loweredModule: lm });
+    typeinfer.inferTypes(lm, { resolveFixed: resolver });
+  } finally {
+    (sampler as any).evaluateExpr = realEval;
+  }
+  // The short-circuit means `lengthof` never reaches evaluateExpr
+  // (we handle it inline reading the inferredType). And critically,
+  // `rowstack` (the expensive op constructing A's data) is NEVER
+  // dispatched — A's value is never materialised by the const-eval
+  // pass.
+  assert.ok(!opsSeen.includes('rowstack'),
+    `rowstack should not have been evaluated; ops seen: ${JSON.stringify(opsSeen)}`);
+  assert.ok(!opsSeen.includes('lengthof'),
+    `lengthof should be short-circuited, not dispatched; ops seen: ${JSON.stringify(opsSeen)}`);
+});
+
+test('demand-driven: eye(n) folds n via the resolver', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+n = 4
+I = eye(n)
+`);
+  const lb = r.loweredModule.bindings.get('I');
+  assert.deepEqual(lb.inferredType.shape, [4, 4]);
+});
+
+test('demand-driven: fill(value, [m, n]) folds shape vector via the resolver', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+shape = [3, 5]
+M = fill(1.0, shape)
+`);
+  const lb = r.loweredModule.bindings.get('M');
+  assert.deepEqual(lb.inferredType.shape, [3, 5]);
+});
+
+test('demand-driven: shape-observer short-circuits through inferredType (no operand eval)', () => {
+  // The motivating example: a fixed-phase chain `A → B → sz =
+  // sizeof(B) → n = prod(sz) → n2 = n + n → M = iid(Normal, n2)`.
+  // To know M's variate shape, we need n2's value. The chain through
+  // `sizeof(B)` short-circuits through B's TYPE — never
+  // materialising B (which would force materialising A).
+  //
+  // The chain only fires for ops that consult the const-eval
+  // resolver — today that's just `iid`. zeros/fill/ones consulting
+  // the resolver is a tracked follow-up (TODO §17), so we route the
+  // shape-position query through iid.
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+B = A
+sz = sizeof(B)
+n = prod(sz)
+n2 = n + n
+M = iid(Normal(mu = 0.0, sigma = 1.0), n2)
+`);
+  const errors = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errors, []);
+  const lb = r.loweredModule.bindings.get('M');
+  const t = lb && lb.inferredType;
+  // sz = [2, 3]; n = 6; n2 = 12; M = iid(Normal, 12) → measure(array([12], real)).
+  assert.equal(t.kind, 'measure');
+  assert.equal(t.domain.kind, 'array');
+  assert.deepEqual(t.domain.shape, [12],
+    `M's variate shape should be [12], got ${JSON.stringify(t.domain.shape)}`);
+});
+
+test('demand-driven: const-eval cache is empty for unconsulted bindings', () => {
+  // Whitebox check: after running typeinfer with the resolver, only
+  // bindings reached through shape-position queries (today only
+  // iid's size arg consults the resolver) should appear in the
+  // cache. Bindings whose value isn't needed by any shape position
+  // stay untouched — the demand-driven guarantee.
+  const fixedEval = require('../fixed-eval.ts');
+  const typeinfer = require('../typeinfer.ts');
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+n = lengthof(A)
+M = iid(Normal(mu = 0.0, sigma = 1.0), n)
+unused = 42
+`);
+  // Re-run inference with a fresh resolver so we can inspect the
+  // cache (the analyzer-internal resolver isn't exposed).
+  const lm = r.loweredModule;
+  const resolver = fixedEval.makeResolver({ loweredModule: lm });
+  typeinfer.inferTypes(lm, { resolveFixed: resolver });
+  const cache = resolver.knownFixed;
+  // `n` should be in the cache (reached via iid(Normal, n) →
+  // resolveIntegerShape → resolver → recurse into n).
+  assert.ok(cache.has('n'),
+    `cache should contain 'n'; entries: ${Array.from(cache.keys())}`);
+  // `unused` should NOT be in the cache — no shape position needs it.
+  assert.ok(!cache.has('unused'),
+    `cache should NOT contain 'unused'; entries: ${Array.from(cache.keys())}`);
+});
+
 test('conformance: const-eval cycle does not crash typeinfer', () => {
   // `a` and `b` mutually reference each other; typeinfer's existing
   // cycle detection should bail with `failed` rather than infinite-

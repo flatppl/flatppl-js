@@ -1,95 +1,166 @@
 'use strict';
 
 // =====================================================================
-// fixed-eval.ts — const-evaluation shim for type/shape inference.
+// fixed-eval.ts — demand-driven const-evaluation for type/shape inference.
 // =====================================================================
 //
 // Engine-concepts §17.4 ("resolve, don't rewrite"): type inference may
-// need to compute fixed-phase values to resolve shape positions
-// (`iid(M, n)`, `cartpow(set, length(data))`, etc.). The actual
-// evaluation work is delegated to the existing deterministic
-// evaluator `sampler.evaluateExpr` — same code path, same arithmetic,
-// no re-implementation. This shim wraps that call with the
-// "try-eval, return undefined on failure" semantics typeinfer needs.
+// need fixed-phase values to fold shape positions. This module is the
+// adapter that lets typeinfer ask "what's the value of this IR?"
+// without itself importing the value-mode evaluator.
 //
-// Why the indirection: typeinfer.ts is independent of value-mode
-// code (it imports only `types.ts` and `builtins.ts`). Letting it
-// `require('./sampler.ts')` would break that layering. Instead, the
-// caller (e.g. analyzer.ts) imports both this shim and typeinfer,
-// then passes the resolver as an optional opt — `flatppl-eval` ↔
-// `flatppl-ir` style dependency-injection, just inside one repo.
+// The resolver is **demand-driven** — equivalent to a query system
+// (rustc / salsa), Haskell lazy evaluation, or Idris/Agda normal-order
+// reduction. Bindings are NOT eagerly evaluated; they're only walked
+// when a shape position transitively needs them. This matters when
+// the module contains expensive fixed-phase work (`A =
+// load_huge_matrix()`, `B = expensive_op(A)`) whose value isn't
+// needed for any shape — we never run it.
 //
-// Per the §17.4 principle: this shim NEVER mutates the IR. It returns
-// values; typeinfer decides what to do with them (typically: embed
-// the literal integer into a type-level shape annotation; never
-// rewrite the source IR).
+// Shape-observer short-circuit: `length(x)` / `lengthof(x)` /
+// `sizeof(x)` are intercepted *before* the operand is evaluated.
+// When the operand is a binding whose inferredType carries a literal
+// shape, the result is read off the TYPE — `sizeof(B)` returns
+// `[m, n]` without ever materialising B. This is the load-bearing
+// optimisation that keeps the const-eval cheap on real models.
+//
+// Why custom evaluator vs delegating everything to
+// `sampler.evaluateExpr`: evaluateExpr walks an IR depth-first; we
+// need to INTERCEPT the walk at shape-observer calls so the operand
+// isn't materialised. Hybrid design: dispatch the recursive walk
+// ourselves; rebuild a synthetic IR with already-evaluated operands
+// as literals; hand THAT to evaluateExpr for the actual op
+// computation. Best of both — evaluateExpr stays the single
+// authority for per-op semantics; the short-circuits live where
+// they're called.
 
 const samplerLib = require('./sampler.ts');
 
 /**
- * Make a resolver callback typeinfer can use to evaluate const
- * expressions on demand. Returns a function `(ir, env) → value | undefined`.
+ * Build a demand-driven const-eval resolver typeinfer can use at
+ * shape positions. Returns a callable `(ir, env?) → value | undefined`.
+ * Undefined means "couldn't statically resolve" — typeinfer treats
+ * that as %dynamic; nothing was rewritten in either case.
  *
- *   - `loweredModule` — the module being inferred, so the resolver
- *     can look up self-refs against bindings it has already
- *     successfully evaluated. Optional — without it, ref lookups
- *     consult only the env arg.
- *   - `baseEnv` — atom-independent env to merge in (session env
- *     from the host, etc.). Optional.
- *
- * The returned resolver carries a `knownFixed` Map on itself so
- * callers (typeinfer) can both consult and grow the cache during
- * a single walk.
+ *   - `loweredModule` — bindings to follow self-refs through; the
+ *     resolver also consults each binding's `inferredType` for the
+ *     shape-observer short-circuit. Optional — without it, only
+ *     self-contained IR (no self-refs) is resolvable.
+ *   - `baseEnv` — atom-independent env (host's session env); merged
+ *     in as the outermost lookup layer. Optional.
  */
 function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
   const loweredModule = opts && opts.loweredModule;
-  const baseEnv = (opts && opts.baseEnv) || {};
-  const knownFixed = new Map<string, any>();
+  const baseEnv: any = (opts && opts.baseEnv) || {};
+  const cache = new Map<string, any>();        // binding name → resolved value (undefined ⇒ couldn't)
+  const visiting = new Set<string>();          // cycle protection
 
-  function tryEval(ir: any, env?: Record<string, any>): any | undefined {
+  function evalIR(ir: any, env?: any): any | undefined {
     if (!ir) return undefined;
-    // Literal short-circuit — no need to dispatch into the full
-    // evaluator for the common case.
     if (ir.kind === 'lit') return ir.value;
-    // Self-ref short-circuit: known bindings come straight from cache.
-    if (ir.kind === 'ref' && ir.ns === 'self' && knownFixed.has(ir.name)) {
-      return knownFixed.get(ir.name);
+    if (ir.kind === 'ref' && ir.ns === 'self') {
+      const name = ir.name;
+      // Ref lookup precedence: caller env > baseEnv > binding cache /
+      // recursive resolution. Caller env wins so a local override
+      // (e.g. axis vars within an aggregate body) is honoured if
+      // typeinfer ever passes one.
+      if (env && Object.prototype.hasOwnProperty.call(env, name)) return env[name];
+      if (Object.prototype.hasOwnProperty.call(baseEnv, name)) return baseEnv[name];
+      return resolveBinding(name);
     }
-    // Otherwise delegate to the existing deterministic evaluator.
-    // The try-catch turns "evaluator threw" (unbound ref, undefined
-    // op, type error) into a clean "couldn't resolve" — typeinfer
-    // falls back to %dynamic rather than crashing.
-    const callEnv: any = Object.assign({}, baseEnv);
-    // Pour knownFixed entries into the env so the evaluator sees
-    // already-resolved self-refs without an extra hop.
-    for (const [k, v] of knownFixed) callEnv[k] = v;
-    if (env) Object.assign(callEnv, env);
-    try {
-      return samplerLib.evaluateExpr(ir, callEnv);
-    } catch {
-      return undefined;
+    if (ir.kind === 'call') {
+      // Shape-observer short-circuit: read the result off the
+      // operand's INFERRED TYPE without recursing into its value.
+      // The single most important pattern for keeping const-eval
+      // cheap (engine-concepts §17.4).
+      const sc = _shapeObserverShortCircuit(ir);
+      if (sc !== undefined) return sc;
+      // General path: evaluate args (recursively, with short-circuits
+      // firing for any sub-expression that hits them), then dispatch
+      // the op via sampler.evaluateExpr on a synthesised IR with
+      // literal operands.
+      return _evalCall(ir, env);
     }
+    return undefined;
   }
 
-  /**
-   * Try to evaluate a binding's RHS and stash the result for later
-   * lookups. Called by typeinfer after each binding's type has been
-   * inferred. No-op (returns undefined) if the RHS can't currently
-   * be resolved (refs to unresolved bindings, etc.).
-   */
-  function tryEvalBinding(name: string): any | undefined {
-    if (knownFixed.has(name)) return knownFixed.get(name);
-    if (!loweredModule) return undefined;
-    const b = loweredModule.bindings && loweredModule.bindings.get(name);
+  function resolveBinding(name: string): any | undefined {
+    if (cache.has(name)) return cache.get(name);
+    if (visiting.has(name)) return undefined;   // cyclic
+    if (!loweredModule || !loweredModule.bindings) return undefined;
+    const b = loweredModule.bindings.get(name);
     if (!b || !b.rhs) return undefined;
-    const v = tryEval(b.rhs);
-    if (v !== undefined) knownFixed.set(name, v);
+    visiting.add(name);
+    const v = evalIR(b.rhs);
+    visiting.delete(name);
+    cache.set(name, v);
     return v;
   }
 
-  (tryEval as any).tryEvalBinding = tryEvalBinding;
-  (tryEval as any).knownFixed = knownFixed;
-  return tryEval as any;
+  // Returns a value when the call is a shape-observer whose operand
+  // has a statically-known shape on its inferredType; otherwise
+  // returns undefined and the caller falls through to general
+  // evaluation.
+  function _shapeObserverShortCircuit(ir: any): any | undefined {
+    if (!Array.isArray(ir.args) || ir.args.length !== 1) return undefined;
+    if (ir.op !== 'length' && ir.op !== 'lengthof' && ir.op !== 'sizeof') return undefined;
+    const arg = ir.args[0];
+    if (!arg || arg.kind !== 'ref' || arg.ns !== 'self') return undefined;
+    const b = loweredModule && loweredModule.bindings && loweredModule.bindings.get(arg.name);
+    const t = b && b.inferredType;
+    if (!t || t.kind !== 'array' || !Array.isArray(t.shape)) return undefined;
+    const allKnown = t.shape.every((d: any) => typeof d === 'number');
+    if (!allKnown) return undefined;
+    if (ir.op === 'sizeof') {
+      // sizeof returns the dim vector as a rank-1 Value (engine
+      // contract §2.1; matches sampler.ARITH_OPS.sizeof).
+      const data = new Float64Array(t.shape.length);
+      for (let i = 0; i < t.shape.length; i++) data[i] = t.shape[i];
+      return { shape: [t.shape.length], data };
+    }
+    return t.shape[0];   // length / lengthof
+  }
+
+  function _evalCall(ir: any, env?: any): any | undefined {
+    const args = ir.args || [];
+    // Evaluate each positional arg recursively; short-circuit on
+    // first failure (`undefined`).
+    const evaledArgs: any[] = new Array(args.length);
+    for (let i = 0; i < args.length; i++) {
+      const v = evalIR(args[i], env);
+      if (v === undefined) return undefined;
+      evaledArgs[i] = v;
+    }
+    // Same for kwargs.
+    let evaledKwargs: Record<string, any> | undefined;
+    if (ir.kwargs) {
+      evaledKwargs = {};
+      for (const k in ir.kwargs) {
+        if (!Object.prototype.hasOwnProperty.call(ir.kwargs, k)) continue;
+        const v = evalIR(ir.kwargs[k], env);
+        if (v === undefined) return undefined;
+        evaledKwargs[k] = v;
+      }
+    }
+    // Synthesise a literal-operand IR and dispatch through
+    // sampler.evaluateExpr. evaluateExpr stays the single authority
+    // for per-op semantics (ARITH_OPS, get/get_field/get0, record,
+    // tuple, polynomial, rand, etc.); we just bypass its operand
+    // walk because we've already done it.
+    const synthArgs = evaledArgs.map((v) => ({ kind: 'lit', value: v }));
+    const synthIR: any = { kind: 'call', op: ir.op, args: synthArgs };
+    if (evaledKwargs) {
+      const sk: Record<string, any> = {};
+      for (const k in evaledKwargs) sk[k] = { kind: 'lit', value: evaledKwargs[k] };
+      synthIR.kwargs = sk;
+    }
+    try { return samplerLib.evaluateExpr(synthIR, baseEnv); }
+    catch { return undefined; }
+  }
+
+  // Test/inspection surface
+  (evalIR as any).knownFixed = cache;
+  return evalIR as any;
 }
 
 module.exports = { makeResolver };
