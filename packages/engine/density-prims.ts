@@ -464,6 +464,246 @@ function _scalarOf(x: any, kernelName: string): number {
 }
 
 // =====================================================================
+// Canonical measurable transports (spec §07 §sec:measure-eval-prims)
+// =====================================================================
+//
+// `builtin_touniform`/`fromuniform` and `builtin_tonormal`/`fromnormal`
+// transport between a kernel's measure and the standard uniform /
+// standard normal reference of matching dimension. Per spec:
+//
+//   • Continuous univariate kernels: touniform = CDF F; fromuniform = F⁻¹.
+//   • Continuous multivariate kernels: measure-specific transport
+//     defined alongside the measure (spec §08). v0.1 implements
+//     MvNormal here (Cholesky-based); others are open follow-ups.
+//   • Discrete kernels: no canonical transport — static error.
+//
+// The four functions are mutually consistent via probit/invprobit:
+//   touniform(x) ≡ invprobit.(tonormal(x))
+//   tonormal(x)  ≡ probit.(touniform(x))     (+ the two inverses)
+// We implement one direction natively per kernel and derive the others
+// from the consistency relations.
+
+// Element-wise Φ (normal CDF) — invprobit(z) — and its inverse Φ⁻¹ —
+// probit(p). Per spec §07 and stdlib convention.
+const _stdlibErfc    = require('@stdlib/math-base-special-erfc');
+const _stdlibErfcinv = require('@stdlib/math-base-special-erfcinv');
+function _normalCdf(z: number): number {
+  // Φ(z) = ½ erfc(-z/√2)
+  return 0.5 * _stdlibErfc(-z / Math.SQRT2);
+}
+function _normalQuantile(p: number): number {
+  // Φ⁻¹(p) = -√2 · erfc⁻¹(2p)
+  return -Math.SQRT2 * _stdlibErfcinv(2 * p);
+}
+
+// Extract the positional param list for a univariate kernel from a
+// kernel_input record. Mirrors `builtinLogdensityof`'s logic; lives
+// here so the transport primitives reuse it. Throws when a required
+// param is missing.
+function _univariateParams(kernelName: string, kernelInput: any, entry: any): any[] {
+  if (kernelName === 'Uniform') {
+    // Uniform's stdlib Ctor takes (a, b); kernel_input.support is the
+    // set object. Accept the same shapes builtinLogdensityof accepts.
+    const s = kernelInput && kernelInput.support;
+    if (Array.isArray(s) && s.length === 2) return [+s[0], +s[1]];
+    if (s && typeof s === 'object' && 'lo' in s && 'hi' in s) return [+s.lo, +s.hi];
+    if (s && typeof s === 'object' && 'a' in s && 'b' in s)   return [+s.a,  +s.b];
+    throw new Error('builtin: Uniform support must be [lo,hi], {lo,hi}, or {a,b}');
+  }
+  const out: any[] = [];
+  for (let i = 0; i < entry.params.length; i++) {
+    const p = entry.params[i];
+    if (kernelInput != null
+        && Object.prototype.hasOwnProperty.call(kernelInput, p)) {
+      out.push(kernelInput[p]);
+    } else if (entry.aliases[p]
+               && kernelInput != null
+               && Object.prototype.hasOwnProperty.call(kernelInput, entry.aliases[p])) {
+      out.push(kernelInput[entry.aliases[p]]);
+    } else {
+      throw new Error(`builtin: '${kernelName}' missing param '${p}'`);
+    }
+  }
+  return out;
+}
+
+// Build a stdlib Ctor-style distribution object for a univariate kernel.
+// Returns null when the entry has no Ctor (no current kernel hits that,
+// but the guard keeps a future engine extension honest).
+function _makeUnivariateCtor(kernelName: string, kernelInput: any): any {
+  const entry = samplerLib._internal.REGISTRY[kernelName];
+  if (!entry || !entry.Ctor) return null;
+  const params = _univariateParams(kernelName, kernelInput, entry);
+  // stdlib Ctors use `new Ctor(...params)`. Our synthetic Ctors are
+  // also called with `new`, so the two paths converge.
+  return new entry.Ctor(...params);
+}
+
+// MvNormal-only multivariate transports. Both consume an n-vector and
+// produce an n-vector; the transport is invertible. mu must be a JS
+// number[] / typed array / Value; cov a square Value.
+function _mvNormalTonormal(x: any, kernelInput: any): any {
+  if (!kernelInput || !('mu' in kernelInput) || !('cov' in kernelInput)) {
+    throw new Error('builtin_tonormal(MvNormal): requires mu and cov');
+  }
+  const muArr = _paramAsNumberArray(kernelInput.mu, 'MvNormal', 'mu');
+  const n = muArr.length;
+  const cov = _paramAsMatrix(kernelInput.cov, 'MvNormal', 'cov');
+  if (cov.shape[0] !== n) {
+    throw new Error(`builtin_tonormal(MvNormal): cov is ${cov.shape[0]}x${cov.shape[1]} `
+      + `but mu has length ${n}`);
+  }
+  const xv = _asVectorOfLength(x, n, 'MvNormal');
+  const L = samplerLib._internal.ARITH_OPS.lower_cholesky(cov);
+  // z = L⁻¹ (x − μ) via forward substitution.
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = xv[i] - muArr[i];
+    for (let k = 0; k < i; k++) s -= L.data[i * n + k] * out[k];
+    out[i] = s / L.data[i * n + i];
+  }
+  return { shape: [n], data: out };
+}
+function _mvNormalFromnormal(z: any, kernelInput: any): any {
+  if (!kernelInput || !('mu' in kernelInput) || !('cov' in kernelInput)) {
+    throw new Error('builtin_fromnormal(MvNormal): requires mu and cov');
+  }
+  const muArr = _paramAsNumberArray(kernelInput.mu, 'MvNormal', 'mu');
+  const n = muArr.length;
+  const cov = _paramAsMatrix(kernelInput.cov, 'MvNormal', 'cov');
+  if (cov.shape[0] !== n) {
+    throw new Error(`builtin_fromnormal(MvNormal): cov is ${cov.shape[0]}x${cov.shape[1]} `
+      + `but mu has length ${n}`);
+  }
+  const zv = _asVectorOfLength(z, n, 'MvNormal');
+  const L = samplerLib._internal.ARITH_OPS.lower_cholesky(cov);
+  // x = μ + L z; L is lower-triangular row-major.
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = muArr[i];
+    for (let k = 0; k <= i; k++) s += L.data[i * n + k] * zv[k];
+    out[i] = s;
+  }
+  return { shape: [n], data: out };
+}
+
+// Multivariate kernels other than MvNormal — transport is spec-defined
+// per measure but not yet implemented in flatppl-js. Surface as a
+// clear "not yet implemented" error rather than the spec's "static
+// error" (a static phase check would belong in the analyzer; for now
+// the runtime is the gate).
+function _multivariateTransportNotImpl(kernelName: string, fn: string): never {
+  throw new Error(`builtin_${fn}: '${kernelName}' transport is spec-defined `
+    + `but not yet implemented in flatppl-js. (MvNormal works; Dirichlet, `
+    + `Wishart, etc. are open follow-ups — see TODO-flatppl-js.md.)`);
+}
+
+// Reject transports on discrete kernels per spec §07 ("use of an
+// undefined transport function is a static error" — we surface at
+// runtime until a static phase check lands).
+function _rejectDiscreteTransport(kernelName: string, fn: string): never {
+  throw new Error(`builtin_${fn}: '${kernelName}' is discrete; the four `
+    + `transport primitives are defined only for continuous kernels (spec §07)`);
+}
+
+/**
+ * builtin_touniform(kernel, kernel_input, x) — transport x from the
+ * kernel's measure to the standard uniform reference.
+ *
+ *   - Continuous univariate kernel: F(x), via the stdlib Ctor's `cdf`.
+ *   - Continuous multivariate kernel: derived from `tonormal` via
+ *     `invprobit` per the spec's consistency relation. MvNormal works
+ *     in v0.1; other multivariate kernels throw "not yet implemented".
+ *   - Discrete kernel: static error.
+ */
+function builtinTouniform(kernelName: string, kernelInput: any, x: any): any {
+  if (kernelName === 'MvNormal') {
+    const z = _mvNormalTonormal(x, kernelInput);
+    // touniform ≡ invprobit ∘ tonormal — elementwise normal CDF.
+    const out = new Float64Array(z.data.length);
+    for (let i = 0; i < z.data.length; i++) out[i] = _normalCdf(z.data[i]);
+    return { shape: z.shape, data: out };
+  }
+  if (isMultivariateKernel(kernelName)) {
+    _multivariateTransportNotImpl(kernelName, 'touniform');
+  }
+  const entry = samplerLib._internal.REGISTRY[kernelName];
+  if (!entry) throw new Error(`builtin_touniform: unknown kernel '${kernelName}'`);
+  if (entry.discrete) _rejectDiscreteTransport(kernelName, 'touniform');
+  const dist = _makeUnivariateCtor(kernelName, kernelInput);
+  if (!dist || typeof dist.cdf !== 'function') {
+    throw new Error(`builtin_touniform: '${kernelName}' has no cdf available`);
+  }
+  return dist.cdf(_scalarOf(x, kernelName));
+}
+
+/**
+ * builtin_fromuniform(kernel, kernel_input, u) — inverse of touniform.
+ *   - Continuous univariate: F⁻¹(u) via stdlib Ctor's `quantile`.
+ *   - MvNormal: fromnormal(probit(u)) elementwise.
+ *   - Other multivariate: not yet implemented.
+ *   - Discrete: static error.
+ */
+function builtinFromuniform(kernelName: string, kernelInput: any, u: any): any {
+  if (kernelName === 'MvNormal') {
+    const uv = _asVectorOfLength(u, _paramAsNumberArray(kernelInput.mu, 'MvNormal', 'mu').length, 'MvNormal');
+    const z = new Float64Array(uv.length);
+    for (let i = 0; i < uv.length; i++) z[i] = _normalQuantile(uv[i]);
+    return _mvNormalFromnormal({ shape: [uv.length], data: z }, kernelInput);
+  }
+  if (isMultivariateKernel(kernelName)) {
+    _multivariateTransportNotImpl(kernelName, 'fromuniform');
+  }
+  const entry = samplerLib._internal.REGISTRY[kernelName];
+  if (!entry) throw new Error(`builtin_fromuniform: unknown kernel '${kernelName}'`);
+  if (entry.discrete) _rejectDiscreteTransport(kernelName, 'fromuniform');
+  const dist = _makeUnivariateCtor(kernelName, kernelInput);
+  if (!dist || typeof dist.quantile !== 'function') {
+    throw new Error(`builtin_fromuniform: '${kernelName}' has no quantile available`);
+  }
+  return dist.quantile(_scalarOf(u, kernelName));
+}
+
+/**
+ * builtin_tonormal(kernel, kernel_input, x) — transport x to standard
+ * normal reference.
+ *   - Univariate continuous: probit(touniform(x)) (consistency relation).
+ *   - MvNormal: L⁻¹(x − μ) directly (the natural form per spec §08).
+ *   - Other multivariate: not yet implemented.
+ *   - Discrete: static error.
+ */
+function builtinTonormal(kernelName: string, kernelInput: any, x: any): any {
+  if (kernelName === 'MvNormal') return _mvNormalTonormal(x, kernelInput);
+  if (isMultivariateKernel(kernelName)) {
+    _multivariateTransportNotImpl(kernelName, 'tonormal');
+  }
+  const entry = samplerLib._internal.REGISTRY[kernelName];
+  if (!entry) throw new Error(`builtin_tonormal: unknown kernel '${kernelName}'`);
+  if (entry.discrete) _rejectDiscreteTransport(kernelName, 'tonormal');
+  const u = builtinTouniform(kernelName, kernelInput, x);
+  return _normalQuantile(+u);
+}
+
+/**
+ * builtin_fromnormal(kernel, kernel_input, z) — inverse of tonormal.
+ *   - Univariate continuous: fromuniform(invprobit(z)).
+ *   - MvNormal: μ + L·z directly.
+ *   - Other multivariate: not yet implemented.
+ *   - Discrete: static error.
+ */
+function builtinFromnormal(kernelName: string, kernelInput: any, z: any): any {
+  if (kernelName === 'MvNormal') return _mvNormalFromnormal(z, kernelInput);
+  if (isMultivariateKernel(kernelName)) {
+    _multivariateTransportNotImpl(kernelName, 'fromnormal');
+  }
+  const entry = samplerLib._internal.REGISTRY[kernelName];
+  if (!entry) throw new Error(`builtin_fromnormal: unknown kernel '${kernelName}'`);
+  if (entry.discrete) _rejectDiscreteTransport(kernelName, 'fromnormal');
+  const u = _normalCdf(_scalarOf(z, kernelName));
+  return builtinFromuniform(kernelName, kernelInput, u);
+}
+
+// =====================================================================
 // Variate-shape lookup for multivariate kernels.
 // =====================================================================
 //
@@ -522,10 +762,16 @@ function multivariateShape(kernelName: string) {
 module.exports = {
   builtinLogdensityof,
   builtinLogdensityofPositional,
+  // FlatPDL canonical transports (spec §07).
+  builtinTouniform,
+  builtinFromuniform,
+  builtinTonormal,
+  builtinFromnormal,
   isBuiltinKernel,
   isMultivariateKernel,
   multivariateShape,
   MV_DENSITY_FNS,
   // Test surface
-  _internal: { logMvGamma, logDetSPD, traceProduct, _logCnLKJ },
+  _internal: { logMvGamma, logDetSPD, traceProduct, _logCnLKJ,
+               _normalCdf, _normalQuantile },
 };

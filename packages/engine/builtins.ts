@@ -134,10 +134,12 @@ const BUILTIN_FUNCTIONS = new Set([
   // Random value generation
   'rngstate', 'rnginit', 'rand',
   // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
-  // `builtin_logdensityof(kernel, kernel_input, x)` is the per-kernel
-  // log-density ABI. Three transport primitives (touniform / tonormal +
-  // inverses) and `builtin_sample` are open follow-ups.
+  // Per-kernel log-density, sampling, and canonical transports to/from
+  // the standard uniform / standard normal references.
   'builtin_logdensityof',
+  'builtin_sample',
+  'builtin_touniform', 'builtin_fromuniform',
+  'builtin_tonormal',  'builtin_fromnormal',
 ]);
 
 // Built-in distribution constructors (kernels)

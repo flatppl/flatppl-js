@@ -428,11 +428,13 @@ const EVALUABLE_OPS = new Set([
   // their inputs. sampler.evaluateCall dispatches each.
   'rnginit', 'rngstate', 'rand',
   // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
-  // `builtin_logdensityof(kernel, kernel_input, x)` is the per-kernel
-  // log-density ABI; dispatch goes through density-prims.ts. The
-  // remaining three transport primitives (touniform / tonormal +
-  // inverses) are open follow-ups.
-  'builtin_logdensityof',
+  // Per-kernel log-density, sampling, and canonical transports to/from
+  // the standard uniform / standard normal references. Dispatch goes
+  // through density-prims.ts (transports / logdensity) and traceeval.ts
+  // (sampling).
+  'builtin_logdensityof', 'builtin_sample',
+  'builtin_touniform', 'builtin_fromuniform',
+  'builtin_tonormal',  'builtin_fromnormal',
   // Shape functions (spec §07 Approximation functions). Pure value
   // ops; kwargs-shaped so they don't fit ARITH_OPS — sampler.evaluateCall
   // dispatches each via a dedicated case.
