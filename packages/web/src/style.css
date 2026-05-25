@@ -312,3 +312,19 @@ html, body {
   min-height: 0;
   min-width: 0;
 }
+
+/* DAG-view hover tooltip — gallery-specific override.
+   The viewer injects its own `<div id="tooltip">` (inside
+   `#flatppl-viewer-root`) and ships matching CSS with `position:
+   absolute`. In the VS Code webview that's fine because the viewer
+   fills the viewport, so the tooltip's viewport-coord math (from
+   `cy.getBoundingClientRect()` + cytoscape's renderedPosition)
+   aligns with the absolute-positioning origin.
+   In the gallery the viewer is embedded inside `.pane-body`, which
+   has `position: relative` — that makes it the containing block for
+   the absolutely-positioned tooltip, and the viewport-coord left/top
+   get applied additively to the pane-body's offset, pushing the
+   tooltip off-screen to the right. Switching to `position: fixed`
+   (always viewport-relative) restores the original math without
+   patching the viewer. */
+#flatppl-viewer-root #tooltip { position: fixed; }

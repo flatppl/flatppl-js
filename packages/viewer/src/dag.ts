@@ -11,6 +11,7 @@
 
 import { updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
+import { renderDoc } from './markdown.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding } from './render-frame.js';
 import type { Ctx } from './types';
@@ -334,9 +335,12 @@ export function initCy(ctx: Ctx) {
     if (!expr && !hasDoc) return;
     // Tooltip shows the existing `label = expr` line on top; the
     // attached doc-comment renders below in dimmer styling (spec §04
-    // §sec:documentation). Tooltip stays plain text — markdown
-    // rendering happens in the VS-Code hover where the host already
-    // does it. Multi-line doc content keeps its line breaks.
+    // §sec:documentation). The doc body goes through marked + Temml
+    // (see markdown.ts) so `**bold**`, lists, code, and math
+    // (`$x$`, `$$…$$`) all render as proper HTML/MathML. The
+    // `label = expr` line stays plain-text (textContent) — there's no
+    // markup expected there and using textContent dodges any
+    // accidental HTML in identifier-derived strings.
     tip.textContent = '';   // clear previous
     if (expr) {
       const exprLine = document.createElement('div');
@@ -347,7 +351,9 @@ export function initCy(ctx: Ctx) {
     if (hasDoc) {
       const docBlock = document.createElement('div');
       docBlock.className = 'tooltip-doc';
-      docBlock.textContent = doc.lines.join('\n');
+      const html = renderDoc(doc);
+      if (html) docBlock.innerHTML = html;
+      else      docBlock.textContent = doc.lines.join('\n');
       tip.appendChild(docBlock);
     }
     tip.style.display = 'block';

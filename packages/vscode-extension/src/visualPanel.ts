@@ -323,6 +323,15 @@ class FlatPPLPanel {
     const viewerUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'viewer.js')
     );
+    // Temml MathML companion stylesheet — sets a font-family chain
+    // over locally-installed math fonts. The accompanying
+    // Temml.woff2 (script-capital font) lives next to it in lib/
+    // and is referenced by a relative URL inside temml.css; the
+    // webview's CSP must permit the same origin for `style-src` and
+    // `font-src` so the link tag loads and the font fetch succeeds.
+    const temmlCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'temml.css')
+    );
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -330,8 +339,9 @@ class FlatPPLPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource} blob:; style-src 'unsafe-inline'; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource};">
+    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource} blob:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource};">
   <title>FlatPPL</title>
+  <link rel="stylesheet" href="${temmlCssUri}">
 </head>
 <body>
   <div id="flatppl-viewer-root"></div>

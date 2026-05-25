@@ -244,11 +244,64 @@ body {
   margin-top: 4px;
   padding-top: 4px;
   border-top: 1px solid var(--vscode-editorHoverWidget-border, #454545);
-  opacity: 0.85;
-  font-style: italic;
+  opacity: 0.95;
   font-family: var(--vscode-font-family, sans-serif);
-  white-space: pre-wrap;
+  /* white-space:normal lets the marked-emitted HTML use its own
+     block-level layout (paragraphs, lists, headings) instead of
+     being treated as a single preformatted line. The doc body can
+     still wrap; the outer #tooltip max-width:400px keeps it
+     bounded. */
+  white-space: normal;
   max-width: 380px;
+}
+/* Tighten the default user-agent margins inside the tooltip — full
+   browser <p>/<h1>/<ul> margins are too generous in a hover popup
+   and push the content off-screen quickly. The selectors stay
+   scoped to #tooltip .tooltip-doc so nothing leaks into the rest
+   of the viewer or the surrounding page. */
+#tooltip .tooltip-doc p,
+#tooltip .tooltip-doc ul,
+#tooltip .tooltip-doc ol,
+#tooltip .tooltip-doc pre {
+  margin: 0.25em 0;
+}
+#tooltip .tooltip-doc h1,
+#tooltip .tooltip-doc h2,
+#tooltip .tooltip-doc h3,
+#tooltip .tooltip-doc h4 {
+  margin: 0.4em 0 0.2em;
+  font-size: 1.05em;
+  font-weight: 600;
+}
+#tooltip .tooltip-doc code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+#tooltip .tooltip-doc pre {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 6px;
+  border-radius: 3px;
+  overflow-x: auto;
+}
+#tooltip .tooltip-doc pre code { background: none; padding: 0; }
+/* MathML rendered by Temml. Inline math inherits surrounding text
+   colour and size; display math is centred with a small vertical
+   margin so it doesn't crowd adjacent prose. */
+#tooltip .tooltip-doc math[display="block"] {
+  display: block;
+  margin: 0.4em 0;
+  text-align: center;
+}
+.tooltip-typst-src {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.95em;
+  white-space: pre-wrap;
+  margin: 0.25em 0;
 }
 #back-btn {
   display: none;

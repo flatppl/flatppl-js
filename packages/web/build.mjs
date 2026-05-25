@@ -71,6 +71,14 @@ const COPY_LIBS = [
   { pkg: 'cytoscape-bubblesets', src: 'cytoscape-bubblesets/build/index.umd.min.js', dst: 'cytoscape-bubblesets.min.js' },
   { pkg: 'cytoscape-layers',     src: 'cytoscape-layers/build/index.umd.min.js',     dst: 'cytoscape-layers.min.js' },
   { pkg: 'echarts',              src: 'echarts/dist/echarts.min.js',                 dst: 'echarts.min.js' },
+  // Temml: MathML styling + the (small, optional) script-capital font.
+  // Temml-Local.css sets a font-family chain that picks up locally-
+  // installed math fonts (Cambria Math / STIX Two Math / Noto Sans
+  // Math / browser default), so no CDN / Google Fonts is involved.
+  // `Temml.woff2` is only fetched if the page actually renders a
+  // `\mathcal{...}` glyph (lazy per @font-face spec); ~9 KB.
+  { pkg: 'temml',                src: 'temml/dist/Temml-Local.css',                  dst: 'temml.css' },
+  { pkg: 'temml',                src: 'temml/dist/Temml.woff2',                      dst: 'Temml.woff2' },
 ];
 
 for (const { pkg, src, dst } of COPY_LIBS) {

@@ -75,6 +75,16 @@ const COPY_LIBS = [
   { pkg: 'cytoscape-bubblesets', src: 'cytoscape-bubblesets/build/index.umd.min.js', dst: 'cytoscape-bubblesets.min.js' },
   { pkg: 'cytoscape-layers',     src: 'cytoscape-layers/build/index.umd.min.js',  dst: 'cytoscape-layers.min.js' },
   { pkg: 'echarts',              src: 'echarts/dist/echarts.min.js',              dst: 'echarts.min.js' },
+  // Temml: MathML styling + the (small, optional) script-capital
+  // font. Loaded by the webview from a `<link>` tag in
+  // src/visualPanel.ts so the DAG hover-tooltip's Temml-emitted
+  // MathML picks up locally-installed math fonts. The CSS itself
+  // ships no @import or external font URL — `Temml.woff2` is the
+  // only external resource, referenced relatively from the CSS, and
+  // it's lazy-loaded only when a `\mathcal{...}` glyph actually
+  // appears. ~16 KB total.
+  { pkg: 'temml',                src: 'temml/dist/Temml-Local.css',                  dst: 'temml.css' },
+  { pkg: 'temml',                src: 'temml/dist/Temml.woff2',                      dst: 'Temml.woff2' },
 ];
 
 for (const { pkg, src, dst } of COPY_LIBS) {
