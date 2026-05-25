@@ -301,6 +301,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // (statically-resolvable when the indexed array's shape is
       // known).
       case 'aggregate': return write(inferAggregate(expr, scopes), expr);
+      // Density-evaluation ops (spec §06 / §07): the inferred type
+      // comes from the static signature, BUT we additionally run the
+      // type-mode consume/rest walker over (measure-IR, variate-type)
+      // to surface shape-mismatched joints / iid lengths / record
+      // fields as parse-time diagnostics rather than runtime
+      // exceptions. Engine-concepts §17.3.
+      case 'logdensityof':
+      case 'densityof':
+      case 'bayesupdate':
+      case 'likelihoodof': {
+        const t = inferGenericCall(expr, scopes);
+        _checkDensityShapes(expr);
+        return write(t, expr);
+      }
       // kernelof and fn are lowered to functionof by lower.js (per
       // spec §sec:kernelof line 421-422 and §sec:fn line 618-628),
       // so we only see functionof here.
@@ -1200,6 +1214,58 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     return T.array(2, [n, n], T.REAL);
   }
 
+  // Density-op shape check: run the type-mode consume/rest walker
+  // over (measure-IR, variate-type) for logdensityof / densityof /
+  // bayesupdate / likelihoodof calls. Surfaces shape mismatches as
+  // parse-time diagnostics. Engine-concepts §17.3 — the type-mode
+  // counterpart to density.ts's runtime empty-rest invariant.
+  //
+  // Op shapes:
+  //   logdensityof(M, x)        — args[0]=M, args[1]=x
+  //   densityof(M, x)            — args[0]=M, args[1]=x
+  //   likelihoodof(K, x)         — args[0]=K (kernel), args[1]=x;
+  //                                 we treat K's signature like M
+  //   bayesupdate(L, prior)      — args[0]=L (likelihood object),
+  //                                 args[1]=prior; the variate type
+  //                                 lives on L, not directly here —
+  //                                 deferred for now.
+  function _checkDensityShapes(expr: any): void {
+    if (expr.op === 'bayesupdate') return;   // see comment above
+    const args = expr.args || [];
+    if (args.length < 2) return;
+    const mIR = args[0];
+    const xT = inferExpr(args[1], []);
+    if (!xT || xT.kind === 'failed' || xT.kind === 'deferred' || xT.kind === 'any') {
+      return;   // can't statically determine variate type
+    }
+    // Resolve measure IR. If args[0] is a self-ref, look up the
+    // binding's RHS (the actual measure expression). Otherwise use
+    // as-is.
+    const measureIR = _resolveMeasureIR(mIR);
+    if (!measureIR) return;   // unresolved ref; defer to runtime
+    const densityPrims = require('./density-prims.ts');
+    const err = densityPrims.staticDensityShapeCheck(measureIR, xT);
+    if (err) {
+      diagnostics.push({
+        severity: 'error',
+        message: expr.op + ': ' + err,
+        loc: expr.loc,
+      });
+    }
+  }
+
+  // For a self-ref to a binding, return that binding's RHS IR (the
+  // measure expression). For an inline measure expression, return
+  // it as-is. Returns null when the ref can't be resolved.
+  function _resolveMeasureIR(ir: any): any {
+    if (!ir) return null;
+    if (ir.kind === 'ref' && ir.ns === 'self') {
+      const b = loweredModule.bindings.get(ir.name);
+      return (b && b.rhs) || null;
+    }
+    return ir;
+  }
+
   // rowstack(vector_of_vectors) / colstack(vector_of_vectors). When
   // the input is an inline vector(vector(...), vector(...), ...)
   // literal, both dims are static — emit the precise [m, n] shape.
@@ -1269,14 +1335,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   function resolveIntegerShape(ir: any): number | null {
     const lit = literalIntFromIR(ir);
     if (lit != null) return lit;
-    // Shape-only short-circuit: `length(x)` / `lengthof(x)` over an
-    // already-typed array reads the leading-axis length from the
-    // type, not the value. The case the principle was built for —
-    // most common shape-determining expression in real models. Per
-    // spec §07, `length`/`lengthof` return the leading-axis size;
-    // `sizeof(x)` returns the *shape vector*, not an integer, so it
-    // belongs to a different (rank-1 integer) shape-resolver path
-    // that hasn't been built yet — leave it to the general resolver.
+    // Shape-only short-circuit: `length(x)` / `lengthof(x)` reads
+    // the leading-axis length from x's inferred type. Works on ANY
+    // x — ref, inline call, anything inferExpr can give a type for.
+    // The principle the engine-concepts §17.4 design was built for
+    // — most common shape-determining expression in real models, and
+    // the only safe way to chain through expensive intermediates.
+    // (`sizeof(x)` returns the shape *vector* and is handled by
+    // resolveIntegerVectorShape, not here.)
     if (ir && ir.kind === 'call'
         && (ir.op === 'length' || ir.op === 'lengthof')
         && Array.isArray(ir.args) && ir.args.length === 1) {

@@ -287,6 +287,19 @@ M = iid(Normal(mu = 0.0, sigma = 1.0), lengthof(A))
     `lengthof should be short-circuited, not dispatched; ops seen: ${JSON.stringify(opsSeen)}`);
 });
 
+test('demand-driven: shape-observer short-circuits non-ref operands too', () => {
+  // Generalised short-circuit: `length(<inline-call>)` reads the
+  // type off the inline-call's meta.type, no recursion into operand.
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+n = lengthof([1.0, 2.0, 3.0, 4.0, 5.0])
+M = iid(Normal(mu = 0.0, sigma = 1.0), n)
+`);
+  const lb = r.loweredModule.bindings.get('M');
+  assert.deepEqual(lb.inferredType.domain.shape, [5],
+    `expected M.domain.shape=[5], got ${JSON.stringify(lb.inferredType.domain.shape)}`);
+});
+
 test('demand-driven: eye(n) folds n via the resolver', () => {
   const engine = require('../index.ts');
   const r = engine.processSource(`
@@ -366,6 +379,76 @@ unused = 42
   // `unused` should NOT be in the cache — no shape position needs it.
   assert.ok(!cache.has('unused'),
     `cache should NOT contain 'unused'; entries: ${Array.from(cache.keys())}`);
+});
+
+// =====================================================================
+// Static density shape diagnostics (engine-concepts §17.3 wiring)
+// =====================================================================
+
+test('static-density: logdensityof with matching shapes → no diagnostic', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+m = Normal(mu = 0.0, sigma = 1.0)
+x = 1.0
+lp = logdensityof(m, x)
+`);
+  const errors = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errors, [],
+    `unexpected errors: ${JSON.stringify(errors)}`);
+});
+
+test('static-density: logdensityof(iid(M, 3), length-5-vector) → static error', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+m = iid(Normal(mu = 0.0, sigma = 1.0), 3)
+x = [1.0, 2.0, 3.0, 4.0, 5.0]
+lp = logdensityof(m, x)
+`);
+  const errors = r.diagnostics.filter((d: any) =>
+    d.severity === 'error' && /3 elements.*5|5.*3 elements/.test(d.message));
+  assert.ok(errors.length > 0,
+    `expected length-mismatch error; got: ${JSON.stringify(r.diagnostics)}`);
+});
+
+test('static-density: logdensityof(joint(...), record-missing-field) → static error', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+m = joint(a = Normal(mu = 0.0, sigma = 1.0), b = Normal(mu = 0.0, sigma = 1.0))
+x = record(a = 1.0)
+lp = logdensityof(m, x)
+`);
+  const errors = r.diagnostics.filter((d: any) =>
+    d.severity === 'error' && /missing field/.test(d.message));
+  assert.ok(errors.length > 0,
+    `expected missing-field error; got: ${JSON.stringify(r.diagnostics)}`);
+});
+
+test('static-density: logdensityof(Normal, record) → static error', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+m = Normal(mu = 0.0, sigma = 1.0)
+x = record(a = 1.0, b = 2.0)
+lp = logdensityof(m, x)
+`);
+  const errors = r.diagnostics.filter((d: any) =>
+    d.severity === 'error' && /scalar leaf/.test(d.message));
+  assert.ok(errors.length > 0,
+    `expected scalar-leaf error; got: ${JSON.stringify(r.diagnostics)}`);
+});
+
+test('static-density: densityof + likelihoodof get checked the same way', () => {
+  const engine = require('../index.ts');
+  for (const op of ['densityof', 'likelihoodof']) {
+    const r = engine.processSource(`
+m = iid(Normal(mu = 0.0, sigma = 1.0), 3)
+x = [1.0, 2.0]
+val = ${op}(m, x)
+`);
+    const errors = r.diagnostics.filter((d: any) =>
+      d.severity === 'error' && /3 elements.*2|2.*3 elements/.test(d.message));
+    assert.ok(errors.length > 0,
+      `${op}: expected length-mismatch error; got: ${JSON.stringify(r.diagnostics)}`);
+  }
 });
 
 test('conformance: const-eval cycle does not crash typeinfer', () => {
