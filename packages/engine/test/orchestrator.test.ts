@@ -3137,11 +3137,13 @@ test('diagnostics: no false positives on ordinary models', () => {
 });
 
 // ---------------------------------------------------------------------
-// #2.5: a fixed-phase array produced by a loosely-typed expression
-// (dotted-broadcast → inferredType 'deferred') must be indistinguishable
-// from a literal fixed array, so the viewer's "route by what it IS"
-// fallback (fixedValues entry is a flat numeric vector → array mode)
-// holds. `tau = (bkg ./ dbkg) .^ 2` vs the literal `dbkg`.
+// #2.5: a fixed-phase array produced by dotted-broadcast must be
+// indistinguishable from a literal fixed array — both at the
+// fixedValues level (rank-1 Value) AND at the inferredType level
+// (array, with the broadcast shape). Before typeinfer learned to
+// handle `broadcast(...)`, this test pinned the deferred fall-through
+// as a workaround; the typeinfer fix landed alongside the FlatPDL
+// refactor and the assertion now pins the tightened type.
 // ---------------------------------------------------------------------
 
 test('fixed dotted-broadcast array == literal fixed array (viewer-routing contract)', () => {
@@ -3166,7 +3168,9 @@ test('fixed dotted-broadcast array == literal fixed array (viewer-routing contra
   }
   assert.ok(Math.abs((tau as any).data[0] - (50 / 3) ** 2) < 1e-9);
   assert.ok(Math.abs((tau as any).data[1] - (52 / 7) ** 2) < 1e-9);
-  // tau's loose static type is exactly why the viewer can't route on it.
-  assert.equal(bindings.get('tau').inferredType.kind, 'deferred');
+  // Both tau and dbkg now infer to array — typeinfer's broadcast
+  // handler propagates the unifying shape so the viewer can route on
+  // the inferred type rather than only on the runtime value shape.
+  assert.equal(bindings.get('tau').inferredType.kind, 'array');
   assert.equal(bindings.get('dbkg').inferredType.kind, 'array');
 });

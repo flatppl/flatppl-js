@@ -285,6 +285,12 @@ function createInferenceContext(loweredModule: any) {
     if (BINARY_ARITH_OPS.has(expr.op)) return write(inferArith2(expr, scopes), expr);
     if (UNARY_ARITH_OPS.has(expr.op))  return write(inferArith1(expr, scopes), expr);
     if (COMPARISON_OPS.has(expr.op))   return write(inferComparison(expr, scopes), expr);
+    // broadcast(fn, A1, A2, ...) propagates the unifying shape of the
+    // data args. Crucial for the viewer's matrix-heatmap dispatch:
+    // a dotted op (`.^ 2`, `.*`, …) lowers to `broadcast(...)`, and
+    // without this fall-through the result inferred as `deferred()`
+    // (so a 3×3 result rendered as a scalar — see TODO §07 broadcast).
+    if (expr.op === 'broadcast') return write(inferBroadcast(expr, scopes), expr);
 
     return write(inferGenericCall(expr, scopes), expr);
   }
@@ -872,6 +878,78 @@ function createInferenceContext(loweredModule: any) {
   // Binary: scalar+scalar → scalar; matching-shape arrays elementwise;
   // scalar/array broadcast. Unary: shape-preserving. Comparisons
   // produce boolean of the broadcast shape.
+
+  // broadcast(fn, A1, A2, …) — propagates the broadcast shape of the
+  // data args AND the function's per-element result type. The function
+  // arg supplies the elementwise op (value-fn or kernel constructor;
+  // see spec §04 higher-order). Element type comes from inferring the
+  // function body / kernel signature; shape from unifying the data
+  // args via the same broadcast rule `unifyArith` already implements.
+  //
+  // Why a custom handler vs SIGNATURE_FACTORIES: a static signature
+  // can't express "result type tracks the unifying broadcast shape
+  // of the variadic data args" without ad-hoc per-call work.
+  function inferBroadcast(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length < 2) return T.deferred();
+    // Data-arg shape unify (args[0] is the callable; args[1..] data).
+    let s = new Map();
+    let acc: any = null;
+    for (let i = 1; i < args.length; i++) {
+      const t: any = inferExpr(args[i], scopes);
+      if (t.kind === 'failed') return T.failed('broadcast cascade');
+      if (acc == null) { acc = t; continue; }
+      const r: any = T.unifyArith(acc, t, s);
+      if (r == null) return T.deferred();
+      s = r.subst || s;
+      acc = r.result;
+    }
+    if (!acc) return T.deferred();
+    // Per-element result type. Two callable shapes the lowerer
+    // produces: a synthetic `functionof` (dotted operators, fn(...)),
+    // and a bare distribution name (kernel-broadcast — spec §04
+    // higher-order, e.g. `broadcast(Gamma, ...)`). For the former we
+    // infer the body's type; for the latter we look up the kernel
+    // signature's result. Anything else falls back to deferred so the
+    // existing fall-through behavior preserves.
+    const fn = args[0];
+    let elem: any = T.deferred();
+    if (fn && fn.kind === 'call' && fn.op === 'functionof'
+        && fn.body && Array.isArray(fn.params)) {
+      // Build a local scope binding each `%local._argN_` to the
+      // matching data-arg's element type (scalar lift of acc). Scope
+      // entries are Maps (inferRef looks up via .has/.get).
+      const localScope = new Map<string, any>();
+      const elemOf = (t: any) => (t && t.kind === 'array') ? t.elem : t;
+      for (let i = 0; i < fn.params.length && i + 1 < args.length; i++) {
+        localScope.set(fn.params[i], elemOf(inferExpr(args[i + 1], scopes)));
+      }
+      elem = inferExpr(fn.body, scopes.concat([localScope]));
+    } else {
+      // Any other function shape — bare-ref to a built-in distribution
+      // (`broadcast(Gamma, ...)`), bare-ref to a user kernel
+      // (`broadcast(K, ...)`), anything dynamic — stays on the
+      // conservative defer. Kernel-broadcast results are semantically
+      // arrays of measures; downstream consumers (`joint(name =
+      // broadcast(K, ...))`, `draw(broadcast(K, ...))`) accept them
+      // via the deferred passthrough. Tightening to `array(measure)`
+      // would need `joint`/`draw` to accept arrays of measures
+      // explicitly — a separate refactor.
+      return T.deferred();
+    }
+    // Defensive: if the body type came back as measure-shaped, stay
+    // on the deferred passthrough (same reasoning).
+    if (elem && elem.kind === 'measure') return T.deferred();
+    // Combine the broadcast shape with the per-element type.
+    if (acc.kind === 'array') {
+      return T.array(acc.rank, acc.shape.slice(),
+        (elem && elem.kind !== 'deferred') ? elem : T.REAL);
+    }
+    if (acc.kind === 'scalar') {
+      return (elem && elem.kind !== 'deferred') ? elem : T.REAL;
+    }
+    return acc;
+  }
 
   function inferArith2(expr: any, scopes: any): any {
     const args = expr.args || [];
