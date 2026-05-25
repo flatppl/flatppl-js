@@ -5824,6 +5824,29 @@ function evaluateCall(ir: any, env: any): any {
   if (op === 'rand') {
     return evaluateRand(ir, env);
   }
+  // builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive,
+  // spec §07 §sec:measure-eval-prims. The single per-kernel
+  // log-density ABI: dispatch lives in `density-prims.ts`'s
+  // `builtinLogdensityof`. `kernel` resolves to a bare distribution
+  // name via three accepted IR shapes:
+  //   - {kind:'lit', value:'Normal'}              — string-literal name
+  //   - {kind:'call', op:'Normal', args:[]}        — no-arg kernel call
+  //   - {kind:'ref', name:'Normal'}               — bare identifier
+  //     (only when the name is a known distribution; the lowerer
+  //     leaves bare distribution names as refs)
+  // `kernel_input` is a record matching the kernel's kwarg interface.
+  if (op === 'builtin_logdensityof') {
+    const args = ir.args || [];
+    if (args.length !== 3) {
+      throw new Error(`evaluateExpr: builtin_logdensityof expects 3 args `
+        + `(kernel, kernel_input, x), got ${args.length}`);
+    }
+    const kernelName = _resolveKernelName(args[0], env);
+    const kernelInput = evaluateExpr(args[1], env);
+    const x = evaluateExpr(args[2], env);
+    const densityPrims = require('./density-prims.ts');
+    return densityPrims.builtinLogdensityof(kernelName, kernelInput, x);
+  }
   // Calls to other built-ins, user-defined functions, etc. aren't expected
   // inside distribution parameters in the visualizer's scope. The
   // orchestrator should pre-evaluate those and supply concrete numbers
@@ -5887,6 +5910,35 @@ function evaluateRand(ir: any, env: any): any {
   }
   const r: any = getTraceeval().walk(state, args[1], env, opts);
   return [r.value, r.state];
+}
+
+// Resolve the `kernel` arg of `builtin_logdensityof(kernel, …)` to a
+// bare distribution name. Per spec §07 §sec:measure-eval-prims, kernel
+// is a built-in kernel constructor (the spec restricts to built-ins; an
+// arbitrary measure expression is disallowed). We accept the three
+// shapes the lowerer can produce:
+//   - {kind:'lit', value:'<name>'}              — string literal
+//   - {kind:'call', op:'<name>', args:[…]}       — kernel call (we
+//     read the op; any args/kwargs on this node are ignored because the
+//     `kernel_input` arg carries the real input)
+//   - {kind:'ref', name:'<name>'}                — bare identifier
+// `<name>` must be a known kernel (REGISTRY entry or a multivariate
+// MV_DENSITY_FNS entry); anything else is rejected.
+function _resolveKernelName(ir: any, _env: any): string {
+  if (!ir) throw new Error('builtin_logdensityof: kernel arg is missing');
+  let name: string | null = null;
+  if (ir.kind === 'lit' && typeof ir.value === 'string') name = ir.value;
+  else if (ir.kind === 'call' && typeof ir.op === 'string') name = ir.op;
+  else if (ir.kind === 'ref' && typeof ir.name === 'string') name = ir.name;
+  if (name == null) {
+    throw new Error('builtin_logdensityof: kernel must be a bare distribution name, '
+      + `got IR kind=${ir.kind}`);
+  }
+  const densityPrims = require('./density-prims.ts');
+  if (!densityPrims.isBuiltinKernel(name)) {
+    throw new Error(`builtin_logdensityof: '${name}' is not a known built-in kernel`);
+  }
+  return name;
 }
 
 function lookupDistribution(measureIR: any) {

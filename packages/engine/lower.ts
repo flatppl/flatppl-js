@@ -111,7 +111,7 @@ import type { IRNode } from './engine-types';
 
 const builtins = require('./builtins.ts');
 
-const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS } = builtins;
+const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS, DISTRIBUTIONS } = builtins;
 
 // ---------------------------------------------------------------------
 // Public API
@@ -428,6 +428,9 @@ function _lowerCallExpr(node: any, ctx: any): any {
   if (calleeName === 'broadcast') {
     return _lowerBroadcast(node, ctx);
   }
+  if (calleeName === 'builtin_logdensityof') {
+    return _lowerBuiltinLogdensityof(node, ctx);
+  }
 
   // General call: built-in (we know its name) vs user-defined (we don't).
   // The analyzer's collected `definedNames` set could refine this, but
@@ -525,6 +528,41 @@ function _lowerBroadcast(node: any, ctx: any) {
 // We track BOTH the param name (visible as `%local` inside the body) and
 // the surface kwarg name (used by callers at callsites). They differ for
 // placeholder-form params and coincide for identifier-form params.
+
+// builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive,
+// spec §07 §sec:measure-eval-prims. The first arg must be a bare
+// distribution Identifier (built-in kernel constructor — `Normal`,
+// `MvNormal`, …); lower it to a `{kind:'lit', value:<name>}` so the
+// analyzer doesn't see it as an undefined variable and the evaluator
+// can read the kernel name directly without resolving a ref. The
+// other two args lower normally.
+function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
+  const args = node.args || [];
+  if (args.length !== 3) {
+    throw new Error(`lower: builtin_logdensityof expects 3 positional `
+      + `arguments (kernel, kernel_input, x), got ${args.length}`);
+  }
+  for (const a of args) {
+    if (a.type === 'KeywordArg') {
+      throw new Error('lower: builtin_logdensityof does not accept keyword arguments');
+    }
+  }
+  const kernelArg = args[0];
+  if (kernelArg.type !== 'Identifier' || !DISTRIBUTIONS.has(kernelArg.name)) {
+    throw new Error('lower: builtin_logdensityof: kernel argument must be a built-in '
+      + 'distribution name (e.g. Normal, MvNormal); got '
+      + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+  }
+  return {
+    kind: 'call', op: 'builtin_logdensityof',
+    args: [
+      { kind: 'lit', value: kernelArg.name, loc: kernelArg.loc },
+      _lowerExpr(args[1], ctx),
+      _lowerExpr(args[2], ctx),
+    ],
+    loc: node.loc,
+  };
+}
 
 function _lowerReification(op: string, node: any, ctx: any): any {
   const args = node.args;

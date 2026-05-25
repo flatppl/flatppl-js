@@ -1081,6 +1081,20 @@ const SIGNATURE_FACTORIES = {
     kwargs: {},
     result: REAL,
   }),
+  // builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive
+  // (spec §07 §sec:measure-eval-prims). Per-kernel log-density ABI:
+  // direct dispatch to the kernel formula, no measure algebra. The
+  // kernel arg is lowered to a string-lit kernel name (see
+  // `_lowerBuiltinLogdensityof`), kernel_input is a record matching
+  // the kernel's kwarg interface, x's type is the kernel's variate.
+  // Loose typing for the kernel_input record (kernel-dependent) and
+  // for x; tightening these would require per-kernel arg dispatch
+  // mirroring SIGNATURE_FACTORIES, an open follow-up.
+  builtin_logdensityof: () => ({
+    args: [any(), any(), any()],
+    kwargs: {},
+    result: REAL,
+  }),
   // truncate(M, S) — restricts the support of measure M to set S.
   // Per spec §06: ν(A) = M(A ∩ S). Does NOT normalize, so the
   // resulting measure's totalmass shrinks to M(S). The set argument

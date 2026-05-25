@@ -133,6 +133,11 @@ const BUILTIN_FUNCTIONS = new Set([
   'polynomial', 'bernstein', 'stepwise',
   // Random value generation
   'rngstate', 'rnginit', 'rand',
+  // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
+  // `builtin_logdensityof(kernel, kernel_input, x)` is the per-kernel
+  // log-density ABI. Three transport primitives (touniform / tonormal +
+  // inverses) and `builtin_sample` are open follow-ups.
+  'builtin_logdensityof',
 ]);
 
 // Built-in distribution constructors (kernels)

@@ -61,8 +61,7 @@ import type { IRNode } from './engine-types';
 
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
-const stdlibGammaln  = require('@stdlib/math-base-special-gammaln');
-const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
+const densityPrims = require('./density-prims.ts');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -262,50 +261,6 @@ function consumeMatrix(value: any, n: any) {
     + (typeof value));
 }
 
-// log multivariate gamma function (Γ_p(a)) for natural-number p.
-//   log Γ_p(a) = (p(p-1)/4) log π + Σ_{i=1..p} log Γ(a + (1-i)/2)
-function logMvGamma(p: any, a: any) {
-  let s = (p * (p - 1) / 4) * Math.log(Math.PI);
-  for (let i = 1; i <= p; i++) {
-    s += stdlibGammaln(a + (1 - i) / 2);
-  }
-  return s;
-}
-
-// log determinant of a square matrix via lower Cholesky (returns null
-// if not positive-definite). Returns log|A| = 2 * Σ log L_ii.
-function logDetSPD(A: any) {
-  const sampler = require('./sampler.ts');
-  try {
-    const L = sampler._internal.ARITH_OPS.lower_cholesky(A);
-    const n = L.shape[0];
-    let ld = 0;
-    for (let i = 0; i < n; i++) {
-      const lii = L.data[i * n + i];
-      if (!(lii > 0)) return null;
-      ld += Math.log(lii);
-    }
-    return 2 * ld;
-  } catch {
-    return null;
-  }
-}
-
-// log trace(A · B) for n×n Values A, B (sum over i of (A·B)_{ii}).
-// Equivalent to elementwise sum(A * B^T).
-function logTraceProduct(A: any, B: any) {
-  // Not log — just trace(A · B); we name it logTraceProduct since it's
-  // used inside log densities. Return the trace itself.
-  const n = A.shape[0];
-  let tr = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      tr += A.data[i * n + j] * B.data[j * n + i];
-    }
-  }
-  return tr;
-}
-
 /**
  * Pull a single named field from a record `value`. Returns
  * { head: value[name], rest } where rest is a shallow copy of value
@@ -418,7 +373,15 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   // the value, then loop atoms resolving params and adding logpdf to
   // acc[i]. consumeScalar is atom-independent (head + rest are derived
   // from `value`, which is shared).
+  //
+  // FlatPDL note (spec §07 §sec:measure-eval-prims, engine-concepts §13.6):
+  // per-atom dispatch routes through `densityPrims.builtinLogdensityofPositional`
+  // so the leaf path explicitly names the FlatPDL primitive — same
+  // numbers as `entry.logpdfFn(head, ...params)`, but the primitive
+  // is the cross-engine ABI any future codegen path lowers to.
   const entry = samplerLib.lookupDistribution(ir);
+  const kernelName: string = (ir as any).op;
+  const blp = densityPrims.builtinLogdensityofPositional;
   const refNames = Object.keys(refArrays);
   const overlayKeys = overlay ? Object.keys(overlay) : null;
 
@@ -438,7 +401,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
     if (refNames.length === 0 && !overlayKeys) {
       const params = samplerLib.resolveParams(ir, entry, baseEnv);
       for (let i = 0; i < N; i++) {
-        acc[i] += entry.logpdfFn(ptAt(i), ...params);
+        acc[i] += blp(kernelName, params, ptAt(i));
       }
       return null;
     }
@@ -459,7 +422,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
         }
       }
       const params = samplerLib.resolveParams(ir, entry, callEnv);
-      acc[i] += entry.logpdfFn(ptAt(i), ...params);
+      acc[i] += blp(kernelName, params, ptAt(i));
     }
     return null;
   }
@@ -469,7 +432,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   // atoms. Resolve once, broadcast.
   if (refNames.length === 0 && !overlayKeys) {
     const params = samplerLib.resolveParams(ir, entry, baseEnv);
-    const logp = entry.logpdfFn(head, ...params);
+    const logp = blp(kernelName, params, head);
     for (let i = 0; i < N; i++) acc[i] += logp;
     return rest;
   }
@@ -519,7 +482,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
       }
     }
     const params = samplerLib.resolveParams(ir, entry, callEnv);
-    acc[i] += entry.logpdfFn(head, ...params);
+    acc[i] += blp(kernelName, params, head);
   }
   return rest;
 }
@@ -967,15 +930,182 @@ const OP_HANDLERS = {
   jointchain:  walkJointchainStub,
   pushfwd:     walkPushfwd,
   select:      walkSelect,
-  MvNormal:    walkMvNormal,
-  Dirichlet:   walkDirichlet,
-  Multinomial: walkMultinomial,
-  BinnedPoissonProcess: walkBinnedPoissonProcess,
-  Wishart:        walkWishart,
-  InverseWishart: walkInverseWishart,
-  LKJ:            walkLKJ,
-  LKJCholesky:    walkLKJCholesky,
+  // Multivariate leaves all route through the generic walker that
+  // dispatches into `density-prims.builtinLogdensityof`. Per-kernel
+  // density math lives in density-prims's MV_DENSITY_FNS — the walker
+  // here only handles structural concerns (variate consume/rest,
+  // per-atom vs atom-indep kwarg resolution).
+  MvNormal:             walkMultivariate,
+  Dirichlet:            walkMultivariate,
+  Multinomial:          walkMultivariate,
+  BinnedPoissonProcess: walkMultivariate,
+  Wishart:              walkMultivariate,
+  InverseWishart:       walkMultivariate,
+  LKJ:                  walkMultivariate,
+  LKJCholesky:          walkMultivariate,
 };
+
+// =====================================================================
+// Generic multivariate walker (FlatPDL leaf dispatch, engine-concepts §13.6)
+// =====================================================================
+//
+// Replaces the per-kernel walkMvNormal / walkDirichlet / walkMultinomial /
+// walkBinnedPoissonProcess / walkWishart / walkInverseWishart / walkLKJ /
+// walkLKJCholesky handlers. The structural work is identical across
+// these kernels: consume a leading vector/matrix block off `value`,
+// resolve kernel kwargs, call the FlatPDL primitive
+// `builtinLogdensityof(name, kwRecord, x)`, broadcast into `acc`.
+// The per-kernel density math lives entirely in
+// `density-prims.MV_DENSITY_FNS`; this walker is kernel-agnostic.
+//
+// Per-atom params are supported automatically: when a kwarg expr
+// references a per-atom name from refArrays (or an env-threaded
+// overlay value), kwargs resolve per atom and the primitive is called
+// in a tight loop. This unlocks hierarchical priors over multivariate
+// kernels (e.g. `Sigma ~ Wishart(...); X ~ MvNormal(0, Sigma)`) that
+// the per-kernel walkers couldn't represent.
+function walkMultivariate(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const kernelName: string = (ir as any).op;
+  const shapeDescr = densityPrims.multivariateShape(kernelName);
+  if (!shapeDescr) {
+    throw new Error('density: walkMultivariate called with non-multivariate kernel '
+      + kernelName);
+  }
+  const kwargsIR: Record<string, any> = (ir as any).kwargs || {};
+  const refNames = refArrays ? Object.keys(refArrays) : [];
+  const overlayKeys = overlay ? Object.keys(overlay) : null;
+  // Atom-independent env baseline. Per-atom names get added inside the
+  // per-atom loop below; the atom-indep eval uses baseEnv + overlay only.
+  const atomIndepEnv = Object.assign({}, baseEnv);
+  if (overlayKeys) {
+    for (let j = 0; j < overlayKeys.length; j++) {
+      atomIndepEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+    }
+  }
+  // Per-atom path triggers only when some kwarg expression actually
+  // references a per-atom name; detect this with a free-ref walk.
+  // refArrays-listed names that no kwarg uses don't force the per-atom
+  // path (cf. walkLeaf's same optimisation).
+  const perAtomSet: Record<string, true> = {};
+  for (const k in kwargsIR) {
+    if (Object.prototype.hasOwnProperty.call(kwargsIR, k)
+        && _exprUsesAny(kwargsIR[k], refNames)) {
+      perAtomSet[k] = true;
+    }
+  }
+  const perAtomKwKeys = Object.keys(perAtomSet);
+  const anyKwUsesPerAtom = perAtomKwKeys.length > 0;
+  // Resolve the atom-independent kwargs once. Per-atom kwargs stay as
+  // IR and get evaluated inside the per-atom loop. We need to compute
+  // the variate shape `n` BEFORE consuming from `value`; the shape's
+  // controlling kwarg (per shapeDescr.sizeFrom) may itself be per-atom
+  // — in that case we resolve it once against atom-0's env to read n,
+  // assuming variate shape is structurally fixed (the only sane
+  // case — the IR-shape is static).
+  const kwInit: Record<string, any> = {};
+  for (const k in kwargsIR) {
+    if (Object.prototype.hasOwnProperty.call(kwargsIR, k) && !perAtomSet[k]) {
+      kwInit[k] = samplerLib.evaluateExpr(kwargsIR[k], atomIndepEnv);
+    }
+  }
+  // For per-atom kwargs we still need ENOUGH to derive `n`. Evaluate
+  // the per-atom kwargs against atom 0's env into a shape-probe record.
+  let kwForSize: Record<string, any> = kwInit;
+  if (anyKwUsesPerAtom) {
+    const probeEnv = Object.assign({}, baseEnv);
+    if (overlayKeys) {
+      for (let j = 0; j < overlayKeys.length; j++) {
+        probeEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+      }
+    }
+    for (let j = 0; j < refNames.length; j++) {
+      const v = refArrays[refNames[j]];
+      probeEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, 0) : v[0];
+    }
+    kwForSize = Object.assign({}, kwInit);
+    for (let j = 0; j < perAtomKwKeys.length; j++) {
+      const k = perAtomKwKeys[j];
+      kwForSize[k] = samplerLib.evaluateExpr(kwargsIR[k], probeEnv);
+    }
+  }
+  const n = shapeDescr.sizeFrom(kwForSize);
+  const { head, rest } = (shapeDescr.kind === 'vector')
+    ? consumeVector(value, n) : consumeMatrix(value, n);
+  if (!anyKwUsesPerAtom) {
+    const lp = densityPrims.builtinLogdensityof(kernelName, kwInit, head);
+    for (let i = 0; i < N; i++) acc[i] += lp;
+    return rest;
+  }
+  // Per-atom path.
+  const callEnv = Object.assign({}, baseEnv);
+  if (overlayKeys) {
+    for (let j = 0; j < overlayKeys.length; j++) {
+      callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+    }
+  }
+  const kwForAtom = Object.assign({}, kwInit);
+  // Reuse atom-0 resolution we already computed for the size probe.
+  for (let j = 0; j < perAtomKwKeys.length; j++) {
+    kwForAtom[perAtomKwKeys[j]] = kwForSize[perAtomKwKeys[j]];
+  }
+  for (let j = 0; j < refNames.length; j++) {
+    const v = refArrays[refNames[j]];
+    callEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, 0) : v[0];
+  }
+  acc[0] += densityPrims.builtinLogdensityof(kernelName, kwForAtom, head);
+  for (let i = 1; i < N; i++) {
+    for (let j = 0; j < refNames.length; j++) {
+      const v = refArrays[refNames[j]];
+      callEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
+    }
+    if (overlayKeys) {
+      for (let j = 0; j < overlayKeys.length; j++) {
+        callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+      }
+    }
+    for (let j = 0; j < perAtomKwKeys.length; j++) {
+      const k = perAtomKwKeys[j];
+      kwForAtom[k] = samplerLib.evaluateExpr(kwargsIR[k], callEnv);
+    }
+    acc[i] += densityPrims.builtinLogdensityof(kernelName, kwForAtom, head);
+  }
+  return rest;
+}
+
+// Per-atom slice of a Value: rank-1 yields a scalar number, rank≥2
+// yields a Value of one rank lower (data shares storage).
+function _atomSlice(v: any, i: number): any {
+  if (v.shape.length === 1) return v.data[i];
+  const tail = v.shape.slice(1);
+  const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
+  return { shape: tail, data: v.data.subarray(i * tailLen, (i + 1) * tailLen) };
+}
+
+// Cheap structural walk: does `ir` (a kwarg expression) reference any
+// name in `nameSet`? Used to decide whether the multivariate walker
+// can stay on the atom-indep hot path.
+function _exprUsesAny(ir: any, names: string[]): boolean {
+  if (!ir || typeof ir !== 'object') return false;
+  if (ir.kind === 'ref' && names.indexOf(ir.name) >= 0) return true;
+  if (Array.isArray(ir.args)) {
+    for (const a of ir.args) if (_exprUsesAny(a, names)) return true;
+  }
+  if (ir.kwargs) {
+    for (const k in ir.kwargs) if (_exprUsesAny(ir.kwargs[k], names)) return true;
+  }
+  if (Array.isArray(ir.fields)) {
+    for (const f of ir.fields) if (_exprUsesAny(f.value, names)) return true;
+  }
+  return false;
+}
+
+function _anyKwUsesPerAtom(kwargsIR: Record<string, any>, refNames: string[]): boolean {
+  for (const k in kwargsIR) {
+    if (Object.prototype.hasOwnProperty.call(kwargsIR, k)
+        && _exprUsesAny(kwargsIR[k], refNames)) return true;
+  }
+  return false;
+}
 
 // ---- Per-atom scalar contribution helpers ---------------------------
 
@@ -985,391 +1115,10 @@ const OP_HANDLERS = {
 // precedence (overlay > refArrays > baseEnv) but enforced inside
 // evaluateExprN.
 // =====================================================================
-// MvNormal — closed-form multivariate Normal density
+// Per-kernel multivariate density walkers have moved to density-prims.ts;
+// dispatch happens through `walkMultivariate` above, which calls into
+// `density-prims.builtinLogdensityof`. See engine-concepts §13.6.
 // =====================================================================
-//
-// Per spec §08: MvNormal(mu, cov) is the n-variate normal with mean
-// vector mu and covariance matrix cov. Density:
-//
-//   log p(x; mu, cov) = -½·n·log(2π) - ½·log|cov| - ½·(x-mu)ᵀ·cov⁻¹·(x-mu)
-//
-// With L = lower_cholesky(cov):
-//
-//   log|cov| = 2·Σ_i log(L_ii)
-//   cov⁻¹·(x-mu) = L⁻ᵀ·L⁻¹·(x-mu)
-//   (x-mu)ᵀ·cov⁻¹·(x-mu) = ‖L⁻¹·(x-mu)‖² = ‖y‖²
-//                          where y is the forward-solve of L·y = x-mu
-//
-// We compute L once (atom-indep) and the Mahalanobis quadratic per
-// atom. For the simplest case — atom-indep mu/cov, atom-shared
-// observation x — the whole logpdf is a single scalar broadcast over
-// the N-atom accumulator. Per-atom obs (e.g. via a vector-valued
-// refArray) is supported by looping over atoms and re-running the
-// forward solve.
-//
-// Atom-batched mu / cov (per-atom parameter pinning) is deferred —
-// it'd require a per-atom Cholesky which doesn't arise in current
-// engine usage (matMvNormal materialises against atom-indep params).
-function walkMvNormal(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const kwargs = ir.kwargs || {};
-  if (!kwargs.mu || !kwargs.cov) {
-    throw new Error('density: MvNormal requires mu and cov kwargs');
-  }
-  // Resolve mu and cov atom-indep. evaluateExpr accepts the baseEnv +
-  // overlay; the IR-level Value-aware mul/add in sampler ensures the
-  // shape-rich paths dispatch correctly.
-  const muEnv = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(muEnv, overlay);
-  const muRaw = samplerLib.evaluateExpr(kwargs.mu, muEnv);
-  const covRaw = samplerLib.evaluateExpr(kwargs.cov, muEnv);
-  // Normalise both to Values.
-  const valueLibLocal = require('./value.ts');
-  const valueOpsLocal = require('./value-ops.ts');
-  const muValue = valueLibLocal.asValue(muRaw);
-  const covValue = Array.isArray(covRaw) && covRaw.length > 0 && Array.isArray(covRaw[0])
-    ? valueOpsLocal._nestedToValue(covRaw)
-    : valueLibLocal.asValue(covRaw);
-  if (muValue.shape.length !== 1) {
-    throw new Error('density: MvNormal mu must be a vector, got shape='
-      + JSON.stringify(muValue.shape));
-  }
-  const n = muValue.shape[0];
-  if (covValue.shape.length !== 2 || covValue.shape[0] !== n || covValue.shape[1] !== n) {
-    throw new Error('density: MvNormal cov must be ' + n + 'x' + n
-      + ', got shape=' + JSON.stringify(covValue.shape));
-  }
-  // Cholesky.
-  const L = samplerLib._internal.ARITH_OPS.lower_cholesky(covValue);
-  // log|cov| = 2 * sum_i log(L_ii). L is shape=[n, n] row-major.
-  let logDet = 0;
-  for (let i = 0; i < n; i++) logDet += Math.log(L.data[i * n + i]);
-  logDet *= 2;
-  const logNormConst = -0.5 * (n * Math.log(2 * Math.PI) + logDet);
-  // Consume the observation vector: length-n head off the value.
-  const { head: x, rest } = consumeVector(value, n);
-  // Mahalanobis^2 = ‖L⁻¹ (x - mu)‖². Atom-indep observation → one
-  // forward solve, scalar broadcast across acc.
-  // (Per-atom obs / params: extend by looping; deferred for now.)
-  const d = new Float64Array(n);
-  for (let i = 0; i < n; i++) d[i] = x[i] - muValue.data[i];
-  // Forward substitution: y_i = (d_i - Σ_{k<i} L_ik y_k) / L_ii.
-  const y = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    let sum = d[i];
-    for (let k = 0; k < i; k++) sum -= L.data[i * n + k] * y[k];
-    y[i] = sum / L.data[i * n + i];
-  }
-  let mahal2 = 0;
-  for (let i = 0; i < n; i++) mahal2 += y[i] * y[i];
-  const logp = logNormConst - 0.5 * mahal2;
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
-
-// =====================================================================
-// Dirichlet — closed-form density on the standard simplex
-// =====================================================================
-//
-// Spec §08: Dirichlet(alpha) has density (w.r.t. Lebesgue on stdsimplex(n)):
-//   log p(x; α) = log Γ(Σα) − Σ log Γ(α_i) + Σ (α_i − 1) log x_i
-//
-// Like MvNormal we resolve α once atom-indep, consume the n-vector
-// observation from `value`, and broadcast a single log-density across
-// atoms. Per-atom α (atom-batched concentration) is deferred — none of
-// the engine's current callers create that shape.
-function walkDirichlet(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const kwargs = ir.kwargs || {};
-  if (!kwargs.alpha) {
-    throw new Error('density: Dirichlet requires alpha kwarg');
-  }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  const alphaRaw = samplerLib.evaluateExpr(kwargs.alpha, env);
-  const alpha: any = valueLib.isValue(alphaRaw)
-    ? Array.from(alphaRaw.data)
-    : Array.from(alphaRaw);
-  const n = alpha.length;
-  if (n < 1) {
-    throw new Error('density: Dirichlet alpha must be non-empty');
-  }
-  let alphaSum = 0;
-  let logBeta = 0;  // log B(α) = Σ log Γ(α_i) − log Γ(Σ α_i)
-  for (let i = 0; i < n; i++) {
-    alphaSum += alpha[i];
-    logBeta  += stdlibGammaln(alpha[i]);
-  }
-  logBeta -= stdlibGammaln(alphaSum);
-  const { head: x, rest } = consumeVector(value, n);
-  // Σ (α_i − 1) log x_i. Outside the simplex (negative or non-summing-
-  // to-1 entries) the density is 0; we treat per-coord violations as
-  // -Infinity to keep walkers composable.
-  let logp = -logBeta;
-  let bad = false;
-  for (let i = 0; i < n; i++) {
-    const xi = +x[i];
-    if (xi <= 0) { bad = true; break; }
-    logp += (alpha[i] - 1) * Math.log(xi);
-  }
-  if (bad) {
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
-
-// =====================================================================
-// Multinomial — closed-form count-vector density
-// =====================================================================
-//
-// Spec §08: Multinomial(n, p) density (w.r.t. iid(Counting(integers), k)):
-//   log p(x; n, p) = log n! − Σ log x_i! + Σ x_i log p_i
-//                  = log Γ(n+1) − Σ log Γ(x_i+1) + Σ x_i log p_i
-// where Σ x_i = n. Returns −∞ if the count vector doesn't sum to n or
-// has negative entries.
-function walkMultinomial(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const kwargs = ir.kwargs || {};
-  if (!('n' in kwargs) || !('p' in kwargs)) {
-    throw new Error('density: Multinomial requires n and p kwargs');
-  }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  const nTotal = +samplerLib.evaluateExpr(kwargs.n, env);
-  const pRaw = samplerLib.evaluateExpr(kwargs.p, env);
-  const p: any = valueLib.isValue(pRaw)
-    ? Array.from(pRaw.data)
-    : Array.from(pRaw);
-  const K = p.length;
-  if (K < 1) {
-    throw new Error('density: Multinomial p must be non-empty');
-  }
-  const { head: x, rest } = consumeVector(value, K);
-  let sumX = 0;
-  let logp = stdlibGammaln(nTotal + 1);
-  let bad = false;
-  for (let i = 0; i < K; i++) {
-    const xi = +x[i];
-    if (xi < 0 || xi !== Math.round(xi)) { bad = true; break; }
-    sumX += xi;
-    logp -= stdlibGammaln(xi + 1);
-    if (xi > 0) {
-      if (p[i] <= 0) { bad = true; break; }
-      logp += xi * Math.log(p[i]);
-    }
-  }
-  if (bad || sumX !== nTotal) {
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
-
-// =====================================================================
-// BinnedPoissonProcess — sum of independent Poisson log-pmfs
-// =====================================================================
-//
-// Spec §08: BinnedPoissonProcess(bins, intensity) is the pushforward of
-// PoissonProcess(intensity) through bincounts(bins, _). The matrials
-// path (matBinnedPoissonProcess) builds a per-bin rate vector and runs
-// K independent Poissons. Closed-form density for that direct form is
-// just the sum of Poisson(rate_k) log-pmfs over k. The current engine
-// shape is the direct one — `intensity` is a pre-computed per-bin rate
-// vector that we resolve once and sum over.
-function walkBinnedPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const kwargs = ir.kwargs || {};
-  // `intensity` is the per-bin rate vector. `bins` is only needed for
-  // sampling; density doesn't use it.
-  if (!kwargs.intensity) {
-    throw new Error('density: BinnedPoissonProcess requires intensity kwarg');
-  }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  const ratesRaw = samplerLib.evaluateExpr(kwargs.intensity, env);
-  // Only the direct (per-bin-rate vector) form is supported by the
-  // density walker today. A measure-typed intensity would require
-  // integrating the intensity over each bin; that path is open.
-  const rates: any = valueLib.isValue(ratesRaw)
-    ? Array.from(ratesRaw.data)
-    : Array.isArray(ratesRaw) ? Array.from(ratesRaw) : null;
-  if (!rates) {
-    throw new Error('density: BinnedPoissonProcess intensity must be a per-bin rate vector'
-      + ' (measure-valued intensity density-evaluation is open work)');
-  }
-  const K = rates.length;
-  const { head: x, rest } = consumeVector(value, K);
-  let logp = 0;
-  let bad = false;
-  for (let k = 0; k < K; k++) {
-    const xk = +x[k];
-    const lambda = +rates[k];
-    if (xk < 0 || xk !== Math.round(xk) || lambda < 0) { bad = true; break; }
-    // Poisson log-pmf: x log λ − λ − log x!
-    if (lambda === 0) {
-      // Zero rate: only x=0 has nonzero mass.
-      if (xk !== 0) { bad = true; break; }
-      // else contributes 0 to logp
-    } else {
-      logp += xk * Math.log(lambda) - lambda - stdlibGammaln(xk + 1);
-    }
-  }
-  if (bad) {
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
-
-// =====================================================================
-// Wishart — closed-form n×n SPD-matrix density
-// =====================================================================
-//
-// Spec §08:
-//   log p(X; ν, V) = (ν − n − 1)/2 · log|X|
-//                  − ½ · tr(V⁻¹ · X)
-//                  − (ν·n / 2) · log 2
-//                  − ν/2 · log|V|
-//                  − log Γ_n(ν/2)
-// where Γ_n is the multivariate gamma function. Atom-indep params,
-// shared observation (single n×n matrix from `value`).
-function walkWishart(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  return _wishartCommon(ir, value, refArrays, N, opts, acc, baseEnv, overlay,
-                         /*invert=*/false);
-}
-function walkInverseWishart(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  return _wishartCommon(ir, value, refArrays, N, opts, acc, baseEnv, overlay,
-                         /*invert=*/true);
-}
-function _wishartCommon(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, invert: any) {
-  const label = invert ? 'InverseWishart' : 'Wishart';
-  const kwargs = ir.kwargs || {};
-  if (!('nu' in kwargs) || !('scale' in kwargs)) {
-    throw new Error('density: ' + label + ' requires nu and scale kwargs');
-  }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  const nu = +samplerLib.evaluateExpr(kwargs.nu, env);
-  const scaleRaw = samplerLib.evaluateExpr(kwargs.scale, env);
-  const sampler = require('./sampler.ts');
-  const valueOps = require('./value-ops.ts');
-  const Vmat = Array.isArray(scaleRaw) && scaleRaw.length > 0 && Array.isArray(scaleRaw[0])
-    ? valueOps._nestedToValue(scaleRaw)
-    : valueLib.asValue(scaleRaw);
-  if (Vmat.shape.length !== 2 || Vmat.shape[0] !== Vmat.shape[1]) {
-    throw new Error('density: ' + label + ' scale must be a square matrix, got shape='
-      + JSON.stringify(Vmat.shape));
-  }
-  const n = Vmat.shape[0];
-  if (!(nu > n - 1)) {
-    // Density is undefined; return -Infinity for all atoms.
-    const { rest } = consumeMatrix(value, n);
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  const { head: Xmat, rest } = consumeMatrix(value, n);
-  const logDetV = logDetSPD(Vmat);
-  const logDetX = logDetSPD(Xmat);
-  if (logDetV == null || logDetX == null) {
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  const Vinv = sampler._internal.ARITH_OPS.inv(Vmat);
-  // Wishart:        log p = (ν-n-1)/2 log|X| − ½ tr(V⁻¹ X) − νn/2 log2 − ν/2 log|V| − log Γ_n(ν/2)
-  // InvWishart Ψ=V: log p = ν/2 log|Ψ| − (ν+n+1)/2 log|X| − ½ tr(Ψ X⁻¹) − νn/2 log2 − log Γ_n(ν/2)
-  const logG = logMvGamma(n, nu / 2);
-  let logp: number;
-  if (!invert) {
-    const tr = logTraceProduct(Vinv, Xmat);
-    logp = (nu - n - 1) / 2 * logDetX
-         - 0.5 * tr
-         - (nu * n / 2) * Math.LN2
-         - (nu / 2) * logDetV
-         - logG;
-  } else {
-    // For InverseWishart Ψ = scale, density uses |Ψ| and tr(Ψ · X⁻¹).
-    // We need X⁻¹.
-    const Xinv = sampler._internal.ARITH_OPS.inv(Xmat);
-    const tr = logTraceProduct(Vmat, Xinv);
-    logp = (nu / 2) * logDetV
-         - (nu + n + 1) / 2 * logDetX
-         - 0.5 * tr
-         - (nu * n / 2) * Math.LN2
-         - logG;
-  }
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
-
-// =====================================================================
-// LKJ / LKJCholesky — closed-form correlation-matrix density
-// =====================================================================
-//
-// Spec §08:
-//   LKJ(n, eta):  p(C) = c_n(η) · det(C)^(η - 1)
-//   LKJCholesky:  p(L) = c_n(η) · Π_{i=2..n} L_ii^(n − i + 2η − 2)
-//
-// Normalization constant (shared, applied as a log):
-//   c_n(η) = 2^Σ_{k=1..n-1}(2η - 2 + n - k)(n - k)
-//          · Π_{k=1..n-1} B(η + (n-k-1)/2, η + (n-k-1)/2)^(n - k)
-//
-// log c_n(η) = log2 · Σ_k (2η - 2 + n - k)(n - k)
-//            + Σ_k (n - k) · 2·log Γ(η + (n-k-1)/2) − log Γ(2η + n-k-1)
-function _logCnLKJ(n: any, eta: any) {
-  let lc = 0;
-  for (let k = 1; k <= n - 1; k++) {
-    const m = n - k;
-    lc += (2 * eta - 2 + m) * m * Math.LN2;
-    const a = eta + (m - 1) / 2;
-    lc += m * (2 * stdlibGammaln(a) - stdlibGammaln(2 * a));
-  }
-  return lc;
-}
-
-function walkLKJ(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const kwargs = ir.kwargs || {};
-  if (!('n' in kwargs) || !('eta' in kwargs)) {
-    throw new Error('density: LKJ requires n and eta kwargs');
-  }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  const nDim = +samplerLib.evaluateExpr(kwargs.n, env);
-  const eta = +samplerLib.evaluateExpr(kwargs.eta, env);
-  const { head: C, rest } = consumeMatrix(value, nDim);
-  const ld = logDetSPD(C);
-  if (ld == null) {
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  const logp = _logCnLKJ(nDim, eta) + (eta - 1) * ld;
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
-
-function walkLKJCholesky(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const kwargs = ir.kwargs || {};
-  if (!('n' in kwargs) || !('eta' in kwargs)) {
-    throw new Error('density: LKJCholesky requires n and eta kwargs');
-  }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  const nDim = +samplerLib.evaluateExpr(kwargs.n, env);
-  const eta = +samplerLib.evaluateExpr(kwargs.eta, env);
-  const { head: L, rest } = consumeMatrix(value, nDim);
-  // p(L) = c_n(η) · Π_{i=2..n} L_ii^(n − i + 2η − 2)
-  // (1-indexed i = 2..n maps to 0-indexed i = 1..n-1.)
-  let logp = _logCnLKJ(nDim, eta);
-  for (let i = 1; i < nDim; i++) {
-    const lii = L.data[i * nDim + i];
-    if (!(lii > 0)) {
-      for (let k = 0; k < N; k++) acc[k] = -Infinity;
-      return rest;
-    }
-    logp += (nDim - (i + 1) + 2 * eta - 2) * Math.log(lii);
-  }
-  for (let i = 0; i < N; i++) acc[i] += logp;
-  return rest;
-}
 
 function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay: any, acc: any, combine: any) {
   const result = samplerLib.evaluateExprN(

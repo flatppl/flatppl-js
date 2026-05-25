@@ -427,6 +427,12 @@ const EVALUABLE_OPS = new Set([
   // ordinary value-typed functions whose phase propagates from
   // their inputs. sampler.evaluateCall dispatches each.
   'rnginit', 'rngstate', 'rand',
+  // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
+  // `builtin_logdensityof(kernel, kernel_input, x)` is the per-kernel
+  // log-density ABI; dispatch goes through density-prims.ts. The
+  // remaining three transport primitives (touniform / tonormal +
+  // inverses) are open follow-ups.
+  'builtin_logdensityof',
   // Shape functions (spec §07 Approximation functions). Pure value
   // ops; kwargs-shaped so they don't fit ARITH_OPS — sampler.evaluateCall
   // dispatches each via a dedicated case.
