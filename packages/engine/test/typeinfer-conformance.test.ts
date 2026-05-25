@@ -382,6 +382,42 @@ unused = 42
 });
 
 // =====================================================================
+// Const-eval shape resolution for cartpow (mirrors iid/zeros/eye)
+// =====================================================================
+
+test('cartpow: literal int dim resolves to concrete shape', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+n = 4
+S = elementof(cartpow(reals, n))
+`);
+  const lb = r.loweredModule.bindings.get('S');
+  assert.equal(lb.inferredType.kind, 'array');
+  assert.deepEqual(lb.inferredType.shape, [4]);
+});
+
+test('cartpow: nested arithmetic ref resolves through const-eval', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+a = 3
+b = a + 1
+S = elementof(cartpow(reals, b))
+`);
+  const lb = r.loweredModule.bindings.get('S');
+  assert.deepEqual(lb.inferredType.shape, [4]);
+});
+
+test('cartpow: lengthof(array) folds via shape-only short-circuit', () => {
+  const engine = require('../index.ts');
+  const r = engine.processSource(`
+data = [1.0, 2.0, 3.0, 4.0, 5.0]
+S = elementof(cartpow(reals, lengthof(data)))
+`);
+  const lb = r.loweredModule.bindings.get('S');
+  assert.deepEqual(lb.inferredType.shape, [5]);
+});
+
+// =====================================================================
 // Static density shape diagnostics (engine-concepts §17.3 wiring)
 // =====================================================================
 

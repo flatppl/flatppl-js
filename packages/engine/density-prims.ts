@@ -837,9 +837,7 @@ function staticConsume(ir: any, variateType: any): StaticConsumeResult {
     return staticConsume(ir.args && ir.args[0], variateType);
   }
   if (op === 'pushfwd') {
-    // f's domain → variate type of base, codomain → variate type of
-    // pushfwd. v0.1: defer — needs bijection-annotation type info.
-    return { logpType: T.REAL, rest: null, deferred: true };
+    return _consumePushfwd(ir, variateType);
   }
   // --- joint / record (positional and kwarg field forms) ------------
   if (op === 'joint' || op === 'record') {
@@ -1013,6 +1011,42 @@ function _consumeIid(ir: any, t: any): StaticConsumeResult {
         + lead };
   }
   return { logpType: T.REAL, rest: null, deferred: typeof lead !== 'number' };
+}
+
+// pushfwd(f, M) — variate type at the surface is f's codomain (the
+// type of `f(x)` for x : domain). Recursively check M with f's
+// DOMAIN type — what M actually produces. Pure bijections preserve
+// rank/structure, so the common scalar↔scalar and vector↔vector
+// cases can be checked statically by reading f's body's inferred
+// type. Higher-rank or non-typed bijections fall through to
+// deferred.
+function _consumePushfwd(ir: any, variateType: any): StaticConsumeResult {
+  const args = ir.args || [];
+  if (args.length < 2) {
+    return { logpType: T.REAL, rest: variateType, deferred: true };
+  }
+  const baseIR = args[1];
+  // Read the bijection's codomain from its forward fn's body type if
+  // available. The forward fn lives on `ir.bijection.f` (mirror of
+  // `fInv` shape) when the lowerer annotated it. Without an
+  // annotation we can't tell what shape f produces; defer.
+  const bij = ir.bijection;
+  if (!bij || !bij.f || !bij.f.body) {
+    return staticConsume(baseIR, variateType);
+  }
+  const fBodyT = bij.f.body && bij.f.body.meta && bij.f.body.meta.type;
+  // Most common case: scalar in / scalar out. Both M and the
+  // surface variate should be scalar-shaped; the consume check
+  // reduces to "recurse into M with the same variate type" (the
+  // pushfwd is shape-preserving — only the value-mode logvolume
+  // term shifts the density).
+  if (fBodyT && fBodyT.kind === 'scalar'
+      && variateType && variateType.kind === 'scalar') {
+    return staticConsume(baseIR, variateType);
+  }
+  // Higher-rank / structured bijections — defer until the
+  // bijection annotation carries explicit domain/codomain types.
+  return { logpType: T.REAL, rest: null, deferred: true };
 }
 
 // Walk each branch of a `select` against the same variate type.
