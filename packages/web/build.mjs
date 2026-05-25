@@ -31,7 +31,7 @@
 //   npm run watch         # rebuild engine bundles on source changes
 
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, watch as fsWatch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -133,20 +133,23 @@ const SRC_BUNDLE_ENTRIES = new Set([
   'codemirror-bundle-entry.ts',
 ]);
 
-const SRC_FILES = await readdir(join(here, 'src'));
-for (const name of SRC_FILES) {
-  if (SRC_BUNDLE_ENTRIES.has(name)) continue;
+// Per-file transpile-or-copy: each script in src/ is loaded by the page
+// as a plain <script src="...">, NOT as an ES module — so the build
+// output must keep file boundaries (one .ts → one .js) rather than
+// bundling cross-file imports. The IIFEs inside each file install
+// their exports onto window.FlatPPL* globals; that contract stays
+// intact because esbuild.transform only strips the types. Non-.ts
+// assets (index.html, style.css, …) are copied verbatim. Returns
+// false if the entry was skipped (bundle entry, .d.ts, missing file).
+async function transpileOrCopySrcFile(name) {
+  if (SRC_BUNDLE_ENTRIES.has(name)) return false;
   // Ambient declaration files have no runtime output — they're for tsc
   // only. Skip them so dist/ doesn't get a meaningless `.d.js` sibling.
-  if (name.endsWith('.d.ts')) continue;
+  if (name.endsWith('.d.ts')) return false;
+  const srcPath = join(here, 'src', name);
+  if (!existsSync(srcPath)) return false;
   if (name.endsWith('.ts')) {
-    // Per-file transpile: each script in src/ is loaded by the page as
-    // a plain <script src="...">, NOT as an ES module — so the build
-    // output must keep file boundaries (one .ts → one .js) rather than
-    // bundling cross-file imports. The IIFEs inside each file install
-    // their exports onto window.FlatPPL* globals; that contract stays
-    // intact because esbuild.transform only strips the types.
-    const src = await readFile(join(here, 'src', name), 'utf8');
+    const src = await readFile(srcPath, 'utf8');
     const result = await esbuild.transform(src, {
       loader: 'ts',
       target: 'es2020',
@@ -156,9 +159,15 @@ for (const name of SRC_FILES) {
     await writeFile(join(distDir, outName), result.code);
     console.log(`  transpiled src/${name} -> dist/${outName}`);
   } else {
-    await copyFile(join(here, 'src', name), join(distDir, name));
+    await copyFile(srcPath, join(distDir, name));
     console.log(`  copied src/${name} -> dist/${name}`);
   }
+  return true;
+}
+
+const SRC_FILES = await readdir(join(here, 'src'));
+for (const name of SRC_FILES) {
+  await transpileOrCopySrcFile(name);
 }
 
 // ---------------------------------------------------------------------
@@ -166,11 +175,24 @@ for (const name of SRC_FILES) {
 //    feature tests, etc.) Recursive copy so subdirectories under demo/
 //    are preserved.
 
-if (existsSync(join(here, 'demo'))) {
-  await rm(join(distDir, 'demo'), { recursive: true, force: true });
+async function syncDemoTree({ clean = true } = {}) {
+  if (!existsSync(join(here, 'demo'))) return;
+  // Avoid removing dist/demo when called from the watcher — serve.mjs
+  // holds a recursive fs.watch on dist/demo for the live-reload SSE
+  // channel, and that watcher dies (ENOENT) if its target briefly
+  // disappears. At startup the directory may already have been
+  // cleaned out together with the rest of dist/ (`rm -rf dist`), so
+  // a fresh full build still starts from scratch.
+  if (clean) await rm(join(distDir, 'demo'), { recursive: true, force: true });
   await copyDirRecursive(join(here, 'demo'), join(distDir, 'demo'));
   console.log('  copied demo/ -> dist/demo/');
 }
+
+// Skip the rm at startup when running under --watch — serve.mjs's
+// recursive watcher on dist/ doesn't survive `rm -rf` of any
+// subdirectory. The watcher rebuild path passes `clean: false`
+// for the same reason.
+await syncDemoTree({ clean: !WATCH });
 
 // ---------------------------------------------------------------------
 // 5. Sync flatppl-examples (canonical public examples) into dist/examples/.
@@ -266,6 +288,39 @@ if (WATCH) {
   console.log('  bundled viewer        -> dist/vendor/viewer.js');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
                      codemirrorCtx.watch(), viewerCtx.watch()]);
+
+  // esbuild's context.watch() only re-fires the four bundles above.
+  // The src/ transpile-or-copy loop and the demo/ tree copy run ONCE
+  // at startup, so without these additional fs.watch handlers edits
+  // to index.html, style.css, src/*.ts, demo/*.flatppl, etc. would
+  // not propagate to dist/ — and the dev server (which serves dist/)
+  // would keep showing stale content. We watch src/ flat (no nested
+  // dirs in practice) and demo/ recursive (it contains the curated
+  // .flatppl programs). Both are debounced with a tiny coalescing
+  // window because fs.watch can fire multiple events per save
+  // (rename + change, editor swap-file pattern, etc.).
+  watchDirDebounced(join(here, 'src'), { recursive: false }, (filename) => {
+    if (!filename) return;
+    transpileOrCopySrcFile(filename).catch((err) => {
+      console.error(`  ! src/${filename} rebuild failed:`, err.message);
+    });
+  });
+  watchDirDebounced(join(here, 'demo'), { recursive: true }, async () => {
+    // demo/ tree changed — re-sync the whole tree (it's small and
+    // hand-curated) and regenerate models.json since the manifest
+    // lists every .flatppl file under demo/. `clean: false` skips
+    // the rm step so serve.mjs's recursive watcher on dist/demo
+    // doesn't see its target vanish mid-rebuild. Stale files
+    // wouldn't be pruned this way, but the dev workflow doesn't
+    // create them often, and a full `npm run build` always starts
+    // from a clean slate.
+    try {
+      await syncDemoTree({ clean: false });
+      await generateManifest();
+    } catch (err) {
+      console.error('  ! demo/ resync failed:', err.message);
+    }
+  });
   console.log('  watching for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -282,6 +337,32 @@ if (WATCH) {
 
 // ---------------------------------------------------------------------
 // Helpers
+
+// Wrap fs.watch with a small per-path debounce. fs.watch on Linux can
+// emit two events (rename + change) for a single save; editors that
+// swap files via tmp + rename can emit even more. Coalescing into a
+// single trailing-edge callback keeps the rebuild log readable and
+// avoids racing transpile/copy operations on the same file.
+function watchDirDebounced(dir, options, onChange) {
+  if (!existsSync(dir)) return;
+  const timers = new Map();
+  const DELAY_MS = 40;
+  fsWatch(dir, options, (_eventType, filename) => {
+    // filename can be null on some platforms; we still dispatch with
+    // null so directory-scope handlers (like demo/) re-sync wholesale.
+    const key = filename || '';
+    const existing = timers.get(key);
+    if (existing) clearTimeout(existing);
+    timers.set(key, setTimeout(() => {
+      timers.delete(key);
+      try {
+        onChange(filename);
+      } catch (err) {
+        console.error(`  ! watcher error for ${dir}/${filename}:`, err.message);
+      }
+    }, DELAY_MS));
+  });
+}
 
 async function copyDirRecursive(srcDir, dstDir) {
   if (!existsSync(srcDir)) return;
@@ -300,7 +381,16 @@ async function copyDirRecursive(srcDir, dstDir) {
 
 async function syncExamples() {
   const dst = join(distDir, 'examples');
-  await rm(dst, { recursive: true, force: true });
+  // When running under --watch alongside serve.mjs (npm run dev),
+  // serve.mjs holds a recursive fs.watch on the dist/ tree for live-
+  // reload. `rm -rf` on dist/examples kills that watcher (ENOENT
+  // scandir) — same trap that syncDemoTree avoids in watch mode.
+  // In watch mode we therefore merge-copy without the prior rm.
+  // One-shot builds (`npm run build`) start from `rm -rf dist`
+  // outside this script anyway, so cleanliness isn't lost.
+  if (!WATCH) {
+    await rm(dst, { recursive: true, force: true });
+  }
   await mkdir(dst, { recursive: true });
 
   if (existsSync(examplesSibling)) {
