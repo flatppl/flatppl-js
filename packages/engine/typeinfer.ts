@@ -92,10 +92,32 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
  * set `binding.inferredType` and writes per-call `meta.type`
  * annotations. Returns diagnostics for type mismatches; loc fields
  * point at the source AST positions captured during lowering.
+ *
+ * `opts.resolveFixed` (optional): a callback the inference pass
+ * invokes at shape positions to fold constant expressions to
+ * concrete integers — `iid(M, n)` where `n = length(data)` becomes
+ * `array([N], elem)` rather than `array([%dynamic], elem)`. Caller
+ * builds the resolver via `fixed-eval.makeResolver(...)`; typeinfer
+ * stays unaware of the value-mode evaluator. Engine-concepts §17.4
+ * "resolve, don't rewrite" — the resolver is consulted only at
+ * narrowly-identified shape positions, and only the resulting
+ * integer is embedded in type annotations; the source IR is left
+ * intact in either case.
  */
-function inferTypes(loweredModule: any) {
-  const ctx = createInferenceContext(loweredModule);
-  for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
+function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
+  const ctx = createInferenceContext(loweredModule, opts);
+  for (const [name] of loweredModule.bindings) {
+    ctx.inferBinding(name);
+    // Post-binding const-eval (interleaved with inference, populates
+    // the resolver's known-fixed cache so later shape-position
+    // lookups can find it). The resolver is responsible for any
+    // size/safety heuristics; here we just notify it the binding's
+    // type is now pinned and its RHS can in principle be evaluated.
+    const resolver = opts && opts.resolveFixed;
+    if (resolver && typeof resolver.tryEvalBinding === 'function') {
+      resolver.tryEvalBinding(name);
+    }
+  }
   return ctx.diagnostics;
 }
 
@@ -134,10 +156,11 @@ function inferExprInScope(loweredModule: any, expr: IRNode, paramTypes: any) {
  * rules. Cycle detection (visiting/visited) is per-context, so
  * separate contexts don't interfere.
  */
-function createInferenceContext(loweredModule: any) {
+function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any }) {
   const diagnostics: any[] = [];
   const visiting = new Set();
   const visited  = new Set();
+  const resolveFixed = opts && opts.resolveFixed;
 
   function inferBinding(name: any): any {
     const b = loweredModule.bindings.get(name);
@@ -1081,7 +1104,8 @@ function createInferenceContext(loweredModule: any) {
         });
         return T.failed('iid bad dim');
       }
-      dims.push(literalIntFromIR(arg) != null ? literalIntFromIR(arg) : '%dynamic');
+      const resolved = resolveIntegerShape(arg);
+      dims.push(resolved != null ? resolved : '%dynamic');
     }
     const rank = dims.length;
     return T.measure(T.array(rank, dims, measureT.domain));
@@ -1091,6 +1115,48 @@ function createInferenceContext(loweredModule: any) {
     if (!ir) return null;
     if (ir.kind === 'lit' && ir.numType === 'integer') return ir.value;
     if (ir.kind === 'lit' && Number.isInteger(ir.value)) return ir.value;
+    return null;
+  }
+
+  // Resolve a shape-position IR expression to a non-negative integer
+  // if possible. Tries the cheap literal-extract first; falls back to
+  // the resolver callback (set up via fixed-eval.makeResolver) when
+  // const-eval is enabled by the caller. Per engine-concepts §17.4:
+  // invoked ONLY at known shape positions, never at general
+  // sub-expressions — and the source IR is left intact regardless.
+  //
+  // Includes the shape-only short-circuit for `length(x)` / `sizeof(x)`:
+  // when the argument's inferred type already carries a literal shape,
+  // we read it directly without invoking the resolver (avoids
+  // materialising large arrays just to ask their length).
+  function resolveIntegerShape(ir: any): number | null {
+    const lit = literalIntFromIR(ir);
+    if (lit != null) return lit;
+    // Shape-only short-circuit: `length(x)` / `lengthof(x)` over an
+    // already-typed array reads the leading-axis length from the
+    // type, not the value. The case the principle was built for —
+    // most common shape-determining expression in real models. Per
+    // spec §07, `length`/`lengthof` return the leading-axis size;
+    // `sizeof(x)` returns the *shape vector*, not an integer, so it
+    // belongs to a different (rank-1 integer) shape-resolver path
+    // that hasn't been built yet — leave it to the general resolver.
+    if (ir && ir.kind === 'call'
+        && (ir.op === 'length' || ir.op === 'lengthof')
+        && Array.isArray(ir.args) && ir.args.length === 1) {
+      const argT: any = inferExpr(ir.args[0], []);
+      if (argT && argT.kind === 'array'
+          && Array.isArray(argT.shape) && argT.shape.length > 0
+          && typeof argT.shape[0] === 'number') {
+        return argT.shape[0];
+      }
+    }
+    // Fall back to the caller-supplied resolver (typically wired by
+    // analyzer.ts via fixed-eval.makeResolver). Without a resolver
+    // we conservatively report "unknown" and the type stays
+    // %dynamic — same behaviour as before the const-eval pass.
+    if (!resolveFixed) return null;
+    const v = resolveFixed(ir);
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return v;
     return null;
   }
 

@@ -344,9 +344,65 @@ test('iid: with literal n produces a measure over a concrete-shape array', () =>
   assert.ok(T.equal(t.domain.elem, T.REAL));
 });
 
-test('iid: with non-literal n falls back to %dynamic dim', () => {
+test('iid: integer-typed binding ref resolves via const-eval', () => {
+  // Before the engine-concepts §17.4 const-eval-in-typeinfer pass
+  // landed, this fell back to %dynamic. With const-eval, the shape
+  // position folds `n` to the integer literal at type-check time.
   const { bindings, errors } = infer(`
     n = 10
+    obs_dist = iid(Normal(mu = 0, sigma = 1), n)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'obs_dist');
+  assert.deepEqual(t.domain.shape, [10]);
+});
+
+test('iid: n = arithmetic on literals resolves to a literal shape', () => {
+  // Const-eval handles arithmetic, not just direct binding refs.
+  const { bindings, errors } = infer(`
+    n = 3 + 4
+    obs_dist = iid(Normal(mu = 0, sigma = 1), n)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'obs_dist');
+  assert.deepEqual(t.domain.shape, [7]);
+});
+
+test('iid: n = length(literal-array) resolves via shape-only short-circuit', () => {
+  // The shape-only short-circuit reads `length` from the type's shape
+  // when available, without invoking the full evaluator. Engine-
+  // concepts §17.4 — most important optimisation for keeping
+  // compile-time eval cheap.
+  const { bindings, errors } = infer(`
+    data = [1.0, 2.0, 3.0, 4.0]
+    obs_dist = iid(Normal(mu = 0, sigma = 1), lengthof(data))
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'obs_dist');
+  assert.deepEqual(t.domain.shape, [4]);
+});
+
+test('iid: nested arithmetic over binding refs resolves', () => {
+  // The whole point: chained const-eval, ref → ref → arithmetic.
+  const { bindings, errors } = infer(`
+    a = 3
+    b = a + 2
+    c = 2 * b
+    obs_dist = iid(Normal(mu = 0, sigma = 1), c)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'obs_dist');
+  assert.deepEqual(t.domain.shape, [10]);
+});
+
+test('iid: %dynamic when n depends on an unresolvable expression', () => {
+  // External / placeholder boundary inputs are NOT fixed-phase, so
+  // const-eval correctly returns undefined and the shape stays
+  // %dynamic. Pins the fall-through behaviour after the const-eval
+  // landed — without this, an unintended widening of const-eval
+  // (evaluating non-fixed expressions) would silently surface here.
+  const { bindings, errors } = infer(`
+    n = external(integer)
     obs_dist = iid(Normal(mu = 0, sigma = 1), n)
   `);
   assert.equal(errors.length, 0);
