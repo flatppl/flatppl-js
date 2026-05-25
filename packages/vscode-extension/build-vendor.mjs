@@ -210,6 +210,24 @@ const samplerWorkerBuildOpts = {
   legalComments: 'inline',
 };
 
+// Math pre-renderer used by the extension's hover provider. Bundles
+// Temml (LaTeX → MathML) into a Node-loadable CommonJS artifact so
+// extension.ts can `require('./lib/math.cjs')` without depending on
+// node_modules at runtime (the packaged .vsix doesn't ship them).
+// `platform: 'node'` makes esbuild prefer CJS resolution of the
+// Temml package and keep Node built-ins (none used here, but safe
+// to declare) external.
+const mathBuildOpts = {
+  entryPoints: [join(here, 'src', 'math.ts')],
+  outfile: join(libDir, 'math.cjs'),
+  bundle: true,
+  minify: true,
+  format: 'cjs',
+  platform: 'node',
+  target: ['node16'],
+  legalComments: 'inline',
+};
+
 if (WATCH) {
   // Watch mode: rebuild both bundles on every change under packages/engine/.
   // The process keeps running until killed (Ctrl+C). Reload the VS Code
@@ -217,21 +235,27 @@ if (WATCH) {
   const engineCtx = await esbuild.context(engineBuildOpts);
   const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
   const viewerCtx = await esbuild.context(viewerBuildOpts);
-  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(), viewerCtx.rebuild()]);
+  const mathCtx   = await esbuild.context(mathBuildOpts);
+  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
+                     viewerCtx.rebuild(), mathCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
-  await Promise.all([engineCtx.watch(), workerCtx.watch(), viewerCtx.watch()]);
+  console.log('  bundled math          -> lib/math.cjs');
+  await Promise.all([engineCtx.watch(), workerCtx.watch(),
+                     viewerCtx.watch(), mathCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
     esbuild.build(viewerBuildOpts),
+    esbuild.build(mathBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
+  console.log('  bundled math          -> lib/math.cjs');
 }
 
 // ---------------------------------------------------------------------
