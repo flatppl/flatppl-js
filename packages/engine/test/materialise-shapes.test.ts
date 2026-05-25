@@ -26,6 +26,46 @@ const { makeMatCtx, expectPlottable } = require('./_materialise-helpers.ts');
 // Baseline: scalars
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// intrinsicShape on rank-≥2 fixed values: lets the viewer route to
+// the matrix-heatmap renderer even when typeinfer didn't pin a static
+// literal shape (e.g. `iid(M, n)`, `cartpow(set, n)`, dotted-broadcast
+// over rowstack outputs, etc.). The materialiser flattens the data
+// for portability; intrinsicShape preserves the structure the
+// renderer needs.
+// ---------------------------------------------------------------------
+
+test('materialise: rank-2 fixed value carries intrinsicShape', async () => {
+  const { ctx } = makeMatCtx('A = rowstack([[1.0, 2.0], [3.0, 4.0]])');
+  const m: any = await expectPlottable(ctx, 'A');
+  assert.deepEqual(m.intrinsicShape, [2, 2],
+    `expected intrinsicShape=[2,2], got ${JSON.stringify(m.intrinsicShape)}`);
+  assert.equal(m.samples.length, 4);
+});
+
+test('materialise: rank-2 broadcast result (E-like) carries intrinsicShape', async () => {
+  // Cross-product binding: (A - A) .^ 2 is a 3x3 zero matrix. Before
+  // intrinsicShape was preserved this rendered as a scalar 0 — the bug
+  // the user spotted. Pin the new contract: matrix structure survives.
+  const { ctx } = makeMatCtx(`rstate = rnginit([1,2,3,4])
+A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+E = (A - A) .^ 2
+`);
+  const m: any = await expectPlottable(ctx, 'E');
+  assert.deepEqual(m.intrinsicShape, [3, 3],
+    `expected intrinsicShape=[3,3], got ${JSON.stringify(m.intrinsicShape)}`);
+  assert.equal(m.samples.length, 9);
+});
+
+test('materialise: rank-1 fixed value does NOT carry intrinsicShape', async () => {
+  // Single-axis fixed arrays render as 1-D step plots; preserving an
+  // intrinsicShape would mis-route them through the matrix path.
+  const { ctx } = makeMatCtx('v = [1.0, 2.0, 3.0]');
+  const m: any = await expectPlottable(ctx, 'v');
+  assert.equal(m.intrinsicShape, undefined,
+    `rank-1 value should not have intrinsicShape, got ${JSON.stringify(m.intrinsicShape)}`);
+});
+
 test('materialise: fixed real scalar', async () => {
   const { ctx } = makeMatCtx('x = 3.14');
   const m = await expectPlottable(ctx, 'x');

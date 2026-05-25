@@ -285,11 +285,25 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     renderArrayStepPlot(ctx, samples);
     return;
   }
-  // Matrix-mode: rank-2 fixed-phase array with statically known
-  // shape. Renders as a heatmap to preserve the 2D structure.
-  if (opts.mode === 'matrix' && Array.isArray(opts.shape)) {
-    renderMatrixHeatmap(ctx, samples, opts.shape as [number, number]);
-    return;
+  // Matrix-mode: rank-2 fixed-phase array → heatmap. Shape source
+  // priority: measure's `intrinsicShape` (preserved by the
+  // materialiser; always present for rank-≥2 fixed Values) wins over
+  // the plan's `opts.shape` hint (set only when typeinfer happened to
+  // have a static literal shape). This lets `iid(M, length(data))`
+  // and other computed-shape rank-2 bindings hit the heatmap path
+  // without depending on type-level shape literalness.
+  if (opts.mode === 'matrix') {
+    const meas = measure as any;
+    let shp: [number, number] | null = null;
+    if (Array.isArray(meas.intrinsicShape) && meas.intrinsicShape.length === 2) {
+      shp = [meas.intrinsicShape[0], meas.intrinsicShape[1]];
+    } else if (Array.isArray(opts.shape) && opts.shape.length === 2) {
+      shp = opts.shape as [number, number];
+    }
+    if (shp) {
+      renderMatrixHeatmap(ctx, samples, shp);
+      return;
+    }
   }
   // Constant scalar samples: render as text (same path as
   // phase=fixed scalars and degenerate distributions). A constant
