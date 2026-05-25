@@ -2121,7 +2121,19 @@ function analyze(ast: any, source: string) {
   // lowered binding to set `inferredType` and writes per-call
   // `meta.type` annotations. We mirror inferredType back onto the
   // analyzer-level bindings for consumers that haven't migrated yet.
-  const typeDiagnostics = require('./typeinfer.ts').inferTypes(loweredModule);
+  //
+  // Const-eval shim (engine-concepts §17.4 "resolve, don't rewrite"):
+  // a fixed-eval resolver is handed to typeinfer so shape positions
+  // can fold computed integers (`iid(M, length(data))` → array([N],
+  // elem)) without typeinfer importing the value-mode evaluator
+  // directly. The resolver wraps `sampler.evaluateExpr` in a
+  // try/catch; if a const expression can't be evaluated (refs to
+  // unresolved bindings, stochastic deps), the type stays %dynamic —
+  // same fall-through as before this shim landed.
+  const fixedEval = require('./fixed-eval.ts');
+  const resolveFixed = fixedEval.makeResolver({ loweredModule });
+  const typeDiagnostics = require('./typeinfer.ts')
+    .inferTypes(loweredModule, { resolveFixed });
   for (const [name, lb] of loweredModule.bindings) {
     const b = bindings.get(name);
     if (b) b.inferredType = lb.inferredType;

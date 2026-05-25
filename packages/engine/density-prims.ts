@@ -759,6 +759,243 @@ function multivariateShape(kernelName: string) {
   return MV_VARIATE_SHAPE[kernelName] || null;
 }
 
+// =====================================================================
+// Type-mode consume/rest walker (engine-concepts §17.3)
+// =====================================================================
+//
+// The value-mode density walker in `density.ts` propagates a `rest`
+// alongside the running log-density: each measure-kind handler
+// consumes its footprint off the variate value and returns whatever's
+// left. The empty-rest assertion at the end is what catches
+// shape-mismatched joint/iid observations.
+//
+// This is the **type-mode counterpart**: same dispatch shape, but
+// the "value" is a structural TYPE (engine-types `Type`), and the
+// "rest" is the type of whatever variate-shape remains unconsumed.
+// An empty rest after walking the whole measure IR is the static
+// shape-mismatch check; a non-empty rest means the user's observation
+// type doesn't fit the measure's footprint.
+//
+// Return shape:
+//   { logpType: 'real',
+//     rest:     <Type | null>,
+//     error?:   <string when a mismatch is statically provable>,
+//     deferred?: boolean   // true when the walker couldn't decide
+//                          // (e.g. %dynamic shapes); caller treats
+//                          // as "passes static check, rely on
+//                          // runtime" rather than as an error.
+//   }
+//
+// v0.1 scope: scalar leaves, weighted/logweighted/truncate/normalize
+// passthroughs, joint (positional + record), iid (literal n; dynamic
+// n stays deferred), and the multivariate kernels (MvNormal, etc.)
+// whose footprint is a known vector/matrix dim. Select/pushfwd are
+// open follow-ups.
+
+const T = require('./types.ts');
+
+type StaticRest = any | null;
+interface StaticConsumeResult {
+  logpType: any;            // T.REAL when the measure is well-typed
+  rest: StaticRest;         // null = consumed-cleanly
+  error?: string;           // present iff a static shape mismatch
+  deferred?: boolean;       // true when the walker can't statically decide
+}
+
+/**
+ * Type-mode consume/rest walker. Given a measure IR and the variate's
+ * structural type, return whether the measure's footprint exactly
+ * matches the variate shape (`rest: null`), what's left if not, and
+ * a static error string when a mismatch is statically provable.
+ *
+ * Use `staticDensityShapeCheck` (below) for the strict empty-rest
+ * wrapper — typically what callers want.
+ */
+function staticConsume(ir: any, variateType: any): StaticConsumeResult {
+  if (!ir) return { logpType: T.REAL, rest: variateType, deferred: true };
+  // Self-ref measures (e.g. `m = Normal(0, 1); lawof(m)`) are
+  // beyond v0.1 scope — caller can pre-expand if needed.
+  if (ir.kind !== 'call') {
+    return { logpType: T.REAL, rest: variateType, deferred: true };
+  }
+  const op = ir.op;
+  // --- Univariate scalar leaves -------------------------------------
+  if (samplerLib.isKnownDistribution(op)) {
+    return _consumeScalarLeaf(variateType);
+  }
+  // --- Multivariate kernels -----------------------------------------
+  if (isMultivariateKernel(op)) {
+    return _consumeMultivariateLeaf(op, ir, variateType);
+  }
+  // --- Pass-throughs (don't change variate footprint) ---------------
+  // weighted/logweighted: (weight, base) — base in args[1].
+  // normalize / truncate: (base, ...) — base in args[0].
+  if (op === 'weighted' || op === 'logweighted') {
+    return staticConsume(ir.args && ir.args[1], variateType);
+  }
+  if (op === 'normalize' || op === 'truncate') {
+    return staticConsume(ir.args && ir.args[0], variateType);
+  }
+  if (op === 'pushfwd') {
+    // f's domain → variate type of base, codomain → variate type of
+    // pushfwd. v0.1: defer — needs bijection-annotation type info.
+    return { logpType: T.REAL, rest: null, deferred: true };
+  }
+  // --- joint / record (positional and kwarg field forms) ------------
+  if (op === 'joint' || op === 'record') {
+    return _consumeJoint(ir, variateType);
+  }
+  // --- iid(M, size) -------------------------------------------------
+  if (op === 'iid') {
+    return _consumeIid(ir, variateType);
+  }
+  // --- select / jointchain / others ---------------------------------
+  // Defer rather than error: the value-mode walker handles these;
+  // the type-mode check just doesn't statically verify them yet.
+  return { logpType: T.REAL, rest: null, deferred: true };
+}
+
+function _consumeScalarLeaf(t: any): StaticConsumeResult {
+  if (!t) return { logpType: T.REAL, rest: null, deferred: true };
+  // Scalar variate types pass without rest.
+  if (t.kind === 'scalar') return { logpType: T.REAL, rest: null };
+  // Rank-1 array with leading dim 1 also satisfies "consumes one entry".
+  if (t.kind === 'array' && Array.isArray(t.shape) && t.shape.length === 1) {
+    const len = t.shape[0];
+    if (len === 1) return { logpType: T.REAL, rest: null };
+    if (typeof len === 'number') {
+      return { logpType: T.REAL,
+        rest: T.array(1, [len - 1], t.elem) };
+    }
+    // %dynamic: defer the empty-rest check to runtime.
+    return { logpType: T.REAL, rest: t, deferred: true };
+  }
+  if (t.kind === 'deferred' || t.kind === 'any') {
+    return { logpType: T.REAL, rest: t, deferred: true };
+  }
+  return { logpType: T.REAL, rest: t,
+    error: 'scalar leaf expected scalar variate, got ' + T.show(t) };
+}
+
+function _consumeMultivariateLeaf(op: string, ir: any, t: any): StaticConsumeResult {
+  // The footprint is a length-n vector for vector-variate kernels
+  // (MvNormal, Dirichlet, Multinomial, BinnedPoissonProcess) and an
+  // n×n matrix for matrix-variate kernels (Wishart, InverseWishart,
+  // LKJ, LKJCholesky). v0.1: defer when the kwargs aren't statically
+  // resolved enough to read n (full inference of kw types is a
+  // follow-up); otherwise check footprint matches the leading
+  // variate axes.
+  const shape = multivariateShape(op);
+  if (!shape) return { logpType: T.REAL, rest: t, deferred: true };
+  if (!t || (t.kind !== 'array')) {
+    return { logpType: T.REAL, rest: t,
+      error: op + ' expects array variate, got ' + T.show(t) };
+  }
+  // Need (kind, n) — we only know the kind statically here (vector vs
+  // matrix); reading n requires running the kwarg expressions. For now
+  // accept if the variate's leading dim matches the kind's
+  // dimensionality (1 dim for vector, 2 dims for matrix); defer the
+  // length check.
+  const wantRank = shape.kind === 'vector' ? 1 : 2;
+  if (t.rank >= wantRank) {
+    return { logpType: T.REAL, rest: null, deferred: true };
+  }
+  return { logpType: T.REAL, rest: t,
+    error: op + ' expects rank-≥' + wantRank + ' variate, got rank ' + t.rank };
+}
+
+function _consumeJoint(ir: any, t: any): StaticConsumeResult {
+  // Record / kwarg-joint with `ir.fields = [{name, value: subIR}, …]`:
+  // variate must be a record with each field's name; walk recursively.
+  if (Array.isArray(ir.fields)) {
+    if (!t || t.kind !== 'record' || !t.fields) {
+      return { logpType: T.REAL, rest: t,
+        error: 'joint(fields) expects a record variate, got ' + T.show(t) };
+    }
+    // For each declared field name, walk staticConsume against the
+    // field's type. The field's full type is consumed by the
+    // sub-measure (no inner rest expected).
+    for (const f of ir.fields) {
+      const ft = t.fields[f.name];
+      if (ft == null) {
+        return { logpType: T.REAL, rest: t,
+          error: 'joint missing field "' + f.name + '" in variate type' };
+      }
+      const sub = staticConsume(f.value, ft);
+      if (sub.error) return sub;
+      // We require each field-measure to fully consume its field
+      // type; otherwise the joint is malformed.
+      if (sub.rest != null && !sub.deferred) {
+        return { logpType: T.REAL, rest: t,
+          error: 'joint field "' + f.name + '" left a non-empty rest' };
+      }
+    }
+    return { logpType: T.REAL, rest: null };
+  }
+  // Positional joint (`joint(M1, M2, ...)`): variate must be a vector
+  // or record long enough to feed each Mi's footprint in order.
+  // Defer for now — the positional-vector consume order is the same
+  // shape as iid's, and the gain is marginal vs the kwarg form which
+  // is what user code typically uses.
+  return { logpType: T.REAL, rest: null, deferred: true };
+}
+
+function _consumeIid(ir: any, t: any): StaticConsumeResult {
+  const args = ir.args || [];
+  if (args.length !== 2) {
+    return { logpType: T.REAL, rest: t,
+      error: 'iid expects 2 args, got ' + args.length };
+  }
+  const M = args[0];
+  // We need n: the second arg's literal-int or const-eval value.
+  // Without a const-eval resolver here, only literal n works. The
+  // user-facing pass at the analyser layer would wire one in.
+  const sizeIR = args[1];
+  let n: number | null = null;
+  if (sizeIR && sizeIR.kind === 'lit' && Number.isInteger(sizeIR.value)) {
+    n = sizeIR.value;
+  }
+  // The variate type must be array(rank>=1, [n, ...], elem) where
+  // elem matches M's variate type. v0.1: defer the full elem check;
+  // just verify the leading axis matches.
+  if (!t || t.kind !== 'array') {
+    if (t && (t.kind === 'deferred' || t.kind === 'any')) {
+      return { logpType: T.REAL, rest: null, deferred: true };
+    }
+    return { logpType: T.REAL, rest: t,
+      error: 'iid expects array variate, got ' + T.show(t) };
+  }
+  if (n == null) {
+    // Dynamic n: leading axis can be anything; defer the empty-rest
+    // check to runtime.
+    return { logpType: T.REAL, rest: null, deferred: true };
+  }
+  const lead = Array.isArray(t.shape) ? t.shape[0] : null;
+  if (typeof lead === 'number' && lead !== n) {
+    return { logpType: T.REAL, rest: t,
+      error: 'iid expects ' + n + ' elements, got variate with leading axis '
+        + lead };
+  }
+  return { logpType: T.REAL, rest: null, deferred: typeof lead !== 'number' };
+}
+
+/**
+ * Strict wrapper: `staticConsume` + assert empty-rest. Returns an
+ * error string if the measure's IR and the variate type are
+ * statically incompatible, null when the check passes (or is
+ * deferred to runtime).
+ */
+function staticDensityShapeCheck(ir: any, variateType: any): string | null {
+  const r = staticConsume(ir, variateType);
+  if (r.error) return r.error;
+  if (r.deferred) return null;   // can't statically prove; trust runtime
+  if (r.rest != null) {
+    return 'measure did not fully consume variate type (rest: '
+      + T.show(r.rest) + ')';
+  }
+  return null;
+}
+
 module.exports = {
   builtinLogdensityof,
   builtinLogdensityofPositional,
@@ -771,6 +1008,9 @@ module.exports = {
   isMultivariateKernel,
   multivariateShape,
   MV_DENSITY_FNS,
+  // Type-mode consume/rest (engine-concepts §17.3)
+  staticConsume,
+  staticDensityShapeCheck,
   // Test surface
   _internal: { logMvGamma, logDetSPD, traceProduct, _logCnLKJ,
                _normalCdf, _normalQuantile },
