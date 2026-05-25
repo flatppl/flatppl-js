@@ -21,6 +21,16 @@ const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, variants } = require('./lib/engine.min.js');
 const { FlatPPLPanel } = require('./src/visualPanel');
+// Math fallback for the editor hover — replaces `$…$` / `$$…$$`
+// regions with CommonMark code (inline backticks / fenced
+// ```math``` blocks). See src/math.ts for the rationale: VS Code's
+// MarkdownString hover sanitiser strips MathML, so we keep the
+// LaTeX source visible rather than letting math regions silently
+// vanish. The DAG-view tooltip (web + webview) renders the same
+// doc-comments as actual MathML via Temml.
+const { replaceMathWithCodeFallback }: {
+  replaceMathWithCodeFallback: (text: string) => string;
+} = require('./lib/math.cjs');
 
 // Surface-syntax variants this extension handles. Per-document
 // Activation uses the document's languageId (set by VS Code from the
@@ -802,7 +812,14 @@ function activate(context: any) {
         lines.push('');
         lines.push('---');
         if (doc.markup === 'md') {
-          lines.push(doc.lines.join('\n'));
+          // Math fallback: VS Code's hover MarkdownString renderer
+          // strips MathML, and rendering math as SVG images would
+          // need a heavyweight MathJax pipeline. Instead we keep
+          // the LaTeX source visible by replacing math regions
+          // with CommonMark inline-code / fenced ```math``` blocks
+          // — see src/math.ts. Users still see what the math is;
+          // the DAG-view tooltip renders the real thing.
+          lines.push(replaceMathWithCodeFallback(doc.lines.join('\n')));
         } else {
           const langId = doc.markup === 'typ' ? 'typst' : doc.markup;
           lines.push('```' + langId);
