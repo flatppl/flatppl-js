@@ -218,29 +218,18 @@ html, body {
   opacity: 0.5;
 }
 
-#source-view {
-  margin: 0;
-  padding: 1em;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre;
-  tab-size: 4;
-  color: var(--fg);
-}
-
-/* Per-line wrapper emitted by the syntax highlighter — addressable
-   target for the DAG → source flash + scroll path (host adapter
-   revealSourceLine). Inline by default so the wrapper itself adds
-   nothing visual; the .src-line-flash class drives a brief background
-   flash via CSS animation. The trailing newline lives outside the
-   wrapper so copy-paste preserves it under <pre>. */
-.src-line { display: inline; }
-.src-line.src-line-flash {
-  animation: src-line-flash 1.5s ease-out;
+/* CodeMirror line-flash decoration — re-installed by editor.ts on
+   every revealLine call, cleared by its own timer after 1.5 s.
+   The Decoration applies this class to the target line wrapper
+   (`<div class="cm-line cm-line-flash">`); animation fades the
+   highlight out. Same timing + colour as the old `.src-line-flash`
+   rule the pre-CodeMirror viewer used, so the visual feedback is
+   unchanged. */
+.cm-line-flash {
+  animation: cm-line-flash 1.5s ease-out;
   border-radius: 2px;
 }
-@keyframes src-line-flash {
+@keyframes cm-line-flash {
   0%   { background: rgba(255, 235, 100, 0.45); }
   100% { background: transparent; }
 }
@@ -249,8 +238,10 @@ html, body {
    one FlatPPL-specific addition — `tok-ident-binding` (identifiers
    that resolve to a binding in the current module) is rendered with
    its own colour and a hover affordance, so users can tell which
-   names in the source map to nodes in the DAG view. The click handler
-   that turns this into actual cross-pane navigation lands in step 1.6. */
+   names in the source map to nodes in the DAG view. CodeMirror's
+   highlight ViewPlugin applies these same class names to its
+   Decoration ranges, so the palette is shared between syntax
+   styling in view and edit modes. */
 .tok-comment        { color: #6a9955; font-style: italic; }
 .tok-string         { color: #ce9178; }
 .tok-number         { color: #b5cea8; }
@@ -277,12 +268,64 @@ html, body {
    right pane's body must not introduce a second scrollbar. */
 #viewer-pane > .pane-body { overflow: hidden; }
 
-/* Playground mode (CodeMirror editor mounted in the source pane).
-   The editor handles its own scrolling, so the pane-body shouldn't
-   add another scrollbar of its own. */
-#source-pane.playground > .pane-body { overflow: hidden; }
+/* Source pane hosts CodeMirror in both view and edit modes. The
+   editor handles its own scrolling, so the pane-body shouldn't
+   add a second scrollbar. */
+#source-pane > .pane-body { overflow: hidden; }
 #source-editor { width: 100%; height: 100%; }
 .cm-editor { height: 100%; }
+
+/* Hover-tooltip emitted by editor.ts's hoverTooltip extension when
+   the cursor hovers an identifier resolving to a defined binding.
+   Same visual treatment as the DAG-view tooltip (see the viewer's
+   own #tooltip rule) so doc rendering stays consistent across
+   surfaces. The outer `.cm-tooltip` class is CodeMirror's own
+   tooltip wrapper; our custom content lives inside `.cm-source-
+   hover` and re-uses the same expr / doc CSS classes. */
+.cm-tooltip.cm-tooltip-hover .cm-source-hover {
+  max-width: 480px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: normal;
+}
+.cm-source-hover .cm-source-hover-expr {
+  font-family: var(--mono);
+  white-space: pre;
+}
+.cm-source-hover .cm-source-hover-doc {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #454545;
+  opacity: 0.95;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.cm-source-hover .cm-source-hover-doc p,
+.cm-source-hover .cm-source-hover-doc ul,
+.cm-source-hover .cm-source-hover-doc ol,
+.cm-source-hover .cm-source-hover-doc pre {
+  margin: 0.25em 0;
+}
+.cm-source-hover .cm-source-hover-doc h1,
+.cm-source-hover .cm-source-hover-doc h2,
+.cm-source-hover .cm-source-hover-doc h3,
+.cm-source-hover .cm-source-hover-doc h4 {
+  margin: 0.4em 0 0.2em;
+  font-size: 1.05em;
+  font-weight: 600;
+}
+.cm-source-hover .cm-source-hover-doc code {
+  font-family: var(--mono);
+  font-size: 0.95em;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 0 3px;
+  border-radius: 2px;
+}
+.cm-source-hover .cm-source-hover-doc math[display="block"] {
+  display: block;
+  margin: 0.4em 0;
+  text-align: center;
+}
 
 #flatppl-viewer-root {
   width: 100%;

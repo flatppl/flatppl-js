@@ -12,6 +12,7 @@
 // and packages/vscode-extension/build-vendor.mjs use this entry.
 
 import { mount } from './main.js';
+import { renderDoc } from './markdown.js';
 
 var FlatPPLViewer: FlatPPLViewerGlobal;
 if (typeof window !== 'undefined') {
@@ -26,6 +27,13 @@ if (typeof window !== 'undefined') {
   FlatPPLViewer = {};
 }
 FlatPPLViewer.mount = mount;
+// Doc-comment renderer is surfaced on the viewer global so a host
+// (e.g. the web gallery's source-code hover) can use the SAME
+// Markdown + Temml-MathML pipeline that drives the DAG-view
+// tooltip. Centralising the renderer here means doc-content
+// styling stays consistent across surfaces, and the gallery
+// doesn't have to bundle marked + temml itself.
+(FlatPPLViewer as any).renderDoc = renderDoc;
 
 // Auto-mount when the host provides a marker container in the DOM
 // (id="flatppl-viewer-root"). Hosts that want explicit control over

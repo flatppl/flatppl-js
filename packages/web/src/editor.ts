@@ -1,65 +1,49 @@
-// @flatppl/web — playground editor.
+// @flatppl/web — source editor (view + edit, unified on CodeMirror).
 //
-// FlatPPL-specific glue around CodeMirror 6 (loaded lazily from
-// vendor/codemirror.min.js). Exposes window.FlatPPLWebEditor
-// with two functions:
+// FlatPPL-specific glue around CodeMirror 6 (loaded eagerly from
+// vendor/codemirror.min.js — see index.html). Replaces the previous
+// dual surface (read-only `<pre>` + syntax.ts on one side, lazy
+// CodeMirror on the other) with a single CodeMirror instance whose
+// `readOnly` / `editable` flags toggle between view and edit modes
+// via Compartment reconfiguration.
 //
-//   loadBundle(): Promise<bundle>
-//     Lazy-loads the CodeMirror bundle if not already present.
-//     Resolves with window.FlatPPLEditorBundle. Idempotent.
+// Exposes window.FlatPPLWebEditor.mountEditor(container, opts) →
+//   { setSource, getSource, setReadOnly, revealLine, replaceRange,
+//     destroy }
 //
-//   mountEditor(container, opts): EditorHandle
-//     Builds a CodeMirror editor inside `container`, wires the
-//     FlatPPL syntax-highlight plugin (which reuses the engine's
-//     tokenizer and the same `tok-*` CSS classes the read-only
-//     pane uses), and returns a small handle:
-//       { setSource(text), getSource(), destroy() }
-//     opts:
-//       initialSource (string, '')
-//       onChange(text) — fired on every document change.
-//                        The caller is expected to debounce and
-//                        re-trigger viewer.update.
-//       onNavigate(name) — fired when the user Ctrl/Cmd-clicks an
-//                          identifier whose name is a defined
-//                          binding. Plain click is the editor's
-//                          cursor placement (default behaviour);
-//                          the modifier reserves "navigate to
-//                          DAG" without fighting the cursor.
+// opts:
+//   initialSource (string, '')
+//   initialReadOnly (boolean, true) — start in view mode by default;
+//                                     the gallery toggles to edit mode
+//                                     when the user flips the source-
+//                                     pane edit button.
+//   onChange(text) — fired on every doc change; gallery debounces
+//                    and re-renders the viewer.
+//   onNavigate(name) — fired when the main cursor lands on an
+//                      identifier that resolves to a defined binding,
+//                      or when the user Ctrl/Cmd-clicks one.
 //
-// Highlight plugin: a ViewPlugin walks the tokenizer output on
-// every doc change, and emits Decoration.mark for each token with
-// the same class names as the static highlighter (`tok-keyword`,
-// `tok-ident-binding`, etc.). The CSS already in style.css covers
-// both surfaces — read-only `<pre>` for non-playground deploys
-// and the editor for playground deploys — without duplication.
+// Visual differentiation between modes is the editor's natural
+// affordance: view mode has no caret, no active-line highlight,
+// no editable input area; edit mode shows the caret and the
+// active-line stripe. Same text rendering, same syntax highlight,
+// same hover — only the input behaviour changes.
 
 'use strict';
 
 (function (globalScope: any) {
-  const BUNDLE_URL = 'vendor/codemirror.min.js';
-  let loadPromise: Promise<any> | null = null;
+  // Names that act as keywords / operators at the surface level
+  // across variants. `and`/`or`/`not` are FlatPPY logical keywords;
+  // `in` is the membership comparison operator in all three variants;
+  // `true`/`false`/`True`/`False` are boolean keywords (variant-
+  // specific spelling, but treated uniformly by the highlighter).
+  const KEYWORD_NAMES = new Set([
+    'and', 'or', 'not', 'in',
+    'true', 'false', 'True', 'False',
+  ]);
 
-  function loadBundle() {
-    if (globalScope.FlatPPLEditorBundle) return Promise.resolve(globalScope.FlatPPLEditorBundle);
-    if (loadPromise) return loadPromise;
-    loadPromise = new Promise(function (resolve, reject) {
-      const s = document.createElement('script');
-      s.src = BUNDLE_URL;
-      s.async = true;
-      s.onload = function () {
-        if (globalScope.FlatPPLEditorBundle) resolve(globalScope.FlatPPLEditorBundle);
-        else reject(new Error('CodeMirror bundle loaded but FlatPPLEditorBundle was not set'));
-      };
-      s.onerror = function () { reject(new Error('Failed to load ' + BUNDLE_URL)); };
-      document.head.appendChild(s);
-    });
-    return loadPromise;
-  }
-
-  // Mirrors syntax.js classifyIdentifier — kept independent so
-  // editor.js doesn't depend on syntax.js (which targets the
-  // read-only pane). Same logic, different output sink.
   function classifyIdentifier(name: any, bindings: any, B: any) {
+    if (KEYWORD_NAMES.has(name))        return 'tok-keyword';
     if (bindings && bindings.has(name)) return 'tok-ident-binding';
     if (B.isSpecialOperation(name))     return 'tok-special';
     if (B.MEASURE_OPS.has(name))        return 'tok-mop';
@@ -73,6 +57,13 @@
     return 'tok-ident';
   }
 
+  const OP_TOKEN_TYPES = new Set([
+    'EQUALS', 'EQEQ', 'NEQ',
+    'LT', 'GT', 'LTE', 'GTE',
+    'PLUS', 'MINUS', 'STAR', 'SLASH',
+    'TILDE', 'CARET', 'AMPAMP', 'PIPEPIPE', 'BANG',
+  ]);
+
   function classifyToken(tok: any) {
     const t = tok.type;
     if (t === 'COMMENT')     return 'tok-comment';
@@ -80,11 +71,7 @@
     if (t === 'NUMBER')      return 'tok-number';
     if (t === 'PLACEHOLDER') return 'tok-placeholder';
     if (t === 'HOLE')        return 'tok-hole';
-    if (t === 'EQUALS' || t === 'EQEQ' || t === 'NEQ' ||
-        t === 'LT' || t === 'GT' || t === 'LTE' || t === 'GTE' ||
-        t === 'PLUS' || t === 'MINUS' || t === 'STAR' || t === 'SLASH') {
-      return 'tok-op';
-    }
+    if (OP_TOKEN_TYPES.has(t)) return 'tok-op';
     return 'tok-punct';
   }
 
@@ -101,10 +88,21 @@
     return (typeof ls === 'number' ? ls : 0) + loc.col;
   }
 
+  function escapeHtml(s: any) {
+    return String(s).replace(/[&<>"']/g, function (ch: any) {
+      if (ch === '&') return '&amp;';
+      if (ch === '<') return '&lt;';
+      if (ch === '>') return '&gt;';
+      if (ch === '"') return '&quot;';
+      return '&#39;';
+    });
+  }
+
   /** Build the FlatPPL highlight ViewPlugin. Closure over the
       bundle so this module doesn't import CodeMirror directly
       (which would force the gallery to depend on it even in
-      non-playground mode). */
+      non-CodeMirror deploys — a hypothetical we no longer
+      support, but the indirection costs nothing). */
   function makeHighlightPlugin(bundle: any) {
     const ViewPlugin = bundle.ViewPlugin;
     const Decoration = bundle.Decoration;
@@ -165,9 +163,85 @@
     );
   }
 
+  /** Hover-tooltip extension: on hover over an identifier that
+      resolves to a defined binding, render the same content as the
+      DAG-view tooltip (`name = expr` + attached doc-comment as
+      Markdown + MathML via the viewer's renderDoc helper). For
+      identifiers that don't resolve to a binding, no tooltip is
+      shown — matching the DAG-view behaviour. */
+  function makeHoverTooltip(bundle: any) {
+    const hoverTooltip = bundle.hoverTooltip;
+    const FE = globalScope.FlatPPLEngine;
+    if (!FE || typeof hoverTooltip !== 'function') return [];
+
+    // Resolve the FlatPPLViewer's renderDoc lazily — the viewer
+    // bundle loads after the editor bundle, so at module-eval time
+    // it may not yet be present. Lookup on each hover (cheap) lets
+    // us pick it up as soon as it's available.
+    function renderDoc(doc: any): string | null {
+      const v = (globalScope.FlatPPLViewer || {});
+      return typeof v.renderDoc === 'function' ? v.renderDoc(doc) : null;
+    }
+
+    return hoverTooltip(function (view: any, pos: number, side: number) {
+      const text = view.state.doc.toString();
+      let processed;
+      try { processed = FE.processSource(text); }
+      catch (_) { return null; }
+      if (!processed || !processed.bindings) return null;
+      const tokens = FE.tokenize(text).tokens || [];
+      const lineStarts = computeLineStarts(text);
+      // Locate the IDENT token under `pos`. CodeMirror's hover API
+      // gives us a `side`: -1 means the caret is on the left edge
+      // of `pos`, +1 the right edge. We accept any IDENT whose
+      // range [from, to] contains pos in the half-open sense
+      // [from, to), with the side handling the boundary case.
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (tok.type !== 'IDENT') continue;
+        const from = offsetOf(tok.loc.start, lineStarts);
+        const to   = offsetOf(tok.loc.end,   lineStarts);
+        if (pos < from || pos > to) continue;
+        if ((pos === from && side < 0) || (pos === to && side > 0)) continue;
+        const name = tok.value;
+        const binding = processed.bindings.get(name);
+        if (!binding) return null;
+        // Build the tooltip body. The `name = expr` line uses
+        // textContent (set via the dom callback's element below)
+        // so identifier-derived strings can't smuggle HTML; the
+        // doc-comment HTML comes from the viewer's renderDoc which
+        // owns its own escaping pipeline (marked + temml).
+        return {
+          pos: from,
+          end: to,
+          above: true,
+          create: function () {
+            const dom = document.createElement('div');
+            dom.className = 'cm-source-hover';
+            const exprLine = document.createElement('div');
+            exprLine.className = 'cm-source-hover-expr';
+            exprLine.textContent = name + ' = ' + (binding.rhs || '');
+            dom.appendChild(exprLine);
+            if (binding.node && binding.node.doc
+                && binding.node.doc.lines
+                && binding.node.doc.lines.length > 0) {
+              const docBlock = document.createElement('div');
+              docBlock.className = 'cm-source-hover-doc';
+              const html = renderDoc(binding.node.doc);
+              if (html) docBlock.innerHTML = html;
+              else      docBlock.textContent = binding.node.doc.lines.join('\n');
+              dom.appendChild(docBlock);
+            }
+            return { dom: dom };
+          },
+        };
+      }
+      return null;
+    }, { hideOnChange: true });
+  }
+
   /** Build a small EditorView.theme matching the gallery's dark
-      palette so the editor blends with the surrounding panes
-      instead of importing a separate CodeMirror theme. */
+      palette so the editor blends with the surrounding panes. */
   function makeTheme(bundle: any) {
     return bundle.EditorView.theme({
       '&': {
@@ -199,26 +273,29 @@
     opts = opts || {};
     const bundle = globalScope.FlatPPLEditorBundle;
     if (!bundle) {
-      throw new Error('FlatPPLEditorBundle missing — call loadBundle() first');
+      throw new Error('FlatPPLEditorBundle missing — load vendor/codemirror.min.js first');
     }
 
-    // Click navigation:
-    //
-    // - Plain click: CodeMirror handles cursor placement (default).
-    //   The selectionSet path below fires onNavigate if the new
-    //   cursor lands on a defined binding's identifier, so the DAG
-    //   tracks the cursor without any custom click logic.
-    //
-    // - Ctrl/Cmd-click on a [data-binding] span: jump-to-definition.
-    //   Look up the binding's LHS position via the engine's binding
-    //   table, dispatch a selection move to that offset, and focus
-    //   the editor. The resulting selectionSet fires onNavigate so
-    //   the URL hash + DAG focus update automatically. We also call
-    //   onNavigate explicitly here so the URL still updates when
-    //   the cursor was already at the definition (cursor jump is a
-    //   no-op then; selectionSet wouldn't fire). Works equally for
-    //   LHS and RHS binding spans — the destination is the LHS in
-    //   both cases.
+    // readOnly + editable live in a Compartment so the view ↔ edit
+    // toggle can reconfigure them on the fly without rebuilding the
+    // editor. We toggle both together: `readOnly: true` blocks
+    // programmatic edits via dispatch (transactions can still apply
+    // selection-only changes), and `editable: false` blocks user
+    // input + hides the caret. View mode wants both off; edit mode
+    // wants both unset (the defaults are writable + editable).
+    const initialReadOnly = opts.initialReadOnly !== false;
+    const readOnlyCompartment = new bundle.Compartment();
+    function readOnlyExtensions(ro: boolean) {
+      return [
+        bundle.EditorState.readOnly.of(ro),
+        bundle.EditorView.editable.of(!ro),
+      ];
+    }
+
+    // Click-navigation (Ctrl/Cmd-click on a defined binding → jump
+    // to its definition). Works regardless of mode: in view mode
+    // the editor isn't focusable for typing, but it still receives
+    // mousedown events.
     function jumpToBindingDefinition(name: any) {
       const FE = globalScope.FlatPPLEngine;
       if (!FE) return;
@@ -257,27 +334,8 @@
       },
     };
 
-    // Suppress onChange for programmatic setSource calls (model
-    // swaps, revert, …). The caller has the new text already and
-    // owns whatever side-effect (viewer.update) it wants to trigger;
-    // firing onChange here would cause a redundant re-render. User-
-    // typed changes still fire normally because suppressOnChange is
-    // only set during dispatch and restored immediately after.
     let suppressOnChange = false;
-    // Suppress cursor-driven navigation specifically. Used by
-    // replaceRange (host.editSource on the persist path): the doc
-    // changed but no user cursor movement happened — the cursor
-    // lingering somewhere from an earlier click would otherwise
-    // trigger a spurious onNavigate to that stale position. Note
-    // this is separate from suppressOnChange: replaceRange DOES
-    // want onChange to fire (so the viewer re-renders with the
-    // new source), it just doesn't want to be misread as user
-    // cursor navigation.
     let suppressNavigate = false;
-    // Last reported binding name from cursor-driven navigation. We
-    // suppress repeats so the router doesn't see a flood of
-    // identical navigateTo calls when the cursor sits on a single
-    // identifier across multiple updates.
     let lastCursorBinding: any = null;
 
     function bindingAtCursor() {
@@ -312,14 +370,6 @@
       if (u.docChanged && typeof opts.onChange === 'function') {
         opts.onChange(u.state.doc.toString());
       }
-      // Cursor-driven navigation: when the main cursor lands on an
-      // identifier that resolves to a defined binding, fire
-      // onNavigate. This subsumes the read-only pane's
-      // "click-a-binding-to-focus" UX (a click both moves the
-      // cursor and triggers selectionSet) plus keyboard cursor
-      // movement, both of which feel natural in a code editor.
-      // The router de-dupes identical states so repeated calls
-      // with the same target are cheap.
       if ((u.selectionSet || u.docChanged)
           && !suppressNavigate
           && typeof opts.onNavigate === 'function') {
@@ -331,24 +381,74 @@
       }
     });
 
+    // The line-flash decoration set: a single mark on the target
+    // line that the gallery's revealLine method installs, then
+    // removes after ~1.5 s. Implementing the flash as a Decoration
+    // (rather than mutating DOM directly) keeps it correct under
+    // CodeMirror's virtual scrolling — the line can scroll out and
+    // back without losing the highlight.
+    const flashState = bundle.StateField
+      ? null
+      : null;
+    // Use a ViewPlugin to manage flash decorations instead of
+    // StateField (StateField requires importing more from
+    // @codemirror/state into the bundle). The plugin holds a
+    // mutable DecorationSet and a small API for installing /
+    // clearing flashes.
+    let flashView: any = null;
+    const flashPlugin = bundle.ViewPlugin.fromClass(
+      function (this: any, view: any) {
+        flashView = this;
+        this.view = view;
+        this.decorations = bundle.Decoration.none;
+        this.timer = null;
+        this.flashLine = function (line1: number) {
+          if (line1 < 1 || line1 > view.state.doc.lines) return;
+          const info = view.state.doc.line(line1);
+          const deco = bundle.Decoration.line({ class: 'cm-line-flash' })
+            .range(info.from);
+          this.decorations = bundle.Decoration.set([deco]);
+          view.requestMeasure();
+          if (this.timer) clearTimeout(this.timer);
+          const self = this;
+          this.timer = setTimeout(function () {
+            self.decorations = bundle.Decoration.none;
+            view.requestMeasure();
+          }, 1500);
+        };
+        this.update = function () { /* nothing — decorations persist
+          across viewport changes until the timer clears them. */ };
+        this.destroy = function () {
+          if (this.timer) clearTimeout(this.timer);
+          flashView = null;
+        };
+      },
+      { decorations: function (v: any) { return v.decorations; } }
+    );
+
+    const extensions: any[] = [
+      bundle.lineNumbers(),
+      bundle.highlightActiveLine(),
+      bundle.highlightActiveLineGutter(),
+      bundle.history(),
+      bundle.keymap.of(
+        (bundle.defaultKeymap || []).concat(
+          bundle.historyKeymap || [],
+          bundle.searchKeymap || []
+        )
+      ),
+      makeHighlightPlugin(bundle),
+      makeHoverTooltip(bundle),
+      flashPlugin,
+      makeTheme(bundle),
+      bundle.EditorView.domEventHandlers(domEventHandlers),
+      docChangeListener,
+      readOnlyCompartment.of(readOnlyExtensions(initialReadOnly)),
+    ];
+
     const state = bundle.EditorState.create({
       doc: typeof opts.initialSource === 'string' ? opts.initialSource : '',
-      extensions: [
-        bundle.lineNumbers(),
-        bundle.highlightActiveLine(),
-        bundle.highlightActiveLineGutter(),
-        bundle.history(),
-        bundle.keymap.of(
-          (bundle.defaultKeymap || []).concat(
-            bundle.historyKeymap || [],
-            bundle.searchKeymap || []
-          )
-        ),
-        makeHighlightPlugin(bundle),
-        makeTheme(bundle),
-        bundle.EditorView.domEventHandlers(domEventHandlers),
-        docChangeListener,
-      ],
+      extensions: extensions,
     });
 
     var view = new bundle.EditorView({ state: state, parent: container });
@@ -358,56 +458,74 @@
         if (text === view.state.doc.toString()) return;
         suppressOnChange = true;
         try {
+          // readOnly: true blocks `changes` transactions by default.
+          // Programmatic source loads bypass that via the
+          // `userEvent: 'input'`-free dispatch — readOnly only
+          // rejects *user* edits in CodeMirror's contract, but to
+          // be defensive we temporarily reconfigure to writable.
+          const wasRO = view.state.readOnly;
+          if (wasRO) {
+            view.dispatch({
+              effects: readOnlyCompartment.reconfigure(readOnlyExtensions(false)),
+            });
+          }
           view.dispatch({
             changes: { from: 0, to: view.state.doc.length, insert: text },
           });
+          if (wasRO) {
+            view.dispatch({
+              effects: readOnlyCompartment.reconfigure(readOnlyExtensions(true)),
+            });
+          }
         } finally {
           suppressOnChange = false;
         }
       },
       getSource: function () { return view.state.doc.toString(); },
+      /** Toggle the editor between view (readOnly + non-editable)
+       *  and edit (writable + editable). The doc, selection,
+       *  history and decorations all persist across the toggle —
+       *  same instance, different input behaviour. */
+      setReadOnly: function (ro: boolean) {
+        view.dispatch({
+          effects: readOnlyCompartment.reconfigure(readOnlyExtensions(!!ro)),
+        });
+      },
       /** Scroll the editor to the given source line (zero-indexed,
-          matching the engine's tokenizer + the read-only pane's
-          data-line attributes) and place the cursor at that
-          line's start. The DAG → source flow (host.revealSourceLine
-          on Ctrl-click of a DAG node) lands here in playground
-          mode. */
+          matching the engine's tokenizer's positions). Adds a
+          short-lived line-flash decoration so the destination is
+          visually obvious. The DAG → source flow lands here. */
       revealLine: function (line: any) {
         const totalLines = view.state.doc.lines;
-        // CodeMirror's doc.line() is 1-indexed; the engine and our
-        // read-only pane are 0-indexed. Translate + clamp.
         const n = Math.max(1, Math.min(((line | 0) + 1), totalLines));
         const info = view.state.doc.line(n);
         view.dispatch({
           selection: { anchor: info.from },
           effects: bundle.EditorView.scrollIntoView(info.from, { y: 'center' }),
         });
-        // Focus the editor so the cursor is visible. Without this
-        // the editor only renders the cursor when focused, and a
-        // Ctrl-click on a DAG node (which kept focus on the DAG
-        // pane) leaves the user with no visual indication that the
-        // editor cursor moved at all. The active-line highlight
-        // (theme rule) is a secondary cue but is too subtle on
-        // its own to substitute for a visible cursor.
-        view.focus();
+        if (flashView) flashView.flashLine(n);
+        // Don't auto-focus in view mode — the caret isn't visible
+        // there anyway, and focusing the editor steals focus from
+        // the DAG pane (Ctrl-click target).
+        if (view.state.readOnly === false) view.focus();
       },
-      /** Replace a byte range in the document with new text. Unlike
-          setSource, this allows onChange to fire — the dispatch
-          changes the doc and the gallery's viewer.update path then
-          re-renders through the standard debounced refresh. Used
-          by host.editSource to write a modified preset's values
-          back into source. The cursor-driven onNavigate is
-          suppressed during dispatch because the doc-changed event
-          would otherwise read the cursor's stale position (from
-          wherever the user last clicked in the editor) and
-          synchronously route a navigateTo to that binding,
-          overriding whatever node the viewer actually has focus on. */
       replaceRange: function (from: any, to: any, text: any) {
         suppressNavigate = true;
         try {
+          const wasRO = view.state.readOnly;
+          if (wasRO) {
+            view.dispatch({
+              effects: readOnlyCompartment.reconfigure(readOnlyExtensions(false)),
+            });
+          }
           view.dispatch({
             changes: { from: from, to: to, insert: text },
           });
+          if (wasRO) {
+            view.dispatch({
+              effects: readOnlyCompartment.reconfigure(readOnlyExtensions(true)),
+            });
+          }
         } finally {
           suppressNavigate = false;
         }
@@ -417,7 +535,6 @@
   }
 
   globalScope.FlatPPLWebEditor = {
-    loadBundle: loadBundle,
     mountEditor: mountEditor,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

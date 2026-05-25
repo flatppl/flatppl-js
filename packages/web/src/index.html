@@ -76,7 +76,10 @@
         </button>
       </div>
       <div class="pane-body">
-        <pre id="source-view"></pre>
+        <!-- Unified source viewer + editor (CodeMirror 6). View mode
+             starts read-only; the edit-toggle button flips it to
+             writable in deploys with allowEdit=true. -->
+        <div id="source-editor"></div>
       </div>
     </section>
 
@@ -101,17 +104,15 @@
     window.__FLATPPL_CONFIG__ = {
       samplerWorkerUrl: new URL('vendor/sampler-worker.min.js', document.baseURI).href,
       // allowEdit: when true, the gallery exposes an edit-mode
-      // toggle in the source-pane header. The user can flip it on
-      // to turn the source pane into a CodeMirror editor (lazy-
-      // loaded from vendor/codemirror.min.js the first time it's
-      // needed) and type freely — viewer + plots refresh with a
-      // debounced re-render. Edits are session-only; nothing is
-      // persisted. With allowEdit false the toggle button is
-      // hidden entirely and the page never requests the CodeMirror
-      // bundle, matching the original read-only deploy.
+      // toggle in the source-pane header. The unified source surface
+      // is CodeMirror in either mode; the toggle flips between
+      // view-only (readOnly + non-editable) and editable. Edits
+      // are session-only; nothing is persisted to disk. With
+      // allowEdit false the toggle button stays hidden and the
+      // editor stays permanently in view mode.
       //
-      // Default mode within a deploy is still read-only — the user
-      // opts into editing via the toggle. The user's last choice is
+      // Default mode within a deploy is view-only — the user opts
+      // into editing via the toggle. The user's last choice is
       // remembered in localStorage so it survives reloads.
       //
       // Reusers of @flatppl/web flip allowEdit to false in their
@@ -120,11 +121,16 @@
     };
   </script>
   <script src="vendor/viewer.js"></script>
+  <!-- CodeMirror bundle: now loaded eagerly because it powers the
+       unified source-view surface (read-only and edit modes share
+       the same instance). Previously this was fetched lazily from
+       editor.js on the first edit-toggle click; the gallery now
+       always needs it on first source render. -->
+  <script src="vendor/codemirror.min.js"></script>
   <script src="ephemeral.js"></script>
   <script src="resolver.js"></script>
   <script src="router.js"></script>
   <script src="manifest.js"></script>
-  <script src="syntax.js"></script>
   <script src="layout.js"></script>
   <script src="editor.js"></script>
   <script src="app.js"></script>

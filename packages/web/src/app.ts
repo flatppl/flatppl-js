@@ -29,18 +29,24 @@
     '',
   ].join('\n');
 
-  let sourceView:   any = null;
   let sourceHeader: any = null;
   let fileTree:     any = null;
   let titleEl:      any = null;
   let viewer:       any = null;
   let manifest:     any = null;
 
-  // Playground state. `playgroundEditor` is the EditorHandle returned
-  // by FlatPPLWebEditor.mountEditor, present only in playground mode.
-  // showSource / showSourceIfChanged switch their write path through
-  // this when set.
-  let playgroundEditor: any = null;
+  // Unified source surface: one CodeMirror instance, eagerly mounted
+  // at boot, toggled between view-only (readOnly + non-editable) and
+  // edit (writable) via the source-pane edit button when allowEdit
+  // is true. Replaces the old dual surface (`<pre>` + lazy
+  // CodeMirror) so syntax highlighting, hover, find, decorations,
+  // and virtual scrolling work uniformly at any file size.
+  let sourceEditor: any = null;
+  // Whether the editor is currently in writable mode. Mirrors the
+  // toggle button's aria-pressed state and is the gate for the
+  // viewer host's `canPersist` / `editSource` hooks (persist is
+  // legal only while the user is in edit mode).
+  let editEnabled = false;
 
   // The source string currently rendered in the source pane. Used by
   // showSourceIfChanged to skip the full innerHTML rewrite (and the
@@ -66,50 +72,16 @@
   // of the file.
   let lastModel: string | null = null;
 
-  /**
-   * Push text into the source pane. When the engine is available
-   * we run it through the FlatPPL-aware syntax highlighter, which
-   * also stamps `data-binding` attributes on identifier spans that
-   * match defined binding names (used by the cross-pane click flows
-   * landing in subsequent steps). If the engine isn't ready yet, we
-   * fall back to plain text so the pane stays useful.
-   */
+  /** Push text into the source editor. The editor's own
+   *  highlight plugin walks the engine's tokenizer + binding table
+   *  on every doc change and applies decorations — so we don't need
+   *  to pre-classify here. setSource is silent (suppresses onChange)
+   *  so callers don't have to worry about a redundant viewer
+   *  re-render. */
   function showSource(text: any, label?: any) {
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
-    // Playground mode: write through the CodeMirror editor instead
-    // of the read-only <pre>. The editor's setSource is silent (no
-    // onChange fires), so we don't trigger a redundant viewer.update —
-    // applyState already calls viewer.update directly with the right
-    // target after this returns.
-    if (playgroundEditor) {
-      playgroundEditor.setSource(text);
-      lastRenderedSource = text;
-      return;
-    }
-    if (!sourceView) return;
-    const FE = window.FlatPPLEngine;
-    const cur = window.FlatPPLWebRouter
-      ? window.FlatPPLWebRouter.parseHash() : { model: null };
-    const variantId = variantIdForPath(cur.model);
-    let bindings: Set<unknown> | null = null;
-    if (FE && typeof FE.processSource === 'function') {
-      try {
-        const processed = FE.processSource(text, { variant: variantId });
-        if (processed && processed.bindings) {
-          bindings = new Set(processed.bindings.keys());
-        }
-      } catch (e) {
-        // Parse / analyzer error — fall through to highlighter
-        // without binding info; the source still renders.
-        bindings = null;
-      }
-    }
-    if (window.FlatPPLWebSyntax && typeof window.FlatPPLWebSyntax.highlight === 'function') {
-      sourceView.innerHTML = window.FlatPPLWebSyntax.highlight(text, bindings,
-        { variant: variantId });
-    } else {
-      sourceView.textContent = text;
-    }
+    if (!sourceEditor) return;
+    sourceEditor.setSource(text);
     lastRenderedSource = text;
   }
 
@@ -137,111 +109,34 @@
     catch (_) {}
   }
 
-  /** Wire the edit toggle. Called once at boot. When the deploy
-      config has allowEdit=true, the toggle button becomes visible
-      and clickable; otherwise it stays hidden and edit mode is
-      unreachable. Restoring the user's last choice from
-      localStorage on boot keeps their preference across reloads.
-      Returns a promise the caller can await so the first
-      applyState writes into the editor (when restored to "on")
-      rather than briefly flashing the read-only <pre>. */
+  /** Wire the edit-toggle button. Called once at boot, after the
+   *  editor has been mounted. The button stays hidden when the
+   *  deploy config has allowEdit=false (read-only-only deploys).
+   *  Restores the user's last edit-mode preference from
+   *  localStorage so it survives reloads. */
   function setupEditToggle() {
     const cfg = window.__FLATPPL_CONFIG__ || {};
     const toggleBtn = document.getElementById('edit-toggle');
-    if (!toggleBtn) return Promise.resolve();
-    if (!cfg.allowEdit) {
-      // Stays `hidden`; never appears in the toolbar. The CodeMirror
-      // bundle is never fetched.
-      return Promise.resolve();
-    }
+    if (!toggleBtn) return;
+    if (!cfg.allowEdit) return;
     toggleBtn.hidden = false;
     toggleBtn.addEventListener('click', function () {
-      setEditMode(!playgroundEditor);
+      setEditMode(!editEnabled);
     });
-    if (readEditPref()) {
-      return setEditMode(true);
-    }
-    return Promise.resolve();
+    if (readEditPref()) setEditMode(true);
   }
 
-  /** Switch the source pane between read-only and editor mode.
-      Lazy-loads the CodeMirror bundle on first enable, mounts the
-      editor with the current pane content; disable disposes the
-      editor and restores the read-only <pre> in place with whatever
-      text was in the editor (so user edits survive a toggle off+on
-      within the same session). */
-  async function setEditMode(on: any) {
+  /** Switch the source editor between view (readOnly + non-editable)
+   *  and edit (writable + editable). Same instance throughout — the
+   *  doc, selection, history, and decorations all persist across the
+   *  toggle. */
+  function setEditMode(on: any) {
+    if (!sourceEditor) return;
     const toggleBtn = document.getElementById('edit-toggle');
-    const sourcePane = document.getElementById('source-pane');
-    if (on === !!playgroundEditor) {
-      // Already in the requested state; sync the button visuals
-      // just in case (e.g. on first boot when persisted state is
-      // already off).
-      if (toggleBtn) toggleBtn.setAttribute('aria-pressed', playgroundEditor ? 'true' : 'false');
-      return;
-    }
-    if (on) {
-      if (!window.FlatPPLWebEditor) {
-        console.warn('[@flatppl/web] edit requested but FlatPPLWebEditor missing — staying read-only');
-        return;
-      }
-      try {
-        await window.FlatPPLWebEditor.loadBundle();
-      } catch (e: any) {
-        console.warn('[@flatppl/web] CodeMirror load failed — staying read-only:', e && e.message);
-        return;
-      }
-      if (!sourceView) return;
-      const paneBody = sourceView.parentNode;
-      let editorContainer = document.getElementById('source-editor');
-      if (!editorContainer) {
-        editorContainer = document.createElement('div');
-        editorContainer.id = 'source-editor';
-        paneBody.appendChild(editorContainer);
-      }
-      sourceView.style.display = 'none';
-      if (sourcePane) sourcePane.classList.add('playground');
-      const initial = lastRenderedSource != null ? lastRenderedSource : '';
-      playgroundEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
-        initialSource: initial,
-        onChange: debounce(function (text: any) {
-          if (!viewer) return;
-          const cur = window.FlatPPLWebRouter.parseHash();
-          // Push edits back into the ephemeral store so they survive
-          // navigation away and back to the same path. update() is a
-          // no-op for paths not in the store, so this is safe for
-          // manifest entries the user is editing in playground mode.
-          if (window.FlatPPLWebEphemeral) {
-            window.FlatPPLWebEphemeral.update(cur.model, text);
-          }
-          viewer.update(text, cur.target || null,
-            { variant: variantIdForPath(cur.model) });
-        }, 250),
-        onNavigate: function (name: any) {
-          const cur = window.FlatPPLWebRouter.parseHash();
-          window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
-        },
-      });
-      lastRenderedSource = initial;
-      if (toggleBtn) toggleBtn.setAttribute('aria-pressed', 'true');
-      writeEditPref(true);
-    } else {
-      // Disable: pull current text out of the editor, dispose, show
-      // the <pre> again. The <pre> picks up whatever the user typed
-      // — read-only mode preserves the last state, no edits are
-      // discarded by the toggle alone.
-      const currentText = playgroundEditor.getSource();
-      try { playgroundEditor.destroy(); } catch (_) {}
-      playgroundEditor = null;
-      const ed = document.getElementById('source-editor');
-      if (ed && ed.parentNode) ed.parentNode.removeChild(ed);
-      if (sourcePane) sourcePane.classList.remove('playground');
-      if (sourceView) sourceView.style.display = '';
-      lastRenderedSource = null;  // force a fresh highlight pass
-      showSource(currentText, (sourceHeader && sourceHeader.textContent) || 'Source');
-      if (toggleBtn) toggleBtn.setAttribute('aria-pressed', 'false');
-      writeEditPref(false);
-    }
+    editEnabled = !!on;
+    sourceEditor.setReadOnly(!editEnabled);
+    if (toggleBtn) toggleBtn.setAttribute('aria-pressed', editEnabled ? 'true' : 'false');
+    writeEditPref(editEnabled);
   }
 
   /** Cheap variant of showSource: skip the full re-highlight when the
@@ -444,32 +339,7 @@
     }
   }
 
-  /** Source-pane click handler: when the user clicks on an identifier
-      span carrying `data-binding`, focus that binding in the DAG view
-      via a router navigation. Routing through the hash means browser
-      back/forward and bookmarkable URLs stay coherent (the hash now
-      encodes both the model and the focused binding). Walks up from
-      ev.target so clicks on the text inside a span hit the same
-      handler as clicks on the span itself. */
-  function onSourceClick(ev: any) {
-    let el = ev.target;
-    while (el && el !== sourceView) {
-      if (el.dataset && el.dataset.binding) {
-        const name = el.dataset.binding;
-        const cur = window.FlatPPLWebRouter.parseHash();
-        window.FlatPPLWebRouter.navigateTo({
-          model: cur.model,
-          target: name,
-        });
-        ev.preventDefault();
-        return;
-      }
-      el = el.parentNode;
-    }
-  }
-
   async function boot() {
-    sourceView   = document.getElementById('source-view');
     sourceHeader = document.getElementById('source-header');
     fileTree     = document.getElementById('file-tree');
     titleEl      = document.getElementById('app-title');
@@ -523,13 +393,36 @@
       });
     }
 
+    // Mount the source editor eagerly. The editor is the only
+    // source surface now (no read-only <pre>) — it lives in view-
+    // only mode by default and the edit toggle flips it to writable.
+    const editorContainer = document.getElementById('source-editor');
+    if (editorContainer && window.FlatPPLWebEditor) {
+      sourceEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
+        initialSource: '',
+        initialReadOnly: true,
+        onChange: debounce(function (text: any) {
+          if (!viewer) return;
+          if (!editEnabled) return;  // pure-view dispatches don't re-render
+          const cur = window.FlatPPLWebRouter.parseHash();
+          if (window.FlatPPLWebEphemeral) {
+            window.FlatPPLWebEphemeral.update(cur.model, text);
+          }
+          viewer.update(text, cur.target || null,
+            { variant: variantIdForPath(cur.model) });
+        }, 250),
+        onNavigate: function (name: any) {
+          const cur = window.FlatPPLWebRouter.parseHash();
+          window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
+        },
+      });
+    }
+
     // Wire the edit-toggle button (visible only when allowEdit is
-    // true) and restore the user's last edit-mode preference. We
-    // await it so the editor (if restored to "on") is already
-    // mounted by the time the first applyState fires — that way
-    // the initial render lands in the editor, not in a briefly-
-    // visible <pre>.
-    await setupEditToggle();
+    // true) and restore the user's last edit-mode preference. The
+    // editor is already mounted above so there's nothing async to
+    // wait for — toggling is a synchronous Compartment reconfigure.
+    setupEditToggle();
 
     // "+ New file" button: only visible when allowEdit is on. Same
     // gate as edit mode, since creating a file is meaningless when
@@ -573,26 +466,9 @@
     // needed yet.
     const webHost = {
       revealSourceLine: function (line: any) {
-        // Playground mode: scroll the CodeMirror editor and place
-        // the cursor at the start of the target line.
-        if (playgroundEditor && typeof playgroundEditor.revealLine === 'function') {
-          playgroundEditor.revealLine(line);
-          return;
+        if (sourceEditor && typeof sourceEditor.revealLine === 'function') {
+          sourceEditor.revealLine(line);
         }
-        // Read-only mode: scroll + flash the pre-rendered .src-line.
-        if (!sourceView) return;
-        const sel = '.src-line[data-line="' + line + '"]';
-        const el = sourceView.querySelector(sel);
-        if (!el) return;
-        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        // Re-trigger the CSS animation by toggling the class with a
-        // forced reflow in between, so two consecutive Ctrl-clicks
-        // on the same line both flash.
-        el.classList.remove('src-line-flash');
-        // Force reflow.
-         
-        el.offsetWidth;
-        el.classList.add('src-line-flash');
       },
       setTitle: function (name: any) {
         // Reflect the focused binding in the browser tab; the model
@@ -617,9 +493,11 @@
         });
       },
       /** Whether the gallery can write to source right now. True
-          when an editor is mounted (playground edit mode); false
-          when the source pane is read-only or no source is loaded. */
-      canPersist: function () { return !!playgroundEditor; },
+       *  when the source editor is in edit mode; false in view
+       *  mode. The unified CodeMirror surface is always present,
+       *  but persist is only legal when the user has explicitly
+       *  flipped the toggle to edit. */
+      canPersist: function () { return editEnabled; },
       /** Prompt the user for a new binding name; loop until valid
           or cancelled. Returns Promise<string|null>. Validation
           uses the engine's isValidBindingName (shared with the
@@ -654,8 +532,8 @@
           rebuildDerivations reconciliation drops any matching
           override on the next pass. */
       editSource: function (args: any) {
-        if (!playgroundEditor) return Promise.resolve(false);
-        const src = playgroundEditor.getSource();
+        if (!sourceEditor || !editEnabled) return Promise.resolve(false);
+        const src = sourceEditor.getSource();
         if (args.range) {
           const lineStarts = [0];
           for (let i = 0; i < src.length; i++) {
@@ -667,10 +545,10 @@
           }
           const from = offsetOf(args.range.start);
           const to   = offsetOf(args.range.end);
-          playgroundEditor.replaceRange(from, to, args.newText);
+          sourceEditor.replaceRange(from, to, args.newText);
         } else {
           const sep = src.length === 0 || src.charAt(src.length - 1) === '\n' ? '' : '\n';
-          playgroundEditor.replaceRange(src.length, src.length,
+          sourceEditor.replaceRange(src.length, src.length,
             sep + args.newText + '\n');
         }
         return Promise.resolve(true);
@@ -679,11 +557,12 @@
 
     viewer = window.FlatPPLViewer.mount(viewerRoot, { host: webHost });
 
-    // Delegated click handler: turns a click on a binding identifier
-    // in the source pane into a router navigation that focuses the
-    // corresponding DAG node. Lives on the source-view root so it
-    // survives every innerHTML rewrite the highlighter does.
-    sourceView.addEventListener('click', onSourceClick);
+    // The source editor handles its own click navigation:
+    //   - Plain click: caret placement → cursor-driven onNavigate
+    //     fires onNavigate(name) if the new caret lands on a
+    //     defined-binding identifier.
+    //   - Ctrl/Cmd-click: jump-to-definition (also via onNavigate).
+    // No delegated `<pre>` click handler needed.
 
     // Manifest is non-fatal: a missing/broken models.json leaves the
     // tree empty and the gallery still works for hash-driven navigation.
