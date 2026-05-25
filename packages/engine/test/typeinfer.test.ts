@@ -288,6 +288,39 @@ test('arithmetic: comparisons return boolean of the broadcast shape', () => {
   assert.ok(T.equal(t.elem, T.BOOLEAN));
 });
 
+test('broadcast: dotted op over rank-1 array preserves shape', () => {
+  // The viewer's matrix-heatmap dispatch keys off the inferredType
+  // being array(rank=N, statically-known-shape). Before typeinfer
+  // learned about `broadcast(...)` directly, `tau = (bkg ./ dbkg) .^
+  // 2` deferred — so a fixed-phase 3×3 zero matrix rendered as a
+  // scalar 0. Pin the tighten on a rank-1 literal where the shape is
+  // statically known (rowstack's signature still leaves the dims
+  // %dynamic at the static-type layer).
+  const { bindings, errors } = infer(`
+    bkg = [50.0, 52.0]
+    tau = bkg .^ 2
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'tau');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [2]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('broadcast: kernel-broadcast stays deferred so joint/draw still accept it', () => {
+  // `broadcast(K, ...)` is semantically an array of measures, but
+  // tightening that would tip joint/draw's measure-typecheck into
+  // rejecting the result. inferBroadcast deliberately falls back to
+  // deferred whenever the function arg isn't a value-producing
+  // synthesized functionof — see typeinfer.ts comments.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    K = fn(Normal(mu = _, sigma = 0.1))
+    D ~ broadcast(K, A)
+  `);
+  assert.equal(errors.length, 0);
+});
+
 test('arithmetic: unary ops preserve shape', () => {
   const { bindings, errors } = infer(`
     xs = [1.0, 2.0, 3.0]
