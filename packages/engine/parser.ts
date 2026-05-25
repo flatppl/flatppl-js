@@ -53,6 +53,42 @@ function parse(tokens: any[], variant: any) {
     }
   }
 
+  // Skip newlines + plain comments while collecting any leading
+  // doc-comments (the next binding's leading-attachment candidate).
+  // Multiple leading doc-comments on the same binding are an error
+  // (spec §04 §sec:documentation attachment rule "one per binding").
+  function skipNewlinesCollectingDocs(): any | null {
+    let leadingDoc: any | null = null;
+    let leadingDocLoc: any | null = null;
+    while (at(T.NEWLINE) || at(T.COMMENT)
+           || at(T.DOC_LINE) || at(T.DOC_BLOCK)) {
+      if (at(T.COMMENT) || at(T.NEWLINE)) {
+        advance();
+        continue;
+      }
+      // DOC_LINE / DOC_BLOCK — consume and remember as leading.
+      const tok = peek();
+      const isBlock = tok.type === T.DOC_BLOCK;
+      const payload = tok.value;
+      advance();
+      if (leadingDoc) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'Only one doc-comment may precede a binding '
+            + '(use a `%%%` block for multi-line content)',
+          loc: tok.loc,
+        });
+        // Discard the new one; keep the first.
+        continue;
+      }
+      leadingDoc = isBlock
+        ? { markup: payload.markup, lines: payload.lines.slice() }
+        : { markup: payload.markup, lines: [payload.content] };
+      leadingDocLoc = tok.loc;
+    }
+    return leadingDoc;
+  }
+
   function skipToNewline() {
     while (!at(T.NEWLINE) && !at(T.EOF)) advance();
   }
@@ -928,19 +964,65 @@ function parse(tokens: any[], variant: any) {
     const body: any[] = [];
     const comments: any[] = [];
 
-    skipNewlines();
+    // Collect a doc-comment that PRECEDES the first statement (leading
+    // form), if any.
+    let leadingDoc = skipNewlinesCollectingDocs();
     while (!at(T.EOF)) {
       if (at(T.COMMENT)) {
         const c = advance();
         comments.push(AST.Comment(c.value, c.loc));
-        skipNewlines();
+        leadingDoc = skipNewlinesCollectingDocs() || leadingDoc;
         continue;
       }
 
       const stmt = parseStatement();
+
+      // Trailing-doc check: a single-line `%` doc-comment right after
+      // the statement's RHS, before the next NEWLINE / SEMI / EOF /
+      // COMMENT, attaches as trailing per spec §04. Block-form
+      // doc-comments cannot be trailing (the fence requires its own
+      // line). XOR rule: a binding has at most one doc; leading
+      // beats trailing only if both present, which is itself an
+      // error.
+      let trailingDoc: any | null = null;
+      let trailingDocLoc: any | null = null;
+      if (at(T.DOC_LINE)) {
+        const tok = peek();
+        trailingDoc = { markup: tok.value.markup, lines: [tok.value.content] };
+        trailingDocLoc = tok.loc;
+        advance();
+      } else if (at(T.DOC_BLOCK)) {
+        // Block form in trailing position is a spec error.
+        const tok = peek();
+        diagnostics.push({
+          severity: 'error',
+          message: 'Block doc-comments (`%%%`) cannot be in trailing '
+            + 'position; place it on its own line BEFORE the binding',
+          loc: tok.loc,
+        });
+        advance();
+      }
+
+      // Resolve leading/trailing XOR.
+      let attached: any | null = null;
+      if (leadingDoc && trailingDoc) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'A binding may have a leading OR trailing doc-comment, '
+            + 'not both',
+          loc: trailingDocLoc,
+        });
+        attached = leadingDoc;
+      } else {
+        attached = leadingDoc || trailingDoc;
+      }
+      if (attached) stmt.doc = attached;
+      leadingDoc = null;
       body.push(stmt);
 
-      // Expect newline or EOF after statement
+      // Expect newline / SEMI(already-NEWLINE) / EOF / COMMENT after
+      // statement (and now also DOC_*, which would have been the
+      // trailing form handled above; defensively swallow any here).
       if (!at(T.NEWLINE) && !at(T.EOF) && !at(T.COMMENT)) {
         diagnostics.push({
           severity: 'error',
@@ -949,7 +1031,16 @@ function parse(tokens: any[], variant: any) {
         });
         skipToNewline();
       }
-      skipNewlines();
+      leadingDoc = skipNewlinesCollectingDocs();
+    }
+
+    // Orphan check: if leadingDoc is set at EOF, no binding followed.
+    if (leadingDoc) {
+      diagnostics.push({
+        severity: 'warning',
+        message: 'Doc-comment is not attached to any following binding',
+        loc: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } },
+      });
     }
 
     return AST.Program(body, comments);

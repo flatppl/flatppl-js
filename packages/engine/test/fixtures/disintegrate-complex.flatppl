@@ -19,17 +19,17 @@ obs2 = draw(Normal(mu = theta1, sigma = sigma))
 
 # ---- Joint with parametric ancestors ----
 #
-# theta1 depends on mu and sigma (parametric); the resulting joint is a
+# theta1 depends on mu and sigma (parametric) -- the resulting joint is a
 # parametric measure. Disintegration produces a kernel and prior that
 # remain parametric in mu, sigma.
 
 joint_with_inputs = lawof(
     record(theta1 = theta1, theta2 = theta2, obs1 = obs1, obs2 = obs2))
 
-# Single-field selector (string form). Kernel: obs1; prior: theta1, theta2, obs2.
+# Single-field selector (string form). Kernel: obs1 -- prior & theta1, theta2, obs2.
 fk_a, pr_a = disintegrate("obs1", joint_with_inputs)
 
-# Multi-field selector. Kernel: obs1, obs2; prior: theta1, theta2.
+# Multi-field selector. Kernel: obs1, obs2 -- prior & theta1, theta2.
 fk_b, pr_b = disintegrate(["obs1", "obs2"], joint_with_inputs)
 
 # ---- Joint without external inputs ----

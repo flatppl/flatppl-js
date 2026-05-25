@@ -93,6 +93,11 @@ function loweredBinding(name: string, rhs: any, opts?: any) {
     // RHSes; this duplicates them at the binding level for fast lookup.
     inferredType: opts.inferredType || null,
     phase: opts.phase || null,
+    // Optional doc-comment attached by the parser (spec §05 / §04
+    // §sec:documentation). Shape: `{ markup: 'md'|'typ', lines: string[] }`.
+    // Null when the source binding had no doc-comment. Lowered to the
+    // optional `(%doc ...)` sub-form of `(%bind ...)` in FlatPIR.
+    doc: opts.doc || null,
   };
 }
 
@@ -131,6 +136,7 @@ function lowerToModule(parsedBindings: Map<string, any>) {
       rhs = { kind: 'lit', value: null, loc: binding.node.loc, lowerError: String(err) };
     }
     m.bindings.set(name, loweredBinding(name, rhs, {
+      doc: binding.node && binding.node.doc ? binding.node.doc : null,
       originLoc: binding.node.loc,
       synthetic: !!binding.synthetic,
     }));

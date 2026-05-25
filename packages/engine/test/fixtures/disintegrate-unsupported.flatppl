@@ -1,7 +1,7 @@
 # Demo file for the "Unsupported plan" visual marker. Three disintegrations
 # are wired up below — one resolves structurally (Synthesized), one resolves
 # by Delegate, and two return Unsupported for distinct, principled reasons.
-# Only the Unsupported results should render with a dotted orange border;
+# Only the Unsupported results should render with a dotted orange border:
 # the others should render with their normal kernel/measure styling.
 
 # --- shared building blocks ---
@@ -19,7 +19,7 @@ fk_ok, pr_ok = disintegrate(["b"], joint_lr)
 
 # === Case 2: delegate — jointchain(prior_b, kernel_b) suffix selection. ===
 prior_b  = lawof(record(theta = draw(Normal(mu = 0, sigma = 1))))
-# functionof for a measure body produces a kernel (§sec:functionof-measure);
+# functionof for a measure body produces a kernel (§sec:functionof-measure):
 # kernelof would be a type error here per §sec:kernelof "x must not be a measure".
 kernel_b = functionof(joint(obs = Normal(mu = mu_p, sigma = 1.0)),
                       theta = _theta_)
