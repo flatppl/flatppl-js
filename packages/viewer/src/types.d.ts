@@ -141,7 +141,13 @@ export interface ArrayPlan extends PlanBase {
 
 export interface MatrixPlan extends PlanBase {
   mode: 'matrix';
-  shape: [number, number];   // rows, cols
+  // Optional static shape hint. Present when typeinfer pinned both
+  // axis lengths to literal integers; absent for computed-shape
+  // rank-2 bindings (`iid(M, length(data))`, `cartpow(reals, n)`,
+  // etc.). The renderer prefers the runtime measure's
+  // `intrinsicShape` when both are available; this field is just a
+  // performance hint that lets it skip the lookup.
+  shape?: [number, number];   // rows, cols
 }
 
 export interface FixedScalarPlan extends PlanBase {

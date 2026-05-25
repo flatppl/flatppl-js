@@ -188,9 +188,19 @@ function fixedValueToMeasure(v: any, sampleCount: any) {
     const flat = dense.data instanceof Float64Array
       ? dense.data
       : Float64Array.from(dense.data);
-    return scalarMeasureN(flat, {
+    const m: any = scalarMeasureN(flat, {
       logWeights: null, logTotalmass: 0, n_eff: flat.length,
     });
+    // Preserve the intrinsic shape so the viewer can pick the
+    // matrix-heatmap (or future rank-≥3) renderer regardless of
+    // whether typeinfer happened to have a static literal shape.
+    // `intrinsicShape` is a fixed-phase-Value-only field; the
+    // 'array'/'record'/'tuple' multivariate-measure discriminator on
+    // `shape` is left alone (which routes through renderRecordMarginals
+    // and would mis-label matrix entries as samples — see the comment
+    // immediately above).
+    if (dense.shape.length >= 2) m.intrinsicShape = dense.shape.slice();
+    return m;
   }
   // Complex scalar `z = complex(re, im)` materialises as { re, im }.
   // Bridge to a planar complex Value of shape=[1] so the viewer's

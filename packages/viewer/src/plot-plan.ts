@@ -291,20 +291,22 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
       });
     if ((d && d.kind === 'array') || typeKind === 'array'
         || isFlatNumericVec) {
-      // Rank-2 fixed array with statically known shape (both axis
-      // lengths integer literals) → heatmap. Falls through to the
-      // 1D step plot for rank-1 arrays and for cases where the
-      // shape carries %dynamic axes (e.g. load_data outputs).
-      if (typeKind === 'array' && inferredType.rank === 2
-          && Array.isArray(inferredType.shape)
-          && inferredType.shape.length === 2
-          && typeof inferredType.shape[0] === 'number'
-          && typeof inferredType.shape[1] === 'number') {
-        return {
-          name: name,
-          mode: 'matrix',
-          shape: [inferredType.shape[0], inferredType.shape[1]],
-        };
+      // Rank-2 fixed array → heatmap. Axis-length literalness is
+      // not required at the type level — the runtime measure carries
+      // an `intrinsicShape` field that the renderer reads at draw
+      // time (see materialiser's fixedValueToMeasure). Static literal
+      // axes are still forwarded when available, as a hint; the
+      // renderer prefers the measure's shape when both are present.
+      // Falls through to the 1D step plot for rank-1 arrays.
+      if (typeKind === 'array' && inferredType.rank === 2) {
+        const out: any = { name: name, mode: 'matrix' };
+        if (Array.isArray(inferredType.shape)
+            && inferredType.shape.length === 2
+            && typeof inferredType.shape[0] === 'number'
+            && typeof inferredType.shape[1] === 'number') {
+          out.shape = [inferredType.shape[0], inferredType.shape[1]];
+        }
+        return out;
       }
       return { name: name, mode: 'array' };
     }
