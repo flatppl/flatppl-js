@@ -1095,6 +1095,25 @@ const SIGNATURE_FACTORIES = {
     kwargs: {},
     result: REAL,
   }),
+  // builtin_sample(rngstate, kernel, kernel_input, [n, m, ...]) — returns
+  // a tuple `(X, new_rngstate)`. Variate type and trailing dims are
+  // kernel-specific (and depend on the runtime kernel_input), so the
+  // tuple's first component is left as `any()` until per-kernel routing
+  // lands in typeinfer. Variadic positional dims handled by `variadic`.
+  builtin_sample: () => ({
+    args: [RNGSTATE, any(), any()],
+    kwargs: {},
+    result: tuple([any(), RNGSTATE]),
+    variadic: 'positional',
+  }),
+  // Canonical transports: same shape for all four. Result type
+  // mirrors the variate (uniform u and normal z share the kernel's
+  // dimension, so we leave it as `any()` until per-kernel signatures
+  // arrive).
+  builtin_touniform:   () => ({ args: [any(), any(), any()], kwargs: {}, result: any() }),
+  builtin_fromuniform: () => ({ args: [any(), any(), any()], kwargs: {}, result: any() }),
+  builtin_tonormal:    () => ({ args: [any(), any(), any()], kwargs: {}, result: any() }),
+  builtin_fromnormal:  () => ({ args: [any(), any(), any()], kwargs: {}, result: any() }),
   // truncate(M, S) — restricts the support of measure M to set S.
   // Per spec §06: ν(A) = M(A ∩ S). Does NOT normalize, so the
   // resulting measure's totalmass shrinks to M(S). The set argument

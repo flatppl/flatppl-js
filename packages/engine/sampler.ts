@@ -5847,6 +5847,53 @@ function evaluateCall(ir: any, env: any): any {
     const densityPrims = require('./density-prims.ts');
     return densityPrims.builtinLogdensityof(kernelName, kernelInput, x);
   }
+  // Canonical transports (spec §07 §sec:measure-eval-prims). Same
+  // signature for all four (kernel, kernel_input, point); the four
+  // functions dispatch into density-prims's `builtinTouniform` etc.
+  if (op === 'builtin_touniform' || op === 'builtin_fromuniform'
+      || op === 'builtin_tonormal' || op === 'builtin_fromnormal') {
+    const args = ir.args || [];
+    if (args.length !== 3) {
+      throw new Error(`evaluateExpr: ${op} expects 3 args `
+        + `(kernel, kernel_input, point), got ${args.length}`);
+    }
+    const kernelName = _resolveKernelName(args[0], env);
+    const kernelInput = evaluateExpr(args[1], env);
+    const point = evaluateExpr(args[2], env);
+    const densityPrims = require('./density-prims.ts');
+    if (op === 'builtin_touniform')   return densityPrims.builtinTouniform(kernelName, kernelInput, point);
+    if (op === 'builtin_fromuniform') return densityPrims.builtinFromuniform(kernelName, kernelInput, point);
+    if (op === 'builtin_tonormal')    return densityPrims.builtinTonormal(kernelName, kernelInput, point);
+    return densityPrims.builtinFromnormal(kernelName, kernelInput, point);
+  }
+  // builtin_sample(rngstate, kernel, kernel_input, [n, m, ...]) — FlatPDL
+  // primitive. We synthesise the measure IR `kernel(...kernel_input)`
+  // (optionally wrapped in `iid(..., size)` for the trailing dims) and
+  // route through traceeval, exactly the path `rand` takes — same
+  // RNG-state threading, same per-distribution math.
+  if (op === 'builtin_sample') {
+    const args = ir.args || [];
+    if (args.length < 3) {
+      throw new Error(`evaluateExpr: builtin_sample expects at least 3 args `
+        + `(rngstate, kernel, kernel_input, [n, m, ...]), got ${args.length}`);
+    }
+    const state: any = evaluateExpr(args[0], env);
+    if (!state || typeof state !== 'object' || !state.key || !state.counter) {
+      throw new Error(`evaluateExpr: builtin_sample's rngstate must be an rngstate `
+        + `(got ${typeof state})`);
+    }
+    const kernelName = _resolveKernelName(args[1], env);
+    const mIR = _synthSampleMeasureIR(kernelName, args[2], args.slice(3), env);
+    const opts: any = {};
+    if (env && typeof env.__resolveMeasureRef === 'function') {
+      opts.resolveMeasureRef = env.__resolveMeasureRef;
+    }
+    if (env && typeof env.__resolveValueRef === 'function') {
+      opts.resolveValueRef = env.__resolveValueRef;
+    }
+    const r: any = getTraceeval().walk(state, mIR, env, opts);
+    return [r.value, r.state];
+  }
   // Calls to other built-ins, user-defined functions, etc. aren't expected
   // inside distribution parameters in the visualizer's scope. The
   // orchestrator should pre-evaluate those and supply concrete numbers
@@ -5910,6 +5957,43 @@ function evaluateRand(ir: any, env: any): any {
   }
   const r: any = getTraceeval().walk(state, args[1], env, opts);
   return [r.value, r.state];
+}
+
+// Build a synthetic measure IR `kernel(...kernelInputKwargs)` from a
+// kernel name + the kernel_input IR + optional trailing dim IRs. Used
+// by `builtin_sample(rngstate, kernel, kernel_input, n, m, ...)` to
+// route through `traceeval.walk` — same path `rand(state, m)` takes.
+//
+// `kernelInputIR` MUST be either:
+//   - an inline `record(...)` call (fields → kernel call kwargs), or
+//   - a call whose `.kwargs` field is already in the right shape (which
+//     the surface grammar doesn't emit but tests may build directly).
+// Refs to record-typed bindings are an open follow-up; for now we
+// throw a clear error so users see the supported surface.
+function _synthSampleMeasureIR(kernelName: string, kernelInputIR: any,
+                                dimIRs: any[], _env: any): any {
+  let kwargs: Record<string, any>;
+  if (kernelInputIR && kernelInputIR.kind === 'call'
+      && kernelInputIR.op === 'record'
+      && Array.isArray(kernelInputIR.fields)) {
+    kwargs = {};
+    for (const f of kernelInputIR.fields) kwargs[f.name] = f.value;
+  } else if (kernelInputIR && kernelInputIR.kind === 'call'
+             && kernelInputIR.kwargs
+             && typeof kernelInputIR.kwargs === 'object') {
+    kwargs = kernelInputIR.kwargs;
+  } else {
+    throw new Error('builtin_sample: kernel_input must be an inline record(...) '
+      + 'literal (refs to record-typed bindings are an open follow-up)');
+  }
+  const distIR: any = { kind: 'call', op: kernelName, kwargs };
+  if (dimIRs.length === 0) return distIR;
+  // Wrap in iid(M, size). Size is a literal vector when there are
+  // multiple trailing dims; bare expr when there is exactly one.
+  const sizeIR = (dimIRs.length === 1)
+    ? dimIRs[0]
+    : { kind: 'call', op: 'vector', args: dimIRs };
+  return { kind: 'call', op: 'iid', args: [distIR, sizeIR] };
 }
 
 // Resolve the `kernel` arg of `builtin_logdensityof(kernel, …)` to a

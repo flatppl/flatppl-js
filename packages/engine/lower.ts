@@ -431,6 +431,13 @@ function _lowerCallExpr(node: any, ctx: any): any {
   if (calleeName === 'builtin_logdensityof') {
     return _lowerBuiltinLogdensityof(node, ctx);
   }
+  if (calleeName === 'builtin_touniform' || calleeName === 'builtin_fromuniform'
+      || calleeName === 'builtin_tonormal' || calleeName === 'builtin_fromnormal') {
+    return _lowerBuiltinTransport(calleeName, node, ctx);
+  }
+  if (calleeName === 'builtin_sample') {
+    return _lowerBuiltinSample(node, ctx);
+  }
 
   // General call: built-in (we know its name) vs user-defined (we don't).
   // The analyzer's collected `definedNames` set could refine this, but
@@ -562,6 +569,72 @@ function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
     ],
     loc: node.loc,
   };
+}
+
+// Shared lowerer for `builtin_touniform` / `builtin_fromuniform` /
+// `builtin_tonormal` / `builtin_fromnormal`. Same 3-arg signature
+// (kernel, kernel_input, x|u|z) and same kernel-name normalisation
+// as `_lowerBuiltinLogdensityof`. Pulled into one helper because the
+// four functions differ only in their op name.
+function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
+  const args = node.args || [];
+  if (args.length !== 3) {
+    throw new Error(`lower: ${op} expects 3 positional arguments `
+      + `(kernel, kernel_input, point), got ${args.length}`);
+  }
+  for (const a of args) {
+    if (a.type === 'KeywordArg') {
+      throw new Error(`lower: ${op} does not accept keyword arguments`);
+    }
+  }
+  const kernelArg = args[0];
+  if (kernelArg.type !== 'Identifier' || !DISTRIBUTIONS.has(kernelArg.name)) {
+    throw new Error(`lower: ${op}: kernel argument must be a built-in `
+      + 'distribution name (e.g. Normal, MvNormal); got '
+      + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+  }
+  return {
+    kind: 'call', op,
+    args: [
+      { kind: 'lit', value: kernelArg.name, loc: kernelArg.loc },
+      _lowerExpr(args[1], ctx),
+      _lowerExpr(args[2], ctx),
+    ],
+    loc: node.loc,
+  };
+}
+
+// builtin_sample(rngstate, kernel, kernel_input, n, m, ...) — FlatPDL
+// primitive. Variadic trailing dims (each a positive-integer expression).
+// Returns the spec-defined tuple `(X, new_rngstate)`. We keep the
+// kernel_input IR intact so the evaluator can pass it to traceeval (no
+// kwarg pre-evaluation, no special record-only restriction at lower
+// time — the evaluator enforces shape constraints with clearer errors).
+function _lowerBuiltinSample(node: any, ctx: any): any {
+  const args = node.args || [];
+  if (args.length < 3) {
+    throw new Error('lower: builtin_sample expects at least 3 positional '
+      + 'arguments (rngstate, kernel, kernel_input, [n, m, ...]); got '
+      + args.length);
+  }
+  for (const a of args) {
+    if (a.type === 'KeywordArg') {
+      throw new Error('lower: builtin_sample does not accept keyword arguments');
+    }
+  }
+  const kernelArg = args[1];
+  if (kernelArg.type !== 'Identifier' || !DISTRIBUTIONS.has(kernelArg.name)) {
+    throw new Error('lower: builtin_sample: kernel argument must be a built-in '
+      + 'distribution name (e.g. Normal, MvNormal); got '
+      + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+  }
+  const lowered: any[] = [
+    _lowerExpr(args[0], ctx),
+    { kind: 'lit', value: kernelArg.name, loc: kernelArg.loc },
+    _lowerExpr(args[2], ctx),
+  ];
+  for (let i = 3; i < args.length; i++) lowered.push(_lowerExpr(args[i], ctx));
+  return { kind: 'call', op: 'builtin_sample', args: lowered, loc: node.loc };
 }
 
 function _lowerReification(op: string, node: any, ctx: any): any {

@@ -103,9 +103,14 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   // evaluateCall via a dedicated case that walks the axis-name iteration
   // and reduces with one of the seven order-invariant reductions.
   'aggregate',
-  // FlatPDL measure-eval primitive (spec §07 §sec:measure-eval-prims).
-  // Dispatched in evaluateCall to density-prims.builtinLogdensityof.
-  'builtin_logdensityof',
+  // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
+  // Dispatched in evaluateCall: builtin_logdensityof / builtin_touniform
+  // / builtin_fromuniform / builtin_tonormal / builtin_fromnormal go to
+  // density-prims.ts; builtin_sample synthesises a measure IR and walks
+  // traceeval.
+  'builtin_logdensityof', 'builtin_sample',
+  'builtin_touniform', 'builtin_fromuniform',
+  'builtin_tonormal',  'builtin_fromnormal',
 ]);
 
 test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () => {
