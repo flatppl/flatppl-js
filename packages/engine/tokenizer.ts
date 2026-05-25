@@ -41,6 +41,15 @@ function token(type: string, value: any, startLine: number, startCol: number, en
   };
 }
 
+// At the start of a line iff there's no preceding token on this line.
+// We track this through the emitted-token stream: a NEWLINE at the
+// tail means we're starting a fresh line; an empty stream means
+// start of source.
+function _atLineStart(tokens: any[]) {
+  if (tokens.length === 0) return true;
+  return tokens[tokens.length - 1].type === 'NEWLINE';
+}
+
 function isAlpha(ch: string) { return /[a-zA-Z]/.test(ch); }
 function isDigit(ch: string) { return /[0-9]/.test(ch); }
 function isHexDigit(ch: string) { return /[0-9a-fA-F]/.test(ch); }
@@ -93,10 +102,64 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       continue;
     }
 
-    // Comment
+    // Comments (spec §05). Two forms:
+    //   - Block comment `###` on its own line (with optional leading
+    //     horizontal whitespace), closed by a matching `###` on its
+    //     own line. Content between fences is consumed and discarded.
+    //   - Line comment `#`, terminated by the next newline OR
+    //     semicolon — whichever comes first — so source survives
+    //     newline-collapsing transport channels (spec §05 Statements:
+    //     newlines and `;` are equivalent separators).
     if (ch === '#') {
+      // Block-comment fence detection: `###` AT THE START OF A LINE
+      // (only horizontal whitespace before it on the line). We
+      // approximate "start of line" by checking that the previous
+      // emitted token is NEWLINE (or there is no previous token —
+      // start of source). Tab/space already consumed by the
+      // whitespace branch above; line/col still point at the `#`.
+      if (peek(1) === '#' && peek(2) === '#'
+          && (peek(3) === '\n' || peek(3) === '' ||
+              (peek(3) === ' ' || peek(3) === '\t'))
+          && _atLineStart(tokens)) {
+        // Consume the opening fence and any trailing whitespace
+        // through the newline.
+        advance(); advance(); advance();
+        while (pos < source.length && at() !== '\n') advance();
+        if (at() === '\n') advance();
+        // Consume body lines until a closing `###` on its own line.
+        while (pos < source.length) {
+          // Save start of this line.
+          const lineStart = pos;
+          // Skip leading horizontal whitespace.
+          let p = pos;
+          while (p < source.length && (source[p] === ' ' || source[p] === '\t')) p++;
+          if (source[p] === '#' && source[p + 1] === '#' && source[p + 2] === '#'
+              && (p + 3 === source.length
+                  || source[p + 3] === '\n'
+                  || source[p + 3] === ' '
+                  || source[p + 3] === '\t')) {
+            // Closing fence; consume through end-of-line.
+            while (pos < source.length && at() !== '\n') advance();
+            if (at() === '\n') advance();
+            break;
+          }
+          // Not a fence — consume the whole line.
+          while (pos < source.length && at() !== '\n') advance();
+          if (at() === '\n') advance();
+        }
+        // Block comment is transparent to the parser — emit no
+        // token. The block spanned ≥1 newline(s) which would have
+        // been emitted as NEWLINE if we'd taken the whitespace path,
+        // so we synthesise a single NEWLINE here at depth 0 to keep
+        // statement-separator behaviour intact.
+        if (depth === 0) {
+          tokens.push(token(T.NEWLINE, '\n', startLine, startCol, line, col));
+        }
+        continue;
+      }
+      // Line comment.
       let text = '';
-      while (pos < source.length && at() !== '\n') {
+      while (pos < source.length && at() !== '\n' && at() !== ';') {
         text += advance();
       }
       tokens.push(token(T.COMMENT, text, startLine, startCol, line, col));
@@ -295,6 +358,17 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
         tokens.push(tok);
         continue;
       }
+    }
+
+    // Semicolon at depth 0: statement separator (spec §05 Statements:
+    // newline and `;` are equivalent). Emitted as NEWLINE so the
+    // parser's existing statement-separator path applies unchanged.
+    // Inside parens/brackets (depth > 0), `;` stays SEMI for FlatPPJ's
+    // positional/kwargs split (`f(x, y; a = 1)`).
+    if (ch === ';' && depth === 0) {
+      advance();
+      tokens.push(token(T.NEWLINE, ';', startLine, startCol, line, col));
+      continue;
     }
 
     // Single-character tokens
