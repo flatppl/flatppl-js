@@ -36,7 +36,6 @@ interface Window {
   FlatPPLWebRouter?: any;
   FlatPPLWebManifest?: any;
   FlatPPLWebResolver?: any;
-  FlatPPLWebSyntax?: any;
   FlatPPLWebLayout?: any;
   FlatPPLWebEditor?: any;
   FlatPPLWebEphemeral?: any;
