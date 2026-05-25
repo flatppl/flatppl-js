@@ -849,7 +849,21 @@ function staticConsume(ir: any, variateType: any): StaticConsumeResult {
   if (op === 'iid') {
     return _consumeIid(ir, variateType);
   }
-  // --- select / jointchain / others ---------------------------------
+  // --- select(branches, logweights) ---------------------------------
+  // Engine-concepts §12: superpose / measure-ifelse / xs[i] all share
+  // ONE variate space (spec §06). Each branch must consume the
+  // variate identically; a branch whose footprint disagrees is a
+  // static error. Branches may carry `ref` or `ir` form (the
+  // post-2026-05 unified shape).
+  if (op === 'select') {
+    return _consumeSelect(ir, variateType);
+  }
+  // --- jointchain (dependent composition) ---------------------------
+  // jointchain canonicalises into joint/record before the density
+  // walker sees it (per the canonicaliser comment in
+  // density.walkJointchainStub). At the static-shape layer we don't
+  // need a separate handler — joint/record cover the canonical form.
+  // --- others -------------------------------------------------------
   // Defer rather than error: the value-mode walker handles these;
   // the type-mode check just doesn't statically verify them yet.
   return { logpType: T.REAL, rest: null, deferred: true };
@@ -932,11 +946,33 @@ function _consumeJoint(ir: any, t: any): StaticConsumeResult {
     }
     return { logpType: T.REAL, rest: null };
   }
-  // Positional joint (`joint(M1, M2, ...)`): variate must be a vector
-  // or record long enough to feed each Mi's footprint in order.
-  // Defer for now — the positional-vector consume order is the same
-  // shape as iid's, and the gain is marginal vs the kwarg form which
-  // is what user code typically uses.
+  // Positional joint (`joint(M1, M2, ...)`): variate must be a flat
+  // vector (or rank-1 array) long enough to feed each Mi's
+  // footprint in order. Walk each Mi consuming from a shrinking
+  // rest. If any Mi can't statically determine its footprint, the
+  // whole joint becomes deferred (consistent with value-mode
+  // walker's runtime semantics — defer == "passes static, rely on
+  // runtime").
+  if (Array.isArray(ir.args) && ir.args.length > 0) {
+    let cur: any = t;
+    let anyDeferred = false;
+    for (let i = 0; i < ir.args.length; i++) {
+      const sub = staticConsume(ir.args[i], cur);
+      if (sub.error) return sub;
+      if (sub.deferred) anyDeferred = true;
+      cur = sub.rest;
+      if (cur == null) {
+        // Component fully consumed the variate. If more components
+        // follow, that's a static error (under-long variate).
+        if (i + 1 < ir.args.length) {
+          return { logpType: T.REAL, rest: null,
+            error: 'joint: variate exhausted after component ' + (i + 1)
+              + ' but ' + (ir.args.length - i - 1) + ' more remain' };
+        }
+      }
+    }
+    return { logpType: T.REAL, rest: cur, deferred: anyDeferred };
+  }
   return { logpType: T.REAL, rest: null, deferred: true };
 }
 
@@ -977,6 +1013,58 @@ function _consumeIid(ir: any, t: any): StaticConsumeResult {
         + lead };
   }
   return { logpType: T.REAL, rest: null, deferred: typeof lead !== 'number' };
+}
+
+// Walk each branch of a `select` against the same variate type.
+// Per spec §06, every branch shares one variate space — they must
+// all produce the SAME rest. Mismatch = static error.
+function _consumeSelect(ir: any, t: any): StaticConsumeResult {
+  const branches = ir.branches;
+  if (!Array.isArray(branches) || branches.length === 0) {
+    return { logpType: T.REAL, rest: t, deferred: true };
+  }
+  let firstRest: any = undefined;
+  let firstSize = -1;
+  let anyDeferred = false;
+  for (let k = 0; k < branches.length; k++) {
+    const b = branches[k];
+    // Branch shape: `{ ir }` (inline measure) or `{ ref }` (binding).
+    // We can statically check only the `ir` form; refs need a binding
+    // lookup we don't have here. Defer when refs appear.
+    const branchIR = b && (b.ir || (b.ref ? null : b));
+    if (!branchIR || typeof branchIR !== 'object' || branchIR.kind !== 'call') {
+      anyDeferred = true;
+      continue;
+    }
+    const sub = staticConsume(branchIR, t);
+    if (sub.error) return sub;
+    if (sub.deferred) { anyDeferred = true; continue; }
+    const sz = _restSize(sub.rest);
+    if (firstRest === undefined) {
+      firstRest = sub.rest;
+      firstSize = sz;
+    } else if (sz !== firstSize) {
+      return { logpType: T.REAL, rest: t,
+        error: 'select: branch ' + k + ' consumes a different footprint '
+          + 'than earlier branches (one variate space per spec §06)' };
+    }
+  }
+  return { logpType: T.REAL,
+    rest: firstRest === undefined ? null : firstRest,
+    deferred: anyDeferred };
+}
+
+// Rough "footprint size" of a static rest, used only for select's
+// per-branch agreement check. null/scalar → 0; array → leading-dim
+// length; record → number of remaining fields.
+function _restSize(r: any): number {
+  if (r == null) return 0;
+  if (r.kind === 'scalar') return 1;
+  if (r.kind === 'array' && Array.isArray(r.shape)) {
+    return typeof r.shape[0] === 'number' ? r.shape[0] : -1;
+  }
+  if (r.kind === 'record' && r.fields) return Object.keys(r.fields).length;
+  return -1;
 }
 
 /**

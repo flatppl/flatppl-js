@@ -98,16 +98,21 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
   }
 
   // Returns a value when the call is a shape-observer whose operand
-  // has a statically-known shape on its inferredType; otherwise
-  // returns undefined and the caller falls through to general
-  // evaluation.
+  // has a statically-known shape; otherwise returns undefined and
+  // the caller falls through to general evaluation.
+  //
+  // Two operand shapes both supported (engine-concepts §17.4 — the
+  // short-circuit must apply uniformly):
+  //  (a) Self-ref to a binding — read shape from binding's inferredType.
+  //  (b) Inline call (e.g. `length(rowstack(...))`) — typeinfer wrote
+  //      the operand's type into its `meta.type` slot; read from there.
+  // Either path avoids materialising the operand.
   function _shapeObserverShortCircuit(ir: any): any | undefined {
     if (!Array.isArray(ir.args) || ir.args.length !== 1) return undefined;
     if (ir.op !== 'length' && ir.op !== 'lengthof' && ir.op !== 'sizeof') return undefined;
     const arg = ir.args[0];
-    if (!arg || arg.kind !== 'ref' || arg.ns !== 'self') return undefined;
-    const b = loweredModule && loweredModule.bindings && loweredModule.bindings.get(arg.name);
-    const t = b && b.inferredType;
+    if (!arg) return undefined;
+    const t = _operandType(arg);
     if (!t || t.kind !== 'array' || !Array.isArray(t.shape)) return undefined;
     const allKnown = t.shape.every((d: any) => typeof d === 'number');
     if (!allKnown) return undefined;
@@ -119,6 +124,17 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
       return { shape: [t.shape.length], data };
     }
     return t.shape[0];   // length / lengthof
+  }
+
+  // Resolve the static type of an operand IR. Ref → binding's
+  // inferredType; any other expr → its meta.type (written by
+  // typeinfer's per-op handlers during the inference pass).
+  function _operandType(ir: any): any | undefined {
+    if (ir.kind === 'ref' && ir.ns === 'self') {
+      const b = loweredModule && loweredModule.bindings && loweredModule.bindings.get(ir.name);
+      return b && b.inferredType;
+    }
+    return ir && ir.meta && ir.meta.type;
   }
 
   function _evalCall(ir: any, env?: any): any | undefined {

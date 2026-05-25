@@ -121,6 +121,76 @@ test('static: iid with dynamic n stays deferred (passes static check)', () => {
 });
 
 // =====================================================================
+// Positional joint
+// =====================================================================
+
+test('static: positional joint(Normal, Normal) vs array(2, real) → empty rest', () => {
+  const ir = { kind: 'call', op: 'joint',
+    args: [Normal(0, 1), Normal(2, 3)] };
+  const variate = T.array(1, [2], T.REAL);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.equal(r.rest, null);
+  assert.ok(!r.error);
+});
+
+test('static: positional joint(Normal, Normal) vs array(3, real) → 1-element rest', () => {
+  const ir = { kind: 'call', op: 'joint',
+    args: [Normal(0, 1), Normal(2, 3)] };
+  const variate = T.array(1, [3], T.REAL);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.ok(r.rest && r.rest.kind === 'array');
+  assert.deepEqual(r.rest.shape, [1]);
+});
+
+test('static: positional joint(Normal, Normal, Normal) vs array(2, real) → static error', () => {
+  const ir = { kind: 'call', op: 'joint',
+    args: [Normal(0, 1), Normal(2, 3), Normal(4, 5)] };
+  const variate = T.array(1, [2], T.REAL);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.ok(r.error && /variate exhausted/.test(r.error),
+    `expected exhaustion error, got: ${r.error}`);
+});
+
+// =====================================================================
+// select (mixture / superpose / measure-valued ifelse)
+// =====================================================================
+
+test('static: select with matching-footprint branches → empty rest', () => {
+  const ir = { kind: 'call', op: 'select',
+    branches: [{ ir: Normal(0, 1) }, { ir: Normal(2, 3) }],
+    logweights: null };
+  const r = densityPrims.staticConsume(ir, T.REAL);
+  assert.equal(r.rest, null);
+  assert.ok(!r.error);
+});
+
+test('static: select with disagreeing footprints → static error', () => {
+  // Branch 0: scalar leaf consumes 1 entry off a length-2 vector → rest [1].
+  // Branch 1: iid(Normal, 2) consumes both entries → rest null.
+  // Disagree: static error.
+  const ir = { kind: 'call', op: 'select',
+    branches: [
+      { ir: Normal(0, 1) },
+      { ir: { kind: 'call', op: 'iid', args: [Normal(0, 1), lit(2)] } },
+    ],
+    logweights: null };
+  const variate = T.array(1, [2], T.REAL);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.ok(r.error && /different footprint/.test(r.error),
+    `expected different-footprint error, got: ${r.error}`);
+});
+
+test('static: select with ref-form branches stays deferred', () => {
+  // The walker can't statically resolve a `ref` branch (would need
+  // binding lookup). Defer rather than error — runtime will check.
+  const ir = { kind: 'call', op: 'select',
+    branches: [{ ref: 'm1' }, { ref: 'm2' }],
+    logweights: null };
+  const err = densityPrims.staticDensityShapeCheck(ir, T.REAL);
+  assert.equal(err, null);   // deferred → no error reported
+});
+
+// =====================================================================
 // Passthroughs (weighted / logweighted / truncate / normalize)
 // =====================================================================
 
