@@ -103,6 +103,9 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   // evaluateCall via a dedicated case that walks the axis-name iteration
   // and reduces with one of the seven order-invariant reductions.
   'aggregate',
+  // FlatPDL measure-eval primitive (spec §07 §sec:measure-eval-prims).
+  // Dispatched in evaluateCall to density-prims.builtinLogdensityof.
+  'builtin_logdensityof',
 ]);
 
 test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () => {
