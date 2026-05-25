@@ -189,3 +189,70 @@ test('tokenizer: variant argument is accepted (no-op for now)', () => {
   const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
   assert.deepEqual(types, [T.IDENT, T.TILDE, T.IDENT]);
 });
+
+// =====================================================================
+// Phase A — semicolon statement separator + `###` block comments
+// (spec §05 §sec:statements + §sec:comments). flatppl-design 7cf8705,
+// d543b79.
+// =====================================================================
+
+test('tokenizer: `;` at top level is a statement separator (emits NEWLINE)', () => {
+  const { tokens } = tokenize('a = 1; b = 2');
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
+  assert.deepEqual(types,
+    [T.IDENT, T.EQUALS, T.NUMBER, T.NEWLINE, T.IDENT, T.EQUALS, T.NUMBER]);
+});
+
+test('tokenizer: `;` inside parens stays SEMI (FlatPPJ kwargs split)', () => {
+  const { tokens } = tokenize('f(x; a = 1)');
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
+  assert.deepEqual(types,
+    [T.IDENT, T.LPAREN, T.IDENT, T.SEMI,
+     T.IDENT, T.EQUALS, T.NUMBER, T.RPAREN]);
+});
+
+test('tokenizer: `#` line comment terminates on `;` as well as newline', () => {
+  const { tokens } = tokenize('a = 1 # cmt ; b = 2');
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
+  // The `;` terminates the comment, then acts as statement separator.
+  // Following `b = 2` becomes its own statement.
+  assert.deepEqual(types,
+    [T.IDENT, T.EQUALS, T.NUMBER, T.COMMENT, T.NEWLINE,
+     T.IDENT, T.EQUALS, T.NUMBER]);
+});
+
+test('tokenizer: `###` block comment consumes lines until matching fence', () => {
+  const { tokens, diagnostics } = tokenize(`a = 1
+###
+some block
+multiple lines
+###
+b = 2`);
+  assert.deepEqual(diagnostics, []);
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
+  // Statements separated by NEWLINEs; block-comment content emits no
+  // tokens (one synthesised NEWLINE for the block as a whole).
+  assert.deepEqual(types,
+    [T.IDENT, T.EQUALS, T.NUMBER, T.NEWLINE, T.NEWLINE,
+     T.IDENT, T.EQUALS, T.NUMBER]);
+});
+
+test('tokenizer: `###` block comment tolerates leading horizontal whitespace on fences', () => {
+  const { tokens, diagnostics } = tokenize(`a = 1
+    ###
+    indented body
+    ###
+b = 2`);
+  assert.deepEqual(diagnostics, []);
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
+  assert.deepEqual(types,
+    [T.IDENT, T.EQUALS, T.NUMBER, T.NEWLINE, T.NEWLINE,
+     T.IDENT, T.EQUALS, T.NUMBER]);
+});
+
+test('tokenizer: `###` in the middle of a line is just a line comment', () => {
+  const { tokens } = tokenize('a = 1 ### still a line comment');
+  const types = tokens.filter((t: any) => t.type !== T.EOF).map((t: any) => t.type);
+  assert.deepEqual(types,
+    [T.IDENT, T.EQUALS, T.NUMBER, T.COMMENT]);
+});
