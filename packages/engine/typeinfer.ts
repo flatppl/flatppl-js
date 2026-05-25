@@ -1226,9 +1226,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   //   likelihoodof(K, x)         — args[0]=K (kernel), args[1]=x;
   //                                 we treat K's signature like M
   //   bayesupdate(L, prior)      — args[0]=L (likelihood object),
-  //                                 args[1]=prior; the variate type
-  //                                 lives on L, not directly here —
-  //                                 deferred for now.
+  //                                 args[1]=prior. The posterior's
+  //                                 variate is just the prior's
+  //                                 variate; the (kernel, observation)
+  //                                 shape compatibility is checked at
+  //                                 the INNER `likelihoodof(K, x)`
+  //                                 call site (when L is built that
+  //                                 way), so bayesupdate adds nothing
+  //                                 new to the static check.
   function _checkDensityShapes(expr: any): void {
     if (expr.op === 'bayesupdate') return;   // see comment above
     const args = expr.args || [];
@@ -1556,8 +1561,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
             && Array.isArray(dimArgs[0].args)) {
           dimArgs = dimArgs[0].args;
         }
-        const dims = dimArgs.map((a: any) =>
-          (a.kind === 'lit' && Number.isInteger(a.value)) ? a.value : '%dynamic');
+        // Engine-concepts §17.4 — const-eval-driven shape resolution.
+        // Same pattern as `iid`: try literal first, then the resolver
+        // callback (which short-circuits length/lengthof/sizeof through
+        // the inferred type). Falls back to %dynamic when const-eval
+        // can't prove a concrete integer.
+        const dims = dimArgs.map((a: any) => {
+          const v = resolveIntegerShape(a);
+          return v != null ? v : '%dynamic';
+        });
         return T.array(dims.length, dims, inner);
       }
       case 'cartprod': {

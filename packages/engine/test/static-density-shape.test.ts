@@ -214,6 +214,40 @@ test('static: normalize(M) and truncate(M, S) pass through', () => {
 });
 
 // =====================================================================
+// pushfwd
+// =====================================================================
+
+test('static: pushfwd over scalar Normal vs scalar variate → empty rest', () => {
+  // pushfwd(f, M) with scalar↔scalar f: recurse into M with the
+  // same variate type (rank preserved).
+  const ir: any = { kind: 'call', op: 'pushfwd',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'f' },   // bijection ref (ignored without annotation)
+      Normal(0, 1),
+    ],
+    // Synthetic bijection annotation: scalar forward fn body type.
+    bijection: {
+      f: { body: { meta: { type: { kind: 'scalar', prim: 'real' } } } },
+      fInv: { body: { meta: { type: { kind: 'scalar', prim: 'real' } } } },
+    },
+  };
+  const r = densityPrims.staticConsume(ir, T.REAL);
+  assert.equal(r.rest, null);
+  assert.ok(!r.error);
+});
+
+test('static: pushfwd without bijection annotation → falls through to M', () => {
+  // Without an annotated f, defer to recursing into M with the
+  // surface variate — preserves the old behaviour for unannotated
+  // bijections.
+  const ir: any = { kind: 'call', op: 'pushfwd',
+    args: [{ kind: 'lit', value: 'f' }, Normal(0, 1)] };
+  const r = densityPrims.staticConsume(ir, T.REAL);
+  // Recurses into Normal → scalar leaf consumes the scalar variate.
+  assert.equal(r.rest, null);
+});
+
+// =====================================================================
 // Multivariate kernels
 // =====================================================================
 
