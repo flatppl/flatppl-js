@@ -303,6 +303,10 @@ function computeSubDAG(bindings: any, nodeName: string) {
       kind: reificationKind(b, bindings),
       phase: b ? b.phase : undefined,
       expr: b ? b.rhs : '',
+      // Doc-comment attached by the parser (spec §04 §sec:documentation;
+      // shape: `{ markup, lines }` or null). Surfaced by the DAG-view
+      // hover-info renderer below the existing label/expr line.
+      doc: b && b.node && b.node.doc ? b.node.doc : null,
       line: b ? b.line : -1,
       isBoundary,
       isTarget: name === nodeName,

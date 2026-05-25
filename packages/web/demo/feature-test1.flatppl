@@ -1,24 +1,40 @@
 # Test of various FlatPPL features
 
-# Prior distributions
+%%%
+# Feature-test 1
+
+Exercises a broad cross-section of FlatPPL features: independent
+priors, deterministic transforms, IID observations, two ways of
+building the forward kernel (direct reification and structural
+disintegration), likelihood, posterior, weighted measures, and
+preset / domain records.
+%%%
+flatppl_compat = "0.1"
+
+# --- Prior distributions ---
+
+% Standard normal prior on theta1.
 theta1_dist = Normal(mu = 0, sigma = 1)
-theta2_dist = Exponential(rate = 1)
+theta2_dist = Exponential(rate = 1)  % Exponential prior with rate 1.
 
 # Prior variates
 theta1 ~ theta1_dist
 theta2 = draw(theta2_dist)
 
-c = 2.5
+c = 2.5                  % Scaling factor
 _par = elementof(reals)
 
-f_a = par -> c * par
-f_b = fn(abs(_) * _)
+f_a = par -> c * par     % Scale by c
+f_b = fn(abs(_) * _)     % abs(arg1) * arg2
 
 # Deterministic transform
 a = f_a(par = beta1)
 b = f_b(theta1, theta2)
 
-# IID observations from the forward model
+%%%
+The forward model: ten IID Gaussian observations whose per-point
+mean and scale come from the deterministic transforms `a` and `b`.
+%%%
 obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
 
 # prior and forward model
@@ -30,7 +46,12 @@ theta = draw(prior)
 # Joint distribution over parameters and observations
 joint_model = jointchain(prior, forward_kernel)
 
-# Structural disintegration, should be eqivalent to forward_kernel and prior
+%%%typ
+Structural disintegration of #emph[joint_model] into a forward
+kernel + prior pair. Should be equivalent to the directly-built
+`forward_kernel` and `prior` above (see the equivalence tests in
+the engine suite).
+%%%
 forward_kernel2, prior2 = disintegrate(["obs"], joint_model)
 
 rstate1 = rnginit([1,2,3,4])
@@ -45,13 +66,17 @@ obs_data_dist = lawof(observed_data)
 obs_data_dist2 = Dirac(observed_data)
 observed_data2 ~ obs_data_dist
 
-# Likelihood
+%md Likelihood of the data under the structurally-disintegrated forward kernel.
 L = likelihoodof(forward_kernel2, record(obs = observed_data))
 
-# Non-normalized posterior
+% Non-normalised posterior — combines `L` and `prior2`.
 posterior = bayesupdate(L, prior2)
 
-# For testing
+###
+The bindings below exercise the engine's `weighted` form (valid
+shapes plus three intentionally-invalid cases that the analyser
+should reject — names starting with `invalid` are the cue).
+###
 
 theta3_dist = weighted(theta2, theta1_dist)
 theta4_dist = weighted(draw(theta2_dist), theta1_dist)
@@ -83,13 +108,20 @@ foo_dist = lawof(foo)
 
 #beta2 = pow(beta1, 2)
 
+% Log-density of the observation model at the observed data.
 lp_obs = logdensityof(obs_dist, record(obs = observed_data))
-d_obs  = densityof(obs_dist, record(obs = observed_data))
+d_obs  = densityof(obs_dist, record(obs = observed_data))   % exp(lp_obs)
 
-pars1 = record(theta1 = 1.3, theta2 = 0.8)
-pars1_domain = cartprod(theta1 = interval(-4, 4), theta2 = interval(0.3, 5))
+###
+Preset points and plot domains. The next two lines demonstrate
+the transport-safety rule: a single-line `%` terminates on a
+semicolon as well as on a newline, so doc + binding can survive
+newline-collapsing channels.
+###
+pars1 = record(theta1 = 1.3, theta2 = 0.8)             % Preset 1.
+% Plot-domain for pars1-style records.; pars1_domain = cartprod(theta1 = interval(-4, 4), theta2 = interval(0.3, 5))
 
-pars2 = record(theta1 = 0.5, theta2 = 2.0)
+pars2 = record(theta1 = 0.5, theta2 = 2.0)             % Preset 2.
 
 some_args1 = record(arg1 = 2.0, arg2 = 1.5)
 some_args2 = record(arg1 = -1.0, arg2 = 0.5)
