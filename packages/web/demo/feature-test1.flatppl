@@ -13,9 +13,10 @@ flatppl_compat = "0.1"
 
 # --- Prior distributions ---
 
-% Standard normal prior on theta1.
+% Standard normal prior on $\theta_1$: $\theta_1 \sim \mathcal{N}(0, 1)$.
 theta1_dist = Normal(mu = 0, sigma = 1)
-theta2_dist = Exponential(rate = 1)  % Exponential prior with rate 1.
+% Exponential prior with rate $\lambda = 1$: density $f(\theta_2) = e^{-\theta_2}$ for $\theta_2 \ge 0$.
+theta2_dist = Exponential(rate = 1)
 
 # Prior variates
 theta1 ~ theta1_dist
@@ -66,10 +67,17 @@ obs_data_dist = lawof(observed_data)
 obs_data_dist2 = Dirac(observed_data)
 observed_data2 ~ obs_data_dist
 
-%md Likelihood of the data under the structurally-disintegrated forward kernel.
+%%%md
+Likelihood of the data under the structurally-disintegrated forward kernel:
+
+$$L(\theta) = \prod_{i=1}^{n} p(x_i \mid \theta)$$
+
+where $p(x_i \mid \theta) = \mathcal{N}(x_i;\, a(\theta),\, b(\theta))$ for each
+observed datum $x_i$.
+%%%
 L = likelihoodof(forward_kernel2, record(obs = observed_data))
 
-% Non-normalised posterior — combines `L` and `prior2`.
+% Non-normalised posterior — combines `L` and `prior2`: $p(\theta \mid x) \propto L(\theta)\, \pi(\theta)$.
 posterior = bayesupdate(L, prior2)
 
 ###

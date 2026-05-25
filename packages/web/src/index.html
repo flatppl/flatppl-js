@@ -19,6 +19,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FlatPPL</title>
   <link rel="stylesheet" href="style.css">
+  <!-- Temml's MathML companion stylesheet — sets a font-family
+       chain over locally-installed math fonts (Cambria Math, STIX
+       Two Math, Noto Sans Math, browser `math` generic) and applies
+       small inter-symbol spacing fixes. The `Temml.woff2` font file
+       it references is lazy-loaded by the browser only if a
+       `\mathcal{...}` glyph actually appears; no Google Fonts / CDN. -->
+  <link rel="stylesheet" href="vendor/temml.css">
 </head>
 <body>
   <div id="app">
