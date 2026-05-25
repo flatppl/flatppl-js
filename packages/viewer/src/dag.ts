@@ -329,8 +329,27 @@ export function initCy(ctx: Ctx) {
   ctx.cy.on('mouseover', 'node', function(evt: any) {
     const d = evt.target.data();
     const expr = d.expr || '';
-    if (!expr) return;
-    tip.textContent = d.label ? (d.label + ' = ' + expr) : expr;
+    const doc = d.doc;
+    const hasDoc = doc && Array.isArray(doc.lines) && doc.lines.length > 0;
+    if (!expr && !hasDoc) return;
+    // Tooltip shows the existing `label = expr` line on top; the
+    // attached doc-comment renders below in dimmer styling (spec §04
+    // §sec:documentation). Tooltip stays plain text — markdown
+    // rendering happens in the VS-Code hover where the host already
+    // does it. Multi-line doc content keeps its line breaks.
+    tip.textContent = '';   // clear previous
+    if (expr) {
+      const exprLine = document.createElement('div');
+      exprLine.className = 'tooltip-expr';
+      exprLine.textContent = d.label ? (d.label + ' = ' + expr) : expr;
+      tip.appendChild(exprLine);
+    }
+    if (hasDoc) {
+      const docBlock = document.createElement('div');
+      docBlock.className = 'tooltip-doc';
+      docBlock.textContent = doc.lines.join('\n');
+      tip.appendChild(docBlock);
+    }
     tip.style.display = 'block';
     const pos = evt.renderedPosition;
     const cRect = $('cy').getBoundingClientRect();
@@ -441,6 +460,7 @@ export function renderDAG(ctx: Ctx, data: any) {
         nodeType: node.type,
         phase: node.phase || '',
         expr: node.expr || '',
+        doc: node.doc || null,
         line: node.line != null ? node.line : -1,
         isBoundary: node.isBoundary || false,
         isTarget: node.isTarget || false,

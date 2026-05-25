@@ -239,6 +239,17 @@ body {
   text-overflow: ellipsis;
   z-index: 100;
 }
+#tooltip .tooltip-expr { white-space: pre; }
+#tooltip .tooltip-doc {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--vscode-editorHoverWidget-border, #454545);
+  opacity: 0.85;
+  font-style: italic;
+  font-family: var(--vscode-font-family, sans-serif);
+  white-space: pre-wrap;
+  max-width: 380px;
+}
 #back-btn {
   display: none;
   background: var(--vscode-button-secondaryBackground, #3a3d41);

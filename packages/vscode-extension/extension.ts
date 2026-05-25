@@ -786,6 +786,30 @@ function activate(context: any) {
       if (binding.deps.length > 0) {
         lines.push(`Dependencies: ${binding.deps.join(', ')}`);
       }
+      // Doc-comment (spec \u00a704 \u00a7sec:documentation; surface form per
+      // \u00a705). Surfaced below the existing type/phase/RHS/deps block.
+      // Markdown (`md`) renders natively in the hover popup. Typst
+      // (`typ`) and any future non-Markdown markup fall back to a
+      // fenced code block tagged with the canonical language id
+      // (`typst` for Typst), so installed extensions like Tinymist
+      // can syntax-highlight via the standard fenced-code path. VS
+      // Code has no built-in Typst renderer; without a Typst
+      // extension the code block falls back to plain monospace,
+      // which still reads cleanly.
+      if (binding.node && binding.node.doc
+          && binding.node.doc.lines && binding.node.doc.lines.length > 0) {
+        const doc = binding.node.doc;
+        lines.push('');
+        lines.push('---');
+        if (doc.markup === 'md') {
+          lines.push(doc.lines.join('\n'));
+        } else {
+          const langId = doc.markup === 'typ' ? 'typst' : doc.markup;
+          lines.push('```' + langId);
+          lines.push(doc.lines.join('\n'));
+          lines.push('```');
+        }
+      }
       const md = new vscode.MarkdownString(lines.join('\n'));
       md.isTrusted = true;
       return new vscode.Hover(md, wordRange);
