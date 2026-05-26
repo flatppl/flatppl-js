@@ -167,6 +167,16 @@ html, body {
 .pane-header button:hover { background: rgba(255,255,255,0.07); }
 .pane-header button:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
 .pane-header button img { display: block; width: 14px; height: 14px; }
+
+/* Desaturate the colour-emoji icons in the pane-header buttons
+   (📤 📥 💾 🗑 — anything in <span aria-hidden="true">) so they
+   render as grayscale instead of the system emoji font's vivid
+   colours. Tonal shading + glyph shape are preserved, but the
+   icons no longer clash with the surrounding monochrome chrome.
+   The SVG <img> children are unaffected (already monochrome). */
+.pane-header button > span[aria-hidden="true"] {
+  filter: grayscale(100%);
+}
 .pane-header button[aria-pressed="true"] {
   background: rgba(13, 113, 199, 0.55);
   color: #fff;
