@@ -727,11 +727,44 @@ The parametric path is critical for the orchestrator's per-atom-params model:
 naively rebuilding the factory per draw makes setup cost dominate (~10× the
 actual sampling cost on small distributions).
 
-### `sampler.ts` (~6100 lines)
+### `sampler.ts` (~4900 lines) + `sampler-registry.ts` (~1100 lines)
 
-**Responsibility.** stdlib-backed registry of sampleable distributions, plus
-analytical `density()` for visualization, plus `evaluateExpr` for deterministic
-sub-expressions.
+**Responsibility.** Distribution registry + deterministic value
+evaluator. The §17.5 split (2026-05-26) factored the registry out into
+`sampler-registry.ts` so standard modules can add distributions
+without touching the evaluator core.
+
+**`sampler-registry.ts`** holds:
+- REGISTRY (~25 entries): per-distribution metadata
+  (`{params, aliases, discrete, Ctor, randFn, logpdfFn,
+  customResolveParams?}`).
+- Custom Ctor + logpdf implementations for distributions without
+  stdlib backing: Dirac, Logistic, Weibull, GeneralizedNormal,
+  InverseGamma, ChiSquared, VonMises, Laplace, Geometric,
+  NegativeBinomial, NegativeBinomial2, Categorical, Categorical0.
+- Dispatch helpers: `isKnownDistribution`, `listDistributions`,
+  `lookupDistribution`, `resolveParams` (per-call lazy-requires
+  `sampler.evaluateExpr` for parameter resolution),
+  `regionBoundsFromIR`.
+- `makePhiloxPrngAdapter` — the Philox PRNG bridge.
+- `readSupport` — normalises stdlib distribution `.support` shapes.
+
+**`sampler.ts`** holds the deterministic value evaluator
+(`evaluateExpr` / `evaluateExprN` / `_evalN` /
+`_batchedApproximation` / `_perAtomFallback`), the ARITH_OPS table
+(scalar + value-aware dispatch), ARITH_OPS_N (batched), the complex
+arithmetic helpers (`_cAdd` / `_cMul` / `_cExp` / `_cLog` / `_cSqrt`
+/ `_cPow`), the linalg helpers (`_luDecomp` / `_cholesky` /
+`_matmul` / inversion / linsolve), `evaluateCall` (the big op
+switch, 600+ lines covering aggregate / broadcast / reduce / scan /
+filter / FlatPDL primitives / etc.), `AGGREGATE_PATTERNS`, plus the
+high-level entry points the worker wraps (`rand` / `makeSampler` /
+`makeParametricSampler` / `makeAnalytical` / `density`). The
+remaining §17 sampler splits (complex / linalg / aggregate /
+eval-batched into their own files) are tracked as follow-ups in
+TODO-flatppl-js.md; the cycles through `evaluateExpr` are
+manageable via lazy require (the same pattern sampler-registry uses
+today and the materialiser uses for sampler).
 
 **`REGISTRY` shape** (per distribution):
 ```js
