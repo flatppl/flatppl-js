@@ -261,3 +261,43 @@ posterior = bayesupdate(L, prior)
     'linear-regression posterior derives (was cascade-pruned before)');
   assert.equal(built.derivations.posterior.kind, 'bayesupdate');
 });
+
+// =====================================================================
+// matKernelBroadcast — per-atom params (prior-predictive samples)
+// =====================================================================
+//
+// matKernelBroadcast originally resolved every parameter via
+// `resolveIRToValue`, which only succeeds for atom-independent
+// (fixed-phase) values. A stochastic-ancestor param expression like
+// `means = alpha .+ beta .* x_data` would blow up trying to resolve
+// the upstream draw. After the prepareDensityRefs refactor matKernel
+// Broadcast evaluates each parameter expression batched via
+// evaluateExprN, so prior-predictive samples of y work end-to-end.
+
+test('matKernelBroadcast samples per-atom params (means = stochastic-ancestor vector)', async () => {
+  const m = await materialise(`
+x = [0.0, 0.5, 1.0, 1.5, 2.0]
+alpha = draw(Normal(mu = 1.0, sigma = 0.01))
+beta  = draw(Normal(mu = 2.0, sigma = 0.01))
+means = alpha .+ beta .* x
+y     = draw(broadcast(Normal, means, 0.01))
+`, 'y', 4000);
+  // Result is a vector-atom measure shape=[N, K] in `m.value`.
+  assert.ok(m.value && Array.isArray(m.value.shape), 'y materialises as a Value');
+  assert.equal(m.value.shape.length, 2, 'vector-atom shape [N, K]');
+  assert.equal(m.value.shape[1], 5, 'K = length of x_data');
+  const N = m.value.shape[0];
+  const data = m.value.data;
+  // The means are nearly deterministic (α≈1, β≈2, σ≈0.01) so y[j] is
+  // tightly concentrated around 1 + 2·x[j] = 1, 2, 3, 4, 5. Average each
+  // column and check it tracks the line.
+  const xs = [0.0, 0.5, 1.0, 1.5, 2.0];
+  for (let j = 0; j < 5; j++) {
+    let s = 0;
+    for (let i = 0; i < N; i++) s += data[i * 5 + j];
+    const colMean = s / N;
+    const expected = 1.0 + 2.0 * xs[j];
+    assert.ok(Math.abs(colMean - expected) < 0.10,
+      `y[:, ${j}] mean ≈ ${expected}, got ${colMean}`);
+  }
+});
