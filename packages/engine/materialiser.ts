@@ -426,8 +426,12 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
   // resulting logWeights; n_eff is min(parents') as a fast bound.
   const refs = orchestrator.collectSelfRefs(d.ir);
   const parentNames: string[] = [];
+  const fixedRefs: string[] = [];
   refs.forEach((n: any) => {
-    if (ctx.fixedValues && ctx.fixedValues.has(n)) return;
+    if (ctx.fixedValues && ctx.fixedValues.has(n)) {
+      fixedRefs.push(n);
+      return;
+    }
     parentNames.push(n);
   });
   return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
@@ -445,12 +449,21 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
           + '" has neither .value nor .samples');
       }
     }
-    return ctx.sendWorker({
+    // Fixed-phase parents (literal arrays, externals, etc.) flow
+    // through the worker's session env, not refArrays — they're
+    // atom-independent, resolved once per evaluateExpr.
+    let setEnvP: Promise<any> = Promise.resolve();
+    if (fixedRefs.length > 0) {
+      const fixedEnv: Record<string, any> = {};
+      for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
+      setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+    }
+    return setEnvP.then(() => ctx.sendWorker({
       type: 'evaluateN',
       ir: d.ir,
       count: ctx.sampleCount,
       refArrays: refArrays,
-    }).then((reply: any) => {
+    })).then((reply: any) => {
       const lw = empirical.propagateLogWeights(parentMeasures);
       let n_eff = ctx.sampleCount;
       for (const p of parentMeasures) {
@@ -992,14 +1005,23 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs).
   // The atoms are the prior's; logWeights = prior.logWeights + per-i logp.
   const bodyIR = d.bodyIR
-    ? orchestrator.expandMeasureRefsInIR(d.bodyIR, ctx.derivations)
+    ? orchestrator.expandMeasureRefsInIR(d.bodyIR, ctx.derivations, undefined, ctx.bindings)
     : orchestrator.expandMeasureIR(d.bodyName, ctx.derivations, undefined, ctx.bindings);
   if (!bodyIR) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
   const valueRefs: string[] = [];
+  const fixedRefs: string[] = [];
   orchestrator.collectSelfRefs(bodyIR).forEach((n: any) => {
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
+    // Non-binding refs include built-in distribution kernel names (e.g.
+    // `Normal` in `broadcast(Normal, ...)`) and synthetic joint
+    // step-variate names — neither materialises as a measure. Skip them.
+    if (!(ctx.bindings && ctx.bindings.has(n))
+        && !(ctx.fixedValues && ctx.fixedValues.has(n))) return;
+    // Fixed-phase refs (e.g. literal `x_data` arrays) flow through the
+    // worker session env, not refArrays.
+    if (ctx.fixedValues && ctx.fixedValues.has(n)) { fixedRefs.push(n); return; }
     valueRefs.push(n);
   });
   return Promise.all([ctx.getMeasure(d.from)].concat(valueRefs.map(ctx.getMeasure)))
@@ -1009,22 +1031,35 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       const refArrays: any = {};
       for (let i = 0; i < valueRefs.length; i++) {
         const rm = refMeasures[i];
-        if (!rm || !rm.samples || !rm.samples.BYTES_PER_ELEMENT) {
+        // Accept both scalar-leaf measures (m.samples Float64Array) AND
+        // vector-leaf measures (m.value Value shape=[N, k]) — the density
+        // walker (walkLeaf accessors, walkBroadcast classification) reads
+        // shape off the Value and dispatches accordingly.
+        if (rm && rm.value) {
+          refArrays[valueRefs[i]] = rm.value;
+        } else if (rm && rm.samples && rm.samples.BYTES_PER_ELEMENT) {
+          refArrays[valueRefs[i]] = valueLib.batchedScalar(rm.samples);
+        } else {
           throw new Error('bayesupdate: ref "' + valueRefs[i] +
-            '" did not materialise to a scalar EmpiricalMeasure');
+            '" did not materialise to a usable EmpiricalMeasure');
         }
-        refArrays[valueRefs[i]] = rm.samples;
+      }
+      let setEnvP: Promise<any> = Promise.resolve();
+      if (fixedRefs.length > 0) {
+        const fixedEnv: Record<string, any> = {};
+        for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
+        setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
       }
       const observed = orchestrator.resolveIRToValue(
         d.obsIR, ctx.bindings, ctx.fixedValues);
-      return ctx.sendWorker({
+      return setEnvP.then(() => ctx.sendWorker({
         type: 'logDensityN',
         ir: bodyIR,
         count: ctx.sampleCount,
         refArrays: refArrays,
         observed: observed,
         tally: 'clamped',
-      }).then((reply: any) => {
+      })).then((reply: any) => {
         const N = measureN(parent);
         const existingLW = parent.logWeights;
         const uniformLW = -Math.log(N);
@@ -2118,11 +2153,18 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
     const refArrays: any = {};
     for (let i = 0; i < valueRefs.length; i++) {
       const rm = refMeasures[i];
-      if (!rm || !rm.samples || !rm.samples.BYTES_PER_ELEMENT) {
+      // Vector-leaf measures (e.g. `means = alpha .+ beta .* x_data`)
+      // surface as Value shape=[N, k] on `rm.value`; scalar-leaf
+      // measures use `rm.samples` (Float64Array(N)). Both feed the
+      // density walker's per-atom accessor pattern uniformly.
+      if (rm && rm.value) {
+        refArrays[valueRefs[i]] = rm.value;
+      } else if (rm && rm.samples && rm.samples.BYTES_PER_ELEMENT) {
+        refArrays[valueRefs[i]] = valueLib.batchedScalar(rm.samples);
+      } else {
         throw new Error('logdensityof: ref "' + valueRefs[i] +
-          '" did not materialise to a scalar EmpiricalMeasure');
+          '" did not materialise to a usable EmpiricalMeasure');
       }
-      refArrays[valueRefs[i]] = rm.samples;
     }
     if (innerJoint) {
       // Positional retain history ⇒ a tuple measure (.elems) in step
