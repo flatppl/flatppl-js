@@ -120,11 +120,36 @@ function makeMainThreadPrng(seed: any) {
 }
 
 /**
+ * Convert a single materialised parent measure into the Value the
+ * worker's refArrays / per-atom evaluator expects. Shared by every
+ * site that builds a refArrays entry from a parent's Measure — keeps
+ * the (scalar-leaf vs vector-leaf) dispatch in one place so it can't
+ * drift between callers.
+ *
+ * Scalar-leaf measures (`.samples` Float64Array(N)) wrap as a Value
+ * shape=[N]; vector-leaf measures already carry the Value shape=[N, k]
+ * (or higher rank) in `.value`. Hand-crafted Measure inputs in tests
+ * that omit `.value` fall through the Float64Array branch via
+ * batchedScalar so they keep working unchanged.
+ */
+function measureToRefValue(m: any, name: string, label: string) {
+  if (m == null) {
+    throw new Error(label + ': measure for "' + name + '" is null/undefined');
+  }
+  if (m.value) return m.value;
+  if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined) {
+    return valueLib.batchedScalar(m.samples);
+  }
+  throw new Error(label + ': measure for "' + name +
+    '" has neither .value nor .samples');
+}
+
+/**
  * Resolve every value-position self-ref in `ir` to its parent's
- * Float64Array of samples, returning a refName→samples map for the
- * worker primitives' refArrays. Fixed-phase refs are dropped: they
- * flow through the worker's session env, NOT refArrays (which would
- * try to slice them per-atom and feed the worker an undefined entry).
+ * Value, returning a refName→Value map for the worker primitives'
+ * refArrays. Fixed-phase refs are dropped: they flow through the
+ * worker's session env, NOT refArrays (which would try to slice them
+ * per-atom and feed the worker an undefined entry).
  */
 function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
   const refs = orchestrator.collectSelfRefs(ir);
@@ -136,26 +161,74 @@ function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
   return Promise.all(names.map(getMeasure)).then((measures: any[]) => {
     const out: any = {};
     for (let i = 0; i < names.length; i++) {
-      // refArrays uniformly carry Values internally. Every scalar-leaf
-      // Measure has a populated `.value` (shape=[N] for scalar atoms,
-      // shape=[N, ...dims] for vector atoms). Consumers
-      // (_perAtomFallback / walkLeaf accessors, broadcast helpers)
-      // assume Value inputs and dispatch on shape.
-      const m = measures[i];
-      if (m.value) {
-        out[names[i]] = m.value;
-      } else if (m.samples) {
-        // Defensive: hand-crafted Measure inputs in tests that bypass
-        // the materialiser may omit `.value`.
-        out[names[i]] = valueLib.batchedScalar(m.samples);
-      } else {
-        // No data at all — shouldn't happen for scalar-leaf measures.
-        throw new Error('collectRefArrays: measure for "' + names[i]
-          + '" has neither .value nor .samples');
-      }
+      out[names[i]] = measureToRefValue(measures[i], names[i], 'collectRefArrays');
     }
     return out;
   });
+}
+
+/**
+ * Single owner of the (collectSelfRefs → filter → split → materialise
+ * → build refArrays + fixedEnv) plumbing the worker-bound density /
+ * evaluate paths need. Replaces the bespoke per-call-site logic in
+ * matBayesupdate / matLogdensityof / matEvaluate that all drifted
+ * subtly (scalar-only guards, missing setEnv for fixedRefs, missing
+ * built-in-name gates).
+ *
+ * Filters:
+ *  - function-like bindings (fn / functionof / kernelof / bijection) —
+ *    these are consulted by name at density / sample dispatch time;
+ *    they don't materialise as values.
+ *  - refs that name neither a binding nor a fixed value — built-in
+ *    distribution kernel names (`Normal`, `MvNormal`, …) and synthetic
+ *    joint step-variate names introduced by expandMeasureIR's
+ *    jointchain canonicalisation. Density-walker env-threading or
+ *    closed-form classification owns those; they must not become
+ *    refArrays entries (getMeasure would fail with 'no derivation').
+ *
+ * Returns:
+ *  - `refArrays`   — { name → Value } for per-atom parent measures.
+ *  - `fixedEnv`    — { name → JS value } for fixed-phase refs. The
+ *    caller pushes this via `setEnv merge:true` before its
+ *    logDensityN / evaluateN message; helpers fixedRefsToSetEnv /
+ *    pushFixedEnv expose the canonical pattern.
+ */
+function prepareDensityRefs(ir: any, ctx: any, label: string) {
+  const refs = orchestrator.collectSelfRefs(ir);
+  const perAtomNames: string[] = [];
+  const fixedEnv: Record<string, any> = {};
+  refs.forEach((n: any) => {
+    if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
+    const isBinding = !!(ctx.bindings && ctx.bindings.has(n));
+    const isFixed   = !!(ctx.fixedValues && ctx.fixedValues.has(n));
+    if (!isBinding && !isFixed) return;
+    if (isFixed) {
+      fixedEnv[n] = ctx.fixedValues.get(n);
+      return;
+    }
+    perAtomNames.push(n);
+  });
+  return Promise.all(perAtomNames.map(ctx.getMeasure)).then((measures: any[]) => {
+    const refArrays: Record<string, any> = {};
+    for (let i = 0; i < perAtomNames.length; i++) {
+      refArrays[perAtomNames[i]] =
+        measureToRefValue(measures[i], perAtomNames[i], label);
+    }
+    return { refArrays, fixedEnv, perAtomNames };
+  });
+}
+
+/**
+ * Push a `fixedEnv` map onto the worker session env via setEnv merge.
+ * Returns a Promise that resolves once the merge has been applied;
+ * empty maps short-circuit to Promise.resolve(). Companion to
+ * prepareDensityRefs.
+ */
+function pushFixedEnv(ctx: any, fixedEnv: Record<string, any>) {
+  for (const _k in fixedEnv) {
+    return ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+  }
+  return Promise.resolve();
 }
 
 /**
@@ -424,46 +497,18 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
   // logWeights propagate via joint IS (sum independent events, dedupe
   // shared via reference identity). logTotalmass follows from the
   // resulting logWeights; n_eff is min(parents') as a fast bound.
-  const refs = orchestrator.collectSelfRefs(d.ir);
-  const parentNames: string[] = [];
-  const fixedRefs: string[] = [];
-  refs.forEach((n: any) => {
-    if (ctx.fixedValues && ctx.fixedValues.has(n)) {
-      fixedRefs.push(n);
-      return;
-    }
-    parentNames.push(n);
-  });
-  return Promise.all(parentNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
-    const refArrays: any = {};
-    for (let i = 0; i < parentNames.length; i++) {
-      // Uniform Value refArrays internally — mirror collectRefArrays.
-      // Wrap `.samples` defensively for hand-crafted measures.
-      const m = parentMeasures[i];
-      if (m.value) {
-        refArrays[parentNames[i]] = m.value;
-      } else if (m.samples) {
-        refArrays[parentNames[i]] = valueLib.batchedScalar(m.samples);
-      } else {
-        throw new Error('matEvaluate: parent "' + parentNames[i]
-          + '" has neither .value nor .samples');
-      }
-    }
-    // Fixed-phase parents (literal arrays, externals, etc.) flow
-    // through the worker's session env, not refArrays — they're
-    // atom-independent, resolved once per evaluateExpr.
-    let setEnvP: Promise<any> = Promise.resolve();
-    if (fixedRefs.length > 0) {
-      const fixedEnv: Record<string, any> = {};
-      for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
-      setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
-    }
-    return setEnvP.then(() => ctx.sendWorker({
-      type: 'evaluateN',
-      ir: d.ir,
-      count: ctx.sampleCount,
-      refArrays: refArrays,
-    })).then((reply: any) => {
+  return prepareDensityRefs(d.ir, ctx, 'matEvaluate').then((prep: any) => {
+    const { refArrays, fixedEnv, perAtomNames } = prep;
+    return Promise.all(perAtomNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
+      // parentMeasures is the same materialised set prepareDensityRefs
+      // already returned (the cache hits via ctx.getMeasure); we need
+      // it here for propagateLogWeights / n_eff reduction.
+      return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
+        type: 'evaluateN',
+        ir: d.ir,
+        count: ctx.sampleCount,
+        refArrays: refArrays,
+      })).then((reply: any) => {
       const lw = empirical.propagateLogWeights(parentMeasures);
       let n_eff = ctx.sampleCount;
       for (const p of parentMeasures) {
@@ -482,6 +527,7 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
         logWeights: lw,
         logTotalmass: logTotalmass,
         n_eff: n_eff,
+      });
       });
     });
   });
@@ -1010,79 +1056,44 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   if (!bodyIR) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
-  const valueRefs: string[] = [];
-  const fixedRefs: string[] = [];
-  orchestrator.collectSelfRefs(bodyIR).forEach((n: any) => {
-    if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
-    // Non-binding refs include built-in distribution kernel names (e.g.
-    // `Normal` in `broadcast(Normal, ...)`) and synthetic joint
-    // step-variate names — neither materialises as a measure. Skip them.
-    if (!(ctx.bindings && ctx.bindings.has(n))
-        && !(ctx.fixedValues && ctx.fixedValues.has(n))) return;
-    // Fixed-phase refs (e.g. literal `x_data` arrays) flow through the
-    // worker session env, not refArrays.
-    if (ctx.fixedValues && ctx.fixedValues.has(n)) { fixedRefs.push(n); return; }
-    valueRefs.push(n);
-  });
-  return Promise.all([ctx.getMeasure(d.from)].concat(valueRefs.map(ctx.getMeasure)))
-    .then((arr) => {
-      const parent = arr[0];
-      const refMeasures = arr.slice(1);
-      const refArrays: any = {};
-      for (let i = 0; i < valueRefs.length; i++) {
-        const rm = refMeasures[i];
-        // Accept both scalar-leaf measures (m.samples Float64Array) AND
-        // vector-leaf measures (m.value Value shape=[N, k]) — the density
-        // walker (walkLeaf accessors, walkBroadcast classification) reads
-        // shape off the Value and dispatches accordingly.
-        if (rm && rm.value) {
-          refArrays[valueRefs[i]] = rm.value;
-        } else if (rm && rm.samples && rm.samples.BYTES_PER_ELEMENT) {
-          refArrays[valueRefs[i]] = valueLib.batchedScalar(rm.samples);
-        } else {
-          throw new Error('bayesupdate: ref "' + valueRefs[i] +
-            '" did not materialise to a usable EmpiricalMeasure');
-        }
+  return Promise.all([
+    ctx.getMeasure(d.from),
+    prepareDensityRefs(bodyIR, ctx, 'bayesupdate'),
+  ]).then(([parent, prep]: [any, any]) => {
+    const { refArrays, fixedEnv } = prep;
+    const observed = orchestrator.resolveIRToValue(
+      d.obsIR, ctx.bindings, ctx.fixedValues);
+    return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
+      type: 'logDensityN',
+      ir: bodyIR,
+      count: ctx.sampleCount,
+      refArrays: refArrays,
+      observed: observed,
+      tally: 'clamped',
+    })).then((reply: any) => {
+      const N = measureN(parent);
+      const existingLW = parent.logWeights;
+      const uniformLW = -Math.log(N);
+      const newLW = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        const base = existingLW ? existingLW[i] : uniformLW;
+        newLW[i] = base + reply.samples[i];
       }
-      let setEnvP: Promise<any> = Promise.resolve();
-      if (fixedRefs.length > 0) {
-        const fixedEnv: Record<string, any> = {};
-        for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
-        setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+      const lTM = empirical.logSumExp(newLW);
+      const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
+      if (parent.fields) {
+        return Object.assign(
+          empirical.recordMeasure(parent.fields, newLW),
+          { logTotalmass: lTM, n_eff: nEff },
+        );
       }
-      const observed = orchestrator.resolveIRToValue(
-        d.obsIR, ctx.bindings, ctx.fixedValues);
-      return setEnvP.then(() => ctx.sendWorker({
-        type: 'logDensityN',
-        ir: bodyIR,
-        count: ctx.sampleCount,
-        refArrays: refArrays,
-        observed: observed,
-        tally: 'clamped',
-      })).then((reply: any) => {
-        const N = measureN(parent);
-        const existingLW = parent.logWeights;
-        const uniformLW = -Math.log(N);
-        const newLW = new Float64Array(N);
-        for (let i = 0; i < N; i++) {
-          const base = existingLW ? existingLW[i] : uniformLW;
-          newLW[i] = base + reply.samples[i];
-        }
-        const lTM = empirical.logSumExp(newLW);
-        const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
-        if (parent.fields) {
-          return Object.assign(
-            empirical.recordMeasure(parent.fields, newLW),
-            { logTotalmass: lTM, n_eff: nEff },
-          );
-        }
-        return scalarMeasureN(parent.samples, {
-          logWeights: newLW,
-          logTotalmass: lTM,
-          n_eff: nEff,
-        });
+      return scalarMeasureN(parent.samples, {
+        logWeights: newLW,
+        logTotalmass: lTM,
+        n_eff: nEff,
       });
     });
+  });
 }
 
 /**
@@ -2099,35 +2110,6 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // MC-weight selector) from their materialised ensembles before
   // density evaluation. No-op for closed-form / weight-free measures.
   return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
-  const valueRefs: string[] = [];
-  const fixedRefs: any[] = [];
-  orchestrator.collectSelfRefs(measureIR).forEach((n: any) => {
-    if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
-    // Walker-threaded names: a ref that is neither a binding nor a
-    // fixed value is a synthetic joint step-variate name introduced by
-    // expandMeasureIR's first-class jointchain canonicalisation (e.g.
-    // the intermediate variates of an N-ary chain). The density
-    // walker's `fields`/`source` overlay env-threading resolves these
-    // from the consumed observation — they are NOT per-atom prior
-    // refs, so they must not be materialised here (getMeasure would
-    // fail with "no derivation"). Overlay precedence (overlay >
-    // refArrays > baseEnv) makes this correct even when a name
-    // coincides with a binding.
-    if (!(ctx.bindings && ctx.bindings.has(n))
-        && !(ctx.fixedValues && ctx.fixedValues.has(n))) {
-      return;
-    }
-    // Fixed-phase refs (literal values, arrays/matrices, etc.) flow
-    // through the worker's session env via setEnv — they're atom-
-    // independent, so the density walker resolves them once per call
-    // rather than once per atom. valueRefs holds only the per-atom
-    // refs that need materialised refArrays.
-    if (ctx.fixedValues && ctx.fixedValues.has(n)) {
-      fixedRefs.push(n);
-      return;
-    }
-    valueRefs.push(n);
-  });
   // N-ary kchain density (engine-concepts §6 chain-associativity).
   // expandMeasureIR returned ONLY the final kernel body with its hole
   // rewired to the cat over the (n−1)-joint history's variate names
@@ -2147,25 +2129,10 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
           steps: measureDeriv.steps.slice(0, -1) }, ctx)
     : Promise.resolve(null);
   return Promise.all([
-    Promise.all(valueRefs.map(ctx.getMeasure)),
+    prepareDensityRefs(measureIR, ctx, 'logdensityof'),
     innerJointP,
-  ]).then(([refMeasures, innerJoint]: [any[], any]) => {
-    const refArrays: any = {};
-    for (let i = 0; i < valueRefs.length; i++) {
-      const rm = refMeasures[i];
-      // Vector-leaf measures (e.g. `means = alpha .+ beta .* x_data`)
-      // surface as Value shape=[N, k] on `rm.value`; scalar-leaf
-      // measures use `rm.samples` (Float64Array(N)). Both feed the
-      // density walker's per-atom accessor pattern uniformly.
-      if (rm && rm.value) {
-        refArrays[valueRefs[i]] = rm.value;
-      } else if (rm && rm.samples && rm.samples.BYTES_PER_ELEMENT) {
-        refArrays[valueRefs[i]] = valueLib.batchedScalar(rm.samples);
-      } else {
-        throw new Error('logdensityof: ref "' + valueRefs[i] +
-          '" did not materialise to a usable EmpiricalMeasure');
-      }
-    }
+  ]).then(([prep, innerJoint]: [any, any]) => {
+    const { refArrays, fixedEnv } = prep;
     if (innerJoint) {
       // Positional retain history ⇒ a tuple measure (.elems) in step
       // order; column i is variate `s{i}` (matches expandMeasureIR's
@@ -2189,17 +2156,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
     }
     const observed = orchestrator.resolveIRToValue(
       d.obsIR, ctx.bindings, ctx.fixedValues);
-    // Push fixed-phase refs to the worker session env so the density
-    // walker (which evaluates leaf params against baseEnv) can resolve
-    // them. setEnv with merge=true so we don't clobber any
-    // host-provided session env.
-    let setEnvP = Promise.resolve();
-    if (fixedRefs.length > 0) {
-      const fixedEnv: Record<string, any> = {};
-      for (const n of fixedRefs) fixedEnv[n] = ctx.fixedValues.get(n);
-      setEnvP = ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
-    }
-    return setEnvP.then(() => ctx.sendWorker({
+    return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
       type: 'logDensityN',
       ir: measureIR,
       count: ctx.sampleCount,
