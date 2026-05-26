@@ -408,6 +408,39 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
       return FlatPPLEngine.empirical.recordMeasure(fields, null);
     });
   }
+  // Kernel-broadcast IR: `broadcast(<ref Dist>, args…)` produced by
+  // `expandMeasureRefsInIR` when a kernel body's variate was drawn
+  // from `Dist.(…)` — e.g. `forward_kernel = kernelof(record(y = y),
+  // …)` where `y ~ Normal.(means, sigma)`. Synthesise a kernel-
+  // broadcast derivation and delegate to the engine's
+  // `matKernelBroadcast` (single-sourced impl).
+  if (ir.op === 'broadcast' && Array.isArray(ir.args) && ir.args.length >= 1) {
+    const head = ir.args[0];
+    const SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
+    if (head && head.kind === 'ref' && head.ns === 'self'
+        && SAMPLEABLE && SAMPLEABLE.has(head.name)) {
+      // Build a materialiser ctx mirroring engine-facade.getMeasure's
+      // ctx — same bindings/fixedValues/getMeasure/sendWorker/
+      // sampleCount/rootSeed shape. Override sampleCount with the
+      // caller's `count` (an iid ancestor may have lifted N×k);
+      // override rootSeed so the synthetic name's per-element seed
+      // (`nameSeed('%broadcast_ir:j', ctx.rootSeed)` inside
+      // matKernelBroadcast) reflects the caller's `seed`.
+      const matCtx = {
+        derivations: ctx.derivationsState!.derivations,
+        bindings:    ctx.derivationsState!.bindings,
+        fixedValues: ctx.derivationsState!.fixedValues,
+        getMeasure:  function(n: any) {
+          return require('./engine-facade.js').getMeasure(ctx, n);
+        },
+        sendWorker:  function(m: any) { return sendWorker(ctx, m); },
+        sampleCount: count,
+        rootSeed:    seed != null ? seed : ctx.rootSeed,
+        rejectionBudget: ctx.REJECTION_BUDGET,
+      };
+      return FlatPPLEngine.materialiser.materialiseKernelBroadcastIR(ir, matCtx);
+    }
+  }
   // Leaf distribution (or unrecognised op — sampleN throws if
   // it's not in the registry). Captured self-refs in the dist's
   // kwargs (e.g. `Normal(mu = lit, sigma = pow(ref self sqrt_sigma, 2))`

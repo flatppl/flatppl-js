@@ -461,8 +461,63 @@ function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   return handler(name, d, ctx);
 }
 
+/**
+ * Materialise a `broadcast(<Dist>, args…)` IR directly, without a
+ * binding-graph derivation. The viewer's kernel-sample path produces
+ * such IR after `expandMeasureRefsInIR` + `substituteLocals` flatten
+ * a kernel body that contained a `~ Dist.(…)` draw — the resulting
+ * IR is `record(field = broadcast(<ref Dist>, …))`, and the field
+ * value needs an independent-product sample without going through
+ * a named binding.
+ *
+ * The IR shape this accepts matches what `classifyKernelBroadcast`
+ * recognises: head is `{kind:'ref', ns:'self', name:<Dist>}` with
+ * `<Dist>` in SAMPLEABLE_DISTRIBUTIONS, followed by positional or
+ * kwarg parameter sources. Anything else rejects with a clear
+ * error.
+ *
+ * Synthesises a kernelbroadcast derivation from the IR and dispatches
+ * to `matKernelBroadcast` — same impl as the binding-graph path, so
+ * conformance with `y ~ Normal.(means, sigma)` (when y is a top-
+ * level binding) is automatic.
+ */
+function materialiseKernelBroadcastIR(ir: any, ctx: any) {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'broadcast') {
+    return Promise.reject(new Error(
+      'materialiseKernelBroadcastIR: not a broadcast call'));
+  }
+  if (!Array.isArray(ir.args) || ir.args.length < 1) {
+    return Promise.reject(new Error(
+      'materialiseKernelBroadcastIR: broadcast has no head arg'));
+  }
+  const head = ir.args[0];
+  if (!head || head.kind !== 'ref' || head.ns !== 'self') {
+    return Promise.reject(new Error(
+      'materialiseKernelBroadcastIR: head must be a self-ref to a distribution'));
+  }
+  const irShared = require('./ir-shared.ts');
+  if (!irShared.SAMPLEABLE_DISTRIBUTIONS.has(head.name)) {
+    return Promise.reject(new Error(
+      "materialiseKernelBroadcastIR: '" + head.name + "' is not a sampleable distribution"));
+  }
+  const argIRs = ir.args.slice(1);
+  const kwargIRs = ir.kwargs ? Object.assign({}, ir.kwargs) : null;
+  if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
+    return Promise.reject(new Error(
+      'materialiseKernelBroadcastIR: broadcast has no parameter inputs'));
+  }
+  const d: any = { kind: 'kernelbroadcast', distOp: head.name,
+                   argIRs: argIRs, kwargIRs: kwargIRs };
+  // Synthetic name for `nameSeed(name, ctx.rootSeed)` inside
+  // matKernelBroadcast — not used as a binding lookup. Callers
+  // that need a stable distinct sample stream can override
+  // `ctx.rootSeed` before calling.
+  return broadcast.matKernelBroadcast('%broadcast_ir', d, ctx);
+}
+
 module.exports = {
   materialiseMeasure,
+  materialiseKernelBroadcastIR,
   // Helpers exposed for the viewer's plot-plan fallbacks (which
   // sometimes need to compose the same primitives outside the kind-
   // dispatch path — e.g., to render a kernel-applied measure that

@@ -301,3 +301,138 @@ y     = draw(broadcast(Normal, means, 0.01))
       `y[:, ${j}] mean ≈ ${expected}, got ${colMean}`);
   }
 });
+
+// ---------------------------------------------------------------------
+// materialiseKernelBroadcastIR — IR-direct entry exposed for the
+// viewer's kernel-sample path. Constructs the broadcast IR shape that
+// `expandMeasureRefsInIR` produces (head is `{kind:'ref', ns:'self',
+// name:<Dist>}`) and dispatches without a binding-graph derivation.
+//
+// Repro: `forward_kernel = kernelof(record(y = y), …)` where
+// `y ~ Normal.(means, sigma)` — the viewer reifies the kernel body
+// to `record(y = broadcast(Normal, means, sigma))`, materialises
+// each field. Without an IR-direct kernel-broadcast entry the
+// fall-through path tried to materialise 'Normal' as a binding and
+// failed with "no derivation for 'Normal'".
+// ---------------------------------------------------------------------
+
+test('materialiseKernelBroadcastIR: positional broadcast(Normal, means, σ)', async () => {
+  // Build the same ctx the binding-graph path uses, then call
+  // materialiseKernelBroadcastIR directly with a synthesised IR
+  // (no enclosing binding).
+  const N = 3000;
+  const lifted = processSource(
+    'means = [1.0, 2.0, 3.0]\n' +
+    'sigmas = [0.001, 0.001, 0.001]\n');
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 4242 });
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure: (n: any) => {
+      if (cache.has(n)) return cache.get(n);
+      const p = materialiser.materialiseMeasure(n, ctx);
+      cache.set(n, p);
+      return p;
+    },
+    sendWorker: (m: any) => {
+      const r = worker.handle(m);
+      return r && r.type === 'error'
+        ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+    },
+    sampleCount: N,
+    rootSeed: 4242,
+  };
+  // The IR shape `expandMeasureRefsInIR` emits for `~ Normal.(means, σ)`.
+  const ir = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'Normal' },
+      { kind: 'ref', ns: 'self', name: 'means' },
+      { kind: 'ref', ns: 'self', name: 'sigmas' },
+    ],
+  };
+  const m: any = await materialiser.materialiseKernelBroadcastIR(ir, ctx);
+  assert.equal(m.shape, 'array');
+  assert.deepEqual(m.dims, [3]);
+  assert.equal(m.value.shape[0], N);
+  assert.equal(m.value.shape[1], 3);
+  // Per-column mean tracks the corresponding mean.
+  for (let j = 0; j < 3; j++) {
+    let s = 0;
+    for (let i = 0; i < N; i++) s += m.value.data[i * 3 + j];
+    const cm = s / N;
+    assert.ok(Math.abs(cm - (j + 1)) < 0.05, `column ${j} mean ≈ ${j + 1}, got ${cm}`);
+  }
+});
+
+test('materialiseKernelBroadcastIR: kwargs form (mu = …, sigma = …)', async () => {
+  const N = 3000;
+  const lifted = processSource('m = [10.0, 20.0]\ns = [0.001, 0.001]\n');
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 4242 });
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure: (n: any) => {
+      if (cache.has(n)) return cache.get(n);
+      const p = materialiser.materialiseMeasure(n, ctx);
+      cache.set(n, p);
+      return p;
+    },
+    sendWorker: (msg: any) => {
+      const r = worker.handle(msg);
+      return r && r.type === 'error'
+        ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+    },
+    sampleCount: N,
+    rootSeed: 4242,
+  };
+  const ir = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: 'Normal' }],
+    kwargs: {
+      mu:    { kind: 'ref', ns: 'self', name: 'm' },
+      sigma: { kind: 'ref', ns: 'self', name: 's' },
+    },
+  };
+  const m: any = await materialiser.materialiseKernelBroadcastIR(ir, ctx);
+  assert.equal(m.value.shape[1], 2);
+  for (let j = 0; j < 2; j++) {
+    let s = 0;
+    for (let i = 0; i < N; i++) s += m.value.data[i * 2 + j];
+    const cm = s / N;
+    const expected = (j === 0) ? 10 : 20;
+    assert.ok(Math.abs(cm - expected) < 0.05);
+  }
+});
+
+test('materialiseKernelBroadcastIR: rejects non-broadcast IR', async () => {
+  const ctx: any = { sampleCount: 100, rootSeed: 0,
+    bindings: new Map(), fixedValues: new Map(),
+    getMeasure: () => Promise.reject(new Error('unused')),
+    sendWorker: () => Promise.reject(new Error('unused')) };
+  await assert.rejects(
+    materialiser.materialiseKernelBroadcastIR(
+      { kind: 'call', op: 'iid', args: [] }, ctx),
+    /not a broadcast call/);
+});
+
+test('materialiseKernelBroadcastIR: rejects unknown distribution head', async () => {
+  const ctx: any = { sampleCount: 100, rootSeed: 0,
+    bindings: new Map(), fixedValues: new Map(),
+    getMeasure: () => Promise.reject(new Error('unused')),
+    sendWorker: () => Promise.reject(new Error('unused')) };
+  await assert.rejects(
+    materialiser.materialiseKernelBroadcastIR(
+      { kind: 'call', op: 'broadcast',
+        args: [{ kind: 'ref', ns: 'self', name: 'NotADist' }] },
+      ctx),
+    /not a sampleable distribution/);
+});
