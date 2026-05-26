@@ -522,7 +522,8 @@ export function renderDAG(ctx: Ctx, data: any) {
     let tetherLabel = '';
     if (edgeType === 'tether') {
       const t = typeByName[edge.target];
-      if (t === 'lawof' || t === 'functionof' || t === 'kernelof' || t === 'fn') {
+      if (t === 'lawof' || t === 'functionof' || t === 'kernelof'
+          || t === 'fn' || t === 'bijection' || t === 'fchain') {
         tetherLabel = t;
       }
     }

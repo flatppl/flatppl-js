@@ -22,8 +22,16 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   // the input cartprod / cartpow into a flat list of scalar
   // axes; the UI layer here picks the default sweep axis +
   // default range and dispatches to worker.profileN.
+  // Callable-layer bindings (function ∪ kernel: functionof / fn /
+  // kernelof / bijection / fchain — and, in Phase 2, kernel-chain)
+  // plus likelihood objects all route through the profile-plot path.
+  // The set is grep-able via the producer tags; the predicate
+  // `isCallableLayerBinding` reads inferredType.kind for the
+  // type-driven view (engine-concepts §19.2).
   if (binding.type === 'functionof' || binding.type === 'fn'
-      || binding.type === 'kernelof' || binding.type === 'likelihood') {
+      || binding.type === 'kernelof' || binding.type === 'bijection'
+      || binding.type === 'fchain'
+      || binding.type === 'likelihood') {
     if (!ctx.derivationsState.bindings) return null;
     const sig = FlatPPLEngine.orchestrator.signatureOf(name, ctx.derivationsState.bindings);
     if (!sig || !sig.body) return null;

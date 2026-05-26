@@ -695,6 +695,17 @@ const SIGNATURE_FACTORIES = {
   cat:    () => ({ args: [any()], kwargs: {}, result: deferred(),
                    variadic: 'positional', special: 'cat' }),
   tuple:  () => ({ args: [], kwargs: {}, result: deferred(), special: 'tuple' }),
+
+  // fchain(f1, f2, ...) — deterministic function composition (spec §04
+  // Function composition and annotation). Left-associative: the chain's
+  // input signature is f1's, its result is fN's, intermediate types
+  // must match per spec §04 sec:calling-convention (auto-splatting at
+  // record→kwargs boundaries). The result type is composed by
+  // inferChainComposition (engine-concepts §19.4) in typeinfer's
+  // `inferFchain` handler — pure structural signature can't express
+  // multi-step type unification.
+  fchain: () => ({ args: [], kwargs: {}, result: deferred(),
+                   variadic: 'positional', special: 'fchain' }),
   // fixed(x) — identity-typed marker (spec §03 value types). Carries
   // no runtime semantics beyond passing the wrapped value through; the
   // 'fixed' op survives in the IR so tooling can recognize it as a

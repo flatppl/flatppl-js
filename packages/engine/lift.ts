@@ -124,6 +124,13 @@ function argSignature(op: string, numArgs: number): string[] | null {
     for (let i = 1; i < numArgs; i++) sig.push('value');
     return sig;
   }
+  if (op === 'fchain') {
+    // fchain(f1, f2, ...): every positional arg is a function value.
+    // Function-value lifting works the same as pushfwd's function arg
+    // — inline `fn(...)` / `functionof(...)` get lifted to anon
+    // bindings so the chain composition sees uniform refs.
+    return Array(numArgs).fill('value');
+  }
   if (op === 'jointchain' || op === 'kchain') {
     // jointchain(M, K1, K2, ...) / kchain(M, K1, K2, ...): every
     // positional arg is measure-typed (the first a base measure or

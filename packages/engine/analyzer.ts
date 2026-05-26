@@ -69,6 +69,11 @@ function classifyStatement(valueNode: any) {
       case 'kernelof': return 'kernelof';
       case 'fn': return 'fn';
       case 'bijection': return 'bijection';
+      // fchain produces a function-valued binding (spec §04
+      // "Function composition and annotation"; engine-concepts §19).
+      // Distinct producer tag so the IR's op stays grep-able, but
+      // consumers test via the function-like predicate, not by tag.
+      case 'fchain': return 'fchain';
       case 'likelihoodof': return 'likelihood';
       case 'bayesupdate': return 'bayesupdate';
       case 'load_module': return 'module';

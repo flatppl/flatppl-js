@@ -50,11 +50,18 @@ function makeMainThreadPrng(seed: any) {
   };
 }
 
-// Function-typed bindings (fn / functionof / kernelof / bijection)
-// aren't materialisable as values — they're consulted by name at
-// density / sample dispatch time. matLogdensityof / matBayesupdate use
-// this to filter such refs out of their "materialise the parents"
-// pre-pass; the parents that ARE values still need materialising.
+// Callable-layer bindings (fn / functionof / kernelof / bijection /
+// fchain — engine-concepts §19.3) aren't materialisable as values —
+// they're consulted by name at density / sample dispatch time.
+// matLogdensityof / matBayesupdate / classifyProfileSelfRefs use this
+// to filter such refs out of their "materialise the parents" pre-pass;
+// the parents that ARE values still need materialising.
+//
+// Phase 2 will add `'kernel-chain'` (kernel-first jointchain/kchain)
+// to this set; at that point the by-tag enumeration here is
+// supplemented (not replaced) by the type-driven predicate
+// `isCallableLayerBinding(b)` which reads `b.inferredType.kind ∈
+// {'func', 'kernel'}` — same answer, two source-of-truth angles.
 function isFunctionLikeBinding(binding: any) {
   if (!binding) return false;
   switch (binding.type) {
@@ -62,10 +69,30 @@ function isFunctionLikeBinding(binding: any) {
     case 'functionof':
     case 'kernelof':
     case 'bijection':
+    case 'fchain':
       return true;
     default:
       return false;
   }
+}
+
+/**
+ * Type-driven callable-layer predicate (engine-concepts §19.2). Reads
+ * `inferredType.kind ∈ {'function', 'kernel'}` — function-layer and
+ * kernel-layer bindings sit in the "callable layer" (consulted by
+ * name at dispatch time, not materialised as a value or measure).
+ *
+ * Use this when the caller has `inferredType` available (post-
+ * typeinfer, which is all materialiser / sampler / viewer paths).
+ * Use `isFunctionLikeBinding(binding)` when only the producer-tag is
+ * available (pre-typeinfer in the analyzer). Both predicates should
+ * agree on every binding by construction; this is a property test
+ * worth adding.
+ */
+function isCallableLayerBinding(binding: any): boolean {
+  if (!binding || !binding.inferredType) return false;
+  const k = binding.inferredType.kind;
+  return k === 'function' || k === 'kernel';
 }
 
 /**
@@ -443,6 +470,7 @@ module.exports = {
   nameSeed,
   makeMainThreadPrng,
   isFunctionLikeBinding,
+  isCallableLayerBinding,
   measureToRefValue,
   collectRefArrays,
   prepareDensityRefs,

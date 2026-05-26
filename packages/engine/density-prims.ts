@@ -1118,6 +1118,219 @@ function staticDensityShapeCheck(ir: any, variateType: any): string | null {
   return null;
 }
 
+// =====================================================================
+// Chain composition: consume/rest at the chain's input-set level
+// (engine-concepts §19.4)
+// =====================================================================
+//
+// fchain, kchain, jointchain all share the same structural pattern: a
+// left-to-right fold over per-step typed composition. The shape is
+// consume/rest at the chain's open-input set — each step "consumes"
+// the prior step's output; empty rest at end ⇒ closed (measure or
+// applied function); non-empty rest ⇒ residual inputs the chain still
+// needs.
+//
+// This helper takes PRE-INFERRED step types (caller has already done
+// inferExpr per step) and returns the chain's composed result type +
+// step-boundary diagnostics. It does not walk IR — typeinfer / the
+// classifier feeds it types.
+
+/** A single chain step, with optional source info for diagnostics. */
+interface ChainStep {
+  /** The inferred type of the step expression. Must be `funcType` for
+   *  mode='func'; `measureType` / `kernelType` for the kernel modes
+   *  (Phase 2; currently rejected with `not yet implemented`). */
+  type:  any;
+  /** Source location for step-boundary diagnostics. Optional but
+   *  strongly recommended; the diagnostic points here. */
+  loc?:  any;
+  /** Binding name if the step is a ref to a named binding (else
+   *  inline). Used in diagnostic text to disambiguate steps. */
+  name?: string;
+}
+
+interface ChainCompositionResult {
+  /** The chain's inferred result type. funcType for mode='func';
+   *  kernelType (or measureType when residual collapses to ∅) for
+   *  the kernel modes. `deferred()` when any step was deferred /
+   *  `any` and the rest couldn't statically resolve. `failed(...)`
+   *  on a static error (also reflected in `diagnostics`). */
+  resultType:  any;
+  /** Per-step-boundary errors anchored at the failing step's loc.
+   *  Empty when the chain types cleanly. Caller pushes these into
+   *  its own diagnostics stream. */
+  diagnostics: any[];
+}
+
+/**
+ * Match step `i`'s result type against step `i+1`'s input list.
+ * Returns `{ ok: true, subst }` on success, `{ ok: false, reason }`
+ * on a static mismatch. Auto-splatting per spec §04
+ * sec:calling-convention: a record-typed result matches multi-input
+ * step boundaries by field name. A single-input step boundary
+ * matches positionally against any compatible result type.
+ */
+function _matchChainBoundary(prevResult: any, nextInputs: any[]) {
+  // Single-input boundary: positional match, any compatible type.
+  if (nextInputs.length === 1) {
+    const s = T.unify(nextInputs[0].type, prevResult, new Map());
+    if (s == null) {
+      return { ok: false,
+        reason: 'cannot unify previous step\'s result type ' + T.show(prevResult)
+              + ' with next step\'s input "' + nextInputs[0].name
+              + '" of type ' + T.show(nextInputs[0].type) };
+    }
+    return { ok: true, subst: s };
+  }
+  // Multi-input boundary: previous result must be record-typed, with
+  // exactly the field names the next step's inputs declare. Auto-splat
+  // per §04 sec:calling-convention.
+  if (prevResult.kind === 'record') {
+    const fieldNames = Object.keys(prevResult.fields);
+    const inputNames = nextInputs.map(i => i.name);
+    // Field-name set check: every input name must have a matching field;
+    // surplus fields are an error (the next step has nothing to bind them to).
+    for (const n of inputNames) {
+      if (!Object.prototype.hasOwnProperty.call(prevResult.fields, n)) {
+        return { ok: false,
+          reason: 'auto-splat at step boundary: previous result record '
+                + T.show(prevResult)
+                + ' is missing field "' + n + '" expected by next step' };
+      }
+    }
+    for (const n of fieldNames) {
+      if (inputNames.indexOf(n) === -1) {
+        return { ok: false,
+          reason: 'auto-splat at step boundary: previous result record '
+                + T.show(prevResult)
+                + ' has extra field "' + n + '" with no matching next-step input' };
+      }
+    }
+    let s: any = new Map();
+    for (const inp of nextInputs) {
+      s = T.unify(inp.type, prevResult.fields[inp.name], s);
+      if (s == null) {
+        return { ok: false,
+          reason: 'auto-splat at step boundary: field "' + inp.name
+                + '" type ' + T.show(prevResult.fields[inp.name])
+                + ' does not unify with next-step input type '
+                + T.show(inp.type) };
+      }
+    }
+    return { ok: true, subst: s };
+  }
+  return { ok: false,
+    reason: 'multi-input step boundary requires a record-typed previous result '
+          + 'for auto-splatting (per spec §04 calling convention); got '
+          + T.show(prevResult) };
+}
+
+function _stepLabel(step: ChainStep, index: number): string {
+  if (step.name) return 'step ' + index + ' (`' + step.name + '`)';
+  return 'step ' + index;
+}
+
+/**
+ * Compose a typed chain of steps left-to-right. See engine-concepts
+ * §19.4 for the design.
+ *
+ * `mode` selects the per-step rule:
+ *   - 'func'              — fchain. Steps are funcType; each step's
+ *                            result feeds the next step's inputs
+ *                            (with auto-splat for multi-input next-
+ *                            step boundaries). Result type is
+ *                            funcType(step_0.inputs, step_N.result).
+ *   - 'kchain-marginal'   — kchain (Phase 2). Intermediate variates
+ *                            marginalised; result variate = last
+ *                            step's measure support. Currently
+ *                            returns failed(); typeinfer will route
+ *                            through this when Phase 2 lands.
+ *   - 'jointchain-retain' — jointchain (Phase 2). Intermediate
+ *                            variates retained; result variate =
+ *                            joint of all step variates. Currently
+ *                            returns failed().
+ */
+function inferChainComposition(
+  steps: ChainStep[],
+  mode: 'func' | 'kchain-marginal' | 'jointchain-retain'
+): ChainCompositionResult {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return { resultType: T.failed('chain composition requires ≥ 1 step'),
+             diagnostics: [] };
+  }
+  // Defer if any step's type is unresolved — typeinfer trusts runtime
+  // for these. A deferred chain can still be referenced; we only
+  // refuse to commit to a result type.
+  for (const s of steps) {
+    if (!s.type) {
+      return { resultType: T.deferred(), diagnostics: [] };
+    }
+    if (s.type.kind === 'deferred' || s.type.kind === 'any') {
+      return { resultType: T.deferred(), diagnostics: [] };
+    }
+    if (s.type.kind === 'failed') {
+      return { resultType: T.failed('chain cascade'), diagnostics: [] };
+    }
+  }
+  if (mode !== 'func') {
+    // Phase 2 placeholder. The helper's shape is fixed; the per-mode
+    // rule lives here. Returns a clean failed() so callers can route
+    // around it until the kernel-side modes are populated.
+    return { resultType: T.failed('chain mode "' + mode + '" not yet implemented'),
+             diagnostics: [] };
+  }
+  // mode === 'func' — every step must be a funcType.
+  const diagnostics: any[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.type.kind !== 'function') {
+      diagnostics.push({
+        severity: 'error',
+        message: 'fchain ' + _stepLabel(s, i)
+               + ' is not a function (got ' + T.show(s.type) + ')',
+        loc: s.loc,
+      });
+      return { resultType: T.failed('fchain non-function step'), diagnostics };
+    }
+  }
+  // Single-step fchain ≡ the step itself (per spec, fchain is left-
+  // associative and the identity case is `fchain(f) ≡ f`). Engine
+  // tests already cover this for the applied form via inlineFchain.
+  if (steps.length === 1) {
+    return { resultType: steps[0].type, diagnostics: [] };
+  }
+  // Walk step boundaries left-to-right.
+  for (let i = 0; i < steps.length - 1; i++) {
+    const prev = steps[i];
+    const next = steps[i + 1];
+    const prevResult = prev.type.result;
+    const nextInputs = next.type.inputs || [];
+    if (nextInputs.length === 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'fchain ' + _stepLabel(next, i + 1)
+               + ' has no inputs; the spec forbids nullary callables (§04 sec:calling-convention)',
+        loc: next.loc || prev.loc,
+      });
+      return { resultType: T.failed('fchain nullary step'), diagnostics };
+    }
+    const m = _matchChainBoundary(prevResult, nextInputs);
+    if (!m.ok) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'fchain step boundary ' + i + ' → ' + (i + 1) + ': ' + m.reason
+               + ' (from ' + _stepLabel(prev, i) + ' to ' + _stepLabel(next, i + 1) + ')',
+        loc: next.loc || prev.loc,
+      });
+      return { resultType: T.failed('fchain step-boundary mismatch'), diagnostics };
+    }
+  }
+  // Chain types cleanly. Result: take step 0's inputs, step N-1's result.
+  const result = T.funcType(steps[0].type.inputs.slice(),
+                            steps[steps.length - 1].type.result);
+  return { resultType: result, diagnostics: [] };
+}
+
 module.exports = {
   builtinLogdensityof,
   builtinLogdensityofPositional,
@@ -1133,7 +1346,12 @@ module.exports = {
   // Type-mode consume/rest (engine-concepts §17.3)
   staticConsume,
   staticDensityShapeCheck,
+  // Chain composition (engine-concepts §19.4) — consume/rest at the
+  // chain's input-set level. Used by fchain (mode='func') and, in
+  // Phase 2, by kchain / jointchain.
+  inferChainComposition,
   // Test surface
   _internal: { logMvGamma, logDetSPD, traceProduct, _logCnLKJ,
-               _normalCdf, _normalQuantile },
+               _normalCdf, _normalQuantile,
+               _matchChainBoundary },
 };
