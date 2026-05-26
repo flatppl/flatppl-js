@@ -53,9 +53,15 @@
 //   - Value-position refs (e.g. `Normal(mu = ref a)`) resolve through
 //     baseEnv ∪ refArrays. Per-atom resolution happens at each leaf.
 //   - Measure-position refs (e.g. `joint(M1ref, M2ref)`) resolve via
-//     opts.resolveMeasureRef(name) → ir | null. Caller typically
-//     supplies a closure over `orchestrator.expandMeasureIR(name,
-//     derivations)`.
+//     opts.resolveMeasureRef(name) → ir | null. Production callers
+//     (matBayesupdate / matLogdensityof / matBroadcastLogdensity /
+//     materialiser.ts in general) PRE-EXPAND via `orchestrator.expand
+//     Measure(input, { derivations, bindings })` (engine-concepts
+//     §17.4 unification) before invoking the density walker — refs
+//     in measure position then never reach walkAcc. The opt is the
+//     escape hatch for callers that feed un-expanded IR directly
+//     (test/density.test.ts:317 covers it; tests are today's only
+//     resolveMeasureRef consumers).
 
 import type { IRNode } from './engine-types';
 
