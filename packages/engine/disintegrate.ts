@@ -865,11 +865,10 @@ function disintegratePlan(joint: any, selector: any, bindings: any, ctx: any): a
 
 module.exports = {
   disintegratePlan,
-  // Plan constructors (exported for the renderer / tests).
+  // Plan constructors — used by the analyzer's disintegrate detection
+  // and the disintegrate-plan unit tests.
   delegate, synthesized, unsupported,
-  // AST helpers (handy for tests).
-  mkIdent, mkKwArg, mkCall,
-  // Introspection helpers (re-exported in case other engine pieces grow
-  // to need them — e.g., visualization for kernel/function distinction).
-  namedOutputFields, tryRecord,
+  // Introspection helper — used by `disintegrate-plan.test.ts` to
+  // verify per-component output fields after a synthesis pass.
+  namedOutputFields,
 };
