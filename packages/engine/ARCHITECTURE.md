@@ -894,7 +894,7 @@ atom-batched dispatch from one source. Atom-batching is the
 engine's job (recognised from the input shape's leading axis), not
 the op's.
 
-> **Status: Phases 1-5c (partial) landed (2026-05-26).** Eighteen
+> **Status: Phases 1-5c (complete) landed (2026-05-26).** Twenty
 > ops declared via `OpDecl` across four kinds:
 >
 > - **fixed-rank** (10): `cross`, `self_outer`, `trace`, `diagmat`,
@@ -907,11 +907,14 @@ the op's.
 >   semantics require explicit `broadcast(fn(op(_)), …)` wrapping.
 > - **variadic** (2): `vector`, `cat`. Dispatcher forwards all args
 >   to `logical` with no atom-batch detection.
-> - **higher-order** (3): `reduce`, `scan`, `filter`. Use the
->   `dispatchHigherOrder(name, irArgs, ctx)` entry which threads
->   the engine's env + evaluateExpr + resolveFn into the op's
->   `logical`. The dedicated `if (op === 'reduce' / 'scan' /
->   'filter')` blocks in `evaluateCall` retired.
+> - **higher-order** (5): `reduce`, `scan`, `filter`, `broadcast`,
+>   `aggregate`. Use the `dispatchHigherOrder(name, ir, ctx)` entry
+>   which threads the engine's env + evaluateExpr + resolveFn into
+>   the op's `logical`. `broadcast` delegates per-element iteration
+>   to the engine's `_broadcastApply` (single-sourced impl);
+>   `aggregate` delegates dispatch to `_evalAggregate` from
+>   `sampler-aggregate.ts`. All dedicated `if (op === …)` blocks in
+>   `evaluateCall` for these ops retired.
 >
 > `evaluateCall` routes declared value-domain ops through
 > `opsModule.dispatch` and higher-order ops through
@@ -921,13 +924,13 @@ the op's.
 > output-shape inference). `ARITH_OPS` entries for migrated ops
 > thin-delegate.
 >
-> **Phase 5c remaining** (engine-concepts §18.9): `broadcast` and
-> `aggregate`. Each is bounded but needs a richer `OpDecl` shape
-> (variadic-data slot for broadcast; axis-name machinery for
-> aggregate). Until migrated they keep their dedicated dispatch in
-> `evaluateCall` (broadcast via `_broadcastApply` /
-> `walkBroadcast`; aggregate via `_evalAggregate` and the
-> AGGREGATE_PATTERNS specialiser table).
+> The op-declaration model now covers the full value-domain surface
+> that isn't scalar arithmetic. Scalar primitives stay on
+> `ARITH_OPS_N` / `_SCALAR_PRIM_ARITY` (a dispatch optimisation
+> layer below `OpDecl`); measure-algebra ops live in the
+> orchestrator's derivation classifier + materialiser dispatch;
+> constructors / structural ops (`record` / `tuple` / `get` /
+> etc.) handled inline in `evaluateCall`.
 
 **`ops.ts`** holds:
 - `register(decl)` / `lookup(name)` / `listDeclared()` /
