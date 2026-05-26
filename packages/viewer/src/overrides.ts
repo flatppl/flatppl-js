@@ -199,13 +199,28 @@ export function rememberPlanSelections(ctx: Ctx, plan: any) {
 export function computeAutoValues(ctx: Ctx, plan: any) {
   const out: Record<string, any> = {};
   const axes = plan.axes || [];
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
   for (let i = 0; i < axes.length; i++) {
     const ax = axes[i];
     let def = defaultValueForLeafType(ax.leafType);
     if (ax.source && ax.source.kind === 'binding'
         && ctx.measureCache && ctx.measureCache.has(ax.source.name)) {
-      const m = ctx.measureCache.get(ax.source.name);
-      if (m && m.samples && m.samples.length > 0) def = m.samples[0];
+      // Latent guard: skip function-like, fixed-phase, or non-binding
+      // sources. Fixed-phase array bindings collapse to samples[0]'s
+      // first scalar element under the naive override (the same
+      // failure mode we fixed in render-profile's profile-plot path
+      // — flatppl-js commit e9984f3). Today this path is gated by
+      // the scalar-input F4a restriction so the bug is latent, but
+      // applying the same filter here makes the code resilient
+      // when F4a is lifted. Engine-concepts §19.
+      const src = bindings && bindings.get(ax.source.name);
+      const isFunctionLike = FlatPPLEngine.materialiser.isFunctionLikeBinding(src);
+      const isFixedPhase = fixedValues && fixedValues.has(ax.source.name);
+      if (!isFunctionLike && !isFixedPhase) {
+        const m = ctx.measureCache.get(ax.source.name);
+        if (m && m.samples && m.samples.length > 0) def = m.samples[0];
+      }
     }
     out[ax.kwargName] = def;
   }

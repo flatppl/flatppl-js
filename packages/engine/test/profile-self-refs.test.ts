@@ -120,6 +120,39 @@ test('classifyProfileSelfRefs filter logic across kinds', () => {
   assert.deepEqual(perAtomNames.sort(), ['r_var']);
 });
 
+test('isFunctionLikeBinding predicate is exposed and recognises all callable-layer producer tags', () => {
+  // The viewer's `overrides.computeAutoValues` and `render-kernel`'s
+  // bindingSourceLookups filter use this predicate to avoid the
+  // array-collapse failure mode (engine-concepts §19; flatppl-js
+  // commit e9984f3 fixed the analogous bug in render-profile).
+  // Pin the surface: the predicate is exposed from `materialiser`,
+  // and recognises every callable-layer producer tag including the
+  // Phase 1 addition `'fchain'`.
+  assert.equal(typeof materialiser.isFunctionLikeBinding, 'function',
+    'materialiser.isFunctionLikeBinding is exposed');
+  assert.equal(typeof materialiser.isCallableLayerBinding, 'function',
+    'materialiser.isCallableLayerBinding is exposed');
+  for (const t of ['fn', 'functionof', 'kernelof', 'bijection', 'fchain']) {
+    assert.equal(materialiser.isFunctionLikeBinding({ type: t }), true,
+      'producer tag ' + t + ' is callable-layer');
+  }
+  for (const t of ['draw', 'lawof', 'literal', 'call', 'input']) {
+    assert.equal(materialiser.isFunctionLikeBinding({ type: t }), false,
+      'producer tag ' + t + ' is NOT callable-layer');
+  }
+  // The type-driven predicate keys on inferredType.kind ∈ {function,
+  // kernel} — a kernel-typed binding whose producer tag is the
+  // catch-all 'call' (e.g. a kernel-first jointchain).
+  const kernelTypedCall = {
+    type: 'call',
+    inferredType: { kind: 'kernel', inputs: [{ name: 'theta', type: {} }], result: {} },
+  };
+  assert.equal(materialiser.isFunctionLikeBinding(kernelTypedCall), false,
+    'producer-tag predicate misses kernelType-via-call bindings (tag is "call")');
+  assert.equal(materialiser.isCallableLayerBinding(kernelTypedCall), true,
+    'type-driven predicate catches kernelType-via-call bindings');
+});
+
 test('linear-regression likelihood: density.logDensityN is finite ' +
      'at MLE when fixed-phase x_data is in baseEnv', () => {
   // Pin the density-level invariant the classifier protects.
