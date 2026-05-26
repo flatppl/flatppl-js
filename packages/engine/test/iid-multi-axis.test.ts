@@ -211,3 +211,83 @@ test('cartpow scalar still infers as rank-1 with that length', () => {
   assert.equal(t.domain.rank, 1);
   assert.equal(t.domain.shape[0], 5);
 });
+
+// =====================================================================
+// classifyIid: size argument can be a binding ref to a fixed-phase
+// expression of arbitrary shape, not just a literal or a fold-able
+// arithmetic tree. resolveConstant now consults the orchestrator's
+// pre-eval fixedValues cache, and buildDerivations re-classifies
+// unclassified bindings after pre-eval has populated it. Before this
+// fix, `n = lengthof(data)` followed by `iid(Dist, n)` silently
+// produced no derivation for the iid binding, cascading to drop any
+// downstream bayesupdate / likelihood path.
+// =====================================================================
+
+const { orchestrator } = require('../index.ts');
+
+// Trace through alias chains to the underlying iid derivation (the
+// lift pass introduces synthetic anonymous bindings for inline
+// `iid(...)` calls, so `y` typically alias-points at an anon).
+function resolveIidVia(derivations: any, name: any): any {
+  let cur = derivations[name];
+  let hops = 0;
+  while (cur && cur.kind === 'alias' && hops < 16) {
+    cur = derivations[cur.from];
+    hops += 1;
+  }
+  return cur;
+}
+
+test('classifyIid: size given as binding ref to lengthof() resolves through pre-eval', () => {
+  const src = `
+counts_data = [2, 3, 7, 6, 4]
+n = lengthof(counts_data)
+lambda = draw(Gamma(shape = 2.0, rate = 1.0))
+y = draw(iid(Poisson(rate = lambda), n))
+`;
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  assert.ok(built.derivations.y, 'y derivation present (missing before n-ref fix)');
+  const yDer = resolveIidVia(built.derivations, 'y');
+  assert.ok(yDer, 'y traces to an iid derivation via alias hops');
+  assert.equal(yDer.kind, 'iid');
+  assert.deepEqual(yDer.dims, [5]);
+});
+
+test('classifyIid: size given as binding ref to literal integer', () => {
+  const src = `
+sz = 7
+lambda = draw(Normal(mu = 0.0, sigma = 1.0))
+y = draw(iid(Normal(mu = lambda, sigma = 1.0), sz))
+`;
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  assert.ok(built.derivations.y, 'y derivation present');
+  const yDer = resolveIidVia(built.derivations, 'y');
+  assert.ok(yDer, 'y derivation present for literal-int binding ref');
+  assert.equal(yDer.kind, 'iid');
+  assert.deepEqual(yDer.dims, [7]);
+});
+
+test('classifyIid: bayesupdate(L, prior) derives end-to-end with n=lengthof(data)', () => {
+  // Gamma-Poisson conjugate model. The full pipeline (derivation →
+  // pre-eval → cascade-prune) succeeds and the posterior binding
+  // emerges as a bayesupdate derivation, ready for the materialiser
+  // to score with importance weights.
+  const src = `
+counts_data = [2, 3, 7, 6, 4]
+n = lengthof(counts_data)
+lambda = draw(Gamma(shape = 2.0, rate = 1.0))
+y = draw(iid(Poisson(rate = lambda), n))
+prior = lawof(record(lambda = lambda))
+forward_kernel = kernelof(record(y = y), lambda = lambda)
+L = likelihoodof(forward_kernel, record(y = counts_data))
+posterior = bayesupdate(L, prior)
+`;
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  assert.ok(built.derivations.posterior,
+    'posterior derivation present (was missing because iid(...,n) didn\'t classify)');
+  assert.equal(built.derivations.posterior.kind, 'bayesupdate');
+  assert.equal(built.derivations.posterior.from, 'prior');
+});
