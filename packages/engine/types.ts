@@ -1147,14 +1147,33 @@ function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }
 let FRESH_COUNTER = 0;
 
 function signatureOf(opName: string) {
-  const f = (SIGNATURE_FACTORIES as any)[opName];
-  if (!f) return null;
+  // Phase 2 (engine-concepts §18): declared ops carry their signature
+  // on the OpDecl in ops.ts. Consult that registry first; fall
+  // through to SIGNATURE_FACTORIES for ops that haven't migrated.
+  // We require lazily to avoid a module-load cycle (ops.ts has no
+  // dep on types.ts today, but ops-declarations.ts could in future,
+  // and the lazy form is robust either way).
+  let sig;
+  try {
+    const opsModule = require('./ops.ts');
+    const declared = opsModule.signatureOf(opName);
+    if (declared) {
+      sig = declared;
+    }
+  } catch (_) {
+    // ops.ts not yet loaded (e.g. during very-early type-system
+    // bootstrap) — fall through to SIGNATURE_FACTORIES.
+  }
+  if (!sig) {
+    const f = (SIGNATURE_FACTORIES as any)[opName];
+    if (!f) return null;
+    sig = f();
+  }
   // Re-key the signature's type variables so two call sites can't share
   // unification state. The module-level FRESH_COUNTER guarantees
   // cross-call uniqueness; the per-signature `sub` map keeps the
   // signature's internal sharing intact (so 'T' in args and 'T' in
   // result still bind to the same fresh variable).
-  const sig = f();
   const sub = new Map();
   function fresh(t: any): any {
     if (!t) return t;
