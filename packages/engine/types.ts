@@ -858,6 +858,13 @@ const SIGNATURE_FACTORIES = {
   col_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  // cross(a, b): 3-D vector cross product (spec §07). Both args are
+  // length-3 vectors; result is a length-3 vector. Bilinear over ℂ
+  // (no conjugation) — real-only signature here; complex args promote
+  // through ARITH_OPS at runtime, same as add/sub/mul.
+  cross:          () => ({ args: [array(1, [3], REAL), array(1, [3], REAL)],
+                           kwargs: {},
+                           result: array(1, [3], REAL) }),
   // Spec §07 reshape additions. tile/splitblocks/joinblocks take ANY
   // rank; their result rank matches the input. Result shape is
   // computed at runtime; we mark it deferred / loose for now.

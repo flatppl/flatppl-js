@@ -167,3 +167,79 @@ test('col_gram(A) = Aᵀ · A', () => {
   assert.deepEqual(ev(call('col_gram', mat([1, 2], [3, 4]))),
     [[10, 14], [14, 20]]);
 });
+
+// =====================================================================
+// cross (3-D vector cross product, spec §07)
+// =====================================================================
+
+test('cross: canonical basis vectors — e1 × e2 = e3', () => {
+  assert.deepEqual(ev(call('cross', vec(1, 0, 0), vec(0, 1, 0))), [0, 0, 1]);
+  assert.deepEqual(ev(call('cross', vec(0, 1, 0), vec(0, 0, 1))), [1, 0, 0]);
+  assert.deepEqual(ev(call('cross', vec(0, 0, 1), vec(1, 0, 0))), [0, 1, 0]);
+});
+
+test('cross: antisymmetry — b × a = −(a × b)', () => {
+  const ab = ev(call('cross', vec(1, 2, 3), vec(4, 5, 6)));
+  const ba = ev(call('cross', vec(4, 5, 6), vec(1, 2, 3)));
+  for (let k = 0; k < 3; k++) assert.equal(ba[k], -ab[k]);
+  // Spec formula: cross([1,2,3], [4,5,6]) = [2·6−3·5, 3·4−1·6, 1·5−2·4]
+  //                                       = [-3, 6, -3]
+  assert.deepEqual(ab, [-3, 6, -3]);
+});
+
+test('cross: parallel vectors → zero', () => {
+  // a × (λ·a) = 0 for any λ.
+  assert.deepEqual(ev(call('cross', vec(1, 2, 3), vec(2, 4, 6))), [0, 0, 0]);
+});
+
+test('cross: result is orthogonal to both inputs', () => {
+  const a = vec(1, 2, 3), b = vec(4, 5, 6);
+  const c = ev(call('cross', a, b));
+  function dot(x: number[], y: number[]) {
+    return x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+  }
+  assert.equal(dot(c, [1, 2, 3]), 0);
+  assert.equal(dot(c, [4, 5, 6]), 0);
+});
+
+test('cross: rejects non-length-3 inputs', () => {
+  assert.throws(() => ev(call('cross', vec(1, 2), vec(0, 1, 0))),
+    /length-3/);
+  assert.throws(() => ev(call('cross', vec(0, 1, 0), vec(1, 2, 3, 4))),
+    /length-3/);
+});
+
+test('cross: complex inputs — bilinear over ℂ (no conjugation)', () => {
+  // i·e1 × e2 = i·e3, NOT −i·e3 (would be the Hermitian variant).
+  // Build complex vectors directly via the complex() constructor.
+  const a = call('vector',
+    call('complex', lit(0), lit(1)),  // i
+    call('complex', lit(0), lit(0)),
+    call('complex', lit(0), lit(0)));
+  const b = call('vector',
+    call('complex', lit(0), lit(0)),
+    call('complex', lit(1), lit(0)),
+    call('complex', lit(0), lit(0)));
+  const out = evRaw(call('cross', a, b));
+  // Expected result: components (0, 0, i). With bilinearity:
+  //   (i·e1) × (e2) = i·(e1 × e2) = i·e3 ⇒ re=[0,0,0], im=[0,0,1].
+  assert.ok(valueLib.isComplexValue(out));
+  assert.deepEqual(out.shape, [3]);
+  assert.deepEqual(Array.from(out.data), [0, 0, 0]);
+  assert.deepEqual(Array.from(out.im),   [0, 0, 1]);
+});
+
+test('cross: complex bilinearity — cross(α·a, β·b) = αβ·cross(a, b)', () => {
+  // Pick α = 1+i, β = 1−i  ⇒  αβ = 2 (real). Cross product
+  // direction unchanged; magnitudes scale by 2.
+  function cVec(reIm: Array<[number, number]>) {
+    return call('vector',
+      ...reIm.map(([r, i]) => call('complex', lit(r), lit(i))));
+  }
+  const a = cVec([[1, 1], [2, 2], [3, 3]]);          // (1+i) · [1,2,3]
+  const b = cVec([[4, -4], [5, -5], [6, -6]]);       // (1−i) · [4,5,6]
+  const out = evRaw(call('cross', a, b));
+  // 2 · cross([1,2,3], [4,5,6]) = 2·[−3, 6, −3] = [−6, 12, −6].
+  assert.deepEqual(Array.from(out.data), [-6, 12, -6]);
+  assert.deepEqual(Array.from(out.im),   [0, 0, 0]);
+});

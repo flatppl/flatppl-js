@@ -112,7 +112,7 @@ const BUILTIN_FUNCTIONS = new Set([
   // Linear algebra
   'transpose', 'adjoint', 'det', 'logabsdet', 'inv', 'trace',
   'linsolve', 'lower_cholesky',
-  'row_gram', 'col_gram', 'self_outer', 'diagmat',
+  'row_gram', 'col_gram', 'self_outer', 'cross', 'diagmat',
   // Diagonal extract / block-matrix constructors (spec §07)
   'diag', 'blockdiagmat', 'bandedmat',
   // Signal-processing 1-D ops (spec §07)
