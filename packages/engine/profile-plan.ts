@@ -34,6 +34,99 @@ const {
  *   null                           — couldn't resolve; UI falls back
  *                                    to default range for the leaf type
  */
+// Spec §08 distribution supports. Each entry names the distribution's
+// natural value-set; used by `resolveAxisBaseSet` to surface tighter
+// auto-domain ranges than the loose `empirical` fallback. Adding a
+// new distribution: pair its spec-canonical name with the right set
+// descriptor (the same shape `parseSetIR` returns for explicit
+// `elementof(set)` bindings).
+const DISTRIBUTION_SUPPORT: Record<string, any> = {
+  // Continuous over all reals.
+  Normal:            { kind: 'reals' },
+  Cauchy:            { kind: 'reals' },
+  StudentT:          { kind: 'reals' },
+  Logistic:          { kind: 'reals' },
+  Laplace:           { kind: 'reals' },
+  GeneralizedNormal: { kind: 'reals' },
+  // Continuous over the positive half-line.
+  Exponential:  { kind: 'posreals' },
+  Gamma:        { kind: 'posreals' },
+  LogNormal:    { kind: 'posreals' },
+  Weibull:      { kind: 'posreals' },
+  InverseGamma: { kind: 'posreals' },
+  ChiSquared:   { kind: 'posreals' },
+  // Continuous over a bounded interval.
+  Beta:     { kind: 'unitinterval' },
+  // VonMises — angles on (-π, π]; surfaced as a bounded interval so
+  // the viewer's auto-range is meaningful even without samples.
+  VonMises: { kind: 'interval', lo: -Math.PI, hi: Math.PI },
+  // Discrete over the non-negative integers.
+  Poisson:           { kind: 'nonnegintegers' },
+  Binomial:          { kind: 'nonnegintegers' },
+  NegativeBinomial:  { kind: 'nonnegintegers' },
+  NegativeBinomial2: { kind: 'nonnegintegers' },
+  Categorical0:      { kind: 'nonnegintegers' },
+  // Discrete over the positive integers (Categorical: 1..K; Geometric:
+  // 1..∞).
+  Categorical: { kind: 'posintegers' },
+  Geometric:   { kind: 'posintegers' },
+  // Boolean.
+  Bernoulli: { kind: 'booleans' },
+};
+
+/**
+ * For a `~`-bound variate, look up the distribution's natural value
+ * set instead of falling through to `empirical`. Walks the binding's
+ * IR to recover the call to a known distribution constructor and
+ * consults `DISTRIBUTION_SUPPORT`. Two surface shapes covered:
+ *
+ *   theta = draw(Exponential(rate = 1))     // direct
+ *   theta ~ Exponential(rate = 1)           // ~ desugars to draw
+ *
+ * `Uniform(support = S)` is a special case: its support is given by a
+ * kwarg, not implicit in the constructor name; the same `parseSetIR`
+ * the explicit `elementof(set)` path uses applies. Other constructors
+ * with explicit support (Lebesgue / Counting) are also handled.
+ *
+ * Returns null when the binding isn't a draw or the distribution isn't
+ * in `DISTRIBUTION_SUPPORT`; the caller falls back to `empirical`.
+ */
+function resolveDrawSupport(target: any, bindings: any): any {
+  if (!target || target.type !== 'draw') return null;
+  const ir = target.ir;
+  if (!ir || ir.kind !== 'call' || ir.op !== 'draw') return null;
+  const inner = ir.args && ir.args[0];
+  if (!inner) return null;
+  // `~`-form usually lifts the dist call to an anon binding: the
+  // draw's arg is `(ref self __anonN)` pointing at the actual
+  // `Exponential(rate = 1)` call. Chase the ref.
+  let distIR = inner;
+  if (distIR.kind === 'ref' && distIR.ns === 'self' && bindings
+      && bindings.has(distIR.name)) {
+    const anon = bindings.get(distIR.name);
+    if (anon && anon.ir && anon.ir.kind === 'call') distIR = anon.ir;
+  }
+  if (!distIR || distIR.kind !== 'call') return null;
+  const op = distIR.op;
+  // Explicit-support constructors: prefer the user's support kwarg
+  // over the distribution-name default.
+  if (op === 'Uniform' || op === 'Lebesgue' || op === 'Counting') {
+    const supportIR = distIR.kwargs && distIR.kwargs.support;
+    if (supportIR) {
+      const d = parseSetIR(supportIR);
+      if (d) return d;
+    }
+    if (op === 'Lebesgue') return { kind: 'reals' };
+    if (op === 'Counting') return { kind: 'integers' };
+    // Uniform without support kwarg — fall through to empirical.
+    return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(DISTRIBUTION_SUPPORT, op)) {
+    return DISTRIBUTION_SUPPORT[op];
+  }
+  return null;
+}
+
 function resolveAxisBaseSet(source: any, bindings: any) {
   if (!source) return null;
   // Anonymous placeholder boundaries (`par = _par_`) aren't bound to
@@ -60,9 +153,16 @@ function resolveAxisBaseSet(source: any, bindings: any) {
       const setDescr = parseSetIR(ir.args[0]);
       if (setDescr) return setDescr;
     }
-    // Anything else (variates, derived deterministic bindings):
-    // there's no static set, but the binding has empirical samples
-    // we can quantile-clip into a range at materialise time.
+    // Drawn variates: look up the distribution's natural support set
+    // instead of degrading to `empirical` (spec §08). Tighter ranges
+    // give the viewer's auto-domain a meaningful starting point even
+    // before sample materialisation runs.
+    const drawn = resolveDrawSupport(target, bindings);
+    if (drawn) return drawn;
+    // Anything else (derived deterministic bindings, lawof-defined
+    // measures, untyped sources): there's no static set, but the
+    // binding has empirical samples we can quantile-clip into a range
+    // at materialise time.
     return { kind: 'empirical', name: source.name };
   }
   return null;
