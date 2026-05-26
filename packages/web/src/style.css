@@ -112,9 +112,7 @@ html, body {
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
   padding: 0.4em 1em;
-  font-size: 0.78em;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 0.85em;
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -140,18 +138,6 @@ html, body {
   text-overflow: ellipsis;
 }
 
-/* The source-pane header carries the loaded model's PATH (a
-   value, not a static label) so we override the surrounding
-   .pane-header uppercase styling — uppercasing a filename
-   actively distorts it (`Bayesian_Inference_1.flatppl` would
-   show as `BAYESIAN_INFERENCE_1.FLATPPL`). The other headers
-   (Files, Visualization) are static labels and keep the
-   uppercase / wide-letter-spacing look. */
-#source-header {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 0.85em;
-}
 
 /* Buttons inside a pane header (e.g. the "Visualize whole module"
    action). Visual style matches the header chrome — quiet by
@@ -216,9 +202,7 @@ html, body {
 /* "Unsaved" section header above ephemeral entries. */
 .file-list-header {
   padding: 0.8em 1em 0.2em;
-  font-size: 0.75em;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: 0.85em;
   opacity: 0.6;
   user-select: none;
 }
@@ -249,9 +233,7 @@ html, body {
   gap: 0.4em;
   padding: 0.45em 1em 0.3em 0.6em;
   cursor: pointer;
-  font-size: 0.78em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 0.85em;
   color: var(--fg-muted);
 }
 .file-folder-header:hover { color: var(--fg); }
