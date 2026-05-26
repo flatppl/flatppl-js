@@ -281,6 +281,29 @@ html, body {
   pointer-events: none;
 }
 
+/* Right-click context menu on a sidebar entry. Single floating
+   div reused across right-clicks; positioned absolutely at the
+   mouse, click-outside closes (handled by app.ts). Compact list
+   of one action per row; rows highlight on hover. */
+#tree-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  padding: 0.25em 0;
+  font-size: 0.9em;
+  user-select: none;
+}
+.tree-ctx-item {
+  padding: 0.35em 1em;
+  cursor: pointer;
+  color: var(--fg);
+}
+.tree-ctx-item:hover { background: #094771; color: #fff; }
+
 /* CodeMirror line-flash decoration — re-installed by editor.ts on
    every revealLine call, cleared by its own timer after 1.5 s.
    The Decoration applies this class to the target line wrapper
