@@ -688,7 +688,7 @@ test('eval ops: mod / abs2', () => {
 // EVALUABLE_OPS) so user-level bindings like `m = mean(arr)` only
 // classify when arr is a kind:'array' derivation. These tests verify
 // the runtime ops themselves — the IR shape they handle, the
-// numerical correctness of var (population), and edge cases.
+// numerical correctness of var (sample, spec §07), and edge cases.
 // =====================================================================
 
 function vectorOfLits(values: any) {
@@ -727,16 +727,22 @@ test('reductions: maximum / minimum over a literal array', () => {
   assert.equal(w.handle({ type: 'evaluateN', ir: reductionIR('minimum', xs), count: 1 }).samples[0], -1);
 });
 
-test('reductions: var (population) matches the known formula', () => {
-  // Population variance of [1, 2, 3, 4, 5]: mean = 3, variance = 2.
+test('reductions: var (sample, spec §07) matches the Bessel-corrected formula', () => {
+  // Sample variance of [1,2,3,4,5]: mean=3, SS=4+1+0+1+4=10, /(n-1)=10/4=2.5.
   const w = createWorkerHandler();
   const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', [1, 2, 3, 4, 5]), count: 1 });
-  assert.equal(r.samples[0], 2);
+  assert.equal(r.samples[0], 2.5);
 });
 
 test('reductions: var of empty array → 0 (degenerate)', () => {
   const w = createWorkerHandler();
   const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', []), count: 1 });
+  assert.equal(r.samples[0], 0);
+});
+
+test('reductions: var of single element → 0 (sample variance undefined for n=1)', () => {
+  const w = createWorkerHandler();
+  const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', [42]), count: 1 });
   assert.equal(r.samples[0], 0);
 });
 

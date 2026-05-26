@@ -72,10 +72,15 @@ test('maximum / minimum on Value', () => {
   assert.equal(ARITH_OPS.minimum(v), 1);
 });
 
-test('var on Value (population variance)', () => {
+test('var on Value (sample variance, spec §07 — Bessel-corrected)', () => {
   const v = valueLib.vector([2, 4, 6, 8]);
-  // mean=5; deviations 9, 1, 1, 9; var = 20/4 = 5
-  assert.equal(ARITH_OPS.var(v), 5);
+  // mean=5; squared deviations 9, 1, 1, 9; SS=20; var = 20/(n-1) = 20/3.
+  assert.ok(Math.abs(ARITH_OPS.var(v) - (20 / 3)) < 1e-12);
+});
+
+test('var on Value: n=1 returns 0 (sample variance undefined)', () => {
+  const v = valueLib.vector([42]);
+  assert.equal(ARITH_OPS.var(v), 0);
 });
 
 test('l1norm / l2norm on Value', () => {
