@@ -142,6 +142,12 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // dropped derivation can cascade: if A depends on B and B becomes
   // unsupported, A also drops.
   for (const [name, binding] of bindings) {
+    // fixedValues hasn't been populated yet — pass undefined so
+    // classifyDerivation falls back to its legacy AST-walk for
+    // constant resolution. A second classification pass below
+    // re-tries unclassified bindings with the populated fixedValues
+    // so classifiers like classifyIid can pick up binding-ref size
+    // arguments.
     const d = classifyDerivation(binding, bindings);
     if (d) {
       derivations[name] = d;
@@ -436,6 +442,21 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     }
   }
 
+  // Second classification pass — pre-eval is now finished and
+  // `fixedValues` is populated, so classifiers that depend on
+  // constant-resolution of a fixed-phase binding (e.g. classifyIid
+  // resolving `iid(M, n)` where `n = lengthof(data)` is a fixed-phase
+  // binding) can succeed here even though the first pass at line 145
+  // ran with an empty fixedValues map. Only re-classify bindings that
+  // didn't already get a derivation in pass 1 — pre-eval may have
+  // overridden some derivations (e.g. converting a `vector(...)`
+  // sample call to an `array` kind), which we don't want to clobber.
+  for (const [name, binding] of bindings) {
+    if (derivations[name]) continue;
+    const d = classifyDerivation(binding, bindings, fixedValues);
+    if (d) derivations[name] = d;
+  }
+
   // Classification diagnostics. "No derivation" is a heavily
   // overloaded state — inputs (`elementof`), callables (`functionof`,
   // `kernelof`, `bijection`), likelihood objects, and parameterized-
@@ -534,7 +555,9 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
  * NOT a sample. This is what gives variates and their measures the
  * same cached samples.
  */
-function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingInfo>): Derivation | null {
+function classifyDerivation(
+  binding: BindingInfo, bindings: Map<string, BindingInfo>, fixedValues?: any,
+): Derivation | null {
   if (!binding || !binding.node || !binding.node.value) return null;
 
   // Read the lowered IR cached by liftInlineSubexpressions. The IR is
@@ -690,7 +713,8 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
     const ast = binding.node.value;
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op != null
         && (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op]) {
-      const result = (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op](rhsIR, ast, bindings);
+      const result = (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op](
+        rhsIR, ast, bindings, fixedValues);
       if (result) return result;
     }
     // Numeric array literal: lowered to (call vector lit lit ...).
@@ -774,7 +798,9 @@ function classifyDerivation(binding: BindingInfo, bindings: Map<string, BindingI
 // in MEASURE_OP_CLASSIFIERS plus the corresponding handler function;
 // no edits to the dispatch loop in classifyDerivation.
 
-function classifyWeighted(rhsIR: IRNode, ast: any, bindings: any): DerivationWeighted | null {
+function classifyWeighted(
+  rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
+): DerivationWeighted | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const weightAst = ast.args[0];
   const baseAst   = ast.args[1];
@@ -785,7 +811,7 @@ function classifyWeighted(rhsIR: IRNode, ast: any, bindings: any): DerivationWei
   const baseName = resolveMeasureBaseName(baseAst, bindings);
   if (baseName == null) return null;
   if (isMeasureExpr(weightAst, bindings)) return null;
-  const w = resolveConstant(weightExpr, bindings, new Set());
+  const w = resolveConstant(weightExpr, bindings, new Set(), fixedValues);
   if (w != null) {
     if (!(w > 0) || !Number.isFinite(w)) return null;
     return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
@@ -796,7 +822,9 @@ function classifyWeighted(rhsIR: IRNode, ast: any, bindings: any): DerivationWei
   return null;
 }
 
-function classifyLogWeighted(rhsIR: IRNode, ast: any, bindings: any): DerivationWeighted | null {
+function classifyLogWeighted(
+  rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
+): DerivationWeighted | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const weightAst = ast.args[0];
   const baseAst   = ast.args[1];
@@ -804,7 +832,7 @@ function classifyLogWeighted(rhsIR: IRNode, ast: any, bindings: any): Derivation
   const baseName = resolveMeasureBaseName(baseAst, bindings);
   if (baseName == null) return null;
   if (isMeasureExpr(weightAst, bindings)) return null;
-  const lw = resolveConstant(lwExpr, bindings, new Set());
+  const lw = resolveConstant(lwExpr, bindings, new Set(), fixedValues);
   if (lw != null) {
     if (!Number.isFinite(lw)) return null;
     return { kind: 'weighted', from: baseName, logShift: lw };
@@ -1078,14 +1106,19 @@ function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */): DerivationRecor
   return null;
 }
 
-function classifyIid(rhsIR: IRNode, ast: any, bindings: any): DerivationIid | null {
+function classifyIid(
+  rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
+): DerivationIid | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
   // New spec: iid(M, size) where size is a positive int or vector of
   // positive ints. Legacy form accepts variadic positional ints. The
   // single-vector-literal case (lowered as `vector(...)` IRCall) is
-  // unpacked into per-axis dims.
+  // unpacked into per-axis dims. `fixedValues` is consulted by
+  // resolveConstant so a binding ref like `n = lengthof(data)` resolves
+  // through the pre-eval cache instead of needing a constant-fold
+  // entry per surface op.
   const dims: number[] = [];
   const tail = rhsIR.args.slice(1);
   let nodes: IRNode[] = tail;
@@ -1096,7 +1129,7 @@ function classifyIid(rhsIR: IRNode, ast: any, bindings: any): DerivationIid | nu
     nodes = (tail[0] as any).args;
   }
   for (const node of nodes) {
-    const n = resolveConstant(node, bindings, new Set());
+    const n = resolveConstant(node, bindings, new Set(), fixedValues);
     if (n == null || !Number.isInteger(n) || n <= 0) return null;
     dims.push(n);
   }

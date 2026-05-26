@@ -62,7 +62,9 @@ function resolveMeasureBaseName(astNode: any, bindings: any) {
  * derivations to pre-compute the log-shift at classification time
  * rather than at sample-render time. Cycle-guarded.
  */
-function resolveConstant(ir: any, bindings: any, seen: Set<any>): any {
+function resolveConstant(
+  ir: any, bindings: any, seen: Set<any>, fixedValues?: any,
+): any {
   if (!ir) return null;
   if (ir.kind === 'lit') {
     if (typeof ir.value === 'number' && Number.isFinite(ir.value)) return ir.value;
@@ -77,11 +79,29 @@ function resolveConstant(ir: any, bindings: any, seen: Set<any>): any {
   if (ir.kind === 'ref' && ir.ns === 'self') {
     if (seen.has(ir.name)) return null;
     seen.add(ir.name);
+    // The orchestrator's pre-eval pass populates `fixedValues` for
+    // every fixed-phase binding it can evaluate — including ones
+    // whose RHS uses ops resolveConstant's own constant-fold table
+    // doesn't recognise (e.g. `n = lengthof(arr)`). When a
+    // fixedValue exists for this ref's name, use it directly: it
+    // is by construction the value the surrounding derivation
+    // would compute anyway, just already cached. This lets
+    // classifyIid (and the other resolveConstant callers) accept
+    // `iid(M, n)` written with `n` a binding ref to a fixed-phase
+    // expression of arbitrary shape, not only refs whose RHS folds
+    // through neg/add/sub/mul/div.
+    if (fixedValues && typeof fixedValues.get === 'function'
+        && fixedValues.has && fixedValues.has(ir.name)) {
+      const v = fixedValues.get(ir.name);
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      // Fall through if the cached value isn't a finite number —
+      // the legacy fold path may still work for special cases.
+    }
     const b = bindings.get(ir.name);
     if (!b || !b.node || !b.node.value) return null;
     let bIR;
     try { bIR = lowerExpr(b.node.value); } catch (_) { return null; }
-    return resolveConstant(bIR, bindings, seen);
+    return resolveConstant(bIR, bindings, seen, fixedValues);
   }
   // Constant-fold small arithmetic. Crucially, the parser lowers a
   // negative literal `-3.5` to `(call neg (lit 3.5))`, so without this
@@ -89,7 +109,7 @@ function resolveConstant(ir: any, bindings: any, seen: Set<any>): any {
   // operator set matches EVALUABLE_OPS so the language's evaluator
   // semantics agree at this level.
   if (ir.kind === 'call' && ir.op && Array.isArray(ir.args)) {
-    const args = ir.args.map((a: any) => resolveConstant(a, bindings, seen));
+    const args = ir.args.map((a: any) => resolveConstant(a, bindings, seen, fixedValues));
     if (args.some((v: any) => v == null)) return null;
     switch (ir.op) {
       case 'neg': return args.length === 1 ? -args[0] : null;
