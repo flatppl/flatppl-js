@@ -65,6 +65,7 @@ const {
   makeMainThreadPrng,
   collectRefArrays,
   prepareDensityRefs,
+  classifyProfileSelfRefs,
   pushFixedEnv,
   fixedValueToMeasure,
   measureFromValue,
@@ -524,6 +525,7 @@ module.exports = {
   // doesn't have a binding-graph derivation).
   fixedValueToMeasure,
   collectRefArrays,
+  classifyProfileSelfRefs,
   nameSeed,
   makeMainThreadPrng,
   // Value ↔ Measure bridges.
