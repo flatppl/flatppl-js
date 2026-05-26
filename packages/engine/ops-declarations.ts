@@ -794,6 +794,121 @@ ops.register({
   logical: _catLogical,
 });
 
+// =====================================================================
+// Higher-order ops (Phase 5c — engine-concepts §18.8)
+// =====================================================================
+//
+// reduce / scan / filter take a callable + data inputs. Their
+// `logical` receives raw IR args plus a `ctx` carrying the engine's
+// env + evaluateExpr + resolveFn (the higher-order dispatch contract,
+// see ops.ts). The op resolves the callable, iterates over the data,
+// and evaluates the body in an env extended per iteration.
+//
+// Atom-batched semantics for these ops are not handled
+// automatically — `reduce` / `scan` / `filter` over an atom-batched
+// array would require explicit per-atom broadcasting in the caller.
+// Today's `_perAtomFallback` in `evaluateExprN` provides this for
+// callers that need it.
+
+function _reduceLogical(irArgs: any[], ctx: any): any {
+  if (irArgs.length !== 2) {
+    throw new Error('reduce: expected 2 args (function, xs), got ' + irArgs.length);
+  }
+  const fn = ctx.resolveFn(irArgs[0], ctx.env);
+  if (!fn || fn.params.length !== 2) {
+    throw new Error('reduce: function arg must be a binary function');
+  }
+  const xsRaw: any = ctx.evaluateExpr(irArgs[1], ctx.env);
+  const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
+  if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
+    throw new Error('reduce: xs must be a vector');
+  }
+  if (xs.length === 0) {
+    throw new Error('reduce: empty vector has no initial value');
+  }
+  const elemEnv = Object.assign({}, ctx.env);
+  let acc: any = xs[0];
+  for (let i = 1; i < xs.length; i++) {
+    elemEnv[fn.params[0]] = acc;
+    elemEnv[fn.params[1]] = xs[i];
+    acc = ctx.evaluateExpr(fn.body, elemEnv);
+  }
+  return acc;
+}
+
+ops.register({
+  name: 'reduce',
+  kind: 'higher-order',
+  logical: _reduceLogical,
+});
+
+function _scanLogical(irArgs: any[], ctx: any): any {
+  if (irArgs.length !== 3) {
+    throw new Error('scan: expected 3 args (function, init, xs), got ' + irArgs.length);
+  }
+  const fn = ctx.resolveFn(irArgs[0], ctx.env);
+  if (!fn || fn.params.length !== 2) {
+    throw new Error('scan: function arg must be a binary function');
+  }
+  const init = ctx.evaluateExpr(irArgs[1], ctx.env);
+  const xsRaw: any = ctx.evaluateExpr(irArgs[2], ctx.env);
+  const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
+  if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
+    throw new Error('scan: xs must be a vector');
+  }
+  const n = xs.length;
+  const out: Float64Array = new Float64Array(n);
+  const elemEnv = Object.assign({}, ctx.env);
+  let acc = init;
+  for (let i = 0; i < n; i++) {
+    elemEnv[fn.params[0]] = acc;
+    elemEnv[fn.params[1]] = xs[i];
+    acc = ctx.evaluateExpr(fn.body, elemEnv);
+    out[i] = acc === true ? 1 : acc === false ? 0 : +acc;
+  }
+  return { shape: [n], data: out };
+}
+
+ops.register({
+  name: 'scan',
+  kind: 'higher-order',
+  logical: _scanLogical,
+});
+
+function _filterLogical(irArgs: any[], ctx: any): any {
+  if (irArgs.length !== 2) {
+    throw new Error('filter: expected 2 args (predicate, data), got ' + irArgs.length);
+  }
+  const fn = ctx.resolveFn(irArgs[0], ctx.env);
+  if (!fn || fn.params.length !== 1) {
+    throw new Error('filter: predicate must be a unary function');
+  }
+  const dataRaw = ctx.evaluateExpr(irArgs[1], ctx.env);
+  const data = valueLib.isValue(dataRaw) ? dataRaw.data : dataRaw;
+  if (!Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
+    throw new Error('filter: data must be a vector (got '
+      + (data === null ? 'null' : typeof data) + ')');
+  }
+  const elemEnv = Object.assign({}, ctx.env);
+  const kept: any[] = [];
+  for (let i = 0; i < data.length; i++) {
+    elemEnv[fn.params[0]] = data[i];
+    const keep = ctx.evaluateExpr(fn.body, elemEnv);
+    if (keep) kept.push(data[i]);
+  }
+  const out = new Float64Array(kept.length);
+  for (let i = 0; i < kept.length; i++) {
+    out[i] = kept[i] === true ? 1 : kept[i] === false ? 0 : +kept[i];
+  }
+  return { shape: [kept.length], data: out };
+}
+
+ops.register({
+  name: 'filter',
+  kind: 'higher-order',
+  logical: _filterLogical,
+});
+
 module.exports = {
   // Re-export for tests that want to call the logical impls directly
   // (rather than through `ops.dispatch`).
@@ -812,4 +927,7 @@ module.exports = {
   _linsolveLogical,
   _vectorLogical,
   _catLogical,
+  _reduceLogical,
+  _scanLogical,
+  _filterLogical,
 };

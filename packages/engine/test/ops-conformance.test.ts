@@ -380,6 +380,119 @@ pinUnaryLinalgOp('row_gram', arbSquareMat());
 pinUnaryLinalgOp('col_gram', arbSquareMat());
 
 // ---------------------------------------------------------------------
+// Higher-order ops (Phase 5c) — reduce / scan / filter. The
+// dispatcher's `dispatchHigherOrder(name, irArgs, ctx)` threads the
+// engine's env + evaluateExpr + resolveFn into the op's logical,
+// which does its own callable resolution and iteration.
+//
+// These tests exercise the dispatch surface directly by building a
+// `ctx` against `sampler.evaluateExpr` + a minimal resolveFn that
+// recognises inline `functionof` IR. The engine's own evaluateCall
+// already routes reduce/scan/filter through dispatchHigherOrder, so
+// the integration tests in fold/reduce/scan/filter.test.ts cover
+// the end-to-end path. Here we pin the conformance contract:
+// `dispatchHigherOrder` produces the same result as the legacy
+// inline impl in evaluateCall.
+// ---------------------------------------------------------------------
+
+// Minimal resolveFn for tests: recognises inline `functionof(params,
+// body)` IR and returns { params, body }. Doesn't handle named-fn
+// refs (those need orchestrator setup); the dispatch path's
+// fallthrough behaviour matches the legacy impl on the inline form.
+function _testResolveFn(fnIR: any, _env: any): any {
+  if (fnIR && fnIR.kind === 'call' && fnIR.op === 'functionof'
+      && Array.isArray(fnIR.params) && fnIR.body) {
+    return { params: fnIR.params, body: fnIR.body };
+  }
+  return null;
+}
+
+function _testCtx(env: any): any {
+  return {
+    env: env || {},
+    evaluateExpr: sampler.evaluateExpr,
+    resolveFn: _testResolveFn,
+  };
+}
+
+// Build `functionof((a, b), body)` IR for binary callables.
+function _binFn(p0: string, p1: string, bodyIR: any): any {
+  return { kind: 'call', op: 'functionof', params: [p0, p1], body: bodyIR };
+}
+
+// Build `functionof((a), body)` IR for unary callables.
+function _unFn(p0: string, bodyIR: any): any {
+  return { kind: 'call', op: 'functionof', params: [p0], body: bodyIR };
+}
+
+function _ref(name: string): any { return { kind: 'ref', ns: 'self', name }; }
+function _lit(v: any): any { return { kind: 'lit', value: v }; }
+function _binOp(op: string, a: any, b: any): any {
+  return { kind: 'call', op, args: [a, b] };
+}
+
+test('ops conformance: reduce — sum via dispatchHigherOrder matches legacy', () => {
+  // reduce((a, b) -> a + b, [1, 2, 3, 4, 5]) ≡ 15
+  const fn = _binFn('a', 'b', _binOp('add', _ref('a'), _ref('b')));
+  const xs = { kind: 'call', op: 'vector',
+    args: [1, 2, 3, 4, 5].map(_lit) };
+  const r = ops.dispatchHigherOrder('reduce', [fn, xs], _testCtx({}));
+  assert.equal(r, 15);
+});
+
+test('ops conformance: reduce — product via dispatchHigherOrder', () => {
+  // reduce((a, b) -> a * b, [1, 2, 3, 4]) ≡ 24
+  const fn = _binFn('a', 'b', _binOp('mul', _ref('a'), _ref('b')));
+  const xs = { kind: 'call', op: 'vector',
+    args: [1, 2, 3, 4].map(_lit) };
+  const r = ops.dispatchHigherOrder('reduce', [fn, xs], _testCtx({}));
+  assert.equal(r, 24);
+});
+
+test('ops conformance: scan — cumsum via dispatchHigherOrder', () => {
+  // scan((a, b) -> a + b, 0, [1, 2, 3, 4]) ≡ [1, 3, 6, 10]
+  const fn = _binFn('a', 'b', _binOp('add', _ref('a'), _ref('b')));
+  const xs = { kind: 'call', op: 'vector',
+    args: [1, 2, 3, 4].map(_lit) };
+  const r = ops.dispatchHigherOrder('scan', [fn, _lit(0), xs], _testCtx({}));
+  assert.ok(valueLib.isValue(r));
+  assert.deepEqual(r.shape, [4]);
+  assert.deepEqual(Array.from(r.data), [1, 3, 6, 10]);
+});
+
+test('ops conformance: filter — keep evens via dispatchHigherOrder', () => {
+  // filter((x) -> x mod 2 == 0, [1, 2, 3, 4, 5, 6]) ≡ [2, 4, 6]
+  const pred = _unFn('x', { kind: 'call', op: 'equal',
+    args: [{ kind: 'call', op: 'mod', args: [_ref('x'), _lit(2)] }, _lit(0)] });
+  const xs = { kind: 'call', op: 'vector',
+    args: [1, 2, 3, 4, 5, 6].map(_lit) };
+  const r = ops.dispatchHigherOrder('filter', [pred, xs], _testCtx({}));
+  assert.ok(valueLib.isValue(r));
+  assert.deepEqual(r.shape, [3]);
+  assert.deepEqual(Array.from(r.data), [2, 4, 6]);
+});
+
+test('ops dispatchHigherOrder: missing ctx surfaces clear error', () => {
+  const fn = _binFn('a', 'b', _binOp('add', _ref('a'), _ref('b')));
+  const xs = { kind: 'call', op: 'vector', args: [_lit(1), _lit(2)] };
+  assert.throws(() => ops.dispatchHigherOrder('reduce', [fn, xs], null as any),
+    /ctx must provide/);
+});
+
+test('ops dispatchHigherOrder: non-higher-order op surfaces clear error', () => {
+  // `cross` is fixed-rank — should reject through dispatchHigherOrder.
+  const args = [vec3Value([1, 0, 0]), vec3Value([0, 1, 0])];
+  assert.throws(() => ops.dispatchHigherOrder('cross', args, _testCtx({})),
+    /not kind=higher-order/);
+});
+
+test('ops dispatch: higher-order op surfaces clear error if routed through dispatch', () => {
+  // `reduce` is higher-order — should reject through plain dispatch.
+  assert.throws(() => ops.dispatch('reduce', [null, null]),
+    /higher-order/);
+});
+
+// ---------------------------------------------------------------------
 // Variadic ops (Phase 5b) — vector / cat. The dispatcher forwards
 // all args to logical; no atom-batch detection.
 // ---------------------------------------------------------------------
