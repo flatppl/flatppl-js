@@ -317,20 +317,40 @@
 
     const domEventHandlers = {
       mousedown: function (ev: any) {
-        if (!(ev.ctrlKey || ev.metaKey)) return false;
-        let t = ev.target;
-        let name: any = null;
-        while (t) {
-          if (t.dataset && t.dataset.binding) { name = t.dataset.binding; break; }
-          t = t.parentNode;
+        // Ctrl/Cmd-click on a defined-binding identifier: jump to its
+        // definition. Works in both view and edit modes.
+        if (ev.ctrlKey || ev.metaKey) {
+          let t = ev.target;
+          let name: any = null;
+          while (t) {
+            if (t.dataset && t.dataset.binding) { name = t.dataset.binding; break; }
+            t = t.parentNode;
+          }
+          if (!name) return false;
+          ev.preventDefault();
+          jumpToBindingDefinition(name);
+          if (typeof opts.onNavigate === 'function') {
+            opts.onNavigate(name);
+          }
+          return true;
         }
-        if (!name) return false;
-        ev.preventDefault();
-        jumpToBindingDefinition(name);
-        if (typeof opts.onNavigate === 'function') {
-          opts.onNavigate(name);
+        // Plain click in view mode: CodeMirror's editable=false stops
+        // the caret from following the click — but the gallery's
+        // click-to-focus-binding UX depends on cursor-driven
+        // onNavigate firing when the new caret lands on a defined
+        // binding. Dispatch the selection move manually here so the
+        // selectionSet event fires; the docChangeListener picks it
+        // up and routes onNavigate just like it would in edit mode.
+        // We don't preventDefault so native text-selection (click +
+        // drag) still works. In edit mode CodeMirror handles caret
+        // movement natively, so the branch is a no-op there.
+        if (view.state.readOnly) {
+          const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
+          if (pos != null && pos !== view.state.selection.main.head) {
+            view.dispatch({ selection: { anchor: pos } });
+          }
         }
-        return true;
+        return false;
       },
     };
 
