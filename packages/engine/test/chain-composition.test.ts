@@ -123,14 +123,145 @@ test('inferChainComposition: non-function step diagnostic', () => {
   assert.match(r.diagnostics[0].message, /m/);
 });
 
-test('inferChainComposition: kernel modes not yet implemented (Phase 2)', () => {
+test('inferChainComposition: kernel modes reject funcType-only chains', () => {
+  // Kernel modes require step 0 to be a measure or kernel, not a
+  // function. Passing a funcType-only chain to a kernel mode is a
+  // static type error — kernel chains are the measure-side analogue.
   const f1 = fn([{ name: 'x', type: T.REAL }], T.REAL);
   const r1 = inferChainComposition([step(f1)], 'kchain-marginal');
   const r2 = inferChainComposition([step(f1)], 'jointchain-retain');
   assert.equal(r1.resultType.kind, 'failed');
   assert.equal(r2.resultType.kind, 'failed');
-  assert.match(r1.resultType.reason, /not yet implemented/);
-  assert.match(r2.resultType.reason, /not yet implemented/);
+  assert.match(r1.resultType.reason, /bad step 0/);
+});
+
+// =====================================================================
+// Kernel modes (Phase 2): kchain-marginal + jointchain-retain
+// =====================================================================
+
+function kernel(inputs: Array<{name: string; type: any}>, variate: any) {
+  return T.kernelType(inputs, T.measure(variate));
+}
+
+test('inferChainComposition: closed-first kchain ⇒ measureType result', () => {
+  // M (measure<real>) → K1 (real → measure<integer>) ⇒ measure<integer>.
+  const M  = T.measure(T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'measure',
+    'closed-first kchain (empty residual) collapses to measureType');
+  assert.deepEqual(r.resultType.domain, T.INTEGER);
+  assert.deepEqual(r.diagnostics, []);
+});
+
+test('inferChainComposition: kernel-first kchain ⇒ kernelType with residual inputs', () => {
+  // K0 (theta: real → measure<real>) → K1 (real → measure<integer>)
+  // ⇒ kernelType({theta: real}, measure<integer>). Residual = K0.inputs.
+  const K0 = kernel([{ name: 'theta', type: T.REAL }], T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const r = inferChainComposition([step(K0, 'K0'), step(K1, 'K1')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'kernel',
+    'kernel-first kchain keeps residual inputs as kernelType');
+  assert.equal(r.resultType.inputs.length, 1);
+  assert.equal(r.resultType.inputs[0].name, 'theta');
+  assert.equal(r.resultType.result.kind, 'measure');
+  assert.deepEqual(r.resultType.result.domain, T.INTEGER);
+});
+
+test('inferChainComposition: closed-first jointchain ⇒ measure of retained record/tuple', () => {
+  // jointchain(M, K1) keyword form ⇒ measure<record({m: real, k: integer})>.
+  const M  = T.measure(T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')],
+                                  'jointchain-retain', { labels: ['m', 'k'] });
+  assert.equal(r.resultType.kind, 'measure');
+  assert.equal(r.resultType.domain.kind, 'record');
+  assert.deepEqual(r.resultType.domain.fields.m, T.REAL);
+  assert.deepEqual(r.resultType.domain.fields.k, T.INTEGER);
+});
+
+test('inferChainComposition: positional jointchain ⇒ measure of tuple variate', () => {
+  // Positional form (no labels) yields a tuple variate (the spec's
+  // `cat(...)` of mixed-typed variates).
+  const M  = T.measure(T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')],
+                                  'jointchain-retain');
+  assert.equal(r.resultType.kind, 'measure');
+  assert.equal(r.resultType.domain.kind, 'tuple');
+  assert.equal(r.resultType.domain.elems.length, 2);
+});
+
+test('inferChainComposition: kernel-first jointchain ⇒ kernelType result', () => {
+  // K0 (theta: real → measure<real>) → K1 (real → measure<integer>)
+  // ⇒ kernelType({theta: real}, measure<record(s0: real, s1: integer)>).
+  const K0 = kernel([{ name: 'theta', type: T.REAL }], T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const r = inferChainComposition([step(K0, 'K0'), step(K1, 'K1')],
+                                  'jointchain-retain', { labels: ['s0', 's1'] });
+  assert.equal(r.resultType.kind, 'kernel',
+    'kernel-first jointchain stays a kernel');
+  assert.equal(r.resultType.inputs.length, 1);
+  assert.equal(r.resultType.inputs[0].name, 'theta');
+  assert.equal(r.resultType.result.domain.kind, 'record');
+  assert.deepEqual(r.resultType.result.domain.fields.s0, T.REAL);
+  assert.deepEqual(r.resultType.result.domain.fields.s1, T.INTEGER);
+});
+
+test('inferChainComposition: kchain step boundary mismatch (variate ↛ next-step input)', () => {
+  // M variate real → K1 expects integer-typed input. real doesn't
+  // promote to integer; boundary mismatch.
+  const M  = T.measure(T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.INTEGER }], T.REAL);
+  const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'failed');
+  assert.match(r.diagnostics[0].message, /step boundary 0 → 1/);
+});
+
+test('inferChainComposition: kchain step boundary auto-splat record→kwargs', () => {
+  // M variate record(a, b) → K1 inputs {a, b} via auto-splat.
+  const M  = T.measure(T.record({ a: T.REAL, b: T.INTEGER }));
+  const K1 = kernel([{ name: 'a', type: T.REAL },
+                     { name: 'b', type: T.INTEGER }], T.REAL);
+  const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'measure');
+  assert.deepEqual(r.resultType.domain, T.REAL);
+});
+
+test('inferChainComposition: kchain measure-typed step i≥1 accepted as nullary kernel', () => {
+  // Per spec §06 line 86-91 (uniform kernel extension), a measure IS
+  // a nullary kernel. So a measure-typed step at position i≥1 is
+  // accepted as a closed-kernel step (no boundary match required —
+  // the next step produces a measure regardless of the prior
+  // variate). Strict non-nullary enforcement is intentionally
+  // deferred (existing fixtures rely on the looseness).
+  const M  = T.measure(T.REAL);
+  const M1 = T.measure(T.REAL);   // nullary kernel = closed measure.
+  const r = inferChainComposition([step(M, 'M'), step(M1, 'M1')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'measure',
+    'closed-first kchain with measure step ≡ measure result');
+});
+
+test('inferChainComposition: kchain function-typed step i≥1 still rejected', () => {
+  // A function step (value→value) is genuinely not a kernel; should
+  // be rejected even with the kernel↔measure unification.
+  const M = T.measure(T.REAL);
+  const f = T.funcType([{ name: 'x', type: T.REAL }], T.REAL);
+  const r = inferChainComposition([step(M, 'M'), step(f, 'f')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'failed');
+  assert.match(r.diagnostics[0].message, /must be a kernel or measure/);
+});
+
+test('inferChainComposition: residual-empty collapse (spec §06 kernel↔measure)', () => {
+  // Specifically pin the collapse: closed-first chain returns
+  // measureType, not kernelType with empty inputs. This is the spec
+  // §06 line 87-90 "kernel with empty interface IS a measure" — falls
+  // out of the helper without a special case.
+  const M  = T.measure(T.REAL);
+  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')], 'kchain-marginal');
+  assert.equal(r.resultType.kind, 'measure');
+  assert.notEqual(r.resultType.kind, 'kernel');
 });
 
 test('inferChainComposition: auto-splat at multi-input boundary', () => {

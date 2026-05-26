@@ -706,6 +706,19 @@ const SIGNATURE_FACTORIES = {
   // multi-step type unification.
   fchain: () => ({ args: [], kwargs: {}, result: deferred(),
                    variadic: 'positional', special: 'fchain' }),
+
+  // jointchain / kchain — dependent composition (spec §06 line 192-
+  // 266). First arg may be a closed measure or (kernel-first) a
+  // kernel; remaining args are non-nullary kernels. Closed-first ⇒
+  // measure result; kernel-first ⇒ kernel result with step_0's
+  // residual inputs (collapses to measureType when residual is
+  // empty, per the spec §06 line 87-90 kernel↔measure boundary).
+  // Result type is computed by inferChainComposition (engine-concepts
+  // §19.4) in typeinfer's `inferJointchain` / `inferKchain` handlers.
+  jointchain: () => ({ args: [], kwargs: {}, result: deferred(),
+                       variadic: 'positional', special: 'jointchain' }),
+  kchain:     () => ({ args: [], kwargs: {}, result: deferred(),
+                       variadic: 'positional', special: 'kchain' }),
   // fixed(x) — identity-typed marker (spec §03 value types). Carries
   // no runtime semantics beyond passing the wrapped value through; the
   // 'fixed' op survives in the IR so tooling can recognize it as a

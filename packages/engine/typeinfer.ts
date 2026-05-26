@@ -325,6 +325,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // the shared `inferChainComposition` helper (consume/rest at the
       // chain's input-set level — engine-concepts §17.3 extended).
       case 'fchain':    return write(inferFchain(expr, scopes), expr);
+      // jointchain / kchain — dependent composition (spec §06 line
+      // 192-266). Closed-first ⇒ measureType; kernel-first ⇒
+      // kernelType with residual inputs (collapses to measure when
+      // residual is empty). Routes through inferChainComposition's
+      // kernel modes (engine-concepts §19.4).
+      case 'jointchain': return write(inferJointchain(expr, scopes, 'jointchain-retain'), expr);
+      case 'kchain':     return write(inferJointchain(expr, scopes, 'kchain-marginal'), expr);
       // transpose / adjoint: spec §07 — apply to vectors and matrices.
       // For vectors, return type is transposed_vector (the new spec
       // type from flatppl-design 244b0e5); for transposed_vector,
@@ -599,6 +606,51 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     }
     const densityPrims = require('./density-prims.ts');
     const r = densityPrims.inferChainComposition(steps, 'func');
+    for (const d of r.diagnostics) diagnostics.push(d);
+    return r.resultType;
+  }
+
+  /**
+   * jointchain / kchain — dependent composition (spec §06 line
+   * 192-266; engine-concepts §19.4). Lowering surfaces:
+   *
+   *   - Positional `jointchain(M, K1, K2)` → `args: [...]`
+   *   - Keyword    `jointchain(name1 = M, name2 = K)` → `fields:
+   *                  [{name, value}, ...]` (labels preserved for the
+   *                  retained record shape).
+   *
+   * Routes through `inferChainComposition` with mode='kchain-marginal'
+   * (kchain) or 'jointchain-retain' (jointchain). Result-kind dispatch
+   * happens inside the helper: kernel-first → kernelType with residual
+   * inputs; closed-first → measureType (the spec §06 kernel↔measure
+   * collapse at residual-empty falls out without a special case).
+   */
+  function inferJointchain(expr: any, scopes: any,
+      mode: 'kchain-marginal' | 'jointchain-retain'): any {
+    let comps: any[];
+    let labels: string[] | null = null;
+    if (Array.isArray(expr.fields) && expr.fields.length > 0) {
+      labels = expr.fields.map((f: any) => f.name);
+      comps  = expr.fields.map((f: any) => f.value);
+    } else {
+      comps = expr.args || [];
+    }
+    const opName = (mode === 'kchain-marginal') ? 'kchain' : 'jointchain';
+    if (comps.length < 2) {
+      diagnostics.push({
+        severity: 'error',
+        message: opName + ' requires ≥ 2 components (spec §06 line 192-266)',
+        loc: expr.loc,
+      });
+      return T.failed(opName + ' arity');
+    }
+    const steps: any[] = [];
+    for (const a of comps) {
+      const name = (a && a.kind === 'ref' && a.ns === 'self') ? a.name : undefined;
+      steps.push({ type: inferExpr(a, scopes), loc: a && a.loc, name });
+    }
+    const densityPrims = require('./density-prims.ts');
+    const r = densityPrims.inferChainComposition(steps, mode, { labels });
     for (const d of r.diagnostics) diagnostics.push(d);
     return r.resultType;
   }
