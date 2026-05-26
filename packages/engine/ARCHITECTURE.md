@@ -885,7 +885,7 @@ state out) via a stateful adapter (`makePhiloxPrngAdapter`) that mutates an
 internal copy of the state and exposes `getState()` so the caller can read the
 trailing state when sampling completes.
 
-### `ops.ts` (~250 lines) + `ops-declarations.ts` (~150 lines)
+### `ops.ts` (~250 lines) + `ops-declarations.ts` (~650 lines)
 
 **Responsibility.** Unified op-declaration registry + atom-batched
 dispatcher (engine-concepts §18). One declaration per non-scalar op
@@ -894,17 +894,22 @@ atom-batched dispatch from one source. Atom-batching is the
 engine's job (recognised from the input shape's leading axis), not
 the op's.
 
-> **Status: Phase 1 — additive.** The registry and dispatcher ship
-> in parallel with the existing ARITH_OPS / SIGNATURE_FACTORIES /
-> EVALUABLE_OPS entries; nothing routes through `dispatch` yet.
-> Two ops (`cross`, `self_outer`) declare via `OpDecl` as
-> proof-of-concept. Phase 2 will route `evaluateCall` through
-> `ops.dispatch` for declared ops and retire the per-file entries
-> one family at a time; phases 3-5 add `batched` fast-paths
-> (vectorised atom-batched linalg) and extend the model to
-> higher-order ops. See `flatppl-dev/TODO-flatppl-js.md` for the
-> phase plan and `engine-concepts.md §18` for the cross-engine
-> rationale.
+> **Status: Phases 1-3 landed (2026-05-26).** Ten ops declared via
+> `OpDecl`: `cross`, `self_outer`, `trace`, `diagmat`, `det`,
+> `logabsdet`, `inv`, `lower_cholesky`, `row_gram`, `col_gram`.
+> `evaluateCall` routes declared ops through `opsModule.dispatch`.
+> `types.signatureOf` consults `ops.signatureOf` first.
+> `ARITH_OPS` entries for migrated ops thin-delegate to
+> `opsModule.dispatch` so direct callers keep working. Three ops
+> have `batched(args, N)` fast-paths for the high-value
+> atom-batched cases: `cross` ([N, 3] Float64Array loop), `inv` and
+> `lower_cholesky` (per-atom LU / Cholesky on [N, n, n] buffers).
+>
+> **Deferred to Phase 5** (engine-concepts §18.7): rank-polymorphic
+> ops (`transpose`, `adjoint`, `linsolve`-with-matrix-b), variadic
+> ops (`cat`, `joint`, `superpose`, `vector`), higher-order ops
+> (`broadcast`, `aggregate`, `reduce`, `scan`, `filter`). Each
+> needs the `OpDecl` kind discriminator to grow.
 
 **`ops.ts`** holds:
 - `register(decl)` / `lookup(name)` / `listDeclared()` /
@@ -924,9 +929,19 @@ the op's.
   the conformance harness; not part of the public dispatcher API.
 
 **`ops-declarations.ts`** holds the per-op `OpDecl` registrations.
-Phase 1 lists `cross` and `self_outer`. As ops migrate (Phase 2),
-their natural homes move here; phases 4-5 grow the declaration
-shape with slots for higher-order / variadic ops.
+Phase 2 covers the fixed-rank linalg family (10 ops). Phase 3
+added `batched` fast-paths for the highest-value cases:
+- `cross`: `_crossBatchedOrFallback` — `[N, 3]` tight loop
+  (real-only); complex falls back to per-atom inline.
+- `inv`: `_invBatchedOrFallback` — per-atom LU on `[N, n, n]` via
+  `linalg._invValue` with subarray views.
+- `lower_cholesky`: `_lowerCholeskyBatchedOrFallback` — same
+  shape as `inv` via `linalg._choleskyValue`.
+
+Each `batched` returns null when inputs don't match the fast-path
+criteria (diag-stored, complex, non-Value); the wrapper runs the
+per-atom loop inline. Conformance suite pins identical results
+against the per-atom oracle.
 
 **Conformance harness** lives in `test/ops-conformance.test.ts`.
 Three properties pinned per declared op via fast-check:
