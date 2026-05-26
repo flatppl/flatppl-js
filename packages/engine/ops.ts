@@ -371,20 +371,24 @@ function dispatch(name: string, args: any[]): any {
 // Higher-order ops (reduce / scan / filter / broadcast / aggregate)
 // can't take pre-evaluated args because some args are callables
 // (function-typed IR that resolves to {params, body}) and some are
-// data IR that needs evaluation. The dispatch surface here takes IR
-// args plus a context object carrying the engine's evaluator hooks:
+// data IR that needs evaluation. The dispatch surface here takes
+// the FULL IR node plus a context object carrying the engine's
+// evaluator hooks:
 //
 //   ctx = {
 //     env:           current evaluation environment,
 //     evaluateExpr:  (ir, env) → value,
-//     resolveFn:     (fnIR, env) → { params, body, isFnRef? }
-//                                  | null,
+//     resolveFn:     (fnIR, env) → { params, body, paramKwargs? } | null,
 //   }
 //
-// The op's `logical` then runs its own resolution + iteration
-// against `ctx`. The dispatcher just routes; it doesn't try to
-// understand callable shapes (each higher-order op's semantics is
-// distinct — reduce vs scan vs filter vs broadcast vs aggregate).
+// Passing the full IR (rather than just `ir.args`) lets ops that
+// use kwargs / fields / other IR shape elements read what they
+// need (broadcast accepts kwargs; reduce/scan/filter only need
+// args). The op's `logical(ir, ctx)` then runs its own resolution
+// + iteration against `ctx`. The dispatcher just routes; it
+// doesn't try to understand callable shapes (each higher-order
+// op's semantics is distinct — reduce vs scan vs filter vs
+// broadcast vs aggregate).
 //
 // This separates the higher-order entry from the value-domain
 // `dispatch(name, args)` so the type contracts stay clean: callers
@@ -396,7 +400,7 @@ interface HigherOrderCtx {
   resolveFn: (fnIR: any, env: any) => any;
 }
 
-function dispatchHigherOrder(name: string, irArgs: any[], ctx: HigherOrderCtx): any {
+function dispatchHigherOrder(name: string, ir: any, ctx: HigherOrderCtx): any {
   const decl = REGISTRY.get(name);
   if (!decl) {
     throw new Error('ops.dispatchHigherOrder: no declaration for op \'' + name + '\'');
@@ -411,7 +415,7 @@ function dispatchHigherOrder(name: string, irArgs: any[], ctx: HigherOrderCtx): 
     throw new Error('ops.dispatchHigherOrder: ctx must provide env, ' +
       'evaluateExpr, and resolveFn');
   }
-  return decl.logical(irArgs, ctx);
+  return decl.logical(ir, ctx);
 }
 
 module.exports = {

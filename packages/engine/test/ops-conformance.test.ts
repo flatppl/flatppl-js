@@ -431,12 +431,21 @@ function _binOp(op: string, a: any, b: any): any {
   return { kind: 'call', op, args: [a, b] };
 }
 
+// Build a call IR node for testing higher-order dispatch — the
+// engine's evaluateCall passes the full `ir` node (so kwargs are
+// visible to broadcast), and the OpDecl's `logical(ir, ctx)`
+// extracts `ir.args` (and `ir.kwargs` when relevant).
+function _callIR(op: string, args: any[], kwargs?: any): any {
+  return kwargs ? { kind: 'call', op, args, kwargs }
+                : { kind: 'call', op, args };
+}
+
 test('ops conformance: reduce — sum via dispatchHigherOrder matches legacy', () => {
   // reduce((a, b) -> a + b, [1, 2, 3, 4, 5]) ≡ 15
   const fn = _binFn('a', 'b', _binOp('add', _ref('a'), _ref('b')));
   const xs = { kind: 'call', op: 'vector',
     args: [1, 2, 3, 4, 5].map(_lit) };
-  const r = ops.dispatchHigherOrder('reduce', [fn, xs], _testCtx({}));
+  const r = ops.dispatchHigherOrder('reduce', _callIR('reduce', [fn, xs]), _testCtx({}));
   assert.equal(r, 15);
 });
 
@@ -445,7 +454,7 @@ test('ops conformance: reduce — product via dispatchHigherOrder', () => {
   const fn = _binFn('a', 'b', _binOp('mul', _ref('a'), _ref('b')));
   const xs = { kind: 'call', op: 'vector',
     args: [1, 2, 3, 4].map(_lit) };
-  const r = ops.dispatchHigherOrder('reduce', [fn, xs], _testCtx({}));
+  const r = ops.dispatchHigherOrder('reduce', _callIR('reduce', [fn, xs]), _testCtx({}));
   assert.equal(r, 24);
 });
 
@@ -454,7 +463,8 @@ test('ops conformance: scan — cumsum via dispatchHigherOrder', () => {
   const fn = _binFn('a', 'b', _binOp('add', _ref('a'), _ref('b')));
   const xs = { kind: 'call', op: 'vector',
     args: [1, 2, 3, 4].map(_lit) };
-  const r = ops.dispatchHigherOrder('scan', [fn, _lit(0), xs], _testCtx({}));
+  const r = ops.dispatchHigherOrder('scan',
+    _callIR('scan', [fn, _lit(0), xs]), _testCtx({}));
   assert.ok(valueLib.isValue(r));
   assert.deepEqual(r.shape, [4]);
   assert.deepEqual(Array.from(r.data), [1, 3, 6, 10]);
@@ -466,23 +476,83 @@ test('ops conformance: filter — keep evens via dispatchHigherOrder', () => {
     args: [{ kind: 'call', op: 'mod', args: [_ref('x'), _lit(2)] }, _lit(0)] });
   const xs = { kind: 'call', op: 'vector',
     args: [1, 2, 3, 4, 5, 6].map(_lit) };
-  const r = ops.dispatchHigherOrder('filter', [pred, xs], _testCtx({}));
+  const r = ops.dispatchHigherOrder('filter',
+    _callIR('filter', [pred, xs]), _testCtx({}));
   assert.ok(valueLib.isValue(r));
   assert.deepEqual(r.shape, [3]);
   assert.deepEqual(Array.from(r.data), [2, 4, 6]);
 });
 
+test('ops conformance: broadcast — positional dispatch matches legacy', () => {
+  // broadcast((x) -> x * 2, [1, 2, 3, 4]) ≡ [2, 4, 6, 8]
+  const fn = _unFn('x', _binOp('mul', _ref('x'), _lit(2)));
+  const xs = { kind: 'call', op: 'vector',
+    args: [1, 2, 3, 4].map(_lit) };
+  const r = ops.dispatchHigherOrder('broadcast',
+    _callIR('broadcast', [fn, xs]), _testCtx({}));
+  // Broadcast result is either a JS array of element results or a
+  // packed Value; both representations carry the same numeric data.
+  const flat = valueLib.isValue(r) ? Array.from(r.data) : r;
+  assert.deepEqual(flat, [2, 4, 6, 8]);
+});
+
+test('ops conformance: broadcast — two-arg binary dispatch', () => {
+  // broadcast((x, y) -> x + y, [1, 2, 3], [10, 20, 30]) ≡ [11, 22, 33]
+  const fn = _binFn('x', 'y', _binOp('add', _ref('x'), _ref('y')));
+  const xs = { kind: 'call', op: 'vector', args: [1, 2, 3].map(_lit) };
+  const ys = { kind: 'call', op: 'vector', args: [10, 20, 30].map(_lit) };
+  const r = ops.dispatchHigherOrder('broadcast',
+    _callIR('broadcast', [fn, xs, ys]), _testCtx({}));
+  const flat = valueLib.isValue(r) ? Array.from(r.data) : r;
+  assert.deepEqual(flat, [11, 22, 33]);
+});
+
+test('ops conformance: aggregate — matrix-vector via dispatchHigherOrder', () => {
+  // aggregate(sum, [.i], A[.i, .j] * v[.j]) ≡ A · v
+  // A = [[1, 2], [3, 4]]; v = [10, 20]; A · v = [50, 110]
+  const A = { kind: 'call', op: 'rowstack', args: [
+    { kind: 'call', op: 'vector', args: [
+      { kind: 'call', op: 'vector', args: [_lit(1), _lit(2)] },
+      { kind: 'call', op: 'vector', args: [_lit(3), _lit(4)] },
+    ]},
+  ]};
+  const v = { kind: 'call', op: 'vector', args: [_lit(10), _lit(20)] };
+  const env = { __resolveFnBody: () => null };
+  // env needs the bindings inline-evaluated, so we wire them by
+  // putting concrete values directly in env.
+  // Body: A[.i, .j] * v[.j]
+  const Av = sampler.evaluateExpr(A, env);
+  const vv = sampler.evaluateExpr(v, env);
+  const env2: any = { ...env, _A: Av, _v: vv };
+  const body = _binOp('mul',
+    { kind: 'call', op: 'get', args: [_ref('_A'),
+      { kind: 'axis', name: 'i' }, { kind: 'axis', name: 'j' }] },
+    { kind: 'call', op: 'get', args: [_ref('_v'),
+      { kind: 'axis', name: 'j' }] });
+  const aggIR = _callIR('aggregate', [
+    _ref('sum'),                                        // reduction
+    { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'i' }] },
+    body,
+  ]);
+  const r = ops.dispatchHigherOrder('aggregate', aggIR, _testCtx(env2));
+  // Result should be [50, 110]
+  const flat = valueLib.isValue(r) ? Array.from(r.data)
+             : (r instanceof Float64Array ? Array.from(r) : r);
+  assert.deepEqual(flat, [50, 110]);
+});
+
 test('ops dispatchHigherOrder: missing ctx surfaces clear error', () => {
   const fn = _binFn('a', 'b', _binOp('add', _ref('a'), _ref('b')));
   const xs = { kind: 'call', op: 'vector', args: [_lit(1), _lit(2)] };
-  assert.throws(() => ops.dispatchHigherOrder('reduce', [fn, xs], null as any),
+  assert.throws(() => ops.dispatchHigherOrder('reduce',
+    _callIR('reduce', [fn, xs]), null as any),
     /ctx must provide/);
 });
 
 test('ops dispatchHigherOrder: non-higher-order op surfaces clear error', () => {
   // `cross` is fixed-rank — should reject through dispatchHigherOrder.
-  const args = [vec3Value([1, 0, 0]), vec3Value([0, 1, 0])];
-  assert.throws(() => ops.dispatchHigherOrder('cross', args, _testCtx({})),
+  assert.throws(() => ops.dispatchHigherOrder('cross',
+    _callIR('cross', []), _testCtx({})),
     /not kind=higher-order/);
 });
 

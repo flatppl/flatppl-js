@@ -810,7 +810,8 @@ ops.register({
 // Today's `_perAtomFallback` in `evaluateExprN` provides this for
 // callers that need it.
 
-function _reduceLogical(irArgs: any[], ctx: any): any {
+function _reduceLogical(ir: any, ctx: any): any {
+  const irArgs = ir.args || [];
   if (irArgs.length !== 2) {
     throw new Error('reduce: expected 2 args (function, xs), got ' + irArgs.length);
   }
@@ -842,7 +843,8 @@ ops.register({
   logical: _reduceLogical,
 });
 
-function _scanLogical(irArgs: any[], ctx: any): any {
+function _scanLogical(ir: any, ctx: any): any {
+  const irArgs = ir.args || [];
   if (irArgs.length !== 3) {
     throw new Error('scan: expected 3 args (function, init, xs), got ' + irArgs.length);
   }
@@ -875,7 +877,8 @@ ops.register({
   logical: _scanLogical,
 });
 
-function _filterLogical(irArgs: any[], ctx: any): any {
+function _filterLogical(ir: any, ctx: any): any {
+  const irArgs = ir.args || [];
   if (irArgs.length !== 2) {
     throw new Error('filter: expected 2 args (predicate, data), got ' + irArgs.length);
   }
@@ -909,6 +912,94 @@ ops.register({
   logical: _filterLogical,
 });
 
+// =====================================================================
+// broadcast(f, args…) — Phase 5c remaining
+// =====================================================================
+//
+// broadcast applies f elementwise over arrays. Two surface shapes:
+//   broadcast(f, A, B, …)                — positional
+//   broadcast(f, x = A, y = B, …)        — kwargs naming f's params
+// Each array must have the same length (no auto-broadcast at this
+// layer; spec §04's leading-axis singleton-expansion is the
+// aggregate / valueOps job). Stochastic-broadcast (kernel f) is
+// NOT handled here — the materialiser owns that path. The OpDecl
+// logical mirrors the engine's existing `_broadcastApply` exactly.
+//
+// Migrating broadcast to higher-order required passing the full
+// `ir` (not just `ir.args`) so kwargs are visible — see ops.ts
+// dispatchHigherOrder signature.
+
+function _broadcastLogical(ir: any, ctx: any): any {
+  const args   = ir.args   || [];
+  const kwargs = ir.kwargs || {};
+  if (args.length < 1) throw new Error('broadcast: no function argument');
+  const fn = ctx.resolveFn(args[0], ctx.env);
+  if (!fn) throw new Error('broadcast: first arg must be a function');
+  const kwargKeys = Object.keys(kwargs);
+  const sources = new Array(fn.params.length);
+  if (kwargKeys.length > 0) {
+    // kwargs form: match by surface kwarg name first
+    // (paramKwargs), fall back to internal placeholder name (params).
+    for (let i = 0; i < fn.params.length; i++) {
+      const surface = (fn.paramKwargs && fn.paramKwargs[i]) || fn.params[i];
+      if (kwargs[surface] != null) sources[i] = kwargs[surface];
+      else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
+      else throw new Error('broadcast: no argument for parameter '
+        + (surface || fn.params[i]));
+    }
+  } else {
+    const posArgs = args.slice(1);
+    if (posArgs.length !== fn.params.length) {
+      throw new Error('broadcast: expected ' + fn.params.length
+        + ' positional arrays, got ' + posArgs.length);
+    }
+    for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
+  }
+  const inputs: any = sources.map((s: any) => ctx.evaluateExpr(s, ctx.env));
+  // Delegate the per-element iteration to the engine's existing
+  // `_broadcastApply` — Phase 5c keeps the impl shared between the
+  // dedicated dispatch and the OpDecl path. Lazy require to avoid
+  // a module-load cycle with sampler.ts (ops-declarations is
+  // required during sampler.ts module load).
+  const samplerMod = require('./sampler.ts');
+  return samplerMod._internal._broadcastApply(fn, inputs, ctx.env);
+}
+
+ops.register({
+  name: 'broadcast',
+  kind: 'higher-order',
+  logical: _broadcastLogical,
+});
+
+// =====================================================================
+// aggregate(f_reduction, output_axes, expr) — Phase 5c remaining
+// =====================================================================
+//
+// aggregate dispatches via the AGGREGATE_PATTERNS specialiser table
+// (matmul, matvec, outer, etc.) with a broadcast-reduce default for
+// everything the specialisers don't catch (engine-concepts §16).
+// The whole machinery lives in `sampler-aggregate.ts`; the OpDecl
+// `logical` just delegates to `_evalAggregate(ir, env)` — the same
+// entry the dedicated dispatch uses.
+//
+// Aggregate is the most distinctive higher-order op (axis-name IR,
+// pattern table, multi-mode dispatch). Subsuming the specialiser
+// machinery directly into OpDecl's `batched` slot would be a larger
+// refactor; the delegation approach single-sources the impl via the
+// existing sampler-aggregate.ts file while bringing aggregate into
+// the OpDecl framework for consistency.
+
+function _aggregateLogical(ir: any, ctx: any): any {
+  const aggregateMod = require('./sampler-aggregate.ts');
+  return aggregateMod._evalAggregate(ir, ctx.env);
+}
+
+ops.register({
+  name: 'aggregate',
+  kind: 'higher-order',
+  logical: _aggregateLogical,
+});
+
 module.exports = {
   // Re-export for tests that want to call the logical impls directly
   // (rather than through `ops.dispatch`).
@@ -930,4 +1021,6 @@ module.exports = {
   _reduceLogical,
   _scanLogical,
   _filterLogical,
+  _broadcastLogical,
+  _aggregateLogical,
 };

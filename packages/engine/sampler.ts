@@ -1804,8 +1804,17 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
 
 function evaluateCall(ir: any, env: any): any {
   const op = ir.op;
+  // aggregate migrated to OpDecl as kind='higher-order' (engine-
+  // concepts §18.9 Phase 5c). The OpDecl's logical delegates to
+  // `_evalAggregate` from sampler-aggregate.ts — same dispatch as
+  // before, routed through the unified op-decl framework for
+  // consistency.
   if (op === 'aggregate') {
-    return _evalAggregate(ir, env);
+    return opsModule.dispatchHigherOrder(op, ir, {
+      env,
+      evaluateExpr,
+      resolveFn: _resolveFn,
+    });
   }
   if (op in ARITH_OPS) {
     const args = (ir.args || []).map((a: any) => evaluateExpr(a, env));
@@ -2096,51 +2105,14 @@ function evaluateCall(ir: any, env: any): any {
     }
     return out;
   }
-  if (op === 'broadcast') {
-    // broadcast(f, A, B, ...) per spec §04 higher-order ops. Apply f
-    // elementwise over arrays. Two surface shapes accepted:
-    //   broadcast(f, A, B, ...)              — positional arrays
-    //   broadcast(f, x = A, y = B, ...)      — kwargs naming f's params
-    // Each array must have the same length; no auto-broadcast.
-    //
-    // Kernel-broadcast (stochastic case) is NOT handled here — that
-    // would produce an array-valued measure, which lives in the
-    // materialiser path, not the value evaluator.
-    const args   = ir.args   || [];
-    const kwargs = ir.kwargs || {};
-    if (args.length < 1) throw new Error('broadcast: no function argument');
-    const fn = _resolveFn(args[0], env);
-    if (!fn) throw new Error('broadcast: first arg must be a function');
-    const kwargKeys = Object.keys(kwargs);
-    const sources = new Array(fn.params.length);
-    if (kwargKeys.length > 0) {
-      // kwargs form: match by surface kwarg name first (paramKwargs),
-      // fall back to internal placeholder name (params).
-      for (let i = 0; i < fn.params.length; i++) {
-        const surface = (fn.paramKwargs && fn.paramKwargs[i]) || fn.params[i];
-        if (kwargs[surface] != null) sources[i] = kwargs[surface];
-        else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
-        else throw new Error('broadcast: no argument for parameter '
-          + (surface || fn.params[i]));
-      }
-    } else {
-      const posArgs = args.slice(1);
-      if (posArgs.length !== fn.params.length) {
-        throw new Error('broadcast: expected ' + fn.params.length
-          + ' positional arrays, got ' + posArgs.length);
-      }
-      for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
-    }
-    const inputs: any = sources.map(s => evaluateExpr(s, env));
-    return _broadcastApply(fn, inputs, env);
-  }
-  // reduce / scan / filter migrated to ops-declarations.ts as
-  // kind='higher-order' (engine-concepts §18.8 Phase 5c). The
-  // dispatcher's `dispatchHigherOrder` threads the engine's env +
-  // evaluator + resolveFn into the op's logical, which does its own
-  // callable resolution and iteration.
-  if (op === 'reduce' || op === 'scan' || op === 'filter') {
-    return opsModule.dispatchHigherOrder(op, ir.args || [], {
+  // Higher-order value-domain ops (engine-concepts §18.8 Phase 5c):
+  // broadcast / reduce / scan / filter migrated to ops-declarations.ts
+  // as kind='higher-order'. Their `logical(ir, ctx)` does its own
+  // callable resolution and iteration using ctx.evaluateExpr +
+  // ctx.resolveFn. aggregate also migrated — it delegates to
+  // `_evalAggregate` from sampler-aggregate.ts via its OpDecl.
+  if (op === 'broadcast' || op === 'reduce' || op === 'scan' || op === 'filter') {
+    return opsModule.dispatchHigherOrder(op, ir, {
       env,
       evaluateExpr,
       resolveFn: _resolveFn,
@@ -2484,7 +2456,9 @@ module.exports = {
   listDistributions,
 
   // Internal — exported for tests + the sampler-eval-batched cycle
-  // (`resolveConst` is read lazily by _evalN's `const` case).
+  // (`resolveConst` is read lazily by _evalN's `const` case) +
+  // the broadcast OpDecl which delegates per-element iteration to
+  // the engine's `_broadcastApply`.
   _internal: {
     REGISTRY,
     ARITH_OPS,
@@ -2493,5 +2467,6 @@ module.exports = {
     resolveParams,
     lookupDistribution,
     resolveConst,
+    _broadcastApply,
   },
 };
