@@ -885,6 +885,62 @@ state out) via a stateful adapter (`makePhiloxPrngAdapter`) that mutates an
 internal copy of the state and exposes `getState()` so the caller can read the
 trailing state when sampling completes.
 
+### `ops.ts` (~250 lines) + `ops-declarations.ts` (~150 lines)
+
+**Responsibility.** Unified op-declaration registry + atom-batched
+dispatcher (engine-concepts §18). One declaration per non-scalar op
+drives the static type signature, the runtime impl, and the
+atom-batched dispatch from one source. Atom-batching is the
+engine's job (recognised from the input shape's leading axis), not
+the op's.
+
+> **Status: Phase 1 — additive.** The registry and dispatcher ship
+> in parallel with the existing ARITH_OPS / SIGNATURE_FACTORIES /
+> EVALUABLE_OPS entries; nothing routes through `dispatch` yet.
+> Two ops (`cross`, `self_outer`) declare via `OpDecl` as
+> proof-of-concept. Phase 2 will route `evaluateCall` through
+> `ops.dispatch` for declared ops and retire the per-file entries
+> one family at a time; phases 3-5 add `batched` fast-paths
+> (vectorised atom-batched linalg) and extend the model to
+> higher-order ops. See `flatppl-dev/TODO-flatppl-js.md` for the
+> phase plan and `engine-concepts.md §18` for the cross-engine
+> rationale.
+
+**`ops.ts`** holds:
+- `register(decl)` / `lookup(name)` / `listDeclared()` /
+  `signatureOf(name)` — the registry surface.
+- `dispatch(name, args)` — the unified entry point.
+  - Looks up the declaration.
+  - For each arg, decides atom-indep (`rank == argRanks[k]`) vs
+    atom-batched (`rank == argRanks[k] + 1` with leading dim N);
+    enforces N consistency across batched args.
+  - If all atom-indep: calls `logical(...args)` directly.
+  - If any atom-batched: calls `batched(args, N)` if provided,
+    else slices each batched arg into per-atom sub-Values
+    (subarray views; complex `im` carried) and runs `logical` N
+    times, stitching results back into a Value shape=[N, ...]
+    via `_stackPerAtom`.
+- `_classifyArg` / `_argAtAtom` / `_stackPerAtom` — exported for
+  the conformance harness; not part of the public dispatcher API.
+
+**`ops-declarations.ts`** holds the per-op `OpDecl` registrations.
+Phase 1 lists `cross` and `self_outer`. As ops migrate (Phase 2),
+their natural homes move here; phases 4-5 grow the declaration
+shape with slots for higher-order / variadic ops.
+
+**Conformance harness** lives in `test/ops-conformance.test.ts`.
+Three properties pinned per declared op via fast-check:
+1. Atom-indep `ops.dispatch(name, args)` ≡ `ARITH_OPS[name](args)`
+   (legacy-reference equivalence).
+2. Atom-batched dispatch ≡ stacked per-atom `logical` results.
+3. Registry bookkeeping consistency (every declaration has a
+   signature + matching argRanks + a logical impl).
+
+Targeted unit tests cover edge cases: mixed atom-indep ×
+atom-batched (broadcasting), batch-size mismatch detection,
+unknown op, wrong arg count, rank incompatible with the
+declaration's logical rank. 10 new tests as of 2026-05-26.
+
 ### `traceeval.ts` (~400 lines)
 
 **Responsibility.** Unified trace evaluator for measure expressions. One walk
@@ -982,6 +1038,17 @@ traceeval `MEASURE_OP_WALKERS`, `MEASURE_PRODUCING`) are intentionally
 cross-cut by structural vs algebraic vs density-routed handling, so those are
 NOT invariant-tested (an equivalence there would be false). Watch them by hand
 when extending.
+
+> **Forward pointer.** The unified `ops.ts` declaration model
+> (engine-concepts §18) collapses much of this drift surface by
+> having one declaration per non-scalar op drive the type signature,
+> the runtime impl, and the atom-batched dispatch from one source.
+> Phase 1 has shipped the registry + dispatcher + conformance harness
+> additively (`cross` and `self_outer` are declared via `OpDecl`); the
+> per-file catalogues below remain authoritative until Phase 2
+> migrates each op family. Once an op is declared in `ops-
+> declarations.ts`, its rows in the tables below collapse to "see
+> the OpDecl".
 
 ### Adding a new built-in distribution (e.g. `Foo`)
 
