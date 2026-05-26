@@ -372,14 +372,12 @@ inBothModes('aggregate: column-wise variance (spec §04 example 3)',
   const M = [[1, 10], [2, 20], [3, 30]];
   const src = 'V = aggregate(var, [.j], M[.i, .j])';
   const got = evalAggregateRHS(src, 'V', { M });
-  // Engine's `var` is population variance (divisor n; see sampler
-  // ARITH_OPS.var). Spec §07 lists sample variance, but the impl is
-  // population — that's an existing divergence we just inherit.
-  // var([1,2,3])    = ((1-2)² + 0 + 1²)/3 = 2/3
-  // var([10,20,30]) = (100 + 0 + 100)/3 = 200/3
+  // Sample variance per spec §07 §sec:functions: (1/(n-1)) Σ(xᵢ - x̄)².
+  // var([1,2,3])    = ((1-2)² + 0 + 1²)/(3-1) = 2/2 = 1
+  // var([10,20,30]) = (100 + 0 + 100)/(3-1) = 200/2 = 100
   assert.equal(got.length, 2);
-  assert.ok(Math.abs(got[0] - (2 / 3))   < 1e-10, `expected ~2/3, got ${got[0]}`);
-  assert.ok(Math.abs(got[1] - (200 / 3)) < 1e-10, `expected ~200/3, got ${got[1]}`);
+  assert.ok(Math.abs(got[0] - 1)   < 1e-10, `expected 1, got ${got[0]}`);
+  assert.ok(Math.abs(got[1] - 100) < 1e-10, `expected 100, got ${got[1]}`);
 });
 
 inBothModes('aggregate: row-wise sum with fixed column (spec §04 example 4)',
@@ -406,7 +404,7 @@ inBothModes('aggregate: all seven reductions over a known vector',
     ['sum',     15],          // 1+2+3+4+5
     ['prod',    120],         // 1*2*3*4*5
     ['mean',    3],           // 15/5
-    ['var',     2],           // population variance: ((-2)²+(-1)²+0+1+2²)/5 = 10/5
+    ['var',     2.5],         // sample variance (spec §07): SS=10, n-1=4 → 10/4
     ['maximum', 5],
     ['minimum', 1],
   ];
@@ -630,4 +628,76 @@ B = [4.0, 5.0, 6.0]
 d_array = aggregate(sum, [.i], A[.i] * B[.i])
 `;
   assert.equal(errors(src).length, 0);
+});
+
+// ---------------------------------------------------------------------
+// Three end-to-end scenarios reported by a user (weighted Frobenius
+// distance, column variance, and a multi-axis prod contraction). Each
+// exercises a different pattern that previously hadn't been pinned
+// numerically:
+//
+//   - D: aggregate(sum, …, (A[.i, .j] - B[.j, .k])^2 * w[.j]) — body
+//        is a non-trivial expression (sub + pow + scalar mul) that
+//        must NOT match any matmul-family specialiser; tail-reduce
+//        over j on a fully-broadcast 3-axis tensor.
+//   - V: aggregate(var, …) — the Bessel-corrected variance reduction
+//        (spec §07 §sec:functions). Population-variance regression
+//        from before 2026-05.
+//   - P: aggregate(prod, …) — multi-axis prod reduction over a
+//        non-trivial body (A[.i, .j] + B[.j, .k]). Pins the prod
+//        path through the broadcast-reduce default.
+// ---------------------------------------------------------------------
+
+inBothModes('aggregate: weighted Frobenius distance (sum over j of squared diff)',
+  'aggregate', () => {
+  const A = [[1, 3, 5], [9, 5, 1]];
+  const B = [[1, 0], [0, 1], [1, 1]];
+  const w = [1, 2, 1];
+  const src = 'D = aggregate(sum, [.i, .k], (A[.i, .j] - B[.j, .k])^2 * w[.j])';
+  const got = evalAggregateRHS(src, 'D', { A, B, w });
+  // By hand:
+  // D[1,1] = (1-1)²·1 + (3-0)²·2 + (5-1)²·1 = 0 + 18 + 16 = 34
+  // D[1,2] = (1-0)²·1 + (3-1)²·2 + (5-1)²·1 = 1 + 8  + 16 = 25
+  // D[2,1] = (9-1)²·1 + (5-0)²·2 + (1-1)²·1 = 64 + 50 + 0 = 114
+  // D[2,2] = (9-0)²·1 + (5-1)²·2 + (1-1)²·1 = 81 + 32 + 0 = 113
+  assert.equal(got.length, 2);
+  assert.equal(got[0].length, 2);
+  assert.equal(got[0][0], 34);
+  assert.equal(got[0][1], 25);
+  assert.equal(got[1][0], 114);
+  assert.equal(got[1][1], 113);
+});
+
+inBothModes('aggregate: column variance with sample-variance (Bessel) semantics',
+  'aggregate', () => {
+  const A = [[1, 3, 5], [9, 5, 1]];
+  const src = 'V = aggregate(var, [.j], A[.i, .j])';
+  const got = evalAggregateRHS(src, 'V', { A });
+  // Bessel-corrected sample variance (spec §07):
+  // col j=1: {1,9} mean=5; SS=16+16=32; /(n-1)=32/1 = 32
+  // col j=2: {3,5} mean=4; SS= 1+ 1= 2; /(n-1)= 2/1 =  2
+  // col j=3: {5,1} mean=3; SS= 4+ 4= 8; /(n-1)= 8/1 =  8
+  assert.equal(got.length, 3);
+  assert.ok(Math.abs(got[0] - 32) < 1e-10);
+  assert.ok(Math.abs(got[1] -  2) < 1e-10);
+  assert.ok(Math.abs(got[2] -  8) < 1e-10);
+});
+
+inBothModes('aggregate: multi-axis prod over a non-trivial body (sum-of-getters)',
+  'aggregate', () => {
+  const A = [[1, 3, 5], [9, 5, 1]];
+  const B = [[1, 0], [0, 1], [1, 1]];
+  const src = 'P = aggregate(prod, [.i, .k], A[.i, .j] + B[.j, .k])';
+  const got = evalAggregateRHS(src, 'P', { A, B });
+  // By hand:
+  // P[1,1] = (1+1)·(3+0)·(5+1) = 2·3·6 = 36
+  // P[1,2] = (1+0)·(3+1)·(5+1) = 1·4·6 = 24
+  // P[2,1] = (9+1)·(5+0)·(1+1) = 10·5·2 = 100
+  // P[2,2] = (9+0)·(5+1)·(1+1) = 9·6·2 = 108
+  assert.equal(got.length, 2);
+  assert.equal(got[0].length, 2);
+  assert.equal(got[0][0], 36);
+  assert.equal(got[0][1], 24);
+  assert.equal(got[1][0], 100);
+  assert.equal(got[1][1], 108);
 });

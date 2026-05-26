@@ -3143,30 +3143,34 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
     return m;
   },
+  // Sample variance per spec §07 §sec:functions (line: `var | xs |
+  // (1/(n-1)) Σ(xᵢ - x̄)²`). Bessel-corrected — divisor is n-1, not
+  // n. n ≤ 1 has no sample variance; return 0 (matches the existing
+  // n=0 sentinel and avoids a NaN from 0/0).
   var: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
-    if (n === 0) return 0;
+    if (n <= 1) return 0;
     let s = 0;
     for (let i = 0; i < n; i++) s += arr[i];
     const mu = s / n;
     let v = 0;
     for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
-    return v / n;
+    return v / (n - 1);
   },
-  // Spec §07 reductions (added for the new stdlib sweep). `std` is the
-  // sqrt of the population variance (matches `var` above — no Bessel
-  // correction). `cumsum`/`cumprod` return arrays of the input length.
+  // std = sqrt(var). Per spec §07 §sec:functions
+  // (`std | xs | √var(x)`) so the Bessel correction in `var` flows
+  // through.
   std: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
-    if (n === 0) return 0;
+    if (n <= 1) return 0;
     let s = 0;
     for (let i = 0; i < n; i++) s += arr[i];
     const mu = s / n;
     let v = 0;
     for (let i = 0; i < n; i++) { const d = arr[i] - mu; v += d * d; }
-    return Math.sqrt(v / n);
+    return Math.sqrt(v / (n - 1));
   },
   // cumsum / cumprod — per spec §07, rank-1 results. Returned as
   // shape-explicit Values per engine-concepts §2.1.

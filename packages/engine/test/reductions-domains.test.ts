@@ -139,24 +139,24 @@ test('prod on complex rank-1 — multiplicative complex algebra', () => {
 // var / std / maximum / minimum — real arrays of any rank
 // =====================================================================
 
-test('var on rank-1', () => {
+test('var on rank-1 (sample variance per spec §07)', () => {
   const fv = ev('v = var([1.0, 2.0, 3.0, 4.0])');
-  // population variance: mean=2.5; SS = 2.25+0.25+0.25+2.25 = 5; /4 = 1.25
-  assert.ok(Math.abs(fv.get('v') - 1.25) < 1e-12);
+  // Bessel-corrected: mean=2.5; SS = 2.25+0.25+0.25+2.25 = 5; /(n-1) = 5/3.
+  assert.ok(Math.abs(fv.get('v') - (5 / 3)) < 1e-12);
 });
 
-test('std on rank-1 = sqrt(var)', () => {
+test('std on rank-1 = sqrt(var) (Bessel-corrected per spec §07)', () => {
   const fv = ev('s = std([1.0, 2.0, 3.0, 4.0])');
-  assert.ok(Math.abs(fv.get('s') - Math.sqrt(1.25)) < 1e-12);
+  assert.ok(Math.abs(fv.get('s') - Math.sqrt(5 / 3)) < 1e-12);
 });
 
-test('var on rank-2 reduces over all entries', () => {
+test('var on rank-2 reduces over all entries (sample variance per spec §07)', () => {
   const fv = ev(`
 M = rowstack([[1.0, 2.0], [3.0, 4.0]])
 v = var(M)
 `);
-  // mean=2.5; SS=5; /4 = 1.25
-  assert.ok(Math.abs(fv.get('v') - 1.25) < 1e-12);
+  // Bessel-corrected: mean=2.5; SS=5; /(n-1) = 5/3
+  assert.ok(Math.abs(fv.get('v') - (5 / 3)) < 1e-12);
 });
 
 test('maximum on rank-1', () => {
