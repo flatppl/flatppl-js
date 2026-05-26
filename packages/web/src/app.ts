@@ -54,6 +54,20 @@
   // navigating between bindings inside the same file.
   let lastRenderedSource: string | null = null;
 
+  // The source text as it was last persisted (loaded or saved). The
+  // dirty marker on the source-pane header reads
+  //   dirty = (sourceEditor.getSource() !== lastSavedSource)
+  // and the save button flips between active and idle on the same
+  // signal. Updated by showSource (which loads a file) and by
+  // handleSave (which writes it back). Stays null until the first
+  // file loads so the dirty marker doesn't briefly flash on boot
+  // while the empty initial buffer compares unequal to nothing.
+  let lastSavedSource: string | null = null;
+  // The model path whose source `lastSavedSource` belongs to. Reset
+  // alongside lastSavedSource on every showSource so navigation
+  // between files re-anchors the dirty check correctly.
+  let lastSavedModel: string | null = null;
+
   // The currently loaded model path, so we can short-circuit when a
   // navigation event only changes the focus target. Critical in
   // playground mode: rewriting the editor's content on every target-
@@ -66,12 +80,36 @@
    *  on every doc change and applies decorations — so we don't need
    *  to pre-classify here. setSource is silent (suppresses onChange)
    *  so callers don't have to worry about a redundant viewer
-   *  re-render. */
+   *  re-render. Also resets the dirty-tracking baseline — loading a
+   *  fresh file is by definition not dirty. */
   function showSource(text: any, label?: any) {
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
     if (!sourceEditor) return;
     sourceEditor.setSource(text);
     lastRenderedSource = text;
+    const cur = window.FlatPPLWebRouter
+      ? window.FlatPPLWebRouter.parseHash() : { model: null };
+    lastSavedSource = text;
+    lastSavedModel  = cur.model;
+    updateDirtyMarker();
+  }
+
+  /** Update the source-pane header's "* " dirty prefix and the
+   *  save button's visual state to reflect the buffer's
+   *  agreement (or not) with the last persisted source. Cheap to
+   *  call on every keystroke. */
+  function updateDirtyMarker() {
+    if (!sourceHeader) return;
+    const cur = window.FlatPPLWebRouter
+      ? window.FlatPPLWebRouter.parseHash() : { model: null };
+    const text = sourceEditor ? sourceEditor.getSource() : '';
+    const dirty = !!editEnabled
+      && lastSavedModel === cur.model
+      && text !== lastSavedSource;
+    const baseLabel = (sourceHeader.textContent || '').replace(/^\* /, '');
+    sourceHeader.textContent = (dirty ? '* ' : '') + baseLabel;
+    const saveBtn = document.getElementById('save-btn');
+    if (saveBtn) saveBtn.setAttribute('aria-pressed', dirty ? 'true' : 'false');
   }
 
   /** Tiny debounce: collapse rapid calls into one delayed call.
@@ -112,6 +150,10 @@
     toggleBtn.addEventListener('click', function () {
       setEditMode(!editEnabled);
     });
+    const saveBtn = document.getElementById('save-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', handleSave);
+    }
     if (readEditPref()) setEditMode(true);
   }
 
@@ -122,10 +164,75 @@
   function setEditMode(on: any) {
     if (!sourceEditor) return;
     const toggleBtn = document.getElementById('edit-toggle');
+    const saveBtn   = document.getElementById('save-btn');
     editEnabled = !!on;
     sourceEditor.setReadOnly(!editEnabled);
     if (toggleBtn) toggleBtn.setAttribute('aria-pressed', editEnabled ? 'true' : 'false');
+    // Save action only makes sense in edit mode. The Ctrl/Cmd-S
+    // keymap binding stays installed at all times (it's a single
+    // CodeMirror keymap entry) — handleSave's own guard turns
+    // out-of-mode invocations into no-ops.
+    if (saveBtn) saveBtn.hidden = !editEnabled;
     writeEditPref(editEnabled);
+    updateDirtyMarker();
+  }
+
+  /** Save-on-action. Called by the save button and the Ctrl/Cmd-S
+   *  keymap binding. Behaviour depends on the current model path:
+   *
+   *  - `user/...`  — already a user file. Persist via
+   *    `FlatPPLWebUserStore.updateSource`.
+   *  - `new/...`   — ephemeral session-only buffer. Promote into
+   *    the user store under `user/<basename>` (with collision
+   *    bumping), drop the ephemeral entry, and re-route the URL
+   *    hash so the gallery follows the new path.
+   *  - read-only  — fork into the user store under
+   *    `user/<basename>` (with collision bumping if the basename
+   *    is already taken by an unrelated entry). The fork records
+   *    its `parent` so the sidebar's modified-dot and the
+   *    upcoming "Reset to original" action have a reliable
+   *    anchor. Then re-route the URL hash to the fork.
+   *
+   *  In every case `lastSavedSource` is bumped so the dirty marker
+   *  clears, and the sidebar redraws via the user-store's own
+   *  change emitter. */
+  function handleSave() {
+    if (!sourceEditor || !editEnabled) return;
+    const userStore = window.FlatPPLWebUserStore;
+    if (!userStore) return;
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (!cur.model) return;
+    const text = sourceEditor.getSource();
+
+    let target = cur.model;
+    let parent: string | null = null;
+
+    if (cur.model.indexOf(userStore.USER_PREFIX) === 0) {
+      // Already a user file. Quiet update — modifiedAt bumps,
+      // parent preserved by updateSource.
+      userStore.updateSource(cur.model, text);
+    } else if (cur.model.indexOf('new/') === 0) {
+      // Ephemeral → user/. Promote, then drop the ephemeral
+      // entry so the "Unsaved" section empties.
+      target = userStore.pathForUpload(basenameOf(cur.model));
+      userStore.save(target, text, { parent: null });
+      if (window.FlatPPLWebEphemeral) {
+        window.FlatPPLWebEphemeral.remove(cur.model);
+      }
+    } else {
+      // Read-only (examples/ or test-cases/). Fork into user/.
+      target = userStore.pathForFork(cur.model);
+      parent = cur.model;
+      userStore.save(target, text, { parent: parent });
+    }
+
+    lastSavedSource = text;
+    lastSavedModel  = target;
+    updateDirtyMarker();
+
+    if (target !== cur.model) {
+      window.FlatPPLWebRouter.navigateTo({ model: target, target: cur.target });
+    }
   }
 
   /** Cheap variant of showSource: skip the full re-highlight when the
@@ -531,18 +638,38 @@
     // only mode by default and the edit toggle flips it to writable.
     const editorContainer = document.getElementById('source-editor');
     if (editorContainer && window.FlatPPLWebEditor) {
+      // Debounced viewer refresh — every keystroke triggering a
+      // full DAG rebuild would be wasteful. 250ms collapses bursts
+      // into one render after the user pauses typing.
+      const debouncedViewerUpdate = debounce(function (text: any, target: any) {
+        if (viewer) viewer.update(text, target || null);
+      }, 250);
       sourceEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
         initialSource: '',
         initialReadOnly: true,
-        onChange: debounce(function (text: any) {
-          if (!viewer) return;
-          if (!editEnabled) return;  // pure-view dispatches don't re-render
+        onChange: function (text: any) {
+          // Synchronous side-effects on every keystroke: the dirty
+          // marker has to feel live, and user/-prefixed files
+          // auto-save so a reload is non-destructive without the
+          // user having to remember to hit save.
+          if (!editEnabled) return;
           const cur = window.FlatPPLWebRouter.parseHash();
-          if (window.FlatPPLWebEphemeral) {
+          const userStore = window.FlatPPLWebUserStore;
+          if (cur.model && userStore && cur.model.indexOf(userStore.USER_PREFIX) === 0
+              && userStore.has(cur.model)) {
+            userStore.updateSource(cur.model, text);
+            lastSavedSource = text;
+            lastSavedModel  = cur.model;
+          } else if (cur.model && window.FlatPPLWebEphemeral) {
+            // Pre-save buffer for ephemeral entries; user-store
+            // auto-save only kicks in once the file has been
+            // explicitly promoted via handleSave.
             window.FlatPPLWebEphemeral.update(cur.model, text);
           }
-          viewer.update(text, cur.target || null);
-        }, 250),
+          updateDirtyMarker();
+          debouncedViewerUpdate(text, cur.target);
+        },
+        onSave: handleSave,
         onNavigate: function (name: any) {
           const cur = window.FlatPPLWebRouter.parseHash();
           window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
