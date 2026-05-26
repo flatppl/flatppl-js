@@ -124,6 +124,26 @@ function argSignature(op: string, numArgs: number): string[] | null {
     for (let i = 1; i < numArgs; i++) sig.push('value');
     return sig;
   }
+  if (op === 'likelihoodof') {
+    // likelihoodof(<kernel>, <obs>): kernel position is value-shaped
+    // for lifting (an inline fn / functionof / kernelof / fchain
+    // gets hoisted to an anon binding so classifyLikelihoodof sees
+    // a clean self-ref). Obs is value-typed.
+    return Array(numArgs).fill('value');
+  }
+  if (op === 'bayesupdate') {
+    // bayesupdate(<likelihood>, <prior>): both arg positions are
+    // measure-shaped at the consumption-side (likelihoods are
+    // density objects classified as measures-of-real for typeinfer
+    // purposes; priors are measures). Lifting both as 'measure'
+    // hoists inline likelihoodof(...) / inline measure expressions
+    // into anon bindings so classifyBayesupdate (derivations.ts)
+    // sees self-refs at args[0] (the L ref) and args[1] (the prior
+    // ref), matching its required shape. Without this, restrict-
+    // expanded forms with inline `likelihoodof(...)` at args[0]
+    // failed to classify.
+    return Array(numArgs).fill('measure');
+  }
   if (op === 'fchain') {
     // fchain(f1, f2, ...): every positional arg is a function value.
     // Function-value lifting works the same as pushfwd's function arg
