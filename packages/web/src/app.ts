@@ -54,17 +54,6 @@
   // navigating between bindings inside the same file.
   let lastRenderedSource: string | null = null;
 
-  /** Map a model path's extension to a surface-syntax variant id
-      ('flatppl' / 'flatppy' / 'flatppj'). Returns undefined for an
-      unrecognized extension or missing path; the viewer treats
-      undefined as "fall back to FlatPPL". Wraps the engine's
-      variantForPath helper so any future detection rules land in
-      one place. */
-  function variantIdForPath(path: any) {
-    if (!window.FlatPPLEngine || !window.FlatPPLEngine.variants) return undefined;
-    const v = window.FlatPPLEngine.variants.variantForPath(path);
-    return v ? v.id : undefined;
-  }
   // The currently loaded model path, so we can short-circuit when a
   // navigation event only changes the focus target. Critical in
   // playground mode: rewriting the editor's content on every target-
@@ -286,10 +275,6 @@
     // and reset the cursor. Read the live text directly out of the
     // editor; fall back to the last rendered text only if the editor
     // hasn't mounted yet (boot race).
-    // The surface-syntax variant follows the model path's extension
-    // (.flatppl / .flatppy / .flatppj). The viewer reads this on
-    // every update so persist write-back emits matching syntax.
-    const variantId = variantIdForPath(state.model);
 
     if (state.model === lastModel) {
       if (viewer) {
@@ -306,7 +291,7 @@
         // (history is capped, and the viewer's back-btn just walks
         // whatever's on the stack).
         viewer.update(liveText, state.target || null,
-          { pushHistory: true, variant: variantId });
+          { pushHistory: true });
       }
       document.title = state.model
         ? ('FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : ''))
@@ -316,8 +301,7 @@
 
     if (!state.model) {
       showSourceIfChanged(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
-      if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null,
-        { variant: 'flatppl' });
+      if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
       lastModel = null;
       return;
@@ -326,8 +310,7 @@
     try {
       const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
       showSourceIfChanged(bundle.primarySource, state.model);
-      if (viewer) viewer.update(bundle.primarySource, state.target || null,
-        { variant: variantId });
+      if (viewer) viewer.update(bundle.primarySource, state.target || null);
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
       lastModel = state.model;
     } catch (err) {
@@ -408,8 +391,7 @@
           if (window.FlatPPLWebEphemeral) {
             window.FlatPPLWebEphemeral.update(cur.model, text);
           }
-          viewer.update(text, cur.target || null,
-            { variant: variantIdForPath(cur.model) });
+          viewer.update(text, cur.target || null);
         }, 250),
         onNavigate: function (name: any) {
           const cur = window.FlatPPLWebRouter.parseHash();

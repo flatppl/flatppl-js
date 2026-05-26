@@ -463,13 +463,11 @@ async function fetchAndExtractExamples(url, dstDir) {
   }
 }
 
-/** Recursively list FlatPPL surface-variant files under rootDir,
-    sorted alphabetically. Paths are relative to rootDir (forward
-    slashes). Matches all three of the spec's surface variants —
-    .flatppl (canonical), .flatppy (Python-AST), .flatppj (Julia-AST)
-    — so a gallery deploy surfaces every source the engine can parse. */
+/** Recursively list FlatPPL source files under rootDir, sorted
+    alphabetically. Paths are relative to rootDir (forward slashes).
+    Canonical FlatPPL is the only surface form (spec §05), so we
+    match a single `.flatppl` extension. */
 async function listFlatpplLikeFiles(rootDir) {
-  const VARIANT_EXTENSIONS = ['.flatppl', '.flatppy', '.flatppj'];
   const out = [];
   async function walk(dir, prefix) {
     if (!existsSync(dir)) return;
@@ -478,8 +476,7 @@ async function listFlatpplLikeFiles(rootDir) {
       const childRelPath = prefix ? prefix + '/' + ent.name : ent.name;
       if (ent.isDirectory()) {
         await walk(join(dir, ent.name), childRelPath);
-      } else if (ent.isFile()
-                 && VARIANT_EXTENSIONS.some((x) => ent.name.endsWith(x))) {
+      } else if (ent.isFile() && ent.name.endsWith('.flatppl')) {
         out.push(childRelPath);
       }
     }
@@ -489,10 +486,9 @@ async function listFlatpplLikeFiles(rootDir) {
   return out;
 }
 
-// Keep the extension in the gallery title — the variant is part of
-// what users want to identify the file by ("minimal.flatppl" vs
-// "minimal.flatppy" vs "minimal.flatppj" all live side-by-side, and
-// the extension is the only thing distinguishing them).
+// Use the basename (not the full path) as the gallery title so the
+// tree renders cleanly. The .flatppl extension stays in the label
+// so the file type is obvious at a glance.
 function basenameTitle(path) {
   const i = path.lastIndexOf('/');
   return i < 0 ? path : path.slice(i + 1);

@@ -37,11 +37,13 @@ const perfConfig = require('./perf-config.ts');
  *
  * @param {string} source — surface source
  * @param {object} [opts]
- *   - opts.variant — variant id string ('flatppl' | 'flatppy' | 'flatppj')
- *                    or a variant object from ./variants. Wins over path.
- *   - opts.path    — source path; the extension picks the variant when
- *                    opts.variant is absent. Defaults to FlatPPL when
- *                    nothing else is supplied.
+ *   - opts.variant — variant id string ('flatppl') or a variant
+ *                    object from ./variants. Canonical FlatPPL is
+ *                    the only surface form (spec §05); the seam is
+ *                    retained for forward-compatibility. Wins over
+ *                    path.
+ *   - opts.path    — source path; reserved for future per-file
+ *                    surface detection. Currently ignored.
  *   - opts.bundle  — module bundle for multi-file models (spec §04
  *                    load_module). Shape:
  *                      { sources: { [path: string]: text: string } }
