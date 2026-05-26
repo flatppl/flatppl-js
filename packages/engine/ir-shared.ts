@@ -491,7 +491,7 @@ const EVALUABLE_OPS = new Set([
   'boolean', 'integer',
   // Linear algebra (spec §07). All pure value ops on matrices /
   // vectors; dispatch through ARITH_OPS.
-  'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer',
+  'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer', 'cross',
   'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
   'row_gram', 'col_gram',
   // Diagonal extract / block-matrix constructors (spec §07)

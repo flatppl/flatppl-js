@@ -755,6 +755,92 @@ const ARITH_OPS = {
     }
     return out;
   },
+  // cross(a, b): 3-D vector cross product (spec §07).
+  //
+  //   cross(a, b) = [ a₂b₃ − a₃b₂,  a₃b₁ − a₁b₃,  a₁b₂ − a₂b₁ ]   (1-based)
+  //
+  // Both inputs must be length-3 vectors. Bilinear over ℂ (no
+  // conjugation): with complex operands the result reuses ordinary
+  // scalar complex multiplication / subtraction, so `cross(α·a, β·b)`
+  // equals `αβ·cross(a, b)`. The Hermitian variant is the user's job
+  // — write `cross(conj(a), b)` explicitly.
+  //
+  // Atom-batched paths flow through `_perAtomFallback` (this op is
+  // not in ARITH_OPS_N): shape=[N, 3] refs are decomposed into
+  // shape=[3] per-atom sub-Values by the accessors there, and each
+  // per-atom call ends up here. So this implementation only has to
+  // handle the length-3 case directly.
+  cross: (a: any, b: any): any => {
+    const aIsVal = valueLib.isValue(a);
+    const bIsVal = valueLib.isValue(b);
+    const wantValue = aIsVal || bIsVal;
+    function asLen3(v: any, isVal: boolean): { re: any; im: any | null } {
+      if (isVal) {
+        const D = valueLib.densify(v);
+        if (D.shape.length !== 1 || D.shape[0] !== 3) {
+          throw new Error('cross: argument must be a length-3 vector, got shape='
+            + JSON.stringify(D.shape));
+        }
+        // readComplex resolves the conjugate bit once and returns
+        // parallel Float64Arrays; for real Values the im buffer is
+        // implicit zeros.
+        const c = valueLib.readComplex(D);
+        return { re: c.re, im: valueLib.isComplexValue(D) ? c.im : null };
+      }
+      // Nested-array / Float64Array path: scalar elements may be
+      // bare numbers or {re, im} complex objects.
+      if (!v || typeof v.length !== 'number' || v.length !== 3) {
+        throw new Error('cross: argument must be a length-3 vector');
+      }
+      let anyComplex = false;
+      for (let k = 0; k < 3; k++) if (_isComplex(v[k])) { anyComplex = true; break; }
+      const re = new Float64Array(3);
+      const im = anyComplex ? new Float64Array(3) : null;
+      for (let k = 0; k < 3; k++) {
+        const e = v[k];
+        if (_isComplex(e)) { re[k] = e.re; if (im) im[k] = e.im; }
+        else { re[k] = +e; }
+      }
+      return { re, im };
+    }
+    const A = asLen3(a, aIsVal);
+    const B = asLen3(b, bIsVal);
+    const hasComplex = A.im !== null || B.im !== null;
+    if (hasComplex) {
+      // Promote whichever side stayed real to a zero-im buffer so the
+      // complex formulas read uniformly.
+      const aR = A.re, aI = A.im || new Float64Array(3);
+      const bR = B.re, bI = B.im || new Float64Array(3);
+      const cR = new Float64Array(3);
+      const cI = new Float64Array(3);
+      // Component k = aR[u]·b[v] − aR[v]·b[u]  with (u, v) cycling
+      // (1,2) → (2,0) → (0,1)  (zero-based: result[0] uses (1,2)).
+      const idx: Array<[number, number]> = [[1, 2], [2, 0], [0, 1]];
+      for (let k = 0; k < 3; k++) {
+        const [u, v] = idx[k];
+        // (aR_u + i·aI_u) · (bR_v + i·bI_v) = aR_u·bR_v − aI_u·bI_v
+        //                                    + i·(aR_u·bI_v + aI_u·bR_v)
+        const p_re = aR[u] * bR[v] - aI[u] * bI[v];
+        const p_im = aR[u] * bI[v] + aI[u] * bR[v];
+        const q_re = aR[v] * bR[u] - aI[v] * bI[u];
+        const q_im = aR[v] * bI[u] + aI[v] * bR[u];
+        cR[k] = p_re - q_re;
+        cI[k] = p_im - q_im;
+      }
+      // Complex Values always wrap; bare nested-array complex
+      // (length-3 of {re, im} objects) is rare but we surface a Value
+      // either way once complex is in play.
+      return valueLib.complexValue(cR, cI, [3]);
+    }
+    // Real path.
+    const aR = A.re, bR = B.re;
+    const out = new Float64Array(3);
+    out[0] = aR[1] * bR[2] - aR[2] * bR[1];
+    out[1] = aR[2] * bR[0] - aR[0] * bR[2];
+    out[2] = aR[0] * bR[1] - aR[1] * bR[0];
+    if (wantValue) return { shape: [3], data: out };
+    return out;
+  },
   // det(A): determinant via LU with partial pivoting. Returns 0 for
   // singular matrices. O(n³).
   det: (A: any): any => {
