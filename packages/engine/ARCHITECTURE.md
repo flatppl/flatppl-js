@@ -727,14 +727,33 @@ The parametric path is critical for the orchestrator's per-atom-params model:
 naively rebuilding the factory per draw makes setup cost dominate (~10× the
 actual sampling cost on small distributions).
 
-### `sampler.ts` (~4900 lines) + `sampler-registry.ts` (~1100 lines)
+### `sampler.ts` (~2800 lines) + its split modules
 
-**Responsibility.** Distribution registry + deterministic value
-evaluator. The §17.5 split (2026-05-26) factored the registry out into
-`sampler-registry.ts` so standard modules can add distributions
-without touching the evaluator core.
+**Responsibility.** Single-point deterministic value evaluator
+(`evaluateExpr` / `evaluateCall`), the ARITH_OPS scalar table, and
+the high-level entry points the worker wraps (`rand` / `makeSampler` /
+`makeParametricSampler` / `makeAnalytical` / `density`). The §17.5
+sampler split (2026-05-26) factored growth-prone surfaces into five
+sibling modules so standard-module work (particle-physics / GLM /
+ext-linalg / …) touches the right file directly instead of bloating
+the evaluator core.
 
-**`sampler-registry.ts`** holds:
+**Module map** (facade-preserving: sampler.ts re-exports the names so
+the public API and `module.exports._internal` are byte-identical to
+the pre-split monolith). Sampler.ts went from 6154 → 2791 lines
+(≈55% reduction) across the split:
+
+```
+sampler.ts (evaluator core + facade)
+   │
+   ├── sampler-registry.ts       (distribution catalog + REGISTRY + PRNG bridge)
+   ├── sampler-complex.ts        (scalar complex arithmetic primitives, ESM)
+   ├── sampler-linalg.ts         (LU / Cholesky / linsolve / inv / matmul, ESM)
+   ├── sampler-aggregate.ts      (aggregate + AGGREGATE_PATTERNS, CJS)
+   └── sampler-eval-batched.ts   (evaluateExprN + ARITH_OPS_N + cx batched, CJS)
+```
+
+**`sampler-registry.ts`** (~1100 lines) holds:
 - REGISTRY (~25 entries): per-distribution metadata
   (`{params, aliases, discrete, Ctor, randFn, logpdfFn,
   customResolveParams?}`).
@@ -749,22 +768,62 @@ without touching the evaluator core.
 - `makePhiloxPrngAdapter` — the Philox PRNG bridge.
 - `readSupport` — normalises stdlib distribution `.support` shapes.
 
-**`sampler.ts`** holds the deterministic value evaluator
-(`evaluateExpr` / `evaluateExprN` / `_evalN` /
-`_batchedApproximation` / `_perAtomFallback`), the ARITH_OPS table
-(scalar + value-aware dispatch), ARITH_OPS_N (batched), the complex
-arithmetic helpers (`_cAdd` / `_cMul` / `_cExp` / `_cLog` / `_cSqrt`
-/ `_cPow`), the linalg helpers (`_luDecomp` / `_cholesky` /
-`_matmul` / inversion / linsolve), `evaluateCall` (the big op
-switch, 600+ lines covering aggregate / broadcast / reduce / scan /
-filter / FlatPDL primitives / etc.), `AGGREGATE_PATTERNS`, plus the
-high-level entry points the worker wraps (`rand` / `makeSampler` /
-`makeParametricSampler` / `makeAnalytical` / `density`). The
-remaining §17 sampler splits (complex / linalg / aggregate /
-eval-batched into their own files) are tracked as follow-ups in
-TODO-flatppl-js.md; the cycles through `evaluateExpr` are
-manageable via lazy require (the same pattern sampler-registry uses
-today and the materialiser uses for sampler).
+**`sampler-complex.ts`** (~70 lines, ESM leaf): `_isComplex` /
+`_toComplex` + the `_c{Add,Sub,Neg,Mul,Div,Conj,Abs,Abs2,Exp,Log,
+Sqrt,Pow}` family. Pure leaf — no engine-internal deps.
+
+**`sampler-linalg.ts`** (~330 lines, ESM leaf): the two parallel
+linear-algebra surfaces — nested-array form (`_luDecomp` / `_detLU` /
+`_logAbsDetLU` / `_linsolveLU` / `_invGaussJordan` / `_cholesky` /
+`_matmul`) for the original ARITH_OPS path; Value-native form
+(`_luDecompValue` / `_detLUValue` / `_logAbsDetLUValue` /
+`_linsolveLUValue` / `_invValue` / `_choleskyValue`) for the §2.1
+shape contract's row-major Float64Array path.
+
+**`sampler-aggregate.ts`** (~1000 lines, CJS): `aggregate(f,
+output_axes, expr)` — the AGGREGATE_PATTERNS specialiser table
+(matmul / matvec / outer / batched-matmul / pure-axis-reduction)
+plus the broadcast-reduce default lowering and its
+lift/broadcast/align helpers (engine-concepts §15 + §16). Lazy-
+requires `sampler.evaluateExpr` and `ARITH_OPS` (via a Proxy
+forwarding to `_internal.ARITH_OPS`) for the cycle.
+
+**`sampler-eval-batched.ts`** (~790 lines, CJS): the batched IR
+evaluator dispatch (`evaluateExprN` / `_evalN` /
+`_batchedApproximation` / `_perAtomFallback`), the broadcast helpers
+(`broadcast1/2/3`, `isBatch`, `_scalarVal`, `_batchData`,
+`_anyValueN`), the ARITH_OPS_N table + shape-aware mul/add/sub/neg
+wrappers, and the complex-aware batched dispatchers (`_cxInPlay` /
+`_cxArgAccessor` / `_cxRichArgGetter` / `_cxElementwise` /
+`_cxIsRich` / `_cxBroadcast` / `_cxOrRealShapeAware` / `_cxOrReal`).
+ARITH_OPS_N is exposed as an initially-empty table object and
+populated by `initARITHOPSN(ARITH_OPS)`; sampler.ts calls
+initARITHOPSN once ARITH_OPS is fully defined. `resolveConst` is
+exposed on sampler.ts's `_internal` so the batched evaluator's
+`const` case can look it up lazily.
+
+**ESM vs CJS choice**: ESM modules (`sampler-complex`,
+`sampler-linalg`) for pure-leaf with no cycle; CJS modules
+(`sampler-registry`, `sampler-aggregate`, `sampler-eval-batched`)
+for anything that requires() back to sampler.ts. Node forbids
+`require()` in ES-module scope, and the cycle-breaking pattern needs
+require(). The lazy require is intentionally NOT memoised —
+sampler.ts re-requires its sub-modules during load, so the first
+snapshot is the partial-exports view (ARITH_OPS or similar not yet
+set). Node caches the module object itself, so each
+`require('./sampler.ts')` returns the live `module.exports` — cheap,
+and the lookup always sees the post-load state at call time.
+
+**`sampler.ts`** itself (~2800 lines) holds: the single-point
+deterministic value evaluator (`evaluateExpr` / `evaluateCall` —
+the big op switch, 600+ lines covering aggregate dispatch /
+broadcast / reduce / scan / filter / FlatPDL primitives / etc.),
+the ARITH_OPS scalar table (~700 lines — every primitive op
+including the value-aware shape dispatch), `_resolveFn` +
+`_broadcastApply` + the `rand` / `makeSampler` /
+`makeParametricSampler` / `makeAnalytical` / `density` entry points
+the worker wraps, plus the `_internal` exports the split modules
+read via the lazy cycle.
 
 **`REGISTRY` shape** (per distribution):
 ```js
