@@ -379,6 +379,162 @@ pinUnaryLinalgOp('lower_cholesky', arbSPD());
 pinUnaryLinalgOp('row_gram', arbSquareMat());
 pinUnaryLinalgOp('col_gram', arbSquareMat());
 
+// ---------------------------------------------------------------------
+// Variadic ops (Phase 5b) — vector / cat. The dispatcher forwards
+// all args to logical; no atom-batch detection.
+// ---------------------------------------------------------------------
+
+test('ops conformance: vector — variadic dispatch matches ARITH_OPS.vector', () => {
+  fc.assert(fc.property(
+    fc.array(arbReal, { minLength: 0, maxLength: 8 }),
+    (xs: any) => {
+      const viaDispatch = ops.dispatch('vector', xs);
+      const viaArith    = ARITH_OPS.vector(...xs);
+      if (valueLib.isValue(viaDispatch) && valueLib.isValue(viaArith)) {
+        assert.deepEqual(viaDispatch.shape, viaArith.shape);
+        assert.deepEqual(Array.from(viaDispatch.data),
+                         Array.from(viaArith.data));
+      } else {
+        assert.deepEqual(viaDispatch, viaArith);
+      }
+    },
+  ), { numRuns: 100 });
+});
+
+test('ops conformance: cat — variadic dispatch matches ARITH_OPS.cat (scalars)', () => {
+  fc.assert(fc.property(
+    fc.array(arbReal, { minLength: 1, maxLength: 6 }),
+    (xs: any) => {
+      const viaDispatch = ops.dispatch('cat', xs);
+      const viaArith    = ARITH_OPS.cat(...xs);
+      assert.deepEqual(viaDispatch.shape, viaArith.shape);
+      assert.deepEqual(Array.from(viaDispatch.data),
+                       Array.from(viaArith.data));
+    },
+  ), { numRuns: 100 });
+});
+
+test('ops conformance: cat — variadic dispatch matches ARITH_OPS.cat (vectors)', () => {
+  fc.assert(fc.property(
+    fc.array(
+      fc.array(arbReal, { minLength: 1, maxLength: 4 })
+        .map(vecValue),
+      { minLength: 1, maxLength: 4 },
+    ),
+    (vs: any) => {
+      const viaDispatch = ops.dispatch('cat', vs);
+      const viaArith    = ARITH_OPS.cat(...vs);
+      assert.deepEqual(viaDispatch.shape, viaArith.shape);
+      assert.deepEqual(Array.from(viaDispatch.data),
+                       Array.from(viaArith.data));
+    },
+  ), { numRuns: 100 });
+});
+
+test('ops dispatch: variadic ops accept zero args', () => {
+  const empty = ops.dispatch('vector', []);
+  assert.deepEqual(empty.shape, [0]);
+  assert.equal(empty.data.length, 0);
+});
+
+// ---------------------------------------------------------------------
+// Rank-polymorphic ops (Phase 5a) — transpose / adjoint / linsolve.
+// The dispatcher does NOT auto-atom-batch these; the contract is to
+// call `logical` with the input as-is. Conformance against ARITH_OPS
+// reference still holds.
+// ---------------------------------------------------------------------
+
+test('ops conformance: transpose — matrix dispatch matches ARITH_OPS.transpose', () => {
+  fc.assert(fc.property(
+    fc.tuple(
+      fc.integer({ min: 1, max: 5 }),
+      fc.integer({ min: 1, max: 5 }),
+    ).chain(([m, n]: any) =>
+      fc.array(fc.array(arbReal, { minLength: n, maxLength: n }),
+        { minLength: m, maxLength: m })),
+    (rows: any) => {
+      const m = rows.length, n = rows[0].length;
+      const data = new Float64Array(m * n);
+      for (let i = 0; i < m; i++) {
+        for (let j = 0; j < n; j++) data[i * n + j] = rows[i][j];
+      }
+      const M = { shape: [m, n], data };
+      const viaDispatch = ops.dispatch('transpose', [M]);
+      const viaArith    = ARITH_OPS.transpose(M);
+      // Both produce O(1)-tag-flip Values; compare via valueLib.densify.
+      const dDisp = valueLib.densify(viaDispatch);
+      const dArith = valueLib.densify(viaArith);
+      assert.deepEqual(dDisp.shape, dArith.shape);
+      assert.deepEqual(Array.from(dDisp.data), Array.from(dArith.data));
+    },
+  ), { numRuns: 100 });
+});
+
+test('ops conformance: transpose — vector (rank 1) tag-flips', () => {
+  const v = vecValue([1, 2, 3]);
+  const t = ops.dispatch('transpose', [v]);
+  assert.ok(valueLib.isValue(t));
+  // valueLib.transpose flips the Klein-4 tag; data unchanged.
+  assert.deepEqual(Array.from(t.data), [1, 2, 3]);
+});
+
+test('ops conformance: adjoint matches transpose on real input', () => {
+  const M = matValue([[1, 2], [3, 4]]);
+  const T = ops.dispatch('transpose', [M]);
+  const A = ops.dispatch('adjoint', [M]);
+  // Real matrices: adjoint ≡ transpose (no conjugation effect).
+  assert.deepEqual(Array.from(valueLib.densify(A).data),
+                   Array.from(valueLib.densify(T).data));
+});
+
+test('ops conformance: linsolve(A, b) — vector b matches ARITH_OPS', () => {
+  fc.assert(fc.property(
+    arbNonSingular(),
+    (rows: any) => {
+      const n = rows.length;
+      const A = matValue(rows);
+      // b = (1, 2, …, n) for a deterministic right-hand side.
+      const bArr: number[] = [];
+      for (let i = 0; i < n; i++) bArr.push(i + 1);
+      const b = vecValue(bArr);
+      const viaDispatch = ops.dispatch('linsolve', [A, b]);
+      const viaArith    = ARITH_OPS.linsolve(A, b);
+      // Both produce vectors; compare data.
+      const dDisp = valueLib.densify(viaDispatch);
+      const dArith = valueLib.densify(viaArith);
+      assert.deepEqual(dDisp.shape, dArith.shape);
+      // Numerical tolerance for LU: compare via approxEqual.
+      assert.ok(approxEqual(dDisp, dArith),
+        'linsolve vector b mismatch (dispatch vs ARITH_OPS)');
+    },
+  ), { numRuns: 100 });
+});
+
+test('ops conformance: linsolve(A, b) — matrix b matches ARITH_OPS', () => {
+  fc.assert(fc.property(
+    arbNonSingular(),
+    (rows: any) => {
+      const n = rows.length;
+      const A = matValue(rows);
+      // b = n × n identity (so x should ≈ A⁻¹).
+      const bArr: number[][] = [];
+      for (let i = 0; i < n; i++) {
+        const row: number[] = new Array(n).fill(0);
+        row[i] = 1;
+        bArr.push(row);
+      }
+      const b = matValue(bArr);
+      const viaDispatch = ops.dispatch('linsolve', [A, b]);
+      const viaArith    = ARITH_OPS.linsolve(A, b);
+      const dDisp = valueLib.densify(viaDispatch);
+      const dArith = valueLib.densify(viaArith);
+      assert.deepEqual(dDisp.shape, dArith.shape);
+      assert.ok(approxEqual(dDisp, dArith),
+        'linsolve matrix b mismatch (dispatch vs ARITH_OPS)');
+    },
+  ), { numRuns: 100 });
+});
+
 // diagmat takes a VECTOR input, returns a structured diag matrix.
 // The dispatcher's per-atom fallback for diagmat shape=[N, n] inputs
 // would produce diag-structured per-atom results which then stack via
@@ -406,7 +562,7 @@ test('ops conformance: diagmat — atom-indep dispatch matches ARITH_OPS', () =>
 // Property 3: registry bookkeeping — every declared op has a signature
 // ---------------------------------------------------------------------
 
-test('ops conformance: every declared op has a signature + argRanks', () => {
+test('ops conformance: every declared op has consistent bookkeeping', () => {
   const declared = ops.listDeclared();
   assert.ok(declared.length > 0, 'at least one op must be declared');
   for (const name of declared) {
@@ -414,13 +570,20 @@ test('ops conformance: every declared op has a signature + argRanks', () => {
     assert.ok(decl, 'lookup returns the registered declaration');
     assert.equal(typeof decl.name, 'string');
     assert.equal(decl.name, name, 'name field matches registry key');
-    assert.ok(decl.signature, name + ': must declare a signature');
-    assert.ok(Array.isArray(decl.argRanks),
-      name + ': must declare argRanks');
-    assert.equal(decl.argRanks.length, decl.signature.args.length,
-      name + ': argRanks length must match signature args length');
     assert.equal(typeof decl.logical, 'function',
       name + ': must declare a logical impl');
+    const kind = decl.kind || 'fixed-rank';
+    // kind='fixed-rank': signature + argRanks required, and they
+    // must line up. Other kinds use loose signature handling.
+    if (kind === 'fixed-rank') {
+      assert.ok(decl.signature,
+        name + ' (kind=fixed-rank): must declare a signature');
+      assert.ok(Array.isArray(decl.argRanks),
+        name + ' (kind=fixed-rank): must declare argRanks');
+      assert.equal(decl.argRanks.length, decl.signature.args.length,
+        name + ' (kind=fixed-rank): argRanks length must match ' +
+        'signature args length');
+    }
   }
 });
 

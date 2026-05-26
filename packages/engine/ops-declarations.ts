@@ -624,6 +624,176 @@ ops.register({
   logical: _colGramLogical,
 });
 
+// =====================================================================
+// Rank-polymorphic ops (Phase 5a — engine-concepts §18.7)
+// =====================================================================
+//
+// transpose / adjoint accept vector OR matrix; linsolve(A, b) takes b
+// as vector OR matrix. The argRanks-driven atom-batch detection
+// can't disambiguate these from atom-batched lower-rank inputs at
+// the runtime level, so the dispatcher's contract for `kind:
+// 'rank-polymorphic'` is "call logical with the inputs as-is" —
+// atom-batched semantics over a rank-polymorphic op require explicit
+// `broadcast(fn(op(_)), …)` wrapping by the caller.
+//
+// The signatures remain in `types.SIGNATURE_FACTORIES` (they use the
+// `special: '<op>'` marker that typeinfer special-cases for output-
+// shape inference based on the actual input type). No `signature`
+// field on the OpDecl — `signatureOf` falls through to the legacy
+// table for these names.
+
+function _transposeLogical(M: any): any {
+  if (valueLib.isValue(M)) return valueLib.transpose(M);  // O(1) tag flip
+  if (!Array.isArray(M) || M.length === 0) return [];
+  const rows = M.length, cols = M[0].length;
+  const out = new Array(cols);
+  for (let j = 0; j < cols; j++) {
+    const row = new Array(rows);
+    for (let i = 0; i < rows; i++) row[i] = M[i][j];
+    out[j] = row;
+  }
+  return out;
+}
+
+ops.register({
+  name: 'transpose',
+  kind: 'rank-polymorphic',
+  logical: _transposeLogical,
+});
+
+function _adjointLogical(M: any): any {
+  if (valueLib.isValue(M)) return valueLib.adjoint(M);    // O(1) tag flip
+  // Real-only nested-array path falls back to transpose (no complex
+  // numbers in nested arrays at this layer).
+  return _transposeLogical(M);
+}
+
+ops.register({
+  name: 'adjoint',
+  kind: 'rank-polymorphic',
+  logical: _adjointLogical,
+});
+
+// linsolve(A, b): A is square matrix (rank 2); b is vector (rank 1)
+// or matrix (rank 2). Diagonal A: vector b → reciprocal × b (O(n)).
+// Otherwise: LU + back-substitution.
+function _linsolveLogical(A: any, b: any): any {
+  if (valueLib.isDiagStored(A) && !A.im) {
+    const d = A.data, m = d.length;
+    const bv = valueLib.isValue(b) ? b : null;
+    const bd = bv ? bv.data : b;
+    if (bd && bd.length === m && (!bv || bv.shape.length === 1)) {
+      const x = new Float64Array(m);
+      for (let i = 0; i < m; i++) {
+        if (d[i] === 0) throw new Error('linsolve: singular diagonal matrix');
+        x[i] = bd[i] / d[i];
+      }
+      return bv ? valueLib.vector(x) : Array.from(x);
+    }
+  }
+  if (valueLib.isValue(A) || valueLib.isValue(b)) {
+    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
+    const bV = valueLib.isValue(b) ? valueLib.densify(b) : valueLib.asValue(b);
+    return linalg._linsolveLUValue(aV, bV);
+  }
+  if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
+    throw new Error('linsolve: A must be a non-empty square matrix');
+  }
+  return linalg._linsolveLU(A, b);
+}
+
+ops.register({
+  name: 'linsolve',
+  kind: 'rank-polymorphic',
+  logical: _linsolveLogical,
+});
+
+// =====================================================================
+// Variadic ops (Phase 5b — engine-concepts §18.7)
+// =====================================================================
+//
+// vector / cat take a variable number of positional args. The
+// dispatcher's variadic kind just forwards all args to `logical`;
+// no atom-batch detection (variadic + batching is a Phase 5c+
+// problem). Same delegation pattern as the rank-polymorphic ops.
+
+function _vectorLogical(...xs: any[]): any {
+  if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
+  let allScalar = true;
+  for (let i = 0; i < xs.length; i++) {
+    const t = typeof xs[i];
+    if (t !== 'number' && t !== 'boolean') { allScalar = false; break; }
+  }
+  if (!allScalar) return xs;
+  const data = new Float64Array(xs.length);
+  for (let i = 0; i < xs.length; i++) {
+    data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
+  }
+  return { shape: [xs.length], data: data };
+}
+
+ops.register({
+  name: 'vector',
+  kind: 'variadic',
+  logical: _vectorLogical,
+});
+
+function _catLogical(...xs: any[]): any {
+  if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
+  const first = xs[0];
+  // cat(scalar, scalar, ...) → rank-1 Value (spec §07).
+  if (typeof first === 'number' || typeof first === 'boolean') {
+    const data = new Float64Array(xs.length);
+    for (let i = 0; i < xs.length; i++) {
+      data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
+    }
+    return { shape: [xs.length], data };
+  }
+  // cat(vector, vector, ...) → rank-1 Value (concatenation along
+  // the only axis).
+  if (valueLib.isValue(first)
+      || (first && first.BYTES_PER_ELEMENT !== undefined)
+      || Array.isArray(first)) {
+    let total = 0;
+    for (let j = 0; j < xs.length; j++) {
+      const v = xs[j];
+      total += valueLib.isValue(v) ? v.data.length : v.length;
+    }
+    const out = new Float64Array(total);
+    let pos = 0;
+    for (let j = 0; j < xs.length; j++) {
+      const v = xs[j];
+      const src = valueLib.isValue(v) ? v.data : v;
+      for (let i = 0; i < src.length; i++) out[pos++] = +src[i];
+    }
+    return { shape: [total], data: out };
+  }
+  // cat(record, record, ...) → merged record (duplicate keys are a
+  // static error per spec §07).
+  if (first && typeof first === 'object') {
+    const out: Record<string, any> = {};
+    for (let j = 0; j < xs.length; j++) {
+      const r = xs[j];
+      for (const k in r) {
+        if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+        if (k in out) {
+          throw new Error("cat: duplicate field '" + k + "'");
+        }
+        out[k] = r[k];
+      }
+    }
+    return out;
+  }
+  throw new Error('cat: unsupported argument shape (got '
+    + (typeof first) + ')');
+}
+
+ops.register({
+  name: 'cat',
+  kind: 'variadic',
+  logical: _catLogical,
+});
+
 module.exports = {
   // Re-export for tests that want to call the logical impls directly
   // (rather than through `ops.dispatch`).
@@ -637,4 +807,9 @@ module.exports = {
   _lowerCholeskyLogical,
   _rowGramLogical,
   _colGramLogical,
+  _transposeLogical,
+  _adjointLogical,
+  _linsolveLogical,
+  _vectorLogical,
+  _catLogical,
 };
