@@ -1158,9 +1158,8 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   //   posterior = bayesupdate(L, prior),  L = likelihoodof(K, obs)
   // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs).
   // The atoms are the prior's; logWeights = prior.logWeights + per-i logp.
-  const bodyIR = d.bodyIR
-    ? orchestrator.expandMeasureRefsInIR(d.bodyIR, ctx.derivations, undefined, ctx.bindings)
-    : orchestrator.expandMeasureIR(d.bodyName, ctx.derivations, undefined, ctx.bindings);
+  const bodyIR = orchestrator.expandMeasure(d.bodyIR || d.bodyName,
+    { derivations: ctx.derivations, bindings: ctx.bindings });
   if (!bodyIR) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
@@ -1266,7 +1265,8 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
 
     // Try to lift the parent to a self-contained sample IR. If that
     // succeeds, we can take the worker-mediated paths (A or B).
-    const expanded = orchestrator.expandMeasureIR(d.from, ctx.derivations);
+    const expanded = orchestrator.expandMeasure(d.from,
+      { derivations: ctx.derivations, bindings: ctx.bindings });
     const parentUniform = !parent.logWeights;
     if (expanded && expanded.kind === 'call' && parentUniform) {
       const valueRefs = orchestrator.collectSelfRefs(expanded);
@@ -2209,7 +2209,8 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   const isChain = !!(measureDeriv
     && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
 
-  const measureIR0 = orchestrator.expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
+  const measureIR0 = orchestrator.expandMeasure(d.measureName,
+    { derivations: ctx.derivations, bindings: ctx.bindings });
   if (!measureIR0) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
       + d.measureName + '" into a self-contained IR'));
@@ -2328,8 +2329,8 @@ function matBroadcastLogdensity(d: DerivationBroadcastLogdensity, ctx: any) {
   const measureDeriv = ctx.derivations[d.measureName];
   const isChain = !!(measureDeriv
     && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
-  const measureIR0 = orchestrator.expandMeasureIR(
-    d.measureName, ctx.derivations, undefined, ctx.bindings);
+  const measureIR0 = orchestrator.expandMeasure(d.measureName,
+    { derivations: ctx.derivations, bindings: ctx.bindings });
   // Resolve non-closed-form selector weights (engine-concepts §11)
   // from their materialised ensembles. The resulting literal weights
   // are constants, so a runtime-weight select stays closed-form-
@@ -2525,8 +2526,8 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
           || f.params.length === 0) return null;
       let body = f.body;
       if (body.kind === 'ref' && body.ns === 'self') {
-        body = orchestrator.expandMeasureIR(
-          body.name, ctx.derivations, undefined, ctx.bindings);
+        body = orchestrator.expandMeasure(body.name,
+          { derivations: ctx.derivations, bindings: ctx.bindings });
         if (!body) return null;
       }
       let leaves;

@@ -1745,15 +1745,64 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
   return null;
 }
 
-function expandMeasureIR(name: string, derivations: any, visited?: any, bindings?: any): IRNode | null {
-  visited = visited || new Set();
+/**
+ * Unified measure-IR expansion (engine-concepts §17.4).
+ *
+ * Single canonical entry point. Replaces the four-way maze of
+ * `expandMeasureIR` (by-name) + `expandMeasureRefsInIR` (by-IR) +
+ * `_expandMeasureIRStructural` (binding-IR fallback) +
+ * `expandMeasurePos` (dispatcher) — each of which handled overlapping
+ * but subtly-different cases with optional `bindings` plumbing that
+ * was load-bearing for correctness.
+ *
+ * Dispatch rules:
+ *  - `input` is a **string** or **ref node** → look up the binding by
+ *    name. Dispatch per derivation kind; if no derivation case fires,
+ *    structurally walk binding.ir (the safety net for bindings that
+ *    were pruned out of the derivation graph — e.g. depending on a
+ *    parameterized ancestor).
+ *  - `input` is a **call node** → walk structurally: peel `draw` /
+ *    `lawof`, recurse on measure-position slots (joint fields, iid
+ *    inner, weighted base, jointchain fields), pass through
+ *    distribution leaves and unknown ops verbatim. Refs encountered
+ *    during the walk recurse via the by-name path.
+ *
+ * `ctx` carries the lookup tables. `bindings` is required for
+ * structural fallback (a binding whose derivation was pruned) to
+ * fire — callers that have access to `bindings` should always pass
+ * it. The backwards-compatible shims `expandMeasureIR` /
+ * `expandMeasureRefsInIR` accept the old positional argument shape.
+ */
+function expandMeasure(input: any, ctx: any, visited?: Set<string>): IRNode | null {
+  visited = visited || new Set<string>();
+  if (input == null) return null;
+  if (typeof input === 'string') {
+    return _expandByName(input, ctx, visited);
+  }
+  if (input.kind === 'ref' && input.ns === 'self') {
+    return _expandByName(input.name, ctx, visited);
+  }
+  if (input.kind !== 'call') return input;
+  return _expandStructural(input, ctx, visited);
+}
+
+/**
+ * Resolve a binding by name → its canonical measure IR. Walks the
+ * derivation graph by kind; falls back to structurally walking
+ * `binding.ir` when no derivation case fires (or no derivation
+ * exists). Maintains a `visited` set keyed by binding name to break
+ * cycles.
+ */
+function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | null {
   if (visited.has(name)) return null;
   const next = new Set(visited); next.add(name);
+  const derivations = ctx && ctx.derivations;
+  const bindings = ctx && ctx.bindings;
   const d = derivations && derivations[name];
   if (d) {
     switch (d.kind) {
       case 'alias':
-        return expandMeasureIR(d.from, derivations, next, bindings);
+        return _expandByName(d.from, ctx, next);
       case 'sample':
         // Leaf distribution call — return the distIR verbatim. Refs
         // in its kwargs are value refs (per-i params).
@@ -1840,9 +1889,9 @@ function expandMeasureIR(name: string, derivations: any, visited?: any, bindings
         for (const b of d.branches) {
           let inner = null;
           if (b && b.ref != null) {
-            inner = expandMeasureIR(b.ref, derivations, next, bindings);
+            inner = _expandByName(b.ref, ctx, next);
           } else if (b && b.ir) {
-            inner = _expandMeasureIRStructural(b.ir, derivations, next, bindings);
+            inner = _expandStructural(b.ir, ctx, next);
           }
           if (!inner) return null;
           branches.push(inner);
@@ -2178,9 +2227,75 @@ function expandMeasureIR(name: string, derivations: any, visited?: any, bindings
   if (bindings) {
     const b = bindings.get(name);
     if (!b || !b.ir) return null;
-    return _expandMeasureIRStructural(b.ir, derivations, next, bindings);
+    return _expandStructural(b.ir, ctx, next);
   }
   return null;
+}
+
+/**
+ * Structural walk of a measure-position IR. Unifies the former
+ * `_expandMeasureIRStructural` (binding-IR safety net) and
+ * `expandMeasureRefsInIR` (inline kernel-body expansion) into one
+ * walker — they handled overlapping cases with subtle differences
+ * (lawof unwrap, jointchain field recursion, sampleable
+ * pass-through) that drifted as the engine grew. Now they share a
+ * single set of structural rules.
+ *
+ * Rules:
+ *   - refs in measure position → `_expandByName(ref.name, ctx)`
+ *   - `draw(M)` / `lawof(M)` → unwrap recursively
+ *   - `record` / `joint` / `jointchain` with fields → recurse on each
+ *     field value (preserving `source` for env-threading)
+ *   - `iid(M, …)` → recurse on args[0]
+ *   - `weighted(w, M)` / `logweighted(g, M)` → recurse on args[1]
+ *   - everything else (sampleable distributions, select, broadcast,
+ *     normalize, superpose, truncate, pushfwd, unknown ops) → return
+ *     unchanged. Refs in their kwargs are value-position (per-i
+ *     params resolved at materialise / density time).
+ */
+function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
+  if (!ir) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    // A ref encountered structurally: try to expand by name; if no
+    // expansion is available (no derivation case + no bindings
+    // fallback), keep the ref unchanged. This is the by-IR
+    // contract — the caller's IR stays well-formed even when some
+    // refs can't be resolved (e.g. the kernel-sample path expects
+    // refs to be substituted by inlineForProfile / substituteLocals
+    // downstream, not by the expansion walker). The by-name path
+    // (expandMeasure(name, …)) returns null instead — caller can
+    // tell whether the binding was resolvable.
+    const expanded = _expandByName(ir.name, ctx, visited);
+    return expanded || ir;
+  }
+  if (ir.kind !== 'call') return ir;
+  if ((ir.op === 'draw' || ir.op === 'lawof')
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    return _expandStructural(ir.args[0], ctx, visited);
+  }
+  if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
+    const inner: any = _expandStructural(ir.args[0], ctx, visited);
+    if (!inner) return null;
+    return { ...ir, args: [inner].concat(ir.args.slice(1)) };
+  }
+  if ((ir.op === 'record' || ir.op === 'joint' || ir.op === 'jointchain')
+      && Array.isArray(ir.fields)) {
+    const fields = ir.fields.map((f: any) => ({
+      ...f, value: _expandStructural(f.value, ctx, visited),
+    }));
+    return { ...ir, fields };
+  }
+  if ((ir.op === 'weighted' || ir.op === 'logweighted')
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    const inner: any = _expandStructural(ir.args[1], ctx, visited);
+    if (!inner) return null;
+    return { ...ir, args: [ir.args[0], inner] };
+  }
+  // Sampleable distribution / select / broadcast / superpose / etc.:
+  // pass through unchanged. Their kwargs / args hold value-position
+  // refs that the density / sample walker resolves per-atom; we
+  // don't substitute those at expansion time.
+  return ir;
 }
 
 /**
@@ -2356,129 +2471,29 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
   };
 }
 
-function _expandMeasureIRStructural(ir: any, derivations: any, visited: any, bindings: any): any {
-  if (!ir) return null;
-  if (ir.kind === 'ref' && ir.ns === 'self') {
-    return expandMeasureIR(ir.name, derivations, visited, bindings);
-  }
-  if (ir.kind !== 'call') return ir;
-  // draw / lawof are pass-throughs at the structural level — the
-  // measure they wrap is the measure we want.
-  if ((ir.op === 'draw' || ir.op === 'lawof')
-      && Array.isArray(ir.args) && ir.args.length === 1) {
-    return _expandMeasureIRStructural(ir.args[0], derivations, visited, bindings);
-  }
-  // iid(measure, n, ...) — recurse on the measure operand.
-  if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
-    const inner: any = _expandMeasureIRStructural(ir.args[0], derivations, visited, bindings);
-    if (!inner) return null;
-    return { kind: 'call', op: 'iid', args: [inner].concat(ir.args.slice(1)), loc: ir.loc };
-  }
-  // record / joint / jointchain — recurse on each field's measure.
-  if ((ir.op === 'record' || ir.op === 'joint' || ir.op === 'jointchain')
-      && Array.isArray(ir.fields)) {
-    const fields = ir.fields.map((f: any) => ({
-      ...f, value: _expandMeasureIRStructural(f.value, derivations, visited, bindings),
-    }));
-    return { kind: 'call', op: ir.op, fields, loc: ir.loc };
-  }
-  // weighted / logweighted — recurse on the measure-position arg.
-  if ((ir.op === 'weighted' || ir.op === 'logweighted')
-      && Array.isArray(ir.args) && ir.args.length === 2) {
-    const inner: any = _expandMeasureIRStructural(ir.args[1], derivations, visited, bindings);
-    if (!inner) return null;
-    return { kind: 'call', op: ir.op, args: [ir.args[0], inner], loc: ir.loc };
-  }
-  // Sampleable distribution call — return as-is. Refs inside the
-  // kwargs are value-position refs to per-atom parameters; caller
-  // resolves them via substituteLocals; refArrays handles captured
-  // self-refs per-atom at sampleN time.
-  if (SAMPLEABLE_DISTRIBUTIONS.has(ir.op)) return ir;
-  // Anything else (normalize / superpose / truncate / pushfwd /
-  // unknown ops): return as-is. Downstream materialise will report
-  // a precise error if the shape isn't supported.
-  return ir;
+/**
+ * Backwards-compatible shim. New code should use
+ * `expandMeasure(input, ctx, visited)` directly. This wrapper exists
+ * because the materialiser and a handful of tests call
+ * `expandMeasureIR(name, derivations, visited, bindings)` with the
+ * positional argument order — keeping it lets the unification be a
+ * pure refactor with no API churn.
+ *
+ * Resolves a binding **by name** to its canonical measure IR.
+ */
+function expandMeasureIR(name: string, derivations: any, visited?: any, bindings?: any): IRNode | null {
+  return expandMeasure(name, { derivations, bindings }, visited);
 }
 
 /**
- * Walk a measure IR and replace every measure-position ref with the
- * expanded IR of the binding it points to. Value-position refs (the
- * ones that appear in distribution kwargs as per-i parameters) are
- * left as-is — the walker resolves them via env / refArrays at
- * materialise time.
- *
- * Used when the kernel body of a bayesupdate is an inline expression
- * (e.g. `record(obs = obs)` written directly inside `kernelof(...)`),
- * not a binding name. classifyBayesupdate stores the lowered IR; the
- * visualPanel calls this at materialise time to inline the measure
- * refs through the now-built derivation graph, producing the same
- * fully-self-contained IR shape that expandMeasureIR(name, ...)
- * would have produced.
- *
- * Measure-position slots recognised:
- *   - joint / record fields' value
- *   - iid's first arg (the inner measure)
- *   - weighted / logweighted's second arg (the base measure)
+ * Backwards-compatible shim. Walks an **inline measure-position IR**
+ * via the same unified expander. Equivalent to the old
+ * `expandMeasureRefsInIR` + `expandMeasurePos` + the
+ * `_expandMeasureIRStructural` safety net, all collapsed into
+ * `expandMeasure`'s call-IR branch.
  */
-function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited: any, bindings?: any): IRNode | null {
-  visited = visited || new Set();
-  if (!ir) return ir;
-  // Top-level ref to a measure binding: expand via the same
-  // measure-IR reconstructor used for refs in measure-arg positions.
-  // Without this branch, a body that's just `(ref self some_dist)` —
-  // typical for `forward_kernel = functionof(obs_dist, …)` where
-  // obs_dist is a measure binding — falls through unchanged and
-  // downstream consumers (materialiseConcreteMeasure, traceeval.walk)
-  // reject the bare ref. Thread `bindings` so kernelbroadcast (and any
-  // other derivation kind that lacks a dedicated switch case) reaches
-  // the structural fallback inside expandMeasureIR and returns its
-  // self-contained measure IR instead of a bare ref.
-  if (ir.kind === 'ref' && ir.ns === 'self') {
-    const expanded = expandMeasureIR(ir.name, derivations, visited, bindings);
-    return expanded || ir;
-  }
-  if (ir.kind !== 'call') return ir;
-  // `lawof(M)` is a no-op once M is in measure position. The
-  // disintegrate rewriter wraps a kernel body's record/joint output
-  // in lawof to express "the measure of this value", but for density
-  // evaluation by traceeval we want the underlying measure structure
-  // — record / joint / iid / weighted / leaf distribution. Peel it
-  // before recursing so the resulting IR is one of those shapes.
-  if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
-    return expandMeasureRefsInIR(ir.args[0], derivations, visited, bindings);
-  }
-  const out = { ...ir };
-  if (Array.isArray(ir.fields)) {
-    out.fields = ir.fields.map((f: any) => ({
-      ...f,
-      value: expandMeasurePos(f.value, derivations, visited, bindings),
-    }));
-  }
-  if (Array.isArray(ir.args)) {
-    if (ir.op === 'iid' && ir.args.length === 2) {
-      out.args = [
-        expandMeasurePos(ir.args[0], derivations, visited, bindings),
-        ir.args[1],
-      ];
-    } else if ((ir.op === 'weighted' || ir.op === 'logweighted') && ir.args.length === 2) {
-      out.args = [
-        ir.args[0],
-        expandMeasurePos(ir.args[1], derivations, visited, bindings),
-      ];
-    }
-  }
-  return out;
-}
-
-function expandMeasurePos(node: any, derivations: any, visited: any, bindings?: any) {
-  if (node && node.kind === 'ref' && node.ns === 'self') {
-    const expanded = expandMeasureIR(node.name, derivations, visited, bindings);
-    return expanded || node;
-  }
-  if (node && node.kind === 'call') {
-    return expandMeasureRefsInIR(node, derivations, visited, bindings);
-  }
-  return node;
+function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited?: any, bindings?: any): IRNode | null {
+  return expandMeasure(ir, { derivations, bindings }, visited);
 }
 
 // =====================================================================
@@ -2602,11 +2617,10 @@ module.exports = {
   isDiscreteAt,
   leafSampleIR,
   resolveBijectionMeta,
+  expandMeasure,
   expandMeasureIR,
+  expandMeasureRefsInIR,
   implicitKernelSignature,
   implicitFunctionSignature,
-  _expandMeasureIRStructural,
-  expandMeasureRefsInIR,
-  expandMeasurePos,
   classifyBayesupdate,
 };

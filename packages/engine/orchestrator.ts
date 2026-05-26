@@ -155,12 +155,11 @@ const {
   isDiscreteAt,
   leafSampleIR,
   resolveBijectionMeta,
+  expandMeasure,
   expandMeasureIR,
+  expandMeasureRefsInIR,
   implicitKernelSignature,
   implicitFunctionSignature,
-  _expandMeasureIRStructural,
-  expandMeasureRefsInIR,
-  expandMeasurePos,
   classifyBayesupdate,
 } = require('./derivations.ts');
 
@@ -434,6 +433,7 @@ module.exports = {
   canonicalizeImplicitBoundaries,
   collectSelfRefs,
   leafSampleIR,
+  expandMeasure,
   expandMeasureIR,
   expandMeasureRefsInIR,
   resolveIRToValue,
