@@ -344,6 +344,100 @@ outer = kchain(prior, inner)
   );
 });
 
+test('applied-via-draw: y ~ chain(theta=value) materialises through kernel-first chain', () => {
+  // Spec §06 "uniform kernel extension" (line 86-91): applying a
+  // kernel binds its inputs and yields a measure. Engine-concepts
+  // §19: a kernel-first jointchain/kchain binding applied to its
+  // residual inputs materialises as a closed measure. The classifier
+  // (derivations.ts classifyAppliedChain) substitutes the bound
+  // args into the chain's first step's kernel body and synthesises a
+  // closed-first jointchain derivation that matJointchain handles.
+  const r = infer(`
+theta = elementof(reals)
+K0 = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
+mu = elementof(reals)
+K1 = functionof(Normal(mu = mu, sigma = 0.5), mu = mu)
+chain = jointchain(K0, K1)
+y ~ chain(theta = 0.5)
+`);
+  const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+  const built = orchestrator.buildDerivations(lifted);
+  // y is an alias to the chain-apply anon (lifted) — both should
+  // classify.
+  assert.ok(built.derivations.y, 'y should have a derivation');
+  // The lifted anon should classify as a jointchain (the synthesised
+  // closed-first form).
+  const anonNames = Object.keys(built.derivations)
+    .filter(n => n.startsWith('__'));
+  assert.ok(anonNames.length > 0,
+    'expected an anon binding for chain(theta=0.5)');
+  assert.equal(built.derivations[anonNames[0]].kind, 'jointchain',
+    'anon should classify as a jointchain (closed-first via applied-chain substitution)');
+  // Step 0 should be a closed base (kernel: false) — the substituted
+  // K0 body. Step 1 should be the original K1.
+  const anonDeriv = built.derivations[anonNames[0]];
+  assert.equal(anonDeriv.steps[0].role, 'base');
+  assert.equal(anonDeriv.steps[0].kernel, false,
+    'first step is now a closed measure after substitution');
+  assert.equal(anonDeriv.steps[1].ref, 'K1');
+
+  // Materialise + verify shape.
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 12345 });
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    lifted,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure:  (n: any) => materialiser.materialiseMeasure(n, ctx),
+    sendWorker:  (msg: any) => {
+      const reply = worker.handle(msg);
+      if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+      return Promise.resolve(reply);
+    },
+    sampleCount: 256,
+    rootSeed:    12345,
+  };
+  return materialiser.materialiseMeasure('y', ctx).then((m: any) => {
+    assert.ok(m, 'y materialises');
+    assert.ok(m.elems || m.fields,
+      'y is a structured measure (positional jointchain ⇒ tuple)');
+    const components = m.elems || Object.values(m.fields || {});
+    assert.equal(components.length, 2, 'two retained variates from K0 and K1');
+    // K0 samples ~ Normal(0.5, 1.0). The empirical mean should be
+    // near 0.5 with a tolerance for 256 atoms.
+    const k0 = components[0];
+    assert.ok(k0.samples && k0.samples.length === 256);
+    const mean0 = Array.from(k0.samples).reduce((a: number, b: number) => a + b, 0) / k0.samples.length;
+    assert.ok(Math.abs(mean0 - 0.5) < 0.25,
+      'K0 sample mean ≈ 0.5 (got ' + mean0 + ')');
+    // K1 samples ~ Normal(K0_sample, 0.5). Expected mean ≈ E[K0] ≈ 0.5.
+    const k1 = components[1];
+    const mean1 = Array.from(k1.samples).reduce((a: number, b: number) => a + b, 0) / k1.samples.length;
+    assert.ok(Math.abs(mean1 - 0.5) < 0.3,
+      'K1 sample mean ≈ 0.5 (got ' + mean1 + ')');
+  });
+});
+
+test('applied-via-draw: applied-chain classifier rejects closed-first chain', () => {
+  // A closed-first chain has no inputs to bind — `closed_chain(args)`
+  // is semantically ill-defined. The applied-chain classifier returns
+  // null; the call falls through to no derivation.
+  const r = infer(`
+prior = Normal(0, 1)
+mu = elementof(reals)
+K = functionof(Normal(mu = mu, sigma = 0.5), mu = mu)
+closed_chain = jointchain(prior, K)
+applied = closed_chain(theta = 0.5)
+`);
+  const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+  const built = orchestrator.buildDerivations(lifted);
+  // closed_chain has a derivation (closed-first works); applied does
+  // not (no inputs to bind).
+  assert.ok(built.derivations.closed_chain);
+  assert.ok(!built.derivations.applied,
+    'closed_chain(theta=0.5) should NOT classify (no inputs to bind)');
+});
+
 test('kernel↔measure collapse: closed-first chain ⇒ measureType (not kernelType[∅])', () => {
   // Pin spec §06 line 86-91 "kernel with empty interface IS a measure"
   // at the engine level: a chain with NO residual inputs surfaces as
