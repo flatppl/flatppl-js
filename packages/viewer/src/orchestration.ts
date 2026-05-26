@@ -30,12 +30,11 @@ export function nameSeed(ctx: Ctx, name: any) {
 
 export function applySourceUpdate(ctx: Ctx, msg: any) {
   const sourceChanged = (msg.source !== ctx.currentSource);
-  // Track the surface-syntax variant of the in-memory source so
-  // (a) processSource picks the right grammar and (b) persist
-  // write-back chooses matching syntax (e.g. `True` vs `true`).
-  // Variant comes from the host as an id string ('flatppl' /
-  // 'flatppy' / 'flatppj') in msg.variant; if absent, falls back
-  // to canonical FlatPPL.
+  // currentVariantId is initialised to 'flatppl' in main.ts and
+  // there is only one canonical surface (spec §05); the host MAY
+  // override via msg.variant for forward-compatibility but no
+  // current host does. Retained as the explicit seam should a
+  // genuinely-different surface form ever land.
   if (msg.variant) ctx.currentVariantId = msg.variant;
   if (sourceChanged) {
     ctx.currentSource = msg.source;

@@ -11,10 +11,7 @@ import { activePresetFor, computeAutoValues, domainOverrideEntryFor, hasDomainOv
 import { isPersistableSetField } from './util.js';
 export function formatScalarForSource(ctx: Ctx, v: unknown): string {
   if (typeof v === 'boolean') {
-    // Boolean spelling follows the source-file variant: FlatPPL
-    // and FlatPPJ use lowercase `true`/`false`; FlatPPY uses
-    // capitalized `True`/`False`.
-    if (ctx.currentVariantId === 'flatppy') return v ? 'True' : 'False';
+    // Canonical FlatPPL boolean spelling (spec §05).
     return v ? 'true' : 'false';
   }
   if (!Number.isFinite(v)) return String(v);

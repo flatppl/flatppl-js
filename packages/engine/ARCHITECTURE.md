@@ -68,9 +68,11 @@ Each layer is independently testable. The test suite exercises this:
 is the extension-host-side entry point and the one most callers want.
 
 `opts` accepts:
-- `variant` — `'flatppl' | 'flatppy' | 'flatppj'` or a variant object; wins
-  over `path`.
-- `path` — source path; the extension picks the variant from this.
+- `variant` — `'flatppl'` or a variant object. Canonical FlatPPL is the
+  only surface form (spec §05); the seam is retained for forward-
+  compatibility. Wins over `path`.
+- `path` — source path; reserved for future per-file surface detection.
+  Currently ignored.
 - `bundle` — module-source bundle for multi-file models (spec §04
   `load_module`). Shape: `{ sources: { [path: string]: text: string } }`.
   Pre-resolved `.flatppl` deps. The engine pipeline stays **synchronous**;

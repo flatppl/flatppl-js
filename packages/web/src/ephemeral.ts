@@ -8,11 +8,9 @@
 // (e.g. `new/untitled.flatppl`) resolves to its in-memory text
 // without ever 404'ing against the server.
 //
-// The store is variant-agnostic: paths can end in `.flatppl` /
-// `.flatppy` / `.flatppj` and the variant detection downstream
-// (variantForPath) picks the right surface syntax. Default file
-// names increment a counter so consecutive "+ New file" clicks
-// produce distinct paths.
+// Paths end in `.flatppl` (the canonical surface; spec §05).
+// Default file names increment a counter so consecutive
+// "+ New file" clicks produce distinct paths.
 //
 // Lives on globalThis as window.FlatPPLWebEphemeral.
 

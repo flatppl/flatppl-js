@@ -32,14 +32,12 @@
 'use strict';
 
 (function (globalScope: any) {
-  // Names that act as keywords / operators at the surface level
-  // across variants. `and`/`or`/`not` are FlatPPY logical keywords;
-  // `in` is the membership comparison operator in all three variants;
-  // `true`/`false`/`True`/`False` are boolean keywords (variant-
-  // specific spelling, but treated uniformly by the highlighter).
+  // Surface keywords / operator-spelled names that the engine
+  // tokenizer emits as IDENT but the highlighter wants to colour
+  // distinctly (spec §05): `in` is the membership comparison
+  // operator; `true`/`false` are boolean literals.
   const KEYWORD_NAMES = new Set([
-    'and', 'or', 'not', 'in',
-    'true', 'false', 'True', 'False',
+    'in', 'true', 'false',
   ]);
 
   function classifyIdentifier(name: any, bindings: any, B: any) {
