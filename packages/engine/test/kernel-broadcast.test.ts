@@ -189,3 +189,75 @@ test('broadcast: incompatible collection lengths is an error', async () => {
                 'e ~ broadcast(Normal, p, q)\n', 'e', 100),
     /incompatible collection lengths/);
 });
+
+// =====================================================================
+// Stochastic-input kernel-broadcast: derivation classification
+// =====================================================================
+//
+// Until this gap was closed, `broadcast(Dist, …)` only classified
+// when its collection-arg inputs were fixed-phase (literal arrays
+// or fixed-phase-derived expressions). With stochastic-phase
+// inputs (e.g. a `means` vector computed from stochastic draws
+// via dotted operators), classifyKernelBroadcast's derivation got
+// cascade-pruned because the upstream `means` binding itself had
+// no derivation — `means = alpha .+ beta .* x_data` lowers to
+// `broadcast(functionof(_a + _b), alpha, broadcast(...))` and
+// `broadcast` wasn't in EVALUABLE_OPS, so the value-broadcast
+// classifier (kind:'evaluate') wouldn't fire for it.
+//
+// Fix: broadcast joined EVALUABLE_OPS with a special-cased
+// isEvaluable rule that skips args[0] (the callable head) —
+// mirroring the existing aggregate special case. Sampler-side
+// evaluateCall already implemented broadcast at runtime.
+
+test('derivation: deterministic broadcast over stochastic inputs (means = α .+ β .* x)', () => {
+  const r = processSource(`
+x = [1.0, 2.0, 3.0]
+alpha = draw(Normal(mu = 0.0, sigma = 1.0))
+beta  = draw(Normal(mu = 0.0, sigma = 1.0))
+means = alpha .+ beta .* x
+`);
+  const built = orchestrator.buildDerivations(r.bindings);
+  assert.ok(built.derivations.means, 'means has a derivation');
+  assert.equal(built.derivations.means.kind, 'evaluate',
+    'deterministic value-broadcast classifies as kind:evaluate');
+});
+
+test('derivation: stochastic kernel-broadcast over stochastic means + sigma', () => {
+  const r = processSource(`
+x = [1.0, 2.0, 3.0, 4.0]
+alpha = draw(Normal(mu = 0.0, sigma = 1.0))
+beta  = draw(Normal(mu = 0.0, sigma = 1.0))
+sigma = draw(Gamma(shape = 2.0, rate = 1.0))
+means = alpha .+ beta .* x
+y     = draw(broadcast(Normal, means, sigma))
+`);
+  const built = orchestrator.buildDerivations(r.bindings);
+  assert.ok(built.derivations.means, 'means derives (evaluate)');
+  assert.ok(built.derivations.y,
+    'y derives (alias → kernelbroadcast) even with stochastic-phase inputs');
+});
+
+test('derivation: bayesupdate over a broadcast-Normal kernel body derives', () => {
+  // Linear regression model — broadcast(Normal, means, sigma) with
+  // means stochastic. Before this fix, posterior cascade-pruned.
+  const r = processSource(`
+x_data = [1.1, 1.5, 1.3, 1.4]
+y_data = [3.2, 4.1, 3.4, 3.9]
+sigma2 = draw(InverseGamma(shape = 5.0, scale = 5.0))
+sigma  = sqrt(sigma2)
+alpha  = draw(Normal(mu = 0.0, sigma = sigma * 3.0))
+beta   = draw(Normal(mu = 0.0, sigma = sigma * 3.0))
+prior  = lawof(record(alpha = alpha, beta = beta, sigma = sigma))
+means  = alpha .+ beta .* x_data
+y      = draw(broadcast(Normal, means, sigma))
+forward_kernel = kernelof(record(y = y),
+                          alpha = alpha, beta = beta, sigma = sigma)
+L         = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
+`);
+  const built = orchestrator.buildDerivations(r.bindings);
+  assert.ok(built.derivations.posterior,
+    'linear-regression posterior derives (was cascade-pruned before)');
+  assert.equal(built.derivations.posterior.kind, 'bayesupdate');
+});

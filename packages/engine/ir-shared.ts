@@ -431,6 +431,17 @@ const EVALUABLE_OPS = new Set([
   // Engine-internal projection emitted by the analyzer's multi-LHS
   // rewriter (`a, b = rand(...)`). sampler.evaluateCall handles it.
   'tuple_get', 'tuple',
+  // Deterministic value-broadcast over a function ref + collection
+  // args (spec §04 sec:higher-order; surface forms `a .+ b`,
+  // `f.(args)` lower to `broadcast(f, args)`). sampler.evaluateCall
+  // dispatches at line 5583+; kernel-broadcast (where the head is a
+  // distribution constructor) is a different code path — it produces
+  // an array-valued measure and is handled by classifyKernelBroadcast
+  // / materialiser, not the value evaluator. The two cases never
+  // collide because classifyKernelBroadcast requires the head be a
+  // SAMPLEABLE_DISTRIBUTIONS member, which the function-broadcast
+  // EVALUABLE path never sees.
+  'broadcast',
   // Field access: lowered from surface `obj.field` and from `record(
   // a=x, b=y)` constructors. Both are pure value computations the
   // evaluator handles.

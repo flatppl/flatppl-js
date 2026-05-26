@@ -1311,6 +1311,28 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         if (args.length !== 3) return false;
         return isEvaluable(args[0]) && isEvaluable(args[2]);
       }
+      // broadcast(f, args, kwargs) — args[0] is a CALLABLE (a function
+      // ref OR an inline `functionof(...)` produced by the dotted-
+      // operator lowering, e.g. `.+` → `broadcast(functionof(_a + _b),
+      // …)`). functionof isn't in EVALUABLE_OPS (it's a measure/
+      // callable shape, not a value), so naively recursing into args[0]
+      // would reject the whole call. Same structural exception
+      // aggregate uses for its reduction ref: skip the callable, only
+      // require the collection / scalar args + kwargs to be evaluable.
+      // Kernel-broadcast (head is a distribution constructor) lands in
+      // classifyKernelBroadcast before this path can fire, so we
+      // don't have to distinguish it here.
+      if (ir.op === 'broadcast') {
+        const args = ir.args || [];
+        if (args.length < 1) return false;
+        for (let i = 1; i < args.length; i++) {
+          if (!isEvaluable(args[i])) return false;
+        }
+        if (ir.kwargs) {
+          for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k])) return false;
+        }
+        return true;
+      }
       // All args / kwargs / fields must themselves be evaluable.
       // record IR uses `fields: [{name, value}, ...]` instead of args,
       // so we walk that shape too — a record(a=x, b=y) is evaluable
