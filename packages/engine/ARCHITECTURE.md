@@ -894,22 +894,33 @@ atom-batched dispatch from one source. Atom-batching is the
 engine's job (recognised from the input shape's leading axis), not
 the op's.
 
-> **Status: Phases 1-3 landed (2026-05-26).** Ten ops declared via
-> `OpDecl`: `cross`, `self_outer`, `trace`, `diagmat`, `det`,
-> `logabsdet`, `inv`, `lower_cholesky`, `row_gram`, `col_gram`.
-> `evaluateCall` routes declared ops through `opsModule.dispatch`.
-> `types.signatureOf` consults `ops.signatureOf` first.
-> `ARITH_OPS` entries for migrated ops thin-delegate to
-> `opsModule.dispatch` so direct callers keep working. Three ops
-> have `batched(args, N)` fast-paths for the high-value
-> atom-batched cases: `cross` ([N, 3] Float64Array loop), `inv` and
-> `lower_cholesky` (per-atom LU / Cholesky on [N, n, n] buffers).
+> **Status: Phases 1-5b landed (2026-05-26).** Fifteen ops declared
+> via `OpDecl` across three kinds:
 >
-> **Deferred to Phase 5** (engine-concepts §18.7): rank-polymorphic
-> ops (`transpose`, `adjoint`, `linsolve`-with-matrix-b), variadic
-> ops (`cat`, `joint`, `superpose`, `vector`), higher-order ops
-> (`broadcast`, `aggregate`, `reduce`, `scan`, `filter`). Each
-> needs the `OpDecl` kind discriminator to grow.
+> - **fixed-rank** (10): `cross`, `self_outer`, `trace`, `diagmat`,
+>   `det`, `logabsdet`, `inv`, `lower_cholesky`, `row_gram`,
+>   `col_gram`. Atom-batched dispatch auto-detected via leading-axis
+>   convention; three have `batched(args, N)` fast-paths (`cross`,
+>   `inv`, `lower_cholesky`).
+> - **rank-polymorphic** (3): `transpose`, `adjoint`, `linsolve`.
+>   Dispatcher hands inputs to `logical` as-is; atom-batched
+>   semantics require explicit `broadcast(fn(op(_)), …)` wrapping.
+> - **variadic** (2): `vector`, `cat`. Dispatcher forwards all args
+>   to `logical` with no atom-batch detection.
+>
+> `evaluateCall` routes declared ops through `opsModule.dispatch`.
+> `types.signatureOf` consults `ops.signatureOf` first (falls
+> through to `SIGNATURE_FACTORIES` for ops that use `special:`
+> markers, e.g. transpose / adjoint output-shape inference).
+> `ARITH_OPS` entries for migrated ops thin-delegate.
+>
+> **Phase 5c deferred** (engine-concepts §18.8): higher-order ops
+> (`broadcast`, `aggregate`, `reduce`, `scan`, `filter`). The
+> dispatcher needs a `ctx` extension to thread the engine's env +
+> evaluator + `resolveFn` into the op. Until then,
+> `kind: 'higher-order'` declarations surface a clear "not yet
+> implemented" error; these ops keep their dedicated dispatch in
+> `evaluateCall`.
 
 **`ops.ts`** holds:
 - `register(decl)` / `lookup(name)` / `listDeclared()` /
