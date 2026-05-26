@@ -96,6 +96,15 @@ const {
   makePhiloxPrngAdapter,
   readSupport,
 } = registry;
+
+// Unified op-declaration registry + dispatcher (engine-concepts §18).
+// Phase 2: declared ops route through `opsModule.dispatch` instead of
+// `ARITH_OPS[op](...)` at evaluateCall time. The ARITH_OPS entries
+// remain for ops that haven't migrated yet; the conformance suite
+// (test/ops-conformance.test.ts) pins both paths to agree. Migration
+// finishes when no op's ARITH_OPS entry is needed any more.
+const opsModule = require('./ops.ts');
+require('./ops-declarations.ts');     // side-effect: trigger op registrations
 /**
  * Sample one value from a built-in measure expression.
  *
@@ -694,202 +703,18 @@ const ARITH_OPS = {
     if (valueLib.isValue(M)) return valueLib.adjoint(M);  // O(1) tag flip
     return ARITH_OPS.transpose(M);
   },
-  trace: (M: any): any => {
-    if (valueLib.isDiagStored(M) && !M.im) {           // O(n): Σ diagonal
-      let s = 0; for (let i = 0; i < M.data.length; i++) s += M.data[i];
-      return valueLib.scalar(s);
-    }
-    if (valueLib.isValue(M)) {
-      // Densify any structural overlay, then read the diagonal via the
-      // row-major stride (n+1). No nested-JS round-trip.
-      const D = valueLib.densify(M);
-      const n = D.shape[0];
-      if (n !== D.shape[1]) throw new Error('trace: argument must be a square matrix');
-      let s = 0;
-      for (let i = 0; i < n; i++) s += D.data[i * n + i];
-      return valueLib.scalar(s);
-    }
-    if (!Array.isArray(M)) throw new Error('trace: argument must be a matrix');
-    const n = M.length;
-    if (n === 0 || M[0].length !== n) {
-      throw new Error('trace: argument must be a square matrix');
-    }
-    let s = 0;
-    for (let i = 0; i < n; i++) s += M[i][i];
-    return s;
-  },
-  // diagmat(v) → the m×m diagonal matrix with v on the diagonal.
-  // Produces the vector-backed `diag` structured Value (O(m) storage);
-  // every diag-aware op fast-paths it, anything else densify()s. A
-  // complex diagonal carries its imaginary part on the same vector.
-  diagmat: (v: any) => {
-    if (valueLib.isValue(v)) {
-      if (v.shape.length !== 1) {
-        throw new Error('diagmat: argument must be a rank-1 vector, got shape='
-          + JSON.stringify(v.shape));
-      }
-      return valueLib.diagMatrix(v.data, v.im);
-    }
-    return valueLib.diagMatrix(v instanceof Float64Array ? v : Float64Array.from(v));
-  },
-  self_outer: (v: any): any => {
-    if (valueLib.isValue(v)) {
-      const D = valueLib.densify(v);
-      if (D.shape.length !== 1) {
-        throw new Error('self_outer: argument must be a rank-1 vector, got shape='
-          + JSON.stringify(D.shape));
-      }
-      const n = D.shape[0];
-      const out = new Float64Array(n * n);
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) out[i * n + j] = D.data[i] * D.data[j];
-      }
-      return { shape: [n, n], data: out };
-    }
-    const n = v.length;
-    const out = new Array(n);
-    for (let i = 0; i < n; i++) {
-      const row = new Array(n);
-      for (let j = 0; j < n; j++) row[j] = v[i] * v[j];
-      out[i] = row;
-    }
-    return out;
-  },
-  // cross(a, b): 3-D vector cross product (spec §07).
-  //
-  //   cross(a, b) = [ a₂b₃ − a₃b₂,  a₃b₁ − a₁b₃,  a₁b₂ − a₂b₁ ]   (1-based)
-  //
-  // Both inputs must be length-3 vectors. Bilinear over ℂ (no
-  // conjugation): with complex operands the result reuses ordinary
-  // scalar complex multiplication / subtraction, so `cross(α·a, β·b)`
-  // equals `αβ·cross(a, b)`. The Hermitian variant is the user's job
-  // — write `cross(conj(a), b)` explicitly.
-  //
-  // Atom-batched paths flow through `_perAtomFallback` (this op is
-  // not in ARITH_OPS_N): shape=[N, 3] refs are decomposed into
-  // shape=[3] per-atom sub-Values by the accessors there, and each
-  // per-atom call ends up here. So this implementation only has to
-  // handle the length-3 case directly.
-  cross: (a: any, b: any): any => {
-    const aIsVal = valueLib.isValue(a);
-    const bIsVal = valueLib.isValue(b);
-    const wantValue = aIsVal || bIsVal;
-    function asLen3(v: any, isVal: boolean): { re: any; im: any | null } {
-      if (isVal) {
-        const D = valueLib.densify(v);
-        if (D.shape.length !== 1 || D.shape[0] !== 3) {
-          throw new Error('cross: argument must be a length-3 vector, got shape='
-            + JSON.stringify(D.shape));
-        }
-        // readComplex resolves the conjugate bit once and returns
-        // parallel Float64Arrays; for real Values the im buffer is
-        // implicit zeros.
-        const c = valueLib.readComplex(D);
-        return { re: c.re, im: valueLib.isComplexValue(D) ? c.im : null };
-      }
-      // Nested-array / Float64Array path: scalar elements may be
-      // bare numbers or {re, im} complex objects.
-      if (!v || typeof v.length !== 'number' || v.length !== 3) {
-        throw new Error('cross: argument must be a length-3 vector');
-      }
-      let anyComplex = false;
-      for (let k = 0; k < 3; k++) if (_isComplex(v[k])) { anyComplex = true; break; }
-      const re = new Float64Array(3);
-      const im = anyComplex ? new Float64Array(3) : null;
-      for (let k = 0; k < 3; k++) {
-        const e = v[k];
-        if (_isComplex(e)) { re[k] = e.re; if (im) im[k] = e.im; }
-        else { re[k] = +e; }
-      }
-      return { re, im };
-    }
-    const A = asLen3(a, aIsVal);
-    const B = asLen3(b, bIsVal);
-    const hasComplex = A.im !== null || B.im !== null;
-    if (hasComplex) {
-      // Promote whichever side stayed real to a zero-im buffer so the
-      // complex formulas read uniformly.
-      const aR = A.re, aI = A.im || new Float64Array(3);
-      const bR = B.re, bI = B.im || new Float64Array(3);
-      const cR = new Float64Array(3);
-      const cI = new Float64Array(3);
-      // Component k = aR[u]·b[v] − aR[v]·b[u]  with (u, v) cycling
-      // (1,2) → (2,0) → (0,1)  (zero-based: result[0] uses (1,2)).
-      const idx: Array<[number, number]> = [[1, 2], [2, 0], [0, 1]];
-      for (let k = 0; k < 3; k++) {
-        const [u, v] = idx[k];
-        // (aR_u + i·aI_u) · (bR_v + i·bI_v) = aR_u·bR_v − aI_u·bI_v
-        //                                    + i·(aR_u·bI_v + aI_u·bR_v)
-        const p_re = aR[u] * bR[v] - aI[u] * bI[v];
-        const p_im = aR[u] * bI[v] + aI[u] * bR[v];
-        const q_re = aR[v] * bR[u] - aI[v] * bI[u];
-        const q_im = aR[v] * bI[u] + aI[v] * bR[u];
-        cR[k] = p_re - q_re;
-        cI[k] = p_im - q_im;
-      }
-      // Complex Values always wrap; bare nested-array complex
-      // (length-3 of {re, im} objects) is rare but we surface a Value
-      // either way once complex is in play.
-      return valueLib.complexValue(cR, cI, [3]);
-    }
-    // Real path.
-    const aR = A.re, bR = B.re;
-    const out = new Float64Array(3);
-    out[0] = aR[1] * bR[2] - aR[2] * bR[1];
-    out[1] = aR[2] * bR[0] - aR[0] * bR[2];
-    out[2] = aR[0] * bR[1] - aR[1] * bR[0];
-    if (wantValue) return { shape: [3], data: out };
-    return out;
-  },
-  // det(A): determinant via LU with partial pivoting. Returns 0 for
-  // singular matrices. O(n³).
-  det: (A: any): any => {
-    if (valueLib.isDiagStored(A) && !A.im) {           // O(n): ∏ diagonal
-      let p = 1; for (let i = 0; i < A.data.length; i++) p *= A.data[i];
-      return valueLib.scalar(p);
-    }
-    if (valueLib.isValue(A)) {
-      return valueLib.scalar(_detLUValue(valueLib.densify(A)));
-    }
-    if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
-      throw new Error('det: argument must be a non-empty square matrix');
-    }
-    return _detLU(A);
-  },
-  // logabsdet(A): log |det(A)|. Computed alongside det via the LU
-  // decomposition to keep numerical stability on near-singular inputs.
-  logabsdet: (A: any): any => {
-    if (valueLib.isDiagStored(A) && !A.im) {           // O(n): Σ log|diag|
-      let s = 0; for (let i = 0; i < A.data.length; i++) s += Math.log(Math.abs(A.data[i]));
-      return valueLib.scalar(s);
-    }
-    if (valueLib.isValue(A)) {
-      return valueLib.scalar(_logAbsDetLUValue(valueLib.densify(A)));
-    }
-    if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
-      throw new Error('logabsdet: argument must be a non-empty square matrix');
-    }
-    return _logAbsDetLU(A);
-  },
-  // inv(A): matrix inverse via LU + back-substitution against I. O(n³).
-  // Throws on singular matrices.
-  inv: (A: any): any => {
-    if (valueLib.isDiagStored(A) && !A.im) {           // O(n): reciprocal
-      const d = new Float64Array(A.data.length);
-      for (let i = 0; i < d.length; i++) {
-        if (A.data[i] === 0) throw new Error('inv: singular diagonal matrix');
-        d[i] = 1 / A.data[i];
-      }
-      return valueLib.diagMatrix(d);
-    }
-    if (valueLib.isValue(A)) {
-      return _invValue(valueLib.densify(A));
-    }
-    if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
-      throw new Error('inv: argument must be a non-empty square matrix');
-    }
-    return _invGaussJordan(A);
-  },
+  // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2);
+  // these entries delegate so direct ARITH_OPS callers (mat-*, tests)
+  // keep working with the single-sourced implementation.
+  trace:      (M: any): any => opsModule.dispatch('trace', [M]),
+  diagmat:    (v: any): any => opsModule.dispatch('diagmat', [v]),
+  self_outer: (v: any): any => opsModule.dispatch('self_outer', [v]),
+  // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2);
+  // these entries delegate so direct ARITH_OPS callers keep working.
+  cross:     (a: any, b: any): any => opsModule.dispatch('cross', [a, b]),
+  det:       (A: any): any => opsModule.dispatch('det', [A]),
+  logabsdet: (A: any): any => opsModule.dispatch('logabsdet', [A]),
+  inv:       (A: any): any => opsModule.dispatch('inv', [A]),
   // linsolve(A, b): solve A x = b for x. b may be a vector (returns
   // vector) or a matrix (returns matrix, solved column-by-column).
   linsolve: (A: any, b: any): any => {
@@ -921,45 +746,10 @@ const ARITH_OPS = {
     }
     return _linsolveLU(A, b);
   },
-  // lower_cholesky(A): lower-triangular L with A = L L^T for symmetric
-  // positive-definite A. Throws if A is not PD.
-  lower_cholesky: (A: any): any => {
-    if (valueLib.isDiagStored(A) && !A.im) {
-      // A diagonal PD matrix is its own Cholesky structure: L = √diag,
-      // still diagonal (lower-triangular). O(n), no factorization.
-      const d = new Float64Array(A.data.length);
-      for (let i = 0; i < d.length; i++) {
-        if (!(A.data[i] > 0)) {
-          throw new Error('lower_cholesky: matrix is not positive definite');
-        }
-        d[i] = Math.sqrt(A.data[i]);
-      }
-      return valueLib.diagMatrix(d);
-    }
-    if (valueLib.isValue(A)) {
-      return _choleskyValue(valueLib.densify(A));
-    }
-    if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
-      throw new Error('lower_cholesky: argument must be a non-empty square matrix');
-    }
-    return _cholesky(A);
-  },
-  // row_gram(A) = A · A^†; col_gram(A) = A^† · A (spec §07 — adjoint /
-  // conjugate-transpose, the Hermitian Gram). For real A the conj bit
-  // is a numerical no-op so this is identical to the old transpose
-  // form; for complex A the adjoint is required for the Gram to be
-  // Hermitian. On Value input the matmul goes through value-ops.mul,
-  // which folds the Klein-4 conj+swap tags at dispatch (no transpose
-  // or conjugate materialisation). Useful for LKJ ↔ LKJCholesky
-  // conversions and Gram-matrix priors.
-  row_gram: (A: any) => {
-    if (valueLib.isValue(A)) return valueOps.mul(A, valueLib.adjoint(A));
-    return _matmul(A, ARITH_OPS.transpose(A));
-  },
-  col_gram: (A: any) => {
-    if (valueLib.isValue(A)) return valueOps.mul(valueLib.adjoint(A), A);
-    return _matmul(ARITH_OPS.transpose(A), A);
-  },
+  // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2).
+  lower_cholesky: (A: any): any => opsModule.dispatch('lower_cholesky', [A]),
+  row_gram:       (A: any): any => opsModule.dispatch('row_gram',       [A]),
+  col_gram:       (A: any): any => opsModule.dispatch('col_gram',       [A]),
   // array(data, size, dimorder) — n-D array from a flat data vector
   // per spec §07. size is an n-vector of positive dimensions;
   // dimorder is a permutation of [1..n] listing axes from slowest- to
@@ -2113,6 +1903,13 @@ function evaluateCall(ir: any, env: any): any {
   }
   if (op in ARITH_OPS) {
     const args = (ir.args || []).map((a: any) => evaluateExpr(a, env));
+    // Phase 2: declared ops dispatch through ops.ts (engine-concepts
+    // §18). Both paths return the same result for the declared ops;
+    // conformance suite pins this. ARITH_OPS entries that haven't
+    // migrated still take the legacy path below.
+    if (opsModule.isDeclared(op)) {
+      return opsModule.dispatch(op, args);
+    }
     return (ARITH_OPS as any)[op](...args);
   }
   // tuple_get(<tuple-expr>, <slot lit>) — engine-internal projection

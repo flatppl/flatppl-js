@@ -98,6 +98,78 @@ function batchedVecValue(rows: number[][]): any {
   return { shape: [N, n], data };
 }
 
+// Square-matrix Value, shape=[n, n].
+function matValue(rows: number[][]): any {
+  const n = rows.length;
+  const data = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) data[i * n + j] = rows[i][j];
+  }
+  return { shape: [n, n], data };
+}
+
+// Batched square matrices, shape=[N, n, n].
+function batchedMatValue(matrices: number[][][]): any {
+  const N = matrices.length;
+  const n = matrices[0].length;
+  const data = new Float64Array(N * n * n);
+  for (let k = 0; k < N; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) data[k * n * n + i * n + j] = matrices[k][i][j];
+    }
+  }
+  return { shape: [N, n, n], data };
+}
+
+// Random square matrix arbitrary, n × n.
+function arbSquareMat(maxN = 5): any {
+  return fc.integer({ min: 1, max: maxN }).chain((n: any) =>
+    fc.array(fc.array(arbReal, { minLength: n, maxLength: n }),
+      { minLength: n, maxLength: n }));
+}
+
+// Random SPD matrix: generate L lower-triangular with positive
+// diagonal, return L · Lᵀ. Always positive definite by construction.
+function arbSPD(maxN = 5): any {
+  return fc.integer({ min: 1, max: maxN }).chain((n: any) =>
+    fc.array(arbReal, { minLength: n * n, maxLength: n * n })
+      .map((vals: any) => {
+        // Build lower-triangular L with non-zero diagonal.
+        const L: number[][] = [];
+        let idx = 0;
+        for (let i = 0; i < n; i++) {
+          const row: number[] = new Array(n).fill(0);
+          for (let j = 0; j <= i; j++) row[j] = vals[idx++];
+          // Force a positive, non-tiny diagonal so det(L) is bounded
+          // away from zero.
+          row[i] = Math.abs(row[i]) + 1.0;
+          L.push(row);
+        }
+        // A = L · Lᵀ.
+        const A: number[][] = [];
+        for (let i = 0; i < n; i++) {
+          const row: number[] = new Array(n);
+          for (let j = 0; j < n; j++) {
+            let s = 0;
+            for (let k = 0; k <= Math.min(i, j); k++) s += L[i][k] * L[j][k];
+            row[j] = s;
+          }
+          A.push(row);
+        }
+        return A;
+      }));
+}
+
+// Random non-singular matrix: A + n·I (diagonal-dominant).
+function arbNonSingular(maxN = 5): any {
+  return arbSquareMat(maxN).map((A: any) => {
+    const n = A.length;
+    const out = A.map((row: any) => row.slice());
+    for (let i = 0; i < n; i++) out[i][i] += n + 1;  // diagonal dominance
+    return out;
+  });
+}
+
 // Convert a Value (or bare Float64Array) to a plain JS array for
 // assert.deepEqual on the numeric content.
 function dataArr(v: any): number[] {
@@ -216,6 +288,118 @@ test('ops conformance: self_outer — atom-batched dispatch produces shape=[N, n
         'atom ' + i + ': batched slice must equal per-atom result');
     }
   }), { numRuns: 150 });
+});
+
+// ---------------------------------------------------------------------
+// Phase 2 linalg family — trace / diagmat / det / logabsdet / inv /
+// lower_cholesky / row_gram / col_gram. Each test runs ops.dispatch
+// against the reference (ARITH_OPS) over random inputs, then checks
+// the atom-batched stacking property.
+//
+// Helpers below close over `op` + an input generator (atom-indep) and
+// run BOTH the legacy-reference equivalence and the
+// batched ≡ per-atom property.
+// ---------------------------------------------------------------------
+
+// Compare two scalar / array / Value results structurally on numeric
+// data, with a small tolerance for floating-point ops where one path
+// might re-associate (det / inv / cholesky etc.).
+function approxEqual(a: any, b: any, tol = 1e-9): boolean {
+  const av = valueLib.isValue(a) ? a : valueLib.asValue(a);
+  const bv = valueLib.isValue(b) ? b : valueLib.asValue(b);
+  if (av.shape.length !== bv.shape.length) return false;
+  for (let i = 0; i < av.shape.length; i++) {
+    if (av.shape[i] !== bv.shape[i]) return false;
+  }
+  if (av.data.length !== bv.data.length) return false;
+  for (let i = 0; i < av.data.length; i++) {
+    const da = av.data[i], db = bv.data[i];
+    if (!isFinite(da) && !isFinite(db)) continue;        // both ±inf / NaN — call equal
+    if (Math.abs(da - db) > tol * (1 + Math.max(Math.abs(da), Math.abs(db)))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Run the three load-bearing properties for an op declared via OpDecl
+// against a generator of atom-indep Value-typed inputs.
+function pinUnaryLinalgOp(opName: string, arbInputs: any) {
+  // 1. atom-indep ops.dispatch ≡ ARITH_OPS.
+  test('ops conformance: ' + opName + ' — atom-indep dispatch matches ARITH_OPS', () => {
+    fc.assert(fc.property(arbInputs, (rows: any) => {
+      const A = matValue(rows);
+      const viaDispatch = ops.dispatch(opName, [A]);
+      const viaArith    = ARITH_OPS[opName](A);
+      assert.ok(approxEqual(viaDispatch, viaArith),
+        opName + ' atom-indep mismatch (dispatch vs ARITH_OPS)');
+    }), { numRuns: 100 });
+  });
+  // 2. atom-batched dispatch ≡ stacked per-atom logical results.
+  test('ops conformance: ' + opName + ' — atom-batched dispatch matches per-atom stacking', () => {
+    fc.assert(fc.property(
+      fc.integer({ min: 1, max: 4 }),
+      arbInputs,
+      (N: any, rows: any) => {
+        const matrices: number[][][] = [];
+        for (let i = 0; i < N; i++) matrices.push(rows);
+        const batched = batchedMatValue(matrices);
+        const viaDispatch = ops.dispatch(opName, [batched]);
+        // Each atom carries the SAME matrix, so per-atom results
+        // must all equal the atom-indep result.
+        const perAtom = ops.dispatch(opName, [matValue(rows)]);
+        // viaDispatch must be a Value with leading dim N.
+        assert.ok(valueLib.isValue(viaDispatch),
+          opName + ' batched must return a Value');
+        assert.equal(viaDispatch.shape[0], N,
+          opName + ' batched: leading dim must be N');
+        // Slice each atom out and compare to the atom-indep result.
+        const tailShape = viaDispatch.shape.slice(1);
+        const tailLen = tailShape.reduce((a: number, b: number) => a * b, 1);
+        const expected = valueLib.isValue(perAtom)
+          ? perAtom.data
+          : (perAtom instanceof Float64Array ? perAtom : new Float64Array([perAtom]));
+        for (let i = 0; i < N; i++) {
+          const slice = viaDispatch.data.slice(i * tailLen, (i + 1) * tailLen);
+          const sliceV = { shape: tailShape, data: slice };
+          const expectV = { shape: tailShape, data: expected };
+          assert.ok(approxEqual(sliceV, expectV),
+            opName + ' batched atom ' + i + ' must equal atom-indep result');
+        }
+      },
+    ), { numRuns: 50 });
+  });
+}
+
+pinUnaryLinalgOp('trace', arbSquareMat());
+pinUnaryLinalgOp('det', arbNonSingular());
+pinUnaryLinalgOp('logabsdet', arbNonSingular());
+pinUnaryLinalgOp('inv', arbNonSingular());
+pinUnaryLinalgOp('lower_cholesky', arbSPD());
+pinUnaryLinalgOp('row_gram', arbSquareMat());
+pinUnaryLinalgOp('col_gram', arbSquareMat());
+
+// diagmat takes a VECTOR input, returns a structured diag matrix.
+// The dispatcher's per-atom fallback for diagmat shape=[N, n] inputs
+// would produce diag-structured per-atom results which then stack via
+// `_stackPerAtom`. The structured-Value handling in _stackPerAtom
+// would need to densify — exercise that explicitly here.
+test('ops conformance: diagmat — atom-indep dispatch matches ARITH_OPS', () => {
+  fc.assert(fc.property(
+    fc.integer({ min: 1, max: 6 }).chain((n: any) =>
+      fc.array(arbReal, { minLength: n, maxLength: n })),
+    (v: any) => {
+      const V = vecValue(v);
+      const viaDispatch = ops.dispatch('diagmat', [V]);
+      const viaArith    = ARITH_OPS.diagmat(V);
+      // Both should be diag-structured Values with the same vector.
+      assert.ok(valueLib.isValue(viaDispatch));
+      assert.deepEqual(
+        Array.from(viaDispatch.data),
+        Array.from(viaArith.data),
+        'diagmat must produce the same diag-stored data');
+    },
+  ), { numRuns: 100 });
 });
 
 // ---------------------------------------------------------------------
