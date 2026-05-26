@@ -254,8 +254,8 @@
       return;
     }
     eph.add(path, starterSourceFor(path));
-    if (!playgroundEditor && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
-      await setEditMode(true);
+    if (!editEnabled && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
+      setEditMode(true);
     }
     window.FlatPPLWebRouter.navigateTo({ model: path });
   }
@@ -275,17 +275,17 @@
     // can't unlock editing through a hash-link).
     const ephRef = window.FlatPPLWebEphemeral;
     if (ephRef && state.model && ephRef.has(state.model)
-        && !playgroundEditor
+        && !editEnabled
         && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
-      await setEditMode(true);
+      setEditMode(true);
     }
 
     // Same model, target-only change: skip the fetch and the source-
-    // pane rewrite entirely. In playground mode the editor IS the
-    // source of truth — rewriting it with the cached original would
-    // wipe user edits and reset the cursor. Read the live text out
-    // of the editor when one is mounted; fall back to the last
-    // rendered text otherwise.
+    // pane rewrite entirely. The editor IS the source of truth now —
+    // rewriting it with the cached original would wipe any user edits
+    // and reset the cursor. Read the live text directly out of the
+    // editor; fall back to the last rendered text only if the editor
+    // hasn't mounted yet (boot race).
     // The surface-syntax variant follows the model path's extension
     // (.flatppl / .flatppy / .flatppj). The viewer reads this on
     // every update so persist write-back emits matching syntax.
@@ -293,8 +293,8 @@
 
     if (state.model === lastModel) {
       if (viewer) {
-        const liveText = playgroundEditor
-          ? playgroundEditor.getSource()
+        const liveText = sourceEditor
+          ? sourceEditor.getSource()
           : (lastRenderedSource || '');
         // pushHistory: true — target-only navigation within one model
         // (source-pane click, cursor-driven onNavigate from the
