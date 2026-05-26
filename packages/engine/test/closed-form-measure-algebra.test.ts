@@ -1020,3 +1020,107 @@ x = draw(ifelse(c, Normal(mu = -8.0, sigma = 1.0), Normal(mu = 8.0, sigma = 1.0)
   assert.ok(Math.abs(nA / xs.length - p) < 0.02,
     `branch-A fraction ≈ p = ${p}, got ${nA / xs.length}`);
 });
+
+// =====================================================================
+// bayesupdate: Gamma-Poisson conjugate posterior (multi-observation)
+// =====================================================================
+//
+// Closed-form conjugate prior:
+//   λ ~ Gamma(α₀, β₀),  y_i | λ ~ Poisson(λ) IID, i = 1..n
+//   ⇒ λ | y ~ Gamma(α₀ + Σy_i, β₀ + n)
+//
+// With α₀=2, β₀=1, counts_data=[2,3,7,6,4], Σy = 22, n = 5:
+//   posterior λ ~ Gamma(24, 6)
+//   E[λ | data] = 24/6 = 4
+//   Var[λ | data] = 24/36 = 2/3
+//
+// Importance sampling reweights prior atoms by L(λ_i) = Π Poisson(y_k; λ_i):
+// the weighted moments converge to the closed-form Gamma(24, 6) moments.
+//
+// Also exercises classifyIid resolving `iid(Poisson(λ), n)` where
+// `n = lengthof(counts_data)` is a binding ref to a fixed-phase
+// expression — the regression covered structurally in
+// iid-multi-axis.test.ts. Here we additionally pin the numerical
+// posterior moments end-to-end.
+
+// Closed-form log-pdf helpers.
+function logGamma(x: number): number {
+  // Stirling-series approximation good enough for ratios across atoms
+  // — Numerical Recipes / Lanczos coefficients would tighten this
+  // further but the differences we test against cancel the bulk.
+  let g = 0, z = x;
+  while (z < 7) { g -= Math.log(z); z += 1; }
+  // Stirling for log Γ(z) at z ≥ 7
+  const z2 = 1 / (z * z);
+  g += (z - 0.5) * Math.log(z) - z + 0.5 * Math.log(2 * Math.PI)
+     + (1/12 - (1/360 - (1/1260 - 1/(1680*z2)) * z2) * z2) / z;
+  return g;
+}
+function gammaLogPdf(x: number, shape: number, rate: number): number {
+  if (x <= 0) return -Infinity;
+  return shape * Math.log(rate) - logGamma(shape)
+       + (shape - 1) * Math.log(x) - rate * x;
+}
+
+test('bayesupdate: Gamma-Poisson conjugate ⇒ posterior Gamma(24, 6)', async () => {
+  // Spec §08 Gamma(shape, rate); per-observation Poisson IID over the
+  // count data. Forward kernel boundary-includes lambda so the
+  // posterior atoms carry λ samples + importance weights from
+  // the per-atom log-likelihood L(λ) = Π Poisson(counts_k | λ).
+  const ctx = makeCtx(`
+counts_data = [2, 3, 7, 6, 4]
+n = lengthof(counts_data)
+lambda = draw(Gamma(shape = 2.0, rate = 1.0))
+prior = lawof(record(lambda = lambda))
+y_dist = joint(y = iid(Poisson(rate = lambda), n))
+K = functionof(y_dist, lambda = lambda)
+L = likelihoodof(K, record(y = counts_data))
+posterior = bayesupdate(L, prior)
+`);
+  const post = await ctx.getMeasure('posterior');
+  assert.ok(post.fields && post.fields.lambda, 'posterior is a record measure with lambda');
+  assert.ok(post.logWeights, 'posterior atoms carry logWeights');
+
+  const lambdas = post.fields.lambda.samples;
+  const lw     = post.logWeights;
+
+  // Plan B: weighted moments against analytical Gamma(24, 6).
+  const muHat   = weightedMean(lambdas, lw);
+  const varHat  = weightedVar(lambdas, lw);
+  // Closed-form: mean = 24/6 = 4, var = 24/36 = 2/3 ≈ 0.6667.
+  assert.ok(Math.abs(muHat - 4.0) < 0.10,
+    'posterior E[λ] = 24/6 = 4.0, got ' + muHat);
+  assert.ok(Math.abs(varHat - (2/3)) < 0.10,
+    'posterior Var[λ] = 24/36 = 2/3, got ' + varHat);
+
+  // Plan A: log-density consistency. For each posterior atom λ_i,
+  //   log p_engine(λ_i) = log p_prior(λ_i) + lw_i
+  // should differ from
+  //   log p_closed(λ_i) = log Gamma(λ_i; 24, 6)
+  // by an additive normalising constant that's the SAME for every
+  // atom (engine returns unnormalised log-posterior; closed-form is
+  // the normalised Gamma(24, 6)). Check that the per-atom difference
+  // is consistent across atoms — i.e. spread (max-min) is small.
+  let minDiff =  Infinity, maxDiff = -Infinity;
+  for (let i = 0; i < lambdas.length; i++) {
+    const lam = lambdas[i];
+    if (!(lam > 0)) continue;          // skip any pathological atoms
+    const logPrior  = gammaLogPdf(lam, 2.0, 1.0);
+    const logPostEn = logPrior + lw[i];
+    const logPostCl = gammaLogPdf(lam, 24.0, 6.0);
+    const d = logPostEn - logPostCl;
+    if (d < minDiff) minDiff = d;
+    if (d > maxDiff) maxDiff = d;
+  }
+  // Numerically the spread should be near floating-point fuzz; allow
+  // 1e-6 to absorb Stirling-series rounding in logGamma above.
+  assert.ok(maxDiff - minDiff < 1e-6,
+    'log p_engine − log p_Gamma(24,6) varies across atoms — engine '
+    + 'posterior shape mismatches closed-form. spread=' + (maxDiff - minDiff));
+
+  // n_eff sanity — Gamma(2,1) is concentrated near small λ; data with
+  // mean 4.4 pulls the posterior away from the prior mode (2), so ESS
+  // will be lossy but should still be a meaningful fraction.
+  assert.ok(post.n_eff > SAMPLE_COUNT * 0.10,
+    'n_eff > 10% of N (importance overlap reasonable), got ' + post.n_eff);
+});
