@@ -1662,6 +1662,89 @@ test('resolveAxisBaseSet: null / unrecognised source → null', () => {
   assert.equal(resolveAxisBaseSet({ kind: 'unknown' }, new Map()), null);
 });
 
+// resolveAxisBaseSet — drawn variates surface their distribution's
+// natural support set instead of degrading to `empirical`. Spec §08;
+// flatppl-dev TODO §03 "Tighten resolveAxisBaseSet for drawn variates."
+
+test('resolveAxisBaseSet: draw(Normal(...)) → reals', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+theta = draw(Normal(0.0, 1.0))
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'theta' }, lifted);
+  assert.deepEqual(base, { kind: 'reals' });
+});
+
+test('resolveAxisBaseSet: ~Exponential → posreals (positive half-line)', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+theta ~ Exponential(rate = 1.0)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'theta' }, lifted);
+  assert.deepEqual(base, { kind: 'posreals' });
+});
+
+test('resolveAxisBaseSet: ~Beta → unitinterval', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+theta ~ Beta(alpha = 2.0, beta = 5.0)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'theta' }, lifted);
+  assert.deepEqual(base, { kind: 'unitinterval' });
+});
+
+test('resolveAxisBaseSet: ~Poisson → nonnegintegers', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+k ~ Poisson(rate = 3.0)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'k' }, lifted);
+  assert.deepEqual(base, { kind: 'nonnegintegers' });
+});
+
+test('resolveAxisBaseSet: ~Bernoulli → booleans', () => {
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+b ~ Bernoulli(p = 0.3)
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'b' }, lifted);
+  assert.deepEqual(base, { kind: 'booleans' });
+});
+
+test('resolveAxisBaseSet: ~Uniform(support = interval(...)) reads the support kwarg', () => {
+  // Uniform's natural support is given by a kwarg, not implicit in
+  // the constructor name. Surface it via parseSetIR (same path as
+  // explicit `elementof(set)` bindings).
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+u ~ Uniform(support = interval(-1.0, 2.5))
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'u' }, lifted);
+  assert.deepEqual(base, { kind: 'interval', lo: -1, hi: 2.5 });
+});
+
+test('resolveAxisBaseSet: deterministic transform of a draw → empirical (no static set)', () => {
+  // Only the direct draw surfaces the distribution support; a
+  // derived deterministic variate doesn't inherit the support
+  // (e.g. `y = 2 * theta` where theta ~ Exponential can take any
+  // positive value if theta is positive). Leave to the empirical
+  // quantile-clip path.
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+theta ~ Exponential(rate = 1.0)
+y = 2.0 * theta
+`);
+  const lifted = liftInlineSubexpressions(bindings);
+  const base = resolveAxisBaseSet({ kind: 'binding', name: 'y' }, lifted);
+  assert.deepEqual(base, { kind: 'empirical', name: 'y' });
+});
+
 test('resolveAxisBaseSet: external() source → empirical (not a set restriction)', () => {
   // external(...) and load_data(...) share binding.type='input' with
   // elementof but their RHS op is 'external' / 'load_data', not
