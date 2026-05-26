@@ -344,6 +344,15 @@
         li.title = ent.path + ' (session-only)';
         li.dataset.path = ent.path;
         li.addEventListener('click', onTreeClick);
+        li.addEventListener('contextmenu', (function (path: string) {
+          return function (ev: any) {
+            ev.preventDefault();
+            showTreeContextMenu(ev, {
+              path: path, targetPath: path,
+              isEphemeral: true,
+            });
+          };
+        })(ent.path));
         ephUl.appendChild(li);
       }
       fileTree.appendChild(ephUl);
@@ -450,6 +459,17 @@
             li.appendChild(dot);
           }
           li.addEventListener('click', onTreeClick);
+          li.addEventListener('contextmenu', function (ev: any) {
+            ev.preventDefault();
+            showTreeContextMenu(ev, {
+              path:       entry.path,       // original (read-only) path or user path
+              targetPath: targetPath,       // click-through target (== fork if any)
+              parent:     entry.parent || null,
+              isUser:     key === 'user',
+              isForked:   !!(forkOf && forkOf[entry.path]),
+              forkPath:   forkOf ? forkOf[entry.path] : null,
+            });
+          });
           ul.appendChild(li);
         }
         folder.appendChild(ul);
@@ -457,6 +477,169 @@
     }
 
     fileTree.appendChild(folder);
+  }
+
+  // -------------------- Tree context menu --------------------
+
+  // Single floating menu element reused across right-clicks. Built
+  // lazily on first show; closed on outside-click, Escape, or
+  // pane scroll. Actions are computed per-entry from the same
+  // metadata renderFolder already has.
+  let _ctxMenu: HTMLElement | null = null;
+  function getTreeContextMenu(): HTMLElement {
+    if (_ctxMenu) return _ctxMenu;
+    const m = document.createElement('div');
+    m.id = 'tree-context-menu';
+    m.style.display = 'none';
+    document.body.appendChild(m);
+    document.addEventListener('mousedown', function (ev: any) {
+      if (!_ctxMenu || _ctxMenu.style.display === 'none') return;
+      if (_ctxMenu.contains(ev.target)) return;
+      hideTreeContextMenu();
+    });
+    document.addEventListener('keydown', function (ev: any) {
+      if (ev.key === 'Escape') hideTreeContextMenu();
+    });
+    _ctxMenu = m;
+    return m;
+  }
+  function hideTreeContextMenu() {
+    if (_ctxMenu) _ctxMenu.style.display = 'none';
+  }
+  function showTreeContextMenu(ev: any, info: any) {
+    const menu = getTreeContextMenu();
+    menu.innerHTML = '';
+
+    const items: Array<{ label: string; action: () => void }> = [];
+    items.push({
+      label: 'Download',
+      action: function () { downloadFile(info.targetPath || info.path); },
+    });
+    if (info.isForked && info.forkPath) {
+      // Read-only entry with a user fork — offer to drop the fork.
+      items.push({
+        label: 'Reset to original',
+        action: function () {
+          if (!window.confirm('Discard your changes to "' + info.path
+              + '"? The original will be restored.')) return;
+          deleteUserFile(info.forkPath, /* navigateTo */ info.path);
+        },
+      });
+    }
+    if (info.isUser) {
+      if (info.parent) {
+        items.push({
+          label: 'Reset to original',
+          action: function () {
+            if (!window.confirm('Discard your changes and restore the original "'
+                + info.parent + '"?')) return;
+            deleteUserFile(info.path, /* navigateTo */ info.parent);
+          },
+        });
+      } else {
+        items.push({
+          label: 'Delete',
+          action: function () {
+            if (!window.confirm('Delete "' + info.path + '"? This cannot be undone.')) return;
+            deleteUserFile(info.path, /* navigateTo */ null);
+          },
+        });
+      }
+    }
+    if (info.isEphemeral) {
+      items.push({
+        label: 'Discard',
+        action: function () {
+          if (!window.confirm('Discard "' + info.path + '"? It will be lost.')) return;
+          if (window.FlatPPLWebEphemeral) {
+            window.FlatPPLWebEphemeral.remove(info.path);
+          }
+          const cur = window.FlatPPLWebRouter.parseHash();
+          if (cur.model === info.path) {
+            const fallback = manifest && manifest.entries && manifest.entries[0]
+              ? manifest.entries[0].path : null;
+            if (fallback) window.FlatPPLWebRouter.navigateTo({ model: fallback });
+          }
+        },
+      });
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const row = document.createElement('div');
+      row.className = 'tree-ctx-item';
+      row.textContent = it.label;
+      row.addEventListener('click', function () {
+        hideTreeContextMenu();
+        try { it.action(); }
+        catch (e) { console.error('[@flatppl/web] context-menu action failed:', e); }
+      });
+      menu.appendChild(row);
+    }
+
+    // Position at the mouse, clamped so the menu doesn't fall off
+    // the right edge of the viewport.
+    menu.style.display = 'block';
+    const rect = menu.getBoundingClientRect();
+    let x = ev.clientX;
+    let y = ev.clientY;
+    if (x + rect.width  > window.innerWidth)  x = window.innerWidth  - rect.width  - 4;
+    if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 4;
+    menu.style.left = x + 'px';
+    menu.style.top  = y + 'px';
+  }
+
+  /** Trigger a browser download of `path`'s source. Resolves the
+   *  text the same way the gallery normally does (ephemeral → user
+   *  → network) so any in-memory or persisted override wins over
+   *  the on-disk read-only original. */
+  async function downloadFile(path: string) {
+    if (!path) return;
+    let text: string | null = null;
+    try {
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
+      text = bundle && bundle.primarySource;
+    } catch (e: any) {
+      window.alert('Download failed: ' + (e && e.message ? e.message : String(e)));
+      return;
+    }
+    if (text == null) return;
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = basenameOf(path);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke after a tick so the browser has time to start the
+    // download — some browsers (Safari) cancel the download if the
+    // blob URL is revoked synchronously.
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /** Delete a user-store entry and optionally navigate the gallery
+   *  to a fallback path (e.g. the original after a "Reset to
+   *  original"). The store's subscribe fires automatically, which
+   *  redraws the sidebar. */
+  function deleteUserFile(path: string, navigateTo: string | null) {
+    const userStore = window.FlatPPLWebUserStore;
+    if (!userStore) return;
+    userStore.remove(path);
+    if (navigateTo) {
+      window.FlatPPLWebRouter.navigateTo({ model: navigateTo });
+    } else {
+      // No fallback — if the current model was just deleted, route
+      // to whatever the next manifest entry is so the gallery
+      // shows something. The user-store subscriber redraws the
+      // tree separately.
+      const cur = window.FlatPPLWebRouter.parseHash();
+      if (cur.model === path) {
+        const fallback = manifest && manifest.entries && manifest.entries[0]
+          ? manifest.entries[0].path : null;
+        if (fallback) window.FlatPPLWebRouter.navigateTo({ model: fallback });
+      }
+    }
   }
 
   /** Build the default starter source for a new ephemeral file.
