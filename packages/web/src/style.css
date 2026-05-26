@@ -218,6 +218,69 @@ html, body {
   opacity: 0.5;
 }
 
+/* Folder grouping in the file pane (Examples / Test cases / User).
+   Each folder has a clickable header with a chevron + name + count
+   badge; click toggles open/closed (persisted via the gallery's
+   FOLDER_STATE_KEY localStorage key). When open, the entries
+   render inside a normal .file-list with a small left indent so
+   the hierarchy reads at a glance. */
+.file-folder {
+  user-select: none;
+}
+.file-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.45em 1em 0.3em 0.6em;
+  cursor: pointer;
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.file-folder-header:hover { color: var(--fg); }
+.file-folder-chev {
+  display: inline-block;
+  width: 0.9em;
+  font-size: 0.85em;
+  text-align: center;
+  line-height: 1;
+}
+.file-folder-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-folder-count {
+  opacity: 0.6;
+  font-size: 0.9em;
+}
+.file-folder .file-list-item {
+  padding-left: 1.6em;     /* indent under the folder header */
+}
+.file-folder-empty {
+  padding: 0.35em 1em 0.6em 1.6em;
+  font-size: 0.85em;
+  font-style: italic;
+  opacity: 0.5;
+}
+
+/* Modified-dot indicator on a read-only file that has a user fork.
+   The whole entry routes the click to the fork (see app.ts
+   renderTree), so the dot is a passive affordance — no separate
+   pointer cursor, no nested hit-target. */
+.file-list-item--modified {
+  /* Make room for the dot at the right edge. */
+}
+.file-list-modified-dot {
+  float: right;
+  margin-left: 0.4em;
+  color: var(--accent);
+  font-size: 0.8em;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
 /* CodeMirror line-flash decoration — re-installed by editor.ts on
    every revealLine call, cleared by its own timer after 1.5 s.
    The Decoration applies this class to the target line wrapper

@@ -146,16 +146,81 @@
     if (viewer && typeof viewer.update === 'function') viewer.update(msg);
   }
 
-  /** Render the manifest + ephemeral entries as clickable lists in
-      the left pane. Ephemeral entries (created via "+ New file") get
-      their own section above the manifest so the unsaved files are
-      easy to find regardless of how many manifest entries there are. */
+  // localStorage key + helpers for folder open/closed state.
+  // Default expansion: examples open, test-cases collapsed, user
+  // open iff non-empty. Once the user toggles a folder we remember
+  // their choice so reloads don't fight muscle memory.
+  const FOLDER_STATE_KEY = 'flatppl-web:folder-open';
+  function readFolderState(): Record<string, boolean | undefined> {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(FOLDER_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (_) {}
+    return {};
+  }
+  function writeFolderState(state: Record<string, boolean>) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(FOLDER_STATE_KEY, JSON.stringify(state));
+      }
+    } catch (_) {}
+  }
+  function basenameOf(path: string): string {
+    const i = path.lastIndexOf('/');
+    return i < 0 ? path : path.slice(i + 1);
+  }
+
+  /** Render the file pane as three top-level folders
+   *  (examples / test-cases / user) plus an optional "Unsaved"
+   *  section above them for ephemeral session-only buffers.
+   *  Folders are collapsible; open/closed state persists in
+   *  localStorage. A read-only file with a user fork shows a small
+   *  modified-dot indicator and clicking it routes to the fork
+   *  (the original is still reachable via "Reset to original"
+   *  on the fork). */
   function renderTree(currentModel: any) {
     if (!fileTree) return;
     fileTree.innerHTML = '';
 
     const eph = window.FlatPPLWebEphemeral;
     const ephEntries = (eph && eph.list) ? eph.list() : [];
+    const userStore = window.FlatPPLWebUserStore;
+    const userEntries = (userStore && userStore.list) ? userStore.list() : [];
+
+    // Bucket manifest entries by top-level prefix. Anything that
+    // doesn't match a known bucket goes into the examples folder by
+    // default (the manifest historically held only demo/ and
+    // examples/; future categories would land here).
+    const buckets: Record<string, any[]> = { examples: [], 'test-cases': [] };
+    if (manifest && manifest.entries) {
+      for (let i = 0; i < manifest.entries.length; i++) {
+        const e = manifest.entries[i];
+        if (typeof e.path === 'string' && e.path.indexOf('test-cases/') === 0) {
+          buckets['test-cases'].push(e);
+        } else if (typeof e.path === 'string' && e.path.indexOf('demo/') === 0) {
+          // Legacy bucket name — keep mapping demo/ → test-cases
+          // until the manifest catches up with the gallery's
+          // user-facing folder labels.
+          buckets['test-cases'].push(e);
+        } else {
+          buckets.examples.push(e);
+        }
+      }
+    }
+
+    // Map read-only-path → user-fork-path. Used to surface a
+    // "modified" indicator on the read-only entry, and to redirect
+    // its click target to the fork.
+    const forkOf: Record<string, string> = Object.create(null);
+    for (let i = 0; i < userEntries.length; i++) {
+      const u = userEntries[i];
+      if (u.parent) forkOf[u.parent] = u.path;
+    }
+
+    // Unsaved (ephemeral) section above the folders.
     if (ephEntries.length > 0) {
       const ephHeader = document.createElement('div');
       ephHeader.className = 'file-list-header';
@@ -177,29 +242,114 @@
       fileTree.appendChild(ephUl);
     }
 
-    if (!manifest || manifest.entries.length === 0) {
-      if (ephEntries.length === 0) {
-        const p = document.createElement('div');
-        p.className = 'pane-placeholder';
-        p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
-        fileTree.appendChild(p);
+    const persisted = readFolderState();
+    renderFolder('examples',   'Examples',   buckets.examples,
+      persisted.examples !== undefined ? !!persisted.examples : true,
+      currentModel, forkOf, /* italic */ false);
+    renderFolder('test-cases', 'Test cases', buckets['test-cases'],
+      persisted['test-cases'] !== undefined ? !!persisted['test-cases'] : false,
+      currentModel, forkOf, /* italic */ false);
+    renderFolder('user',       'User',       userEntries.map(function (u: any) {
+        return { path: u.path, title: basenameOf(u.path), parent: u.parent };
+      }),
+      persisted.user !== undefined ? !!persisted.user : (userEntries.length > 0),
+      currentModel, /* forkOf */ null, /* italic */ false);
+
+    // Empty state — only relevant if literally nothing is in any
+    // folder and there are no ephemeral entries. The folders
+    // themselves render their own per-folder empty labels.
+    if (ephEntries.length === 0
+        && buckets.examples.length === 0
+        && buckets['test-cases'].length === 0
+        && userEntries.length === 0) {
+      const p = document.createElement('div');
+      p.className = 'pane-placeholder';
+      p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
+      fileTree.appendChild(p);
+    }
+  }
+
+  /** Render one folder header + entry list. Open/closed state is
+   *  toggled on click and persisted across reloads. `forkOf` (when
+   *  non-null) is a map from read-only path → user-fork path; an
+   *  entry whose path is in the map gets a modified-dot
+   *  indicator AND its click is rerouted to the fork. */
+  function renderFolder(key: string, label: string, items: any[],
+                        open: boolean, currentModel: any,
+                        forkOf: Record<string, string> | null,
+                        italic: boolean) {
+    const folder = document.createElement('div');
+    folder.className = 'file-folder' + (open ? ' file-folder--open' : '');
+    folder.dataset.key = key;
+
+    const header = document.createElement('div');
+    header.className = 'file-folder-header';
+    const chev = document.createElement('span');
+    chev.className = 'file-folder-chev';
+    chev.textContent = open ? '▾' : '▸';  // ▾ / ▸
+    chev.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('span');
+    name.className = 'file-folder-name';
+    name.textContent = label;
+    const count = document.createElement('span');
+    count.className = 'file-folder-count';
+    count.textContent = String(items.length);
+    header.appendChild(chev);
+    header.appendChild(name);
+    header.appendChild(count);
+    header.addEventListener('click', function () {
+      const state = readFolderState();
+      const wasOpen = state[key] !== undefined ? !!state[key]
+        : (key === 'examples'
+           || (key === 'user' && items.length > 0));
+      state[key] = !wasOpen;
+      writeFolderState(state as Record<string, boolean>);
+      // Cheapest correct redraw — re-render the whole tree, which
+      // keeps the per-folder open/closed states + selection in sync.
+      renderTree(currentModel);
+    });
+    folder.appendChild(header);
+
+    if (open) {
+      if (items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'file-folder-empty';
+        empty.textContent = '(empty)';
+        folder.appendChild(empty);
+      } else {
+        const ul = document.createElement('ul');
+        ul.className = 'file-list';
+        for (let i = 0; i < items.length; i++) {
+          const entry = items[i];
+          const li = document.createElement('li');
+          li.className = 'file-list-item';
+          if (italic) li.classList.add('file-list-item--ephemeral');
+          // Determine the canonical click target. If this is a
+          // read-only entry with a known user fork, route the
+          // click to the fork instead of the original.
+          const targetPath = (forkOf && forkOf[entry.path]) || entry.path;
+          if (targetPath === currentModel) li.classList.add('selected');
+          li.textContent = entry.title || basenameOf(entry.path);
+          li.title = entry.parent
+            ? (entry.path + '  ←  forked from ' + entry.parent)
+            : entry.path;
+          li.dataset.path = targetPath;
+          if (forkOf && forkOf[entry.path]) {
+            li.classList.add('file-list-item--modified');
+            const dot = document.createElement('span');
+            dot.className = 'file-list-modified-dot';
+            dot.textContent = '●';   // ●
+            dot.title = 'Modified locally — click to open your copy';
+            li.appendChild(dot);
+          }
+          li.addEventListener('click', onTreeClick);
+          ul.appendChild(li);
+        }
+        folder.appendChild(ul);
       }
-      return;
     }
-    const ul = document.createElement('ul');
-    ul.className = 'file-list';
-    for (let j = 0; j < manifest.entries.length; j++) {
-      const entry = manifest.entries[j];
-      const li2 = document.createElement('li');
-      li2.className = 'file-list-item';
-      if (entry.path === currentModel) li2.classList.add('selected');
-      li2.textContent = entry.title;
-      li2.title = entry.path;
-      li2.dataset.path = entry.path;
-      li2.addEventListener('click', onTreeClick);
-      ul.appendChild(li2);
-    }
-    fileTree.appendChild(ul);
+
+    fileTree.appendChild(folder);
   }
 
   /** Build the default starter source for a new ephemeral file.
@@ -417,6 +567,12 @@
     }
     if (window.FlatPPLWebEphemeral && window.FlatPPLWebEphemeral.subscribe) {
       window.FlatPPLWebEphemeral.subscribe(function () {
+        const cur = window.FlatPPLWebRouter.parseHash();
+        renderTree(cur.model);
+      });
+    }
+    if (window.FlatPPLWebUserStore && window.FlatPPLWebUserStore.subscribe) {
+      window.FlatPPLWebUserStore.subscribe(function () {
         const cur = window.FlatPPLWebRouter.parseHash();
         renderTree(cur.model);
       });
