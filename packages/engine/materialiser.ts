@@ -547,6 +547,13 @@ module.exports = {
   fixedValueToMeasure,
   collectRefArrays,
   classifyProfileSelfRefs,
+  // Callable-layer predicates (engine-concepts §19.2). Exposed for
+  // viewer-side filters that need to skip function-like / kernel-
+  // typed source bindings before pulling samples[0] (the same array-
+  // collapse failure mode fixed in render-profile.ts; flatppl-js
+  // commit e9984f3).
+  isFunctionLikeBinding,
+  isCallableLayerBinding,
   nameSeed,
   makeMainThreadPrng,
   // Value ↔ Measure bridges.

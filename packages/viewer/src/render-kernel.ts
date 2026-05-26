@@ -116,7 +116,20 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // inlineForProfile because that pass inlines deterministic
   // deps. Anything still self-ref'd is genuinely a captured
   // stochastic/fixed dep from the outer scope.
+  // Latent guard (engine-concepts §19): filter function-like and
+  // fixed-phase source bindings from the samples[0] override loop.
+  // The same array-collapse failure mode we fixed in render-profile
+  // (flatppl-js commit e9984f3) would apply here once non-scalar
+  // input axes are supported (F4a restriction in render-profile
+  // lines 44-49). Today it's latent — fixing now keeps the code
+  // resilient when F4a lifts.
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
   Promise.all(bindingSourceLookups.map(function(s) {
+    const src = bindings && bindings.get(s.sourceName);
+    const isFunctionLike = FlatPPLEngine.materialiser.isFunctionLikeBinding(src);
+    const isFixedPhase = fixedValues && fixedValues.has(s.sourceName);
+    if (isFunctionLike || isFixedPhase) return null;
     return tryGetMeasure(ctx, s.sourceName);
   })).then(function(srcMeasures) {
     for (let i = 0; i < bindingSourceLookups.length; i++) {
