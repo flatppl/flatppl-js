@@ -397,8 +397,112 @@ function matBroadcastLogdensity(d: DerivationBroadcastLogdensity, ctx: any) {
 // `marginalize=true` (kchain) ⇒ keep only the last step's variate(s);
 // the prior is integrated out by matLogdensityof's MC reduction.
 
+/**
+ * Splice nested-chain steps into a flat step list.
+ *
+ * When a chain step's `ref` points to a binding that is itself a
+ * jointchain/kchain (kernel-first), we replace that step with the
+ * inner chain's steps so matJointchain's flat per-step loop covers
+ * the combined sequence. Per spec §06 the outer's variate is the
+ * `cat` of step variates; for an inner-chain component this engine
+ * interprets as flat retention (the alternative — nested retention —
+ * is spec-ambiguous when components have array-typed variates and
+ * is harder to compose with downstream consumers).
+ *
+ * Variable-name renaming: inner step vars get an `<outer-var>__`
+ * prefix so they don't collide with outer's. The first inner step
+ * (originally kernel-first base) becomes a kernel step in outer's
+ * context, with its `inputs` rewired to outer's accumulated prior
+ * vars (the outer step that this inner replaces).
+ */
+function _flattenNestedChainSteps(steps: any[], outerMarginalize: boolean, ctx: any): any[] {
+  const out: any[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    const innerDeriv = s.ref != null && ctx.derivations
+      ? ctx.derivations[s.ref] : null;
+    const isNested = !!innerDeriv && innerDeriv.kind === 'jointchain'
+      && Array.isArray(innerDeriv.steps);
+    if (i === 0 || !isNested) {
+      // Outer step 0 is the base; never splice. Non-chain steps pass
+      // through unchanged.
+      out.push(s);
+      continue;
+    }
+    // Marginalize-flag guard. Splicing preserves spec semantics only
+    // when inner and outer agree on retain-vs-marginalise: both
+    // jointchain (retain) ⇒ outer.variate retains every step including
+    // inner's; both kchain (marginal) ⇒ outer keeps the last step
+    // (which is inner's last, consistent with both marginalising
+    // intermediates). Mismatch corrupts semantics:
+    //   outer=jointchain, inner=kchain → flattening exposes inner's
+    //     intermediate variate that inner.kchain explicitly drops.
+    //   outer=kchain, inner=jointchain → outer keeps inner's last
+    //     step only, dropping inner's retain-set.
+    // Reject the mismatch case with a clear follow-up diagnostic;
+    // the per-atom "delegate to inner.matJointchain" approach handles
+    // it correctly but is a larger runtime extension.
+    const innerMarginalize = !!innerDeriv.marginalize;
+    if (innerMarginalize !== outerMarginalize) {
+      throw new Error(
+        `jointchain: step ${i} ref '${s.ref}' has `
+        + `marginalize=${innerMarginalize} while outer has `
+        + `marginalize=${outerMarginalize}; mixed-marginalize nested `
+        + `chains need per-atom delegation, a runtime follow-up. The `
+        + `same-marginalize case (both retain or both marginal) flattens `
+        + `correctly today; spell out the chain explicitly as a workaround.`);
+    }
+    // Splice inner's steps. The prior outer vars accumulated so far
+    // are exactly `out[j].var for j < i`, but since out only carries
+    // vars from steps we've appended (which is the same set), we
+    // capture them by name.
+    const priorVars = out.map(p => p.var);
+    const renamePrefix = s.var + '__';
+    const innerVarMap = new Map<string, string>();
+    for (const is of innerDeriv.steps) {
+      innerVarMap.set(is.var, renamePrefix + is.var);
+    }
+    // First inner step (kernel-first base in inner; was role:'base',
+    // kernel:true). In outer's context it's a kernel step taking
+    // outer's accumulated prior vars as input.
+    const inner0 = innerDeriv.steps[0];
+    out.push({
+      var: innerVarMap.get(inner0.var),
+      role: 'kernel',
+      inputs: priorVars.slice(),
+      // Reuse inner0's kernel-body reference / IR verbatim — the
+      // input-name substitution at materialise time handles wiring.
+      ref: inner0.ref,
+      kernelIR: inner0.kernelIR,
+    });
+    // Subsequent inner steps: keep their input refs but rename to
+    // the renamed inner vars.
+    for (let j = 1; j < innerDeriv.steps.length; j++) {
+      const isj = innerDeriv.steps[j];
+      out.push({
+        var: innerVarMap.get(isj.var),
+        role: 'kernel',
+        inputs: (isj.inputs || []).map((n: string) =>
+          innerVarMap.get(n) || n),
+        ref: isj.ref,
+        kernelIR: isj.kernelIR,
+      });
+    }
+  }
+  return out;
+}
+
 function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
-  const steps = (d && d.steps) || [];
+  const rawSteps = (d && d.steps) || [];
+  // Splice nested-chain step refs into a flat sequence (engine-concepts
+  // §19; flat-retention interpretation for spec §06's `cat(variates)`).
+  // Throws if a nested step's marginalize flag doesn't match outer's.
+  let steps: any[];
+  try {
+    steps = _flattenNestedChainSteps(rawSteps, !!d.marginalize, ctx);
+  } catch (e: any) {
+    return Promise.reject(e);
+  }
   if (steps.length < 2) {
     return Promise.reject(new Error('jointchain: need at least 2 steps'));
   }
@@ -519,26 +623,14 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
       chainP = chainP.then((produced) => {
         const ke = kernelLeaves(kstep, 's' + i);
         if (!ke) {
-          // Nested-chain materialisation (a step whose ref points to
-          // a jointchain / kchain binding) is a known follow-up: the
-          // classifier recognises it (engine-concepts §19; commit
-          // <this work>), and the runtime walker that flattens / re-
-          // dispatches through the inner chain's steps is filed under
-          // §06 in TODO-flatppl-js. The type-level + entry-point gate
-          // are in place; this rejection is the explicit "runtime
-          // extension not yet wired" surface.
-          const kb = kstep.ref ? (ctx.bindings && ctx.bindings.get(kstep.ref)) : null;
-          const isNestedChain = !!kb && kb.ir && kb.ir.kind === 'call'
-            && (kb.ir.op === 'jointchain' || kb.ir.op === 'kchain');
-          if (isNestedChain) {
-            return Promise.reject(new Error(
-              `jointchain: step ${i} ref '${kstep.ref}' is itself a `
-              + 'jointchain/kchain binding (kernel-first chain); '
-              + 'nested-chain materialisation is a follow-up '
-              + '(engine-concepts §19; TODO §06). Type-level '
-              + 'recognition is in place but the runtime walker '
-              + 'through inner steps is not yet wired.'));
-          }
+          // Nested-chain steps are spliced into the flat step list at
+          // the top of matJointchain (`_flattenNestedChainSteps`), so
+          // by the time we get here, kstep.ref points to a functionof
+          // (or resolvable fn) body — not another jointchain/kchain.
+          // The only ways to reach this rejection are (a) the ref
+          // points to an unsupported binding kind, or (b) the ref's
+          // binding lacks a functionof body the kernelLeaves walker
+          // can extract. Both are real "user-facing error" cases.
           return Promise.reject(new Error(
             `jointchain: step ${i} kernel `
             + `${kstep.ref ? `'${kstep.ref}' ` : '(inline) '}`

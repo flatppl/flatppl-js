@@ -236,11 +236,14 @@ outer = jointchain(prior, inner)
   assert.equal(outer.inferredType.kind, 'measure');
 });
 
-test('nested chain: materialisation rejects with clear follow-up message', () => {
-  // The runtime walker through nested-chain steps is a follow-up
-  // (engine-concepts §19; TODO §06). The materialiser must reject
-  // with a clear "not yet wired" diagnostic rather than the cryptic
-  // "no resolvable functionof body" the user used to see.
+test('nested chain: materialisation flattens inner into outer step list', () => {
+  // outer = jointchain(prior, inner) where inner = jointchain(K0, K1)
+  // materialises end-to-end via the splice-at-materialise-time path
+  // in `_flattenNestedChainSteps`. The retain interpretation flattens
+  // inner's variates into outer's flat retain list (spec §06's
+  // `cat(variates)` semantics applied to nested chains; the nested-
+  // retention alternative is spec-ambiguous and harder to compose).
+  // Resulting outer variate is a 3-tuple [prior, inner_K0, inner_K1].
   const r = infer(`
 theta = elementof(reals)
 K0 = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
@@ -271,14 +274,72 @@ outer = jointchain(prior, inner)
       if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
       return Promise.resolve(reply);
     },
+    sampleCount: 64,
+    rootSeed:    12345,
+  };
+  return materialiser.materialiseMeasure('outer', ctx).then((m: any) => {
+    assert.ok(m, 'outer materialises');
+    // outer.variate (flat retain) has 3 components: prior, inner_K0, inner_K1.
+    // The materialiser yields a tuple-shaped measure (no labels in either
+    // outer or inner positional form).
+    assert.ok(m.elems || m.fields,
+      'outer measure has structured shape (tuple or record)');
+    const components = m.elems || Object.values(m.fields || {});
+    assert.equal(components.length, 3,
+      'flat retain: outer.variate has 3 components [prior, K0, K1]');
+    for (const c of components) {
+      assert.ok(c.samples && c.samples.length === 64,
+        'each component has 64 samples aligned per-atom');
+    }
+  });
+});
+
+test('nested chain: outer=kchain + inner=jointchain mismatch rejected with clear diagnostic', () => {
+  // Mixed-marginalize nested chains corrupt semantics under flat
+  // splicing (outer=kchain drops everything except the last step,
+  // including inner's retain-set; or outer=jointchain exposes
+  // inner's kchain-marginalised intermediate). The materialiser
+  // rejects with a clear "needs per-atom delegation" message; the
+  // delegation runtime is a deferred follow-up. Workaround: spell
+  // out the chain explicitly.
+  const r = infer(`
+theta = elementof(reals)
+K0 = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
+mu = elementof(reals)
+K1 = functionof(Normal(mu = mu, sigma = 0.5), mu = mu)
+inner = jointchain(K0, K1)
+prior = Normal(0.0, 1.0)
+outer = kchain(prior, inner)
+`);
+  const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+  const built = orchestrator.buildDerivations(lifted);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 12345 });
+  const bindings = new Map();
+  for (const [name, b] of lifted.entries()) {
+    const lb = r.loweredModule.bindings.get(name);
+    const merged = Object.assign({}, b);
+    if (lb && lb.inferredType) merged.inferredType = lb.inferredType;
+    bindings.set(name, merged);
+  }
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure:  (n: any) => materialiser.materialiseMeasure(n, ctx),
+    sendWorker:  (msg: any) => {
+      const reply = worker.handle(msg);
+      if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+      return Promise.resolve(reply);
+    },
     sampleCount: 32,
     rootSeed:    12345,
   };
   return materialiser.materialiseMeasure('outer', ctx).then(
-    () => { throw new Error('expected rejection — nested-chain materialisation not yet wired'); },
+    () => { throw new Error('expected rejection — mixed-marginalize nested chain'); },
     (err: any) => {
-      assert.match(err.message, /nested-chain materialisation is a follow-up/i,
-        'should give the clear follow-up message, not the cryptic "no resolvable functionof body"');
+      assert.match(err.message, /marginalize/i);
+      assert.match(err.message, /per-atom delegation/i);
     }
   );
 });
