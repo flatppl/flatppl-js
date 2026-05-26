@@ -124,17 +124,33 @@ html, body {
 /* Variant of .pane-header that holds inline children (currently the
    source pane's title + right-aligned toolbar buttons). The plain
    text-style rules above still apply; the flex layout governs the
-   horizontal distribution of the children. */
+   horizontal distribution of the children. Vertical padding matches
+   the plain .pane-header so the three pane headers (Files / Source
+   / Visualization) line up at the same height — and so the emoji
+   button glyphs don't overflow the top edge. */
 .pane-header--row {
   display: flex;
   align-items: center;
   gap: 0.6em;
-  padding: 0.2em 1em;
+  padding: 0.4em 1em;
 }
 .pane-header-text {
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The source-pane header carries the loaded model's PATH (a
+   value, not a static label) so we override the surrounding
+   .pane-header uppercase styling — uppercasing a filename
+   actively distorts it (`Bayesian_Inference_1.flatppl` would
+   show as `BAYESIAN_INFERENCE_1.FLATPPL`). The other headers
+   (Files, Visualization) are static labels and keep the
+   uppercase / wide-letter-spacing look. */
+#source-header {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.85em;
 }
 
 /* Buttons inside a pane header (e.g. the "Visualize whole module"
