@@ -61,17 +61,30 @@
    * `.flatppl` deps).
    */
   async function resolveBundle(primaryPath: any) {
-    // Ephemeral (unsaved) sources live in an in-memory store the
-    // user populates via the gallery's "+ New file" button. Consult
-    // it before the network so an ephemeral path resolves without
-    // ever 404'ing against the server. The router round-trips the
-    // path through the URL hash, and the editor mounts on it.
+    // Resolution order:
+    //   1. Ephemeral (in-memory, session-only). Populated by the
+    //      "+ New file" button before the user has saved.
+    //   2. User store (localStorage-backed). Populated by saving a
+    //      modified read-only file or uploading.
+    //   3. Network fetch against the document base.
+    // Each in-memory source short-circuits before the next so a
+    // user-overridden path never falls through to its read-only
+    // origin on the network.
     const eph = globalScope.FlatPPLWebEphemeral;
     if (eph && eph.has && eph.has(primaryPath)) {
       return {
         primaryPath: primaryPath,
         primaryUrl: primaryPath,
         primarySource: eph.get(primaryPath),
+        sources: Object.create(null),
+      };
+    }
+    const userStore = globalScope.FlatPPLWebUserStore;
+    if (userStore && userStore.has && userStore.has(primaryPath)) {
+      return {
+        primaryPath: primaryPath,
+        primaryUrl: primaryPath,
+        primarySource: userStore.getSource(primaryPath),
         sources: Object.create(null),
       };
     }
