@@ -64,10 +64,37 @@ const valueLib = require('./value.ts');
 // involved than we need now, so we list ranks explicitly per op until
 // the signature-driven derivation matures.
 
+// Op kind discriminator (engine-concepts §18.7):
+//
+//   - 'fixed-rank'        — each arg has a fixed logical rank; the
+//                           dispatcher detects atom-batching as
+//                           `rank == argRanks[k] + 1`. Default.
+//   - 'rank-polymorphic'  — arg ranks vary per-call (e.g. transpose
+//                           accepts vector or matrix; linsolve(A, b)
+//                           takes b as either). The dispatcher does
+//                           NOT auto-atom-batch — explicit
+//                           `broadcast` wrapping is the contract for
+//                           batching such ops. `argRanks` is unused.
+//   - 'variadic'          — arg count varies per-call (e.g. cat,
+//                           vector). The dispatcher calls `logical`
+//                           with all args spread; no atom-batch
+//                           detection. `argRanks` is unused.
+//   - 'higher-order'      — at least one arg is a callable; the op
+//                           threads body-inference / function-call
+//                           machinery through dispatch. Deferred —
+//                           see §18.7. Engines must surface a clear
+//                           error if the dispatcher encounters this
+//                           kind before the dedicated dispatch
+//                           extension lands.
+type OpKind = 'fixed-rank' | 'rank-polymorphic' | 'variadic' | 'higher-order';
+
 interface OpDecl {
   name: string;
-  signature: any;
-  argRanks: number[];
+  signature?: any;
+  // Required for kind='fixed-rank'; ignored for 'rank-polymorphic',
+  // 'variadic', 'higher-order'.
+  argRanks?: number[];
+  kind?: OpKind;                      // default 'fixed-rank'
   logical: (...args: any[]) => any;
   batched?: (args: any[], N: number) => any;
 }
@@ -81,6 +108,21 @@ const REGISTRY: Map<string, OpDecl> = new Map();
 function register(decl: OpDecl) {
   if (REGISTRY.has(decl.name)) {
     throw new Error('ops.register: duplicate op declaration for ' + decl.name);
+  }
+  const kind: OpKind = decl.kind || 'fixed-rank';
+  // Fixed-rank ops require argRanks; rank-polymorphic / variadic /
+  // higher-order ops don't (argRanks is unused for those kinds).
+  if (kind === 'fixed-rank') {
+    if (!Array.isArray(decl.argRanks)) {
+      throw new Error('ops.register: op \'' + decl.name +
+        '\' is kind=fixed-rank but argRanks is missing');
+    }
+    if (decl.signature && decl.argRanks.length !== decl.signature.args.length) {
+      throw new Error('ops.register: op \'' + decl.name +
+        '\' argRanks.length (' + decl.argRanks.length +
+        ') must match signature.args.length (' +
+        decl.signature.args.length + ')');
+    }
   }
   REGISTRY.set(decl.name, decl);
 }
@@ -254,7 +296,35 @@ function dispatch(name: string, args: any[]): any {
   if (!decl) {
     throw new Error('ops.dispatch: no declaration for op \'' + name + '\'');
   }
+  const kind: OpKind = decl.kind || 'fixed-rank';
+
+  // Rank-polymorphic and variadic ops bypass atom-batch detection.
+  // The §2.1 shape contract still applies (Values keep their shape),
+  // but the dispatcher just hands the inputs to `logical` as-is and
+  // the op handles whatever rank/arity it received. Callers that
+  // want atom-batched semantics over a rank-polymorphic op wrap
+  // with explicit `broadcast(fn(op(_)), atom_batched)` —
+  // engine-concepts §18.7.
+  if (kind === 'rank-polymorphic' || kind === 'variadic') {
+    return decl.logical(...args);
+  }
+
+  // Higher-order ops haven't grown dispatch extensions yet; if one
+  // reaches this point, surface a clear error rather than silently
+  // mis-dispatching.
+  if (kind === 'higher-order') {
+    throw new Error('ops.dispatch: op \'' + name + '\' has kind=higher-order; ' +
+      'higher-order dispatch extension not yet implemented (engine-concepts §18.7)');
+  }
+
+  // Fixed-rank dispatch: classify each arg vs declared logical rank,
+  // detect atom-batching by leading-axis convention, run logical or
+  // batched accordingly.
   const argRanks = decl.argRanks;
+  if (!argRanks) {
+    throw new Error('ops.dispatch: op \'' + name +
+      '\' is kind=fixed-rank but argRanks is missing');
+  }
   if (args.length !== argRanks.length) {
     throw new Error('ops.dispatch: op \'' + name + '\' expects ' +
       argRanks.length + ' args, got ' + args.length);

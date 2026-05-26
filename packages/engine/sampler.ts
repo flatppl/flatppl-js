@@ -595,20 +595,9 @@ const ARITH_OPS = {
   // preserving the "vector of vectors" distinction from a matrix that
   // spec §03 establishes (matrices are made explicitly via rowstack /
   // colstack).
-  vector: (...xs: any[]) => {
-    if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
-    let allScalar = true;
-    for (let i = 0; i < xs.length; i++) {
-      const t = typeof xs[i];
-      if (t !== 'number' && t !== 'boolean') { allScalar = false; break; }
-    }
-    if (!allScalar) return xs;
-    const data = new Float64Array(xs.length);
-    for (let i = 0; i < xs.length; i++) {
-      data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
-    }
-    return { shape: [xs.length], data: data };
-  },
+  // Migrated to ops-declarations.ts as kind='variadic' (engine-
+  // concepts §18.7 Phase 5b).
+  vector: (...xs: any[]) => opsModule.dispatch('vector', xs),
   // cat(...) — structural concatenation per spec §07. Three shape
   // classes; mixing is a runtime error (the type checker rejects
   // most mixes statically but the runtime check guards programmatic
@@ -685,24 +674,12 @@ const ARITH_OPS = {
   //
   // Matrices in legacy form are nested JS arrays (row-major):
   // M[i][j] is row i, col j. Vectors are flat JS arrays.
-  transpose: (M: any) => {
-    if (valueLib.isValue(M)) return valueLib.transpose(M);  // O(1) tag flip
-    if (!Array.isArray(M) || M.length === 0) return [];
-    const rows = M.length, cols = M[0].length;
-    const out = new Array(cols);
-    for (let j = 0; j < cols; j++) {
-      const row = new Array(rows);
-      for (let i = 0; i < rows; i++) row[i] = M[i][j];
-      out[j] = row;
-    }
-    return out;
-  },
-  // adjoint = conjugate transpose. For real matrices = transpose.
-  // (Complex support deferred — but the tag tracks it.)
-  adjoint: (M: any) => {
-    if (valueLib.isValue(M)) return valueLib.adjoint(M);  // O(1) tag flip
-    return ARITH_OPS.transpose(M);
-  },
+  // Migrated to ops-declarations.ts as kind='rank-polymorphic'
+  // (engine-concepts §18.7 Phase 5a). The dispatcher hands the input
+  // to `logical` as-is — atom-batched callers wrap with explicit
+  // `broadcast(fn(transpose(_)), …)`.
+  transpose: (M: any) => opsModule.dispatch('transpose', [M]),
+  adjoint:   (M: any) => opsModule.dispatch('adjoint',   [M]),
   // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2);
   // these entries delegate so direct ARITH_OPS callers (mat-*, tests)
   // keep working with the single-sourced implementation.
@@ -715,37 +692,11 @@ const ARITH_OPS = {
   det:       (A: any): any => opsModule.dispatch('det', [A]),
   logabsdet: (A: any): any => opsModule.dispatch('logabsdet', [A]),
   inv:       (A: any): any => opsModule.dispatch('inv', [A]),
-  // linsolve(A, b): solve A x = b for x. b may be a vector (returns
-  // vector) or a matrix (returns matrix, solved column-by-column).
-  linsolve: (A: any, b: any): any => {
-    // Diagonal A: x = b ⊘ diag, O(n), no factorization. Vector b only
-    // (the MvNormal/whitening case); matrix b densifies via the
-    // generic path below.
-    if (valueLib.isDiagStored(A) && !A.im) {
-      const d = A.data, m = d.length;
-      const bv = valueLib.isValue(b) ? b : null;
-      const bd = bv ? bv.data : b;
-      if (bd && bd.length === m && (!bv || bv.shape.length === 1)) {
-        const x = new Float64Array(m);
-        for (let i = 0; i < m; i++) {
-          if (d[i] === 0) throw new Error('linsolve: singular diagonal matrix');
-          x[i] = bd[i] / d[i];
-        }
-        return bv ? valueLib.vector(x) : Array.from(x);
-      }
-    }
-    if (valueLib.isValue(A) || valueLib.isValue(b)) {
-      // Promote both operands to dense Values so the LU path operates
-      // on row-major Float64Array data directly (no nested-JS roundtrip).
-      const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
-      const bV = valueLib.isValue(b) ? valueLib.densify(b) : valueLib.asValue(b);
-      return _linsolveLUValue(aV, bV);
-    }
-    if (!Array.isArray(A) || A.length === 0 || A[0].length !== A.length) {
-      throw new Error('linsolve: A must be a non-empty square matrix');
-    }
-    return _linsolveLU(A, b);
-  },
+  // Migrated to ops-declarations.ts as kind='rank-polymorphic'
+  // (engine-concepts §18.7 Phase 5a): A is square matrix, b is
+  // vector OR matrix. The dispatcher passes both through to logical
+  // as-is.
+  linsolve: (A: any, b: any): any => opsModule.dispatch('linsolve', [A, b]),
   // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2).
   lower_cholesky: (A: any): any => opsModule.dispatch('lower_cholesky', [A]),
   row_gram:       (A: any): any => opsModule.dispatch('row_gram',       [A]),
@@ -1327,54 +1278,9 @@ const ARITH_OPS = {
     if (v.im instanceof Float64Array) out.im = v.im;     // complex rides along
     return out;
   },
-  cat: (...xs: any[]) => {
-    if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
-    const first = xs[0];
-    // cat(scalar, scalar, ...) → rank-1 Value (spec §07).
-    if (typeof first === 'number' || typeof first === 'boolean') {
-      const data = new Float64Array(xs.length);
-      for (let i = 0; i < xs.length; i++) {
-        data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
-      }
-      return { shape: [xs.length], data };
-    }
-    // cat(vector, vector, ...) → rank-1 Value (concatenation along
-    // the only axis). Accept any indexable (Value / Float64Array /
-    // JS array of numbers).
-    if (valueLib.isValue(first)
-        || (first && first.BYTES_PER_ELEMENT !== undefined)
-        || Array.isArray(first)) {
-      let total = 0;
-      for (let j = 0; j < xs.length; j++) {
-        const v = xs[j];
-        total += valueLib.isValue(v) ? v.data.length : v.length;
-      }
-      const out = new Float64Array(total);
-      let pos = 0;
-      for (let j = 0; j < xs.length; j++) {
-        const v = xs[j];
-        const src = valueLib.isValue(v) ? v.data : v;
-        for (let i = 0; i < src.length; i++) out[pos++] = +src[i];
-      }
-      return { shape: [total], data: out };
-    }
-    if (first && typeof first === 'object') {
-      const out: Record<string, any> = {};
-      for (let j = 0; j < xs.length; j++) {
-        const r = xs[j];
-        for (const k in r) {
-          if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
-          if (k in out) {
-            throw new Error("cat: duplicate field '" + k + "'");
-          }
-          out[k] = r[k];
-        }
-      }
-      return out;
-    }
-    throw new Error('cat: unsupported argument shape (got '
-      + (typeof first) + ')');
-  },
+  // Migrated to ops-declarations.ts as kind='variadic' (engine-
+  // concepts §18.7 Phase 5b).
+  cat: (...xs: any[]) => opsModule.dispatch('cat', xs),
   // Reductions over an array. Spec §07:
   //   sum / mean / prod  — real or complex arrays (any rank)
   //   var / std          — real arrays (any rank)
