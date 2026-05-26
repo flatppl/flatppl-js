@@ -612,6 +612,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlinePushfwdLift(astArg);
       astArg = inlineBijectionLift(astArg);
       astArg = inlineFilterLift(astArg);
+      astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
     }
     return astArg;
@@ -743,6 +744,37 @@ function liftInlineSubexpressions(bindings: any) {
       out.set(n, makeSyntheticBinding(n, a));
       astArg.args[i] = makeIdent(n, astArg.loc);
     }
+    return astArg;
+  }
+
+  /**
+   * Lift the kernel arg of `likelihoodof(K, obs)` to a named binding
+   * when it's an inline function expression (fn / functionof /
+   * kernelof / fchain). classifyLikelihoodof + classifyBayesupdate
+   * both require K to be a self-ref to a function-like binding so
+   * they can walk the binding graph. The general `liftValue` /
+   * `liftMeasure` paths refuse to hoist function-shaped expressions
+   * because they typically contain placeholders / holes that can't
+   * escape the enclosing scope; the op-specific lift here knows the
+   * kernel-arg position safely contains them and hoists the whole
+   * function expression as a unit.
+   */
+  function inlineLikelihoodofLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'likelihoodof') return astArg;
+    if (!astArg.args || astArg.args.length !== 2) return astArg;
+    let kArg = astArg.args[0];
+    if (kArg.type === 'KeywordArg') return astArg;
+    if (kArg.type === 'Identifier') return astArg;
+    visit(kArg);
+    if (kArg.type === 'Identifier') {
+      astArg.args[0] = kArg;
+      return astArg;
+    }
+    const n = freshName();
+    out.set(n, makeSyntheticBinding(n, kArg));
+    astArg.args[0] = makeIdent(n, astArg.loc);
     return astArg;
   }
 
