@@ -2134,100 +2134,17 @@ function evaluateCall(ir: any, env: any): any {
     const inputs: any = sources.map(s => evaluateExpr(s, env));
     return _broadcastApply(fn, inputs, env);
   }
-  if (op === 'reduce') {
-    // reduce(f, xs) per spec §07. f is a binary function; xs is a
-    // non-empty vector. Computes f(...f(f(xs[0], xs[1]), xs[2])..., xs[n-1]).
-    // The first element of xs is the initial accumulator (no separate
-    // init arg, unlike scan).
-    const args = ir.args || [];
-    if (args.length !== 2) {
-      throw new Error('reduce: expected 2 args (function, xs), got ' + args.length);
-    }
-    const fn = _resolveFn(args[0], env);
-    if (!fn || fn.params.length !== 2) {
-      throw new Error('reduce: function arg must be a binary function');
-    }
-    const xsRaw: any = evaluateExpr(args[1], env);
-    const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
-    if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
-      throw new Error('reduce: xs must be a vector');
-    }
-    if (xs.length === 0) {
-      throw new Error('reduce: empty vector has no initial value');
-    }
-    const elemEnv = Object.assign({}, env);
-    let acc: any = xs[0];
-    for (let i = 1; i < xs.length; i++) {
-      elemEnv[fn.params[0]] = acc;
-      elemEnv[fn.params[1]] = xs[i];
-      acc = evaluateExpr(fn.body, elemEnv);
-    }
-    return acc;
-  }
-  if (op === 'scan') {
-    // scan(f, init, xs) per spec §07. Left scan: produces a vector of
-    // intermediate accumulator values, one per element of xs.
-    //   out[i] = f(out[i-1], xs[i])   with out[-1] = init
-    // Result has the same length as xs.
-    const args = ir.args || [];
-    if (args.length !== 3) {
-      throw new Error('scan: expected 3 args (function, init, xs), got ' + args.length);
-    }
-    const fn = _resolveFn(args[0], env);
-    if (!fn || fn.params.length !== 2) {
-      throw new Error('scan: function arg must be a binary function');
-    }
-    const init = evaluateExpr(args[1], env);
-    const xsRaw: any = evaluateExpr(args[2], env);
-    const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
-    if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
-      throw new Error('scan: xs must be a vector');
-    }
-    // Scan result has the same length as xs and is a rank-1 vector per
-    // spec §07 — return a shape-explicit Value.
-    const n = xs.length;
-    const out: Float64Array = new Float64Array(n);
-    const elemEnv = Object.assign({}, env);
-    let acc = init;
-    for (let i = 0; i < n; i++) {
-      elemEnv[fn.params[0]] = acc;
-      elemEnv[fn.params[1]] = xs[i];
-      acc = evaluateExpr(fn.body, elemEnv);
-      out[i] = acc === true ? 1 : acc === false ? 0 : +acc;
-    }
-    return { shape: [n], data: out };
-  }
-  if (op === 'filter') {
-    // filter(pred, data) per spec §07. pred can be a named function
-    // binding (orchestrator.inlineFilterLift lifts inline fn(...) to
-    // anon) OR an inline functionof call IR. _resolveFn handles both.
-    const args = ir.args || [];
-    if (args.length !== 2) {
-      throw new Error('filter: expected 2 args (predicate, data), got ' + args.length);
-    }
-    const fn = _resolveFn(args[0], env);
-    if (!fn || fn.params.length !== 1) {
-      throw new Error('filter: predicate must be a unary function');
-    }
-    const dataRaw = evaluateExpr(args[1], env);
-    const data = valueLib.isValue(dataRaw) ? dataRaw.data : dataRaw;
-    if (!Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
-      throw new Error('filter: data must be a vector (got '
-        + (data === null ? 'null' : typeof data) + ')');
-    }
-    const elemEnv = Object.assign({}, env);
-    const kept: any[] = [];
-    for (let i = 0; i < data.length; i++) {
-      elemEnv[fn.params[0]] = data[i];
-      const keep = evaluateExpr(fn.body, elemEnv);
-      if (keep) kept.push(data[i]);
-    }
-    // Filter result is a rank-1 vector per spec §07 — return as Value.
-    const out = new Float64Array(kept.length);
-    for (let i = 0; i < kept.length; i++) {
-      out[i] = kept[i] === true ? 1 : kept[i] === false ? 0 : +kept[i];
-    }
-    return { shape: [kept.length], data: out };
+  // reduce / scan / filter migrated to ops-declarations.ts as
+  // kind='higher-order' (engine-concepts §18.8 Phase 5c). The
+  // dispatcher's `dispatchHigherOrder` threads the engine's env +
+  // evaluator + resolveFn into the op's logical, which does its own
+  // callable resolution and iteration.
+  if (op === 'reduce' || op === 'scan' || op === 'filter') {
+    return opsModule.dispatchHigherOrder(op, ir.args || [], {
+      env,
+      evaluateExpr,
+      resolveFn: _resolveFn,
+    });
   }
   if (op === 'bincounts') {
     // bincounts(bins, data) — count data points falling into bins.

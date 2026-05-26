@@ -309,12 +309,12 @@ function dispatch(name: string, args: any[]): any {
     return decl.logical(...args);
   }
 
-  // Higher-order ops haven't grown dispatch extensions yet; if one
-  // reaches this point, surface a clear error rather than silently
-  // mis-dispatching.
+  // Higher-order ops use `dispatchHigherOrder(name, irArgs, ctx)`.
+  // Reaching `dispatch` (value-domain entry) means the caller routed
+  // incorrectly — surface a clear error.
   if (kind === 'higher-order') {
-    throw new Error('ops.dispatch: op \'' + name + '\' has kind=higher-order; ' +
-      'higher-order dispatch extension not yet implemented (engine-concepts §18.7)');
+    throw new Error('ops.dispatch: op \'' + name + '\' is higher-order; ' +
+      'use ops.dispatchHigherOrder(name, irArgs, ctx) instead');
   }
 
   // Fixed-rank dispatch: classify each arg vs declared logical rank,
@@ -364,6 +364,56 @@ function dispatch(name: string, args: any[]): any {
   return _stackPerAtom(perAtom, N);
 }
 
+// ---------------------------------------------------------------------
+// Higher-order dispatch — for kind='higher-order' ops only
+// ---------------------------------------------------------------------
+//
+// Higher-order ops (reduce / scan / filter / broadcast / aggregate)
+// can't take pre-evaluated args because some args are callables
+// (function-typed IR that resolves to {params, body}) and some are
+// data IR that needs evaluation. The dispatch surface here takes IR
+// args plus a context object carrying the engine's evaluator hooks:
+//
+//   ctx = {
+//     env:           current evaluation environment,
+//     evaluateExpr:  (ir, env) → value,
+//     resolveFn:     (fnIR, env) → { params, body, isFnRef? }
+//                                  | null,
+//   }
+//
+// The op's `logical` then runs its own resolution + iteration
+// against `ctx`. The dispatcher just routes; it doesn't try to
+// understand callable shapes (each higher-order op's semantics is
+// distinct — reduce vs scan vs filter vs broadcast vs aggregate).
+//
+// This separates the higher-order entry from the value-domain
+// `dispatch(name, args)` so the type contracts stay clean: callers
+// route based on what they have (evaluated values vs raw IR + ctx).
+
+interface HigherOrderCtx {
+  env: any;
+  evaluateExpr: (ir: any, env: any) => any;
+  resolveFn: (fnIR: any, env: any) => any;
+}
+
+function dispatchHigherOrder(name: string, irArgs: any[], ctx: HigherOrderCtx): any {
+  const decl = REGISTRY.get(name);
+  if (!decl) {
+    throw new Error('ops.dispatchHigherOrder: no declaration for op \'' + name + '\'');
+  }
+  if (decl.kind !== 'higher-order') {
+    throw new Error('ops.dispatchHigherOrder: op \'' + name +
+      '\' is not kind=higher-order (got ' + (decl.kind || 'fixed-rank') +
+      '); use ops.dispatch instead');
+  }
+  if (!ctx || typeof ctx.evaluateExpr !== 'function'
+      || typeof ctx.resolveFn !== 'function') {
+    throw new Error('ops.dispatchHigherOrder: ctx must provide env, ' +
+      'evaluateExpr, and resolveFn');
+  }
+  return decl.logical(irArgs, ctx);
+}
+
 module.exports = {
   register,
   lookup,
@@ -371,6 +421,7 @@ module.exports = {
   listDeclared,
   signatureOf,
   dispatch,
+  dispatchHigherOrder,
   // Exported for the conformance harness:
   _classifyArg,
   _argAtAtom,
