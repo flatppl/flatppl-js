@@ -129,15 +129,28 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   const planForCall = plan;
   // The body may reference other bindings via (ref self <name>) —
   // e.g. `f_a = functionof(c * _par_, ...)` where `c` is an outer
-  // literal. Pre-materialise those, take their samples[0] as a
-  // single fixed value, and merge into fixedEnv. F4b will let
-  // the user pick a different atom or override these. For
-  // stochastic self refs this picks the first atom, which is
+  // literal. Pre-materialise those random-phase parents, take their
+  // samples[0] as a single fixed value, and merge into fixedEnv.
+  // F4b will let the user pick a different atom or override these.
+  // For stochastic self refs this picks the first atom, which is
   // arbitrary but deterministic — a "good enough" first cut.
-  const selfRefs: string[] = [];
-  FlatPPLEngine.orchestrator.collectSelfRefs(ir).forEach(function(n: string) {
-    selfRefs.push(n);
-  });
+  //
+  // The engine's classifyProfileSelfRefs is the single owner of the
+  // (function-like / built-in / fixed-phase) filter: function-like
+  // bindings consult by name at sample/density dispatch, built-in
+  // distribution names (Normal, MvNormal, …) are not bindings, and
+  // fixed-phase refs (literal arrays, external inputs, fixed
+  // reductions like `means = alpha .+ beta .* x_data`) already live
+  // in the worker's session env via `setEnv` on the
+  // derivations-state push (see derivations.ts:175-184). Overriding
+  // them via samples[0] of a materialised constant-atom measure
+  // collapses array literals to a scalar and breaks every downstream
+  // broadcast that consumes them.
+  const { perAtomNames: selfRefs } =
+    FlatPPLEngine.materialiser.classifyProfileSelfRefs(
+      ir,
+      ctx.derivationsState!.bindings,
+      ctx.derivationsState!.fixedValues);
   // Range resolution per (binding, axis, domain):
   //   1. Active domain has a range for the sweep kwarg (named
   //      source binding, override, or both) → use it.

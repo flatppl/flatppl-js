@@ -168,6 +168,40 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
 }
 
 /**
+ * Pure / synchronous classifier sibling of `prepareDensityRefs` for the
+ * profile-plot path. Returns the names of value-typed, random-phase
+ * self-refs whose materialised parent measure the caller should fetch
+ * to construct a single representative value for `fixedEnv`.
+ *
+ * The viewer's profile-plot path (`render-profile.ts`) needs the same
+ * filtering as `prepareDensityRefs` — drop function-like bindings, drop
+ * built-in distribution names and other unbound refs, drop fixed-phase
+ * refs (already in the worker session env via setEnv) — but NOT the
+ * async per-atom measure-fetch. `profileN` doesn't accept refArrays;
+ * non-swept random-phase parents need a single first-cut value, not a
+ * per-atom slice.
+ *
+ * Centralising the classification here keeps the filter rules in one
+ * place. Without this, render-profile.ts duplicated the loop by hand
+ * and got it wrong: feeding built-in names through `tryGetMeasure`,
+ * and clobbering fixed-phase array values (`x_data = [...]`) with the
+ * `samples[0]` of a materialised constant-atom measure.
+ */
+function classifyProfileSelfRefs(
+  ir: any, bindings: any, fixedValues: any
+): { perAtomNames: string[] } {
+  const refs = orchestrator.collectSelfRefs(ir);
+  const perAtomNames: string[] = [];
+  refs.forEach((n: any) => {
+    if (isFunctionLikeBinding(bindings && bindings.get(n))) return;
+    if (fixedValues && fixedValues.has(n)) return;
+    if (!bindings || !bindings.has(n)) return;
+    perAtomNames.push(n);
+  });
+  return { perAtomNames };
+}
+
+/**
  * Push a `fixedEnv` map onto the worker session env via setEnv merge.
  * Returns a Promise that resolves once the merge has been applied;
  * empty maps short-circuit to Promise.resolve(). Companion to
@@ -412,6 +446,7 @@ module.exports = {
   measureToRefValue,
   collectRefArrays,
   prepareDensityRefs,
+  classifyProfileSelfRefs,
   pushFixedEnv,
   fixedValueToMeasure,
   measureN,
