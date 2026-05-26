@@ -2399,7 +2399,7 @@ function _expandMeasureIRStructural(ir: any, derivations: any, visited: any, bin
  *   - iid's first arg (the inner measure)
  *   - weighted / logweighted's second arg (the base measure)
  */
-function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited: any): IRNode | null {
+function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited: any, bindings?: any): IRNode | null {
   visited = visited || new Set();
   if (!ir) return ir;
   // Top-level ref to a measure binding: expand via the same
@@ -2408,9 +2408,12 @@ function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited: any
   // typical for `forward_kernel = functionof(obs_dist, …)` where
   // obs_dist is a measure binding — falls through unchanged and
   // downstream consumers (materialiseConcreteMeasure, traceeval.walk)
-  // reject the bare ref.
+  // reject the bare ref. Thread `bindings` so kernelbroadcast (and any
+  // other derivation kind that lacks a dedicated switch case) reaches
+  // the structural fallback inside expandMeasureIR and returns its
+  // self-contained measure IR instead of a bare ref.
   if (ir.kind === 'ref' && ir.ns === 'self') {
-    const expanded = expandMeasureIR(ir.name, derivations, visited);
+    const expanded = expandMeasureIR(ir.name, derivations, visited, bindings);
     return expanded || ir;
   }
   if (ir.kind !== 'call') return ir;
@@ -2421,38 +2424,38 @@ function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited: any
   // — record / joint / iid / weighted / leaf distribution. Peel it
   // before recursing so the resulting IR is one of those shapes.
   if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
-    return expandMeasureRefsInIR(ir.args[0], derivations, visited);
+    return expandMeasureRefsInIR(ir.args[0], derivations, visited, bindings);
   }
   const out = { ...ir };
   if (Array.isArray(ir.fields)) {
     out.fields = ir.fields.map((f: any) => ({
       ...f,
-      value: expandMeasurePos(f.value, derivations, visited),
+      value: expandMeasurePos(f.value, derivations, visited, bindings),
     }));
   }
   if (Array.isArray(ir.args)) {
     if (ir.op === 'iid' && ir.args.length === 2) {
       out.args = [
-        expandMeasurePos(ir.args[0], derivations, visited),
+        expandMeasurePos(ir.args[0], derivations, visited, bindings),
         ir.args[1],
       ];
     } else if ((ir.op === 'weighted' || ir.op === 'logweighted') && ir.args.length === 2) {
       out.args = [
         ir.args[0],
-        expandMeasurePos(ir.args[1], derivations, visited),
+        expandMeasurePos(ir.args[1], derivations, visited, bindings),
       ];
     }
   }
   return out;
 }
 
-function expandMeasurePos(node: any, derivations: any, visited: any) {
+function expandMeasurePos(node: any, derivations: any, visited: any, bindings?: any) {
   if (node && node.kind === 'ref' && node.ns === 'self') {
-    const expanded = expandMeasureIR(node.name, derivations, visited);
+    const expanded = expandMeasureIR(node.name, derivations, visited, bindings);
     return expanded || node;
   }
   if (node && node.kind === 'call') {
-    return expandMeasureRefsInIR(node, derivations, visited);
+    return expandMeasureRefsInIR(node, derivations, visited, bindings);
   }
   return node;
 }

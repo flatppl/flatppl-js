@@ -711,6 +711,194 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   return rest;
 }
 
+// ---- Kernel-broadcast: array-valued independent product measure ----
+//
+// `broadcast(Dist, c1, c2, …)` (spec §04 sec:higher-order) — independent
+// product of `Dist(params_j)` at each j ∈ [0, K). Density at a
+// length-K observation y is the SUM of per-element logpdfs:
+//
+//   logp(y | broadcast(Dist, args)) = Σ_j logpdf_Dist(y[j]; params_j)
+//
+// Per-atom (outer batch axis i ∈ [0, N)): each parameter expression may
+// reference per-atom prior refs (refArrays / overlay), so the effective
+// params at (i, j) are evaluated from each arg's resolved shape:
+//
+//   atom-indep scalar  (number / Value shape=[])    → const value
+//   atom-indep K-vec   (Value shape=[K] / Array)    → data[j]
+//   per-atom  scalar   (Float64Array(N) / [N])      → data[i]
+//   per-atom  K-vec    (Value shape=[N, K])         → data[i*K + j]
+//
+// This is the natural batched shape (engine-concepts §2.1: leading axis
+// is the batch). `evaluateExprN` already produces these shapes; the
+// walker just dispatches accessors off them. Singleton intrinsic axes
+// (length 1) broadcast across K, mirroring matKernelBroadcast.
+//
+// Hot path: when NO parameter expression touches a per-atom ref, the
+// per-element sum is constant in i — compute it once, fan out to acc[i].
+// This is the same atom-indep short-circuit walkLeaf / walkMultivariate
+// take when refArrays is empty for them.
+//
+// FlatPDL note: per-element dispatch goes through
+// `densityPrims.builtinLogdensityofPositional`, the same primitive
+// walkLeaf uses — same numbers, same cross-engine ABI.
+function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const args = ir.args || [];
+  if (args.length < 1) {
+    throw new Error('density: broadcast requires at least the kernel head arg');
+  }
+  // Kernel head must name a built-in sampleable distribution. Same
+  // restriction matKernelBroadcast / classifyKernelBroadcast accept.
+  const hd: any = args[0];
+  let kernelName: string | null = null;
+  if (hd && hd.kind === 'ref' && hd.ns === 'self') kernelName = hd.name;
+  else if (hd && hd.kind === 'lit' && typeof hd.value === 'string') kernelName = hd.value;
+  if (!kernelName || !samplerLib.isKnownDistribution(kernelName)) {
+    throw new Error('density: broadcast head ' + (kernelName ? "'" + kernelName + "'" : '<?>')
+      + ' is not a built-in distribution kernel');
+  }
+  const entry = samplerLib.lookupDistribution({ kind: 'call', op: kernelName });
+  const paramNames: string[] = entry.params;
+  const aliases: Record<string, string> = entry.aliases || {};
+  const positional: any[] = args.slice(1);
+  const kwargsIR: Record<string, any> = (ir as any).kwargs || {};
+  const usingKwargs = Object.keys(kwargsIR).length > 0;
+  // Map each declared parameter to its IR (kwargs > positional).
+  const paramIRs: any[] = new Array(paramNames.length);
+  for (let i = 0; i < paramNames.length; i++) {
+    const p = paramNames[i];
+    if (Object.prototype.hasOwnProperty.call(kwargsIR, p)) {
+      paramIRs[i] = kwargsIR[p];
+    } else if (aliases[p] && Object.prototype.hasOwnProperty.call(kwargsIR, aliases[p])) {
+      paramIRs[i] = kwargsIR[aliases[p]];
+    } else if (!usingKwargs && i < positional.length) {
+      paramIRs[i] = positional[i];
+    } else {
+      throw new Error("density: broadcast(" + kernelName + ") missing parameter '"
+        + p + "'");
+    }
+  }
+  // Evaluate each parameter expression once over the atom batch. The
+  // resulting shape (combined with `_exprUsesAny` to disambiguate
+  // length-N atom-indep vectors from per-atom scalars) classifies the
+  // accessor pattern.
+  const refNames: string[] = refArrays ? Object.keys(refArrays) : [];
+  const evalOpts = overlay ? { overlay } : undefined;
+  const accessors: Array<(i: number, j: number) => number> = new Array(paramNames.length);
+  const perAtomFlags: boolean[] = new Array(paramNames.length);
+  let K = 1;
+  let anyAtomDep = false;
+  for (let pi = 0; pi < paramNames.length; pi++) {
+    const pIR = paramIRs[pi];
+    const usesAtom = _exprUsesAny(pIR, refNames);
+    perAtomFlags[pi] = usesAtom;
+    if (usesAtom) anyAtomDep = true;
+    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
+    let intrinsicK = 1;
+    let access: (i: number, j: number) => number;
+    if (typeof v === 'number') {
+      const val = +v;
+      access = (_i, _j) => val;
+    } else if (typeof v === 'boolean') {
+      const val = v ? 1 : 0;
+      access = (_i, _j) => val;
+    } else if (valueLib.isValue(v)) {
+      const shape = v.shape;
+      const data = v.data;
+      if (shape.length === 0) {
+        const val = data[0];
+        access = (_i, _j) => val;
+      } else if (shape.length === 1) {
+        // Length-N is ambiguous when N === K; `usesAtom` is the
+        // disambiguator: a per-atom expression always produces leading-N.
+        if (usesAtom && shape[0] === N) {
+          access = (i, _j) => data[i];
+        } else {
+          intrinsicK = shape[0];
+          if (intrinsicK === 1) {
+            const val = data[0];
+            access = (_i, _j) => val;
+          } else {
+            access = (_i, j) => data[j];
+          }
+        }
+      } else if (shape.length === 2 && shape[0] === N) {
+        intrinsicK = shape[1];
+        if (intrinsicK === 1) {
+          access = (i, _j) => data[i];
+        } else {
+          const stride = intrinsicK;
+          access = (i, j) => data[i * stride + j];
+        }
+      } else {
+        throw new Error("density: broadcast(" + kernelName + ") parameter '"
+          + paramNames[pi] + "' resolved to unsupported shape "
+          + JSON.stringify(shape) + ' (v1 supports scalar / [K] / [N] / [N, K])');
+      }
+    } else if (v && v.BYTES_PER_ELEMENT !== undefined
+                && typeof v.length === 'number') {
+      const data: any = v;
+      if (usesAtom && data.length === N) {
+        access = (i, _j) => data[i];
+      } else {
+        intrinsicK = data.length;
+        if (intrinsicK === 1) {
+          const val = data[0];
+          access = (_i, _j) => val;
+        } else {
+          access = (_i, j) => data[j];
+        }
+      }
+    } else if (Array.isArray(v)) {
+      intrinsicK = v.length;
+      if (intrinsicK === 1) {
+        const val = +v[0];
+        access = (_i, _j) => val;
+      } else {
+        const arr = v;
+        access = (_i, j) => +arr[j];
+      }
+    } else {
+      throw new Error("density: broadcast(" + kernelName + ") parameter '"
+        + paramNames[pi] + "' resolved to non-numeric value (type " + (typeof v) + ')');
+    }
+    accessors[pi] = access;
+    if (intrinsicK > 1) {
+      if (K === 1) K = intrinsicK;
+      else if (K !== intrinsicK) {
+        throw new Error("density: broadcast(" + kernelName + ") incompatible "
+          + 'collection lengths (' + K + ' vs ' + intrinsicK + ") on parameter '"
+          + paramNames[pi] + "'");
+      }
+    }
+  }
+  // Variate footprint is K scalars consumed from the head of `value`.
+  const { head, rest } = consumeVector(value, K);
+  const blp = densityPrims.builtinLogdensityofPositional;
+  const P = paramNames.length;
+  const params = new Array(P);
+  if (!anyAtomDep) {
+    // Atom-indep parameters across the entire batch: compute the
+    // per-element sum once, fan out into acc[i].
+    let total = 0;
+    for (let j = 0; j < K; j++) {
+      for (let pi = 0; pi < P; pi++) params[pi] = accessors[pi](0, j);
+      total += blp(kernelName, params, head[j]);
+    }
+    if (total !== 0) for (let i = 0; i < N; i++) acc[i] += total;
+    return rest;
+  }
+  // Per-atom × per-element loop. K is the inner axis (densest stride).
+  for (let i = 0; i < N; i++) {
+    let total = 0;
+    for (let j = 0; j < K; j++) {
+      for (let pi = 0; pi < P; pi++) params[pi] = accessors[pi](i, j);
+      total += blp(kernelName, params, head[j]);
+    }
+    acc[i] += total;
+  }
+  return rest;
+}
+
 // ---- Discrete-selector mixture (engine-concepts §11) ---------------
 
 // Footprint size of a `rest` (how many scalar slots remain). Used only
@@ -930,6 +1118,7 @@ const OP_HANDLERS = {
   jointchain:  walkJointchainStub,
   pushfwd:     walkPushfwd,
   select:      walkSelect,
+  broadcast:   walkBroadcast,
   // Multivariate leaves all route through the generic walker that
   // dispatches into `density-prims.builtinLogdensityof`. Per-kernel
   // density math lives in density-prims's MV_DENSITY_FNS — the walker
