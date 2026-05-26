@@ -1,11 +1,14 @@
 // @flatppl/web — persistent store for user files.
 //
 // Companion to FlatPPLWebEphemeral: where the ephemeral store keeps
-// session-only buffers (in-memory, lost on reload), this store holds
-// FlatPPL files the user has explicitly saved — either by editing a
-// read-only example/test-case and saving the result (a "fork"), or
-// by creating a new file and saving it, or by uploading a file. All
-// entries live under the conceptual `user/` folder in the sidebar.
+// session-only buffers (in-memory, lost on reload), this store
+// holds FlatPPL files the user has explicitly saved — either by
+// editing a read-only example/test-case under a fresh name, or by
+// creating a new file and saving it, or by uploading a file. All
+// entries live under the conceptual `user/` folder in the sidebar
+// and are independent of any read-only origin. The on-disk schema
+// keeps a nullable `parent` field for forward-compatibility but
+// no current caller writes a non-null value.
 //
 // Backing storage is `localStorage`. Each entry is one key/value
 // pair; an index key lists every entry path in insertion order so
@@ -224,33 +227,11 @@
     emit();
   }
 
-  /** Look up the user-store path that was forked from
-   *  `parentPath`. Returns null if no fork exists. */
-  function findForkOf(parentPath: string): string | null {
-    for (let i = 0; i < pathOrder.length; i++) {
-      const p = pathOrder[i];
-      const e = entries.get(p);
-      if (e && e.parent === parentPath) return p;
-    }
-    return null;
-  }
-
-  /** Decide where to materialise a first-time fork of `parentPath`.
-   *  If a fork already exists, returns its path (idempotent — a
-   *  second save on the same source just hits the same target). If
-   *  not, picks `user/<basename>` and bumps a numeric suffix until
-   *  the path is free, so an unrelated `user/foo.flatppl` doesn't
-   *  silently get clobbered by forking `examples/foo.flatppl`. */
-  function pathForFork(parentPath: string): string {
-    const existing = findForkOf(parentPath);
-    if (existing) return existing;
-    const base = basename(parentPath);
-    return uniquePath(USER_PREFIX + base);
-  }
-
   /** Decide a user/-prefixed path for a freshly-uploaded or
-   *  freshly-renamed file. Suffix bumps avoid collisions with
-   *  unrelated existing entries. */
+   *  freshly-promoted file. Suffix bumps avoid collisions with
+   *  unrelated existing entries (e.g. an upload of `foo.flatppl`
+   *  while `user/foo.flatppl` already exists lands at
+   *  `user/foo-2.flatppl`). */
   function pathForUpload(filename: string): string {
     return uniquePath(USER_PREFIX + filename);
   }
@@ -295,8 +276,6 @@
     save:          save,
     updateSource:  updateSource,
     remove:        remove,
-    findForkOf:    findForkOf,
-    pathForFork:   pathForFork,
     pathForUpload: pathForUpload,
     subscribe:     subscribe,
   };

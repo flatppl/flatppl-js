@@ -265,22 +265,6 @@ html, body {
   opacity: 0.5;
 }
 
-/* Modified-dot indicator on a read-only file that has a user fork.
-   The whole entry routes the click to the fork (see app.ts
-   renderTree), so the dot is a passive affordance — no separate
-   pointer cursor, no nested hit-target. */
-.file-list-item--modified {
-  /* Make room for the dot at the right edge. */
-}
-.file-list-modified-dot {
-  float: right;
-  margin-left: 0.4em;
-  color: var(--accent);
-  font-size: 0.8em;
-  line-height: 1.4;
-  pointer-events: none;
-}
-
 /* Right-click context menu on a sidebar entry. Single floating
    div reused across right-clicks; positioned absolutely at the
    mouse, click-outside closes (handled by app.ts). Compact list
