@@ -801,8 +801,8 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     const paramVals: Record<string, any> = {};
     let K = 1;
     for (const pn of pnames) {
-      const usesAtom = orchestrator.collectSelfRefs(paramIRs[pn]).size > 0
-        && refNames.some((n) => orchestrator.collectSelfRefs(paramIRs[pn]).has(n));
+      const paramRefs = orchestrator.collectSelfRefs(paramIRs[pn]);
+      const usesAtom = refNames.some((n) => paramRefs.has(n));
       usesAtomBy[pn] = usesAtom;
       let v: any;
       try {
