@@ -4,64 +4,105 @@ Deep-dive companion to the root [`AGENTS.md`](../../AGENTS.md). This document co
 the engine package only. For the language semantics it implements, read the FlatPPL
 language spec in the **flatppl-design** repository (resolution order in `AGENTS.md`).
 
-> **Status:** Reference implementation, FlatPPL spec v0.1, pre-release. The engine
-> covers a working subset of the language — enough to drive the VS Code visualizer
-> end-to-end. Many spec features are recognised by the parser and analyzer but
-> stop short of full execution; those gaps are noted per file below.
+> **Status:** Reference implementation of FlatPPL v0.1. All sources in
+> TypeScript with `strict: true` (migration complete 2026-05). 2187 engine
+> tests pass; the engine drives the VS Code visualizer and the web gallery
+> end-to-end. The measure-algebra core is feature-complete for the spec's
+> Bayesian / measure-theoretic vocabulary; multivariate distributions
+> (MvNormal, Dirichlet, Multinomial, Wishart, InverseWishart, LKJ /
+> LKJCholesky, BinnedPoissonProcess) and the FlatPDL measure-eval
+> primitives (`builtin_logdensityof` / `builtin_sample` / the four
+> transports) all landed in May 2026. Outstanding spec features are
+> tracked in `flatppl-dev/TODO-flatppl-js.md` — primarily the standard
+> modules (particle-physics, GLM family, ext-linear-algebra,
+> special-functions), `PoissonProcess`, multi-file `load_module`
+> end-to-end wiring, and finer typeinfer coverage.
 
 ## Pipeline overview
 
 ```
 ┌──────────────┐  source text
-│ tokenizer.js │
+│ tokenizer.ts │
 └──────┬───────┘
        │ Token[]
 ┌──────▼───┐
-│ parser.js │  recursive-descent
+│ parser.ts │  recursive-descent precedence climbing
 └──────┬───┘
-       │ AST (ast.js node constructors)
+       │ AST (ast.ts node constructors)
 ┌──────▼─────┐
-│ analyzer.js│  bindings, deps, classification, validation,
+│ analyzer.ts│  bindings, deps, classification, validation,
 └──────┬─────┘  phase analysis, multi-LHS rewrite,
-       │        disintegrate detection
+       │        disintegrate detection, restrict expansion
        │
-       ├── dag.js        ── ancestor sub-DAG / full DAG
-       ├── disintegrate ── structural disintegration plans
+       ├── dag.ts                ── ancestor sub-DAG / full DAG (viewer)
+       ├── disintegrate.ts +     ── structural disintegration plans
+       │   disintegrate-plan.ts     (decompose → partition →
+       │                              admissibility → synthesize)
        │
        │ analyzer.bindings (Map<name, BindingInfo>)
 ┌──────▼──────┐
-│   pir.js    │  LoweredModule = ordered map of LoweredBinding(rhs=PIR-JSON)
+│   pir.ts    │  LoweredModule = ordered map of LoweredBinding(rhs=PIR-JSON)
 └──────┬──────┘
        │
-       ├── lower.js      ── per-expression AST → FlatPIR-JSON
-       ├── types.js      ── type constructors, unify, signatureOf
-       ├── typeinfer.js  ── inferTypes(LoweredModule), per-call meta annotation
+       ├── lower.ts        ── per-expression AST → FlatPIR-JSON
+       ├── types.ts        ── type constructors, unify, signatureOf
+       ├── typeinfer.ts +  ── inferTypes(LoweredModule), per-call meta
+       │   fixed-eval.ts      annotation, demand-driven const-eval for
+       │                       shape positions (engine-concepts §17.4)
+       ├── pir-sexpr.ts    ── FlatPIR S-expression printer + reader
        │
-       │ LoweredModule + bindings + diagnostics
+       │ LoweredModule + bindings + diagnostics + inferredTypes
 ┌──────▼─────────┐
-│ orchestrator.js│  buildSampleChain, buildDerivations, signatureOf-likelihood,
-└──────┬─────────┘  profile-plan, scope materialisation, axis enumeration
-       │            (facade over ir-shared / lift / derivations /
-       │             signatures / profile-plan — see "Module map")
+│ orchestrator.ts│  buildSampleChain, buildDerivations, scope materialisation,
+└──────┬─────────┘  axis enumeration; facade over ir-shared / lift /
+       │            derivations / signatures / profile-plan
        │
-       │ chain steps  (sent over postMessage)
+       ├── ir-shared.ts     ── shared IR utilities (constant folding,
+       │                        collectSelfRefs, parseSetIR, static gates)
+       ├── lift.ts          ── inline-subexpression lifting + isEvaluable
+       ├── derivations.ts   ── per-binding derivation classification +
+       │                        the unified `expandMeasure` walker
+       ├── signatures.ts    ── callable signature reconstruction
+       ├── profile-plan.ts  ── profile-plot range / preset derivation
+       │
+       │ derivations: Map<name, Derivation> + fixedValues
+┌──────▼──────────┐
+│ materialiser.ts │  per-derivation-kind handlers → EmpiricalMeasure
+└──────┬──────────┘  (samples + value + logWeights + n_eff + logTotalmass)
+       │             via prepareDensityRefs / measureToRefValue plumbing
+       │
+       │ worker messages (over postMessage)
 ┌──────▼──────┐
-│  worker.js  │  message handler (sampleN, logDensityN, evaluateN, ...)
+│ worker.ts   │  thin shell over sampler / density / traceeval
 └──────┬──────┘
        │
-       ├── sampler.js    ── stdlib-backed registry, per-distribution sampling
-       ├── traceeval.js  ── sample/score walk over measure IR
-       ├── empirical.js  ── log-space weighted measures, ESS, resampling
-       ├── histogram.js  ── FD-bins, weighted histogram, density estimate
-       └── rng.js        ── pure Philox-4x32-10 + state threading
+       ├── sampler.ts       ── stdlib REGISTRY (18 univariate dists),
+       │                        evaluateExpr / evaluateExprN, ARITH_OPS,
+       │                        AGGREGATE_PATTERNS, _broadcastApply
+       ├── density.ts +     ── consume/rest log-density walker, OP_HANDLERS
+       │   density-prims.ts    table, multivariate kernel density math
+       ├── traceeval.ts     ── sample/score walker for inline measure IR
+       ├── value.ts +       ── shape-tagged Value (engine-concepts §2.1),
+       │   value-ops.ts        Klein-4 transpose + struct bitmask, ops
+       ├── empirical.ts     ── log-space weighted measures, ESS, resample
+       ├── histogram.ts     ── FD-bins, weighted histogram, density curve
+       ├── dataload.ts      ── JSON / CSV / WSV parsers (load_data)
+       ├── standard-modules.ts ── std-module registry skeleton
+       └── rng.ts           ── pure Philox-4x32-10 + state threading
 ```
 
-Each layer is independently testable. The test suite exercises this:
-`tokenizer.test.js`, `parser.test.js`, `lower.test.js`, `types.test.js`,
-`typeinfer.test.js`, `orchestrator.test.js`, `sampler.test.js`, `worker.test.js`,
-`empirical.test.js`, `histogram.test.js`, `rng.test.js`, etc.
+Each layer is independently testable. The 2187-test suite covers the
+pipeline: `tokenizer.test.ts`, `parser.test.ts`, `lower.test.ts`,
+`pir.test.ts`, `types.test.ts`, `typeinfer.test.ts`,
+`orchestrator.test.ts`, `materialiser.test.ts`, `density.test.ts`,
+`sampler.test.ts`, `traceeval.test.ts`, `worker.test.ts`,
+`empirical.test.ts`, `histogram.test.ts`, `rng.test.ts`,
+`value.test.ts`, plus the broad cross-cutting suites
+(`closed-form-measure-algebra.test.ts`, `measure-algebra.test.ts`,
+`broadcast-semantics.test.ts`, `kernel-broadcast.test.ts`,
+`jointchain-first-class.test.ts`, …).
 
-## Public entry: `index.js`
+## Public entry: `index.ts`
 
 `processSource(source, opts?)` runs tokenize → parse → analyze and returns
 `{ ast, bindings, loweredModule, symbols, diagnostics, variant, bundle }`. This
@@ -80,10 +121,29 @@ is the extension-host-side entry point and the one most callers want.
   `vscode.workspace.fs`; the standalone web host uses `fetch()`).
   Defaults to an empty bundle.
 
-**Important:** `sampler.js` and `worker.js` are deliberately **not** re-exported —
+**Important:** `sampler.ts` and `worker.ts` are deliberately **not** re-exported —
 they pull in ~1 MB of stdlib distribution code and are only needed inside the
 worker bundle. Code on the extension host or main webview thread that needs to
-sample drives the worker via postMessage. See `engine/index.js:20-25`.
+sample drives the worker via postMessage. See `engine/index.ts`.
+
+### Bundle entry points (4)
+
+1. **`engine.min.js`** — main entry (`/engine/index.ts`). Exports
+   `processSource`, `variants`, `tokenize`, `parse`, `analyze`,
+   `disintegrate`, `lower`, `orchestrator`, `density`, `materialiser`,
+   `histogram`, `empirical`, `value`, `types`, `typeinfer`, etc.
+   **Excludes:** `sampler`, `worker` (pulled in by the worker bundle).
+2. **`sampler-worker.min.js`** — `/engine/worker-entry.ts`. Thin
+   transport shim; dispatches to `worker.createWorkerHandler`. Detects
+   Web Worker (`self.postMessage`) vs Node `worker_threads`
+   (`parentPort`). Bundled with full stdlib for per-step sampling /
+   density.
+3. **`viewer.js`** — `/viewer/src/index.ts`. Visualization +
+   interaction; bundles cytoscape + echarts + viewer logic. Includes
+   the engine bundle but NOT `sampler-worker` (external load).
+4. **`vscode-extension.js`** — `/vscode-extension/extension.ts`. Editor
+   integration; wires engine parsing + views. Bundles engine; loads
+   sampler-worker from `lib/sampler-worker.min.js`.
 
 ### Multi-file models (architectural decisions locked 2026-05-10)
 
@@ -108,9 +168,11 @@ separate items in `TODO-flatppl-js.md` under "Multi-file models".
 
 ## Module reference
 
-Each section: responsibility · exports · key invariants · gotchas.
+Each section: responsibility · key exports · invariants · gotchas. Line
+counts are approximate (rounded to nearest 50) and drift slowly as the
+engine grows — treat them as relative size hints.
 
-### `tokenizer.js` (250 lines)
+### `tokenizer.ts` (~300 lines)
 
 **Responsibility.** Source text → Token[] with diagnostics.
 
@@ -121,7 +183,7 @@ whitespace (Python-style implicit line continuation). Distinguishes `_` (HOLE),
 **Token types.** See `T` constant; matches FlatPPL's tiny grammar (no `**`, no
 `and`/`or`, no block keywords, etc. — see spec §05).
 
-### `parser.js` (370 lines)
+### `parser.ts` (~750 lines)
 
 **Responsibility.** Token[] → AST (Program, AssignStatement, expressions).
 Recursive-descent precedence climbing.
@@ -133,13 +195,13 @@ Recursive-descent precedence climbing.
 - `==`/`!=` produce `BinaryExpr` with op `'=='` / `'!='`; the lowering to
   the function form happens in `lower.js`.
 
-### `ast.js` (120 lines)
+### `ast.ts` (~150 lines)
 
 **Responsibility.** AST node factories. Plain objects with a `type` discriminator
 and a `loc: {start, end}` field. `synthLoc(source)` makes a sentinel location for
 engine-synthesized nodes (used by analyzer's multi-LHS rewriter and disintegrate).
 
-### `builtins.js` (190 lines)
+### `builtins.ts` (~300 lines)
 
 **Responsibility.** Single source of truth for which names are FlatPPL built-ins:
 constants, sets, special operations, ordinary built-in functions, distributions,
@@ -156,7 +218,7 @@ distributions). See "Cross-file invariants" below.
 the analyzer's multi-LHS rewriter. Listed here so `lower.js` treats it as a
 built-in op rather than a user-defined function call.
 
-### `analyzer.js` (1583 lines — large; subdivide mentally)
+### `analyzer.ts` (~2500 lines — large; subdivide mentally)
 
 **Responsibility.** AST → analyzed `bindings: Map<name, BindingInfo>`. Top-level
 entry is `analyze(ast, source)`; everything else supports it.
@@ -221,7 +283,7 @@ entry is `analyze(ast, source)`; everything else supports it.
 disintegrate.js, dag.js, and orchestrator.js. Could/should consolidate with the
 type system's `isMeasure`; right now both exist for historical reasons.
 
-### `dag.js` (771 lines)
+### `dag.ts` (~800 lines)
 
 **Responsibility.** `computeSubDAG(bindings, target)` and `computeFullDAG(bindings)`.
 Walks ancestors, materialises reified-callable scopes (each `functionof`/`kernelof`
@@ -232,7 +294,7 @@ for the cytoscape renderer.
 get `id = bindingName + ':' + boundaryName`). The renderer detects scope-local
 nodes via `id.indexOf(':') !== -1`. Fragile to refactor.
 
-### `disintegrate.js` (694 lines)
+### `disintegrate.ts` + `disintegrate-plan.ts` (~750 + ~500 lines)
 
 **Responsibility.** Structural disintegration of joint measures into
 `(kernel, prior)` pairs. Returns one of:
@@ -245,7 +307,21 @@ nodes via `id.indexOf(':') !== -1`. Fragile to refactor.
 Operates structurally on the joint's RHS AST; supports `lawof(record(...))`,
 keyword-form `joint(...)`, and `jointchain(...)` shapes.
 
-### `lower.js` (630 lines)
+**`disintegrate-plan.ts`** factors the dispatch as `decompose → partition →
+admissibility → synthesize` (engine-concepts §11, commit `ca48cde`).
+Per-shape `decomposeX` / `synthesizeX` pairs (record, joint, jointchain)
+share a partition helper + an admissibility check + a delegate-detection
+pass.
+
+### `restrict.ts` (~150 lines)
+
+**Responsibility.** Implements `restrict(M, x)` (spec §06) as a pure
+structural rewrite on top of `disintegrate` + `bayesupdate` +
+`likelihoodof`. No new derivation kind — `restrict` is canonicalized
+to its expanded form during analyzer pass 3. Supports kwarg form
+(`restrict(M, a=..., b=...)`) via a synthetic `record(...)` bundling.
+
+### `lower.ts` (~800 lines)
 
 **Responsibility.** AST expression → FlatPIR-JSON. Pure; no bindings map needed.
 
@@ -281,7 +357,7 @@ keyword-form `joint(...)`, and `jointchain(...)` shapes.
   `/` → `div`, comparisons → `lt`/`le`/`gt`/`ge`/`eq`/`ne`, etc.
   See `BIN_OP_MAP` and `UN_OP_MAP`.
 
-### `pir.js` (190 lines)
+### `pir.ts` (~250 lines) + `pir-sexpr.ts` (~600 lines)
 
 **Responsibility.** Module-level container (`LoweredModule`) and lowering driver
 (`lowerToModule`). The LoweredModule is the single source of truth for the
@@ -311,7 +387,13 @@ orchestrator all consume it.
 `walkCalls(expr, visit)` is the standard post-order call visitor used by
 type/phase inference. Always walks `args`, `kwargs`, `fields`, and `body`.
 
-### `types.js` (765 lines)
+**`pir-sexpr.ts`** provides the FlatPIR S-expression printer / reader for
+round-tripping `.flatpir` ↔ LoweredModule (spec §11). Handles calls, refs,
+kwargs, fields, assigns, params, axis, `%public`, `%bind`. `%meta`
+emission and cross-module `(%ref <mod> <name>)` resolution are documented
+follow-ups in TODO-flatppl-js.md §11.
+
+### `types.ts` (~800 lines)
 
 **Responsibility.** FlatPIR type constructors, unification with type variables,
 and the built-in signature registry.
@@ -345,14 +427,22 @@ signature (variables re-keyed per call site) or null for unknown ops. Built-in
 signatures are stored as factory functions in `SIGNATURE_FACTORIES` so each call
 site gets fresh type variables.
 
-> **Coverage gap:** the registry covers ~50 ops — well-typed for common
-> distributions and the core measure algebra, but most multivariate distributions,
-> the entire array/table generation suite, linear algebra, and measure-algebra
-> ops outside `weighted`/`normalize`/`superpose`/`joint`/`iid` are missing.
-> Unknown ops fall through to `inferGenericCall` → `signatureOf` returns null →
-> result is `deferred()`. See `TODO.md` for the planned coverage roadmap.
+> **Coverage status:** the registry covers ~90 ops. Univariate +
+> multivariate distributions (MvNormal, Dirichlet, Multinomial, Wishart /
+> InverseWishart, LKJ / LKJCholesky, BinnedPoissonProcess), the core
+> measure algebra (`weighted`/`logweighted`/`normalize`/`superpose`/
+> `joint`/`jointchain`/`iid`/`truncate`/`pushfwd`/`bayesupdate`/
+> `likelihoodof`/`logdensityof`/`totalmass`/`disintegrate`/`restrict`),
+> the FlatPDL primitive family (`builtin_logdensityof`/`builtin_sample`/
+> the four transports), select/ifelse, and most array / linalg /
+> approximation / reduction / norm builtins all have signatures. Gaps:
+> some array-construction shape rules still defer (`fill` / `zeros` /
+> `ones` / `eye` / `cartpow` / `cartprod` — see TODO §17), `chain` /
+> `relabel` / `bijection` first-class typing, and a few new
+> stdlib-additions (qr, diag, quadform, tile, splitblocks, blockdiagmat,
+> bandedmat, conv, crosscorr) listed in TODO §07.
 
-### `typeinfer.js` (870 lines)
+### `typeinfer.ts` (~1600 lines) + `fixed-eval.ts` (~250 lines)
 
 **Responsibility.** Inference over a LoweredModule. Mutates each binding to set
 `inferredType`, writes per-call `meta.type` annotations.
@@ -379,7 +469,18 @@ Auto-splatting (single positional record arg whose fields are a subset of the
 callee's input names) is detected and routed through the kwarg path so type
 checks fire correctly.
 
-### `orchestrator.js` (~460 lines) + its split modules
+**Demand-driven const-eval at shape positions** (engine-concepts §17.4).
+Pure-structural inference is incomplete on FlatPPL by design — shapes
+can be computed from fixed-phase values (`iid(M, lengthof(data))`,
+`cartpow(reals, n)`, …). `fixed-eval.ts` provides a lazy / call-by-need
+resolver invoked only at shape positions, with shape-observer
+short-circuits (`length(x)` / `lengthof(x)` / `sizeof(x)` read off the
+inferredType without evaluating x). The IR is left intact: resolved
+integers live in a side-table side-map; rewrites that fold them into
+the IR are a separate later pass with size-aware policy. **The clean
+invariant: typeinfer never changes bytes in the IR.**
+
+### `orchestrator.ts` (~460 lines) + its split modules
 
 **Responsibility.** Builds executable artifacts on top of analyzer + lowered IR:
 - `buildSampleChain(target, bindings)` — topological list of sample/evaluate
@@ -422,13 +523,22 @@ ir-shared.js  ◄── signatures.js ◄── lift.js ◄── derivations.js
   implicit-boundary-canonicalisation helpers; `isEvaluable`). Handles
   `mu = 2 * draw(...)` style forms by hoisting the inner draw to a
   synthetic binding. Requires `lower`, `signatures`, `ir-shared`.
-- **`derivations.js`** — the measure-algebra heart: `buildDerivations`,
+- **`derivations.ts`** — the measure-algebra heart: `buildDerivations`,
   `classifyDerivation`, the per-op `classify*` family +
-  `MEASURE_OP_CLASSIFIERS`, derivation expansion/resolution
-  (`expandMeasureIR` & friends, `derivationRefsValid`), `isDiscreteAt`,
-  `leafSampleIR`, `classifyBayesupdate`, implicit kernel/function
-  signatures. Leaf w.r.t. the orchestrator core (never calls
-  `buildSampleChain`/`classifyForChain`/`resolveMeasure`).
+  `MEASURE_OP_CLASSIFIERS` (16 ops), derivation expansion / resolution
+  via the unified `expandMeasure(input, ctx, visited)` walker
+  (engine-concepts §17.4 — replaces the former four-walker maze of
+  `expandMeasureIR` + `expandMeasureRefsInIR` + structural fallback +
+  `expandMeasurePos`; the two backwards-compat shims `expandMeasureIR`
+  and `expandMeasureRefsInIR` survive as one-liners),
+  `derivationRefsValid`, `isDiscreteAt`, `leafSampleIR`,
+  `classifyBayesupdate`, implicit kernel/function signatures. Leaf
+  w.r.t. the orchestrator core (never calls
+  `buildSampleChain`/`classifyForChain`/`resolveMeasure`). The 15
+  derivation kinds in `_expandByName` cover the spec measure algebra:
+  alias / sample / mvnormal / iid / record / tuple / superpose / select
+  / jointchain / weighted / normalize / pushfwd / kernelbroadcast (and
+  the structural fallback through `binding.ir`).
 - **`signatures.js`** — callable introspection for the profile-plot UI:
   `signatureOf`/`signatureOfLikelihood`, axis enumeration
   (`distributeAxes`, `walkType`, `enumerateOutputLeaves`,
@@ -450,7 +560,152 @@ files — see "Cross-file invariants"); `orchestrator.js` /
 - `EVALUABLE_OPS` — built-ins the worker's `evaluateExpr` knows how to compute;
   must mirror `sampler.ARITH_OPS` plus a few hand-listed extras.
 
-### `worker.js` (418 lines) and `worker-entry.js` (89 lines)
+### `materialiser.ts` (~2800 lines)
+
+**Responsibility.** Per-binding-name → `EmpiricalMeasure` evaluator.
+Drives the worker via `ctx.sendWorker(msg)`. `materialiseMeasure(name,
+ctx)` dispatches to per-kind handlers in `KIND_HANDLERS` (~27 entries:
+the 13 measure-algebra derivation kinds + 8 multivariate distribution
+kinds + the FlatPDL primitives surface — see engine-concepts §13.6).
+
+**Shared plumbing** (engine-concepts §17.1, commit `38135f2`):
+- `prepareDensityRefs(ir, ctx, label)` — one owner of the
+  collectSelfRefs → filter (function-like / non-binding /
+  non-fixed) → split (per-atom vs fixed) → materialise per-atom →
+  return `{ refArrays, fixedEnv, perAtomNames }` plumbing.
+- `measureToRefValue(m, name, label)` — uniform parent-measure →
+  worker-facing Value dispatch (`m.value` for vector ensembles,
+  `batchedScalar(m.samples)` for scalar ensembles).
+- `pushFixedEnv(ctx, fixedEnv)` — canonical setEnv merge for
+  fixed-phase parents.
+- `collectRefArrays(ir, fixedValues, getMeasure)` — older sibling
+  used by leaf-sample / iid / multivariate paths (returns refArrays
+  only, no fixedEnv split).
+
+**`EmpiricalMeasure` shape** (engine-concepts §2 universal value):
+```ts
+{
+  samples:      Float64Array,   // per-atom scalar view (atom-major)
+  value?:       Value,          // shape-[N, ...dims] canonical batched
+  logWeights:   Float64Array | null,   // null ⇒ uniform 1/N
+  logTotalmass: number,         // log-space scalar; 0 ⇒ probability
+  n_eff:        number,         // Kish ESS or constructive analogue
+  fields?:      { [name]: EmpiricalMeasure },   // record-typed
+  elems?:       EmpiricalMeasure[],             // tuple-typed
+  dims?:        number[],       // intrinsic shape (vector/matrix atoms)
+}
+```
+
+Each kind handler returns one of these. Composite measures (record /
+tuple / iid / superpose / select / jointchain) compose by recursing
+into children via `ctx.getMeasure(name)`. The orchestrator caches per
+binding name; the materialiser is called at most once per
+binding-per-context.
+
+### `density.ts` (~1400 lines) + `density-prims.ts` (~1100 lines)
+
+**Responsibility.** Single density implementation for the engine.
+Every production density caller (matLogdensityof, matBayesupdate,
+profileN-logdensity, worker.logDensityN, broadcast(logdensityof, …)
+points-batched fast path) goes through `logDensityConsumeN(ir, value,
+refArrays, count, opts)` — the foundation that walks the measure IR
+once (atom-independent consume/rest splitting) while evaluating
+per-leaf logpdf N times (the only per-atom work).
+
+**Public API** (single function, three convenience wrappers):
+- `logDensityConsumeN(ir, value, refArrays, count, opts)` →
+  `{ logps: Float64Array(count), rest }` — foundation.
+- `logDensityN(ir, value, refArrays, count, opts)` → Float64Array —
+  strict batched wrapper (asserts empty rest).
+- `logDensityConsume(ir, value, env, opts)` → `{ logp, rest }` —
+  single-point with rest.
+- `logDensity(ir, value, env, opts)` → number — single-point strict.
+
+**Consume/rest dispatch** (engine-concepts §4) — `OP_HANDLERS` table
+covers 11 measure ops:
+- Structural: `joint` / `record` (unified `walkJointFieldsOrPositional`),
+  `iid` (`walkIid`), `jointchain` (stub — canonicalised to record/joint
+  by `expandMeasure` before reaching density).
+- Reweighting: `weighted` (`walkWeighted`), `logweighted`
+  (`walkLogWeighted`), `truncate` (`walkTruncate`),
+  `normalize` (`walkNormalize`).
+- Transformation: `pushfwd` (`walkPushfwd`) — requires `bijection`
+  annotation per spec §06.
+- Discrete-selector: `select` (`walkSelect`) — engine-concepts §12
+  unified `ifelse` / `superpose` / `mixture` / `xs[i]`. Carries a
+  reference-measure guard against spike-and-slab heterogeneity.
+- Array-product: `broadcast` (`walkBroadcast`) — closed-form density
+  for `broadcast(Dist, args…)` (engine-concepts §17 — added 2026-05-26;
+  per-atom × per-element parameter resolution via `evaluateExprN`).
+- Multivariate kernels (8): `MvNormal`, `Dirichlet`, `Multinomial`,
+  `BinnedPoissonProcess`, `Wishart`, `InverseWishart`, `LKJ`,
+  `LKJCholesky` — all route through a generic `walkMultivariate` that
+  dispatches into `densityPrims.builtinLogdensityof(name, kw, x)`
+  (FlatPDL primitive, see below).
+- Univariate leaves: `walkLeaf` — `densityPrims.builtinLogdensityofPositional`.
+
+**Density primitives** (`density-prims.ts`, engine-concepts §13.6) — the
+FlatPDL `builtin_logdensityof` ABI surface. Holds the per-kernel
+log-density math for the eight multivariate kernels (MvNormal,
+Dirichlet, Multinomial, Wishart, InverseWishart, LKJ, LKJCholesky,
+BinnedPoissonProcess), the FlatPDL dispatch helpers
+(`builtinLogdensityof(name, kwRecord, x)` and the positional shortcut
+`builtinLogdensityofPositional(name, params, x)` walkLeaf uses), and
+the multivariate transports `builtin_touniform` / `builtin_fromuniform`
+/ `builtin_tonormal` / `builtin_fromnormal` (MvNormal: direct
+Cholesky; non-MvNormal: TODO §07 follow-up).
+
+`density-prims.ts` also hosts the type-mode consume/rest static
+shape walker `staticConsume` / `staticDensityShapeCheck`
+(engine-concepts §17.3): scalar leaves, joint(fields), iid (literal n),
+weighted / normalize / truncate passthroughs, multivariate rank check.
+Wired into analyser-time diagnostics is a TODO (§17 follow-up).
+
+### `value.ts` (~700 lines) + `value-ops.ts` (~1100 lines)
+
+**Responsibility.** The shape-tagged Value contract (engine-concepts
+§2.1) — the single per-cell numeric representation the engine carries
+between primitives.
+
+**`Value` shape:**
+```ts
+{
+  shape:   number[],         // logical shape, leading axis = batch
+  data:    Float64Array,     // contiguous storage (real part if complex)
+  dtype?:  'f64' | 'complex',
+  im?:     Float64Array,     // imaginary part (planar; complex dtype)
+  t?:      'N' | 'T' | 'A' | 'C',   // Klein-4 transpose/adjoint tag
+  struct?: number,           // structured-matrix bitmask
+}
+```
+
+Klein-4 tag (engine-concepts §2.1) — `transpose` toggles the swapped
+bit, `adjoint` toggles both, `conjugate` toggles the conjugate bit.
+Matrices read the tag in matmul / matvec / inner / outer via
+index-permutation; transposes allocate no storage. Vectors stay
+rank-1 (a row vector is a transposed vector, not a single-row
+matrix, per spec §07).
+
+`struct` bitmask (engine-concepts §2.2) — `ST_LOWER | ST_DIAG |
+ST_UPPER` occupancy + `ST_UNIT | ST_SYM | ST_POSDEF` refinements.
+Algebra: occupancy ORs under `+`; refinements AND. Storage: only
+`diag` is vector-backed today; other shapes are dense + flag (the
+flag's payoff is algorithmic dispatch, not bytes).
+
+**Densify contract.** Exactly one fallback,
+`densify(v)`, materialises a structured Value to plain dense. Every op
+without a structured fast-path calls it via the nested-array linalg
+bridge `_valueToNested`. **Correctness never depends on a fast-path
+existing.**
+
+**`value-ops.ts`** holds shape-aware `add` / `sub` / `neg` / `mul` /
+the batched siblings (`mulN`, `addN`), structured-matrix Cholesky /
+det / inv / triangular solve, plus the complex-arithmetic helpers
+(real and imaginary buffers, planar layout). The op set is closed
+under the Klein-4 tag — every binary op respects the operand tags via
+the dispatcher.
+
+### `worker.ts` (~430 lines) and `worker-entry.ts` (~90 lines)
 
 **Responsibility.** Stateless message handler that drives `sampler.js` and
 `traceeval.js`. `worker-entry.js` is the transport shim — wires the handler to
@@ -472,7 +727,7 @@ The parametric path is critical for the orchestrator's per-atom-params model:
 naively rebuilding the factory per draw makes setup cost dominate (~10× the
 actual sampling cost on small distributions).
 
-### `sampler.js` (911 lines)
+### `sampler.ts` (~6100 lines)
 
 **Responsibility.** stdlib-backed registry of sampleable distributions, plus
 analytical `density()` for visualization, plus `evaluateExpr` for deterministic
@@ -490,14 +745,47 @@ sub-expressions.
 }
 ```
 
-**Currently sampleable:** Normal, Exponential, LogNormal, Beta, Gamma, Cauchy,
-StudentT, Bernoulli, Binomial, Poisson, Dirac. The other 12 spec distributions
-are recognised by the parser/analyzer but the orchestrator returns `unsupported`
-when they reach `buildSampleChain`.
+**Currently sampleable:**
+- Univariate continuous: Normal, Uniform, Exponential, LogNormal, Beta,
+  Gamma, InverseGamma, Cauchy, StudentT, Logistic, Weibull, ChiSquared,
+  GeneralizedNormal, VonMises, Laplace.
+- Univariate discrete: Bernoulli, Categorical, Categorical0, Binomial,
+  Geometric, NegativeBinomial, NegativeBinomial2, Poisson.
+- Multivariate continuous (via dedicated mat handlers, density via
+  `walkMultivariate` + `density-prims`): MvNormal, Dirichlet, Wishart,
+  InverseWishart, LKJ, LKJCholesky.
+- Multivariate discrete: Multinomial.
+- Composite: BinnedPoissonProcess.
+- Degenerate: Dirac (scalar-only; identity rewrite via classifier).
 
-**`evaluateExpr(ir, env)`** evaluates deterministic IR — literals, constants,
-refs (resolved via `env`), and a fixed catalog of calls (`ARITH_OPS` table plus
-`tuple`/`tuple_get`/`get_field`/`record`/`rnginit`/`rngstate`/`rand`).
+**Outstanding spec distributions** (parser-recognised, sample/density
+not yet implemented): `PoissonProcess` (point process with ragged
+per-atom shape — needs a new measure shape class for "ragged vector
+per atom"; tracked in TODO §08).
+
+**`evaluateExpr(ir, env)`** / **`evaluateExprN(ir, refArrays, count,
+baseEnv, opts)`** — the single deterministic value evaluator (single-point
++ batched form). Single-point is a one-shot if no per-atom refs touch the
+expression. Batched dispatches per-op:
+- `ARITH_OPS_N` (~50 entries): scalar arith with batching — add / sub / mul
+  (with shape-aware routing through `value-ops` for matrices / vectors) /
+  div / mod / pow / neg / pos / abs / abs2 / exp / log / sqrt / trig +
+  hyperbolic / floor / ceil / round / comparisons / logic.
+- `_batchedApproximation`: polynomial / bernstein / stepwise with tight
+  per-atom Horner / basis loops.
+- `_perAtomFallback`: per-op handlers for non-arith shapes (`tuple` /
+  `tuple_get` / `get_field` / `get` / `get0` / `record` / `rnginit` /
+  `rngstate` / `rand` / `broadcast` / `reduce` / `scan` / `filter` /
+  `aggregate` / shape funcs / binning / `builtin_sample` /
+  `builtin_logdensityof` / the four transports).
+
+**`AGGREGATE_PATTERNS`** (engine-concepts §15 + §16) — pattern
+specialiser table over the broadcast-reduce default. Landed entries:
+matmul (all four transpose variants), matrix-vector, outer product,
+batched matmul, pure axis reductions. Gated by the `aggregate`
+optimisation toggle (`perf-config.ts`); every value-computing aggregate
+test runs in both modes via `inBothModes` so the specialisers and the
+default agree by construction.
 
 **RNG bridge.** stdlib's distribution samplers expect a `() → [0,1)` PRNG closure
 via `opts.prng`. We bridge our pure-functional Philox (state in, value out, new
@@ -505,7 +793,7 @@ state out) via a stateful adapter (`makePhiloxPrngAdapter`) that mutates an
 internal copy of the state and exposes `getState()` so the caller can read the
 trailing state when sampling completes.
 
-### `traceeval.js` (344 lines)
+### `traceeval.ts` (~400 lines)
 
 **Responsibility.** Unified trace evaluator for measure expressions. One walk
 handles both generative mode (sampling) and scoring mode (log-density at observed
@@ -515,7 +803,7 @@ values), driven by a `tally` argument.
 measure-algebra op, add a handler function and register it here — no edits to the
 core `walkInner`.
 
-### `empirical.js` (666 lines)
+### `empirical.ts` (~700 lines)
 
 **Responsibility.** Weighted empirical measure utilities: log-space arithmetic,
 effective sample size, resampling (systematic + multinomial), normalization.
@@ -528,13 +816,13 @@ allocation when an op needs it.
 `totalLogMass` returns 0 for null weights (treated as a probability measure).
 These conventions are documented inline but are easy to violate when extending.
 
-### `histogram.js` (324 lines)
+### `histogram.ts` (~350 lines)
 
 **Responsibility.** Binning strategies (Freedman-Diaconis equal-width, integer
 atoms for discrete distributions). Weighted histogram, weighted quantile,
 quantile-trimmed plot range.
 
-### `rng.js` (378 lines)
+### `rng.ts` (~400 lines)
 
 **Responsibility.** Pure Philox-4x32-10 counter-based PRNG.
 
@@ -547,6 +835,45 @@ ranges), cross-implementation parity (cuRAND, NumPy, PyTorch all ship Philox).
 `nextUint32(state)`, `nextUniform(state)`, `incrementCounter(c)`. The 32×32→64
 multiply uses 16-bit decomposition to stay within JS safe-integer range; avoids
 BigInt overhead on the hot path.
+
+### `dataload.ts` (~400 lines)
+
+**Responsibility.** Loaders for `load_data(source, valueset)` (spec
+§07). Parses JSON (array-of-objects / object-of-arrays / vector
+shapes), CSV, WSV (comma- / whitespace-separated with column names in
+the first row). Arrow IPC support is a documented deferral (TODO §07).
+
+Pure parsers — no I/O. The host (vscode-extension, web gallery) is
+responsible for fetching the bytes and passing them through to the
+engine via the `dataResolver(path)` callback.
+
+### `standard-modules.ts` (~250 lines)
+
+**Responsibility.** Engine-provided standard-module registry skeleton
+(spec §09). Exposes `lookupStandardModule(name, compat)`,
+`registerStandardModule`, `listStandardModules`. Each entry holds a
+Map of binding-name → descriptor `{ kind: 'function' | 'value' |
+'distribution', impl?, value?, sig? }`. Exact (name, compat) match for
+now; semver matching is a follow-up.
+
+The analyzer / orchestrator wiring to actually resolve
+`standard_module(name, compat)` through the registry is pending — see
+TODO §09.
+
+### `engine-types.d.ts`
+
+**Responsibility.** Cross-file type declarations consumed by the
+engine's `.ts` sources. Declares `Value`, `ValueTag`, `ValueDtype`;
+`IRNode` discriminated union over `IRLit | IRConst | IRRef | IRHole |
+IRCall`; `DerivationKind` literal union and the per-kind interfaces
+that compose the `Derivation` discriminated union; `DerivationsState`,
+`BindingInfo`, `BindingType`, `EmpiricalMeasure`, `HistogramResult`.
+
+Named `.d.ts` to avoid resolution clash with the existing runtime
+`types.ts`. Also re-exported across packages via
+`@flatppl/engine/engine-types` so the viewer (and any future external
+consumer) can `import type` the public shapes without pulling in the
+runtime engine.
 
 ---
 
@@ -568,14 +895,17 @@ when extending.
 
 | File | What to add | Reason |
 |---|---|---|
-| `builtins.js` | `'Foo'` in `DISTRIBUTIONS` (and so in `ALL_KNOWN`) | parser/analyzer recognise the name |
-| `builtins.js` | (keep `MEASURE_PRODUCING` in sync) | typeinfer / orchestrator measure-classification |
-| `types.js` | `Foo: () => realDistKwargs({...})` in `SIGNATURE_FACTORIES` | typeinfer kwargs/result shape |
-| `ir-shared.js` | `'Foo'` in `SAMPLEABLE_DISTRIBUTIONS` (and `DISCRETE_DISTRIBUTIONS` if applicable) | chain builder admits it (re-bound into orchestrator/derivations via the `ir-shared` facade) |
-| `sampler.js` | `Foo: { params, aliases, discrete, Ctor, randFn, logpdfFn }` in `REGISTRY` | runtime sampling + density |
-| `sampler.js` | stdlib package `require()`s at top of file | Ctor / randFn / logpdfFn |
+| `builtins.ts` | `'Foo'` in `DISTRIBUTIONS` (and so in `ALL_KNOWN`) | parser/analyzer recognise the name |
+| `builtins.ts` | (keep `MEASURE_PRODUCING` in sync) | typeinfer / orchestrator measure-classification |
+| `types.ts` | `Foo: () => realDistKwargs({...})` in `SIGNATURE_FACTORIES` | typeinfer kwargs/result shape |
+| `ir-shared.ts` | `'Foo'` in `SAMPLEABLE_DISTRIBUTIONS` (and `DISCRETE_DISTRIBUTIONS` if applicable) | chain builder admits it (re-bound into orchestrator/derivations via the `ir-shared` facade) |
+| `sampler.ts` | `Foo: { params, aliases, discrete, Ctor, randFn, logpdfFn }` in `REGISTRY` | runtime sampling + density |
+| `sampler.ts` | stdlib package `require()`s at top of file | Ctor / randFn / logpdfFn |
+| `density-prims.ts` | per-kernel logpdf math + `MV_DENSITY_FNS` entry (multivariate only) | walkMultivariate dispatch |
+| `density.ts` | `OP_HANDLERS[Foo] = walkMultivariate` (multivariate only) | density walker dispatch |
+| `materialiser.ts` | `KIND_HANDLERS[Foo] = matFoo` + the `matFoo` handler (multivariate only) | per-atom sampling |
 | `engine/package.json` | `@stdlib/...` deps for the new packages | npm install |
-| `test/sampler.test.js` and friends | regression tests | catch param-name drift |
+| `test/sampler.test.ts` and friends | regression tests | catch param-name drift |
 
 The kwargs in `types.js` MUST equal the `params` array entries in
 `sampler.REGISTRY[Foo]` (and both should match the spec). The cross-file
@@ -586,12 +916,12 @@ distribution with mismatched param names it'll fail loudly.
 
 | File | What to add |
 |---|---|
-| `builtins.js` | `'bar'` in `BUILTIN_FUNCTIONS` |
-| `types.js` | `bar: () => ({ args: [REAL], kwargs: {}, result: REAL })` in `SIGNATURE_FACTORIES` |
-| `lower.js` | only if `bar` has special syntax handling (most don't) |
-| `ir-shared.js` | `'bar'` in `EVALUABLE_OPS` |
-| `sampler.js` | `bar: a => Math.bar(a)` in `ARITH_OPS` |
-| `test/sampler.test.js` | regression test for `bar` evaluation |
+| `builtins.ts` | `'bar'` in `BUILTIN_FUNCTIONS` |
+| `types.ts` | `bar: () => ({ args: [REAL], kwargs: {}, result: REAL })` in `SIGNATURE_FACTORIES` |
+| `lower.ts` | only if `bar` has special syntax handling (most don't) |
+| `ir-shared.ts` | `'bar'` in `EVALUABLE_OPS` |
+| `sampler.ts` | `bar: a => Math.bar(a)` in `ARITH_OPS` (single-point) + `ARITH_OPS_N` (batched) if numeric |
+| `test/sampler.test.ts` | regression test for `bar` evaluation |
 
 `ir-shared.EVALUABLE_OPS` and `sampler.ARITH_OPS` must contain the same op
 names (the orchestrator's static gate is the runtime's gate). This IS
@@ -602,25 +932,30 @@ documented `vector` / `cat` exemptions and the inline-evaluable handful).
 
 | File | What to add |
 |---|---|
-| `builtins.js` | `'baz'` in `MEASURE_OPS`; possibly in `MEASURE_PRODUCING` |
-| `types.js` | signature in `SIGNATURE_FACTORIES`, possibly `special: 'baz'` if structurally unusual |
-| `typeinfer.js` | a special-case handler in `inferCall` if `special` is set |
-| `lower.js` | `'baz'` in `FIELD_FORMS` if it has ordered named entries |
-| `derivations.js` | `classifyBaz` derivation classifier; entry in `MEASURE_OP_CLASSIFIERS` |
-| `traceeval.js` | walker function; entry in `MEASURE_OP_WALKERS` |
-| `disintegrate.js` | dispatch entry if it can appear in joint-measure RHS |
-| `test/measure-algebra.test.js` | regression test |
+| `builtins.ts` | `'baz'` in `MEASURE_OPS`; possibly in `MEASURE_PRODUCING` |
+| `types.ts` | signature in `SIGNATURE_FACTORIES`, possibly `special: 'baz'` if structurally unusual |
+| `typeinfer.ts` | a special-case handler in `inferCall` if `special` is set |
+| `lower.ts` | `'baz'` in `FIELD_FORMS` if it has ordered named entries |
+| `derivations.ts` | `classifyBaz` derivation classifier; entry in `MEASURE_OP_CLASSIFIERS`; a `case 'baz'` arm in `_expandByName`'s switch (explicit, never via the structural fallback) |
+| `traceeval.ts` | walker function; entry in `MEASURE_OP_WALKERS` (sampling side) |
+| `density.ts` | walker function; entry in `OP_HANDLERS` (scoring side) |
+| `materialiser.ts` | per-kind handler; entry in `KIND_HANDLERS` |
+| `disintegrate.ts` | dispatch entry if it can appear in joint-measure RHS |
+| `test/measure-algebra.test.ts` + `closed-form-measure-algebra.test.ts` | regression tests |
 
 ### Catalog cross-references summary
 
 | Catalog | Source of truth | Mirrored in |
 |---|---|---|
 | Built-in name set | `builtins.ALL_KNOWN` | (drives lower's user-vs-builtin dispatch) |
-| Sampleable distributions | `sampler.REGISTRY` | `orchestrator.SAMPLEABLE_DISTRIBUTIONS` |
-| Discrete distributions | (subset of above) | `orchestrator.DISCRETE_DISTRIBUTIONS` |
-| Evaluable functions | `sampler.ARITH_OPS` | `orchestrator.EVALUABLE_OPS`, `typeinfer` op handlers |
+| Sampleable distributions | `sampler.REGISTRY` + multivariate `mat*` handlers | `ir-shared.SAMPLEABLE_DISTRIBUTIONS` |
+| Discrete distributions | (subset of above) | `ir-shared.DISCRETE_DISTRIBUTIONS` |
+| Evaluable functions | `sampler.ARITH_OPS` / `ARITH_OPS_N` | `ir-shared.EVALUABLE_OPS`, `typeinfer` op handlers |
 | Type signatures | `types.SIGNATURE_FACTORIES` | (only place) |
 | Measure-producing ops | `builtins.MEASURE_PRODUCING` | `analyzer.isMeasureExpr`, `typeinfer.isMeasure`, `orchestrator` |
+| Derivation kinds | `derivations.ts` `_expandByName` switch | `materialiser.KIND_HANDLERS`; `engine-types.d.ts` `DerivationKind` union |
+| Density-walker ops | `density.OP_HANDLERS` | (consumes `expandMeasure` output; no other mirror) |
+| FlatPDL primitive surface | `density-prims.ts` (`builtin_logdensityof` / multivariate transports) | `sampler.ts` (`builtin_sample`); spec §07 sec:measure-eval-prims |
 
 ---
 
@@ -840,20 +1175,42 @@ back onto its source binding (`binding.diagnostics`) so the DAG view can answer
 
 ## Test layout
 
-`packages/engine/test/`:
-- Per-module unit tests: `tokenizer.test.js`, `parser.test.js`, `analyzer.test.js`,
-  `lower.test.js`, `pir.test.js`, `types.test.js`, `typeinfer.test.js`,
-  `dag.test.js`, `disintegrate.test.js`, `disintegrate-plan.test.js`,
-  `histogram.test.js`, `empirical.test.js`, `rng.test.js`, `sampler.test.js`,
-  `traceeval.test.js`, `worker.test.js`, `orchestrator.test.js`.
-- Cross-cutting: `holes.test.js`, `indexing.test.js`, `selection.test.js`,
-  `phases.test.js`, `rename.test.js`, `measure-algebra.test.js`.
-- Integration: `integration.test.js` runs against `.flatppl` fixtures copied
-  from the **flatppl-examples** repo into `test/fixtures/`. Update the copies
-  when the originals change (no auto-sync).
+`packages/engine/test/` (~98 test files):
+- Per-module unit tests: `tokenizer.test.ts`, `parser.test.ts`,
+  `analyzer.test.ts`, `lower.test.ts`, `pir.test.ts`, `pir-sexpr.test.ts`,
+  `types.test.ts`, `typeinfer.test.ts`, `dag.test.ts`,
+  `disintegrate.test.ts`, `disintegrate-plan.test.ts`,
+  `disintegrate-bi-equivalence.test.ts`,
+  `disintegrate-spec-coverage.test.ts`, `histogram.test.ts`,
+  `empirical.test.ts`, `rng.test.ts`, `sampler.test.ts`,
+  `traceeval.test.ts`, `worker.test.ts`, `orchestrator.test.ts`,
+  `materialiser.test.ts`, `density.test.ts`, `value.test.ts`,
+  `value-ops-*.test.ts`.
+- Distributions: `sampler.test.ts`, `multivariate-distributions.test.ts`,
+  `new-univariate-distributions.test.ts`,
+  `builtin-sample-transport.test.ts`,
+  `multivariate-density.test.ts`, `builtin-logdensityof.test.ts`,
+  `static-density-shape.test.ts`,
+  `hierarchical-multivariate-density.test.ts`.
+- Measure algebra: `measure-algebra.test.ts`,
+  `closed-form-measure-algebra.test.ts`, `broadcast-semantics.test.ts`,
+  `kernel-broadcast.test.ts`, `jointchain-first-class.test.ts`,
+  `iid-multi-axis.test.ts`, `marginal-sampling.test.ts`.
+- Type inference: `typeinfer.test.ts`, `typeinfer-conformance.test.ts`,
+  `typeinfer-conformance-property.test.ts`,
+  `typeinfer-tvector.test.ts`.
+- Linear algebra: `linear-algebra.test.ts`, `diag-structure.test.ts`,
+  `vector-atom-reductions.test.ts`, `vector-atom-softmax.test.ts`.
+- Cross-cutting: `holes.test.ts`, `indexing.test.ts`,
+  `selection.test.ts`, `phases.test.ts`, `rename.test.ts`,
+  `invariants.test.ts`, `equivalence.test.ts`,
+  `spec-patterns.test.ts`.
+- Integration: `integration.test.ts` runs against `.flatppl` fixtures
+  copied from the **flatppl-examples** repo into `test/fixtures/`.
+  Update the copies when the originals change (no auto-sync).
 
-Run with `npm test` (in the workspace root or in `packages/engine/`). 671 tests
-in ~3.5 s as of writing.
+Run with `npm --workspace=@flatppl/engine run test` (or `npm test` in
+`packages/engine/`). 2187 tests in ~25-40 s as of writing.
 
 ---
 
@@ -861,45 +1218,71 @@ in ~3.5 s as of writing.
 
 | Concern | Start here |
 |---|---|
-| "Why is this name unknown?" | `builtins.js` (catalogs), `analyzer.js:1075` (undefined-name warning) |
-| "Why does this expression have type X?" | `typeinfer.js` (inferCall), `types.js` (signatures) |
-| "What phase is this binding?" | `analyzer.js:607` (`computePhases`) |
-| "Why is the chain unsupported?" | `orchestrator.js` (`classifyForChain`) |
-| "How is this distribution sampled?" | `sampler.js` (REGISTRY entry) |
-| "How is this measure-algebra op handled?" | `derivations.js` classifier; `traceeval.js` walker |
-| "Why does the DAG render this way?" | `dag.js` |
-| "Why did disintegrate produce this Plan?" | `disintegrate.js` |
-| "How does the worker thread work?" | `worker.js` (handler), `worker-entry.js` (transport) |
-| "Why is the RNG result this number?" | `rng.js` (Philox), `sampler.js` (PRNG adapter) |
+| "Why is this name unknown?" | `builtins.ts` (catalogs), `analyzer.ts` (undefined-name warning) |
+| "Why does this expression have type X?" | `typeinfer.ts` (inferCall), `types.ts` (signatures), `fixed-eval.ts` (const-eval at shape positions) |
+| "What phase is this binding?" | `analyzer.ts` `computePhases` |
+| "Why is the chain unsupported?" | `orchestrator.ts` (`classifyForChain`) |
+| "Why doesn't this binding have a derivation?" | `derivations.ts` (`buildDerivations`, the per-op classifiers) |
+| "What's the canonical measure IR for this binding?" | `derivations.ts` `expandMeasure(name, { derivations, bindings })` |
+| "How is this distribution sampled?" | `sampler.ts` (REGISTRY entry); multivariate: `materialiser.ts` `mat*` handler |
+| "How is this distribution's density computed?" | `density.ts` `OP_HANDLERS` for structural ops; `density-prims.ts` for the per-kernel math |
+| "How is this measure-algebra op handled?" | `derivations.ts` classifier + `_expandByName` case; `materialiser.ts` `KIND_HANDLERS` entry; `density.ts` `OP_HANDLERS` (scoring); `traceeval.ts` `MEASURE_OP_WALKERS` (sampling-walker, deprecated for materialiser paths) |
+| "Why does the DAG render this way?" | `dag.ts` |
+| "Why did disintegrate produce this Plan?" | `disintegrate.ts` + `disintegrate-plan.ts` |
+| "How does the worker thread work?" | `worker.ts` (handler), `worker-entry.ts` (transport) |
+| "Why is the RNG result this number?" | `rng.ts` (Philox), `sampler.ts` (PRNG adapter) |
+| "How are refs in a measure body resolved?" | `materialiser.ts` `prepareDensityRefs` (the canonical plumbing); `sampler.ts` `evaluateExprN` (worker side) |
+| "What's the empirical measure shape?" | `engine-types.d.ts` `EmpiricalMeasure`; engine-concepts §2 |
+| "How is a Value laid out?" | `value.ts` `isValue`; engine-concepts §2.1 (Klein-4 tag) + §2.2 (struct bitmask) |
 
 ---
 
 ## Known issues and gaps
 
-A point-in-time architectural review (May 2026) flagged a number of bugs
-and gaps. Most of the small consistency bugs have since been fixed (the
-`==`/`!=` lowering, the Cauchy/Logistic/Gamma/InverseGamma/Weibull/Uniform/
-Categorical/GeneralizedNormal parameter-name divergences, the `Lebesgue`/
-`Counting` `support` kwarg, the non-spec `tan` builtin). The remaining
-items are larger:
+Major outstanding work is tracked in
+`flatppl-dev/TODO-flatppl-js.md` (the single source of truth for
+what's left). The shortlist as of 2026-05-26:
 
-- **Static type system covers ~50 ops.** Many spec ops fall through to
-  `deferred()` silently — most multivariate distributions, the entire
-  array/table-generation suite (`array`, `fill`, `zeros`, `linspace`, `cat`,
-  `partition`, …), linear algebra, approximation functions, and several
-  measure-algebra ops (`truncate`, `pushfwd`, `chain`, `relabel`, `bijection`,
-  …). When you add a new distribution, also add its signature. See `TODO.md`
-  for the planned coverage roadmap.
-- **`orchestrator.js` has been decomposed** (4 763 → ~460 lines) into the
-  five facade-preserving modules documented above in the "Module map"
-  (`ir-shared`, `lift`, `derivations`, `signatures`, `profile-plan`).
-  **`viewer/src/viewer.js` is still oversized** (~5 683 lines) and is the
-  next decomposition target; it has natural seams but no module split yet.
-- **The cross-file invariants table at the top of this section is enforced
-  by `test/invariants.test.js`** for the SAMPLEABLE↔REGISTRY, EVALUABLE↔ARITH_OPS,
-  DISCRETE-flag-consistency, BIN_OP_MAP-has-signature, and REGISTRY-params-↔-
-  types-kwargs invariants. Adding a new catalog or a new "must-agree" link
-  should come with a test in that file.
+- **Multi-file models** — `processSource(src, { bundle })` accepts a
+  pre-resolved source bundle (landed 2026-05-24) but the rest of
+  `load_module` end-to-end is pending: cross-module reference
+  resolution (`mod.x` → `ref(ns: mod)`), substitution semantics with
+  phase-compatibility checks, host pre-fetching via
+  `vscode.workspace.fs` / `fetch()`. See TODO "Multi-file models".
+- **Standard modules** — registry skeleton landed
+  (`standard-modules.ts`) but the analyzer / orchestrator don't yet
+  resolve `standard_module(name, compat)` through it. Five
+  std-modules outstanding: `particle-physics`, `generalized-linear-
+  models`, `ext-linear-algebra`, `special-functions`, `polynomials`,
+  `distances`. See TODO §09.
+- **`PoissonProcess`** — point process with permutation-invariant
+  arrays / tables. Sampling needs a new measure shape class for
+  "ragged vector per atom" (per-atom event count varies). See
+  TODO §08.
+- **Multivariate transports beyond MvNormal** — Dirichlet
+  (Connor–Mosimann stick-breaking) and other measure-specific
+  transports per spec §08. See TODO §07.
+- **Static type system gaps** — most ops have signatures, but a few
+  array-construction shape rules (`fill` / `zeros` / `ones` /
+  `eye` / `cartpow` / `cartprod`) still return `deferred()`; new
+  stdlib functions (qr / diag / quadform / tile / splitblocks /
+  blockdiagmat / bandedmat / conv / crosscorr) need signatures. See
+  TODO §03 + §07.
+- **`viewer/src/viewer.js` is still oversized** (~5 700 lines) and
+  is the next decomposition target (the engine's
+  orchestrator decomposition is done). It has natural seams but no
+  module split yet. Tracked in flatppl-js' viewer-internal TODOs.
+- **Cross-file invariants** are enforced by `test/invariants.test.ts`
+  (SAMPLEABLE ↔ REGISTRY ↔ DISCRETE flag consistency, EVALUABLE_OPS
+  ↔ ARITH_OPS, BIN_OP_MAP signatures, REGISTRY params ↔ types
+  kwargs, sampleable ⊆ DISTRIBUTIONS). Adding a new catalog or a new
+  "must-agree" link should come with a test there. The `MEASURE_OP_*`
+  catalogs (`MEASURE_OP_CLASSIFIERS`, traceeval `MEASURE_OP_WALKERS`,
+  density `OP_HANDLERS`, materialiser `KIND_HANDLERS`) are
+  intentionally NOT invariant-checked — they cross-cut structural vs
+  algebraic vs density-routed dispatch and a clean equivalence would
+  be false. Watch them by hand when extending.
 
-When making changes, check the review document if it's accessible — some of
-those bugs may still be open.
+For the full list, current priorities, and per-section status, read
+`flatppl-dev/TODO-flatppl-js.md`. That file is checkable surface (no
+status duplication here).
