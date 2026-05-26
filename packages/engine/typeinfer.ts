@@ -407,7 +407,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         for (let i = 0; i < fixedN; i++) {
           const at: any = inferExpr(args[i], scopes);
           const next = T.unify(sig.args[i], at, s);
-          if (next == null) return argError(op, i, sig.args[i], at, args[i].loc);
+          if (next == null) {
+            // Apply the substitution accumulated from earlier args so
+            // the diagnostic's "expected" type is concrete, not the
+            // bare type variable. E.g. `logdensityof(iid(Normal,3), data_5)`
+            // reports "arg 2 expects array of real (length 3), got
+            // array of real (length 5)" instead of the noisy
+            // "arg 2 expects any, got …" (engine-concepts §17.4).
+            return argError(op, i, T.substitute(sig.args[i], s), at, args[i].loc);
+          }
           s = next;
         }
         if (variadic) {
@@ -415,7 +423,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
           for (let i = fixedN; i < got; i++) {
             const at: any = inferExpr(args[i], scopes);
             const next = T.unify(tail, at, s);
-            if (next == null) return argError(op, i, tail, at, args[i].loc);
+            if (next == null) return argError(op, i, T.substitute(tail, s), at, args[i].loc);
             s = next;
           }
         }
@@ -426,7 +434,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       if (!(k in kwargs)) continue;   // optional/defaulted kwargs allowed missing
       const at: any = inferExpr(kwargs[k], scopes);
       const next = T.unify(sig.kwargs[k], at, s);
-      if (next == null) return kwargError(op, k, sig.kwargs[k], at, kwargs[k].loc);
+      if (next == null) return kwargError(op, k, T.substitute(sig.kwargs[k], s), at, kwargs[k].loc);
       s = next;
     }
     return T.substitute(sig.result, s);

@@ -605,3 +605,40 @@ test('multi-LHS preserves disintegrate semantics (no tuple_get rewrite)', () => 
       `${name}: effectiveValue must not be tuple_get`);
   }
 });
+
+
+test('logdensityof: shape-mismatch diagnostic substitutes resolved measure domain', () => {
+  // When the second arg's type doesn't unify with the substituted T
+  // (the resolved measure domain), the generic argError now reports
+  // the concrete expected type rather than the bare 'any' that
+  // T.show renders for unbound type variables.
+  const { errors } = infer(`
+    data_5 = [1.0, 2.0, 3.0, 4.0, 5.0]
+    M = iid(Normal(0, 1), 3)
+    ld = logdensityof(M, data_5)
+  `);
+  // Two diagnostics expected: the generic arg-2 error (with the
+  // resolved-domain expected type) AND the static-shape walker's
+  // precise iid-step error. We pin only the generic one's wording.
+  const genericArg = errors.find((d: any) =>
+    /^logdensityof: arg 2 expects/.test(d.message));
+  assert.ok(genericArg, 'expected a generic logdensityof arg-2 diagnostic');
+  assert.match(genericArg.message,
+    /array of real \(length 3\), got array of real \(length 5\)/,
+    'diagnostic substitutes the resolved measure domain (length 3) ' +
+    'rather than reporting bare any: ' + genericArg.message);
+});
+
+test('logdensityof: scalar measure vs array data — substituted domain shows real', () => {
+  const { errors } = infer(`
+    data = [1.0, 2.0, 3.0]
+    ld = logdensityof(Normal(0, 1), data)
+  `);
+  const genericArg = errors.find((d: any) =>
+    /^logdensityof: arg 2 expects/.test(d.message));
+  assert.ok(genericArg, 'expected generic logdensityof arg-2 diagnostic');
+  assert.match(genericArg.message,
+    /expects real, got array of real \(length 3\)/,
+    'expected concrete real type, got: ' + genericArg.message);
+});
+
