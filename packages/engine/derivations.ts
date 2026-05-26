@@ -2143,6 +2143,27 @@ function expandMeasureIR(name: string, derivations: any, visited?: any, bindings
         }
         return out;
       }
+      case 'kernelbroadcast': {
+        // broadcast(Dist, args…) — array-valued independent product
+        // measure (spec §04 sec:higher-order). The density walker's
+        // walkBroadcast handler scores the resulting independent
+        // product as Σ_j logpdf(y[j]; params_j); we rebuild the
+        // canonical broadcast IR shape here so density / sample
+        // consumers see the same self-contained measure IR as for
+        // any other measure-algebra op. Previously this case
+        // fell through to the structural fallback below, which
+        // worked only when callers passed `bindings` — a silent
+        // dependency that bit kernel-broadcast expansion in
+        // kernel-body density paths.
+        const head: any = { kind: 'ref', ns: 'self', name: d.distOp };
+        const ir: any = { kind: 'call', op: 'broadcast', args: [head] };
+        if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
+          ir.kwargs = Object.assign({}, d.kwargIRs);
+        } else if (Array.isArray(d.argIRs)) {
+          for (let i = 0; i < d.argIRs.length; i++) ir.args.push(d.argIRs[i]);
+        }
+        return ir;
+      }
       // evaluate / array / normalize / superpose / iid-of-iid / etc.
       // are not measures-with-densities we can score today.
     }
