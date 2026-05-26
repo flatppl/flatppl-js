@@ -110,6 +110,91 @@ function _crossLogical(a: any, b: any): any {
   return out;
 }
 
+// Batched fast-path for cross: real-only, atom-major Float64Array
+// loop over `[N, 3]` buffers. ~N× faster than the per-atom fallback
+// (one JS call instead of N). Complex inputs and non-atom-batched
+// shapes drop back to the dispatcher's per-atom fallback; the
+// conformance harness pins both paths agree.
+function _crossBatched(args: any[], N: number): any {
+  const [a, b] = args;
+  // Only handle the common case: both args are real Values of shape
+  // [N, 3] or [3]. Anything else falls back to per-atom via the
+  // dispatcher (this returns null sentinel below to signal fallback).
+  function asAtomMajor(v: any): { data: Float64Array; isBatched: boolean } | null {
+    if (!valueLib.isValue(v)) return null;
+    if (v.dtype === 'complex') return null;             // complex → fallback
+    if (v.shape.length === 1 && v.shape[0] === 3) {
+      return { data: v.data, isBatched: false };
+    }
+    if (v.shape.length === 2 && v.shape[0] === N && v.shape[1] === 3) {
+      return { data: v.data, isBatched: true };
+    }
+    return null;
+  }
+  const A = asAtomMajor(a);
+  const B = asAtomMajor(b);
+  if (!A || !B) {
+    // Signal fallback — dispatcher would otherwise have called us
+    // unconditionally. Easiest way is to do the per-atom work here
+    // ourselves; matches the dispatcher's stitching semantics.
+    return null;
+  }
+  // Tight Float64Array loop. Reads:
+  //   a stride: 3 if batched, else 0 (broadcast)
+  //   b stride: 3 if batched, else 0
+  const aS = A.isBatched ? 3 : 0;
+  const bS = B.isBatched ? 3 : 0;
+  const aD = A.data, bD = B.data;
+  const out = new Float64Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const ao = i * aS, bo = i * bS;
+    out[i * 3 + 0] = aD[ao + 1] * bD[bo + 2] - aD[ao + 2] * bD[bo + 1];
+    out[i * 3 + 1] = aD[ao + 2] * bD[bo + 0] - aD[ao + 0] * bD[bo + 2];
+    out[i * 3 + 2] = aD[ao + 0] * bD[bo + 1] - aD[ao + 1] * bD[bo + 0];
+  }
+  return { shape: [N, 3], data: out };
+}
+
+// Wrapper that calls the fast-path when applicable, falls back to
+// the dispatcher's per-atom path otherwise. The dispatcher itself
+// invokes `batched` unconditionally for atom-batched inputs, so we
+// handle "not eligible for fast-path" by running the per-atom loop
+// inline (same as what the dispatcher would do without `batched`).
+function _crossBatchedOrFallback(args: any[], N: number): any {
+  const fast = _crossBatched(args, N);
+  if (fast !== null) return fast;
+  // Fallback: per-atom logical N times, stack. Same machinery the
+  // dispatcher uses; we invoke directly here.
+  const perAtom: any[] = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const sliced = args.map((v: any) => {
+      if (valueLib.isValue(v) && v.shape.length === 2 && v.shape[0] === N) {
+        const tailLen = v.shape[1];
+        const subData = v.data.subarray(i * tailLen, (i + 1) * tailLen);
+        const sub: any = { shape: [tailLen], data: subData };
+        if (v.dtype === 'complex' && v.im) {
+          sub.dtype = 'complex';
+          sub.im = v.im.subarray(i * tailLen, (i + 1) * tailLen);
+        }
+        return sub;
+      }
+      return v;
+    });
+    perAtom[i] = _crossLogical(sliced[0], sliced[1]);
+  }
+  // Stack to shape=[N, 3]. Complex outputs preserve im part.
+  const first = perAtom[0];
+  const isComplex = valueLib.isComplexValue(first);
+  const out = new Float64Array(N * 3);
+  const outIm = isComplex ? new Float64Array(N * 3) : null;
+  for (let i = 0; i < N; i++) {
+    out.set(perAtom[i].data, i * 3);
+    if (outIm && perAtom[i].im) outIm.set(perAtom[i].im, i * 3);
+  }
+  if (outIm) return valueLib.complexValue(out, outIm, [N, 3]);
+  return { shape: [N, 3], data: out };
+}
+
 ops.register({
   name: 'cross',
   signature: {
@@ -119,9 +204,7 @@ ops.register({
   },
   argRanks: [1, 1],
   logical: _crossLogical,
-  // batched: optional fast-path; Phase 3 will add a tight loop over
-  // [N, 3] Float64Array buffers. Until then the dispatcher uses the
-  // per-atom fallback — semantically equivalent, just N JS calls.
+  batched: _crossBatchedOrFallback,
 });
 
 // =====================================================================
@@ -328,6 +411,68 @@ function _invLogical(A: any): any {
   return linalg._invGaussJordan(A);
 }
 
+// Batched inv: per-atom LU + back-sub on an atom-major [N, n, n]
+// Float64Array. Skips the per-atom JS dispatch overhead; the LU
+// factorisation itself is the same algorithm `_invValue` uses.
+// Diag-stored Values fall through to per-atom (the diag-fast-path is
+// O(n) per atom and rarely the bottleneck).
+function _invBatched(args: any[], N: number): any {
+  const [A] = args;
+  if (!valueLib.isValue(A) || A.shape.length !== 3
+      || A.shape[0] !== N || A.dtype === 'complex'
+      || valueLib.isDiagStored(A)) {
+    return null;  // signal fallback
+  }
+  const n = A.shape[1];
+  if (n !== A.shape[2]) {
+    throw new Error('inv: per-atom matrix must be square, got shape='
+      + JSON.stringify(A.shape));
+  }
+  const out = new Float64Array(N * n * n);
+  const stride = n * n;
+  // Per-atom slice → linalg._invValue, copy into output buffer.
+  for (let i = 0; i < N; i++) {
+    const slice = A.data.subarray(i * stride, (i + 1) * stride);
+    const atomA = { shape: [n, n], data: slice };
+    const atomInv = linalg._invValue(atomA);
+    out.set(atomInv.data, i * stride);
+  }
+  return { shape: [N, n, n], data: out };
+}
+
+function _invBatchedOrFallback(args: any[], N: number): any {
+  const fast = _invBatched(args, N);
+  if (fast !== null) return fast;
+  // Per-atom fallback inline (diag-stored Values, complex, anything
+  // non-batched-Value).
+  const perAtom: any[] = new Array(N);
+  const A = args[0];
+  for (let i = 0; i < N; i++) {
+    let atomA: any = A;
+    if (valueLib.isValue(A) && A.shape.length === 3 && A.shape[0] === N) {
+      const stride = A.shape[1] * A.shape[2];
+      const subData = A.data.subarray(i * stride, (i + 1) * stride);
+      atomA = { shape: [A.shape[1], A.shape[2]], data: subData };
+    }
+    perAtom[i] = _invLogical(atomA);
+  }
+  // All results should be matrices of consistent shape; densify any
+  // diag-stored entries (rare, but possible if diag fast-path fired
+  // per atom) before stacking.
+  const tailShape = valueLib.isValue(perAtom[0])
+    ? valueLib.densify(perAtom[0]).shape
+    : [perAtom[0].length, perAtom[0][0].length];
+  const tailLen = tailShape.reduce((a: number, b: number) => a * b, 1);
+  const out = new Float64Array(N * tailLen);
+  for (let i = 0; i < N; i++) {
+    const d = valueLib.isValue(perAtom[i])
+      ? valueLib.densify(perAtom[i]).data
+      : perAtom[i];
+    out.set(d, i * tailLen);
+  }
+  return { shape: [N, ...tailShape], data: out };
+}
+
 ops.register({
   name: 'inv',
   signature: {
@@ -337,6 +482,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _invLogical,
+  batched: _invBatchedOrFallback,
 });
 
 // =====================================================================
@@ -366,6 +512,59 @@ function _lowerCholeskyLogical(A: any): any {
   return linalg._cholesky(A);
 }
 
+// Batched lower_cholesky: per-atom Cholesky-Banachiewicz on
+// [N, n, n] atom-major Float64Array. Same skip-criteria as inv.
+function _lowerCholeskyBatched(args: any[], N: number): any {
+  const [A] = args;
+  if (!valueLib.isValue(A) || A.shape.length !== 3
+      || A.shape[0] !== N || A.dtype === 'complex'
+      || valueLib.isDiagStored(A)) {
+    return null;
+  }
+  const n = A.shape[1];
+  if (n !== A.shape[2]) {
+    throw new Error('lower_cholesky: per-atom matrix must be square, got shape='
+      + JSON.stringify(A.shape));
+  }
+  const out = new Float64Array(N * n * n);
+  const stride = n * n;
+  for (let i = 0; i < N; i++) {
+    const slice = A.data.subarray(i * stride, (i + 1) * stride);
+    const atomA = { shape: [n, n], data: slice };
+    const L = linalg._choleskyValue(atomA);
+    out.set(L.data, i * stride);
+  }
+  return { shape: [N, n, n], data: out };
+}
+
+function _lowerCholeskyBatchedOrFallback(args: any[], N: number): any {
+  const fast = _lowerCholeskyBatched(args, N);
+  if (fast !== null) return fast;
+  const perAtom: any[] = new Array(N);
+  const A = args[0];
+  for (let i = 0; i < N; i++) {
+    let atomA: any = A;
+    if (valueLib.isValue(A) && A.shape.length === 3 && A.shape[0] === N) {
+      const stride = A.shape[1] * A.shape[2];
+      const subData = A.data.subarray(i * stride, (i + 1) * stride);
+      atomA = { shape: [A.shape[1], A.shape[2]], data: subData };
+    }
+    perAtom[i] = _lowerCholeskyLogical(atomA);
+  }
+  const tailShape = valueLib.isValue(perAtom[0])
+    ? valueLib.densify(perAtom[0]).shape
+    : [perAtom[0].length, perAtom[0][0].length];
+  const tailLen = tailShape.reduce((a: number, b: number) => a * b, 1);
+  const out = new Float64Array(N * tailLen);
+  for (let i = 0; i < N; i++) {
+    const d = valueLib.isValue(perAtom[i])
+      ? valueLib.densify(perAtom[i]).data
+      : perAtom[i];
+    out.set(d, i * tailLen);
+  }
+  return { shape: [N, ...tailShape], data: out };
+}
+
 ops.register({
   name: 'lower_cholesky',
   signature: {
@@ -375,6 +574,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _lowerCholeskyLogical,
+  batched: _lowerCholeskyBatchedOrFallback,
 });
 
 // =====================================================================
