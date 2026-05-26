@@ -450,7 +450,20 @@
       bundle.highlightActiveLineGutter(),
       bundle.history(),
       bundle.keymap.of(
-        (bundle.defaultKeymap || []).concat(
+        // The Ctrl/Cmd-S binding gets `preventDefault: true` so the
+        // browser's "save page" dialog doesn't fire on top of our
+        // save action. The handler is callable in view mode too —
+        // the gallery's onSave decides whether there's anything to
+        // do (no-op when no editable buffer / no dirty changes).
+        ([{
+          key: 'Mod-s',
+          preventDefault: true,
+          run: function () {
+            if (typeof opts.onSave === 'function') opts.onSave();
+            return true;
+          },
+        }] as any[]).concat(
+          bundle.defaultKeymap || [],
           bundle.historyKeymap || [],
           bundle.searchKeymap || []
         )
