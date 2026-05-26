@@ -228,14 +228,40 @@ html, body {
 }
 
 /* Ephemeral entries get italicised + a soft accent so they stand out
-   from on-disk manifest entries. The session-only nature should be
-   visually obvious at a glance. */
+   from on-disk manifest entries. The "Unsaved" section label and the
+   per-entry save/revert icons (see .file-list-action below) signal
+   the unsaved-to-disk state; italic alone keeps the row's typography
+   distinct without a redundant leading `* ` prefix. */
 .file-list-item--ephemeral {
   font-style: italic;
 }
-.file-list-item--ephemeral::before {
-  content: '* ';
-  opacity: 0.5;
+
+/* Inline save (💾) / revert (↺) icons that appear on file-tree
+   entries with unsaved work — every ephemeral row, plus the
+   currently-loaded read-only-or-user file when its editor buffer
+   differs from the last-persisted source. Floated right so they
+   sit at the row's trailing edge regardless of filename length;
+   the filename truncates first via the existing
+   .file-list-item text-overflow rule. The icons are clickable
+   (with click-stop in JS so the row navigation doesn't fire); the
+   row's own click target still works on the rest of the row. */
+.file-list-item--dirty {
+  padding-right: 0.4em;          /* tighten so the icons don't fall off */
+}
+.file-list-action {
+  float: right;
+  margin-left: 0.4em;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  filter: grayscale(100%);
+  opacity: 0.7;
+  border-radius: 2px;
+}
+.file-list-action:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* Folder grouping in the file pane (Examples / Test cases / User).

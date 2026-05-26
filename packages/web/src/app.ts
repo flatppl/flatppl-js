@@ -94,6 +94,45 @@
     updateDirtyMarker();
   }
 
+  /** True when the path has work that would be lost on reload:
+   *
+   *  - It's the currently-loaded model AND the editor buffer
+   *    differs from `lastSavedSource` (we're in edit mode and
+   *    the user has typed something since the last persist).
+   *  - It's any path in the ephemeral store — those are session-
+   *    only buffers (cleared on reload), so they always count as
+   *    "would lose work".
+   *
+   *  Used by the sidebar's per-entry save-icon marker AND by the
+   *  beforeunload tab-close warning so the two stay in sync. */
+  function isPathDirty(path: string): boolean {
+    if (!path) return false;
+    const eph = window.FlatPPLWebEphemeral;
+    if (eph && eph.has && eph.has(path)) return true;
+    if (!sourceEditor) return false;
+    if (!editEnabled) return false;
+    const cur = window.FlatPPLWebRouter
+      ? window.FlatPPLWebRouter.parseHash() : { model: null };
+    if (cur.model !== path) return false;
+    if (lastSavedModel !== path) return false;
+    return sourceEditor.getSource() !== lastSavedSource;
+  }
+
+  /** True iff anything in the gallery currently holds unsaved
+   *  work. Drives the `beforeunload` warning — the browser only
+   *  prompts on tab close / reload / external navigation when
+   *  this returns true. */
+  function hasUnsavedWork(): boolean {
+    const eph = window.FlatPPLWebEphemeral;
+    if (eph && eph.list && eph.list().length > 0) return true;
+    if (!sourceEditor || !editEnabled) return false;
+    const cur = window.FlatPPLWebRouter
+      ? window.FlatPPLWebRouter.parseHash() : { model: null };
+    if (!cur.model) return false;
+    if (lastSavedModel !== cur.model) return false;
+    return sourceEditor.getSource() !== lastSavedSource;
+  }
+
   /** Refresh visibility of the source-pane header buttons that
    *  depend on the currently-loaded model. Cheap; called from
    *  applyState (URL changes) and from the user-store subscriber
@@ -126,10 +165,79 @@
     deleteUserFile(cur.model, /* navigateTo */ null);
   }
 
+  /** Click handler for the inline save (💾) icon next to a dirty
+   *  entry in the file tree. For the currently-loaded model this is
+   *  just `handleSave`. For an ephemeral entry that ISN'T currently
+   *  loaded we promote it directly without changing the active
+   *  view — picks the same `user/<basename>` target the regular
+   *  promote path would, drops the ephemeral entry, and lets the
+   *  user keep working where they are. */
+  function onEntrySaveClick(path: string) {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (cur && cur.model === path) {
+      handleSave();
+      return;
+    }
+    // Non-active path. Only ephemerals reach here in practice —
+    // a user-store or read-only entry can only be "dirty" when
+    // it's the active model.
+    const eph = window.FlatPPLWebEphemeral;
+    const userStore = window.FlatPPLWebUserStore;
+    if (eph && userStore && eph.has && eph.has(path)) {
+      const text = eph.get(path) || '';
+      const target = userStore.pathForUpload(basenameOf(path));
+      userStore.save(target, text, { parent: null });
+      eph.remove(path);
+    }
+  }
+
+  /** Click handler for the inline revert (↺) icon. Mirrors the
+   *  destructive actions in the context menu but does NOT prompt
+   *  for confirmation — the icon is right there, deliberate, and
+   *  the user can re-edit by typing again. */
+  function onEntryRevertClick(path: string) {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    const eph = window.FlatPPLWebEphemeral;
+    if (eph && eph.has && eph.has(path)) {
+      eph.remove(path);
+      if (cur && cur.model === path) {
+        const fallback = manifest && manifest.entries && manifest.entries[0]
+          ? manifest.entries[0].path : null;
+        if (fallback) window.FlatPPLWebRouter.navigateTo({ model: fallback });
+      }
+      return;
+    }
+    // Non-ephemeral revert: discard the editor buffer and reload
+    // the persisted source. Only meaningful for the currently-
+    // loaded model with a dirty buffer.
+    if (!cur || cur.model !== path || !sourceEditor) return;
+    (async function () {
+      try {
+        const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
+        if (bundle && typeof bundle.primarySource === 'string') {
+          showSource(bundle.primarySource, path);
+          // Refresh the viewer from the restored source.
+          if (viewer) viewer.update(bundle.primarySource, cur.target || null);
+        }
+      } catch (e: any) {
+        console.error('[@flatppl/web] revert failed:', e);
+      }
+    })();
+  }
+
+  // Was the current model dirty on the previous keystroke? Used to
+  // avoid redrawing the whole file tree on every keystroke — the
+  // sidebar's save/revert icons only need to flip when the dirty
+  // status changes, not when a single character ticks the
+  // already-dirty buffer further.
+  let _wasDirty = false;
+
   /** Update the source-pane header's "* " dirty prefix and the
    *  save button's visual state to reflect the buffer's
    *  agreement (or not) with the last persisted source. Cheap to
-   *  call on every keystroke. */
+   *  call on every keystroke. Also fires a sidebar re-render on
+   *  the transition from clean→dirty or dirty→clean so the inline
+   *  save/revert icons appear/disappear in step. */
   function updateDirtyMarker() {
     if (!sourceHeader) return;
     const cur = window.FlatPPLWebRouter
@@ -142,6 +250,10 @@
     sourceHeader.textContent = (dirty ? '* ' : '') + baseLabel;
     const saveBtn = document.getElementById('save-btn');
     if (saveBtn) saveBtn.setAttribute('aria-pressed', dirty ? 'true' : 'false');
+    if (dirty !== _wasDirty) {
+      _wasDirty = dirty;
+      renderTree(cur.model);
+    }
   }
 
   /** Tiny debounce: collapse rapid calls into one delayed call.
@@ -375,6 +487,37 @@
     return i < 0 ? path : path.slice(i + 1);
   }
 
+  /** Append the inline save (💾) + revert (↺) action icons to a
+   *  file-tree entry. Right-floated so they sit at the row's
+   *  trailing edge regardless of filename length, with
+   *  pointer-events restricted so clicking the icons doesn't also
+   *  trigger the row's navigation click. */
+  function attachEntryActions(li: HTMLElement, path: string) {
+    const revert = document.createElement('span');
+    revert.className = 'file-list-action file-list-action-revert';
+    revert.setAttribute('aria-hidden', 'true');
+    revert.textContent = '↺';   // ↺ anticlockwise open circle arrow
+    revert.title = 'Revert (discard changes / delete ephemeral)';
+    revert.addEventListener('click', function (ev: any) {
+      ev.stopPropagation();
+      onEntryRevertClick(path);
+    });
+    const save = document.createElement('span');
+    save.className = 'file-list-action file-list-action-save';
+    save.setAttribute('aria-hidden', 'true');
+    save.textContent = '💾';   // 💾 floppy disk
+    save.title = 'Save';
+    save.addEventListener('click', function (ev: any) {
+      ev.stopPropagation();
+      onEntrySaveClick(path);
+    });
+    // Float order: rightmost span = first floated, so save floats
+    // first (right edge), then revert (left of save).
+    li.appendChild(save);
+    li.appendChild(revert);
+    li.classList.add('file-list-item--dirty');
+  }
+
   /** Render the file pane as three top-level folders
    *  (examples / test-cases / user) plus an optional "Unsaved"
    *  section above them for ephemeral session-only buffers.
@@ -439,6 +582,10 @@
             });
           };
         })(ent.path));
+        // Every ephemeral is by definition "unsaved" (session-only;
+        // lost on reload), so the save + revert action icons live
+        // on every ephemeral row.
+        attachEntryActions(li, ent.path);
         ephUl.appendChild(li);
       }
       fileTree.appendChild(ephUl);
@@ -540,6 +687,10 @@
               });
             };
           })(entry.path));
+          // Surface the save + revert action icons when the row's
+          // path has unsaved work — currently-loaded read-only or
+          // user file with a dirty editor buffer.
+          if (isPathDirty(entry.path)) attachEntryActions(li, entry.path);
           ul.appendChild(li);
         }
         folder.appendChild(ul);
@@ -978,6 +1129,23 @@
     if (downloadBtn) downloadBtn.addEventListener('click', onDownloadClick);
     if (deleteBtn)   deleteBtn.addEventListener('click',   onDeleteClick);
 
+    // Tab-close / reload / external-navigation guard. Standard
+    // beforeunload pattern: setting returnValue to a non-empty
+    // value triggers the browser's native "Leave site? Changes
+    // you made may not be saved" prompt. Modern browsers ignore
+    // the actual string and show a generic message; the gate is
+    // what matters. Only fires when something would actually be
+    // lost (per hasUnsavedWork), so unmodified sessions reload
+    // silently as before.
+    window.addEventListener('beforeunload', function (ev: BeforeUnloadEvent) {
+      if (!hasUnsavedWork()) return;
+      ev.preventDefault();
+      // Required for the prompt to fire in older Chromium-based
+      // browsers; ignored by current Chrome / Firefox / Safari
+      // but harmless to set.
+      ev.returnValue = '';
+    });
+
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;
@@ -1016,22 +1184,21 @@
         initialSource: '',
         initialReadOnly: true,
         onChange: function (text: any) {
-          // Synchronous side-effects on every keystroke: the dirty
-          // marker has to feel live, and user/-prefixed files
-          // auto-save so a reload is non-destructive without the
-          // user having to remember to hit save.
+          // Persistence requires an explicit save (Ctrl/Cmd-S or
+          // the save button) — no implicit auto-save into the user
+          // store, even for files that already live there. The
+          // dirty marker reflects the buffer-vs-persisted gap.
+          //
+          // The single in-keystroke side-effect we DO keep is the
+          // ephemeral-store update for `new/...` paths: ephemeral
+          // is the in-memory session buffer, not persistent
+          // storage, so keeping it in sync just makes
+          // navigate-away-and-back non-destructive within the
+          // session.
           if (!editEnabled) return;
           const cur = window.FlatPPLWebRouter.parseHash();
-          const userStore = window.FlatPPLWebUserStore;
-          if (cur.model && userStore && cur.model.indexOf(userStore.USER_PREFIX) === 0
-              && userStore.has(cur.model)) {
-            userStore.updateSource(cur.model, text);
-            lastSavedSource = text;
-            lastSavedModel  = cur.model;
-          } else if (cur.model && window.FlatPPLWebEphemeral) {
-            // Pre-save buffer for ephemeral entries; user-store
-            // auto-save only kicks in once the file has been
-            // explicitly promoted via handleSave.
+          if (cur.model && cur.model.indexOf('new/') === 0
+              && window.FlatPPLWebEphemeral) {
             window.FlatPPLWebEphemeral.update(cur.model, text);
           }
           updateDirtyMarker();
