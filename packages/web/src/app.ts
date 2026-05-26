@@ -618,6 +618,128 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
+  /** Ingest a list of files (from an `<input type="file">` change
+   *  or a drag-drop on the file tree) into the user store. Only
+   *  `.flatppl` files are accepted; everything else is silently
+   *  skipped with a single combined toast at the end. A 1 MB
+   *  per-file size cap protects localStorage's ~5 MB total quota.
+   *  Collision-avoidance is delegated to userStore.pathForUpload
+   *  so an existing `user/<basename>` doesn't get clobbered. The
+   *  first accepted file becomes the new active model so the user
+   *  sees their upload land. */
+  async function ingestUploadedFiles(files: FileList | File[] | null) {
+    if (!files) return;
+    const userStore = window.FlatPPLWebUserStore;
+    if (!userStore) return;
+    const list = Array.from(files as any) as File[];
+    const accepted: string[] = [];
+    let skipped = 0;
+    let oversized = 0;
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (!f || !f.name.endsWith('.flatppl')) { skipped += 1; continue; }
+      if (f.size > 1024 * 1024) { oversized += 1; continue; }
+      try {
+        // File.text() is widely supported (Chrome ≥ 76, Firefox ≥ 69,
+        // Safari ≥ 14). For older browsers a FileReader fallback
+        // would be needed; declining to add the polyfill until
+        // a real user complains.
+        const text = await f.text();
+        const path = userStore.pathForUpload(f.name);
+        userStore.save(path, text, { parent: null });
+        accepted.push(path);
+      } catch (e: any) {
+        console.warn('[@flatppl/web] upload read failed for', f.name, e);
+        skipped += 1;
+      }
+    }
+    const notes: string[] = [];
+    if (accepted.length > 0) notes.push('Uploaded ' + accepted.length + ' file' + (accepted.length > 1 ? 's' : ''));
+    if (skipped > 0)         notes.push('skipped ' + skipped + ' non-.flatppl');
+    if (oversized > 0)       notes.push('skipped ' + oversized + ' over 1 MB');
+    if (notes.length > 0) showToast(notes.join('; ') + '.');
+    if (accepted.length > 0) {
+      window.FlatPPLWebRouter.navigateTo({ model: accepted[0] });
+    }
+  }
+
+  /** Open the browser's file picker via a transient hidden
+   *  `<input type="file">`. Click is dispatched synchronously
+   *  inside the user-initiated event handler so the picker
+   *  actually opens (browsers reject programmatic .click() on a
+   *  file input outside a user gesture). */
+  function onUploadClick() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.flatppl';
+    input.multiple = true;
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.addEventListener('change', function () {
+      try { ingestUploadedFiles(input.files); }
+      finally {
+        if (input.parentNode) input.parentNode.removeChild(input);
+      }
+    });
+    input.click();
+  }
+
+  /** Wire drag-and-drop on the file tree. dragover sets dropEffect
+   *  so the cursor shows a copy affordance; dragleave / drop clear
+   *  the drag-target highlight. Multi-file drops are handled
+   *  natively by FileList. */
+  function installFileTreeDragDrop() {
+    if (!fileTree) return;
+    fileTree.addEventListener('dragenter', function (ev: any) {
+      ev.preventDefault();
+      fileTree.classList.add('file-tree--drop-target');
+    });
+    fileTree.addEventListener('dragover', function (ev: any) {
+      ev.preventDefault();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+    });
+    fileTree.addEventListener('dragleave', function (ev: any) {
+      // Only clear when leaving the file-tree element itself, not
+      // when crossing into a child. `relatedTarget` is the element
+      // the pointer entered; if it's null (left the window) or not
+      // a descendant, we're really leaving.
+      if (!ev.relatedTarget || !fileTree.contains(ev.relatedTarget)) {
+        fileTree.classList.remove('file-tree--drop-target');
+      }
+    });
+    fileTree.addEventListener('drop', function (ev: any) {
+      ev.preventDefault();
+      fileTree.classList.remove('file-tree--drop-target');
+      const dt = ev.dataTransfer;
+      if (dt && dt.files) ingestUploadedFiles(dt.files);
+    });
+  }
+
+  /** Minimal transient notification for upload/skip summaries.
+   *  Single reusable div appended on first show; auto-fades after
+   *  ~2.5 s. No queue — successive calls just overwrite the
+   *  current message and reset the timer. */
+  let _toastTimer: any = null;
+  function showToast(msg: string) {
+    let t = document.getElementById('gallery-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'gallery-toast';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.display = 'block';
+    t.style.opacity = '1';
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function () {
+      if (!t) return;
+      t.style.opacity = '0';
+      _toastTimer = setTimeout(function () {
+        if (t) t.style.display = 'none';
+      }, 300);
+    }, 2500);
+  }
+
   /** Delete a user-store entry and optionally navigate the gallery
    *  to a fallback path (e.g. the original after a "Reset to
    *  original"). The store's subscribe fires automatically, which
@@ -871,9 +993,17 @@
     // editing is disabled. Subscribing to ephemeral changes here
     // keeps the file tree in sync as entries get added.
     const newFileBtn = document.getElementById('new-file-btn');
-    if (newFileBtn && (window.__FLATPPL_CONFIG__ || {}).allowEdit) {
-      newFileBtn.hidden = false;
-      newFileBtn.addEventListener('click', onNewFileClick);
+    const uploadBtn  = document.getElementById('upload-btn');
+    if ((window.__FLATPPL_CONFIG__ || {}).allowEdit) {
+      if (newFileBtn) {
+        newFileBtn.hidden = false;
+        newFileBtn.addEventListener('click', onNewFileClick);
+      }
+      if (uploadBtn) {
+        uploadBtn.hidden = false;
+        uploadBtn.addEventListener('click', onUploadClick);
+      }
+      installFileTreeDragDrop();
     }
     if (window.FlatPPLWebEphemeral && window.FlatPPLWebEphemeral.subscribe) {
       window.FlatPPLWebEphemeral.subscribe(function () {
