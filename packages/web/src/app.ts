@@ -94,6 +94,38 @@
     updateDirtyMarker();
   }
 
+  /** Refresh visibility of the source-pane header buttons that
+   *  depend on the currently-loaded model. Cheap; called from
+   *  applyState (URL changes) and from the user-store subscriber
+   *  (so deleting the open file from outside still hides the
+   *  delete button). */
+  function updateHeaderButtons() {
+    const cur = window.FlatPPLWebRouter
+      ? window.FlatPPLWebRouter.parseHash() : { model: null };
+    const userStore = window.FlatPPLWebUserStore;
+    const downloadBtn = document.getElementById('download-btn');
+    const deleteBtn   = document.getElementById('delete-btn');
+    if (downloadBtn) downloadBtn.hidden = !cur.model;
+    if (deleteBtn) {
+      const isUserFile = !!(userStore && cur.model
+        && cur.model.indexOf(userStore.USER_PREFIX) === 0
+        && userStore.has(cur.model));
+      deleteBtn.hidden = !isUserFile;
+    }
+  }
+
+  function onDownloadClick() {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (cur && cur.model) downloadFile(cur.model);
+  }
+
+  function onDeleteClick() {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (!cur || !cur.model) return;
+    if (!window.confirm('Delete "' + cur.model + '"? This cannot be undone.')) return;
+    deleteUserFile(cur.model, /* navigateTo */ null);
+  }
+
   /** Update the source-pane header's "* " dirty prefix and the
    *  save button's visual state to reflect the buffer's
    *  agreement (or not) with the last persisted source. Cheap to
@@ -835,6 +867,7 @@
   async function applyState(state: any) {
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
+    updateHeaderButtons();
 
     // Ephemeral files have no on-disk source — they're meaningless
     // outside edit mode. Auto-enable edit mode when navigating to
@@ -931,6 +964,20 @@
       });
     }
 
+    // Source-pane header buttons for the currently-loaded file:
+    //   Download — always visible when a file is loaded; same
+    //              action as the tree context-menu's Download.
+    //   Delete   — visible only for user/ files; same action as
+    //              the tree context-menu's Delete.
+    // Both buttons read the current model from the router on
+    // click rather than holding a reference, so they stay correct
+    // across navigation. Visibility is refreshed by
+    // updateHeaderButtons on URL changes and user-store events.
+    const downloadBtn = document.getElementById('download-btn');
+    const deleteBtn   = document.getElementById('delete-btn');
+    if (downloadBtn) downloadBtn.addEventListener('click', onDownloadClick);
+    if (deleteBtn)   deleteBtn.addEventListener('click',   onDeleteClick);
+
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;
@@ -1025,12 +1072,14 @@
       window.FlatPPLWebEphemeral.subscribe(function () {
         const cur = window.FlatPPLWebRouter.parseHash();
         renderTree(cur.model);
+        updateHeaderButtons();
       });
     }
     if (window.FlatPPLWebUserStore && window.FlatPPLWebUserStore.subscribe) {
       window.FlatPPLWebUserStore.subscribe(function () {
         const cur = window.FlatPPLWebRouter.parseHash();
         renderTree(cur.model);
+        updateHeaderButtons();
       });
     }
 
