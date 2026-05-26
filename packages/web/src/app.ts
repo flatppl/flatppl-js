@@ -177,6 +177,60 @@
     updateDirtyMarker();
   }
 
+  /** Default user/ filename suggestion for forking a read-only
+   *  file: `user/<stem>-modified.flatppl`, with a numeric suffix
+   *  bumped (-modified2, -modified3, ...) until the result is
+   *  free. The user can edit the suggestion in the save prompt. */
+  function suggestForkName(origPath: string): string {
+    const userStore = window.FlatPPLWebUserStore;
+    if (!userStore) return 'user/' + basenameOf(origPath);
+    const base = basenameOf(origPath);
+    const dot  = base.lastIndexOf('.');
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    const ext  = dot > 0 ? base.slice(dot)    : '.flatppl';
+    let candidate = userStore.USER_PREFIX + stem + '-modified' + ext;
+    if (!userStore.has(candidate)) return candidate;
+    let n = 2;
+    for (;;) {
+      candidate = userStore.USER_PREFIX + stem + '-modified' + n + ext;
+      if (!userStore.has(candidate)) return candidate;
+      n += 1;
+    }
+  }
+
+  /** Prompt the user for a `user/`-prefixed target path for a
+   *  read-only fork. Returns the validated path or null when the
+   *  user cancelled. Allows either `user/<name>.flatppl` or a
+   *  bare `<name>.flatppl` (prepended with `user/` automatically);
+   *  rejects names that don't end in `.flatppl`. If the chosen
+   *  name already exists in the store, asks for overwrite
+   *  confirmation before returning. */
+  function promptForUserPath(origPath: string): string | null {
+    const userStore = window.FlatPPLWebUserStore;
+    if (!userStore) return null;
+    const suggested = suggestForkName(origPath);
+    const raw = window.prompt(
+      'Save your edits to. The original "' + origPath
+      + '" stays unchanged:',
+      suggested);
+    if (raw == null) return null;
+    let typed = raw.trim();
+    if (!typed) return null;
+    if (typed.indexOf(userStore.USER_PREFIX) !== 0) {
+      typed = userStore.USER_PREFIX + typed;
+    }
+    if (!/\.flatppl$/.test(typed)) {
+      window.alert('File name must end with .flatppl');
+      return null;
+    }
+    if (userStore.has(typed)) {
+      if (!window.confirm('"' + typed + '" already exists. Overwrite?')) {
+        return null;
+      }
+    }
+    return typed;
+  }
+
   /** Save-on-action. Called by the save button and the Ctrl/Cmd-S
    *  keymap binding. Behaviour depends on the current model path:
    *
@@ -186,12 +240,13 @@
    *    the user store under `user/<basename>` (with collision
    *    bumping), drop the ephemeral entry, and re-route the URL
    *    hash so the gallery follows the new path.
-   *  - read-only  — fork into the user store under
-   *    `user/<basename>` (with collision bumping if the basename
-   *    is already taken by an unrelated entry). The fork records
-   *    its `parent` so the sidebar's modified-dot and the
-   *    upcoming "Reset to original" action have a reliable
-   *    anchor. Then re-route the URL hash to the fork.
+   *  - read-only  — prompt the user for a `user/`-prefixed
+   *    filename (default `user/<stem>-modified.flatppl`, with
+   *    `-modified2` / `-modified3` / ... bumping if the default
+   *    is taken). The user can edit the suggestion; an existing
+   *    name triggers an overwrite confirm. The saved file has
+   *    NO linkage back to the original — it's an ordinary user
+   *    file from there on. Then re-route the URL hash to it.
    *
    *  In every case `lastSavedSource` is bumped so the dirty marker
    *  clears, and the sidebar redraws via the user-store's own
@@ -205,7 +260,6 @@
     const text = sourceEditor.getSource();
 
     let target = cur.model;
-    let parent: string | null = null;
 
     if (cur.model.indexOf(userStore.USER_PREFIX) === 0) {
       // Already a user file. Quiet update — modifiedAt bumps,
@@ -220,10 +274,19 @@
         window.FlatPPLWebEphemeral.remove(cur.model);
       }
     } else {
-      // Read-only (examples/ or test-cases/). Fork into user/.
-      target = userStore.pathForFork(cur.model);
-      parent = cur.model;
-      userStore.save(target, text, { parent: parent });
+      // Read-only (examples/ or test-cases/). Forks become
+      // independent files — no metadata linkage back to the
+      // original — so the user picks a name explicitly and the
+      // sidebar later treats the fork like any other user file.
+      // The default suggestion follows the user's stated
+      // convention: `user/<stem>-modified.flatppl`, with the
+      // suffix bumped (-modified2, -modified3, ...) until free.
+      // The user can edit the suggestion; existing names trigger
+      // an overwrite confirm rather than silent collision.
+      const typed = promptForUserPath(cur.model);
+      if (typed == null) return;
+      target = typed;
+      userStore.save(target, text, { parent: null });
     }
 
     lastSavedSource = text;
@@ -318,15 +381,6 @@
       }
     }
 
-    // Map read-only-path → user-fork-path. Used to surface a
-    // "modified" indicator on the read-only entry, and to redirect
-    // its click target to the fork.
-    const forkOf: Record<string, string> = Object.create(null);
-    for (let i = 0; i < userEntries.length; i++) {
-      const u = userEntries[i];
-      if (u.parent) forkOf[u.parent] = u.path;
-    }
-
     // Unsaved (ephemeral) section above the folders.
     if (ephEntries.length > 0) {
       const ephHeader = document.createElement('div');
@@ -361,15 +415,15 @@
     const persisted = readFolderState();
     renderFolder('examples',   'Examples',   buckets.examples,
       persisted.examples !== undefined ? !!persisted.examples : true,
-      currentModel, forkOf, /* italic */ false);
+      currentModel, /* italic */ false);
     renderFolder('test-cases', 'Test cases', buckets['test-cases'],
       persisted['test-cases'] !== undefined ? !!persisted['test-cases'] : false,
-      currentModel, forkOf, /* italic */ false);
+      currentModel, /* italic */ false);
     renderFolder('user',       'User',       userEntries.map(function (u: any) {
-        return { path: u.path, title: basenameOf(u.path), parent: u.parent };
+        return { path: u.path, title: basenameOf(u.path) };
       }),
       persisted.user !== undefined ? !!persisted.user : (userEntries.length > 0),
-      currentModel, /* forkOf */ null, /* italic */ false);
+      currentModel, /* italic */ false);
 
     // Empty state — only relevant if literally nothing is in any
     // folder and there are no ephemeral entries. The folders
@@ -386,13 +440,13 @@
   }
 
   /** Render one folder header + entry list. Open/closed state is
-   *  toggled on click and persisted across reloads. `forkOf` (when
-   *  non-null) is a map from read-only path → user-fork path; an
-   *  entry whose path is in the map gets a modified-dot
-   *  indicator AND its click is rerouted to the fork. */
+   *  toggled on click and persisted across reloads. Entries are
+   *  rendered as plain navigation targets; user files are
+   *  independent of any read-only origin (saving a fork prompts
+   *  for a fresh `user/...` name rather than tying back to the
+   *  original). */
   function renderFolder(key: string, label: string, items: any[],
                         open: boolean, currentModel: any,
-                        forkOf: Record<string, string> | null,
                         italic: boolean) {
     const folder = document.createElement('div');
     folder.className = 'file-folder' + (open ? ' file-folder--open' : '');
@@ -440,36 +494,20 @@
           const li = document.createElement('li');
           li.className = 'file-list-item';
           if (italic) li.classList.add('file-list-item--ephemeral');
-          // Determine the canonical click target. If this is a
-          // read-only entry with a known user fork, route the
-          // click to the fork instead of the original.
-          const targetPath = (forkOf && forkOf[entry.path]) || entry.path;
-          if (targetPath === currentModel) li.classList.add('selected');
+          if (entry.path === currentModel) li.classList.add('selected');
           li.textContent = entry.title || basenameOf(entry.path);
-          li.title = entry.parent
-            ? (entry.path + '  ←  forked from ' + entry.parent)
-            : entry.path;
-          li.dataset.path = targetPath;
-          if (forkOf && forkOf[entry.path]) {
-            li.classList.add('file-list-item--modified');
-            const dot = document.createElement('span');
-            dot.className = 'file-list-modified-dot';
-            dot.textContent = '●';   // ●
-            dot.title = 'Modified locally — click to open your copy';
-            li.appendChild(dot);
-          }
+          li.title = entry.path;
+          li.dataset.path = entry.path;
           li.addEventListener('click', onTreeClick);
-          li.addEventListener('contextmenu', function (ev: any) {
-            ev.preventDefault();
-            showTreeContextMenu(ev, {
-              path:       entry.path,       // original (read-only) path or user path
-              targetPath: targetPath,       // click-through target (== fork if any)
-              parent:     entry.parent || null,
-              isUser:     key === 'user',
-              isForked:   !!(forkOf && forkOf[entry.path]),
-              forkPath:   forkOf ? forkOf[entry.path] : null,
-            });
-          });
+          li.addEventListener('contextmenu', (function (path: string) {
+            return function (ev: any) {
+              ev.preventDefault();
+              showTreeContextMenu(ev, {
+                path:   path,
+                isUser: key === 'user',
+              });
+            };
+          })(entry.path));
           ul.appendChild(li);
         }
         folder.appendChild(ul);
@@ -513,38 +551,16 @@
     const items: Array<{ label: string; action: () => void }> = [];
     items.push({
       label: 'Download',
-      action: function () { downloadFile(info.targetPath || info.path); },
+      action: function () { downloadFile(info.path); },
     });
-    if (info.isForked && info.forkPath) {
-      // Read-only entry with a user fork — offer to drop the fork.
+    if (info.isUser) {
       items.push({
-        label: 'Reset to original',
+        label: 'Delete',
         action: function () {
-          if (!window.confirm('Discard your changes to "' + info.path
-              + '"? The original will be restored.')) return;
-          deleteUserFile(info.forkPath, /* navigateTo */ info.path);
+          if (!window.confirm('Delete "' + info.path + '"? This cannot be undone.')) return;
+          deleteUserFile(info.path, /* navigateTo */ null);
         },
       });
-    }
-    if (info.isUser) {
-      if (info.parent) {
-        items.push({
-          label: 'Reset to original',
-          action: function () {
-            if (!window.confirm('Discard your changes and restore the original "'
-                + info.parent + '"?')) return;
-            deleteUserFile(info.path, /* navigateTo */ info.parent);
-          },
-        });
-      } else {
-        items.push({
-          label: 'Delete',
-          action: function () {
-            if (!window.confirm('Delete "' + info.path + '"? This cannot be undone.')) return;
-            deleteUserFile(info.path, /* navigateTo */ null);
-          },
-        });
-      }
     }
     if (info.isEphemeral) {
       items.push({
