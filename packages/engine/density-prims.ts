@@ -1231,6 +1231,142 @@ function _stepLabel(step: ChainStep, index: number): string {
 }
 
 /**
+ * Pull the variate space from a step's output. For a kernel step the
+ * variate is `step.result.domain` (kernel returns a measure); for a
+ * measure-typed step (chain base only) it's `step.domain`. Returns
+ * null when the type isn't kernel- or measure-shaped (which surfaces
+ * as a step-type error upstream).
+ */
+function _chainStepVariate(stepType: any): any {
+  if (!stepType) return null;
+  if (stepType.kind === 'kernel') {
+    return stepType.result && stepType.result.kind === 'measure'
+      ? stepType.result.domain : null;
+  }
+  if (stepType.kind === 'measure') return stepType.domain;
+  return null;
+}
+
+/**
+ * Internal — kernel-side chain composition (modes 'kchain-marginal'
+ * and 'jointchain-retain'). Spec §06 dependent composition:
+ * - step 0: measureType (closed-first) or kernelType (kernel-first).
+ * - steps i≥1: kernelType with inputs matching step_{i-1}'s variate.
+ * - result variate: last step's variate (kchain) OR joint of all
+ *   step variates (jointchain).
+ * - residual inputs: step_0's inputs if kernel-first, else ∅.
+ *   Empty residual ⇒ measureType result (kernel↔measure collapse);
+ *   non-empty ⇒ kernelType result.
+ */
+function _inferKernelChain(
+  steps: ChainStep[],
+  mode: 'kchain-marginal' | 'jointchain-retain',
+  labels: string[] | null
+): ChainCompositionResult {
+  const diagnostics: any[] = [];
+  // Step 0 may be measure (closed-first) or kernel (kernel-first).
+  const s0 = steps[0];
+  const s0kind = s0.type.kind;
+  if (s0kind !== 'measure' && s0kind !== 'kernel') {
+    diagnostics.push({
+      severity: 'error',
+      message: mode + ' step 0 (`' + (s0.name || '<inline>')
+             + '`) must be a measure or kernel (got ' + T.show(s0.type) + ')',
+      loc: s0.loc,
+    });
+    return { resultType: T.failed(mode + ' bad step 0'), diagnostics };
+  }
+  // Steps i ≥ 1: kernel by spec §06 line 223-225, BUT per the kernel↔
+  // measure unification (§06 line 86-91), a measure-typed step IS a
+  // nullary kernel and is accepted here as a closed-kernel step. (The
+  // "non-nullary" spec rule is intentionally not enforced at type-
+  // check time — existing engine fixtures rely on the looseness, and
+  // the structural inputs-vs-variate match below already catches the
+  // shape errors that matter for downstream materialisation.)
+  for (let i = 1; i < steps.length; i++) {
+    const k = steps[i].type.kind;
+    if (k !== 'kernel' && k !== 'measure') {
+      diagnostics.push({
+        severity: 'error',
+        message: mode + ' ' + _stepLabel(steps[i], i)
+               + ' must be a kernel or measure (got '
+               + T.show(steps[i].type) + ')',
+        loc: steps[i].loc,
+      });
+      return { resultType: T.failed(mode + ' non-kernel step'), diagnostics };
+    }
+  }
+  // Boundary walk: step_i's variate → step_{i+1}'s inputs. Same matcher
+  // as fchain's, applied at the value level (the measure's domain).
+  // A nullary next-step (measure-typed or kernel with empty inputs) is
+  // a closed kernel — no boundary match required; the next step
+  // produces a measure regardless of the prior step's variate.
+  for (let i = 0; i < steps.length - 1; i++) {
+    const next = steps[i + 1];
+    const nextInputs = (next.type.kind === 'kernel' && next.type.inputs) || [];
+    if (nextInputs.length === 0) continue;     // closed kernel — no binding
+    const prevVariate = _chainStepVariate(steps[i].type);
+    if (prevVariate == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: mode + ' ' + _stepLabel(steps[i], i)
+               + ' has no resolvable variate space',
+        loc: steps[i].loc,
+      });
+      return { resultType: T.failed(mode + ' unresolved variate'), diagnostics };
+    }
+    const m = _matchChainBoundary(prevVariate, nextInputs);
+    if (!m.ok) {
+      diagnostics.push({
+        severity: 'error',
+        message: mode + ' step boundary ' + i + ' → ' + (i + 1) + ': '
+               + m.reason
+               + ' (from ' + _stepLabel(steps[i], i) + ' to '
+               + _stepLabel(next, i + 1) + ')',
+        loc: next.loc || steps[i].loc,
+      });
+      return { resultType: T.failed(mode + ' step-boundary mismatch'),
+               diagnostics };
+    }
+  }
+  // Compute the chain's variate.
+  let resultVariate: any;
+  if (mode === 'kchain-marginal') {
+    // kchain: only the last step's variate survives.
+    resultVariate = _chainStepVariate(steps[steps.length - 1].type);
+    if (resultVariate == null) {
+      // Should never trip — boundary walk above would have caught this
+      // — but a defensive fallback keeps the helper total.
+      resultVariate = T.deferred();
+    }
+  } else {
+    // jointchain: retain every step's variate. Keyword form (labels)
+    // → record; positional form → tuple (spec §06 line 252's
+    // `cat(...variates...)` is array-of-array semantically; the type
+    // system models heterogeneous positional retention as tuple,
+    // since arrays require homogeneous element types per §03).
+    const stepVariates = steps.map(s => _chainStepVariate(s.type));
+    if (labels && labels.length === steps.length) {
+      const fields: Record<string, any> = {};
+      for (let i = 0; i < labels.length; i++) {
+        fields[labels[i]] = stepVariates[i];
+      }
+      resultVariate = T.record(fields);
+    } else {
+      resultVariate = T.tuple(stepVariates);
+    }
+  }
+  // Residual inputs: step 0's inputs survive only if kernel-first.
+  // measure-first chain ⇒ empty residual ⇒ measureType result. Spec
+  // §06 line 87-90 collapse falls out without a special case.
+  const residual = s0kind === 'kernel' ? s0.type.inputs.slice() : [];
+  const result = residual.length === 0
+    ? T.measure(resultVariate)
+    : T.kernelType(residual, T.measure(resultVariate));
+  return { resultType: result, diagnostics };
+}
+
+/**
  * Compose a typed chain of steps left-to-right. See engine-concepts
  * §19.4 for the design.
  *
@@ -1240,19 +1376,27 @@ function _stepLabel(step: ChainStep, index: number): string {
  *                            (with auto-splat for multi-input next-
  *                            step boundaries). Result type is
  *                            funcType(step_0.inputs, step_N.result).
- *   - 'kchain-marginal'   — kchain (Phase 2). Intermediate variates
- *                            marginalised; result variate = last
- *                            step's measure support. Currently
- *                            returns failed(); typeinfer will route
- *                            through this when Phase 2 lands.
- *   - 'jointchain-retain' — jointchain (Phase 2). Intermediate
- *                            variates retained; result variate =
- *                            joint of all step variates. Currently
- *                            returns failed().
+ *   - 'kchain-marginal'   — kchain. Step 0 is measure or kernel;
+ *                            steps i≥1 are kernels whose inputs match
+ *                            step_{i-1}'s variate space. Intermediate
+ *                            variates marginalised. Result variate =
+ *                            last step's variate. Kernel-first →
+ *                            kernelType(step_0.inputs, …); measure-
+ *                            first → measureType(…).
+ *   - 'jointchain-retain' — jointchain. Same per-step rule as
+ *                            kchain; result variate retains every
+ *                            step's variate. `opts.labels` (kwarg
+ *                            form) → record-typed result; null →
+ *                            tuple-typed (positional `cat` of
+ *                            variates, spec §06 line 252).
+ *
+ * `opts.labels`: optional array of step labels (kwarg-form jointchain
+ * surfaces these as field names). Used only by 'jointchain-retain'.
  */
 function inferChainComposition(
   steps: ChainStep[],
-  mode: 'func' | 'kchain-marginal' | 'jointchain-retain'
+  mode: 'func' | 'kchain-marginal' | 'jointchain-retain',
+  opts?: { labels?: string[] | null }
 ): ChainCompositionResult {
   if (!Array.isArray(steps) || steps.length === 0) {
     return { resultType: T.failed('chain composition requires ≥ 1 step'),
@@ -1272,12 +1416,8 @@ function inferChainComposition(
       return { resultType: T.failed('chain cascade'), diagnostics: [] };
     }
   }
-  if (mode !== 'func') {
-    // Phase 2 placeholder. The helper's shape is fixed; the per-mode
-    // rule lives here. Returns a clean failed() so callers can route
-    // around it until the kernel-side modes are populated.
-    return { resultType: T.failed('chain mode "' + mode + '" not yet implemented'),
-             diagnostics: [] };
+  if (mode === 'kchain-marginal' || mode === 'jointchain-retain') {
+    return _inferKernelChain(steps, mode, (opts && opts.labels) || null);
   }
   // mode === 'func' — every step must be a funcType.
   const diagnostics: any[] = [];

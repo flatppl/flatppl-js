@@ -403,11 +403,20 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
     return Promise.reject(new Error('jointchain: need at least 2 steps'));
   }
   const base = steps[0];
+  // Kernel-first base rejection lives at materialiseMeasure's entry-
+  // point gate (engine-concepts §19.2 + §19.5) — the binding's
+  // inferredType.kind === 'kernel' surfaces a clear diagnostic
+  // before dispatch. matJointchain itself only handles closed-first
+  // (residual = ∅) materialisation; reaching it with base.kernel
+  // would indicate a missing classifier path or a synthetic call
+  // site outside materialiseMeasure, so we keep a defensive
+  // assertion here.
   if (base.kernel) {
     return Promise.reject(new Error(
-      'jointchain: kernel-first base is itself a kernel, not a closed '
-      + 'measure (spec §06 kernel-first chain) — not materialisable; '
-      + 'disintegrate handles it structurally (step 3).'));
+      'matJointchain: kernel-first base reached the handler — should '
+      + 'have been rejected at materialiseMeasure entry-point gate '
+      + '(engine-concepts §19); a synthetic dispatch may have skipped '
+      + 'the gate.'));
   }
   const baseP = base.ref != null
     ? ctx.getMeasure(base.ref)

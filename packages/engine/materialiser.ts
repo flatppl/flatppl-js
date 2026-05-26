@@ -72,6 +72,8 @@ const {
   measureFromReply,
   scalarMeasureN,
   valueOf,
+  isFunctionLikeBinding,
+  isCallableLayerBinding,
 } = shared;
 
 // =====================================================================
@@ -443,6 +445,25 @@ const KIND_HANDLERS = {
  * already-computed measures.
  */
 function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
+  // Callable-layer early-rejection gate (engine-concepts §19.2 +
+  // §19.5). Bindings in the function or kernel layer (functionof /
+  // kernelof / fn / bijection / fchain — and, when its inferredType
+  // is kernelType, a kernel-first jointchain/kchain) are not
+  // materialisable as a closed measure. They're consulted by name at
+  // density / sample dispatch. The gate consolidates what used to be
+  // per-handler defensive throws (matJointchain's kernel-first reject,
+  // etc.) into one diagnostic at the entry point — same observable
+  // behaviour, single source of truth.
+  const binding = ctx.bindings && ctx.bindings.get(name);
+  const isCallableByTag = binding && isFunctionLikeBinding(binding);
+  const isCallableByType = binding && isCallableLayerBinding(binding);
+  if (isCallableByTag || isCallableByType) {
+    return Promise.reject(new Error(
+      "callable-layer binding '" + name + "'"
+      + (binding && binding.type ? " (type '" + binding.type + "')" : '')
+      + " is not materialisable as a closed measure (engine-concepts §19); "
+      + "it is consulted by name at density / sample dispatch."));
+  }
   // Fixed-phase short-circuit. The orchestrator's pre-eval may have
   // computed a value (a scalar from a deterministic expression, an
   // array from rand, a record from a literal). Synthesize the measure
