@@ -243,3 +243,84 @@ test('invariant: DISCRETE_DISTRIBUTIONS ⊆ builtins.DISTRIBUTIONS', () => {
       `doesn't`);
   }
 });
+
+
+// ---------------------------------------------------------------------
+// 8. Every measure-algebra op's classifier handles inline subexpressions
+//
+// Each measure-algebra op has metadata scattered across several
+// registries: a classifier in derivations.ts (often requiring
+// self-ref args), an entry in lift.ts argSignature (declaring which
+// arg positions need anon-lifting), the measure-producing set,
+// signatures in types.ts. Drift between any pair fails silently: the
+// classifier returns null and the binding gets no derivation — the
+// viewer then surfaces "Not plottable for <name>" with no clue
+// what's missing.
+//
+// The bridge fix until the OpDecl migration lands (engine-concepts
+// §18 → measure-algebra phase): for each op below, build a binding
+// with the op applied to inline subexpressions and assert the
+// resulting binding has a derivation. Catches missing argSignature
+// entries, missing inlineXxxLift handlers, missing classifier paths.
+//
+// One concrete bug caught by this invariant: flatppl-js commit
+// 868dd1f fixed `bayesupdate` + `likelihoodof` missing from
+// argSignature, which silently broke `restrict` expansion.
+// ---------------------------------------------------------------------
+
+test('invariant: every measure-algebra op classifies under inline subexpressions', () => {
+  const { processSource } = require('..');
+  // Each fixture has exactly one binding 'b' whose RHS exercises the
+  // op with INLINE subexpression args (no explicit anon bindings).
+  // After lift + buildDerivations, b must have a derivation entry.
+  const fixtures: Array<{op: string, src: string}> = [
+    { op: 'weighted',     src: 'b = weighted(0.5, Normal(0, 1))' },
+    { op: 'logweighted',  src: 'b = logweighted(-1.0, Normal(0, 1))' },
+    { op: 'normalize',    src: 'b = normalize(weighted(0.5, Normal(0, 1)))' },
+    { op: 'superpose',    src: 'b = superpose(Normal(0, 1), Normal(1, 1))' },
+    { op: 'iid',          src: 'b = iid(Normal(0, 1), 3)' },
+    { op: 'joint',        src: 'b = joint(x = Normal(0, 1), y = Exponential(1))' },
+    { op: 'truncate',     src: 'b = truncate(Normal(0, 1), interval(0.0, 1.0))' },
+    { op: 'pushfwd',      src: 'b = pushfwd(fn(_ + 1.0), Normal(0, 1))' },
+    { op: 'jointchain',   src: 'b = jointchain(Normal(0, 1), fn(Normal(_, 1.0)))' },
+    { op: 'kchain',       src: 'b = kchain(Normal(0, 1), fn(Normal(_, 1.0)))' },
+    { op: 'bayesupdate',  src: 'b = bayesupdate(likelihoodof(fn(Normal(_, 1.0)), 0.5), Normal(0, 1))' },
+  ];
+  const failures: string[] = [];
+  for (const f of fixtures) {
+    const r = processSource(f.src);
+    const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
+    if (errs.length > 0) {
+      failures.push(`${f.op}: parse/analyse error — ${errs.map((d: any) => d.message).join('; ')}`);
+      continue;
+    }
+    const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+    const built = orchestrator.buildDerivations(lifted);
+    if (!built.derivations.b) {
+      failures.push(`${f.op}: no derivation (silent failure — missing argSignature entry, lift handler, or classifier path?)`);
+    }
+  }
+  assert.deepEqual(failures, [],
+    'measure-algebra op classification under inline subexpressions:\n  - ' + failures.join('\n  - '));
+});
+
+// ---------------------------------------------------------------------
+// 9. Likelihood bindings are tagged 'likelihood' (consumed, not materialised)
+//
+// likelihoodof returns a likelihood object, NOT a measure (spec §06).
+// Likelihood bindings don't get measure-algebra derivations; they're
+// consumed by bayesupdate / densityof / logdensityof. The
+// classifyStatement → 'likelihood' tag is what downstream consumers
+// dispatch on; ensure that's still wired.
+// ---------------------------------------------------------------------
+
+test('invariant: likelihoodof bindings classify as type=likelihood', () => {
+  const { processSource } = require('..');
+  const r = processSource('L = likelihoodof(fn(Normal(_, 1.0)), 0.5)');
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const L = r.bindings.get('L');
+  assert.equal(L?.type, 'likelihood',
+    'likelihoodof bindings must have binding.type === "likelihood" ' +
+    '(the consumer-side tag bayesupdate / densityof / logdensityof read)');
+});
+
