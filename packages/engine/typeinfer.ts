@@ -319,6 +319,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // spec §sec:kernelof line 421-422 and §sec:fn line 618-628),
       // so we only see functionof here.
       case 'functionof': return write(inferReification(expr, scopes), expr);
+      // fchain(f1, f2, ...) — deterministic function composition
+      // (spec §04 Function composition and annotation, engine-concepts
+      // §19.4). Result type is the composed function type computed by
+      // the shared `inferChainComposition` helper (consume/rest at the
+      // chain's input-set level — engine-concepts §17.3 extended).
+      case 'fchain':    return write(inferFchain(expr, scopes), expr);
       // transpose / adjoint: spec §07 — apply to vectors and matrices.
       // For vectors, return type is transposed_vector (the new spec
       // type from flatppl-design 244b0e5); for transposed_vector,
@@ -564,6 +570,37 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       }
     }
     return T.measure(T.record(out));
+  }
+
+  /**
+   * fchain(f1, f2, ..., fN) — deterministic function composition per
+   * spec §04. Result type is the composed funcType, computed by the
+   * shared `inferChainComposition` helper (engine-concepts §19.4).
+   *
+   * Per-step requirement: each arg's inferred type must be `funcType`.
+   * Non-function step types surface as a step-anchored diagnostic
+   * from the helper.
+   */
+  function inferFchain(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length === 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'fchain requires ≥ 1 function arg (spec §04 forbids nullary callables)',
+        loc: expr.loc,
+      });
+      return T.failed('fchain nullary');
+    }
+    const steps: any[] = [];
+    for (const a of args) {
+      // Refs carry a name; we pass it through for diagnostic clarity.
+      const name = (a && a.kind === 'ref' && a.ns === 'self') ? a.name : undefined;
+      steps.push({ type: inferExpr(a, scopes), loc: a && a.loc, name });
+    }
+    const densityPrims = require('./density-prims.ts');
+    const r = densityPrims.inferChainComposition(steps, 'func');
+    for (const d of r.diagnostics) diagnostics.push(d);
+    return r.resultType;
   }
 
   function inferTuple(expr: any, scopes: any) {
