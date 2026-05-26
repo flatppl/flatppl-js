@@ -747,141 +747,249 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
   // length-1 singleton — the 87c9be1 shape rules, v1 = 1-D). Result
   // is a vector-atom measure shape=[N, K], atom-major, mirroring
   // matIid. Probability kernel ⇒ independent product is a probability
-  // measure: logTotalmass 0, n_eff N. Closed-form logdensity is a
-  // documented follow-up (TODO §04), exactly as matIid defers it.
+  // measure: logTotalmass 0, n_eff N.
+  //
+  // Supports both atom-independent params (fixed-phase μ, σ — closed-
+  // form Normal MvNormal pipeline takes the hot path) AND per-atom
+  // params (stochastic-ancestor expressions like
+  // `means = alpha .+ beta .* x_data` — evaluated batched via
+  // `evaluateExprN`, then K worker sampleN calls with per-atom
+  // refArrays carrying each param's atom-i value). Symmetric with the
+  // density side (`walkBroadcast`) which dispatches off the same
+  // shape contract.
   const sampler = require('./sampler.ts');
-  const params = (sampler._internal.REGISTRY[d.distOp] || {}).params;
+  const params: string[] = (sampler._internal.REGISTRY[d.distOp] || {}).params;
   if (!params) {
     return Promise.reject(new Error(
       'broadcast: unknown distribution kernel ' + d.distOp));
   }
-  // Map parameter name → source Value (resolved atom-indep, like
-  // matMvNormal does for mu/cov).
-  const srcByParam: any = {};
-  try {
-    if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
-      for (const pn of Object.keys(d.kwargIRs)) {
-        srcByParam[pn] = valueLib.asValue(orchestrator.resolveIRToValue(
-          d.kwargIRs[pn], ctx.bindings, ctx.fixedValues));
-      }
-    } else {
-      if (d.argIRs.length !== params.length) {
-        throw new Error('broadcast(' + d.distOp + '): expected '
-          + params.length + ' parameter args (' + params.join(', ')
-          + '), got ' + d.argIRs.length);
-      }
-      for (let i = 0; i < params.length; i++) {
-        srcByParam[params[i]] = valueLib.asValue(orchestrator.resolveIRToValue(
-          d.argIRs[i], ctx.bindings, ctx.fixedValues));
-      }
+  // Map parameter slot → its IR (kwarg form wins, else positional).
+  const paramIRs: Record<string, any> = {};
+  if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
+    for (const pn of params) {
+      if (Object.prototype.hasOwnProperty.call(d.kwargIRs, pn)) paramIRs[pn] = d.kwargIRs[pn];
     }
-  } catch (err) {
-    return Promise.reject(err instanceof Error ? err : new Error(String(err)));
-  }
-  // Broadcast length K: the common length of the rank-1 collection
-  // args; scalars / length-1 are singletons held constant.
-  let K = 1;
-  const pnames = Object.keys(srcByParam);
-  for (const pn of pnames) {
-    const v = srcByParam[pn];
-    if (v.shape.length > 1) {
-      return Promise.reject(new Error('broadcast(' + d.distOp + '): parameter '
-        + pn + ' must be a scalar or 1-D array (multi-axis is a follow-up),'
-        + ' got shape=' + JSON.stringify(v.shape)));
+    for (const pn of Object.keys(d.kwargIRs)) {
+      if (paramIRs[pn] === undefined) paramIRs[pn] = d.kwargIRs[pn];
     }
-    const len = v.shape.length === 0 ? 1 : v.shape[0];
-    if (len !== 1) {
-      if (K !== 1 && K !== len) {
-        return Promise.reject(new Error('broadcast(' + d.distOp
-          + '): incompatible collection lengths (' + K + ' vs ' + len + ')'));
-      }
-      K = len;
+  } else if (Array.isArray(d.argIRs)) {
+    if (d.argIRs.length !== params.length) {
+      return Promise.reject(new Error('broadcast(' + d.distOp + '): expected '
+        + params.length + ' parameter args (' + params.join(', ')
+        + '), got ' + d.argIRs.length));
     }
+    for (let i = 0; i < params.length; i++) paramIRs[params[i]] = d.argIRs[i];
   }
-  if (K < 1) {
-    return Promise.reject(new Error('broadcast(' + d.distOp
-      + '): empty collection argument'));
-  }
-  const N = ctx.sampleCount;
-  // j-th element of a collection arg (scalar / length-1 → broadcast).
-  const elemAt = (v: any, j: any) => {
-    const len = v.shape.length === 0 ? 1 : v.shape[0];
-    return v.data[len === 1 ? 0 : j];
+  const pnames = Object.keys(paramIRs);
+  // Synthesize a containing IR so prepareDensityRefs collects every
+  // free name across all parameter expressions in one pass.
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: paramIRs,
   };
-
-  // Closed-form specialization: broadcast(Normal, mu, sigma) is the
-  // independent product of N(mu_j, sigma_j²) — i.e. MvNormal(mu,
-  // diag(sigma²)). With the structured-matrix diag fast-paths this is
-  // O(N·n), exact, and a single worker draw: lower_cholesky(diag) =
-  // diag(sigma), then mu + L·z via the diag mulN/addN fast-paths
-  // (exactly matMvNormal's pipeline, but the cov never densifies and
-  // there is no O(n³) Cholesky). Scalar / held-constant mu or sigma
-  // broadcast into the length-K vectors, so this also covers
-  // broadcast(Normal, scalarMu, sigmas) etc.
-  if (d.distOp === 'Normal' && srcByParam.mu && srcByParam.sigma) {
-    const valueOps = require('./value-ops.ts');
-    const muVec  = new Float64Array(K);
-    const sigSq  = new Float64Array(K);
-    for (let j = 0; j < K; j++) {
-      muVec[j] = elemAt(srcByParam.mu, j);
-      const s = elemAt(srcByParam.sigma, j);
-      sigSq[j] = s * s;
-    }
-    const cov = valueLib.diagMatrix(sigSq);                 // diag Value
-    let L;
-    try {
-      L = sampler._internal.ARITH_OPS.lower_cholesky(cov);  // diag(σ), O(n)
-    } catch (err) {
-      return Promise.reject(new Error('broadcast(Normal): ' + (err as any).message));
-    }
-    const stdNormalIR = {
-      kind: 'call', op: 'Normal',
-      kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
-    };
-    return ctx.sendWorker({
-      type: 'sampleN', ir: stdNormalIR, count: N, repeat: K,
-      refArrays: {}, seed: nameSeed(name, ctx.rootSeed),
-    }).then((reply: any) => {
-      const z = { shape: [N, K], data: reply.samples };     // [N,K] atom-major
-      const Lz = valueOps.mulN(L, z, N);                     // diag·z, O(N·n)
-      const result = valueOps.addN({ shape: [K], data: muVec }, Lz, N);
-      return measureFromValue(result, {
-        logWeights: null, logTotalmass: 0, n_eff: N,
-      });
-    });
-  }
-
-  // Per element j: build Dist(params_j) and draw N atoms. K small
-  // (model dimension), N large — K leaf-sample calls is fine for v1.
-  const cols = new Array(K);
-  let chain = Promise.resolve();
-  for (let j = 0; j < K; j++) {
-    const jj = j;
-    chain = chain.then(() => {
-      const kwargs: Record<string, any> = {};
-      for (const pn of pnames) {
-        kwargs[pn] = { kind: 'lit', value: elemAt(srcByParam[pn], jj) };
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+    const N = ctx.sampleCount;
+    // Evaluate each parameter expression once over the atom batch.
+    // The shape disambiguates: per-atom vs atom-indep; scalar vs
+    // length-K vector. Mirrors walkBroadcast's classification.
+    const usesAtomBy: Record<string, boolean> = {};
+    const paramVals: Record<string, any> = {};
+    let K = 1;
+    for (const pn of pnames) {
+      const usesAtom = orchestrator.collectSelfRefs(paramIRs[pn]).size > 0
+        && refNames.some((n) => orchestrator.collectSelfRefs(paramIRs[pn]).has(n));
+      usesAtomBy[pn] = usesAtom;
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(paramIRs[pn], refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
-      const distIR = { kind: 'call', op: d.distOp, kwargs: kwargs };
-      return ctx.sendWorker({
-        type: 'sampleN', ir: distIR, count: N,
-        refArrays: {},
-        seed: nameSeed(name + ':' + jj, ctx.rootSeed),
-      }).then((reply: any) => { cols[jj] = reply.samples; });
-    });
-  }
-  return chain.then(() => {
-    // Atom-major pack into shape=[N, K]: atom i occupies [i*K, (i+1)*K).
-    const out = new Float64Array(N * K);
-    for (let j = 0; j < K; j++) {
-      const col = cols[j];
-      for (let i = 0; i < N; i++) out[i * K + j] = col[i];
+      paramVals[pn] = v;
+      // Determine intrinsic K from this param (the non-batch axis).
+      let intrinsicK = 1;
+      if (typeof v === 'number' || typeof v === 'boolean') {
+        intrinsicK = 1;
+      } else if (valueLib.isValue(v)) {
+        const shape = v.shape;
+        if (shape.length === 0) intrinsicK = 1;
+        else if (shape.length === 1) {
+          intrinsicK = (usesAtom && shape[0] === N) ? 1 : shape[0];
+        } else if (shape.length === 2 && shape[0] === N) {
+          intrinsicK = shape[1];
+        } else {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): parameter \'' + pn + '\' resolved to unsupported shape '
+            + JSON.stringify(shape) + ' (v1 supports scalar / [K] / [N] / [N, K])'));
+        }
+      } else if (v && v.BYTES_PER_ELEMENT !== undefined
+                  && typeof v.length === 'number') {
+        intrinsicK = (usesAtom && v.length === N) ? 1 : v.length;
+      } else if (Array.isArray(v)) {
+        intrinsicK = v.length;
+      } else {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): parameter \'' + pn + '\' resolved to non-numeric value'));
+      }
+      if (intrinsicK > 1) {
+        if (K === 1) K = intrinsicK;
+        else if (K !== intrinsicK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): incompatible collection lengths (' + K + ' vs '
+            + intrinsicK + ') on parameter \'' + pn + '\''));
+        }
+      }
     }
-    const value = { shape: [N | 0, K], data: out };
-    return Object.assign(
-      empirical.arrayMeasure(out, [K], null),
-      { value: value, logTotalmass: 0, n_eff: N },
-    );
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+    const anyAtomDep = pnames.some((pn) => usesAtomBy[pn]);
+
+    // ATOM-INDEP HOT PATH (closed-form Normal): broadcast(Normal,
+    // μ_vec, σ_vec) with both params atom-independent ⇒ MvNormal(μ,
+    // diag(σ²)). Uses the structured-matrix diag Cholesky for O(N·K)
+    // generation. Same as the original fast path; only the param
+    // resolution moved through evaluateExprN above.
+    if (!anyAtomDep && d.distOp === 'Normal' && paramVals.mu && paramVals.sigma) {
+      const valueOps = require('./value-ops.ts');
+      const muV  = valueLib.asValue(paramVals.mu);
+      const sigV = valueLib.asValue(paramVals.sigma);
+      const muLen  = muV.shape.length === 0 ? 1 : muV.shape[0];
+      const sigLen = sigV.shape.length === 0 ? 1 : sigV.shape[0];
+      const muVec  = new Float64Array(K);
+      const sigSq  = new Float64Array(K);
+      for (let j = 0; j < K; j++) {
+        muVec[j] = muV.data[muLen === 1 ? 0 : j];
+        const s = sigV.data[sigLen === 1 ? 0 : j];
+        sigSq[j] = s * s;
+      }
+      const cov = valueLib.diagMatrix(sigSq);
+      let L;
+      try {
+        L = sampler._internal.ARITH_OPS.lower_cholesky(cov);
+      } catch (err) {
+        return Promise.reject(new Error('broadcast(Normal): ' + (err as any).message));
+      }
+      const stdNormalIR = {
+        kind: 'call', op: 'Normal',
+        kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
+      };
+      return ctx.sendWorker({
+        type: 'sampleN', ir: stdNormalIR, count: N, repeat: K,
+        refArrays: {}, seed: nameSeed(name, ctx.rootSeed),
+      }).then((reply: any) => {
+        const z = { shape: [N, K], data: reply.samples };
+        const Lz = valueOps.mulN(L, z, N);
+        const result = valueOps.addN({ shape: [K], data: muVec }, Lz, N);
+        return measureFromValue(result, {
+          logWeights: null, logTotalmass: 0, n_eff: N,
+        });
+      });
+    }
+
+    // GENERAL PATH: K worker sampleN calls, each with per-atom
+    // refArrays carrying the (i, j) value of each per-atom parameter.
+    // Atom-indep params pass as lit kwargs. Same shape contract as
+    // walkBroadcast on the density side; reflects the engine's
+    // batched scalar/array storage (§2.1 leading-axis batch).
+    const elemScalar = (v: any, j: number): number => {
+      // Resolve the (atom-indep) j-th element of an atom-indep value.
+      if (typeof v === 'number') return v;
+      if (typeof v === 'boolean') return v ? 1 : 0;
+      if (valueLib.isValue(v)) {
+        const shape = v.shape;
+        if (shape.length === 0) return v.data[0];
+        if (shape.length === 1) {
+          return v.data[shape[0] === 1 ? 0 : j];
+        }
+      }
+      if (v && v.BYTES_PER_ELEMENT !== undefined
+          && typeof v.length === 'number') {
+        return v[v.length === 1 ? 0 : j];
+      }
+      if (Array.isArray(v)) return +v[v.length === 1 ? 0 : j];
+      throw new Error('broadcast: cannot scalarise atom-indep value at j=' + j);
+    };
+    // Pre-extract per-atom params at element j into a Float64Array(N).
+    // The worker's sampleN takes refArrays uniformly; passing a
+    // pre-extracted column reuses the existing per-atom ref machinery
+    // unchanged.
+    const perAtomColumn = (v: any, j: number): Float64Array => {
+      const col = new Float64Array(N);
+      if (valueLib.isValue(v)) {
+        const shape = v.shape;
+        const data = v.data;
+        if (shape.length === 1 && shape[0] === N) {
+          // per-atom scalar
+          col.set(data);
+        } else if (shape.length === 2 && shape[0] === N) {
+          const stride = shape[1];
+          const off = stride === 1 ? 0 : j;
+          for (let i = 0; i < N; i++) col[i] = data[i * stride + off];
+        } else {
+          throw new Error('broadcast: unexpected per-atom shape ' + JSON.stringify(shape));
+        }
+      } else if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === N) {
+        col.set(v);
+      } else {
+        throw new Error('broadcast: per-atom param has unexpected type ' + (typeof v));
+      }
+      return col;
+    };
+    const cols = new Array(K);
+    let chain = Promise.resolve();
+    for (let j = 0; j < K; j++) {
+      const jj = j;
+      chain = chain.then(() => {
+        const kwargs: Record<string, any> = {};
+        const perAtomRefs: Record<string, any> = {};
+        let safeIdx = 0;
+        for (const pn of pnames) {
+          if (usesAtomBy[pn]) {
+            // Manufacture a unique ref name (we don't want to collide
+            // with any name in the model). Pass the column-j slice as
+            // a Value shape=[N] in refArrays.
+            const refName = '__bc_' + pn + '_' + (safeIdx++);
+            try {
+              const col = perAtomColumn(paramVals[pn], jj);
+              perAtomRefs[refName] = valueLib.batchedScalar(col);
+            } catch (err) {
+              throw err instanceof Error ? err : new Error(String(err));
+            }
+            kwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
+          } else {
+            kwargs[pn] = { kind: 'lit', value: elemScalar(paramVals[pn], jj) };
+          }
+        }
+        const distIR = { kind: 'call', op: d.distOp, kwargs: kwargs };
+        return ctx.sendWorker({
+          type: 'sampleN', ir: distIR, count: N,
+          refArrays: perAtomRefs,
+          seed: nameSeed(name + ':' + jj, ctx.rootSeed),
+        }).then((reply: any) => { cols[jj] = reply.samples; });
+      });
+    }
+    // Push fixedEnv to the worker session env so any leaf-param IR
+    // that mentions a fixed-phase name (rare in v1, but possible if a
+    // param refers to a fixed-phase ref) resolves through baseEnv.
+    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
+      const out = new Float64Array(N * K);
+      for (let j = 0; j < K; j++) {
+        const col = cols[j];
+        for (let i = 0; i < N; i++) out[i * K + j] = col[i];
+      }
+      const value = { shape: [N | 0, K], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K], null),
+        { value: value, logTotalmass: 0, n_eff: N },
+      );
+    });
   });
 }
 
