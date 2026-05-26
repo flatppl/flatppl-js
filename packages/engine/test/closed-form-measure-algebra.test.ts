@@ -1124,3 +1124,76 @@ posterior = bayesupdate(L, prior)
   assert.ok(post.n_eff > SAMPLE_COUNT * 0.10,
     'n_eff > 10% of N (importance overlap reasonable), got ' + post.n_eff);
 });
+
+// =====================================================================
+// bayesupdate: Normal-InverseGamma linear regression
+//   sigma² ~ InverseGamma(5, 5);   sigma = sqrt(sigma²)
+//   alpha, beta | sigma ~ Normal(0, 3 sigma)
+//   y_i ~ Normal(alpha + beta x_i, sigma)     (broadcast Normal kernel)
+//
+// NIG conjugate posterior parameters (closed form):
+//   μ_n  ≈ (1.1355, 1.8739)
+//   a_n  = a_0 + n/2 = 5 + 2 = 7
+//   b_n  ≈ 5.3035
+//   E[sigma²|data] = b_n / (a_n − 1) ≈ 0.8839
+//
+// Density exercises walkBroadcast (per-atom × per-element Normal logpdf
+// over the broadcast(Normal, means, sigma) variate).
+// =====================================================================
+
+test('bayesupdate: NIG linear regression ⇒ posterior moments match closed form', async () => {
+  const ctx = makeCtx(`
+x_data = [1.1, 1.5, 1.3, 1.4]
+y_data = [3.2, 4.1, 3.4, 3.9]
+sigma2 = draw(InverseGamma(shape = 5.0, scale = 5.0))
+sigma  = sqrt(sigma2)
+alpha  = draw(Normal(mu = 0.0, sigma = sigma * 3.0))
+beta   = draw(Normal(mu = 0.0, sigma = sigma * 3.0))
+prior  = lawof(record(alpha = alpha, beta = beta, sigma = sigma))
+means  = alpha .+ beta .* x_data
+y      = draw(broadcast(Normal, means, sigma))
+forward_kernel = kernelof(record(y = y),
+                          alpha = alpha, beta = beta, sigma = sigma)
+L         = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
+`);
+  const post = await ctx.getMeasure('posterior');
+  assert.ok(post.fields && post.fields.alpha && post.fields.beta && post.fields.sigma,
+    'posterior is a record measure with alpha/beta/sigma');
+  assert.ok(post.logWeights, 'posterior atoms carry logWeights');
+
+  const alphas = post.fields.alpha.samples;
+  const betas  = post.fields.beta.samples;
+  const sigmas = post.fields.sigma.samples;
+  const lw     = post.logWeights;
+
+  // Plan B: weighted moments against the NIG closed form.
+  const aHat   = weightedMean(alphas, lw);
+  const bHat   = weightedMean(betas,  lw);
+  // E[sigma² | data] = b_n / (a_n − 1) = 5.3035 / 6 ≈ 0.8839.
+  let sigma2Sum = 0, lse = -Infinity;
+  for (let i = 0; i < lw.length; i++) if (lw[i] > lse) lse = lw[i];
+  let den = 0;
+  for (let i = 0; i < lw.length; i++) {
+    const w = Math.exp(lw[i] - lse);
+    sigma2Sum += w * sigmas[i] * sigmas[i];
+    den += w;
+  }
+  const sigma2Hat = sigma2Sum / den;
+
+  // Importance-sampling variance can be loose when the prior overlaps
+  // the posterior modestly; allow a few % absolute tolerance on each
+  // moment. n_eff sanity check below pins the overlap quality.
+  assert.ok(Math.abs(aHat - 1.1355) < 0.20,
+    'posterior E[α] = μ_n[1] ≈ 1.1355, got ' + aHat);
+  assert.ok(Math.abs(bHat - 1.8739) < 0.20,
+    'posterior E[β] = μ_n[2] ≈ 1.8739, got ' + bHat);
+  assert.ok(Math.abs(sigma2Hat - 0.8839) < 0.20,
+    'posterior E[σ²] = b_n/(a_n−1) ≈ 0.8839, got ' + sigma2Hat);
+
+  // n_eff: the prior is moderately diffuse relative to the posterior
+  // (3-σ scale on the coefficients), so a fair fraction of atoms
+  // should overlap meaningfully.
+  assert.ok(post.n_eff > SAMPLE_COUNT * 0.02,
+    'n_eff > 2% of N (importance overlap), got ' + post.n_eff);
+});
