@@ -1372,8 +1372,15 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
     if (!ir) return null;
     if (ir.kind === 'ref' && ir.ns === 'self' && bindings.has(ir.name)) {
       const b = bindings.get(ir.name);
-      const isKernel = !!b && (b.type === 'functionof'
-        || b.type === 'kernelof' || b.type === 'fn');
+      // Kernel detection by producer tag (functionof/kernelof/fn) OR
+      // by inferredType (a kernel-first jointchain/kchain binding
+      // whose inferred type is kernelType). Engine-concepts §19 +
+      // §19.5: the layer is read from the type system; the producer
+      // tag's traditional set isn't authoritative for ordinary-call
+      // bindings that produce a kernel-typed value.
+      const isKernel = !!b && (
+        b.type === 'functionof' || b.type === 'kernelof' || b.type === 'fn'
+        || (b.inferredType && b.inferredType.kind === 'kernel'));
       const isMeasure = !isKernel && (
         (b && b.ir && b.ir.kind === 'call' && MEASURE_PRODUCING.has(b.ir.op))
         || isMeasureExpr(b && b.node && b.node.value, bindings));

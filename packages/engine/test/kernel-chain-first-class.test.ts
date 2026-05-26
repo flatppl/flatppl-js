@@ -204,6 +204,85 @@ chain = jointchain(mu = mu_dist, x = K_inner)
     'variate of keyword jointchain is a record');
 });
 
+test('nested chain: kernel-first chain consumed as step of outer chain (classifier-level)', () => {
+  // outer = jointchain(prior, inner) where inner = jointchain(K0, K1)
+  // is a kernel-first chain. The classifier must recognise inner as
+  // kernel-typed (via inferredType.kind === 'kernel') even though
+  // inner.type is 'call' (not 'functionof'/'kernelof'). Engine-
+  // concepts §19: kernel-typed bindings produced by ordinary calls
+  // (jointchain, kchain) are first-class kernel components.
+  const r = infer(`
+theta = elementof(reals)
+K0 = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
+mu = elementof(reals)
+K1 = functionof(Normal(mu = mu, sigma = 0.5), mu = mu)
+inner = jointchain(K0, K1)
+prior = Normal(0.0, 1.0)
+outer = jointchain(prior, inner)
+`);
+  const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+  const built = orchestrator.buildDerivations(lifted);
+  assert.ok(built.derivations.outer,
+    'outer should have a jointchain derivation (classifier recognises inner as kernel)');
+  assert.equal(built.derivations.outer.kind, 'jointchain');
+  assert.equal(built.derivations.outer.steps.length, 2);
+  assert.equal(built.derivations.outer.steps[0].ref, 'prior');
+  assert.equal(built.derivations.outer.steps[1].ref, 'inner');
+  assert.equal(built.derivations.outer.steps[1].role, 'kernel',
+    'inner step is classified as a kernel');
+  // outer's inferredType: closed-first chain → measureType (kernel↔
+  // measure collapse at empty residual).
+  const outer = r.loweredModule.bindings.get('outer');
+  assert.equal(outer.inferredType.kind, 'measure');
+});
+
+test('nested chain: materialisation rejects with clear follow-up message', () => {
+  // The runtime walker through nested-chain steps is a follow-up
+  // (engine-concepts §19; TODO §06). The materialiser must reject
+  // with a clear "not yet wired" diagnostic rather than the cryptic
+  // "no resolvable functionof body" the user used to see.
+  const r = infer(`
+theta = elementof(reals)
+K0 = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
+mu = elementof(reals)
+K1 = functionof(Normal(mu = mu, sigma = 0.5), mu = mu)
+inner = jointchain(K0, K1)
+prior = Normal(0.0, 1.0)
+outer = jointchain(prior, inner)
+`);
+  const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+  const built = orchestrator.buildDerivations(lifted);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 12345 });
+  const bindings = new Map();
+  for (const [name, b] of lifted.entries()) {
+    const lb = r.loweredModule.bindings.get(name);
+    const merged = Object.assign({}, b);
+    if (lb && lb.inferredType) merged.inferredType = lb.inferredType;
+    bindings.set(name, merged);
+  }
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure:  (n: any) => materialiser.materialiseMeasure(n, ctx),
+    sendWorker:  (msg: any) => {
+      const reply = worker.handle(msg);
+      if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+      return Promise.resolve(reply);
+    },
+    sampleCount: 32,
+    rootSeed:    12345,
+  };
+  return materialiser.materialiseMeasure('outer', ctx).then(
+    () => { throw new Error('expected rejection — nested-chain materialisation not yet wired'); },
+    (err: any) => {
+      assert.match(err.message, /nested-chain materialisation is a follow-up/i,
+        'should give the clear follow-up message, not the cryptic "no resolvable functionof body"');
+    }
+  );
+});
+
 test('kernel↔measure collapse: closed-first chain ⇒ measureType (not kernelType[∅])', () => {
   // Pin spec §06 line 86-91 "kernel with empty interface IS a measure"
   // at the engine level: a chain with NO residual inputs surfaces as

@@ -519,6 +519,26 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
       chainP = chainP.then((produced) => {
         const ke = kernelLeaves(kstep, 's' + i);
         if (!ke) {
+          // Nested-chain materialisation (a step whose ref points to
+          // a jointchain / kchain binding) is a known follow-up: the
+          // classifier recognises it (engine-concepts §19; commit
+          // <this work>), and the runtime walker that flattens / re-
+          // dispatches through the inner chain's steps is filed under
+          // §06 in TODO-flatppl-js. The type-level + entry-point gate
+          // are in place; this rejection is the explicit "runtime
+          // extension not yet wired" surface.
+          const kb = kstep.ref ? (ctx.bindings && ctx.bindings.get(kstep.ref)) : null;
+          const isNestedChain = !!kb && kb.ir && kb.ir.kind === 'call'
+            && (kb.ir.op === 'jointchain' || kb.ir.op === 'kchain');
+          if (isNestedChain) {
+            return Promise.reject(new Error(
+              `jointchain: step ${i} ref '${kstep.ref}' is itself a `
+              + 'jointchain/kchain binding (kernel-first chain); '
+              + 'nested-chain materialisation is a follow-up '
+              + '(engine-concepts §19; TODO §06). Type-level '
+              + 'recognition is in place but the runtime walker '
+              + 'through inner steps is not yet wired.'));
+          }
           return Promise.reject(new Error(
             `jointchain: step ${i} kernel `
             + `${kstep.ref ? `'${kstep.ref}' ` : '(inline) '}`
