@@ -108,29 +108,28 @@ html, body {
 }
 .pane:last-child { border-right: none; }
 
+/* All three pane headers (Files / Source / Visualization) get a
+   fixed pixel height so emoji-button glyphs (which render larger
+   than text glyphs at the same em size) can't push the row taller
+   in headers that happen to hold more icons. Flex layout centers
+   text + buttons + chevrons + img children on the same baseline.
+   The variant `.pane-header--row` only adds a child gap on top. */
 .pane-header {
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
-  padding: 0.4em 1em;
-  font-size: 0.85em;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 1em;
+  display: flex;
+  align-items: center;
+  font-size: 0.95em;
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-/* Variant of .pane-header that holds inline children (currently the
-   source pane's title + right-aligned toolbar buttons). The plain
-   text-style rules above still apply; the flex layout governs the
-   horizontal distribution of the children. Vertical padding matches
-   the plain .pane-header so the three pane headers (Files / Source
-   / Visualization) line up at the same height — and so the emoji
-   button glyphs don't overflow the top edge. */
 .pane-header--row {
-  display: flex;
-  align-items: center;
   gap: 0.6em;
-  padding: 0.4em 1em;
 }
 .pane-header-text {
   flex: 1 1 auto;
@@ -139,9 +138,10 @@ html, body {
 }
 
 
-/* Buttons inside a pane header (e.g. the "Visualize whole module"
-   action). Visual style matches the header chrome — quiet by
-   default, lights up on hover. */
+/* Buttons inside a pane header. Explicit small font-size + tight
+   line-height pin the icon glyph (emoji, text, img) at 14 px so
+   the row stays at the .pane-header height regardless of how many
+   icons live in a given header. */
 .pane-header button {
   background: transparent;
   border: none;
@@ -153,10 +153,12 @@ html, body {
   justify-content: center;
   color: var(--fg);
   opacity: 1;
+  font-size: 14px;
+  line-height: 1;
 }
 .pane-header button:hover { background: rgba(255,255,255,0.07); }
 .pane-header button:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
-.pane-header button img { display: block; }
+.pane-header button img { display: block; width: 14px; height: 14px; }
 .pane-header button[aria-pressed="true"] {
   background: rgba(13, 113, 199, 0.55);
   color: #fff;
