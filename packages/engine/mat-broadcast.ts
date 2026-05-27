@@ -165,47 +165,10 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
 
     // GENERAL PATH: K worker sampleN calls, each with per-atom
     // refArrays carrying the (i, j) value of each per-atom parameter.
-    // Atom-indep params pass as lit kwargs. Same shape contract as
-    // walkBroadcast on the density side; reflects the engine's
-    // batched scalar/array storage (§2.1 leading-axis batch).
-    const elemScalar = (v: any, j: number): number => {
-      if (typeof v === 'number') return v;
-      if (typeof v === 'boolean') return v ? 1 : 0;
-      if (valueLib.isValue(v)) {
-        const shape = v.shape;
-        if (shape.length === 0) return v.data[0];
-        if (shape.length === 1) {
-          return v.data[shape[0] === 1 ? 0 : j];
-        }
-      }
-      if (v && v.BYTES_PER_ELEMENT !== undefined
-          && typeof v.length === 'number') {
-        return v[v.length === 1 ? 0 : j];
-      }
-      if (Array.isArray(v)) return +v[v.length === 1 ? 0 : j];
-      throw new Error('broadcast: cannot scalarise atom-indep value at j=' + j);
-    };
-    const perAtomColumn = (v: any, j: number): Float64Array => {
-      const col = new Float64Array(N);
-      if (valueLib.isValue(v)) {
-        const shape = v.shape;
-        const data = v.data;
-        if (shape.length === 1 && shape[0] === N) {
-          col.set(data);
-        } else if (shape.length === 2 && shape[0] === N) {
-          const stride = shape[1];
-          const off = stride === 1 ? 0 : j;
-          for (let i = 0; i < N; i++) col[i] = data[i * stride + off];
-        } else {
-          throw new Error('broadcast: unexpected per-atom shape ' + JSON.stringify(shape));
-        }
-      } else if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === N) {
-        col.set(v);
-      } else {
-        throw new Error('broadcast: per-atom param has unexpected type ' + (typeof v));
-      }
-      return col;
-    };
+    // Atom-indep params pass as lit kwargs. Param-shape contract
+    // (scalar / [K] / [N] / [N, K]) and the per-atom column / scalar
+    // extractors live in materialiser-shared so the density side and
+    // any other per-atom materialiser path can share them.
     const cols = new Array(K);
     let chain = Promise.resolve();
     for (let j = 0; j < K; j++) {
@@ -218,14 +181,14 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
           if (usesAtomBy[pn]) {
             const refName = '__bc_' + pn + '_' + (safeIdx++);
             try {
-              const col = perAtomColumn(paramVals[pn], jj);
+              const col = shared.perAtomColumnAtJ(paramVals[pn], jj, N);
               perAtomRefs[refName] = valueLib.batchedScalar(col);
             } catch (err) {
               throw err instanceof Error ? err : new Error(String(err));
             }
             kwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
           } else {
-            kwargs[pn] = { kind: 'lit', value: elemScalar(paramVals[pn], jj) };
+            kwargs[pn] = { kind: 'lit', value: shared.elemScalarAtJ(paramVals[pn], jj, N) };
           }
         }
         const distIR = { kind: 'call', op: d.distOp, kwargs: kwargs };
