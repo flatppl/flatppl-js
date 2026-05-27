@@ -521,7 +521,6 @@ AGGREGATE_PATTERNS.push({
     const flat = _toFlat(src);
     const sourceShape = flat.shape;
     const sourceStrides = _rowMajorStrides(sourceShape);
-    const reduce = _AGGREGATE_REDUCTIONS[match.fname];
 
     // Determine per-output-cell traversal: iterate output axes,
     // for each (output-coord) reduce across the remaining dims.
@@ -565,7 +564,7 @@ AGGREGATE_PATTERNS.push({
           redCoord[k] = 0;
         }
       }
-      outData[i] = +reduce(tmp);
+      outData[i] = _applyAggregateReduction(match.fname, tmp, reduceSize);
       // Increment outCoord.
       for (let k = outCoord.length - 1; k >= 0; k--) {
         outCoord[k]++;
@@ -578,6 +577,19 @@ AGGREGATE_PATTERNS.push({
 });
 
 // Map reduction name → ARITH_OPS implementation.
+//
+// IMPORTANT: do not call `_AGGREGATE_REDUCTIONS[fname](data)` from
+// new aggregate paths. Use `_applyAggregateReduction(fname, data,
+// expectedCount)` (below). The wrapper enforces the materialisation
+// invariant the non-linear reductions (mean / var / std) rely on:
+// `data.length` must equal the count of distinct values being
+// reduced over — singleton-expanded / strided views give silently
+// wrong results for mean (wrong denominator) and var / std (wrong
+// Bessel correction). The two existing call sites
+// (`_evalAggregateBroadcastReduce`, the pure-axis-reduction
+// specialiser) both materialise their `tmp` buffer to `reduceSize`
+// genuine elements before calling, and route through the wrapper
+// to make that contract explicit and check-able.
 const _AGGREGATE_REDUCTIONS: Record<string, (a: any) => number> = {
   sum:     (a: any) => (ARITH_OPS as any).sum(a),
   prod:    (a: any) => (ARITH_OPS as any).prod(a),
@@ -587,6 +599,44 @@ const _AGGREGATE_REDUCTIONS: Record<string, (a: any) => number> = {
   maximum: (a: any) => (ARITH_OPS as any).maximum(a),
   minimum: (a: any) => (ARITH_OPS as any).minimum(a),
 };
+
+// Reductions whose result depends on the count (n) of input
+// values, not just their multiset content. These are silently
+// wrong if `data` is a singleton-broadcast view rather than a
+// fully-materialised buffer.
+const _COUNT_DEPENDENT_REDUCTIONS = new Set(['mean', 'var', 'std']);
+
+// Sanctioned entry point for applying a reduction to a buffer in an
+// aggregate context. `expectedCount` should be the genuine count of
+// elements being reduced (i.e. the product of reduce-axis sizes for
+// this output cell). If the caller passes a Float64Array whose
+// length disagrees with `expectedCount`, we throw — this catches
+// the future-specialiser footgun of feeding a non-linear reduction
+// a singleton-expanded view.
+//
+// Pass `expectedCount` as the integer count, or `null` to skip the
+// check (use this only when the caller has already validated
+// materialisation upstream, e.g. via `_broadcastTo(lifted,
+// fullShape)`).
+function _applyAggregateReduction(
+  fname: string,
+  data: Float64Array,
+  expectedCount: number | null,
+): number {
+  const reduce = _AGGREGATE_REDUCTIONS[fname];
+  if (!reduce) {
+    throw new Error(`aggregate: unknown reduction '${fname}'`);
+  }
+  if (expectedCount !== null && _COUNT_DEPENDENT_REDUCTIONS.has(fname)) {
+    if (data.length !== expectedCount) {
+      throw new Error(`aggregate: reduction '${fname}' expects a fully `
+        + `materialised buffer of length ${expectedCount}, got ${data.length}; `
+        + 'singleton-expanded views give wrong mean / var / std (count '
+        + 'mismatch). Materialise via _broadcastTo before reducing.');
+    }
+  }
+  return +reduce(data);
+}
 
 // =====================================================================
 // Broadcast-reduce default implementation
@@ -982,7 +1032,7 @@ function _evalAggregateBroadcastReduce(ir: any, env: any): any {
   for (let i = 0; i < outSize; i++) {
     const base = i * reduceSize;
     for (let j = 0; j < reduceSize; j++) tmp[j] = full.data[base + j];
-    outData[i] = +reduce(tmp);
+    outData[i] = _applyAggregateReduction(fname!, tmp, reduceSize);
   }
   return _flatToNested(outData, outShape);
 }
