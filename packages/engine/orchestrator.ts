@@ -91,6 +91,9 @@ const {
   findMatchingDomains,
   fourSigmaQuantileRange,
   inlineForProfile,
+  arrayInputLength,
+  computeAutoInputs,
+  computeAutoDomain,
 } = require('./profile-plan.ts');
 
 // Facade re-bind of the callable-introspection support now living in
@@ -450,6 +453,9 @@ module.exports = {
   fourSigmaQuantileRange,
   findMatchingPresets,
   findMatchingDomains,
+  arrayInputLength,
+  computeAutoInputs,
+  computeAutoDomain,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.

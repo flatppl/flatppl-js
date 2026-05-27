@@ -197,48 +197,31 @@ export function rememberPlanSelections(ctx: Ctx, plan: any) {
 }
 
 export function computeAutoValues(ctx: Ctx, plan: any) {
-  const out: Record<string, any> = {};
-  const axes = plan.axes || [];
+  // Delegates per-kwarg resolution to engine.orchestrator.compute-
+  // AutoInputs — single source of truth for the array-vs-scalar
+  // dispatch, per-kwarg dedup, and "atom-0 vs leaf-default"
+  // fallback. The viewer's responsibility is the side-table
+  // lookup that engine code can't reach into directly: the
+  // measure cache + the function-like / fixed-phase filters
+  // (a synchronous `getAtomZero(name)` callback).
+  if (!plan || !plan.signature) return {};
   const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
   const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
-  // Group by kwargName: array-typed inputs (`walkType` emits one
-  // axis per slot) share a kwarg — one source lookup, one entry in
-  // `out` (as a J-element array). Without grouping, J slots would
-  // overwrite each other with the same scalar.
-  const inputs = (plan.signature && plan.signature.inputs) || [];
-  const inputByKwarg: Record<string, any> = {};
-  for (let k = 0; k < inputs.length; k++) inputByKwarg[inputs[k].kwargName] = inputs[k];
-  const seen = new Set<string>();
-  for (let i = 0; i < axes.length; i++) {
-    const ax = axes[i];
-    if (seen.has(ax.kwargName)) continue;
-    seen.add(ax.kwargName);
-    const inp = inputByKwarg[ax.kwargName];
-    const arrayLen = inp ? arrayInputLength(inp.type) : null;
-    const leafDef = defaultValueForLeafType(ax.leafType);
-    let def: any = arrayLen != null ? new Array(arrayLen).fill(leafDef) : leafDef;
-    if (ax.source && ax.source.kind === 'binding'
-        && ctx.measureCache && ctx.measureCache.has(ax.source.name)) {
-      // Latent guard: skip function-like, fixed-phase, or non-binding
-      // sources. Fixed-phase array bindings collapse to samples[0]'s
-      // first scalar element under the naive override (the same
-      // failure mode we fixed in render-profile's profile-plot path
-      // — flatppl-js commit e9984f3).
-      const src = bindings && bindings.get(ax.source.name);
-      const isFunctionLike = FlatPPLEngine.materialiser.isFunctionLikeBinding(src);
-      const isFixedPhase = fixedValues && fixedValues.has(ax.source.name);
-      if (!isFunctionLike && !isFixedPhase) {
-        const m = ctx.measureCache.get(ax.source.name);
-        if (m && m.samples && m.samples.length > 0) {
-          if (arrayLen != null && m.samples.length >= arrayLen) {
-            def = Array.from(m.samples.slice(0, arrayLen));
-          } else {
-            def = m.samples[0];
-          }
-        }
-      }
-    }
-    out[ax.kwargName] = def;
+  const cache = ctx.measureCache;
+  function getAtomZero(name: string): any {
+    if (!cache || !cache.has(name)) return null;
+    // Skip function-like and fixed-phase sources (same latent guard
+    // as before — fixed-phase array bindings collapse to samples[0]
+    // under naive override).
+    const src = bindings && bindings.get(name);
+    if (FlatPPLEngine.materialiser.isFunctionLikeBinding(src)) return null;
+    if (fixedValues && fixedValues.has(name)) return null;
+    const m = cache.get(name);
+    if (!m || !m.samples || m.samples.length === 0) return null;
+    // Always return the samples view; computeAutoInputs slices to
+    // arrayLen for array-typed inputs and takes [0] for scalars.
+    return m.samples;
   }
-  return out;
+  return FlatPPLEngine.orchestrator.computeAutoInputs(
+    plan.signature, bindings, fixedValues, getAtomZero);
 }

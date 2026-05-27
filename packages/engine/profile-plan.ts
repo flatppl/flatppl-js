@@ -108,6 +108,21 @@ function resolveDrawSupport(target: any, bindings: any): any {
   }
   if (!distIR || distIR.kind !== 'call') return null;
   const op = distIR.op;
+  // `iid(Dist, n)` produces an array-shaped variate whose PER-SLOT
+  // support is Dist's support. Surface that — the caller (`compute-
+  // AutoDomain`) wraps it in `cartpow(base, n)` when the input type
+  // is array-shaped. Without this peek, a `~ iid(Normal, 4)` source
+  // degrades to `empirical` and the persisted domain emits a
+  // `cartpow(reals, 4)` only because computeAutoDomain falls back
+  // when base is null; an Exponential / Beta-cored iid would lose
+  // its support refinement.
+  if (op === 'iid' && Array.isArray(distIR.args) && distIR.args.length >= 1) {
+    const inner = distIR.args[0];
+    // Synthesise a draw-shaped target for the inner distribution so we
+    // can recurse uniformly through the same support logic.
+    const innerTarget = { type: 'draw', ir: { kind: 'call', op: 'draw', args: [inner] } };
+    return resolveDrawSupport(innerTarget, bindings);
+  }
   // Explicit-support constructors: prefer the user's support kwarg
   // over the distribution-name default.
   if (op === 'Uniform' || op === 'Lebesgue' || op === 'Counting') {
@@ -344,6 +359,166 @@ function findMatchingDomains(signature: any, bindings: any) {
  * thinnest tails. Used by the profile-plot UI to set an axis range
  * from a binding-source backref's empirical samples.
  */
+/**
+ * Static slot count of an array-typed callable input, or null if the
+ * type isn't a statically-shaped array. Used by the auto-input /
+ * auto-domain derivation paths to decide whether to populate a kwarg
+ * entry with a single scalar (samples[0] / interval) or a J-element
+ * array (atom-0 slice / cartpow wrap).
+ */
+function arrayInputLength(type: any): number | null {
+  if (!type || type.kind !== 'array') return null;
+  if (!Array.isArray(type.shape)) return null;
+  let total = 1;
+  for (const d of type.shape) {
+    if (d === '%dynamic' || typeof d !== 'number') return null;
+    total *= d;
+  }
+  return total;
+}
+
+/**
+ * Per-leaf-type default for an unresolved auto-input slot. Mirrors
+ * the viewer's `defaultValueForLeafType`; centralised here so the
+ * engine alone owns the "what value should the viewer show before
+ * the user picks one?" decision.
+ *
+ * Conservative defaults: integer / boolean / real all collapse to 0
+ * / false. The "swept-axis range" decision is separate (lives in
+ * `resolveAxisBaseSet` + `fourSigmaQuantileRange`).
+ */
+function defaultValueForLeafType(leafType: any): number | boolean {
+  if (!leafType) return 0;
+  if (leafType.kind === 'scalar') {
+    if (leafType.prim === 'boolean') return false;
+    return 0;
+  }
+  return 0;
+}
+
+/**
+ * Compute per-kwarg "auto" input values for a callable signature.
+ *
+ * For each kwarg, the returned record entry is:
+ *   - a J-element array, if the input type is `array(rank=1,
+ *     shape=[J])` — atom-0 slice from `getAtomZero(sourceName)` when
+ *     the input's source is a binding, else J copies of the
+ *     leaf-type default.
+ *   - a scalar (number / boolean), otherwise — `getAtomZero
+ *     (sourceName)[0]`-equivalent when the source is a binding (the
+ *     callback may return a scalar directly for scalar measures), else
+ *     the leaf-type default.
+ *
+ * `getAtomZero(name)` is the consumer-supplied callback for fetching
+ * atom-0 of a binding's empirical measure. It returns:
+ *   - a single number for scalar measures,
+ *   - a number[] / TypedArray of length ≥ arrayLen for array measures
+ *     (only the first arrayLen entries are consumed),
+ *   - null when the measure isn't materialised / isn't applicable.
+ * The engine never reaches into the viewer's measure cache directly;
+ * the caller routes through this hook.
+ *
+ * Used by the viewer's preset dropdown ("auto" row), persist
+ * (`persistAutoAsNewBinding`), and any future render path that
+ * needs deterministic per-kwarg defaults. Engine-side ownership
+ * makes the resolution rules testable in isolation, mirrors
+ * `resolveAxisBaseSet` (per-axis) at the per-kwarg level, and
+ * single-sources the array-vs-scalar dispatch.
+ */
+function computeAutoInputs(
+  signature: any,
+  bindings: any,
+  fixedValues: any,
+  getAtomZero: ((name: string) => any) | null,
+): Record<string, any> {
+  void bindings; void fixedValues;
+  const out: Record<string, any> = {};
+  if (!signature || !Array.isArray(signature.inputs)) return out;
+  const seen = new Set<string>();
+  for (const inp of signature.inputs) {
+    const kw = inp.kwargName;
+    if (!kw || seen.has(kw)) continue;
+    seen.add(kw);
+    const arrayLen = arrayInputLength(inp.type);
+    const leafType = arrayLen != null && inp.type && inp.type.elem
+      ? inp.type.elem
+      : inp.type;
+    const leafDef = defaultValueForLeafType(leafType);
+    let def: any = arrayLen != null
+      ? new Array(arrayLen).fill(leafDef)
+      : leafDef;
+    if (inp.source && inp.source.kind === 'binding'
+        && typeof getAtomZero === 'function') {
+      const v = getAtomZero(inp.source.name);
+      const isArrayLike = Array.isArray(v) || (v != null
+        && typeof v === 'object'
+        && typeof v.length === 'number'
+        && (typeof v.BYTES_PER_ELEMENT === 'number'
+            || v[0] !== undefined));
+      if (v != null) {
+        if (arrayLen != null) {
+          if (isArrayLike && v.length >= arrayLen) {
+            def = Array.from(v).slice(0, arrayLen);
+          }
+          // If the callback returned a scalar for an array input,
+          // ignore it — atom-0 of a J-vector measure should itself
+          // be J entries; a scalar result indicates the source
+          // doesn't match the signature shape.
+        } else if (typeof v === 'number' || typeof v === 'boolean') {
+          def = v;
+        } else if (isArrayLike && v.length > 0
+                   && (typeof v[0] === 'number' || typeof v[0] === 'boolean')) {
+          // Array-like passed for scalar input — convention is "take
+          // the first atom's scalar". Lets callers hand the full
+          // sample buffer through without branching on arity per-call.
+          def = v[0];
+        }
+      }
+    }
+    out[kw] = def;
+  }
+  return out;
+}
+
+/**
+ * Compute per-kwarg "auto" domain descriptors for a callable
+ * signature. Each entry is a `SetDescriptor` — the same shape
+ * `resolveAxisBaseSet` returns for scalar axes, with the additional
+ * `{kind: 'cartpow', base: SetDescriptor, n: number}` variant for
+ * array-typed inputs.
+ *
+ * For array kwargs the resolution rule: walk the per-slot axes (all
+ * slots share a source), resolve `resolveAxisBaseSet` once, wrap in
+ * `cartpow(base, J)` where `J = arrayInputLength(input.type)`.
+ *
+ * Used by `persistAutoDomainAsNewBinding` (the viewer's "save as
+ * new domain binding" path); the viewer's `defaultSetSourceForKwarg`
+ * becomes a thin formatter over the engine's structured descriptor.
+ */
+function computeAutoDomain(
+  signature: any,
+  bindings: any,
+): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (!signature || !Array.isArray(signature.inputs)) return out;
+  for (const inp of signature.inputs) {
+    const kw = inp.kwargName;
+    if (!kw || Object.prototype.hasOwnProperty.call(out, kw)) continue;
+    const arrayLen = arrayInputLength(inp.type);
+    let base: any = null;
+    try {
+      base = resolveAxisBaseSet(inp.source, bindings);
+    } catch (_) { base = null; }
+    if (!base) base = { kind: 'reals' };
+    if (arrayLen != null) {
+      out[kw] = { kind: 'cartpow', base, n: arrayLen };
+    } else {
+      out[kw] = base;
+    }
+  }
+  return out;
+}
+
 function fourSigmaQuantileRange(samples: ArrayLike<number>) {
   if (!samples || samples.length === 0) return null;
   if (samples.length === 1) return [samples[0], samples[0]];
@@ -449,4 +624,8 @@ module.exports = {
   findMatchingDomains,
   fourSigmaQuantileRange,
   inlineForProfile,
+  arrayInputLength,
+  defaultValueForLeafType,
+  computeAutoInputs,
+  computeAutoDomain,
 };

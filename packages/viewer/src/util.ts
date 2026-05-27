@@ -530,20 +530,14 @@ export function defaultValueForLeafType(leafType: any) {
 
 /**
  * Total slot count of an array-typed callable input, or null if the
- * type isn't a statically-shaped array. Used by render-kernel /
- * render-profile to decide whether to populate the env entry with a
- * single scalar (samples[0]) or a J-element slice (atom-0's full
- * array, then `substituteLocals` emits `vector(lit,…)` IR).
+ * type isn't a statically-shaped array. Thin wrapper over engine's
+ * `orchestrator.arrayInputLength` — single source of truth in the
+ * engine (where it's tested in isolation), re-surfaced here as the
+ * usual viewer import path so callers don't have to thread
+ * FlatPPLEngine through util.ts consumers.
  */
 export function arrayInputLength(type: any): number | null {
-  if (!type || type.kind !== 'array') return null;
-  if (!Array.isArray(type.shape)) return null;
-  let total = 1;
-  for (const d of type.shape) {
-    if (d === '%dynamic' || typeof d !== 'number') return null;
-    total *= d;
-  }
-  return total;
+  return FlatPPLEngine.orchestrator.arrayInputLength(type);
 }
 
 export function defaultRangeForLeafType(leafType: any) {
