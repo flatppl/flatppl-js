@@ -583,6 +583,131 @@ function computeAutoDomain(
   return out;
 }
 
+/**
+ * Effective per-kwarg input values for a callable signature, after
+ * merging the precedence chain:
+ *
+ *   effective[kwarg]  =  override[kwarg]  ??  base[kwarg]  ??  auto[kwarg]
+ *
+ * `auto` is computed via `computeAutoInputs(signature, bindings,
+ * fixedValues, getAtomZero)`; `base` and `override` are passed in
+ * verbatim (the consumer supplies them — typically the active
+ * preset's `values` and the user's override entry). Returns one
+ * entry per kwarg in the signature, with scalar OR array shape
+ * matching the input's static type (no per-slot kwarg keys).
+ *
+ * Centralises the merge logic that was previously sprinkled across
+ * commitSliceX, computeAutoValues consumers, and the persist path.
+ * The smell flagged in 4575b35: every site re-derived "what's the
+ * current value of kwarg X for this plan?" by hand; pull it into
+ * one engine call.
+ */
+function effectiveInputValues(
+  signature: any,
+  bindings: any,
+  fixedValues: any,
+  baseValues: Record<string, any> | null | undefined,
+  overrideValues: Record<string, any> | null | undefined,
+  getAtomZero: ((name: string) => any) | null,
+): Record<string, any> {
+  const auto = computeAutoInputs(signature, bindings, fixedValues, getAtomZero);
+  const base = baseValues || {};
+  const over = overrideValues || {};
+  const out: Record<string, any> = {};
+  if (!signature || !Array.isArray(signature.inputs)) return out;
+  const seen = new Set<string>();
+  for (const inp of signature.inputs) {
+    const kw = inp.kwargName;
+    if (!kw || seen.has(kw)) continue;
+    seen.add(kw);
+    if (Object.prototype.hasOwnProperty.call(over, kw)) {
+      out[kw] = over[kw];
+    } else if (Object.prototype.hasOwnProperty.call(base, kw)) {
+      out[kw] = base[kw];
+    } else if (Object.prototype.hasOwnProperty.call(auto, kw)) {
+      out[kw] = auto[kw];
+    }
+  }
+  return out;
+}
+
+/**
+ * Effective per-kwarg SetDescriptor for a callable signature's
+ * input domain, after merging:
+ *
+ *   effective[kwarg]  =
+ *     overrideRange[kwarg] applied to auto-domain shape ??
+ *     baseRange[kwarg]     applied to auto-domain shape ??
+ *     baseSetName[kwarg]   applied to auto-domain shape ??
+ *     auto[kwarg]
+ *
+ * "Applied to auto-domain shape" preserves the cartpow wrap for
+ * array-typed kwargs: an override interval becomes the base of
+ * `cartpow(<base>, n)` rather than collapsing to bare `interval`.
+ * Without this, the viewer's persist path lost the array shape
+ * whenever a user edited a per-slot range.
+ *
+ * `overrideRanges` and `baseRanges` are maps `kwarg → {lo, hi}`;
+ * `baseSetNames` is a map `kwarg → 'reals' | 'posreals' | ...`
+ * (the named-set form `findMatchingDomains` surfaces). The caller
+ * passes these in (typically from `activeDomainRangesFor` /
+ * matched-domain entries).
+ */
+function effectiveInputDomain(
+  signature: any,
+  bindings: any,
+  baseRanges: Record<string, { lo: number; hi: number }> | null | undefined,
+  baseSetNames: Record<string, string> | null | undefined,
+  overrideRanges: Record<string, { lo: number; hi: number }> | null | undefined,
+): Record<string, any> {
+  const auto = computeAutoDomain(signature, bindings);
+  const br = baseRanges || {};
+  const bn = baseSetNames || {};
+  const or = overrideRanges || {};
+  const out: Record<string, any> = {};
+  if (!signature || !Array.isArray(signature.inputs)) return out;
+  const seen = new Set<string>();
+  for (const inp of signature.inputs) {
+    const kw = inp.kwargName;
+    if (!kw || seen.has(kw)) continue;
+    seen.add(kw);
+    const autoDesc = auto[kw];
+    // Resolve the active SetDescriptor with precedence override > base
+    // range > base named-set > auto. Each "range" / "named-set" entry
+    // is wrapped to preserve the auto descriptor's cartpow shape when
+    // the input is array-typed.
+    let raw: any = null;
+    if (Object.prototype.hasOwnProperty.call(or, kw)) {
+      const r = or[kw];
+      if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
+        raw = { kind: 'interval', lo: r.lo, hi: r.hi };
+      }
+    } else if (Object.prototype.hasOwnProperty.call(br, kw)) {
+      const r = br[kw];
+      if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
+        raw = { kind: 'interval', lo: r.lo, hi: r.hi };
+      }
+    } else if (Object.prototype.hasOwnProperty.call(bn, kw)) {
+      // Named set: build a bare descriptor with the set name as kind.
+      // (The format mirrors the descriptors `resolveAxisBaseSet` /
+      // `computeAutoDomain` return for built-in sets.)
+      const n = bn[kw];
+      if (typeof n === 'string') raw = { kind: n };
+    }
+    if (raw == null) {
+      out[kw] = autoDesc || { kind: 'reals' };
+      continue;
+    }
+    if (autoDesc && autoDesc.kind === 'cartpow') {
+      // Linked-cartpow: preserve the wrap, replace the base.
+      out[kw] = { kind: 'cartpow', base: raw, n: autoDesc.n };
+    } else {
+      out[kw] = raw;
+    }
+  }
+  return out;
+}
+
 function fourSigmaQuantileRange(samples: ArrayLike<number>) {
   if (!samples || samples.length === 0) return null;
   if (samples.length === 1) return [samples[0], samples[0]];
@@ -692,4 +817,6 @@ module.exports = {
   defaultValueForLeafType,
   computeAutoInputs,
   computeAutoDomain,
+  effectiveInputValues,
+  effectiveInputDomain,
 };

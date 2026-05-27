@@ -27,6 +27,7 @@ const {
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets, findMatchingDomains,
   arrayInputLength, computeAutoInputs, computeAutoDomain,
+  effectiveInputValues, effectiveInputDomain,
   expandMeasureIR, implicitKernelSignature, implicitFunctionSignature,
   canonicalizeImplicitBoundaries,
   _internal: { isEvaluable, classifyForChain },
@@ -1925,6 +1926,112 @@ k = functionof(Normal(mu = 0.0, sigma = 1.0), lambdas = lambdas)
   assert.equal(dom.lambdas.kind, 'cartpow');
   assert.equal(dom.lambdas.n, 3);
   assert.equal(dom.lambdas.base.kind, 'posreals');
+});
+
+// =====================================================================
+// effectiveInputValues — merge auto / base / override per kwarg
+// =====================================================================
+
+test('effectiveInputValues: override > base > auto, per kwarg', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+sigma = elementof(interval(0, inf))
+k = functionof(Normal(mu = mu, sigma = sigma), mu = mu, sigma = sigma)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const baseValues    = { mu: 1.0, sigma: 2.0 };
+  const overrideValues = { mu: 99.0 };   // overrides mu, no entry for sigma
+  const out = effectiveInputValues(
+    sig, built.bindings, built.fixedValues,
+    baseValues, overrideValues, null);
+  assert.equal(out.mu, 99.0, 'override wins');
+  assert.equal(out.sigma, 2.0, 'base used when no override');
+});
+
+test('effectiveInputValues: auto fills missing kwargs', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+k = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  // No base, no override → auto fallback (leaf-type default for mu).
+  const out = effectiveInputValues(sig, built.bindings, built.fixedValues, {}, {}, null);
+  assert.equal(out.mu, 0,
+    'auto leaf default when neither base nor override applies');
+});
+
+test('effectiveInputValues: array override preserves array shape', () => {
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 3)
+k = kernelof(record(y = theta), theta = theta)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const overrideValues = { theta: [0.5, -1.0, 2.5] };
+  const out = effectiveInputValues(
+    sig, built.bindings, built.fixedValues, {}, overrideValues, null);
+  assert.ok(Array.isArray(out.theta));
+  assert.equal(out.theta.length, 3);
+  assert.equal(out.theta[0],  0.5);
+  assert.equal(out.theta[1], -1.0);
+  assert.equal(out.theta[2],  2.5);
+});
+
+// =====================================================================
+// effectiveInputDomain — merge auto / base ranges / overrides
+// =====================================================================
+
+test('effectiveInputDomain: scalar kwarg, override range wins over auto', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+k = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const out = effectiveInputDomain(sig, built.bindings, {}, {}, { mu: { lo: -2, hi: 5 } });
+  assert.equal(out.mu.kind, 'interval');
+  assert.equal(out.mu.lo, -2);
+  assert.equal(out.mu.hi,  5);
+});
+
+test('effectiveInputDomain: array kwarg with override wraps in cartpow', () => {
+  // Linked-cartpow semantics: a single interval override applies
+  // to every slot of the array kwarg, persisted as
+  // cartpow(interval(lo, hi), n).
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 4)
+k = kernelof(record(y = theta), theta = theta)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const out = effectiveInputDomain(
+    sig, built.bindings, {}, {}, { theta: { lo: -3, hi: 7 } });
+  assert.equal(out.theta.kind, 'cartpow');
+  assert.equal(out.theta.n, 4);
+  assert.equal(out.theta.base.kind, 'interval');
+  assert.equal(out.theta.base.lo, -3);
+  assert.equal(out.theta.base.hi,  7);
+});
+
+test('effectiveInputDomain: base ranges used when no override; auto otherwise', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+sigma = elementof(interval(0, inf))
+k = functionof(Normal(mu = mu, sigma = sigma), mu = mu, sigma = sigma)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const baseRanges = { mu: { lo: -1, hi: 1 } };   // base covers mu only
+  const out = effectiveInputDomain(sig, built.bindings, baseRanges, {}, {});
+  // mu: base range applies.
+  assert.equal(out.mu.kind, 'interval');
+  assert.equal(out.mu.lo, -1);
+  assert.equal(out.mu.hi,  1);
+  // sigma: no base / override → auto (elementof(interval(0, inf))).
+  assert.equal(out.sigma.kind, 'interval');
+  assert.equal(out.sigma.lo, 0);
 });
 
 // =====================================================================

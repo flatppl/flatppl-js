@@ -8,7 +8,7 @@
 
 import type { Ctx, ProfilePlan } from './types';
 import { tryGetMeasure } from './engine-facade.js';
-import { activeDomainRangesFor, activeFixedNamesFor, activePresetFor, computeAutoValues, ensureDomainOverrideFor, ensureOverrideFor, resolveSweepRange, setDomainOverrideFor, setOverrideFor } from './overrides.js';
+import { activeDomainRangesFor, activeFixedNamesFor, activeInputDomain, activeInputValues, activePresetFor, computeAutoValues, ensureDomainOverrideFor, ensureOverrideFor, resolveSweepRange, setDomainOverrideFor, setOverrideFor } from './overrides.js';
 import { colorForBinding } from './palette.js';
 import { buildDomainControl, buildPresetControl } from './render-controls.js';
 import { showPlotMessage } from './render-frame.js';
@@ -586,27 +586,23 @@ export function buildProfileBottomRow(ctx: Ctx, plan: ProfilePlan, range: any) {
     if (!key) return;
     const entry = ensureDomainOverrideFor(ctx, plan);
     entry.ranges = entry.ranges || {};
-    // Per-slot sweep on a cartpow-domain kwarg: the auto-domain
-    // descriptor reports `{kind: 'cartpow', base, n}` (uniform
-    // across all slots). There's no spec syntax for per-slot
-    // intervals within `cartpow`, so we adopt the "linked" semantics
-    // matching the source structure: editing any slot updates the
-    // shared interval, propagating to every other slot. Persist
-    // emits `cartpow(interval(lo, hi), n)`. Store the override
-    // under the KWARG NAME (not the per-slot key) so the
-    // persist path and viewer-side range lookups pick it up
-    // uniformly.
+    // Per-slot sweep on a cartpow-domain kwarg: the engine's
+    // effective domain reports `{kind: 'cartpow', base, n}`
+    // (linked-cartpow semantics — editing any slot updates the
+    // shared interval, propagating to every other slot). Store
+    // the override under the KWARG NAME so the persist path
+    // and viewer-side range lookups pick it up uniformly. For
+    // any other shape (scalar input; non-cartpow array domain)
+    // store under the sweep key.
     //
-    // If the user later wants unlinked per-slot intervals, the
-    // toggle UX is a v2 polish — cartpow's spec shape doesn't
-    // express it today.
+    // The "unlinked per-slot intervals" mode would need spec
+    // syntax that doesn't exist today; a v2 toggle is the right
+    // UX when there's user demand.
     let lookupKey = key;
     const sweepAx = plan.axes && plan.axes.find(function(a: any) { return a.key === plan.sweepKey; });
     if (sweepAx && sweepAx.path && sweepAx.path.length > 0
         && sweepAx.kwargName) {
-      const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
-      const dom = FlatPPLEngine.orchestrator.computeAutoDomain(
-        plan.signature, bindings);
+      const dom = activeInputDomain(ctx, plan);
       const desc = dom && dom[sweepAx.kwargName];
       if (desc && desc.kind === 'cartpow') {
         lookupKey = sweepAx.kwargName;
@@ -854,28 +850,17 @@ export function commitSliceX(ctx: Ctx, plan: ProfilePlan, x: number) {
   const kwarg = sweepAxis.kwargName;
   const entry = ensureOverrideFor(ctx, plan);
   // Per-slot sweep (path = [{idx:[N]}] on an array-typed input):
-  // merge into the array under entry.values[kwarg] rather than
-  // overwriting the whole kwarg with a scalar. Reads the current
-  // array via activePresetFor (which already merges base values +
-  // prior overrides + auto values via computeAutoValues), so a
-  // sequence of per-slot edits accumulates correctly. Without
-  // this, persisting after a slot edit emits `theta = <scalar>`
-  // — losing the other 7 slots.
+  // read the current effective value via activeInputValues (the
+  // engine-merged auto/base/override record), copy the array,
+  // assign at the slot, store back. Scalar sweep keeps the same
+  // single-overwrite path.
   if (sweepAxis.path && sweepAxis.path.length > 0) {
     const seg = sweepAxis.path[0];
     if (seg && Array.isArray(seg.idx) && seg.idx.length === 1
         && Number.isInteger(seg.idx[0])) {
       const slotIdx = seg.idx[0] - 1;   // FlatPPL 1-indexed → JS 0-indexed
-      // Reconstruct the current array by layering autoValues with
-      // any existing override. activePresetFor does this merge but
-      // also folds in matched-preset base values; that's the same
-      // composition computeAutoValues uses, so the array we read
-      // matches what the user sees in the toolbar.
-      const auto = computeAutoValues(ctx, plan);
-      const active = activePresetFor(ctx, plan);
-      const current = (active.values && active.values[kwarg] != null)
-        ? active.values[kwarg]
-        : (auto && auto[kwarg]);
+      const effective = activeInputValues(ctx, plan);
+      const current = effective[kwarg];
       let next: any[];
       if (Array.isArray(current)) {
         next = current.slice();
@@ -883,15 +868,13 @@ export function commitSliceX(ctx: Ctx, plan: ProfilePlan, x: number) {
                  && typeof current.length === 'number') {
         next = Array.from(current);
       } else {
-        // Fallback — shouldn't happen for an array-typed input that
-        // walkType emitted per-slot axes for, but stay defensive.
+        // Defensive — walkType emitted per-slot axes only for array-
+        // typed inputs, so effective[kwarg] should be array-like.
         next = [];
       }
       if (slotIdx >= 0 && slotIdx < next.length) {
         next[slotIdx] = x;
       } else if (slotIdx >= 0) {
-        // Array was shorter than expected (unusual); pad with zeros
-        // and assign. Same defensive footing as above.
         while (next.length < slotIdx) next.push(0);
         next.push(x);
       }

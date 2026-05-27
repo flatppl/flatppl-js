@@ -94,6 +94,8 @@ const {
   arrayInputLength,
   computeAutoInputs,
   computeAutoDomain,
+  effectiveInputValues,
+  effectiveInputDomain,
 } = require('./profile-plan.ts');
 
 // Facade re-bind of the callable-introspection support now living in
@@ -456,6 +458,8 @@ module.exports = {
   arrayInputLength,
   computeAutoInputs,
   computeAutoDomain,
+  effectiveInputValues,
+  effectiveInputDomain,
   // Internal — exported for tests and for visualPanel.js to mirror the
   // gating rules locally if it wants a quick "is this plottable?" check
   // without re-running the full builder.
