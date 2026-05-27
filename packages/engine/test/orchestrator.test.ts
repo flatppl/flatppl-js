@@ -2074,9 +2074,63 @@ some_args = record(arg1 = 2.0, arg2 = -3.5)
   assert.deepEqual(presets[0].values, { arg1: 2.0, arg2: -3.5 });
 });
 
+test('findMatchingPresets: array-typed kwarg accepts array-literal field', () => {
+  // The viewer's "save as new preset binding" path emits
+  // `record(theta = [v1, v2, ..., v8])` for an array-typed input.
+  // The parser/lifter lowers array literals to `vector(lit, lit, ...)`
+  // IR. findMatchingPresets must accept this shape so the saved
+  // record surfaces in the preset dropdown — otherwise persisted
+  // per-slot preset points are silently invisible.
+  const { liftInlineSubexpressions, buildDerivations } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 4)
+k = kernelof(record(y = theta), theta = theta)
+saved_preset = record(theta = [0.5, -1.0, 2.5, 0.1])
+`);
+  const built = buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const presets = findMatchingPresets(sig, built.bindings);
+  void liftInlineSubexpressions;
+  const match = presets.find((p: any) => p.name === 'saved_preset');
+  assert.ok(match, 'expected saved_preset in matchedPresets; got ['
+    + presets.map((p: any) => p.name).join(', ') + ']');
+  assert.ok(Array.isArray(match.values.theta));
+  assert.equal(match.values.theta.length, 4);
+  assert.equal(match.values.theta[0],  0.5);
+  assert.equal(match.values.theta[1], -1.0);
+  assert.equal(match.values.theta[2],  2.5);
+  assert.equal(match.values.theta[3],  0.1);
+});
+
 // =====================================================================
 // findMatchingDomains — cartprod bindings whose kwargs match a callable
 // =====================================================================
+
+test('findMatchingDomains: cartpow field for array-typed kwarg surfaces ranges', () => {
+  // The viewer's "save as new domain binding" path emits cartprod
+  // entries like `theta = cartpow(interval(-2, 4), 8)` for array-
+  // typed kwargs (linked-cartpow semantics). findMatchingDomains
+  // must accept `cartpow(<base>, n)` fields so the saved domain
+  // shows up in the dropdown — otherwise persisted domain edits
+  // are silently invisible. Both interval-base and named-set-base
+  // shapes must round-trip (range entry vs setName entry).
+  const { buildDerivations } = require('../orchestrator.ts');
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 4)
+k = kernelof(record(y = theta), theta = theta)
+bounded_dom = cartprod(theta = cartpow(interval(-2, 4), 4))
+unbounded_dom = cartprod(theta = cartpow(reals, 4))
+`);
+  const built = buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const doms = findMatchingDomains(sig, built.bindings);
+  const byName: any = {};
+  for (const d of doms) byName[d.name] = d;
+  assert.ok(byName.bounded_dom, 'expected bounded_dom in matchedDomains');
+  assert.deepEqual(byName.bounded_dom.ranges, { theta: { lo: -2, hi: 4 } });
+  assert.ok(byName.unbounded_dom, 'expected unbounded_dom in matchedDomains');
+  assert.deepEqual(byName.unbounded_dom.setNames, { theta: 'reals' });
+});
 
 test('findMatchingDomains: matches cartprod whose kwargs equal the input set', () => {
   const { liftInlineSubexpressions } = require('../orchestrator.ts');

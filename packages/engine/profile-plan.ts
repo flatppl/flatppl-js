@@ -254,6 +254,40 @@ function findMatchingPresets(signature: any, bindings: any) {
           inner = refTarget.ir.args[0];
         }
       }
+      // Array-typed value: `vector(lit, lit, ...)` IR (lowered from
+      // surface `[v1, v2, ...]` literals). The lift pass typically
+      // hoists array literals into an anon binding, so the field's
+      // immediate value here is a (ref self __anonN). Chase that
+      // ref once to see whether the target IR is a vector call.
+      // Each vector element must itself be constant-resolvable.
+      // Surfacing array values lets a saved `record(theta = [...])`
+      // show up in the preset dropdown for an array-typed input.
+      let vectorIR: any = null;
+      if (inner && inner.kind === 'call' && inner.op === 'vector'
+          && Array.isArray(inner.args)) {
+        vectorIR = inner;
+      } else if (inner && inner.kind === 'ref' && inner.ns === 'self') {
+        const refTarget2 = bindings.get(inner.name);
+        if (refTarget2 && refTarget2.ir && refTarget2.ir.kind === 'call'
+            && refTarget2.ir.op === 'vector'
+            && Array.isArray(refTarget2.ir.args)) {
+          vectorIR = refTarget2.ir;
+        }
+      }
+      if (vectorIR) {
+        const arr: any[] = [];
+        let arrayMatch = true;
+        for (const el of vectorIR.args) {
+          const elV = resolveConstant(el, bindings, new Set());
+          if (elV == null) { arrayMatch = false; break; }
+          arr.push(elV);
+        }
+        if (arrayMatch) {
+          values[f.name] = arr;
+          continue;
+        }
+        allMatch = false; break;
+      }
       const v = resolveConstant(inner, bindings, new Set());
       if (v == null) { allMatch = false; break; }
       values[f.name] = v;
@@ -331,6 +365,36 @@ function findMatchingDomains(signature: any, bindings: any) {
         if (lo == null || hi == null || !(lo < hi)) { allMatch = false; break; }
         ranges[f.name] = { lo, hi };
         continue;
+      }
+      // (c) cartpow(<base>, n) for array-typed kwargs. Per the
+      // linked-cartpow domain semantics, the interior `<base>`
+      // applies uniformly to every slot; expose it as a single
+      // {lo, hi} range entry so the viewer renders identical
+      // bounds across the per-slot axes. `<base>` may itself be
+      // an `interval(lo, hi)` (literal-resolvable) or a bare
+      // named set (no range entry, just a setName tag).
+      if (inner && inner.kind === 'call' && inner.op === 'cartpow'
+          && Array.isArray(inner.args) && inner.args.length === 2) {
+        let basePart: any = inner.args[0];
+        if (basePart && basePart.kind === 'ref' && basePart.ns === 'self') {
+          const refTarget = bindings.get(basePart.name);
+          if (refTarget && refTarget.ir) basePart = refTarget.ir;
+        }
+        if (basePart && basePart.kind === 'call' && basePart.op === 'interval'
+            && Array.isArray(basePart.args) && basePart.args.length === 2) {
+          const lo = resolveConstant(basePart.args[0], bindings, new Set());
+          const hi = resolveConstant(basePart.args[1], bindings, new Set());
+          if (lo == null || hi == null || !(lo < hi)) { allMatch = false; break; }
+          ranges[f.name] = { lo, hi };
+          continue;
+        }
+        const baseSetName = basePart && (basePart.kind === 'const' || basePart.kind === 'ref')
+          ? basePart.name : null;
+        if (baseSetName && NAMED_SET_NAMES.has(baseSetName)) {
+          setNames[f.name] = baseSetName;
+          continue;
+        }
+        allMatch = false; break;
       }
       // (b) bare named-set reference (parser emits these as const
       // refs in the IR — see builtins.SETS).

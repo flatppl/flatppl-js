@@ -195,6 +195,15 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
   })).then(function(name) {
     if (!name) return;
     ctx.pendingPresetName = name;
+    // The save-as promotes the auto-pseudo-preset's values into a
+    // named binding; the original autoOverride is now redundant
+    // (the named preset captures it). Clear it so the toolbar
+    // dropdown stops showing "auto (modified)" once the source
+    // refresh switches to the new named preset. If editSource
+    // never lands the user's auto-edits are also cleared, which
+    // is acceptable: the unsaved state was the override; the
+    // saved state is the persisted record.
+    plan.autoOverride = null;
     ctx.host.editSource({
       range: null,
       newText: name + ' = record(' + pairsText + ')',
@@ -421,6 +430,11 @@ export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
   })).then(function(name) {
     if (!name) return;
     ctx.pendingDomainName = name;
+    // Same rationale as the preset save-as: promotes the auto-
+    // domain override into a named binding; clear plan.domainAuto-
+    // Override so the dropdown stops showing "auto (modified)"
+    // once the source refresh switches to the new named domain.
+    plan.domainAutoOverride = null;
     ctx.host.editSource({
       range: null,
       newText: name + ' = cartprod(' + pairsText + ')',
