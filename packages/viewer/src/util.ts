@@ -489,6 +489,15 @@ export function isPersistableSetField(v: any) {
       && v.args[0].type === 'NumberLiteral'
       && v.args[1].type === 'NumberLiteral') return true;
   if (v.type === 'Identifier' && KNOWN_NAMED_SETS[v.name]) return true;
+  // `cartpow(<base>, <n>)` for array-typed inputs: accept when the
+  // base is itself a persistable scalar set field and the count is
+  // a positive integer literal.
+  if (v.type === 'CallExpr' && v.callee && v.callee.name === 'cartpow'
+      && Array.isArray(v.args) && v.args.length === 2
+      && v.args[1].type === 'NumberLiteral'
+      && Number.isInteger(v.args[1].value)
+      && v.args[1].value > 0
+      && isPersistableSetField(v.args[0])) return true;
   return false;
 }
 

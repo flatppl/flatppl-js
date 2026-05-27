@@ -18,6 +18,35 @@ export function formatScalarForSource(ctx: Ctx, v: unknown): string {
   return String(v);
 }
 
+/**
+ * Serialise a preset-point value into its FlatPPL source form.
+ * Scalars round-trip through `formatScalarForSource`. Arrays
+ * (plain Array or Float64Array) emit `[v1, v2, …]` literals so
+ * an array-typed callable input (e.g. `theta` of shape `[J]`)
+ * persists as `theta = [v1, …, vJ]` rather than dropping the
+ * field or stringifying as `"1,2,3"`.
+ */
+export function formatValueForSource(ctx: Ctx, v: unknown): string | null {
+  if (typeof v === 'boolean' || typeof v === 'number') {
+    if (!Number.isFinite(v) && typeof v === 'number') return null;
+    return formatScalarForSource(ctx, v);
+  }
+  if (Array.isArray(v) || (v != null && typeof v === 'object'
+      && typeof (v as any).length === 'number'
+      && (typeof (v as any).BYTES_PER_ELEMENT === 'number'
+          || (v as any)[0] !== undefined))) {
+    const parts: string[] = [];
+    const len = (v as any).length;
+    for (let i = 0; i < len; i++) {
+      const e = (v as any)[i];
+      if (typeof e !== 'number' || !Number.isFinite(e)) return null;
+      parts.push(formatScalarForSource(ctx, e));
+    }
+    return '[' + parts.join(', ') + ']';
+  }
+  return null;
+}
+
 export function canPersistActive(ctx: Ctx, plan: any): boolean {
   if (!hasOverrides(ctx, plan)) return false;
   if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
@@ -48,7 +77,20 @@ export function canPersistActive(ctx: Ctx, plan: any): boolean {
         && Array.isArray(v.args) && v.args.length === 1) {
       v = v.args[0];
     }
-    if (v.type !== 'NumberLiteral' && v.type !== 'BoolLiteral') return false;
+    if (v.type === 'NumberLiteral' || v.type === 'BoolLiteral') continue;
+    // Array literal: every element must itself be a numeric literal
+    // (no nested refs / calls — the preset must be self-contained
+    // for edit-in-place persistence).
+    if (v.type === 'ArrayLiteral' && Array.isArray(v.elements)) {
+      let allLits = true;
+      for (const el of v.elements) {
+        if (!el || (el.type !== 'NumberLiteral' && el.type !== 'BoolLiteral')) {
+          allLits = false; break;
+        }
+      }
+      if (allLits) continue;
+    }
+    return false;
   }
   return true;
 }
@@ -67,9 +109,34 @@ export function buildPersistedPresetLine(ctx: Ctx, plan: any): string {
     const innerSrc = wasFixed ? srcVal.args[0] : srcVal;
     const override = active.values
                 && Object.prototype.hasOwnProperty.call(active.values, kwarg);
-    const v = override ? active.values[kwarg]
-                     : (innerSrc && innerSrc.value);
-    let text = formatScalarForSource(ctx, v);
+    let text: string;
+    if (override) {
+      // Override may be a scalar or an array (array-typed inputs
+      // persist via formatValueForSource as `[v1, …]`).
+      const t = formatValueForSource(ctx, active.values[kwarg]);
+      text = (t != null)
+        ? t
+        // Fall through to existing scalar path if value isn't
+        // representable (defensive — shouldn't happen for valid
+        // override entries; the toolbar dropdown only writes
+        // representable values).
+        : formatScalarForSource(ctx, active.values[kwarg]);
+    } else if (innerSrc && innerSrc.type === 'ArrayLiteral'
+               && Array.isArray(innerSrc.elements)) {
+      // Source-form array literal — preserve it verbatim by
+      // formatting each element.
+      const elemTexts: string[] = [];
+      for (const el of innerSrc.elements) {
+        if (el && (el.type === 'NumberLiteral' || el.type === 'BoolLiteral')) {
+          elemTexts.push(formatScalarForSource(ctx, el.value));
+        } else {
+          elemTexts.push('null');   // unreachable per canPersistActive
+        }
+      }
+      text = '[' + elemTexts.join(', ') + ']';
+    } else {
+      text = formatScalarForSource(ctx, innerSrc && innerSrc.value);
+    }
     if (wasFixed) text = 'fixed(' + text + ')';
     parts.push(kwarg + ' = ' + text);
   }
@@ -113,9 +180,9 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
   const parts: string[] = [];
   for (const k in combined) {
     if (!Object.prototype.hasOwnProperty.call(combined, k)) continue;
-    const v = combined[k];
-    if (!Number.isFinite(v)) continue;
-    parts.push(k + ' = ' + formatScalarForSource(ctx, v));
+    const text = formatValueForSource(ctx, combined[k]);
+    if (text == null) continue;   // unrepresentable value — skip kwarg
+    parts.push(k + ' = ' + text);
   }
   if (parts.length === 0) return;
   const existingNames: string[] = [];
@@ -139,6 +206,13 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
 
 export function setFieldToSource(ctx: Ctx, v: any): string {
   if (v.type === 'Identifier') return v.name;
+  if (v.type === 'CallExpr' && v.callee && v.callee.name === 'cartpow'
+      && Array.isArray(v.args) && v.args.length === 2) {
+    // cartpow(<base>, <n>) — array-typed input. Round-trip the base
+    // recursively (interval / named set) and the int-literal count.
+    return 'cartpow(' + setFieldToSource(ctx, v.args[0]) + ', '
+      + formatScalarForSource(ctx, v.args[1].value) + ')';
+  }
   // interval(NumLit, NumLit)
   return 'interval('
     + formatScalarForSource(ctx, v.args[0].value) + ', '
@@ -151,11 +225,41 @@ export function defaultSetSourceForKwarg(ctx: Ctx, plan: any, kwargName: string)
   for (let i = 0; i < plan.axes.length; i++) {
     if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
   }
-  if (matching.length !== 1) return 'reals';  // non-scalar — defer
+  // Array-typed input (e.g. `theta` of shape `[J]`): `walkType`
+  // produced J per-slot axes. The natural set is `cartpow(<base>,
+  // J)` — element-wise the same set as the scalar case, but
+  // shape-preserving for the persisted cartprod. Use any slot to
+  // derive `<base>` (all slots resolve to the same source set).
+  if (matching.length > 1) {
+    const inputs = (plan.signature && plan.signature.inputs) || [];
+    let inputType: any = null;
+    for (let ii = 0; ii < inputs.length; ii++) {
+      if (inputs[ii].kwargName === kwargName) { inputType = inputs[ii].type; break; }
+    }
+    if (inputType && inputType.kind === 'array'
+        && Array.isArray(inputType.shape)
+        && inputType.shape.length === 1
+        && typeof inputType.shape[0] === 'number') {
+      // Resolve the per-slot base set via the same logic as the
+      // scalar case, then wrap in cartpow(..., J).
+      const slotBase = resolveScalarBaseSet(ctx, matching[0]);
+      return 'cartpow(' + slotBase + ', ' + inputType.shape[0] + ')';
+    }
+    return 'reals';
+  }
+  return resolveScalarBaseSet(ctx, matching[0]);
+}
+
+/**
+ * Resolve the natural FlatPPL source-set descriptor for a single
+ * scalar axis (the inner per-slot set, used by both scalar inputs
+ * and the per-slot base of array inputs).
+ */
+function resolveScalarBaseSet(ctx: Ctx, axis: any): string {
   const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
   let d: any = null;
   try {
-    d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(matching[0].source, bindings);
+    d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(axis.source, bindings);
   } catch (_) { d = null; }
   if (!d) return 'reals';
   switch (d.kind) {
