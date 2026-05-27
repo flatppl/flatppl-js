@@ -341,6 +341,143 @@ posterior = restrict(joint_model, record(obs = [1.0, 2.0, 3.0, 4.0]))
     'posterior should classify as bayesupdate (selector route — spec equivalence)');
 });
 
+test('restrict: complement route materialises end-to-end (predictive at fixed params)', async () => {
+  // Companion to the classifier-level complement-route test above:
+  // the synthesised kernelof body and the lift-introduced closure
+  // bindings (substituted RHSs of `a`, `b`, `obs`) carry through to
+  // an EmpiricalMeasure with the right moments. The forward model is
+  //   obs ~ iid(Normal(mu = theta1 + theta2, sigma = theta2), 4)
+  // restricted at `default_pars = record(theta1 = 0.5, theta2 = 1.0)`
+  // is `iid(Normal(mu = 1.5, sigma = 1.0), 4)`. We pull a large
+  // empirical batch and check the mean / std land at the predicted
+  // values within MC tolerance.
+  //
+  // Test setup mirrors the viewer's contract: the worker session env
+  // is preloaded with `fixedValues` via setEnv, so that lift-
+  // synthesised constants (`__anon11 = theta1+theta2 → 1.5`,
+  // `__anon12 = theta2 → 1.0`) resolve at sample time. Without this
+  // push, the worker throws 'unbound self reference' — that gap was
+  // the source of the prior "deep-substitution follow-up" mis-
+  // diagnosis: lift's closure walk already substitutes correctly;
+  // the gap was the harness, not the engine.
+  const { orchestrator, materialiser } = require('..');
+  const { createWorkerHandler } = require('../worker.ts');
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+default_pars = record(theta1 = 0.5, theta2 = 1.0)
+maxlike_predictive = restrict(joint_model, default_pars)
+`;
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 12345 });
+  const envObj: Record<string, any> = {};
+  built.fixedValues.forEach((v: any, k: any) => { envObj[k] = v; });
+  worker.handle({ type: 'setEnv', env: envObj, merge: false });
+  const SAMPLE_COUNT = 4096;
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues,
+    sampleCount: SAMPLE_COUNT,
+    rootSeed:    12345,
+  };
+  ctx.getMeasure = (name: string) => {
+    if (cache.has(name)) return cache.get(name);
+    const p = materialiser.materialiseMeasure(name, ctx);
+    cache.set(name, p);
+    return p;
+  };
+  ctx.sendWorker = (msg: any) => {
+    const reply = worker.handle(msg);
+    if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+    return Promise.resolve(reply);
+  };
+  const m = await ctx.getMeasure('maxlike_predictive');
+  assert.ok(m && m.fields && m.fields.obs,
+    'maxlike_predictive should materialise as a record measure with field obs');
+  const obs = m.fields.obs.samples;
+  assert.equal(obs.length, SAMPLE_COUNT * 4,
+    'iid(Normal, 4) over N atoms should produce SAMPLE_COUNT * 4 scalar samples');
+  let sum = 0, sumSq = 0;
+  for (let i = 0; i < obs.length; i++) { sum += obs[i]; sumSq += obs[i] * obs[i]; }
+  const mean = sum / obs.length;
+  const variance = sumSq / obs.length - mean * mean;
+  const std = Math.sqrt(variance);
+  // expected: mean = theta1+theta2 = 1.5, std = theta2 = 1.0.
+  // MC tolerance for SAMPLE_COUNT * 4 = 16384 draws: ±0.05 on the mean,
+  // ±0.05 on std should leave plenty of headroom.
+  assert.ok(Math.abs(mean - 1.5) < 0.05,
+    `mean should be ~1.5 (theta1+theta2 at fixed params), got ${mean.toFixed(3)}`);
+  assert.ok(Math.abs(std - 1.0) < 0.05,
+    `std should be ~1.0 (theta2 at fixed params), got ${std.toFixed(3)}`);
+});
+
+test('restrict: selector route materialises end-to-end (posterior at observed obs)', async () => {
+  // The posterior pattern: x covers downstream observations. The
+  // analyzer picks the selector route → bayesupdate(likelihoodof(
+  // kernel, obs), prior). End-to-end materialisation produces a
+  // joint over (theta1, theta2) — the unnormalised posterior.
+  // We only check that the materialised measure exists and has the
+  // right field shape; the absolute density values depend on the
+  // particular prior + likelihood combination and aren't pinned by
+  // this test (the closed-form-measure-algebra suite covers those
+  // for narrower models).
+  const { orchestrator, materialiser } = require('..');
+  const { createWorkerHandler } = require('../worker.ts');
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+posterior = restrict(joint_model, record(obs = [1.0, 2.0, 3.0, 4.0]))
+`;
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 67890 });
+  const envObj: Record<string, any> = {};
+  built.fixedValues.forEach((v: any, k: any) => { envObj[k] = v; });
+  worker.handle({ type: 'setEnv', env: envObj, merge: false });
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues,
+    sampleCount: 256,
+    rootSeed:    67890,
+  };
+  ctx.getMeasure = (name: string) => {
+    if (cache.has(name)) return cache.get(name);
+    const p = materialiser.materialiseMeasure(name, ctx);
+    cache.set(name, p);
+    return p;
+  };
+  ctx.sendWorker = (msg: any) => {
+    const reply = worker.handle(msg);
+    if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+    return Promise.resolve(reply);
+  };
+  const m = await ctx.getMeasure('posterior');
+  assert.ok(m && m.fields, 'posterior should materialise as a record measure');
+  assert.ok(m.fields.theta1 && m.fields.theta2,
+    'posterior fields should include theta1 and theta2 (the unobserved variates)');
+  assert.equal(m.fields.theta1.samples.length, 256);
+  assert.equal(m.fields.theta2.samples.length, 256);
+  // The posterior carries non-trivial logWeights (the likelihood at
+  // the observed data) — the prior alone would have null weights.
+  assert.ok(m.logWeights != null,
+    'bayesupdate-produced posterior should carry log-weights (likelihood reweighting)');
+});
+
 test('restrict: identifier referencing a non-record binding → clean diagnostic', () => {
   const src = `
 prior = joint(mu = Normal(mu = 0, sigma = 1))

@@ -33,6 +33,18 @@ function makeCtx(source: any, opts?: any) {
   const built = orchestrator.buildDerivations(lifted.bindings);
   const worker = createWorkerHandler();
   worker.handle({ type: 'init', seed: ROOT_SEED });
+  // Mirror the viewer's contract: push fixed-phase pre-evaluated
+  // values into the worker's session env. Without this, sample
+  // primitives whose IR carries fixed-phase refs (e.g. an iid whose
+  // distribution params resolve to lift-synthesised constants from
+  // a complement-route restrict expansion) throw 'unbound self
+  // reference' at the worker. The viewer always pushes; matching
+  // that here keeps the test harness faithful to the deployed flow.
+  if (built.fixedValues && built.fixedValues.size > 0) {
+    const envObj: Record<string, any> = {};
+    built.fixedValues.forEach((v: any, k: any) => { envObj[k] = v; });
+    worker.handle({ type: 'setEnv', env: envObj, merge: false });
+  }
 
   const cache = new Map();
   const ctx = {
