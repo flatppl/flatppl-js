@@ -47,6 +47,35 @@ export function formatValueForSource(ctx: Ctx, v: unknown): string | null {
   return null;
 }
 
+/**
+ * Common side-effect when a save-as path commits a new named
+ * binding (preset point or domain). Two things to do:
+ *   1. Stash the new name on `ctx.pendingPreset/DomainName` so
+ *      the next `processSource` rebuild (after `editSource` lands)
+ *      picks it up via `applyPendingNames` in render-plot's
+ *      onPlanRebuild and switches the active selection.
+ *   2. Clear the corresponding auto-pseudo-preset override on the
+ *      plan — its values have been promoted into a named binding,
+ *      so the toolbar should stop showing "auto (modified)" after
+ *      the refresh.
+ *
+ * Centralised here to keep the lifecycle symmetric across both
+ * persist paths (preset, domain) — without this helper the two
+ * sites drifted (e.g. one cleared the override, the other didn't,
+ * one set pending, the other forgot).
+ */
+function finalizeSaveAsNew(
+  ctx: Ctx, plan: any, kind: 'preset' | 'domain', name: string,
+): void {
+  if (kind === 'preset') {
+    ctx.pendingPresetName = name;
+    plan.autoOverride = null;
+  } else {
+    ctx.pendingDomainName = name;
+    plan.domainAutoOverride = null;
+  }
+}
+
 export function canPersistActive(ctx: Ctx, plan: any): boolean {
   if (!hasOverrides(ctx, plan)) return false;
   if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
@@ -194,16 +223,7 @@ export function persistAutoAsNewBinding(ctx: Ctx, plan: any): void {
     existingNames: existingNames,
   })).then(function(name) {
     if (!name) return;
-    ctx.pendingPresetName = name;
-    // The save-as promotes the auto-pseudo-preset's values into a
-    // named binding; the original autoOverride is now redundant
-    // (the named preset captures it). Clear it so the toolbar
-    // dropdown stops showing "auto (modified)" once the source
-    // refresh switches to the new named preset. If editSource
-    // never lands the user's auto-edits are also cleared, which
-    // is acceptable: the unsaved state was the override; the
-    // saved state is the persisted record.
-    plan.autoOverride = null;
+    finalizeSaveAsNew(ctx, plan, 'preset', name);
     ctx.host.editSource({
       range: null,
       newText: name + ' = record(' + pairsText + ')',
@@ -429,12 +449,7 @@ export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
     existingNames: existingNames,
   })).then(function(name) {
     if (!name) return;
-    ctx.pendingDomainName = name;
-    // Same rationale as the preset save-as: promotes the auto-
-    // domain override into a named binding; clear plan.domainAuto-
-    // Override so the dropdown stops showing "auto (modified)"
-    // once the source refresh switches to the new named domain.
-    plan.domainAutoOverride = null;
+    finalizeSaveAsNew(ctx, plan, 'domain', name);
     ctx.host.editSource({
       range: null,
       newText: name + ' = cartprod(' + pairsText + ')',

@@ -120,6 +120,61 @@ export function activeDomainRangesFor(ctx: Ctx, plan: any) {
   return Object.assign({}, base, entry.ranges);
 }
 
+/**
+ * Effective per-kwarg input values for the active plan: merges
+ * auto / base preset / user override via the engine helper. The
+ * single source of "what's the current value of each kwarg" —
+ * commitSliceX, persist, and the auto preset dropdown all consume
+ * this rather than re-doing the merge by hand.
+ */
+export function activeInputValues(ctx: Ctx, plan: any): Record<string, any> {
+  if (!plan || !plan.signature) return {};
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
+  const cache = ctx.measureCache;
+  function getAtomZero(name: string): any {
+    if (!cache || !cache.has(name)) return null;
+    const src = bindings && bindings.get(name);
+    if (FlatPPLEngine.materialiser.isFunctionLikeBinding(src)) return null;
+    if (fixedValues && fixedValues.has(name)) return null;
+    const m = cache.get(name);
+    if (!m || !m.samples || m.samples.length === 0) return null;
+    return m.samples;
+  }
+  const baseValues = baseValuesFor(ctx, plan);
+  const overrideEntry = overrideEntryFor(ctx, plan);
+  const overrideValues = (overrideEntry && overrideEntry.values) || {};
+  return FlatPPLEngine.orchestrator.effectiveInputValues(
+    plan.signature, bindings, fixedValues, baseValues, overrideValues, getAtomZero);
+}
+
+/**
+ * Effective per-kwarg input domain (SetDescriptor) for the active
+ * plan: merges auto / base named-domain / user override via the
+ * engine helper. The single source of "what's the current domain
+ * for each kwarg" — commitRange / persist / the domain dropdown
+ * all consume this.
+ */
+export function activeInputDomain(ctx: Ctx, plan: any): Record<string, any> {
+  if (!plan || !plan.signature) return {};
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const baseRanges = baseRangesFor(ctx, plan);
+  // baseSetNames lives on plan.matchedDomains alongside ranges.
+  let baseSetNames: Record<string, string> = {};
+  if (plan.domainName != null && plan.matchedDomains) {
+    for (let i = 0; i < plan.matchedDomains.length; i++) {
+      if (plan.matchedDomains[i].name === plan.domainName) {
+        baseSetNames = plan.matchedDomains[i].setNames || {};
+        break;
+      }
+    }
+  }
+  const overrideEntry = domainOverrideEntryFor(ctx, plan);
+  const overrideRanges = (overrideEntry && overrideEntry.ranges) || {};
+  return FlatPPLEngine.orchestrator.effectiveInputDomain(
+    plan.signature, bindings, baseRanges, baseSetNames, overrideRanges);
+}
+
 export function activeFixedNamesFor(ctx: Ctx, plan: any) {
   if (plan.presetName != null && plan.matchedPresets) {
     for (let i = 0; i < plan.matchedPresets.length; i++) {
