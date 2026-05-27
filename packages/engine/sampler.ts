@@ -1382,6 +1382,14 @@ const ARITH_OPS = {
     }
     return _packDims([]);
   },
+  // indicesof / indicesof0 (spec §07) — axis indices for arrays /
+  // vectors / tables. Implementation materialises a Float64Array
+  // (engines may use lazy integer ranges per spec; JS has no
+  // built-in range type, so a packed array is the simplest
+  // realisation). 1-D / table → single rank-1 Value of length N.
+  // Multi-axis array → tuple of per-axis index Values.
+  indicesof:  (a: any) => _indicesOfImpl(a, /*zeroBased=*/ false),
+  indicesof0: (a: any) => _indicesOfImpl(a, /*zeroBased=*/ true),
   maximum: (a: any) => {
     const arr = _arrLike(a);
     let m = -Infinity;
@@ -1530,6 +1538,62 @@ const ARITH_OPS = {
 function _arrLike(v: any) {
   if (valueLib.isValue(v)) return v.data;
   return v;
+}
+
+/**
+ * indicesof / indicesof0 implementation (spec §07). Produces axis
+ * indices for arrays / vectors / tables, with a 0-based variant.
+ *
+ *   - 1-D vector / typed array         → rank-1 Value of length N
+ *   - Multi-axis Value (rank ≥ 2)      → tuple of per-axis index
+ *                                        Values (one per axis)
+ *   - Nested JS array                  → tuple of per-axis indices
+ *   - Record-of-columns (table)        → row indices (rank-1 Value)
+ *   - Scalar / unknown shape           → empty rank-1 Value
+ *
+ * Engines may emit integer ranges per spec; the JS engine has no
+ * built-in lazy range, so we materialise a Float64Array.
+ */
+function _indicesOfImpl(a: any, zeroBased: boolean): any {
+  const offset = zeroBased ? 0 : 1;
+  function _packRange(n: number): any {
+    const out = new Float64Array(n);
+    for (let i = 0; i < n; i++) out[i] = i + offset;
+    return { shape: [n], data: out };
+  }
+  function _multiAxisTuple(dims: number[]): any {
+    if (dims.length === 1) return _packRange(dims[0]);
+    return dims.map(_packRange);
+  }
+  if (valueLib.isValue(a)) {
+    if (a.shape.length === 0) return _packRange(0);
+    if (a.shape.length === 1) return _packRange(a.shape[0]);
+    return _multiAxisTuple(a.shape);
+  }
+  if (a == null) return _packRange(0);
+  if (typeof a === 'number') return _packRange(0);
+  if (a.BYTES_PER_ELEMENT !== undefined && typeof a.length === 'number') {
+    return _packRange(a.length);
+  }
+  if (Array.isArray(a)) {
+    const dims: number[] = [];
+    let cur: any = a;
+    while (Array.isArray(cur)) {
+      dims.push(cur.length);
+      cur = cur[0];
+    }
+    return _multiAxisTuple(dims);
+  }
+  // Record-of-columns ⇒ table. Row count = first column's length.
+  if (typeof a === 'object') {
+    for (const k in a) {
+      if (!Object.prototype.hasOwnProperty.call(a, k)) continue;
+      const col = a[k];
+      if (valueLib.isValue(col)) return _packRange(col.shape[0]);
+      if (col && typeof col.length === 'number') return _packRange(col.length);
+    }
+  }
+  return _packRange(0);
 }
 
 // _sizeAsDims: normalize a `size` argument (per spec §07: positive int

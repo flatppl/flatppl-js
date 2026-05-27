@@ -422,6 +422,7 @@ const EVALUABLE_OPS = new Set([
   // (with stochastic refs) must NOT classify as evaluable, so the
   // existing array-derivation special case keeps owning that path.
   'sum', 'mean', 'prod', 'lengthof', 'sizeof', 'maximum', 'minimum', 'var', 'std',
+  'indicesof', 'indicesof0',
   'cumsum', 'cumprod',
   // Norms and softmax family (spec §07). All single-arg, vector
   // input; *unit / softmax / logsoftmax return vectors, the rest

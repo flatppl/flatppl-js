@@ -1042,6 +1042,13 @@ const SIGNATURE_FACTORIES = {
   // is the rank of the input. Per spec §07 sizeof accepts arrays of
   // ANY rank — multi-dim sizeof(M) returns a vector of dims.
   sizeof:   () => ({ args: [any()], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
+  // indicesof(x): 1-based axis indices. Vector → integer vector,
+  // multi-axis array → tuple of per-axis index vectors, table →
+  // row indices (spec §07). The result shape is input-shape-
+  // dependent; we surface `%dynamic` and let the runtime own the
+  // exact shape. indicesof0 is the 0-based variant.
+  indicesof:  () => ({ args: [any()], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
+  indicesof0: () => ({ args: [any()], kwargs: {}, result: array(1, ['%dynamic'], INTEGER) }),
   // Population variance (divisor N — not N-1). maximum/minimum on
   // any-rank real array (spec §07).
   var:     () => ({ args: [any()], kwargs: {}, result: REAL }),
