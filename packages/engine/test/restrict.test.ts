@@ -305,16 +305,24 @@ maxlike_predictive = restrict(joint_model, default_pars)
   assert.equal(kb.type, 'kernelof',
     'restrict-synthesised kernel anon should be kernelof-typed');
   // The lifted form post-buildDerivations: maxlike_predictive carries
-  // a record derivation (the kernel's body after substitution).
+  // a `weighted` derivation. The base of the weighted is the
+  // substituted kernel body (a record measure); the weight is a
+  // scalar `logdensityof(marginal, x)` — the marginal-likelihood
+  // factor restoring the non-normalized conditional mass per spec
+  // §06. (Earlier classification expected `record` because the
+  // analyzer emitted `nu = kernel(x)` directly, dropping the
+  // scalar factor — that was a spec violation; total mass of
+  // `restrict(M, x)` should equal the marginal density of M at x,
+  // not 1.)
   const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
   const built = orchestrator.buildDerivations(lifted);
   assert.ok(built.derivations.maxlike_predictive,
-    'maxlike_predictive should classify (lift\'s inlineOnce uses effectiveValue '
-    + 'so the synthesised kernelof body is substituted in, not the literal '
-    + 'disintegrate selector list — flatppl-js commit <this work>)');
-  assert.equal(built.derivations.maxlike_predictive.kind, 'record',
-    'expected record derivation (the apply-kernel result is the kernel\'s '
-    + 'lawof-record body with kernel params substituted)');
+    'maxlike_predictive should classify');
+  assert.equal(built.derivations.maxlike_predictive.kind, 'weighted',
+    'expected weighted derivation (logweighted(logdensityof(marginal, x), '
+    + 'kernel(x)) — the spec-required scalar mass factor)');
+  assert.equal(built.derivations.maxlike_predictive.isLog, true,
+    'log-space form: weight comes from logdensityof, no exp() pre-applied');
 });
 
 test('restrict: selector route stays for the posterior case (x = observation)', () => {
@@ -417,6 +425,21 @@ maxlike_predictive = restrict(joint_model, default_pars)
     `mean should be ~1.5 (theta1+theta2 at fixed params), got ${mean.toFixed(3)}`);
   assert.ok(Math.abs(std - 1.0) < 0.05,
     `std should be ~1.0 (theta2 at fixed params), got ${std.toFixed(3)}`);
+  // The scalar logweighted factor is `logdensityof(marginal, x)` —
+  // the marginal-likelihood mass that `totalmass(restrict(M, x))`
+  // should equal per spec §06. For our model, marginal is the prior
+  // `joint(theta1 = Normal(0,1), theta2 = Exponential(1))` evaluated
+  // at x = (0.5, 1.0):
+  //   logphi(0.5; 0, 1)            = -0.5*log(2π) - 0.5*0.25 ≈ -1.0439
+  //   logExponential(1.0; rate=1)  = log(1) + (-1*1.0)       =  -1.0
+  //                                  total                    ≈ -2.0439
+  // The materialised logTotalmass should land at this value within
+  // MC tolerance (the worker integrates the logdensity numerically;
+  // for an exact joint of analytic priors this should be tight).
+  const expectedLogMass = -2.0439;
+  assert.ok(Math.abs(m.logTotalmass - expectedLogMass) < 0.02,
+    `logTotalmass should be ~${expectedLogMass.toFixed(4)} (the marginal `
+    + `density of the prior at default_pars), got ${m.logTotalmass.toFixed(4)}`);
 });
 
 test('restrict: selector route materialises end-to-end (posterior at observed obs)', async () => {

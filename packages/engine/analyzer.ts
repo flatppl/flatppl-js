@@ -45,6 +45,35 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       const name = node.callee.name;
       if (name === 'lawof') return true;
       if (MEASURE_PRODUCING.has(name)) return true;
+      // `record(field = expr, ...)` with every field value resolving
+      // to a draw / lawof / measure-typed call is a record-measure —
+      // matches the engine's `classifyRecordOrJoint` derivation
+      // (joint of the field measures). Without this, the complement-
+      // route restrict's synthesised kernel body — `record(name =
+      // variate_binding, ...)` — fails `resolveMeasureBaseName` and
+      // the `logweighted(scalar, kernel(x))` wrapper produced by
+      // `expandRestrictStatements` won't classify. The check
+      // recurses through Identifier refs (chase a draw / lawof /
+      // measure-typed call binding) and bottoms out on any non-
+      // measure field value, so plain value records like
+      // `default_pars = record(theta1 = 0.5, theta2 = 1.0)` still
+      // return false.
+      if (name === 'record' && Array.isArray(node.args) && node.args.length > 0) {
+        for (const a of node.args) {
+          if (!a || a.type !== 'KeywordArg' || !a.value) return false;
+          const v = a.value;
+          if (v.type === 'Identifier') {
+            if (seen.has(v.name)) return false;
+            const fb = bindings.get(v.name);
+            if (!fb) return false;
+            if (fb.type === 'draw' || fb.type === 'lawof') continue;
+            if (!isMeasureExpr(v, bindings, seen)) return false;
+            continue;
+          }
+          if (!isMeasureExpr(v, bindings, seen)) return false;
+        }
+        return true;
+      }
       return false;
     }
     default:
@@ -1954,8 +1983,11 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
     // structural disintegration, the kernel goes from `x`'s
     // variates to the complement (the forward model when `M` is a
     // generative `lawof(record(...))` / jointchain). The result is
-    // just `kernel(x)` — no bayesupdate needed. This is the
-    // tractable direction for the "fix parameters, observe
+    // `logweighted(logdensityof(marginal, x), kernel(x))` — a
+    // single scalar reweighting that restores the marginal-
+    // likelihood mass factor `mu(x, complement)` that selector-
+    // route bayesupdate produces via per-point reweighting. This
+    // is the tractable direction for the "fix parameters, observe
     // predictive" use case where `x` covers parameters and the
     // selector direction (which would yield the posterior kernel)
     // is intractable.
@@ -2004,11 +2036,29 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
     if (useComplementRoute) {
       // Complement-disintegration expansion (spec §06):
       //   kernel, marginal = disintegrate([...complement...], M)
-      //   nu = kernel(x)
-      // The marginal binding is emitted but unused (the result is
-      // just the kernel applied to x); it stays in the binding graph
-      // as a synthesized anon and is materialised only if some other
-      // binding references it (none do, by construction).
+      //   nu = logweighted(logdensityof(marginal, x), kernel(x))
+      //
+      // `disintegrate(S, M)` returns `(kernel, base_measure)` where
+      // the kernel produces the SELECTED variates given the
+      // complement and the base_measure is the marginal on the
+      // complement-of-selector. With selector set to the complement
+      // of x.fields, the kernel goes from x's variates to the
+      // unobserved (complement) variates — the forward model when M
+      // is generative — and the marginal lives on x's variates.
+      //
+      // `kernel(x)` alone is the NORMALIZED conditional measure
+      // p(unobserved | x) — total mass 1. `restrict(M, x)` is
+      // defined as the NON-NORMALIZED conditional with total mass
+      // equal to the marginal density of M at x — the evidence /
+      // marginal-likelihood factor. So the kernel application must
+      // be reweighted by the scalar `densityof(marginal, x)`. The
+      // selector-route equivalent (bayesupdate) gets this factor
+      // automatically via the per-point reweighting of the marginal
+      // by the likelihood; the complement route's reweighting is a
+      // single scalar by construction (x is fixed when the kernel
+      // is applied). Emitted in log-space (`logweighted` +
+      // `logdensityof`) for numerical robustness when the marginal
+      // density is tiny.
       const compSelectorElems = complementFields.map(
         (n: string) => AST.StringLiteral(n, n, sloc));
       const compSelector = AST.ArrayLiteral(compSelectorElems, sloc);
@@ -2028,7 +2078,19 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
         AST.Identifier(kernelAnon, sloc),
         [xExpr],
         sloc);
-      const userStmt = AST.AssignStatement(stmt.names, applyCall, stmt.loc);
+      // Scalar marginal log-density `logdensityof(marginal, x)`.
+      // Lifted through `logweighted(...)` it shifts the result
+      // measure's log total mass by exactly this scalar without
+      // changing per-atom samples (uniform scaling).
+      const logDensityScalar = AST.CallExpr(
+        AST.Identifier('logdensityof', sloc),
+        [AST.Identifier(marginalAnon, sloc), xExpr],
+        sloc);
+      const logweightedCall = AST.CallExpr(
+        AST.Identifier('logweighted', sloc),
+        [logDensityScalar, applyCall],
+        sloc);
+      const userStmt = AST.AssignStatement(stmt.names, logweightedCall, stmt.loc);
       newBody.push(disintStmt);
       newBody.push(userStmt);
       continue;

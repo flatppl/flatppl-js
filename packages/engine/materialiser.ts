@@ -153,7 +153,74 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
   // atom's logWeight by log(w_i) (or lw_i directly). totalmass scales
   // by the average weight; the empirical log-total-mass is
   // logSumExp(resulting logWeights).
+  //
+  // Record-typed parent: a record measure has no top-level .samples,
+  // just per-field sub-measures (with their own samples + logWeights)
+  // and a top-level logWeights array joining the per-field weights.
+  // Weighting a record measure shifts the top-level logWeights — the
+  // per-field samples and weights stay untouched (the weight is a
+  // function of the variate, not of any one field). The constant-
+  // shift fast path also leaves the field structure intact and only
+  // adjusts the top-level logWeights / logTotalmass. Used by the
+  // complement-route restrict expansion `logweighted(logdensityof(
+  // marginal, x), kernel(x))`, where `kernel(x)` materialises as a
+  // record measure (the kernel body) and the per-atom log-weight is
+  // a single scalar from `logdensityof(marginal, x)`.
   return ctx.getMeasure(d.from).then((parent: any) => {
+    const isRecord = parent && parent.shape === 'record' && parent.fields;
+    const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
+    if (isRecord || isTuple) {
+      const N = ctx.sampleCount;
+      const baseLW = parent.logWeights
+        ? parent.logWeights
+        : (() => {
+            const c = N > 0 ? -Math.log(N) : 0;
+            const a = new Float64Array(N);
+            for (let i = 0; i < N; i++) a[i] = c;
+            return a;
+          })();
+      const w = new Float64Array(N);
+      const finalise = (logTotalmass: number, weights: Float64Array) => {
+        const out = isRecord
+          ? Object.assign(empirical.recordMeasure(parent.fields, weights),
+              { logTotalmass, n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) })
+          : Object.assign(empirical.tupleMeasure(parent.elems, weights),
+              { logTotalmass, n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) });
+        return out;
+      };
+      if (d.weightIR) {
+        return collectRefArrays(d.weightIR, ctx.fixedValues, ctx.getMeasure).then((refArrays: any) =>
+          ctx.sendWorker({
+            type: 'evaluateN',
+            ir: d.weightIR,
+            count: N,
+            refArrays: refArrays,
+          })
+        ).then((reply: any) => {
+          const weights = reply.samples;
+          if (d.isLog) {
+            for (let i = 0; i < N; i++) w[i] = baseLW[i] + weights[i];
+          } else {
+            let nonPos = 0;
+            for (let j = 0; j < N; j++) {
+              const v = weights[j];
+              if (v > 0) w[j] = baseLW[j] + Math.log(v);
+              else { w[j] = -Infinity; if (v < 0) nonPos++; }
+            }
+            if (nonPos > 0) {
+              // eslint-disable-next-line no-console
+              console.warn('weighted: ' + nonPos
+                + ' negative weight sample(s) treated as zero mass');
+            }
+          }
+          return finalise(empirical.logSumExp(w), w);
+        });
+      }
+      // Constant shift fast path.
+      for (let i = 0; i < N; i++) w[i] = baseLW[i] + d.logShift;
+      const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+      return finalise(parentLTM + d.logShift, w);
+    }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
     const w = new Float64Array(N);
