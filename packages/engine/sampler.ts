@@ -1655,6 +1655,7 @@ _evalBatched.initARITHOPSN(ARITH_OPS);
 // Extracted to sampler-linalg.ts (engine-concepts §17.5 split).
 
 const _linalg = require('./sampler-linalg.ts');
+const _broadcastShape = require('./broadcast-shape.ts');
 const {
   _luDecomp, _detLU, _logAbsDetLU,
   _luDecompValue, _detLUValue, _logAbsDetLUValue,
@@ -1871,196 +1872,14 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
   return nested;
 }
 
-// Classify one broadcast input. Returns a slot descriptor used by the
-// iteration loop:
-//
-//   { coll: false, val }                       // held constant
-//   { coll: true,  kind: 'flat', V,            // flat Value, all axes
-//     outerRank, outerShape, getCell(idx) }    //   iterated
-//   { coll: true,  kind: 'nested', elements,   // JS array of Values
-//     outerRank: 1, outerShape: [N],           //   (v1: rank-1 outer)
-//     getCell(idx) }
-function _classifyBroadcastSlot(v: any): any {
-  if (valueLib.isValue(v)) {
-    if (v.shape.length === 0) return { coll: false, val: v.data[0] };
-    const V = v;
-    const shape = V.shape;
-    const rank = shape.length;
-    const strides = new Array(rank);
-    let acc = 1;
-    for (let a = rank - 1; a >= 0; a--) {
-      strides[a] = (shape[a] === 1) ? 0 : acc;
-      acc *= shape[a];
-    }
-    return {
-      coll: true, kind: 'flat', V,
-      outerRank: rank, outerShape: shape,
-      getCell(idx: number[]) {
-        let off = 0;
-        for (let a = 0; a < rank; a++) off += idx[a] * strides[a];
-        return (V.dtype === 'complex' && V.im)
-          ? { re: V.data[off], im: V.im[off] }
-          : V.data[off];
-      },
-    };
-  }
-  if (v != null && v.BYTES_PER_ELEMENT !== undefined
-      && typeof v.length === 'number') {
-    return _classifyBroadcastSlot(valueLib.asValue(v));
-  }
-  if (Array.isArray(v)) {
-    // Distinguish a JS array that lifts to a flat numeric Value (the
-    // legacy `vector(1, 2, 3)` path → JS array of numbers) from a
-    // "nested-vector" — a JS array whose elements are themselves
-    // Values (or further-nested arrays) i.e. the `vector(C)`-style
-    // path where C is a non-scalar.
-    let allFlatScalars = true;
-    for (let i = 0; i < v.length; i++) {
-      const el = v[i];
-      const t = typeof el;
-      if (t === 'number' || t === 'boolean') continue;
-      if (el && el.re !== undefined && el.im !== undefined
-          && typeof el.re === 'number' && typeof el.im === 'number') continue;
-      allFlatScalars = false;
-      break;
-    }
-    if (allFlatScalars) {
-      // Legacy flat-numeric JS array → coerce to a flat rank-1 Value.
-      return _classifyBroadcastSlot(valueLib.asValue(v));
-    }
-    // Nested-vector. May be rank-1 (`[C]`) or deeper (`[[C]]`,
-    // `[[V1, V2], [V3, V4]]`, …). The outer JS-array layer plus any
-    // further JS-array nesting form the OUTER loop axes; the
-    // innermost element (a Value or scalar) is what the callable's
-    // param receives whole each cell.
-    return _classifyNestedJSArray(v);
-  }
-  if (typeof v === 'number' || typeof v === 'boolean'
-      || (v && typeof v === 'object'
-          && typeof v.re === 'number' && typeof v.im === 'number')) {
-    return { coll: false, val: v };                       // scalar / complex
-  }
-  if (v && typeof v === 'object'
-      && v.body !== undefined && Array.isArray(v.params)) {
-    return { coll: false, val: v };                       // fn / kernel
-  }
-  if (v && typeof v === 'object') {
-    throw new Error('broadcast: records and tuples are not allowed as '
-      + 'broadcast inputs (spec §04)');
-  }
-  return { coll: false, val: v };
-}
-
-// Walk a (possibly multi-level) nested JS array, returning a slot
-// descriptor with outerRank = nesting depth, outerShape = the per-
-// level lengths, and getCell(idx) that indexes idx[0..outerRank-1]
-// into the chain. The innermost element is whatever the engine
-// produces (typically a Value); the broadcast loop passes it whole
-// to the callable.
-//
-// Spec compliance: the engine's "same number of axes" rule applies
-// over `outerRank`. So `[[C]]` (outer depth 2, innermost = the
-// rank-1 Value C) only composes with collection args that also have
-// outer depth 2 — e.g. a flat 2-D Value, or `[[D1, D2], [D3, D4]]`.
-// Singleton axes are filled per the standard broadcast rule.
-function _classifyNestedJSArray(v: any[]): any {
-  // Discover the nesting depth + per-level lengths by descending
-  // along the [0] chain until we hit a non-JS-array. Validate
-  // rectangularity: at each level, every sibling must be a JS array
-  // of the same length, all the way down. Ragged ⇒ throw at
-  // classification, matching the asValue / vector(...) discipline.
-  const depths: number[] = [];
-  let cur: any = v;
-  while (Array.isArray(cur)) {
-    depths.push(cur.length);
-    if (cur.length === 0) break;
-    cur = cur[0];
-  }
-  // Rectangularity check at every level.
-  function _checkRect(node: any[], level: number) {
-    if (level >= depths.length - 1) {
-      // Last level: every sibling must be a JS array of the same
-      // length AND its element must NOT be a JS array (we already
-      // identified the innermost leaf level). If `cur` was non-
-      // array, depths.length-1 IS the innermost JS-array level.
-      // Either way, no further descent.
-      return;
-    }
-    const expected = depths[level + 1];
-    for (let i = 0; i < node.length; i++) {
-      const ch = node[i];
-      if (!Array.isArray(ch) || ch.length !== expected) {
-        throw new Error('broadcast: nested-vector argument is ragged '
-          + 'at depth ' + (level + 1) + ' (expected length ' + expected
-          + ', got ' + (Array.isArray(ch) ? ch.length : 'non-array')
-          + '); broadcast nested-vector args must be rectangular '
-          + '(spec §04 — no ragged arrays)');
-      }
-      _checkRect(ch, level + 1);
-    }
-  }
-  _checkRect(v, 0);
-  const outerRank = depths.length;
-  const outerShape = depths.slice();
-  return {
-    coll: true, kind: 'nested', elements: v,
-    outerRank, outerShape,
-    getCell(idx: number[]) {
-      let node: any = v;
-      for (let a = 0; a < outerRank; a++) {
-        const sz = outerShape[a];
-        const i = (sz === 1) ? 0 : idx[a];
-        node = node[i];
-      }
-      return node;
-    },
-  };
-}
-
-// Stack a flat list of broadcast cell results into a single shape-
-// explicit Value when possible. Returns null if the cells aren't
-// stackable (different inner shapes, or non-numeric content).
-//
-// Two stack shapes are supported:
-//   - every cell is a scalar number / boolean ⇒ Value shape=bshape.
-//   - every cell is a Value with the SAME inner shape S ⇒ Value
-//     shape=[...bshape, ...S], row-major over the broadcast index.
-function _tryStackBroadcastCells(cells: any[], bshape: number[]): any {
-  if (cells.length === 0) {
-    return { shape: bshape.slice(), data: new Float64Array(0) };
-  }
-  // Try scalar-stack first.
-  let allScalar = true;
-  for (let i = 0; i < cells.length; i++) {
-    const t = typeof cells[i];
-    if (t !== 'number' && t !== 'boolean') { allScalar = false; break; }
-  }
-  if (allScalar) {
-    const out = new Float64Array(cells.length);
-    for (let i = 0; i < cells.length; i++) {
-      out[i] = cells[i] === true ? 1 : cells[i] === false ? 0 : +cells[i];
-    }
-    return { shape: bshape.slice(), data: out };
-  }
-  // Try Value-stack (same inner shape).
-  let innerShape: number[] | null = null;
-  for (let i = 0; i < cells.length; i++) {
-    if (!valueLib.isValue(cells[i])) return null;
-    const s = cells[i].shape;
-    if (innerShape === null) innerShape = s;
-    else {
-      if (s.length !== innerShape.length) return null;
-      for (let a = 0; a < s.length; a++) if (s[a] !== innerShape[a]) return null;
-    }
-  }
-  if (innerShape === null) return null;
-  const innerLen = innerShape.reduce((a: number, b: number) => a * b, 1);
-  const out = new Float64Array(cells.length * innerLen);
-  for (let i = 0; i < cells.length; i++) {
-    out.set(cells[i].data, i * innerLen);
-  }
-  return { shape: bshape.concat(innerShape), data: out };
-}
+// Broadcast-shape classification and per-cell stacking live in
+// `broadcast-shape.ts` so they can be re-used by future broadcast
+// consumers (kernel-broadcast lowering, atom-batched fast paths,
+// aggregate's outer-axis classification at `get(arr, .i, .j)`
+// sites) without dragging the whole sampler with them. The two
+// helpers below are thin local aliases.
+const _classifyBroadcastSlot = _broadcastShape.classifyAxisStructure;
+const _tryStackBroadcastCells = _broadcastShape.tryStackBroadcastCells;
 
 function evaluateCall(ir: any, env: any): any {
   const op = ir.op;
