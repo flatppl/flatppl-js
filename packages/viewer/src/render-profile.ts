@@ -625,26 +625,37 @@ export function buildProfileBottomRow(ctx: Ctx, plan: ProfilePlan, range: any) {
   // Lets the user read the current slice and "navigate" through
   // axes by clicking + switching the sweep direction.
   let axisName = plan.sweepKey;
-  let sweepKwarg = plan.sweepKey;
+  let sweepKwarg: string | null = plan.sweepKey;
+  let sweepPath: any = null;
   if (plan.axes) {
     for (let i = 0; i < plan.axes.length; i++) {
       if (plan.axes[i].key === plan.sweepKey) {
         axisName = plan.axes[i].label;
         sweepKwarg = plan.axes[i].kwargName;
+        sweepPath = plan.axes[i].path;
         break;
       }
     }
   }
   let defaultText = '';
   if (sweepKwarg) {
-    const activeForLabel = activePresetFor(ctx, plan);
-    let v;
-    if (activeForLabel.values
-        && Object.prototype.hasOwnProperty.call(activeForLabel.values, sweepKwarg)) {
-      v = activeForLabel.values[sweepKwarg];
-    } else {
-      const av = computeAutoValues(ctx, plan);
-      v = av[sweepKwarg];
+    const effective = activeInputValues(ctx, plan);
+    let v = effective[sweepKwarg];
+    // Per-slot sweep on an array-typed input: render the SLOT's
+    // value, not the whole array. Without this, the bottom label
+    // shows `(default = v1, v2, ..., v8)` — confusing the per-axis
+    // display with the array's full state.
+    if (sweepPath && sweepPath.length > 0
+        && (Array.isArray(v) || (v != null && typeof v === 'object'
+            && typeof v.length === 'number'))) {
+      const seg = sweepPath[0];
+      if (seg && Array.isArray(seg.idx) && seg.idx.length === 1
+          && Number.isInteger(seg.idx[0])) {
+        const slotIdx = seg.idx[0] - 1;
+        if (slotIdx >= 0 && slotIdx < v.length) {
+          v = v[slotIdx];
+        }
+      }
     }
     if (v !== undefined && v !== null) {
       defaultText = '  (default = ' + formatScalar(v) + ')';
