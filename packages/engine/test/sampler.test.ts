@@ -595,6 +595,59 @@ test('tuple_get: projects an evaluated tuple by literal slot', () => {
   assert.equal(sampler.evaluateExpr(ir, {}), 20);
 });
 
+test('indicesof: vector returns 1-based index Value', () => {
+  // 1-D vector input → rank-1 Value of length N with entries 1..N.
+  const ir = call('indicesof', [call('vector', [lit(10), lit(20), lit(30), lit(40)])]);
+  const out = sampler.evaluateExpr(ir, {});
+  assert.ok(out && out.shape && out.data,
+    'indicesof returns a shape-tagged Value, got ' + JSON.stringify(out));
+  assert.deepEqual(Array.from(out.shape), [4]);
+  assert.deepEqual(Array.from(out.data), [1, 2, 3, 4]);
+});
+
+test('indicesof0: vector returns 0-based index Value', () => {
+  const ir = call('indicesof0', [call('vector', [lit(10), lit(20), lit(30), lit(40)])]);
+  const out = sampler.evaluateExpr(ir, {});
+  assert.deepEqual(Array.from(out.shape), [4]);
+  assert.deepEqual(Array.from(out.data), [0, 1, 2, 3]);
+});
+
+test('indicesof: empty vector returns empty index Value', () => {
+  const ir = call('indicesof', [call('vector', [])]);
+  const out = sampler.evaluateExpr(ir, {});
+  assert.deepEqual(Array.from(out.shape), [0]);
+  assert.equal(out.data.length, 0);
+});
+
+test('indicesof: rank-2 array yields tuple of per-axis index Values', () => {
+  // 2×3 matrix → tuple([1,2], [1,2,3]). Synthesise a rank-2 Value
+  // directly (rowstack takes a single nested-array arg; easier to
+  // hand-construct the shape-tagged Value for a focused test).
+  const v: any = {
+    shape: [2, 3],
+    data: new Float64Array([1, 2, 3, 4, 5, 6]),
+  };
+  const env = { M: v };
+  const ir = call('indicesof', [{ kind: 'ref', ns: 'self', name: 'M', loc: synthLoc() }]);
+  const out = sampler.evaluateExpr(ir, env);
+  assert.ok(Array.isArray(out),
+    'rank-2 indicesof returns a per-axis tuple, got ' + JSON.stringify(out));
+  assert.equal(out.length, 2);
+  assert.deepEqual(Array.from(out[0].data), [1, 2]);
+  assert.deepEqual(Array.from(out[1].data), [1, 2, 3]);
+});
+
+test('indicesof0: motivating use case — chebyshev_series-style index broadcast', () => {
+  // Verifies that `indicesof0(coeffs)` produces an Int-valued vector
+  // suitable for index-driven broadcasts. We check the values
+  // directly here (the broadcast itself is exercised in
+  // broadcast tests).
+  const coeffs = call('vector', [lit(1.0), lit(0.5), lit(-0.25), lit(0.1)]);
+  const ir = call('indicesof0', [coeffs]);
+  const out = sampler.evaluateExpr(ir, {});
+  assert.deepEqual(Array.from(out.data), [0, 1, 2, 3]);
+});
+
 test('tuple_get: applied to a rand result extracts the value slot', () => {
   const init = rng.seedFromBytes([99]);
   const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });

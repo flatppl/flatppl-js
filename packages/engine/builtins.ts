@@ -119,6 +119,11 @@ const BUILTIN_FUNCTIONS = new Set([
   'conv', 'crosscorr',
   // Reductions
   'sum', 'mean', 'var', 'std', 'prod', 'maximum', 'minimum', 'lengthof', 'sizeof',
+  // Axis-index helpers (spec §07). `indicesof(x)` returns 1-based
+  // axis indices; `indicesof0(x)` is the 0-based variant. Vector
+  // input → integer vector; multi-axis array → tuple of per-axis
+  // index vectors; table → row indices.
+  'indicesof', 'indicesof0',
   'cumsum', 'cumprod',
   // Norms and normalization
   'l1norm', 'l2norm', 'l1unit', 'l2unit',
