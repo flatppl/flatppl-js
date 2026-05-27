@@ -1883,16 +1883,48 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
   if (!ast || !ast.body) return;
   const newBody: any[] = [];
   for (const stmt of ast.body) {
-    if (stmt.type !== 'AssignStatement'
-        || !stmt.value
-        || stmt.value.type !== 'CallExpr'
-        || !stmt.value.callee
-        || stmt.value.callee.type !== 'Identifier'
-        || stmt.value.callee.name !== 'restrict') {
+    // Two top-level patterns supported by this pass:
+    //   name = restrict(M, x)                — spec-compliant non-normalized
+    //                                          conditional, totalmass = density
+    //                                          of marginal at x.
+    //   name = normalize(restrict(M, x))     — the normalized variant. Per the
+    //                                          peephole `normalize(weighted(c, M))
+    //                                          = normalize(M)`, the scalar mass
+    //                                          factor cancels under normalize,
+    //                                          so the complement-route expansion
+    //                                          drops the logweighted wrap (and
+    //                                          the marginal-density dead-code
+    //                                          computation that goes with it).
+    //                                          `normalize(...)` itself is kept —
+    //                                          the underlying kernel/bayesupdate
+    //                                          may carry non-unit mass.
+    // Other nestings of restrict (e.g. inside truncate, weighted, broadcast)
+    // are not currently rewritten; users can lift the inner restrict to a
+    // named binding by hand.
+    let restrictCall: any = null;
+    let wrapInNormalize = false;
+    if (stmt.type === 'AssignStatement'
+        && stmt.value && stmt.value.type === 'CallExpr'
+        && stmt.value.callee && stmt.value.callee.type === 'Identifier') {
+      if (stmt.value.callee.name === 'restrict') {
+        restrictCall = stmt.value;
+      } else if (stmt.value.callee.name === 'normalize'
+                 && Array.isArray(stmt.value.args)
+                 && stmt.value.args.length === 1
+                 && stmt.value.args[0]
+                 && stmt.value.args[0].type === 'CallExpr'
+                 && stmt.value.args[0].callee
+                 && stmt.value.args[0].callee.type === 'Identifier'
+                 && stmt.value.args[0].callee.name === 'restrict') {
+        restrictCall = stmt.value.args[0];
+        wrapInNormalize = true;
+      }
+    }
+    if (!restrictCall) {
       newBody.push(stmt);
       continue;
     }
-    const call = stmt.value;
+    const call = restrictCall;
     const args = call.args || [];
     if (args.length < 2) {
       diagnostics.push({
@@ -2078,19 +2110,39 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
         AST.Identifier(kernelAnon, sloc),
         [xExpr],
         sloc);
-      // Scalar marginal log-density `logdensityof(marginal, x)`.
-      // Lifted through `logweighted(...)` it shifts the result
-      // measure's log total mass by exactly this scalar without
-      // changing per-atom samples (uniform scaling).
-      const logDensityScalar = AST.CallExpr(
-        AST.Identifier('logdensityof', sloc),
-        [AST.Identifier(marginalAnon, sloc), xExpr],
-        sloc);
-      const logweightedCall = AST.CallExpr(
-        AST.Identifier('logweighted', sloc),
-        [logDensityScalar, applyCall],
-        sloc);
-      const userStmt = AST.AssignStatement(stmt.names, logweightedCall, stmt.loc);
+      // For `name = restrict(M, x)`: emit the spec-compliant form
+      //     logweighted(logdensityof(marginal, x), kernel(x))
+      // For `name = normalize(restrict(M, x))`: drop the scalar weight
+      // layer — the peephole `normalize(weighted(scalar, M))` ≡
+      // `normalize(M)` lets the constant `logdensityof(marginal, x)`
+      // factor cancel under normalize, so computing it is dead code.
+      // Emit `name = normalize(kernel(x))` directly. `normalize(...)`
+      // is preserved because the underlying kernel application may
+      // have non-unit total mass (depends on the disintegration
+      // convention; FlatPPL spec §06 doesn't pin the kernel to
+      // probability measures, only that jointchain(marginal, kernel) ≡
+      // the original joint).
+      let resultExpr: any;
+      if (wrapInNormalize) {
+        resultExpr = AST.CallExpr(
+          AST.Identifier('normalize', sloc),
+          [applyCall],
+          sloc);
+      } else {
+        // Scalar marginal log-density `logdensityof(marginal, x)`.
+        // Lifted through `logweighted(...)` it shifts the result
+        // measure's log total mass by exactly this scalar without
+        // changing per-atom samples (uniform scaling).
+        const logDensityScalar = AST.CallExpr(
+          AST.Identifier('logdensityof', sloc),
+          [AST.Identifier(marginalAnon, sloc), xExpr],
+          sloc);
+        resultExpr = AST.CallExpr(
+          AST.Identifier('logweighted', sloc),
+          [logDensityScalar, applyCall],
+          sloc);
+      }
+      const userStmt = AST.AssignStatement(stmt.names, resultExpr, stmt.loc);
       newBody.push(disintStmt);
       newBody.push(userStmt);
       continue;
@@ -2118,6 +2170,11 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
       sloc);
 
     // Statement 2: <user name> = bayesupdate(likelihoodof(kernel_anon, x), marginal_anon)
+    // For the normalize-wrapped form, the bayesupdate is wrapped in
+    // an outer normalize (no peephole shortcut for the selector
+    // route — bayesupdate's per-atom reweighting doesn't collapse
+    // under normalize the way the complement route's single scalar
+    // weight does).
     const likelihoodCall = AST.CallExpr(
       AST.Identifier('likelihoodof', sloc),
       [AST.Identifier(kernelAnon, sloc), xExpr],
@@ -2126,7 +2183,10 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
       AST.Identifier('bayesupdate', sloc),
       [likelihoodCall, AST.Identifier(marginalAnon, sloc)],
       sloc);
-    const userStmt = AST.AssignStatement(stmt.names, bayesCall, stmt.loc);
+    const finalCall = wrapInNormalize
+      ? AST.CallExpr(AST.Identifier('normalize', sloc), [bayesCall], sloc)
+      : bayesCall;
+    const userStmt = AST.AssignStatement(stmt.names, finalCall, stmt.loc);
 
     newBody.push(disintStmt);
     newBody.push(userStmt);

@@ -273,7 +273,37 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
 
 function matNormalize(d: DerivationNormalize, ctx: any) {
   // normalize(base): shift weights so they sum to 1 (logTotalmass = 0).
+  // Record/tuple-typed parents: same logic as matWeighted's record
+  // branch — the top-level logWeights array carries the joint
+  // weighting; per-field samples and weights stay untouched.
+  // Used by `normalize(restrict(M, x))` (complement route emits a
+  // record-shaped kernel application; selector route emits a
+  // bayesupdate of a record-shaped prior).
   return ctx.getMeasure(d.from).then((parent: any) => {
+    const isRecord = parent && parent.shape === 'record' && parent.fields;
+    const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
+    if (isRecord || isTuple) {
+      const N = ctx.sampleCount;
+      const baseLW = parent.logWeights
+        ? parent.logWeights
+        : (() => {
+            const c = N > 0 ? -Math.log(N) : 0;
+            const a = new Float64Array(N);
+            for (let i = 0; i < N; i++) a[i] = c;
+            return a;
+          })();
+      const lse = empirical.logSumExp(baseLW);
+      const w = new Float64Array(N);
+      for (let i = 0; i < N; i++) w[i] = baseLW[i] - lse;
+      const out = isRecord
+        ? Object.assign(empirical.recordMeasure(parent.fields, w),
+            { logTotalmass: 0,
+              n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) })
+        : Object.assign(empirical.tupleMeasure(parent.elems, w),
+            { logTotalmass: 0,
+              n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) });
+      return out;
+    }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
     const lse = empirical.logSumExp(lifted.logWeights);
