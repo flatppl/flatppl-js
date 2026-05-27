@@ -309,14 +309,10 @@ test('integration: indicesof0-driven polyeval (scalar form)', () => {
   // Reference: polyeval([2.3, 1.5, 0.7], x) = 2.3 + 1.5 x + 0.7 x²
   //   at x = 3.3 → 2.3 + 4.95 + 7.623 = 14.873.
   //
-  // Note: the broadcast form `polyeval.([C], X)` (Ref(C)-style
-  // hold-constant idiom) exposes a known gap in the engine's
-  // `_broadcastApply` — it extracts a per-cell scalar from every
-  // collection input, but `[C]`'s inner element is itself a vector
-  // that `polyeval` expects as the `coeffs` arg whole. The fix is
-  // the "atom-batched broadcast fast-path" TODO (§04 viewer /
-  // engine follow-ups); covered there. The scalar form below is
-  // the primary indicesof0 demonstration.
+  // The broadcast form `polyeval.([C], X)` (Ref(C)-style hold-
+  // constant idiom) is pinned in test/nested-broadcast.test.ts —
+  // see the "Ref-wrap motivating case" test there. This test keeps
+  // the simpler scalar form as the primary indicesof0 demonstration.
   const src = `
 polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
 C = [2.3, 1.5, 0.7]
