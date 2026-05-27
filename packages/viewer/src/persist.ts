@@ -309,9 +309,25 @@ export function buildPersistedDomainLine(ctx: Ctx, plan: any): string {
     const sa = srcArgs[i];
     const kwarg = sa.name;
     if (Object.prototype.hasOwnProperty.call(or, kwarg)) {
-      parts.push(kwarg + ' = interval('
-        + formatScalarForSource(ctx, or[kwarg].lo) + ', '
-        + formatScalarForSource(ctx, or[kwarg].hi) + ')');
+      const r = or[kwarg];
+      // Preserve the source field's array shape: if the original
+      // field is `cartpow(<base>, n)`, the override (which is a
+      // single interval per the linked-domain semantics) updates
+      // the base while keeping the cartpow wrap. Otherwise emit
+      // bare `interval(lo, hi)`.
+      if (sa.value && sa.value.type === 'CallExpr' && sa.value.callee
+          && sa.value.callee.name === 'cartpow'
+          && Array.isArray(sa.value.args) && sa.value.args.length === 2
+          && sa.value.args[1].type === 'NumberLiteral') {
+        parts.push(kwarg + ' = cartpow(interval('
+          + formatScalarForSource(ctx, r.lo) + ', '
+          + formatScalarForSource(ctx, r.hi) + '), '
+          + formatScalarForSource(ctx, sa.value.args[1].value) + ')');
+      } else {
+        parts.push(kwarg + ' = interval('
+          + formatScalarForSource(ctx, r.lo) + ', '
+          + formatScalarForSource(ctx, r.hi) + ')');
+      }
     } else {
       parts.push(kwarg + ' = ' + setFieldToSource(ctx, sa.value));
     }
@@ -354,24 +370,42 @@ export function persistAutoDomainAsNewBinding(ctx: Ctx, plan: any): void {
   // Step 2 means an axis the user looked at but never edited
   // still persists with its observed bounds rather than being
   // weakened to the natural set.
+  // Pre-resolve the engine's auto-domain descriptors. For array-
+  // typed kwargs the descriptor is `{kind:'cartpow', base, n}`;
+  // when a range override or cache hit applies to the kwarg we
+  // substitute its `base` with the interval rather than collapsing
+  // to a bare `interval(...)` (which would lose the array shape).
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const autoDomain = FlatPPLEngine.orchestrator.computeAutoDomain(
+    plan.signature, bindings) || {};
   const inputs = (plan.signature && plan.signature.inputs) || [];
   const parts: string[] = [];
+  function formatRangeForKwarg(kw: string, lo: number, hi: number): string {
+    const desc = autoDomain[kw];
+    const intervalDesc: any =
+      (lo === 0 && hi === 1) ? { kind: 'interval', lo: 0, hi: 1 }
+                             : { kind: 'interval', lo, hi };
+    if (desc && desc.kind === 'cartpow') {
+      // Linked-cartpow domain: edit propagates to every slot. The
+      // wrap preserves the source's array shape per spec §03.
+      return formatSetDescriptor(ctx, {
+        kind: 'cartpow', base: intervalDesc, n: desc.n,
+      });
+    }
+    return formatSetDescriptor(ctx, intervalDesc);
+  }
   for (let i = 0; i < inputs.length; i++) {
     const kw = inputs[i].kwargName;
     if (!kw) continue;
     const r = Object.prototype.hasOwnProperty.call(ranges, kw) ? ranges[kw] : null;
     if (r && Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
-      parts.push(kw + ' = interval('
-        + formatScalarForSource(ctx, r.lo) + ', '
-        + formatScalarForSource(ctx, r.hi) + ')');
+      parts.push(kw + ' = ' + formatRangeForKwarg(kw, r.lo, r.hi));
       continue;
     }
     const cached = ctx.profileRangeCache.get(
       plan.name + '|' + kw + '|D=' + (plan.domainName || ''));
     if (cached && Number.isFinite(cached.lo) && Number.isFinite(cached.hi)) {
-      parts.push(kw + ' = interval('
-        + formatScalarForSource(ctx, cached.lo) + ', '
-        + formatScalarForSource(ctx, cached.hi) + ')');
+      parts.push(kw + ' = ' + formatRangeForKwarg(kw, cached.lo, cached.hi));
       continue;
     }
     parts.push(kw + ' = ' + defaultSetSourceForKwarg(ctx, plan, kw));
