@@ -14,7 +14,7 @@ import { getMeasure, tryGetMeasure } from './engine-facade.js';
 import { activePresetFor } from './overrides.js';
 import { showPlotMessage } from './render-frame.js';
 import { renderConstantRecord } from './render-record.js';
-import { defaultValueForLeafType, esc } from './util.js';
+import { arrayInputLength, defaultValueForLeafType, esc } from './util.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
   showPlotMessage(ctx, 'Loading…', { hint: true });
@@ -38,16 +38,6 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   for (let k = 0; k < sig.inputs.length; k++) {
     inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
   }
-  // Restrict (for now) to top-level scalar inputs — same limit
-  // as the function/likelihood profile path.
-  for (let ai = 0; ai < plan.axes.length; ai++) {
-    if (plan.axes[ai].path && plan.axes[ai].path.length > 0) {
-      showPlotMessage(ctx, 'Kernel plot: record / array inputs not yet supported '
-        + '— try a kernel with scalar inputs only.',
-        { hint: true });
-      return;
-    }
-  }
   const active = activePresetFor(ctx, plan);
   // Cache key embeds the active preset's values directly so two
   // states of the same preset (with vs. without overrides, or
@@ -55,21 +45,38 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // samples. Stable JSON suffices for our short kwarg lists.
   const cacheKey = plan.name + '|kernel-sample|' + (plan.presetName || '')
     + '|' + JSON.stringify(active.values || {});
-  // Build the input env (paramName → number). Auto values for
-  // axes not covered by the active preset (incl. modified
-  // overrides) come from source-binding samples[0] (or type-
-  // aware defaults for placeholder sources).
-  const env: Record<string, number | boolean> = {};
-  const bindingSourceLookups: Array<{ paramName: string; sourceName: string }> = [];
+  // Build the input env (paramName → number | array). Auto values
+  // for axes not covered by the active preset (incl. modified
+  // overrides) come from source-binding samples (or type-aware
+  // defaults for placeholder sources).
+  //
+  // Array-typed inputs (e.g. `theta = elementof(cartpow(reals,8))`
+  // or `theta ~ iid(Normal(0,1),8)` used as a kernel input) live
+  // as ONE env entry: `env[paramName] = [v_1, ..., v_J]`.
+  // `walkType` emits one axis per slot, but the kwargName is shared
+  // across all slots — so we group by kwargName and do a single
+  // source lookup per array-typed input. `substituteLocals`
+  // handles the array env value by emitting a `vector(lit,…)` IR.
+  const env: Record<string, any> = {};
+  const bindingSourceLookups: Array<{ paramName: string; sourceName: string; arrayLen: number | null }> = [];
+  const seenKwargs = new Set<string>();
   for (let a = 0; a < plan.axes.length; a++) {
     const ax = plan.axes[a];
+    if (seenKwargs.has(ax.kwargName)) continue;
+    seenKwargs.add(ax.kwargName);
     const inp = inputByKwarg[ax.kwargName];
     if (!inp) continue;
+    const arrayLen = arrayInputLength(inp.type);
     if (active.values && Object.prototype.hasOwnProperty.call(active.values, ax.kwargName)) {
       env[inp.paramName] = active.values[ax.kwargName];
       continue;
     }
-    env[inp.paramName] = defaultValueForLeafType(ax.leafType);
+    if (arrayLen != null) {
+      const def = defaultValueForLeafType(ax.leafType);
+      env[inp.paramName] = new Array(arrayLen).fill(def);
+    } else {
+      env[inp.paramName] = defaultValueForLeafType(ax.leafType);
+    }
     if (ax.source && ax.source.kind === 'binding') {
       // Queue an empirical-sample lookup unconditionally —
       // tryGetMeasure soft-fails to null for sources that can't
@@ -78,6 +85,7 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
       bindingSourceLookups.push({
         paramName: inp.paramName,
         sourceName: ax.source.name,
+        arrayLen,
       });
     }
   }
@@ -133,9 +141,17 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
     return tryGetMeasure(ctx, s.sourceName);
   })).then(function(srcMeasures) {
     for (let i = 0; i < bindingSourceLookups.length; i++) {
+      const lookup = bindingSourceLookups[i];
       const sm = srcMeasures[i];
-      if (sm && sm.samples && sm.samples.length > 0) {
-        env[bindingSourceLookups[i].paramName] = sm.samples[0];
+      if (!sm || !sm.samples || sm.samples.length === 0) continue;
+      if (lookup.arrayLen != null && sm.samples.length >= lookup.arrayLen) {
+        // Array input: take atom-0's J-element slice (sm.samples is
+        // atom-major flattened — atom 0 occupies the first arrayLen
+        // entries). Convert to plain Array so substituteLocals'
+        // length-based dispatch picks the array branch cleanly.
+        env[lookup.paramName] = Array.from(sm.samples.slice(0, lookup.arrayLen)) as number[];
+      } else {
+        env[lookup.paramName] = sm.samples[0];
       }
     }
     let ir = sig.body;

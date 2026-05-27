@@ -271,7 +271,31 @@ function substituteLocals(ir: any, env: any): any {
   if (Array.isArray(ir)) return ir.map(function(x: any) { return substituteLocals(x, env); });
   if (ir.kind === 'ref' && ir.ns === '%local'
       && Object.prototype.hasOwnProperty.call(env, ir.name)) {
-    return { kind: 'lit', value: env[ir.name], numType: 'real', loc: ir.loc };
+    const v = env[ir.name];
+    // Array env value (e.g. an array-typed kernel/likelihood input
+    // whose source binding has shape `[J]`): emit `vector(elem, …)`
+    // IR. Each element is either a plain JS scalar (→ lit) OR a
+    // pre-built IR node — the per-slot profile-sweep path puts a
+    // `(ref %local sweepName)` into one slot so profileN sweeps
+    // that element while the rest of the array stays fixed.
+    if (Array.isArray(v) || (v != null && typeof v === 'object'
+        && typeof v.length === 'number'
+        && (typeof (v as any).BYTES_PER_ELEMENT === 'number'
+            || (v as any)[0] !== undefined))) {
+      const len = (v as any).length;
+      const args: any[] = [];
+      for (let i = 0; i < len; i++) {
+        const e = (v as any)[i];
+        if (e && typeof e === 'object' && e.kind != null) {
+          // Pre-built IR (e.g. a sweep ref).
+          args.push(e);
+        } else {
+          args.push({ kind: 'lit', value: e, numType: 'real', loc: ir.loc });
+        }
+      }
+      return { kind: 'call', op: 'vector', args, loc: ir.loc };
+    }
+    return { kind: 'lit', value: v, numType: 'real', loc: ir.loc };
   }
   const out: any = {};
   for (const k in ir) out[k] = substituteLocals(ir[k], env);

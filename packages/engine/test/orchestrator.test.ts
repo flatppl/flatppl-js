@@ -2024,6 +2024,63 @@ test('substituteLocals: leaves %local refs not in env intact', () => {
   assert.equal(out.ns, '%local');
 });
 
+test('substituteLocals: array env value emits vector(lit,…) IR', () => {
+  // For array-typed callable inputs (e.g. `theta` of shape `[J]`),
+  // the viewer's kernel/profile paths populate env[paramName] with
+  // a J-element array (atom-0 of the source binding's empirical
+  // measure, or a preset's array value). substituteLocals must
+  // emit a `vector(lit,…)` call so downstream evaluators see a
+  // well-formed array expression — not a single lit wrapping the
+  // array (which the worker can't evaluate).
+  const ir = { kind: 'ref', ns: '%local', name: 'theta' };
+  const out = substituteLocals(ir, { theta: [0.5, -1.0, 2.5] });
+  assert.equal(out.kind, 'call');
+  assert.equal(out.op, 'vector');
+  assert.equal(out.args.length, 3);
+  for (let i = 0; i < 3; i++) {
+    assert.equal(out.args[i].kind, 'lit');
+  }
+  assert.equal(out.args[0].value,  0.5);
+  assert.equal(out.args[1].value, -1.0);
+  assert.equal(out.args[2].value,  2.5);
+});
+
+test('substituteLocals: per-slot sweep — array env with IR-ref entry passes through', () => {
+  // The profile-plot per-slot sweep populates env[paramName] with
+  // an array that has one slot replaced by `{kind: 'ref', ns:
+  // '%local', name: SWEEP_VAR}` — the synthetic sweep variable
+  // profileN will iterate over. substituteLocals emits `vector
+  // (lit, lit, (ref %local __sweep__), lit, …)` so the worker sees
+  // a `vector(...)` whose sweep-position is a remaining %local ref.
+  const SWEEP = { kind: 'ref', ns: '%local', name: '__sweep__' };
+  const ir = { kind: 'ref', ns: '%local', name: 'theta' };
+  const out = substituteLocals(ir, { theta: [0.5, SWEEP, 1.5, 2.0] });
+  assert.equal(out.kind, 'call');
+  assert.equal(out.op, 'vector');
+  assert.equal(out.args.length, 4);
+  assert.equal(out.args[0].kind, 'lit');
+  assert.equal(out.args[0].value, 0.5);
+  assert.equal(out.args[1].kind, 'ref');
+  assert.equal(out.args[1].ns, '%local');
+  assert.equal(out.args[1].name, '__sweep__');
+  assert.equal(out.args[2].kind, 'lit');
+  assert.equal(out.args[2].value, 1.5);
+  assert.equal(out.args[3].kind, 'lit');
+  assert.equal(out.args[3].value, 2.0);
+});
+
+test('substituteLocals: array env value works for Float64Array (typed array)', () => {
+  // Source-binding samples slices come back as Float64Array (typed
+  // array). substituteLocals must accept that shape too.
+  const ir = { kind: 'ref', ns: '%local', name: 'theta' };
+  const out = substituteLocals(ir, { theta: Float64Array.from([1.0, 2.0]) });
+  assert.equal(out.kind, 'call');
+  assert.equal(out.op, 'vector');
+  assert.equal(out.args.length, 2);
+  assert.equal(out.args[0].value, 1.0);
+  assert.equal(out.args[1].value, 2.0);
+});
+
 test('substituteLocals: walks nested args / fields', () => {
   const ir = {
     kind: 'call', op: 'joint',
