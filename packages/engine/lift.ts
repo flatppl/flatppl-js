@@ -1032,9 +1032,31 @@ function liftInlineSubexpressions(bindings: any) {
         && fnBinding.type !== 'fn') {
       return astArg;
     }
-    const fnAst = fnBinding.node && fnBinding.node.value;
+    // Use effectiveValue when the analyzer synthesised one (e.g. a
+    // disintegrate-derived kernel/prior pair, where the literal RHS
+    // is `disintegrate(selector, M)` but the effective form is the
+    // synthesised `kernelof(body, kw=...)`). Without this, inlineOnce
+    // would grab `disintegrate`'s first arg — the selector array
+    // literal — and treat it as the kernel body, producing wildly
+    // wrong inlinings (the restrict-expand complement-route bug).
+    const fnAst = (fnBinding.effectiveValue
+      || (fnBinding.node && fnBinding.node.value));
     if (!fnAst || fnAst.type !== 'CallExpr' || !fnAst.args || fnAst.args.length === 0) {
       return astArg;
+    }
+    // After picking effectiveValue we may now be looking at a
+    // `kernelof(...)` AST (synthesised form). The body-substitution
+    // rules below assume the same call-positional structure that
+    // functionof / kernelof / fn use: args[0] = body, args[1..] =
+    // boundary kwargs. Both functionof and the synthesised kernelof
+    // satisfy this — but if a future synthesis emits a different
+    // head, we'd need additional dispatch here.
+    if (fnAst.callee && fnAst.callee.type === 'Identifier') {
+      const head = fnAst.callee.name;
+      if (head !== 'functionof' && head !== 'kernelof' && head !== 'fn') {
+        // Unsupported synthesised shape — bail rather than mis-inline.
+        return astArg;
+      }
     }
 
     // The function's body is the first positional arg.

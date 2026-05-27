@@ -262,6 +262,85 @@ posterior = restrict(joint_model, record(obs = observed_data))
   });
 });
 
+test('restrict: complement route chosen when selector disintegrate not admissible', () => {
+  // Per spec §06 "Measure restriction" both formulations are equivalent.
+  // The complement route picks `disintegrate(complement, M)` and
+  // applies the resulting kernel to `x` — needed when `x` covers the
+  // *upstream* variates of a generative model (e.g. parameters of a
+  // forward model). The analyzer's `expandRestrictStatements` chooses
+  // the complement route when the selector-route disintegrate is not
+  // structurally admissible (selected variates have downstream
+  // dependencies in unselected — the "posterior direction" in a
+  // forward generative model).
+  const { orchestrator } = require('..');
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+default_pars = record(theta1 = 0.5, theta2 = 1.0)
+maxlike_predictive = restrict(joint_model, default_pars)
+`;
+  const r = processSource(src);
+  const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errs.map((d: any) => d.message), [],
+    'complement-route restrict-expansion should be diagnostic-free');
+  // The classifier produces the apply-kernel form, NOT bayesupdate.
+  // maxlike_predictive's RHS is `__restrict_kernel_N(default_pars)` —
+  // a user-call to the synthesised kernel binding. After lift inlines
+  // the kernel body, the result is a record measure (the kernel's
+  // body shape).
+  const mp = r.bindings.get('maxlike_predictive');
+  assert.ok(mp, 'maxlike_predictive binding present');
+  assert.notEqual(mp.type, 'bayesupdate',
+    'complement route should NOT produce a bayesupdate-typed binding');
+  // The synthesised kernel anon should have classified as kernelof.
+  const kernelAnons = [...r.bindings.entries()]
+    .filter(([n, _]: any) => n.startsWith('__restrict_kernel_'));
+  assert.ok(kernelAnons.length > 0,
+    'expected a __restrict_kernel_N synthesised binding');
+  const [kn, kb] = kernelAnons[0];
+  assert.equal(kb.type, 'kernelof',
+    'restrict-synthesised kernel anon should be kernelof-typed');
+  // The lifted form post-buildDerivations: maxlike_predictive carries
+  // a record derivation (the kernel's body after substitution).
+  const lifted = orchestrator.liftInlineSubexpressions(r.bindings);
+  const built = orchestrator.buildDerivations(lifted);
+  assert.ok(built.derivations.maxlike_predictive,
+    'maxlike_predictive should classify (lift\'s inlineOnce uses effectiveValue '
+    + 'so the synthesised kernelof body is substituted in, not the literal '
+    + 'disintegrate selector list — flatppl-js commit <this work>)');
+  assert.equal(built.derivations.maxlike_predictive.kind, 'record',
+    'expected record derivation (the apply-kernel result is the kernel\'s '
+    + 'lawof-record body with kernel params substituted)');
+});
+
+test('restrict: selector route stays for the posterior case (x = observation)', () => {
+  // The posterior pattern: x covers *downstream* variates (the
+  // observations). The selector-direction disintegrate is admissible
+  // (no unselected variate depends on a selected one — obs depends
+  // on theta, not the other way around), so the analyzer picks the
+  // selector route. The complement direction here (`disintegrate
+  // (["theta1", "theta2"], M)`) is NOT admissible because obs
+  // depends on theta — that's the posterior kernel, intractable.
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+posterior = restrict(joint_model, record(obs = [1.0, 2.0, 3.0, 4.0]))
+`;
+  const r = processSource(src);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const p = r.bindings.get('posterior');
+  assert.equal(p?.type, 'bayesupdate',
+    'posterior should classify as bayesupdate (selector route — spec equivalence)');
+});
+
 test('restrict: identifier referencing a non-record binding → clean diagnostic', () => {
   const src = `
 prior = joint(mu = Normal(mu = 0, sigma = 1))
