@@ -12,7 +12,7 @@ import { activeDomainRangesFor, activeFixedNamesFor, activePresetFor, computeAut
 import { colorForBinding } from './palette.js';
 import { buildDomainControl, buildPresetControl } from './render-controls.js';
 import { showPlotMessage } from './render-frame.js';
-import { defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
+import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
 import { renderPlotFrame } from './render-frame.js';
 import { plotZoomOptions } from './util.js';
@@ -40,15 +40,24 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   for (let k = 0; k < sig.inputs.length; k++) {
     inputByKwarg[sig.inputs[k].kwargName] = sig.inputs[k];
   }
-  // Top-level-scalar-only restriction for F4a.
-  for (let a = 0; a < axes.length; a++) {
-    if (axes[a].path && axes[a].path.length > 0) {
-      showPlotMessage(ctx, 'Profile plot: record / array inputs not yet supported — '
-        + 'try a binding with scalar inputs only.',
-        { hint: true });
-      return;
-    }
+  // Array-typed inputs are supported in TWO roles:
+  //   - non-swept: fixedEnv[paramName] = J-element array (atom-0 from
+  //     source, or preset value). substituteLocals emits vector(lit…).
+  //   - swept (per-slot): the swept axis lives on `path = [{idx:[i]}]`.
+  //     We inject a synthetic `(ref %local __sweep__)` into slot i;
+  //     substituteLocals then emits `vector(lit,…,ref,…,lit)`. profileN
+  //     sweeps over `__sweep__` while the other slots stay fixed.
+  // A separate fold-out toolbar UI for nested arrays is a follow-up;
+  // for now per-slot axes render flat in the axis dropdown
+  // (truncated at 50 entries — see buildProfileControls).
+  const SWEEP_VAR = '__sweep__';
+  const isPerSlotSweep = !!(sweepAxis.path && sweepAxis.path.length > 0);
+  const sweepInput = inputByKwarg[sweepAxis.kwargName];
+  if (!sweepInput) {
+    showPlotMessage(ctx, 'Profile plot: cannot resolve sweep parameter.', { hint: true });
+    return;
   }
+  const sweepParamName = sweepInput.paramName;
   // Build fixedEnv with three-tier precedence:
   //   1. Active preset's value for the kwarg (highest) — base
   //      preset values overridden by (modified) overrides.
@@ -61,31 +70,52 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // don't even fetch the source binding.
   const active = activePresetFor(ctx, plan);
   const fixedEnv: Record<string, any> = {};
-  const nonSweptBindingSources: Array<{ paramName: string; sourceName: string }> = [];
+  const nonSweptBindingSources: Array<{ paramName: string; sourceName: string; arrayLen: number | null }> = [];
+  // Group axes by kwargName so an array input (one axis per slot)
+  // produces one source lookup and one fixedEnv entry.
+  const seenKwargs = new Set<string>();
   for (let a2 = 0; a2 < axes.length; a2++) {
-    if (axes[a2].key === plan.sweepKey) continue;
-    const inp = inputByKwarg[axes[a2].kwargName];
-    if (!inp) continue;
-    if (active.values && Object.prototype.hasOwnProperty.call(active.values, axes[a2].kwargName)) {
-      fixedEnv[inp.paramName] = active.values[axes[a2].kwargName];
+    const ax = axes[a2];
+    if (seenKwargs.has(ax.kwargName)) continue;
+    // Skip ONLY the kwarg whose swept axis is at the top level
+    // (scalar input). For an array kwarg with a per-slot swept axis,
+    // we still need to populate fixedEnv with the rest of the slots —
+    // handled separately below after this loop.
+    if (ax.kwargName === sweepAxis.kwargName && !isPerSlotSweep) {
+      seenKwargs.add(ax.kwargName);
       continue;
     }
-    fixedEnv[inp.paramName] = defaultValueForLeafType(axes[a2].leafType);
-    if (axes[a2].source && axes[a2].source.kind === 'binding') {
-      // tryGetMeasure (below) soft-fails to null for inputs and
-      // any other source that has no samples — the leaf-type
-      // default then stays in fixedEnv.
+    seenKwargs.add(ax.kwargName);
+    const inp = inputByKwarg[ax.kwargName];
+    if (!inp) continue;
+    const arrayLen = arrayInputLength(inp.type);
+    if (active.values && Object.prototype.hasOwnProperty.call(active.values, ax.kwargName)) {
+      fixedEnv[inp.paramName] = active.values[ax.kwargName];
+      continue;
+    }
+    if (arrayLen != null) {
+      const def = defaultValueForLeafType(ax.leafType);
+      fixedEnv[inp.paramName] = new Array(arrayLen).fill(def);
+    } else {
+      fixedEnv[inp.paramName] = defaultValueForLeafType(ax.leafType);
+    }
+    if (ax.source && ax.source.kind === 'binding') {
       nonSweptBindingSources.push({
         paramName: inp.paramName,
-        sourceName: axes[a2].source.name,
+        sourceName: ax.source.name,
+        arrayLen,
       });
     }
   }
-  const sweepInput = inputByKwarg[sweepAxis.kwargName];
-  const sweepParamName = sweepInput && sweepInput.paramName;
-  if (!sweepParamName) {
-    showPlotMessage(ctx, 'Profile plot: cannot resolve sweep parameter.', { hint: true });
-    return;
+  // For per-slot sweep on an array input: the sweep slot's index in
+  // the array. `path = [{idx: [N]}]` for a 1-D array — FlatPPL
+  // 1-indexed, so subtract 1 for the JS array index.
+  let sweepSlotIdx = -1;
+  if (isPerSlotSweep) {
+    const seg = sweepAxis.path[0];
+    if (seg && Array.isArray(seg.idx) && seg.idx.length >= 1) {
+      sweepSlotIdx = seg.idx[0] - 1;
+    }
   }
   // For kernels / likelihoods we walk the kernel body via
   // traceeval — peel any outer lawof and substitute self-refs to
@@ -194,10 +224,35 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     }
     const srcMeasures = arr[2];
     for (let k = 0; k < nonSweptBindingSources.length; k++) {
+      const lookup = nonSweptBindingSources[k];
       const sm = srcMeasures[k];
-      if (sm && sm.samples && sm.samples.length > 0) {
-        fixedEnv[nonSweptBindingSources[k].paramName] = sm.samples[0];
+      if (!sm || !sm.samples || sm.samples.length === 0) continue;
+      if (lookup.arrayLen != null && sm.samples.length >= lookup.arrayLen) {
+        fixedEnv[lookup.paramName] = Array.from(sm.samples.slice(0, lookup.arrayLen)) as number[];
+      } else {
+        fixedEnv[lookup.paramName] = sm.samples[0];
       }
+    }
+    // Per-slot sweep: inject the sweep placeholder into the array.
+    // The user is sweeping `paramName[i]`; we need the rest of the
+    // slots populated (from source / preset / defaults) and slot i
+    // replaced by a `(ref %local SWEEP_VAR)` IR node. substituteLocals
+    // will assemble the final `vector(lit,…, ref,…, lit)` IR.
+    if (isPerSlotSweep && sweepSlotIdx >= 0) {
+      let arr0 = fixedEnv[sweepParamName];
+      if (!Array.isArray(arr0)) {
+        // No prior population (no source / no preset / no default
+        // loop above): fall back to a J-length array of leaf defaults.
+        const J = arrayInputLength(sweepInput.type);
+        const def = defaultValueForLeafType(sweepAxis.leafType);
+        arr0 = J != null ? new Array(J).fill(def) : [def];
+      } else {
+        arr0 = arr0.slice();
+      }
+      if (sweepSlotIdx < arr0.length) {
+        arr0[sweepSlotIdx] = { kind: 'ref', ns: '%local', name: SWEEP_VAR };
+      }
+      fixedEnv[sweepParamName] = arr0;
     }
     // Integer-typed sweep axis (e.g. a count parameter, a
     // Bernoulli k, a Poisson observation): only integer x values
@@ -230,14 +285,34 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       observed = FlatPPLEngine.orchestrator.resolveIRToValue(
         sig.obsIR, ctx.derivationsState!.bindings, ctx.derivationsState!.fixedValues);
     }
+    // Bake fixedEnv into the IR via substituteLocals so arrays land
+    // as `vector(lit,…)` and the per-slot sweep's sweep-ref is in
+    // place (substituteLocals walks the IR once; it ignores
+    // %local refs not in env, so the scalar-sweep variable's ref
+    // survives untouched). After substitution the only remaining
+    // %local refs in the IR are: the sweep variable, and any
+    // params for which we don't have a fixedEnv value (shouldn't
+    // happen — caller is supposed to populate every non-sweep
+    // input). Pass an empty fixedEnv to profileN to avoid double
+    // resolution.
+    const irForWorker = FlatPPLEngine.orchestrator.substituteLocals(ir, fixedEnv);
+    // For per-slot sweep on an array input the sweep variable lives
+    // INSIDE the vector(...) IR substituteLocals built — its name is
+    // SWEEP_VAR (the synthetic local injected above), not the array
+    // paramName (which has been substituted away into a
+    // `vector(lit,…, (ref %local SWEEP_VAR),…, lit)`). For scalar
+    // sweep the body's `(ref %local <paramName>)` survives
+    // substituteLocals (no env entry for the swept param), so we
+    // sweep the paramName directly.
+    const effectiveSweepName = isPerSlotSweep ? SWEEP_VAR : sweepParamName;
     return sendWorker(ctx, {
       type: 'profileN',
-      ir: ir,
-      sweepName: sweepParamName,
+      ir: irForWorker,
+      sweepName: effectiveSweepName,
       range: rangeRef[0],
       count: pointCount,
       mode: mode,
-      fixedEnv: fixedEnv,
+      fixedEnv: {},
       observed: observed,
       tally: 'clamped',
     });
@@ -379,6 +454,22 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
     });
     if (kept.length > 0) visibleAxes = kept;
   }
+  // Truncate at 50 entries to keep the dropdown usable for very wide
+  // arrays / records (e.g. iid(Normal,1000)). Always keep the
+  // currently-swept axis in the visible set so the selection
+  // round-trips. A fold-out / collapsible group control is a v2
+  // polish (TODO §06 — viewer kernel affordances).
+  const AXIS_LIMIT = 50;
+  let axisTruncatedCount = 0;
+  if (visibleAxes.length > AXIS_LIMIT) {
+    const sweepInList = visibleAxes.find(function(a: any) { return a.key === plan.sweepKey; });
+    const head = visibleAxes.slice(0, AXIS_LIMIT);
+    if (sweepInList && !head.find(function(a: any) { return a.key === plan.sweepKey; })) {
+      head[AXIS_LIMIT - 1] = sweepInList;
+    }
+    axisTruncatedCount = visibleAxes.length - head.length;
+    visibleAxes = head;
+  }
 
   let axisEl;
   if (hasAxes) {
@@ -388,7 +479,9 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
     axisEl.style.border = '1px solid var(--vscode-dropdown-border, #555)';
     axisEl.style.padding = '2px 4px';
     axisEl.style.fontSize = '1em';
-    axisEl.title = 'Axis to sweep';
+    axisEl.title = axisTruncatedCount > 0
+      ? 'Axis to sweep (' + axisTruncatedCount + ' more axes not shown)'
+      : 'Axis to sweep';
     for (let ai = 0; ai < visibleAxes.length; ai++) {
       const opt = document.createElement('option');
       opt.value = visibleAxes[ai].key;
@@ -396,8 +489,17 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
       if (visibleAxes[ai].key === plan.sweepKey) opt.selected = true;
       axisEl.appendChild(opt);
     }
+    if (axisTruncatedCount > 0) {
+      const sep = document.createElement('option');
+      sep.value = '__truncated__';
+      sep.textContent = '… +' + axisTruncatedCount + ' more (not shown)';
+      sep.disabled = true;
+      axisEl.appendChild(sep);
+    }
     axisEl.addEventListener('change', function(e) {
-      plan.sweepKey = (e.target as HTMLSelectElement).value;
+      const v = (e.target as HTMLSelectElement).value;
+      if (v === '__truncated__') return;
+      plan.sweepKey = v;
       renderProfilePlotForCurrent(ctx);
     });
   } else if (plan.axes && plan.axes.length === 1) {

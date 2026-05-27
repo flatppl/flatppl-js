@@ -519,6 +519,24 @@ export function defaultValueForLeafType(leafType: any) {
   return 0;
 }
 
+/**
+ * Total slot count of an array-typed callable input, or null if the
+ * type isn't a statically-shaped array. Used by render-kernel /
+ * render-profile to decide whether to populate the env entry with a
+ * single scalar (samples[0]) or a J-element slice (atom-0's full
+ * array, then `substituteLocals` emits `vector(lit,…)` IR).
+ */
+export function arrayInputLength(type: any): number | null {
+  if (!type || type.kind !== 'array') return null;
+  if (!Array.isArray(type.shape)) return null;
+  let total = 1;
+  for (const d of type.shape) {
+    if (d === '%dynamic' || typeof d !== 'number') return null;
+    total *= d;
+  }
+  return total;
+}
+
 export function defaultRangeForLeafType(leafType: any) {
   if (leafType && leafType.kind === 'scalar' && leafType.prim === 'integer') {
     return [-10, 10];
