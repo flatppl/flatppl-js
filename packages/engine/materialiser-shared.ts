@@ -446,6 +446,75 @@ function setBoundsForMat(setDescr: any) {
  * to the actual function binding's body. Returns { body, paramName }
  * or null when the binding isn't function-shaped.
  */
+// Per-atom parameter-shape access for broadcast(K|Dist, …) and
+// related N-atom × K-element materialiser paths.
+//
+// The shape contract in the engine's batched scalar/array storage
+// (§2.1 leading-axis batch) admits four input shapes for a kernel
+// parameter that's broadcast over K elements with N atoms each:
+//
+//   scalar             — same value at every (i, j)
+//   shape=[K]          — varies along j (K elements), constant in i
+//   shape=[N]          — varies along i (N atoms), constant in j
+//   shape=[N, K]       — varies along both, atom-major row-major
+//
+// `elemScalarAtJ(v, j, N)` returns the value at element index j
+// (the K-axis). Used when a parameter is atom-independent and the
+// per-element scalar is enough to drive a single worker `sampleN`
+// call. Size-1 axes broadcast by repetition.
+//
+// `perAtomColumnAtJ(v, j, N)` returns a length-N Float64Array
+// holding the per-atom column at element index j. Used when a
+// parameter genuinely varies per atom and needs to flow through
+// the worker as a `refArrays` entry. Throws if the shape isn't
+// one of the four supported above.
+//
+// These utilities used to live as closures inside `matKernelBroadcast`
+// (mat-broadcast.ts); pulled here so other per-atom materialiser
+// paths can share them and so the param-shape contract is in one
+// documented place.
+function elemScalarAtJ(v: any, j: number, _N: number): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (valueLib.isValue(v)) {
+    const shape = v.shape;
+    if (shape.length === 0) return v.data[0];
+    if (shape.length === 1) {
+      return v.data[shape[0] === 1 ? 0 : j];
+    }
+  }
+  if (v && v.BYTES_PER_ELEMENT !== undefined
+      && typeof v.length === 'number') {
+    return v[v.length === 1 ? 0 : j];
+  }
+  if (Array.isArray(v)) return +v[v.length === 1 ? 0 : j];
+  throw new Error('broadcast: cannot scalarise atom-indep value at j=' + j);
+}
+
+function perAtomColumnAtJ(v: any, j: number, N: number): Float64Array {
+  const col = new Float64Array(N);
+  if (valueLib.isValue(v)) {
+    const shape = v.shape;
+    const data = v.data;
+    if (shape.length === 1 && shape[0] === N) {
+      col.set(data);
+    } else if (shape.length === 2 && shape[0] === N) {
+      const stride = shape[1];
+      const off = stride === 1 ? 0 : j;
+      for (let i = 0; i < N; i++) col[i] = data[i * stride + off];
+    } else {
+      throw new Error('broadcast: unexpected per-atom shape '
+        + JSON.stringify(shape));
+    }
+  } else if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === N) {
+    col.set(v);
+  } else {
+    throw new Error('broadcast: per-atom param has unexpected type '
+      + (typeof v));
+  }
+  return col;
+}
+
 function resolveFnBody(binding: any, bindings: any): any {
   if (!binding) return null;
   if (binding.type === 'bijection') {
@@ -483,5 +552,7 @@ module.exports = {
   measureFromValue,
   measureFromReply,
   setBoundsForMat,
+  elemScalarAtJ,
+  perAtomColumnAtJ,
   resolveFnBody,
 };
