@@ -501,6 +501,145 @@ posterior = restrict(joint_model, record(obs = [1.0, 2.0, 3.0, 4.0]))
     'bayesupdate-produced posterior should carry log-weights (likelihood reweighting)');
 });
 
+test('restrict: normalize(restrict(M, x)) — complement route absorbs the scalar weight peephole', () => {
+  // Peephole: `normalize(weighted(scalar, M)) ≡ normalize(M)`. For
+  // the complement-route restrict expansion the spec-compliant form
+  // is `logweighted(logdensityof(marginal, x), kernel(x))`; wrapped
+  // in `normalize(...)` the scalar `logdensityof(marginal, x)` factor
+  // cancels and the analyzer emits `normalize(kernel(x))` directly,
+  // skipping the marginal-density dead-code computation.
+  //
+  // Without this rewrite the engine would compute logdensityof
+  // (which requires materialising the marginal measure) just to
+  // discard it at normalize time.
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+default_pars = record(theta1 = 0.5, theta2 = 1.0)
+predictive = normalize(restrict(joint_model, default_pars))
+`;
+  const r = processSource(src);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), [],
+    'normalize(restrict(...)) should expand without diagnostics');
+  // The analyzer-emitted form: `normalize(kernel_anon(default_pars))`.
+  // No `logweighted` / `logdensityof` should appear in the predictive
+  // binding's RHS — that's the peephole at work.
+  const p = r.bindings.get('predictive');
+  assert.ok(p, 'predictive binding present');
+  assert.equal(p?.node?.value?.callee?.name, 'normalize',
+    'predictive RHS should still be the outer normalize call');
+  const inner = p?.node?.value?.args?.[0];
+  assert.ok(inner && inner.type === 'CallExpr',
+    'normalize\'s arg should be a call (the kernel application)');
+  assert.notEqual(inner.callee?.name, 'logweighted',
+    'normalize-route should drop the logweighted scalar-weight layer');
+  // The kernel anon synthesised by disintegrate should still exist as
+  // a binding — it's what's being applied inside the normalize.
+  const kernelAnons = [...r.bindings.entries()]
+    .filter(([n, _]: any) => n.startsWith('__restrict_kernel_'));
+  assert.ok(kernelAnons.length > 0,
+    'expected the disintegrate-synthesised kernel binding');
+});
+
+test('restrict: normalize(restrict(M, x)) — selector route keeps bayesupdate inside normalize', () => {
+  // Selector route doesn't have a normalize-peephole shortcut — the
+  // per-atom bayesupdate weights are inhomogeneous (likelihood at
+  // each prior atom), so they don't cancel under normalize. The
+  // analyzer emits the standard `bayesupdate(...)` wrapped in
+  // `normalize(...)`; the engine materialises the unnormalized
+  // posterior and divides by total mass at normalize time.
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+norm_posterior = normalize(restrict(joint_model, record(obs = [1.0, 2.0, 3.0, 4.0])))
+`;
+  const r = processSource(src);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const np = r.bindings.get('norm_posterior');
+  assert.equal(np?.node?.value?.callee?.name, 'normalize',
+    'norm_posterior RHS should be normalize(...)');
+  const inner = np?.node?.value?.args?.[0];
+  assert.equal(inner?.callee?.name, 'bayesupdate',
+    'normalize\'s arg should be the bayesupdate expansion (selector route)');
+});
+
+test('restrict: normalize(restrict(M, x)) — complement route materialises to a unit-mass record measure', async () => {
+  // End-to-end materialisation: the result of normalize(restrict(...))
+  // should be a probability measure (logTotalmass = 0). Per-atom
+  // samples come from kernel(default_pars), which is itself a
+  // probability measure in this model — so normalize is effectively
+  // a no-op semantically, but the engine still runs it (to be safe
+  // for cases where the disintegrate-produced kernel might be
+  // non-normalized).
+  const { orchestrator, materialiser } = require('..');
+  const { createWorkerHandler } = require('../worker.ts');
+  const src = `
+theta1 ~ Normal(0, 1)
+theta2 ~ Exponential(1)
+a = theta1 + theta2
+b = theta2
+obs ~ iid(Normal(mu = a, sigma = b), 4)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
+default_pars = record(theta1 = 0.5, theta2 = 1.0)
+predictive = normalize(restrict(joint_model, default_pars))
+`;
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 54321 });
+  const envObj: Record<string, any> = {};
+  built.fixedValues.forEach((v: any, k: any) => { envObj[k] = v; });
+  worker.handle({ type: 'setEnv', env: envObj, merge: false });
+  const SAMPLE_COUNT = 4096;
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues,
+    sampleCount: SAMPLE_COUNT,
+    rootSeed:    54321,
+  };
+  ctx.getMeasure = (name: string) => {
+    if (cache.has(name)) return cache.get(name);
+    const p = materialiser.materialiseMeasure(name, ctx);
+    cache.set(name, p);
+    return p;
+  };
+  ctx.sendWorker = (msg: any) => {
+    const reply = worker.handle(msg);
+    if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+    return Promise.resolve(reply);
+  };
+  const m = await ctx.getMeasure('predictive');
+  assert.ok(m && m.fields && m.fields.obs,
+    'predictive should materialise as a record measure with field obs');
+  // logTotalmass = 0 after normalize (vs ~-2.04 for the un-normalized
+  // restrict, since the scalar marginal-density factor would shift it
+  // but normalize cancels that scaling).
+  assert.ok(Math.abs(m.logTotalmass) < 1e-9,
+    `normalize result should have logTotalmass = 0, got ${m.logTotalmass}`);
+  // Per-atom samples should still mean ≈ 1.5, std ≈ 1.0 (the kernel's
+  // own shape at default_pars — unchanged by normalize since the
+  // kernel application is already a probability measure here).
+  const obs = m.fields.obs.samples;
+  let sum = 0, sumSq = 0;
+  for (let i = 0; i < obs.length; i++) { sum += obs[i]; sumSq += obs[i] * obs[i]; }
+  const mean = sum / obs.length;
+  const std = Math.sqrt(sumSq / obs.length - mean * mean);
+  assert.ok(Math.abs(mean - 1.5) < 0.05,
+    `mean should be ~1.5, got ${mean.toFixed(3)}`);
+  assert.ok(Math.abs(std - 1.0) < 0.05,
+    `std should be ~1.0, got ${std.toFixed(3)}`);
+});
+
 test('restrict: identifier referencing a non-record binding → clean diagnostic', () => {
   const src = `
 prior = joint(mu = Normal(mu = 0, sigma = 1))
