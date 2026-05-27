@@ -26,6 +26,7 @@ const {
   signatureOf, distributeAxes, inlineForProfile, substituteLocals,
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets, findMatchingDomains,
+  arrayInputLength, computeAutoInputs, computeAutoDomain,
   expandMeasureIR, implicitKernelSignature, implicitFunctionSignature,
   canonicalizeImplicitBoundaries,
   _internal: { isEvaluable, classifyForChain },
@@ -1758,6 +1759,172 @@ ext = external("data.dat")
   const lifted = liftInlineSubexpressions(bindings);
   const base = resolveAxisBaseSet({ kind: 'binding', name: 'ext' }, lifted);
   assert.deepEqual(base, { kind: 'empirical', name: 'ext' });
+});
+
+// =====================================================================
+// arrayInputLength — static slot count of an array-typed input
+// =====================================================================
+
+test('arrayInputLength: scalar → null', () => {
+  assert.equal(arrayInputLength({ kind: 'scalar', prim: 'real' }), null);
+});
+
+test('arrayInputLength: array(rank=1, shape=[J]) → J', () => {
+  const t = { kind: 'array', rank: 1, shape: [8], elem: { kind: 'scalar', prim: 'real' } };
+  assert.equal(arrayInputLength(t), 8);
+});
+
+test('arrayInputLength: array with %dynamic shape → null', () => {
+  const t = { kind: 'array', rank: 1, shape: ['%dynamic'], elem: { kind: 'scalar', prim: 'real' } };
+  assert.equal(arrayInputLength(t), null);
+});
+
+test('arrayInputLength: array(rank=2, shape=[3,4]) → 12', () => {
+  const t = { kind: 'array', rank: 2, shape: [3, 4], elem: { kind: 'scalar', prim: 'real' } };
+  assert.equal(arrayInputLength(t), 12);
+});
+
+// =====================================================================
+// computeAutoInputs — per-kwarg auto values (scalar + array)
+// =====================================================================
+
+test('computeAutoInputs: scalar inputs default to leaf-type zero when no getAtomZero', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+sigma = elementof(interval(0, inf))
+k = functionof(Normal(mu = mu, sigma = sigma), mu = mu, sigma = sigma)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const out = computeAutoInputs(sig, built.bindings, built.fixedValues, null);
+  assert.equal(out.mu, 0);
+  assert.equal(out.sigma, 0);
+});
+
+test('computeAutoInputs: scalar inputs pull from getAtomZero(name) callback', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+k = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const getAtomZero = (n: string) => n === 'mu' ? 0.42 : null;
+  const out = computeAutoInputs(sig, built.bindings, built.fixedValues, getAtomZero);
+  assert.equal(out.mu, 0.42);
+});
+
+test('computeAutoInputs: array input returns J-element default array', () => {
+  // Kernel with an array-typed input (J=4). Without a getAtomZero
+  // hit, the auto value is a J-element array of leaf defaults
+  // (zeros for real scalar leaves) — not a single scalar that
+  // would overwrite per-slot.
+  const { bindings, loweredModule } = processSource(`
+theta ~ iid(Normal(0, 1), 4)
+k = kernelof(record(y = theta), theta = theta)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const out = computeAutoInputs(sig, built.bindings, built.fixedValues, null);
+  assert.ok(Array.isArray(out.theta),
+    'array input → array auto-value; got ' + JSON.stringify(out.theta));
+  assert.equal(out.theta.length, 4);
+  for (const v of out.theta) assert.equal(v, 0);
+  void loweredModule;
+});
+
+test('computeAutoInputs: array input pulls atom-0 slice from getAtomZero', () => {
+  // getAtomZero returns a J-vector (per the contract); the engine
+  // slices to arrayLen and stores as a plain Array.
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 3)
+k = kernelof(record(y = theta), theta = theta)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const getAtomZero = (n: string) =>
+    n === 'theta' ? Float64Array.from([0.5, -1.0, 2.5, 99.0 /* ignored */]) : null;
+  const out = computeAutoInputs(sig, built.bindings, built.fixedValues, getAtomZero);
+  assert.ok(Array.isArray(out.theta));
+  assert.equal(out.theta.length, 3);
+  assert.equal(out.theta[0],  0.5);
+  assert.equal(out.theta[1], -1.0);
+  assert.equal(out.theta[2],  2.5);
+});
+
+test('computeAutoInputs: dedupes per kwarg (does not overwrite per-slot)', () => {
+  // Even though signatureOf produces one input entry per kwarg,
+  // distributeAxes emits one axis PER SLOT for array inputs.
+  // computeAutoInputs reads signature.inputs (one per kwarg) and
+  // is naturally per-kwarg, but the dedup guard catches duplicates
+  // a defensively-constructed signature might carry.
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 2)
+k = kernelof(record(y = theta), theta = theta)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const out = computeAutoInputs(sig, built.bindings, built.fixedValues, null);
+  assert.equal(Object.keys(out).length, 1);
+  assert.ok(Array.isArray(out.theta));
+});
+
+// =====================================================================
+// computeAutoDomain — per-kwarg SetDescriptor (with cartpow for arrays)
+// =====================================================================
+
+test('computeAutoDomain: scalar input bound by elementof(reals) → {kind:reals}', () => {
+  const { bindings } = processSource(`
+mu = elementof(reals)
+k = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const dom = computeAutoDomain(sig, built.bindings);
+  assert.equal(dom.mu.kind, 'reals');
+});
+
+test('computeAutoDomain: scalar input bound by interval(0, 1) → interval descriptor', () => {
+  const { bindings } = processSource(`
+p = elementof(interval(0, 1))
+k = functionof(Bernoulli(p = p), p = p)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const dom = computeAutoDomain(sig, built.bindings);
+  assert.equal(dom.p.kind, 'interval');
+  assert.equal(dom.p.lo, 0);
+  assert.equal(dom.p.hi, 1);
+});
+
+test('computeAutoDomain: array input → {kind:cartpow, base, n}', () => {
+  // Array-typed input wraps the per-slot base set in cartpow(base, J).
+  // The viewer's persist path formats this as `cartpow(reals, 4)`
+  // in the cartprod(...) source rather than collapsing to bare `reals`.
+  const { bindings } = processSource(`
+theta ~ iid(Normal(0, 1), 4)
+k = kernelof(record(y = theta), theta = theta)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const dom = computeAutoDomain(sig, built.bindings);
+  assert.equal(dom.theta.kind, 'cartpow');
+  assert.equal(dom.theta.n, 4);
+  assert.equal(dom.theta.base.kind, 'reals');
+});
+
+test('computeAutoDomain: array input with interval-bound base → cartpow over interval', () => {
+  // Array-typed input drawn from a distribution with a positive
+  // support (Exponential) → cartpow(posreals, J).
+  const { bindings } = processSource(`
+lambdas ~ iid(Exponential(1.0), 3)
+k = functionof(Normal(mu = 0.0, sigma = 1.0), lambdas = lambdas)
+`);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const sig = signatureOf('k', built.bindings);
+  const dom = computeAutoDomain(sig, built.bindings);
+  assert.equal(dom.lambdas.kind, 'cartpow');
+  assert.equal(dom.lambdas.n, 3);
+  assert.equal(dom.lambdas.base.kind, 'posreals');
 });
 
 // =====================================================================

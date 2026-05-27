@@ -220,47 +220,32 @@ export function setFieldToSource(ctx: Ctx, v: any): string {
 }
 
 export function defaultSetSourceForKwarg(ctx: Ctx, plan: any, kwargName: string): string {
-  if (!plan.axes) return 'reals';
-  const matching: any[] = [];
-  for (let i = 0; i < plan.axes.length; i++) {
-    if (plan.axes[i].kwargName === kwargName) matching.push(plan.axes[i]);
-  }
-  // Array-typed input (e.g. `theta` of shape `[J]`): `walkType`
-  // produced J per-slot axes. The natural set is `cartpow(<base>,
-  // J)` — element-wise the same set as the scalar case, but
-  // shape-preserving for the persisted cartprod. Use any slot to
-  // derive `<base>` (all slots resolve to the same source set).
-  if (matching.length > 1) {
-    const inputs = (plan.signature && plan.signature.inputs) || [];
-    let inputType: any = null;
-    for (let ii = 0; ii < inputs.length; ii++) {
-      if (inputs[ii].kwargName === kwargName) { inputType = inputs[ii].type; break; }
-    }
-    if (inputType && inputType.kind === 'array'
-        && Array.isArray(inputType.shape)
-        && inputType.shape.length === 1
-        && typeof inputType.shape[0] === 'number') {
-      // Resolve the per-slot base set via the same logic as the
-      // scalar case, then wrap in cartpow(..., J).
-      const slotBase = resolveScalarBaseSet(ctx, matching[0]);
-      return 'cartpow(' + slotBase + ', ' + inputType.shape[0] + ')';
-    }
-    return 'reals';
-  }
-  return resolveScalarBaseSet(ctx, matching[0]);
+  // Engine's `computeAutoDomain` resolves the structured descriptor
+  // (including cartpow wrap for array-typed inputs); this function
+  // is now a pure formatter on top.
+  if (!plan || !plan.signature) return 'reals';
+  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+  const dom = FlatPPLEngine.orchestrator.computeAutoDomain(plan.signature, bindings);
+  const descriptor = dom && dom[kwargName];
+  if (!descriptor) return 'reals';
+  return formatSetDescriptor(ctx, descriptor);
 }
 
 /**
- * Resolve the natural FlatPPL source-set descriptor for a single
- * scalar axis (the inner per-slot set, used by both scalar inputs
- * and the per-slot base of array inputs).
+ * Format an engine `SetDescriptor` (the return shape of
+ * `resolveAxisBaseSet` / `computeAutoDomain`) into FlatPPL source
+ * text. Pure formatter — keeps the viewer's source-emission
+ * concerns separate from the engine's resolution logic.
+ *
+ * Descriptor kinds (mirrors engine spec):
+ *   reals / posreals / nonnegreals / integers / posintegers /
+ *   nonnegintegers / booleans                          → bareword
+ *   interval (lo=0, hi=1)                              → unitinterval
+ *   interval (lo, hi)                                  → interval(lo, hi)
+ *   cartpow {base, n}                                  → cartpow(<base>, n)
+ *   empirical / unknown                                → 'reals' (safe fallback)
  */
-function resolveScalarBaseSet(ctx: Ctx, axis: any): string {
-  const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
-  let d: any = null;
-  try {
-    d = FlatPPLEngine.orchestrator.resolveAxisBaseSet(axis.source, bindings);
-  } catch (_) { d = null; }
+function formatSetDescriptor(ctx: Ctx, d: any): string {
   if (!d) return 'reals';
   switch (d.kind) {
     case 'reals':           return 'reals';
@@ -275,6 +260,9 @@ function resolveScalarBaseSet(ctx: Ctx, axis: any): string {
       return 'interval('
         + formatScalarForSource(ctx, d.lo) + ', '
         + formatScalarForSource(ctx, d.hi) + ')';
+    case 'cartpow':
+      return 'cartpow(' + formatSetDescriptor(ctx, d.base) + ', '
+        + formatScalarForSource(ctx, d.n) + ')';
     default:                return 'reals';  // empirical / unknown
   }
 }
