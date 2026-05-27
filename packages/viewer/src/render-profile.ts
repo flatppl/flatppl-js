@@ -814,15 +814,62 @@ export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: Profi
 
 export function commitSliceX(ctx: Ctx, plan: ProfilePlan, x: number) {
   if (!plan || !plan.axes) return;
-  let kwarg: string | null = null;
+  let sweepAxis: any = null;
   for (let i = 0; i < plan.axes.length; i++) {
-    if (plan.axes[i].key === plan.sweepKey) {
-      kwarg = plan.axes[i].kwargName;
-      break;
+    if (plan.axes[i].key === plan.sweepKey) { sweepAxis = plan.axes[i]; break; }
+  }
+  if (!sweepAxis || !sweepAxis.kwargName) return;
+  const kwarg = sweepAxis.kwargName;
+  const entry = ensureOverrideFor(ctx, plan);
+  // Per-slot sweep (path = [{idx:[N]}] on an array-typed input):
+  // merge into the array under entry.values[kwarg] rather than
+  // overwriting the whole kwarg with a scalar. Reads the current
+  // array via activePresetFor (which already merges base values +
+  // prior overrides + auto values via computeAutoValues), so a
+  // sequence of per-slot edits accumulates correctly. Without
+  // this, persisting after a slot edit emits `theta = <scalar>`
+  // — losing the other 7 slots.
+  if (sweepAxis.path && sweepAxis.path.length > 0) {
+    const seg = sweepAxis.path[0];
+    if (seg && Array.isArray(seg.idx) && seg.idx.length === 1
+        && Number.isInteger(seg.idx[0])) {
+      const slotIdx = seg.idx[0] - 1;   // FlatPPL 1-indexed → JS 0-indexed
+      // Reconstruct the current array by layering autoValues with
+      // any existing override. activePresetFor does this merge but
+      // also folds in matched-preset base values; that's the same
+      // composition computeAutoValues uses, so the array we read
+      // matches what the user sees in the toolbar.
+      const auto = computeAutoValues(ctx, plan);
+      const active = activePresetFor(ctx, plan);
+      const current = (active.values && active.values[kwarg] != null)
+        ? active.values[kwarg]
+        : (auto && auto[kwarg]);
+      let next: any[];
+      if (Array.isArray(current)) {
+        next = current.slice();
+      } else if (current != null && typeof current === 'object'
+                 && typeof current.length === 'number') {
+        next = Array.from(current);
+      } else {
+        // Fallback — shouldn't happen for an array-typed input that
+        // walkType emitted per-slot axes for, but stay defensive.
+        next = [];
+      }
+      if (slotIdx >= 0 && slotIdx < next.length) {
+        next[slotIdx] = x;
+      } else if (slotIdx >= 0) {
+        // Array was shorter than expected (unusual); pad with zeros
+        // and assign. Same defensive footing as above.
+        while (next.length < slotIdx) next.push(0);
+        next.push(x);
+      }
+      entry.values[kwarg] = next;
+      setOverrideFor(ctx, plan, entry);
+      return;
     }
   }
-  if (!kwarg) return;
-  const entry = ensureOverrideFor(ctx, plan);
+  // Scalar sweep — existing path. The override key is the kwarg
+  // name; the persist formatter serialises it as a single number.
   entry.values[kwarg] = x;
   setOverrideFor(ctx, plan, entry);
 }
