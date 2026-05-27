@@ -296,6 +296,49 @@ test('integration: minimal — phases line up with what the model semantics impl
   assert.deepEqual(actual, expected);
 });
 
+test('integration: indicesof0-driven polyeval (scalar form)', () => {
+  // End-to-end exercise of the motivating use case for the new
+  // `indicesof0` builtin (spec §07): polynomial evaluation by
+  // broadcasting `x .^ k` over `k = [0, 1, ..., N-1]`. Covers:
+  //   - parser + analyzer + typeinfer accept `indicesof0(coeffs)`
+  //     in a deterministic-broadcast context;
+  //   - `x .^ indicesof0(coeffs)` evaluates as `[x^0, x^1, x^2]`
+  //     (scalar-vector dotted exponent — broadcasting an
+  //     element-wise pow);
+  //   - elementwise mul + sum reduces to the polynomial value.
+  // Reference: polyeval([2.3, 1.5, 0.7], x) = 2.3 + 1.5 x + 0.7 x²
+  //   at x = 3.3 → 2.3 + 4.95 + 7.623 = 14.873.
+  //
+  // Note: the broadcast form `polyeval.([C], X)` (Ref(C)-style
+  // hold-constant idiom) exposes a known gap in the engine's
+  // `_broadcastApply` — it extracts a per-cell scalar from every
+  // collection input, but `[C]`'s inner element is itself a vector
+  // that `polyeval` expects as the `coeffs` arg whole. The fix is
+  // the "atom-batched broadcast fast-path" TODO (§04 viewer /
+  // engine follow-ups); covered there. The scalar form below is
+  // the primary indicesof0 demonstration.
+  const src = `
+polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+C = [2.3, 1.5, 0.7]
+y = polyeval(C, 3.3)
+`;
+  const r = processSource(src);
+  const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    'polyeval source should parse + analyze without errors; got ['
+    + errs.map((e: any) => e.message).join(', ') + ']');
+
+  const { buildDerivations } = require('../orchestrator.ts');
+  const ds = buildDerivations(r.bindings);
+  const yVal = ds.fixedValues && ds.fixedValues.get('y');
+  assert.ok(yVal != null,
+    'y should land in fixedValues (deterministic over fixed-phase inputs)');
+  const expectedY = 2.3 + 1.5 * 3.3 + 0.7 * 3.3 * 3.3;   // = 14.873
+  assert.ok(Math.abs(yVal - expectedY) < 1e-9,
+    'polyeval scalar result should match analytical (got ' + yVal
+    + ', expected ' + expectedY + ')');
+});
+
 test('integration: bayesian_inference_3 posterior view uses the literal source structure', () => {
   // When viewing posterior (transitively reaches prior2 / forward_kernel2),
   // the trace should follow the user's source — not the rewriter's
