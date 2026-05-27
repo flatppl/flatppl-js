@@ -191,7 +191,13 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // Note: presetOverrides are orthogonal — they drive non-swept
   // input values, not x-axis ranges.
   const domainRanges = activeDomainRangesFor(ctx, plan);
-  const domainRangeForSweep = domainRanges[plan.sweepKey];
+  // Range lookup falls back from the sweep-axis KEY (e.g.
+  // `theta[3]`) to the input's KWARG NAME (`theta`) — the linked-
+  // cartpow domain semantics store the shared interval under the
+  // kwarg name so a single edit applies to every slot in the
+  // viewer-side render as well as the persisted source.
+  const domainRangeForSweep = domainRanges[plan.sweepKey]
+    || (sweepAxis.kwargName ? domainRanges[sweepAxis.kwargName] : undefined);
   const cacheKey = plan.name + '|' + plan.sweepKey + '|D=' + (plan.domainName || '');
   let rangePromise;
   if (domainRangeForSweep) {
@@ -580,7 +586,33 @@ export function buildProfileBottomRow(ctx: Ctx, plan: ProfilePlan, range: any) {
     if (!key) return;
     const entry = ensureDomainOverrideFor(ctx, plan);
     entry.ranges = entry.ranges || {};
-    entry.ranges[key] = { lo: newLo, hi: newHi };
+    // Per-slot sweep on a cartpow-domain kwarg: the auto-domain
+    // descriptor reports `{kind: 'cartpow', base, n}` (uniform
+    // across all slots). There's no spec syntax for per-slot
+    // intervals within `cartpow`, so we adopt the "linked" semantics
+    // matching the source structure: editing any slot updates the
+    // shared interval, propagating to every other slot. Persist
+    // emits `cartpow(interval(lo, hi), n)`. Store the override
+    // under the KWARG NAME (not the per-slot key) so the
+    // persist path and viewer-side range lookups pick it up
+    // uniformly.
+    //
+    // If the user later wants unlinked per-slot intervals, the
+    // toggle UX is a v2 polish — cartpow's spec shape doesn't
+    // express it today.
+    let lookupKey = key;
+    const sweepAx = plan.axes && plan.axes.find(function(a: any) { return a.key === plan.sweepKey; });
+    if (sweepAx && sweepAx.path && sweepAx.path.length > 0
+        && sweepAx.kwargName) {
+      const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
+      const dom = FlatPPLEngine.orchestrator.computeAutoDomain(
+        plan.signature, bindings);
+      const desc = dom && dom[sweepAx.kwargName];
+      if (desc && desc.kind === 'cartpow') {
+        lookupKey = sweepAx.kwargName;
+      }
+    }
+    entry.ranges[lookupKey] = { lo: newLo, hi: newHi };
     setDomainOverrideFor(ctx, plan, entry);
     renderProfilePlotForCurrent(ctx);
   };
