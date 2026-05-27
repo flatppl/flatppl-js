@@ -1627,6 +1627,196 @@ function _freshRestrictAnon(role: string): string {
   return `__restrict_${role}_${_restrictCounter++}`;
 }
 
+/**
+ * Statically enumerate the field-names of a joint measure binding by
+ * walking the AST. Used by `expandRestrictStatements` (which runs
+ * before the bindings map is populated) to compute the complement of
+ * `x`'s fields for the complement-disintegration route per spec §06.
+ *
+ * Covers the common cases:
+ *   M = lawof(record(name = ..., ...))    → record kwarg names
+ *   M = joint(name = ..., ...)            → joint kwarg names
+ *   M = jointchain(name = ..., ...)       → jointchain kwarg names
+ *   M = some_other_M                      → recurse through the
+ *                                            identifier (with cycle guard)
+ *
+ * Returns null when the shape isn't covered — the caller falls back
+ * to the selector-disintegration route (spec equivalence). Pure
+ * AST inspection; bindings map not required.
+ */
+function _jointMeasureFields(measureName: string, ast: any, seen?: Set<string>): Set<string> | null {
+  if (!ast || !ast.body) return null;
+  if (!seen) seen = new Set();
+  if (seen.has(measureName)) return null;
+  seen.add(measureName);
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement' || !stmt.names
+        || stmt.names.length !== 1) continue;
+    if (stmt.names[0].name !== measureName) continue;
+    return _extractFieldsFromMeasureRhs(stmt.value, ast, seen);
+  }
+  return null;
+}
+
+/**
+ * Statically determine the dependency DAG among variates of a
+ * `lawof(record(...))` joint measure, used by restrict-expand to
+ * choose between the selector and complement disintegration routes
+ * (spec §06). For each variate field, returns the set of OTHER
+ * variates referenced (directly or transitively, only one binding-hop
+ * deep) in its defining RHS.
+ *
+ * Restricted to the canonical shape `M = lawof(record(name1 = ident1,
+ * name2 = ident2, ...))` where each `ident_i` is a binding (typically
+ * a draw, e.g. `theta1 ~ Normal(0, 1)` or `obs ~ iid(Normal(mu = …,
+ * sigma = …), n)`). Returns null when the shape isn't recognised —
+ * the caller falls back to the selector route.
+ *
+ * Disintegration admissibility:
+ *   - For a selector S to be structurally admissible, no unselected
+ *     variate u may depend on any selected variate s ∈ S. (Spec §06:
+ *     the kernel goes from unselected → selected; selected ones must
+ *     be downstream.)
+ *
+ * For `lawof(record(theta1=theta1, theta2=theta2, obs=obs))` where
+ * `obs ~ iid(Normal(mu=theta1, ...), n)`:
+ *   - Variate `obs` depends on `theta1`, `theta2`.
+ *   - Variates `theta1` / `theta2` depend on nothing.
+ *   - selector = ["obs"]: unselected = {theta1, theta2}, no dep on
+ *     selected → admissible. (Forward / standard posterior direction.)
+ *   - selector = ["theta1", "theta2"]: unselected = {obs}, obs
+ *     depends on selected theta1/theta2 → NOT admissible. (Posterior
+ *     direction, needs model inversion.)
+ */
+function _jointVariateDeps(measureName: string, ast: any): Map<string, Set<string>> | null {
+  const Mrhs = _findRhsOfBinding(measureName, ast, new Set());
+  if (!Mrhs) return null;
+  // Recognise `lawof(record(field = ident, ...))`.
+  if (Mrhs.type !== 'CallExpr' || !Mrhs.callee
+      || Mrhs.callee.type !== 'Identifier' || Mrhs.callee.name !== 'lawof'
+      || !Array.isArray(Mrhs.args) || Mrhs.args.length !== 1) return null;
+  const inner = Mrhs.args[0];
+  if (!inner || inner.type !== 'CallExpr' || !inner.callee
+      || inner.callee.type !== 'Identifier' || inner.callee.name !== 'record') return null;
+  // Map field name → identifier name (the variate binding).
+  const variateIdent = new Map<string, string>();
+  for (const a of inner.args || []) {
+    if (!a || a.type !== 'KeywordArg') return null;
+    if (!a.value || a.value.type !== 'Identifier') return null;
+    variateIdent.set(a.name, a.value.name);
+  }
+  if (variateIdent.size === 0) return null;
+  // For each variate, walk its binding's RHS transitively (chasing
+  // identifier refs through intermediate bindings) and collect any
+  // identifier that resolves to another variate. Transitive chasing
+  // is necessary because models commonly route through intermediate
+  // deterministic bindings: `obs ~ iid(Normal(mu = a, sigma = b), n)`
+  // with `a = theta1 + theta2`; obs's DIRECT refs include `a` (not
+  // a variate), but obs transitively depends on theta1, theta2.
+  const identToVar = new Map<string, string>();
+  for (const [vName, iName] of variateIdent) identToVar.set(iName, vName);
+  const deps = new Map<string, Set<string>>();
+  for (const [vName, iName] of variateIdent) {
+    const ds = new Set<string>();
+    const seenChase = new Set<string>([iName]);
+    const stack: any[] = [];
+    const startRhs = _findRhsOfBinding(iName, ast, new Set());
+    if (startRhs) stack.push(startRhs);
+    while (stack.length > 0) {
+      const node = stack.pop();
+      _collectIdentifierRefs(node, (name: string) => {
+        const otherVar = identToVar.get(name);
+        if (otherVar && otherVar !== vName) {
+          ds.add(otherVar);
+          return;   // don't chase into another variate's binding;
+                    // its own deps are tracked separately.
+        }
+        if (seenChase.has(name)) return;
+        seenChase.add(name);
+        const sub = _findRhsOfBinding(name, ast, new Set());
+        if (sub) stack.push(sub);
+      });
+    }
+    deps.set(vName, ds);
+  }
+  return deps;
+}
+
+function _findRhsOfBinding(name: string, ast: any, seen: Set<string>): any | null {
+  if (!ast || !ast.body) return null;
+  if (seen.has(name)) return null;
+  seen.add(name);
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement' || !stmt.names
+        || stmt.names.length !== 1) continue;
+    if (stmt.names[0].name !== name) continue;
+    return stmt.value;
+  }
+  return null;
+}
+
+function _collectIdentifierRefs(node: any, visit: (n: string) => void): void {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const x of node) _collectIdentifierRefs(x, visit); return; }
+  if (node.type === 'Identifier' && typeof node.name === 'string') visit(node.name);
+  for (const k of Object.keys(node)) {
+    if (k === 'loc') continue;
+    _collectIdentifierRefs(node[k], visit);
+  }
+}
+
+/**
+ * Is `disintegrate(selectorFields, M)` structurally admissible given
+ * the AST-level variate dependency DAG? Per spec §06: no unselected
+ * variate may depend on a selected variate.
+ */
+function _disintegrateAdmissible(deps: Map<string, Set<string>>, selector: string[]): boolean {
+  const sel = new Set(selector);
+  for (const [name, depsOf] of deps) {
+    if (sel.has(name)) continue;   // selected
+    for (const d of depsOf) {
+      if (sel.has(d)) return false;
+    }
+  }
+  return true;
+}
+
+function _extractFieldsFromMeasureRhs(node: any, ast: any, seen: Set<string>): Set<string> | null {
+  if (!node) return null;
+  // Identifier ref: chase through the AST.
+  if (node.type === 'Identifier') {
+    return _jointMeasureFields(node.name, ast, seen);
+  }
+  if (node.type !== 'CallExpr' || !node.callee
+      || node.callee.type !== 'Identifier') return null;
+  const op = node.callee.name;
+  // lawof(record(name=..., ...)): fields are the record kwargs.
+  if (op === 'lawof' && Array.isArray(node.args) && node.args.length === 1) {
+    const inner = node.args[0];
+    if (inner && inner.type === 'CallExpr' && inner.callee
+        && inner.callee.type === 'Identifier'
+        && inner.callee.name === 'record') {
+      const fields = new Set<string>();
+      for (const a of inner.args || []) {
+        if (a && a.type === 'KeywordArg') fields.add(a.name);
+      }
+      return fields.size > 0 ? fields : null;
+    }
+  }
+  // joint / jointchain in keyword form: fields are the call kwargs.
+  if ((op === 'jointchain' || op === 'joint') && Array.isArray(node.args)
+      && node.args.length > 0) {
+    const fields = new Set<string>();
+    let allKw = true;
+    for (const a of node.args) {
+      if (a && a.type === 'KeywordArg') fields.add(a.name);
+      else { allKw = false; break; }
+    }
+    if (allKw && fields.size > 0) return fields;
+  }
+  return null;
+}
+
 function _recordFieldNames(node: any, ast?: any, seen?: Set<string>): string[] | null {
   if (!node) return null;
   if (node.type === 'CallExpr' && node.callee
@@ -1757,9 +1947,95 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
     // loc object preserves provenance for renderer / IR consumers
     // that want to distinguish synthetic from user-written.
     const sloc = { ...call.loc, synthetic: true, source: 'restrict-expand' };
-    const kernelAnon = _freshRestrictAnon('kernel');
+
+    // Try the COMPLEMENT-disintegration route first (spec §06
+    // "Measure restriction"): if `M`'s field set is statically
+    // resolvable and the complement of `x`'s fields admits a
+    // structural disintegration, the kernel goes from `x`'s
+    // variates to the complement (the forward model when `M` is a
+    // generative `lawof(record(...))` / jointchain). The result is
+    // just `kernel(x)` — no bayesupdate needed. This is the
+    // tractable direction for the "fix parameters, observe
+    // predictive" use case where `x` covers parameters and the
+    // selector direction (which would yield the posterior kernel)
+    // is intractable.
+    //
+    // Fall back to the SELECTOR-disintegration route (kernel goes
+    // from complement to `x`'s variates; bayesupdate reweights the
+    // marginal) when the complement direction isn't admissible —
+    // either the field set can't be statically resolved, the
+    // complement is empty (x covers every field), or the
+    // complement disintegrate's admissibility check fails.
+    // Choose route via AST-level disintegrate admissibility.
+    //
+    // Always try the SELECTOR route first (matches spec equivalence;
+    // standard posterior pattern). Fall back to the COMPLEMENT route
+    // only when the selector route's disintegrate is not structurally
+    // admissible (i.e., some unselected variate depends on a selected
+    // one — the posterior direction in a typical forward generative
+    // model). Spec §06 "Measure restriction" gives both routes as
+    // equivalent; engines pick whichever admits.
+    //
+    // The dependency DAG is read from the AST (`_jointVariateDeps`)
+    // because the analyzer's bindings map isn't populated yet at this
+    // pre-pass — only the canonical `lawof(record(name = ident, ...))`
+    // shape is recognised, which covers the common restrict
+    // use cases (posteriors, max-likelihood predictives).
+    const Mfields = _jointMeasureFields(measureArg.name, ast);
+    const variateDeps = _jointVariateDeps(measureArg.name, ast);
+    const complementFields: string[] = Mfields
+      ? [...Mfields].filter((f: string) => !fieldNames.includes(f))
+      : [];
+    let useComplementRoute = false;
+    if (variateDeps && complementFields.length > 0) {
+      const selectorAdmits = _disintegrateAdmissible(variateDeps, fieldNames);
+      const complementAdmits = _disintegrateAdmissible(variateDeps, complementFields);
+      // If selector admits, prefer it (matches spec equivalence and
+      // existing posterior-construction patterns). If selector
+      // doesn't admit but complement does, take the complement route
+      // — this is the "max-likelihood predictive" case where x covers
+      // upstream variates.
+      if (!selectorAdmits && complementAdmits) useComplementRoute = true;
+    }
+
+    const kernelAnon   = _freshRestrictAnon('kernel');
     const marginalAnon = _freshRestrictAnon('marginal');
 
+    if (useComplementRoute) {
+      // Complement-disintegration expansion (spec §06):
+      //   kernel, marginal = disintegrate([...complement...], M)
+      //   nu = kernel(x)
+      // The marginal binding is emitted but unused (the result is
+      // just the kernel applied to x); it stays in the binding graph
+      // as a synthesized anon and is materialised only if some other
+      // binding references it (none do, by construction).
+      const compSelectorElems = complementFields.map(
+        (n: string) => AST.StringLiteral(n, n, sloc));
+      const compSelector = AST.ArrayLiteral(compSelectorElems, sloc);
+      const disintCall = AST.CallExpr(
+        AST.Identifier('disintegrate', sloc),
+        [compSelector, measureArg],
+        sloc);
+      const disintStmt = AST.AssignStatement(
+        [AST.Identifier(kernelAnon, sloc), AST.Identifier(marginalAnon, sloc)],
+        disintCall,
+        sloc);
+      // Apply the kernel to x. The user-call substitution path
+      // (lift's inlineUserCall, then the classifier) handles
+      // `kernel_anon(x)` exactly as it would handle any
+      // user-written kernel-application call site.
+      const applyCall = AST.CallExpr(
+        AST.Identifier(kernelAnon, sloc),
+        [xExpr],
+        sloc);
+      const userStmt = AST.AssignStatement(stmt.names, applyCall, stmt.loc);
+      newBody.push(disintStmt);
+      newBody.push(userStmt);
+      continue;
+    }
+
+    // Selector-disintegration expansion (existing default route).
+    //
     // Selector: array literal of string literals (works uniformly for
     // single- and multi-field selectors). The disintegrate detector
     // also accepts a bare StringLiteral for "bare value" selectors,

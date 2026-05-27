@@ -871,4 +871,11 @@ module.exports = {
   // Introspection helper — used by `disintegrate-plan.test.ts` to
   // verify per-component output fields after a synthesis pass.
   namedOutputFields,
+  // Decomposition — exposed so the analyzer's `restrict` expansion
+  // can enumerate a joint measure's field names (to compute the
+  // complement selector for the complement-disintegration route per
+  // spec §06 "Measure restriction"). Returns a Decomposition record
+  // with `allFields: Set<string>` and `variates: VariateInfo[]`, or
+  // an `unsupported` marker.
+  decompose,
 };
