@@ -31,13 +31,11 @@ sigma ~ truncate(Normal(0, 1), interval(0, inf))
 % Per-group regressors (G groups × N_per_group values per group).
 x_per_group = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]]
 
-% Per-group observation kernel: given the group's intercept,
-% produce N_per_group iid Normal obs at the group's x_per_group
-% with intercept + slope * x.
-% (The closure-form: x_g comes via the kernel's input.)
+% Per-group observation kernel — kwarg-form placeholders.
 group_kernel = kernelof(
   iid(Normal(mu = intercept + slope .* x_group, sigma = sigma), N_per_group),
-  intercept, x_group)
+  intercept = intercept,
+  x_group = x_group)
 
 % Broadcast the kernel: per group i, kernel applied with
 % intercept = intercepts[i], x_group = x_per_group[i].

@@ -26,10 +26,9 @@ mu_g ~ iid(Normal(0, 10), G)
 % Shared global noise.
 sigma_g ~ truncate(Normal(0, 1), interval(0, inf))
 
-% Per-group obs kernel: given a group's mean and the shared sigma,
-% produce N_per_group iid Normal draws.
-group_kernel = kernelof(iid(Normal(mu, sigma_g), N_per_group), mu)
+% Per-group obs kernel — kwarg-form placeholder, engine canonical.
+group_kernel = kernelof(iid(Normal(mu = mu, sigma = sigma_g), N_per_group),
+                        mu = mu)
 
-% Broadcast the kernel over each group's mu — yields a [G, N_per_group]
-% observation matrix per atom.
+% Broadcast over each group's mu — yields a [G, N_per_group] obs matrix.
 obs = broadcast(group_kernel, mu = mu_g)
