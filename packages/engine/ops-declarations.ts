@@ -240,6 +240,30 @@ function _selfOuterLogical(v: any): any {
   return out;
 }
 
+// Batched fast-path: atom-batched vector `[N, k]` → atom-batched
+// matrix `[N, k, k]` with each [k, k] slice = v[atom] · v[atom]^†.
+// Vectorised tight loop on flat row-major storage; complex falls
+// back to per-atom (rare).
+function _selfOuterBatchedOrFallback(args: any[], N: number): any | null {
+  const v = args[0];
+  if (!valueLib.isValue(v)) return null;
+  if (v.dtype === 'complex') return null;
+  if (v.shape.length !== 2) return null;
+  const k = v.shape[1];
+  const out = new Float64Array(N * k * k);
+  for (let atom = 0; atom < N; atom++) {
+    const vBase = atom * k;
+    const oBase = atom * k * k;
+    for (let i = 0; i < k; i++) {
+      const vi = v.data[vBase + i];
+      for (let j = 0; j < k; j++) {
+        out[oBase + i * k + j] = vi * v.data[vBase + j];
+      }
+    }
+  }
+  return { shape: [N, k, k], data: out };
+}
+
 ops.register({
   name: 'self_outer',
   signature: {
@@ -249,6 +273,7 @@ ops.register({
   },
   argRanks: [1],
   logical: _selfOuterLogical,
+  batched: _selfOuterBatchedOrFallback,
 });
 
 // =====================================================================
