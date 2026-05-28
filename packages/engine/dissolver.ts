@@ -283,9 +283,28 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
   if (!bcIR || bcIR.kind !== 'call' || bcIR.op !== 'broadcast') return null;
   const bcArgs: any[] = bcIR.args || [];
   if (bcArgs.length < 1) return null;
-  const head = bcArgs[0];
-  // Head must be a synthesised functionof (the lowering shape for
-  // dotted operators, `fn(<op>(_, …))`, and chained dotted ops).
+  let head = bcArgs[0];
+  // Phase 4 — user-fn inlining: when the head is a `self`-ref to a
+  // user-defined `functionof` binding, look up its lifted IR and
+  // inline. The dissolver then applies the same Phase-3 substitution
+  // path that the inline-`functionof` form takes. The inlined fn must
+  // itself be dissolvable (its body must satisfy the Phase-3 walker).
+  if (head && head.kind === 'ref' && head.ns === 'self' && bindings && bindings.get) {
+    const fnBinding = bindings.get(head.name);
+    const fnIR = fnBinding && fnBinding.ir;
+    if (fnIR && fnIR.kind === 'call' && fnIR.op === 'functionof') {
+      // Visiting guard would matter if `fnIR.body` referenced its own
+      // binding name — but `functionof` bodies only see `%local`
+      // params after lift, so a self-reference would have to be
+      // through another binding (mutual recursion). FlatPPL is DAG-
+      // only at the spec level, so this can't form a cycle by
+      // construction. Inline directly.
+      head = fnIR;
+    } else {
+      return null;
+    }
+  }
+  // Head must be a functionof (inline or post-inlined).
   if (!head || head.kind !== 'call' || head.op !== 'functionof') return null;
   const params: string[] = Array.isArray(head.params) ? head.params : [];
   if (params.length === 0) return null;
