@@ -529,6 +529,17 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
         const r = _batchedApproximation(op, ir, refArrays, N, baseEnv, overlay);
         if (r !== _BATCH_FELL_THROUGH) return r;
       }
+      // Atom-batched aggregate (engine-concepts §20.10.10): the
+      // fusion (a) Step 2 rewrite emits `aggregate(R, [.atom], body)`
+      // IRs where some body refs are atom-batched. The non-batched
+      // evaluator would per-atom-loop here (~60 µs/atom); the
+      // batched evaluator lifts the body tensor to shape
+      // [N, ...outAxes, ...reduceAxes] in one pass and tail-reduces
+      // (~5 µs/atom). Returns a Value shape=[N, ...outAxes].
+      if (op === 'aggregate') {
+        const agg = require('./sampler-aggregate.ts');
+        return agg._evalAggregateBroadcastReduceN(ir, refArrays, N, baseEnv, overlay);
+      }
       // Non-batched op: per-atom dispatch through the existing
       // single-point evaluateExpr. Atom-indep when no per-atom refs
       // touch this subtree (cheap one-shot); per-atom loop otherwise.

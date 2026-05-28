@@ -1068,10 +1068,406 @@ function _broadcastTo(
   return { data: out, shape: targetShape.slice() };
 }
 
+// =====================================================================
+// Atom-batched aggregate evaluator (engine-concepts §20.10.10)
+// =====================================================================
+//
+// `_evalAggregateBroadcastReduceN(ir, refArrays, N, baseEnv, overlay)`
+// is the atom-batched analogue of `_evalAggregateBroadcastReduce`.
+// Used by `evaluateExprN` when an `aggregate(...)` IR is encountered
+// in a per-atom-batched context (typically: fusion (a) Step 2 output
+// where one or more body refs are stochastic / atom-batched). The
+// alternative per-atom fallback evaluates the aggregate once per
+// engine atom, incurring ~40 µs/atom of axis-inference + body-lift
+// overhead; the batched version prepends an implicit atom axis to
+// the canonical-axis ordering and lifts the body tensor to shape
+// `[N, ...outAxes, ...reduceAxes]` in ONE pass, then tail-reduces
+// per (atom, output_tuple).
+//
+// **Refs in the body:**
+//   - If a ref's value is atom-batched (a Value with shape =
+//     [N, ...rest]), the leading N is treated as the atom axis;
+//     remaining dims provide the selector axes from `get(...)`.
+//   - Otherwise (atom-indep — bare scalar, bare typed-array, or
+//     Value without leading N), broadcast across the atom axis
+//     (singleton stride for the atom dim).
+//
+// **Output:** a Value with shape=[N, ...outAxes] (atom-major).
+//
+// **Coverage:** matches the non-batched `_evalAggregateBroadcastReduce`
+// for atom-indep refs (the atom dim becomes singleton and the result
+// is broadcast back). For atom-batched refs, the per-atom slicing
+// loop in `_perAtomFallback` collapses to one batched-lift +
+// tail-reduce.
+
+function _evalAggregateBroadcastReduceN(
+  ir: any, refArrays: any, N: number, baseEnv: any, overlay: any,
+): any {
+  const args = ir.args || [];
+  if (args.length !== 3) {
+    throw new Error(`aggregateN: expected 3 args, got ${args.length}`);
+  }
+  const [fIR, axesIR, exprIR] = args;
+  const fname = (fIR.kind === 'ref' && fIR.name)
+              || (fIR.kind === 'const' && fIR.name);
+  const reduce = fname && _AGGREGATE_REDUCTIONS[fname];
+  if (!reduce) throw new Error(`aggregateN: unknown reduction '${fname}'`);
+  if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
+    throw new Error('aggregateN: output_axes must be an array literal of axis names');
+  }
+  const outAxes = (axesIR.args || []).map((a: any) => {
+    if (a.kind !== 'axis')
+      throw new Error('aggregateN: output_axes entries must be axis names (.name)');
+    return a.name;
+  });
+
+  // Atom axis prepends to the canonical ordering. Its name uses a
+  // double-underscore prefix to avoid colliding with any user-axis
+  // name (spec §05 axis labels start with a letter).
+  const ATOM_AXIS = '__atom_N';
+  const usedAxes = _collectInScopeAxisNames(exprIR);
+  const reduceAxes: string[] = [];
+  for (const a of usedAxes) if (!outAxes.includes(a)) reduceAxes.push(a);
+  const canonicalAxes = [ATOM_AXIS, ...outAxes, ...reduceAxes];
+
+  // Build an env for evaluating subtree containers. Containers may be
+  // bound in refArrays (per-atom values) OR baseEnv (atom-indep
+  // values). Overlay (highest priority) is applied last. Track WHICH
+  // names are atom-batched (membership in refArrays — not shape-
+  // sniffed, since an atom-indep array might coincidentally have
+  // shape[0] === N) so the lifter knows where the atom dim lives.
+  const env: Record<string, any> = Object.assign({}, baseEnv || {});
+  const atomBatchedNames: Set<string> = new Set();
+  if (refArrays) {
+    for (const k of Object.keys(refArrays)) {
+      env[k] = refArrays[k];
+      atomBatchedNames.add(k);
+    }
+  }
+  if (overlay) {
+    for (const k of Object.keys(overlay)) {
+      env[k] = overlay[k];
+      // Overlay wins; if a name was atom-batched but overlay
+      // overrides, treat the new value at face value (no atom
+      // unless leading dim matches N — overlay is a refinement
+      // pattern usually used to inject atom-indep substitutes).
+      atomBatchedNames.delete(k);
+    }
+  }
+
+  // Infer axis lengths. Atom axis is N (caller-given). Other axes
+  // come from get(arr, .ax) shape inspection — for atom-batched
+  // refs the shape's first dim is N (stripped during shape-of); for
+  // atom-indep refs the shape is taken verbatim.
+  const axisLengths: Record<string, number> = { [ATOM_AXIS]: N };
+  _inferAxisLengthsN(exprIR, outAxes.concat(reduceAxes), axisLengths,
+                     env, atomBatchedNames, N);
+
+  // Lift the body to a [N, ...outAxes, ...reduceAxes] tensor.
+  const lifted = _liftAggregateExprN(exprIR, canonicalAxes, axisLengths,
+                                     env, atomBatchedNames, N);
+
+  // Materialise singleton dims to their full length (matches the
+  // non-batched path).
+  const fullShape = canonicalAxes.map((a) => axisLengths[a]);
+  const full = _broadcastTo(lifted, fullShape);
+
+  const outShape = [N, ...outAxes.map((a: string) => axisLengths[a])];
+  const outSize = _shapeProd(outShape);
+  if (reduceAxes.length === 0) {
+    // No reduction — already shape [N, ...outAxes].
+    return { shape: outShape, data: full.data };
+  }
+  const reduceSize = _shapeProd(reduceAxes.map((a: string) => axisLengths[a]));
+  const outData = new Float64Array(outSize);
+  const tmp = new Float64Array(reduceSize);
+  for (let i = 0; i < outSize; i++) {
+    const base = i * reduceSize;
+    for (let j = 0; j < reduceSize; j++) tmp[j] = full.data[base + j];
+    outData[i] = _applyAggregateReduction(fname!, tmp, reduceSize);
+  }
+  return { shape: outShape, data: outData };
+}
+
+// Walk the body and infer axis lengths for atom-batched context.
+// Same logic as `_inferAggregateAxisLengths` but with awareness that
+// containers may be atom-batched. A container is atom-batched ONLY
+// when its top-level ref is in `atomBatchedNames` (the refArrays
+// keys); shape coincidence (e.g. an atom-indep length-N vector when
+// N matches the atom count) is NOT treated as atom-batched.
+function _inferAxisLengthsN(
+  exprIR: any, axisNames: string[], lengths: Record<string, number>,
+  env: any, atomBatchedNames: Set<string>, N: number,
+) {
+  function walk(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (n.kind === 'call' && n.op === 'aggregate') return;
+    if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
+      const args = n.args || [];
+      const container = args[0];
+      const sels = args.slice(1);
+      let containerVal: any = undefined;
+      let containerShape: number[] | null = null;
+      for (let k = 0; k < sels.length; k++) {
+        const s = sels[k];
+        if (s && s.kind === 'axis' && !(s.name in lengths)) {
+          if (containerVal === undefined) {
+            try { containerVal = evaluateExpr(container, env); }
+            catch (_) { containerVal = null; }
+            if (containerVal != null) {
+              containerShape = _shapeOfContainer(
+                containerVal, container, atomBatchedNames, N);
+            }
+          }
+          if (containerShape && typeof containerShape[k] === 'number') {
+            lengths[s.name] = containerShape[k];
+          }
+        }
+      }
+    }
+    for (const k of Object.keys(n)) {
+      if (k === 'loc' || k === 'kind' || k === 'op' || k === 'name' || k === 'ns') continue;
+      walk((n as any)[k]);
+    }
+  }
+  walk(exprIR);
+  const missing = axisNames.filter((a) => !(a in lengths));
+  if (missing.length > 0) {
+    throw new Error(
+      `aggregateN: could not infer length of axis ${missing.map((a) => '.' + a).join(', ')} ` +
+      `— each axis must index a known array at least once in expr`);
+  }
+}
+
+// Inspect a container value and return its PER-ATOM shape.
+// "Atom-batched" is determined by ref-name membership in
+// `atomBatchedNames`, NOT by shape sniffing (an atom-indep array of
+// shape [N] would otherwise be mis-classified when its length
+// coincides with the atom count).
+//
+// - If the container is a self-ref whose name is in
+//   `atomBatchedNames` AND the value's shape[0] === N → return
+//   shape.slice(1) (the per-atom shape).
+// - Otherwise → return shape verbatim.
+function _shapeOfContainer(
+  val: any, containerIR: any, atomBatchedNames: Set<string>, N: number,
+): number[] | null {
+  if (val == null) return null;
+  if (typeof val === 'number' || typeof val === 'boolean') return [];
+  let shape: number[] | null = null;
+  if (val.BYTES_PER_ELEMENT !== undefined) {
+    shape = [val.length];
+  } else if (Array.isArray(val)) {
+    shape = [val.length];
+    let probe = val[0];
+    while (Array.isArray(probe)
+           || (probe && probe.BYTES_PER_ELEMENT !== undefined)) {
+      shape.push(probe.length);
+      probe = probe[0];
+    }
+  } else if (val && Array.isArray(val.shape)) {
+    shape = val.shape.slice();
+  }
+  if (!shape) return null;
+  // Atom-batched only if the container is a direct ref to an atom-
+  // batched name (i.e. an entry in refArrays). Strip the leading N.
+  const isAtomBatched = containerIR
+    && containerIR.kind === 'ref'
+    && containerIR.ns === 'self'
+    && atomBatchedNames.has(containerIR.name)
+    && shape.length > 0 && shape[0] === N;
+  if (isAtomBatched) return shape.slice(1);
+  return shape;
+}
+
+function _liftAggregateExprN(
+  node: any, canonicalAxes: string[],
+  axisLengths: Record<string, number>, env: any,
+  atomBatchedNames: Set<string>, N: number,
+): { data: Float64Array; shape: number[] } {
+  // Constant-hoist (no axis refs): evaluate once. The result may be:
+  //  - A scalar (atom-indep) → broadcast singleton everywhere.
+  //  - A direct atom-batched ref to a rank-1 [N] scalar → broadcast
+  //    across non-atom axes.
+  // We detect atom-batched only by NAME (membership in
+  // atomBatchedNames), not shape coincidence.
+  if (!_containsAxisRef(node)) {
+    const v = evaluateExpr(node, env);
+    return _alignedConstTensorN(v, node, canonicalAxes, axisLengths,
+                                atomBatchedNames, N);
+  }
+  if (node.kind === 'call' && (node.op === 'get' || node.op === 'get0')) {
+    return _alignedTensorFromGetN(node, canonicalAxes, axisLengths, env,
+                                  atomBatchedNames, N);
+  }
+  if (node.kind === 'call' && node.args && node.args.length === 2) {
+    const fn = _AGG_BIN[node.op];
+    if (fn) {
+      const a = _liftAggregateExprN(node.args[0], canonicalAxes,
+                                     axisLengths, env, atomBatchedNames, N);
+      const b = _liftAggregateExprN(node.args[1], canonicalAxes,
+                                     axisLengths, env, atomBatchedNames, N);
+      return _broadcastBinary(a, b, fn);
+    }
+  }
+  if (node.kind === 'call' && node.args && node.args.length === 1) {
+    const fn = _AGG_UN[node.op];
+    if (fn) {
+      const a = _liftAggregateExprN(node.args[0], canonicalAxes,
+                                     axisLengths, env, atomBatchedNames, N);
+      return _broadcastUnary(a, fn);
+    }
+  }
+  throw new Error(`aggregateN: unsupported op '${node.op || node.kind}' `
+    + `in body — broadcast-reduce default supports arithmetic and `
+    + `unary math on indexed arrays.`);
+}
+
+// Constant subtree (no axis refs). The evaluated value may be:
+//   - Scalar (atom-indep) → broadcast singleton everywhere.
+//   - Atom-batched scalar (direct ref to a per-atom rank-1 Value
+//     with shape=[N]) → broadcast across non-atom axes.
+function _alignedConstTensorN(
+  v: any, node: any, canonicalAxes: string[],
+  axisLengths: Record<string, number>,
+  atomBatchedNames: Set<string>, N: number,
+): { data: Float64Array; shape: number[] } {
+  const shape = canonicalAxes.map(() => 1);
+  // Direct atom-batched ref to a per-atom scalar value: name in
+  // atomBatchedNames AND the value's shape is [N].
+  const isDirectAtomRef = node && node.kind === 'ref'
+    && node.ns === 'self' && atomBatchedNames.has(node.name);
+  if (isDirectAtomRef) {
+    let perAtom: Float64Array | null = null;
+    if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === N) {
+      perAtom = v as Float64Array;
+    } else if (v && Array.isArray(v.shape) && v.shape.length === 1
+               && v.shape[0] === N) {
+      perAtom = v.data as Float64Array;
+    }
+    if (perAtom) {
+      shape[0] = N;
+      return { data: perAtom, shape };
+    }
+  }
+  return { data: new Float64Array([+v]), shape };
+}
+
+// Atom-batched-aware `get` lifter. Container value may be:
+//   - atom-batched (direct ref to a name in `atomBatchedNames`,
+//     value shape[0] === N) → leading dim is atom axis; the
+//     remaining dims correspond to the get's selector positions.
+//   - atom-indep → broadcasts across atom axis (singleton stride).
+//
+// Critical: "atom-batched" is determined by NAME, not shape. An
+// atom-indep array of shape [N] (coincidental) would be wrongly
+// classified by shape alone — driving the lifter to strip an axis
+// that doesn't exist, and trip subsequent axis-length inference.
+function _alignedTensorFromGetN(
+  getIR: any, canonicalAxes: string[],
+  axisLengths: Record<string, number>, env: any,
+  atomBatchedNames: Set<string>, N: number,
+): { data: Float64Array; shape: number[] } {
+  const args = getIR.args || [];
+  const oneBased = getIR.op === 'get';
+  const containerIR = args[0];
+  const arr = evaluateExpr(containerIR, env);
+  const sels = args.slice(1);
+  const src = _toFlat(arr);
+  // Detect atom-batched container by REF NAME (not shape).
+  const atomBatched = containerIR
+    && containerIR.kind === 'ref'
+    && containerIR.ns === 'self'
+    && atomBatchedNames.has(containerIR.name)
+    && src.shape.length > 0 && src.shape[0] === N
+    && src.shape.length === sels.length + 1;
+  // Source dims that correspond to the get's selector positions.
+  // For atom-indep: dims = src.shape (length === sels.length).
+  // For atom-batched: dims = src.shape.slice(1).
+  const selDims = atomBatched ? src.shape.slice(1) : src.shape;
+  const sourceStrides = _rowMajorStrides(src.shape);
+  // Stride for the atom dim (offset between atom-i and atom-(i+1)):
+  //   - atom-batched: product of remaining dims (the per-atom slice).
+  //   - atom-indep: 0 (the same atom-indep value broadcasts to every
+  //     atom — singleton stride).
+  const atomStride = atomBatched ? sourceStrides[0] : 0;
+  // Per-sel-dim stride into src.shape (after the atom dim if any).
+  const selStrides = atomBatched ? sourceStrides.slice(1) : sourceStrides;
+
+  // Resolve selectors.
+  const axisAt: Record<string, number> = {};
+  let baseOffset = 0;
+  for (let k = 0; k < sels.length; k++) {
+    const s = sels[k];
+    if (s && s.kind === 'axis') {
+      axisAt[s.name] = k;
+      continue;
+    }
+    if (s && s.kind === 'const' && s.name === 'only') {
+      if (selDims[k] !== 1) {
+        throw new Error(`aggregateN: 'only' selector requires the indexed `
+          + `axis to have length 1, got length ${selDims[k]}`);
+      }
+      continue;
+    }
+    if (s && s.kind === 'const' && s.name === 'all') {
+      throw new Error(`aggregateN: 'all' / ':' is not supported in an `
+        + `aggregate body; use an axis name (.name) instead`);
+    }
+    const idx = +evaluateExpr(s, env);
+    const idx0 = oneBased ? (idx | 0) - 1 : (idx | 0);
+    if (idx0 < 0 || idx0 >= selDims[k]) {
+      throw new Error(`aggregateN: index ${oneBased ? idx : idx0} out of bounds `
+        + `for axis of length ${selDims[k]}`);
+    }
+    baseOffset += idx0 * selStrides[k];
+  }
+
+  // Build aligned shape + per-canonical-position source stride.
+  // The atom axis at position 0 → atomStride; other canonical axes →
+  // selStrides if the get binds them, else singleton (stride 0).
+  const M = canonicalAxes.length;
+  const alignedShape = new Array(M);
+  const sourceStrideAt: number[] = new Array(M);
+  const ATOM_AXIS = canonicalAxes[0];
+  for (let i = 0; i < M; i++) {
+    const axisName = canonicalAxes[i];
+    if (axisName === ATOM_AXIS) {
+      alignedShape[i] = N;
+      sourceStrideAt[i] = atomStride;
+      continue;
+    }
+    if (axisName in axisAt) {
+      alignedShape[i] = axisLengths[axisName];
+      sourceStrideAt[i] = selStrides[axisAt[axisName]];
+    } else {
+      alignedShape[i] = 1;
+      sourceStrideAt[i] = 0;
+    }
+  }
+
+  // Materialise the aligned tensor.
+  const alignedSize = _shapeProd(alignedShape);
+  const out = new Float64Array(alignedSize);
+  const coord = new Array(M).fill(0);
+  for (let linear = 0; linear < alignedSize; linear++) {
+    let srcOff = baseOffset;
+    for (let i = 0; i < M; i++) srcOff += coord[i] * sourceStrideAt[i];
+    out[linear] = src.data[srcOff];
+    for (let i = M - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < alignedShape[i]) break;
+      coord[i] = 0;
+    }
+  }
+  return { data: out, shape: alignedShape };
+}
+
 module.exports = {
   _inferAggregateAxisLengths,
   _collectInScopeAxisNames,
   AGGREGATE_PATTERNS,
   _evalAggregate,
+  _evalAggregateBroadcastReduceN,
   _matmulDispatch,
 };
