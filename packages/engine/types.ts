@@ -79,6 +79,15 @@ function record(fields: any) { return { kind: 'record', fields }; }
 /** Tuple type. `elems` is an array of element Types (length ≥ 2 per spec). */
 function tuple(elems: any)   { return { kind: 'tuple', elems }; }
 
+/** Table type per spec §03 §11. `columns` is an ordered object mapping
+ *  column name → COLUMN-ELEMENT type (typically a scalar — spec §03 says
+ *  "Table columns must be vectors", so each column is a vector of this
+ *  element type). `nrows` is the row count (a positive integer or
+ *  the literal '%dynamic' when not statically known). Row indexing
+ *  yields a record over the same column names; column access yields
+ *  an array of the column-element type. */
+function table(columns: any, nrows: any) { return { kind: 'table', columns, nrows }; }
+
 /** Closed measure over a value domain. */
 function measure(domain: any) { return { kind: 'measure', domain }; }
 
@@ -170,6 +179,16 @@ function equal(a: any, b: any): boolean {
       if (a.elems.length !== b.elems.length) return false;
       for (let i = 0; i < a.elems.length; i++) if (!equal(a.elems[i], b.elems[i])) return false;
       return true;
+    case 'table': {
+      if (a.nrows !== b.nrows) return false;
+      const ka = Object.keys(a.columns), kb = Object.keys(b.columns);
+      if (ka.length !== kb.length) return false;
+      for (let i = 0; i < ka.length; i++) {
+        if (ka[i] !== kb[i]) return false;
+        if (!equal(a.columns[ka[i]], b.columns[kb[i]])) return false;
+      }
+      return true;
+    }
     case 'measure':
       return equal(a.domain, b.domain);
     case 'rngstate':
@@ -210,6 +229,11 @@ function substitute(t: any, subst: Map<any, any>): any {
     const out: Record<string, any> = {};
     for (const k in t.fields) out[k] = substitute(t.fields[k], subst);
     return record(out);
+  }
+  if (t.kind === 'table') {
+    const cols: Record<string, any> = {};
+    for (const k in t.columns) cols[k] = substitute(t.columns[k], subst);
+    return table(cols, t.nrows);
   }
   if (t.kind === 'function' || t.kind === 'kernel') {
     return { kind: t.kind,
@@ -295,6 +319,21 @@ function unify(a: any, b: any, subst: any): any {
       }
       return s;
     }
+    case 'table': {
+      // Spec §03: table column names + order are part of the table's
+      // identity (records are ordered, tables share that convention).
+      if (a.nrows !== '%dynamic' && b.nrows !== '%dynamic'
+          && a.nrows !== b.nrows) return null;
+      const ka = Object.keys(a.columns), kb = Object.keys(b.columns);
+      if (ka.length !== kb.length) return null;
+      let s = subst;
+      for (let i = 0; i < ka.length; i++) {
+        if (ka[i] !== kb[i]) return null;
+        s = unify(a.columns[ka[i]], b.columns[kb[i]], s);
+        if (s == null) return null;
+      }
+      return s;
+    }
     case 'rngstate':
       // Opaque — both sides are rngstate, no further structure to
       // unify. Same kind already matches above; this case is here for
@@ -337,6 +376,7 @@ function occurs(id: any, t: any, subst: any): boolean {
   if (t.kind === 'array') return occurs(id, t.elem, subst);
   if (t.kind === 'tuple') return t.elems.some((e: any) => occurs(id, e, subst));
   if (t.kind === 'record') return Object.values(t.fields).some((f: any) => occurs(id, f, subst));
+  if (t.kind === 'table') return Object.values(t.columns).some((f: any) => occurs(id, f, subst));
   return false;
 }
 
@@ -375,6 +415,7 @@ function show(t: any): string {
     case 'tvector':  return 'transposed vector of ' + show(t.elem)
                             + (t.length !== '%dynamic' ? ' (length ' + t.length + ')' : '');
     case 'record':   return showRecord(t);
+    case 'table':    return showTable(t);
     case 'tuple':    return 'tuple (' + t.elems.map(show).join(', ') + ')';
     case 'measure':  return showMeasure(t);
     case 'rngstate': return 'rngstate';
@@ -408,6 +449,15 @@ function showRecord(t: any): string {
   const ks = Object.keys(t.fields);
   if (ks.length === 0) return 'record';
   return 'record with fields ' + ks.map((k: string) => k + ': ' + show(t.fields[k])).join(', ');
+}
+
+function showTable(t: any): string {
+  const ks = Object.keys(t.columns);
+  const nrows = t.nrows === '%dynamic' ? '' : ' (' + t.nrows + ' rows)';
+  if (ks.length === 0) return 'table' + nrows;
+  return 'table with columns '
+    + ks.map((k: string) => k + ': ' + show(t.columns[k])).join(', ')
+    + nrows;
 }
 
 function showCallable(label: string, t: any): string {
@@ -445,6 +495,7 @@ function isValue(t: any) {
     case 'array':
     case 'tvector':
     case 'record':
+    case 'table':
     case 'tuple':
     case 'deferred':
     case 'any':
@@ -1244,7 +1295,7 @@ function hasSignature(opName: string) {
 
 module.exports = {
   // Constructors
-  deferred, failed, any, scalar, array, tvector, record, tuple, measure, rngstate, tvar,
+  deferred, failed, any, scalar, array, tvector, record, table, tuple, measure, rngstate, tvar,
   funcType, kernelType,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Operations

@@ -246,6 +246,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'elementof': return write(inferElementof(expr, scopes), expr);
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);
+      case 'table':     return write(inferTable(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
       // tuple_get(<tuple-expr>, <slot lit>) — internal IR op emitted by
@@ -266,6 +267,25 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
+      // Spec §07 table reductions: when sum / mean / var / std / prod /
+      // maximum / minimum is applied to a table, the result is a record
+      // whose fields are the column names and values are the per-column
+      // reductions. Check the input type up front so the static SIGNATURE_
+      // FACTORIES entry (which returns any() / REAL) doesn't shadow this.
+      case 'sum':
+      case 'mean':
+      case 'var':
+      case 'std':
+      case 'prod':
+      case 'maximum':
+      case 'minimum': {
+        const tbl = _maybeTableReduction(expr, scopes);
+        if (tbl != null) return write(tbl, expr);
+        break;
+      }
+      // lengthof(t) for a table returns the row count (an integer).
+      // The signature factory already returns INTEGER unconditionally
+      // (it works for vectors and tables uniformly); no extra case here.
       // Const-eval-driven shape inference (engine-concepts §17.4).
       // Shape-determining producers whose result rank/shape depends
       // on their dim arg(s). All of them consult the resolver via
@@ -567,6 +587,85 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     return T.record(out);
   }
 
+  // Spec §07 "Table reductions": sum / mean / var / std / prod / max /
+  // min applied to a table operates column-wise and returns a record
+  // whose fields are the column names and values are the per-column
+  // reductions. Returns null when the input isn't a table — caller
+  // falls through to the signature-factory path (which handles arrays
+  // and scalars).
+  //
+  // Per-column result type:
+  //   sum, prod, mean   → same as column element type (real / complex)
+  //   var, std          → real (Bessel-corrected variance / its sqrt)
+  //   maximum, minimum  → same as column element type
+  function _maybeTableReduction(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 1) return null;
+    const t: any = inferExpr(args[0], scopes);
+    if (!t || t.kind !== 'table') return null;
+    const op = expr.op;
+    const fields: Record<string, any> = {};
+    for (const k in t.columns) {
+      const cT = t.columns[k];
+      if (op === 'var' || op === 'std') {
+        fields[k] = T.REAL;
+      } else {
+        // sum, prod, mean, maximum, minimum preserve element type.
+        fields[k] = cT;
+      }
+    }
+    return T.record(fields);
+  }
+
+  // table(col1 = [...], col2 = [...]) per spec §03. Each column's
+  // value must be a 1-D array; all columns must have the same length
+  // (the row count). The table type carries column-element types (not
+  // the array types themselves — spec §11's table shape is
+  // `(%table (%columns (<name> <element-type>) ...) (%nrows <N>))`).
+  function inferTable(expr: any, scopes: any) {
+    const fields = expr.fields || [];
+    if (fields.length === 0) return T.failed('table: at least one column required');
+    const columns: Record<string, any> = {};
+    let nrows: number | '%dynamic' = '%dynamic';
+    let nrowsBound = false;
+    for (const f of fields) {
+      const ct: any = inferExpr(f.value, scopes);
+      // The value should be a rank-1 array. Deferred / any flow
+      // through with deferred column type — engine still produces
+      // a table at runtime.
+      if (ct && ct.kind === 'array' && ct.rank === 1) {
+        columns[f.name] = ct.elem;
+        const dim = ct.shape[0];
+        if (typeof dim === 'number') {
+          if (!nrowsBound) { nrows = dim; nrowsBound = true; }
+          else if (nrows !== dim) {
+            diagnostics.push({
+              severity: 'error',
+              message: 'table: column "' + f.name + '" has length ' + dim
+                + ', but earlier columns have length ' + nrows
+                + ' (spec §03: all columns must have equal length)',
+              loc: f.loc || expr.loc,
+            });
+            return T.failed('table column length mismatch');
+          }
+        }
+      } else if (ct && (ct.kind === 'deferred' || ct.kind === 'any')) {
+        columns[f.name] = T.deferred();
+      } else if (ct && ct.kind === 'failed') {
+        return T.failed('table column cascade');
+      } else {
+        diagnostics.push({
+          severity: 'error',
+          message: 'table: column "' + f.name + '" must be an array (vector); got '
+            + T.show(ct),
+          loc: f.loc || expr.loc,
+        });
+        return T.failed('table non-array column');
+      }
+    }
+    return T.table(columns, nrows);
+  }
+
   function inferJoint(expr: any, scopes: any) {
     const fields = expr.fields || [];
     const out: Record<string, any> = {};
@@ -694,6 +793,34 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     }
     const recT: any = inferExpr(args[0], scopes);
     if (recT && recT.kind === 'failed') return T.failed('get_field cascade');
+    // Tables and records share the dot-access shape `r.col` (spec §03):
+    // column access on a table returns the column AS A VECTOR (array of
+    // the column-element type and length nrows); field access on a
+    // record returns the field value directly.
+    if (recT && recT.kind === 'table' && recT.columns) {
+      const nameIR = args[1];
+      if (!nameIR || nameIR.kind !== 'lit' || typeof nameIR.value !== 'string') {
+        return T.failed('get_field name must be a literal string');
+      }
+      if (!(nameIR.value in recT.columns)) {
+        diagnostics.push({
+          severity: 'error',
+          message: `get_field: '${nameIR.value}' is not a column of ${T.show(recT)}`,
+          loc: expr.loc,
+        });
+        return T.failed('get_field unknown column');
+      }
+      return T.array(1, [recT.nrows], recT.columns[nameIR.value]);
+    }
+    // `any` / `deferred` recipients (common in user-fn bodies where
+    // the param's type isn't pinned at definition — the param defaults
+    // to `any` until B5's polymorphic-at-call-site re-infers the body
+    // with the actual call-site type) flow through as deferred result.
+    // This lets `row -> row.col` body-infer without a spurious error
+    // when row's type is unknown statically.
+    if (recT && (recT.kind === 'any' || recT.kind === 'deferred')) {
+      return T.deferred();
+    }
     if (!recT || recT.kind !== 'record' || !recT.fields) {
       diagnostics.push({
         severity: 'error',
@@ -798,6 +925,32 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       if (args.length === 2 && args[1].kind === 'lit'
           && typeof args[1].value === 'string') {
         return inferGetField(expr, scopes);
+      }
+      return T.deferred();
+    }
+
+    // Table access (spec §03):
+    //   - get(t, i) (integer literal/integer expr) → record per row.
+    //   - get(t, "col") → array of column-element type, length = nrows.
+    //   - get(t, ["c1","c2"]) → table sub-selection (deferred for v0.1).
+    if (containerT && containerT.kind === 'table') {
+      if (args.length === 2 && args[1].kind === 'lit'
+          && typeof args[1].value === 'string') {
+        // Column access — same shape as get_field.
+        return inferGetField(expr, scopes);
+      }
+      if (args.length === 2 && args[1].kind === 'lit'
+          && typeof args[1].value === 'number') {
+        // Row access — returns a record over the same column names.
+        return T.record(containerT.columns);
+      }
+      if (args.length === 2) {
+        // Row access via expression (axis or computed int). Conservative:
+        // a row is a record over the table's columns.
+        const selT: any = inferExpr(args[1], scopes);
+        if (selT && selT.kind === 'scalar' && selT.prim === 'integer') {
+          return T.record(containerT.columns);
+        }
       }
       return T.deferred();
     }
@@ -1087,6 +1240,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         // Flat tensor: all axes are loop axes; cell type = scalar elem.
         return { collection: true, outerShape: t.shape.slice(), cellType: t.elem };
       }
+      if (t && t.kind === 'table') {
+        // Spec §03: "When a table is passed to broadcast, it is
+        // traversed row-wise and each row treated as a record passed
+        // to the function used in the broadcast." Outer axis = nrows;
+        // per cell the callable sees a record over the table's
+        // columns.
+        return {
+          collection: true,
+          outerShape: [t.nrows],
+          cellType: T.record(t.columns),
+        };
+      }
       if (t && t.kind === 'scalar') {
         return { collection: false, cellType: t };
       }
@@ -1098,7 +1263,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         // Treat as held-constant; cellType propagates through.
         return { collection: false, cellType: t };
       }
-      // measure / failed / record / tuple / etc — can't tell statically.
+      // measure / failed / tuple / record (records are explicitly
+      // disallowed as broadcast inputs per spec §04) / etc.
       return null;
     }
     const argClassif: any[] = [];
