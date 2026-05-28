@@ -307,6 +307,212 @@ test('broadcast: dotted op over rank-1 array preserves shape', () => {
   assert.ok(T.equal(t.elem, T.REAL));
 });
 
+test('broadcast: user-defined callable resolves cell-type via callee result', () => {
+  // `f.(args)` lowers to `broadcast(self.f, args...)`, keeping `f`
+  // as a bare ref. inferBroadcast looks up the callable's declared
+  // result type — same monomorphic-at-definition simplification
+  // inferUserCall uses for scalar calls — and stacks it across the
+  // broadcast outer shape. Without this, dotted-broadcasts of user
+  // functions were silently deferred and downstream consumers (the
+  // viewer's plot-plan, materialise-time shape checks) had to
+  // fall back to runtime-value heuristics. Pinning this on the
+  // motivating polyeval case from nested-broadcast.test.ts.
+  const { bindings, errors } = infer(`
+    polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+    C = [2.3, 1.5, 0.7]
+    X = [1.1, 2.2, 3.3]
+    Y = polyeval.([C], X)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'Y');
+  assert.equal(t.kind, 'array',
+    'Y should infer to array, got ' + JSON.stringify(t));
+  assert.deepEqual(t.shape, [3],
+    'Y outer shape should be [3] after singleton-expanding [1] vs [3], '
+    + 'got ' + JSON.stringify(t.shape));
+  assert.ok(T.equal(t.elem, T.REAL),
+    'Y cell type should be real, got ' + JSON.stringify(t.elem));
+});
+
+test('broadcast: singleton outer-shape expansion ([1] × [3] → [3])', () => {
+  // Per spec §04: size-one outer axes broadcast by repetition. The
+  // nested-vector classifier sees `[C]` (length 1) as outer rank 1,
+  // shape [1]; `X` (length 3) as outer rank 1, shape [3]. Both have
+  // outer rank 1; per-axis sizes 1 vs 3 broadcast to 3. (`unifyArith`
+  // didn't implement singleton-broadcast — this case used to defer.)
+  const { bindings, errors } = infer(`
+    polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+    C = [2.3, 1.5, 0.7]
+    Xsingle = [3.3]
+    Y = polyeval.([C], Xsingle)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'Y');
+  assert.equal(t.kind, 'array');
+  // Both outer axes are length 1; merged outer shape is [1].
+  assert.deepEqual(t.shape, [1]);
+});
+
+test('broadcast: multi-axis flat tensor preserves all axes', () => {
+  // `M .^ 2` with M = rowstack(...) — M is a flat rank-2 tensor; all
+  // axes are loop axes (not nested-vector). The new classifier keeps
+  // outer shape = M.shape, scalar elem; result has the same rank-2
+  // shape. Pins that the multi-axis path didn't regress when the
+  // classifier learned about nested vectors.
+  const { bindings, errors } = infer(`
+    M = rowstack([[1.0, 2.0], [3.0, 4.0]])
+    out = M .^ 2
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'out');
+  assert.equal(t.kind, 'array');
+  assert.equal(t.rank, 2);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('broadcast: 2-level nested Ref-wrap polyeval.([[C]], X_2D) → array(2, [2,3], real)', () => {
+  // Deeper nesting: `[[C]]` is `vector(vector(C))` →
+  // array(rank=1, shape=[1], elem=array(rank=1, shape=[1], elem=array(rank=1, shape=[3], real))).
+  // For broadcast type inference, the OUTERMOST axis is the loop
+  // axis; the cell sees the inner nest whole. With `X_2D` of shape
+  // [2, 3], the broadcast iterates the outer rank-1 axis (singleton
+  // expansion 1 → 2), and per cell sees `[C]` and a length-3 slice
+  // of X_2D. But X_2D's outer rank is 2 (flat tensor), while [[C]]'s
+  // outer rank is 1 — the spec "same number of axes" rule kicks in,
+  // so this case statically defers. (The viable shape for double-Ref
+  // broadcast is when the OTHER arg is also nested-rank-2, e.g.
+  // a length-(N*M) outer of inner-rank-1 vectors; see the next test.)
+  const { bindings, errors } = infer(`
+    polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+    C = [2.3, 1.5, 0.7]
+    X_2D = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    Y = polyeval.([[C]], X_2D)
+  `);
+  // Outer-rank mismatch ([[C]] is nested rank 1; X_2D is flat rank 2)
+  // ⇒ defer. Diagnostic-free: typeinfer doesn't claim a hard error
+  // here because the runtime evaluator surfaces the precise mismatch
+  // at the broadcast call site (see test/nested-broadcast.test.ts
+  // v2 outer-rank-mismatch case). To get a non-deferred type here
+  // you'd need `[[C]]` paired with a NESTED-RANK-2 collection (e.g.
+  // `[[V1, V2], [V3, V4]]`); pinned in the next test.
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'Y');
+  assert.equal(t.kind, 'deferred',
+    'expected deferred (outer-rank mismatch); got ' + JSON.stringify(t));
+});
+
+test('broadcast: 2-level nested matches 2-level nested ([[C]] vs [[V1,V2],[V3,V4]])', () => {
+  // The composable companion to the rank-mismatch case above.
+  // `[[C]]` is nested rank-1 (outer shape [1]) wrapping a length-3 vector
+  // (Ref-wrapped); `[[V1, V2], [V3, V4]]` is nested rank-1 (outer shape [2])
+  // wrapping length-2 nested-vectors. Both have outer rank 1 — but the
+  // inner-rank-1 cells then face their own broadcast (dot of inner vectors).
+  // Outer-rank-1 unify of [1] vs [2] → [2] via singleton expansion.
+  const { bindings, errors } = infer(`
+    dot = (a, b) -> sum(a .* b)
+    C = [1.0, 1.0, 1.0]
+    V1 = [1.0, 2.0, 3.0]
+    V2 = [4.0, 5.0, 6.0]
+    Y = dot.([C], [V1, V2])
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'Y');
+  assert.equal(t.kind, 'array');
+  // Outer-shape unify [1] vs [2] → [2] via singleton expansion.
+  assert.deepEqual(t.shape, [2]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('broadcast: pairwise dot.([V1,V2,V3], [W1,W2,W3]) → array(1, [3], real)', () => {
+  // Pairwise broadcast over two length-3 nested vectors (`[V1,V2,V3]`
+  // and `[W1,W2,W3]`). Both have outer rank 1, cell type = inner
+  // length-k vector. The callable's result is a scalar (sum reduces
+  // the per-cell elementwise product). Broadcast result = array(1, [3], real).
+  const { bindings, errors } = infer(`
+    dot = (a, b) -> sum(a .* b)
+    V1 = [1.0, 2.0, 3.0]
+    V2 = [4.0, 5.0, 6.0]
+    V3 = [7.0, 8.0, 9.0]
+    W1 = [1.0, 0.0, 0.0]
+    W2 = [0.0, 1.0, 0.0]
+    W3 = [0.0, 0.0, 1.0]
+    Y = dot.([V1, V2, V3], [W1, W2, W3])
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'Y');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('broadcast: chained dotted ops preserve shape across compositions', () => {
+  // Broadcast results feeding broadcast inputs. After the first
+  // `A .+ B` types as array(1, [2], real), the second broadcast
+  // `... .* B` sees both args as flat rank-1 arrays of matching
+  // shape — outer-shape unify gives [2]. Pins the chained-typing
+  // case so later tightening doesn't accidentally erase the result
+  // type of the intermediate.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0]
+    B = [10.0, 20.0]
+    Y = (A .+ B) .* B
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'Y');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [2]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('aggregate: matrix multiplication infers array(2, [2, 2], real)', () => {
+  // Spec §04 §sec:aggregate canonical example. Output rank = 2
+  // (output_axes = [.i, .k]), shape inferred from A and B's
+  // statically-known dims (rowstack is loose at the type level, so
+  // axis lengths come back %dynamic — but the rank is concrete and
+  // the elem type is real).
+  const { bindings, errors } = infer(`
+    A = rowstack([[1.0, 3.0, 5.0], [9.0, 5.0, 1.0]])
+    B = rowstack([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+    C = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'C');
+  assert.equal(t.kind, 'array');
+  assert.equal(t.rank, 2);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('aggregate: column-wise reduction infers array(1, ...)', () => {
+  // Reducing over `.i` keeps `.j` in the output → result is a
+  // rank-1 array indexed by `.j`. Tests that the axis-length
+  // inference correctly picks the right dim from A's shape.
+  const { bindings, errors } = infer(`
+    A = rowstack([[1.0, 3.0, 5.0], [9.0, 5.0, 1.0]])
+    V = aggregate(var, [.j], A[.i, .j])
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'V');
+  assert.equal(t.kind, 'array');
+  assert.equal(t.rank, 1);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('aggregate: outer-product (no reduction) infers rank-2', () => {
+  // No reduction axis ⇒ output rank = input axes. The body is
+  // u[.i] * v[.j] — pure broadcast, no contraction.
+  const { bindings, errors } = infer(`
+    u = [1.0, 2.0, 3.0]
+    v = [10.0, 20.0]
+    O = aggregate(sum, [.i, .j], u[.i] * v[.j])
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'O');
+  assert.equal(t.kind, 'array');
+  assert.equal(t.rank, 2);
+  assert.deepEqual(t.shape, [3, 2]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
 test('broadcast: kernel-broadcast stays deferred so joint/draw still accept it', () => {
   // `broadcast(K, ...)` is semantically an array of measures, but
   // tightening that would tip joint/draw's measure-typecheck into
