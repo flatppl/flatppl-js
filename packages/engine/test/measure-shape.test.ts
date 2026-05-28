@@ -153,7 +153,52 @@ test('measure(domain, opts) preserves only specified fields', () => {
 });
 
 // =====================================================================
-// 4. substitute() preserves shape metadata
+// 4. Kernel-broadcast populates batchShape
+// =====================================================================
+
+test('measure type: broadcast(K, vec) populates batchShape', () => {
+  // K is a kernel over scalar reals; broadcasting over a length-N
+  // vector produces a measure with batchShape = [N] and the inner
+  // kernel's eventShape = [].
+  const t = inferredTypeOf(`
+flatppl_compat = "0.1"
+mu = elementof(reals)
+K = fn(Normal(mu = mu + _, sigma = 1.0))
+xs = [0.5, 1.0, 1.5, 2.0]
+D = broadcast(K, xs)
+`, 'D');
+  assert.equal(t.kind, 'measure');
+  assert.deepEqual(t.batchShape, [4]);
+  assert.deepEqual(t.eventShape, []);
+  assert.deepEqual(t.sampleShape, []);
+});
+
+test('measure type: kernel-broadcast batchShape distinct from iid sampleShape', () => {
+  // Same outer length 4 but different decomposition: iid → sample;
+  // kernel-broadcast → batch. The distinction matters for fusion
+  // (b) and for density-walk axis-reduction (event axes sum out,
+  // batch axes preserve, sample axes per-replicate).
+  const iidT = inferredTypeOf(`
+flatppl_compat = "0.1"
+mu = elementof(reals)
+M = Normal(mu = mu, sigma = 1.0)
+X = iid(M, 4)
+`, 'X');
+  const bcastT = inferredTypeOf(`
+flatppl_compat = "0.1"
+mu = elementof(reals)
+K = fn(Normal(mu = mu + _, sigma = 1.0))
+xs = [0.5, 1.0, 1.5, 2.0]
+D = broadcast(K, xs)
+`, 'D');
+  assert.deepEqual(iidT.sampleShape, [4]);
+  assert.deepEqual(iidT.batchShape, []);
+  assert.deepEqual(bcastT.sampleShape, []);
+  assert.deepEqual(bcastT.batchShape, [4]);
+});
+
+// =====================================================================
+// 5. substitute() preserves shape metadata
 // =====================================================================
 
 test('substitute() preserves sampleShape / batchShape / eventShape', () => {

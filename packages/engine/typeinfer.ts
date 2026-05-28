@@ -1341,10 +1341,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // level: a measure over an array whose shape is the broadcast outer
     // shape and whose element type is the kernel's per-cell variate
     // type. Mirrors how iid is typed (see inferIid).
+    //
+    // P2 — populate the three-shape decomposition. The outer broadcast
+    // shape is `batchShape` (conditionally-independent cells, NOT iid
+    // replicates per Pyro/TFP convention); the inner kernel's
+    // `eventShape` carries through; sampleShape stays empty.
     if (elem && elem.kind === 'measure') {
       if (!hasCollection) return elem;   // no outer axis ⇒ single call
+      const batchShape = outerShape!.slice();
+      const eventShape = Array.isArray(elem.eventShape) ? elem.eventShape.slice() : [];
+      const sampleShape = Array.isArray(elem.sampleShape) ? elem.sampleShape.slice() : [];
       return T.measure(
-        T.array(outerShape!.length, outerShape!.slice(), elem.domain));
+        T.array(outerShape!.length, outerShape!.slice(), elem.domain),
+        { sampleShape, batchShape, eventShape });
     }
 
     // Phase 5: combine for the value-broadcast (non-kernel) case.
