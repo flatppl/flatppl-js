@@ -735,6 +735,75 @@ const add = _makeElementwiseBinop((a: any, b: any) => a + b, 'add');
 const sub = _makeElementwiseBinop((a: any, b: any) => a - b, 'sub');
 
 // =====================================================================
+// Batched-elementwise primitives for ops whose spec form has different
+// semantics (multiplicative arith) or is scalar-only (unary maths).
+// =====================================================================
+//
+// These are the engine primitives for `broadcasted(<op>)(args)` — the
+// canonical batched form of each scalar op (engine-concepts §20.1; spec
+// §04 `broadcasted(f)`). They differ from spec-`<op>` for ops whose
+// spec semantics overload on rank (matrix product for `mul`, etc.) —
+// `broadcast(mul, A, B)` is elementwise per cell, distinct from
+// `mul(A, B)` which is matrix product on rank-2.
+//
+// Real-only for the binary multiplicative family; complex dispatch
+// falls back to per-cell broadcast (rare in practice; covered by
+// existing `_cxBroadcast`). The factory pattern matches `add`/`sub` —
+// elementwise loop over flat row-major data; rank-0 × rank-N
+// broadcasts via `_scalarBroadcastBinop`; shapes must otherwise
+// match.
+
+const mulElem = _makeElementwiseBinop((a: any, b: any) => a * b, 'mulElem');
+const divElem = _makeElementwiseBinop((a: any, b: any) => a / b, 'divElem');
+const powElem = _makeElementwiseBinop((a: any, b: any) => Math.pow(a, b), 'powElem');
+const modElem = _makeElementwiseBinop((a: any, b: any) => a % b, 'modElem');
+
+// Unary elementwise factory: same shape as `_makeElementwiseBinop` but
+// for one-argument scalar functions. Applies `scalarFn` pointwise over
+// the flat data buffer regardless of rank. Diag-stored falls back to
+// densify (the scalar fn need not preserve zero, so we can't keep diag
+// storage in general).
+function _makeElementwiseUnop(scalarFn: any, opName: any) {
+  return function elementwiseUnop(a: any): any {
+    if (!isValue(a)) {
+      throw new Error('value-ops.' + opName + ': operand must be a Value');
+    }
+    if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
+    // Complex unary scalar maths route through _cxBroadcast in the
+    // sampler layer; keep this path real-only.
+    if (isComplexValue(a)) {
+      throw new Error('value-ops.' + opName + ': complex input not supported '
+        + 'on this fast path; expected real-only Value');
+    }
+    const out = new Float64Array(a.data.length);
+    for (let i = 0; i < a.data.length; i++) out[i] = scalarFn(a.data[i]);
+    const r: any = { shape: a.shape.slice(), data: out };
+    if (a.t && a.t !== 'N') r.t = a.t;
+    if (a.dtype) r.dtype = a.dtype;
+    return r;
+  };
+}
+
+// Engine primitives for `broadcasted(<unary-scalar-op>)(arg)`. Each
+// applies the underlying JS scalar fn pointwise over flat data at any
+// rank. Names use the `<op>Elem` convention to keep them distinct
+// from the existing scalar-only `ARITH_OPS.<op>` entries.
+const expElem    = _makeElementwiseUnop(Math.exp,    'expElem');
+const logElem    = _makeElementwiseUnop(Math.log,    'logElem');
+const sqrtElem   = _makeElementwiseUnop(Math.sqrt,   'sqrtElem');
+const sinElem    = _makeElementwiseUnop(Math.sin,    'sinElem');
+const cosElem    = _makeElementwiseUnop(Math.cos,    'cosElem');
+const tanElem    = _makeElementwiseUnop(Math.tan,    'tanElem');
+const absElem    = _makeElementwiseUnop(Math.abs,    'absElem');
+const abs2Elem   = _makeElementwiseUnop((x: any) => x * x, 'abs2Elem');
+const log10Elem  = _makeElementwiseUnop(Math.log10,  'log10Elem');
+const log1pElem  = _makeElementwiseUnop(Math.log1p,  'log1pElem');
+const expm1Elem  = _makeElementwiseUnop(Math.expm1,  'expm1Elem');
+const floorElem  = _makeElementwiseUnop(Math.floor,  'floorElem');
+const ceilElem   = _makeElementwiseUnop(Math.ceil,   'ceilElem');
+const roundElem  = _makeElementwiseUnop(Math.round,  'roundElem');
+
+// =====================================================================
 // neg — pointwise negation
 // =====================================================================
 //
@@ -1121,6 +1190,27 @@ module.exports = {
   addN,
   subN,
   negN,
+  // engine-concepts §20.1 — batched-elementwise primitives for the
+  // canonical `broadcasted(<op>)` form. Used by the broadcast
+  // dispatcher's fast path when the head is a known scalar primitive.
+  mulElem,
+  divElem,
+  powElem,
+  modElem,
+  expElem,
+  logElem,
+  sqrtElem,
+  sinElem,
+  cosElem,
+  tanElem,
+  absElem,
+  abs2Elem,
+  log10Elem,
+  log1pElem,
+  expm1Elem,
+  floorElem,
+  ceilElem,
+  roundElem,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
   _valueToNested,

@@ -1054,7 +1054,235 @@ ops.register({
 // `ir` (not just `ir.args`) so kwargs are visible — see ops.ts
 // dispatchHigherOrder signature.
 
+// engine-concepts §20.1 — `broadcasted(<scalar_op>)` engine primitives.
+// Maps op-name → { arity, impl(values) → Value }. `impl` takes the
+// already-evaluated broadcast args as Values (rank ≥ 0) and returns
+// a Value of the elementwise-application result. The factory is value-
+// ops' `_makeElementwiseBinop` / `_makeElementwiseUnop` under the
+// hood — flat row-major loop, NumPy-style broadcasting on rank-0 ×
+// rank-N.
+//
+// Set membership: every scalar primitive whose `broadcasted(<op>)`
+// engine primitive exists. For ops whose spec semantics ARE
+// elementwise at any rank (add/sub/neg per spec §07 "arrays of same
+// shape"), the spec primitive doubles as the batched primitive —
+// `valueOps.add(A, B)` is already elementwise. For ops whose spec
+// form has different semantics on rank ≥ 1 (mul = matmul) or is
+// scalar-only at spec (unary scalar maths), the engine primitive is
+// a separate `<op>Elem` impl in value-ops.
+//
+// Lazy require: see _broadcastLogical above for why.
+let _BROADCASTED_PRIMS_CACHE: any = null;
+function _broadcastedPrimitives(): any {
+  if (_BROADCASTED_PRIMS_CACHE) return _BROADCASTED_PRIMS_CACHE;
+  const vo = require('./value-ops.ts');
+  _BROADCASTED_PRIMS_CACHE = {
+    // Binary additive (spec elementwise; value-ops impl IS the batched form).
+    add:    { arity: 2, impl: (vs: any[]) => vo.add(vs[0], vs[1]) },
+    sub:    { arity: 2, impl: (vs: any[]) => vo.sub(vs[0], vs[1]) },
+    // Binary multiplicative (spec has matrix semantics on rank ≥ 1;
+    // the batched primitives are new elementwise impls).
+    mul:    { arity: 2, impl: (vs: any[]) => vo.mulElem(vs[0], vs[1]) },
+    div:    { arity: 2, impl: (vs: any[]) => vo.divElem(vs[0], vs[1]) },
+    divide: { arity: 2, impl: (vs: any[]) => vo.divElem(vs[0], vs[1]) },
+    pow:    { arity: 2, impl: (vs: any[]) => vo.powElem(vs[0], vs[1]) },
+    mod:    { arity: 2, impl: (vs: any[]) => vo.modElem(vs[0], vs[1]) },
+    // Unary negation (spec elementwise; value-ops impl IS batched).
+    neg:    { arity: 1, impl: (vs: any[]) => vo.neg(vs[0]) },
+    // Unary scalar maths (spec is scalar-only; engine primitive is
+    // pointwise application of the JS scalar fn over flat data).
+    exp:    { arity: 1, impl: (vs: any[]) => vo.expElem(vs[0]) },
+    log:    { arity: 1, impl: (vs: any[]) => vo.logElem(vs[0]) },
+    sqrt:   { arity: 1, impl: (vs: any[]) => vo.sqrtElem(vs[0]) },
+    sin:    { arity: 1, impl: (vs: any[]) => vo.sinElem(vs[0]) },
+    cos:    { arity: 1, impl: (vs: any[]) => vo.cosElem(vs[0]) },
+    tan:    { arity: 1, impl: (vs: any[]) => vo.tanElem(vs[0]) },
+    abs:    { arity: 1, impl: (vs: any[]) => vo.absElem(vs[0]) },
+    abs2:   { arity: 1, impl: (vs: any[]) => vo.abs2Elem(vs[0]) },
+    log10:  { arity: 1, impl: (vs: any[]) => vo.log10Elem(vs[0]) },
+    log1p:  { arity: 1, impl: (vs: any[]) => vo.log1pElem(vs[0]) },
+    expm1:  { arity: 1, impl: (vs: any[]) => vo.expm1Elem(vs[0]) },
+    floor:  { arity: 1, impl: (vs: any[]) => vo.floorElem(vs[0]) },
+    ceil:   { arity: 1, impl: (vs: any[]) => vo.ceilElem(vs[0]) },
+    round:  { arity: 1, impl: (vs: any[]) => vo.roundElem(vs[0]) },
+  };
+  return _BROADCASTED_PRIMS_CACHE;
+}
+
+// Try the fast path: when the broadcast head names a known scalar
+// primitive (either as a bare ref or as a synthesised functionof
+// wrapping the op with the params in some order), dispatch directly
+// to the corresponding value-ops elementwise primitive. Returns the
+// result Value on success; null when no fast path applies (caller
+// falls through to the per-cell `_broadcastApply` path).
+//
+// Recognises both lowered shapes:
+//   1. `broadcast(<ref to op>, A, B, …)` — the form `broadcasted(<op>)
+//      (A, B, …)` lowers to.
+//   2. `broadcast(functionof(<op>(_arg1_, _arg2_, …)), A, B, …)` —
+//      the form `A .* B` and `op.(A, B)` lower to (dotted-binary +
+//      `f.(…)` surfaces, plus `broadcast(<op>, …)` direct call when
+//      `<op>` is in BUILTIN_FUNCTIONS).
+//
+// Soundness gates:
+//   - All evaluated broadcast args must be Values (or coercible via
+//     asValue — bare numbers / Float64Arrays / nested JS arrays).
+//   - For binary ops the args' shapes must match or one is rank-0
+//     (value-ops elementwise handles the rest including rank-0 ×
+//     rank-N broadcasting).
+//   - For ops with kwargs the head's `paramKwargs` (functionof case)
+//     or arity-bound positional order applies; mismatches return
+//     null (cold path takes over).
+function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
+  const args   = ir.args   || [];
+  const kwargs = ir.kwargs || {};
+  if (args.length < 1) return null;
+  const head = args[0];
+  if (!head) return null;
+  const prims = _broadcastedPrimitives();
+
+  let opName: string | null = null;
+  let arity = 0;
+  // For the functionof case, `paramReorder[i]` says: the i-th call
+  // arg to the body comes from broadcast position `paramReorder[i]`.
+  // For the bare-ref case it's identity (i.e., [0, 1, …, arity-1]).
+  let paramReorder: number[] | null = null;
+  let paramKwargs: string[] | null = null;
+
+  if (head.kind === 'ref' && head.ns === 'self') {
+    const desc = prims[head.name];
+    if (!desc) return null;
+    opName = head.name;
+    arity = desc.arity;
+    paramReorder = null;  // identity
+    paramKwargs = null;
+  } else if (head.kind === 'call' && head.op === 'functionof'
+             && Array.isArray(head.params)
+             && head.body && head.body.kind === 'call' && head.body.op) {
+    const body = head.body;
+    if (body.kwargs && Object.keys(body.kwargs).length > 0) return null;
+    if (Array.isArray(body.fields) && body.fields.length > 0) return null;
+    const bodyArgs: any[] = body.args || [];
+    if (bodyArgs.length !== head.params.length) return null;
+    const desc = prims[body.op];
+    if (!desc) return null;
+    if (desc.arity !== bodyArgs.length) return null;
+    // Body args must each be a `%local` ref to one of head.params;
+    // record the param index for each body position.
+    const order = new Array(bodyArgs.length);
+    for (let i = 0; i < bodyArgs.length; i++) {
+      const ba = bodyArgs[i];
+      if (!ba || ba.kind !== 'ref' || ba.ns !== '%local') return null;
+      const idx = head.params.indexOf(ba.name);
+      if (idx < 0) return null;
+      order[i] = idx;
+    }
+    opName = body.op;
+    arity = desc.arity;
+    paramReorder = order;
+    paramKwargs = Array.isArray(head.paramKwargs) ? head.paramKwargs : null;
+  } else {
+    return null;
+  }
+
+  // Resolve the broadcast call's positional / kwarg arg sources into
+  // a positional array of length `arity` (the head's declared param
+  // order — equivalent to `head.params` for functionof, or the op's
+  // declared order for bare refs).
+  const sources: any[] = new Array(arity);
+  const kwNames = Object.keys(kwargs);
+  if (kwNames.length === 0) {
+    const posArgs = args.slice(1);
+    if (posArgs.length !== arity) return null;
+    for (let i = 0; i < arity; i++) sources[i] = posArgs[i];
+  } else if (args.length === 1) {
+    // Pure kwargs form. Need paramKwargs (functionof case) or fall
+    // back to arity-1 mapping.
+    if (!paramKwargs || paramKwargs.length !== arity) return null;
+    for (let i = 0; i < arity; i++) {
+      const name = paramKwargs[i];
+      if (!(name in kwargs)) return null;
+      sources[i] = kwargs[name];
+    }
+    // Reject extra kwargs the head doesn't declare.
+    for (const n of kwNames) {
+      if (paramKwargs.indexOf(n) === -1) return null;
+    }
+  } else {
+    return null;  // mixed pos+kw — cold path
+  }
+
+  // Evaluate broadcast arg IRs to Values. The fast path requires
+  // every evaluated arg to be a Value (rank ≥ 0); bare nested JS
+  // arrays (the "Ref-wrap" idiom) or per-atom params not yet
+  // coerced fall to the per-cell `_broadcastApply` path.
+  const valueLib = require('./value.ts');
+  const inputs: any[] = new Array(arity);
+  for (let i = 0; i < arity; i++) {
+    const v = ctx.evaluateExpr(sources[i], ctx.env);
+    if (!v) return null;
+    // Coerce friendly scalar/typed-array inputs to Values; anything
+    // else (records, nested JS arrays, etc.) bails to the cold path.
+    if (valueLib.isValue(v)) {
+      inputs[i] = v;
+      continue;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean'
+        || v instanceof Float64Array
+        || (ArrayBuffer.isView(v) && typeof (v as any).length === 'number')) {
+      inputs[i] = valueLib.asValue(v);
+      continue;
+    }
+    return null;
+  }
+
+  // Reorder per the body's param order if needed (functionof case
+  // with swizzled body args).
+  let opInputs: any[];
+  if (paramReorder) {
+    opInputs = new Array(arity);
+    for (let i = 0; i < arity; i++) opInputs[i] = inputs[paramReorder[i]];
+  } else {
+    opInputs = inputs;
+  }
+
+  // Shape compatibility check — the fast-path requires either:
+  //  (a) all inputs are rank-0 (scalar), OR
+  //  (b) every non-rank-0 input has the SAME shape (value-ops'
+  //      elementwise contract handles this). Spec §04's singleton-
+  //      axis broadcast (size-1 → size-N by repetition) is NOT
+  //      handled here; those broadcasts ride the cold path
+  //      `_broadcastApply` which expands singletons correctly.
+  // Return null on shape mismatch so the caller falls back.
+  let referenceShape: number[] | null = null;
+  for (const v of opInputs) {
+    if (v.shape.length === 0) continue;  // rank-0 broadcasts trivially
+    if (referenceShape === null) referenceShape = v.shape;
+    else {
+      if (v.shape.length !== referenceShape.length) return null;
+      for (let i = 0; i < v.shape.length; i++) {
+        if (v.shape[i] !== referenceShape[i]) return null;
+      }
+    }
+  }
+
+  // Dispatch to the elementwise impl. value-ops' elementwise factory
+  // handles rank-0 × rank-N broadcasting and same-shape elementwise;
+  // anything else has been ruled out above.
+  return prims[opName!].impl(opInputs);
+}
+
 function _broadcastLogical(ir: any, ctx: any): any {
+  // Fast path: `broadcasted(<scalar_op>)(args)` and the equivalent
+  // dotted-binary / `op.(…)` lowered forms dispatch directly to the
+  // engine's batched-elementwise primitive (engine-concepts §20.1).
+  // Bypasses per-cell iteration; uses value-ops' flat-data loops.
+  // Returns null when the head doesn't match a known scalar primitive
+  // OR the args don't evaluate to coercible Values — the per-cell
+  // path below then runs as before.
+  const fast = _maybeFastBroadcasted(ir, ctx);
+  if (fast !== null) return fast;
+
   const args   = ir.args   || [];
   const kwargs = ir.kwargs || {};
   if (args.length < 1) throw new Error('broadcast: no function argument');
