@@ -390,23 +390,13 @@ function resolveRef(ir: any, env: any) {
   return env[ir.name];
 }
 
-// Determine whether `v` carries an intrinsic vector/matrix shape
-// (i.e. is a Value with rank ≥ 2, or rank 1 with length ≠ atom-count
-// N). Used by mul / add / sub dispatchers to route shape-aware paths.
-// Bare JS numbers and bare Float64Arrays are NOT rich; they pass
-// through the existing scalar-broadcast helpers.
-function _isShapeRich(v: any, N?: any) {
-  if (!valueLib.isValue(v)) return false;
-  const r = v.shape.length;
-  if (r === 0) return false;                    // atom-indep scalar
-  if (r === 1 && N !== undefined && v.shape[0] === N) return false;  // batched scalar
-  return true;
-}
-
 // Shape-aware add/sub/neg dispatcher (used inline in the
-// ARITH_OPS table below). Same logic as the mul dispatcher: if either
-// operand carries an intrinsic vector/matrix shape, route to
-// value-ops; otherwise stay on the scalar JS fast path.
+// ARITH_OPS table below). engine-concepts §20 / TODO Phase 1:
+// whenever either operand is a Value, route through value-ops —
+// no bare-number unwrap branch. valueOps handles rank-0 + rank-N
+// via NumPy-style broadcasting (stride-0 read on rank-0 operands),
+// so a rank-0 constant Value flowing into a batched op produces
+// the right result without pre-replicating it to a length-N buffer.
 //
 // Complex extension: when either operand is a complex scalar ({re, im}),
 // promote both to complex and dispatch through the complex helper. The
@@ -418,12 +408,7 @@ function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn:
     return complexFn(_toComplex(a), _toComplex(b));
   }
   if (valueLib.isValue(a) || valueLib.isValue(b)) {
-    if (_isShapeRich(a) || _isShapeRich(b)) {
-      return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
-    }
-    const av = valueLib.isValue(a) ? a.data[0] : a;
-    const bv = valueLib.isValue(b) ? b.data[0] : b;
-    return scalarFn(av, bv);
+    return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
   }
   return scalarFn(a, b);
 }
@@ -444,36 +429,18 @@ function _tableReduce(t: any, reduceCol: (col: any) => any): any {
 const ARITH_OPS = {
   add: (a: any, b: any) => _shapeAwareBinop('add', (x: any, y: any) => x + y, a, b, _cAdd),
   sub: (a: any, b: any) => _shapeAwareBinop('sub', (x: any, y: any) => x - y, a, b, _cSub),
-  // mul: shape-dispatched. Bare scalars stay on the JS-multiply fast
-  // path; Value inputs with rank ≥ 1 (vectors / matrices, with
-  // Klein-4 transpose tag respected) route to value-ops.mul. The
-  // dispatcher is reached when:
-  //   - ARITH_OPS_N.mul → broadcast2 sees both inputs as not-batched,
-  //     unwraps the (any) Value to its scalar via _scalarVal, calls
-  //     ARITH_OPS.mul. Hit only when both operands are scalars (the
-  //     atom-indep fast path); the (a, b) → a*b primitive still wins.
-  //   - ARITH_OPS_N.mul detects a shape-rich Value and routes around
-  //     broadcast2 directly to value-ops.mul (see ARITH_OPS_N
-  //     construction below).
-  //   - evaluateExpr (single-point) hits ARITH_OPS.mul directly. If
-  //     either arg is a shape-rich Value it dispatches here.
+  // mul: engine-concepts §20 / TODO Phase 1 — whenever either operand
+  // is a Value, route through value-ops.mul (which handles rank-0,
+  // rank-1 vec/transposed-vec inner/outer, rank-2 matmul/matvec via
+  // Klein-4 transpose-tag dispatch, plus rank-0 broadcasting). Both
+  // bare numbers → scalar JS fast path. No bare-number scalar unwrap
+  // branch — Value scalars produce Value outputs.
   mul: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cMul(_toComplex(a), _toComplex(b));
     }
     if (valueLib.isValue(a) || valueLib.isValue(b)) {
-      // Route to value-ops only when at least one operand has
-      // intrinsic shape; otherwise keep the scalar JS fast path
-      // (Value shape=[] inputs get unwrapped by _scalarVal above and
-      // never reach here in that form).
-      if (_isShapeRich(a) || _isShapeRich(b)) {
-        return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
-      }
-      // Both are atom-indep scalars (one wrapped, one bare or both
-      // wrapped). Unwrap and multiply.
-      const av = valueLib.isValue(a) ? a.data[0] : a;
-      const bv = valueLib.isValue(b) ? b.data[0] : b;
-      return av * bv;
+      return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
     }
     return a * b;
   },
@@ -492,10 +459,7 @@ const ARITH_OPS = {
   mod: (a: any, b: any) => a % b,
   neg: (a: any) => {
     if (_isComplex(a)) return _cNeg(a);
-    if (valueLib.isValue(a)) {
-      if (_isShapeRich(a)) return valueOps.neg(a);
-      return -a.data[0];
-    }
+    if (valueLib.isValue(a)) return valueOps.neg(a);
     return -a;
   },
   pos: (a: any) => _isComplex(a) ? a : +a,

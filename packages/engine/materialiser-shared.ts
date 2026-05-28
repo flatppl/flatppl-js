@@ -250,10 +250,21 @@ function pushFixedEnv(ctx: any, fixedEnv: Record<string, any>) {
  */
 function fixedValueToMeasure(v: any, sampleCount: any): any {
   if (typeof v === 'number' && Number.isFinite(v)) {
+    // engine-concepts §20.2 / TODO Phase 1: a fixed-phase scalar is a
+    // rank-0 Value (`{shape: [], data: Float64Array([v])}`); broadcasting
+    // against atom-batched operands happens lazily in valueOps via
+    // stride-0 reads on the rank-0 side. The canonical `.value` field
+    // is what consumers should read; `.samples` is kept as a length-N
+    // buffer transitionally so legacy histogram / viewer / per-atom
+    // consumers continue to see the broadcast form until they migrate
+    // to `valueOf(m)` reads.
     const arr = new Float64Array(sampleCount);
     arr.fill(v);
-    return scalarMeasureN(arr,
+    const m = scalarMeasureN(arr,
       { logWeights: null, logTotalmass: 0, n_eff: sampleCount });
+    m.value = valueLib.scalar(v);
+    m.rank0 = true;
+    return m;
   }
   // Shape-explicit Value (e.g. produced by `eye(n)`, `diagmat`,
   // transpose / lower_cholesky chains). A fixed-phase Value is ONE

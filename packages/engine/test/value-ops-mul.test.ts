@@ -271,11 +271,14 @@ test('ARITH_OPS.mul: bare scalars still on the JS fast path', () => {
   assert.equal(typeof ARITH_OPS.mul(2, 3), 'number');
 });
 
-test('ARITH_OPS.mul: Value scalar × Value scalar → JS number (unwrapped)', () => {
-  // When both inputs are shape=[] Values, mul dispatcher unwraps and
-  // multiplies — returning a plain JS number. The atom-indep fast path
-  // produces no allocation.
-  assert.equal(ARITH_OPS.mul(scalar(4), scalar(5)), 20);
+test('ARITH_OPS.mul: Value scalar × Value scalar → rank-0 Value', () => {
+  // engine-concepts §20 / TODO Phase 1: when either input is a Value,
+  // the dispatcher routes through value-ops.mul unconditionally —
+  // rank-0 × rank-0 produces a rank-0 Value (no bare-number unwrap).
+  // Callers that need a JS scalar use valueLib.asScalar(...).
+  const r = ARITH_OPS.mul(scalar(4), scalar(5));
+  assert.deepEqual(r.shape, []);
+  assert.equal(r.data[0], 20);
 });
 
 test('ARITH_OPS.mul: shape-rich Value routes to value-ops', () => {
