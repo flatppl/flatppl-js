@@ -428,6 +428,19 @@ function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn:
   return scalarFn(a, b);
 }
 
+// Apply a column-wise reduction to a table (spec §07 "Table reductions":
+// "When `sum`, `mean`, or `var` is applied to a table, the reduction
+// operates column-wise and returns a record whose fields are the column
+// names and values are the per-column reductions"). Used by the
+// reduction-table entries (sum, mean, var, std, prod, maximum, minimum)
+// to dispatch table inputs without each entry re-implementing the
+// column iteration.
+function _tableReduce(t: any, reduceCol: (col: any) => any): any {
+  const out: Record<string, any> = {};
+  for (const k in t.columns) out[k] = reduceCol(t.columns[k]);
+  return out;
+}
+
 const ARITH_OPS = {
   add: (a: any, b: any) => _shapeAwareBinop('add', (x: any, y: any) => x + y, a, b, _cAdd),
   sub: (a: any, b: any) => _shapeAwareBinop('sub', (x: any, y: any) => x - y, a, b, _cSub),
@@ -1292,6 +1305,7 @@ const ARITH_OPS = {
   // reductions flatten over EVERY entry, so multi-dim inputs reduce
   // to a single scalar.
   sum: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).sum);
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       let sR = 0, sI = 0;
@@ -1306,6 +1320,7 @@ const ARITH_OPS = {
     return s;
   },
   mean: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).mean);
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       const n = cplx.re.length;
@@ -1319,6 +1334,7 @@ const ARITH_OPS = {
     return s / arr.length;
   },
   prod: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).prod);
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       let pR = 1, pI = 0;
@@ -1342,9 +1358,12 @@ const ARITH_OPS = {
   // return the first field's length, matching the spec's "rows" notion.
   lengthof: (a: any) => {
     if (valueLib.isValue(a)) return a.shape.length === 0 ? 1 : a.shape[0];
+    // First-class table (spec §03): row count is explicit on the marker.
+    if (a && a.__table__ === true) return a.nrows || 0;
     if (a && !Array.isArray(a) && typeof a === 'object'
         && a.BYTES_PER_ELEMENT === undefined) {
-      // Record-of-columns ⇒ table. Length is the row count = first column's length.
+      // Legacy record-of-columns shape. Length = first column's length.
+      // Kept for the rare callers that hand-construct this form.
       for (const k in a) {
         if (!Object.prototype.hasOwnProperty.call(a, k)) continue;
         const col = a[k];
@@ -1391,12 +1410,14 @@ const ARITH_OPS = {
   indicesof:  (a: any) => _indicesOfImpl(a, /*zeroBased=*/ false),
   indicesof0: (a: any) => _indicesOfImpl(a, /*zeroBased=*/ true),
   maximum: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).maximum);
     const arr = _arrLike(a);
     let m = -Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
     return m;
   },
   minimum: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).minimum);
     const arr = _arrLike(a);
     let m = Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
@@ -1407,6 +1428,7 @@ const ARITH_OPS = {
   // n. n ≤ 1 has no sample variance; return 0 (matches the existing
   // n=0 sentinel and avoids a NaN from 0/0).
   var: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).var);
     const arr = _arrLike(a);
     const n = arr.length;
     if (n <= 1) return 0;
@@ -1421,6 +1443,7 @@ const ARITH_OPS = {
   // (`std | xs | √var(x)`) so the Bessel correction in `var` flows
   // through.
   std: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).std);
     const arr = _arrLike(a);
     const n = arr.length;
     if (n <= 1) return 0;
@@ -1952,6 +1975,11 @@ function evaluateCall(ir: any, env: any): any {
     if (obj == null || typeof obj !== 'object') {
       throw new Error(`evaluateExpr: get_field target is not a record (got ${typeof obj})`);
     }
+    // Table column access (spec §03): a __table__-marked value's
+    // fields are in `obj.columns`, not directly on `obj`.
+    if (obj.__table__ === true && obj.columns) {
+      return obj.columns[key];
+    }
     return obj[key];
   }
   // get(container, sel, ...) / get0(...) — spec §07 unified element /
@@ -2020,6 +2048,41 @@ function evaluateCall(ir: any, env: any): any {
     const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;
       const s = ss[0], rest = ss.slice(1);
+      // Table dispatch (spec §03). A table is a `__table__`-marked
+      // object holding a column-name → array map plus a row count.
+      // - String selector → column array.
+      // - Integer selector → record-of-column-values at that row.
+      // - ALL → iterate rows, returning an array of row-records.
+      if (c && c.__table__ === true && c.columns) {
+        if (typeof s === 'string') {
+          return applyGet(c.columns[s], rest);
+        }
+        if (typeof s === 'number' || typeof s === 'boolean') {
+          const idx = oneBased ? ((s as number) | 0) - 1 : ((s as number) | 0);
+          if (idx < 0 || idx >= c.nrows) {
+            throw new Error(`evaluateExpr: ${op} row index ${s} out of `
+              + `bounds for table with ${c.nrows} rows`);
+          }
+          const row: Record<string, any> = {};
+          for (const k in c.columns) {
+            const col = c.columns[k];
+            row[k] = valueLib.isValue(col) ? col.data[idx] : col[idx];
+          }
+          return applyGet(row, rest);
+        }
+        if (s === ALL) {
+          const rows: any[] = [];
+          for (let i = 0; i < c.nrows; i++) {
+            const row: Record<string, any> = {};
+            for (const k in c.columns) {
+              const col = c.columns[k];
+              row[k] = valueLib.isValue(col) ? col.data[i] : col[i];
+            }
+            rows.push(applyGet(row, rest));
+          }
+          return rows;
+        }
+      }
       if (s === ALL) {                       // whole axis: map over it
         if (!isArrayLike(c)) {
           throw new Error(`evaluateExpr: ${op} ':' axis-slice target is not an array`);
@@ -2272,6 +2335,32 @@ function evaluateCall(ir: any, env: any): any {
     const out: Record<string, any> = {};
     for (const f of ir.fields) out[f.name] = evaluateExpr(f.value, env);
     return out;
+  }
+  // table(col1=..., col2=...) per spec §03 §11. At runtime, a table
+  // is a `__table__` marker object: { __table__: true, columns: {col→array} }.
+  // The marker distinguishes a table value from a plain record (which
+  // is just a JS object with field values). Downstream consumers
+  // (get, lengthof, reductions, broadcast) branch on the marker.
+  if (op === 'table' && Array.isArray(ir.fields)) {
+    const columns: Record<string, any> = {};
+    let nrows: number | null = null;
+    for (const f of ir.fields) {
+      const colV = evaluateExpr(f.value, env);
+      const arr = valueLib.isValue(colV) ? colV
+                : (colV && colV.BYTES_PER_ELEMENT !== undefined) ? colV
+                : Array.isArray(colV) ? colV
+                : null;
+      if (arr === null) {
+        throw new Error(`table: column '${f.name}' must be an array (vector), got ${typeof colV}`);
+      }
+      const len = valueLib.isValue(arr) ? arr.shape[0] : arr.length;
+      if (nrows === null) nrows = len;
+      else if (nrows !== len) {
+        throw new Error(`table: column '${f.name}' has length ${len}, but earlier columns have length ${nrows} (spec §03: all columns must have equal length)`);
+      }
+      columns[f.name] = arr;
+    }
+    return { __table__: true, columns, nrows: nrows || 0 };
   }
   // rnginit(<bytes>) — produces a fresh Philox state from a byte vector
   // via FNV-1a-based key derivation (rng.seedFromBytes).

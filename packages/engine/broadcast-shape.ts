@@ -80,6 +80,28 @@ const valueLib = require('./value.ts');
 // one cell?". Used by `_broadcastApply`; intended to be the entry
 // point for any future broadcast-shape consumer.
 function classifyAxisStructure(v: any): any {
+  // Table (spec §03): when a table is passed to broadcast, it is
+  // traversed row-wise; each row is passed to the callable as a
+  // record over the table's columns. Outer rank = 1 (only the row
+  // axis is iterated); the cell is a record built on demand.
+  if (v && v.__table__ === true && v.columns) {
+    const nrows = v.nrows || 0;
+    const cols = v.columns;
+    const colNames = Object.keys(cols);
+    return {
+      coll: true, kind: 'table', table: v,
+      outerRank: 1, outerShape: [nrows],
+      getCell(idx: number[]) {
+        const i = (nrows === 1) ? 0 : idx[0];
+        const row: Record<string, any> = {};
+        for (let k = 0; k < colNames.length; k++) {
+          const col = cols[colNames[k]];
+          row[colNames[k]] = valueLib.isValue(col) ? col.data[i] : col[i];
+        }
+        return row;
+      },
+    };
+  }
   if (valueLib.isValue(v)) {
     if (v.shape.length === 0) return { coll: false, val: v.data[0] };
     const V = v;
