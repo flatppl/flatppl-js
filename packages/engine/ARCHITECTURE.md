@@ -1082,6 +1082,47 @@ legacy variants stay reachable. Future fusion (b) wires this
 surface through the materialiser; multivariate-density variants
 and backend lowering both layer on the same registry.
 
+**Atom-batched variant fast-paths (P1 follow-up, 2026-05-29).**
+`OpVariant` gains a `batched?: (args, N, ctx?) => result` slot
+alongside its atom-indep `impl`. `dispatch` / `dispatchVariant`
+accept `opts.atomN: number`: when set, the dispatcher tries
+atom-aware variant matching BEFORE exact-rank. The atom-aware
+matcher (`_pickVariantAtomAware`) accepts an arg whose shape rank
+== `pattern.rank + 1` AND whose leading dim == `atomN`, treats
+that arg as atom-batched, and matches the pattern against the
+rank-1-less sliced view. At least one arg must be atom-batched;
+all atom-batched args must share `atomN`.
+
+Caller signals atom-batching explicitly via `opts.atomN` — rank
+alone can't distinguish "rank-2 matrix" from "atom-batched rank-1
+vector (shape=[N, n])" so the dispatcher routes to the matmul
+variant by default and to `_matBatchedVecMul` only when `atomN`
+is set.
+
+Variants registered (engine-concepts §18.11):
+  - `add(rank-1, rank-1)`, `sub(rank-1, rank-1)` — atom-aware
+    routes mixed atom-batched/atom-indep cases through
+    `_atomBroadcastBinop` (the existing same-shape elementwise
+    path serves the both-atom-batched case).
+  - `neg(rank-1)` — atom-aware passthrough (`vo.neg` works at
+    any rank).
+  - `mul(rank-2 real, rank-1 real)` — atom-aware routes the
+    MvNormal `L · z` hot path through `_matBatchedVecMul`.
+
+Caller migration: `mat-multivariate.ts` and `mat-broadcast.ts`
+now route the MvNormal `μ + L·z` composition through
+`ops.dispatch('mul'/'add', [..], { atomN: N })`. Diag-stored `L`
+stays on `value-ops.mulN`'s pre-check (its null-fallthrough fast-
+path doesn't fit per-variant matching). `value-ops.mulN/addN/
+subN/negN` are kept as the diag-aware façades.
+
+Test coverage: `test/ops-atom-batched.test.ts` (12 tests) pins
+atom-aware routing for add/sub/neg/mul, opt-in gating via
+`opts.atomN`, the rank-2-as-matrix shadowing test (without
+`atomN`, the matmul variant correctly fires), mismatched-N
+refusal, and parity with `valueOps.mulN/addN` on the MvNormal
+shape combinations.
+
 `test/ops-variants-typed.test.ts` (21 tests): ArgInfo
 constructors, kind-discriminated matching, measure-shape
 matching (sampleShape / batchShape / eventShape with wildcards),

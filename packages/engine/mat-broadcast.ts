@@ -128,6 +128,7 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     // generation.
     if (!anyAtomDep && d.distOp === 'Normal' && paramVals.mu && paramVals.sigma) {
       const valueOps = require('./value-ops.ts');
+      const ops      = require('./ops.ts');
       const muV  = valueLib.asValue(paramVals.mu);
       const sigV = valueLib.asValue(paramVals.sigma);
       const muLen  = muV.shape.length === 0 ? 1 : muV.shape[0];
@@ -155,8 +156,17 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         refArrays: {}, seed: nameSeed(name, ctx.rootSeed),
       }).then((reply: any) => {
         const z = { shape: [N, K], data: reply.samples };
-        const Lz = valueOps.mulN(L, z, N);
-        const result = valueOps.addN({ shape: [K], data: muVec }, Lz, N);
+        // Atom-batched L·z + μ via the registry's atom-aware
+        // variants (TODO-flatppl-js P1 follow-up). L is shape=[K,K]
+        // (Cholesky factor of diag(σ²) — diag-stored on this hot
+        // path); z is atom-batched rank-1 shape=[N, K]; μ is rank-1
+        // shape=[K]. Diag-stored L stays on value-ops.mulN (its
+        // null-fallthrough fast-path doesn't fit variant dispatch).
+        const Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
+          ? valueOps.mulN(L, z, N)
+          : ops.dispatch('mul', [L, z], { atomN: N });
+        const result = ops.dispatch('add',
+          [{ shape: [K], data: muVec }, Lz], { atomN: N });
         return measureFromValue(result, {
           logWeights: null, logTotalmass: 0, n_eff: N,
         });

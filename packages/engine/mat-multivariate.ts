@@ -47,11 +47,15 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
   //   1. Resolve mu (atom-indep vector, shape=[n]) and cov (shape=[n, n]).
   //   2. L = lower_cholesky(cov)         — one O(n³) call.
   //   3. Draw N atoms of n standard normals → shape=[N, n].
-  //   4. result = mu + L * z (value-ops.mulN + addN)  → shape=[N, n].
+  //   4. result = mu + L * z via ops.dispatch with opts.atomN=N —
+  //      the registered atom-batched variants for mul(rank-2, rank-1)
+  //      and add(rank-1, rank-1) handle the L·z gemv + mu broadcast.
   //
   // logTotalmass = 0 (normalized probability measure); n_eff = N.
   const valueOps = require('./value-ops.ts');
+  const valueLib = require('./value.ts');
   const sampler  = require('./sampler.ts');
+  const ops      = require('./ops.ts');
   const distIR = d.distIR;
   if (!distIR || !distIR.kwargs || !distIR.kwargs.mu || !distIR.kwargs.cov) {
     return Promise.reject(new Error('MvNormal: requires mu and cov kwargs'));
@@ -97,8 +101,19 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
     seed: nameSeed(name, ctx.rootSeed),
   }).then((reply: any) => {
     const z = { shape: [N, n], data: reply.samples };
-    const Lz = valueOps.mulN(L, z, N);
-    const result = valueOps.addN(muValue, Lz, N);
+    // Atom-batched mul: L (rank-2 [n,n]) × z (atom-batched rank-1
+    // [N,n]) → result shape=[N, n]. The registry's atom-aware variant
+    // routes to _matBatchedVecMul. Diag-stored L stays on the
+    // value-ops.mulN pre-check path (its null-fallthrough semantics
+    // don't fit variant dispatch); we route through valueOps.mulN
+    // only when L is diag-stored.
+    const Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
+      ? valueOps.mulN(L, z, N)
+      : ops.dispatch('mul', [L, z], { atomN: N });
+    // Atom-batched add: mu (rank-1 [n]) + Lz (atom-batched rank-1
+    // [N, n]) → result shape=[N, n]. The registry's atom-aware
+    // variant routes to _atomBroadcastBinop.
+    const result = ops.dispatch('add', [muValue, Lz], { atomN: N });
     return measureFromValue(result, {
       logWeights: null,
       logTotalmass: 0,
