@@ -65,6 +65,33 @@ Z = myFn.(X, Y)
   assert.equal(d.kind, 'evaluate');
 });
 
+test('inlineCallableRefs splices user-fn body in place of a self-ref', () => {
+  // The materialiser's matEvaluate inlines callable refs before
+  // sending the IR to the worker — the worker's session env doesn't
+  // carry __resolveFnBody, so a bare ref to a user-fn would fail
+  // _resolveFn. Splicing the inline functionof IR lets _resolveFn's
+  // inline branch resolve directly.
+  const { inlineCallableRefs } = require('../materialiser-shared.ts');
+  const proc = processSource(`
+polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+C = [2.3, 1.5, 0.7]
+X ~ iid(Normal(0,1), 10)
+Y = polyeval.([C], X)
+`);
+  const out = buildDerivations(proc.bindings);
+  const yIR = out.bindings.get('Y').ir;
+  // Pre-inline: head is a self-ref to polyeval.
+  assert.equal(yIR.args[0].kind, 'ref');
+  assert.equal(yIR.args[0].name, 'polyeval');
+  // Post-inline: head is the inline functionof IR.
+  const inlined = inlineCallableRefs(yIR, out.bindings);
+  assert.equal(inlined.args[0].kind, 'call');
+  assert.equal(inlined.args[0].op, 'functionof');
+  assert.ok(Array.isArray(inlined.args[0].params),
+    'inlined functionof carries its params');
+  assert.ok(inlined.args[0].body, 'inlined functionof carries its body');
+});
+
 test('regression: kernelof MEASURE position still cascade-prunes', () => {
   // The callable-head exemption is NARROW — it only applies to args[0]
   // of broadcast / aggregate. `logdensityof(k, x)` uses k in a

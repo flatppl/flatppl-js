@@ -68,6 +68,7 @@ const {
   classifyProfileSelfRefs,
   pushFixedEnv,
   fixedValueToMeasure,
+  inlineCallableRefs,
   measureFromValue,
   measureFromReply,
   scalarMeasureN,
@@ -111,12 +112,23 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
   // logWeights propagate via joint IS (sum independent events, dedupe
   // shared via reference identity). logTotalmass follows from the
   // resulting logWeights; n_eff is min(parents') as a fast bound.
-  return prepareDensityRefs(d.ir, ctx, 'matEvaluate').then((prep: any) => {
+  //
+  // Inline callable refs before the worker hand-off. The worker's
+  // session env doesn't carry `__resolveFnBody`, so a bare `self`-ref
+  // to a user-defined `functionof` (e.g. `Y = polyeval.([C], X)`
+  // where polyeval is a user fn) would fail `_resolveFn` at the
+  // broadcast dispatcher. Splicing the inline `functionof` IR in
+  // place lets `_resolveFn`'s inline branch resolve directly. The
+  // refs walk below also skips function-like bindings (the inlined
+  // body's `%local` placeholder refs aren't `self`-refs, so they
+  // don't enter the perAtomNames / fixedEnv pre-fetch).
+  const inlinedIR = inlineCallableRefs(d.ir, ctx.bindings);
+  return prepareDensityRefs(inlinedIR, ctx, 'matEvaluate').then((prep: any) => {
     const { refArrays, fixedEnv, perAtomNames } = prep;
     return Promise.all(perAtomNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
       return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
         type: 'evaluateN',
-        ir: d.ir,
+        ir: inlinedIR,
         count: ctx.sampleCount,
         refArrays: refArrays,
       })).then((reply: any) => {
