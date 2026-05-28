@@ -1031,55 +1031,134 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // produce boolean of the broadcast shape.
 
   // broadcast(fn, A1, A2, …) — propagates the broadcast shape of the
-  // data args AND the function's per-element result type. The function
+  // data args AND the function's per-cell result type. The function
   // arg supplies the elementwise op (value-fn or kernel constructor;
-  // see spec §04 higher-order). Element type comes from inferring the
-  // function body / kernel signature; shape from unifying the data
-  // args via the same broadcast rule `unifyArith` already implements.
+  // see spec §04 higher-order).
   //
-  // Why a custom handler vs SIGNATURE_FACTORIES: a static signature
-  // can't express "result type tracks the unifying broadcast shape
-  // of the variadic data args" without ad-hoc per-call work.
+  // Per-arg classification distinguishes the spec's two array kinds:
+  //
+  //   - Flat tensor: `array(rank=k, shape=[...], elem=scalar)`.
+  //     All k axes are loop axes; per cell the callable sees a
+  //     scalar. `rowstack(...)` matrices, literal `[1, 2, 3]` flat
+  //     vectors, broadcast results.
+  //
+  //   - Nested vector: `array(rank=1, shape=[N], elem=array(...))`.
+  //     The outer rank-1 axis is the loop axis; per cell the
+  //     callable receives the inner array WHOLE. This is the
+  //     Ref-wrap idiom in the type system: `[C]` where `C` is a
+  //     vector lifts to `array(1, [1], array(1, [k], real))`.
+  //     §03 spec: "Vectors of vectors are not interpreted as
+  //     matrices implicitly" — the two types are genuinely
+  //     distinct.
+  //
+  // Outer-shape unification follows the spec rule: all collection
+  // args must have the same OUTER rank; per axis sizes must be
+  // equal or 1 (singleton broadcast).
+  //
+  // Two callable shapes the lowerer produces:
+  //   - synthetic `functionof` (from dotted operators / `fn(...)`):
+  //     re-infer the body with per-cell types in scope.
+  //   - bare ref to a user-defined callable (`f.(args)` →
+  //     `broadcast(f, args...)` keeps the ref): use the callable's
+  //     declared result type, monomorphic-at-definition (the same
+  //     simplification `inferUserCall` makes for scalar calls).
+  // Anything else falls back to deferred.
   function inferBroadcast(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length < 2) return T.deferred();
-    // Data-arg shape unify (args[0] is the callable; args[1..] data).
-    let s = new Map();
-    let acc: any = null;
+
+    // Phase 1: infer each data arg's type.
+    const dataTypes: any[] = [];
     for (let i = 1; i < args.length; i++) {
-      const t: any = inferExpr(args[i], scopes);
-      if (t.kind === 'failed') return T.failed('broadcast cascade');
-      if (acc == null) { acc = t; continue; }
-      const r: any = T.unifyArith(acc, t, s);
-      if (r == null) return T.deferred();
-      s = r.subst || s;
-      acc = r.result;
+      const t = inferExpr(args[i], scopes);
+      if (t && t.kind === 'failed') return T.failed('broadcast cascade');
+      dataTypes.push(t);
     }
-    if (!acc) return T.deferred();
-    // Per-element result type. Two callable shapes the lowerer
-    // produces: a synthetic `functionof` (dotted operators, fn(...)),
-    // and a bare distribution name (kernel-broadcast — spec §04
-    // higher-order, e.g. `broadcast(Gamma, ...)`). For the former we
-    // infer the body's type; for the latter we look up the kernel
-    // signature's result. Anything else falls back to deferred so the
-    // existing fall-through behavior preserves.
+
+    // Phase 2: per-arg classification — collection (outer shape +
+    // cell type) or held-constant.
+    function classifyArg(t: any): any {
+      if (t && t.kind === 'array') {
+        if (t.elem && t.elem.kind === 'array') {
+          // Nested vector: outer rank-1 axis is the loop axis; the
+          // inner array is what the callable sees per cell.
+          return { collection: true, outerShape: [t.shape[0]], cellType: t.elem };
+        }
+        // Flat tensor: all axes are loop axes; cell type = scalar elem.
+        return { collection: true, outerShape: t.shape.slice(), cellType: t.elem };
+      }
+      if (t && t.kind === 'scalar') {
+        return { collection: false, cellType: t };
+      }
+      if (t && (t.kind === 'any' || t.kind === 'deferred')) {
+        // Common inside a `functionof` body where a boundary has no
+        // declared type — the param is `any`, and downstream broadcasts
+        // over it still need to flow some cell type to the callable's
+        // body inference (signature lookups can tighten the result).
+        // Treat as held-constant; cellType propagates through.
+        return { collection: false, cellType: t };
+      }
+      // measure / failed / record / tuple / etc — can't tell statically.
+      return null;
+    }
+    const argClassif: any[] = [];
+    for (const t of dataTypes) {
+      const c = classifyArg(t);
+      if (c == null) return T.deferred();
+      argClassif.push(c);
+    }
+
+    // Phase 3: outer-shape unification across collection args.
+    // Spec §04: same OUTER rank required; per-axis sizes must be
+    // equal or 1 (singleton broadcast).
+    let outerShape: any[] | null = null;
+    let hasCollection = false;
+    for (const c of argClassif) {
+      if (!c.collection) continue;
+      hasCollection = true;
+      if (outerShape === null) {
+        outerShape = c.outerShape.slice();
+        continue;
+      }
+      if (c.outerShape.length !== outerShape.length) {
+        // Rank mismatch — spec violation. Stay deferred so the
+        // runtime evaluator surfaces the precise error at the
+        // broadcast call site.
+        return T.deferred();
+      }
+      const merged: any[] = [];
+      for (let a = 0; a < outerShape.length; a++) {
+        const ai = outerShape[a], bi = c.outerShape[a];
+        if (ai === '%dynamic') merged.push(bi);
+        else if (bi === '%dynamic') merged.push(ai);
+        else if (ai === bi) merged.push(ai);
+        else if (ai === 1) merged.push(bi);
+        else if (bi === 1) merged.push(ai);
+        else return T.deferred();
+      }
+      outerShape = merged;
+    }
+
+    // Phase 4: resolve cell-result type via the callable.
+    const cellTypes = argClassif.map((c) => c.cellType);
     const fn = args[0];
     let elem: any = T.deferred();
     if (fn && fn.kind === 'call' && fn.op === 'functionof'
         && fn.body && Array.isArray(fn.params)) {
-      // Build a local scope binding each `%local._argN_` to the
-      // matching data-arg's element type (scalar lift of acc). Scope
-      // entries are Maps (inferRef looks up via .has/.get).
       const localScope = new Map<string, any>();
-      const elemOf = (t: any) => (t && t.kind === 'array') ? t.elem : t;
-      for (let i = 0; i < fn.params.length && i + 1 < args.length; i++) {
-        localScope.set(fn.params[i], elemOf(inferExpr(args[i + 1], scopes)));
+      for (let i = 0; i < fn.params.length && i < cellTypes.length; i++) {
+        localScope.set(fn.params[i], cellTypes[i]);
       }
       elem = inferExpr(fn.body, scopes.concat([localScope]));
+    } else if (fn && fn.kind === 'ref' && fn.ns === 'self') {
+      const calleeType: any = inferBinding(fn.name);
+      if (T.isCallable(calleeType)) {
+        elem = calleeType.result;
+      } else {
+        return T.deferred();
+      }
     } else {
-      // Any other function shape — bare-ref to a built-in distribution
-      // (`broadcast(Gamma, ...)`), bare-ref to a user kernel
-      // (`broadcast(K, ...)`), anything dynamic — stays on the
+      // Bare distribution name, computed callable, anything else —
       // conservative defer. Kernel-broadcast results are semantically
       // arrays of measures; downstream consumers (`joint(name =
       // broadcast(K, ...))`, `draw(broadcast(K, ...))`) accept them
@@ -1088,18 +1167,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // explicitly — a separate refactor.
       return T.deferred();
     }
-    // Defensive: if the body type came back as measure-shaped, stay
-    // on the deferred passthrough (same reasoning).
+    if (elem && elem.kind === 'failed') return T.failed('broadcast cascade');
+    // Defensive: if the cell type came back as measure-shaped, stay
+    // on the deferred passthrough (same reasoning as bare distribution).
     if (elem && elem.kind === 'measure') return T.deferred();
-    // Combine the broadcast shape with the per-element type.
-    if (acc.kind === 'array') {
-      return T.array(acc.rank, acc.shape.slice(),
-        (elem && elem.kind !== 'deferred') ? elem : T.REAL);
+
+    // Phase 5: combine.
+    const concrete = elem && elem.kind !== 'deferred' && elem.kind !== 'any';
+    if (!hasCollection) {
+      // No collection args ⇒ single call; result = cell-result.
+      return concrete ? elem : T.deferred();
     }
-    if (acc.kind === 'scalar') {
-      return (elem && elem.kind !== 'deferred') ? elem : T.REAL;
-    }
-    return acc;
+    // Default to real for unknown cell types — broadcast is by design
+    // numeric, and downstream consumers (viewer plot-routing, materialise
+    // shape checks) need a concrete elem to dispatch on. This matches the
+    // assumption every other broadcast path in the engine already makes.
+    const elemFinal = concrete ? elem : T.REAL;
+    return T.array(outerShape!.length, outerShape!.slice(), elemFinal);
   }
 
   function inferArith2(expr: any, scopes: any): any {
