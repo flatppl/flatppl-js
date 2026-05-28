@@ -701,6 +701,95 @@ function _installDefaultMaterialiserStages(): void {
 }
 _installDefaultMaterialiserStages();
 
+// ---------------------------------------------------------------------
+// Tracing stage example (P3b observability use case)
+// ---------------------------------------------------------------------
+//
+// `makeTracingStage(opts?)` returns a pipeline stage that records
+// per-binding materialise timings into a buffer (or a user-supplied
+// callback). Useful for performance profiling: how long does each
+// derivation kind take, which bindings are bottlenecks. The stage
+// forwards transparently — adding it to the pipeline doesn't change
+// any materialise result, only adds an observation side-channel.
+//
+// Usage:
+//   const buffer: TraceEntry[] = [];
+//   const stage = makeTracingStage({ buffer });
+//   registerMaterialiserStage(stage);
+//   // ... drive materialise calls ...
+//   console.log(buffer);   // [{name, durationMs, kind?, ok}, …]
+//
+// Or for streaming:
+//   const stage = makeTracingStage({
+//     onEvent: (e) => myMetricsBackend.emit(e),
+//   });
+//
+// The stage is added OUTSIDE the default guards so it observes the
+// guards' decisions too (a callable-layer rejection produces a
+// trace entry with `ok: false`).
+
+interface TraceEntry {
+  name: string;
+  durationMs: number;
+  kind?: string;       // derivation kind, when known
+  ok: boolean;         // true on resolved measure; false on reject
+  error?: string;      // error message when ok=false
+}
+
+interface TracingStageOpts {
+  // Optional buffer to push entries to. Mutated in place.
+  buffer?: TraceEntry[];
+  // Optional callback invoked per entry. When both buffer and
+  // onEvent are set, both fire.
+  onEvent?: (entry: TraceEntry) => void;
+  // Optional clock; defaults to performance.now() in environments
+  // that have it, Date.now() otherwise. Tests pass a deterministic
+  // clock to pin timing semantics.
+  now?: () => number;
+}
+
+function makeTracingStage(opts?: TracingStageOpts): MaterialiserStage {
+  const o = opts || {};
+  const buf = o.buffer;
+  const onEvent = o.onEvent;
+  const now = o.now || (typeof performance !== 'undefined' && performance.now
+    ? () => performance.now()
+    : () => Date.now());
+  const stage: MaterialiserStage = function (name, ctx, next) {
+    const t0 = now();
+    // Derivation kind is helpful for grouping; available pre-dispatch.
+    const kind = ctx.derivations && ctx.derivations[name]
+      && ctx.derivations[name].kind;
+    return next(name, ctx).then(
+      (m) => {
+        const entry: TraceEntry = {
+          name,
+          durationMs: now() - t0,
+          ok: true,
+        };
+        if (kind !== undefined) entry.kind = kind;
+        if (buf) buf.push(entry);
+        if (onEvent) onEvent(entry);
+        return m;
+      },
+      (err) => {
+        const entry: TraceEntry = {
+          name,
+          durationMs: now() - t0,
+          ok: false,
+          error: err && err.message ? err.message : String(err),
+        };
+        if (kind !== undefined) entry.kind = kind;
+        if (buf) buf.push(entry);
+        if (onEvent) onEvent(entry);
+        throw err;
+      },
+    );
+  };
+  stage.label = 'tracing';
+  return stage;
+}
+
 function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // Pre-dispatch guards (callable-layer rejection, fixed-phase
   // short-circuit) plus the terminal kindDispatch all live in the
@@ -778,6 +867,7 @@ module.exports = {
   kindDispatchStage,
   callableGuardStage,
   fixedPhaseStage,
+  makeTracingStage,
   _runPipeline,
   // Helpers exposed for the viewer's plot-plan fallbacks (which
   // sometimes need to compose the same primitives outside the kind-

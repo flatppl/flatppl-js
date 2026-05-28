@@ -210,7 +210,74 @@ test('default pipeline: fixedPhaseStage short-circuits with a fixed value', asyn
 });
 
 // =====================================================================
-// 7. Existing materialiser tests pass (delegated to the full test
+// 7. Tracing stage example (P3b observability use case)
+// =====================================================================
+
+test('makeTracingStage: records duration + name per successful materialise', async () => {
+  freshPipeline();
+  const buffer: any[] = [];
+  // Deterministic clock: timestamps progress by 7ms per call.
+  let nowCount = 0;
+  const tracer = materialiser.makeTracingStage({
+    buffer,
+    now: () => { nowCount += 7; return nowCount; },
+  });
+  materialiser.registerMaterialiserStage(tracer);
+  // Terminal short-circuit stage so we don't need real KIND_HANDLERS.
+  materialiser.registerMaterialiserStage(function (n: string, c: any, _next: any) {
+    return Promise.resolve({ name: n } as any);
+  });
+  const ctx: any = { derivations: { X: { kind: 'draw' }, Y: { kind: 'iid' } } };
+  await materialiser._runPipeline('X', ctx);
+  await materialiser._runPipeline('Y', ctx);
+  assert.equal(buffer.length, 2);
+  assert.equal(buffer[0].name, 'X');
+  assert.equal(buffer[0].kind, 'draw');
+  assert.equal(buffer[0].ok, true);
+  assert.equal(buffer[0].durationMs, 7);  // (now=14) - (now=7) = 7
+  assert.equal(buffer[1].name, 'Y');
+  assert.equal(buffer[1].kind, 'iid');
+});
+
+test('makeTracingStage: records errors with ok=false + error string', async () => {
+  freshPipeline();
+  const buffer: any[] = [];
+  let n = 0;
+  materialiser.registerMaterialiserStage(materialiser.makeTracingStage({
+    buffer,
+    now: () => { n += 1; return n; },
+  }));
+  // Terminal stage that always rejects.
+  materialiser.registerMaterialiserStage(function (name: string, _c: any, _next: any) {
+    return Promise.reject(new Error('boom: ' + name));
+  });
+  const ctx: any = { derivations: { Z: { kind: 'broken' } } };
+  await assert.rejects(() => materialiser._runPipeline('Z', ctx), /boom: Z/);
+  assert.equal(buffer.length, 1);
+  assert.equal(buffer[0].ok, false);
+  assert.match(buffer[0].error, /boom: Z/);
+  assert.equal(buffer[0].kind, 'broken');
+});
+
+test('makeTracingStage: onEvent callback fires per entry', async () => {
+  freshPipeline();
+  const events: any[] = [];
+  materialiser.registerMaterialiserStage(materialiser.makeTracingStage({
+    onEvent: (e: any) => events.push(e),
+    now: () => 100,
+  }));
+  materialiser.registerMaterialiserStage(function (name: string, _c: any, _next: any) {
+    return Promise.resolve({ tag: name } as any);
+  });
+  const ctx: any = { derivations: { foo: { kind: 'draw' } } };
+  await materialiser._runPipeline('foo', ctx);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].name, 'foo');
+  assert.equal(events[0].ok, true);
+});
+
+// =====================================================================
+// 8. Existing materialiser tests pass (delegated to the full test
 //    suite — listed here as a reminder that the default pipeline
 //    preserves backward-compat).
 // =====================================================================
