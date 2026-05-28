@@ -977,6 +977,48 @@ atom-batched (broadcasting), batch-size mismatch detection,
 unknown op, wrong arg count, rank incompatible with the
 declaration's logical rank. 10 new tests as of 2026-05-26.
 
+### `dissolver.ts` (~300 lines)
+
+**Responsibility.** Term-rewriter for broadcast / aggregate
+dissolution. Engine-concepts §20 (cross-engine architecture);
+"Broadcast / aggregate dissolution" section below for JS-engine
+specifics.
+
+**Public surface.** `dissolveBindings(bindings)` runs in
+`derivations.buildDerivations` immediately after
+`liftInlineSubexpressions`. Rewrites each binding's cached `.ir` in
+place when the binding matches a dissolution pattern; non-matching
+bindings (and non-dissolvable broadcasts within matched bindings)
+pass through unchanged. `dissolveExpr(ir, bindings)` is the
+recursive walker; `_tryDissolveSingleOp(bcIR, bindings)` and
+`_substituteBody(...)` are exported for unit tests.
+
+**Phases landed (1–4).**
+- Phase 1: scalar constants flow as rank-0 Values; ARITH_OPS
+  routes Value inputs through valueOps unconditionally.
+- Phase 2: single-op broadcast → direct call for
+  `broadcast(functionof(<op>(_arg1_, _arg2_, …)), args)`.
+- Phase 3: multi-op body via per-name placeholder substitution
+  (`fn(_a + _b - _a)` → `sub(add(A, B), A)`).
+- Phase 4: user-fn inlining — `self`-ref heads look up the lifted
+  `functionof` binding and inline.
+
+**Soundness gates.**
+- `DISSOLVE_SAFE_OPS = {add, sub, neg, pos}` — every op in the body
+  tree must be in this set. The set is narrow on purpose; widening
+  to mul / scalar unaries blocks on type-aware shape safety.
+- Outer broadcast args must all be binding refs of IDENTICAL
+  inferred type AND phase. Mixed-shape / mixed-phase broadcasts
+  stay on the `_broadcastApply` cold path.
+- Body refs: `%local` placeholders substituted by name; `self`
+  refs allowed only when the target binding is fixed-phase
+  (held constant per cell).
+
+**Tests.** `test/dissolution.test.ts` (~270 lines) pins the
+structural matcher in isolation plus end-to-end behaviour on
+dotted-binary surfaces, refusal of unsafe ops, mismatched
+types/phases, multi-op bodies, and user-fn inlining.
+
 ### `traceeval.ts` (~400 lines)
 
 **Responsibility.** Unified trace evaluator for measure expressions. One walk
@@ -1488,45 +1530,95 @@ status duplication here).
 Cross-engine architecture in `flatppl-dev/flatppl-engine-concepts.md`
 §20. JS-engine implementation notes below.
 
+> **Status:** Phases 1–4 landed (2026-05-28). Constants flow as rank-0
+> Values; ARITH_OPS no longer emits bare numbers when Values flow in;
+> the dissolver rewrites broadcast IR into direct elementwise call
+> chains for add/sub/neg/pos including multi-op bodies and inlined
+> user-fn heads. DISSOLVE_SAFE_OPS widening (mul/div/exp/log/…),
+> Phase 5 aggregate dissolution, and Phase 6 atom-axis unification
+> are tracked in `TODO-flatppl-js.md`.
+
 ### Where dissolution slots into the pipeline
 
-The dissolver is a **post-lift, pre-typeinfer term-rewrite pass on
-the lowered IR**:
+The dissolver runs in `derivations.buildDerivations`, **immediately
+after `liftInlineSubexpressions`** — at this point each binding has
+a cached lifted IR (`b.ir`) and inferred-type annotation
+(`b.inferredType`, propagated from analyzer pass 7). The dissolver
+rewrites the IR in place; classifiers / materialiser / sampler see
+the dissolved form.
 
 ```
-parse → analyze → lift → DISSOLVE → lower-to-PIR → typeinfer
-                                                       ↓
-                                                  derivations / materialiser
-                                                       ↓
-                                                  sampler / density (evaluating dissolved IR)
+parse → analyze (incl. typeinfer) → lower → lift → DISSOLVE → derivations
+                                                                  ↓
+                                                              materialiser → sampler / density
 ```
 
-The dissolver rewrites broadcast / aggregate / broadcasted-curried
-forms in-place on the bindings map produced by lift. Subsequent
-typeinfer / materialiser / sampler all see the dissolved form;
-their existing higher-order dispatch paths are unchanged but rarely
-exercised after dissolution (only for the residual non-dissolvable
-cases — kernel-broadcast, table row-dispatch, recursive user-fns).
+The dissolver mutates `b.ir` only when a dissolution is applied; the
+lifted AST (`b.node.value`) is untouched. Non-dissolvable broadcasts
+(kernel-broadcast, table row-dispatch, recursive user-fns, mismatched-
+shape broadcasts) keep their original IR — the existing
+`_broadcastApply` runtime path handles them unchanged.
+
+### The dissolver — pattern + soundness
+
+`packages/engine/dissolver.ts` exports `dissolveBindings(bindings)`
+and a single internal entry `_tryDissolveSingleOp(bcIR, bindings)`.
+The dissolver matches
+
+```
+broadcast(<head>, args…)   # positional
+broadcast(<head>, name=arg, …)   # kwarg
+```
+
+where `<head>` is either an inline `functionof` or a `self`-ref to a
+user-defined `functionof` binding (Phase 4 inlining).
+
+After resolving the head, the dissolver walks the body's expression
+tree via `_substituteBody`, replacing every `%local _argN_` ref with
+the corresponding broadcast arg by name. Each call-node along the
+way must satisfy:
+
+- `op` ∈ `DISSOLVE_SAFE_OPS` (currently `add` / `sub` / `neg` /
+  `pos` — every elementwise-at-any-rank op available through
+  value-ops without Klein-4 matrix semantics).
+- No kwargs / fields / nested functionof body inside the call.
+- All leaf refs are either `%local` placeholders (substituted),
+  fixed-phase `self` refs (held constant per cell), literals, or
+  constants.
+
+Soundness gate on the outer broadcast args: every positional
+broadcast arg must be a binding ref and all referenced bindings
+must share the SAME `inferredType` AND the SAME phase. Mixed-shape
+broadcasts (`scalar .+ vec`) and mixed-phase combinations leave
+the broadcast IR in place — `_broadcastApply` runs them correctly
+on the cold path.
+
+`DISSOLVE_SAFE_OPS` is deliberately narrow until type-aware shape
+safety lands (`mul` has matrix semantics on rank-1 vectors via
+Klein-4; scalar unaries like `exp` / `log` route through
+`broadcast1` which assumes rank-0/rank-1 inputs — silently breaks
+on higher-rank cells). Widening lands in a Phase 3 follow-up.
 
 ### The runtime contract after dissolution
 
-Post-dissolution, the runtime evaluator sees ARITH_OPS / valueOps /
-declared-op calls almost exclusively. The current
-`_broadcastApply` machinery becomes the COLD path for the residual
-non-dissolvable cases; the hot path is direct op dispatch through
-`valueOps`.
+Post-dissolution, the dissolved IR runs through `evaluateExprN`
+which dispatches scalar primitives via `ARITH_OPS_N` and shape-rich
+ops via the existing value-ops paths. The `_broadcastApply`
+machinery remains as the cold path for residual non-dissolvable
+cases (kernel-broadcast, table row-dispatch, mismatched-shape
+broadcasts).
 
-`valueOps` becomes the canonical batched-primitive surface:
-- Every elementwise op (add, sub, mul, …) implements NumPy-style
-  broadcasting (rank alignment from right, size-1 dims expand,
-  rank-0 broadcasts implicitly against any rank).
+`valueOps` is the canonical batched-primitive surface:
+- Elementwise ops (add, sub, neg) operate on flat row-major data
+  regardless of rank; the leading dims (atom axis + user broadcast
+  axes) collapse uniformly into the elementwise loop.
 - Reductions (sum, mean, var, …) take an explicit axis argument
-  (the dissolver passes axis indices for reduce axes).
+  (the dissolver will pass axis indices once Phase 5 lands).
 - Matrix ops (matmul, dot, …) handle batched shapes via leading
-  dim broadcast (numpy convention: trailing dims contracted; all
+  dim broadcast (NumPy convention: trailing dims contracted; all
   leading dims broadcast).
 
-The Klein-4 transpose tag and structured-matrix tags become
+The Klein-4 transpose tag and structured-matrix tags remain
 **runtime-internal optimisation markers**, hidden behind the IR
 contract. valueOps reads them where they help (free transpose
 via tag flip; sparse-storage exploitation for diag / lower /
@@ -1534,24 +1626,24 @@ upper); op-boundary handoffs materialise to contiguous form.
 
 ### Constants and the rank-0 path
 
-The materialiser's `fixedValueToMeasure` currently replicates
-fixed scalars to length-N atom buffers (`new Float64Array(N);
-arr.fill(v)`). This becomes wasteful at scale and pre-determines
-storage layout in a way that conflicts with cross-engine
-portability.
+`fixedValueToMeasure` for finite scalars now carries the canonical
+rank-0 Value at `m.value` (Phase 1 — engine commit 919dab7). The
+length-N `.samples` buffer is kept transitionally for legacy
+histogram / viewer consumers; future work retires it via a
+`samplesAsLengthN(m, N)` helper when needed at consumers (lands
+with Phase 6 atom-axis unification).
 
-Migration: store constants as rank-0 Values (shape=[],
-data=Float64Array([v]), outerRank=0). Broadcasting against atom-
-batched operands happens lazily in valueOps via stride-0 reads
-on the rank-0 side. Memory cost drops from O(N) to O(1) per
-constant; broadcast cost is one read of the constant slot per
-result cell — same arithmetic work, less memory traffic.
+The downstream effect: any binding that reads a fixed-phase
+constant via `valueOf(m)` sees a rank-0 Value, and arithmetic
+through ARITH_OPS / value-ops handles rank-0 × rank-N broadcasting
+via NumPy-style stride-0 reads on the smaller operand.
 
-### Migration order — see TODO
+### Status + follow-ups — see TODO
 
-The phased migration plan lives at the top of
-`flatppl-dev/TODO-flatppl-js.md` (the "Broadcast / aggregate
-dissolution and value-contract unification" entry). Each phase has
-exit criteria, test coverage requirements, and the cross-cutting
-impacts called out so a session can pick up and execute one phase
-without reading every other phase first.
+Phases 1–4 of the migration are in. Remaining work (DISSOLVE_SAFE_OPS
+widening, Phase 5 aggregate dissolution, Phase 6 atom-axis
+unification, and the `.samples` length-N retirement) is tracked in
+`flatppl-dev/TODO-flatppl-js.md` under "Broadcast / aggregate
+dissolution and value-contract unification". Each remaining phase
+has exit criteria + cross-cutting impacts so a future session can
+execute one phase without re-reading the rest.
