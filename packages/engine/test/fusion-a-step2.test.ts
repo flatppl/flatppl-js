@@ -177,7 +177,13 @@ test('fusion (a) Step 2: unsupported reducer (var) refused', () => {
 // 3. Phase gate — stochastic broadcast arg refuses fusion
 // =====================================================================
 
-test('fusion (a) Step 2: stochastic broadcast arg refused (MVP phase gate)', () => {
+test('fusion (a) Step 2: stochastic broadcast arg now ACCEPTED (phase gate lifted)', () => {
+  // Phase E lift: the per-atom fallback in evaluateExprN slices the
+  // stochastic rank-2 Value to rank-1 per engine atom, so the
+  // substituted body's `get(X, .atom)` indexes the rank-1 view
+  // correctly. Engine atom axis prepends via _perAtomFallback's
+  // atom-major packing. Net effect: one aggregate-per-atom instead
+  // of nested broadcast recursion per cell.
   const bindings = mkBindings([
     ['V', { ir: lit(0), inferredType: arrayType(1, [3]), phase: 'fixed' }],
     ['X', { ir: lit(0), inferredType: arrayType(1, [4]), phase: 'stochastic' }],
@@ -189,21 +195,24 @@ test('fusion (a) Step 2: stochastic broadcast arg refused (MVP phase gate)', () 
   };
   const bcIR = { kind: 'call', op: 'broadcast', args: [fn, vector(ref('V')), ref('X')] };
   const r = _tryDissolveBroadcastReduction(bcIR, bindings);
-  assert.equal(r, null, 'stochastic args stay on runtime path');
+  assert.ok(r, 'stochastic broadcast arg now fires the fusion');
+  assert.equal(r.op, 'aggregate');
 });
 
 // =====================================================================
 // 4. Forbidden-op gate — nested broadcast in body refuses
 // =====================================================================
 
-test('fusion (a) Step 2: nested broadcast in body refused', () => {
+test('fusion (a) Step 2: nested broadcast(elementwise) in body inlined into aggregate', () => {
+  // Body has a nested broadcast(mul, ...) — the dotted-binary surface
+  // (`v .* s` lowers to broadcast(mul_fn, v, s)). The wrapper inlines
+  // this into a pointwise `mul(wrap(v), wrap(s))` call in the
+  // aggregate body. This is the polyeval-shape gate that was lifted
+  // in fusion (a) follow-up.
   const bindings = mkBindings([
     ['V', { ir: lit(0), inferredType: arrayType(1, [3]), phase: 'fixed' }],
     ['S', { ir: lit(0), inferredType: arrayType(1, [4]), phase: 'fixed' }],
   ]);
-  // Body has a nested broadcast(mul, ...) — the polyeval-like surface.
-  // MVP refuses this; pre-dissolution would have to flatten the dotted
-  // binary first.
   const innerBroadcast = call('broadcast',
     { kind: 'call', op: 'functionof', params: ['a', 'b'], body: call('mul', loc('a'), loc('b')) },
     loc('v'),
@@ -215,7 +224,13 @@ test('fusion (a) Step 2: nested broadcast in body refused', () => {
   };
   const bcIR = { kind: 'call', op: 'broadcast', args: [fn, vector(ref('V')), ref('S')] };
   const r = _tryDissolveBroadcastReduction(bcIR, bindings);
-  assert.equal(r, null, 'nested broadcast in body refuses');
+  assert.ok(r, 'nested broadcast in body now inlines via wrapper');
+  assert.equal(r.op, 'aggregate');
+  // body should be `mul(get(V, .j), get(S, .atom))` — the inner
+  // broadcast collapsed to a pointwise mul.
+  const body = r.args[2];
+  assert.equal(body.kind, 'call');
+  assert.equal(body.op, 'mul');
 });
 
 test('fusion (a) Step 2: nested aggregate in body refused', () => {
@@ -283,6 +298,58 @@ test('fusion (a) Step 2: body not a reducer call refused', () => {
 // =====================================================================
 // 6. Single-param reducer (closure-form mkfn-like, body is plain)
 // =====================================================================
+
+test('fusion (a) Step 2: polyeval-shape with nested .* / .^ broadcasts inlines fully', () => {
+  // The polyeval-slow case (closure form, fixed X). Body is:
+  //   sum(broadcast(mul_fn, C, broadcast(pow_fn, x, indicesof0(C))))
+  // After substitution: indicesof0(C) folds to vector(0, 1, 2);
+  // _inlineBroadcastInAggregate collapses the two nested broadcasts;
+  // leaves get .j-indexed; pow's exponent comes from get(vector(0,1,2),
+  // .j). The fully-fused aggregate body is `mul(get(C, .j),
+  // pow(get(X, .atom), get(vector(0,1,2), .j)))`.
+  const bindings = mkBindings([
+    ['C', { ir: lit(0), inferredType: arrayType(1, [3]), phase: 'fixed' }],
+    ['X', { ir: lit(0), inferredType: arrayType(1, [4]), phase: 'fixed' }],
+  ]);
+  // body = sum(mul .* (x .^ indicesof0(coeffs)))
+  //      = sum(broadcast(mul_fn, coeffs, broadcast(pow_fn, x, indicesof0(coeffs))))
+  const mulFn = {
+    kind: 'call', op: 'functionof',
+    params: ['_arg1_', '_arg2_'],
+    paramKwargs: ['arg1', 'arg2'],
+    body: call('mul', loc('_arg1_'), loc('_arg2_')),
+  };
+  const powFn = {
+    kind: 'call', op: 'functionof',
+    params: ['_arg1_', '_arg2_'],
+    paramKwargs: ['arg1', 'arg2'],
+    body: call('pow', loc('_arg1_'), loc('_arg2_')),
+  };
+  const innerPow = call('broadcast', powFn, loc('x'), call('indicesof0', loc('coeffs')));
+  const outerMul = call('broadcast', mulFn, loc('coeffs'), innerPow);
+  const polyeval = {
+    kind: 'call', op: 'functionof',
+    params: ['coeffs', 'x'],
+    body: call('sum', outerMul),
+  };
+  const bcIR = { kind: 'call', op: 'broadcast', args: [polyeval, vector(ref('C')), ref('X')] };
+  const r = _tryDissolveBroadcastReduction(bcIR, bindings);
+  assert.ok(r, 'polyeval-shape fuses fully now');
+  assert.equal(r.op, 'aggregate');
+  // body should be mul(get(C, .j), pow(get(X, .atom), get(vector(...), .j))).
+  const body = r.args[2];
+  assert.equal(body.op, 'mul');
+  const arg0 = body.args[0];   // get(C, .j)
+  const arg1 = body.args[1];   // pow(...)
+  assert.equal(arg0.op, 'get');
+  assert.equal(arg0.args[0].name, 'C');
+  assert.equal(arg1.op, 'pow');
+  // arg1's first sub-arg is get(X, .atom); second is get(vector(0,1,2), .j).
+  assert.equal(arg1.args[0].op, 'get');
+  assert.equal(arg1.args[0].args[0].name, 'X');
+  assert.equal(arg1.args[1].op, 'get');
+  assert.equal(arg1.args[1].args[0].op, 'vector');
+});
 
 test('fusion (a) Step 2: single-param fn with closed-over self-ref in body', () => {
   // fn = (v) -> sum(mul(self.C, v))  — C is closed-over, V broadcast-over

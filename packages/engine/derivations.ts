@@ -1618,6 +1618,15 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
                   || b.type === 'kernelof' || b.type === 'bijection')) {
           seen.add(head.name);
         }
+        // Aggregate's first arg is the REDUCER (sum / mean / prod /
+        // …) — a builtin reducer reference rather than a user binding.
+        // Builtins aren't in `bindings`, so the `b` check above
+        // wouldn't have added them; but the cascade-prune sweep would
+        // still see the ref via `collectSelfRefs` and try to resolve
+        // it. Skip unconditionally for aggregate heads — the reducer
+        // is resolved by the aggregate evaluator at run time, not by
+        // a binding lookup.
+        if (ir.op === 'aggregate') seen.add(head.name);
       }
     }
     // Recurse — broadcasts can nest inside other expression trees.

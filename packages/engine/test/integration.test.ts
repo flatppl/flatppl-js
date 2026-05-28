@@ -359,26 +359,32 @@ test('integration: polyeval-iid-broadcast fixture — Ref-wrap broadcast over ii
   // Y should have a derivation. Phase 1 was: classifier produced
   // null (vector(C) inline blocked isEvaluable). Phase 2 was:
   // refs-valid sweep pruned because polyeval (a functionof) wasn't
-  // in derivations/fixedValues. Both fixes verified.
+  // in derivations/fixedValues. Both fixes verified. Phase 3
+  // (fusion (a) Step 2, 2026-05-29): the broadcast(polyeval, [C], X)
+  // form rewrites to an aggregate IR before classification — the
+  // assertions below pin the FUSED structure.
   assert.ok(ds.derivations.Y,
     'Y should classify (post lift + cascade-prune exemption)');
   assert.equal(ds.derivations.Y.kind, 'evaluate');
 
-  // The lifted IR has [C] hoisted: Y.ir's first non-head arg should
-  // be a bare ref, not an inline vector(...) call.
+  // Post-fusion Y.ir: aggregate(sum, [.atom], <body with get(C, .j)
+  // and get(X, .atom) and get(literal_vector, .j)>). The fusion (a)
+  // Step 2 rewrite collapses the nested broadcasts and lifts the
+  // shape-folded indicesof0(C) to a literal vector.
   const yBinding = ds.bindings.get('Y');
-  assert.equal(yBinding.ir.args[1].kind, 'ref',
-    'inline [C] should be hoisted to an anon ref');
+  assert.equal(yBinding.ir.op, 'aggregate',
+    'polyeval-shape broadcast now fuses to an aggregate IR');
+  assert.equal(yBinding.ir.args[0].name, 'sum',
+    'reducer is sum');
+  assert.equal(yBinding.ir.args[1].op, 'vector',
+    'output_axes is a vector of axis refs');
+  assert.equal(yBinding.ir.args[1].args[0].kind, 'axis',
+    'output axis is .atom (the broadcast iteration axis)');
 
-  // inlineCallableRefs substitution at materialiser → worker hand-
-  // off produces an inline functionof at the broadcast head.
-  const { inlineCallableRefs } = require('../materialiser-shared.ts');
-  const inlined = inlineCallableRefs(yBinding.ir, ds.bindings);
-  assert.equal(inlined.args[0].kind, 'call');
-  assert.equal(inlined.args[0].op, 'functionof',
-    'callable-ref head should inline to functionof for worker dispatch');
-
-  // Y's inferred type — array(rank=1, shape=[10], real).
+  // Y's inferred type — array(rank=1, shape=[10], real). Inferred
+  // type comes from typeinfer (runs BEFORE the dissolver), so the
+  // type carries the pre-fusion shape regardless of what the IR
+  // looks like post-dissolution.
   assert.equal(yBinding.inferredType.kind, 'array');
   assert.equal(yBinding.inferredType.rank, 1);
   assert.deepEqual(yBinding.inferredType.shape, [10]);

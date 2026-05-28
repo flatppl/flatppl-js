@@ -668,6 +668,21 @@ function _substituteAllowingAxes(
       }
       out.kwargs = outKwargs;
     }
+    // Preserve `functionof` reification fields so nested broadcasts in
+    // the body (`broadcast(<functionof>, …)` — the dotted-binary
+    // surface form) keep their head structure intact. Without this
+    // the wrapper's `_inlineBroadcastInAggregate` sees a head with
+    // no body and refuses, which is exactly what blocks the polyeval-
+    // shape fusion. functionof bodies' `%local` refs name the
+    // function's OWN parameters (a new lexical scope), distinct from
+    // the outer broadcast's placeholders — substituting through them
+    // would be wrong; we copy through unchanged.
+    if (expr.op === 'functionof') {
+      if (expr.body) out.body = expr.body;
+      if (expr.params) out.params = expr.params;
+      if (expr.paramKwargs) out.paramKwargs = expr.paramKwargs;
+      if (expr.paramSources) out.paramSources = expr.paramSources;
+    }
     if (expr.loc) out.loc = expr.loc;
     return out;
   }
@@ -1154,17 +1169,20 @@ function _substituteBody(
 
 const REDUCERS_FUSION_A: Set<string> = new Set(['sum', 'mean', 'prod']);
 
-// Higher-order / non-plain ops that the MVP fusion (a) Step 2 rewrite
-// refuses inside the reduction body. The body must be a plain
-// elementwise expression after substitution — these ops would need
-// per-call special handling (axis-introduction inside their callable
-// arg, etc.) which is follow-up work. Refusing keeps the rewrite
-// safe.
+// Higher-order / non-plain ops that fusion (a) Step 2 still refuses
+// inside the reduction body. `broadcast` is allowed now —
+// `_inlineBroadcastInAggregate` inlines `broadcast(<fn>(<op>(_)),
+// args…)` to pointwise `<op>(wrap(args)…)` once leaves carry `.j`
+// indexing. The dotted-binary surfaces (`.*` / `.+` / …) all land
+// here so polyeval-shaped bodies fuse end-to-end. `functionof` is
+// also allowed since it appears as a broadcast head (the wrapper
+// handles that case via `_inlineBroadcastInAggregate`); any
+// stand-alone functionof appearance passes through the wrapper
+// untouched. Aggregate / iid / measure-algebra ops remain forbidden
+// — they need axis-stack-aware materialiser handling (follow-up
+// work).
 const _FUSION_A_BODY_FORBIDDEN_OPS: Set<string> = new Set([
-  'broadcast',
-  'broadcasted',
   'aggregate',
-  'functionof',
   'kernelof',
   'kernel_broadcast',
   'iid',
@@ -1283,6 +1301,24 @@ function _wrapVectorLeaves(
     // contain nested rank-1 leaves.
     return expr;
   }
+  // Nested broadcast of an elementwise op (e.g. `coeffs .* x` lowers
+  // to `broadcast(<synth_functionof for mul>, coeffs, x)`). In the
+  // aggregate body, the broadcast collapses to a scalar pointwise
+  // call once each arg's rank-1 leaves are wrapped with `.j`
+  // indexing. Inline: replace broadcast(<fn>(<op>(_locals)), args…)
+  // with `<op>(wrap(args[0]), wrap(args[1])…)`.
+  if (expr.kind === 'call' && expr.op === 'broadcast') {
+    return _inlineBroadcastInAggregate(expr, jName, bindings);
+  }
+  // `functionof` (and `kernelof`-derived `functionof`) reifications
+  // need to pass through unchanged — their body lives in `expr.body`
+  // (not in `args`), so the compound-call branch below would drop
+  // it. Leave the entire functionof unchanged; the wrapper doesn't
+  // descend into reified function bodies (those are a separate
+  // lexical scope per spec §8).
+  if (expr.kind === 'call' && expr.op === 'functionof') {
+    return expr;
+  }
   if (expr.kind === 'call' && expr.op) {
     // Compound call (elementwise op, etc.). Recurse into args.
     const inArgs: any[] = expr.args || [];
@@ -1297,6 +1333,74 @@ function _wrapVectorLeaves(
     return out;
   }
   return null;
+}
+
+// Inline a nested broadcast inside an aggregate body. Treats
+// `broadcast(<functionof>(<op>(_locals)), args…)` as a pointwise
+// scalar call once the broadcast args' rank-1 leaves are wrapped
+// with `.j` indexing — emits `<op>(wrap(args[0]), …)` directly.
+//
+// Supports two head shapes:
+//   1. Inline functionof: `{kind:'call', op:'functionof', params, body}`
+//      — the dotted-binary surface (`.*` / `.+` / …) lowers here.
+//   2. Self-ref to a user-defined functionof binding (Phase 4 inlining).
+//
+// Refuses when:
+//   - Head doesn't resolve to a functionof.
+//   - Functionof body isn't a single op call structurally matching
+//     the param count (placeholders in order). More complex bodies
+//     (multi-statement, kwargs, etc.) refuse.
+//   - Any wrapped arg returns null.
+//
+// Returns the inlined op call (recursively wrapped) on success, null
+// otherwise.
+function _inlineBroadcastInAggregate(
+  bcIR: any, jName: string, bindings: any,
+): any | null {
+  if (!bcIR || bcIR.kind !== 'call' || bcIR.op !== 'broadcast') return null;
+  const bcArgs: any[] = bcIR.args || [];
+  if (bcArgs.length < 2) return null;
+  // Reject kwarg form for the inline path — adds complication; the
+  // synthetic dotted-binary functionof uses positional only.
+  if (bcIR.kwargs && Object.keys(bcIR.kwargs).length > 0) return null;
+  let head = bcArgs[0];
+  // Resolve a self-ref head to its functionof binding.
+  if (head && head.kind === 'ref' && head.ns === 'self'
+      && bindings && bindings.get) {
+    const b = bindings.get(head.name);
+    if (b && b.ir && b.ir.kind === 'call' && b.ir.op === 'functionof') {
+      head = b.ir;
+    } else {
+      return null;
+    }
+  }
+  if (!head || head.kind !== 'call' || head.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(head.params) ? head.params : [];
+  const body = head.body;
+  if (!body || body.kind !== 'call' || !body.op || !params.length) return null;
+  // Posbargs.
+  const posArgs = bcArgs.slice(1);
+  if (posArgs.length !== params.length) return null;
+  // Wrap each broadcast arg through `_wrapVectorLeaves` so rank-1
+  // leaves become `.j`-indexed scalars in the aggregate context.
+  const wrappedArgs: any[] = new Array(posArgs.length);
+  for (let i = 0; i < posArgs.length; i++) {
+    const w = _wrapVectorLeaves(posArgs[i], jName, bindings);
+    if (w === null) return null;
+    wrappedArgs[i] = w;
+  }
+  // Substitute `%local` placeholders in the body with the wrapped
+  // args. `_substituteAllowingAxes` walks any IR kind permissively;
+  // its placeholder index keys by name.
+  const paramIndex: Map<string, number> = new Map();
+  for (let i = 0; i < params.length; i++) paramIndex.set(params[i], i);
+  const substituted = _substituteAllowingAxes(body, paramIndex, wrappedArgs);
+  if (substituted === null) return null;
+  // Recurse: the substituted body may contain further nested
+  // broadcasts (the dotted-binary surface is left-associative so
+  // `a .* b .^ c` produces nested broadcasts) or other shapes the
+  // wrapper handles.
+  return _wrapVectorLeaves(substituted, jName, bindings);
 }
 
 // Recursively shape-fold an expression bottom-up. Used by fusion (a)
@@ -1370,13 +1474,21 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   // or rank-1 broadcast-over (per-cell value = get(arg, .atom)).
   // Build the placeholder→replacement map.
   //
-  // **MVP phase gate.** Only fire the fusion when ALL broadcast args
-  // are fixed-phase. Stochastic / parameterized broadcast-over args
-  // (e.g. the polyeval-slow case where X is iid Normal) need richer
-  // axisStack-aware materialiser handling — stay on the runtime
-  // path until the kernel-broadcast fusion (b) infrastructure lands.
-  // Fixed-phase fusion covers value-broadcast workloads (parameter
-  // loops, fixed coefficient tables, etc.).
+  // **No phase gate** (lifted 2026-05-29). The substituted body
+  // works for both fixed and stochastic broadcast-over args:
+  //   - Fixed-phase: aggregate runs once over the static axis
+  //     sizes.
+  //   - Stochastic: the per-atom fallback in `_perAtomFallback`
+  //     slices the rank-2 Value to rank-1 per engine atom; the
+  //     aggregate body's `get(X, .atom)` indexes the rank-1 view
+  //     correctly. Engine atom axis prepends to the result via
+  //     `_perAtomFallback`'s atom-major packing. The collapse from
+  //     interpreted per-cell broadcast recursion to one aggregate-
+  //     per-atom evaluation is the perf win on the polyeval-slow
+  //     case.
+  //   - Future batched-aggregate runtime can collapse the
+  //     per-engine-atom loop further (a single aggregate IR
+  //     evaluated across all engine atoms in one tight loop).
   const atomAxisName = _freshAxisName(innerExpr, 'atom');
   const paramReplacement: Map<string, any> = new Map();
   for (let i = 0; i < params.length; i++) {
@@ -1384,9 +1496,6 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
     const inner = _refWrapInner(arg, bindings);
     if (inner !== null) {
       // Ref-wrap: substitute the placeholder with the unwrapped inner.
-      // The inner itself must resolve to fixed-phase too.
-      const innerTP = _argTypeAndPhase(inner, bindings);
-      if (innerTP && innerTP.phase && innerTP.phase !== 'fixed') return null;
       paramReplacement.set(params[i], inner);
       continue;
     }
@@ -1396,7 +1505,6 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
     if (!tp || !tp.type) return null;
     if (tp.type.kind !== 'array') return null;
     if (!Array.isArray(tp.type.shape) || tp.type.shape.length === 0) return null;
-    if (tp.phase !== 'fixed') return null;  // MVP phase gate
     paramReplacement.set(params[i], {
       kind: 'call', op: 'get',
       args: [arg, { kind: 'axis', name: atomAxisName }],
