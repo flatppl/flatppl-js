@@ -1481,3 +1481,77 @@ what's left). The shortlist as of 2026-05-26:
 For the full list, current priorities, and per-section status, read
 `flatppl-dev/TODO-flatppl-js.md`. That file is checkable surface (no
 status duplication here).
+
+
+## Broadcast / aggregate dissolution (JS-engine specifics)
+
+Cross-engine architecture in `flatppl-dev/flatppl-engine-concepts.md`
+§20. JS-engine implementation notes below.
+
+### Where dissolution slots into the pipeline
+
+The dissolver is a **post-lift, pre-typeinfer term-rewrite pass on
+the lowered IR**:
+
+```
+parse → analyze → lift → DISSOLVE → lower-to-PIR → typeinfer
+                                                       ↓
+                                                  derivations / materialiser
+                                                       ↓
+                                                  sampler / density (evaluating dissolved IR)
+```
+
+The dissolver rewrites broadcast / aggregate / broadcasted-curried
+forms in-place on the bindings map produced by lift. Subsequent
+typeinfer / materialiser / sampler all see the dissolved form;
+their existing higher-order dispatch paths are unchanged but rarely
+exercised after dissolution (only for the residual non-dissolvable
+cases — kernel-broadcast, table row-dispatch, recursive user-fns).
+
+### The runtime contract after dissolution
+
+Post-dissolution, the runtime evaluator sees ARITH_OPS / valueOps /
+declared-op calls almost exclusively. The current
+`_broadcastApply` machinery becomes the COLD path for the residual
+non-dissolvable cases; the hot path is direct op dispatch through
+`valueOps`.
+
+`valueOps` becomes the canonical batched-primitive surface:
+- Every elementwise op (add, sub, mul, …) implements NumPy-style
+  broadcasting (rank alignment from right, size-1 dims expand,
+  rank-0 broadcasts implicitly against any rank).
+- Reductions (sum, mean, var, …) take an explicit axis argument
+  (the dissolver passes axis indices for reduce axes).
+- Matrix ops (matmul, dot, …) handle batched shapes via leading
+  dim broadcast (numpy convention: trailing dims contracted; all
+  leading dims broadcast).
+
+The Klein-4 transpose tag and structured-matrix tags become
+**runtime-internal optimisation markers**, hidden behind the IR
+contract. valueOps reads them where they help (free transpose
+via tag flip; sparse-storage exploitation for diag / lower /
+upper); op-boundary handoffs materialise to contiguous form.
+
+### Constants and the rank-0 path
+
+The materialiser's `fixedValueToMeasure` currently replicates
+fixed scalars to length-N atom buffers (`new Float64Array(N);
+arr.fill(v)`). This becomes wasteful at scale and pre-determines
+storage layout in a way that conflicts with cross-engine
+portability.
+
+Migration: store constants as rank-0 Values (shape=[],
+data=Float64Array([v]), outerRank=0). Broadcasting against atom-
+batched operands happens lazily in valueOps via stride-0 reads
+on the rank-0 side. Memory cost drops from O(N) to O(1) per
+constant; broadcast cost is one read of the constant slot per
+result cell — same arithmetic work, less memory traffic.
+
+### Migration order — see TODO
+
+The phased migration plan lives at the top of
+`flatppl-dev/TODO-flatppl-js.md` (the "Broadcast / aggregate
+dissolution and value-contract unification" entry). Each phase has
+exit criteria, test coverage requirements, and the cross-cutting
+impacts called out so a session can pick up and execute one phase
+without reading every other phase first.
