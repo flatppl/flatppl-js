@@ -105,6 +105,57 @@ export interface IRAxis extends IRBase {
 }
 
 /**
+ * Static outer-axis metadata attached to measure-op IR nodes
+ * (engine-concepts §18.11 / P3a). Lists the outer iteration axes
+ * surrounding a node — the spec-§04 / §06 "axis context" made
+ * explicit at the IR layer.
+ *
+ * Each entry describes ONE outer axis, in OUTER-TO-INNER order:
+ * the first entry is the outermost axis, the last is the
+ * innermost. For example, `iid(broadcast(K, args), 5)` annotated
+ * on the outer `iid` call carries
+ *
+ *   axisStack: [
+ *     { source: 'iid',              size: 5 },
+ *     { source: 'kernel_broadcast', size: <len of args> },
+ *   ]
+ *
+ * The atom (sampling-time `N`) axis is NOT carried in IR
+ * axisStack — it's an engine-internal concept that materialise-
+ * time prepends. Backends without an atom-axis concept (RooFit,
+ * Stan) consume IR axisStack as-is.
+ *
+ * Sources:
+ *  - 'iid'                — added by `iid(M, n)` (size = n)
+ *  - 'broadcast'          — added by value `broadcast(f, args)`
+ *                           (size = axis length of args)
+ *  - 'kernel_broadcast'   — added by `broadcast(K, args)` for a
+ *                           kernel head (size = axis length of args)
+ *  - 'aggregate'          — output axis of `aggregate(...)`
+ *                           (name = axis name; size = dim length
+ *                           if statically known)
+ *
+ * The `size` field is `number` when statically known, `string`
+ * when symbolic (binding name, axis name, '%dynamic'). The
+ * `name` field is set for aggregate axes (axis name) and for
+ * kernel/value broadcast (typically the broadcast arg's binding
+ * name, when available).
+ *
+ * P3a defines the schema and populates it for the simple cases
+ * (iid / broadcast / aggregate at IR top level). Consumers
+ * (materialiser, density walker) don't read axisStack yet — that
+ * lands with fusion thread (b). Adding new sources or refining
+ * the size/name resolution is additive: existing variants and
+ * callers are unaffected.
+ */
+export interface AxisStackEntry {
+  source: 'iid' | 'broadcast' | 'kernel_broadcast' | 'aggregate';
+  size: number | string;
+  name?: string;
+}
+export type AxisStack = AxisStackEntry[];
+
+/**
  * Call IR — built-in (uses `op`) or user-defined (uses `target`).
  * Field forms (record, joint, jointchain, cartprod, table) carry
  * `fields: [{name, value}, …]`. Module-load forms carry `assigns`.
@@ -128,6 +179,13 @@ export interface IRCall extends IRBase {
   weightsFrom?: { ref: string; K: number; base: number } | null;
   selectorName?: string | null;
   selectorBase?: number | null;
+  // Static axis-context metadata (P3a; engine-concepts §18.11 /
+  // §20.10.5 item 4). Populated by `propagateAxisStack` in
+  // dissolver.ts for measure-op IR nodes whose variate carries
+  // outer iteration axes (iid / kernel_broadcast / aggregate).
+  // Not all calls have this — only measure-op calls in a
+  // recognised axis-introducing shape.
+  axisStack?: AxisStack;
 }
 
 export type IRNode = IRLit | IRConst | IRRef | IRHole | IRAxis | IRCall;

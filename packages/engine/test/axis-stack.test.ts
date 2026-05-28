@@ -1,0 +1,230 @@
+'use strict';
+
+// =====================================================================
+// axis-stack.test.ts — P3a IR-axis-context annotation
+// =====================================================================
+//
+// Pins `propagateAxisStack` (dissolver.ts, engine-concepts §18.11 /
+// §20.10.5 item 4): the static outer-axis metadata attached to
+// measure-op IR nodes after dissolution settles. The annotation is
+// pure IR metadata; no runtime semantics depend on it yet, but the
+// schema and the propagation are infrastructure for fusion thread (b)
+// (kernel-broadcast fusion).
+//
+// Three classes of test:
+//   1. Direct propagateAxisStack on synthetic IR — exercises the
+//      _axisStackForIR shape recognition in isolation.
+//   2. End-to-end via processSource — pins that annotated bindings
+//      survive the dissolveBindings call in the normal pipeline.
+//   3. Idempotency + non-annotation — re-running the pass on already-
+//      annotated bindings is stable; non-axis-introducing IRs are
+//      left untouched.
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const dissolver = require('../dissolver.ts');
+const { processSource } = require('../index.ts');
+
+// ---------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------
+
+function mkBindings(entries: Record<string, any>): Map<string, any> {
+  const m = new Map<string, any>();
+  for (const k in entries) m.set(k, entries[k]);
+  return m;
+}
+
+// =====================================================================
+// 1. Direct shape recognition (no bindings context — defaults)
+// =====================================================================
+
+test('axisStack: iid(M, literal n) → one iid entry with statically-known size', () => {
+  const ir = {
+    kind: 'call', op: 'iid',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'M' },
+      { kind: 'lit', value: 10 },
+    ],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 10 }]);
+});
+
+test('axisStack: iid(M, ref) → size carries the binding name when no inferred type', () => {
+  const ir = {
+    kind: 'call', op: 'iid',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'M' },
+      { kind: 'ref', ns: 'self', name: 'n_count' },
+    ],
+  };
+  const bindings = mkBindings({ n_count: { phase: 'fixed' } });
+  const stack = dissolver._axisStackForIR(ir, bindings);
+  assert.deepEqual(stack, [{ source: 'iid', size: 'n_count' }]);
+});
+
+test('axisStack: broadcast with function head → source=broadcast', () => {
+  const ir = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'f' },
+      { kind: 'ref', ns: 'self', name: 'xs' },
+    ],
+  };
+  const bindings = mkBindings({
+    f:  { inferredType: { kind: 'function' } },
+    xs: { inferredType: { kind: 'array', rank: 1, shape: [7], elem: { kind: 'scalar', prim: 'real' } } },
+  });
+  const stack = dissolver._axisStackForIR(ir, bindings);
+  assert.deepEqual(stack, [{ source: 'broadcast', size: 7, name: 'xs' }]);
+});
+
+test('axisStack: broadcast with kernel head → source=kernel_broadcast', () => {
+  const ir = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'K' },
+      { kind: 'ref', ns: 'self', name: 'data' },
+    ],
+  };
+  const bindings = mkBindings({
+    K:    { inferredType: { kind: 'kernel' } },
+    data: { inferredType: { kind: 'array', rank: 1, shape: [50], elem: { kind: 'scalar', prim: 'real' } } },
+  });
+  const stack = dissolver._axisStackForIR(ir, bindings);
+  assert.deepEqual(stack, [{ source: 'kernel_broadcast', size: 50, name: 'data' }]);
+});
+
+test('axisStack: broadcast with kwargs → uses first kwarg arg', () => {
+  const ir = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: 'f' }],
+    kwargs: { x: { kind: 'ref', ns: 'self', name: 'mu_vec' } },
+  };
+  const bindings = mkBindings({
+    f:      { inferredType: { kind: 'function' } },
+    mu_vec: { inferredType: { kind: 'array', rank: 1, shape: [4], elem: { kind: 'scalar', prim: 'real' } } },
+  });
+  const stack = dissolver._axisStackForIR(ir, bindings);
+  assert.deepEqual(stack, [{ source: 'broadcast', size: 4, name: 'mu_vec' }]);
+});
+
+test('axisStack: aggregate with 2 output axes → 2 entries with axis names', () => {
+  const ir = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      {
+        kind: 'call', op: 'vector',
+        args: [
+          { kind: 'axis', name: 'i' },
+          { kind: 'axis', name: 'k' },
+        ],
+      },
+      { kind: 'call', op: 'mul', args: [/* doesn't matter for axisStack */] },
+    ],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [
+    { source: 'aggregate', size: '%dynamic', name: 'i' },
+    { source: 'aggregate', size: '%dynamic', name: 'k' },
+  ]);
+});
+
+test('axisStack: non-axis-introducing IR returns null', () => {
+  const ir = { kind: 'call', op: 'add', args: [] };
+  assert.equal(dissolver._axisStackForIR(ir, null), null);
+});
+
+test('axisStack: malformed iid (missing n) returns null', () => {
+  const ir = {
+    kind: 'call', op: 'iid',
+    args: [{ kind: 'ref', ns: 'self', name: 'M' }],
+  };
+  assert.equal(dissolver._axisStackForIR(ir, null), null);
+});
+
+// =====================================================================
+// 2. Through dissolveBindings (the full dissolver entry point)
+// =====================================================================
+
+test('dissolveBindings annotates iid IR with axisStack', () => {
+  const bindings = mkBindings({
+    X: {
+      ir: {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'M' },
+          { kind: 'lit', value: 5 },
+        ],
+      },
+      phase: 'stochastic',
+    },
+  });
+  dissolver.dissolveBindings(bindings);
+  const ir = bindings.get('X').ir;
+  assert.deepEqual(ir.axisStack, [{ source: 'iid', size: 5 }]);
+});
+
+test('dissolveBindings annotates aggregate IR with output axes', () => {
+  const bindings = mkBindings({
+    C: {
+      ir: {
+        kind: 'call', op: 'aggregate',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'sum' },
+          {
+            kind: 'call', op: 'vector',
+            args: [
+              { kind: 'axis', name: 'i' },
+              { kind: 'axis', name: 'k' },
+            ],
+          },
+          { kind: 'call', op: 'mul', args: [] },
+        ],
+      },
+      phase: 'parameterised',
+    },
+  });
+  dissolver.dissolveBindings(bindings);
+  const ir = bindings.get('C').ir;
+  assert.ok(Array.isArray(ir.axisStack));
+  assert.equal(ir.axisStack.length, 2);
+  assert.deepEqual(ir.axisStack.map((e: any) => e.name), ['i', 'k']);
+});
+
+// =====================================================================
+// 3. Idempotency + non-annotation
+// =====================================================================
+
+test('axisStack: re-running propagateAxisStack is idempotent', () => {
+  const ir = {
+    kind: 'call', op: 'iid',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'M' },
+      { kind: 'lit', value: 7 },
+    ],
+  };
+  const bindings = mkBindings({ X: { ir, phase: 'stochastic' } });
+  dissolver.propagateAxisStack(bindings);
+  const firstIR = bindings.get('X').ir;
+  assert.ok(firstIR.axisStack);
+  dissolver.propagateAxisStack(bindings);
+  // Same axisStack content, but the IR object may stay identical
+  // (the pass short-circuits when the annotation is already equal).
+  const secondIR = bindings.get('X').ir;
+  assert.deepEqual(secondIR.axisStack, firstIR.axisStack);
+  assert.strictEqual(secondIR, firstIR,
+    'idempotent: IR identity preserved on second pass');
+});
+
+test('axisStack: bindings without axis-introducing IR are untouched', () => {
+  const ir = { kind: 'call', op: 'add', args: [] };
+  const bindings = mkBindings({ Y: { ir, phase: 'fixed' } });
+  dissolver.propagateAxisStack(bindings);
+  assert.equal(bindings.get('Y').ir.axisStack, undefined);
+  assert.strictEqual(bindings.get('Y').ir, ir,
+    'non-axis IR object identity preserved');
+});
