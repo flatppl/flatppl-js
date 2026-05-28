@@ -284,17 +284,24 @@ r = s * v
 
 test('cross: nested literal [[a,b],[c,d]] is vector-of-vectors (NOT matrix)', () => {
   // Per spec §03: `[[1,2],[3,4]]` is a vector of vectors. It is NOT
-  // implicitly a matrix. Arithmetic `*` between two vec-of-vec is
-  // therefore undefined; engine produces a JS array of inner-Value
-  // entries, and operating on it is the user's responsibility (the
-  // language-level type system would reject it once that catches up).
+  // implicitly a matrix. Engine-concepts §2.1 (C7 outerRank tag):
+  // the runtime carries this distinction via the `outerRank` field
+  // on Value — a vector-of-vectors has outerRank set + less than
+  // shape.length (some axes are nested-collection outer axes). A
+  // true matrix has no `outerRank` tag (or outerRank == shape.length)
+  // — every axis is a loop axis at the matrix level. Either a JS
+  // array of inner Values (legacy host form), null, or a tagged
+  // nested-vector Value are all valid runtime forms; what's NOT
+  // valid is auto-lifting to a flat matrix Value.
   const valueLib = require('../value.ts');
   const fv = ev(`
 M = [[1.0, 2.0], [3.0, 4.0]]
 `);
   const m = fv.get('M');
-  // Either a JS array of inner Values, OR null (if some pass elided
-  // the binding). Confirm it's NOT a rank-2 matrix Value.
-  assert.ok(!valueLib.isValue(m) || m.shape.length !== 2,
-    'nested literal must NOT auto-lift to a matrix Value (spec §03)');
+  const isFlatMatrix = valueLib.isValue(m) && m.shape.length === 2
+    && !valueLib.isNestedVectorValue(m);
+  assert.ok(!isFlatMatrix,
+    'nested literal must NOT auto-lift to a flat matrix Value (spec §03); '
+    + 'expected JS array OR tagged nested-vector Value (outerRank set), got '
+    + JSON.stringify(m && { shape: m.shape, outerRank: m.outerRank }));
 });

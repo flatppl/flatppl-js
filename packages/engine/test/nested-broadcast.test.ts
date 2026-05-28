@@ -242,7 +242,71 @@ Y = dot.([V1, V2], [[1.0,1.0], [1.0,1.0,1.0]])
 });
 
 // =====================================================================
-// E. Deeper nesting (v2 — multi-axis nested-vector outer loops)
+// E. C7 outerRank tag — canonical-storage form
+// =====================================================================
+//
+// Engine-concepts §2.1 C7: `_vectorLogical` emits a flat tagged
+// Value `{shape, data, outerRank}` for non-scalar args, replacing
+// the legacy "return a JS array of inner Values" host-shape form.
+// outerRank stacks under nesting: `vector(vector(C))` has
+// outerRank=2 because the inner already has outerRank=1.
+
+test('C7: vector(C) where C: shape=[3] produces tagged Value (outerRank=1, shape=[1,3])', () => {
+  const v = run(`
+C = [2.3, 1.5, 0.7]
+W = [C]
+`);
+  const W = v.get('W');
+  assert.ok(W && W.shape && W.data instanceof Float64Array,
+    'expected shape-explicit Value (not JS array); got ' + JSON.stringify(W));
+  assert.deepEqual(W.shape, [1, 3]);
+  assert.equal(W.outerRank, 1,
+    'outerRank should be 1 (single Ref-wrap)');
+  assert.deepEqual(Array.from(W.data), [2.3, 1.5, 0.7]);
+});
+
+test('C7: vector(vector(C)) stacks outerRank to 2', () => {
+  const v = run(`
+C = [2.3, 1.5, 0.7]
+W = [[C]]
+`);
+  const W = v.get('W');
+  assert.deepEqual(W.shape, [1, 1, 3]);
+  assert.equal(W.outerRank, 2,
+    'outerRank should stack: 1 (new wrap) + 1 (inner [C] tag) = 2');
+});
+
+test('C7: vector(C, D) of same-shape vectors → outerRank=1, shape=[2, k]', () => {
+  const v = run(`
+C = [1.0, 2.0, 3.0]
+D = [4.0, 5.0, 6.0]
+W = [C, D]
+`);
+  const W = v.get('W');
+  assert.deepEqual(W.shape, [2, 3]);
+  assert.equal(W.outerRank, 1);
+  assert.deepEqual(Array.from(W.data), [1, 2, 3, 4, 5, 6]);
+});
+
+test('C7: rowstack of tagged nested-vector strips outerRank → matrix', () => {
+  // `rowstack([[1, 2, 3], [4, 5, 6]])` previously consumed the
+  // JS-array form; now the inner `[[…],[…]]` is a tagged nested-
+  // vector Value. rowstack accepts both forms via
+  // `valueLib.isNestedVectorValue`; the output is a flat matrix
+  // Value (no outerRank tag — every axis is a loop axis at the
+  // matrix level).
+  const v = run(`
+M = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+`);
+  const M = v.get('M');
+  assert.deepEqual(M.shape, [2, 3]);
+  assert.ok(M.outerRank === undefined || M.outerRank === 2,
+    'rowstack output should not carry outerRank=1 (it is a flat matrix); '
+    + 'got outerRank=' + M.outerRank);
+});
+
+// =====================================================================
+// F. Deeper nesting (v2 — multi-axis nested-vector outer loops)
 // =====================================================================
 //
 // The v1 classifier walks the full JS-array nesting depth and treats
