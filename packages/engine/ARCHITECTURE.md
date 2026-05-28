@@ -993,26 +993,44 @@ pass through unchanged. `dissolveExpr(ir, bindings)` is the
 recursive walker; `_tryDissolveSingleOp(bcIR, bindings)` and
 `_substituteBody(...)` are exported for unit tests.
 
-**Phases landed (1–4).**
+**Phases landed (1–6).**
 - Phase 1: scalar constants flow as rank-0 Values; ARITH_OPS
   routes Value inputs through valueOps unconditionally.
 - Phase 2: single-op broadcast → direct call for
   `broadcast(functionof(<op>(_arg1_, _arg2_, …)), args)`.
 - Phase 3: multi-op body via per-name placeholder substitution
   (`fn(_a + _b - _a)` → `sub(add(A, B), A)`).
+- Phase 3.5: type-aware widening — split DISSOLVE_SAFE_OPS into
+  AT_ANY_RANK and SCALAR_ONLY tiers + a lazy type resolver that
+  derives types for inline / synthetic-anon args.
 - Phase 4: user-fn inlining — `self`-ref heads look up the lifted
   `functionof` binding and inline.
+- Phase 5: aggregate dissolution — matmul / matvec / outer product
+  rewrite to direct `mul(…)` calls with Klein-4 transpose wrappers.
+- Phase 6: declared fixed-rank linalg ops (cross / self_outer /
+  trace / det / logabsdet / diagmat / inv / lower_cholesky /
+  row_gram / col_gram) join AT_ANY_RANK — ops.dispatch's
+  auto-batching covers the atom axis uniformly.
 
 **Soundness gates.**
-- `DISSOLVE_SAFE_OPS = {add, sub, neg, pos}` — every op in the body
-  tree must be in this set. The set is narrow on purpose; widening
-  to mul / scalar unaries blocks on type-aware shape safety.
-- Outer broadcast args must all be binding refs of IDENTICAL
-  inferred type AND phase. Mixed-shape / mixed-phase broadcasts
-  stay on the `_broadcastApply` cold path.
+- DISSOLVE_SAFE_OPS split into two tiers:
+    - `DISSOLVE_AT_ANY_RANK_OPS` — value-ops handles elementwise
+      at any rank (add/sub/neg/pos) plus declared fixed-rank
+      linalg ops where `ops.dispatch` auto-batches uniformly.
+    - `DISSOLVE_SCALAR_ONLY_OPS` — multiplicative arith (mul / div
+      / pow), unary scalar maths (exp / log / sqrt / sin / …),
+      comparisons + logic, scalar restrictors. Permitted only
+      when every outer broadcast arg has
+      `inferredType.kind === 'scalar'`.
+- Outer broadcast args must resolve to IDENTICAL inferred types
+  with matching phase. Mixed-shape / mixed-phase broadcasts stay
+  on the `_broadcastApply` cold path.
 - Body refs: `%local` placeholders substituted by name; `self`
   refs allowed only when the target binding is fixed-phase
   (held constant per cell).
+- Lazy type resolver derives types for inline calls and synthetic
+  anon bindings (which lift creates without inferredType), so
+  multi-step chains like `(a .* b) .+ c` dissolve end-to-end.
 
 **Tests.** `test/dissolution.test.ts` (~270 lines) pins the
 structural matcher in isolation plus end-to-end behaviour on
@@ -1530,13 +1548,15 @@ status duplication here).
 Cross-engine architecture in `flatppl-dev/flatppl-engine-concepts.md`
 §20. JS-engine implementation notes below.
 
-> **Status:** Phases 1–4 landed (2026-05-28). Constants flow as rank-0
-> Values; ARITH_OPS no longer emits bare numbers when Values flow in;
-> the dissolver rewrites broadcast IR into direct elementwise call
-> chains for add/sub/neg/pos including multi-op bodies and inlined
-> user-fn heads. DISSOLVE_SAFE_OPS widening (mul/div/exp/log/…),
-> Phase 5 aggregate dissolution, and Phase 6 atom-axis unification
-> are tracked in `TODO-flatppl-js.md`.
+> **Status:** Phases 1–6 (+ Phase 3.5 widening) landed (2026-05-28).
+> Constants flow as rank-0 Values; ARITH_OPS no longer emits bare
+> numbers when Values flow in; the dissolver rewrites broadcast and
+> aggregate IR into direct call chains. Phase 1.5 (stride-0
+> broadcasting) is deferred as optional perf. Remaining Phase-5
+> follow-ups (batched matmul, pure-axis reductions, non-sum
+> reductions) and per-op `batched` fast-paths for declared linalg
+> ops without one (trace / det / logabsdet / self_outer / row_gram
+> / col_gram / diagmat) tracked in `TODO-flatppl-js.md`.
 
 ### Where dissolution slots into the pipeline
 
