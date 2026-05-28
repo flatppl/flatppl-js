@@ -1605,6 +1605,37 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // Cross-module user calls — not yet implemented.
       return write(T.deferred(), expr);
     }
+
+    // `broadcasted(f)` wrapper recognition. The lift rewrites
+    // `bc(args)` (where bc = broadcasted(f)) to `broadcast(f, args)`
+    // at runtime materialisation time — but that lift runs AFTER
+    // typeinfer, so the call's IR still says `target=bc, args=...`.
+    // Without this hook, the call types as deferred (callee's
+    // inferred type is deferred — broadcasted(f) has no signature
+    // and shouldn't, since the callable is fully polymorphic).
+    //
+    // Route the call through `inferBroadcast` directly. The wrapper
+    // is just sugar at the type level: `broadcasted(f)(args)` ≡
+    // `broadcast(f, args)` per spec §04.
+    //
+    // Direct form `broadcasted(f)(args)` (no via-binding) is NOT
+    // handled here — it fails to lower (non-Identifier callee in
+    // lower.ts) and stores as a lit-null placeholder. Use the
+    // via-binding form `bc = broadcasted(f); bc(args)` to get
+    // type-level routing.
+    const b = loweredModule.bindings.get(head.name);
+    if (b && b.rhs && b.rhs.kind === 'call' && b.rhs.op === 'broadcasted'
+        && b.rhs.args && b.rhs.args.length === 1) {
+      const f = b.rhs.args[0];
+      const broadcastIR: any = {
+        kind: 'call', op: 'broadcast',
+        args: [f].concat(expr.args || []),
+        kwargs: expr.kwargs,
+        loc: expr.loc,
+      };
+      return write(inferBroadcast(broadcastIR, scopes), expr);
+    }
+
     const calleeType: any = inferBinding(head.name);
     if (!T.isCallable(calleeType)) {
       // Cascade silently when the callee already failed or is still

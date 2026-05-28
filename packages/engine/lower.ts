@@ -404,9 +404,44 @@ function _lowerUnaryExpr(node: any, ctx: any): any {
 
 function _lowerCallExpr(node: any, ctx: any): any {
   if (!node.callee || node.callee.type !== 'Identifier') {
-    // Higher-order or computed callees aren't part of the FlatPPL surface
-    // grammar today. If we ever add them, they'd lower with a
-    // computed-target form. For now, refuse loudly.
+    // Special case: `broadcasted(f)(args...)` — the spec §04
+    // curried form `broadcasted(f)(args) ≡ broadcast(f, args)`.
+    // Lower this directly to a `broadcast` IR, avoiding the
+    // synthesised inner `fn(f(_, _, …))` wrapper the runtime lift
+    // would otherwise add. This makes inline forms like
+    // `fn(broadcasted(f)(a, _, c))` lower cleanly (without this,
+    // the outer call's non-Identifier callee would land in the
+    // lit-null catch in pir.lowerToModule). The body of the
+    // resulting `broadcast` keeps `f` as a bare ref / call expr;
+    // the runtime broadcast handler and inferBroadcast both
+    // resolve user-fn refs directly, so no wrapper is needed.
+    if (node.callee && node.callee.type === 'CallExpr'
+        && node.callee.callee && node.callee.callee.type === 'Identifier'
+        && node.callee.callee.name === 'broadcasted') {
+      const bcArgs = (node.callee.args || []).filter(
+        (a: any) => a && a.type !== 'KeywordArg');
+      if (bcArgs.length === 1) {
+        const f = _lowerExpr(bcArgs[0], ctx);
+        const lowered: any = { kind: 'call', op: 'broadcast', loc: node.loc };
+        const posArgs: any[] = [];
+        const kwargs: Record<string, any> = {};
+        let hasKwargs = false;
+        for (const a of node.args || []) {
+          if (a.type === 'KeywordArg') {
+            kwargs[a.name] = _lowerExpr(a.value, ctx);
+            hasKwargs = true;
+          } else {
+            posArgs.push(_lowerExpr(a, ctx));
+          }
+        }
+        lowered.args = [f, ...posArgs];
+        if (hasKwargs) lowered.kwargs = kwargs;
+        return lowered;
+      }
+    }
+    // Otherwise: higher-order or computed callees aren't part of
+    // the FlatPPL surface grammar today. If we ever add them, they'd
+    // lower with a computed-target form. For now, refuse loudly.
     throw new Error(`lower: unsupported callee type '${node.callee?.type}'`);
   }
   const calleeName = node.callee.name;
