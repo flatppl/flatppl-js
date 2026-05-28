@@ -1049,6 +1049,46 @@ vec×vec inner/outer/error, matvec/vecmat/error, matmul), via
 fast-check; plus pattern-matcher and specificity-ordering unit
 tests (51 tests total).
 
+**Unified value+measure dispatch via ArgInfo (P1↔P2↔P3a
+integration, 2026-05-29).** The variant model extended to handle
+BOTH value-domain AND measure-domain dispatch through one
+registry. Three additions to ArgPattern:
+
+  - `kind` discriminator (`'value' | 'measure' | 'function' |
+    'kernel' | 'tuple'`, default `'value'`).
+  - Measure-side shape fields (`sampleShape` / `batchShape` /
+    `eventShape`) that consume P2 metadata on measure types.
+  - `axisStack` constraint that consumes P3a IR-context entries.
+
+`ArgInfo` is the typed wrapper that carries either a Value, a
+measure type, a callable type, or an axisStack context. The
+matcher splits cleanly into `_matchValueArg` /
+`_matchMeasureArg`; the kind discriminator filters
+categorically so value-only and measure-only variants don't
+collide.
+
+New API:
+  - `argInfoFromValue(v, opts?)`, `argInfoFromMeasure(type, opts?)`,
+    `argInfoFromFunction(type)`, `argInfoFromKernel(type)` —
+    constructors that wrap raw payloads.
+  - `dispatchTyped(name, argInfos, opts?)` — typed-dispatch entry.
+    Unwraps ArgInfo to the impl's raw arg payload; passes the
+    full `argInfos` via `ctx.argInfos` for impls that need the
+    richer context.
+
+Backward compat: `dispatch` / `dispatchVariant` keep their raw-
+Value contract. The matcher auto-wraps raw args internally so
+legacy variants stay reachable. Future fusion (b) wires this
+surface through the materialiser; multivariate-density variants
+and backend lowering both layer on the same registry.
+
+`test/ops-variants-typed.test.ts` (21 tests): ArgInfo
+constructors, kind-discriminated matching, measure-shape
+matching (sampleShape / batchShape / eventShape with wildcards),
+axisStack matching, specificity ordering, end-to-end registration
+of a kind:`measure` variant that distinguishes iid sampleShape
+from kernel-broadcast batchShape at the dispatch layer.
+
 ### `dissolver.ts` (~750 lines)
 
 **Responsibility.** Term-rewriter for broadcast / aggregate
