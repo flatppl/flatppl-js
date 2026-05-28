@@ -1127,6 +1127,178 @@ function _ensureBroadcastedRegistered(): void {
   }
 }
 
+// =====================================================================
+// `mul` direct-wrapping variants (engine-concepts §18.11)
+// =====================================================================
+//
+// Spec §07 mul has shape-dependent semantics: scalar broadcast,
+// inner/outer products via Klein-4 tag, matvec, vecmat, matmul.
+// The existing `valueOps.mul` switch handles these via a sequence of
+// `if (sa.length === ...)` clauses; this block lifts that switch
+// into the variant registry as data. Each variant covers one
+// shape/tag combination and points at the corresponding helper.
+//
+// **Pre-dispatch filtering** stays in `valueOps.mul`:
+//   - Diag-stored Values are fast-pathed via `_diagMul` BEFORE the
+//     registry; on no-fast-path the diag is densified and falls
+//     through. The diag fast-path's null-fallthrough semantics
+//     doesn't fit cleanly into "match → impl → done" variant
+//     dispatch, so it stays as a pre-hook for now.
+//   - Complex Values are routed to the existing `_cx*Mul` helpers
+//     via the `_isCx` branch in `valueOps.mul`. Migrating complex
+//     to variants would require either a cross-arg "any complex"
+//     pattern dimension or parallel complex variants for every
+//     shape combo; both are larger refactors for a future session.
+//
+// Variants therefore declare `dtype: 'real'` to make this contract
+// explicit: complex Values must be filtered out by the caller
+// before the registry is consulted. The matcher rejects complex
+// dtype, and the dispatcher would throw "no variant matched" —
+// catching any code path that accidentally bypasses valueOps.mul's
+// pre-check.
+//
+// **Klein-4 dispatch** for vec×vec is encoded as four variants:
+//   - swapped × unswapped → inner product
+//   - unswapped × swapped → outer product
+//   - unswapped × unswapped → static error (col × col is undefined)
+//   - swapped   × swapped   → static error (row × row is undefined)
+// `tag: ['T', 'A']` matches "swapped" Klein-4 elements; `tag:
+// ['N', 'C']` matches "unswapped". This factoring mirrors
+// `isTransposeView()`'s swapped-bit semantics directly.
+
+let _MUL_DIRECT_VARIANTS_REGISTERED = false;
+function _ensureMulDirectRegistered(): void {
+  if (_MUL_DIRECT_VARIANTS_REGISTERED) return;
+  _MUL_DIRECT_VARIANTS_REGISTERED = true;
+  const vo = require('./value-ops.ts');
+
+  // (1) Scalar × anything (left scalar): broadcast the scalar over
+  //     every cell of the array operand, preserving its tag.
+  ops.registerVariant('mul', {
+    argPatterns: [{ rank: 0, dtype: 'real' }, { dtype: 'real' }],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._scalarBroadcastMul(args[0].data[0], args[1]),
+    label: 'mul(scalar, *) → scalar broadcast',
+  });
+  // (2) Anything × scalar (right scalar): symmetric to (1).
+  ops.registerVariant('mul', {
+    argPatterns: [{ dtype: 'real' }, { rank: 0, dtype: 'real' }],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._scalarBroadcastMul(args[1].data[0], args[0]),
+    label: 'mul(*, scalar) → scalar broadcast',
+  });
+  // (3a) swapped × unswapped vec×vec → inner product (row × col).
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 1, tag: ['T', 'A'], dtype: 'real' },
+      { rank: 1, tag: ['N', 'C'], dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._innerProduct(args[0], args[1]),
+    label: 'mul(row vec, col vec) → inner product',
+  });
+  // (3b) unswapped × swapped vec×vec → outer product (col × row).
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 1, tag: ['N', 'C'], dtype: 'real' },
+      { rank: 1, tag: ['T', 'A'], dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._outerProduct(args[0], args[1]),
+    label: 'mul(col vec, row vec) → outer product',
+  });
+  // (3c) unswapped × unswapped vec×vec → static error (col × col).
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 1, tag: ['N', 'C'], dtype: 'real' },
+      { rank: 1, tag: ['N', 'C'], dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: () => {
+      throw new Error(
+        'mul: vector * vector is not defined; use transpose(v1) * v2 ' +
+        'for inner product or v1 * transpose(v2) for outer product');
+    },
+    label: 'mul(col vec, col vec) → error',
+  });
+  // (3d) swapped × swapped vec×vec → static error (row × row).
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 1, tag: ['T', 'A'], dtype: 'real' },
+      { rank: 1, tag: ['T', 'A'], dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: () => {
+      throw new Error(
+        'mul: transpose(v1) * transpose(v2) is not defined (two row vectors)');
+    },
+    label: 'mul(row vec, row vec) → error',
+  });
+  // (4) Matrix × column vector → matvec product. The vector MUST be
+  //     unswapped (column orientation); a transposed/row vector on
+  //     the right is undefined per spec §07.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 2, dtype: 'real' },
+      { rank: 1, tag: ['N', 'C'], dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._matVecMul(args[0], args[1]),
+    label: 'mul(mat, col vec) → matvec',
+  });
+  // (4-err) Matrix × row vector → static error. Wins over the
+  //     general (rank-2, rank-1) match by tag specificity.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 2, dtype: 'real' },
+      { rank: 1, tag: ['T', 'A'], dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: () => {
+      throw new Error(
+        'mul: matrix * (transposed/row vector) is not defined; ' +
+        'mul requires a column vector on the right');
+    },
+    label: 'mul(mat, row vec) → error',
+  });
+  // (5) Row vector × matrix → vecmat product. The vector MUST be
+  //     swapped (row orientation).
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 1, tag: ['T', 'A'], dtype: 'real' },
+      { rank: 2, dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._vecMatMul(args[0], args[1]),
+    label: 'mul(row vec, mat) → vecmat',
+  });
+  // (5-err) Column vector × matrix → static error.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 1, tag: ['N', 'C'], dtype: 'real' },
+      { rank: 2, dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: () => {
+      throw new Error(
+        'mul: (column vector) * matrix is not defined; ' +
+        'mul requires matrix on the left of a column vector or ' +
+        'transpose(v) on the left of a matrix');
+    },
+    label: 'mul(col vec, mat) → error',
+  });
+  // (6) Matrix × matrix → matmul.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 2, dtype: 'real' },
+      { rank: 2, dtype: 'real' },
+    ],
+    wrappingOp: 'direct',
+    impl: (args: any[]) => vo._matMatMul(args[0], args[1]),
+    label: 'mul(mat, mat) → matmul',
+  });
+}
+
 // Try the fast path: when the broadcast head names a known scalar
 // primitive (either as a bare ref or as a synthesised functionof
 // wrapping the op with the params in some order), dispatch directly
@@ -1387,6 +1559,11 @@ ops.register({
 // load (engine-concepts §18.11 / §20.1). value-ops is already
 // required at the top of this file so there's no cycle risk.
 _ensureBroadcastedRegistered();
+
+// Eagerly register the `mul` direct-wrapping variants — the
+// rank-based shape switch that previously lived in valueOps.mul
+// (engine-concepts §18.11).
+_ensureMulDirectRegistered();
 
 module.exports = {
   // Re-export for tests that want to call the logical impls directly

@@ -174,25 +174,42 @@ function _diagMul(a: any, b: any) {
   return null;   // not fast-pathed → caller densifies
 }
 
+// Lazy reference to ops.dispatch — assigned on first call to avoid a
+// hard module-load dep on ops.ts (which would require ops-declarations.ts
+// to have already registered the mul variants). Callers of this file
+// during engine bootstrap (e.g. row_gram registration in
+// ops-declarations.ts) invoke `mul` AFTER variants are registered;
+// the lazy lookup guarantees correct sequencing in either order.
+let _opsModule: any = null;
+function _ops(): any {
+  if (!_opsModule) _opsModule = require('./ops.ts');
+  return _opsModule;
+}
+
 function mul(a: Value, b: Value): Value {
   // Runtime check stays — also narrows the type predicate's promise
   // when called from `any`-typed sites that haven't migrated yet.
   if (!isValue(a) || !isValue(b)) {
     throw new Error('value-ops.mul: both operands must be Values');
   }
+  // Diag fast-path (pre-dispatch). `_diagMul` covers diag×scalar,
+  // diag×vec, diag×mat, mat×diag, and the diag×diag Hadamard. On
+  // any combination it doesn't fast-path (e.g. complex diag) it
+  // returns null, the diag operand(s) are densified, and we fall
+  // through to the generic dense path.
   if (valueLib.isDiagStored(a) || valueLib.isDiagStored(b)) {
     const r = _diagMul(a, b);
     if (r !== null) return r;
-    // Unhandled combination (e.g. complex diagonal): densify the diag
-    // operand(s) and fall through to the generic dense path.
     if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
     if (valueLib.isDiagStored(b)) b = valueLib.densify(b);
   }
+  // Complex branch (pre-dispatch). Conjugation-aware complex gemm via
+  // dedicated `_cx*` helpers. Migrating complex into the variant
+  // registry is a future P1 follow-up; today the per-arg ArgPattern
+  // doesn't naturally express "any operand is complex" without
+  // duplicating every shape variant per-arg-complex case.
   const sa = a.shape, sb = b.shape;
   if (_isCx(a, b)) {
-    // Conjugation-aware complex gemm. readComplex (inside each helper)
-    // folds the Klein-4 conj bit, so adjoint(·) gives the Hermitian
-    // form for free; the swapped bit still drives index permutation.
     if (sa.length === 0 || sb.length === 0) return _complexScalarBroadcastMul(a, b);
     if (sa.length === 1 && sb.length === 1) return _cxVecVecMul(a, b);
     if (sa.length === 2 && sb.length === 1) return _cxMatVecMul(a, b);
@@ -202,21 +219,12 @@ function mul(a: Value, b: Value): Value {
       'value-ops.mul: unsupported complex shape combination ' +
       JSON.stringify(sa) + ' × ' + JSON.stringify(sb));
   }
-  // scalar × anything
-  if (sa.length === 0) return _scalarBroadcastMul(a.data[0], b);
-  if (sb.length === 0) return _scalarBroadcastMul(b.data[0], a);
-  // vector × vector
-  if (sa.length === 1 && sb.length === 1) return _vecVecMul(a, b);
-  // matrix × vector
-  if (sa.length === 2 && sb.length === 1) return _matVecMul(a, b);
-  // vector × matrix
-  if (sa.length === 1 && sb.length === 2) return _vecMatMul(a, b);
-  // matrix × matrix
-  if (sa.length === 2 && sb.length === 2) return _matMatMul(a, b);
-  throw new Error(
-    'value-ops.mul: unsupported shape combination ' +
-    JSON.stringify(sa) + ' × ' + JSON.stringify(sb)
-  );
+  // Real path: dispatched via the variant registry (engine-concepts
+  // §18.11). Each (rank-A tag-X) × (rank-B tag-Y) combination maps
+  // to one registered variant entry pointing at the corresponding
+  // helper (_scalarBroadcastMul / _vecVecMul split into inner /
+  // outer / error / _matVecMul / _vecMatMul / _matMatMul).
+  return _ops().dispatch('mul', [a, b], { wrappingOp: 'direct' });
 }
 
 // scalar (JS number) × Value (any shape) → Value with same shape and tag.
