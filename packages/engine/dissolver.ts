@@ -333,6 +333,13 @@ function dissolveExpr(ir: any, bindings: any): any {
   // Pattern-match `broadcast(...)` and `aggregate(...)` at THIS
   // level after the children are dissolved.
   if (walked.op === 'broadcast') {
+    // Try the broadcast-with-reduction-body rewrite (fusion (a)
+    // Step 2) FIRST: it matches when the head's body is a top-
+    // level reducer call (sum/mean/prod) and emits an aggregate
+    // IR node. If the body isn't reduction-shaped, falls through
+    // to the existing single-op dissolver.
+    const fused = _tryDissolveBroadcastReduction(walked, bindings);
+    if (fused) return fused;
     const dissolved = _tryDissolveSingleOp(walked, bindings);
     if (dissolved) return dissolved;
   }
@@ -1091,6 +1098,348 @@ function _substituteBody(
   }
 }
 
+// =====================================================================
+// Fusion (a) Step 2 — broadcast → aggregate rewrite
+// (engine-concepts §20.10.8; TODO-flatppl-js fusion thread (a))
+// =====================================================================
+//
+// Recognises `broadcast(<head>, <args>…)` whose head functionof body
+// is a top-level reduction `R(<expr>)` where R ∈ {sum, mean, prod},
+// and rewrites it as `aggregate(R, [.atom], <substituted_body>)` —
+// one IR node carrying the outer broadcast axis as output + the
+// inner reduction axis as implicit reduction (engine-concepts §20.1
+// dispatcher treats outer broadcast + inner reduction axes
+// uniformly).
+//
+// The polyeval-slow case (TODO-flatppl-js fusion (a)):
+//
+//   polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+//   Y = polyeval.([C], X)
+//
+// After shape-folding (§20.10.7), `indicesof0(coeffs)` resolves to
+// a literal vector once `coeffs` substitutes to a ref with static
+// shape. Then the body is structurally a reduction over an
+// elementwise expression mixing rank-1 leaves (vector refs +
+// literal vectors) and atom-indexed scalars.
+//
+// The rewrite:
+//   1. Resolve head to a functionof (inline or via binding ref).
+//   2. Body must be `R(inner_expr)` for R in REDUCERS_FUSION_A.
+//   3. Classify each broadcast arg:
+//        - Ref-wrap (`vector(<single>)`): per-cell value = <single>;
+//          substitute placeholder → <single>.
+//        - rank-1 broadcast-over (array-typed): per-cell value =
+//          get(<arg>, .atom); substitute placeholder → that.
+//        Anything else → refuse.
+//   4. Substitute placeholders in `inner_expr`.
+//   5. Walk and wrap each rank-1 leaf in `get(<leaf>, .j)` so the
+//      aggregate body evaluates pointwise over (.atom, .j) tuples.
+//   6. Emit `aggregate(R, [.atom], wrapped_body)`.
+//
+// Scope (MVP):
+//   - One outer broadcast axis (.atom). Multi-axis broadcasts stay
+//     on the existing single-op dissolver / runtime path.
+//   - At most one reduction axis (.j).
+//   - Leaves are: refs (resolved via bindings), literal vectors
+//     (`vector(<lits>)`), `get(<atom-indexed>, …)` scalars. Compound
+//     rank-1 expressions inside the body that aren't leaves stay on
+//     the runtime path.
+//   - Reducers: sum, mean, prod. Other reducers (var/std/min/max)
+//     don't have closed-form aggregate forms in §20.10 yet.
+
+const REDUCERS_FUSION_A: Set<string> = new Set(['sum', 'mean', 'prod']);
+
+// Higher-order / non-plain ops that the MVP fusion (a) Step 2 rewrite
+// refuses inside the reduction body. The body must be a plain
+// elementwise expression after substitution — these ops would need
+// per-call special handling (axis-introduction inside their callable
+// arg, etc.) which is follow-up work. Refusing keeps the rewrite
+// safe.
+const _FUSION_A_BODY_FORBIDDEN_OPS: Set<string> = new Set([
+  'broadcast',
+  'broadcasted',
+  'aggregate',
+  'functionof',
+  'kernelof',
+  'kernel_broadcast',
+  'iid',
+  'lawof',
+  'draw',
+  'weighted',
+  'normalize',
+]);
+
+function _bodyContainsForbiddenOp(expr: any): boolean {
+  if (!expr || typeof expr !== 'object') return false;
+  if (expr.kind === 'call' && typeof expr.op === 'string'
+      && _FUSION_A_BODY_FORBIDDEN_OPS.has(expr.op)) {
+    return true;
+  }
+  if (Array.isArray(expr.args)) {
+    for (const a of expr.args) {
+      if (_bodyContainsForbiddenOp(a)) return true;
+    }
+  }
+  if (expr.kwargs) {
+    for (const k in expr.kwargs) {
+      if (_bodyContainsForbiddenOp(expr.kwargs[k])) return true;
+    }
+  }
+  return false;
+}
+
+// Resolve a broadcast arg's "ref-wrap" shape: when the arg is a ref
+// to an anon binding whose IR is `vector(<single_inner>)`, return
+// the inner expression — the per-cell value of a Ref-wrap (spec §04
+// `[expr]` idiom). When the arg is itself a direct `vector(<single>)`
+// IR (not yet lifted), also return the inner. Otherwise null.
+function _refWrapInner(arg: any, bindings: any): any | null {
+  if (!arg) return null;
+  if (arg.kind === 'call' && arg.op === 'vector'
+      && Array.isArray(arg.args) && arg.args.length === 1) {
+    return arg.args[0];
+  }
+  if (arg.kind === 'ref' && arg.ns === 'self' && bindings && bindings.get) {
+    const b = bindings.get(arg.name);
+    if (b && b.ir && b.ir.kind === 'call' && b.ir.op === 'vector'
+        && Array.isArray(b.ir.args) && b.ir.args.length === 1) {
+      return b.ir.args[0];
+    }
+  }
+  return null;
+}
+
+// Generate a fresh axis name that doesn't collide with anything in
+// the body. Walks `_collectAxisNames` (already in this module) to
+// find used axis labels and picks a non-colliding name. Suffix
+// counter for stability across re-runs.
+function _freshAxisName(body: any, base: string): string {
+  const used = new Set<string>();
+  _collectAxisNames(body, used);
+  if (!used.has(base)) return base;
+  let i = 0;
+  while (used.has(base + i)) i++;
+  return base + i;
+}
+
+// Walk a substituted body and wrap rank-1 leaves in
+// `get(<leaf>, .<jName>)` so the aggregate body evaluates scalarly
+// over (.atom, .j) tuples. Returns the rewritten expression; null
+// if a sub-expression can't be handled (forcing the caller to
+// refuse the fusion).
+//
+// Leaves recognised:
+//   - Refs to bindings with rank-1 (or higher) array type.
+//   - Literal vector IRs (`vector(<lits>)`).
+//
+// Compound rank-1 expressions (e.g. a call returning a vector
+// without going through a known leaf shape) refuse — too risky to
+// auto-introduce indexing without a clear shape.
+function _wrapVectorLeaves(
+  expr: any, jName: string, bindings: any,
+): any | null {
+  if (!expr) return null;
+  if (expr.kind === 'lit') return expr;
+  if (expr.kind === 'const') return expr;
+  if (expr.kind === 'axis') return expr;
+  if (expr.kind === 'ref') {
+    if (expr.ns !== 'self') return expr;
+    if (!bindings || !bindings.get) return expr;
+    const b = bindings.get(expr.name);
+    if (!b) return expr;
+    const t = b.inferredType;
+    if (t && t.kind === 'array' && Array.isArray(t.shape) && t.shape.length === 1) {
+      // rank-1 leaf → wrap in get(<ref>, .j).
+      return {
+        kind: 'call', op: 'get',
+        args: [expr, { kind: 'axis', name: jName }],
+      };
+    }
+    return expr;
+  }
+  if (expr.kind === 'call' && expr.op === 'vector' && Array.isArray(expr.args)) {
+    // Literal vector leaf: every element is a scalar literal (after
+    // shape-fold). Wrap with get(<vector>, .j).
+    let allLitScalars = true;
+    for (const a of expr.args) {
+      if (!a || a.kind !== 'lit') { allLitScalars = false; break; }
+    }
+    if (allLitScalars) {
+      return {
+        kind: 'call', op: 'get',
+        args: [expr, { kind: 'axis', name: jName }],
+      };
+    }
+    return null;  // mixed vector — refuse
+  }
+  if (expr.kind === 'call' && expr.op === 'get') {
+    // get(...) extracting a scalar at a fixed index / axis — already
+    // a leaf; recurse only into the SOURCE (args[0]) when it might
+    // contain nested rank-1 leaves.
+    return expr;
+  }
+  if (expr.kind === 'call' && expr.op) {
+    // Compound call (elementwise op, etc.). Recurse into args.
+    const inArgs: any[] = expr.args || [];
+    const outArgs: any[] = new Array(inArgs.length);
+    for (let i = 0; i < inArgs.length; i++) {
+      const sub = _wrapVectorLeaves(inArgs[i], jName, bindings);
+      if (sub === null) return null;
+      outArgs[i] = sub;
+    }
+    const out: any = { kind: 'call', op: expr.op, args: outArgs };
+    if (expr.loc) out.loc = expr.loc;
+    return out;
+  }
+  return null;
+}
+
+// Recursively shape-fold an expression bottom-up. Used by fusion (a)
+// to fold `indicesof0(<concrete-ref>)` AFTER placeholder substitution
+// turns the inner expression's `%local` refs into binding refs with
+// resolvable shapes.
+function _foldShapeRecursive(expr: any, bindings: any): any {
+  if (!expr || typeof expr !== 'object') return expr;
+  if (expr.kind !== 'call') return expr;
+  let changed = false;
+  let newArgs: any[] | null = null;
+  if (Array.isArray(expr.args)) {
+    newArgs = new Array(expr.args.length);
+    for (let i = 0; i < expr.args.length; i++) {
+      const w = _foldShapeRecursive(expr.args[i], bindings);
+      newArgs[i] = w;
+      if (w !== expr.args[i]) changed = true;
+    }
+  }
+  let walked = expr;
+  if (changed) {
+    walked = Object.assign({}, expr);
+    if (newArgs) walked.args = newArgs;
+  }
+  if (walked.op) {
+    const folded = _foldShapeCall(walked, bindings);
+    if (folded) return folded;
+  }
+  return walked;
+}
+
+function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
+  if (!bcIR || bcIR.kind !== 'call' || bcIR.op !== 'broadcast') return null;
+  const bcArgs: any[] = bcIR.args || [];
+  if (bcArgs.length < 2) return null;
+  let head = bcArgs[0];
+
+  // Resolve head to a functionof (inline or via self-ref). Same gate
+  // shape as `_tryDissolveSingleOp` Phase 4 inlining.
+  if (head && head.kind === 'ref' && head.ns === 'self' && bindings && bindings.get) {
+    const fnBinding = bindings.get(head.name);
+    const fnIR = fnBinding && fnBinding.ir;
+    if (fnIR && fnIR.kind === 'call' && fnIR.op === 'functionof') head = fnIR;
+    else return null;
+  }
+  if (!head || head.kind !== 'call' || head.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(head.params) ? head.params : [];
+  if (params.length === 0) return null;
+  const body = head.body;
+  if (!body || body.kind !== 'call') return null;
+  if (!body.op || !REDUCERS_FUSION_A.has(body.op)) return null;
+  if (!Array.isArray(body.args) || body.args.length !== 1) return null;
+  const reducerName = body.op;
+  const innerExpr = body.args[0];
+
+  // MVP gate: the inner expression must be a "plain" expression —
+  // no nested broadcast / aggregate / functionof / kernelof / iid /
+  // measure-algebra ops. Pre-dissolution of dotted-binary surfaces
+  // (`.*`, `.+`, …) into plain `mul` / `add` etc. would let polyeval-
+  // shaped bodies fuse; today those surfaces stay as `broadcast(...)`
+  // IR which the MVP wrapper can't safely axis-introduce. Refuse
+  // cleanly so the runtime path handles them.
+  if (_bodyContainsForbiddenOp(innerExpr)) return null;
+
+  // Match positional args; kwargs form bails (uncommon in practice).
+  const posArgs = bcArgs.slice(1);
+  if (posArgs.length !== params.length) return null;
+  if (bcIR.kwargs && Object.keys(bcIR.kwargs).length > 0) return null;
+
+  // Classify each broadcast arg: Ref-wrap (per-cell value = inner)
+  // or rank-1 broadcast-over (per-cell value = get(arg, .atom)).
+  // Build the placeholder→replacement map.
+  //
+  // **MVP phase gate.** Only fire the fusion when ALL broadcast args
+  // are fixed-phase. Stochastic / parameterized broadcast-over args
+  // (e.g. the polyeval-slow case where X is iid Normal) need richer
+  // axisStack-aware materialiser handling — stay on the runtime
+  // path until the kernel-broadcast fusion (b) infrastructure lands.
+  // Fixed-phase fusion covers value-broadcast workloads (parameter
+  // loops, fixed coefficient tables, etc.).
+  const atomAxisName = _freshAxisName(innerExpr, 'atom');
+  const paramReplacement: Map<string, any> = new Map();
+  for (let i = 0; i < params.length; i++) {
+    const arg = posArgs[i];
+    const inner = _refWrapInner(arg, bindings);
+    if (inner !== null) {
+      // Ref-wrap: substitute the placeholder with the unwrapped inner.
+      // The inner itself must resolve to fixed-phase too.
+      const innerTP = _argTypeAndPhase(inner, bindings);
+      if (innerTP && innerTP.phase && innerTP.phase !== 'fixed') return null;
+      paramReplacement.set(params[i], inner);
+      continue;
+    }
+    // Broadcast-over: arg must be a binding ref with array-typed
+    // inferredType so its first axis can be indexed by .atom.
+    const tp = _argTypeAndPhase(arg, bindings);
+    if (!tp || !tp.type) return null;
+    if (tp.type.kind !== 'array') return null;
+    if (!Array.isArray(tp.type.shape) || tp.type.shape.length === 0) return null;
+    if (tp.phase !== 'fixed') return null;  // MVP phase gate
+    paramReplacement.set(params[i], {
+      kind: 'call', op: 'get',
+      args: [arg, { kind: 'axis', name: atomAxisName }],
+    });
+  }
+
+  // Substitute placeholders in the inner expression.
+  const paramIndex: Map<string, number> = new Map();
+  const replacementList: any[] = new Array(params.length);
+  for (let i = 0; i < params.length; i++) {
+    paramIndex.set(params[i], i);
+    replacementList[i] = paramReplacement.get(params[i]);
+  }
+  const substituted = _substituteAllowingAxes(innerExpr, paramIndex, replacementList);
+  if (!substituted) return null;
+
+  // Shape-fold the substituted body — placeholders (e.g. `coeffs` in
+  // `indicesof0(coeffs)`) are now bound to refs with static shapes,
+  // so calls like `indicesof0(<Cref>)` resolve to literal vectors
+  // (engine-concepts §20.10.7) BEFORE the wrap step turns them into
+  // scalar `.j`-indexed leaves. Without this pre-fold, the wrap step
+  // would mistakenly turn `indicesof0(C)` into `indicesof0(get(C,
+  // .j))` (rank-0 input to indicesof0 → wrong).
+  const folded = _foldShapeRecursive(substituted, bindings);
+
+  // Walk the folded body and wrap rank-1 leaves in get(.j).
+  const jName = _freshAxisName(folded, 'j');
+  const wrapped = _wrapVectorLeaves(folded, jName, bindings);
+  if (!wrapped) return null;
+
+  // Emit the aggregate IR. Output axis = [.atom]; reduction axis .j
+  // is implicit (it appears in the wrapped body but not in the
+  // output_axes vector).
+  const aggIR: any = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: reducerName },
+      {
+        kind: 'call', op: 'vector',
+        args: [{ kind: 'axis', name: atomAxisName }],
+      },
+      wrapped,
+    ],
+  };
+  if (bcIR.loc) aggIR.loc = bcIR.loc;
+  return aggIR;
+}
+
 // Try Phase-2 / Phase-3 broadcast dissolution:
 //
 //   Phase 2: broadcast(functionof(<op>(_arg1_, _arg2_, …)), args…)
@@ -1477,6 +1826,7 @@ module.exports = {
   propagateAxisStack,
   _tryDissolveSingleOp,
   _tryDissolveAggregate,
+  _tryDissolveBroadcastReduction,
   _axisStackForIR,
   _foldShapeCall,
 };
