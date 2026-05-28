@@ -1182,17 +1182,56 @@ function classifyIid(
 function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationKernelBroadcast | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length < 1) return null;
   const k = rhsIR.args[0];
+  if (!k || k.kind !== 'ref' || k.ns !== 'self') return null;
   // Bare distribution-constructor kernel, not shadowed by a binding.
-  if (!k || k.kind !== 'ref' || k.ns !== 'self'
-      || !SAMPLEABLE_DISTRIBUTIONS.has(k.name) || bindings.has(k.name)) {
-    return null;
-  }
+  const isBareDist = SAMPLEABLE_DISTRIBUTIONS.has(k.name) && !bindings.has(k.name);
+  // Composite kernel-of-iid binding — fusion (b) Phase F shape.
+  // Recognise broadcast(<user-kernel-binding>, …) when the binding
+  // is `kernelof(iid(<BuiltinDist>, n), kw)` (lowered to
+  // `functionof(lawof(iid(<BuiltinDist>, n)), kw)`). The runtime
+  // (matKernelBroadcast) detects and handles this case.
+  const isIidComposite = !isBareDist && _isIidCompositeKernelBinding(k.name, bindings);
+  if (!isBareDist && !isIidComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
   if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
     return null;   // no parameter inputs → not a broadcast
   }
   return { kind: 'kernelbroadcast', distOp: k.name, argIRs: argIRs, kwargIRs: kwargIRs };
+}
+
+// Detect whether a binding name resolves to a kernel-of-iid shape
+// — `functionof(lawof(iid(<BuiltinDistCall>, <n_literal>)), params)`.
+// Mirrors `_detectIidKernelBody` in mat-broadcast.ts but operates
+// at classify-time (no ctx, just the bindings map).
+function _isIidCompositeKernelBinding(name: string, bindings: any): boolean {
+  if (!bindings || !bindings.has || !bindings.has(name)) return false;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return false;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') return false;
+  if (!Array.isArray(ir.params) || ir.params.length === 0) return false;
+  const body = ir.body;
+  if (!body || body.kind !== 'call' || body.op !== 'lawof') return false;
+  const innerMeasure = body.args && body.args[0];
+  if (!innerMeasure || innerMeasure.kind !== 'call'
+      || innerMeasure.op !== 'iid') return false;
+  const iidArgs = innerMeasure.args || [];
+  if (iidArgs.length !== 2) return false;
+  // The lift pass hoists inline measure expressions to anon bindings,
+  // so `iid(Normal(...), N)` becomes `iid(ref(__anonM), N)` post-
+  // lift. Dereference once through the anon to find the underlying
+  // dist call.
+  let distCall = iidArgs[0];
+  if (distCall && distCall.kind === 'ref' && distCall.ns === 'self'
+      && bindings.has(distCall.name)) {
+    const anon = bindings.get(distCall.name);
+    if (anon && anon.ir) distCall = anon.ir;
+  }
+  if (!distCall || distCall.kind !== 'call' || !distCall.op) return false;
+  // The inner builtin must be in SAMPLEABLE_DISTRIBUTIONS.
+  if (!SAMPLEABLE_DISTRIBUTIONS.has(distCall.op)) return false;
+  return true;
 }
 
 // broadcast(logdensityof, M, points) — evaluate a measure's density

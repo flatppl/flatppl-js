@@ -80,42 +80,23 @@ function setupCtx(src: string, N: number) {
 // N_per_group vector — so the whole result is shape [G, N_per_group]
 // per engine atom.
 
-test('hierarchical-repeated-measures: classifies + materialises (target: Phase F)', async () => {
+test('hierarchical-repeated-measures: classifies + materialises (Phase F)', async () => {
   const src = readFixture('hierarchical-repeated-measures.flatppl');
   const { ctx, derivations } = setupCtx(src, 50);
 
-  // Today (post fusion (b) MVP): obs SHOULD have a derivation
-  // (the cascade-prune lets the broadcast classify), but
-  // materialise rejects.
-  assert.ok(derivations.obs,
-    'obs has a derivation (classifier accepts the broadcast IR)');
+  // obs classifies as kernelbroadcast (Phase F extends
+  // classifyKernelBroadcast to recognise user-kernel heads with
+  // iid-body shape).
+  assert.ok(derivations.obs, 'obs has a derivation');
+  assert.equal(derivations.obs.kind, 'kernelbroadcast',
+    'kernel-of-iid composite routes via matKernelBroadcast');
 
-  // Phase F target: matKernelBroadcast or a dissolver rewrite
-  // handles `kernelof(iid(...), ...)` heads. Until that lands,
-  // pin the failure mode so a regression in either direction is
-  // detected.
-  let didError: Error | null = null;
-  try {
-    const m = await ctx.getMeasure('obs');
-    // If this branch fires, Phase F has landed. Pin the result
-    // shape: [N_atom=50, G=4, N_per_group=5].
-    assert.ok(m && m.value && Array.isArray(m.value.shape),
-      'obs materialises to a shape-tagged Value once Phase F lands');
-    assert.equal(m.value.shape[0], 50, 'leading axis = N_atom');
-    assert.equal(m.value.shape[1], 4, 'second axis = G');
-    assert.equal(m.value.shape[2], 5, 'third axis = N_per_group');
-  } catch (e: any) {
-    didError = e;
-  }
-
-  if (didError) {
-    // Document current failure mode — present-day matKernelBroadcast
-    // rejects the user-kernel head. Once Phase F lands, the catch
-    // branch above goes away and this assertion path retires.
-    assert.match(didError.message,
-      /unknown distribution kernel|undefined|Cannot read|kernelbroadcast/i,
-      'documented failure mode: user-kernel head not yet supported by matKernelBroadcast');
-  }
+  // Phase F result shape: [N_atom=50, G=4, N_per_group=5].
+  const m = await ctx.getMeasure('obs');
+  assert.ok(m && m.value && Array.isArray(m.value.shape),
+    'obs materialises to a shape-tagged Value');
+  assert.deepEqual(m.value.shape, [50, 4, 5],
+    'Phase F result shape: [N_atom, G, N_per_group]');
 });
 
 // =====================================================================
@@ -162,8 +143,14 @@ test('random-intercepts: classifies + materialises (target: Phase F)', async () 
   }
 
   if (didError) {
+    // Phase F's simple-iid-body case lands; random-intercepts has a
+    // more complex inner DistCall (`Normal(mu = intercept + slope
+    // .* x_group, sigma)` — per-cell parameter is itself a vector
+    // expression). The runtime extension's per-cell sampleN loop
+    // doesn't yet handle vector-valued per-cell params for the
+    // composite case. Track in TODO + log the failure shape.
     assert.match(didError.message,
-      /unknown distribution kernel|undefined|Cannot read|kernelbroadcast|broadcast/i,
-      'documented failure mode for Phase F target');
+      /shape mismatch|addN|undefined|kernelbroadcast|broadcast/i,
+      'documented failure mode for the more complex composite case');
   }
 });
