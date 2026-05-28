@@ -321,14 +321,175 @@ function dissolveExpr(ir: any, bindings: any): any {
     if (newBody !== ir.body) walked.body = newBody;
     if (newFields) walked.fields = newFields;
   }
-  // Pattern-match `broadcast(...)` at THIS level after the children
-  // are dissolved. We don't try to dissolve aggregate / broadcasted
-  // yet — those are Phase 5 / Phase 3 respectively.
+  // Pattern-match `broadcast(...)` and `aggregate(...)` at THIS
+  // level after the children are dissolved.
   if (walked.op === 'broadcast') {
     const dissolved = _tryDissolveSingleOp(walked, bindings);
     if (dissolved) return dissolved;
   }
+  if (walked.op === 'aggregate') {
+    const dissolved = _tryDissolveAggregate(walked, bindings);
+    if (dissolved) return dissolved;
+  }
   return walked;
+}
+
+// =====================================================================
+// Phase 5 — aggregate dissolution
+// =====================================================================
+//
+// `aggregate(f_reduction, output_axes, body_expr)` admits a small
+// set of structural rewrites into direct tensor-op calls. The
+// runtime AGGREGATE_PATTERNS specialisers in `sampler-aggregate.ts`
+// pattern-match these at evaluation time; Phase 5 lifts a subset of
+// those matchers up to IR-time so the dissolved FlatPIR carries the
+// direct op calls (and other backends — StableHLO / TF.js — can
+// consume them without re-recognising the aggregate shape).
+//
+// Coverage (Phase 5 — narrow start):
+//   - Matmul-family (4 transpose variants):
+//       aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])  ≡  A · B
+//     dissolves to `mul(<maybe transpose>(A), <maybe transpose>(B))`.
+//   - Matvec-family (2 transpose variants):
+//       aggregate(sum, [.i], A[.i, .j] * v[.j])          ≡  A · v
+//     dissolves similarly.
+//
+// Both rewrites preserve spec semantics: `mul` on rank-2 matrices
+// is matrix product per the Klein-4 transpose-tag dispatch in
+// value-ops; a Klein-4 transpose is a free tag flip (no allocation)
+// so emitting `transpose(A)` ahead of `mul` is cheap.
+//
+// Soundness gate: both source operands of the body's `mul` must be
+// binding refs (or otherwise resolvable to a concrete inferredType
+// via the lazy resolver). The runtime AGGREGATE_PATTERNS path
+// remains as the cold fallback for everything else (outer-product,
+// batched-matmul, pure-axis-reduction, non-matched shapes).
+
+function _aggregateBodyClassifyA(
+  fac: any, iName: string,
+): { src: any; trans: boolean; jName: string } | null {
+  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
+  if (!fac.args || fac.args.length !== 3) return null;
+  const s0 = fac.args[1], s1 = fac.args[2];
+  if (!s0 || s0.kind !== 'axis') return null;
+  if (!s1 || s1.kind !== 'axis') return null;
+  if (s0.name === iName) return { src: fac.args[0], trans: false, jName: s1.name };
+  if (s1.name === iName) return { src: fac.args[0], trans: true, jName: s0.name };
+  return null;
+}
+
+function _aggregateBodyClassifyB(
+  fac: any, kName: string,
+): { src: any; trans: boolean; jName: string } | null {
+  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
+  if (!fac.args || fac.args.length !== 3) return null;
+  const s0 = fac.args[1], s1 = fac.args[2];
+  if (!s0 || s0.kind !== 'axis') return null;
+  if (!s1 || s1.kind !== 'axis') return null;
+  if (s1.name === kName) return { src: fac.args[0], trans: false, jName: s0.name };
+  if (s0.name === kName) return { src: fac.args[0], trans: true, jName: s1.name };
+  return null;
+}
+
+function _aggregateBodyClassifyV(
+  fac: any, jName: string,
+): any | null {
+  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
+  if (!fac.args || fac.args.length !== 2) return null;
+  const s0 = fac.args[1];
+  if (!s0 || s0.kind !== 'axis') return null;
+  if (s0.name !== jName) return null;
+  return fac.args[0];
+}
+
+function _wrapTranspose(ir: any, doTranspose: boolean): any {
+  if (!doTranspose) return ir;
+  return { kind: 'call', op: 'transpose', args: [ir] };
+}
+
+// Verify a source IR resolves to a concrete inferredType — same
+// gate the broadcast dissolver uses. Returns the resolved
+// (type, phase) or null.
+function _checkSourceType(ir: any, bindings: any): { type: any; phase: any } | null {
+  return _resolveExprType(ir, bindings, 0);
+}
+
+function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
+  if (!aggIR || aggIR.kind !== 'call' || aggIR.op !== 'aggregate') return null;
+  const args = aggIR.args || [];
+  if (args.length !== 3) return null;
+  const fIR = args[0], axesIR = args[1], bodyIR = args[2];
+  // Reduction must be `sum` (the only one whose direct-call
+  // equivalent matches the matmul / matvec patterns we recognise).
+  if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+  if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+  const outAxes = axesIR.args || [];
+  for (const a of outAxes) {
+    if (!a || a.kind !== 'axis') return null;
+  }
+  // Body must be a `mul(<getA>, <getB>)` call.
+  if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
+  if (!bodyIR.args || bodyIR.args.length !== 2) return null;
+
+  // Matmul: 2 output axes (.i, .k); body is mul of two-axis indexings
+  // sharing a reduction axis.
+  if (outAxes.length === 2) {
+    const iName = outAxes[0].name;
+    const kName = outAxes[1].name;
+    if (iName === kName) return null;
+    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+    // Mul is commutative; try both factor orderings.
+    for (const [fA, fB] of [[f1, f2], [f2, f1]]) {
+      const ca = _aggregateBodyClassifyA(fA, iName);
+      const cb = _aggregateBodyClassifyB(fB, kName);
+      if (!ca || !cb) continue;
+      if (ca.jName !== cb.jName) continue;
+      if (ca.jName === iName || ca.jName === kName) continue;
+      // Both source operands must resolve to concrete inferredTypes
+      // (so the runtime mul dispatch sees the expected rank-2 shapes).
+      const tA = _checkSourceType(ca.src, bindings);
+      const tB = _checkSourceType(cb.src, bindings);
+      if (!tA || !tB) return null;
+      if (tA.phase !== tB.phase) return null;
+      // Both args must be rank-2 matrices for valueOps.mul to do
+      // matrix product. The lazy resolver returns the binding's
+      // inferredType; check shape rank.
+      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return null;
+      if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return null;
+      const A = _wrapTranspose(ca.src, ca.trans);
+      const B = _wrapTranspose(cb.src, cb.trans);
+      const out: any = { kind: 'call', op: 'mul', args: [A, B] };
+      if (aggIR.loc) out.loc = aggIR.loc;
+      return out;
+    }
+    return null;
+  }
+
+  // Matvec: 1 output axis (.i); body is mul of a 2-axis indexing (A)
+  // and a 1-axis indexing (v), sharing a reduction axis.
+  if (outAxes.length === 1) {
+    const iName = outAxes[0].name;
+    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+    for (const [fA, fV] of [[f1, f2], [f2, f1]]) {
+      const ca = _aggregateBodyClassifyA(fA, iName);
+      if (!ca) continue;
+      const vSrc = _aggregateBodyClassifyV(fV, ca.jName);
+      if (!vSrc) continue;
+      const tA = _checkSourceType(ca.src, bindings);
+      const tV = _checkSourceType(vSrc, bindings);
+      if (!tA || !tV) return null;
+      if (tA.phase !== tV.phase) return null;
+      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return null;
+      if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
+      const A = _wrapTranspose(ca.src, ca.trans);
+      const out: any = { kind: 'call', op: 'mul', args: [A, vSrc] };
+      if (aggIR.loc) out.loc = aggIR.loc;
+      return out;
+    }
+    return null;
+  }
+
+  return null;
 }
 
 // Recursively substitute `%local` refs in a body expression with the
@@ -563,4 +724,5 @@ module.exports = {
   dissolveExpr,
   dissolveBindings,
   _tryDissolveSingleOp,
+  _tryDissolveAggregate,
 };

@@ -389,6 +389,68 @@ Y = A .* B
     'mul on fixed vectors stays as broadcast (matrix-semantics guard)');
 });
 
+test('Phase 5 aggregate dissolution: matmul dissolves to mul(A, B)', () => {
+  // The canonical sum-of-products matmul pattern from spec §04
+  // (`aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])`) dissolves to
+  // `mul(A, B)` — value-ops.mul on rank-2 matrices does matrix
+  // product via Klein-4 dispatch. The shorthand `:=` notation
+  // lowers to an explicit `aggregate(sum, ...)` IR per spec §05.
+  const b = getBinding(`
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B = rowstack([[5.0, 6.0], [7.0, 8.0]])
+C[.i, .k] := A[.i, .j] * B[.j, .k]
+`, 'C');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'mul', 'matmul aggregate dissolves to direct mul');
+  assert.equal(b.ir.args[0].name, 'A');
+  assert.equal(b.ir.args[1].name, 'B');
+});
+
+test('Phase 5 aggregate dissolution: matmul with A^T (A[.j, .i] * B[.j, .k])', () => {
+  // Transposed-A variant: A's reduce axis comes first, so the
+  // matcher emits transpose(A) and the dissolved IR is
+  // `mul(transpose(A), B)` — a Klein-4 free transpose followed by
+  // matmul.
+  const b = getBinding(`
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B = rowstack([[5.0, 6.0], [7.0, 8.0]])
+C[.i, .k] := A[.j, .i] * B[.j, .k]
+`, 'C');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'mul');
+  assert.equal(b.ir.args[0].op, 'transpose',
+    'A is transposed before the mul');
+  assert.equal(b.ir.args[0].args[0].name, 'A');
+  assert.equal(b.ir.args[1].name, 'B');
+});
+
+test('Phase 5 aggregate dissolution: matvec dissolves to mul(A, v)', () => {
+  const b = getBinding(`
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+v = [5.0, 6.0]
+w[.i] := A[.i, .j] * v[.j]
+`, 'w');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'mul', 'matvec aggregate dissolves to direct mul');
+  assert.equal(b.ir.args[0].name, 'A');
+  assert.equal(b.ir.args[1].name, 'v');
+});
+
+test('Phase 5 aggregate dissolution: outer product NOT yet dissolved (kept as aggregate)', () => {
+  // Outer product `aggregate(any, [.i, .j], u[.i] * v[.j])` has
+  // a 1-axis-per-operand body — not in Phase-5 scope (the runtime
+  // AGGREGATE_PATTERNS specialiser handles it). Stays as
+  // aggregate.
+  const b = getBinding(`
+u = [1.0, 2.0, 3.0]
+v = [4.0, 5.0]
+M[.i, .j] := u[.i] * v[.j]
+`, 'M');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'aggregate',
+    'outer product stays as aggregate IR (runtime specialiser path)');
+});
+
 test('Phase 6 atom-axis unification: cross.(A, B) dissolves to direct cross', () => {
   // `cross` is a declared fixed-rank op (argRanks=[1,1]). The
   // ops.dispatch dispatcher auto-detects atom-batching (rank=2 vs
