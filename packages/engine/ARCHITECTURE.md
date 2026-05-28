@@ -977,6 +977,48 @@ atom-batched (broadcasting), batch-size mismatch detection,
 unknown op, wrong arg count, rank incompatible with the
 declaration's logical rank. 10 new tests as of 2026-05-26.
 
+**Shape-pattern variants (P1 keystone, 2026-05-28).** Engine-
+concepts §18.11 lifts shape / Klein-4 tag / structured-matrix /
+dtype / wrappingOp dispatch into the registry as data: each
+`OpDecl` carries an optional `variants: OpVariant[]` array, the
+dispatcher picks the most-specific applicable variant on each
+call. Adds three APIs:
+
+- `registerVariant(opName, variant)` — accumulates variants on
+  the op (auto-creates a minimal variant-only OpDecl if `opName`
+  isn't registered yet).
+- `dispatchVariant(name, args, opts)` — tries the variant
+  registry; returns null if no variant matches. Used by callers
+  that want to fall through to a cold path on miss.
+- `hasVariantFor(name, wrappingOp)` — presence check without
+  evaluating args; gates fast paths early.
+
+`isDeclared(name)` still means "has a `logical` impl that
+`dispatch(name, args)` can invoke directly" — variant-only ops
+(no logical) return false here, so `evaluateCall`'s routing gate
+is unchanged.
+
+The 19 broadcasted-primitives (`add`/`sub`/`mul`/`div`/`pow`/
+`mod`/`neg`/`exp`/`log`/`sqrt`/`sin`/`cos`/`tan`/`abs`/`abs2`/
+`log10`/`log1p`/`expm1`/`floor`/`ceil`/`round`) register as
+variant-only OpDecls with `wrappingOp: 'broadcast'` entries
+pointing at the corresponding `valueOps.*Elem` impls. The legacy
+`_BROADCASTED_PRIMS_CACHE` table is retired; `_maybeFastBroadcasted`
+in `ops-declarations.ts` now does IR-shape recognition and routes
+through `ops.dispatchVariant(opName, opInputs, { wrappingOp:
+'broadcast' })`.
+
+Direct (non-broadcast) ops like `mul(A, B)` still go through
+`valueOps.mul`'s shape-switch — that switch is the next
+migration target (each rank case becomes a
+`wrappingOp: 'direct'` variant). The variant infrastructure is
+in place so the migration is mechanical.
+
+`test/ops-variants.test.ts` pins variant-routed dispatch ≡
+direct `valueOps.*Elem` calls for all 19 broadcasted primitives
+via fast-check; plus pattern-matcher and specificity-ordering
+unit tests (37 tests total).
+
 ### `dissolver.ts` (~300 lines)
 
 **Responsibility.** Term-rewriter for broadcast / aggregate
