@@ -75,6 +75,7 @@ const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions } = require('./lift.ts');
+const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf, substituteLocals } = require('./signatures.ts');
 const {
   collectSelfRefs,
@@ -105,6 +106,19 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // case for inline weighted/normalize/superpose/draw inside another
   // measure expression.
   bindings = liftInlineSubexpressions(bindings);
+
+  // Post-lift: dissolve broadcast / aggregate constructs whose body is
+  // an inherently-batched single op (engine-concepts §20 / Phase 2 of
+  // the dissolution migration). The dissolver rewrites
+  //   broadcast(functionof(<safe_op>(_, _, …)), args…)
+  // to a direct `<safe_op>(args…)` call. Downstream classifiers and
+  // evaluators see the dissolved form, so dotted-binary surfaces
+  // (`A .+ B`, `A .* B`, `.exp(X)`, …) bypass per-cell iteration and
+  // route through ARITH_OPS_N's batched-broadcast path. Non-dissolvable
+  // broadcasts (kernel-broadcast, table row-dispatch, recursive user-
+  // fns) stay as-is — the existing `_broadcastApply` cold path handles
+  // them unchanged.
+  bindings = dissolveBindings(bindings);
 
   // After the lift, record bijection metadata on bijection-typed
   // bindings. The classifier and downstream code (matPushfwd's
