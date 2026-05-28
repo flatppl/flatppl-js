@@ -497,6 +497,129 @@ test('aggregate: column-wise reduction infers array(1, ...)', () => {
   assert.ok(T.equal(t.elem, T.REAL));
 });
 
+test('broadcasted direct form: broadcasted(f)(A, B) lowers and types as broadcast(f, A, B)', () => {
+  // Spec §04: `broadcasted(f)(args) ≡ broadcast(f, args)`. The
+  // direct form has the outer call's callee = `broadcasted(f)` (a
+  // CallExpr, not an Identifier). `_lowerCallExpr` special-cases
+  // this shape and lowers directly to a `broadcast` IR — bypassing
+  // the lit-null catch the non-Identifier callee guard would
+  // otherwise trip. inferBroadcast then types the result normally.
+  const { bindings, errors } = infer(`
+    add2 = (a, b) -> a + b
+    A = [1.0, 2.0, 3.0]
+    B = [10.0, 20.0, 30.0]
+    G = broadcasted(add2)(A, B)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'G');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('broadcasted inline-in-fn: fn(broadcasted(f)(_, B)) types as a function returning an array', () => {
+  // `fn(broadcasted(f)(a, _, c))` works because the broadcasted-curry
+  // rewrite in `_lowerCallExpr` fires inside the fn body. The outer
+  // fn becomes a function over the inner holes; its body lowers to
+  // `broadcast(f, a, $hole, c)`. inferBroadcast types the body as
+  // array(1, [outer], elem); the fn's signature wraps it.
+  const { bindings, errors } = infer(`
+    add2 = (a, b) -> a + b
+    B = [10.0, 20.0, 30.0]
+    F = fn(broadcasted(add2)(_, B))
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'F');
+  assert.equal(t.kind, 'function');
+  assert.equal(t.inputs.length, 1);
+  // Result type follows the inner broadcast.
+  assert.equal(t.result.kind, 'array');
+  assert.deepEqual(t.result.shape, [3]);
+  assert.ok(T.equal(t.result.elem, T.REAL));
+});
+
+test('broadcasted via-binding: bc = broadcasted(f); bc(A, B) types via broadcast routing', () => {
+  // Spec §04: `broadcasted(f)(args)` ≡ `broadcast(f, args)`. The
+  // wrapper is polymorphic — its type at the definition site
+  // (`bc = broadcasted(f)`) is intentionally deferred, since the
+  // result shape depends on call-site args. inferUserCall now
+  // recognises the via-binding wrapper pattern and routes the call
+  // through inferBroadcast at the type level — same routing the
+  // runtime lift does later for the materialised path.
+  //
+  // Direct form `broadcasted(f)(A, B)` (no via-binding) is a known
+  // limitation: it fails to lower (non-Identifier callee at
+  // lower.ts) and stores as a lit-null placeholder. The via-binding
+  // form is the supported way to type-route broadcasted.
+  const { bindings, errors } = infer(`
+    add2 = (a, b) -> a + b
+    A = [1.0, 2.0, 3.0]
+    B = [10.0, 20.0, 30.0]
+    bcadd = broadcasted(add2)
+    C = bcadd(A, B)
+  `);
+  assert.equal(errors.length, 0);
+  // bcadd itself: deferred (no useful type at definition; the wrapper
+  // is fully polymorphic and types at the call site).
+  const tBc = typeOf(bindings, 'bcadd');
+  assert.equal(tBc.kind, 'deferred');
+  // The call: properly typed array via inferBroadcast routing.
+  const tC = typeOf(bindings, 'C');
+  assert.equal(tC.kind, 'array');
+  assert.deepEqual(tC.shape, [3]);
+  assert.ok(T.equal(tC.elem, T.REAL));
+});
+
+test('reduce: result type = element type of xs (left-fold accumulator)', () => {
+  // Spec §04 §sec:higher-order: `reduce(f, xs)` uses xs[0] as the
+  // initial accumulator; f is applied pairwise. The result type
+  // follows the accumulator — same as xs's element type (T unified
+  // through the SIGNATURE_FACTORIES tvar). Pins that this works for
+  // both literal scalars and array operations.
+  const { bindings, errors } = infer(`
+    add2 = (a, b) -> a + b
+    xs = [1.0, 2.0, 3.0, 4.0]
+    S = reduce(add2, xs)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'S');
+  assert.ok(T.equal(t, T.REAL),
+    'reduce result should be real (xs element type); got ' + JSON.stringify(t));
+});
+
+test('scan: result type = array(1, %dynamic, T) where T is the accumulator type', () => {
+  // Spec §04: `scan(f, init, xs)` produces a vector of intermediate
+  // accumulator values, one per element/row of xs. The accumulator
+  // type unifies from init AND xs's elements (both tvar 'T'). The
+  // output length matches xs's; the signature keeps it %dynamic
+  // until the cumulative-length tightening lands.
+  const { bindings, errors } = infer(`
+    add2 = (a, b) -> a + b
+    xs = [1.0, 2.0, 3.0, 4.0]
+    SCN = scan(add2, 0.0, xs)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'SCN');
+  assert.equal(t.kind, 'array');
+  assert.equal(t.rank, 1);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
+test('filter: result type = array(1, %dynamic, T) — length dynamic by predicate', () => {
+  // Spec §04: `filter(pred, data)` keeps elements satisfying pred,
+  // returning a shorter array of the SAME element type. Length is
+  // statically dynamic — depends on which elements match.
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0, 4.0]
+    F = filter(fn(_ > 2.0), xs)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'F');
+  assert.equal(t.kind, 'array');
+  assert.equal(t.rank, 1);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
 test('aggregate: outer-product (no reduction) infers rank-2', () => {
   // No reduction axis ⇒ output rank = input axes. The body is
   // u[.i] * v[.j] — pure broadcast, no contraction.
