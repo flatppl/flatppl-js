@@ -407,7 +407,15 @@ and the built-in signature registry.
 - `array(rank, shape, elem)` — shape entries are positive ints or `'%dynamic'`
 - `record(fields)` — `fields: {name: Type}` (ordered, per spec)
 - `tuple(elems)` — length ≥ 2
-- `measure(domain)` — closed measure
+- `measure(domain, opts?)` — closed measure. `opts` carries
+  optional `{sampleShape, batchShape, eventShape}` — the three-
+  shape decomposition (Pyro/TFP convention; P2,
+  engine-concepts §18.11 / §20.10.5 item 2). Today populated for
+  scalar leaf distributions (`eventShape: []`) and `iid(M, n…)`
+  results (prepends n… to inner `sampleShape`). Kernel-broadcast
+  `batchShape` population is a future follow-up. The fields are
+  PURELY ADDITIVE — `substitute`/`fresh`/etc. preserve them; no
+  consumer requires their presence yet.
 - `tvar(id)` — type variable for polymorphic signatures
 - `funcType(inputs, result)`, `kernelType(inputs, result)` — `inputs` is array of
   `{name, type}`

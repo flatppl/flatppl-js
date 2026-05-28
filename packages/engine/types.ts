@@ -88,8 +88,36 @@ function tuple(elems: any)   { return { kind: 'tuple', elems }; }
  *  an array of the column-element type. */
 function table(columns: any, nrows: any) { return { kind: 'table', columns, nrows }; }
 
-/** Closed measure over a value domain. */
-function measure(domain: any) { return { kind: 'measure', domain }; }
+/**
+ * Closed measure over a value domain.
+ *
+ * The `opts` argument carries optional three-shape decomposition of
+ * the variate's axes (P2; engine-concepts §18.11 / §20.10.5 item 2):
+ *
+ *  - `eventShape`: dimensions of a single variate (the measure's
+ *    intrinsic dimensionality). `[]` for scalar distributions; `[k]`
+ *    for `MvNormal` / `Dirichlet` over k-vectors; etc.
+ *  - `sampleShape`: iid replicate axes introduced by `iid(M, n…)`.
+ *  - `batchShape`: conditionally-independent axes introduced by
+ *    `broadcast(K, args…)` and similar kernel-broadcast contexts.
+ *
+ * The full variate shape is `sampleShape ++ batchShape ++
+ * eventShape`; the existing `domain` field already encodes that
+ * concatenation as an array type. The new fields are PURELY ADDITIVE
+ * metadata for engine layers that want to reason about the
+ * decomposition (P1 dispatch variants, future fusion-thread (a) /
+ * (b) work). Consumers MUST tolerate missing fields — only the
+ * populated cases carry them today.
+ */
+function measure(domain: any, opts?: any) {
+  const t: any = { kind: 'measure', domain };
+  if (opts) {
+    if (opts.sampleShape !== undefined) t.sampleShape = opts.sampleShape;
+    if (opts.batchShape  !== undefined) t.batchShape  = opts.batchShape;
+    if (opts.eventShape  !== undefined) t.eventShape  = opts.eventShape;
+  }
+  return t;
+}
 
 /** Type variable, used inside polymorphic signatures (e.g. weighted's T).
  *  `id` is a string identifier; instantiation gives every signature a
@@ -223,7 +251,17 @@ function substitute(t: any, subst: Map<any, any>): any {
   }
   if (t.kind === 'array')   return array(t.rank, t.shape.slice(), substitute(t.elem, subst));
   if (t.kind === 'tvector') return tvector(t.length, substitute(t.elem, subst));
-  if (t.kind === 'measure') return measure(substitute(t.domain, subst));
+  if (t.kind === 'measure') {
+    // Preserve P2 sample/batch/event shape metadata across
+    // substitution. Substituting only affects the domain's type
+    // variables; the shape decompositions are fixed integer arrays
+    // and pass through unchanged.
+    const opts: any = {};
+    if (t.sampleShape !== undefined) opts.sampleShape = t.sampleShape;
+    if (t.batchShape  !== undefined) opts.batchShape  = t.batchShape;
+    if (t.eventShape  !== undefined) opts.eventShape  = t.eventShape;
+    return measure(substitute(t.domain, subst), opts);
+  }
   if (t.kind === 'tuple')   return tuple(t.elems.map((e: any) => substitute(e, subst)));
   if (t.kind === 'record') {
     const out: Record<string, any> = {};
@@ -633,14 +671,19 @@ function unifyArith(a: any, b: any, subst: any): any {
 // Helper for distribution constructors — every parameterised real-valued
 // scalar distribution has the same signature shape (kwargs are values,
 // result is a real-valued measure). Reduces repetition below.
+//
+// P2 (engine-concepts §18.11 / §20.10.5 item 2): scalar distributions
+// have empty `eventShape` (one scalar per variate, no intrinsic
+// dimensions). `sampleShape` / `batchShape` are introduced later by
+// `iid` / kernel-broadcast contexts that wrap the leaf distribution.
 function realDistKwargs(kwargs: any) {
-  return { args: null, kwargs, result: measure(REAL) };
+  return { args: null, kwargs, result: measure(REAL,    { eventShape: [] }) };
 }
 function intDistKwargs(kwargs: any) {
-  return { args: null, kwargs, result: measure(INTEGER) };
+  return { args: null, kwargs, result: measure(INTEGER, { eventShape: [] }) };
 }
 function boolDistKwargs(kwargs: any) {
-  return { args: null, kwargs, result: measure(BOOLEAN) };
+  return { args: null, kwargs, result: measure(BOOLEAN, { eventShape: [] }) };
 }
 
 // Signatures are stored as factory functions so each call to
@@ -1267,7 +1310,17 @@ function signatureOf(opName: string) {
       }
       return m;
     }
-    if (t.kind === 'measure') return measure(fresh(t.domain));
+    if (t.kind === 'measure') {
+      // Preserve P2 sample/batch/event shape metadata across
+      // signatureOf's fresh-variable rewrite. Shape fields are
+      // integer arrays, not type variables, so they pass through
+      // unchanged.
+      const opts: any = {};
+      if (t.sampleShape !== undefined) opts.sampleShape = t.sampleShape;
+      if (t.batchShape  !== undefined) opts.batchShape  = t.batchShape;
+      if (t.eventShape  !== undefined) opts.eventShape  = t.eventShape;
+      return measure(fresh(t.domain), opts);
+    }
     if (t.kind === 'array')   return array(t.rank, t.shape.slice(), fresh(t.elem));
     if (t.kind === 'tuple')   return tuple(t.elems.map(fresh));
     if (t.kind === 'record') {

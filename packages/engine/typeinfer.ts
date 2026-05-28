@@ -1495,7 +1495,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       dims.push(resolved != null ? resolved : '%dynamic');
     }
     const rank = dims.length;
-    return T.measure(T.array(rank, dims, measureT.domain));
+    // P2 — populate the sample-shape decomposition. iid prepends its
+    // own dims to the inner measure's sampleShape (so nested iid
+    // stacks: `iid(iid(M, 5), 3)` carries sampleShape = [3, 5]).
+    // batchShape and eventShape pass through from the inner measure.
+    const innerSample = Array.isArray(measureT.sampleShape) ? measureT.sampleShape : [];
+    const sampleShape = dims.concat(innerSample);
+    const batchShape  = Array.isArray(measureT.batchShape)  ? measureT.batchShape.slice()  : [];
+    const eventShape  = Array.isArray(measureT.eventShape)  ? measureT.eventShape.slice()  : [];
+    return T.measure(
+      T.array(rank, dims, measureT.domain),
+      { sampleShape, batchShape, eventShape });
   }
 
   // Resolve a shape-position IR expression to a non-negative integer
