@@ -1008,16 +1008,38 @@ in `ops-declarations.ts` now does IR-shape recognition and routes
 through `ops.dispatchVariant(opName, opInputs, { wrappingOp:
 'broadcast' })`.
 
-Direct (non-broadcast) ops like `mul(A, B)` still go through
-`valueOps.mul`'s shape-switch — that switch is the next
-migration target (each rank case becomes a
-`wrappingOp: 'direct'` variant). The variant infrastructure is
-in place so the migration is mechanical.
+**`mul` direct-dispatch migration (2026-05-29).** The rank-and-
+tag switch that lived in `valueOps.mul` as a sequence of
+`if (sa.length === …)` clauses moves into the variant registry
+as data — 11 variants with `wrappingOp: 'direct'`:
+
+  - 2 scalar broadcast (rank-0 on either side)
+  - 4 vec×vec Klein-4 variants — inner product
+    (`tag: ['T','A']` × `tag: ['N','C']`), outer product
+    (`['N','C']` × `['T','A']`), and 2 declarative "static error"
+    variants for col×col and row×row
+  - 2 matvec / vecmat variants requiring correct vector orientation
+  - 2 matvec / vecmat error variants for wrong orientation
+  - matmul variant
+
+`valueOps.mul` becomes a thin entry point: diag fast-path and
+complex branch stay as pre-dispatch hooks (diag's null-fallthrough
+and "any-arg-is-complex" patterns don't fit cleanly into per-arg
+ArgPattern matching; future refactors may migrate them). The
+real path dispatches through `ops.dispatch('mul', [a, b],
+{ wrappingOp: 'direct' })`.
+
+`ArgPattern.tag` accepts an array form (`['T','A']` matches any
+swapped Klein-4 tag; `['N','C']` matches any unswapped) — direct
+expression of the swapped-bit semantics without per-tag-letter
+combinatorial duplication.
 
 `test/ops-variants.test.ts` pins variant-routed dispatch ≡
 direct `valueOps.*Elem` calls for all 19 broadcasted primitives
-via fast-check; plus pattern-matcher and specificity-ordering
-unit tests (37 tests total).
+plus the 11 mul direct-wrapping variants (scalar broadcast,
+vec×vec inner/outer/error, matvec/vecmat/error, matmul), via
+fast-check; plus pattern-matcher and specificity-ordering unit
+tests (51 tests total).
 
 ### `dissolver.ts` (~300 lines)
 
