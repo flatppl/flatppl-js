@@ -553,6 +553,88 @@ const KIND_HANDLERS = {
  * its own, so the recursion through ctx.getMeasure must short-circuit
  * already-computed measures.
  */
+// ---------------------------------------------------------------------
+// Materialiser pipeline (P3b; engine-concepts §18.11 / §20.10.5 item 5)
+// ---------------------------------------------------------------------
+//
+// `materialiseMeasure(name, ctx)` runs through a pipeline of stages.
+// Each stage has signature `(name, ctx, next) => Promise<Measure>`
+// where `next(name, ctx)` invokes the rest of the pipeline. Stages
+// compose via direct function nesting (middleware / MLIR-pass
+// pattern). Default pipeline is `[kindDispatchStage]`; orthogonal
+// concerns (tracing, MCMC handlers, gradient capture, etc.) get
+// added as additional stages without touching per-kind code.
+//
+// Today's `KIND_HANDLERS` dispatch lives in `kindDispatchStage` —
+// the final stage. Earlier stages can wrap, short-circuit, or
+// instrument the dispatch. The pipeline is intentionally append-
+// extensible via `registerMaterialiserStage(stage)`; the default
+// pipeline ships with only the kindDispatch stage so backward
+// compat is exact.
+//
+// Engine-concepts §18.11 / §20.10.5 item 5: this is the "not-
+// Messenger" version of the effect-handler pattern — a static
+// pipeline over IR-walking requests, not a runtime handler stack
+// over message dicts.
+
+interface MaterialiserStage {
+  (name: string, ctx: any, next: (name: string, ctx: any) => Promise<EmpiricalMeasure>):
+    Promise<EmpiricalMeasure>;
+  // Optional label for debug / instrumentation.
+  label?: string;
+}
+
+// Default pipeline. New stages get prepended via
+// `registerMaterialiserStage(stage)` so they wrap the existing
+// dispatch (caller-side first, dispatch-side last). The terminal
+// stage (kindDispatchStage) runs the actual KIND_HANDLERS lookup.
+const _MATERIALISER_PIPELINE: MaterialiserStage[] = [];
+
+function registerMaterialiserStage(stage: MaterialiserStage): void {
+  if (typeof stage !== 'function') {
+    throw new Error('registerMaterialiserStage: stage must be a function');
+  }
+  _MATERIALISER_PIPELINE.push(stage);
+}
+
+// Reset to default (only the terminal kindDispatch stage). Exported
+// for tests that add stages and need a clean slate.
+function _resetMaterialiserPipeline(): void {
+  _MATERIALISER_PIPELINE.length = 0;
+}
+
+// The terminal stage: existing KIND_HANDLERS dispatch. Receives
+// `next` for symmetry but never calls it — it IS the final step.
+const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
+  const d = ctx.derivations[name];
+  if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
+  const handler = (KIND_HANDLERS as any)[d.kind];
+  if (!handler) {
+    return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
+  }
+  return handler(name, d, ctx);
+};
+kindDispatchStage.label = 'kindDispatch';
+
+// Pre-dispatch stages live in _MATERIALISER_PIPELINE; the terminal
+// is kindDispatchStage. Compose them right-to-left so the pipeline
+// reads outer-to-inner: stage[0] wraps stage[1] wraps … wraps
+// kindDispatch.
+function _runPipeline(name: string, ctx: any): Promise<EmpiricalMeasure> {
+  let chain: (n: string, c: any) => Promise<EmpiricalMeasure> =
+    (n, c) => kindDispatchStage(n, c, () => {
+      throw new Error('materialiser: terminal stage cannot call next');
+    });
+  // Build the chain inside-out: start from kindDispatch (terminal),
+  // wrap each registered stage AROUND it.
+  for (let i = _MATERIALISER_PIPELINE.length - 1; i >= 0; i--) {
+    const stage = _MATERIALISER_PIPELINE[i];
+    const inner = chain;
+    chain = (n, c) => stage(n, c, inner);
+  }
+  return chain(name, ctx);
+}
+
 function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // Callable-layer early-rejection gate (engine-concepts §19.2 +
   // §19.5). Bindings in the function or kernel layer (functionof /
@@ -583,13 +665,11 @@ function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
     // Opaque fixed value (rngstate) — fall through; if the binding has
     // no derivation either, the next check rejects cleanly.
   }
-  const d = ctx.derivations[name];
-  if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
-  const handler = (KIND_HANDLERS as any)[d.kind];
-  if (!handler) {
-    return Promise.reject(new Error('unknown derivation kind: ' + d.kind));
-  }
-  return handler(name, d, ctx);
+  // Run the materialiser pipeline (P3b). When no stages are
+  // registered, this is exactly the previous direct-dispatch path
+  // — `_runPipeline` reduces to `kindDispatchStage`. Registered
+  // pre-dispatch stages can wrap, short-circuit, or instrument.
+  return _runPipeline(name, ctx);
 }
 
 /**
@@ -649,6 +729,14 @@ function materialiseKernelBroadcastIR(ir: any, ctx: any) {
 module.exports = {
   materialiseMeasure,
   materialiseKernelBroadcastIR,
+  // P3b — materialiser pipeline (engine-concepts §18.11 / §20.10.5
+  // item 5). Stages get prepended to the default pipeline via
+  // `registerMaterialiserStage(stage)`; they wrap the terminal
+  // kindDispatch stage. Stages call `next(name, ctx)` to forward.
+  registerMaterialiserStage,
+  _resetMaterialiserPipeline,
+  kindDispatchStage,
+  _runPipeline,
   // Helpers exposed for the viewer's plot-plan fallbacks (which
   // sometimes need to compose the same primitives outside the kind-
   // dispatch path — e.g., to render a kernel-applied measure that
