@@ -349,6 +349,31 @@ Y = exp.(a)
   assert.equal(b.ir.op, 'exp', 'scalar exp dissolves');
 });
 
+test('Lazy type resolver: (a .* b) .+ c dissolves over scalars (multi-step chain)', () => {
+  // The inner `a .* b` lifts to an anon binding `__anonN` without
+  // an `inferredType` (typeinfer ran before lift). The lazy resolver
+  // in the dissolver recursively derives the anon's effective type
+  // from its dissolved IR's args — both `a` and `b` are scalar, so
+  // `__anonN` resolves to scalar. The outer .+ then finds matching
+  // types (anon + c are both scalar) and dissolves end-to-end.
+  const proc = require('../index.ts').processSource(`
+a = elementof(reals)
+b = elementof(reals)
+c = elementof(reals)
+Y = (a .* b) .+ c
+`);
+  const out = require('../derivations.ts').buildDerivations(proc.bindings);
+  const y = out.bindings.get('Y');
+  assert.ok(y && y.ir);
+  // After fixed-point dissolution: Y.ir should be add(<anon-resolved>, c)
+  // where the anon's IR has dissolved to mul(a, b). The exact form of
+  // y.ir.args[0] depends on whether the dissolver substitutes
+  // through the anon ref or keeps the ref — Phase 3.5's outer
+  // dissolution keeps the ref (single layer), so y.ir.op === 'add'.
+  assert.equal(y.ir.op, 'add',
+    'outer .+ dissolves now that anon type resolves lazily');
+});
+
 test('Phase 3.5 scalar-only widening: .* over fixed vectors does NOT dissolve', () => {
   // Both A and B are fixed length-3 vectors. `argsAreAllScalar` is
   // false (inferredType.kind === 'array'), so mul stays as a

@@ -168,19 +168,86 @@ function _typesEqual(a: any, b: any): boolean {
 }
 
 // Look up the inferredType + phase of a positional broadcast arg.
-// Returns null if the arg is not a binding ref or if the binding
-// lookup yields no usable annotation — the conservative response is
-// "don't dissolve."
+// Returns null if the arg is not a binding ref or if no usable type
+// can be derived — the conservative response is "don't dissolve."
+//
+// Synthetic anon bindings created by `liftInlineSubexpressions` lack
+// an `inferredType` (typeinfer runs in analyzer pass 7, before lift
+// adds them). For anons whose IR has been dissolved to a direct
+// safe-op call, we can derive the type lazily from the call's args.
+// This is what `_resolveBindingType` does.
 function _argTypeAndPhase(arg: any, bindings: any): { type: any; phase: any } | null {
-  if (!arg) return null;
-  if (arg.kind !== 'ref') return null;
-  if (arg.ns !== 'self') return null;
-  const b = bindings && bindings.get && bindings.get(arg.name);
-  if (!b) return null;
-  const t = b.inferredType;
-  const ph = b.phase;
-  if (!t || t.kind === 'deferred' || t.kind === 'failed') return null;
-  return { type: t, phase: ph };
+  return _resolveExprType(arg, bindings, 0);
+}
+
+// Recursively resolve an IR expression's effective (type, phase).
+//
+// Handles three IR shapes:
+//   - `ref`: looks up the binding's `inferredType` if present;
+//     otherwise descends into the binding's IR (lazy resolution for
+//     synthetic anon bindings created by lift after typeinfer).
+//   - `call` to a DISSOLVE-safe op: type is the args' common type,
+//     same-phase. Mirrors elementwise semantics — this is what
+//     dissolution would produce if it folded the inline call out.
+//   - `lit` / `const`: scalar real, fixed-phase. Permitted as a
+//     constituent of a parent expression but doesn't anchor a
+//     type on its own.
+//
+// Recursion is bounded to keep pathological cases cheap.
+function _resolveExprType(
+  expr: any,
+  bindings: any,
+  depth: number,
+): { type: any; phase: any } | null {
+  if (depth > 8) return null;
+  if (!expr) return null;
+  if (expr.kind === 'ref') {
+    if (expr.ns !== 'self') return null;
+    if (!bindings || !bindings.get) return null;
+    const b = bindings.get(expr.name);
+    if (!b) return null;
+    const t = b.inferredType;
+    if (t && t.kind !== 'deferred' && t.kind !== 'failed') {
+      return { type: t, phase: b.phase };
+    }
+    if (b.ir) return _resolveExprType(b.ir, bindings, depth + 1);
+    return null;
+  }
+  if (expr.kind === 'lit' || expr.kind === 'const') {
+    // Scalar real, fixed-phase. Returned as a constituent type;
+    // callers must combine with the other args' types — a pure
+    // literal can't anchor an outer-arg uniformity check.
+    return { type: { kind: 'scalar', prim: 'real' }, phase: 'fixed' };
+  }
+  if (expr.kind === 'call' && expr.op) {
+    if (!_isSafeOp(expr.op)) return null;
+    const argTPs: { type: any; phase: any }[] = [];
+    const callArgs: any[] = expr.args || [];
+    if (callArgs.length === 0) return null;
+    let nonLiteralCount = 0;
+    for (const a of callArgs) {
+      const sub = _resolveExprType(a, bindings, depth + 1);
+      if (!sub) return null;
+      argTPs.push(sub);
+      if (a && a.kind !== 'lit' && a.kind !== 'const') nonLiteralCount++;
+    }
+    // Need at least one non-literal arg to anchor the result type.
+    if (nonLiteralCount === 0) return argTPs[0];  // all scalars
+    // Skip literal contributors when checking uniformity (a literal
+    // is scalar/fixed and broadcasts harmlessly via valueOps).
+    let anchor: { type: any; phase: any } | null = null;
+    for (let i = 0; i < argTPs.length; i++) {
+      const a = callArgs[i];
+      if (a && (a.kind === 'lit' || a.kind === 'const')) continue;
+      if (anchor === null) anchor = argTPs[i];
+      else {
+        if (anchor.phase !== argTPs[i].phase) return null;
+        if (!_typesEqual(anchor.type, argTPs[i].type)) return null;
+      }
+    }
+    return anchor;
+  }
+  return null;
 }
 
 // Walk an IR expression bottom-up, dissolving any embedded broadcast
@@ -454,12 +521,23 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
 // for caller convenience. Bindings without a cached IR are left alone.
 function dissolveBindings(bindings: any): any {
   if (!bindings) return bindings;
-  for (const [name, b] of bindings) {
-    if (!b || !b.ir) continue;
-    const dissolved = dissolveExpr(b.ir, bindings);
-    if (dissolved !== b.ir) {
-      bindings.set(name, { ...b, ir: dissolved });
+  // Fixed-point iteration: dissolving a leaf anon binding may unlock
+  // a parent (e.g. `(A .* B) .+ C` — the outer .+ can only dissolve
+  // once `__anon0 = A .* B` has a derivable type). Capped at a small
+  // number of iterations; the dissolution rules are monotone so
+  // convergence is guaranteed.
+  const MAX_ITERS = 5;
+  for (let iter = 0; iter < MAX_ITERS; iter++) {
+    let changed = false;
+    for (const [name, b] of bindings) {
+      if (!b || !b.ir) continue;
+      const dissolved = dissolveExpr(b.ir, bindings);
+      if (dissolved !== b.ir) {
+        bindings.set(name, { ...b, ir: dissolved });
+        changed = true;
+      }
     }
+    if (!changed) break;
   }
   return bindings;
 }
