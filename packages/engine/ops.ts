@@ -149,15 +149,63 @@ interface OpDecl {
 // caller migration required.
 
 type Klein4Tag = 'N' | 'T' | 'A' | 'C';
+type ArgKind = 'value' | 'measure' | 'function' | 'kernel' | 'tuple';
+type ShapeDim = number | '%dynamic' | '*';
+type ShapePattern = Array<ShapeDim>;
+
+// ArgInfo — typed dispatch input. The matcher inspects this struct
+// rather than raw JS values, so a single registry can dispatch on
+// value-domain args (Value with shape/tag/struct/dtype) AND
+// measure-domain args (measure type with sample/batch/event shape
+// from P2) uniformly.
+//
+// Construction:
+//   - `argInfoFromValue(v)` wraps a Value (or raw scalar) for
+//     value-domain dispatch.
+//   - `argInfoFromMeasure(type, opts?)` wraps a measure type for
+//     measure-domain dispatch; the engine's typeinfer layer produces
+//     these from `inferredType` on measure-typed bindings.
+//   - `argInfoFromKernel(type)` / `argInfoFromFunction(type)` wrap
+//     callable types.
+//
+// `dispatch(name, rawArgs, opts)` (the existing entry point) auto-
+// wraps each raw arg via argInfoFromValue and routes to the new
+// typed entry `dispatchTyped(name, argInfos, opts)`. Existing
+// value-only variants and callers stay unchanged.
+//
+// The `axisStack` slot carries P3a's static outer-axis context from
+// the call site so variants can pattern-match on enclosing iteration
+// contexts (kernel-broadcast outer / iid sample / aggregate output
+// axes). Today populated only by callers that know the context;
+// future fusion (b) wires it through the materialiser.
+interface ArgInfo {
+  kind: ArgKind;
+  // Value-side (kind === 'value'):
+  value?: any;                            // the Value or raw scalar
+  // Measure-side (kind === 'measure'):
+  measureType?: any;                      // typeinfer's measure type
+  // Callable-side (kind ∈ {'function', 'kernel'}):
+  callableType?: any;                     // typeinfer's function/kernel type
+  // IR-context (any kind):
+  axisStack?: any[];                      // P3a outer-axis context
+}
 
 interface ArgPattern {
+  // ---------------------------------------------------------------
+  // Kind discriminator (default 'value').
+  // ---------------------------------------------------------------
+  kind?: ArgKind;
+
+  // ---------------------------------------------------------------
+  // Value-side constraints (apply when arg is a Value).
+  // ---------------------------------------------------------------
   // Logical rank (no atom-batch axis). Atom-batching is detected by
   // the dispatcher BELOW this layer; patterns describe logical shape.
   rank?: number;
   // Concrete dim sizes ('*' = any size, useful for partial constraints
   // like "rank-2 with second dim = 3"). Implies `rank` (length of the
   // shape array).
-  shape?: Array<number | '*'>;
+  shape?: ShapePattern;
   // Klein-4 transpose tag (value.ts §2.1). Single tag matches that
   // tag literally; an array matches if the arg's tag is in the array
   // (e.g. `tag: ['T', 'A']` matches "swapped" Klein-4 elements —
@@ -168,6 +216,29 @@ interface ArgPattern {
   struct?: 'diag' | 'tri' | 'sym';
   // Element type at the storage level.
   dtype?: 'real' | 'complex';
+
+  // ---------------------------------------------------------------
+  // Measure-side constraints (apply when arg.kind === 'measure', P2).
+  // ---------------------------------------------------------------
+  // Three-shape decomposition (Pyro/TFP convention; engine-concepts
+  // §20.10.5 item 2). Each shape uses ShapePattern semantics: '*'
+  // matches any dim; '%dynamic' matches '%dynamic' literally; a
+  // number matches the exact value. The pattern's length must equal
+  // the arg's shape length (no rank polymorphism here; if you want
+  // "any sampleShape" use absence of the field).
+  sampleShape?: ShapePattern;
+  batchShape?:  ShapePattern;
+  eventShape?:  ShapePattern;
+
+  // ---------------------------------------------------------------
+  // IR-context constraints (apply to any kind, from P3a axisStack).
+  // ---------------------------------------------------------------
+  // Match outer-axis context. Each entry constrains the axis-stack
+  // entry at that position (in OUTER-TO-INNER order). `source: '*'`
+  // accepts any source. Pattern length must equal the arg's
+  // axisStack length (no partial-prefix match — explicit '*' entries
+  // express that).
+  axisStack?: Array<{ source?: 'iid' | 'broadcast' | 'kernel_broadcast' | 'aggregate' | '*' }>;
 }
 
 type WrappingOp = 'broadcast' | 'aggregate' | 'direct';
@@ -220,10 +291,128 @@ function _argDtype(arg: any): 'real' | 'complex' {
   return 'real';
 }
 
+// ---------------------------------------------------------------------
+// ArgInfo constructors
+// ---------------------------------------------------------------------
+
+// Wrap a raw Value (or scalar) for typed dispatch. The matcher
+// inspects argInfo.value for value-side constraints (rank/shape/etc.)
+// and argInfo.axisStack for IR-context constraints.
+function argInfoFromValue(value: any, opts?: { axisStack?: any[] }): ArgInfo {
+  return { kind: 'value', value, axisStack: opts && opts.axisStack };
+}
+
+// Wrap a measure type (from typeinfer's inferredType on a measure-
+// typed binding) for typed dispatch. The matcher inspects
+// argInfo.measureType for measure-side constraints (sampleShape /
+// batchShape / eventShape from P2) and argInfo.axisStack for the
+// P3a outer-axis context.
+function argInfoFromMeasure(measureType: any, opts?: { value?: any; axisStack?: any[] }): ArgInfo {
+  return {
+    kind: 'measure',
+    measureType,
+    value: opts && opts.value,
+    axisStack: opts && opts.axisStack,
+  };
+}
+
+// Wrap a function/kernel type for typed dispatch — used by
+// higher-order op variants (broadcast, aggregate) that need to
+// pattern-match on the callable's input/output shape.
+function argInfoFromFunction(callableType: any): ArgInfo {
+  return { kind: 'function', callableType };
+}
+function argInfoFromKernel(callableType: any): ArgInfo {
+  return { kind: 'kernel', callableType };
+}
+
+// Promote a raw JS arg to ArgInfo (auto-detect kind). Used by the
+// legacy `dispatch(name, args, opts)` entry to convert untyped args
+// into the typed representation.
+function _autoArgInfo(arg: any): ArgInfo {
+  // ArgInfo objects pass through (already typed).
+  if (arg && typeof arg === 'object' && typeof arg.kind === 'string'
+      && (arg.kind === 'value' || arg.kind === 'measure'
+          || arg.kind === 'function' || arg.kind === 'kernel'
+          || arg.kind === 'tuple')) {
+    return arg as ArgInfo;
+  }
+  return argInfoFromValue(arg);
+}
+
+// ---------------------------------------------------------------------
+// Pattern matching
+// ---------------------------------------------------------------------
+
+// Match a ShapePattern against an actual shape array. '*' matches any
+// dim; '%dynamic' matches '%dynamic' literally; a number matches the
+// exact value. Returns false if lengths differ.
+function _matchShape(p: ShapePattern, actual: any[] | undefined): boolean {
+  if (!actual) return false;
+  if (p.length !== actual.length) return false;
+  for (let i = 0; i < p.length; i++) {
+    const want = p[i];
+    if (want === '*') continue;
+    if (want !== actual[i]) return false;
+  }
+  return true;
+}
+
+// Match an axisStack pattern against an actual axis-stack array.
+// Each pattern entry constrains the corresponding actual entry's
+// `source`. Pattern length must equal actual length.
+function _matchAxisStack(
+  p: NonNullable<ArgPattern['axisStack']>,
+  actual: any[] | undefined,
+): boolean {
+  if (!actual) return false;
+  if (p.length !== actual.length) return false;
+  for (let i = 0; i < p.length; i++) {
+    const want = p[i].source;
+    if (want === undefined || want === '*') continue;
+    if (actual[i].source !== want) return false;
+  }
+  return true;
+}
+
 function _matchArgPattern(p: ArgPattern, arg: any): boolean {
+  // Promote raw arg to ArgInfo if needed (so existing callers passing
+  // raw Values still work).
+  const info: ArgInfo = (arg && typeof arg === 'object' && typeof arg.kind === 'string'
+                         && (arg.kind === 'value' || arg.kind === 'measure'
+                             || arg.kind === 'function' || arg.kind === 'kernel'
+                             || arg.kind === 'tuple'))
+                       ? arg as ArgInfo
+                       : argInfoFromValue(arg);
+
+  // Kind discriminator. Pattern default is 'value'.
+  const wantKind: ArgKind = p.kind || 'value';
+  if (info.kind !== wantKind) return false;
+
+  // axisStack constraint applies regardless of kind.
+  if (p.axisStack !== undefined) {
+    if (!_matchAxisStack(p.axisStack, info.axisStack)) return false;
+  }
+
+  if (info.kind === 'value') {
+    return _matchValueArg(p, info.value);
+  }
+  if (info.kind === 'measure') {
+    return _matchMeasureArg(p, info.measureType);
+  }
+  if (info.kind === 'function' || info.kind === 'kernel') {
+    // No specific callable-side constraints yet (rank/shape/etc.
+    // don't apply directly to a callable). Future extensions can
+    // add input-arity / result-rank constraints.
+    return true;
+  }
+  return false;
+}
+
+function _matchValueArg(p: ArgPattern, value: any): boolean {
   // Bare scalars (JS number / boolean) match rank-0 patterns only.
-  if (!valueLib.isValue(arg)) {
-    if (typeof arg === 'number' || typeof arg === 'boolean') {
+  if (!valueLib.isValue(value)) {
+    if (typeof value === 'number' || typeof value === 'boolean') {
       if (p.rank !== undefined && p.rank !== 0) return false;
       if (p.shape !== undefined && p.shape.length > 0) return false;
       if (p.tag !== undefined && p.tag !== 'N') return false;
@@ -232,32 +421,67 @@ function _matchArgPattern(p: ArgPattern, arg: any): boolean {
       return true;
     }
     // Non-Value, non-scalar (nested JS array, Float64Array). Allow
-    // only when the pattern places NO constraints — those args would
-    // have to be coerced to Values by the caller anyway.
+    // only when the pattern places NO value-side constraints.
     return p.rank === undefined && p.shape === undefined
         && p.tag === undefined && p.struct === undefined
         && p.dtype === undefined;
   }
-  const rank = arg.shape.length;
+  const rank = value.shape.length;
   if (p.rank !== undefined && rank !== p.rank) return false;
   if (p.shape !== undefined) {
-    if (p.shape.length !== rank) return false;
-    for (let i = 0; i < rank; i++) {
-      const want = p.shape[i];
-      if (want === '*') continue;
-      if (typeof want === 'number' && want !== arg.shape[i]) return false;
-    }
+    if (!_matchShape(p.shape, value.shape)) return false;
   }
   if (p.tag !== undefined) {
-    const argTag = _argTag(arg);
+    const argTag = _argTag(value);
     if (Array.isArray(p.tag)) {
       if (p.tag.indexOf(argTag as Klein4Tag) < 0) return false;
     } else if (argTag !== p.tag) {
       return false;
     }
   }
-  if (p.struct !== undefined && _argStruct(arg) !== p.struct) return false;
-  if (p.dtype !== undefined && _argDtype(arg) !== p.dtype) return false;
+  if (p.struct !== undefined && _argStruct(value) !== p.struct) return false;
+  if (p.dtype !== undefined && _argDtype(value) !== p.dtype) return false;
+  return true;
+}
+
+function _matchMeasureArg(p: ArgPattern, measureType: any): boolean {
+  // No type info → cannot match measure-specific constraints. But if
+  // the pattern doesn't constrain anything beyond `kind: 'measure'`,
+  // pass through (the kind check at the caller already succeeded).
+  if (!measureType) {
+    return p.sampleShape === undefined
+        && p.batchShape  === undefined
+        && p.eventShape  === undefined
+        && p.rank        === undefined
+        && p.shape       === undefined
+        && p.dtype       === undefined;
+  }
+  if (p.sampleShape !== undefined && !_matchShape(p.sampleShape, measureType.sampleShape)) {
+    return false;
+  }
+  if (p.batchShape !== undefined && !_matchShape(p.batchShape, measureType.batchShape)) {
+    return false;
+  }
+  if (p.eventShape !== undefined && !_matchShape(p.eventShape, measureType.eventShape)) {
+    return false;
+  }
+  // Allow rank/shape constraints to ALSO apply to the measure's
+  // domain — useful for "a measure over a rank-2 variate".
+  if (p.rank !== undefined || p.shape !== undefined) {
+    const dom = measureType.domain;
+    if (!dom || dom.kind !== 'array') return false;
+    if (p.rank !== undefined && dom.rank !== p.rank) return false;
+    if (p.shape !== undefined && !_matchShape(p.shape, dom.shape)) return false;
+  }
+  // dtype applies to the variate's element type (real vs complex).
+  if (p.dtype !== undefined) {
+    let elem: any = measureType.domain;
+    while (elem && elem.kind === 'array') elem = elem.elem;
+    if (!elem || elem.kind !== 'scalar') return false;
+    const isCx = elem.prim === 'complex';
+    if (p.dtype === 'complex' && !isCx) return false;
+    if (p.dtype === 'real'    &&  isCx) return false;
+  }
   return true;
 }
 
@@ -279,6 +503,11 @@ function _specificityScore(v: OpVariant): number {
   let s = 0;
   if (v.wrappingOp !== undefined) s += 50;
   for (const p of v.argPatterns) {
+    // Kind discriminator: explicitly setting `kind` (any non-default
+    // value) is a categorical filter, weighted between wrappingOp
+    // and the per-arg refinements.
+    if (p.kind !== undefined && p.kind !== 'value') s += 5;
+    // Value-side refinements:
     if (p.rank !== undefined) s += 1;
     if (p.shape !== undefined) {
       for (const d of p.shape) if (d !== '*') s += 1;
@@ -286,6 +515,22 @@ function _specificityScore(v: OpVariant): number {
     if (p.tag !== undefined) s += 2;
     if (p.struct !== undefined) s += 10;
     if (p.dtype !== undefined) s += 1;
+    // Measure-side refinements (P2): each non-'*' dim adds 1.
+    if (p.sampleShape !== undefined) {
+      for (const d of p.sampleShape) if (d !== '*') s += 1;
+    }
+    if (p.batchShape !== undefined) {
+      for (const d of p.batchShape) if (d !== '*') s += 1;
+    }
+    if (p.eventShape !== undefined) {
+      for (const d of p.eventShape) if (d !== '*') s += 1;
+    }
+    // IR-context refinements (P3a): each non-'*' source adds 2 (a
+    // categorical filter like the tag, scaled to its outer-axis
+    // significance).
+    if (p.axisStack !== undefined) {
+      for (const e of p.axisStack) if (e.source !== undefined && e.source !== '*') s += 2;
+    }
   }
   return s;
 }
@@ -555,6 +800,42 @@ function _writeNested(dst: Float64Array, offset: number, src: any): number {
   return offset;
 }
 
+// Unwrap an ArgInfo to its raw payload (value / measureType /
+// callableType). Existing variant impls expect raw arg arrays; the
+// typed-dispatch entry routes through this so impls stay unchanged.
+// Variants that want the richer ArgInfo can read `ctx.argInfos`.
+function _unwrapArgInfo(info: ArgInfo): any {
+  if (info.kind === 'value')    return info.value;
+  if (info.kind === 'measure')  return info.measureType;
+  if (info.kind === 'function') return info.callableType;
+  if (info.kind === 'kernel')   return info.callableType;
+  return info;
+}
+
+// Typed-dispatch entry point. Accepts ArgInfo[] (rich arg
+// representation including value, measure type, callable type, or
+// IR axisStack context) and routes to the most-specific matching
+// variant. Used by callers that want to dispatch on measure-arg
+// types (P2 sample/batch/event shape) or IR-context (P3a axisStack)
+// rather than just Value shapes.
+//
+// `dispatch` / `dispatchVariant` (raw-args form) keep their existing
+// contract: raw Values in, raw result out. Callers wanting measure-
+// arg or axisStack dispatch use `dispatchTyped` directly with
+// ArgInfos. Variants that only constrain Value shapes are reachable
+// from both entry points — the matcher auto-wraps raw args internally.
+function dispatchTyped(name: string, argInfos: ArgInfo[], opts?: DispatchOpts): any {
+  const decl = REGISTRY.get(name);
+  if (!decl || !decl.variants || decl.variants.length === 0) return null;
+  const v = _pickVariant(decl.variants, argInfos, opts || {});
+  if (!v) return null;
+  // Unwrap ArgInfo → raw arg for the impl. Existing impls expect raw
+  // Values / measure types / callable types directly; new impls
+  // that want axisStack or the full ArgInfo read ctx.argInfos.
+  const rawArgs = argInfos.map(_unwrapArgInfo);
+  return v.impl(rawArgs, Object.assign({}, opts || {}, { argInfos }));
+}
+
 // Try shape-pattern variant dispatch. Returns the impl's result on
 // match; returns null (sentinel) when no variant matches. Callers
 // that want a throw-on-no-match contract use `dispatch` instead;
@@ -718,13 +999,24 @@ module.exports = {
   signatureOf,
   dispatch,
   dispatchVariant,
+  dispatchTyped,
   dispatchHigherOrder,
+  // ArgInfo constructors for typed dispatch (P2 / P3a integration):
+  argInfoFromValue,
+  argInfoFromMeasure,
+  argInfoFromFunction,
+  argInfoFromKernel,
   // Exported for the conformance harness:
   _classifyArg,
   _argAtAtom,
   _stackPerAtom,
   _matchArgPattern,
+  _matchValueArg,
+  _matchMeasureArg,
+  _matchShape,
+  _matchAxisStack,
   _matchVariant,
   _specificityScore,
   _pickVariant,
+  _autoArgInfo,
 };
