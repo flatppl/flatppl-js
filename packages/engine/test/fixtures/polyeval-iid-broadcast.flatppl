@@ -1,0 +1,26 @@
+%%%
+Ref-wrap broadcast over a stochastic iid vector.
+
+`polyeval` is a user-defined functionof; `[C]` is the Ref-wrap idiom
+(a length-1 wrapper around the fixed-phase length-3 coefficient
+vector) that holds C constant per broadcast cell while X (length-10
+per atom, stochastic) iterates.
+
+Per cell: polyeval(C, x_i) = sum_j(C[j] * x_i^j)
+                           = C[0] + C[1]*x_i + C[2]*x_i^2
+
+Result Y has shape [10] per atom — length-10 vector of polynomial
+values at each x_i.
+%%%
+flatppl_compat = "0.1"
+
+polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+
+% Coefficients of the polynomial 2.3 + 1.5*x + 0.7*x^2.
+C = [2.3, 1.5, 0.7]
+
+% Stochastic length-10 vector of iid standard normal draws per atom.
+X ~ iid(Normal(0, 1), 10)
+
+% Polynomial evaluated at each of X's 10 elements, per atom.
+Y = polyeval.([C], X)

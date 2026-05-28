@@ -169,6 +169,74 @@ function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
  *    logDensityN / evaluateN message; helpers fixedRefsToSetEnv /
  *    pushFixedEnv expose the canonical pattern.
  */
+// Walk an IR expression and substitute every `self`-ref to a
+// callable binding (fn / functionof / kernelof / bijection — see
+// `isFunctionLikeBinding`) with the binding's inline `functionof` IR.
+// Used at materialiser → worker hand-off so the worker's `_resolveFn`
+// sees inline `functionof` shapes directly (the
+// `_resolveFn` `self`-ref branch requires `env.__resolveFnBody`,
+// which the worker's session env doesn't carry).
+//
+// Returns the (possibly new) IR; mutates nothing on the input.
+// Bounded recursion — callable bindings can't form cycles per
+// FlatPPL spec §04 (modules are DAGs).
+function inlineCallableRefs(ir: any, bindings: any): any {
+  if (!ir || typeof ir !== 'object') return ir;
+  // Self-ref to a callable binding → splice in its `functionof` IR.
+  if (ir.kind === 'ref' && ir.ns === 'self' && bindings && bindings.get) {
+    const b = bindings.get(ir.name);
+    if (isFunctionLikeBinding(b) && b.ir
+        && b.ir.kind === 'call' && b.ir.op === 'functionof') {
+      // Recurse into the inlined body too — a callable can reference
+      // other callables. Cycles can't form (spec §04 DAG).
+      return inlineCallableRefs(b.ir, bindings);
+    }
+    return ir;
+  }
+  if (ir.kind !== 'call') return ir;
+  let changed = false;
+  let newArgs: any[] | null = null;
+  if (Array.isArray(ir.args)) {
+    newArgs = new Array(ir.args.length);
+    for (let i = 0; i < ir.args.length; i++) {
+      const w = inlineCallableRefs(ir.args[i], bindings);
+      newArgs[i] = w;
+      if (w !== ir.args[i]) changed = true;
+    }
+  }
+  let newKwargs: Record<string, any> | null = null;
+  if (ir.kwargs && typeof ir.kwargs === 'object') {
+    newKwargs = {};
+    for (const k in ir.kwargs) {
+      const w = inlineCallableRefs(ir.kwargs[k], bindings);
+      newKwargs[k] = w;
+      if (w !== ir.kwargs[k]) changed = true;
+    }
+  }
+  let newBody = ir.body;
+  if (ir.body) {
+    newBody = inlineCallableRefs(ir.body, bindings);
+    if (newBody !== ir.body) changed = true;
+  }
+  let newFields: any[] | null = null;
+  if (Array.isArray(ir.fields)) {
+    newFields = new Array(ir.fields.length);
+    for (let i = 0; i < ir.fields.length; i++) {
+      const f = ir.fields[i];
+      const wv = inlineCallableRefs(f && f.value, bindings);
+      newFields[i] = (wv === f.value) ? f : { ...f, value: wv };
+      if (wv !== f.value) changed = true;
+    }
+  }
+  if (!changed) return ir;
+  const walked: any = { ...ir };
+  if (newArgs) walked.args = newArgs;
+  if (newKwargs) walked.kwargs = newKwargs;
+  if (newBody !== ir.body) walked.body = newBody;
+  if (newFields) walked.fields = newFields;
+  return walked;
+}
+
 function prepareDensityRefs(ir: any, ctx: any, label: string) {
   const refs = orchestrator.collectSelfRefs(ir);
   const perAtomNames: string[] = [];
@@ -547,6 +615,7 @@ function resolveFnBody(binding: any, bindings: any): any {
 }
 
 module.exports = {
+  inlineCallableRefs,
   nameSeed,
   makeMainThreadPrng,
   isFunctionLikeBinding,

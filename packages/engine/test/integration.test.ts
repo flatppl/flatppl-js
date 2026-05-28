@@ -335,6 +335,55 @@ y = polyeval(C, 3.3)
     + ', expected ' + expectedY + ')');
 });
 
+test('integration: polyeval-iid-broadcast fixture — Ref-wrap broadcast over iid', () => {
+  // The canonical nested-broadcast test case: `polyeval.([C], X)`
+  // with X ~ iid(Normal(0,1), 10). Verifies the full pipeline:
+  //   - lift hoists the inline `[C]` ArrayLiteral to an anon binding;
+  //   - the anon classifies as kind:'tuple' (a tuple of refs);
+  //   - cascade-prune sweep skips the callable-head ref to polyeval;
+  //   - Y classifies as 'evaluate' (not 'broadcast');
+  //   - materialiser's matEvaluate inlines polyeval's functionof body
+  //     before worker hand-off so the broadcast dispatcher can
+  //     resolve the head without `env.__resolveFnBody`.
+  const src = fs.readFileSync(
+    path.join(FIXTURES_DIR, 'polyeval-iid-broadcast.flatppl'), 'utf8');
+  const r = processSource(src);
+  const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    'polyeval-iid-broadcast fixture should parse + analyze without errors; got ['
+    + errs.map((e: any) => e.message).join(', ') + ']');
+
+  const { buildDerivations } = require('../orchestrator.ts');
+  const ds = buildDerivations(r.bindings);
+
+  // Y should have a derivation. Phase 1 was: classifier produced
+  // null (vector(C) inline blocked isEvaluable). Phase 2 was:
+  // refs-valid sweep pruned because polyeval (a functionof) wasn't
+  // in derivations/fixedValues. Both fixes verified.
+  assert.ok(ds.derivations.Y,
+    'Y should classify (post lift + cascade-prune exemption)');
+  assert.equal(ds.derivations.Y.kind, 'evaluate');
+
+  // The lifted IR has [C] hoisted: Y.ir's first non-head arg should
+  // be a bare ref, not an inline vector(...) call.
+  const yBinding = ds.bindings.get('Y');
+  assert.equal(yBinding.ir.args[1].kind, 'ref',
+    'inline [C] should be hoisted to an anon ref');
+
+  // inlineCallableRefs substitution at materialiser → worker hand-
+  // off produces an inline functionof at the broadcast head.
+  const { inlineCallableRefs } = require('../materialiser-shared.ts');
+  const inlined = inlineCallableRefs(yBinding.ir, ds.bindings);
+  assert.equal(inlined.args[0].kind, 'call');
+  assert.equal(inlined.args[0].op, 'functionof',
+    'callable-ref head should inline to functionof for worker dispatch');
+
+  // Y's inferred type — array(rank=1, shape=[10], real).
+  assert.equal(yBinding.inferredType.kind, 'array');
+  assert.equal(yBinding.inferredType.rank, 1);
+  assert.deepEqual(yBinding.inferredType.shape, [10]);
+});
+
 test('integration: bayesian_inference_3 posterior view uses the literal source structure', () => {
   // When viewing posterior (transitively reaches prior2 / forward_kernel2),
   // the trace should follow the user's source — not the rewriter's
