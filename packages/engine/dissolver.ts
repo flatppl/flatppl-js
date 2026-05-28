@@ -715,6 +715,172 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
   return substituted;
 }
 
+// =====================================================================
+// Axis-stack annotation (P3a; engine-concepts §18.11 / §20.10.5 item 4)
+// =====================================================================
+//
+// `propagateAxisStack` walks each binding's IR and annotates measure-
+// op IR nodes with `axisStack` metadata: the outer iteration axes
+// their variate carries from enclosing axis-introducing constructs
+// (iid / kernel-broadcast / aggregate / value broadcast).
+//
+// The annotation is PURE METADATA — it doesn't change any IR
+// structure or runtime semantics. Today no consumer reads it (fusion
+// thread (b) will, when kernel-broadcast fusion lands). The pass
+// exists to make the axis context EXPLICIT at the IR layer so the
+// fusion work can lift the existing per-cell loops into batched
+// primitives uniformly.
+//
+// **Pass scope (minimum-viable P3a).** Annotates the OUTERMOST
+// measure-op IR node of each binding when the binding's RHS matches
+// one of three axis-introducing shapes:
+//
+//   1. `iid(M, n)` — one iid axis of size `n`.
+//   2. `broadcast(<head>, args…)` — one broadcast axis whose size
+//      comes from the first non-head arg's outer shape (the
+//      enforced "all args share leading axis" contract; spec §04).
+//      The source label is 'kernel_broadcast' when the head resolves
+//      to a kernel-typed binding, 'broadcast' otherwise (value head
+//      or unresolved).
+//   3. `aggregate(f, [axes…], expr)` — one entry per output axis;
+//      `name` set to the axis name, `size` left as `'%dynamic'`
+//      pending later refinement that resolves axis lengths via the
+//      body's indexings.
+//
+// **Out of scope (future refinements)**:
+//   - Nested annotation: if a binding's RHS is `iid(broadcast(K, …), n)`,
+//     today we annotate the top-level `iid` with one entry. A future
+//     pass can recurse into the inner `broadcast` and produce the
+//     full stack `[{iid, n}, {kernel_broadcast, len}]`.
+//   - Inlining through kernel bodies: when fusion (b) lands, the
+//     pass extends to propagate axisStack INTO kernel `functionof`
+//     bodies at materialise time.
+//   - Atom axis: deliberately NOT in IR axisStack (engine-internal
+//     concept; materialiser-time prepended).
+
+function _isKernelHead(head: any, bindings: any): boolean {
+  if (!head) return false;
+  if (head.kind !== 'ref' || head.ns !== 'self') return false;
+  if (!bindings || !bindings.get) return false;
+  const b = bindings.get(head.name);
+  if (!b) return false;
+  // Either the binding is explicitly kernel-typed, OR its IR
+  // constructs a measure (e.g. `kernelof(...)`). For the minimum-
+  // viable pass we recognise only the type-driven case; the dissolver
+  // already inlines `functionof` bodies, so a function head wouldn't
+  // appear in a kernel-broadcast pattern.
+  const t = b.inferredType;
+  if (!t) return false;
+  return t.kind === 'kernel';
+}
+
+function _argSizeIdentifier(arg: any, bindings: any): number | string {
+  if (!arg) return '%dynamic';
+  if (arg.kind === 'lit') {
+    if (typeof arg.value === 'number') return arg.value;
+    return '%dynamic';
+  }
+  if (arg.kind === 'ref' && arg.ns === 'self') {
+    // Bindings whose inferred type is array[1] of known size give us
+    // the leading dim; otherwise carry the binding name as a symbolic
+    // size identifier so consumers can resolve at materialise time.
+    if (bindings && bindings.get) {
+      const b = bindings.get(arg.name);
+      const t = b && b.inferredType;
+      if (t && t.kind === 'array' && Array.isArray(t.shape) && t.shape.length >= 1) {
+        const d0 = t.shape[0];
+        if (typeof d0 === 'number') return d0;
+      }
+    }
+    return arg.name;
+  }
+  return '%dynamic';
+}
+
+// Build the axisStack entry for a single measure-op IR node. Returns
+// null if the IR doesn't match a recognised axis-introducing shape.
+function _axisStackForIR(ir: any, bindings: any): any[] | null {
+  if (!ir || ir.kind !== 'call' || !ir.op) return null;
+  const args: any[] = ir.args || [];
+
+  if (ir.op === 'iid') {
+    // iid(M, n) — second positional is the size (literal or ref).
+    if (args.length < 2) return null;
+    const n = args[1];
+    const size = _argSizeIdentifier(n, bindings);
+    return [{ source: 'iid', size }];
+  }
+
+  if (ir.op === 'broadcast') {
+    // broadcast(<head>, args…) or broadcast(<head>, name=arg, …).
+    // Head is args[0]; remaining positionals or kwargs are the
+    // broadcast args. The outer axis size matches the first non-
+    // head arg's leading dim.
+    if (args.length < 1) return null;
+    const head = args[0];
+    let firstArg: any = null;
+    if (args.length >= 2) firstArg = args[1];
+    else if (ir.kwargs) {
+      const keys = Object.keys(ir.kwargs);
+      if (keys.length > 0) firstArg = ir.kwargs[keys[0]];
+    }
+    if (!firstArg) return null;
+    const size = _argSizeIdentifier(firstArg, bindings);
+    const source = _isKernelHead(head, bindings) ? 'kernel_broadcast' : 'broadcast';
+    const entry: any = { source, size };
+    if (firstArg.kind === 'ref' && firstArg.ns === 'self') entry.name = firstArg.name;
+    return [entry];
+  }
+
+  if (ir.op === 'aggregate') {
+    // aggregate(f, output_axes, body). One axisStack entry per output
+    // axis; size is %dynamic pending axis-length resolution.
+    if (args.length < 3) return null;
+    const axesIR = args[1];
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const axes: any[] = axesIR.args || [];
+    const stack: any[] = [];
+    for (const ax of axes) {
+      if (!ax || ax.kind !== 'axis') return null;
+      stack.push({ source: 'aggregate', size: '%dynamic', name: ax.name });
+    }
+    return stack.length > 0 ? stack : null;
+  }
+
+  return null;
+}
+
+// Annotate the top-level IR of each binding with axisStack when the
+// shape matches. The annotation is attached as a NEW field on a fresh
+// copy of the IR node (no in-place mutation), so other consumers that
+// hold references to the pre-annotation IR stay unaffected.
+function propagateAxisStack(bindings: any): any {
+  if (!bindings) return bindings;
+  for (const [name, b] of bindings) {
+    if (!b || !b.ir) continue;
+    // Only top-level measure-op IRs for now. Future iterations may
+    // descend into nested IR (e.g. iid(broadcast(K, …), n) would
+    // accumulate two stack entries on the iid node).
+    const stack = _axisStackForIR(b.ir, bindings);
+    if (!stack) continue;
+    // Don't reannotate if axisStack is already present and equal.
+    if (Array.isArray(b.ir.axisStack)
+        && b.ir.axisStack.length === stack.length) {
+      let same = true;
+      for (let i = 0; i < stack.length; i++) {
+        const a = b.ir.axisStack[i], c = stack[i];
+        if (a.source !== c.source || a.size !== c.size || a.name !== c.name) {
+          same = false; break;
+        }
+      }
+      if (same) continue;
+    }
+    const newIR = { ...b.ir, axisStack: stack };
+    bindings.set(name, { ...b, ir: newIR });
+  }
+  return bindings;
+}
+
 // Walk a bindings map (post-liftInlineSubexpressions output) and
 // dissolve each binding's `.ir` field in place. Returns the same map
 // for caller convenience. Bindings without a cached IR are left alone.
@@ -738,6 +904,10 @@ function dissolveBindings(bindings: any): any {
     }
     if (!changed) break;
   }
+  // After dissolution settles, annotate measure-op IR nodes with
+  // axisStack metadata (P3a). Pure annotation; doesn't affect any
+  // runtime semantics.
+  propagateAxisStack(bindings);
   return bindings;
 }
 
@@ -747,6 +917,8 @@ module.exports = {
   DISSOLVE_SCALAR_ONLY_OPS,
   dissolveExpr,
   dissolveBindings,
+  propagateAxisStack,
   _tryDissolveSingleOp,
   _tryDissolveAggregate,
+  _axisStackForIR,
 };

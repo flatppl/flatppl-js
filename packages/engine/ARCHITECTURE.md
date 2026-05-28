@@ -1041,7 +1041,7 @@ vec×vec inner/outer/error, matvec/vecmat/error, matmul), via
 fast-check; plus pattern-matcher and specificity-ordering unit
 tests (51 tests total).
 
-### `dissolver.ts` (~300 lines)
+### `dissolver.ts` (~750 lines)
 
 **Responsibility.** Term-rewriter for broadcast / aggregate
 dissolution. Engine-concepts §20 (cross-engine architecture);
@@ -1100,6 +1100,42 @@ recursive walker; `_tryDissolveSingleOp(bcIR, bindings)` and
 structural matcher in isolation plus end-to-end behaviour on
 dotted-binary surfaces, refusal of unsafe ops, mismatched
 types/phases, multi-op bodies, and user-fn inlining.
+
+**Axis-stack annotation (P3a, engine-concepts §18.11 / §20.10.5
+item 4).** After the dissolution rewrites settle,
+`propagateAxisStack(bindings)` walks each binding's IR and
+attaches `axisStack: AxisStackEntry[]` metadata to recognised
+measure-op IR nodes — pure metadata, no semantic change.
+
+Currently annotates three IR shapes at the binding's top-level
+IR:
+- `iid(M, n)` → one `{source: 'iid', size}` entry; size is the
+  literal value when n is a literal, the binding name when n is
+  a ref, `'%dynamic'` otherwise.
+- `broadcast(<head>, args…)` → one `{source: 'broadcast' |
+  'kernel_broadcast', size, name?}` entry; source is
+  `kernel_broadcast` when the head ref resolves to a
+  kernel-typed binding, plain `broadcast` for function heads or
+  unresolved.
+- `aggregate(f, [axes…], body)` → one `{source: 'aggregate',
+  size: '%dynamic', name}` entry per output axis name.
+
+`axisStack` enumerates outer iteration axes the variate carries
+from enclosing axis-introducing constructs, in OUTER-TO-INNER
+order. The atom (sampling-time `N`) axis is deliberately NOT
+included — that's an engine-internal concept the materialiser
+prepends; backends without atom-axis semantics (RooFit, Stan)
+consume IR axisStack as-is.
+
+**No consumer reads axisStack yet.** It's infrastructure for
+fusion thread (b) (kernel-broadcast fusion); the materialiser
+and density walker pass through unchanged. Tests in
+`test/axis-stack.test.ts` pin the shape-recognition logic and
+the propagation pass's idempotency. Future refinements: nested
+annotation (so `iid(broadcast(K, args), n)` produces the full
+2-entry stack on the outer `iid`), axis-length resolution for
+`aggregate` via the body's indexings, inlining into kernel
+`functionof` bodies at materialise time.
 
 ### `traceeval.ts` (~400 lines)
 
