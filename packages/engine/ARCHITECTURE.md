@@ -1465,7 +1465,7 @@ back onto its source binding (`binding.diagnostics`) so the DAG view can answer
   Update the copies when the originals change (no auto-sync).
 
 Run with `npm --workspace=@flatppl/engine run test` (or `npm test` in
-`packages/engine/`). 2187 tests in ~25-40 s as of writing.
+`packages/engine/`). 2428 tests in ~25-40 s as of writing.
 
 ---
 
@@ -1496,7 +1496,7 @@ Run with `npm --workspace=@flatppl/engine run test` (or `npm test` in
 
 Major outstanding work is tracked in
 `flatppl-dev/TODO-flatppl-js.md` (the single source of truth for
-what's left). The shortlist as of 2026-05-26:
+what's left). Shortlist:
 
 - **Multi-file models** — `processSource(src, { bundle })` accepts a
   pre-resolved source bundle (landed 2026-05-24) but the rest of
@@ -1548,15 +1548,15 @@ status duplication here).
 Cross-engine architecture in `flatppl-dev/flatppl-engine-concepts.md`
 §20. JS-engine implementation notes below.
 
-> **Status:** Phases 1–6 (+ Phase 3.5 widening) landed (2026-05-28).
-> Constants flow as rank-0 Values; ARITH_OPS no longer emits bare
-> numbers when Values flow in; the dissolver rewrites broadcast and
-> aggregate IR into direct call chains. Phase 1.5 (stride-0
-> broadcasting) is deferred as optional perf. Remaining Phase-5
-> follow-ups (batched matmul, pure-axis reductions, non-sum
-> reductions) and per-op `batched` fast-paths for declared linalg
-> ops without one (trace / det / logabsdet / self_outer / row_gram
-> / col_gram / diagmat) tracked in `TODO-flatppl-js.md`.
+> **Status (2026-05-28).** The dissolver is in. Constants flow as
+> rank-0 Values; `ARITH_OPS` no longer emits bare numbers when Values
+> flow in; broadcast and aggregate IR rewrite to direct elementwise /
+> linalg / matmul-family call chains via `dissolver.ts`. Remaining
+> design and follow-ups (a canonical elementwise primitive for
+> non-scalar `.*` / `./` / `.^`, a generalized contraction op for
+> batched matmul + pure-axis reductions, `batched` fast-paths for the
+> remaining declared linalg ops, length-N `.samples` retirement on
+> rank-0 fixed measures) tracked in `flatppl-dev/TODO-flatppl-js.md`.
 
 ### Where dissolution slots into the pipeline
 
@@ -1598,20 +1598,28 @@ tree via `_substituteBody`, replacing every `%local _argN_` ref with
 the corresponding broadcast arg by name. Each call-node along the
 way must satisfy:
 
-- `op` ∈ `DISSOLVE_SAFE_OPS` (currently `add` / `sub` / `neg` /
-  `pos` — every elementwise-at-any-rank op available through
-  value-ops without Klein-4 matrix semantics).
+- `op` ∈ `DISSOLVE_AT_ANY_RANK_OPS` (no shape constraint) or
+  `op` ∈ `DISSOLVE_SCALAR_ONLY_OPS` AND all outer broadcast args
+  are scalar-typed. The two tiers are spelled out in the module-
+  reference entry above.
 - No kwargs / fields / nested functionof body inside the call.
 - All leaf refs are either `%local` placeholders (substituted),
   fixed-phase `self` refs (held constant per cell), literals, or
   constants.
 
 Soundness gate on the outer broadcast args: every positional
-broadcast arg must be a binding ref and all referenced bindings
-must share the SAME `inferredType` AND the SAME phase. Mixed-shape
-broadcasts (`scalar .+ vec`) and mixed-phase combinations leave
-the broadcast IR in place — `_broadcastApply` runs them correctly
-on the cold path.
+broadcast arg must resolve to a concrete `inferredType` with
+matching phase across args. The `_resolveExprType` lazy resolver
+handles both binding refs (consults `inferredType`; falls back to
+walking the binding's IR) and inline call expressions (computes
+the result type from the args' types). Mixed-shape (`scalar .+
+vec`) and mixed-phase (`fixed_vec .+ parameterised_vec`)
+broadcasts leave the broadcast IR in place — `_broadcastApply`
+runs them on the cold path.
+
+The dissolver iterates `dissolveBindings` to a fixed point so a
+newly-dissolved leaf unblocks a parent in the same pass
+(`(a .* b) .+ c` etc.).
 
 `DISSOLVE_SAFE_OPS` is deliberately narrow until type-aware shape
 safety lands (`mul` has matrix semantics on rank-1 vectors via
