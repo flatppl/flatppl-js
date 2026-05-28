@@ -119,7 +119,13 @@ test('dissolver: refuses body with closed-over scope ref', () => {
   assert.equal(out, null);
 });
 
-test('dissolver: refuses swizzled body args (params out of order)', () => {
+test('dissolver: swizzled body args dissolve via substitution (Phase 3)', () => {
+  // Phase 3's body walker substitutes each `%local` ref with the
+  // corresponding broadcast arg by NAME (not by position) — so a
+  // body of `add(_arg2_, _arg1_)` over args (A, B) dissolves to
+  // `add(B, A)`. Spec-correct: broadcast iterates per cell with the
+  // args bound to placeholders by name; the dissolved call just
+  // hoists that substitution out of the per-cell loop.
   const bcIR = {
     kind: 'call', op: 'broadcast',
     args: [
@@ -130,7 +136,7 @@ test('dissolver: refuses swizzled body args (params out of order)', () => {
         body: {
           kind: 'call', op: 'add',
           args: [
-            { kind: 'ref', ns: '%local', name: '_arg2_' },  // wrong order
+            { kind: 'ref', ns: '%local', name: '_arg2_' },
             { kind: 'ref', ns: '%local', name: '_arg1_' },
           ],
         },
@@ -140,7 +146,11 @@ test('dissolver: refuses swizzled body args (params out of order)', () => {
     ],
   };
   const out = _tryDissolveSingleOp(bcIR, null);
-  assert.equal(out, null);
+  assert.ok(out);
+  assert.equal(out.op, 'add');
+  // First substituted arg is whatever _arg2_ maps to = B.
+  assert.equal(out.args[0].name, 'B');
+  assert.equal(out.args[1].name, 'A');
 });
 
 // ---------------------------------------------------------------------
@@ -230,6 +240,105 @@ W = .- A
 `, 'Y');
   assert.ok(b && b.ir);
   assert.equal(b.ir.op, 'add');
+});
+
+test('Phase 3 multi-op body: fn(_arg1_ + _arg2_ - _arg1_) dissolves', () => {
+  // The body is a tree of safe ops. Phase 3's substitute walker
+  // descends into add → sub and replaces placeholder refs with
+  // broadcast args.
+  const bcIR = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      {
+        kind: 'call', op: 'functionof',
+        params: ['_arg1_', '_arg2_'],
+        paramKwargs: ['arg1', 'arg2'],
+        body: {
+          kind: 'call', op: 'sub',
+          args: [
+            {
+              kind: 'call', op: 'add',
+              args: [
+                { kind: 'ref', ns: '%local', name: '_arg1_' },
+                { kind: 'ref', ns: '%local', name: '_arg2_' },
+              ],
+            },
+            { kind: 'ref', ns: '%local', name: '_arg1_' },
+          ],
+        },
+      },
+      { kind: 'ref', ns: 'self', name: 'A' },
+      { kind: 'ref', ns: 'self', name: 'B' },
+    ],
+  };
+  const out = _tryDissolveSingleOp(bcIR, null);
+  assert.ok(out);
+  assert.equal(out.op, 'sub');
+  // sub(add(A, B), A)
+  assert.equal(out.args[0].op, 'add');
+  assert.equal(out.args[0].args[0].name, 'A');
+  assert.equal(out.args[0].args[1].name, 'B');
+  assert.equal(out.args[1].name, 'A');
+});
+
+test('Phase 3 multi-op body: refuses unsafe inner op (mul)', () => {
+  // Body tree contains an unsafe op (mul). The walker bails — no
+  // partial dissolution.
+  const bcIR = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      {
+        kind: 'call', op: 'functionof',
+        params: ['_arg1_', '_arg2_'],
+        paramKwargs: ['arg1', 'arg2'],
+        body: {
+          kind: 'call', op: 'add',
+          args: [
+            {
+              kind: 'call', op: 'mul',  // not in DISSOLVE_SAFE_OPS
+              args: [
+                { kind: 'ref', ns: '%local', name: '_arg1_' },
+                { kind: 'ref', ns: '%local', name: '_arg2_' },
+              ],
+            },
+            { kind: 'ref', ns: '%local', name: '_arg2_' },
+          ],
+        },
+      },
+      { kind: 'ref', ns: 'self', name: 'A' },
+      { kind: 'ref', ns: 'self', name: 'B' },
+    ],
+  };
+  const out = _tryDissolveSingleOp(bcIR, null);
+  assert.equal(out, null);
+});
+
+test('Phase 3 multi-op body: literals pass through', () => {
+  // `fn(_arg1_ + 1.0)` — a literal in the body survives substitution.
+  const bcIR = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      {
+        kind: 'call', op: 'functionof',
+        params: ['_arg1_'],
+        paramKwargs: ['arg1'],
+        body: {
+          kind: 'call', op: 'add',
+          args: [
+            { kind: 'ref', ns: '%local', name: '_arg1_' },
+            { kind: 'lit', value: 1.0, numType: 'real' },
+          ],
+        },
+      },
+      { kind: 'ref', ns: 'self', name: 'A' },
+    ],
+  };
+  const out = _tryDissolveSingleOp(bcIR, null);
+  assert.ok(out);
+  assert.equal(out.op, 'add');
+  assert.equal(out.args[0].name, 'A');
+  assert.equal(out.args[1].kind, 'lit');
+  assert.equal(out.args[1].value, 1.0);
 });
 
 test('nested broadcast: lifted-anon ref blocks outer dissolution (type-guard)', () => {

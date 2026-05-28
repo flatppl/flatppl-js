@@ -202,46 +202,95 @@ function dissolveExpr(ir: any, bindings: any): any {
   return walked;
 }
 
-// Try the Phase-2 single-op pattern:
+// Recursively substitute `%local` refs in a body expression with the
+// corresponding broadcast args, and verify every op-call in the body
+// is in DISSOLVE_SAFE_OPS. Returns the substituted IR on success, or
+// null when the body contains an unsupported construct.
 //
-//     broadcast(functionof(<op>(_arg1_, _arg2_, …)), args…)
-//       where <op> ∈ DISSOLVE_SAFE_OPS, body args are exactly the
-//       params in order (no closed-over refs / no swizzling), and the
-//       broadcast supplies exactly arity positional or kwarg args.
+// Constraints applied at every node:
+//   - call.op must be in DISSOLVE_SAFE_OPS (no user-defined calls).
+//   - call.args are recursively substituted; call.kwargs/fields not
+//     supported (would imply a non-elementwise op).
+//   - `%local` refs map to the broadcast arg via the params index.
+//   - `self` refs are allowed ONLY when their target binding is
+//     fixed-phase (held constant per cell — broadcast and direct
+//     elementwise call produce the same result on a constant).
+//   - Literals (`lit`, `const`) pass through unchanged.
+//   - Anything else (nested functionof, broadcast, measure ops, …)
+//     fails the check — return null.
+function _substituteBody(
+  expr: any,
+  paramIndex: Map<string, number>,
+  bcArgs: any[],
+  bindings: any,
+): any | null {
+  if (!expr) return null;
+  switch (expr.kind) {
+    case 'lit':
+    case 'const':
+      return expr;
+    case 'ref':
+      if (expr.ns === '%local') {
+        const idx = paramIndex.get(expr.name);
+        if (idx === undefined) return null;  // unknown placeholder
+        return bcArgs[idx];
+      }
+      if (expr.ns === 'self') {
+        // Held constant: require the target binding be fixed-phase.
+        if (!bindings || !bindings.get) return null;
+        const b = bindings.get(expr.name);
+        if (!b || b.phase !== 'fixed') return null;
+        return expr;
+      }
+      return null;  // unknown namespace
+    case 'call':
+      if (!expr.op || !DISSOLVE_SAFE_OPS.has(expr.op)) return null;
+      if (expr.kwargs && Object.keys(expr.kwargs).length > 0) return null;
+      if (Array.isArray(expr.fields) && expr.fields.length > 0) return null;
+      if (expr.body) return null;  // nested functionof — bail
+      const inArgs: any[] = expr.args || [];
+      const outArgs: any[] = new Array(inArgs.length);
+      for (let i = 0; i < inArgs.length; i++) {
+        const sub = _substituteBody(inArgs[i], paramIndex, bcArgs, bindings);
+        if (sub === null) return null;
+        outArgs[i] = sub;
+      }
+      const out: any = { kind: 'call', op: expr.op, args: outArgs };
+      if (expr.loc) out.loc = expr.loc;
+      return out;
+    default:
+      return null;
+  }
+}
+
+// Try Phase-2 / Phase-3 broadcast dissolution:
 //
-// On match, returns `{ kind: 'call', op: <op>, args: [<broadcast args>] }`.
-// On no match, returns null (the caller leaves the IR as-is).
+//   Phase 2: broadcast(functionof(<op>(_arg1_, _arg2_, …)), args…)
+//     where the body is a SINGLE call with args being the placeholders
+//     in declared order.
+//
+//   Phase 3 (this superset): the body may be an arbitrary expression
+//     tree of DISSOLVE_SAFE_OPS, with `%local` refs at the leaves
+//     mapping to the broadcast args and fixed-phase `self` refs held
+//     constant. Each substitution preserves the spec broadcast
+//     semantics because every op in the tree is elementwise-at-any-
+//     rank under value-ops.
+//
+// On match, returns a substituted IR (the body's expression tree with
+// placeholders replaced by the broadcast args). On no match, returns
+// null and the caller leaves the broadcast IR in place.
 function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
   if (!bcIR || bcIR.kind !== 'call' || bcIR.op !== 'broadcast') return null;
   const bcArgs: any[] = bcIR.args || [];
   if (bcArgs.length < 1) return null;
   const head = bcArgs[0];
   // Head must be a synthesised functionof (the lowering shape for
-  // dotted operators and `fn(<op>(_, …))`).
+  // dotted operators, `fn(<op>(_, …))`, and chained dotted ops).
   if (!head || head.kind !== 'call' || head.op !== 'functionof') return null;
   const params: string[] = Array.isArray(head.params) ? head.params : [];
   if (params.length === 0) return null;
   const body = head.body;
-  if (!body || body.kind !== 'call') return null;
-  // Builtin op only (user-defined calls have .target, not .op).
-  if (!body.op) return null;
-  if (!DISSOLVE_SAFE_OPS.has(body.op)) return null;
-  // Body must be a pure positional call to one op — no kwargs / fields.
-  // (Multi-form bodies are a Phase 3 concern.)
-  if (body.kwargs && Object.keys(body.kwargs).length > 0) return null;
-  if (Array.isArray(body.fields) && body.fields.length > 0) return null;
-  const bodyArgs: any[] = body.args || [];
-  if (bodyArgs.length !== params.length) return null;
-  // Body args must be exactly the params in order — `%local` refs in
-  // the same sequence as `functionof.params`. Anything else (closed-
-  // over scope refs, swizzled order, literal mixed in) is left to
-  // later phases.
-  for (let i = 0; i < params.length; i++) {
-    const a = bodyArgs[i];
-    if (!a || a.kind !== 'ref' || a.ns !== '%local' || a.name !== params[i]) {
-      return null;
-    }
-  }
+  if (!body) return null;
   // Match broadcast's outer arity (positional OR kwarg form, not
   // mixed; mixed forms are rare in practice and the dissolver leaves
   // them to the runtime).
@@ -298,13 +347,17 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
       }
     }
   }
-  const out: any = {
-    kind: 'call',
-    op: body.op,
-    args: appliedArgs,
-  };
-  if (bcIR.loc) out.loc = bcIR.loc;
-  return out;
+  // Build the param-index map for the body walk.
+  const paramIndex: Map<string, number> = new Map();
+  for (let i = 0; i < params.length; i++) paramIndex.set(params[i], i);
+  const substituted = _substituteBody(body, paramIndex, appliedArgs, bindings);
+  if (substituted === null) return null;
+  // Preserve the broadcast's source location on the outermost call so
+  // diagnostics still point at the user-written site.
+  if (bcIR.loc && substituted.kind === 'call' && !substituted.loc) {
+    substituted.loc = bcIR.loc;
+  }
+  return substituted;
 }
 
 // Walk a bindings map (post-liftInlineSubexpressions output) and
