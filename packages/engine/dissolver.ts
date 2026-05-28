@@ -431,34 +431,58 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
   if (!bodyIR.args || bodyIR.args.length !== 2) return null;
 
-  // Matmul: 2 output axes (.i, .k); body is mul of two-axis indexings
-  // sharing a reduction axis.
+  // Matmul / Outer-product: 2 output axes (.i, .k or .i, .j).
   if (outAxes.length === 2) {
     const iName = outAxes[0].name;
     const kName = outAxes[1].name;
     if (iName === kName) return null;
     const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
-    // Mul is commutative; try both factor orderings.
+
+    // Matmul: body is mul of two-axis indexings sharing a reduction
+    // axis (e.g. A[.i, .j] * B[.j, .k] reducing over .j).
     for (const [fA, fB] of [[f1, f2], [f2, f1]]) {
       const ca = _aggregateBodyClassifyA(fA, iName);
       const cb = _aggregateBodyClassifyB(fB, kName);
       if (!ca || !cb) continue;
       if (ca.jName !== cb.jName) continue;
       if (ca.jName === iName || ca.jName === kName) continue;
-      // Both source operands must resolve to concrete inferredTypes
-      // (so the runtime mul dispatch sees the expected rank-2 shapes).
       const tA = _checkSourceType(ca.src, bindings);
       const tB = _checkSourceType(cb.src, bindings);
       if (!tA || !tB) return null;
       if (tA.phase !== tB.phase) return null;
-      // Both args must be rank-2 matrices for valueOps.mul to do
-      // matrix product. The lazy resolver returns the binding's
-      // inferredType; check shape rank.
       if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return null;
       if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return null;
       const A = _wrapTranspose(ca.src, ca.trans);
       const B = _wrapTranspose(cb.src, cb.trans);
       const out: any = { kind: 'call', op: 'mul', args: [A, B] };
+      if (aggIR.loc) out.loc = aggIR.loc;
+      return out;
+    }
+
+    // Outer product: body is mul of two 1-axis indexings with
+    // distinct axes (e.g. u[.i] * v[.j]) — no reduction axis. The
+    // dissolved form `mul(u, transpose(v))` uses value-ops'
+    // vec×transposed-vec Klein-4 dispatch → matrix result. Note
+    // we still require the aggregate's reduction func to be `sum`
+    // (the matched outer block); spec says any reduction works
+    // since there's nothing to reduce, but the runtime
+    // AGGREGATE_PATTERNS specialiser also gates on sum + the
+    // engine consistency is cleaner. (Wider non-sum coverage is a
+    // follow-up.)
+    for (const [fU, fV] of [[f1, f2], [f2, f1]]) {
+      const uSrc = _aggregateBodyClassifyV(fU, iName);
+      const vSrc = _aggregateBodyClassifyV(fV, kName);
+      if (!uSrc || !vSrc) continue;
+      const tU = _checkSourceType(uSrc, bindings);
+      const tV = _checkSourceType(vSrc, bindings);
+      if (!tU || !tV) return null;
+      if (tU.phase !== tV.phase) return null;
+      if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return null;
+      if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
+      const out: any = {
+        kind: 'call', op: 'mul',
+        args: [uSrc, { kind: 'call', op: 'transpose', args: [vSrc] }],
+      };
       if (aggIR.loc) out.loc = aggIR.loc;
       return out;
     }
