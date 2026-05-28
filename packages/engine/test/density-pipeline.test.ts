@@ -132,6 +132,66 @@ test('density tracing stage: records per-call duration via custom now()', () => 
 // 5. _resetDensityPipeline clears stages
 // =====================================================================
 
+// =====================================================================
+// 5. makeDensityTracingStage factory (mirrors materialiser's)
+// =====================================================================
+
+test('makeDensityTracingStage: records key + duration + count + ok', () => {
+  freshPipeline();
+  const buffer: any[] = [];
+  let t = 0;
+  density.registerDensityStage(density.makeDensityTracingStage({
+    buffer,
+    now: () => { t += 3; return t; },
+  }));
+  density.registerDensityStage(function (
+    _ir: any, _value: any, _refArrays: any, count: any, _opts: any, _next: any
+  ) {
+    return { logps: new Float64Array(count), rest: null };
+  });
+  density._runDensityPipeline({ kind: 'call', op: 'Normal' }, 1.0, {}, 5, {});
+  assert.equal(buffer.length, 1);
+  assert.equal(buffer[0].key, 'Normal');
+  assert.equal(buffer[0].count, 5);
+  assert.equal(buffer[0].ok, true);
+  assert.equal(buffer[0].durationMs, 3);   // (now=6) - (now=3) = 3
+});
+
+test('makeDensityTracingStage: records errors with ok=false', () => {
+  freshPipeline();
+  const buffer: any[] = [];
+  density.registerDensityStage(density.makeDensityTracingStage({ buffer, now: () => 0 }));
+  density.registerDensityStage(function (
+    _ir: any, _value: any, _refArrays: any, _count: any, _opts: any, _next: any
+  ) {
+    throw new Error('density: stub failure');
+  });
+  assert.throws(
+    () => density._runDensityPipeline({ kind: 'call', op: 'Poisson' }, 3, {}, 2, {}),
+    /density: stub failure/);
+  assert.equal(buffer.length, 1);
+  assert.equal(buffer[0].ok, false);
+  assert.equal(buffer[0].key, 'Poisson');
+  assert.match(buffer[0].error, /density: stub failure/);
+});
+
+test('makeDensityTracingStage: custom keyFn extracts richer key', () => {
+  freshPipeline();
+  const buffer: any[] = [];
+  density.registerDensityStage(density.makeDensityTracingStage({
+    buffer,
+    now: () => 0,
+    keyFn: (ir: any) => 'op=' + ir.op + ' kind=' + ir.kind,
+  }));
+  density.registerDensityStage(function (
+    _ir: any, _value: any, _refArrays: any, count: any, _opts: any, _next: any
+  ) {
+    return { logps: new Float64Array(count), rest: null };
+  });
+  density._runDensityPipeline({ kind: 'call', op: 'iid' }, [1, 2], {}, 1, {});
+  assert.equal(buffer[0].key, 'op=iid kind=call');
+});
+
 test('_resetDensityPipeline clears registered stages', () => {
   freshPipeline();
   let counter = 0;

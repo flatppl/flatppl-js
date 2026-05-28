@@ -386,6 +386,66 @@ function logDensityConsumeN(ir: IRNode, value: any, refArrays: any, count: any, 
   return _runDensityPipeline(ir, value, refArrays, N, opts);
 }
 
+// ---------------------------------------------------------------------
+// Tracing stage example (density side, P3b observability)
+// ---------------------------------------------------------------------
+//
+// `makeDensityTracingStage(opts?)` mirrors `materialiser.makeTracingStage`
+// for density evaluations. Same TraceEntry shape so a unified tracer
+// can write materialise + density timings to the same buffer.
+
+interface DensityTraceEntry {
+  // Identifier for the density call. Defaults to the IR's `op`
+  // field; callers may supply a richer key via opts.keyFn.
+  key: string;
+  durationMs: number;
+  count: number;       // batch size N
+  ok: boolean;
+  error?: string;
+}
+
+interface DensityTracingStageOpts {
+  buffer?: DensityTraceEntry[];
+  onEvent?: (entry: DensityTraceEntry) => void;
+  // Optional clock; same convention as materialiser's tracing stage.
+  now?: () => number;
+  // Optional key extractor; default uses ir.op || '<noop>'.
+  keyFn?: (ir: any) => string;
+}
+
+function makeDensityTracingStage(opts?: DensityTracingStageOpts): DensityStage {
+  const o = opts || {};
+  const buf = o.buffer;
+  const onEvent = o.onEvent;
+  const now = o.now || (typeof performance !== 'undefined' && performance.now
+    ? () => performance.now()
+    : () => Date.now());
+  const keyFn = o.keyFn || ((ir: any) => (ir && ir.op) || '<noop>');
+  const stage: DensityStage = function (ir, value, refArrays, count, ostage, next) {
+    const t0 = now();
+    const key = keyFn(ir);
+    try {
+      const r = next(ir, value, refArrays, count, ostage);
+      const entry: DensityTraceEntry = {
+        key, durationMs: now() - t0, count: count | 0, ok: true,
+      };
+      if (buf) buf.push(entry);
+      if (onEvent) onEvent(entry);
+      return r;
+    } catch (err: any) {
+      const entry: DensityTraceEntry = {
+        key, durationMs: now() - t0, count: count | 0, ok: false,
+        error: (err && err.message) ? err.message : String(err),
+      };
+      if (buf) buf.push(entry);
+      if (onEvent) onEvent(entry);
+      throw err;
+    }
+  };
+  stage.label = 'densityTracing';
+  return stage;
+}
+
 // In-place recursive accumulator. Adds contributions to `acc` and
 // returns rest.
 //
@@ -1474,6 +1534,7 @@ module.exports = {
   registerDensityStage,
   _resetDensityPipeline,
   densityCoreStage,
+  makeDensityTracingStage,
   _runDensityPipeline,
   // Test/debug surface — exposes the shape helpers in case callers
   // outside the dispatch want to compose their own consumers.
