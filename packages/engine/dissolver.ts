@@ -87,7 +87,21 @@
 //     and unary scalar maths (which route through `broadcast1`
 //     and only handle rank-0 / rank-1 inputs correctly).
 const DISSOLVE_AT_ANY_RANK_OPS: Set<string> = new Set([
+  // Elementwise arith over flat row-major data (value-ops handles
+  // any rank uniformly).
   'add', 'sub', 'neg', 'pos',
+  // Declared fixed-rank ops from `ops-declarations.ts`. The
+  // `ops.dispatch` dispatcher auto-detects atom-batching via the
+  // leading-axis convention (rank == argRanks[k] + 1) and either
+  // calls the op's `batched` fast-path or runs the per-atom
+  // slicing fallback. Either way, `broadcast(<op>, args…) ≡
+  // <op>(args…)` is sound — atom-axis unification (engine-concepts
+  // §20.1; Phase 6 of the dissolution migration) means the atom
+  // axis is just another outer axis the dispatcher handles
+  // uniformly with the user-broadcast axis. Same-type guard on
+  // the outer broadcast args still applies.
+  'cross', 'self_outer', 'trace', 'det', 'logabsdet', 'diagmat',
+  'inv', 'lower_cholesky', 'row_gram', 'col_gram',
 ]);
 
 const DISSOLVE_SCALAR_ONLY_OPS: Set<string> = new Set([

@@ -389,6 +389,25 @@ Y = A .* B
     'mul on fixed vectors stays as broadcast (matrix-semantics guard)');
 });
 
+test('Phase 6 atom-axis unification: cross.(A, B) dissolves to direct cross', () => {
+  // `cross` is a declared fixed-rank op (argRanks=[1,1]). The
+  // ops.dispatch dispatcher auto-detects atom-batching (rank=2 vs
+  // argRanks+1=2 → batched, N from leading dim) and routes to
+  // _crossBatchedOrFallback. Dissolving `broadcast(cross, A, B)`
+  // to `cross(A, B)` is sound because the dispatcher handles the
+  // atom axis uniformly with intrinsic axes.
+  const b = getBinding(`
+A = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+B = [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+Y = cross.(A, B)
+`, 'Y');
+  assert.ok(b && b.ir);
+  // The outer broadcast args are nested vectors with identical
+  // inferred types — same-type guard passes; cross is in
+  // DISSOLVE_AT_ANY_RANK_OPS; dissolution proceeds.
+  assert.equal(b.ir.op, 'cross', 'cross.(A, B) → cross(A, B)');
+});
+
 test('Phase 4 user-fn inlining: single-op user fn dissolves', () => {
   // `mySum = (a, b) -> a + b` is itself a `functionof` binding. The
   // dissolver looks up `self.mySum` and inlines, then Phase 3
