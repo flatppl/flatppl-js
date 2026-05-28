@@ -314,19 +314,76 @@ function consumeField(value: any, name: any) {
 //     duplicated structurally.
 //   - Returns the (atom-independent) `rest` of `value`.
 
+// ---------------------------------------------------------------------
+// Density-walker pipeline (P3b; engine-concepts §18.11 / §20.10.5 item 5)
+// ---------------------------------------------------------------------
+//
+// `logDensityConsumeN(ir, value, refArrays, count, opts)` runs through
+// a pipeline of stages. Each stage has signature
+//   (ir, value, refArrays, count, opts, next) => { logps, rest }
+// where `next(ir, value, refArrays, count, opts)` invokes the rest
+// of the pipeline. Stages compose via direct function nesting
+// (middleware / MLIR-pass pattern), mirroring the materialiser's
+// pipeline (materialiser.ts P3b).
+//
+// Default pipeline ships with only the terminal `densityCoreStage`
+// (which runs the existing acc + walkAcc dispatch), so behaviour is
+// unchanged when no stages are registered. Useful pre-dispatch
+// stages: density result cache, tracing for profiling, shape
+// validation, custom-handler interception for MCMC etc.
+
+interface DensityStage {
+  (ir: IRNode, value: any, refArrays: any, count: any, opts: any,
+   next: (ir: IRNode, value: any, refArrays: any, count: any, opts: any) => any): any;
+  label?: string;
+}
+
+const _DENSITY_PIPELINE: DensityStage[] = [];
+
+function registerDensityStage(stage: DensityStage): void {
+  if (typeof stage !== 'function') {
+    throw new Error('registerDensityStage: stage must be a function');
+  }
+  _DENSITY_PIPELINE.push(stage);
+}
+
+function _resetDensityPipeline(): void {
+  _DENSITY_PIPELINE.length = 0;
+}
+
+// Terminal stage: existing acc + walkAcc dispatch. Receives `next`
+// for signature symmetry but never calls it.
+const densityCoreStage: DensityStage = function (ir, value, refArrays, count, opts, _next) {
+  const N = count | 0;
+  refArrays = refArrays || {};
+  const baseEnv = (opts && opts.baseEnv) || {};
+  const acc = new Float64Array(N);
+  const rest = walkAcc(ir, value, refArrays, N, opts || {}, acc, baseEnv, null);
+  return { logps: acc, rest };
+};
+densityCoreStage.label = 'densityCore';
+
+function _runDensityPipeline(ir: IRNode, value: any, refArrays: any, count: any, opts: any): any {
+  let chain: (ir: IRNode, v: any, r: any, c: any, o: any) => any =
+    (i, v, r, c, o) => densityCoreStage(i, v, r, c, o, () => {
+      throw new Error('density: terminal stage cannot call next');
+    });
+  for (let i = _DENSITY_PIPELINE.length - 1; i >= 0; i--) {
+    const stage = _DENSITY_PIPELINE[i];
+    const inner = chain;
+    chain = (irX, v, r, c, o) => stage(irX, v, r, c, o, inner);
+  }
+  return chain(ir, value, refArrays, count, opts);
+}
+
 function logDensityConsumeN(ir: IRNode, value: any, refArrays: any, count: any, opts: any) {
   opts = opts || {};
   const N = count | 0;
+  // Input-validation gates stay OUTSIDE the pipeline — they're not
+  // composable concerns, just argument sanity checks.
   if (N <= 0) throw new Error('density: count must be positive');
   if (!ir) throw new Error('density: missing IR');
-  refArrays = refArrays || {};
-  const baseEnv = opts.baseEnv || {};
-
-  const acc = new Float64Array(N);
-  // overlay starts empty; env-threading from joint fields adds entries
-  // that win over both baseEnv and per-atom refArrays at each leaf.
-  const rest = walkAcc(ir, value, refArrays, N, opts, acc, baseEnv, null);
-  return { logps: acc, rest };
+  return _runDensityPipeline(ir, value, refArrays, N, opts);
 }
 
 // In-place recursive accumulator. Adds contributions to `acc` and
@@ -1409,6 +1466,15 @@ module.exports = {
   // Single-point conveniences (count=1 of the foundation)
   logDensityConsume,
   logDensity,
+  // P3b — density-walker pipeline (engine-concepts §18.11 /
+  // §20.10.5 item 5). Stages compose around `densityCoreStage`
+  // (the terminal acc+walkAcc dispatch). Caching, tracing,
+  // shape-validation, and custom inference hooks all land as
+  // additional stages without touching per-op-handler code.
+  registerDensityStage,
+  _resetDensityPipeline,
+  densityCoreStage,
+  _runDensityPipeline,
   // Test/debug surface — exposes the shape helpers in case callers
   // outside the dispatch want to compose their own consumers.
   _internal: { consumeScalar, consumeField, consumeVector, isEmptyRest, inSet },
