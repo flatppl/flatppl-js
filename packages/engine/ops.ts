@@ -171,6 +171,13 @@ function signatureOf(name: string): any {
 //   { batched: false }              — atom-indep (matches logical rank)
 //   { batched: true,  N: number }   — atom-batched; leading dim is N
 //   throws                          — rank doesn't fit either case
+//
+// engine-concepts §20 / TODO Phase 1: a rank-0 Value passed to a
+// scalar op (`logicalRank === 0`) is atom-indep (constant held across
+// the N axis); the dispatcher does NOT slice per atom. valueOps
+// handles rank-0 × rank-N broadcasting downstream. Higher-rank ops
+// reject rank-0 inputs as a type error (e.g. `inv(scalar)` is
+// undefined) — that strictness is correct.
 function _classifyArg(v: any, logicalRank: number): { batched: boolean; N?: number } {
   if (v == null) return { batched: false };
   // Value: inspect shape vs logical rank.
