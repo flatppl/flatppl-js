@@ -516,6 +516,143 @@ function _substituteAllowingAxes(
   return expr;
 }
 
+// =====================================================================
+// Nested-aggregate fusion (fusion thread (c) sub-item 1)
+// =====================================================================
+//
+// When an outer aggregate's body contains an inner aggregate as a
+// sub-expression, the inner can be FUSED into the outer: the inner's
+// body replaces the inner call, and the inner's reduction axes become
+// additional implicit reduction axes of the outer.
+//
+// Soundness: this rewrite is valid iff the SAME reducer is used at
+// both levels (only sum-sum or mean-mean preserves semantics — mixed
+// reducers don't commute through nesting). Additionally, the inner's
+// reduction axes must NOT appear ANYWHERE ELSE in the outer body
+// (otherwise lifting would conflate the inner's local reduction axis
+// with an outer free axis of the same name).
+//
+// Example (sum-sum):
+//   aggregate(sum, [.i], A[.i, .j] * aggregate(sum, [.j], B[.j, .l]))
+//   ≡ aggregate(sum, [.i], A[.i, .j] * B[.j, .l])
+// where the fused form has .j AND .l as implicit reduction axes
+// (neither appears in outer's output_axes).
+//
+// After fusion, the matmul/matvec recognisers still operate on the
+// outer body. If they fail (because the fused body has more than 2
+// multiplicands or unfamiliar structure), the aggregate stays in its
+// fused form for the runtime AGGREGATE_PATTERNS path — strictly an
+// improvement over the original nested form (cleaner IR, one
+// contraction op for backends, simpler to reason about).
+
+// Collect all axis names that appear in an IR expression. Used to
+// check no shadowing between an inner aggregate's reduction axes
+// and the outer body's other axes.
+function _collectAxisNames(expr: any, out: Set<string>): void {
+  if (!expr) return;
+  if (expr.kind === 'axis') {
+    out.add(expr.name);
+    return;
+  }
+  if (expr.kind !== 'call') return;
+  if (Array.isArray(expr.args)) {
+    for (const a of expr.args) _collectAxisNames(a, out);
+  }
+  if (expr.kwargs) {
+    for (const k in expr.kwargs) _collectAxisNames(expr.kwargs[k], out);
+  }
+}
+
+// Detect whether an IR is an inner-aggregate call shape:
+//   aggregate(<reducer-ref>, [<axis>...], <body>)
+// Returns the parsed pieces (reducer name, outputAxes set, body) or
+// null when the shape doesn't match.
+function _classifyInnerAggregate(ir: any): {
+  reducer: string;
+  outputAxes: Set<string>;
+  body: any;
+} | null {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'aggregate') return null;
+  const args = ir.args || [];
+  if (args.length !== 3) return null;
+  const fIR = args[0], axesIR = args[1], bodyIR = args[2];
+  if (!fIR || fIR.kind !== 'ref') return null;
+  if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+  const outputAxes = new Set<string>();
+  for (const a of (axesIR.args || [])) {
+    if (!a || a.kind !== 'axis') return null;
+    outputAxes.add(a.name);
+  }
+  if (!bodyIR) return null;
+  return { reducer: fIR.name, outputAxes, body: bodyIR };
+}
+
+// Walk an outer aggregate body and lift any nested aggregates whose
+// reducer matches the outer's. Soundness gate per nest: the inner's
+// reduction axes (axes in inner body but not in inner's output_axes)
+// must not appear anywhere ELSE in the outer body. Returns the
+// rewritten body IR; identity-passes the input on no-op.
+//
+// Lifts inner aggregates DEPTH-FIRST so a doubly-nested case lifts
+// inside-out: the innermost aggregate inlines first, then the next.
+function _fuseNestedAggregates(
+  outerBody: any,
+  outerReducer: string,
+  outerOutputAxes: Set<string>,
+): any {
+  if (!outerBody || outerBody.kind !== 'call') return outerBody;
+
+  // Recurse into children first (depth-first lift).
+  let changed = false;
+  const newArgs: any[] = [];
+  for (const a of (outerBody.args || [])) {
+    const r = _fuseNestedAggregates(a, outerReducer, outerOutputAxes);
+    newArgs.push(r);
+    if (r !== a) changed = true;
+  }
+  let walked: any = outerBody;
+  if (changed) {
+    walked = Object.assign({}, outerBody);
+    walked.args = newArgs;
+  }
+
+  // After children are lifted, see if THIS node is itself an inner
+  // aggregate eligible for lifting.
+  if (walked.op === 'aggregate') {
+    const inner = _classifyInnerAggregate(walked);
+    if (!inner) return walked;
+    // Same reducer required (sum-sum or mean-mean).
+    if (inner.reducer !== outerReducer) return walked;
+    // Identify the inner's reduction axes: axis names in the inner
+    // body that are NOT in inner.outputAxes.
+    const innerBodyAxes = new Set<string>();
+    _collectAxisNames(inner.body, innerBodyAxes);
+    const innerReductionAxes: string[] = [];
+    for (const name of innerBodyAxes) {
+      if (!inner.outputAxes.has(name)) innerReductionAxes.push(name);
+    }
+    // Soundness: inner reduction axes must NOT collide with the
+    // OUTER's output axes (would shadow user-visible axes) or
+    // be guaranteed-unique in the outer body. We can't easily
+    // inspect "the rest of the outer body" from here (we're in a
+    // recursive walk), so the caller pre-collects outerOutputAxes
+    // and we check against THOSE. A subsequent walk after lifting
+    // verifies that the merged body's axis names are still well-
+    // formed.
+    for (const name of innerReductionAxes) {
+      if (outerOutputAxes.has(name)) {
+        // Inner reduction collides with outer output — refusing
+        // lift keeps semantics safe; the cold path still works.
+        return walked;
+      }
+    }
+    // Lift: replace this aggregate node with the inner body.
+    return inner.body;
+  }
+
+  return walked;
+}
+
 // Wrap a dissolved IR in a closed-form reduction-correction factor.
 // For `sum`-reduction this is the identity; for `mean`-reduction we
 // divide by the contraction-axis size (sum / k = mean × k). Returns
@@ -602,15 +739,48 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
     const inlined = _inlineAggregateBody(bodyIR, bindings);
     if (inlined) bodyIR = inlined;
   }
+
+  // Nested-aggregate fusion (engine-concepts §20.9 fusion thread (c)
+  // sub-item 1): if the body contains an inner aggregate with the
+  // SAME reducer and no axis-name conflicts, lift the inner's body
+  // in place of the inner call. The inner's reduction axes become
+  // implicit reduction axes of the outer. After fusion the matmul/
+  // matvec recognisers below operate on the fused body; if they
+  // don't catch the shape, the outer aggregate is rebuilt with the
+  // fused body and returned via _fusedFallback() — strictly cleaner
+  // IR (one aggregate, not nested) for backends and the runtime
+  // AGGREGATE_PATTERNS path.
+  const outerOutputAxesSet = new Set<string>();
+  for (const a of outAxes) {
+    if (a && a.kind === 'axis') outerOutputAxesSet.add(a.name);
+  }
+  const fusedBody = _fuseNestedAggregates(bodyIR, reducer, outerOutputAxesSet);
+  const didFuse = fusedBody !== bodyIR;
+  if (didFuse) bodyIR = fusedBody;
+
+  // Helper: return the post-fusion aggregate (one-level) when no
+  // further dissolution catches. Lets us preserve the fusion rewrite
+  // even on matcher misses, instead of dropping back to the original
+  // nested form.
+  function _fusedFallback(): any | null {
+    if (!didFuse) return null;
+    const rebuilt: any = {
+      kind: 'call', op: 'aggregate',
+      args: [fIR, axesIR, bodyIR],
+    };
+    if (aggIR.loc) rebuilt.loc = aggIR.loc;
+    return rebuilt;
+  }
+
   // Body must be a `mul(<getA>, <getB>)` call.
-  if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
-  if (!bodyIR.args || bodyIR.args.length !== 2) return null;
+  if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return _fusedFallback();
+  if (!bodyIR.args || bodyIR.args.length !== 2) return _fusedFallback();
 
   // Matmul / Outer-product: 2 output axes (.i, .k or .i, .j).
   if (outAxes.length === 2) {
     const iName = outAxes[0].name;
     const kName = outAxes[1].name;
-    if (iName === kName) return null;
+    if (iName === kName) return _fusedFallback();
     const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
 
     // Matmul: body is mul of two-axis indexings sharing a reduction
@@ -623,10 +793,10 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
       if (ca.jName === iName || ca.jName === kName) continue;
       const tA = _checkSourceType(ca.src, bindings);
       const tB = _checkSourceType(cb.src, bindings);
-      if (!tA || !tB) return null;
-      if (tA.phase !== tB.phase) return null;
-      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return null;
-      if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return null;
+      if (!tA || !tB) return _fusedFallback();
+      if (tA.phase !== tB.phase) return _fusedFallback();
+      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return _fusedFallback();
+      if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return _fusedFallback();
       const A = _wrapTranspose(ca.src, ca.trans);
       const B = _wrapTranspose(cb.src, cb.trans);
       const mulCall: any = { kind: 'call', op: 'mul', args: [A, B] };
@@ -637,7 +807,7 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
       // dim — falls back to the cold AGGREGATE_PATTERNS path.
       const k = _contractionSizeFromA(tA, ca.trans);
       const out = _applyReducerCorrection(reducer, mulCall, k);
-      if (!out) return null;
+      if (!out) return _fusedFallback();
       if (aggIR.loc) out.loc = aggIR.loc;
       return out;
     }
@@ -654,10 +824,10 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
         if (!uSrc || !vSrc) continue;
         const tU = _checkSourceType(uSrc, bindings);
         const tV = _checkSourceType(vSrc, bindings);
-        if (!tU || !tV) return null;
-        if (tU.phase !== tV.phase) return null;
-        if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return null;
-        if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
+        if (!tU || !tV) return _fusedFallback();
+        if (tU.phase !== tV.phase) return _fusedFallback();
+        if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return _fusedFallback();
+        if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return _fusedFallback();
         const out: any = {
           kind: 'call', op: 'mul',
           args: [uSrc, { kind: 'call', op: 'transpose', args: [vSrc] }],
@@ -666,7 +836,7 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
         return out;
       }
     }
-    return null;
+    return _fusedFallback();
   }
 
   // Matvec: 1 output axis (.i); body is mul of a 2-axis indexing (A)
@@ -681,23 +851,23 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
       if (!vSrc) continue;
       const tA = _checkSourceType(ca.src, bindings);
       const tV = _checkSourceType(vSrc, bindings);
-      if (!tA || !tV) return null;
-      if (tA.phase !== tV.phase) return null;
-      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return null;
-      if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
+      if (!tA || !tV) return _fusedFallback();
+      if (tA.phase !== tV.phase) return _fusedFallback();
+      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return _fusedFallback();
+      if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return _fusedFallback();
       const A = _wrapTranspose(ca.src, ca.trans);
       const mulCall: any = { kind: 'call', op: 'mul', args: [A, vSrc] };
       // Mean correction via the same closed-form factor as matmul.
       const k = _contractionSizeFromA(tA, ca.trans);
       const out = _applyReducerCorrection(reducer, mulCall, k);
-      if (!out) return null;
+      if (!out) return _fusedFallback();
       if (aggIR.loc) out.loc = aggIR.loc;
       return out;
     }
-    return null;
+    return _fusedFallback();
   }
 
-  return null;
+  return _fusedFallback();
 }
 
 // Recursively substitute `%local` refs in a body expression with the

@@ -739,6 +739,179 @@ test('aggregate mean with dynamic contraction axis stays on cold path', () => {
   assert.equal(dissolver._tryDissolveAggregate(aggIR, bindings), null);
 });
 
+// ---------------------------------------------------------------------
+// Fusion thread (c) sub-item 1: aggregate-with-aggregate-body fusion
+// ---------------------------------------------------------------------
+
+test('nested aggregate fusion: matvec-of-rowsum collapses to one aggregate', () => {
+  // Outer:   aggregate(sum, [.i], A[.i, .j] * inner)
+  // Inner:   aggregate(sum, [.j], B[.j, .l])
+  // After fusion: aggregate(sum, [.i], A[.i, .j] * B[.j, .l])
+  // (.j is reduced by outer; .l is reduced by the implicit
+  // any-axis-not-in-output rule.)
+  const dissolver = require('../dissolver.ts');
+  const inner = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'j' }] },
+      {
+        kind: 'call', op: 'get',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'B' },
+          { kind: 'axis', name: 'j' },
+          { kind: 'axis', name: 'l' },
+        ],
+      },
+    ],
+  };
+  const outer = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'i' }] },
+      {
+        kind: 'call', op: 'mul',
+        args: [
+          {
+            kind: 'call', op: 'get',
+            args: [
+              { kind: 'ref', ns: 'self', name: 'A' },
+              { kind: 'axis', name: 'i' },
+              { kind: 'axis', name: 'j' },
+            ],
+          },
+          inner,
+        ],
+      },
+    ],
+  };
+  const bindings = new Map<string, any>([
+    ['A', { inferredType: { kind: 'array', rank: 2, shape: [4, 3], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+    ['B', { inferredType: { kind: 'array', rank: 2, shape: [3, 5], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+  ]);
+  const result = dissolver._tryDissolveAggregate(outer, bindings);
+  assert.ok(result, 'nested aggregate fuses');
+  // Result is a single aggregate (the matmul matcher won't catch
+  // the 3-way contraction A * B-with-internal-l-summed; the fused
+  // aggregate is returned via _fusedFallback).
+  assert.equal(result.op, 'aggregate', 'one-level aggregate after fusion');
+  // The fused body should be the original mul(A[.i,.j], B[.j,.l])
+  // shape with the inner aggregate replaced by B's get.
+  const fusedBody = result.args[2];
+  assert.equal(fusedBody.op, 'mul', 'fused body is a mul');
+  assert.equal(fusedBody.args[1].op, 'get',
+    'inner aggregate replaced by raw get(B, .j, .l)');
+  assert.equal(fusedBody.args[1].args[0].name, 'B');
+});
+
+test('nested aggregate fusion: mismatched reducer (sum-outer × mean-inner) refuses', () => {
+  const dissolver = require('../dissolver.ts');
+  const inner = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'mean' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'j' }] },
+      {
+        kind: 'call', op: 'get',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'B' },
+          { kind: 'axis', name: 'j' },
+          { kind: 'axis', name: 'l' },
+        ],
+      },
+    ],
+  };
+  const outer = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'i' }] },
+      {
+        kind: 'call', op: 'mul',
+        args: [
+          {
+            kind: 'call', op: 'get',
+            args: [
+              { kind: 'ref', ns: 'self', name: 'A' },
+              { kind: 'axis', name: 'i' },
+              { kind: 'axis', name: 'j' },
+            ],
+          },
+          inner,
+        ],
+      },
+    ],
+  };
+  const bindings = new Map<string, any>([
+    ['A', { inferredType: { kind: 'array', rank: 2, shape: [4, 3], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+    ['B', { inferredType: { kind: 'array', rank: 2, shape: [3, 5], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+  ]);
+  // mismatched reducer: fusion refuses; the outer aggregate has no
+  // matmul/matvec match either (inner is still nested) — returns
+  // null cleanly, and the original IR stays in place.
+  const result = dissolver._tryDissolveAggregate(outer, bindings);
+  assert.equal(result, null,
+    'mismatched reducers refuse fusion; outer aggregate stays nested');
+});
+
+test('nested aggregate fusion: inner reduction axis colliding with outer output refuses', () => {
+  // Outer output_axes = [.i, .l]. Inner's reduction axis = .l (it's
+  // in inner body but not inner.output_axes). Lifting would conflate
+  // the outer's free axis .l with the inner's private reduction .l.
+  // The fuser should refuse (return walked unchanged).
+  const dissolver = require('../dissolver.ts');
+  const inner = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'j' }] },
+      {
+        kind: 'call', op: 'get',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'B' },
+          { kind: 'axis', name: 'j' },
+          { kind: 'axis', name: 'l' },  // inner's reduction axis
+        ],
+      },
+    ],
+  };
+  const outer = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      // .l in outer's output_axes — would collide with inner's reduction.
+      { kind: 'call', op: 'vector', args: [
+        { kind: 'axis', name: 'i' },
+        { kind: 'axis', name: 'l' },
+      ]},
+      {
+        kind: 'call', op: 'mul',
+        args: [
+          {
+            kind: 'call', op: 'get',
+            args: [
+              { kind: 'ref', ns: 'self', name: 'A' },
+              { kind: 'axis', name: 'i' },
+              { kind: 'axis', name: 'j' },
+            ],
+          },
+          inner,
+        ],
+      },
+    ],
+  };
+  const bindings = new Map<string, any>([
+    ['A', { inferredType: { kind: 'array', rank: 2, shape: [4, 3], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+    ['B', { inferredType: { kind: 'array', rank: 2, shape: [3, 5], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+  ]);
+  // Fusion refuses (axis collision); matmul matcher also refuses
+  // (the body is still a mul of get + nested-aggregate, not a clean
+  // 2-way get*get). Returns null.
+  assert.equal(dissolver._tryDissolveAggregate(outer, bindings), null,
+    'axis-name collision refuses fusion');
+});
+
 test('nested broadcast: lifted-anon ref blocks outer dissolution (type-guard)', () => {
   // The inner `A .* B` lifts to a synthetic `__anonN` binding; lift
   // runs after typeinfer (analyzer pass 7), so the anon's inferredType
