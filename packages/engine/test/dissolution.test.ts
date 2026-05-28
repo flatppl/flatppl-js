@@ -436,19 +436,21 @@ w[.i] := A[.i, .j] * v[.j]
   assert.equal(b.ir.args[1].name, 'v');
 });
 
-test('Phase 5 aggregate dissolution: outer product NOT yet dissolved (kept as aggregate)', () => {
-  // Outer product `aggregate(any, [.i, .j], u[.i] * v[.j])` has
-  // a 1-axis-per-operand body — not in Phase-5 scope (the runtime
-  // AGGREGATE_PATTERNS specialiser handles it). Stays as
-  // aggregate.
+test('Phase 5 aggregate dissolution: outer product → mul(u, transpose(v))', () => {
+  // Outer product `aggregate(any, [.i, .j], u[.i] * v[.j])` has no
+  // shared reduction axis between the two 1-axis indexings. The
+  // dissolved form `mul(u, transpose(v))` uses value-ops'
+  // vec × transposed-vec Klein-4 dispatch — produces a matrix.
   const b = getBinding(`
 u = [1.0, 2.0, 3.0]
 v = [4.0, 5.0]
 M[.i, .j] := u[.i] * v[.j]
 `, 'M');
   assert.ok(b && b.ir);
-  assert.equal(b.ir.op, 'aggregate',
-    'outer product stays as aggregate IR (runtime specialiser path)');
+  assert.equal(b.ir.op, 'mul', 'outer product dissolves to direct mul');
+  assert.equal(b.ir.args[0].name, 'u');
+  assert.equal(b.ir.args[1].op, 'transpose');
+  assert.equal(b.ir.args[1].args[0].name, 'v');
 });
 
 test('Phase 6 atom-axis unification: cross.(A, B) dissolves to direct cross', () => {
