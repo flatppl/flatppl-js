@@ -414,11 +414,114 @@ function _checkSourceType(ir: any, bindings: any): { type: any; phase: any } | n
   return _resolveExprType(ir, bindings, 0);
 }
 
+// Inline a user-fn body into the aggregate's body position.
+//
+// Detects `aggregate(sum, [...], <user_fn>(args...))` where the body
+// is a user-defined call (target: { ns: 'self', name }). Looks up
+// the function's binding, retrieves its `functionof` body, and
+// substitutes the functionof's placeholders with the call's args.
+//
+// Returns the rewritten body IR on success; null if:
+//  - body isn't a user call,
+//  - the target binding isn't a functionof,
+//  - the call's arg count doesn't match the params,
+//  - any placeholder occurrence in the body isn't substitutable
+//    (the existing _substituteBody check fails — same gate the
+//    broadcast Phase 4 inliner uses).
+//
+// This is the aggregate-side analogue of Phase 4's broadcast user-fn
+// inlining (engine-concepts §20.9 fusion thread (c) sub-item 2).
+// After inlining, the caller re-attempts the matmul/matvec
+// recognisers on the inlined body.
+function _inlineAggregateBody(bodyIR: any, bindings: any): any | null {
+  if (!bodyIR || bodyIR.kind !== 'call') return null;
+  // Must be a user-defined call (target set, no built-in op).
+  if (!bodyIR.target || bodyIR.target.ns !== 'self' || bodyIR.op) return null;
+  if (!bindings || !bindings.get) return null;
+
+  const fnBinding = bindings.get(bodyIR.target.name);
+  const fnIR = fnBinding && fnBinding.ir;
+  if (!fnIR || fnIR.kind !== 'call' || fnIR.op !== 'functionof') return null;
+
+  const params: string[] = Array.isArray(fnIR.params) ? fnIR.params : [];
+  if (params.length === 0) return null;
+  const fnBody = fnIR.body;
+  if (!fnBody) return null;
+
+  // Match call args to params. Aggregate body is a positional call
+  // (the body is an EXPRESSION in scope of axis names — the user
+  // doesn't write kwargs here in practice). Kwarg form bails.
+  if (bodyIR.kwargs && Object.keys(bodyIR.kwargs).length > 0) return null;
+  const callArgs: any[] = bodyIR.args || [];
+  if (callArgs.length !== params.length) return null;
+
+  // Substitute placeholders in the fn body with call args. Reuse the
+  // existing _substituteBody machinery — it walks the IR and replaces
+  // %local refs by index. For aggregate the substituted body lives
+  // in axis-name scope, so it can contain `(get <src> <axis>)` etc.
+  // which _substituteBody doesn't recognise. Walk the body ourselves
+  // with a placeholder-aware visitor that handles ANY IR kind.
+  const paramIndex: Map<string, number> = new Map();
+  for (let i = 0; i < params.length; i++) paramIndex.set(params[i], i);
+  return _substituteAllowingAxes(fnBody, paramIndex, callArgs);
+}
+
+// Recursively substitute `%local` refs in an IR expression with the
+// corresponding positional args from `bcArgs`. Unlike _substituteBody
+// (which gates on DISSOLVE_SAFE_OPS), this version is permissive
+// about op names — the caller (`_tryDissolveAggregate`) will validate
+// the resulting structure. Returns null if any placeholder can't be
+// resolved.
+function _substituteAllowingAxes(
+  expr: any,
+  paramIndex: Map<string, number>,
+  bcArgs: any[],
+): any | null {
+  if (!expr) return expr;
+  if (expr.kind === 'lit' || expr.kind === 'const' || expr.kind === 'axis') {
+    return expr;
+  }
+  if (expr.kind === 'ref') {
+    if (expr.ns === '%local') {
+      const idx = paramIndex.get(expr.name);
+      if (idx === undefined) return null;
+      return bcArgs[idx];
+    }
+    return expr;
+  }
+  if (expr.kind === 'call') {
+    const inArgs: any[] = expr.args || [];
+    const outArgs: any[] = new Array(inArgs.length);
+    for (let i = 0; i < inArgs.length; i++) {
+      const sub = _substituteAllowingAxes(inArgs[i], paramIndex, bcArgs);
+      if (sub === null) return null;
+      outArgs[i] = sub;
+    }
+    const out: any = { kind: 'call' };
+    if (expr.op)     out.op = expr.op;
+    if (expr.target) out.target = expr.target;
+    if (outArgs.length > 0) out.args = outArgs;
+    if (expr.kwargs) {
+      const outKwargs: Record<string, any> = {};
+      for (const k in expr.kwargs) {
+        const sub = _substituteAllowingAxes(expr.kwargs[k], paramIndex, bcArgs);
+        if (sub === null) return null;
+        outKwargs[k] = sub;
+      }
+      out.kwargs = outKwargs;
+    }
+    if (expr.loc) out.loc = expr.loc;
+    return out;
+  }
+  return expr;
+}
+
 function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   if (!aggIR || aggIR.kind !== 'call' || aggIR.op !== 'aggregate') return null;
   const args = aggIR.args || [];
   if (args.length !== 3) return null;
-  const fIR = args[0], axesIR = args[1], bodyIR = args[2];
+  const fIR = args[0], axesIR = args[1];
+  let bodyIR = args[2];
   // Reduction must be `sum` (the only one whose direct-call
   // equivalent matches the matmul / matvec patterns we recognise).
   if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
@@ -426,6 +529,18 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   const outAxes = axesIR.args || [];
   for (const a of outAxes) {
     if (!a || a.kind !== 'axis') return null;
+  }
+  // User-fn body inlining (engine-concepts §20.9 fusion thread (c)
+  // sub-item 2): if the body is a user-defined call, look up the
+  // function's `functionof` binding and inline its body with
+  // placeholders substituted. This lets `aggregate(sum, [.i, .k],
+  // myMul(A[.i,.j], B[.j,.k]))` dissolve when `myMul = (a, b) ->
+  // a * b` — after inlining, the body becomes `mul(A[.i,.j],
+  // B[.j,.k])` and the existing matchers below recognise it.
+  if (bodyIR && bodyIR.kind === 'call' && bodyIR.target
+      && bodyIR.target.ns === 'self' && !bodyIR.op) {
+    const inlined = _inlineAggregateBody(bodyIR, bindings);
+    if (inlined) bodyIR = inlined;
   }
   // Body must be a `mul(<getA>, <getB>)` call.
   if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
