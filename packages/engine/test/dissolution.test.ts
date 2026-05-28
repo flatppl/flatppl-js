@@ -534,6 +534,92 @@ test('Phase 3 multi-op body: literals pass through', () => {
   assert.equal(out.args[1].value, 1.0);
 });
 
+// ---------------------------------------------------------------------
+// Fusion thread (c) sub-item 2: aggregate-with-user-fn-body inlining
+// ---------------------------------------------------------------------
+
+test('aggregate user-fn inlining: aggregate(sum, [.i,.k], myMul(A[.i,.j], B[.j,.k])) dissolves to mul(A, B)', () => {
+  // myMul is a user-defined binary scalar function; when nested
+  // inside aggregate's body, the dissolver should inline myMul's
+  // body (substituting placeholders with the call args) and then
+  // recognise the matmul pattern.
+  const b = getBinding(`
+flatppl_compat = "0.1"
+myMul = (a, b) -> a * b
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+B = rowstack([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+C[.i, .k] := myMul(A[.i, .j], B[.j, .k])
+`, 'C');
+  assert.ok(b && b.ir, 'C has IR');
+  assert.equal(b.ir.op, 'mul',
+    'aggregate(sum, [.i,.k], myMul(A[.i,.j], B[.j,.k])) dissolves to mul(A, B)');
+  // Args should be the raw refs (no transpose wrapping in this case
+  // — the canonical [.i,.j] × [.j,.k] order maps directly to A * B).
+  assert.equal(b.ir.args[0].name, 'A');
+  assert.equal(b.ir.args[1].name, 'B');
+});
+
+test('aggregate user-fn inlining: arity mismatch refuses inlining', () => {
+  // myMul takes 2 args; calling it with 1 in the aggregate body
+  // doesn't typecheck at FlatPPL level (so this is a synthetic
+  // construction below the IR shape recognition). The dissolver
+  // should refuse inlining cleanly — return null on arity mismatch
+  // rather than substituting wrong args.
+  const dissolver = require('../dissolver.ts');
+  const fnIR = {
+    kind: 'call', op: 'functionof',
+    params: ['_a_', '_b_'],
+    body: {
+      kind: 'call', op: 'mul',
+      args: [
+        { kind: 'ref', ns: '%local', name: '_a_' },
+        { kind: 'ref', ns: '%local', name: '_b_' },
+      ],
+    },
+  };
+  const aggIR = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'i' }] },
+      // Body: myMul called with only ONE arg.
+      {
+        kind: 'call', target: { ns: 'self', name: 'myMul' },
+        args: [{ kind: 'ref', ns: 'self', name: 'A' }],
+      },
+    ],
+  };
+  const bindings = new Map<string, any>([
+    ['myMul', { ir: fnIR, phase: 'fixed' }],
+    ['A', { inferredType: { kind: 'array', rank: 2, shape: [3, 3], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
+  ]);
+  // Should refuse cleanly (return null) — no spurious dissolution.
+  assert.equal(dissolver._tryDissolveAggregate(aggIR, bindings), null);
+});
+
+test('aggregate user-fn inlining: non-functionof binding refuses', () => {
+  // The user-call's target binding isn't a `functionof` (e.g. it's
+  // an alias to another binding). The inliner returns null cleanly
+  // and the aggregate stays in place.
+  const dissolver = require('../dissolver.ts');
+  const aggIR = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'sum' },
+      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'i' }] },
+      {
+        kind: 'call', target: { ns: 'self', name: 'notAFn' },
+        args: [{ kind: 'ref', ns: 'self', name: 'A' }],
+      },
+    ],
+  };
+  // notAFn isn't a functionof — its IR is a simple ref.
+  const bindings = new Map<string, any>([
+    ['notAFn', { ir: { kind: 'ref', ns: 'self', name: 'other' }, phase: 'fixed' }],
+  ]);
+  assert.equal(dissolver._tryDissolveAggregate(aggIR, bindings), null);
+});
+
 test('nested broadcast: lifted-anon ref blocks outer dissolution (type-guard)', () => {
   // The inner `A .* B` lifts to a synthetic `__anonN` binding; lift
   // runs after typeinfer (analyzer pass 7), so the anon's inferredType
