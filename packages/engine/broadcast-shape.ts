@@ -107,6 +107,43 @@ function classifyAxisStructure(v: any): any {
     const V = v;
     const shape = V.shape;
     const rank = shape.length;
+    // Engine-concepts §2.1 outerRank tag (C7). When set by the
+    // constructor (`vector(...)` of Values), it splits the shape
+    // into LOOP axes (the leading `outerRank`) and CELL axes (the
+    // remaining trailing axes). Per cell the callable sees a Value
+    // of the inner shape, not a scalar. Default `outerRank ===
+    // shape.length` (flat tensor — every axis is a loop axis,
+    // cell = scalar).
+    const outerRank = (typeof V.outerRank === 'number') ? V.outerRank : rank;
+    if (outerRank < rank) {
+      // Nested-vector path: cell is a sub-Value of the inner shape.
+      // Per cell we copy out the inner block into a fresh Float64Array
+      // — the callable may otherwise see overlapping subarray views
+      // and accidentally mutate.
+      const innerShape = shape.slice(outerRank);
+      const innerLen = innerShape.reduce((a: number, b: number) => a * b, 1);
+      const outerShape = shape.slice(0, outerRank);
+      // Row-major strides over the OUTER axes; size-1 axes get
+      // stride 0 so they auto-repeat.
+      const outerStrides = new Array(outerRank);
+      let acc = innerLen;
+      for (let a = outerRank - 1; a >= 0; a--) {
+        outerStrides[a] = (outerShape[a] === 1) ? 0 : acc;
+        acc *= outerShape[a];
+      }
+      return {
+        coll: true, kind: 'nested', V,
+        outerRank, outerShape,
+        getCell(idx: number[]) {
+          let off = 0;
+          for (let a = 0; a < outerRank; a++) off += idx[a] * outerStrides[a];
+          const sub = new Float64Array(innerLen);
+          for (let k = 0; k < innerLen; k++) sub[k] = V.data[off + k];
+          return { shape: innerShape.slice(), data: sub };
+        },
+      };
+    }
+    // Flat tensor: every axis is a loop axis.
     const strides = new Array(rank);
     let acc = 1;
     for (let a = rank - 1; a >= 0; a--) {
