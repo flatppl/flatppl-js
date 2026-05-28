@@ -1230,6 +1230,28 @@ prod}.
 reducer-set, phase gate, forbidden-op gate, structural refusals,
 and the closure-form (single-param fn with self-ref in body).
 
+**Kernel-broadcast inlining (fusion (b) MVP, 2026-05-29).**
+`_tryDissolveKernelBroadcast` catches `broadcast(<ref to
+user-kernel binding>, args…)` whose IR is `functionof(lawof
+(<BuiltinDist>(kw…)), kw_params…)` and rewrites it to
+`broadcast(<BuiltinDist>, mapped_kwargs)`. Lets `matKernelBroadcast`
+(which only knows builtin dist names) take the existing
+per-atom-params path for the simplest user-kernel case.
+
+Conservative gates (engine-concepts §20.10.9): inner dist call is
+a single builtin (uppercase op name, not in higher-order /
+measure-algebra blocklist); broadcast args all positional OR all
+kwarg; substitution preserves closed-over self-refs. Kernels
+whose body is iid/joint/jointchain or kernel-broadcast itself
+refuse cleanly; those cases need axis-stack-aware materialiser
+expansion (follow-up).
+
+`test/fusion-b-kernel-broadcast.test.ts` (12 tests) pins
+canonical fires (kwarg / positional / multi-param / closure form)
+and refusals (non-builtin inner op, measure-algebra inner,
+higher-order inner, non-functionof head, non-lawof body, mixed
+positional+kwarg, arity mismatch, unknown kwarg).
+
 **Tests.** `test/dissolution.test.ts` (~270 lines) pins the
 structural matcher in isolation plus end-to-end behaviour on
 dotted-binary surfaces, refusal of unsafe ops, mismatched

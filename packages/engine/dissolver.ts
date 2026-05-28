@@ -333,11 +333,16 @@ function dissolveExpr(ir: any, bindings: any): any {
   // Pattern-match `broadcast(...)` and `aggregate(...)` at THIS
   // level after the children are dissolved.
   if (walked.op === 'broadcast') {
+    // Try the kernel-broadcast inlining rewrite (fusion (b) MVP)
+    // FIRST: when the head is a ref to a `kernelof(<builtin_dist>
+    // (...), kw…)` binding, rewrite as `broadcast(<builtin_dist>,
+    // mapped_params)` so matKernelBroadcast (which only knows
+    // builtin dists) takes the existing path.
+    const kfused = _tryDissolveKernelBroadcast(walked, bindings);
+    if (kfused) return kfused;
     // Try the broadcast-with-reduction-body rewrite (fusion (a)
-    // Step 2) FIRST: it matches when the head's body is a top-
-    // level reducer call (sum/mean/prod) and emits an aggregate
-    // IR node. If the body isn't reduction-shaped, falls through
-    // to the existing single-op dissolver.
+    // Step 2): matches when the head's body is a top-level reducer
+    // call (sum/mean/prod) and emits an aggregate IR node.
     const fused = _tryDissolveBroadcastReduction(walked, bindings);
     if (fused) return fused;
     const dissolved = _tryDissolveSingleOp(walked, bindings);
@@ -1440,6 +1445,165 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   return aggIR;
 }
 
+// =====================================================================
+// Fusion (b) MVP — kernel-broadcast inlining
+// (engine-concepts §20.10.9; TODO-flatppl-js fusion thread (b))
+// =====================================================================
+//
+// When the broadcast head is a ref to a user-defined kernel binding
+// of the shape `kernelof(<BuiltinDist>(<kw>…), <kwParams>…)`, rewrite
+// the broadcast as `broadcast(<BuiltinDist>, <substituted-kwargs>)`
+// — directly invocable by `matKernelBroadcast` since the head is
+// then a builtin distribution name.
+//
+// Without this rewrite, `matKernelBroadcast` rejects the user-kernel
+// case with "broadcast: unknown distribution kernel <name>" — the
+// dist name is a binding, not a REGISTRY entry. The rewrite UNWRAPS
+// the user-kernel layer at IR-time, exposing the builtin dist to
+// the runtime.
+//
+// MVP scope (this commit):
+//   - Head is a ref to a binding with IR `functionof(lawof(<Dist>(…)),
+//     kw1=…, kw2=…)`. (`kernelof(M, kw…)` lowers to
+//     `functionof(lawof(M), kw…)` per lower.ts:733.)
+//   - The kernelof's inner measure is a single builtin distribution
+//     call (`Normal(…)`, `Poisson(…)`, …). The recogniser checks
+//     that the op name is non-empty and not a higher-order op; it
+//     does NOT consult sampler REGISTRY (the runtime path will
+//     reject anyway if the dist is unknown).
+//   - The dist call's kwargs may reference the kernel's parameters
+//     via `%local` placeholders OR closed-over `self` refs. The
+//     rewrite substitutes broadcast args into the placeholders and
+//     leaves `self` refs untouched.
+//   - The broadcast call carries its args as kwargs matching the
+//     kernel's paramKwargs (the surface kwarg names), OR positional
+//     in declared order. Mixed forms refuse.
+//
+// Out of scope (follow-ups):
+//   - kernelof whose body is a measure ALGEBRA expression (joint,
+//     weighted, iid, …) rather than a single dist call.
+//   - kernelof composed via jointchain / kchain.
+//   - axisStack-aware outer-axis propagation through arbitrary
+//     kernel bodies (the broader fusion (b) work).
+//
+// After rewrite, axisStack annotation from P3a still applies to
+// the result (the new `broadcast(<dist>, args)` has the same outer-
+// axis semantics — `propagateAxisStack` reads `kernel_broadcast`
+// for kernel heads).
+
+const _BROADCAST_DIST_NON_DIST_OPS: Set<string> = new Set([
+  // Higher-order / non-dist ops that shouldn't appear as kernel
+  // bodies in this MVP. If the inner measure is one of these, refuse
+  // and stay on the runtime path.
+  'broadcast', 'aggregate', 'iid', 'joint', 'jointchain', 'kchain',
+  'weighted', 'normalize', 'truncate', 'superpose', 'bayesupdate',
+  'pushfwd', 'mixture', 'lawof', 'draw', 'functionof', 'kernelof',
+]);
+
+function _tryDissolveKernelBroadcast(bcIR: any, bindings: any): any | null {
+  if (!bcIR || bcIR.kind !== 'call' || bcIR.op !== 'broadcast') return null;
+  const bcArgs: any[] = bcIR.args || [];
+  if (bcArgs.length < 1) return null;
+  const head = bcArgs[0];
+
+  // Head must be a self-ref to a binding.
+  if (!head || head.kind !== 'ref' || head.ns !== 'self') return null;
+  if (!bindings || !bindings.get) return null;
+  const kBinding = bindings.get(head.name);
+  if (!kBinding || !kBinding.ir) return null;
+  const kIR = kBinding.ir;
+
+  // Binding's IR must be `functionof(lawof(<DistCall>), params=…)`.
+  // (kernelof lowers to this form per lower.ts:733.) functionof's
+  // body is the measure expression; for fusion (b) MVP we only
+  // recognise `lawof(<single_dist_call>)`.
+  if (kIR.kind !== 'call' || kIR.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(kIR.params) ? kIR.params : [];
+  const paramKwargs: string[] = Array.isArray(kIR.paramKwargs) ? kIR.paramKwargs : params;
+  if (params.length === 0) return null;
+  const kBody = kIR.body;
+  if (!kBody || kBody.kind !== 'call' || kBody.op !== 'lawof') return null;
+  if (!Array.isArray(kBody.args) || kBody.args.length !== 1) return null;
+  const distCall = kBody.args[0];
+  if (!distCall || distCall.kind !== 'call' || typeof distCall.op !== 'string') {
+    return null;
+  }
+  if (_BROADCAST_DIST_NON_DIST_OPS.has(distCall.op)) return null;
+  // Reject if the dist op name is in lowercase (value-domain ops):
+  // builtin distributions start with an uppercase letter (Normal,
+  // Poisson, MvNormal, …). This rules out non-dist calls cheaply
+  // without consulting the sampler REGISTRY.
+  if (!/^[A-Z]/.test(distCall.op)) return null;
+
+  // Build broadcast args→param substitution.
+  const posBc = bcArgs.slice(1);
+  const bcKwargs = bcIR.kwargs || {};
+  const bcKwNames = Object.keys(bcKwargs);
+  const paramReplacement: Map<string, any> = new Map();
+  if (posBc.length > 0 && bcKwNames.length === 0) {
+    if (posBc.length !== params.length) return null;
+    for (let i = 0; i < params.length; i++) {
+      paramReplacement.set(params[i], posBc[i]);
+    }
+  } else if (bcKwNames.length > 0 && posBc.length === 0) {
+    // Kwarg form: map by paramKwargs (surface kwarg names).
+    for (let i = 0; i < params.length; i++) {
+      const kw = paramKwargs[i];
+      if (!(kw in bcKwargs)) return null;
+      paramReplacement.set(params[i], bcKwargs[kw]);
+    }
+    // Every supplied kwarg must be consumed.
+    for (const k of bcKwNames) {
+      if (paramKwargs.indexOf(k) === -1) return null;
+    }
+  } else {
+    return null;  // Mixed positional+kwarg, or no args
+  }
+
+  // Substitute %local placeholders in the dist call's kwargs / args.
+  const paramIndex: Map<string, number> = new Map();
+  const replacementList: any[] = new Array(params.length);
+  for (let i = 0; i < params.length; i++) {
+    paramIndex.set(params[i], i);
+    replacementList[i] = paramReplacement.get(params[i]);
+  }
+
+  // The dist call may have args (positional) and/or kwargs.
+  // Substitute placeholders throughout.
+  function subst(expr: any): any | null {
+    return _substituteAllowingAxes(expr, paramIndex, replacementList);
+  }
+  const newDistArgs: any[] = [];
+  if (Array.isArray(distCall.args)) {
+    for (const a of distCall.args) {
+      const s = subst(a);
+      if (s === null) return null;
+      newDistArgs.push(s);
+    }
+  }
+  const newDistKwargs: Record<string, any> = {};
+  if (distCall.kwargs) {
+    for (const k in distCall.kwargs) {
+      const s = subst(distCall.kwargs[k]);
+      if (s === null) return null;
+      newDistKwargs[k] = s;
+    }
+  }
+
+  // Emit the rewritten broadcast: head is now a self-ref to the
+  // builtin dist (matKernelBroadcast looks it up by name in
+  // sampler REGISTRY).
+  const distHead: any = { kind: 'ref', ns: 'self', name: distCall.op };
+  if (distCall.loc) distHead.loc = distCall.loc;
+  const out: any = {
+    kind: 'call', op: 'broadcast',
+    args: newDistArgs.length > 0 ? [distHead, ...newDistArgs] : [distHead],
+  };
+  if (Object.keys(newDistKwargs).length > 0) out.kwargs = newDistKwargs;
+  if (bcIR.loc) out.loc = bcIR.loc;
+  return out;
+}
+
 // Try Phase-2 / Phase-3 broadcast dissolution:
 //
 //   Phase 2: broadcast(functionof(<op>(_arg1_, _arg2_, …)), args…)
@@ -1827,6 +1991,7 @@ module.exports = {
   _tryDissolveSingleOp,
   _tryDissolveAggregate,
   _tryDissolveBroadcastReduction,
+  _tryDissolveKernelBroadcast,
   _axisStackForIR,
   _foldShapeCall,
 };
