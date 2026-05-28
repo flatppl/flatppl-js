@@ -1200,10 +1200,35 @@ into literal IR when the input's shape is statically known:
   (`_SHAPE_FOLD_MAX_LEN = 4096`). The runtime path stays.
 
 The fold is the architectural prerequisite for fusion (a) —
-broadcast-through-reductions — letting the upcoming
+broadcast-through-reductions — letting the
 `broadcast(fn, args)` → `aggregate(R, [outer_axes], body)` rewrite
 treat axis-derived values as ordinary literals rather than
 needing a new "axis-as-value" IR form.
+
+**Broadcast → aggregate rewrite (fusion (a) Step 2 MVP,
+2026-05-29).** `_tryDissolveBroadcastReduction` recognises
+`broadcast(<head>, args…)` whose functionof body is `R(<plain
+elementwise>)` for R ∈ {sum, mean, prod} and emits
+`aggregate(R, [.atom], <substituted_body>)`. The rewrite:
+- Resolves head to a functionof (inline or via self-ref).
+- Classifies each arg as Ref-wrap (per-cell value = inner of
+  `vector(<single>)`) or rank-1 broadcast-over (per-cell value =
+  `get(<arg>, .atom)`).
+- Substitutes placeholders accordingly.
+- Shape-folds the substituted body so
+  `indicesof0(<concrete-ref>)` → literal vector before leaf-wrap.
+- Wraps each rank-1 leaf (refs to vector bindings + literal
+  vectors) in `get(<leaf>, .j)`.
+
+**Conservative MVP gates** (engine-concepts §20.10.8): fixed-
+phase only (stochastic broadcast args stay on runtime path);
+plain-body only (refuses nested broadcast / aggregate / functionof
+in body); single output axis (.atom); reducers ∈ {sum, mean,
+prod}.
+
+`test/fusion-a-step2.test.ts` (11 tests) pins canonical-fire,
+reducer-set, phase gate, forbidden-op gate, structural refusals,
+and the closure-form (single-param fn with self-ref in body).
 
 **Tests.** `test/dissolution.test.ts` (~270 lines) pins the
 structural matcher in isolation plus end-to-end behaviour on
