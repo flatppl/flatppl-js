@@ -799,7 +799,15 @@ function _argSizeIdentifier(arg: any, bindings: any): number | string {
 
 // Build the axisStack entry for a single measure-op IR node. Returns
 // null if the IR doesn't match a recognised axis-introducing shape.
-function _axisStackForIR(ir: any, bindings: any): any[] | null {
+//
+// Recurses into nested measure-op IR: `iid(broadcast(K, args), n)`
+// produces the full 2-entry stack [{iid, n}, {kernel_broadcast,
+// len(args)}] on the outer iid. The recursion is bounded by IR depth;
+// pathological inputs are clamped at MAX_NEST_DEPTH and treated as
+// unrecognised (return null) to keep the pass linear-time.
+const _AXIS_STACK_MAX_DEPTH = 8;
+function _axisStackForIR(ir: any, bindings: any, depth: number = 0): any[] | null {
+  if (depth > _AXIS_STACK_MAX_DEPTH) return null;
   if (!ir || ir.kind !== 'call' || !ir.op) return null;
   const args: any[] = ir.args || [];
 
@@ -808,7 +816,15 @@ function _axisStackForIR(ir: any, bindings: any): any[] | null {
     if (args.length < 2) return null;
     const n = args[1];
     const size = _argSizeIdentifier(n, bindings);
-    return [{ source: 'iid', size }];
+    const entry = { source: 'iid', size };
+    // Descend into the inner measure's IR if it's itself an axis-
+    // introducing shape, OR if it's a `self` ref to a binding whose
+    // IR has axisStack already populated (the outer dissolveBindings
+    // walk runs first; populating ALL bindings, so by the time we
+    // get here a referenced inner iid's stack is on the binding's
+    // IR). Prepend our entry to the inner stack.
+    const innerStack = _innerMeasureStack(args[0], bindings, depth);
+    return innerStack ? [entry].concat(innerStack) : [entry];
   }
 
   if (ir.op === 'broadcast') {
@@ -829,6 +845,12 @@ function _axisStackForIR(ir: any, bindings: any): any[] | null {
     const source = _isKernelHead(head, bindings) ? 'kernel_broadcast' : 'broadcast';
     const entry: any = { source, size };
     if (firstArg.kind === 'ref' && firstArg.ns === 'self') entry.name = firstArg.name;
+    // For kernel-broadcast the inner measure context is the kernel's
+    // body (in a separate binding); recursing into a `self`-ref to a
+    // kernel binding would require materialise-time inlining (future
+    // fusion (b) work). For value-broadcast there's no inner measure
+    // — the head is a function producing values. Either way no
+    // within-IR recursion applies; the entry stands alone.
     return [entry];
   }
 
@@ -850,33 +872,68 @@ function _axisStackForIR(ir: any, bindings: any): any[] | null {
   return null;
 }
 
-// Annotate the top-level IR of each binding with axisStack when the
-// shape matches. The annotation is attached as a NEW field on a fresh
-// copy of the IR node (no in-place mutation), so other consumers that
-// hold references to the pre-annotation IR stay unaffected.
+// Resolve the inner measure's axisStack for the `iid(M, n)` recursion.
+// Handles two shapes:
+//   1. M is an inline measure-op IR (e.g. `iid(broadcast(K, …), n)`
+//      where the outer iid's first arg is itself an axis-introducing
+//      call). Recurse via _axisStackForIR.
+//   2. M is a `self` ref to another binding that's already been
+//      annotated by an earlier propagateAxisStack iteration (the
+//      pass runs to a fixed point). Read the binding's IR axisStack
+//      if present.
+// Returns null when no inner stack applies — caller treats the outer
+// entry as standalone.
+function _innerMeasureStack(measureArg: any, bindings: any, depth: number): any[] | null {
+  if (!measureArg) return null;
+  if (measureArg.kind === 'call') {
+    return _axisStackForIR(measureArg, bindings, depth + 1);
+  }
+  if (measureArg.kind === 'ref' && measureArg.ns === 'self' && bindings && bindings.get) {
+    const b = bindings.get(measureArg.name);
+    if (b && b.ir && Array.isArray(b.ir.axisStack) && b.ir.axisStack.length > 0) {
+      return b.ir.axisStack.slice();
+    }
+  }
+  return null;
+}
+
+// Compare two axisStack arrays for content equality.
+function _axisStacksEqual(a: any[], b: any[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].source !== b[i].source || a[i].size !== b[i].size || a[i].name !== b[i].name) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Annotate measure-op IR nodes with axisStack metadata. The pass
+// iterates to a fixed point so cross-binding references settle: an
+// `iid(M_ref, n)` binding inherits M_ref's axisStack via the inner-
+// measure recursion, which requires M_ref's binding to be annotated
+// first. Iteration order within a pass is bindings-map order; later
+// iterations pick up entries that an earlier iteration produced.
+// Annotation attaches as a NEW field on a fresh copy of the IR node
+// (no in-place mutation), so other consumers holding references to
+// the pre-annotation IR stay unaffected.
 function propagateAxisStack(bindings: any): any {
   if (!bindings) return bindings;
-  for (const [name, b] of bindings) {
-    if (!b || !b.ir) continue;
-    // Only top-level measure-op IRs for now. Future iterations may
-    // descend into nested IR (e.g. iid(broadcast(K, …), n) would
-    // accumulate two stack entries on the iid node).
-    const stack = _axisStackForIR(b.ir, bindings);
-    if (!stack) continue;
-    // Don't reannotate if axisStack is already present and equal.
-    if (Array.isArray(b.ir.axisStack)
-        && b.ir.axisStack.length === stack.length) {
-      let same = true;
-      for (let i = 0; i < stack.length; i++) {
-        const a = b.ir.axisStack[i], c = stack[i];
-        if (a.source !== c.source || a.size !== c.size || a.name !== c.name) {
-          same = false; break;
-        }
+  const MAX_ITERS = 5;
+  for (let iter = 0; iter < MAX_ITERS; iter++) {
+    let changed = false;
+    for (const [name, b] of bindings) {
+      if (!b || !b.ir) continue;
+      const stack = _axisStackForIR(b.ir, bindings);
+      if (!stack) continue;
+      if (Array.isArray(b.ir.axisStack) && _axisStacksEqual(b.ir.axisStack, stack)) {
+        continue;
       }
-      if (same) continue;
+      const newIR = { ...b.ir, axisStack: stack };
+      bindings.set(name, { ...b, ir: newIR });
+      changed = true;
     }
-    const newIR = { ...b.ir, axisStack: stack };
-    bindings.set(name, { ...b, ir: newIR });
+    if (!changed) break;
   }
   return bindings;
 }

@@ -228,3 +228,88 @@ test('axisStack: bindings without axis-introducing IR are untouched', () => {
   assert.strictEqual(bindings.get('Y').ir, ir,
     'non-axis IR object identity preserved');
 });
+
+// =====================================================================
+// 4. Nested annotation
+// =====================================================================
+
+test('axisStack nested: iid(iid(M, n_inner), n_outer) inline produces 2-entry stack', () => {
+  const ir = {
+    kind: 'call', op: 'iid',
+    args: [
+      {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'M' },
+          { kind: 'lit', value: 7 },
+        ],
+      },
+      { kind: 'lit', value: 4 },
+    ],
+  };
+  const bindings = mkBindings({ X: { ir, phase: 'stochastic' } });
+  dissolver.propagateAxisStack(bindings);
+  const stack = bindings.get('X').ir.axisStack;
+  assert.deepEqual(stack, [
+    { source: 'iid', size: 4 },
+    { source: 'iid', size: 7 },
+  ]);
+});
+
+test('axisStack nested: iid(M_ref, n) inherits via cross-binding ref (fixed-point)', () => {
+  // M_inner is itself an annotated iid; M_outer wraps it via ref.
+  // The fixed-point iteration of propagateAxisStack ensures M_outer
+  // picks up M_inner's stack after M_inner is annotated.
+  const irInner = {
+    kind: 'call', op: 'iid',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'M' },
+      { kind: 'lit', value: 7 },
+    ],
+  };
+  const irOuter = {
+    kind: 'call', op: 'iid',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'M_inner' },
+      { kind: 'lit', value: 4 },
+    ],
+  };
+  const bindings = mkBindings({
+    M_inner: { ir: irInner, phase: 'stochastic' },
+    M_outer: { ir: irOuter, phase: 'stochastic' },
+  });
+  dissolver.propagateAxisStack(bindings);
+  assert.deepEqual(bindings.get('M_inner').ir.axisStack, [
+    { source: 'iid', size: 7 },
+  ]);
+  assert.deepEqual(bindings.get('M_outer').ir.axisStack, [
+    { source: 'iid', size: 4 },
+    { source: 'iid', size: 7 },
+  ]);
+});
+
+test('axisStack nested: iid(broadcast(K, args), n) produces iid + kernel_broadcast entries', () => {
+  const ir = {
+    kind: 'call', op: 'iid',
+    args: [
+      {
+        kind: 'call', op: 'broadcast',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'K' },
+          { kind: 'ref', ns: 'self', name: 'data' },
+        ],
+      },
+      { kind: 'lit', value: 3 },
+    ],
+  };
+  const bindings = mkBindings({
+    K:    { inferredType: { kind: 'kernel' } },
+    data: { inferredType: { kind: 'array', rank: 1, shape: [50], elem: { kind: 'scalar', prim: 'real' } } },
+    Y:    { ir, phase: 'stochastic' },
+  });
+  dissolver.propagateAxisStack(bindings);
+  assert.deepEqual(bindings.get('Y').ir.axisStack, [
+    { source: 'iid', size: 3 },
+    { source: 'kernel_broadcast', size: 50, name: 'data' },
+  ]);
+});
