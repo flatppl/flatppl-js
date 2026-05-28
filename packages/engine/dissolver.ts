@@ -516,15 +516,75 @@ function _substituteAllowingAxes(
   return expr;
 }
 
+// Wrap a dissolved IR in a closed-form reduction-correction factor.
+// For `sum`-reduction this is the identity; for `mean`-reduction we
+// divide by the contraction-axis size (sum / k = mean × k). Returns
+// null when the correction can't be expressed in closed form for
+// the given reducer.
+//
+// Engineering note: emits `mul(lit, body)` rather than `divide(body,
+// lit)` so the result routes through the variant registry's scalar-
+// broadcast variant (mul(rank-0, rank-2) → scalar broadcast) — the
+// existing dissolved path. Avoids introducing a new `divide` shape
+// the registry doesn't yet cover.
+function _applyReducerCorrection(
+  reducer: string,
+  body: any,
+  contractionSize: number | '%dynamic',
+): any | null {
+  if (reducer === 'sum') return body;
+  if (reducer === 'mean') {
+    if (contractionSize === '%dynamic' || typeof contractionSize !== 'number') {
+      // Can't compute the scalar correction without a static dim size.
+      return null;
+    }
+    if (contractionSize <= 0) return null;
+    const inv = 1 / contractionSize;
+    return {
+      kind: 'call', op: 'mul',
+      args: [
+        { kind: 'lit', value: inv, numType: 'real' },
+        body,
+      ],
+    };
+  }
+  // 'prod' / 'var' / 'std' / 'max' / 'min' don't have a closed-form
+  // matmul equivalent; refuse and leave the aggregate on the cold
+  // path.
+  return null;
+}
+
+// Resolve the contraction-axis size from a rank-2 array's inferred
+// type and the transposition state of its get-indexing.
+//   - trans=false → logical shape is [size(.i), size(.j)],
+//     contraction axis is .j → shape[1].
+//   - trans=true  → logical shape is [size(.j), size(.i)],
+//     contraction axis is .j → shape[0].
+function _contractionSizeFromA(
+  tA: { type: any; phase: any },
+  trans: boolean,
+): number | '%dynamic' {
+  const shape = tA && tA.type && tA.type.shape;
+  if (!Array.isArray(shape) || shape.length < 2) return '%dynamic';
+  const dim = trans ? shape[0] : shape[1];
+  if (typeof dim === 'number') return dim;
+  return '%dynamic';
+}
+
 function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   if (!aggIR || aggIR.kind !== 'call' || aggIR.op !== 'aggregate') return null;
   const args = aggIR.args || [];
   if (args.length !== 3) return null;
   const fIR = args[0], axesIR = args[1];
   let bodyIR = args[2];
-  // Reduction must be `sum` (the only one whose direct-call
-  // equivalent matches the matmul / matvec patterns we recognise).
-  if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+  // Reduction must be a closed-form recognised reducer. 'sum' is the
+  // canonical case (direct matmul/matvec); 'mean' = sum / k where k
+  // is the contraction-axis length (resolved from operand shape).
+  // Other reductions (prod / var / std / min / max) don't have a
+  // closed-form matmul equivalent and stay on the cold path.
+  if (!fIR || fIR.kind !== 'ref') return null;
+  const reducer = fIR.name;
+  if (reducer !== 'sum' && reducer !== 'mean') return null;
   if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
   const outAxes = axesIR.args || [];
   for (const a of outAxes) {
@@ -569,37 +629,42 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
       if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return null;
       const A = _wrapTranspose(ca.src, ca.trans);
       const B = _wrapTranspose(cb.src, cb.trans);
-      const out: any = { kind: 'call', op: 'mul', args: [A, B] };
+      const mulCall: any = { kind: 'call', op: 'mul', args: [A, B] };
+      // Apply the closed-form reducer correction. For 'sum' this is
+      // identity; for 'mean' we wrap in `(1/k) * mulCall` where k is
+      // the contraction-axis length (resolved from A's shape +
+      // transposition state). Returns null on `mean` with dynamic
+      // dim — falls back to the cold AGGREGATE_PATTERNS path.
+      const k = _contractionSizeFromA(tA, ca.trans);
+      const out = _applyReducerCorrection(reducer, mulCall, k);
+      if (!out) return null;
       if (aggIR.loc) out.loc = aggIR.loc;
       return out;
     }
 
     // Outer product: body is mul of two 1-axis indexings with
-    // distinct axes (e.g. u[.i] * v[.j]) — no reduction axis. The
-    // dissolved form `mul(u, transpose(v))` uses value-ops'
-    // vec×transposed-vec Klein-4 dispatch → matrix result. Note
-    // we still require the aggregate's reduction func to be `sum`
-    // (the matched outer block); spec says any reduction works
-    // since there's nothing to reduce, but the runtime
-    // AGGREGATE_PATTERNS specialiser also gates on sum + the
-    // engine consistency is cleaner. (Wider non-sum coverage is a
-    // follow-up.)
-    for (const [fU, fV] of [[f1, f2], [f2, f1]]) {
-      const uSrc = _aggregateBodyClassifyV(fU, iName);
-      const vSrc = _aggregateBodyClassifyV(fV, kName);
-      if (!uSrc || !vSrc) continue;
-      const tU = _checkSourceType(uSrc, bindings);
-      const tV = _checkSourceType(vSrc, bindings);
-      if (!tU || !tV) return null;
-      if (tU.phase !== tV.phase) return null;
-      if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return null;
-      if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
-      const out: any = {
-        kind: 'call', op: 'mul',
-        args: [uSrc, { kind: 'call', op: 'transpose', args: [vSrc] }],
-      };
-      if (aggIR.loc) out.loc = aggIR.loc;
-      return out;
+    // distinct axes (e.g. u[.i] * v[.j]) — no reduction axis. Only
+    // sum-reduction is meaningful here (no contraction axis means
+    // 'mean' has no axis-length to divide by); mean falls back to
+    // the cold path.
+    if (reducer === 'sum') {
+      for (const [fU, fV] of [[f1, f2], [f2, f1]]) {
+        const uSrc = _aggregateBodyClassifyV(fU, iName);
+        const vSrc = _aggregateBodyClassifyV(fV, kName);
+        if (!uSrc || !vSrc) continue;
+        const tU = _checkSourceType(uSrc, bindings);
+        const tV = _checkSourceType(vSrc, bindings);
+        if (!tU || !tV) return null;
+        if (tU.phase !== tV.phase) return null;
+        if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return null;
+        if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
+        const out: any = {
+          kind: 'call', op: 'mul',
+          args: [uSrc, { kind: 'call', op: 'transpose', args: [vSrc] }],
+        };
+        if (aggIR.loc) out.loc = aggIR.loc;
+        return out;
+      }
     }
     return null;
   }
@@ -621,7 +686,11 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
       if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return null;
       if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return null;
       const A = _wrapTranspose(ca.src, ca.trans);
-      const out: any = { kind: 'call', op: 'mul', args: [A, vSrc] };
+      const mulCall: any = { kind: 'call', op: 'mul', args: [A, vSrc] };
+      // Mean correction via the same closed-form factor as matmul.
+      const k = _contractionSizeFromA(tA, ca.trans);
+      const out = _applyReducerCorrection(reducer, mulCall, k);
+      if (!out) return null;
       if (aggIR.loc) out.loc = aggIR.loc;
       return out;
     }

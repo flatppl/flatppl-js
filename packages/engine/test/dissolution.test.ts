@@ -620,6 +620,125 @@ test('aggregate user-fn inlining: non-functionof binding refuses', () => {
   assert.equal(dissolver._tryDissolveAggregate(aggIR, bindings), null);
 });
 
+// ---------------------------------------------------------------------
+// Fusion thread (c) sub-item 3: non-sum reductions via closed-form factor
+// ---------------------------------------------------------------------
+
+test('aggregate mean-of-matmul: dissolves to (1/k) * mul(A, B)', () => {
+  // `aggregate(mean, [.i,.k], A[.i,.j] * B[.j,.k])` ≡ (sum/k) ⇒ same
+  // matmul matcher fires but the dissolved form is scaled by 1/k
+  // where k is the contraction-axis size (.j → A's shape[1]).
+  const b = getBinding(`
+flatppl_compat = "0.1"
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+B = rowstack([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+C = aggregate(mean, [.i, .k], A[.i, .j] * B[.j, .k])
+`, 'C');
+  assert.ok(b && b.ir, 'C has IR');
+  // Expected dissolved form: mul(lit(1/3), mul(A, B)). The outer
+  // mul is the scalar-broadcast variant (rank-0 × rank-2 → scalar
+  // broadcast); the inner is the canonical matmul.
+  assert.equal(b.ir.op, 'mul', 'outer wrap is a mul (scalar × matmul)');
+  assert.ok(b.ir.args && b.ir.args.length === 2);
+  // First arg: literal 1/k = 1/3.
+  assert.equal(b.ir.args[0].kind, 'lit');
+  assert.ok(Math.abs(b.ir.args[0].value - 1 / 3) < 1e-12);
+  // Second arg: matmul of A, B.
+  assert.equal(b.ir.args[1].op, 'mul');
+  assert.equal(b.ir.args[1].args[0].name, 'A');
+  assert.equal(b.ir.args[1].args[1].name, 'B');
+});
+
+test('aggregate mean-of-matvec: dissolves to (1/k) * mul(A, v)', () => {
+  const b = getBinding(`
+flatppl_compat = "0.1"
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+v = [1.0, 1.0, 1.0]
+y = aggregate(mean, [.i], A[.i, .j] * v[.j])
+`, 'y');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'mul', 'outer is scalar × matvec');
+  // k = A.shape[1] = 3.
+  assert.equal(b.ir.args[0].kind, 'lit');
+  assert.ok(Math.abs(b.ir.args[0].value - 1 / 3) < 1e-12);
+  assert.equal(b.ir.args[1].op, 'mul');
+});
+
+test('aggregate prod / max / min over matmul stay on cold path', () => {
+  // 'prod' / 'max' / 'min' over a matrix product don't have a
+  // closed-form direct-call equivalent — _applyReducerCorrection
+  // refuses, and the aggregate stays intact for the runtime
+  // AGGREGATE_PATTERNS path to handle.
+  for (const reducer of ['prod', 'max', 'min']) {
+    const b = getBinding(`
+flatppl_compat = "0.1"
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+B = rowstack([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+C = aggregate(${reducer}, [.i, .k], A[.i, .j] * B[.j, .k])
+`, 'C');
+    assert.ok(b && b.ir);
+    assert.equal(b.ir.op, 'aggregate',
+      reducer + ': aggregate stays in place (no closed-form matmul equivalent)');
+  }
+});
+
+test('aggregate mean with dynamic contraction axis stays on cold path', () => {
+  // The mean correction divides by the contraction-axis length;
+  // when that dim is %dynamic (e.g. data-driven via load_data),
+  // we can't emit a static scalar factor and the aggregate stays
+  // in place. Direct API check (synthetic IR + bindings) since the
+  // surface FlatPPL doesn't easily produce dynamic dims here.
+  const dissolver = require('../dissolver.ts');
+  const aggIR = {
+    kind: 'call', op: 'aggregate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'mean' },
+      {
+        kind: 'call', op: 'vector',
+        args: [
+          { kind: 'axis', name: 'i' },
+          { kind: 'axis', name: 'k' },
+        ],
+      },
+      {
+        kind: 'call', op: 'mul',
+        args: [
+          {
+            kind: 'call', op: 'get',
+            args: [
+              { kind: 'ref', ns: 'self', name: 'A' },
+              { kind: 'axis', name: 'i' },
+              { kind: 'axis', name: 'j' },
+            ],
+          },
+          {
+            kind: 'call', op: 'get',
+            args: [
+              { kind: 'ref', ns: 'self', name: 'B' },
+              { kind: 'axis', name: 'j' },
+              { kind: 'axis', name: 'k' },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const bindings = new Map<string, any>([
+    ['A', {
+      inferredType: { kind: 'array', rank: 2, shape: [4, '%dynamic'],
+                      elem: { kind: 'scalar', prim: 'real' } },
+      phase: 'fixed',
+    }],
+    ['B', {
+      inferredType: { kind: 'array', rank: 2, shape: ['%dynamic', 5],
+                      elem: { kind: 'scalar', prim: 'real' } },
+      phase: 'fixed',
+    }],
+  ]);
+  // mean refuses because contraction dim is %dynamic.
+  assert.equal(dissolver._tryDissolveAggregate(aggIR, bindings), null);
+});
+
 test('nested broadcast: lifted-anon ref blocks outer dissolution (type-guard)', () => {
   // The inner `A .* B` lifts to a synthetic `__anonN` binding; lift
   // runs after typeinfer (analyzer pass 7), so the anon's inferredType
