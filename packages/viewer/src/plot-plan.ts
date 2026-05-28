@@ -274,31 +274,17 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     if (typeKind === 'record' || typeKind === 'tuple') {
       return { name: name, mode: 'fixed-record' };
     }
-    // Static numeric arrays still take the dedicated step-plot
-    // path. (kind:'array' derivation also implies phase='fixed'
-    // and inferredType=array.)
-    //
-    // Ground-truth fallback: route by WHAT THE BINDING IS, not by
-    // the static type. A fixed-phase binding whose pre-evaluated
-    // value (orchestrator fixedValues) is a flat numeric/boolean
-    // vector IS an array value — even when inferredType came back
-    // 'deferred' because the producing expression isn't covered by
-    // typeinfer. The canonical case: `tau = (bkg ./ dbkg) .^ 2`
-    // (dotted-broadcast typeinfer is intentionally loose, TODO
-    // §07), which materialises byte-identically to the literal
-    // `dbkg = [3.0, 7.0]` yet, without this, fell through to the
-    // scalar-sample path and rendered as an empty 2-point
-    // histogram. Tightening dotted-broadcast typeinfer would also
-    // fix it at the source; this fallback hardens the viewer
-    // against every present and future loose-typeinfer case.
-    const fvMap = ctx.derivationsState.fixedValues;
-    const fvVal = fvMap && fvMap.has(name) ? fvMap.get(name) : undefined;
-    const isFlatNumericVec = Array.isArray(fvVal) && fvVal.length > 0
-      && fvVal.every(function (e) {
-        return typeof e === 'number' || typeof e === 'boolean';
-      });
-    if ((d && d.kind === 'array') || typeKind === 'array'
-        || isFlatNumericVec) {
+    // Static numeric arrays take the dedicated step-plot / matrix
+    // path. (kind:'array' derivation also implies phase='fixed' and
+    // inferredType=array.) Routing keys on the binding's STATIC
+    // type+phase+derivation-kind triple alone — `inferBroadcast`
+    // tightened in typeinfer.ts (see test/typeinfer.test.ts
+    // 'broadcast: user-defined callable resolves cell-type via
+    // callee result') so dotted-broadcast results
+    // (`Y = polyeval.([C], X)`, `tau = (bkg ./ dbkg) .^ 2`) now
+    // type as `array(rank, shape, real)` and flow through here
+    // naturally, no runtime-value fallback needed.
+    if ((d && d.kind === 'array') || typeKind === 'array') {
       // Rank-2 fixed array → heatmap. Axis-length literalness is
       // not required at the type level — the runtime measure carries
       // an `intrinsicShape` field that the renderer reads at draw
