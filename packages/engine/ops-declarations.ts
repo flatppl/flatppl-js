@@ -1055,12 +1055,13 @@ ops.register({
 // dispatchHigherOrder signature.
 
 // engine-concepts §20.1 — `broadcasted(<scalar_op>)` engine primitives.
-// Maps op-name → { arity, impl(values) → Value }. `impl` takes the
-// already-evaluated broadcast args as Values (rank ≥ 0) and returns
-// a Value of the elementwise-application result. The factory is value-
-// ops' `_makeElementwiseBinop` / `_makeElementwiseUnop` under the
-// hood — flat row-major loop, NumPy-style broadcasting on rank-0 ×
-// rank-N.
+// Each op registers a variant with `wrappingOp: 'broadcast'` on the
+// ops.ts shape-pattern registry (engine-concepts §18.11). The variant
+// matches when the dispatcher is called with `opts.wrappingOp ===
+// 'broadcast'`; argPatterns are empty constraints (the impls accept
+// any shape — value-ops' elementwise factory handles same-shape and
+// rank-0 × rank-N broadcasting; spec §04's singleton-axis expansion
+// stays on the cold path for now).
 //
 // Set membership: every scalar primitive whose `broadcasted(<op>)`
 // engine primitive exists. For ops whose spec semantics ARE
@@ -1071,42 +1072,59 @@ ops.register({
 // scalar-only at spec (unary scalar maths), the engine primitive is
 // a separate `<op>Elem` impl in value-ops.
 //
-// Lazy require: see _broadcastLogical above for why.
-let _BROADCASTED_PRIMS_CACHE: any = null;
-function _broadcastedPrimitives(): any {
-  if (_BROADCASTED_PRIMS_CACHE) return _BROADCASTED_PRIMS_CACHE;
+// Lazy require: value-ops depends on value.ts only (no cycle with
+// ops.ts), but the registration runs at module load — keeping the
+// table as a one-shot cache avoids re-resolving value-ops on every
+// dispatch. The vo binding initialises on first call to
+// _ensureBroadcastedRegistered() at module-load time of this file
+// (right after the table definition).
+let _BCAST_VARIANTS_REGISTERED = false;
+function _ensureBroadcastedRegistered(): void {
+  if (_BCAST_VARIANTS_REGISTERED) return;
+  _BCAST_VARIANTS_REGISTERED = true;
   const vo = require('./value-ops.ts');
-  _BROADCASTED_PRIMS_CACHE = {
-    // Binary additive (spec elementwise; value-ops impl IS the batched form).
-    add:    { arity: 2, impl: (vs: any[]) => vo.add(vs[0], vs[1]) },
-    sub:    { arity: 2, impl: (vs: any[]) => vo.sub(vs[0], vs[1]) },
+  // (opName, arity, implFn) — implFn takes the same Values the
+  // legacy `impl` did. Arity is recorded in argPatterns.length so
+  // the variant matcher rejects ill-shaped calls.
+  const BCAST_TABLE: Array<[string, number, (vs: any[]) => any]> = [
+    // Binary additive (spec elementwise; value-ops impl IS batched).
+    ['add',    2, (vs) => vo.add(vs[0], vs[1])],
+    ['sub',    2, (vs) => vo.sub(vs[0], vs[1])],
     // Binary multiplicative (spec has matrix semantics on rank ≥ 1;
-    // the batched primitives are new elementwise impls).
-    mul:    { arity: 2, impl: (vs: any[]) => vo.mulElem(vs[0], vs[1]) },
-    div:    { arity: 2, impl: (vs: any[]) => vo.divElem(vs[0], vs[1]) },
-    divide: { arity: 2, impl: (vs: any[]) => vo.divElem(vs[0], vs[1]) },
-    pow:    { arity: 2, impl: (vs: any[]) => vo.powElem(vs[0], vs[1]) },
-    mod:    { arity: 2, impl: (vs: any[]) => vo.modElem(vs[0], vs[1]) },
+    // engine primitives are separate elementwise impls).
+    ['mul',    2, (vs) => vo.mulElem(vs[0], vs[1])],
+    ['div',    2, (vs) => vo.divElem(vs[0], vs[1])],
+    ['divide', 2, (vs) => vo.divElem(vs[0], vs[1])],
+    ['pow',    2, (vs) => vo.powElem(vs[0], vs[1])],
+    ['mod',    2, (vs) => vo.modElem(vs[0], vs[1])],
     // Unary negation (spec elementwise; value-ops impl IS batched).
-    neg:    { arity: 1, impl: (vs: any[]) => vo.neg(vs[0]) },
+    ['neg',    1, (vs) => vo.neg(vs[0])],
     // Unary scalar maths (spec is scalar-only; engine primitive is
     // pointwise application of the JS scalar fn over flat data).
-    exp:    { arity: 1, impl: (vs: any[]) => vo.expElem(vs[0]) },
-    log:    { arity: 1, impl: (vs: any[]) => vo.logElem(vs[0]) },
-    sqrt:   { arity: 1, impl: (vs: any[]) => vo.sqrtElem(vs[0]) },
-    sin:    { arity: 1, impl: (vs: any[]) => vo.sinElem(vs[0]) },
-    cos:    { arity: 1, impl: (vs: any[]) => vo.cosElem(vs[0]) },
-    tan:    { arity: 1, impl: (vs: any[]) => vo.tanElem(vs[0]) },
-    abs:    { arity: 1, impl: (vs: any[]) => vo.absElem(vs[0]) },
-    abs2:   { arity: 1, impl: (vs: any[]) => vo.abs2Elem(vs[0]) },
-    log10:  { arity: 1, impl: (vs: any[]) => vo.log10Elem(vs[0]) },
-    log1p:  { arity: 1, impl: (vs: any[]) => vo.log1pElem(vs[0]) },
-    expm1:  { arity: 1, impl: (vs: any[]) => vo.expm1Elem(vs[0]) },
-    floor:  { arity: 1, impl: (vs: any[]) => vo.floorElem(vs[0]) },
-    ceil:   { arity: 1, impl: (vs: any[]) => vo.ceilElem(vs[0]) },
-    round:  { arity: 1, impl: (vs: any[]) => vo.roundElem(vs[0]) },
-  };
-  return _BROADCASTED_PRIMS_CACHE;
+    ['exp',    1, (vs) => vo.expElem(vs[0])],
+    ['log',    1, (vs) => vo.logElem(vs[0])],
+    ['sqrt',   1, (vs) => vo.sqrtElem(vs[0])],
+    ['sin',    1, (vs) => vo.sinElem(vs[0])],
+    ['cos',    1, (vs) => vo.cosElem(vs[0])],
+    ['tan',    1, (vs) => vo.tanElem(vs[0])],
+    ['abs',    1, (vs) => vo.absElem(vs[0])],
+    ['abs2',   1, (vs) => vo.abs2Elem(vs[0])],
+    ['log10',  1, (vs) => vo.log10Elem(vs[0])],
+    ['log1p',  1, (vs) => vo.log1pElem(vs[0])],
+    ['expm1',  1, (vs) => vo.expm1Elem(vs[0])],
+    ['floor',  1, (vs) => vo.floorElem(vs[0])],
+    ['ceil',   1, (vs) => vo.ceilElem(vs[0])],
+    ['round',  1, (vs) => vo.roundElem(vs[0])],
+  ];
+  for (const [opName, arity, impl] of BCAST_TABLE) {
+    const argPatterns = new Array(arity).fill(null).map(() => ({}));
+    ops.registerVariant(opName, {
+      argPatterns,
+      wrappingOp: 'broadcast',
+      impl,
+      label: 'broadcasted(' + opName + ')',
+    });
+  }
 }
 
 // Try the fast path: when the broadcast head names a known scalar
@@ -1134,13 +1152,24 @@ function _broadcastedPrimitives(): any {
 //     or arity-bound positional order applies; mismatches return
 //     null (cold path takes over).
 function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
+  _ensureBroadcastedRegistered();
   const args   = ir.args   || [];
   const kwargs = ir.kwargs || {};
   if (args.length < 1) return null;
   const head = args[0];
   if (!head) return null;
-  const prims = _broadcastedPrimitives();
 
+  // Resolve the broadcast head to (opName, expected arity, optional
+  // body-param reorder). Two IR shapes lower into the broadcast head:
+  //   1. `broadcast(<ref to op>, A, B, …)` — bare ref produced by
+  //      `broadcasted(<op>)(args)`.
+  //   2. `broadcast(functionof(<op>(_arg1_, _arg2_, …)), A, B, …)` —
+  //      synthesised functionof produced by dotted-binary `.* ./ …`
+  //      and `op.(…)` surfaces, plus direct `broadcast(<op>, …)`
+  //      where `<op>` is a known builtin.
+  // The variant matcher in ops.ts decides whether the op has a
+  // `wrappingOp: 'broadcast'` variant matching the inputs; this
+  // function just unpacks the IR shape so dispatch sees flat Values.
   let opName: string | null = null;
   let arity = 0;
   // For the functionof case, `paramReorder[i]` says: the i-th call
@@ -1150,11 +1179,10 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
   let paramKwargs: string[] | null = null;
 
   if (head.kind === 'ref' && head.ns === 'self') {
-    const desc = prims[head.name];
-    if (!desc) return null;
+    if (!ops.hasVariantFor(head.name, 'broadcast')) return null;
     opName = head.name;
-    arity = desc.arity;
-    paramReorder = null;  // identity
+    arity = -1;  // determined by remaining IR args after head
+    paramReorder = null;
     paramKwargs = null;
   } else if (head.kind === 'call' && head.op === 'functionof'
              && Array.isArray(head.params)
@@ -1164,9 +1192,7 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
     if (Array.isArray(body.fields) && body.fields.length > 0) return null;
     const bodyArgs: any[] = body.args || [];
     if (bodyArgs.length !== head.params.length) return null;
-    const desc = prims[body.op];
-    if (!desc) return null;
-    if (desc.arity !== bodyArgs.length) return null;
+    if (!ops.hasVariantFor(body.op, 'broadcast')) return null;
     // Body args must each be a `%local` ref to one of head.params;
     // record the param index for each body position.
     const order = new Array(bodyArgs.length);
@@ -1178,7 +1204,7 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
       order[i] = idx;
     }
     opName = body.op;
-    arity = desc.arity;
+    arity = bodyArgs.length;
     paramReorder = order;
     paramKwargs = Array.isArray(head.paramKwargs) ? head.paramKwargs : null;
   } else {
@@ -1189,16 +1215,18 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
   // a positional array of length `arity` (the head's declared param
   // order — equivalent to `head.params` for functionof, or the op's
   // declared order for bare refs).
-  const sources: any[] = new Array(arity);
   const kwNames = Object.keys(kwargs);
+  let sources: any[];
   if (kwNames.length === 0) {
     const posArgs = args.slice(1);
+    if (arity === -1) arity = posArgs.length;
     if (posArgs.length !== arity) return null;
-    for (let i = 0; i < arity; i++) sources[i] = posArgs[i];
+    sources = posArgs;
   } else if (args.length === 1) {
-    // Pure kwargs form. Need paramKwargs (functionof case) or fall
-    // back to arity-1 mapping.
-    if (!paramKwargs || paramKwargs.length !== arity) return null;
+    // Pure kwargs form. Need paramKwargs (functionof case) — bare-ref
+    // heads don't carry surface kwarg names at this layer.
+    if (!paramKwargs || arity === -1 || paramKwargs.length !== arity) return null;
+    sources = new Array(arity);
     for (let i = 0; i < arity; i++) {
       const name = paramKwargs[i];
       if (!(name in kwargs)) return null;
@@ -1266,10 +1294,12 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
     }
   }
 
-  // Dispatch to the elementwise impl. value-ops' elementwise factory
-  // handles rank-0 × rank-N broadcasting and same-shape elementwise;
-  // anything else has been ruled out above.
-  return prims[opName!].impl(opInputs);
+  // Dispatch through the variant registry. The 'broadcast'-wrapping
+  // variant for `opName` (registered above) maps to the corresponding
+  // value-ops elementwise impl. Returns null if no variant matches
+  // (e.g. opName has no broadcast variant — `head` was a non-
+  // broadcastable builtin).
+  return ops.dispatchVariant(opName!, opInputs, { wrappingOp: 'broadcast' });
 }
 
 function _broadcastLogical(ir: any, ctx: any): any {
@@ -1352,6 +1382,11 @@ ops.register({
   kind: 'higher-order',
   logical: _aggregateLogical,
 });
+
+// Eagerly register the broadcasted-primitives variants at module
+// load (engine-concepts §18.11 / §20.1). value-ops is already
+// required at the top of this file so there's no cycle risk.
+_ensureBroadcastedRegistered();
 
 module.exports = {
   // Re-export for tests that want to call the logical impls directly

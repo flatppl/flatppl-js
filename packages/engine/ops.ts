@@ -95,8 +95,214 @@ interface OpDecl {
   // 'variadic', 'higher-order'.
   argRanks?: number[];
   kind?: OpKind;                      // default 'fixed-rank'
-  logical: (...args: any[]) => any;
+  logical?: (...args: any[]) => any;  // optional: variant-only ops omit it
   batched?: (args: any[], N: number) => any;
+  // Type-directed shape-pattern variants — the P1 keystone per
+  // engine-concepts §18.11. Each variant declares the input shape
+  // pattern it applies to (per-arg rank / shape / Klein-4 tag /
+  // struct flag / dtype) plus the surrounding wrapping op
+  // ('broadcast' / 'aggregate' / 'direct'). The dispatcher picks the
+  // most-specific applicable variant; ties broken by registration
+  // order. Variants are tried BEFORE the kind-based legacy paths,
+  // so they take priority. Variant-only ops (no `logical`) auto-
+  // create a minimal OpDecl via `registerVariant`.
+  variants?: OpVariant[];
+}
+
+// ---------------------------------------------------------------------
+// Type-directed shape-pattern variants (engine-concepts §18.11)
+// ---------------------------------------------------------------------
+//
+// A variant declares: "for input args matching THESE patterns, under
+// THIS wrapping context, dispatch to THIS impl." Variants generalise
+// the single-`logical` model to cover the dispatch axes the engine
+// currently fragments across multiple modules:
+//
+//   - Per-arg rank, shape, Klein-4 tag, structured-matrix flag, dtype.
+//   - Wrapping op ('broadcast' / 'aggregate' / 'direct') — same spec
+//     op has different semantics under different wrappers (mul direct
+//     = matrix product; mul broadcasted = Hadamard elementwise).
+//
+// Adding a new shape variant becomes one registry entry, not edits
+// across `value-ops.mul`'s shape-switch, `_BROADCASTED_PRIMS_CACHE`,
+// `ARITH_OPS_N`, `_maybeFastBroadcasted`, and `_broadcastApply`.
+//
+// **Specificity ordering.** When multiple variants match, the most
+// specific wins (most constrained pattern fields). The score is:
+//
+//   - wrappingOp constraint: 50 pts (most categorical)
+//   - struct flag:           10 pts/arg
+//   - tag constraint:         2 pts/arg
+//   - rank constraint:        1 pt/arg
+//   - explicit shape dim:     1 pt/dim
+//   - dtype constraint:       1 pt/arg
+//
+// Ties broken by registration order: first registered wins. This is
+// deterministic but inverts the usual Julia-multimethod convention; we
+// pick it because most variants are registered ONCE per category and
+// later-registered variants conceptually OVERRIDE earlier ones
+// (consistent with module-load order).
+//
+// **Extensibility.** Adding new pattern dimensions (e.g. P2's
+// sample/batch/event shape; P3a's axisStack) means adding optional
+// fields to ArgPattern + scoring weights to _specificityScore. No
+// caller migration required.
+
+type Klein4Tag = 'N' | 'T' | 'A' | 'C';
+
+interface ArgPattern {
+  // Logical rank (no atom-batch axis). Atom-batching is detected by
+  // the dispatcher BELOW this layer; patterns describe logical shape.
+  rank?: number;
+  // Concrete dim sizes ('*' = any size, useful for partial constraints
+  // like "rank-2 with second dim = 3"). Implies `rank` (length of the
+  // shape array).
+  shape?: Array<number | '*'>;
+  // Klein-4 transpose tag (value.ts §2.1). Single tag matches that
+  // tag literally; an array matches if the arg's tag is in the array
+  // (e.g. `tag: ['T', 'A']` matches "swapped" Klein-4 elements —
+  // those for which `isTransposeView(v) === true`; `tag: ['N', 'C']`
+  // matches "unswapped" elements).
+  tag?: Klein4Tag | Klein4Tag[];
+  // Structured-matrix occupancy/refinement (value.ts §2.2).
+  struct?: 'diag' | 'tri' | 'sym';
+  // Element type at the storage level.
+  dtype?: 'real' | 'complex';
+}
+
+type WrappingOp = 'broadcast' | 'aggregate' | 'direct';
+
+interface OpVariant {
+  // One pattern per positional arg; length must equal the call's arg
+  // count for the variant to match.
+  argPatterns: ArgPattern[];
+  // If set, the variant matches ONLY when the dispatcher is called
+  // with opts.wrappingOp equal to this value. If omitted, the variant
+  // matches any wrapping context (general fallback).
+  wrappingOp?: WrappingOp;
+  // The impl. Receives the Values as passed to dispatch (NOT pre-
+  // stripped of atom axis — atom-batch handling is variant-specific
+  // for now; future refinement may add a 'logical-only' variant kind).
+  impl: (args: any[], ctx?: DispatchCtx) => any;
+  // Optional short label for debug / conformance reports.
+  label?: string;
+}
+
+interface DispatchOpts {
+  // Surrounding wrapping op. Default is 'direct' (op called directly,
+  // not inside broadcast / aggregate).
+  wrappingOp?: WrappingOp;
+}
+
+interface DispatchCtx extends DispatchOpts {
+  // Future: env, evaluateExpr, axisStack annotations, etc. Variants
+  // that need richer context (e.g. higher-order body inlining) read
+  // additional fields populated by the caller.
+  [key: string]: any;
+}
+
+function _argTag(arg: any): string {
+  if (valueLib.isValue(arg)) return arg.t || 'N';
+  return 'N';
+}
+
+function _argStruct(arg: any): string | null {
+  if (!valueLib.isValue(arg)) return null;
+  // value.ts exposes `isDiagStored` / occupancy flags. For now only
+  // 'diag' is exposed; tri / sym refinement detection lives in
+  // value.ts and can be lifted here when needed.
+  if (valueLib.isDiagStored && valueLib.isDiagStored(arg)) return 'diag';
+  return null;
+}
+
+function _argDtype(arg: any): 'real' | 'complex' {
+  if (valueLib.isValue(arg) && arg.dtype === 'complex') return 'complex';
+  return 'real';
+}
+
+function _matchArgPattern(p: ArgPattern, arg: any): boolean {
+  // Bare scalars (JS number / boolean) match rank-0 patterns only.
+  if (!valueLib.isValue(arg)) {
+    if (typeof arg === 'number' || typeof arg === 'boolean') {
+      if (p.rank !== undefined && p.rank !== 0) return false;
+      if (p.shape !== undefined && p.shape.length > 0) return false;
+      if (p.tag !== undefined && p.tag !== 'N') return false;
+      if (p.struct !== undefined) return false;
+      if (p.dtype !== undefined && p.dtype !== 'real') return false;
+      return true;
+    }
+    // Non-Value, non-scalar (nested JS array, Float64Array). Allow
+    // only when the pattern places NO constraints — those args would
+    // have to be coerced to Values by the caller anyway.
+    return p.rank === undefined && p.shape === undefined
+        && p.tag === undefined && p.struct === undefined
+        && p.dtype === undefined;
+  }
+  const rank = arg.shape.length;
+  if (p.rank !== undefined && rank !== p.rank) return false;
+  if (p.shape !== undefined) {
+    if (p.shape.length !== rank) return false;
+    for (let i = 0; i < rank; i++) {
+      const want = p.shape[i];
+      if (want === '*') continue;
+      if (typeof want === 'number' && want !== arg.shape[i]) return false;
+    }
+  }
+  if (p.tag !== undefined) {
+    const argTag = _argTag(arg);
+    if (Array.isArray(p.tag)) {
+      if (p.tag.indexOf(argTag as Klein4Tag) < 0) return false;
+    } else if (argTag !== p.tag) {
+      return false;
+    }
+  }
+  if (p.struct !== undefined && _argStruct(arg) !== p.struct) return false;
+  if (p.dtype !== undefined && _argDtype(arg) !== p.dtype) return false;
+  return true;
+}
+
+function _matchVariant(v: OpVariant, args: any[], opts: DispatchOpts): boolean {
+  // wrappingOp constraint: if the variant declares one, it must equal
+  // the caller's; if it doesn't declare one, the variant matches any.
+  if (v.wrappingOp !== undefined) {
+    const callerWrap: WrappingOp = opts.wrappingOp || 'direct';
+    if (v.wrappingOp !== callerWrap) return false;
+  }
+  if (v.argPatterns.length !== args.length) return false;
+  for (let i = 0; i < args.length; i++) {
+    if (!_matchArgPattern(v.argPatterns[i], args[i])) return false;
+  }
+  return true;
+}
+
+function _specificityScore(v: OpVariant): number {
+  let s = 0;
+  if (v.wrappingOp !== undefined) s += 50;
+  for (const p of v.argPatterns) {
+    if (p.rank !== undefined) s += 1;
+    if (p.shape !== undefined) {
+      for (const d of p.shape) if (d !== '*') s += 1;
+    }
+    if (p.tag !== undefined) s += 2;
+    if (p.struct !== undefined) s += 10;
+    if (p.dtype !== undefined) s += 1;
+  }
+  return s;
+}
+
+// Pick the most-specific matching variant. Returns null when no
+// variant matches. Ties broken by registration order (first wins) —
+// `variants` is iterated in declaration order, and the SECOND match
+// only replaces the first if it scores strictly higher.
+function _pickVariant(variants: OpVariant[], args: any[], opts: DispatchOpts): OpVariant | null {
+  let best: OpVariant | null = null;
+  let bestScore = -1;
+  for (const v of variants) {
+    if (!_matchVariant(v, args, opts)) continue;
+    const s = _specificityScore(v);
+    if (s > bestScore) { best = v; bestScore = s; }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------
@@ -112,7 +318,9 @@ function register(decl: OpDecl) {
   const kind: OpKind = decl.kind || 'fixed-rank';
   // Fixed-rank ops require argRanks; rank-polymorphic / variadic /
   // higher-order ops don't (argRanks is unused for those kinds).
-  if (kind === 'fixed-rank') {
+  // Variant-only ops (no `logical`, only `variants`) also skip argRanks
+  // — atom-batch detection happens per-variant.
+  if (kind === 'fixed-rank' && decl.logical) {
     if (!Array.isArray(decl.argRanks)) {
       throw new Error('ops.register: op \'' + decl.name +
         '\' is kind=fixed-rank but argRanks is missing');
@@ -124,19 +332,68 @@ function register(decl: OpDecl) {
         decl.signature.args.length + ')');
     }
   }
+  if (!decl.logical && (!decl.variants || decl.variants.length === 0)) {
+    throw new Error('ops.register: op \'' + decl.name +
+      '\' has no logical impl and no variants');
+  }
   REGISTRY.set(decl.name, decl);
+}
+
+// Register a shape-pattern variant on an op. If no OpDecl exists yet
+// for `opName`, auto-creates a minimal variant-only decl. This is the
+// preferred entry point for ops that have NO atom-indep "logical"
+// reference impl (e.g. broadcasted scalar primitives whose canonical
+// form IS the variant impl). Multiple `registerVariant` calls on the
+// same op accumulate variants; the dispatcher matches the most
+// specific applicable pattern at call time.
+function registerVariant(opName: string, variant: OpVariant): void {
+  if (!variant || !Array.isArray(variant.argPatterns) || typeof variant.impl !== 'function') {
+    throw new Error('ops.registerVariant: variant must have argPatterns + impl');
+  }
+  let decl = REGISTRY.get(opName);
+  if (!decl) {
+    decl = { name: opName, kind: 'fixed-rank', variants: [] };
+    REGISTRY.set(opName, decl);
+  }
+  if (!decl.variants) decl.variants = [];
+  decl.variants.push(variant);
 }
 
 function lookup(name: string): OpDecl | null {
   return REGISTRY.get(name) || null;
 }
 
+// `isDeclared` is the routing gate used by `evaluateCall`: it answers
+// "can `dispatch(name, args)` be called for direct (no wrappingOp)
+// invocation?" Variant-only ops (no `logical`, only wrappingOp-
+// constrained variants like the broadcasted-primitives table) are
+// NOT declared in this sense — they're invoked through
+// `dispatchVariant` with the right `wrappingOp` opt. Callers that
+// need "is the op in the registry at all?" use `lookup(name) !=
+// null` instead.
 function isDeclared(name: string): boolean {
-  return REGISTRY.has(name);
+  const decl = REGISTRY.get(name);
+  if (!decl) return false;
+  return typeof decl.logical === 'function';
+}
+
+// "Does this op have ANY registered variant for the given wrappingOp?"
+// Used by `_maybeFastBroadcasted` to gate the broadcast fast-path
+// before evaluating arg IRs. Returns false when the op has no
+// variants OR has no variant whose `wrappingOp` matches.
+function hasVariantFor(name: string, wrappingOp: WrappingOp): boolean {
+  const decl = REGISTRY.get(name);
+  if (!decl || !decl.variants) return false;
+  for (const v of decl.variants) {
+    if (v.wrappingOp === wrappingOp) return true;
+    // Variants with no wrappingOp constraint match any wrapping; also count.
+    if (v.wrappingOp === undefined) return true;
+  }
+  return false;
 }
 
 function listDeclared(): string[] {
-  return Array.from(REGISTRY.keys());
+  return Array.from(REGISTRY.keys()).filter(n => isDeclared(n));
 }
 
 function signatureOf(name: string): any {
@@ -298,10 +555,36 @@ function _writeNested(dst: Float64Array, offset: number, src: any): number {
   return offset;
 }
 
-function dispatch(name: string, args: any[]): any {
+// Try shape-pattern variant dispatch. Returns the impl's result on
+// match; returns null (sentinel) when no variant matches. Callers
+// that want a throw-on-no-match contract use `dispatch` instead;
+// callers that want to fall through to a legacy path (e.g.
+// `_maybeFastBroadcasted` falling to the per-cell `_broadcastApply`)
+// use `dispatchVariant` and branch on null.
+function dispatchVariant(name: string, args: any[], opts?: DispatchOpts): any {
+  const decl = REGISTRY.get(name);
+  if (!decl || !decl.variants || decl.variants.length === 0) return null;
+  const v = _pickVariant(decl.variants, args, opts || {});
+  if (!v) return null;
+  return v.impl(args, opts || {});
+}
+
+function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   const decl = REGISTRY.get(name);
   if (!decl) {
     throw new Error('ops.dispatch: no declaration for op \'' + name + '\'');
+  }
+  // Variants take priority. Most-specific match wins.
+  if (decl.variants && decl.variants.length > 0) {
+    const v = _pickVariant(decl.variants, args, opts || {});
+    if (v) return v.impl(args, opts || {});
+  }
+  if (!decl.logical) {
+    throw new Error('ops.dispatch: no variant matched and no logical fallback for op \'' +
+      name + '\' (args: ' +
+      args.map((a: any) => valueLib.isValue(a)
+        ? 'shape=' + JSON.stringify(a.shape) + (a.t ? ',t=' + a.t : '')
+        : typeof a).join(' / ') + ')');
   }
   const kind: OpKind = decl.kind || 'fixed-rank';
 
@@ -427,14 +710,21 @@ function dispatchHigherOrder(name: string, ir: any, ctx: HigherOrderCtx): any {
 
 module.exports = {
   register,
+  registerVariant,
   lookup,
   isDeclared,
+  hasVariantFor,
   listDeclared,
   signatureOf,
   dispatch,
+  dispatchVariant,
   dispatchHigherOrder,
   // Exported for the conformance harness:
   _classifyArg,
   _argAtAtom,
   _stackPerAtom,
+  _matchArgPattern,
+  _matchVariant,
+  _specificityScore,
+  _pickVariant,
 };
