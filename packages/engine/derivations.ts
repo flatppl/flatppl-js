@@ -1586,6 +1586,48 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     return false;
   }
 
+  // Refs in CALLABLE-HEAD positions (args[0] of broadcast / aggregate
+  // / pushfwd / etc.) are resolved at evaluation time via the env's
+  // `__resolveFnBody` hook, NOT through derivations / fixedValues —
+  // so they're "resolvable" via a different mechanism. Collect these
+  // separately so the IR-refs walk below can skip them.
+  //
+  // Without this, an `evaluate`-classified `broadcast(<user-fn-ref>,
+  // …)` (e.g. `Y = polyeval.([C], X)`) would be pruned the moment
+  // the refs-valid sweep walked `<user-fn-ref>` and found polyeval
+  // missing from both derivations and fixedValues. The materialiser's
+  // broadcast handler resolves it correctly at evaluation time; the
+  // cascade-prune sweep just needs to know.
+  //
+  // Narrow to: refs of a callable BINDING (fn / functionof /
+  // kernelof / bijection) USED in a callable-head IR position. We
+  // can't use type alone (a kernelof binding is also legitimately
+  // used as a measure source in `logdensityof(k, x)` — see the
+  // orchestrator test for that case, which must still cascade-prune
+  // when k isn't materialisable as a measure).
+  function _collectCallableHeadRefs(ir: any, seen?: Set<string>): Set<string> {
+    if (!seen) seen = new Set();
+    if (!ir || typeof ir !== 'object') return seen;
+    if (ir.kind === 'call' && ir.op
+        && (ir.op === 'broadcast' || ir.op === 'aggregate')
+        && Array.isArray(ir.args) && ir.args.length > 0) {
+      const head = ir.args[0];
+      if (head && head.kind === 'ref' && head.ns === 'self') {
+        const b = bindings.get(head.name);
+        if (b && (b.type === 'fn' || b.type === 'functionof'
+                  || b.type === 'kernelof' || b.type === 'bijection')) {
+          seen.add(head.name);
+        }
+      }
+    }
+    // Recurse — broadcasts can nest inside other expression trees.
+    if (ir.args)    for (const a of ir.args)            _collectCallableHeadRefs(a, seen);
+    if (ir.kwargs)  for (const k in ir.kwargs)          _collectCallableHeadRefs(ir.kwargs[k], seen);
+    if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectCallableHeadRefs(f && f.value, seen);
+    if (ir.body)                                        _collectCallableHeadRefs(ir.body, seen);
+    return seen;
+  }
+
   if (d.kind === 'alias' || d.kind === 'normalize') {
     return resolvable(d.from);
   }
@@ -1685,7 +1727,13 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
   const refs = collectSelfRefs(ir);
+  const callableHeads = _collectCallableHeadRefs(ir);
   for (const r of refs) {
+    // Callable-head refs (broadcast / aggregate heads bound to a
+    // callable binding) resolve via __resolveFnBody at eval time,
+    // not via derivations / fixedValues. Skip them in the cascade-
+    // prune check.
+    if (callableHeads.has(r)) continue;
     if (!resolvable(r)) return false;
   }
   return true;
