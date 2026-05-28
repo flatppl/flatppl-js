@@ -1548,6 +1548,16 @@ status duplication here).
 Cross-engine architecture in `flatppl-dev/flatppl-engine-concepts.md`
 §20. JS-engine implementation notes below.
 
+> **Terminology.** Dissolution = our specific term for the
+> spec-§04-driven term-rewriting that turns broadcast / aggregate
+> IR into batched-primitive call chains. In the broader ML-compiler
+> world the umbrella term is **fusion** (XLA elementwise / reduction
+> fusion; JAX vmap composition; LLVM loop fusion). The two are
+> compatible — dissolution is a particular flavor of broadcast +
+> aggregate fusion tied to FlatPPL's spec-level constructs. The
+> rest of this section uses "dissolution" for what the dissolver
+> does; "fusion" when comparing to the ML-compiler tradition.
+
 > **Status (2026-05-28).** The dissolver is in. Constants flow as
 > rank-0 Values; `ARITH_OPS` no longer emits bare numbers when Values
 > flow in; broadcast and aggregate IR rewrite to direct elementwise /
