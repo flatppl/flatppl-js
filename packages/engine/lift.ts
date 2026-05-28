@@ -1408,6 +1408,25 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
     case 'axis':        // resolved against the enclosing aggregate's axis env.
                         return true;
     case 'call':
+      // Special case: a `vector(...)` whose elements are ALL pure
+      // literals / consts (no refs) is a constant integer/real array
+      // and IS evaluable as a value. The general `vector` op stays
+      // out of EVALUABLE_OPS because vectors-with-stochastic-refs
+      // (`[mu, 1.0]`) need the array-derivation path; but
+      // shape-fold emits literal-only vectors (e.g. for
+      // `indicesof0(C)` → `vector(lit_0, lit_1, lit_2)`) that the
+      // aggregate body in fusion (a) Step 2 indexes via `get(vec,
+      // .j)`. Treating literal-only vectors as evaluable lets that
+      // pattern classify cleanly.
+      if (ir.op === 'vector' && Array.isArray(ir.args)) {
+        let allLit = true;
+        for (const a of ir.args) {
+          if (!a || (a.kind !== 'lit' && a.kind !== 'const')) {
+            allLit = false; break;
+          }
+        }
+        if (allLit) return true;
+      }
       if (!ir.op || !EVALUABLE_OPS.has(ir.op)) return false;
       // rand(state, measure) — the measure arg is a measure IR passed
       // verbatim to the trace evaluator, NOT a value expression. So we
