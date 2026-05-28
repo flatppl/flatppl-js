@@ -1,0 +1,35 @@
+%%%
+Hierarchical repeated-measures observation model.
+
+Canonical SOTA pattern (Pyro `with plate` over groups + plate over
+observations; Stan / Bambi random-intercepts model with per-group
+repeated obs). Each of G groups has its own latent mean `mu_g`
+drawn from a hyperprior; conditional on `mu_g`, the group produces
+`N_per_group` iid Normal observations sharing a global sigma.
+
+The forward model is `kernelof(iid(Normal(mu, sigma), N_per_group),
+mu)` — a kernel whose body is an iid measure. Broadcasting that
+kernel over the per-group `mu_g` values yields a [G, N_per_group]
+observation matrix.
+
+This is the motivating shape for fusion (b) phase F (composite
+kernel bodies) — `matKernelBroadcast` today rejects user-kernel
+heads whose body isn't a single builtin distribution.
+%%%
+flatppl_compat = "0.1"
+
+% Group-level latent means (one per group, drawn from a hyperprior).
+G = 4
+N_per_group = 5
+mu_g ~ iid(Normal(0, 10), G)
+
+% Shared global noise.
+sigma_g ~ truncate(Normal(0, 1), interval(0, inf))
+
+% Per-group obs kernel: given a group's mean and the shared sigma,
+% produce N_per_group iid Normal draws.
+group_kernel = kernelof(iid(Normal(mu, sigma_g), N_per_group), mu)
+
+% Broadcast the kernel over each group's mu — yields a [G, N_per_group]
+% observation matrix per atom.
+obs = broadcast(group_kernel, mu = mu_g)
