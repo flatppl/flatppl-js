@@ -27,14 +27,24 @@ test('dissolver: structural match on add/sub/neg/pos', () => {
   }
 });
 
-test('dissolver: mul / div / exp / log / sin are NOT in the Phase-2 safe set', () => {
-  // These either have non-elementwise valueOps semantics (mul) or no
-  // higher-rank elementwise impl (div, scalar unaries). Phase 3 will
-  // widen the set with type-aware safety.
+test('dissolver: scalar-only ops live in DISSOLVE_SCALAR_ONLY_OPS', () => {
+  // Phase 3 widening (Phase 3.5) split DISSOLVE_SAFE_OPS into two
+  // tiers: AT_ANY_RANK (add/sub/neg/pos — valueOps elementwise at
+  // any rank) and SCALAR_ONLY (mul, div, scalar unaries — safe only
+  // when all outer broadcast args are scalar-typed). Both live under
+  // the umbrella `DISSOLVE_SAFE_OPS` set, but dissolution of a
+  // scalar-only op requires the runtime guard.
+  const {
+    DISSOLVE_AT_ANY_RANK_OPS, DISSOLVE_SCALAR_ONLY_OPS,
+  } = require('../dissolver.ts');
+  for (const op of ['add', 'sub', 'neg', 'pos']) {
+    assert.ok(DISSOLVE_AT_ANY_RANK_OPS.has(op), op + ' rank-agnostic');
+  }
   for (const op of ['mul', 'div', 'divide', 'pow', 'exp', 'log',
                     'sqrt', 'sin', 'cos', 'abs']) {
-    assert.ok(!DISSOLVE_SAFE_OPS.has(op),
-      op + ' should NOT be in Phase-2 safe set');
+    assert.ok(DISSOLVE_SCALAR_ONLY_OPS.has(op), op + ' scalar-only');
+    assert.ok(!DISSOLVE_AT_ANY_RANK_OPS.has(op),
+      op + ' should not be rank-agnostic');
   }
 });
 
@@ -311,6 +321,47 @@ test('Phase 3 multi-op body: refuses unsafe inner op (mul)', () => {
   };
   const out = _tryDissolveSingleOp(bcIR, null);
   assert.equal(out, null);
+});
+
+test('Phase 3.5 scalar-only widening: .* over scalars dissolves', () => {
+  // Both `a` and `b` are parameterized scalars; broadcast(mul, a, b)
+  // dissolves to `mul(a, b)` because `argsAreAllScalar` holds (both
+  // inferredType=scalar). At runtime ARITH_OPS_N.mul routes via
+  // broadcast2 (neither operand is shape-rich at rank > 1) — correct.
+  const b = getBinding(`
+a = elementof(reals)
+b = elementof(reals)
+Y = a .* b
+`, 'Y');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'mul', 'scalar × scalar dissolves');
+});
+
+test('Phase 3.5 scalar-only widening: .exp over scalar dissolves', () => {
+  // Unary scalar op. Arg is parameterized scalar; broadcast(exp, a)
+  // dissolves to `exp(a)`. ARITH_OPS_N.exp via broadcast1 maps the
+  // function elementwise across the atom axis — correct.
+  const b = getBinding(`
+a = elementof(reals)
+Y = exp.(a)
+`, 'Y');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'exp', 'scalar exp dissolves');
+});
+
+test('Phase 3.5 scalar-only widening: .* over fixed vectors does NOT dissolve', () => {
+  // Both A and B are fixed length-3 vectors. `argsAreAllScalar` is
+  // false (inferredType.kind === 'array'), so mul stays as a
+  // broadcast IR — value-ops.mul on rank-1 vectors has matrix
+  // semantics that don't match elementwise broadcast.
+  const b = getBinding(`
+A = [1.0, 2.0, 3.0]
+B = [4.0, 5.0, 6.0]
+Y = A .* B
+`, 'Y');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'broadcast',
+    'mul on fixed vectors stays as broadcast (matrix-semantics guard)');
 });
 
 test('Phase 4 user-fn inlining: single-op user fn dissolves', () => {

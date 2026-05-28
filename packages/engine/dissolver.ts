@@ -76,8 +76,56 @@
 // captures the common dotted-binary cases that arise from
 // `Y = A .+ B`, `Y = A .- B`, `Y = -A`, etc. — the perf-relevant
 // surface for vector-of-scalar data arrays.
-const DISSOLVE_SAFE_OPS: Set<string> = new Set([
+//
+// Two tiers (Phase 3 type-aware widening):
+//   - DISSOLVE_AT_ANY_RANK_OPS: safe regardless of the broadcast
+//     args' shapes — value-ops handles them elementwise at any
+//     rank.
+//   - DISSOLVE_SCALAR_ONLY_OPS: safe only when ALL outer broadcast
+//     args have `inferredType.kind === 'scalar'`. Includes
+//     multiplicative arith (which has matrix semantics on rank-1)
+//     and unary scalar maths (which route through `broadcast1`
+//     and only handle rank-0 / rank-1 inputs correctly).
+const DISSOLVE_AT_ANY_RANK_OPS: Set<string> = new Set([
   'add', 'sub', 'neg', 'pos',
+]);
+
+const DISSOLVE_SCALAR_ONLY_OPS: Set<string> = new Set([
+  // Multiplicative arith (matrix semantics on rank-1 vectors).
+  'mul', 'div', 'divide', 'mod', 'pow',
+  // Unary scalar maths — broadcast1-routed, scalar-only.
+  'abs', 'abs2', 'exp', 'log', 'log10', 'log1p', 'expm1', 'sqrt',
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+  'floor', 'ceil', 'round',
+  // Special functions / link functions.
+  'gamma', 'loggamma',
+  'logit', 'invlogit', 'probit', 'invprobit',
+  // Pairwise scalar reductions.
+  'min', 'max',
+  // Comparisons + predicates + logic — produce scalar booleans.
+  'lt', 'le', 'gt', 'ge', 'equal', 'unequal',
+  'isfinite', 'isinf', 'isnan', 'iszero',
+  'land', 'lor', 'lxor', 'lnot', 'ifelse',
+  // Scalar restrictors + complex constructors.
+  'boolean', 'integer', 'real', 'imag', 'conj', 'complex', 'cis',
+  // Identity (broadcast(identity, A) ≡ A; harmless dissolution).
+  'identity',
+]);
+
+// Composite check: op is safe to dissolve at all? (Either tier.)
+function _isSafeOp(name: string): boolean {
+  return DISSOLVE_AT_ANY_RANK_OPS.has(name)
+    || DISSOLVE_SCALAR_ONLY_OPS.has(name);
+}
+
+// Legacy alias retained for the structural unit tests that probe
+// the safe-op set directly. Sums both tiers — equivalent to
+// `_isSafeOp` for callers that just want "is this op dissolvable
+// in principle".
+const DISSOLVE_SAFE_OPS: Set<string> = new Set([
+  ...DISSOLVE_AT_ANY_RANK_OPS,
+  ...DISSOLVE_SCALAR_ONLY_OPS,
 ]);
 
 // ---------------------------------------------------------------------
@@ -223,6 +271,7 @@ function _substituteBody(
   paramIndex: Map<string, number>,
   bcArgs: any[],
   bindings: any,
+  argsAreAllScalar: boolean,
 ): any | null {
   if (!expr) return null;
   switch (expr.kind) {
@@ -244,14 +293,27 @@ function _substituteBody(
       }
       return null;  // unknown namespace
     case 'call':
-      if (!expr.op || !DISSOLVE_SAFE_OPS.has(expr.op)) return null;
+      if (!expr.op) return null;
+      // Two-tier op-safety check:
+      //   - rank-agnostic ops: always allowed in the body.
+      //   - scalar-only ops: only allowed when ALL outer broadcast
+      //     args are scalar (so the body runs entirely on scalars
+      //     once substitution lands the runtime args in place).
+      if (DISSOLVE_AT_ANY_RANK_OPS.has(expr.op)) {
+        // OK regardless of arg ranks.
+      } else if (DISSOLVE_SCALAR_ONLY_OPS.has(expr.op)) {
+        if (!argsAreAllScalar) return null;
+      } else {
+        return null;  // unknown / unsafe op
+      }
       if (expr.kwargs && Object.keys(expr.kwargs).length > 0) return null;
       if (Array.isArray(expr.fields) && expr.fields.length > 0) return null;
       if (expr.body) return null;  // nested functionof — bail
       const inArgs: any[] = expr.args || [];
       const outArgs: any[] = new Array(inArgs.length);
       for (let i = 0; i < inArgs.length; i++) {
-        const sub = _substituteBody(inArgs[i], paramIndex, bcArgs, bindings);
+        const sub = _substituteBody(
+          inArgs[i], paramIndex, bcArgs, bindings, argsAreAllScalar);
         if (sub === null) return null;
         outArgs[i] = sub;
       }
@@ -351,11 +413,17 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
   // bayesupdate / kernel-broadcast tests during Phase 2 sizing. Leaving
   // those broadcasts in place keeps `_broadcastApply` correct.
   //
+  // Also tracks whether ALL outer args are scalar-typed — that
+  // unlocks the SCALAR_ONLY ops (mul / exp / log / …) in the body
+  // walker.
+  //
   // The check is permissive when `bindings` is null (unit-test path
   // for the structural matcher in isolation). Production callers
   // always provide it.
+  let argsAreAllScalar = false;
   if (bindings) {
     let firstTP: { type: any; phase: any } | null = null;
+    argsAreAllScalar = true;
     for (let i = 0; i < appliedArgs.length; i++) {
       const tp = _argTypeAndPhase(appliedArgs[i], bindings);
       if (!tp) return null;  // non-ref arg or missing annotation
@@ -364,12 +432,14 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
         if (firstTP.phase !== tp.phase) return null;
         if (!_typesEqual(firstTP.type, tp.type)) return null;
       }
+      if (!tp.type || tp.type.kind !== 'scalar') argsAreAllScalar = false;
     }
   }
   // Build the param-index map for the body walk.
   const paramIndex: Map<string, number> = new Map();
   for (let i = 0; i < params.length; i++) paramIndex.set(params[i], i);
-  const substituted = _substituteBody(body, paramIndex, appliedArgs, bindings);
+  const substituted = _substituteBody(
+    body, paramIndex, appliedArgs, bindings, argsAreAllScalar);
   if (substituted === null) return null;
   // Preserve the broadcast's source location on the outermost call so
   // diagnostics still point at the user-written site.
@@ -396,6 +466,8 @@ function dissolveBindings(bindings: any): any {
 
 module.exports = {
   DISSOLVE_SAFE_OPS,
+  DISSOLVE_AT_ANY_RANK_OPS,
+  DISSOLVE_SCALAR_ONLY_OPS,
   dissolveExpr,
   dissolveBindings,
   _tryDissolveSingleOp,
