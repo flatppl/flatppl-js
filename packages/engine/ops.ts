@@ -251,10 +251,18 @@ interface OpVariant {
   // with opts.wrappingOp equal to this value. If omitted, the variant
   // matches any wrapping context (general fallback).
   wrappingOp?: WrappingOp;
-  // The impl. Receives the Values as passed to dispatch (NOT pre-
-  // stripped of atom axis — atom-batch handling is variant-specific
-  // for now; future refinement may add a 'logical-only' variant kind).
+  // The atom-indep impl. Receives the Values as passed to dispatch
+  // (NOT pre-stripped of atom axis). Used when every arg's rank
+  // matches its argPattern.rank exactly.
   impl: (args: any[], ctx?: DispatchCtx) => any;
+  // Atom-batched fast-path. When one or more args have shape=[N,
+  // ...rank-of-pattern], the dispatcher routes here with the shared
+  // atom count N (engine-concepts §2.1 leading-axis-batch convention).
+  // If absent, the dispatcher falls back to per-atom slicing via
+  // _argAtAtom + _stackPerAtom (correctness-equivalent but slower).
+  // Receives the Values UNCHANGED (atom axis still present); the
+  // impl decides how to use N.
+  batched?: (args: any[], N: number, ctx?: DispatchCtx) => any;
   // Optional short label for debug / conformance reports.
   label?: string;
 }
@@ -263,6 +271,14 @@ interface DispatchOpts {
   // Surrounding wrapping op. Default is 'direct' (op called directly,
   // not inside broadcast / aggregate).
   wrappingOp?: WrappingOp;
+  // Atom-batched dispatch (engine-concepts §2.1 leading-axis-batch).
+  // When set, the dispatcher tries atom-aware variant matching FIRST
+  // (variants with a `batched` impl whose argPatterns match each arg
+  // with the leading atom dim of size `atomN` stripped); callers
+  // signal atom-batching explicitly since rank alone can't always
+  // distinguish "rank-r matrix" from "atom-batched rank-(r-1)
+  // vector" (e.g. shape=[N, n] is both).
+  atomN?: number;
 }
 
 interface DispatchCtx extends DispatchOpts {
@@ -546,6 +562,76 @@ function _pickVariant(variants: OpVariant[], args: any[], opts: DispatchOpts): O
     if (!_matchVariant(v, args, opts)) continue;
     const s = _specificityScore(v);
     if (s > bestScore) { best = v; bestScore = s; }
+  }
+  return best;
+}
+
+// Atom-aware variant matching (engine-concepts §2.1 leading-axis-batch
+// convention). For each variant V whose argPatterns specify static
+// ranks and which provides a `batched` fast-path, retry matching with
+// each arg's shape "atom-stripped" — i.e. if arg.shape.length ===
+// pattern.rank + 1 AND the leading dim equals the caller-declared
+// atom count N, treat arg as atom-batched and match the pattern
+// against arg.shape[1:].
+//
+// **Caller signals atom-batching via opts.atomN.** Rank alone can't
+// distinguish "rank-2 matrix" from "atom-batched rank-1 vector
+// (shape=[N, n])" since both have rank 2 — the caller knows which it
+// has and passes opts.atomN so the dispatcher routes correctly.
+// (Engines that want auto-detection can supply argRanks at the decl
+// level — that path stays available for fixed-rank kind-based
+// dispatch.)
+//
+// Match rules:
+//   - opts.atomN must be set; the value is the atom count.
+//   - For each arg:
+//       - if arg's rank matches pattern.rank exactly → atom-indep.
+//       - if arg's rank == pattern.rank + 1 AND arg.shape[0] === atomN
+//         → atom-batched (sliced view matched against the pattern).
+//       - else → no match.
+//   - At least one arg must be atom-batched (otherwise the exact-
+//     rank path would have matched first).
+//   - The variant MUST have a `batched` impl.
+//
+// Returns { variant, N } on match (N === opts.atomN) or null when no
+// atom-aware variant matches. Same specificity / tie-break as
+// _pickVariant.
+function _pickVariantAtomAware(
+  variants: OpVariant[], args: any[], opts: DispatchOpts,
+): { variant: OpVariant; N: number } | null {
+  const atomN = opts.atomN;
+  if (typeof atomN !== 'number') return null;
+  let best: { variant: OpVariant; N: number } | null = null;
+  let bestScore = -1;
+  for (const v of variants) {
+    if (typeof v.batched !== 'function') continue;
+    // wrappingOp constraint (same as _matchVariant).
+    if (v.wrappingOp !== undefined) {
+      const callerWrap: WrappingOp = opts.wrappingOp || 'direct';
+      if (v.wrappingOp !== callerWrap) continue;
+    }
+    if (v.argPatterns.length !== args.length) continue;
+    let atomBatchedCount = 0;
+    let ok = true;
+    for (let i = 0; i < args.length; i++) {
+      const p = v.argPatterns[i];
+      const arg = args[i];
+      // Try exact-rank match first (atom-indep arg).
+      if (_matchArgPattern(p, arg)) continue;
+      // Otherwise: must have a static pattern rank to slice against.
+      if (p.rank === undefined) { ok = false; break; }
+      // The arg must be a Value (only Values carry shape metadata).
+      if (!valueLib.isValue(arg)) { ok = false; break; }
+      if (arg.shape.length !== p.rank + 1) { ok = false; break; }
+      if (arg.shape[0] !== atomN) { ok = false; break; }
+      // Sliced-view pattern match (shape-only; no storage allocation).
+      const slicedView: any = Object.assign({}, arg, { shape: arg.shape.slice(1) });
+      if (!_matchArgPattern(p, slicedView)) { ok = false; break; }
+      atomBatchedCount++;
+    }
+    if (!ok || atomBatchedCount === 0) continue;
+    const s = _specificityScore(v);
+    if (s > bestScore) { best = { variant: v, N: atomN }; bestScore = s; }
   }
   return best;
 }
@@ -845,9 +931,16 @@ function dispatchTyped(name: string, argInfos: ArgInfo[], opts?: DispatchOpts): 
 function dispatchVariant(name: string, args: any[], opts?: DispatchOpts): any {
   const decl = REGISTRY.get(name);
   if (!decl || !decl.variants || decl.variants.length === 0) return null;
-  const v = _pickVariant(decl.variants, args, opts || {});
-  if (!v) return null;
-  return v.impl(args, opts || {});
+  const safeOpts: DispatchOpts = opts || {};
+  // Atom-aware first when opts.atomN is set (rank-2 atom-batched
+  // would shadow rank-2 matrix exact-match otherwise).
+  if (typeof safeOpts.atomN === 'number') {
+    const ab = _pickVariantAtomAware(decl.variants, args, safeOpts);
+    if (ab) return ab.variant.batched!(args, ab.N, safeOpts);
+  }
+  const v = _pickVariant(decl.variants, args, safeOpts);
+  if (v) return v.impl(args, safeOpts);
+  return null;
 }
 
 function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
@@ -855,10 +948,19 @@ function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   if (!decl) {
     throw new Error('ops.dispatch: no declaration for op \'' + name + '\'');
   }
+  const safeOpts: DispatchOpts = opts || {};
   // Variants take priority. Most-specific match wins.
   if (decl.variants && decl.variants.length > 0) {
-    const v = _pickVariant(decl.variants, args, opts || {});
-    if (v) return v.impl(args, opts || {});
+    // When the caller signals atom-batching (opts.atomN), try atom-
+    // aware variants FIRST. This is the correct ordering because a
+    // rank-2 atom-batched vector (shape=[N, n]) would otherwise match
+    // a rank-2-matrix exact variant and run the wrong impl.
+    if (typeof safeOpts.atomN === 'number') {
+      const ab = _pickVariantAtomAware(decl.variants, args, safeOpts);
+      if (ab) return ab.variant.batched!(args, ab.N, safeOpts);
+    }
+    const v = _pickVariant(decl.variants, args, safeOpts);
+    if (v) return v.impl(args, safeOpts);
   }
   if (!decl.logical) {
     throw new Error('ops.dispatch: no variant matched and no logical fallback for op \'' +

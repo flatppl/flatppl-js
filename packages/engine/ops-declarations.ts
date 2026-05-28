@@ -1128,6 +1128,149 @@ function _ensureBroadcastedRegistered(): void {
 }
 
 // =====================================================================
+// Atom-batched fast-path variants (P1 follow-up; engine-concepts §18.11)
+// =====================================================================
+//
+// The §2.1 leading-axis-batch convention: a Value of shape=[N, …rest]
+// where N is the atom count carries an atom-batched rank-(rank+1)
+// payload. The asymmetric case "atom-indep rank-r + atom-batched
+// rank-r" (e.g. MvNormal's `mu + L·z` where mu is shape=[k] and L·z
+// is shape=[N, k]) needs a per-cell elementwise broadcast loop that
+// the symmetric value-ops elementwise impl doesn't handle (rank-
+// mismatch throw).
+//
+// This block lifts the existing `value-ops.addN` / `subN` / `negN` /
+// `mulN` fast-paths into variant `batched` slots on the corresponding
+// op. The variant matcher recognises atom-batched args via the
+// `_pickVariantAtomAware` path (shape rank == pattern.rank + 1,
+// shared N across all atom-batched args); when it picks a matching
+// variant with a `batched` impl, the dispatcher routes to it directly
+// without per-atom slicing.
+//
+// Migration scope (this commit):
+//   - add / sub: rank-1 + rank-1 with one or both atom-batched.
+//     Symmetric same-shape case stays on the existing broadcasted
+//     variant (rank-N elementwise add is just vo.add). The new
+//     atom-batched variant handles the ASYMMETRIC case via the
+//     existing _atomBroadcastBinop helper.
+//   - neg: rank-1 unary. The atom-indep neg already iterates over
+//     flat data so the batched impl is a trivial passthrough; the
+//     variant registration makes routing uniform.
+//   - mul: matrix × rank-1 vec (rank-2 + rank-1). When the second
+//     arg is atom-batched (shape=[N, n] meaning [N] vectors of
+//     length n), routes to _matBatchedVecMul / _cxMatBatchedVecMul
+//     for the MvNormal `L·z` hot path. Diag-stored matrix arg
+//     stays as a value-ops pre-check (the diag fast-path's null-
+//     fallthrough doesn't fit variant matching).
+//
+// Real-only for now; complex stays on the value-ops pre-check path
+// in `value-ops.mulN`. Migration of complex is a separate item
+// (parallel complex variants, like the existing direct-mul migration).
+
+let _ATOM_BATCHED_VARIANTS_REGISTERED = false;
+function _ensureAtomBatchedRegistered(): void {
+  if (_ATOM_BATCHED_VARIANTS_REGISTERED) return;
+  _ATOM_BATCHED_VARIANTS_REGISTERED = true;
+  const vo = require('./value-ops.ts');
+  const valueLib = require('./value.ts');
+
+  // -------------------------------------------------------------------
+  // add / sub: rank-1 + rank-1, atom-batched broadcast
+  // -------------------------------------------------------------------
+  //
+  // The exact-rank match (both rank-1) calls vo.add / vo.sub directly.
+  // Atom-aware match (one or both rank-2) routes to `batched`, which
+  // detects which arg is atom-batched and dispatches:
+  //   - both atom-batched same shape → vo.add (elementwise on flat data)
+  //   - one atom-batched, one atom-indep → _atomBroadcastBinop
+  //
+  // Mirror the value-ops _makeAtomAwareBinop logic.
+  function _makeBatchedAddLike(scalarFn: any, atomIndepImpl: any, opName: string) {
+    return function batchedAddLike(args: any[], N: number) {
+      const a = args[0], b = args[1];
+      const aBatched = valueLib.isValue(a) && a.shape.length === 2 && a.shape[0] === N;
+      const bBatched = valueLib.isValue(b) && b.shape.length === 2 && b.shape[0] === N;
+      if (aBatched && bBatched) {
+        // Same atom-batched shape: elementwise on flat data works.
+        return atomIndepImpl(a, b);
+      }
+      if (aBatched && !bBatched) {
+        return vo._atomBroadcastBinop(scalarFn, a, b, N, false, opName);
+      }
+      // !aBatched && bBatched
+      return vo._atomBroadcastBinop(scalarFn, b, a, N, true, opName);
+    };
+  }
+  ops.registerVariant('add', {
+    argPatterns: [{ rank: 1 }, { rank: 1 }],
+    impl: (vs: any[]) => vo.add(vs[0], vs[1]),
+    batched: _makeBatchedAddLike((x: any, y: any) => x + y, vo.add, 'add'),
+    label: 'add(rank-1, rank-1) atom-aware',
+  });
+  ops.registerVariant('sub', {
+    argPatterns: [{ rank: 1 }, { rank: 1 }],
+    impl: (vs: any[]) => vo.sub(vs[0], vs[1]),
+    batched: _makeBatchedAddLike((x: any, y: any) => x - y, vo.sub, 'sub'),
+    label: 'sub(rank-1, rank-1) atom-aware',
+  });
+
+  // -------------------------------------------------------------------
+  // neg: rank-1 unary, atom-batched
+  // -------------------------------------------------------------------
+  //
+  // The atom-indep `neg` iterates over flat data regardless of rank;
+  // batched value-ops.neg is just neg unchanged. The variant exists
+  // primarily so atom-aware dispatch routes uniformly through the
+  // registry rather than via the value-ops.negN side door.
+  ops.registerVariant('neg', {
+    argPatterns: [{ rank: 1 }],
+    impl: (vs: any[]) => vo.neg(vs[0]),
+    batched: (args: any[], _N: number) => vo.neg(args[0]),
+    label: 'neg(rank-1) atom-aware',
+  });
+
+  // -------------------------------------------------------------------
+  // mul: matrix × rank-1 vec, atom-batched on the vector
+  // -------------------------------------------------------------------
+  //
+  // The MvNormal `L · z` hot path: L is shape=[n, n] (atom-indep
+  // matrix), z is shape=[N, n] (atom-batched rank-1 vector). The
+  // existing `_matBatchedVecMul` runs the per-atom gemv loop in one
+  // pass. Diag-stored L is filtered out by the matrix's struct
+  // pattern (no diag variant here — the diag fast-path stays in
+  // value-ops.mulN's pre-check until a separate complex+diag
+  // migration). Real-only via dtype: 'real'.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 2, dtype: 'real' },
+      { rank: 1, dtype: 'real' },
+    ],
+    impl: (vs: any[]) => vo._matVecMul(vs[0], vs[1]),
+    batched: (args: any[], N: number) => {
+      const A = args[0], v = args[1];
+      // Only the vector is atom-batched (a stays rank-2). If A were
+      // also batched (rank-3) the atom-aware matcher would reject —
+      // its rank constraint is 2 here. So this impl handles exactly
+      // the matrix × [N, n] pattern.
+      if (valueLib.isDiagStored && valueLib.isDiagStored(A)) {
+        // Diag stays on the value-ops mulN pre-check path; reject
+        // here so the caller can densify-and-retry. The variant
+        // matcher rejects struct constraints by default, but we
+        // don't gate on struct in the pattern — instead, route
+        // through value-ops.mulN's diag pre-check explicitly when
+        // diag-stored is detected. For now, throw a clear error so
+        // a missed caller surfaces.
+        throw new Error(
+          'ops.mul.batched(rank-2 × atom-batched rank-1): diag-stored matrix ' +
+          'should route through value-ops.mulN (diag fast-path), not the variant registry');
+      }
+      return vo._matBatchedVecMul(A, v, N);
+    },
+    label: 'mul(rank-2, rank-1) atom-aware → matBatchedVecMul',
+  });
+}
+
+// =====================================================================
 // `mul` direct-wrapping variants (engine-concepts §18.11)
 // =====================================================================
 //
@@ -1564,6 +1707,13 @@ _ensureBroadcastedRegistered();
 // rank-based shape switch that previously lived in valueOps.mul
 // (engine-concepts §18.11).
 _ensureMulDirectRegistered();
+
+// Eagerly register the atom-batched fast-path variants for
+// add/sub/neg/mul (engine-concepts §18.11 — P1 follow-up). Variant
+// `batched` slots make `ops.dispatch` route atom-batched inputs
+// uniformly through the registry; legacy `value-ops.addN/subN/
+// negN/mulN` callers now have a registry path available.
+_ensureAtomBatchedRegistered();
 
 module.exports = {
   // Re-export for tests that want to call the logical impls directly
