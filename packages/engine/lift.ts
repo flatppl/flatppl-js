@@ -488,12 +488,53 @@ function liftInlineSubexpressions(bindings: any) {
         if (a && a.type === 'KeywordArg') {
           if (isRecordLike)             a.value = liftMeasure(a.value);
           else if (opUsesValueKwargs(op)) a.value = liftValue(a.value);
+          // `broadcast(f, name=[lits or refs], …)` (kwarg form of the
+          // surface broadcast surfaces, including dot-notation
+          // f.(name=A, …)). Per spec §04 every kwarg value is a
+          // collection; inline ArrayLiteral collection args block the
+          // classifier (the lowered IR uses `vector(...)` which
+          // ir-shared deliberately omits from EVALUABLE_OPS — see
+          // below for the matching positional-args block). Hoist
+          // those to anon bindings so the classifier sees bare refs.
+          if (op === 'broadcast' && a.value
+              && a.value.type === 'ArrayLiteral'
+              && !containsHoleOrPlaceholder(a.value)) {
+            const name = freshName();
+            out.set(name, makeSyntheticBinding(name, a.value));
+            a.value = makeIdent(name, a.value.loc);
+          }
           continue;
         }
         const expected = sig ? sig[i] : null;
         if      (expected === 'measure')          astNode.args[i] = liftMeasure(a);
         else if (expected === 'value-or-measure') astNode.args[i] = liftMeasureOrValue(a);
         else                                      astNode.args[i] = liftValue(a);
+        // `broadcast(f, [lit_or_ref, …], X, …)` and dot-call /
+        // dotted-operator surfaces all lower through the same
+        // `broadcast` CallExpr (parser.broadcastCall). When a non-head
+        // positional arg is an inline ArrayLiteral (the Ref-wrap idiom
+        // `[C]` or a literal collection `[1.0, 2.0, …]`) the lowered
+        // IR carries it as `vector(<elems>)` — which is deliberately
+        // omitted from `EVALUABLE_OPS` (stochastic-element arrays
+        // keep the `kind:'array'` / `kind:'tuple'` classifier path).
+        // Without lifting the array literal to its own anon binding,
+        // the broadcast's `isEvaluable` recursion sees a non-
+        // evaluable `vector(...)` arg and the classifier yields no
+        // derivation for the parent binding. Hoist the array literal
+        // so the broadcast's arg becomes a bare ref to an anon that
+        // the classifier handles via the kind:'array' / kind:'tuple'
+        // paths (see derivations.ts line 741+).
+        //
+        // i > 0 because args[0] is the callable (function / kernel /
+        // distribution ref); inline ArrayLiteral there would be a
+        // type error.
+        if (op === 'broadcast' && i > 0 && astNode.args[i]
+            && astNode.args[i].type === 'ArrayLiteral'
+            && !containsHoleOrPlaceholder(astNode.args[i])) {
+          const name = freshName();
+          out.set(name, makeSyntheticBinding(name, astNode.args[i]));
+          astNode.args[i] = makeIdent(name, astNode.args[i].loc);
+        }
       }
     }
     if (astNode.kwargs && opUsesValueKwargs(op)) {
