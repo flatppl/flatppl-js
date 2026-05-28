@@ -313,6 +313,40 @@ test('Phase 3 multi-op body: refuses unsafe inner op (mul)', () => {
   assert.equal(out, null);
 });
 
+test('Phase 4 user-fn inlining: single-op user fn dissolves', () => {
+  // `mySum = (a, b) -> a + b` is itself a `functionof` binding. The
+  // dissolver looks up `self.mySum` and inlines, then Phase 3
+  // substitution replaces the placeholders with the broadcast args.
+  const b = getBinding(`
+mySum = (a, b) -> a + b
+A = [1.0, 2.0, 3.0]
+B = [4.0, 5.0, 6.0]
+Y = mySum.(A, B)
+`, 'Y');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'add', 'Y dissolves to direct add(A, B)');
+  assert.equal(b.ir.args[0].name, 'A');
+  assert.equal(b.ir.args[1].name, 'B');
+});
+
+test('Phase 4 user-fn inlining: multi-op user fn dissolves to chain', () => {
+  // The user-fn body is a tree of safe ops; after inlining the
+  // dissolver descends and substitutes the placeholders.
+  const b = getBinding(`
+diff_then_sum = (a, b) -> (a - b) + a
+A = [1.0, 2.0, 3.0]
+B = [4.0, 5.0, 6.0]
+Y = diff_then_sum.(A, B)
+`, 'Y');
+  assert.ok(b && b.ir);
+  assert.equal(b.ir.op, 'add');
+  // outer add( sub(A, B), A )
+  assert.equal(b.ir.args[0].op, 'sub');
+  assert.equal(b.ir.args[0].args[0].name, 'A');
+  assert.equal(b.ir.args[0].args[1].name, 'B');
+  assert.equal(b.ir.args[1].name, 'A');
+});
+
 test('Phase 3 multi-op body: literals pass through', () => {
   // `fn(_arg1_ + 1.0)` — a literal in the body survives substitution.
   const bcIR = {
