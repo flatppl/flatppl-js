@@ -497,6 +497,71 @@ test('aggregate: column-wise reduction infers array(1, ...)', () => {
   assert.ok(T.equal(t.elem, T.REAL));
 });
 
+test('polymorphic-at-call-site: f(scalar, scalar) → scalar; f(array, array) → array', () => {
+  // Spec §sec:functionof. Before B5, user-defined fns were typed
+  // monomorphically at definition with each param as `any`, so call
+  // sites couldn't tighten. After B5, inferUserCall re-infers the
+  // callee's functionof body with the call-site arg types in scope
+  // — the result tightens to match what the body would produce for
+  // those argument types.
+  const { bindings, errors } = infer(`
+    f = (a, b) -> a + b
+    x = f(1, 2)
+    y = f([1.0, 2.0, 3.0], [10.0, 20.0, 30.0])
+    mixed = f(2.0, 3)
+  `);
+  assert.equal(errors.length, 0);
+  // Scalar call: integer + integer → integer (per the existing arith
+  // promotion rules; both operands stay integer).
+  const tx = typeOf(bindings, 'x');
+  assert.equal(tx.kind, 'scalar');
+  assert.equal(tx.prim, 'integer');
+  // Array call: array(1, [3], real) + array(1, [3], real) → array.
+  const ty = typeOf(bindings, 'y');
+  assert.equal(ty.kind, 'array');
+  assert.deepEqual(ty.shape, [3]);
+  assert.ok(T.equal(ty.elem, T.REAL));
+  // Mixed scalar: real + integer → real (promotion).
+  const tmixed = typeOf(bindings, 'mixed');
+  assert.equal(tmixed.kind, 'scalar');
+  assert.equal(tmixed.prim, 'real');
+});
+
+test('polymorphic-at-call-site: recursive call falls back to monomorphic (visiting guard)', () => {
+  // Recursion: if the body calls the same fn, the visiting set
+  // prevents re-entrant body inference (would otherwise infinite-
+  // loop). The polymorphic branch is skipped; the monomorphic
+  // `calleeType.result` is returned. Pinning that no infinite
+  // loop happens AND no spurious error is emitted.
+  const { errors } = infer(`
+    f = (n) -> ifelse(n > 0, f(n - 1) + 1, 0)
+    r = f(3)
+  `);
+  // Either no errors, or only the recursion-related ones — but
+  // critically, no hang.
+  assert.ok(errors.length < 5,
+    'recursive call should not emit a cascade; got ' + errors.length + ' errors');
+});
+
+test('polymorphic-at-call-site: composes with broadcast (inferBroadcast uses polymorphic cell type)', () => {
+  // Demonstrates B5 + the broadcast tightening compose: the user-fn
+  // `square` types its CELL result correctly under arg-specific types,
+  // and inferBroadcast picks up the cell result and stacks across the
+  // broadcast outer shape. Pre-B5 the cell would have come back as
+  // `any` (from the monomorphic path) and we'd default to REAL via
+  // the deferred fallback. Now it's REAL directly.
+  const { bindings, errors } = infer(`
+    square = x -> x * x
+    A = [1.0, 2.0, 3.0]
+    out = square.(A)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'out');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  assert.ok(T.equal(t.elem, T.REAL));
+});
+
 test('broadcasted direct form: broadcasted(f)(A, B) lowers and types as broadcast(f, A, B)', () => {
   // Spec §04: `broadcasted(f)(args) ≡ broadcast(f, args)`. The
   // direct form has the outer call's callee = `broadcasted(f)` (a

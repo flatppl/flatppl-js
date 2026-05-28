@@ -1900,6 +1900,49 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         }
       }
     }
+
+    // Polymorphic-at-call-site (spec §sec:functionof). The
+    // monomorphic `calleeType.result` was computed with each param
+    // typed as `any` at the callee's definition site, which under-
+    // specifies in general. Re-infer the body with the call-site's
+    // actual arg types in scope; that tightens results like
+    // `f([1.0, 2.0]) → array(...)` where the monomorphic path gave
+    // `any`. Falls back to the monomorphic result when re-inference
+    // doesn't sharpen (e.g. recursive calls — body inference re-enters
+    // and bails to deferred via the visiting set — or when the
+    // binding's IR isn't a functionof shape we can walk).
+    const callee = loweredModule.bindings.get(head.name);
+    const calleeIR = callee && callee.rhs;
+    if (calleeIR && calleeIR.kind === 'call' && calleeIR.op === 'functionof'
+        && calleeIR.body && Array.isArray(calleeIR.params)
+        && !visiting.has(head.name)) {
+      const params = calleeIR.params;
+      const paramKwargs = calleeIR.paramKwargs || [];
+      const newScope = new Map<string, any>();
+      for (let i = 0; i < params.length; i++) {
+        let argT: any = T.any();
+        if (i < args.length) {
+          argT = inferExpr(args[i], scopes);
+        } else {
+          const kwName = paramKwargs[i] || params[i];
+          if (kwName in kwargs) {
+            const kw = kwargs[kwName];
+            argT = (kw && kw.__splatType) ? kw.__splatType : inferExpr(kw, scopes);
+          }
+        }
+        newScope.set(params[i], argT);
+      }
+      const polymorphic: any = inferExpr(calleeIR.body, [newScope]);
+      // Only use the polymorphic result when it sharpens — i.e. is
+      // concrete and not failed. If the body re-inference produces
+      // failed / deferred / any, keep the monomorphic `calleeType.result`
+      // so legacy behaviour (the diagnostic-free default-to-deferred
+      // path) is preserved.
+      if (polymorphic && polymorphic.kind !== 'failed'
+          && polymorphic.kind !== 'deferred' && polymorphic.kind !== 'any') {
+        return write(polymorphic, expr);
+      }
+    }
     return write(calleeType.result, expr);
   }
 
