@@ -321,6 +321,15 @@ function dissolveExpr(ir: any, bindings: any): any {
     if (newBody !== ir.body) walked.body = newBody;
     if (newFields) walked.fields = newFields;
   }
+  // Shape-driven constant folding: rewrite shape→value calls
+  // (`indicesof`, `indicesof0`, `sizeof`, `lengthof`) whose argument
+  // has a statically-known shape into a literal vector / integer
+  // (engine-concepts §20.10.6). The fold runs AFTER children are
+  // walked so nested shape calls fold inside-out.
+  if (walked.kind === 'call' && walked.op) {
+    const folded = _foldShapeCall(walked, bindings);
+    if (folded) return folded;
+  }
   // Pattern-match `broadcast(...)` and `aggregate(...)` at THIS
   // level after the children are dissolved.
   if (walked.op === 'broadcast') {
@@ -332,6 +341,143 @@ function dissolveExpr(ir: any, bindings: any): any {
     if (dissolved) return dissolved;
   }
   return walked;
+}
+
+// =====================================================================
+// Shape-driven constant folding (engine-concepts §20.10.6)
+// =====================================================================
+//
+// Folds spec §07 shape→value functions whose argument's shape is
+// statically known into literal IR:
+//
+//   indicesof(X)  → vector(lit_1, …, lit_n)      (1-based axis indices)
+//   indicesof0(X) → vector(lit_0, …, lit_{n-1})  (0-based axis indices)
+//   sizeof(X)     → vector(lit_d_0, …, lit_d_k)  (per-axis sizes)
+//   lengthof(X)   → lit_n                        (first-axis size)
+//
+// Where `n` is X's first-axis size and `d_i` are X's shape dims, all
+// resolved via `_resolveExprType` (the same shape/phase resolver the
+// broadcast / aggregate dissolvers use).
+//
+// **Why this matters architecturally.** Shape-determined values are
+// invariant once the shape is known — they don't need to be recomputed
+// at every materialise. Folding them at lift time gives downstream
+// rewriters (fusion (a) — broadcast-through-reductions, the
+// upcoming `aggregate(R, [axes], substituted_body)` rewrite) a
+// uniform "every dim-derived value is a literal" precondition, so the
+// fusion can substitute placeholder refs into axis-indexed get-
+// expressions without special-casing axis-as-value semantics. (The
+// alternative — introducing a new IR form `axis_value(.j)` — would
+// have required spec uptake; folding to literals stays purely
+// internal and composes with the existing IR vocabulary.)
+//
+// **Backend lowering note.** For a high-perf backend (StableHLO,
+// TF.js), the literal-vector form is recognisable as an `iota`
+// (StableHLO `stablehlo.iota`, TF.js `tf.range`) — a future lowering
+// pass can re-collapse `vector(lit_0, …, lit_{n-1})` back to a range
+// primitive if the backend benefits from it. The JS engine consumes
+// the expanded literal directly via the existing `vector(...)` IR
+// path. The fold therefore IS NOT WASTEFUL: shapes are reused across
+// many atom evaluations of the same model, so the literal materialises
+// once per binding rather than once per atom (per the user's
+// observation that batched outer loops repeatedly walk inner arrays
+// of identical shape).
+//
+// **Length cap.** Refuse the fold when the expanded literal would
+// exceed `_SHAPE_FOLD_MAX_LEN` elements; the runtime path stays for
+// pathologically large axis-index vectors. The cap is conservative —
+// 4096 covers every realistic interactive-model size without
+// bloating the IR or the bundle.
+
+const _SHAPE_FOLD_MAX_LEN = 4096;
+
+// Walk a (possibly nested) array type to collect every concrete dim.
+// `array(1, [m], array(1, [n], real))` → `[m, n]` (matches the
+// runtime `sizeof` behaviour on JS nested arrays, sampler.ts:1372).
+// Returns null if any dim is non-numeric (`%dynamic`, type var, …).
+function _collectAllDims(t: any): number[] | null {
+  const dims: number[] = [];
+  let cur = t;
+  while (cur && cur.kind === 'array') {
+    if (!Array.isArray(cur.shape) || cur.shape.length === 0) return null;
+    for (const d of cur.shape) {
+      if (typeof d !== 'number' || d < 0) return null;
+      dims.push(d);
+    }
+    cur = cur.elem;
+  }
+  return dims;
+}
+
+function _foldShapeCall(ir: any, bindings: any): any | null {
+  if (!ir || ir.kind !== 'call' || !ir.op) return null;
+  const args = ir.args || [];
+  if (args.length !== 1) return null;
+
+  // Single-arg shape→value builtins: indicesof / indicesof0 / sizeof /
+  // lengthof. Each consults `_resolveExprType` for the arg's static
+  // shape. The arg must NOT be a placeholder ref (`%local`) — a
+  // functionof-body fold would happen post-substitution, not here.
+  switch (ir.op) {
+    case 'indicesof':
+    case 'indicesof0':
+    case 'lengthof':
+    case 'sizeof':
+      break;
+    default:
+      return null;
+  }
+
+  const tp = _resolveExprType(args[0], bindings, 0);
+  if (!tp || !tp.type) return null;
+  const t = tp.type;
+
+  // Need an array-typed arg with a static first-axis dim.
+  if (t.kind !== 'array' || !Array.isArray(t.shape) || t.shape.length === 0) {
+    return null;
+  }
+
+  if (ir.op === 'lengthof') {
+    const n = t.shape[0];
+    if (typeof n !== 'number' || n < 0) return null;
+    const out: any = { kind: 'lit', value: n, numType: 'integer' };
+    if (ir.loc) out.loc = ir.loc;
+    return out;
+  }
+
+  if (ir.op === 'sizeof') {
+    // Walk nested array types — `array(1, [m], array(1, [n], real))`
+    // → `[m, n]`. Any non-numeric dim along the walk → refuse.
+    const dims = _collectAllDims(t);
+    if (!dims) return null;
+    const elements: any[] = new Array(dims.length);
+    for (let i = 0; i < dims.length; i++) {
+      elements[i] = { kind: 'lit', value: dims[i], numType: 'integer' };
+    }
+    const out: any = { kind: 'call', op: 'vector', args: elements };
+    if (ir.loc) out.loc = ir.loc;
+    return out;
+  }
+
+  // indicesof / indicesof0: rank-1 single-axis only. The runtime
+  // returns a TUPLE-of-vectors for multi-axis arrays (sampler.ts:
+  // _indicesOfImpl); folding that to literal IR would need a tuple
+  // construction, which we defer. The simple rank-1 case covers
+  // every fusion-(a) use, where the reduction axis is over a flat
+  // vector.
+  if (t.shape.length !== 1) return null;
+  if (t.elem && t.elem.kind === 'array') return null;
+  const n = t.shape[0];
+  if (typeof n !== 'number' || n < 0) return null;
+  if (n > _SHAPE_FOLD_MAX_LEN) return null;
+  const base = ir.op === 'indicesof' ? 1 : 0;
+  const elements: any[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    elements[i] = { kind: 'lit', value: i + base, numType: 'integer' };
+  }
+  const out: any = { kind: 'call', op: 'vector', args: elements };
+  if (ir.loc) out.loc = ir.loc;
+  return out;
 }
 
 // =====================================================================
@@ -1332,4 +1478,5 @@ module.exports = {
   _tryDissolveSingleOp,
   _tryDissolveAggregate,
   _axisStackForIR,
+  _foldShapeCall,
 };

@@ -1144,10 +1144,32 @@ recursive walker; `_tryDissolveSingleOp(bcIR, bindings)` and
   anon bindings (which lift creates without inferredType), so
   multi-step chains like `(a .* b) .+ c` dissolve end-to-end.
 
+**Shape-driven constant folding (engine-concepts §20.10.7).**
+`_foldShapeCall(ir, bindings)` runs inside `dissolveExpr` after each
+subtree's children are walked; folds spec §07 shape→value functions
+into literal IR when the input's shape is statically known:
+- `lengthof(X)` → integer literal (first-axis size).
+- `sizeof(X)` → literal vector of all dims; walks nested array
+  types so `sizeof([[1,2,3],[4,5,6]])` folds to `vector(2, 3)`
+  (matching the runtime's nested-JS-array walk in `sampler.sizeof`).
+- `indicesof(X)` / `indicesof0(X)` → `vector(lit_1…lit_n)` /
+  `vector(lit_0…lit_{n-1})`; rank-1 single-axis only (the multi-
+  axis tuple-of-vectors form is deferred).
+- Refusals: `%dynamic`, `%local` placeholders, oversize expansion
+  (`_SHAPE_FOLD_MAX_LEN = 4096`). The runtime path stays.
+
+The fold is the architectural prerequisite for fusion (a) —
+broadcast-through-reductions — letting the upcoming
+`broadcast(fn, args)` → `aggregate(R, [outer_axes], body)` rewrite
+treat axis-derived values as ordinary literals rather than
+needing a new "axis-as-value" IR form.
+
 **Tests.** `test/dissolution.test.ts` (~270 lines) pins the
 structural matcher in isolation plus end-to-end behaviour on
 dotted-binary surfaces, refusal of unsafe ops, mismatched
 types/phases, multi-op bodies, and user-fn inlining.
+`test/shape-fold.test.ts` (17 tests) pins the shape-folding
+pass.
 
 **Axis-stack annotation (P3a, engine-concepts §18.11 / §20.10.5
 item 4).** After the dissolution rewrites settle,
