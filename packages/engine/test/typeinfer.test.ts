@@ -701,16 +701,42 @@ test('aggregate: outer-product (no reduction) infers rank-2', () => {
   assert.ok(T.equal(t.elem, T.REAL));
 });
 
-test('broadcast: kernel-broadcast stays deferred so joint/draw still accept it', () => {
-  // `broadcast(K, ...)` is semantically an array of measures, but
-  // tightening that would tip joint/draw's measure-typecheck into
-  // rejecting the result. inferBroadcast deliberately falls back to
-  // deferred whenever the function arg isn't a value-producing
-  // synthesized functionof — see typeinfer.ts comments.
+test('broadcast: kernel-broadcast tightens to measure(array(...))', () => {
+  // Spec §04: "broadcast(kernel, ...) returns an array-valued
+  // measure: the independent product measure of the kernel
+  // applications at each array position." Mirrors iid's typing —
+  // the result is a measure over arrays of the kernel's domain
+  // element type, sized by the broadcast outer shape.
+  //
+  // Before B6 this returned deferred (the previous comment claimed
+  // joint/draw needed deferred to accept the result; in fact spec §06
+  // makes them accept any measure — measure(array(...)) is a measure,
+  // so they accept it the same way they accept iid's result).
   const { bindings, errors } = infer(`
     A = [1.0, 2.0, 3.0]
     K = fn(Normal(mu = _, sigma = 0.1))
+    D = broadcast(K, A)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'D');
+  assert.equal(t.kind, 'measure',
+    'kernel-broadcast result should be a measure; got ' + JSON.stringify(t));
+  // Domain is array(1, [3], real) — the per-cell variate type
+  // (real, from Normal) wrapped in an array of the broadcast shape.
+  assert.equal(t.domain.kind, 'array');
+  assert.deepEqual(t.domain.shape, [3]);
+});
+
+test('broadcast: kernel-broadcast via ~ (draw) still works after tightening', () => {
+  // joint / draw accept any measure — measure(array(...)) is the
+  // proper measure type for the kernel-broadcast result, so `D ~
+  // broadcast(K, A)` continues to flow naturally and D ends up
+  // value-typed as the variate of the product measure.
+  const { errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    K = fn(Normal(mu = _, sigma = 0.1))
     D ~ broadcast(K, A)
+    j = joint(d = broadcast(K, A))
   `);
   assert.equal(errors.length, 0);
 });

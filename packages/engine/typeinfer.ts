@@ -1334,11 +1334,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       return T.deferred();
     }
     if (elem && elem.kind === 'failed') return T.failed('broadcast cascade');
-    // Defensive: if the cell type came back as measure-shaped, stay
-    // on the deferred passthrough (same reasoning as bare distribution).
-    if (elem && elem.kind === 'measure') return T.deferred();
 
-    // Phase 5: combine.
+    // Kernel-broadcast result type (spec §04 "broadcast(kernel, ...)
+    // returns an array-valued measure: the independent product measure
+    // of the kernel applications at each array position"). At the type
+    // level: a measure over an array whose shape is the broadcast outer
+    // shape and whose element type is the kernel's per-cell variate
+    // type. Mirrors how iid is typed (see inferIid).
+    if (elem && elem.kind === 'measure') {
+      if (!hasCollection) return elem;   // no outer axis ⇒ single call
+      return T.measure(
+        T.array(outerShape!.length, outerShape!.slice(), elem.domain));
+    }
+
+    // Phase 5: combine for the value-broadcast (non-kernel) case.
     const concrete = elem && elem.kind !== 'deferred' && elem.kind !== 'any';
     if (!hasCollection) {
       // No collection args ⇒ single call; result = cell-result.
