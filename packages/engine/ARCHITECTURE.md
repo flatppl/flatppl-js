@@ -1668,8 +1668,12 @@ writes explicitly via `broadcasted(op)(args)`), the
   any rank; no per-cell `evaluateExpr` reentry.
 
 `_broadcastApply` remains as the cold path for everything the fast
-path doesn't catch — see "What's still on the `_broadcastApply` cold
-path" in `flatppl-dev/TODO-flatppl-js.md` for the full audit.
+path doesn't catch — see "What's still on the cold path" in
+`flatppl-dev/TODO-flatppl-js.md` for the full audit. Most cold-path
+cases are fusable in principle (including kernel-broadcast — the
+outer broadcast axis can be pushed through the kernel body's ops
+the same way value-broadcast pushes through a `functionof` body);
+they're cold TODAY pending dissolution-side work.
 
 `valueOps` is the canonical batched-primitive surface:
 - Elementwise ops (add, sub, neg) operate on flat row-major data
