@@ -724,12 +724,82 @@ function _vectorLogical(...xs: any[]): any {
     const t = typeof xs[i];
     if (t !== 'number' && t !== 'boolean') { allScalar = false; break; }
   }
-  if (!allScalar) return xs;
-  const data = new Float64Array(xs.length);
-  for (let i = 0; i < xs.length; i++) {
-    data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
+  if (allScalar) {
+    const data = new Float64Array(xs.length);
+    for (let i = 0; i < xs.length; i++) {
+      data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
+    }
+    return { shape: [xs.length], data: data };
   }
-  return { shape: [xs.length], data: data };
+  // Nested-vector path (`vector(V1, V2, …)` where each Vi is itself
+  // a Value or vector-like). When all elements share the same inner
+  // shape, collapse into a flat shape-explicit Value with an
+  // explicit `outerRank=1` tag — the §2.1 engine-wide storage
+  // convention. The tag distinguishes a length-N nested-vector
+  // (outerRank=1, inner shape S) from a flat rank-(1+|S|) tensor
+  // (no outerRank tag → every axis is a loop axis) per spec §03's
+  // "vectors of vectors are not interpreted as matrices implicitly".
+  //
+  // Falls back to the legacy JS-array-of-Values form when shapes
+  // don't agree, or when an element isn't array-like (records,
+  // tuples, kernels, mixed scalar+non-scalar) — downstream
+  // consumers (`rowstack`, `colstack`, matrix linalg) still
+  // accept both representations via `valueLib.asVectorOfVectors`.
+  let innerShape: number[] | null = null;
+  // Track each arg's own explicit outerRank tag so the wrapper's
+  // outerRank can STACK on top: `[[C]]` (= vector(vector(C))) has
+  // outerRank=2 because the inner `vector(C)` is itself a tagged
+  // nested vector (outerRank=1). The new wrapping adds one more
+  // outer axis ON TOP of the existing nesting.
+  //
+  // Untagged args (no `outerRank` field — flat vectors, scalars,
+  // typed-arrays, JS arrays) are treated as a SINGLE cell. New
+  // outerRank = 1, cell = arg.shape. The user's `[C]` lifts C
+  // into a length-1 nested vector with C as the sole cell.
+  let stackOuterRank: number | null = null;
+  for (let i = 0; i < xs.length; i++) {
+    const v = xs[i];
+    let s: number[] | null = null;
+    let nestedTag: number = 0;
+    if (v && Array.isArray(v.shape) && v.data instanceof Float64Array) {
+      s = v.shape;
+      // Only an EXPLICIT tag stacks; untagged Values are cells.
+      nestedTag = (typeof v.outerRank === 'number') ? v.outerRank : 0;
+    } else if (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number') {
+      s = [v.length];
+    } else if (Array.isArray(v)) {
+      s = [v.length];
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      return xs;
+    } else {
+      return xs;
+    }
+    if (innerShape === null) { innerShape = s; stackOuterRank = nestedTag; }
+    else {
+      if (s.length !== innerShape.length) return xs;
+      for (let a = 0; a < s.length; a++) if (s[a] !== innerShape[a]) return xs;
+      // Ragged stacking across args ⇒ fall back to JS-array form.
+      if (nestedTag !== stackOuterRank) return xs;
+    }
+  }
+  if (innerShape === null) return xs;
+  const innerLen = innerShape.reduce((a: number, b: number) => a * b, 1);
+  const out = new Float64Array(xs.length * innerLen);
+  for (let i = 0; i < xs.length; i++) {
+    const v = xs[i];
+    if (v && Array.isArray(v.shape) && v.data instanceof Float64Array) {
+      out.set(v.data, i * innerLen);
+    } else if (v && v.BYTES_PER_ELEMENT !== undefined) {
+      for (let k = 0; k < innerLen; k++) out[i * innerLen + k] = +(v as any)[k];
+    } else if (Array.isArray(v)) {
+      for (let k = 0; k < innerLen; k++) out[i * innerLen + k] = +v[k];
+    }
+  }
+  return {
+    shape: [xs.length].concat(innerShape as number[]),
+    data: out,
+    outerRank: 1 + (stackOuterRank || 0),
+  };
 }
 
 ops.register({

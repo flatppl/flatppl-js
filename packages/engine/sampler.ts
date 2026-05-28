@@ -631,11 +631,22 @@ const ARITH_OPS = {
   // `mul`/`add`/`sub` on rowstack outputs would fall through the
   // valueLib.isValue branch and yield NaN.
   rowstack: (vs: any) => {
+    // Accept BOTH input forms (engine-concepts §2.1 C7):
+    //   - Legacy JS array of inner Values / Float64Arrays / JS arrays
+    //   - Tagged nested-vector Value: shape=[N, k], outerRank=1.
+    //     This is what `vector(V1, V2, …)` now produces when its
+    //     args are themselves Values.
+    // Both denote the same vec-of-vecs; output is always a flat
+    // rank-2 matrix Value (no outerRank tag — every axis is a
+    // loop axis at the matrix level).
+    if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
+      // Fast path: storage layout is already row-major-rows. Strip
+      // the outerRank tag to expose the value AS a matrix.
+      return { shape: vs.shape.slice(), data: vs.data };
+    }
     if (!Array.isArray(vs) || vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
     }
-    // Accept either a JS array of rows (each a JS array or a rank-1
-    // Value) or a single Value that's a vector-of-vectors view.
     const m = vs.length;
     const firstRow = vs[0];
     const n = valueLib.isValue(firstRow) ? firstRow.shape[firstRow.shape.length - 1]
@@ -653,6 +664,22 @@ const ARITH_OPS = {
     return { shape: [m, n], data: data };
   },
   colstack: (vs: any) => {
+    // Symmetric to rowstack but writes the input columns into the
+    // output matrix's columns (i.e. transposes the storage layout).
+    // For a tagged nested-vector Value the row-major storage holds
+    // each "column" contiguously, so we must walk it explicitly
+    // rather than just stripping the tag.
+    if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
+      const colsN = vs.shape[0];
+      const m = vs.shape[1];
+      const out = new Float64Array(m * colsN);
+      for (let c = 0; c < colsN; c++) {
+        for (let i = 0; i < m; i++) {
+          out[i * colsN + c] = vs.data[c * m + i];
+        }
+      }
+      return { shape: [m, colsN], data: out };
+    }
     if (!Array.isArray(vs) || vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
     }

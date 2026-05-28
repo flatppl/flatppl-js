@@ -268,6 +268,105 @@ function isBatched(v: any, N: number) {
   return v.shape.length > 0 && v.shape[0] === N;
 }
 
+// =====================================================================
+// Nested-vector tag (engine-concepts §2.1, outerRank)
+// =====================================================================
+//
+// Optional `Value.outerRank` field: number of LEADING axes that are
+// "outer" / "loop" / "nested-collection" axes. The remaining
+// trailing axes are the "inner" / "cell" axes — what each loop cell
+// holds.
+//
+// When the tag is absent, the value is a flat tensor: every axis is
+// a loop axis (cell = scalar). When set:
+//
+//   outerRank = 1, shape = [N]                    → flat vector of N scalars
+//                                                   (equivalent to absent)
+//   outerRank = 1, shape = [N, k]                 → nested vector:
+//                                                   N inner vectors of length k
+//   outerRank = 1, shape = [N, m, n]              → nested vector:
+//                                                   N inner m×n matrices
+//   outerRank = 2, shape = [N, M, k]              → 2-D nested vector:
+//                                                   N×M outer loop axes,
+//                                                   inner length-k vectors
+//
+// Per spec §03: "vectors of vectors are not interpreted as matrices
+// implicitly". The outerRank tag is how the engine carries that
+// distinction at the runtime-value level — without it, a Value with
+// shape [N, k] could equally be a matrix (outerRank absent, every
+// axis a loop axis from a broadcast's POV) OR a nested vector
+// (outerRank=1, length-N collection of length-k vectors). Operations
+// that care about the distinction (broadcast, type inference, matrix
+// linear algebra) consult the tag.
+function outerRankOf(v: any): number {
+  if (!v || !Array.isArray(v.shape)) return 0;
+  return (typeof v.outerRank === 'number') ? v.outerRank : v.shape.length;
+}
+
+// "Is this Value a nested vector?" — true iff outerRank is explicitly
+// set AND less than shape.length (i.e. there are inner axes).
+function isNestedVectorValue(v: any): boolean {
+  return !!v && typeof v.outerRank === 'number'
+    && Array.isArray(v.shape)
+    && v.outerRank < v.shape.length;
+}
+
+// Inner-shape (cell-shape) of a tagged value. Returns the trailing
+// axes after the outer-rank split. For a flat tensor (tag absent or
+// outerRank == shape.length) this is `[]`.
+function innerShapeOf(v: any): number[] {
+  if (!isValue(v)) return [];
+  const r = outerRankOf(v);
+  return v.shape.slice(r);
+}
+
+// Outer-shape (loop-axis shape) of a tagged value. The leading
+// `outerRank` entries of `shape`.
+function outerShapeOf(v: any): number[] {
+  if (!isValue(v)) return [];
+  const r = outerRankOf(v);
+  return v.shape.slice(0, r);
+}
+
+// Cheap helper used by linear-algebra ops that accept "vector of
+// vectors" inputs (rowstack, colstack, matvec when the matrix is
+// given as a vec-of-vecs, …). Detects either form:
+//   (a) Legacy JS array of inner Values/scalars (host-shape form).
+//   (b) Tagged nested-vector Value (outerRank=1, shape=[N, ...inner]).
+//
+// Returns `{ kind: 'js-array', items }` or `{ kind: 'nested-value',
+// V }`, or `null` if `v` isn't a vector-of-vectors-shaped input.
+function asVectorOfVectors(v: any): any {
+  if (Array.isArray(v) && v.length > 0) {
+    // JS-array form (legacy). Caller iterates `v[i]` directly.
+    return { kind: 'js-array', items: v };
+  }
+  if (isValue(v) && isNestedVectorValue(v)) {
+    return { kind: 'nested-value', V: v };
+  }
+  return null;
+}
+
+// Extract the i-th row of a vector-of-vectors as a Value (for
+// tagged form) or whatever the JS-array's i-th element is (for
+// legacy form). For tagged form: slice the inner shape out of
+// the flat buffer; for JS-array form: return the element as-is.
+function vovRowAt(vov: any, i: number): any {
+  if (vov.kind === 'js-array') return vov.items[i];
+  const V = vov.V;
+  const inner = innerShapeOf(V);
+  const innerLen = inner.reduce((a: number, b: number) => a * b, 1);
+  const slice = new Float64Array(innerLen);
+  for (let k = 0; k < innerLen; k++) slice[k] = V.data[i * innerLen + k];
+  return { shape: inner.slice(), data: slice };
+}
+
+// Length (outer-axis size, i.e. number of inner vectors).
+function vovLength(vov: any): number {
+  if (vov.kind === 'js-array') return vov.items.length;
+  return vov.V.shape[0];
+}
+
 // ---------------------------------------------------------------------
 // Klein-4 tag operations: transpose / adjoint / conjugate
 // ---------------------------------------------------------------------
@@ -641,6 +740,14 @@ module.exports = {
   getImag: getImag,
   isBatched: isBatched,
   numel: numel,
+  // outerRank / nested-vector tag (engine-concepts §2.1)
+  outerRankOf: outerRankOf,
+  isNestedVectorValue: isNestedVectorValue,
+  innerShapeOf: innerShapeOf,
+  outerShapeOf: outerShapeOf,
+  asVectorOfVectors: asVectorOfVectors,
+  vovRowAt: vovRowAt,
+  vovLength: vovLength,
   // structured-matrix tag (orthogonal to the Klein-4 tag)
   ST_LOWER: ST_LOWER, ST_DIAG: ST_DIAG, ST_UPPER: ST_UPPER,
   ST_UNIT: ST_UNIT, ST_SYM: ST_SYM, ST_POSDEF: ST_POSDEF,
