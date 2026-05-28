@@ -34,10 +34,13 @@ const assert = require('node:assert/strict');
 
 const materialiser = require('../materialiser.ts');
 
-// Reset the pipeline before every test so test ordering can't leak
-// state.
+// Clear the pipeline before every test so test ordering can't leak
+// state. `_clearMaterialiserPipeline` removes ALL stages (including
+// the default callable-guard / fixed-phase stages). Tests then
+// register their own synthetic stages. Production callers use
+// `_resetMaterialiserPipeline()` which reinstalls defaults.
 function freshPipeline() {
-  materialiser._resetMaterialiserPipeline();
+  materialiser._clearMaterialiserPipeline();
 }
 
 // =====================================================================
@@ -171,9 +174,45 @@ test('_resetMaterialiserPipeline clears registered stages', async () => {
 });
 
 // =====================================================================
-// 6. Existing materialiser tests pass (delegated to the full test
-//    suite — listed here as a reminder that the default empty
-//    pipeline is transparent).
+// 6. Default stage migration: callable-guard + fixed-phase live as stages
+// =====================================================================
+
+test('default pipeline installs callableGuardStage + fixedPhaseStage', async () => {
+  // Reset reinstalls the defaults (clearing first then re-running
+  // _installDefaultMaterialiserStages). Drive the pipeline with a
+  // ctx that triggers the callable-guard rejection.
+  materialiser._resetMaterialiserPipeline();
+  const ctx: any = {
+    bindings: new Map([['polyeval', { type: 'fchain' }]]),
+    derivations: {},
+  };
+  await assert.rejects(
+    () => materialiser._runPipeline('polyeval', ctx),
+    /callable-layer binding 'polyeval'/);
+});
+
+test('default pipeline: fixedPhaseStage short-circuits with a fixed value', async () => {
+  materialiser._resetMaterialiserPipeline();
+  // fixedValueToMeasure produces an EmpiricalMeasure for the value;
+  // we just check the pipeline RESOLVES (rather than rejecting via
+  // kindDispatch's "no derivation" path) when fixedValues carries
+  // the binding.
+  const ctx: any = {
+    fixedValues: new Map([['c', 3.14]]),
+    sampleCount: 4,
+    bindings: new Map([['c', {}]]),
+    derivations: {},  // no derivation, but fixedPhase short-circuits
+  };
+  const m: any = await materialiser._runPipeline('c', ctx);
+  // The result is whatever fixedValueToMeasure produced for the
+  // scalar; we just confirm it's defined (the stage fired).
+  assert.ok(m, 'fixedPhaseStage produced a measure record');
+});
+
+// =====================================================================
+// 7. Existing materialiser tests pass (delegated to the full test
+//    suite — listed here as a reminder that the default pipeline
+//    preserves backward-compat).
 // =====================================================================
 //
 // `npm test` covers ~2500 materialiser-dependent tests; the default

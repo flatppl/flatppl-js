@@ -597,9 +597,25 @@ function registerMaterialiserStage(stage: MaterialiserStage): void {
   _MATERIALISER_PIPELINE.push(stage);
 }
 
-// Reset to default (only the terminal kindDispatch stage). Exported
-// for tests that add stages and need a clean slate.
+// Reset to default state — clears stages then reinstalls the
+// default pre-dispatch guards (callable-layer rejection + fixed-
+// phase short-circuit). Used in tests that register transient
+// stages and want to restore working production state.
 function _resetMaterialiserPipeline(): void {
+  _MATERIALISER_PIPELINE.length = 0;
+  // Defaults are installed once at module load by
+  // _installDefaultMaterialiserStages; re-install them here so
+  // post-reset state is operational, not bare.
+  if (typeof _installDefaultMaterialiserStages === 'function') {
+    _installDefaultMaterialiserStages();
+  }
+}
+
+// Clear ALL stages, including the default pre-dispatch guards.
+// Tests that want a truly empty pipeline (and will manually drive
+// `_runPipeline` with their own terminal stage) use this. Production
+// code should never call this.
+function _clearMaterialiserPipeline(): void {
   _MATERIALISER_PIPELINE.length = 0;
 }
 
@@ -635,16 +651,15 @@ function _runPipeline(name: string, ctx: any): Promise<EmpiricalMeasure> {
   return chain(name, ctx);
 }
 
-function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
-  // Callable-layer early-rejection gate (engine-concepts §19.2 +
-  // §19.5). Bindings in the function or kernel layer (functionof /
-  // kernelof / fn / bijection / fchain — and, when its inferredType
-  // is kernelType, a kernel-first jointchain/kchain) are not
-  // materialisable as a closed measure. They're consulted by name at
-  // density / sample dispatch. The gate consolidates what used to be
-  // per-handler defensive throws (matJointchain's kernel-first reject,
-  // etc.) into one diagnostic at the entry point — same observable
-  // behaviour, single source of truth.
+// Callable-layer rejection stage (engine-concepts §19.2 + §19.5).
+// Bindings in the function or kernel layer (functionof / kernelof /
+// fn / bijection / fchain — and, when its inferredType is
+// kernelType, a kernel-first jointchain/kchain) are not
+// materialisable as a closed measure. They're consulted by name at
+// density / sample dispatch. The gate consolidates what used to be
+// per-handler defensive throws into one diagnostic at the pipeline
+// front.
+const callableGuardStage: MaterialiserStage = function (name, ctx, next) {
   const binding = ctx.bindings && ctx.bindings.get(name);
   const isCallableByTag = binding && isFunctionLikeBinding(binding);
   const isCallableByType = binding && isCallableLayerBinding(binding);
@@ -655,20 +670,43 @@ function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
       + " is not materialisable as a closed measure (engine-concepts §19); "
       + "it is consulted by name at density / sample dispatch."));
   }
-  // Fixed-phase short-circuit. The orchestrator's pre-eval may have
-  // computed a value (a scalar from a deterministic expression, an
-  // array from rand, a record from a literal). Synthesize the measure
-  // record directly; the worker never has to see fixed-phase values.
+  return next(name, ctx);
+};
+callableGuardStage.label = 'callableGuard';
+
+// Fixed-phase short-circuit stage. The orchestrator's pre-eval may
+// have computed a value (a scalar from a deterministic expression,
+// an array from rand, a record from a literal). Synthesise the
+// measure record directly; the worker never has to see fixed-phase
+// values. Opaque fixed values (rngstate) fall through to the next
+// stage — if the binding has no derivation either, the kindDispatch
+// stage rejects cleanly.
+const fixedPhaseStage: MaterialiserStage = function (name, ctx, next) {
   if (ctx.fixedValues && ctx.fixedValues.has(name)) {
     const fxm = fixedValueToMeasure(ctx.fixedValues.get(name), ctx.sampleCount);
     if (fxm) return Promise.resolve(fxm);
-    // Opaque fixed value (rngstate) — fall through; if the binding has
-    // no derivation either, the next check rejects cleanly.
   }
-  // Run the materialiser pipeline (P3b). When no stages are
-  // registered, this is exactly the previous direct-dispatch path
-  // — `_runPipeline` reduces to `kindDispatchStage`. Registered
-  // pre-dispatch stages can wrap, short-circuit, or instrument.
+  return next(name, ctx);
+};
+fixedPhaseStage.label = 'fixedPhaseShortCircuit';
+
+// Default pipeline ships with the two pre-dispatch stages above,
+// in callable-guard → fixed-phase → kindDispatch order. Tests that
+// need a clean slate call `_resetMaterialiserPipeline()` first, then
+// re-register if they want the defaults back via
+// `_installDefaultMaterialiserStages()`.
+function _installDefaultMaterialiserStages(): void {
+  registerMaterialiserStage(callableGuardStage);
+  registerMaterialiserStage(fixedPhaseStage);
+}
+_installDefaultMaterialiserStages();
+
+function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
+  // Pre-dispatch guards (callable-layer rejection, fixed-phase
+  // short-circuit) plus the terminal kindDispatch all live in the
+  // pipeline now. Each concern composes orthogonally; new concerns
+  // (tracing, MCMC handlers, gradient capture) add stages without
+  // touching this function.
   return _runPipeline(name, ctx);
 }
 
@@ -735,7 +773,11 @@ module.exports = {
   // kindDispatch stage. Stages call `next(name, ctx)` to forward.
   registerMaterialiserStage,
   _resetMaterialiserPipeline,
+  _clearMaterialiserPipeline,
+  _installDefaultMaterialiserStages,
   kindDispatchStage,
+  callableGuardStage,
+  fixedPhaseStage,
   _runPipeline,
   // Helpers exposed for the viewer's plot-plan fallbacks (which
   // sometimes need to compose the same primitives outside the kind-
