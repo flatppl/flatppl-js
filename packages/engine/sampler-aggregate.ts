@@ -870,7 +870,20 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
   mul:    (x, y) => x * y,
   div:    (x, y) => x / y,
   divide: (x, y) => x / y,
-  pow:    (x, y) => Math.pow(x, y),
+  pow:    (x, y) => {
+    // Math.pow is ~100 ns per call; for the common integer-exponent
+    // cases (polyeval / indexof0 patterns produce exponents 0, 1, 2,
+    // 3) repeated mul is 10–20× faster. Falls through to Math.pow
+    // for non-small / non-integer exponents.
+    if (y === (y | 0)) {
+      if (y === 0) return 1;
+      if (y === 1) return x;
+      if (y === 2) return x * x;
+      if (y === 3) return x * x * x;
+      if (y === 4) { const x2 = x * x; return x2 * x2; }
+    }
+    return Math.pow(x, y);
+  },
   mod:    (x, y) => x % y,
 };
 
@@ -901,6 +914,56 @@ function _broadcastBinary(
   const aStrides = _broadcastStrides(a.shape, outShape);
   const bStrides = _broadcastStrides(b.shape, outShape);
   const out = new Float64Array(outSize);
+  // Fast paths: rank-specific nested loops — much friendlier to V8's
+  // JIT than the generic coord-walker. The aggregate runtime hits
+  // rank-3 most often (one atom dim + one output axis + one reduce
+  // axis), and rank-2 for value-domain broadcasts. The generic
+  // fallback handles ranks 0, 1, and ≥4.
+  if (N === 3) {
+    const D0 = outShape[0], D1 = outShape[1], D2 = outShape[2];
+    const aS0 = aStrides[0], aS1 = aStrides[1], aS2 = aStrides[2];
+    const bS0 = bStrides[0], bS1 = bStrides[1], bS2 = bStrides[2];
+    const aData = a.data, bData = b.data;
+    let outIdx = 0;
+    for (let i0 = 0; i0 < D0; i0++) {
+      const aOff0 = i0 * aS0, bOff0 = i0 * bS0;
+      for (let i1 = 0; i1 < D1; i1++) {
+        const aOff1 = aOff0 + i1 * aS1, bOff1 = bOff0 + i1 * bS1;
+        for (let i2 = 0; i2 < D2; i2++) {
+          out[outIdx++] = fn(aData[aOff1 + i2 * aS2], bData[bOff1 + i2 * bS2]);
+        }
+      }
+    }
+    return { data: out, shape: outShape };
+  }
+  if (N === 2) {
+    const D0 = outShape[0], D1 = outShape[1];
+    const aS0 = aStrides[0], aS1 = aStrides[1];
+    const bS0 = bStrides[0], bS1 = bStrides[1];
+    const aData = a.data, bData = b.data;
+    let outIdx = 0;
+    for (let i0 = 0; i0 < D0; i0++) {
+      const aOff0 = i0 * aS0, bOff0 = i0 * bS0;
+      for (let i1 = 0; i1 < D1; i1++) {
+        out[outIdx++] = fn(aData[aOff0 + i1 * aS1], bData[bOff0 + i1 * bS1]);
+      }
+    }
+    return { data: out, shape: outShape };
+  }
+  if (N === 1) {
+    const D0 = outShape[0];
+    const aS0 = aStrides[0], bS0 = bStrides[0];
+    const aData = a.data, bData = b.data;
+    for (let i0 = 0; i0 < D0; i0++) {
+      out[i0] = fn(aData[i0 * aS0], bData[i0 * bS0]);
+    }
+    return { data: out, shape: outShape };
+  }
+  if (N === 0) {
+    out[0] = fn(a.data[0], b.data[0]);
+    return { data: out, shape: outShape };
+  }
+  // Generic coord-walker for rank ≥4.
   const coord = new Array(N).fill(0);
   for (let linear = 0; linear < outSize; linear++) {
     let aOff = 0, bOff = 0;
@@ -1180,11 +1243,40 @@ function _evalAggregateBroadcastReduceN(
   }
   const reduceSize = _shapeProd(reduceAxes.map((a: string) => axisLengths[a]));
   const outData = new Float64Array(outSize);
-  const tmp = new Float64Array(reduceSize);
-  for (let i = 0; i < outSize; i++) {
-    const base = i * reduceSize;
-    for (let j = 0; j < reduceSize; j++) tmp[j] = full.data[base + j];
-    outData[i] = _applyAggregateReduction(fname!, tmp, reduceSize);
+  // Fast paths for sum / mean / prod: inline tight reduce loop
+  // (no tmp-copy + no per-cell function call). The generic path
+  // (tmp + _applyAggregateReduction) handles var / std / min / max
+  // which need either two passes or a per-cell function call anyway.
+  const fdata = full.data;
+  if (fname === 'sum') {
+    for (let i = 0; i < outSize; i++) {
+      const base = i * reduceSize;
+      let acc = 0;
+      for (let j = 0; j < reduceSize; j++) acc += fdata[base + j];
+      outData[i] = acc;
+    }
+  } else if (fname === 'mean') {
+    const invN = 1 / reduceSize;
+    for (let i = 0; i < outSize; i++) {
+      const base = i * reduceSize;
+      let acc = 0;
+      for (let j = 0; j < reduceSize; j++) acc += fdata[base + j];
+      outData[i] = acc * invN;
+    }
+  } else if (fname === 'prod') {
+    for (let i = 0; i < outSize; i++) {
+      const base = i * reduceSize;
+      let acc = 1;
+      for (let j = 0; j < reduceSize; j++) acc *= fdata[base + j];
+      outData[i] = acc;
+    }
+  } else {
+    const tmp = new Float64Array(reduceSize);
+    for (let i = 0; i < outSize; i++) {
+      const base = i * reduceSize;
+      for (let j = 0; j < reduceSize; j++) tmp[j] = fdata[base + j];
+      outData[i] = _applyAggregateReduction(fname!, tmp, reduceSize);
+    }
   }
   return { shape: outShape, data: outData };
 }
@@ -1446,14 +1538,56 @@ function _alignedTensorFromGetN(
     }
   }
 
-  // Materialise the aligned tensor.
+  // Materialise the aligned tensor. Rank-specific fast paths (1-3)
+  // beat the generic coord-walker by ~10× because V8 JITs the
+  // nested-loop form much better than the per-element coord-stride
+  // recomputation. Rank 3 is the hot case for fusion (a) Step 2's
+  // canonical output (atom × outer × reduce axes).
   const alignedSize = _shapeProd(alignedShape);
   const out = new Float64Array(alignedSize);
+  const srcData = src.data;
+  if (M === 3) {
+    const D0 = alignedShape[0], D1 = alignedShape[1], D2 = alignedShape[2];
+    const S0 = sourceStrideAt[0], S1 = sourceStrideAt[1], S2 = sourceStrideAt[2];
+    let idx = 0;
+    for (let i0 = 0; i0 < D0; i0++) {
+      const off0 = baseOffset + i0 * S0;
+      for (let i1 = 0; i1 < D1; i1++) {
+        const off1 = off0 + i1 * S1;
+        for (let i2 = 0; i2 < D2; i2++) {
+          out[idx++] = srcData[off1 + i2 * S2];
+        }
+      }
+    }
+    return { data: out, shape: alignedShape };
+  }
+  if (M === 2) {
+    const D0 = alignedShape[0], D1 = alignedShape[1];
+    const S0 = sourceStrideAt[0], S1 = sourceStrideAt[1];
+    let idx = 0;
+    for (let i0 = 0; i0 < D0; i0++) {
+      const off0 = baseOffset + i0 * S0;
+      for (let i1 = 0; i1 < D1; i1++) {
+        out[idx++] = srcData[off0 + i1 * S1];
+      }
+    }
+    return { data: out, shape: alignedShape };
+  }
+  if (M === 1) {
+    const D0 = alignedShape[0], S0 = sourceStrideAt[0];
+    for (let i0 = 0; i0 < D0; i0++) out[i0] = srcData[baseOffset + i0 * S0];
+    return { data: out, shape: alignedShape };
+  }
+  if (M === 0) {
+    out[0] = srcData[baseOffset];
+    return { data: out, shape: alignedShape };
+  }
+  // Generic fallback (rank ≥4).
   const coord = new Array(M).fill(0);
   for (let linear = 0; linear < alignedSize; linear++) {
     let srcOff = baseOffset;
     for (let i = 0; i < M; i++) srcOff += coord[i] * sourceStrideAt[i];
-    out[linear] = src.data[srcOff];
+    out[linear] = srcData[srcOff];
     for (let i = M - 1; i >= 0; i--) {
       coord[i]++;
       if (coord[i] < alignedShape[i]) break;
