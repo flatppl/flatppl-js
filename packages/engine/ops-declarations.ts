@@ -282,6 +282,35 @@ function _traceLogical(M: any): any {
   return s;
 }
 
+// Batched fast-path: atom-batched matrix `[N, m, m]` → atom-batched
+// scalar `[N]`. Iterates once over the flat row-major buffer reading
+// only diagonal positions (i*m + i, atom-strided). Complex falls
+// back to per-atom slicing (rare; trace of complex matrices isn't
+// part of the hot loop today).
+function _traceBatchedOrFallback(args: any[], N: number): any | null {
+  const M = args[0];
+  if (!valueLib.isValue(M)) return null;
+  if (M.dtype === 'complex') return null;
+  if (valueLib.isDiagStored(M)) return null;   // logical handles diag
+  if (M.shape.length !== 3) return null;
+  const m = M.shape[1];
+  if (M.shape[2] !== m) return null;
+  // Densify if any structural tag (lower / upper / sym / posdef)
+  // is set — the diagonal is still in `data[i*m + i]` after
+  // densification, but the structured-bit fast paths aren't
+  // applicable to a reduction.
+  const D = valueLib.densify(M);
+  const stride = m * m;
+  const out = new Float64Array(N);
+  for (let atom = 0; atom < N; atom++) {
+    const base = atom * stride;
+    let s = 0;
+    for (let i = 0; i < m; i++) s += D.data[base + i * m + i];
+    out[atom] = s;
+  }
+  return { shape: [N], data: out };
+}
+
 ops.register({
   name: 'trace',
   signature: {
@@ -291,6 +320,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _traceLogical,
+  batched: _traceBatchedOrFallback,
 });
 
 // =====================================================================
