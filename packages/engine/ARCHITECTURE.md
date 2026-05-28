@@ -1551,12 +1551,17 @@ Cross-engine architecture in `flatppl-dev/flatppl-engine-concepts.md`
 > **Status (2026-05-28).** The dissolver is in. Constants flow as
 > rank-0 Values; `ARITH_OPS` no longer emits bare numbers when Values
 > flow in; broadcast and aggregate IR rewrite to direct elementwise /
-> linalg / matmul-family call chains via `dissolver.ts`. Remaining
-> design and follow-ups (a canonical elementwise primitive for
-> non-scalar `.*` / `./` / `.^`, a generalized contraction op for
-> batched matmul + pure-axis reductions, `batched` fast-paths for the
-> remaining declared linalg ops, length-N `.samples` retirement on
-> rank-0 fixed measures) tracked in `flatppl-dev/TODO-flatppl-js.md`.
+> linalg / matmul-family call chains via `dissolver.ts`. The runtime
+> `_broadcastLogical` has a fast-path for `broadcast(<scalar_op>, args)`
+> and `broadcasted(<op>)(args)` shapes, dispatching through value-ops'
+> batched-elementwise primitives (`mulElem` / `divElem` / `powElem` /
+> `expElem` / `logElem` / …). Spec-`mul` matrix semantics fully
+> preserved — the fast-path only intercepts `broadcast(...)` IRs.
+> Remaining follow-ups (widening the broadcasted-primitives table to
+> the rest of the scalar surface, singleton-axis expansion in value-
+> ops elementwise, `batched` fast-paths for the remaining declared
+> linalg ops, length-N `.samples` retirement on rank-0 fixed measures)
+> tracked in `flatppl-dev/TODO-flatppl-js.md`.
 
 ### Where dissolution slots into the pipeline
 
@@ -1631,10 +1636,30 @@ on higher-rank cells). Widening lands in a Phase 3 follow-up.
 
 Post-dissolution, the dissolved IR runs through `evaluateExprN`
 which dispatches scalar primitives via `ARITH_OPS_N` and shape-rich
-ops via the existing value-ops paths. The `_broadcastApply`
-machinery remains as the cold path for residual non-dissolvable
-cases (kernel-broadcast, table row-dispatch, mismatched-shape
-broadcasts).
+ops via the existing value-ops paths.
+
+For broadcasts the dissolver leaves untouched (or that the user
+writes explicitly via `broadcasted(op)(args)`), the
+`_broadcastLogical` op handler tries a runtime fast-path first
+(`_maybeFastBroadcasted` in `ops-declarations.ts`):
+
+- Recognises `broadcast(<ref to op>, args)` and `broadcast(functionof
+  (<op>(_, …)), args)` when `<op>` is in a built-in scalar-primitive
+  table (`_BROADCASTED_PRIMS_CACHE`).
+- Coerces all broadcast args to Values via `asValue`. Rejects (returns
+  null → cold path) when an arg is a nested JS array (Ref-wrap idiom)
+  or a non-coercible host value.
+- Shape check: all non-rank-0 inputs must have the SAME shape (value-
+  ops elementwise contract). Singleton-axis expansion (`[3] .+ [1]`)
+  is NOT handled here; falls through to the cold path which expands
+  size-1 axes per spec §04.
+- Dispatches through value-ops' `mulElem` / `divElem` / `powElem` /
+  `addElem` / `expElem` / `logElem` / … impls. Flat row-major loops at
+  any rank; no per-cell `evaluateExpr` reentry.
+
+`_broadcastApply` remains as the cold path for everything the fast
+path doesn't catch — see "What's still on the `_broadcastApply` cold
+path" in `flatppl-dev/TODO-flatppl-js.md` for the full audit.
 
 `valueOps` is the canonical batched-primitive surface:
 - Elementwise ops (add, sub, neg) operate on flat row-major data
