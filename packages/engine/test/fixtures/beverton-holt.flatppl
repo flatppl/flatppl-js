@@ -1,0 +1,52 @@
+n = 15
+
+ssb = [
+    50.0,  80.0, 100.0, 140.0, 180.0,
+   220.0, 270.0, 350.0, 450.0, 600.0,
+   750.0, 900.0, 1100.0, 1300.0, 1500.0
+]
+
+r_data = [
+    651.0, 1073.0,  834.0, 1303.0,  817.0,
+   1062.0, 1160.0,  800.0, 1273.0,  974.0,
+   1393.0, 1048.0, 1261.0,  891.0, 1194.0
+]
+
+max_r = 1393.0
+
+# Helper distributions
+uniform_02_1 = pushfwd(fn(0.2 + 0.8 * _), Beta(1, 1))
+half_cauchy_25 = normalize(truncate(Cauchy(0, 2.5), interval(0, inf)))
+alpha_prior = normalize(truncate(Normal(2 * max_r, 0.2 * max_r), interval(0, inf)))
+
+# Priors
+h ~ uniform_02_1
+alpha ~ alpha_prior
+log_beta ~ Normal(10, 5)
+sigma ~ half_cauchy_25
+
+# Transformed parameters
+beta     = exp(log_beta)
+log_rhat = log.(0.8 .* alpha .* h .* ssb) .- log.((0.2 * beta * (1 - h)) .+ ((h - 0.2) .* ssb))
+
+# Lognormal observation kernel via pushforward of Normal through exp
+r ~ LogNormal.(log_rhat, sigma)
+
+# Likelihood + posterior
+prior = lawof(record(
+    h = h,
+    alpha = alpha,
+    log_beta = log_beta,
+    sigma = sigma
+))
+
+forward_kernel = kernelof(
+    record(r = r),
+    h = h,
+    alpha = alpha,
+    log_beta = log_beta,
+    sigma = sigma
+)
+
+L = likelihoodof(forward_kernel, record(r = r_data))
+posterior = bayesupdate(L, prior)
