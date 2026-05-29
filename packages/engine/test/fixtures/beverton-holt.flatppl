@@ -1,3 +1,5 @@
+% Beverton-Holt stock-recruitment model (steepness parametrisation) with lognormal observation noise.
+
 n = 15
 
 ssb = [

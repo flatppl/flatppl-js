@@ -127,20 +127,51 @@ function measureToRefValue(m: any, name: string, label: string) {
  * worker's session env, NOT refArrays (which would try to slice them
  * per-atom and feed the worker an undefined entry).
  */
-function collectRefArrays(ir: any, fixedValues: any, getMeasure: any) {
+function collectRefArrays(ir: any, fixedValuesOrCtx: any, getMeasure?: any) {
+  // Two call shapes supported:
+  //  - (ir, ctx)                                — preferred: auto-pushes
+  //    fixed-phase refs into the worker session env via setEnv merge.
+  //    The fixed-phase refs the IR mentions (e.g. max_r, N, K) reach
+  //    the worker's eval context automatically — no caller needs to
+  //    remember to pushFixedEnv first.
+  //  - (ir, fixedValues, getMeasure)            — legacy: returns
+  //    refArrays only; fixed-phase refs are silently dropped on the
+  //    assumption the caller has already pushed them. Retained for
+  //    back-compat; new callers should pass `ctx`.
+  const isCtxForm = (fixedValuesOrCtx
+    && typeof fixedValuesOrCtx === 'object'
+    && typeof fixedValuesOrCtx.getMeasure === 'function');
+  const fixedValues = isCtxForm ? fixedValuesOrCtx.fixedValues : fixedValuesOrCtx;
+  const _getMeasure = isCtxForm ? fixedValuesOrCtx.getMeasure : getMeasure;
+  const ctx        = isCtxForm ? fixedValuesOrCtx : null;
+
   const refs = orchestrator.collectSelfRefs(ir);
   const names: string[] = [];
+  const fixedEnv: Record<string, any> = {};
+  let anyFixed = false;
   refs.forEach((n: string) => {
-    if (fixedValues && fixedValues.has(n)) return;
+    if (fixedValues && fixedValues.has(n)) {
+      fixedEnv[n] = fixedValues.get(n);
+      anyFixed = true;
+      return;
+    }
     names.push(n);
   });
-  return Promise.all(names.map(getMeasure)).then((measures: any[]) => {
-    const out: any = {};
-    for (let i = 0; i < names.length; i++) {
-      out[names[i]] = measureToRefValue(measures[i], names[i], 'collectRefArrays');
-    }
-    return out;
-  });
+  // ctx-form: pushFixedEnv first so the worker has these refs before
+  // the caller's next sendWorker. Legacy form: skip the push (caller
+  // is responsible for setEnv).
+  const preFlight = (ctx && anyFixed)
+    ? pushFixedEnv(ctx, fixedEnv)
+    : Promise.resolve();
+  return preFlight
+    .then(() => Promise.all(names.map(_getMeasure)))
+    .then((measures: any[]) => {
+      const out: any = {};
+      for (let i = 0; i < names.length; i++) {
+        out[names[i]] = measureToRefValue(measures[i], names[i], 'collectRefArrays');
+      }
+      return out;
+    });
 }
 
 /**
