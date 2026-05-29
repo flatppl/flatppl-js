@@ -403,20 +403,25 @@ test('rasch-two-parameter: hierarchical IRT classifies + materialises end-to-end
 //    loading + cross-module call dispatch end-to-end
 // =====================================================================
 //
-// A particle-physics resonance amplitude composed from
-// `particle-physics.resonance_breitwigner` (complex Breit-Wigner with
-// mass-dependent width + Blatt-Weisskopf form factors) and a Chebyshev-
-// series background from `polynomials.chebyshev`. Three pieces of
-// infrastructure get exercised in one fixture:
+// The full physics pipeline:
+//
+//   resonance(s)    = breit_wigner(s, m, width=Γ, ma=0, mb=0, ℓ=0, d=1) [complex amplitude]
+//   coherent_b(x)   = c0 + c1·x                                          [real linear bg]
+//   full_intensity(x) = |resonance(x²)·yS + coherent_b(x)|²              [observable density]
+//   D1              = normalize(weighted(full_intensity, Lebesgue([a,b])))
+//   cheb_density(x) = b0·T0(z) + b1·T1(z) + b2·T2(z), z = (2x−(a+b))/(b−a)
+//   D2              = normalize(weighted(cheb_density, Lebesgue([a,b])))
+//   mixture         = superpose(weighted(f1, D1), weighted(f2, D2))
+//
+// Three pieces of engine infrastructure get exercised in one fixture:
 //
 //   - Module-aware lowering (lower.ts): `hepphys.resonance_breitwigner`
 //     and `polynomials.chebyshev` lower to `(%ref mod X)` per spec §11,
 //     NOT to `get_field`.
-//   - Alias resolution (alias-resolution.ts): the `breit_wigner =
-//     hepphys.resonance_breitwigner` and `chebyshev = polynomials
-//     .chebyshev` aliases canonicalise to module-namespaced refs
-//     across the whole module — call sites inside `resonance(s)`,
-//     `bw_scaled(x)`, `cheb_density(x)` all carry resolved targets.
+//   - Alias resolution (alias-resolution.ts): the `breit_wigner` and
+//     `chebyshev` aliases canonicalise to module-namespaced refs
+//     across the whole module — every callsite inside `resonance(s)`,
+//     `cheb_density(x)`, `full_intensity(x)` carries a resolved target.
 //   - Sampler cross-module dispatch (sampler.ts `_evaluateStandard
 //     ModuleCall`): runtime evaluation of `breit_wigner(...)` /
 //     `chebyshev(...)` reaches the standard-modules.ts registry's
@@ -426,8 +431,20 @@ test('rasch-two-parameter: hierarchical IRT classifies + materialises end-to-end
 //     broadcast lowers to `broadcast(<module-aliased-ref>, …)`; the
 //     broadcast's _resolveFn synthesises a per-arity wrapper that
 //     calls the registry impl.
+//
+// Tests organised by what they sensibly pin:
+//   (a) Structural — module bindings classify; aliases canonicalise;
+//       call sites carry resolved targets.
+//   (b) Closed-form runtime evaluation — `resonance(m²)`, `cheb_density(a/b)`,
+//       `full_intensity(m)` match spec arithmetic to 1e-9 precision.
+//   (c) End-to-end materialisation — D1 / D2 / mixture produce
+//       finite-n_eff weighted measures; samples in spec support.
+//   (d) Empirical-quality contrast — D2 (near-uniform background)
+//       has HIGHER ESS than D1 (sharp resonance peak), since
+//       importance sampling from Uniform([a,b]) wastes more atoms
+//       on D1's tails.
 
-test('hadron-physics: standard-module loading + cross-module call dispatch', () => {
+test('hadron-physics: standard-module loading + alias canonicalisation', () => {
   const src = readFixture('hadron-physics-resonance.flatppl');
   const r = processSource(src);
   const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
@@ -444,8 +461,8 @@ test('hadron-physics: standard-module loading + cross-module call dispatch', () 
   assert.equal(reg.polynomials.stdName, 'polynomials');
   assert.equal(reg.polynomials.stdCompat, '0.1');
 
-  // The alias `breit_wigner` canonicalises to a module-namespaced
-  // ref; its inferredType is the std-module's function signature.
+  // Both aliases canonicalise to module-namespaced refs; their
+  // inferredType matches the std-module function signature.
   const bw = r.loweredModule.bindings.get('breit_wigner');
   assert.equal(bw.isAlias, true);
   assert.equal(bw.rhs.kind, 'ref');
@@ -453,49 +470,111 @@ test('hadron-physics: standard-module loading + cross-module call dispatch', () 
   assert.equal(bw.rhs.name, 'resonance_breitwigner');
   assert.equal(bw.inferredType.kind, 'function');
 
-  // After alias-resolution, `bw_scaled`'s functionof body has its
-  // inner call's target already canonicalised. Walking the IR
-  // confirms the alias never leaks into the body.
-  const bwScaled = r.loweredModule.bindings.get('bw_scaled');
-  assert.equal(bwScaled.rhs.op, 'functionof');
-  const innerCall = bwScaled.rhs.body.args[1];  // 10 * <breit_wigner_call>
+  const cheb = r.loweredModule.bindings.get('chebyshev');
+  assert.equal(cheb.isAlias, true);
+  assert.equal(cheb.rhs.ns, 'polynomials');
+  assert.equal(cheb.rhs.name, 'chebyshev');
+  assert.equal(cheb.inferredType.kind, 'function');
+
+  // After alias-resolution, the `resonance` functionof body has the
+  // inner `breit_wigner(...)` call's target already canonicalised —
+  // the alias never leaks into call sites.
+  const resonance = r.loweredModule.bindings.get('resonance');
+  assert.equal(resonance.rhs.op, 'functionof');
+  const innerCall = resonance.rhs.body;
   assert.equal(innerCall.kind, 'call');
   assert.equal(innerCall.target.ns, 'hepphys');
   assert.equal(innerCall.target.name, 'resonance_breitwigner');
 });
 
-test('hadron-physics: D1 / D2 / mixture materialise end-to-end', async () => {
-  // The full pipeline:
-  //   D1 = normalize(weighted(full_intensity, Lebesgue(interval(a, b))))
-  //   D2 = normalize(weighted(cheb_density, Lebesgue(interval(a, b))))
-  //   mixture = superpose(weighted(f1, D1), weighted(f2, D2))
+test('hadron-physics: closed-form runtime evaluation of std-module callables', () => {
+  // Runtime arithmetic via the registry impl, not via FlatPPL
+  // sampling — these are deterministic spec checks. Three layers:
   //
-  // Three engine extensions land together to make this work:
+  //   - resonance(m²) — the Breit-Wigner amplitude at its pole.
+  //     For ℓ=0, mₐ=m_b=0: BW(σ) = 1/(m² − σ − i·m·Γ). At σ = m²
+  //     the real denominator vanishes; |BW(m²)| = 1/(m·Γ), pure
+  //     imaginary. m=1.5, Γ=0.1 → magnitude = 1/0.15 = 6.6667.
+  //   - cheb_density at the affine endpoints — the dotted broadcast
+  //     `chebyshev.([0, 1, 2], z)` routes through _synthStdModuleFn
+  //     into the registry impl per element. At z=−1 (x=a):
+  //     T₀=1, T₁=−1, T₂=1 → density = b0 − b1 + b2 = 1.1. At z=+1
+  //     (x=b): T_n=1 ∀n → density = b0 + b1 + b2 = 1.5.
+  //   - full_intensity(m) — composes the complex BW amplitude with
+  //     the complex coupling yS and the real linear background,
+  //     then `abs2` collapses to a real density. Peaks at the
+  //     resonance mass x = m.
+  const src = readFixture('hadron-physics-resonance.flatppl');
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  const sampler = require('../sampler.ts');
+  const sigMod = require('../signatures.ts');
+  const env: any = { __moduleRegistry: r.loweredModule.moduleRegistry };
+  for (const [k, v] of built.fixedValues) env[k] = v;
+
+  // 1. resonance(m² = 2.25) — BW at the pole.
+  const resSig = sigMod.signatureOf('resonance', built.bindings);
+  const m_sq = 1.5 * 1.5;
+  const resPole = sampler.evaluateExpr(
+    sigMod.substituteLocals(resSig.body, { _s_: m_sq }), env);
+  assert.ok(Math.abs(resPole.re) < 1e-9,
+    `Re(BW(m²)) ≈ 0 at the pole; got ${resPole.re}`);
+  assert.ok(Math.abs(resPole.im - 1 / (1.5 * 0.1)) < 1e-9,
+    `Im(BW(m²)) = 1/(m·Γ) = 6.6667; got ${resPole.im}`);
+  // Off-pole magnitude drops away.
+  const resOff = sampler.evaluateExpr(
+    sigMod.substituteLocals(resSig.body, { _s_: 4.0 }), env);
+  const polMag = Math.hypot(resPole.re, resPole.im);
+  const offMag = Math.hypot(resOff.re, resOff.im);
+  assert.ok(offMag < polMag,
+    `|BW(4.0)|=${offMag} < |BW(m²)|=${polMag}`);
+
+  // 2. cheb_density at the affine endpoints.
+  const chebSig = sigMod.signatureOf('cheb_density', built.bindings);
+  const cAtA = sampler.evaluateExpr(
+    sigMod.substituteLocals(chebSig.body, { _x_: 0.5 }), env);
+  assert.ok(Math.abs(cAtA - 1.1) < 1e-9, `cheb_density(a) = b0−b1+b2 = 1.1; got ${cAtA}`);
+  const cAtB = sampler.evaluateExpr(
+    sigMod.substituteLocals(chebSig.body, { _x_: 2.5 }), env);
+  assert.ok(Math.abs(cAtB - 1.5) < 1e-9, `cheb_density(b) = b0+b1+b2 = 1.5; got ${cAtB}`);
+
+  // 3. full_intensity peaks at x = m (the resonance mass: x² hits
+  //    the BW pole).
+  const fiSig = sigMod.signatureOf('full_intensity', built.bindings);
+  const fiPeak = sampler.evaluateExpr(
+    sigMod.substituteLocals(fiSig.body, { _x_: 1.5 }), env);
+  const fiOff = sampler.evaluateExpr(
+    sigMod.substituteLocals(fiSig.body, { _x_: 0.6 }), env);
+  assert.ok(fiPeak > 5 * fiOff,
+    `full_intensity peaks sharply at resonance: peak=${fiPeak} vs off=${fiOff}`);
+});
+
+test('hadron-physics: D1 / D2 / mixture materialise end-to-end', async () => {
+  // End-to-end materialisation of the three derived distributions
+  // composes every layer:
+  //
   //   - classifyLebesgueInterval recognises `Lebesgue(support =
-  //     interval(a, b))` as a Uniform-sample derivation. The
-  //     unnormalised totalmass (= b − a) is dropped — the outer
-  //     `normalize` discards it anyway.
+  //     interval(a, b))` as a Uniform-sample derivation.
   //   - classifyWeighted recognises `weighted(<function>, <base>)`
   //     per spec §06 ("f is a non-negative weight, a constant or a
   //     function of the variate"): substitutes the function's
-  //     parameter with `(%ref self <baseName>)`, producing a
-  //     weightIR the existing materialiser path evaluates per atom.
+  //     parameter with `(%ref self <baseName>)`.
   //   - `_perAtomFallback`'s packing recognises per-atom complex
-  //     `{re, im}` returns and emits a shape-rich complex Value
-  //     (shape=[N], dtype='complex'). Without this, the batched
-  //     evaluator returned NaN for IRs that include complex-valued
-  //     intermediates (full_intensity composes complex Breit-Wigner
-  //     amplitude × complex coupling + real background before
-  //     `abs2` collapses to real).
-  const { errs, ctx, built } = setupCtx(readFixture('hadron-physics-resonance.flatppl'), 200);
+  //     `{re, im}` returns and emits a shape-rich complex Value —
+  //     without this, full_intensity's complex intermediates would
+  //     batch-evaluate as NaN.
+  const N = 200;
+  const { errs, ctx, built } = setupCtx(readFixture('hadron-physics-resonance.flatppl'), N);
   assert.equal(errs.length, 0);
   assert.ok(built.derivations.D1, 'D1 classifies');
   assert.ok(built.derivations.D2, 'D2 classifies');
   assert.ok(built.derivations.mixture, 'mixture classifies');
+  const measures: Record<string, any> = {};
   for (const name of ['D1', 'D2', 'mixture']) {
     const m = await ctx!.getMeasure(name);
+    measures[name] = m;
     const data = (m.value && m.value.data) || m.samples;
-    assert.equal(data.length, 200, `${name} has N samples`);
+    assert.equal(data.length, N, `${name} has N samples`);
     let mn = Infinity, mx = -Infinity;
     for (const v of data) {
       assert.ok(!Number.isNaN(v), `${name} sample is NaN`);
@@ -507,61 +586,44 @@ test('hadron-physics: D1 / D2 / mixture materialise end-to-end', async () => {
     assert.ok(mx <= 2.5 + 1e-9, `${name} max ${mx} ≤ b=2.5`);
     assert.ok(Number.isFinite(m.n_eff), `${name} n_eff finite (got ${m.n_eff})`);
   }
-});
 
-test('hadron-physics: bw_scaled / cheb_density / full_intensity evaluate to spec values', () => {
-  const src = readFixture('hadron-physics-resonance.flatppl');
-  const r = processSource(src);
-  const built = orchestrator.buildDerivations(r.bindings);
-  const sampler = require('../sampler.ts');
-  const sigMod = require('../signatures.ts');
-  const env: any = { __moduleRegistry: r.loweredModule.moduleRegistry };
-  for (const [k, v] of built.fixedValues) env[k] = v;
+  // Empirical-quality contrast: D2 (near-uniform Chebyshev
+  // background; cheb_density varies smoothly from ~1.1 at x=a to
+  // ~1.5 at x=b, with no narrow peaks) should retain most of its
+  // importance weight; D1 (resonance peak at x = m = 1.5 with
+  // width Γ/m ≈ 7% of the interval) burns its IS weight on a
+  // narrow region. D2's n_eff should be substantially higher.
+  // The thresholds are conservative — empirically D2 ≈ 95% of N,
+  // D1 ≈ 20-40% of N depending on seed; pinning D2 > 0.7·N and
+  // D1 < 0.7·N gives the comparative shape without being seed-
+  // brittle.
+  assert.ok(measures.D2.n_eff > 0.7 * N,
+    `D2 n_eff=${measures.D2.n_eff} should be > 0.7·${N} (near-uniform background retains weight)`);
+  assert.ok(measures.D1.n_eff < 0.7 * N,
+    `D1 n_eff=${measures.D1.n_eff} should be < 0.7·${N} (sharp resonance peak loses weight)`);
+  assert.ok(measures.D2.n_eff > measures.D1.n_eff,
+    `D2 ESS > D1 ESS (Chebyshev vs resonance)`);
 
-  // 1. bw_scaled(x) = 10 · BW(x, m=1.1, width=0.2, ℓ=0, m_a=m_b=0)
-  //    At ℓ=0, m_a=m_b=0: BW(σ) = 1/(m² − σ − iΓm) (spec §09 closing
-  //    note). At σ = m² = 1.21 the real denominator vanishes; |BW|
-  //    peaks at 1/(Γ·m) = 1/(0.2·1.1) = 4.545; the scaled value is 10·.
-  const sig = sigMod.signatureOf('bw_scaled', built.bindings);
-  const peakBody = sigMod.substituteLocals(sig.body, { _x_: 1.21 });
-  const peakBW = sampler.evaluateExpr(peakBody, env);
-  // pure imaginary at resonance — real denominator is exactly 0
-  assert.ok(Math.abs(peakBW.re) < 1e-10, `BW(m²) real ≈ 0; got ${peakBW.re}`);
-  assert.ok(Math.abs(peakBW.im - 10 / (0.2 * 1.1)) < 1e-6,
-    `BW(m²) imag = 10/(Γ·m) = 45.4545; got ${peakBW.im}`);
-
-  // Off-resonance: |BW| drops away monotonically (in this simple
-  // ℓ=0 case).
-  const offBody = sigMod.substituteLocals(sig.body, { _x_: 3.0 });
-  const offBW = sampler.evaluateExpr(offBody, env);
-  const peakMag = Math.hypot(peakBW.re, peakBW.im);
-  const offMag = Math.hypot(offBW.re, offBW.im);
-  assert.ok(offMag < peakMag,
-    `off-resonance magnitude must be smaller; |BW(3.0)|=${offMag}, |BW(m²)|=${peakMag}`);
-
-  // 2. cheb_density(x) — uses `chebyshev.([0, 1, 2], affine_x)` which
-  //    routes the broadcast through `_synthStdModuleFn`. Coefficients
-  //    are b0=1.1, b1=0.2, b2=0.2 on the spec basis a=0.5, b=2.5.
-  //    affine_x(2.5) = 1 → T₀=T₁=T₂=1 → density = 1.1+0.2+0.2 = 1.5.
-  //    affine_x(0.5) = -1 → T₀=1,T₁=-1,T₂=1 → density = 1.1-0.2+0.2 = 1.1.
-  const chebSig = sigMod.signatureOf('cheb_density', built.bindings);
-  const cAt05 = sampler.evaluateExpr(
-    sigMod.substituteLocals(chebSig.body, { _x_: 0.5 }), env);
-  assert.ok(Math.abs(cAt05 - 1.1) < 1e-9, `cheb_density(0.5) ≈ 1.1; got ${cAt05}`);
-  const cAt25 = sampler.evaluateExpr(
-    sigMod.substituteLocals(chebSig.body, { _x_: 2.5 }), env);
-  assert.ok(Math.abs(cAt25 - 1.5) < 1e-9, `cheb_density(2.5) ≈ 1.5; got ${cAt25}`);
-
-  // 3. full_intensity(x) — composes resonance + coherent background
-  //    + complex coupling. Peaks at x = m = √(m²) = 1.5 (resonance
-  //    mass) since x² = σ enters BW(σ); off-peak < peak.
-  const fiSig = sigMod.signatureOf('full_intensity', built.bindings);
-  const fiPeak = sampler.evaluateExpr(
-    sigMod.substituteLocals(fiSig.body, { _x_: 1.5 }), env);
-  const fiOff = sampler.evaluateExpr(
-    sigMod.substituteLocals(fiSig.body, { _x_: 3.0 }), env);
-  assert.ok(fiPeak > fiOff,
-    `full_intensity peaks at resonance: fiPeak=${fiPeak}, fiOff=${fiOff}`);
+  // The IS-weighted mean of D1 sits near the resonance mass x = m
+  // = 1.5 (the BW peaks there + the linear background tilts it
+  // slightly upward). Without IS weighting the mean would sit at
+  // the support midpoint (1.5 too, but for the wrong reason).
+  // Pin the WEIGHTED mean lives inside (1.3, 1.7) — well inside
+  // the support, comfortably near the resonance.
+  const d1 = measures.D1;
+  const d1data = (d1.value && d1.value.data) || d1.samples;
+  let wSum = 0, wxSum = 0, lwMax = -Infinity;
+  if (d1.logWeights) for (let i = 0; i < N; i++) if (d1.logWeights[i] > lwMax) lwMax = d1.logWeights[i];
+  for (let i = 0; i < N; i++) {
+    const w = d1.logWeights
+      ? Math.exp(d1.logWeights[i] - lwMax)
+      : 1;
+    wSum  += w;
+    wxSum += w * d1data[i];
+  }
+  const d1Mean = wxSum / wSum;
+  assert.ok(d1Mean > 1.3 && d1Mean < 1.7,
+    `D1 IS-weighted mean near resonance (m=1.5): got ${d1Mean}`);
 });
 
 test('beta-binomial-pushfwd: full fixture exposes user-kernel-composition gap', () => {
