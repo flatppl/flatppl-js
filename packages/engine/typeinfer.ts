@@ -1133,14 +1133,34 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // `(call vector e1 e2 …)` — the array's length is the number of
     // arguments (statically known); the element type is the unifying
     // type of the elements. Empty vectors get an %any element type.
+    //
+    // Elements unify under SCALAR PROMOTION (spec §03's `booleans ⊂
+    // integers ⊂ reals ⊂ complexes` lattice): `[1, 2.0]` is a real
+    // vector, `[1, -3, 28]` stays integer. Strict `T.unify` would
+    // refuse the first case because integer ≠ real as type constants;
+    // `T.unifyArith` is the scalar-promoting variant the binary-arith
+    // path already uses for `add` / `sub` / etc. Same rule across all
+    // numeric contexts.
     const args = expr.args || [];
     if (args.length === 0) return T.array(1, [0], T.any());
     const elemTypes = args.map((a: any) => inferExpr(a, scopes));
     let s = new Map();
     let elem = elemTypes[0];
     for (let i = 1; i < elemTypes.length; i++) {
-      const next = T.unify(elem, elemTypes[i], s);
-      if (next == null) {
+      // Try strict structural unify first (records / measures / etc.);
+      // fall back to scalar-promoting `unifyArith` so `[1, 2.0]` lifts
+      // to real and `[1, -3, 28]` stays integer. `T.unify` returns the
+      // new subst Map; `T.unifyArith` returns {result, subst}.
+      let nextSubst: any = T.unify(elem, elemTypes[i], s);
+      let nextElem: any = elem;
+      if (nextSubst == null) {
+        const r: any = T.unifyArith(elem, elemTypes[i], s);
+        if (r != null) {
+          nextSubst = r.subst;
+          nextElem = r.result;
+        }
+      }
+      if (nextSubst == null) {
         diagnostics.push({
           severity: 'error',
           message: 'array element type mismatch: '
@@ -1149,8 +1169,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         });
         return T.failed('array element mismatch');
       }
-      s = next;
-      elem = T.substitute(elem, s);
+      s = nextSubst;
+      elem = T.substitute(nextElem, s);
     }
     return T.array(1, [args.length], T.substitute(elem, s));
   }
@@ -1396,14 +1416,39 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     const aT = inferExpr(args[0], scopes);
     if (aT.kind === 'failed') return T.failed(expr.op + ' cascade');
     // Scalar in → scalar out; array in → array out (shape preserved).
-    // floor/ceil/round produce integer scalars from real input;
-    // otherwise the result type matches the input. Other unary maths
-    // are real → real for now (spec doesn't require richer overloads).
-    const isIntCast = (expr.op === 'floor' || expr.op === 'ceil' || expr.op === 'round');
+    // Per-op element-type rule:
+    //   - INT_CAST  (floor/ceil/round): real → integer.
+    //   - PRESERVING (neg/pos/abs/abs2): preserve integer/real
+    //     unchanged; complex → real for abs/abs2 (modulus is real-
+    //     valued), preserve for neg/pos (negation/identity of a
+    //     complex is complex). Spec §03's scalar hierarchy
+    //     (booleans ⊂ integers ⊂ reals): unary negation of an
+    //     integer is mathematically an integer. Widening to real
+    //     here (the pre-2026-05-29 behaviour) made `-3` mismatch
+    //     `28` in an array-literal element unification — see
+    //     commit 5c889a5's literal-fold workaround. With the
+    //     element-type preserved we no longer need that workaround
+    //     to clear the unification.
+    //   - REAL_ONLY (exp/log/log10/sqrt/sin/cos): always real.
+    const isIntCast    = (expr.op === 'floor' || expr.op === 'ceil' || expr.op === 'round');
+    const isPreserving = (expr.op === 'neg' || expr.op === 'pos'
+                          || expr.op === 'abs' || expr.op === 'abs2');
+    function elemTypeFor(scalarPrim: string): any {
+      if (isIntCast) return T.INTEGER;
+      if (isPreserving) {
+        if (scalarPrim === 'integer') return T.INTEGER;
+        if (scalarPrim === 'complex') {
+          // abs/abs2 of complex → real; neg/pos of complex → complex.
+          return (expr.op === 'abs' || expr.op === 'abs2') ? T.REAL : T.COMPLEX;
+        }
+        return T.REAL;
+      }
+      return T.REAL;
+    }
     function liftElemwise(t: any): any {
-      if (t.kind === 'scalar')   return isIntCast ? T.INTEGER : T.REAL;
-      if (t.kind === 'array')    return T.array(t.rank, t.shape.slice(),
-                                                 liftElemwise(t.elem));
+      if (t.kind === 'scalar') return elemTypeFor(t.prim);
+      if (t.kind === 'array')  return T.array(t.rank, t.shape.slice(),
+                                              liftElemwise(t.elem));
       if (t.kind === 'deferred' || t.kind === 'any') return t;
       return null;
     }

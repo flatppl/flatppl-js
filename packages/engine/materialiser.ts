@@ -344,18 +344,37 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   // round-trip.
   const resolved = _resolveIidLeaf(d.from, ctx.derivations);
   if (!resolved) {
-    // Fallback for iid-of-composite-measure (e.g. iid(zib_one, N)
-    // where zib_one is a superpose / mixture / pushfwd / etc.):
-    // materialise the inner measure BY NAME with an inflated
-    // sample count = N × k, then reshape to [N, …dims]. Going by
-    // name re-enters the kind-dispatch pipeline so the right
-    // kind-specific handler (matSuperpose / matSelect / matPushfwd)
-    // runs — including per-atom-weight resolution that the
-    // materialiseMeasureIR fast paths can't do.
+    // Composite-inner fallback: when the iid's inner measure is a
+    // composite (superpose / select / pushfwd / bayesupdate / nested
+    // iid / …), there's no single worker primitive to batch the
+    // whole `iid(M, k)` at — we re-enter the kind-dispatch pipeline
+    // for M with an inflated sample count = N × k and reshape the
+    // resulting flat samples to [N, …dims]. The kind-specific
+    // handler (matSuperpose / matSelect / matPushfwd / …) then runs
+    // at the inflated count, picking up per-atom-weight resolution,
+    // per-atom branch selection, etc., that the materialiseMeasureIR
+    // fast paths can't do.
     //
     // Uses a child ctx with a FRESH cache + inflated sampleCount
     // so the inflated-count materialisation doesn't pollute the
     // parent ctx's cache for the same name at N atoms.
+    //
+    // **Semantic caveat (TODO §06).** With stochastic upstream
+    // parameters in M (e.g. `psi ~ Beta(1, 1); zib_one = superpose
+    // (weighted(psi, …), …); y ~ iid(zib_one, k)`), strict spec
+    // §06 semantics is "draw N atoms of psi; for each, take k iid
+    // draws from zib_one *at that psi_i*". This fallback instead
+    // draws N×k independent (psi, …, zib_one) triples and reshapes
+    // — producing the correct *marginal* over y but losing the
+    // within-atom conditional independence structure (the k inner
+    // draws no longer share atom-i's psi_i). For marginal-density
+    // / histogram consumers the two distributions are observationally
+    // identical; for joint diagnostics or downstream density
+    // evaluation against an observed iid block, the difference
+    // matters. The principled fix is an explicit "repeat axis"
+    // threaded through the kind-dispatch pipeline alongside the
+    // atom axis (engine-concepts §20.1 axisStack work / P3a-P3b
+    // follow-ups); not yet wired.
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
@@ -431,12 +450,30 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     });
 }
 
-// Walk the derivation graph to resolve an iid's inner measure into
-// (a) a sample leaf — returning the distribution IR — or (b) a
-// truncate leaf — returning the underlying dist IR + set descriptor.
-// Peels through alias and normalize (both sample-preserving). Returns
-// null if the chain bottoms out at something we can't iid (e.g.
-// weighted with non-trivial weight, pushfwd, bayesupdate).
+// Derivation kinds that are SAMPLE-PRESERVING when wrapped by iid:
+// peeling them changes nothing about the produced atoms (only the
+// trailing mass / metadata bookkeeping that iid itself overwrites).
+// Adding a new sample-preserving wrapper = one entry here, no
+// per-call hand-wiring at consumers.
+//
+//   alias     — pure rename; samples identical.
+//   normalize — divides total mass by Z; sample identities unchanged.
+//
+// Truncate is NOT sample-preserving (it rejection-redraws), so it's
+// recognised as its own leaf shape below — it has a worker primitive
+// (`truncateSampleN`) that takes the inflated count directly.
+const IID_LEAF_PRESERVING_KINDS = new Set(['alias', 'normalize']);
+
+// Walk the derivation graph to find a leaf shape iid can route to a
+// SINGLE worker round-trip:
+//   - 'sample'   → sampleN(<distIR>, count = N*k)
+//   - 'truncate' → truncateSampleN(<distIR>, set, count = N*k)
+// Peels through sample-preserving wrappers (alias / normalize / …)
+// uniformly. Returns null when the chain bottoms out at a composite
+// (superpose / select / iid / record / pushfwd / bayesupdate / …) —
+// composites can't be batched at the worker as one call; matIid's
+// composite fallback then re-enters the kind-dispatch pipeline with
+// an inflated sample count.
 function _resolveIidLeaf(
   name: string, derivations: any, visited?: Set<string>,
 ): { kind: 'sample' | 'truncate'; distIR: any; setDescr?: any } | null {
@@ -445,8 +482,7 @@ function _resolveIidLeaf(
   visited.add(name);
   const d = derivations[name];
   if (!d) return null;
-  if (d.kind === 'alias') return _resolveIidLeaf(d.from, derivations, visited);
-  if (d.kind === 'normalize') {
+  if (IID_LEAF_PRESERVING_KINDS.has(d.kind)) {
     return _resolveIidLeaf(d.from, derivations, visited);
   }
   if (d.kind === 'sample') {

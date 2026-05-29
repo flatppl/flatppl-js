@@ -123,32 +123,26 @@ function measureToRefValue(m: any, name: string, label: string) {
 /**
  * Resolve every value-position self-ref in `ir` to its parent's
  * Value, returning a refName→Value map for the worker primitives'
- * refArrays. Fixed-phase refs are dropped: they flow through the
- * worker's session env, NOT refArrays (which would try to slice them
- * per-atom and feed the worker an undefined entry).
+ * refArrays. Fixed-phase refs are auto-pushed into the worker
+ * session env via `pushFixedEnv` (setEnv merge), so each caller's
+ * subsequent sendWorker call sees them automatically — no caller
+ * needs to remember the setEnv step.
+ *
+ * Signature: `collectRefArrays(ir, ctx)`. `ctx` is the materialiser
+ * context — must carry `fixedValues` (the orchestrator's pre-eval
+ * map), `getMeasure(name)` (parent-measure lookup), and `sendWorker`
+ * (for the fixedEnv push). The legacy 3-arg form
+ * `(ir, fixedValues, getMeasure)` was retired 2026-05-29 after every
+ * in-engine caller migrated to ctx-form; eight callers each
+ * remembering setEnv-merge was exactly the distributed-responsibility
+ * anti-pattern engine-concepts §11 calls out.
  */
-function collectRefArrays(ir: any, fixedValuesOrCtx: any, getMeasure?: any) {
-  // Two call shapes supported:
-  //  - (ir, ctx)                                — preferred: auto-pushes
-  //    fixed-phase refs into the worker session env via setEnv merge.
-  //    The fixed-phase refs the IR mentions (e.g. max_r, N, K) reach
-  //    the worker's eval context automatically — no caller needs to
-  //    remember to pushFixedEnv first.
-  //  - (ir, fixedValues, getMeasure)            — legacy: returns
-  //    refArrays only; fixed-phase refs are silently dropped on the
-  //    assumption the caller has already pushed them. Retained for
-  //    back-compat; new callers should pass `ctx`.
-  const isCtxForm = (fixedValuesOrCtx
-    && typeof fixedValuesOrCtx === 'object'
-    && typeof fixedValuesOrCtx.getMeasure === 'function');
-  const fixedValues = isCtxForm ? fixedValuesOrCtx.fixedValues : fixedValuesOrCtx;
-  const _getMeasure = isCtxForm ? fixedValuesOrCtx.getMeasure : getMeasure;
-  const ctx        = isCtxForm ? fixedValuesOrCtx : null;
-
+function collectRefArrays(ir: any, ctx: any) {
   const refs = orchestrator.collectSelfRefs(ir);
   const names: string[] = [];
   const fixedEnv: Record<string, any> = {};
   let anyFixed = false;
+  const fixedValues = ctx && ctx.fixedValues;
   refs.forEach((n: string) => {
     if (fixedValues && fixedValues.has(n)) {
       fixedEnv[n] = fixedValues.get(n);
@@ -157,14 +151,9 @@ function collectRefArrays(ir: any, fixedValuesOrCtx: any, getMeasure?: any) {
     }
     names.push(n);
   });
-  // ctx-form: pushFixedEnv first so the worker has these refs before
-  // the caller's next sendWorker. Legacy form: skip the push (caller
-  // is responsible for setEnv).
-  const preFlight = (ctx && anyFixed)
-    ? pushFixedEnv(ctx, fixedEnv)
-    : Promise.resolve();
+  const preFlight = anyFixed ? pushFixedEnv(ctx, fixedEnv) : Promise.resolve();
   return preFlight
-    .then(() => Promise.all(names.map(_getMeasure)))
+    .then(() => Promise.all(names.map(ctx.getMeasure)))
     .then((measures: any[]) => {
       const out: any = {};
       for (let i = 0; i < names.length; i++) {

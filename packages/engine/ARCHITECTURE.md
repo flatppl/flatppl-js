@@ -586,9 +586,14 @@ kinds + the FlatPDL primitives surface — see engine-concepts §13.6).
   `batchedScalar(m.samples)` for scalar ensembles).
 - `pushFixedEnv(ctx, fixedEnv)` — canonical setEnv merge for
   fixed-phase parents.
-- `collectRefArrays(ir, fixedValues, getMeasure)` — older sibling
-  used by leaf-sample / iid / multivariate paths (returns refArrays
-  only, no fixedEnv split).
+- `collectRefArrays(ir, ctx)` — refArrays builder used by
+  leaf-sample / iid / multivariate paths. Auto-pushes fixed-phase
+  refs into the worker session env via `pushFixedEnv` (single
+  owner), so callers never need to remember the setEnv-merge step
+  themselves. Returns the per-atom refArrays map; fixed refs are
+  delivered out-of-band on the worker. Legacy 3-arg form
+  `(ir, fixedValues, getMeasure)` retired 2026-05-29 after every
+  in-engine caller migrated to ctx-form.
 
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value):
 ```ts
