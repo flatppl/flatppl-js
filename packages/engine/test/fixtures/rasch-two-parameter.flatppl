@@ -14,9 +14,9 @@ item_idx = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4]
 correct_data = [1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1]
 
 # Hyperpriors
-diff_mean ~ Cauchy(0, 5)
-diff_sd ~ normalize(truncate(Cauchy(0, 5), interval(0, inf)))
-discrim_log_sd ~ normalize(truncate(Cauchy(0, 5), interval(0, inf)))
+diff_mean ~ Normal(0, 5)
+diff_sd ~ normalize(truncate(Normal(0, 5), interval(0, inf)))
+discrim_log_sd ~ normalize(truncate(Normal(0, 5), interval(0, inf)))
 
 # Unit-level priors
 ability ~ iid(Normal(0, 1), n_person)
