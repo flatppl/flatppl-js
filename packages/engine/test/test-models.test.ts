@@ -587,6 +587,16 @@ test('hadron-physics: D1 / D2 / mixture materialise end-to-end', async () => {
     assert.ok(Number.isFinite(m.n_eff), `${name} n_eff finite (got ${m.n_eff})`);
   }
 
+  // Spec §06 normalize: after normalize, totalmass = 1
+  // (logTotalmass = 0). Pins that the function-weight + Lebesgue
+  // totalmass tracking compose correctly: D1 / D2's weighted
+  // logTotalmass = log((b−a) · E_Uniform[f]) per the function-
+  // weighted derivation; normalize cancels it to 0 cleanly.
+  for (const name of ['D1', 'D2']) {
+    assert.ok(Math.abs(measures[name].logTotalmass) < 1e-12,
+      `${name} (after normalize) logTotalmass ≈ 0; got ${measures[name].logTotalmass}`);
+  }
+
   // Empirical-quality contrast: D2 (near-uniform Chebyshev
   // background; cheb_density varies smoothly from ~1.1 at x=a to
   // ~1.5 at x=b, with no narrow peaks) should retain most of its
@@ -624,6 +634,47 @@ test('hadron-physics: D1 / D2 / mixture materialise end-to-end', async () => {
   const d1Mean = wxSum / wSum;
   assert.ok(d1Mean > 1.3 && d1Mean < 1.7,
     `D1 IS-weighted mean near resonance (m=1.5): got ${d1Mean}`);
+});
+
+// =====================================================================
+// 8. Lebesgue(interval) standalone — totalmass tracking
+// =====================================================================
+//
+// Pins the spec-canonical totalmass for the unnormalised reference
+// measure independently of the hadron-physics fixture. Three checks
+// in one short test:
+//   - `Lebesgue(support = interval(a, b))` materialises to a sample
+//     measure with `logTotalmass = log(b − a)` (spec §06 reference
+//     measure on a finite support).
+//   - `weighted(<scalar>, Lebesgue([a,b]))` propagates the parent's
+//     mass + the scalar shift: `logTotalmass = log(b − a) + log(w)`.
+//   - `weighted(<function>, Lebesgue([a,b]))` propagates the parent's
+//     mass + the empirical avg(f): logTotalmass ≈ log((b − a) ·
+//     E_Uniform[f]). For a constant function f ≡ c we expect log(c·
+//     (b − a)) exactly.
+
+test('Lebesgue(interval): unnormalised reference measure carries log(b − a) totalmass', async () => {
+  // Lebesgue([0.2, 1.7]) — b − a = 1.5, log(1.5) ≈ 0.4054651.
+  const src = `
+a = 0.2
+b = 1.7
+L = Lebesgue(support = interval(a, b))
+LW = weighted(3.0, L)
+`;
+  const { errs, ctx, built } = setupCtx(src, 100);
+  assert.equal(errs.length, 0);
+  // Lebesgue's anon binding materialises (after lift it becomes the
+  // direct binding L's IR).
+  const Lm = await ctx!.getMeasure('L');
+  const expectedLog = Math.log(1.5);
+  assert.ok(Math.abs(Lm.logTotalmass - expectedLog) < 1e-12,
+    `Lebesgue([0.2, 1.7]) logTotalmass = log(1.5) = ${expectedLog}; got ${Lm.logTotalmass}`);
+
+  // weighted(3.0, L) — constant-shift fast path. Result mass =
+  //   ∫_a^b 3.0 · dx = 3.0 · (b − a) = 4.5.
+  const LWm = await ctx!.getMeasure('LW');
+  assert.ok(Math.abs(LWm.logTotalmass - Math.log(4.5)) < 1e-12,
+    `weighted(3.0, Lebesgue([0.2, 1.7])) logTotalmass = log(4.5); got ${LWm.logTotalmass}`);
 });
 
 test('beta-binomial-pushfwd: full fixture exposes user-kernel-composition gap', () => {
