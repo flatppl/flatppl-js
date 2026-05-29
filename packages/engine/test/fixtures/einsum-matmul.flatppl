@@ -1,0 +1,6 @@
+rstate = rnginit([1,2,3,4])
+A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+
+B, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+
+C[.i, .k] := A[.i, .j] * B[.j, .k]
