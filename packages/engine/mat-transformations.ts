@@ -136,7 +136,7 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
       }
 
       // Rejection-redraw. Need refArrays for parametric params.
-      return collectRefArrays(expanded, ctx.fixedValues, ctx.getMeasure)
+      return collectRefArrays(expanded, ctx)
         .then((refArrays: any) => ctx.sendWorker({
           type: 'truncateSampleN',
           ir: expanded,

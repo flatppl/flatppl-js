@@ -683,7 +683,7 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
                   `jointchain: step ${i} iid-field kernel param binding `
                   + 'unsupported'));
               }
-              return collectRefArrays(bnd.ir, ctx.fixedValues, ctx.getMeasure)
+              return collectRefArrays(bnd.ir, ctx)
                 .then((extra: any) => ctx.sendWorker({
                   type: 'sampleN', ir: bnd.ir, count: N, repeat: reps,
                   refArrays: Object.assign({}, extra, bnd.refArrays),

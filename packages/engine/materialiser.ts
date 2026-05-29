@@ -82,7 +82,7 @@ const {
 // =====================================================================
 
 function matSample(name: string, d: DerivationSample, ctx: any) {
-  return collectRefArrays(d.distIR, ctx.fixedValues, ctx.getMeasure)
+  return collectRefArrays(d.distIR, ctx)
     .then((refArrays: any) => ctx.sendWorker({
       type: 'sampleN',
       ir: d.distIR,
@@ -201,7 +201,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         return out;
       };
       if (d.weightIR) {
-        return collectRefArrays(d.weightIR, ctx.fixedValues, ctx.getMeasure).then((refArrays: any) =>
+        return collectRefArrays(d.weightIR, ctx).then((refArrays: any) =>
           ctx.sendWorker({
             type: 'evaluateN',
             ir: d.weightIR,
@@ -237,7 +237,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     const N = lifted.logWeights.length;
     const w = new Float64Array(N);
     if (d.weightIR) {
-      return collectRefArrays(d.weightIR, ctx.fixedValues, ctx.getMeasure).then((refArrays: any) =>
+      return collectRefArrays(d.weightIR, ctx).then((refArrays: any) =>
         ctx.sendWorker({
           type: 'evaluateN',
           ir: d.weightIR,
@@ -353,7 +353,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // Truncated leaf: route to truncateSampleN with count = N*k.
     // Output is shape=[N, ...dims] atom-major; the worker returns
     // a flat N*k Float64Array which we wrap directly.
-    return collectRefArrays(resolved.distIR, ctx.fixedValues, ctx.getMeasure)
+    return collectRefArrays(resolved.distIR, ctx)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'truncateSampleN',
         ir: resolved.distIR,
@@ -376,7 +376,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   }
 
   // Standard sample leaf — sampleN with repeat=k.
-  return collectRefArrays(resolved.distIR, ctx.fixedValues, ctx.getMeasure)
+  return collectRefArrays(resolved.distIR, ctx)
     .then((refArrays: any) => ctx.sendWorker({
       type: 'sampleN', ir: resolved.distIR, count: N, repeat: k,
       refArrays: refArrays,
@@ -531,7 +531,7 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
   }
   const branchP = branchEntries.map((b: any, bi: any) => {
     if (b && b.ref != null) return ctx.getMeasure(b.ref);
-    return collectRefArrays(b.ir, ctx.fixedValues, ctx.getMeasure)
+    return collectRefArrays(b.ir, ctx)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'sampleN', ir: b.ir, count: ctx.sampleCount,
         refArrays: refArrays, seed: nameSeed(name + ':b' + bi, ctx.rootSeed),

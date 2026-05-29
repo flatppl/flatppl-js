@@ -185,6 +185,53 @@ a_plus_b ~ iid(pareto, G)
     'pareto inferredType.kind === measure (was deferred pre-fix)');
 });
 
+// =====================================================================
+// 5. Beverton-Holt stock-recruitment (steepness parametrisation)
+// =====================================================================
+//
+// Lognormal-observation Bayesian regression for fisheries
+// recruitment data. Uses pushfwd-derived priors (uniform on
+// (0.2, 1) for steepness h), normalize(truncate(...)) for
+// positive-support priors (half-Cauchy on σ; truncated-Normal on
+// α), and a deterministic transform chaining the priors into
+// `log_rhat` — a per-observation linear predictor that ends up as
+// the lognormal mean.
+//
+// What this exercises beyond the others: a fixed-phase scalar
+// constant (`max_r`) is closed-over deep inside a stochastic prior
+// (`alpha ~ normalize(truncate(Normal(2 * max_r, …), …))`).
+// Without the `collectRefArrays` fix that auto-pushes fixed refs
+// into the worker session env, materialising `alpha` fails with
+// "unbound self reference 'max_r'" — even though `max_r` is in
+// `fixedValues`. (The legacy callers had to remember to push
+// fixedEnv themselves; this fixture catches the gap end-to-end.)
+
+test('beverton-holt: classifies + materialises (collectRefArrays auto-push fix)', async () => {
+  const { errs, ctx, built } = setupCtx(readFixture('beverton-holt.flatppl'), 50);
+  assert.equal(errs.length, 0);
+  assert.ok(built.derivations.posterior);
+  assert.equal(built.derivations.posterior.kind, 'bayesupdate');
+  // alpha goes through normalize(truncate(Normal(2 * max_r, ...))).
+  // Pre-fix: fails with "unbound self reference 'max_r'" because
+  // collectRefArrays filtered out fixed refs without pushing them
+  // into the worker session env.
+  const alpha = await ctx!.getMeasure('alpha');
+  assert.ok(alpha && alpha.samples,
+    'alpha materialises (max_r is auto-pushed via setEnv merge)');
+  // All alpha samples must be positive (truncate to (0, inf)).
+  for (let i = 0; i < alpha.samples.length; i++) {
+    assert.ok(alpha.samples[i] > 0,
+      `alpha sample ${i} = ${alpha.samples[i]} must be > 0`);
+  }
+  // Posterior materialises end-to-end (low n_eff is expected for a
+  // single MC step against informative-ish data — not an engine
+  // bug; just the model's nature with a small sample count).
+  const m = await ctx!.getMeasure('posterior');
+  assert.ok(m, 'posterior materialises');
+  assert.ok(typeof m.n_eff === 'number' && Number.isFinite(m.n_eff),
+    `posterior n_eff is finite (got ${m.n_eff})`);
+});
+
 test('beta-binomial-pushfwd: full fixture exposes user-kernel-composition gap', () => {
   // Pin the failure mode of the full fixture so a regression in
   // either direction (fix lands → catch flips green; gap reopens
