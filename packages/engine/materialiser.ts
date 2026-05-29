@@ -335,24 +335,91 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   //
   // totalmass: M^k (in log: k · M.logTotalmass).
   // n_eff: inherits M's n_eff.
-  const distIR = orchestrator.leafSampleIR(d.from, ctx.derivations);
-  if (!distIR) {
+  //
+  // Resolution: peel through alias / normalize (both sample-
+  // preserving — normalize just adjusts logTotalmass, samples
+  // unchanged) to reach the underlying sample / truncate derivation,
+  // then dispatch to sampleN (vanilla) or truncateSampleN (truncated)
+  // with `count = N * k` so iid blocks are produced in one worker
+  // round-trip.
+  const resolved = _resolveIidLeaf(d.from, ctx.derivations);
+  if (!resolved) {
     return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
   }
   const k = d.dims.reduce((p: any, n: any) => p * n, 1);
-  return collectRefArrays(distIR, ctx.fixedValues, ctx.getMeasure)
+  const N = ctx.sampleCount;
+
+  if (resolved.kind === 'truncate') {
+    // Truncated leaf: route to truncateSampleN with count = N*k.
+    // Output is shape=[N, ...dims] atom-major; the worker returns
+    // a flat N*k Float64Array which we wrap directly.
+    return collectRefArrays(resolved.distIR, ctx.fixedValues, ctx.getMeasure)
+      .then((refArrays: any) => ctx.sendWorker({
+        type: 'truncateSampleN',
+        ir: resolved.distIR,
+        setDescr: resolved.setDescr,
+        count: N * k,
+        mode: 'rejection',
+        budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
+        refArrays: refArrays,
+        seed: nameSeed(name, ctx.rootSeed),
+      }))
+      .then((reply: any) => {
+        const value = { shape: [N | 0].concat(d.dims), data: reply.samples };
+        return Object.assign(
+          empirical.arrayMeasure(reply.samples, d.dims, null),
+          // logTotalmass scales by k (independent product of k iid
+          // truncated draws — each contributes the same logShift).
+          { value: value, logTotalmass: k * (reply.logShift || 0), n_eff: N },
+        );
+      });
+  }
+
+  // Standard sample leaf — sampleN with repeat=k.
+  return collectRefArrays(resolved.distIR, ctx.fixedValues, ctx.getMeasure)
     .then((refArrays: any) => ctx.sendWorker({
-      type: 'sampleN', ir: distIR, count: ctx.sampleCount, repeat: k,
+      type: 'sampleN', ir: resolved.distIR, count: N, repeat: k,
       refArrays: refArrays,
       seed: nameSeed(name, ctx.rootSeed),
     }))
     .then((reply: any) => {
-      const value = { shape: [ctx.sampleCount | 0].concat(d.dims), data: reply.samples };
+      const value = { shape: [N | 0].concat(d.dims), data: reply.samples };
       return Object.assign(
         empirical.arrayMeasure(reply.samples, d.dims, null),
-        { value: value, logTotalmass: 0, n_eff: ctx.sampleCount },
+        { value: value, logTotalmass: 0, n_eff: N },
       );
     });
+}
+
+// Walk the derivation graph to resolve an iid's inner measure into
+// (a) a sample leaf — returning the distribution IR — or (b) a
+// truncate leaf — returning the underlying dist IR + set descriptor.
+// Peels through alias and normalize (both sample-preserving). Returns
+// null if the chain bottoms out at something we can't iid (e.g.
+// weighted with non-trivial weight, pushfwd, bayesupdate).
+function _resolveIidLeaf(
+  name: string, derivations: any, visited?: Set<string>,
+): { kind: 'sample' | 'truncate'; distIR: any; setDescr?: any } | null {
+  visited = visited || new Set();
+  if (visited.has(name)) return null;
+  visited.add(name);
+  const d = derivations[name];
+  if (!d) return null;
+  if (d.kind === 'alias') return _resolveIidLeaf(d.from, derivations, visited);
+  if (d.kind === 'normalize') {
+    return _resolveIidLeaf(d.from, derivations, visited);
+  }
+  if (d.kind === 'sample') {
+    return { kind: 'sample', distIR: d.distIR };
+  }
+  if (d.kind === 'truncate') {
+    // Truncate's parent must reduce to a sample leaf — we need the
+    // underlying dist IR + the set descriptor.
+    const parentLeaf = _resolveIidLeaf(d.from, derivations, visited);
+    if (!parentLeaf || parentLeaf.kind !== 'sample') return null;
+    return { kind: 'truncate', distIR: parentLeaf.distIR, setDescr: d.setDescr };
+  }
+  return null;
 }
 
 function matTuple(d: DerivationTuple, ctx: any) {

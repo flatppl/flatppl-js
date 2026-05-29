@@ -1257,6 +1257,31 @@ const SIGNATURE_FACTORIES = {
     kwargs: {},
     result: measure(tvar('T')),
   }),
+  // pushfwd(f, M) — pushforward of measure M through function f, per
+  // spec §06. Result is a measure (over f's codomain, which is not
+  // statically tracked here — type variable suffices for downstream
+  // "is this a measure" checks done by callers like iid /
+  // logdensityof / bayesupdate). The first arg is a callable
+  // (function or kernel reified to a function); typed loosely as
+  // any() here since we don't have a dedicated callable-type
+  // surface in the signature DSL. Validated structurally by the
+  // classifier (which checks the fnRef points at a bijection /
+  // fn / functionof binding before routing to matPushfwd).
+  // pushfwd(f, M) — pushforward of measure M through function f
+  // (spec §06). Per spec: when M is a measure → result is a
+  // measure; when M is a kernel → result is a kernel. The static
+  // signature here can't express that dependency in the existing
+  // signature DSL — `inferPushfwd` in typeinfer.ts handles the
+  // measure-vs-kernel branch explicitly. This stub signature is a
+  // sentinel for `signatureOf` callers; the typeinfer dispatch
+  // recognises 'pushfwd' before generic-call lookup so this
+  // signature is intentionally permissive (args: [any, any];
+  // result: any) to avoid regressing existing kernel-input uses.
+  pushfwd: () => ({
+    args: [any(), any()],
+    kwargs: {},
+    result: any(),
+  }),
 };
 
 function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }

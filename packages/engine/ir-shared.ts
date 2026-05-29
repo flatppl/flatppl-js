@@ -289,6 +289,25 @@ function collectSelfRefs(ir: IRNode | null | undefined) {
     // get missed.
     if (Array.isArray(node.fields)) for (const f of node.fields) walk(f && f.value);
     if (node.body)                                          walk(node.body);
+    // Discrete-selector IRs (`select` — superpose / mixture / ifelse
+    // expansion) carry their per-branch measure IRs in
+    // `branches: [{ kind, ir? | ref?, ... }, ...]` rather than
+    // args/kwargs. Walking branches catches refs that appear inside
+    // per-branch measure expressions (e.g. `superpose(weighted(psi,
+    // Binomial(K, p)), …)` — the `K` / `p` refs live inside the
+    // branch's measure IR, not at the top level). Without this the
+    // bayesupdate / likelihoodof density path fails to push K /
+    // other closed-over fixed-phase refs into the worker session
+    // env, surfacing as "unbound self reference 'K'" at eval time.
+    if (Array.isArray(node.branches)) {
+      for (const b of node.branches) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.ir) walk(b.ir);
+        if (b.kind) walk(b);
+      }
+    }
+    if (node.selector)   walk(node.selector);
+    if (node.logweights) walk(node.logweights);
     // Reified-scope params/paramKwargs are name lists, not IRs.
   }
 }
