@@ -1228,7 +1228,11 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
     })).then((subs: any[]) => {
       const fields: Record<string, any> = {};
       for (let i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
-      return empirical.recordMeasure(fields, null);
+      // Propagate per-field weights to the outer level. recordMeasure
+      // then strips them at the leaves so the invariant holds at every
+      // layer (empirical.ts §"composite-measure invariant").
+      const lw = empirical.propagateLogWeights(subs);
+      return empirical.recordMeasure(fields, lw);
     });
   }
   // broadcast(<Dist>, args…) → engine kernel-broadcast IR-direct entry.

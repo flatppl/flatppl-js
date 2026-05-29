@@ -232,6 +232,163 @@ test('beverton-holt: classifies + materialises (collectRefArrays auto-push fix)'
     `posterior n_eff is finite (got ${m.n_eff})`);
 });
 
+// =====================================================================
+// 6. 2PL Item Response Theory (Rasch with discrimination)
+// =====================================================================
+//
+// Educational psychometrics workhorse: per-person ability, per-item
+// difficulty + discrimination, hierarchical hyperpriors on the
+// difficulty mean / sd and the log-discrimination sd. The forward
+// model is
+//
+//   P(correct[p, i]) = invlogit(discrim[i] · (ability[p] − diff[i] − diff_mean))
+//
+// fitted against a flat list of (person_idx, item_idx, correct) rows.
+//
+// Why this fixture exercises a lot of the engine surface in one shot:
+//
+//   - Hierarchical priors with PARAMETER-DEPENDENT sigma:
+//     `diff ~ iid(Normal(0, diff_sd), n_item)` — diff_sd is itself a
+//     stochastic draw. Per-atom binding of refArrays must thread
+//     diff_sd[i] to all n_item inner draws sharing that atom.
+//   - LogNormal scale prior on discrimination.
+//   - Half-Cauchy via `normalize(truncate(Cauchy(0, 5),
+//     interval(0, inf)))` — matIid's normalize + truncate peel
+//     route through truncateSampleN.
+//   - Gather indexing with integer index arrays:
+//     `ability[person_idx]`, `diff[item_idx]`, `discrim[item_idx]`
+//     — `get(arr, int_arr)` produces a length-12 vector per atom.
+//   - Dotted broadcast of a distribution constructor:
+//     `Bernoulli.(invlogit.(...))` — kernel-broadcast over an inline
+//     elementwise computation.
+//   - Record-typed kernel output: `kernelof(record(correct = …),
+//     …kw)` with six inputs of mixed scalar/array shape.
+//   - bayesupdate density walk over the full structure.
+//
+// The regression test checks each layer rather than just "no
+// errors": every refactor on the dev branch (ir-walk centralisation,
+// matIid leaf-preserving set, collectRefArrays auto-push,
+// inferArith1 type-preserving, inferVector scalar promotion) is
+// exercised by this fixture, so a future regression in any of them
+// trips a specific assertion below.
+
+test('rasch-two-parameter: hierarchical IRT classifies + materialises end-to-end', async () => {
+  const { errs, ctx, built } = setupCtx(readFixture('rasch-two-parameter.flatppl'), 500);
+  assert.equal(errs.length, 0, 'no parse/typeinfer errors');
+  assert.ok(built.derivations.posterior, 'posterior classifies');
+  assert.equal(built.derivations.posterior.kind, 'bayesupdate');
+
+  // Half-Cauchy hyperprior — all positive, no NaN.
+  const diff_sd = await ctx!.getMeasure('diff_sd');
+  const diff_sd_data = diff_sd.value?.data || diff_sd.samples;
+  for (let i = 0; i < diff_sd_data.length; i++) {
+    assert.ok(diff_sd_data[i] > 0, `diff_sd[${i}] = ${diff_sd_data[i]} must be positive (half-Cauchy)`);
+    assert.ok(!Number.isNaN(diff_sd_data[i]), `diff_sd[${i}] is NaN`);
+  }
+
+  // Hierarchical iid: diff ~ iid(Normal(0, diff_sd), n_item). Per-atom
+  // diff_sd[i] should drive std(diff[i, :]). Pre-fix to matIid's
+  // _resolveIidLeaf, this case fell back to the composite-inner path
+  // which broke the per-atom param binding; post-fix it routes
+  // through the leaf-sample worker primitive with refArrays carrying
+  // diff_sd, and per-atom correlation is strong.
+  const diff = await ctx!.getMeasure('diff');
+  assert.deepEqual(diff.value.shape, [500, 4]);
+  const dd = diff.value.data;
+  let mu_sd = 0, mu_std = 0;
+  const stds = new Float64Array(500);
+  for (let i = 0; i < 500; i++) {
+    let s = 0, ss = 0;
+    for (let j = 0; j < 4; j++) { const v = dd[i*4 + j]; s += v; ss += v*v; }
+    const m = s / 4;
+    stds[i] = Math.sqrt(Math.max(0, ss / 4 - m*m));
+    mu_sd += diff_sd_data[i];
+    mu_std += stds[i];
+  }
+  mu_sd /= 500; mu_std /= 500;
+  let cov = 0, vsd = 0, vstd = 0;
+  for (let i = 0; i < 500; i++) {
+    const a = diff_sd_data[i] - mu_sd, b = stds[i] - mu_std;
+    cov += a*b; vsd += a*a; vstd += b*b;
+  }
+  const r_per_atom = cov / Math.sqrt(vsd * vstd);
+  assert.ok(r_per_atom > 0.8,
+    `per-atom param binding: corr(diff_sd, std(diff)) = ${r_per_atom.toFixed(3)} (must be > 0.8)`);
+
+  // LogNormal scale: support is mathematically (0, ∞). Under
+  // float-arithmetic this becomes [0, +∞]: extreme `discrim_log_sd`
+  // values from the half-Cauchy(0, 5) hyperprior produce
+  // `exp(Normal(0, σ))` that overflows to +∞ or underflows to 0.
+  // Both are legitimate float-truncated LogNormal samples (the spec
+  // and the runtime both treat them as the float endpoints of the
+  // support). The invariant is "no NaN, no negative".
+  const discrim = await ctx!.getMeasure('discrim');
+  assert.deepEqual(discrim.value.shape, [500, 4]);
+  for (let i = 0; i < discrim.value.data.length; i++) {
+    const v = discrim.value.data[i];
+    assert.ok(!Number.isNaN(v), `discrim[${i}] is NaN`);
+    assert.ok(v >= 0, `discrim[${i}] = ${v} must be ≥ 0 (LogNormal)`);
+  }
+
+  // Gather indexing + dotted broadcast of Bernoulli: `correct` has
+  // length 12 (n_obs) and per-element mean ≈ 0.5 (invlogit of
+  // zero-centered prior means). Verifies that
+  // `ability[person_idx]` etc. produce length-12 per-atom vectors
+  // and `Bernoulli.(invlogit.(…))` produces a length-12 product
+  // measure.
+  const correct = await ctx!.getMeasure('correct');
+  assert.deepEqual(correct.value.shape, [500, 12]);
+  let total_zeros = 0;
+  for (let i = 0; i < correct.value.data.length; i++) {
+    const v = correct.value.data[i];
+    assert.ok(v === 0 || v === 1, `correct[${i}] = ${v} must be 0 or 1`);
+    if (v === 0) total_zeros++;
+  }
+  const zeros_frac = total_zeros / correct.value.data.length;
+  assert.ok(zeros_frac > 0.4 && zeros_frac < 0.6,
+    `prior predictive P(correct = 0) ≈ 0.5; got ${zeros_frac.toFixed(3)}`);
+
+  // bayesupdate density walk produces a posterior with finite
+  // logTotalmass + n_eff. The ESS will be small (12 binary obs vs a
+  // 14-parameter posterior sampled from the prior — importance
+  // sampling shows its limits here; that's a known property, not an
+  // engine bug). What matters is that density evaluation
+  // SUCCEEDS — pre-collectRefArrays-fix this would have failed with
+  // unbound-ref errors deep inside the bayesupdate density walk
+  // over the kernel-broadcast body.
+  const m = await ctx!.getMeasure('posterior');
+  assert.ok(m, 'posterior materialises');
+  assert.ok(typeof m.n_eff === 'number' && Number.isFinite(m.n_eff),
+    `posterior n_eff is finite (got ${m.n_eff})`);
+  assert.ok(Number.isFinite(m.logTotalmass),
+    `posterior logTotalmass is finite (got ${m.logTotalmass})`);
+  // logWeights must NOT be all -∞ or NaN (would indicate density-eval
+  // collapsed everywhere).
+  let finite_count = 0;
+  if (m.logWeights) {
+    for (const w of m.logWeights) if (Number.isFinite(w)) finite_count++;
+  } else {
+    finite_count = 500; // null logWeights ⇒ uniform.
+  }
+  assert.ok(finite_count > 0, `posterior has at least one finite-weight atom (got ${finite_count}/500)`);
+
+  // Composite-measure invariant (empirical.ts §"composite-measure
+  // invariant"): the IS weights live at the OUTER level alone;
+  // sub-fields are SoA storage with null logWeights / no n_eff.
+  // Pre-fix (empirical.recordMeasure transparent): the prior's
+  // half-Cauchy normalize weights survived on
+  // `posterior.fields.diff_sd.logWeights`, stale relative to the
+  // bayesupdate output. Post-fix: every field's metadata is
+  // cleared on composite construction.
+  for (const fname of ['ability', 'diff', 'discrim', 'diff_mean', 'diff_sd', 'discrim_log_sd']) {
+    const f = m.fields[fname];
+    assert.equal(f.logWeights, null,
+      `posterior.fields.${fname}.logWeights cleared on composite construction`);
+    assert.equal(f.n_eff, undefined,
+      `posterior.fields.${fname}.n_eff cleared on composite construction`);
+  }
+});
+
 test('beta-binomial-pushfwd: full fixture exposes user-kernel-composition gap', () => {
   // Pin the failure mode of the full fixture so a regression in
   // either direction (fix lands → catch flips green; gap reopens
