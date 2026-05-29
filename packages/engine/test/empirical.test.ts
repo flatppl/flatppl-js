@@ -336,7 +336,7 @@ test('multinomialResample: degenerate weights → all output indices equal', () 
 // estimate slightly.
 
 const { paretoKHat, paretoKThreshold, importanceSamplingQuality,
-        estimateDof, recordMeasure, arrayMeasure } = require('../empirical.ts');
+        estimateDof, recordMeasure, tupleMeasure, arrayMeasure } = require('../empirical.ts');
 
 // Deterministic Pareto sampler: F⁻¹(u) = (1-u)^(-1/α) - 1 has shape
 // k̂ = 1/α for the GPD. Use an LCG for reproducibility.
@@ -494,4 +494,75 @@ test('estimateDof: array(iid) of length 10 across N atoms → 10 (independent sl
   }
   const m = arrayMeasure(samples, [K], null);
   assert.equal(estimateDof(m), K);
+});
+
+// =====================================================================
+// Composite-measure invariant — sub-fields carry no weighting metadata
+// =====================================================================
+
+test('recordMeasure: strips sub-field logWeights / n_eff / logTotalmass', () => {
+  const w = new Float64Array([0.0, -0.5, -1.0]);
+  const fStale = {
+    samples: new Float64Array([1, 2, 3]),
+    logWeights: new Float64Array([-2, -1, 0]),  // stale prior weights
+    n_eff: 2.5,
+    logTotalmass: -1.7,
+  };
+  const fClean = {
+    samples: new Float64Array([4, 5, 6]),
+    logWeights: null,
+  };
+  const m = recordMeasure({ a: fStale, b: fClean }, w);
+
+  // Outer level carries the IS weights.
+  assert.equal(m.logWeights, w);
+
+  // Sub-field metadata stripped (invariant: outer-level only).
+  assert.equal(m.fields.a.logWeights, null,
+    'fStale logWeights cleared on composite construction');
+  assert.equal(m.fields.a.n_eff, undefined, 'fStale n_eff cleared');
+  assert.equal(m.fields.a.logTotalmass, undefined, 'fStale logTotalmass cleared');
+
+  // Sub-field SAMPLES intact (SoA storage).
+  assert.equal(m.fields.a.samples, fStale.samples,
+    'sample storage shared with original (not copied)');
+
+  // The ORIGINAL fStale object is untouched — the constructor
+  // shallow-copies. Cached binding measures (which fStale stands
+  // in for) keep their own metadata intact for standalone access.
+  assert.notEqual(m.fields.a, fStale, 'shallow-copied (not mutated)');
+  assert.equal(fStale.logWeights, w === fStale.logWeights ? w : fStale.logWeights);
+  assert.equal(fStale.n_eff, 2.5, 'original logWeights still readable');
+
+  // Clean sub-field passes through by reference (no work needed).
+  assert.equal(m.fields.b, fClean, 'clean fields share reference');
+});
+
+test('recordMeasure: recurses into nested records', () => {
+  const innerStale = {
+    samples: new Float64Array([1, 2]),
+    logWeights: new Float64Array([-1, -1]),
+    n_eff: 1.2,
+  };
+  const middle = {
+    shape: 'record',
+    fields: { x: innerStale },
+    logWeights: new Float64Array([-1, -1]),
+    n_eff: 1.5,
+  };
+  const outer = recordMeasure({ middle: middle }, new Float64Array([0, -0.5]));
+
+  assert.equal(outer.fields.middle.logWeights, null,
+    'middle-level logWeights cleared');
+  assert.equal(outer.fields.middle.fields.x.logWeights, null,
+    'innermost logWeights cleared (recursive strip)');
+});
+
+test('tupleMeasure: strips sub-element metadata', () => {
+  const e0 = { samples: new Float64Array([1, 2]), logWeights: new Float64Array([-1, 0]), n_eff: 1.5 };
+  const e1 = { samples: new Float64Array([3, 4]), logWeights: null };
+  const m = tupleMeasure([e0, e1], new Float64Array([0, -0.5]));
+  assert.equal(m.elems[0].logWeights, null);
+  assert.equal(m.elems[0].n_eff, undefined);
+  assert.equal(m.elems[1], e1, 'clean elements pass through by reference');
 });

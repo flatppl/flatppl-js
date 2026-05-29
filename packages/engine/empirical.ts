@@ -305,11 +305,31 @@ function multinomialResample(logWeights: ArrayLike<number>, n: number, prng: () 
 //   { shape: 'tuple',  elems:  [ EmpiricalMeasure, … ],     logWeights }
 //   { shape: 'array',  samples, dims, logWeights }    // flat N*prod(dims)
 //
-// Top-level `logWeights` lives at the root only — one weight per atom,
-// shared across all fields/elements (joint sampling produces atoms,
-// not per-field draws). Sub-level EmpiricalMeasures carry their own
-// `samples` / `fields` / `elems` but no separate weights — querying
-// any leaf's mass goes through the root.
+// **Composite-measure invariant (LOAD-BEARING).** When the outer
+// measure is composite (record / tuple) and carries `logWeights`,
+// sub-field / sub-element measures MUST carry null logWeights and no
+// `n_eff` / `logTotalmass`. The importance-weighting channel lives
+// at the OUTER level alone; sub-leaves are SoA storage of per-atom
+// samples. The `recordMeasure` / `tupleMeasure` constructors enforce
+// this by shallow-copy-and-strip of any sub-measure metadata. They
+// recurse so the invariant holds at every nested layer.
+//
+// **Why.** Per spec §03 records are atoms-of-records (SoA storage),
+// not records-of-atoms. The importance-weighting channel is one
+// per atom — shared across all fields. Storing per-field
+// `logWeights` would either duplicate the outer's (wasted memory +
+// drift risk if one path forgets to update both) or carry stale
+// upstream weights from the field's binding cache (the original
+// rasch-two-parameter symptom: `posterior.fields.diff_sd.logWeights`
+// kept the half-Cauchy normalize weights from the prior, missing
+// the likelihood update). The cached binding `diff_sd_binding`
+// keeps its own weights — `recordMeasure` shallow-copies before
+// stripping, so binding-cache integrity is preserved.
+//
+// **What consumers do.** Reading IS-weighted statistics on a field
+// (histogram, ESS, k̂) always reads logWeights from the OUTER
+// measure. The viewer's `renderDensityStrips` and `renderCornerGrid`
+// already do this; future consumers must follow the same rule.
 //
 // Why SoA (not array-of-records): each field is its own contiguous
 // Float64Array, indexed by atom. Marginals (just take a column),
@@ -324,14 +344,84 @@ function multinomialResample(logWeights: ArrayLike<number>, n: number, prng: () 
 // They're thin builders: callers populate the fields/elems with
 // already-materialised sub-measures.
 
+/**
+ * Strip per-leaf importance-weighting metadata so the composite-
+ * measure invariant holds: logWeights / n_eff / logTotalmass live
+ * ONLY at the outer level. Sub-fields and tuple elements are SoA
+ * storage of per-atom samples; consumers compute IS-weighted leaf
+ * statistics by reading the outer measure's logWeights.
+ *
+ * Shallow-copies any sub-measure that carries weighting metadata
+ * (referent of `fields[k]` / `elems[i]` may be a cached binding
+ * measure shared with the orchestrator's per-binding empirical-
+ * measure cache — mutating it would corrupt the cache).
+ *
+ * Nested composites recurse so the invariant holds at every layer:
+ * `posterior.fields.X` is clean AND `posterior.fields.X.fields.Y`
+ * is clean.
+ */
+function _stripLeafWeights(m: any): any {
+  if (!m || typeof m !== 'object') return m;
+  // A leaf carries weighting metadata if any of these are present.
+  // Drop them via shallow copy.
+  const hasWeights = m.logWeights != null
+                  || typeof m.logTotalmass === 'number'
+                  || typeof m.n_eff === 'number';
+  // Always recurse into nested composites; mutate the copy when we
+  // need to.
+  let copy: any = null;
+  if (m.fields) {
+    let changed = false;
+    const f2: any = {};
+    for (const k in m.fields) {
+      const stripped = _stripLeafWeights(m.fields[k]);
+      f2[k] = stripped;
+      if (stripped !== m.fields[k]) changed = true;
+    }
+    if (changed) {
+      copy = copy || Object.assign({}, m);
+      copy.fields = f2;
+    }
+  }
+  if (Array.isArray(m.elems)) {
+    let changed = false;
+    const e2 = new Array(m.elems.length);
+    for (let i = 0; i < m.elems.length; i++) {
+      const stripped = _stripLeafWeights(m.elems[i]);
+      e2[i] = stripped;
+      if (stripped !== m.elems[i]) changed = true;
+    }
+    if (changed) {
+      copy = copy || Object.assign({}, m);
+      copy.elems = e2;
+    }
+  }
+  if (hasWeights) {
+    copy = copy || Object.assign({}, m);
+    copy.logWeights = null;
+    // Drop derived metadata that would no longer reflect the
+    // outer-level weighting once the composite carries the real
+    // outer logWeights. `value` (the Float64Array view) stays —
+    // sample storage is shared with the binding cache and not
+    // semantically tied to the weighting channel.
+    delete copy.logTotalmass;
+    delete copy.n_eff;
+  }
+  return copy || m;
+}
+
 /** Build a record-shaped measure. `fields` is `{name: subMeasure}`. */
 function recordMeasure(fields: any, logWeights: any) {
-  return { shape: 'record', fields, logWeights: logWeights || null };
+  const cleanFields: any = {};
+  for (const k in fields) cleanFields[k] = _stripLeafWeights(fields[k]);
+  return { shape: 'record', fields: cleanFields, logWeights: logWeights || null };
 }
 
 /** Build a tuple-shaped measure. `elems` is `[subMeasure, ...]`. */
 function tupleMeasure(elems: any, logWeights: any) {
-  return { shape: 'tuple', elems, logWeights: logWeights || null };
+  const cleanElems = new Array(elems.length);
+  for (let i = 0; i < elems.length; i++) cleanElems[i] = _stripLeafWeights(elems[i]);
+  return { shape: 'tuple', elems: cleanElems, logWeights: logWeights || null };
 }
 
 /**
