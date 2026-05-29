@@ -391,6 +391,27 @@ function _lowerUnaryExpr(node: any, ctx: any): any {
   if (!op) {
     throw new Error(`lower: unknown unary operator '${node.op}'`);
   }
+  // Literal-folding for negated numeric literals. Without this,
+  // `-3` lowers to `neg(lit(3, integer))` which typeinfers as
+  // `real` (the neg signature widens integers to real); inside an
+  // array literal `[1, -3, 5]` the unification then fails with
+  // "array element type mismatch: integer vs real". Folding `-N` /
+  // `+N` to `lit(-N)` / `lit(N)` at lower-time preserves the
+  // integer/real numType and matches how `28` itself lowers.
+  // (Non-broadcast unary `-`/`+` on a literal only — broadcast
+  // dotted-unary and unary on non-lit operands keep their original
+  // shape.)
+  if (!node.broadcast && (node.op === '-' || node.op === '+')
+      && node.operand && node.operand.type === 'NumberLiteral'
+      && typeof node.operand.value === 'number') {
+    // Re-use the same integer-detection logic NumberLiteral uses
+    // (raw-source pattern, not Number.isInteger — `1.0` is integer-
+    // valued but spec-real).
+    const raw = String(node.operand.raw != null ? node.operand.raw : node.operand.value);
+    const isInt = /^[+-]?(\d(_?\d)*|0x[0-9a-fA-F](_?[0-9a-fA-F])*)$/.test(raw);
+    const v = node.op === '-' ? -node.operand.value : node.operand.value;
+    return { kind: 'lit', value: v, numType: isInt ? 'integer' : 'real', loc: node.loc };
+  }
   const args: any[] = [_lowerExpr(node.operand, ctx)];
   if (node.broadcast) {
     return {
