@@ -1,0 +1,69 @@
+%%%
+Bayesian linear regression with horseshoe prior on coefficients,
+inlined data (N=10, D_X=3).
+%%%
+
+# Data
+N = 10
+D_X = 3
+
+X = rowstack([
+    [ 1.222423958070559,   -0.12023644555183673,   0.03255538840436528],
+    [ 0.3722741874926629,   2.610192697112328,    -1.0190496683179162 ],
+    [-0.3032566720882061,  -1.1006816905302443,    1.1999459468054487 ],
+    [ 0.9819124952993676,  -0.053085085601933577,  0.4543073151256401 ],
+    [ 2.1443264972193616,  -0.6922130442557026,   -0.45681839269713614],
+    [ 0.7885880362986288,  -0.574854907607343,     0.8371407096427117 ],
+    [-0.6794035343810304,  -1.535665030509775,    -1.779353789884585  ],
+    [-1.3369469794913187,  -0.6710897370014051,   -0.2523579139766338 ],
+    [ 1.1627067027857843,   0.019693136391318453, -0.45688712307507806],
+    [-0.4398920137630417,   1.5541469762575257,    1.8795086898586204 ]
+])
+
+Y_data = [
+    1.1981005499956638,
+    3.368887896707422,
+   -3.876179108996998,
+   -0.2684639146275135,
+    3.7967252423997384,
+   -1.3979103496986878,
+    4.839414908810532,
+   -0.743364999085408,
+    2.4769336412232796,
+   -6.076637948004147
+]
+
+# Priors
+half_cauchy = normalize(truncate(Cauchy(0, 1), interval(0, inf)))
+
+lambdas ~ iid(half_cauchy, D_X)
+tau ~ half_cauchy
+unscaled_betas ~ iid(Normal(0, 1), D_X)
+prec_obs ~ Gamma(3, 1)
+
+# Transformed parameter: betas = tau * lambdas .* unscaled_betas
+betas = tau .* lambdas .* unscaled_betas
+
+# Observation model
+mu_obs = X * betas
+sigma_obs = 1 / sqrt(prec_obs)
+Y ~ Normal.(mu_obs, sigma_obs)
+
+# Likelihood + posterior
+prior = lawof(record(
+    lambdas = lambdas,
+    tau = tau,
+    unscaled_betas = unscaled_betas,
+    prec_obs = prec_obs
+))
+
+forward_kernel = kernelof(
+    record(Y = Y),
+    lambdas = lambdas,
+    tau = tau,
+    unscaled_betas = unscaled_betas,
+    prec_obs = prec_obs
+)
+
+L = likelihoodof(forward_kernel, record(Y = Y_data))
+posterior = bayesupdate(L, prior)

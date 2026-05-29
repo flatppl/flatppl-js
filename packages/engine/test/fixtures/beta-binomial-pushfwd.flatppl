@@ -1,0 +1,56 @@
+%%%
+Hierarchical Beta-Binomial model (litter data, G=2, N=16).
+
+Groups g = 1..G, each with N observations. Per-observation success rates
+p[g, i] are Beta-distributed with group-specific shape (a[g], b[g]), where
+a + b ~ Pareto(0.1, 1.5) and mu = a/(a+b) ~ Uniform(0, 1).
+Observations r[g, i] ~ Binomial(n[g, i], p[g, i]).
+%%%
+
+G = 2
+N = 16
+
+n_data = [
+    [13, 12,  9,  9,  8,  8, 13, 12, 10, 10,  9, 13,  5,  7, 10, 10],
+    [12, 11, 10,  9, 11, 10, 10,  9,  9,  5,  9,  7, 10,  6, 10,  7]
+]
+
+r_data = [
+    [13, 12,  9,  9,  8,  8, 12, 11,  9,  9,  8, 11,  4,  5,  7,  7],
+    [12, 11, 10,  9, 10,  9,  9,  8,  8,  4,  7,  4,  5,  3,  3,  0]
+]
+
+# Pareto(scale = x_m, shape = alpha): X = x_m * exp(Y), Y ~ Exponential(alpha)
+pareto = pushfwd(fn(0.1 * exp(_)), Exponential(1.5))
+
+# Priors
+a_plus_b ~ iid(pareto, G)
+mu ~ iid(Beta(1, 1), G)
+
+# Transformed parameters
+a = mu .* a_plus_b
+b = (1 .- mu) .* a_plus_b
+
+beta_row_K = (a_g, b_g) -> iid(Beta(a_g, b_g), N)
+p ~ beta_row_K.(a, b)
+
+# Per-group row kernel: N independent Binomials per group
+binomial_row_K = (n_row, p_row) -> Binomial.(n_row, p_row)
+r ~ binomial_row_K.(n_data, p)
+
+# Likelihood + posterior
+prior = lawof(record(
+    a_plus_b = a_plus_b,
+    mu = mu,
+    p = p
+))
+
+forward_kernel = kernelof(
+    record(r = r),
+    a_plus_b = a_plus_b,
+    mu = mu,
+    p = p
+)
+
+L = likelihoodof(forward_kernel, record(r = r_data))
+posterior = bayesupdate(L, prior)
