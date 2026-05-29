@@ -13,6 +13,7 @@ import type { IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
+const { walkIR } = require('./ir-walk.ts');
 
 /**
  * Resolve a measure-typed AST argument (the measure operand of
@@ -275,41 +276,25 @@ function valueToPlain(v: any): any {
  * those introduce their own scope and their bodies aren't part of the
  * outer binding's data dependencies for sampling.
  */
+/**
+ * Collect every `self`-namespaced ref name reachable from `ir`,
+ * recursing through every FlatPIR sub-position (args / kwargs /
+ * fields / body / branches / selector / logweights / assigns —
+ * single source of truth in `ir-walk.ts`).
+ *
+ * Critical for the worker-bound density / sampling pipeline: each
+ * collected name becomes a per-atom refArray (or a fixedEnv push if
+ * fixed-phase). Missing a sub-position here surfaces as "unbound
+ * self reference '<name>'" at eval time — historically the failure
+ * mode when `select` (superpose / mixture / ifelse lift) was added
+ * to IR without updating every walker.
+ */
 function collectSelfRefs(ir: IRNode | null | undefined) {
   const seen = new Set<string>();
-  walk(ir);
+  walkIR(ir, (n: any) => {
+    if (n && n.kind === 'ref' && n.ns === 'self') seen.add(n.name);
+  });
   return seen;
-  function walk(node: IRNode | null | undefined) {
-    if (!node || typeof node !== 'object') return;
-    if (node.kind === 'ref' && node.ns === 'self') seen.add(node.name);
-    if (node.args)   for (const a of node.args)            walk(a);
-    if (node.kwargs) for (const k in node.kwargs)          walk(node.kwargs[k]);
-    // joint/record IRs use `fields: [{ name, value }, ...]` instead
-    // of args/kwargs. Walk values so refs inside joint fields don't
-    // get missed.
-    if (Array.isArray(node.fields)) for (const f of node.fields) walk(f && f.value);
-    if (node.body)                                          walk(node.body);
-    // Discrete-selector IRs (`select` — superpose / mixture / ifelse
-    // expansion) carry their per-branch measure IRs in
-    // `branches: [{ kind, ir? | ref?, ... }, ...]` rather than
-    // args/kwargs. Walking branches catches refs that appear inside
-    // per-branch measure expressions (e.g. `superpose(weighted(psi,
-    // Binomial(K, p)), …)` — the `K` / `p` refs live inside the
-    // branch's measure IR, not at the top level). Without this the
-    // bayesupdate / likelihoodof density path fails to push K /
-    // other closed-over fixed-phase refs into the worker session
-    // env, surfacing as "unbound self reference 'K'" at eval time.
-    if (Array.isArray(node.branches)) {
-      for (const b of node.branches) {
-        if (!b || typeof b !== 'object') continue;
-        if (b.ir) walk(b.ir);
-        if (b.kind) walk(b);
-      }
-    }
-    if (node.selector)   walk(node.selector);
-    if (node.logweights) walk(node.logweights);
-    // Reified-scope params/paramKwargs are name lists, not IRs.
-  }
 }
 
 function lowerSafe(ast: any): IRNode | null {

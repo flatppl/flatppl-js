@@ -12,6 +12,7 @@
 import type { IRNode } from './engine-types';
 
 const { quantileSorted } = require('./histogram.ts');
+const { mapIR } = require('./ir-walk.ts');
 const {
   resolveConstant,
   parseSetIR,
@@ -753,68 +754,32 @@ function inlineForProfile(ir: IRNode | null | undefined, paramNames: any, bindin
   const visiting = new Set();
   return walk(ir);
 
+  // Two responsibilities, both keyed off `self`-namespace refs:
+  //   1. Swept input → %local rewrite.
+  //   2. Evaluable-binding ref → inline the target's IR (cycle-guarded,
+  //      so a self-referential chain stays intact).
+  // Everything else (args / kwargs / fields / body / branches /
+  // selector / logweights / assigns) recurses uniformly via mapIR,
+  // which owns IR sub-position enumeration.
   function walk(node: any): any {
-    if (node == null || typeof node !== 'object') return node;
-    if (Array.isArray(node)) return node.map(walk);
-    if (node.kind === 'ref' && node.ns === 'self') {
-      // Swept input → %local rewrite.
-      if (paramSet.has(node.name)) {
-        return { ...node, ns: '%local' };
+    return mapIR(node, function(n: any): any {
+      if (!n || n.kind !== 'ref' || n.ns !== 'self') return n;
+      if (paramSet.has(n.name)) return { ...n, ns: '%local' };
+      if (visiting.has(n.name)) return n;
+      const target = bindings && bindings.get(n.name);
+      const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, n.name)
+        ? derivations[n.name] : null;
+      const isEvaluate =
+        (drv && drv.kind === 'evaluate')
+        || (!drv && target && target.type === 'call' && target.ir);
+      if (isEvaluate && target && target.ir) {
+        visiting.add(n.name);
+        const expanded = walk(target.ir);
+        visiting.delete(n.name);
+        return expanded;
       }
-      // Evaluable binding → inline. Cycle guard: if we're already
-      // expanding this name, leave the ref intact (the cycle would
-      // be the analyzer's bug, not ours to mask).
-      //
-      // Two routes to "evaluable":
-      //   1. The derivation table tags this binding as evaluate-kind
-      //      (the common case for non-parameterized chains).
-      //   2. buildDerivations pruned the binding because it transitively
-      //      depends on a parameterized (elementof) ancestor — exactly
-      //      the situation profile-plotting is here to handle. Fall
-      //      back on the binding's static shape: type='call' with a
-      //      lowered IR is evaluable. Without this fallback, sweeping
-      //      `f_mu2 = functionof(mu2)` (mu2 = mu^2) leaves the body as
-      //      `ref self mu2` and the profile evaluator never reaches
-      //      `ref self mu` to rewrite it as `ref %local mu`, producing
-      //      an empty line plot.
-      if (!visiting.has(node.name)) {
-        const target = bindings && bindings.get(node.name);
-        const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, node.name)
-          ? derivations[node.name] : null;
-        const isEvaluate =
-          (drv && drv.kind === 'evaluate')
-          || (!drv && target && target.type === 'call' && target.ir);
-        if (isEvaluate && target && target.ir) {
-          visiting.add(node.name);
-          const expanded: any = walk(target.ir);
-          visiting.delete(node.name);
-          return expanded;
-        }
-      }
-      // Constant / stochastic / opaque ref — leave for fixedEnv.
-      return node;
-    }
-    // Recurse into structural children: args, fields, kwargs, body,
-    // branches (the `select` IR's per-branch measures — without this
-    // a `self.<kernel_input>` ref inside a `weighted(w, m)` branch
-    // stays unrewritten when the swept input appears inside a
-    // superpose / mixture / ifelse, surfacing downstream as
-    // "select branch weight must reduce to a number; got self.psi"
-    // at materialiseSelectIR's fold step).
-    const out = { ...node };
-    if (Array.isArray(node.args))   out.args   = node.args.map(walk);
-    if (Array.isArray(node.fields)) out.fields = node.fields.map((f: any) => ({ ...f, value: walk(f.value) }));
-    if (node.kwargs && typeof node.kwargs === 'object') {
-      out.kwargs = {};
-      for (const k in node.kwargs) out.kwargs[k] = walk(node.kwargs[k]);
-    }
-    if (node.body) out.body = walk(node.body);
-    if (Array.isArray(node.branches)) {
-      out.branches = node.branches.map(walk);
-    }
-    if (node.selector)   out.selector   = walk(node.selector);
-    if (node.logweights) out.logweights = walk(node.logweights);
-    return out;
+      return n;
+    });
   }
 }
 

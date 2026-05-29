@@ -156,16 +156,16 @@ function lowerToModule(parsedBindings: Map<string, any>) {
  * Walk every call in `expr` (depth-first, post-order). Visitor receives
  * the call node; return value is ignored. Used by inference passes that
  * need to annotate every call with meta, not just the outermost.
+ *
+ * Delegates IR-position enumeration to `ir-walk.walkIR` (single source
+ * of truth for which fields carry recursive IR children: args / kwargs
+ * / fields / body / branches / selector / logweights / assigns). Filters
+ * to call nodes here.
  */
+const { walkIR } = require('./ir-walk.ts');
+
 function walkCalls(expr: any, visit: (e: any) => void) {
-  if (!expr || typeof expr !== 'object') return;
-  if (expr.kind === 'call') {
-    if (expr.args)   for (const a of expr.args) walkCalls(a, visit);
-    if (expr.kwargs) for (const k in expr.kwargs) walkCalls(expr.kwargs[k], visit);
-    if (expr.fields) for (const f of expr.fields) walkCalls(f.value, visit);
-    if (expr.body)   walkCalls(expr.body, visit);
-    visit(expr);
-  }
+  walkIR(expr, (n: any) => { if (n && n.kind === 'call') visit(n); });
 }
 
 /**
