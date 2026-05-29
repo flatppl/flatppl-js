@@ -58,6 +58,49 @@ test('lower: float literal', () => {
   assert.equal(ir.value, 3.14);
 });
 
+test('lower: negated numeric literals fold to signed lits (preserves numType)', () => {
+  // `-3` as a UnaryExpr operand of a NumberLiteral would otherwise
+  // lower to `neg(lit(3, integer))` and typeinfer as real, breaking
+  // arrays like `[1, -3, 5]` ("element type mismatch: integer vs
+  // real"). The fold collapses the UnaryExpr to a single lit with
+  // the source-preserved numType.
+  const intNeg = lowerOne('x = -3');
+  assert.equal(intNeg.kind, 'lit');
+  assert.equal(intNeg.value, -3);
+  assert.equal(intNeg.numType, 'integer');
+
+  const realNeg = lowerOne('x = -3.14');
+  assert.equal(realNeg.kind, 'lit');
+  assert.equal(realNeg.value, -3.14);
+  assert.equal(realNeg.numType, 'real');
+});
+
+test('lower: array literal mixes pos/neg ints without type mismatch', () => {
+  // Regression for the eight-schools fixture: y_data = [28, 8, -3,
+  // 7, -1, 1, 18, 12]. Before the fold this emitted a diagnostic
+  // ("array element type mismatch: integer vs real") because the
+  // unary-minus lowered to `neg(...)` whose inferredType widened to
+  // real.
+  const ir = lowerOne('y_data = [28, 8, -3, 7, -1, 1, 18, 12]');
+  assert.equal(ir.kind, 'call');
+  assert.equal(ir.op, 'vector');
+  // Every element should be a bare `lit` with numType 'integer'.
+  for (const a of ir.args) {
+    assert.equal(a.kind, 'lit', `arg ${JSON.stringify(a)} should be a bare lit`);
+    assert.equal(a.numType, 'integer');
+  }
+});
+
+test('lower: unary minus on non-literal operand stays as neg call', () => {
+  // The fold only applies to literal operands; refs and call
+  // operands keep the existing neg(...) shape so the typeinfer +
+  // value-ops path still drives them.
+  const ir = lowerOne('y = -x');
+  assert.equal(ir.kind, 'call');
+  assert.equal(ir.op, 'neg');
+  assert.equal(ir.args[0].kind, 'ref');
+});
+
 test('lower: string literal', () => {
   const ir = lowerOne('x = "hello"');
   assert.equal(ir.kind, 'lit');
