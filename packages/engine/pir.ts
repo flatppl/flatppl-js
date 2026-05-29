@@ -117,6 +117,16 @@ function loweredBinding(name: string, rhs: any, opts?: any) {
  */
 function lowerToModule(parsedBindings: Map<string, any>) {
   const m = loweredModule({ source: parsedBindings });
+  // Module-typed bindings (`load_module(...)` / `standard_module(...)` —
+  // analyzer's classifier sets `binding.type === 'module'`). The lower
+  // pass consults this set when it sees `<name>.field`: if `<name>` is
+  // module-typed, emit the spec §11 cross-module ref `(%ref name field)`
+  // rather than a data-access `get_field(name, "field")`.
+  const moduleNames = new Set<string>();
+  for (const [name, binding] of parsedBindings) {
+    if (binding && binding.type === 'module') moduleNames.add(name);
+  }
+  const lowerCtx = { localScope: null, moduleNames };
   for (const [name, binding] of parsedBindings) {
     if (!binding.node || !binding.node.value) continue;
     // Multi-LHS bindings (`a, b = rand(...)`) and disintegrate-rewritten
@@ -128,7 +138,7 @@ function lowerToModule(parsedBindings: Map<string, any>) {
     const sourceAst = binding.effectiveValue || binding.node.value;
     let rhs;
     try {
-      rhs = lower.lowerExpr(sourceAst);
+      rhs = lower.lowerExpr(sourceAst, lowerCtx);
     } catch (err) {
       // Lowering failure (malformed AST) — record a placeholder
       // synthetic literal so downstream passes don't crash. The

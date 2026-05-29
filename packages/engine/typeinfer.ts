@@ -231,7 +231,79 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       if (builtins.isSet(expr.name)) return setMarker(expr.name);
       return T.failed('undefined name "' + expr.name + '"');
     }
-    // Cross-module ref — not yet implemented.
+    // Cross-module ref — `(%ref mod X)` resolves through the
+    // module binding's loaded definition (spec §11). For standard
+    // modules (engine-provided), look the binding up in the
+    // registry; for `load_module` modules, the resolver descends
+    // into the loaded LoweredModule (open follow-up — see
+    // TODO-flatppl-js §multi-file).
+    return inferCrossModuleRef(expr);
+  }
+
+  // Resolve `(%ref <module-alias> <name>)` through the module
+  // binding's loaded definition. The module-alias is itself a
+  // self-namespaced binding; we read its lowered IR to determine
+  // which kind of module load (standard_module or load_module) and
+  // dispatch accordingly.
+  function inferCrossModuleRef(expr: any): any {
+    const modAlias = expr.ns;
+    const modBindingLoweredBinding = loweredModule.bindings.get(modAlias);
+    if (!modBindingLoweredBinding) {
+      return T.failed("undefined module alias '" + modAlias + "'");
+    }
+    const modRhs = modBindingLoweredBinding.rhs;
+    if (!modRhs || modRhs.kind !== 'call'
+        || (modRhs.op !== 'standard_module' && modRhs.op !== 'load_module')) {
+      return T.failed("'" + modAlias
+        + "' is not a module binding (cannot resolve "
+        + modAlias + "." + expr.name + ")");
+    }
+    if (modRhs.op === 'standard_module') {
+      return resolveStandardModuleRef(modRhs, expr.name, modAlias);
+    }
+    // load_module path — pending the multi-file end-to-end wiring.
+    return T.deferred();
+  }
+
+  function resolveStandardModuleRef(stdModCall: any, bindingName: string, modAlias: string): any {
+    // `standard_module(<name-lit>, <compat-lit>)`. Both args are
+    // literal strings — the analyzer validates this shape upstream.
+    const args = stdModCall.args || [];
+    const nameArg = args[0], compatArg = args[1];
+    if (!nameArg || nameArg.kind !== 'lit' || typeof nameArg.value !== 'string'
+        || !compatArg || compatArg.kind !== 'lit' || typeof compatArg.value !== 'string') {
+      return T.failed(modAlias + ': standard_module() requires literal name+compat strings');
+    }
+    const stdName = nameArg.value;
+    const stdCompat = compatArg.value;
+    const stdModules = require('./standard-modules.ts');
+    const entry = stdModules.lookupStandardModule(stdName, stdCompat);
+    if (!entry) {
+      return T.failed("standard module '" + stdName + "@" + stdCompat
+        + "' is not provided by this engine");
+    }
+    const desc = entry.bindings.get(bindingName);
+    if (!desc) {
+      return T.failed("'" + bindingName + "' is not a binding of standard module '"
+        + stdName + "@" + stdCompat + "'");
+    }
+    // Each descriptor kind maps to a different type signal:
+    //   - 'function': a `funcType(...)` per the descriptor's sig
+    //     (built from types.ts factories at registration time).
+    //   - 'value':    the descriptor's value already carries the
+    //     concrete type (e.g. a literal scalar / array).
+    //   - 'distribution': a kernel constructor — treated as a
+    //     function returning a measure (the dist call's domain
+    //     comes from the descriptor's `domain` field).
+    if (desc.kind === 'function' && desc.sig) {
+      return desc.sig;
+    }
+    if (desc.kind === 'value' && desc.valueType) {
+      return desc.valueType;
+    }
+    if (desc.kind === 'distribution' && desc.sig) {
+      return desc.sig;
+    }
     return T.deferred();
   }
 
