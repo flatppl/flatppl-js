@@ -127,6 +127,16 @@ function lowerToModule(parsedBindings: Map<string, any>) {
     if (binding && binding.type === 'module') moduleNames.add(name);
   }
   const lowerCtx = { localScope: null, moduleNames };
+
+  // Module registry: alias → resolved descriptor for downstream
+  // consumers (typeinfer / materialiser / sampler) that need to
+  // dispatch through `(%ref <alias> X)` refs without re-parsing the
+  // `standard_module(...)` / `load_module(...)` IR each time. Filled
+  // post-lowerExpr so the binding's IR already exists. For now we
+  // only populate standard_module entries; load_module support
+  // follows the multi-file end-to-end work.
+  const moduleRegistry: Record<string, any> = {};
+  m.moduleRegistry = moduleRegistry;
   for (const [name, binding] of parsedBindings) {
     if (!binding.node || !binding.node.value) continue;
     // Multi-LHS bindings (`a, b = rand(...)`) and disintegrate-rewritten
@@ -150,6 +160,19 @@ function lowerToModule(parsedBindings: Map<string, any>) {
       originLoc: binding.node.loc,
       synthetic: !!binding.synthetic,
     }));
+    // Module-typed binding: extract the (stdName, stdCompat) from its
+    // lowered `standard_module(<name>, <compat>)` call so downstream
+    // consumers can resolve `(%ref <alias> X)` without re-parsing.
+    if (binding.type === 'module' && rhs && rhs.kind === 'call'
+        && rhs.op === 'standard_module'
+        && Array.isArray(rhs.args) && rhs.args.length === 2
+        && rhs.args[0].kind === 'lit' && rhs.args[1].kind === 'lit') {
+      moduleRegistry[name] = {
+        kind: 'standard',
+        stdName: rhs.args[0].value,
+        stdCompat: rhs.args[1].value,
+      };
+    }
     // Public-by-default: any name not starting with underscore. The
     // analyzer marks engine-internal multi-LHS shared bindings with
     // a `%mlhs:` prefix to keep them out of the public set.

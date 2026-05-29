@@ -1706,6 +1706,73 @@ const _aggregate = require('./sampler-aggregate.ts');
 const { _evalAggregate } = _aggregate;
 
 
+// Dispatch a `(call target=({ns: <module-alias>, name: X}) args,
+// kwargs)` to the standard-module registry's JS impl. See
+// `evaluateCall`'s cross-module-call paragraph for context.
+//
+// `env.__moduleRegistry[<alias>]` provides the resolved (stdName,
+// stdCompat) for the module binding. The registry lookup
+// (`standard-modules.ts`) then yields the BindingDescriptor whose
+// `sig.inputs` is the ordered parameter list. Call arguments
+// (kwargs + positional, post-alias-resolution) get matched against
+// `sig.inputs` by name / position, evaluated via `evaluateExpr`,
+// then passed positionally to `desc.impl`.
+//
+// Errors are raised at the failing layer (no registry entry, no
+// binding, missing param, …) with sources pointing at the call IR's
+// `loc`.
+function _evaluateStandardModuleCall(ir: any, env: any): any {
+  const modAlias = ir.target.ns;
+  const bindingName = ir.target.name;
+  const reg = env && env.__moduleRegistry;
+  if (!reg || !reg[modAlias]) {
+    throw new Error("evaluateCall: cross-module ref '"
+      + modAlias + "." + bindingName
+      + "' has no entry in env.__moduleRegistry — host did not "
+      + "thread the module registry into the worker session env");
+  }
+  const modInfo = reg[modAlias];
+  if (modInfo.kind !== 'standard') {
+    throw new Error("evaluateCall: cross-module ref '"
+      + modAlias + "." + bindingName + "' resolves to a "
+      + modInfo.kind + " module — only standard_module is currently "
+      + "dispatchable at runtime (load_module wiring is a follow-up)");
+  }
+  const stdMods = require('./standard-modules.ts');
+  const entry = stdMods.lookupStandardModule(modInfo.stdName, modInfo.stdCompat);
+  if (!entry) {
+    throw new Error("evaluateCall: standard module '"
+      + modInfo.stdName + "@" + modInfo.stdCompat
+      + "' is not provided by this engine");
+  }
+  const desc = entry.bindings.get(bindingName);
+  if (!desc) {
+    throw new Error("evaluateCall: standard module '"
+      + modInfo.stdName + "@" + modInfo.stdCompat
+      + "' has no binding '" + bindingName + "'");
+  }
+  if (typeof desc.impl !== 'function') {
+    throw new Error("evaluateCall: standard module binding '"
+      + modInfo.stdName + "." + bindingName
+      + "' has no runtime impl (it may be a value-only descriptor)");
+  }
+  const inputs = (desc.sig && desc.sig.inputs) || [];
+  const kwargs = ir.kwargs || {};
+  const positional = ir.args || [];
+  const callArgs: any[] = [];
+  for (let i = 0; i < inputs.length; i++) {
+    const paramName = inputs[i].name;
+    let argIR: any;
+    if (paramName in kwargs)          argIR = kwargs[paramName];
+    else if (i < positional.length)   argIR = positional[i];
+    else throw new Error("evaluateCall: '" + modAlias + "."
+      + bindingName + "' missing argument '" + paramName + "'");
+    callArgs.push(evaluateExpr(argIR, env));
+  }
+  return desc.impl.apply(null, callArgs);
+}
+
+
 // Resolve a function-positional argument used by higher-order ops
 // (filter, reduce, scan) into { body, params } regardless of whether
 // the IR is an inline `functionof(...)` call or a self-ref to a named
@@ -1720,6 +1787,18 @@ function _resolveFn(fnIR: any, env: any) {
     if (!fn) return null;
     return fn;
   }
+  // Module-aliased ref `(%ref <modAlias> <name>)` — the alias-
+  // resolution pass canonicalised an `arr.f = mod.foo; broadcast(arr.f,
+  // …)` callsite into a direct module-namespaced callable. Synthesise
+  // a wrapper functionof on the fly: parameter list comes from the
+  // standard-module descriptor's `sig.inputs`; body is a single call
+  // to the module's binding with each param bound as a %local ref.
+  // The body's call then dispatches through evaluateCall's cross-
+  // module-call path (`_evaluateStandardModuleCall`).
+  if (fnIR.kind === 'ref' && fnIR.ns && fnIR.ns !== '%local'
+      && env && env.__moduleRegistry && env.__moduleRegistry[fnIR.ns]) {
+    return _synthStdModuleFn(fnIR, env);
+  }
   if (fnIR.kind === 'call' && fnIR.op === 'functionof'
       && Array.isArray(fnIR.params) && fnIR.body) {
     return {
@@ -1730,6 +1809,39 @@ function _resolveFn(fnIR: any, env: any) {
     };
   }
   return null;
+}
+
+// Build a synthetic functionof-shaped wrapper for a module-aliased
+// callable ref. Each sig.input becomes a %local param; the body
+// is a single call to `(%ref <modAlias> <name>)` with positional args
+// bound to the params in declaration order. Used by `_resolveFn` so
+// higher-order ops (broadcast, reduce, scan, filter) can iterate a
+// std-module callable element-wise without bespoke per-op support.
+function _synthStdModuleFn(refIR: any, env: any): any {
+  const modInfo = env.__moduleRegistry[refIR.ns];
+  if (!modInfo || modInfo.kind !== 'standard') return null;
+  const stdMods = require('./standard-modules.ts');
+  const entry = stdMods.lookupStandardModule(modInfo.stdName, modInfo.stdCompat);
+  if (!entry) return null;
+  const desc = entry.bindings.get(refIR.name);
+  if (!desc || !desc.sig || !Array.isArray(desc.sig.inputs)) return null;
+  // Use the descriptor's actual param names. They map kwarg-by-name
+  // when the call passes kwargs; positionally when args are
+  // positional. The synthetic body refs each by name as a `%local`.
+  const params = desc.sig.inputs.map((i: any) => i.name);
+  const paramKwargs = params.slice();
+  const args = params.map((p: string) => ({ kind: 'ref', ns: '%local', name: p }));
+  const body = {
+    kind: 'call',
+    target: { ns: refIR.ns, name: refIR.name },
+    args,
+  };
+  return {
+    body,
+    params,
+    paramKwargs,
+    paramName: params[0],
+  };
 }
 
 // broadcast(callable, inputs…) per spec §04 + commit 87c9be1, extended
@@ -1896,6 +2008,22 @@ const _classifyBroadcastSlot = _broadcastShape.classifyAxisStructure;
 const _tryStackBroadcastCells = _broadcastShape.tryStackBroadcastCells;
 
 function evaluateCall(ir: any, env: any): any {
+  // Cross-module call dispatch — `(call target=({ns: <module-alias>,
+  // name: X}) args, kwargs)` where <module-alias> is a load_module /
+  // standard_module binding. Resolves through the env's module
+  // registry to the standard-modules.ts BindingDescriptor and
+  // invokes the JS impl with the resolved args.
+  //
+  // The registry is threaded via `env.__moduleRegistry` (a map
+  // `<alias> → {kind: 'standard', stdName, stdCompat}`); the host
+  // (viewer / test setup / materialiser) pushes it via setEnv
+  // alongside fixedValues. Cross-module callsites that bypass the
+  // registry (e.g. the alias-resolution pass didn't get to canonicalise
+  // because the binding was injected post-hoc) surface a clear error
+  // here rather than failing silently.
+  if (ir && ir.target && ir.target.ns && ir.target.ns !== 'self') {
+    return _evaluateStandardModuleCall(ir, env);
+  }
   const op = ir.op;
   // aggregate migrated to OpDecl as kind='higher-order' (engine-
   // concepts §18.9 Phase 5c). The OpDecl's logical delegates to

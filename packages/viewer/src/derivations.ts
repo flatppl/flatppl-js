@@ -19,6 +19,16 @@ export function rebuildDerivations(ctx: Ctx) {
   }
   try {
     ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(ctx.currentBindings);
+    // Thread the module registry from the lowered module into
+    // derivationsState so the cross-module call dispatch path
+    // (sampler.ts's `_evaluateStandardModuleCall`) finds it via
+    // the setEnv push below. `currentLoweredModule.moduleRegistry`
+    // is populated by `pir.lowerToModule` for every `standard
+    // _module(name, compat)` binding.
+    if (ctx.derivationsState && ctx.currentLoweredModule
+        && ctx.currentLoweredModule.moduleRegistry) {
+      ctx.derivationsState.moduleRegistry = ctx.currentLoweredModule.moduleRegistry;
+    }
     // Surface classification diagnostics instead of letting a
     // silently-dropped binding turn into a confusing plot-time
     // error far from its cause. buildDerivations only emits the
@@ -172,10 +182,21 @@ export function rebuildDerivations(ctx: Ctx) {
   // non-scalar fixed values like a length-10 `random_data` array.
   // setEnv with merge=false replaces (so a stale fixedValues map
   // from the previous source can't leak into the new one).
-  if (ctx.derivationsState && ctx.derivationsState.fixedValues
-      && ctx.derivationsState.fixedValues.size > 0) {
+  //
+  // Module registry threaded under `__moduleRegistry` for
+  // cross-module call dispatch (sampler.ts's
+  // `_evaluateStandardModuleCall`). One push per derivations
+  // rebuild — replaces the previous module registry on every
+  // source-change so a removed `standard_module(...)` binding
+  // can't leave stale entries behind.
+  const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
+  const moduleRegistry = ctx.derivationsState && ctx.derivationsState.moduleRegistry;
+  const hasFV = fixedValues && fixedValues.size > 0;
+  const hasMR = moduleRegistry && Object.keys(moduleRegistry).length > 0;
+  if (hasFV || hasMR) {
     const envObj: Record<string, any> = {};
-    ctx.derivationsState.fixedValues.forEach(function(v: any, k: any) { envObj[k] = v; });
+    if (hasFV) fixedValues.forEach(function(v: any, k: any) { envObj[k] = v; });
+    if (hasMR) envObj.__moduleRegistry = moduleRegistry;
     ensureSamplerWorker(ctx).then(function(w: any) {
       sendWorkerNow(ctx, w, { type: 'setEnv', env: envObj, merge: false });
     }).catch(function(err: any) {

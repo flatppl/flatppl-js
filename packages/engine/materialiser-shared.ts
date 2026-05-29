@@ -319,14 +319,34 @@ function classifyProfileSelfRefs(
 /**
  * Push a `fixedEnv` map onto the worker session env via setEnv merge.
  * Returns a Promise that resolves once the merge has been applied;
- * empty maps short-circuit to Promise.resolve(). Companion to
- * prepareDensityRefs.
+ * companion to prepareDensityRefs.
+ *
+ * Module registry threading: if `ctx.moduleRegistry` is present and
+ * hasn't yet been pushed for this ctx (tracked via a one-time flag),
+ * `__moduleRegistry` is added to the same setEnv message. This is
+ * the central point where cross-module call dispatch (sampler.ts's
+ * `_evaluateStandardModuleCall`) gets the alias → (stdName, stdCompat)
+ * map it needs. Hosts that bypass the materialiser (or that maintain
+ * their own setEnv plumbing — e.g. the viewer's
+ * `rebuildDerivations`) push it themselves; this path covers tests
+ * and any direct materialiser consumers.
+ *
+ * If `fixedEnv` is empty AND no moduleRegistry push is pending, the
+ * helper short-circuits.
  */
 function pushFixedEnv(ctx: any, fixedEnv: Record<string, any>) {
-  for (const _k in fixedEnv) {
-    return ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+  let mergedEnv = fixedEnv;
+  const needModReg = !!(ctx && ctx.moduleRegistry && !ctx._moduleRegistryPushed);
+  if (needModReg) {
+    mergedEnv = Object.assign({ __moduleRegistry: ctx.moduleRegistry }, fixedEnv);
+    ctx._moduleRegistryPushed = true;
   }
-  return Promise.resolve();
+  let hasAny = needModReg;
+  if (!hasAny) {
+    for (const _k in fixedEnv) { hasAny = true; break; }
+  }
+  if (!hasAny) return Promise.resolve();
+  return ctx.sendWorker({ type: 'setEnv', env: mergedEnv, merge: true });
 }
 
 /**
