@@ -344,7 +344,47 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   // round-trip.
   const resolved = _resolveIidLeaf(d.from, ctx.derivations);
   if (!resolved) {
-    return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
+    // Fallback for iid-of-composite-measure (e.g. iid(zib_one, N)
+    // where zib_one is a superpose / mixture / pushfwd / etc.):
+    // materialise the inner measure BY NAME with an inflated
+    // sample count = N × k, then reshape to [N, …dims]. Going by
+    // name re-enters the kind-dispatch pipeline so the right
+    // kind-specific handler (matSuperpose / matSelect / matPushfwd)
+    // runs — including per-atom-weight resolution that the
+    // materialiseMeasureIR fast paths can't do.
+    //
+    // Uses a child ctx with a FRESH cache + inflated sampleCount
+    // so the inflated-count materialisation doesn't pollute the
+    // parent ctx's cache for the same name at N atoms.
+    if (!ctx.derivations || !ctx.derivations[d.from]) {
+      return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
+    }
+    const k = d.dims.reduce((p: any, n: any) => p * n, 1);
+    const N = ctx.sampleCount;
+    const inflatedCache = new Map();
+    const inflatedCtx: any = Object.assign({}, ctx, {
+      sampleCount: N * k,
+      rootSeed: nameSeed(name + ':iid_fallback', ctx.rootSeed),
+    });
+    inflatedCtx.getMeasure = function(nn: string) {
+      if (inflatedCache.has(nn)) return inflatedCache.get(nn);
+      const p = materialiseMeasure(nn, inflatedCtx);
+      inflatedCache.set(nn, p);
+      return p;
+    };
+    return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
+      const samples = innerM.samples
+        || (innerM.value && innerM.value.data);
+      if (!samples) {
+        return Promise.reject(new Error(
+          'iid: inner measure for ' + d.from + ' produced no samples'));
+      }
+      const value = { shape: [N | 0].concat(d.dims), data: samples };
+      return Object.assign(
+        empirical.arrayMeasure(samples, d.dims, null),
+        { value: value, logTotalmass: 0, n_eff: N },
+      );
+    });
   }
   const k = d.dims.reduce((p: any, n: any) => p * n, 1);
   const N = ctx.sampleCount;

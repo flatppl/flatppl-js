@@ -794,7 +794,13 @@ function inlineForProfile(ir: IRNode | null | undefined, paramNames: any, bindin
       // Constant / stochastic / opaque ref — leave for fixedEnv.
       return node;
     }
-    // Recurse into structural children: args, fields, kwargs, body.
+    // Recurse into structural children: args, fields, kwargs, body,
+    // branches (the `select` IR's per-branch measures — without this
+    // a `self.<kernel_input>` ref inside a `weighted(w, m)` branch
+    // stays unrewritten when the swept input appears inside a
+    // superpose / mixture / ifelse, surfacing downstream as
+    // "select branch weight must reduce to a number; got self.psi"
+    // at materialiseSelectIR's fold step).
     const out = { ...node };
     if (Array.isArray(node.args))   out.args   = node.args.map(walk);
     if (Array.isArray(node.fields)) out.fields = node.fields.map((f: any) => ({ ...f, value: walk(f.value) }));
@@ -803,6 +809,11 @@ function inlineForProfile(ir: IRNode | null | undefined, paramNames: any, bindin
       for (const k in node.kwargs) out.kwargs[k] = walk(node.kwargs[k]);
     }
     if (node.body) out.body = walk(node.body);
+    if (Array.isArray(node.branches)) {
+      out.branches = node.branches.map(walk);
+    }
+    if (node.selector)   out.selector   = walk(node.selector);
+    if (node.logweights) out.logweights = walk(node.logweights);
     return out;
   }
 }
