@@ -344,117 +344,27 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   return { name: name, mode: 'samples', discrete: discrete, analyticalIR: analyticalIR };
 }
 
+// Materialise a concrete (closed, no-refs) measure IR — used by
+// the kernel-plot path after substituting placeholder values into
+// the kernel body. The viewer doesn't case on FlatPPL operations
+// itself; all measure-algebra dispatch lives in the engine. This
+// function builds a matCtx mirroring engine-facade.getMeasure's
+// shape and delegates to `materialiseMeasureIR`, the engine's
+// IR-direct measure entry. Per-op routing (lawof / iid / joint /
+// record / broadcast(Dist) / select / leaf-dist) is handled there.
 export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, seed: number | null): Promise<any> {
-  if (!ir) return Promise.reject(new Error('materialiseConcreteMeasure: null IR'));
-  if (ir.kind !== 'call') {
-    return Promise.reject(new Error(
-      "materialiseConcreteMeasure: non-call IR (kind '" + ir.kind + "')"));
-  }
-  if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
-    return materialiseConcreteMeasure(ctx, ir.args[0], count, seed);
-  }
-  if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
-    const inner = ir.args[0];
-    const dims: number[] = [];
-    for (let di = 1; di < ir.args.length; di++) {
-      const d = ir.args[di];
-      if (!d || d.kind !== 'lit' || !Number.isInteger(d.value)) {
-        return Promise.reject(new Error('materialiseConcreteMeasure: iid dim must be integer literal'));
-      }
-      dims.push(d.value);
-    }
-    const k = dims.reduce(function(p: any, n: any) { return p * n; }, 1);
-    // Leaf-distribution inner: use sampleN's `repeat` so the per-
-    // atom refArrays line up — atom i gets refArrays[i], then k
-    // independent draws share it. Mirrors getMeasure's iid path.
-    // Naive recursion with count*k would mis-index refArrays
-    // (only `count` entries available, repeated k times by the
-    // atom index — out-of-bounds for i >= count).
-    const SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
-    if (inner.kind === 'call' && SAMPLEABLE && SAMPLEABLE.has(inner.op)) {
-      return collectRefArrays(ctx, inner).then(function(refArrays: any) {
-        return sendWorker(ctx, {
-          type: 'sampleN', ir: inner, count: count, repeat: k,
-          refArrays: refArrays, seed: seed,
-        });
-      }).then(function(reply: any) {
-        return FlatPPLEngine.empirical.arrayMeasure(reply.samples, dims, null);
-      });
-    }
-    // Non-leaf inner (nested iid / record / joint inside iid).
-    // The recursive form keeps the structure but doesn't handle
-    // captured refs correctly under expansion — flag if we ever
-    // hit it in practice. Today's kernel-sample bodies all
-    // bottom out at leaf distributions after the IR pipeline.
-    return materialiseConcreteMeasure(ctx, inner, count * k, seed).then(function(innerM) {
-      return FlatPPLEngine.empirical.arrayMeasure(innerM.samples, dims, null);
-    });
-  }
-  if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {
-    const fieldNames = ir.fields.map(function(f: any) { return f.name; });
-    const fieldIRs = ir.fields.map(function(f: any) { return f.value; });
-    return Promise.all(fieldIRs.map(function(v: any, i: any) {
-      return materialiseConcreteMeasure(ctx, v, count,
-        seed != null ? (seed ^ (i + 1) * 0x9e3779b1) : null);
-    })).then(function(subs: any) {
-      const fields: Record<string, any> = {};
-      for (let i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
-      return FlatPPLEngine.empirical.recordMeasure(fields, null);
-    });
-  }
-  // Kernel-broadcast IR: `broadcast(<ref Dist>, args…)` produced by
-  // `expandMeasureRefsInIR` when a kernel body's variate was drawn
-  // from `Dist.(…)` — e.g. `forward_kernel = kernelof(record(y = y),
-  // …)` where `y ~ Normal.(means, sigma)`. Synthesise a kernel-
-  // broadcast derivation and delegate to the engine's
-  // `matKernelBroadcast` (single-sourced impl).
-  if (ir.op === 'broadcast' && Array.isArray(ir.args) && ir.args.length >= 1) {
-    const head = ir.args[0];
-    const SAMPLEABLE = FlatPPLEngine.orchestrator.SAMPLEABLE_DISTRIBUTIONS;
-    if (head && head.kind === 'ref' && head.ns === 'self'
-        && SAMPLEABLE && SAMPLEABLE.has(head.name)) {
-      // Build a materialiser ctx mirroring engine-facade.getMeasure's
-      // ctx — same bindings/fixedValues/getMeasure/sendWorker/
-      // sampleCount/rootSeed shape. Override sampleCount with the
-      // caller's `count` (an iid ancestor may have lifted N×k);
-      // override rootSeed so the synthetic name's per-element seed
-      // (`nameSeed('%broadcast_ir:j', ctx.rootSeed)` inside
-      // matKernelBroadcast) reflects the caller's `seed`.
-      const matCtx = {
-        derivations: ctx.derivationsState!.derivations,
-        bindings:    ctx.derivationsState!.bindings,
-        fixedValues: ctx.derivationsState!.fixedValues,
-        getMeasure:  function(n: any) {
-          return require('./engine-facade.js').getMeasure(ctx, n);
-        },
-        sendWorker:  function(m: any) { return sendWorker(ctx, m); },
-        sampleCount: count,
-        rootSeed:    seed != null ? seed : ctx.rootSeed,
-        rejectionBudget: ctx.REJECTION_BUDGET,
-      };
-      return FlatPPLEngine.materialiser.materialiseKernelBroadcastIR(ir, matCtx);
-    }
-  }
-  // Leaf distribution (or unrecognised op — sampleN throws if
-  // it's not in the registry). Captured self-refs in the dist's
-  // kwargs (e.g. `Normal(mu = lit, sigma = pow(ref self sqrt_sigma, 2))`
-  // after substituteLocals) are resolved per-atom via refArrays
-  // — same mechanism getMeasure uses for closed-measure
-  // sampling. Fixed-phase refs flow through the worker's session
-  // env, so collectRefArrays drops them.
-  return collectRefArrays(ctx, ir).then(function(refArrays: any) {
-    return sendWorker(ctx, {
-      type: 'sampleN', ir: ir, count: count, seed: seed,
-      refArrays: refArrays,
-    });
-  }).then(function(reply: any) {
-    // Hand-built Measures populate `.value` for
-    // consistency with materialiser-produced ones.
-    const data = reply.samples;
-    return {
-      samples: data,
-      value: { shape: [data.length], data: data },
-      logWeights: null,
-    };
-  });
+  const matCtx: any = {
+    derivations: ctx.derivationsState!.derivations,
+    bindings:    ctx.derivationsState!.bindings,
+    fixedValues: ctx.derivationsState!.fixedValues,
+    getMeasure:  function(n: any) {
+      return require('./engine-facade.js').getMeasure(ctx, n);
+    },
+    sendWorker:  function(m: any) { return sendWorker(ctx, m); },
+    sampleCount: count,
+    rootSeed:    seed != null ? seed : ctx.rootSeed,
+    rejectionBudget: ctx.REJECTION_BUDGET,
+  };
+  return FlatPPLEngine.materialiser.materialiseMeasureIR(ir, matCtx);
 }
+
