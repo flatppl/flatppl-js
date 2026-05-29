@@ -920,9 +920,278 @@ function materialiseKernelBroadcastIR(ir: any, ctx: any) {
   return broadcast.matKernelBroadcast('%broadcast_ir', d, ctx);
 }
 
+/**
+ * IR-direct sampling of a `select(branches=[weighted(w_i, M_i)], …)`
+ * shape (engine-concepts §11). Used by the viewer's kernel-plot path
+ * (`plot-plan.materialiseConcreteMeasure`) when a kernel body's
+ * realised measure contains a superpose / mixture / ifelse — the
+ * lift form is a `select` IR with weighted branches but no
+ * binding-graph derivation (the kernel body is sampled after
+ * placeholder substitution; matSelect's derivation-keyed path
+ * doesn't fit).
+ *
+ * Implementation mirrors matSelect's eval-all-branches-then-gather:
+ *   - Fold per-branch weights to JS numbers (lits + arith over
+ *     lits + Math consts).
+ *   - Build a Bernoulli (K=2) / Categorical (K≥3) selector IR with
+ *     the normalised probs.
+ *   - Sample selector + each branch independently over N atoms.
+ *   - Gather per atom from the chosen branch.
+ *
+ * Limitation: weights must reduce to numbers. Variable-weight
+ * mixtures (e.g. `weighted(w_atom, …)` where w_atom is a per-atom
+ * ref) need either a derivation-keyed materialiser (matSelect's
+ * runtimeWeights branch) or an extension here. Out of scope today.
+ */
+function materialiseSelectIR(ir: any, ctx: any) {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'select') {
+    return Promise.reject(new Error('materialiseSelectIR: not a select call'));
+  }
+  const branches = ir.branches;
+  if (!Array.isArray(branches) || branches.length === 0) {
+    return Promise.reject(new Error('materialiseSelectIR: select has no branches'));
+  }
+  const K = branches.length;
+  const N = ctx.sampleCount;
+  const branchPairs: Array<{ weight: number; measureIR: any }> = [];
+  for (const b of branches) {
+    if (!b || b.kind !== 'call' || b.op !== 'weighted'
+        || !Array.isArray(b.args) || b.args.length !== 2) {
+      return Promise.reject(new Error(
+        'materialiseSelectIR: select branch must be weighted(w, m); got '
+        + JSON.stringify(b).slice(0, 80)));
+    }
+    const w = _foldNumericIR(b.args[0]);
+    if (w == null) {
+      return Promise.reject(new Error(
+        'materialiseSelectIR: select branch weight must reduce to a '
+        + 'number (literal or arith over literals); got '
+        + JSON.stringify(b.args[0]).slice(0, 100)));
+    }
+    branchPairs.push({ weight: w, measureIR: b.args[1] });
+  }
+  const wSum = branchPairs.reduce((a, p) => a + p.weight, 0);
+  if (!(wSum > 0)) {
+    return Promise.reject(new Error('materialiseSelectIR: weights sum to non-positive'));
+  }
+  const probs = branchPairs.map((p) => p.weight / wSum);
+  // Selector IR. K=2 → Bernoulli (1 → branch 0, 0 → branch 1,
+  // matching matSelect's gather convention). K≥3 → Categorical
+  // (1-based per engine convention; subtract 1 at gather time).
+  let selectorIR: any;
+  if (K === 2) {
+    selectorIR = { kind: 'call', op: 'Bernoulli',
+      kwargs: { p: { kind: 'lit', value: probs[0], numType: 'real' } } };
+  } else {
+    selectorIR = { kind: 'call', op: 'Categorical',
+      kwargs: { p: { kind: 'call', op: 'vector',
+        args: probs.map((pp) => ({ kind: 'lit', value: pp, numType: 'real' })) } } };
+  }
+  const selectorSeed = nameSeed('%select_ir:selector', ctx.rootSeed);
+  const selectorP = ctx.sendWorker({
+    type: 'sampleN', ir: selectorIR, count: N, seed: selectorSeed,
+  });
+  // Sample each branch's measure. The measureIR can itself be any
+  // measure shape — recurse via the viewer's materialiseConcrete-
+  // Measure (which routes back here for nested selects). To keep
+  // this engine helper self-contained AND avoid a viewer↔engine
+  // cycle, we require branches to be either:
+  //   - a leaf distribution (sampleN-able directly), OR
+  //   - a closed-measure ref the caller's ctx.getMeasure resolves.
+  // For richer nested shapes (iid inside select etc.) the caller's
+  // materialiseConcreteMeasure should peel structure FIRST and
+  // call materialiseSelectIR once it reaches a select node.
+  const branchPs = branchPairs.map((p, bi) => {
+    const inner = p.measureIR;
+    if (inner && inner.kind === 'ref' && inner.ns === 'self') {
+      return ctx.getMeasure(inner.name);
+    }
+    // Leaf-distribution branch: collectRefArrays + worker sampleN
+    // (the engine's standard sample path).
+    return shared.collectRefArrays(inner, ctx)
+      .then((refArrays: any) => ctx.sendWorker({
+        type: 'sampleN', ir: inner, count: N, refArrays: refArrays,
+        seed: nameSeed('%select_ir:b' + bi, ctx.rootSeed),
+      }))
+      .then((reply: any) => scalarMeasureN(reply.samples, {
+        logWeights: reply.logWeights || null,
+        logTotalmass: 0, n_eff: reply.samples.length,
+      }));
+  });
+  return Promise.all(([selectorP] as any[]).concat(branchPs)).then((results: any[]) => {
+    const sel = empirical.materialiseUniform(results[0]).samples
+      || results[0].samples;
+    const branchMs = results.slice(1).map((m: any) =>
+      empirical.materialiseUniform(m).samples || m.samples);
+    const out = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let k;
+      if (K === 2) {
+        k = sel[i] ? 0 : 1;
+      } else {
+        k = (sel[i] | 0) - 1;
+      }
+      if (k < 0) k = 0; else if (k >= K) k = K - 1;
+      out[i] = branchMs[k][i];
+    }
+    return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N });
+  });
+}
+
+// Fold a numeric IR expression (literals + arithmetic ops over
+// literals + named constants) to a JS number. Returns null when
+// the expression isn't fully constant — viewer-side
+// substituteLocals inlines `%local` refs to lits but doesn't
+// constant-fold downstream arith.
+function _foldNumericIR(ir: any): number | null {
+  if (!ir || typeof ir !== 'object') return null;
+  if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
+  if (ir.kind === 'const') {
+    if (ir.name === 'pi') return Math.PI;
+    if (ir.name === 'inf') return Infinity;
+    return null;
+  }
+  if (ir.kind !== 'call' || !Array.isArray(ir.args)) return null;
+  const args = ir.args.map(_foldNumericIR);
+  for (const a of args) if (a == null) return null;
+  const op = ir.op;
+  if (args.length === 2) {
+    const a = args[0] as number, b = args[1] as number;
+    if (op === 'add') return a + b;
+    if (op === 'sub') return a - b;
+    if (op === 'mul') return a * b;
+    if (op === 'div' || op === 'divide') return a / b;
+    if (op === 'pow') return Math.pow(a, b);
+    if (op === 'mod') return a % b;
+  }
+  if (args.length === 1) {
+    const a = args[0] as number;
+    if (op === 'neg') return -a;
+    if (op === 'pos') return +a;
+    if (op === 'exp')  return Math.exp(a);
+    if (op === 'log')  return Math.log(a);
+    if (op === 'sqrt') return Math.sqrt(a);
+    if (op === 'abs')  return Math.abs(a);
+  }
+  return null;
+}
+
+/**
+ * IR-direct measure materialisation — single engine entry for
+ * callers that have a CONCRETE (closed, no-refs) measure IR and
+ * need samples back. The viewer's kernel-plot path uses this
+ * after substituting placeholder values into a kernel body's
+ * IR: the result is a closed measure IR that needs sampling
+ * without going through a binding-graph derivation.
+ *
+ * Dispatches on `ir.op`:
+ *   - `lawof(M)`         → peel, recurse on M.
+ *   - `iid(M, n…)`       → sampleN with `repeat=k` for leaf-dist
+ *                          M, recurse for nested.
+ *   - `joint`/`record`   → per-field materialise, combine via
+ *                          `empirical.recordMeasure`.
+ *   - `broadcast(<Dist>, args…)` → `materialiseKernelBroadcastIR`.
+ *   - `select(branches=…)`       → `materialiseSelectIR`.
+ *   - leaf distribution → `collectRefArrays` + worker `sampleN`.
+ *
+ * Single source of truth for IR-direct measure dispatch — viewer
+ * helpers like `plot-plan.materialiseConcreteMeasure` delegate
+ * here so per-op routing logic lives in the engine, not duplicated
+ * across consumers. (Per TODO-flatppl-js: "Refactor
+ * `materialiseConcreteMeasure` to delegate to engine KIND_HANDLERS"
+ * — this entry IS that delegation point for the IR-direct path.)
+ */
+function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
+  if (!ir) return Promise.reject(new Error('materialiseMeasureIR: null IR'));
+  if (ir.kind !== 'call') {
+    return Promise.reject(new Error(
+      "materialiseMeasureIR: non-call IR (kind '" + ir.kind + "')"));
+  }
+  // lawof(M) → peel, recurse on M.
+  if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
+    return materialiseMeasureIR(ir.args[0], ctx);
+  }
+  // iid(M, n…) — sample-major output [N, ...dims].
+  if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
+    const inner = ir.args[0];
+    const dims: number[] = [];
+    for (let di = 1; di < ir.args.length; di++) {
+      const d = ir.args[di];
+      if (!d || d.kind !== 'lit' || !Number.isInteger(d.value)) {
+        return Promise.reject(new Error(
+          'materialiseMeasureIR: iid dim must be integer literal'));
+      }
+      dims.push(d.value);
+    }
+    const k = dims.reduce((p: number, n: number) => p * n, 1);
+    const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+    if (inner && inner.kind === 'call' && SAMPLEABLE && SAMPLEABLE.has(inner.op)) {
+      return shared.collectRefArrays(inner, ctx).then((refArrays: any) =>
+        ctx.sendWorker({
+          type: 'sampleN', ir: inner, count: ctx.sampleCount, repeat: k,
+          refArrays: refArrays,
+          seed: nameSeed('%materialise_ir:iid', ctx.rootSeed),
+        })
+      ).then((reply: any) => empirical.arrayMeasure(reply.samples, dims, null));
+    }
+    // Nested inner — recurse with count*k, then reshape.
+    const innerCtx = Object.assign({}, ctx, { sampleCount: ctx.sampleCount * k });
+    return materialiseMeasureIR(inner, innerCtx).then((innerM: any) =>
+      empirical.arrayMeasure(innerM.samples, dims, null));
+  }
+  // joint / record → field-wise materialise + recordMeasure.
+  if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {
+    const fieldNames = ir.fields.map((f: any) => f.name);
+    const fieldIRs   = ir.fields.map((f: any) => f.value);
+    return Promise.all(fieldIRs.map((v: any, i: number) => {
+      const subCtx = Object.assign({}, ctx, {
+        rootSeed: ctx.rootSeed != null
+          ? (ctx.rootSeed ^ ((i + 1) * 0x9e3779b1)) : ctx.rootSeed,
+      });
+      return materialiseMeasureIR(v, subCtx);
+    })).then((subs: any[]) => {
+      const fields: Record<string, any> = {};
+      for (let i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
+      return empirical.recordMeasure(fields, null);
+    });
+  }
+  // broadcast(<Dist>, args…) → engine kernel-broadcast IR-direct entry.
+  if (ir.op === 'broadcast' && Array.isArray(ir.args) && ir.args.length >= 1) {
+    const head = ir.args[0];
+    const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+    if (head && head.kind === 'ref' && head.ns === 'self'
+        && SAMPLEABLE && SAMPLEABLE.has(head.name)) {
+      return materialiseKernelBroadcastIR(ir, ctx);
+    }
+  }
+  // select(branches=…) → engine select IR-direct entry.
+  if (ir.op === 'select' && Array.isArray(ir.branches) && ir.branches.length >= 1) {
+    return materialiseSelectIR(ir, ctx);
+  }
+  // Leaf distribution (or any unrecognised call op — the worker's
+  // sampleN throws if the op isn't in the sampler REGISTRY,
+  // surfacing a clear diagnostic).
+  return shared.collectRefArrays(ir, ctx).then((refArrays: any) =>
+    ctx.sendWorker({
+      type: 'sampleN', ir: ir, count: ctx.sampleCount,
+      refArrays: refArrays,
+      seed: nameSeed('%materialise_ir:leaf', ctx.rootSeed),
+    })
+  ).then((reply: any) => {
+    const data = reply.samples;
+    return {
+      samples: data,
+      value: { shape: [data.length], data: data },
+      logWeights: reply.logWeights || null,
+    };
+  });
+}
+
 module.exports = {
   materialiseMeasure,
   materialiseKernelBroadcastIR,
+  materialiseSelectIR,
+  materialiseMeasureIR,
   // P3b — materialiser pipeline (engine-concepts §18.11 / §20.10.5
   // item 5). Stages get prepended to the default pipeline via
   // `registerMaterialiserStage(stage)`; they wrap the terminal
