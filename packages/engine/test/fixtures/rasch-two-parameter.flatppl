@@ -1,0 +1,49 @@
+%%%
+2PL Item Response Theory (IRT) model.
+Binary correctness for (person, item) responses with per-person ability,
+per-item difficulty + discrimination, and shared hyperparameters.
+%%%
+
+# Data
+n_person = 3
+n_item = 4
+n_obs = 12
+
+person_idx = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
+item_idx = [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4]
+correct_data = [1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1]
+
+# Hyperpriors
+diff_mean ~ Cauchy(0, 5)
+diff_sd ~ normalize(truncate(Cauchy(0, 5), interval(0, inf)))
+discrim_log_sd ~ normalize(truncate(Cauchy(0, 5), interval(0, inf)))
+
+# Unit-level priors
+ability ~ iid(Normal(0, 1), n_person)
+diff ~ iid(Normal(0, diff_sd), n_item)
+discrim ~ iid(LogNormal(0, discrim_log_sd), n_item)
+
+correct ~ Bernoulli.(invlogit.(discrim[item_idx] .* (ability[person_idx] .- diff[item_idx] .- diff_mean)))
+
+# Likelihood + posterior
+prior = lawof(record(
+    diff_mean = diff_mean,
+    diff_sd = diff_sd,
+    discrim_log_sd = discrim_log_sd,
+    ability = ability,
+    diff = diff,
+    discrim = discrim
+))
+
+forward_kernel = kernelof(
+    record(correct = correct),
+    diff_mean = diff_mean,
+    diff_sd = diff_sd,
+    discrim_log_sd = discrim_log_sd,
+    ability = ability,
+    diff = diff,
+    discrim = discrim
+)
+
+L = likelihoodof(forward_kernel, record(correct = correct_data))
+posterior = bayesupdate(L, prior)
