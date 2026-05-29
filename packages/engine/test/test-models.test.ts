@@ -464,6 +464,51 @@ test('hadron-physics: standard-module loading + cross-module call dispatch', () 
   assert.equal(innerCall.target.name, 'resonance_breitwigner');
 });
 
+test('hadron-physics: D1 / D2 / mixture materialise end-to-end', async () => {
+  // The full pipeline:
+  //   D1 = normalize(weighted(full_intensity, Lebesgue(interval(a, b))))
+  //   D2 = normalize(weighted(cheb_density, Lebesgue(interval(a, b))))
+  //   mixture = superpose(weighted(f1, D1), weighted(f2, D2))
+  //
+  // Three engine extensions land together to make this work:
+  //   - classifyLebesgueInterval recognises `Lebesgue(support =
+  //     interval(a, b))` as a Uniform-sample derivation. The
+  //     unnormalised totalmass (= b − a) is dropped — the outer
+  //     `normalize` discards it anyway.
+  //   - classifyWeighted recognises `weighted(<function>, <base>)`
+  //     per spec §06 ("f is a non-negative weight, a constant or a
+  //     function of the variate"): substitutes the function's
+  //     parameter with `(%ref self <baseName>)`, producing a
+  //     weightIR the existing materialiser path evaluates per atom.
+  //   - `_perAtomFallback`'s packing recognises per-atom complex
+  //     `{re, im}` returns and emits a shape-rich complex Value
+  //     (shape=[N], dtype='complex'). Without this, the batched
+  //     evaluator returned NaN for IRs that include complex-valued
+  //     intermediates (full_intensity composes complex Breit-Wigner
+  //     amplitude × complex coupling + real background before
+  //     `abs2` collapses to real).
+  const { errs, ctx, built } = setupCtx(readFixture('hadron-physics-resonance.flatppl'), 200);
+  assert.equal(errs.length, 0);
+  assert.ok(built.derivations.D1, 'D1 classifies');
+  assert.ok(built.derivations.D2, 'D2 classifies');
+  assert.ok(built.derivations.mixture, 'mixture classifies');
+  for (const name of ['D1', 'D2', 'mixture']) {
+    const m = await ctx!.getMeasure(name);
+    const data = (m.value && m.value.data) || m.samples;
+    assert.equal(data.length, 200, `${name} has N samples`);
+    let mn = Infinity, mx = -Infinity;
+    for (const v of data) {
+      assert.ok(!Number.isNaN(v), `${name} sample is NaN`);
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    // a = 0.5, b = 2.5 — every sample sits in the spec support.
+    assert.ok(mn >= 0.5 - 1e-9, `${name} min ${mn} ≥ a=0.5`);
+    assert.ok(mx <= 2.5 + 1e-9, `${name} max ${mx} ≤ b=2.5`);
+    assert.ok(Number.isFinite(m.n_eff), `${name} n_eff finite (got ${m.n_eff})`);
+  }
+});
+
 test('hadron-physics: bw_scaled / cheb_density / full_intensity evaluate to spec values', () => {
   const src = readFixture('hadron-physics-resonance.flatppl');
   const r = processSource(src);
