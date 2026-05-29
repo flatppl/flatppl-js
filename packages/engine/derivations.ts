@@ -846,10 +846,62 @@ function classifyWeighted(
     if (!(w > 0) || !Number.isFinite(w)) return null;
     return { kind: 'weighted', from: baseName, logShift: Math.log(w) };
   }
+  // Spec §06: `weighted(weight, base)` accepts a FUNCTION of the
+  // variate as weight. Check this BEFORE the evaluable-arith fall-
+  // through — a self-ref to a function-typed binding is
+  // syntactically evaluable but semantically a callable (no
+  // per-atom value to read); we need to substitute the function's
+  // parameter with the base ref so the body evaluates per atom.
+  const fnDeriv = _classifyWeightedByFunction(weightExpr, baseName, bindings);
+  if (fnDeriv) return fnDeriv;
   if (isEvaluable(weightExpr)) {
     return { kind: 'weighted', from: baseName, weightIR: weightExpr, isLog: false };
   }
   return null;
+}
+
+// Recognise a function-of-variate weight: weightExpr is a self-ref
+// to a callable-layer binding whose functionof body has a SINGLE
+// parameter (the variate). Returns a synthesised weightIR with the
+// parameter substituted by `(%ref self <baseName>)`. Returns null
+// when the shape doesn't match.
+//
+// Why single-parameter: spec §06 says weight is "a function of the
+// variate x of M". Multi-parameter functions imply additional inputs
+// the engine doesn't have a binding source for in this context;
+// they're out of scope for now (could be lifted to additional
+// per-atom refs in a follow-up).
+function _classifyWeightedByFunction(
+  weightExpr: any, baseName: string, bindings: any,
+): DerivationWeighted | null {
+  if (!weightExpr || weightExpr.kind !== 'ref' || weightExpr.ns !== 'self') return null;
+  const fnBinding = bindings.get(weightExpr.name);
+  if (!fnBinding) return null;
+  const fnIR = fnBinding.ir;
+  if (!fnIR || fnIR.kind !== 'call' || fnIR.op !== 'functionof'
+      || !Array.isArray(fnIR.params) || fnIR.params.length !== 1
+      || !fnIR.body) return null;
+  // Callable-layer check (function-layer or kernel-layer per engine-
+  // concepts §19.2). Aliases to standard-module functions pass too
+  // — the alias-resolution pass canonicalises their RHS to a module-
+  // namespaced ref, and the inferred function type is set by typeinfer's
+  // cross-module-ref resolution.
+  const ic = fnBinding.inferredType && fnBinding.inferredType.kind;
+  if (ic !== 'function' && ic !== 'kernel') return null;
+  const paramName = fnIR.params[0];
+  // Replace every `(ref %local <paramName>)` in the body with
+  // `(ref self <baseName>)`. mapIR's identity-preserving rebuild
+  // means any sub-tree that doesn't mention the parameter shares
+  // references with the original — the binding's body keeps its
+  // IR intact for other consumers (signatures, dag).
+  const { mapIR } = require('./ir-walk.ts');
+  const synth = mapIR(fnIR.body, (n: any) => {
+    if (n && n.kind === 'ref' && n.ns === '%local' && n.name === paramName) {
+      return { kind: 'ref', ns: 'self', name: baseName, loc: n.loc };
+    }
+    return n;
+  });
+  return { kind: 'weighted', from: baseName, weightIR: synth, isLog: false };
 }
 
 function classifyLogWeighted(
@@ -1584,6 +1636,34 @@ function classifyAppliedChain(rhsIR: any, bindings: any): any {
   };
 }
 
+// Lebesgue(support = interval(a, b)) — the canonical continuous
+// reference measure restricted to a finite interval. Sample-able via
+// Uniform(a, b): for any density-based consumer (weighted, bayes-
+// update via likelihoodof, etc.) the per-atom samples are the same as
+// `normalize(Lebesgue(support=interval(a,b)))`'s. The unnormalised
+// measure's `logTotalmass = log(b - a)` (spec §06: total mass equals
+// the support's Lebesgue measure) — currently not tracked separately;
+// downstream `normalize` discards it anyway. Higher-dim Lebesgue
+// supports (`cartpow`, `cartprod`) are a follow-up — each adds its
+// own multi-axis sampling path. Open in TODO §06.
+function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any): any {
+  void ast; void bindings;
+  if (!rhsIR.kwargs) return null;
+  const support = rhsIR.kwargs.support;
+  if (!support || support.kind !== 'call' || support.op !== 'interval') return null;
+  if (!Array.isArray(support.args) || support.args.length !== 2) return null;
+  // Synthetic Uniform(support = interval(a, b)) sample IR. `distIR`
+  // flows through the standard 'sample' derivation path; matSample's
+  // worker `sampleN` routes to sampler.REGISTRY.Uniform which reads
+  // the interval bounds via the same `support` kwarg.
+  const distIR = {
+    kind: 'call', op: 'Uniform',
+    kwargs: { support },
+    loc: rhsIR.loc,
+  };
+  return { kind: 'sample', distIR, discrete: false };
+}
+
 const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
@@ -1601,6 +1681,7 @@ const MEASURE_OP_CLASSIFIERS = {
   pushfwd:      classifyPushfwd,
   jointchain:   classifyJointchain,
   kchain:       classifyJointchain,
+  Lebesgue:     classifyLebesgueInterval,
 };
 
 /**
