@@ -2520,6 +2520,19 @@ function analyze(ast: any, source: string) {
   const pir = require('./pir.ts');
   const loweredModule = pir.lowerToModule(bindings);
 
+  // Alias resolution (engine-concepts §19 / spec §04 "Aliasing is
+  // just assignment"). Bindings whose RHS is a single ref node — pure
+  // aliases like `breit_wigner = hepphys.X` or `theta = some_param`
+  // — get canonicalised here: every `(%ref self <alias>)` elsewhere
+  // in the module rewrites to the alias's canonical target. Aliases
+  // survive in the binding map (tagged `isAlias: true`) for DAG /
+  // viewer affordances, but downstream consumers (typeinfer,
+  // derivations, materialiser, sampler) see one canonical ref per
+  // object. Matches Rust HIR's `use`-path resolution + LLVM @alias /
+  // MLIR symbol resolution — one canonical-IR pass instead of an
+  // alias-chain walk in every consumer.
+  require('./alias-resolution.ts').resolveAliases(loweredModule);
+
   // Structural type inference (FlatPIR §sec:flatpir). Mutates each
   // lowered binding to set `inferredType` and writes per-call
   // `meta.type` annotations. We mirror inferredType back onto the

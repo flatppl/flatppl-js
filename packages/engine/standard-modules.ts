@@ -97,9 +97,219 @@ function _clearStandardModules(): void {
   _REGISTRY.clear();
 }
 
+// =====================================================================
+// Built-in standard-module registrations
+// =====================================================================
+//
+// Each standard module is registered as one entry below. Adding a new
+// binding to a module: extend that module's `bindings` map. Adding a
+// new module: copy a `_register*` function and call it from
+// `_registerBuiltinStandardModules`.
+//
+// Conventions:
+//   - Signatures use the engine's types.ts factories (funcType,
+//     kernelType, scalar(...)).
+//   - Functions take their arguments in the SAME ORDER as
+//     sig.inputs — the standard-module dispatcher matches actual
+//     kwargs / positional args to that order before invoking.
+//   - Complex-valued functions return `{re, im}` JS objects matching
+//     sampler-complex.ts's scalar convention.
+
+const T = require('./types.ts');
+
+// --- polynomials ------------------------------------------------------
+//
+// `chebyshev(n, x)` — Chebyshev polynomial of the first kind T_n(x),
+// computed via the three-term recurrence
+//
+//   T_0(x) = 1,   T_1(x) = x,   T_n(x) = 2x · T_{n-1}(x) − T_{n-2}(x).
+//
+// Numerically stable for moderate n (no fast cancellation for typical
+// inputs); for very large n / |x| > 1 the recurrence is still well-
+// conditioned for T_n itself (it's bounded by 1 inside [-1, 1] and
+// grows polynomially outside). spec §09 polynomials module.
+
+function _chebyshev(n: number, x: number): number {
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error('chebyshev: n must be a non-negative integer (got ' + n + ')');
+  }
+  if (n === 0) return 1;
+  if (n === 1) return x;
+  let prev = 1, cur = x;
+  for (let k = 2; k <= n; k++) {
+    const next = 2 * x * cur - prev;
+    prev = cur;
+    cur = next;
+  }
+  return cur;
+}
+
+function _registerPolynomials() {
+  const bindings = new Map<string, BindingDescriptor>();
+  bindings.set('chebyshev', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'n', type: T.INTEGER }, { name: 'x', type: T.REAL }],
+      T.REAL,
+    ),
+    impl: _chebyshev,
+  });
+  // legendre / hermite / laguerre are also in the spec but deferred
+  // until a consumer needs them.
+  registerStandardModule({
+    name: 'polynomials',
+    compat: '0.1',
+    bindings,
+  });
+}
+
+// --- particle-physics -------------------------------------------------
+//
+// `resonance_breitwigner(sigma, m, width, ma, mb, l, d)` — complex-
+// valued relativistic Breit-Wigner amplitude with a mass-dependent
+// width for a two-body decay R → a b with orbital angular momentum
+// l, per spec §09 particle-physics module + Section 50 of Navas et al.
+// (2024).
+//
+// Definition:
+//   BW(σ) = 1 / (m² − σ − i · m · Γ(σ))
+//
+// with mass-dependent width
+//   Γ(σ) = Γ · (m/√σ) · (p(σ)/p_0) · (F_l(p(σ)) / F_l(p_0))²
+//
+// where p(σ) is the breakup momentum, F_l is the Blatt-Weisskopf
+// barrier factor, and p_0 = p(m²). Auxiliary helpers below.
+
+// Källén function λ(x, y, z) = x² + y² + z² − 2xy − 2yz − 2xz.
+function _kaellen(x: number, y: number, z: number): number {
+  return x * x + y * y + z * z - 2 * (x * y + y * z + x * z);
+}
+
+// Breakup momentum p(σ) for R → a b at invariant mass-squared σ. For
+// σ above threshold (σ ≥ (ma + mb)²) the momentum is real-positive;
+// below threshold it's analytically continued (the engine returns the
+// real magnitude; sub-threshold behaviour is not load-bearing for the
+// canonical-mass-region resonance peak the function represents).
+function _breakupMomentum(sigma: number, ma: number, mb: number): number {
+  const lam = _kaellen(sigma, ma * ma, mb * mb);
+  // Sub-threshold: clamp to zero (the BW form's denominator stays
+  // finite via the iΓ imaginary part).
+  if (lam <= 0) return 0;
+  return Math.sqrt(lam) / (2 * Math.sqrt(sigma));
+}
+
+// Blatt-Weisskopf squared form factor F_l(p)² in the dimensionless
+// variable z = (p · d)². PDG convention; tabulated for l = 0..4.
+// Higher l values throw — extending the table is mechanical when a
+// consumer needs them.
+function _blattWeisskopfSquared(l: number, pd2: number): number {
+  switch (l) {
+    case 0: return 1;
+    case 1: return 1 / (1 + pd2);
+    case 2: return 1 / (9 + 3 * pd2 + pd2 * pd2);
+    case 3: {
+      const z2 = pd2 * pd2, z3 = z2 * pd2;
+      return 1 / (225 + 45 * pd2 + 6 * z2 + z3);
+    }
+    case 4: {
+      const z2 = pd2 * pd2, z3 = z2 * pd2, z4 = z3 * pd2;
+      return 1 / (11025 + 1575 * pd2 + 135 * z2 + 10 * z3 + z4);
+    }
+    default:
+      throw new Error('resonance_breitwigner: Blatt-Weisskopf factor for l='
+        + l + ' not implemented (supported: 0..4)');
+  }
+}
+
+function _resonanceBreitwigner(
+  sigma: number, m: number, width: number,
+  ma: number, mb: number, l: number, d: number,
+): { re: number; im: number } {
+  if (!Number.isFinite(sigma) || sigma <= 0) {
+    return { re: NaN, im: NaN };  // outside the support
+  }
+  const m2 = m * m;
+  const p = _breakupMomentum(sigma, ma, mb);
+  const p0 = _breakupMomentum(m2, ma, mb);
+  // F_l(p)² / F_l(p0)² ratio in the mass-dependent width. The factor
+  // d appears squared in pd2; p · d has units of (energy · length).
+  const pd2 = (p * d) * (p * d);
+  const p0d2 = (p0 * d) * (p0 * d);
+  const F2  = _blattWeisskopfSquared(l, pd2);
+  const F02 = _blattWeisskopfSquared(l, p0d2);
+  // Γ(σ) — guard against p0 = 0 (massless daughters at threshold);
+  // in the degenerate ℓ=0, ma=mb=0 case Γ(σ) collapses to Γ as the
+  // ratios cancel exactly (spec §09 closing note). The reformulation
+  // below preserves that limit via `(m/√σ) · (p · F²) / (p0 · F0²)`
+  // — the factors cancel when ma=mb=0, l=0.
+  const sqrtSigma = Math.sqrt(sigma);
+  let gammaSigma: number;
+  if (p0 === 0) {
+    // Threshold-only resonance — fall back to mass-independent width.
+    gammaSigma = width;
+  } else {
+    gammaSigma = width * (m / sqrtSigma) * (p / p0) * (F2 / F02);
+  }
+  // BW(σ) = 1 / (m² − σ − i · m · Γ(σ)). Real denominator (m²-σ),
+  // imag denominator (−m·Γ). Reciprocal of a complex (a − ib) is
+  // (a + ib) / (a² + b²).
+  const reDen = m2 - sigma;
+  const imDen = -m * gammaSigma;
+  const norm = reDen * reDen + imDen * imDen;
+  return { re: reDen / norm, im: -imDen / norm };
+}
+
+function _registerParticlePhysics() {
+  const bindings = new Map<string, BindingDescriptor>();
+  bindings.set('resonance_breitwigner', {
+    kind: 'function',
+    sig: T.funcType(
+      [
+        { name: 'sigma', type: T.REAL },
+        { name: 'm',     type: T.REAL },
+        { name: 'width', type: T.REAL },
+        { name: 'ma',    type: T.REAL },
+        { name: 'mb',    type: T.REAL },
+        { name: 'l',     type: T.INTEGER },
+        { name: 'd',     type: T.REAL },
+      ],
+      T.COMPLEX,
+    ),
+    impl: _resonanceBreitwigner,
+  });
+  // Other particle-physics bindings (interp_*, CrystalBall, Argus, …)
+  // are deferred until a consumer needs them.
+  registerStandardModule({
+    name: 'particle-physics',
+    compat: '0.1',
+    bindings,
+  });
+}
+
+// Engine-startup registration: runs once on module require so the
+// registry is populated before typeinfer / orchestrator / sampler
+// consult it. Tests that need a clean slate (cross-test isolation)
+// call `_clearStandardModules()` and re-register with bespoke
+// descriptors via `registerStandardModule` directly.
+function _registerBuiltinStandardModules() {
+  _registerPolynomials();
+  _registerParticlePhysics();
+}
+
+_registerBuiltinStandardModules();
+
 module.exports = {
   lookupStandardModule,
   registerStandardModule,
   listStandardModules,
   _clearStandardModules,
+  _registerBuiltinStandardModules,
+  // Exported for tests
+  _internal: {
+    _chebyshev,
+    _resonanceBreitwigner,
+    _breakupMomentum,
+    _kaellen,
+    _blattWeisskopfSquared,
+  },
 };

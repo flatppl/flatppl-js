@@ -299,7 +299,51 @@ function _lowerExpr(node: any, ctx: any): IRNode {
         loc: node.loc,
       };
 
-    case 'FieldAccess':
+    case 'FieldAccess': {
+      // Per spec §04 name resolution: `self.foo` is the explicit
+      // current-module reference; `base.foo` is the explicit built-in
+      // reference; `mod.foo` (mod a loaded module) is the cross-
+      // module reference. None of those are data-access — they're
+      // name-resolution refs, lowered to spec §11's `(%ref ns name)`
+      // / bare-headed (for base) shapes. Per spec §03/§07, only
+      // record / table / tuple values get the data-access form
+      // `get_field(value, "field")`.
+      //
+      // Discriminator (in order):
+      //   - `self.X`  → (%ref self X)
+      //   - `base.X`  → bare-headed when X is a known builtin (spec
+      //                  §04: built-ins lower to bare form, never to
+      //                  `(%ref base X)`); else surface error.
+      //   - `mod.X`   → (%ref mod X) when `mod` is module-typed.
+      //   - anything else → get_field(object, "field") (record /
+      //                       table / tuple access).
+      if (node.object && node.object.type === 'Identifier') {
+        const objName = node.object.name;
+        if (objName === 'self') {
+          return {
+            kind: 'ref', ns: 'self', name: node.field, loc: node.loc,
+          };
+        }
+        if (objName === 'base') {
+          // Spec §11: explicit built-in refs share the same bare-
+          // headed IR shape as implicit built-in calls. The lowerer
+          // emits a `ref` here with no `ns` — downstream consumers
+          // that need to resolve a base-ref look it up by name in
+          // the built-ins catalog. (Most code paths see `base.foo`
+          // exclusively in HEAD position of a call, where _lower
+          // CallExpr handles it; bare value-position `base.foo`
+          // produces a callable ref the caller is expected to apply
+          // immediately.)
+          return {
+            kind: 'ref', ns: 'base', name: node.field, loc: node.loc,
+          };
+        }
+        if (ctx && ctx.moduleNames && ctx.moduleNames.has(objName)) {
+          return {
+            kind: 'ref', ns: objName, name: node.field, loc: node.loc,
+          };
+        }
+      }
       // a.field → (get_field a "field")
       return {
         kind: 'call',
@@ -310,6 +354,7 @@ function _lowerExpr(node: any, ctx: any): IRNode {
         ],
         loc: node.loc,
       };
+    }
 
     case 'CallExpr':
       return _lowerCallExpr(node, ctx);
