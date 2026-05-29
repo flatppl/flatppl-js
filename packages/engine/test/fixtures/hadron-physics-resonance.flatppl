@@ -56,6 +56,3 @@ D2 = normalize(weighted(cheb_density, Lebesgue(support = interval(a, b))))
 
 % Mixture of the two components.
 mixture = superpose(weighted(f1, D1), weighted(f2, D2))
-
-% Standalone scaled Breit-Wigner amplitude (a function, not a measure).
-bw_scaled = x -> 10 * breit_wigner(x, m = 1.1, width = 0.2, ma = 0, mb = 0, l = 0, d = 1.0)
