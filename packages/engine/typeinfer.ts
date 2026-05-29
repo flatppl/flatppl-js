@@ -366,6 +366,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // "weighted(measure, measure)" reject path).
       case 'weighted':
       case 'logweighted': return write(inferWeighted(expr, scopes), expr);
+      case 'pushfwd':     return write(inferPushfwd(expr, scopes), expr);
     }
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
@@ -1450,6 +1451,40 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // n is statically known; %dynamic otherwise. We resolve n via
   // literal and binding-ref folding so common cases (`n = 10;
   // iid(M, n)`) yield concrete shapes for downstream shape checks.
+  // pushfwd(f, M) — pushforward of measure / kernel M through fn f
+  // (spec §06). Result type tracks arg 2:
+  //   - M a measure → result is a measure (over f's codomain).
+  //   - M a kernel  → result is a kernel (same kernel inputs, new
+  //                   codomain measure).
+  //   - otherwise   → defer (no specific check; downstream
+  //                   classifier validates structural shape).
+  //
+  // The variate type of f's codomain isn't statically tracked
+  // here — defaults to real, which covers the common case (most
+  // pushfwd uses produce real-valued measures: log-Cauchy, Pareto-
+  // via-exp, affine-transformed Normals). Per-call bijection
+  // annotations could later refine this; the classifier validates
+  // the f / M shapes structurally at routing time.
+  function inferPushfwd(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError('pushfwd', '2', args.length, expr.loc);
+    // arg 0 is the function; we don't statically check its type
+    // here (callable-type tracking is the orchestrator's job).
+    inferExpr(args[0], scopes);
+    const m2 = inferExpr(args[1], scopes);
+    if (T.isMeasure(m2)) return T.measure(T.REAL);
+    if (m2 && m2.kind === 'kernel') {
+      // Preserve the kernel's input signature; only the output
+      // measure's variate type changes.
+      return { kind: 'kernel', inputs: m2.inputs || {}, output: T.measure(T.REAL) };
+    }
+    if (m2 && m2.kind === 'failed') return T.failed('pushfwd cascade');
+    // Permissive default — pushfwd OUTSIDE measure/kernel context
+    // (e.g. inside a `fn(...)` body whose arg-types haven't been
+    // resolved yet) defers rather than erroring.
+    return T.deferred();
+  }
+
   function inferIid(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length < 2) return arityError('iid', '≥2', args.length, expr.loc);
