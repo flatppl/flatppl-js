@@ -65,6 +65,15 @@ function setupCtx(src: string, N: number) {
     derivations: built.derivations,
     bindings: built.bindings,
     fixedValues: built.fixedValues || new Map(),
+    // Module registry: alias → (stdName, stdCompat) for cross-
+    // module call dispatch. Populated by pir.lowerToModule from
+    // every `standard_module(name, compat)` / `load_module(...)`
+    // binding. Threaded into the worker's session env via
+    // pushFixedEnv (materialiser-shared.ts) so sampler's cross-
+    // module call dispatch (`_evaluateStandardModuleCall`) can
+    // resolve `(call target=({ns: <alias>, name: X}) ...)` to
+    // the registry's JS impl.
+    moduleRegistry: lifted.loweredModule.moduleRegistry || null,
     getMeasure: (n: string) => {
       if (cache.has(n)) return cache.get(n);
       const p = materialiser.materialiseMeasure(n, ctx);
@@ -387,6 +396,127 @@ test('rasch-two-parameter: hierarchical IRT classifies + materialises end-to-end
     assert.equal(f.n_eff, undefined,
       `posterior.fields.${fname}.n_eff cleared on composite construction`);
   }
+});
+
+// =====================================================================
+// 7. Hadron-physics resonance fixture — exercises standard-module
+//    loading + cross-module call dispatch end-to-end
+// =====================================================================
+//
+// A particle-physics resonance amplitude composed from
+// `particle-physics.resonance_breitwigner` (complex Breit-Wigner with
+// mass-dependent width + Blatt-Weisskopf form factors) and a Chebyshev-
+// series background from `polynomials.chebyshev`. Three pieces of
+// infrastructure get exercised in one fixture:
+//
+//   - Module-aware lowering (lower.ts): `hepphys.resonance_breitwigner`
+//     and `polynomials.chebyshev` lower to `(%ref mod X)` per spec §11,
+//     NOT to `get_field`.
+//   - Alias resolution (alias-resolution.ts): the `breit_wigner =
+//     hepphys.resonance_breitwigner` and `chebyshev = polynomials
+//     .chebyshev` aliases canonicalise to module-namespaced refs
+//     across the whole module — call sites inside `resonance(s)`,
+//     `bw_scaled(x)`, `cheb_density(x)` all carry resolved targets.
+//   - Sampler cross-module dispatch (sampler.ts `_evaluateStandard
+//     ModuleCall`): runtime evaluation of `breit_wigner(...)` /
+//     `chebyshev(...)` reaches the standard-modules.ts registry's
+//     JS impl via env.__moduleRegistry.
+//   - Higher-order ops over std-module callables (sampler.ts
+//     `_synthStdModuleFn`): the `chebyshev.([0, 1, 2], …)` dotted
+//     broadcast lowers to `broadcast(<module-aliased-ref>, …)`; the
+//     broadcast's _resolveFn synthesises a per-arity wrapper that
+//     calls the registry impl.
+
+test('hadron-physics: standard-module loading + cross-module call dispatch', () => {
+  const src = readFixture('hadron-physics-resonance.flatppl');
+  const r = processSource(src);
+  const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    `no parse/typeinfer errors: ${JSON.stringify(errs)}`);
+
+  // The two module-typed bindings classify as `module` and their
+  // moduleRegistry entries point at the right (stdName, stdCompat).
+  assert.equal(r.bindings.get('hepphys')?.type, 'module');
+  assert.equal(r.bindings.get('polynomials')?.type, 'module');
+  const reg = r.loweredModule.moduleRegistry;
+  assert.equal(reg.hepphys.stdName, 'particle-physics');
+  assert.equal(reg.hepphys.stdCompat, '0.1');
+  assert.equal(reg.polynomials.stdName, 'polynomials');
+  assert.equal(reg.polynomials.stdCompat, '0.1');
+
+  // The alias `breit_wigner` canonicalises to a module-namespaced
+  // ref; its inferredType is the std-module's function signature.
+  const bw = r.loweredModule.bindings.get('breit_wigner');
+  assert.equal(bw.isAlias, true);
+  assert.equal(bw.rhs.kind, 'ref');
+  assert.equal(bw.rhs.ns, 'hepphys');
+  assert.equal(bw.rhs.name, 'resonance_breitwigner');
+  assert.equal(bw.inferredType.kind, 'function');
+
+  // After alias-resolution, `bw_scaled`'s functionof body has its
+  // inner call's target already canonicalised. Walking the IR
+  // confirms the alias never leaks into the body.
+  const bwScaled = r.loweredModule.bindings.get('bw_scaled');
+  assert.equal(bwScaled.rhs.op, 'functionof');
+  const innerCall = bwScaled.rhs.body.args[1];  // 10 * <breit_wigner_call>
+  assert.equal(innerCall.kind, 'call');
+  assert.equal(innerCall.target.ns, 'hepphys');
+  assert.equal(innerCall.target.name, 'resonance_breitwigner');
+});
+
+test('hadron-physics: bw_scaled / cheb_density / full_intensity evaluate to spec values', () => {
+  const src = readFixture('hadron-physics-resonance.flatppl');
+  const r = processSource(src);
+  const built = orchestrator.buildDerivations(r.bindings);
+  const sampler = require('../sampler.ts');
+  const sigMod = require('../signatures.ts');
+  const env: any = { __moduleRegistry: r.loweredModule.moduleRegistry };
+  for (const [k, v] of built.fixedValues) env[k] = v;
+
+  // 1. bw_scaled(x) = 10 · BW(x, m=1.1, width=0.2, ℓ=0, m_a=m_b=0)
+  //    At ℓ=0, m_a=m_b=0: BW(σ) = 1/(m² − σ − iΓm) (spec §09 closing
+  //    note). At σ = m² = 1.21 the real denominator vanishes; |BW|
+  //    peaks at 1/(Γ·m) = 1/(0.2·1.1) = 4.545; the scaled value is 10·.
+  const sig = sigMod.signatureOf('bw_scaled', built.bindings);
+  const peakBody = sigMod.substituteLocals(sig.body, { _x_: 1.21 });
+  const peakBW = sampler.evaluateExpr(peakBody, env);
+  // pure imaginary at resonance — real denominator is exactly 0
+  assert.ok(Math.abs(peakBW.re) < 1e-10, `BW(m²) real ≈ 0; got ${peakBW.re}`);
+  assert.ok(Math.abs(peakBW.im - 10 / (0.2 * 1.1)) < 1e-6,
+    `BW(m²) imag = 10/(Γ·m) = 45.4545; got ${peakBW.im}`);
+
+  // Off-resonance: |BW| drops away monotonically (in this simple
+  // ℓ=0 case).
+  const offBody = sigMod.substituteLocals(sig.body, { _x_: 3.0 });
+  const offBW = sampler.evaluateExpr(offBody, env);
+  const peakMag = Math.hypot(peakBW.re, peakBW.im);
+  const offMag = Math.hypot(offBW.re, offBW.im);
+  assert.ok(offMag < peakMag,
+    `off-resonance magnitude must be smaller; |BW(3.0)|=${offMag}, |BW(m²)|=${peakMag}`);
+
+  // 2. cheb_density(x) — uses `chebyshev.([0, 1, 2], affine_x)` which
+  //    routes the broadcast through `_synthStdModuleFn`. Coefficients
+  //    are b0=1.1, b1=0.2, b2=0.2 on the spec basis a=0.5, b=2.5.
+  //    affine_x(2.5) = 1 → T₀=T₁=T₂=1 → density = 1.1+0.2+0.2 = 1.5.
+  //    affine_x(0.5) = -1 → T₀=1,T₁=-1,T₂=1 → density = 1.1-0.2+0.2 = 1.1.
+  const chebSig = sigMod.signatureOf('cheb_density', built.bindings);
+  const cAt05 = sampler.evaluateExpr(
+    sigMod.substituteLocals(chebSig.body, { _x_: 0.5 }), env);
+  assert.ok(Math.abs(cAt05 - 1.1) < 1e-9, `cheb_density(0.5) ≈ 1.1; got ${cAt05}`);
+  const cAt25 = sampler.evaluateExpr(
+    sigMod.substituteLocals(chebSig.body, { _x_: 2.5 }), env);
+  assert.ok(Math.abs(cAt25 - 1.5) < 1e-9, `cheb_density(2.5) ≈ 1.5; got ${cAt25}`);
+
+  // 3. full_intensity(x) — composes resonance + coherent background
+  //    + complex coupling. Peaks at x = m = √(m²) = 1.5 (resonance
+  //    mass) since x² = σ enters BW(σ); off-peak < peak.
+  const fiSig = sigMod.signatureOf('full_intensity', built.bindings);
+  const fiPeak = sampler.evaluateExpr(
+    sigMod.substituteLocals(fiSig.body, { _x_: 1.5 }), env);
+  const fiOff = sampler.evaluateExpr(
+    sigMod.substituteLocals(fiSig.body, { _x_: 3.0 }), env);
+  assert.ok(fiPeak > fiOff,
+    `full_intensity peaks at resonance: fiPeak=${fiPeak}, fiOff=${fiOff}`);
 });
 
 test('beta-binomial-pushfwd: full fixture exposes user-kernel-composition gap', () => {

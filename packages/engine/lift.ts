@@ -420,12 +420,28 @@ function liftInlineSubexpressions(bindings: any) {
   // rewriter set one (disintegration delegates and synthesized plans),
   // otherwise from the literal RHS — same precedence the classifier
   // used to compute on demand.
+  //
+  // The lowerExpr call must see `moduleNames` so `mod.X` lowers to
+  // `(%ref mod X)` per spec §11 (not to `get_field`). After
+  // re-lowering we run alias-resolution on the `.ir` fields so
+  // `breit_wigner = hepphys.X` style aliases canonicalise (the
+  // analyzer's earlier alias-resolution pass operated on `.rhs` of
+  // loweredModule; lift's re-lower bypasses that, so we run the
+  // same canonicalisation on `.ir` here to keep the two views in
+  // lockstep).
+  const moduleNames = new Set<string>();
+  for (const [bname, b] of out) {
+    if (b && b.type === 'module') moduleNames.add(bname);
+  }
+  const lowerCtx = { localScope: null, moduleNames };
   for (const [name, b] of out) {
     if (!b || !b.node || !b.node.value) continue;
     let ir = null;
-    try { ir = lowerExpr(b.effectiveValue || b.node.value); } catch (_) { ir = null; }
+    try { ir = lowerExpr(b.effectiveValue || b.node.value, lowerCtx); } catch (_) { ir = null; }
     out.set(name, { ...b, ir });
   }
+  const { resolveAliasesOnBindings } = require('./alias-resolution.ts');
+  resolveAliasesOnBindings(out, 'ir');
   return out;
 
   function cloneAst(node: any): any {

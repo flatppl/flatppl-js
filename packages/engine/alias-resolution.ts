@@ -87,32 +87,40 @@ function _canonicalise(target: any, aliases: Map<string, any>): any | null {
 }
 
 /**
- * Run alias resolution over a LoweredModule. Mutates each binding:
- *   - alias bindings (single-ref RHS) get `isAlias: true` and their
- *     RHS is updated to the canonical ref;
+ * Run alias resolution over a Map<name, {<irField>: IR, isAlias?: bool}>
+ * — the structural shape shared by LoweredModule (irField='rhs') AND
+ * the analyzer's lift-output bindings (irField='ir'). Both forms need
+ * canonicalisation: LoweredModule.bindings.X.rhs flows into typeinfer
+ * + the materialiser; the analyzer's bindings.get(name).ir flows into
+ * derivation classifiers + signatureOf + the sampler. The two are
+ * derived from the same source AST but live in parallel structures
+ * (the lift re-lowers from AST, so it doesn't inherit
+ * loweredModule.rhs's alias resolution). Running the same pass on
+ * both keeps them in lockstep.
+ *
+ * Behavior:
+ *   - alias bindings (single-ref RHS in <irField>) get `isAlias: true`
+ *     and their RHS is updated to the canonical ref;
  *   - non-alias bindings have their RHS `mapIR`-rewritten so every
- *     `(%ref self <alias>)` ref is replaced by the alias's canonical
- *     ref.
+ *     `(%ref self <alias>)` ref AND `call.target = {ns:'self',
+ *     name:<alias>}` is replaced by the alias's canonical ref/target.
  *
- * Cycles are detected and left untouched (the affected alias stays
- * with its original RHS; downstream typeinfer will surface a
- * diagnostic if the cyclic name is consumed). Returns the same
- * LoweredModule (mutation-in-place for ergonomics; nothing here
- * allocates a new module).
+ * Cycles are detected and left untouched. Returns the same Map
+ * (mutation in place).
  *
- * IR purity: rewritten bindings get a NEW RHS object (shallow-rebuilt
+ * IR purity: rewritten bindings get a NEW IR object (shallow-rebuilt
  * via mapIR). Caller-held references to pre-resolution IR stay valid;
- * the resolution writes to `binding.rhs` so subsequent reads see the
- * canonical form.
+ * the resolution writes to `binding.<irField>` so subsequent reads
+ * see the canonical form.
  */
-function resolveAliases(loweredModule: any): any {
-  if (!loweredModule || !loweredModule.bindings) return loweredModule;
+function resolveAliasesOnBindings(bindings: any, irField: string): any {
+  if (!bindings) return bindings;
 
   // Pass 1: collect every binding whose RHS is a pure ref. These are
   // the alias candidates.
   const aliases = new Map<string, any>();
-  for (const [name, lb] of loweredModule.bindings) {
-    const target = _aliasTarget(lb.rhs);
+  for (const [name, lb] of bindings) {
+    const target = lb && _aliasTarget(lb[irField]);
     if (target) aliases.set(name, target);
   }
 
@@ -140,9 +148,10 @@ function resolveAliases(loweredModule: any): any {
   //
   // Identity-preserving — bindings whose IR contains no alias-resolved
   // refs / targets are untouched (no copy allocated).
-  for (const [name, lb] of loweredModule.bindings) {
+  for (const [name, lb] of bindings) {
     if (aliases.has(name)) continue;  // alias bindings handled in pass 4
-    lb.rhs = mapIR(lb.rhs, (n: any) => {
+    if (!lb || lb[irField] == null) continue;
+    lb[irField] = mapIR(lb[irField], (n: any) => {
       if (!n || typeof n !== 'object') return n;
       if (n.kind === 'ref' && n.ns === 'self'
           && canonicalByName.has(n.name)) {
@@ -166,19 +175,32 @@ function resolveAliases(loweredModule: any): any {
   // skip-or-special-case alias bindings via `lb.isAlias`. Cyclic
   // aliases stay un-marked so the cycle surfaces as the original
   // self-reference downstream (the cleanest place to error).
-  for (const [name, lb] of loweredModule.bindings) {
+  for (const [name, lb] of bindings) {
     if (!aliases.has(name)) continue;
     const canon = canonicalByName.get(name);
     if (canon == null) continue;  // cyclic — leave untouched
-    lb.rhs = { kind: 'ref', ns: canon.ns, name: canon.name, loc: lb.rhs.loc };
+    if (!lb) continue;
+    const oldLoc = lb[irField] && lb[irField].loc;
+    lb[irField] = { kind: 'ref', ns: canon.ns, name: canon.name, loc: oldLoc };
     lb.isAlias = true;
   }
 
+  return bindings;
+}
+
+/**
+ * LoweredModule entry point — runs alias resolution over `.rhs`.
+ * The original API the analyzer pipeline uses (analyzer.ts:2534).
+ */
+function resolveAliases(loweredModule: any): any {
+  if (!loweredModule || !loweredModule.bindings) return loweredModule;
+  resolveAliasesOnBindings(loweredModule.bindings, 'rhs');
   return loweredModule;
 }
 
 module.exports = {
   resolveAliases,
+  resolveAliasesOnBindings,
   // Exported for tests / introspection.
   _internal: {
     _aliasTarget,

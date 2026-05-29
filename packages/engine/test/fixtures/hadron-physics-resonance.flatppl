@@ -1,0 +1,61 @@
+%%%
+# Resonance + Chebyshev background mixture (HEP example)
+
+A coherent sum of a Breit-Wigner amplitude and a linear background,
+squared to a density on `[a, b]` and mixed with a Chebyshev-series
+background.
+%%%
+flatppl_compat = "0.1"
+
+hepphys = standard_module("particle-physics", "0.1")
+breit_wigner = hepphys.resonance_breitwigner
+
+polynomials = standard_module("polynomials", "0.1")
+chebyshev = polynomials.chebyshev
+
+% Resonance parameters.
+m = 1.5
+Gamma = 0.1
+
+% Linear coherent background (complex amplitude space).
+c0 = 1.1
+c1 = 0.02
+
+% Chebyshev background coefficients on [a, b].
+b0 = 1.1
+b1 = 0.2
+b2 = 0.2
+
+% Complex coupling between resonance amplitude and coherent background.
+yS = 1.0 * cis(3 * pi / 4)
+
+% Mixture fractions.
+f1 = 0.4
+f2 = 1 - f1
+
+% Integration / support range.
+a = 0.5
+b = 2.5
+
+% Resonance amplitude as a complex-valued function of s = mass^2.
+resonance = s -> breit_wigner(s, m = m, width = Gamma, ma = 0, mb = 0, l = 0, d = 1.0)
+
+% Coherent background as a function of mass.
+coherent_b = x -> c0 + c1 * x
+
+% Full intensity: |amplitude|^2 as a function of mass.
+full_intensity = x -> abs2(resonance(x^2) * yS + coherent_b(x))
+
+% Numerically normalized resonance + background distribution on [a, b].
+D1 = normalize(weighted(full_intensity, Lebesgue(support = interval(a, b))))
+
+% Chebyshev-series density on [a, b], built from per-degree T_n via broadcast + sum
+cheb_density = x -> sum([b0, b1, b2] .* chebyshev.([0, 1, 2], (2 * x - (a + b)) / (b - a)))
+
+D2 = normalize(weighted(cheb_density, Lebesgue(support = interval(a, b))))
+
+% Mixture of the two components.
+mixture = superpose(weighted(f1, D1), weighted(f2, D2))
+
+% Standalone scaled Breit-Wigner amplitude (a function, not a measure).
+bw_scaled = x -> 10 * breit_wigner(x, m = 1.1, width = 0.2, ma = 0, mb = 0, l = 0, d = 1.0)
