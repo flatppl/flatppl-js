@@ -319,34 +319,55 @@ function classifyProfileSelfRefs(
 /**
  * Push a `fixedEnv` map onto the worker session env via setEnv merge.
  * Returns a Promise that resolves once the merge has been applied;
- * companion to prepareDensityRefs.
+ * companion to prepareDensityRefs. Empty maps short-circuit.
  *
- * Module registry threading: if `ctx.moduleRegistry` is present and
- * hasn't yet been pushed for this ctx (tracked via a one-time flag),
- * `__moduleRegistry` is added to the same setEnv message. This is
- * the central point where cross-module call dispatch (sampler.ts's
- * `_evaluateStandardModuleCall`) gets the alias → (stdName, stdCompat)
- * map it needs. Hosts that bypass the materialiser (or that maintain
- * their own setEnv plumbing — e.g. the viewer's
- * `rebuildDerivations`) push it themselves; this path covers tests
- * and any direct materialiser consumers.
- *
- * If `fixedEnv` is empty AND no moduleRegistry push is pending, the
- * helper short-circuits.
+ * Single responsibility: this helper covers ONLY fixed-phase
+ * pre-evaluated bindings (the `fixedValues` channel). The module
+ * registry is pushed separately via `pushModuleRegistry(ctx)` —
+ * see that helper for the rationale.
  */
 function pushFixedEnv(ctx: any, fixedEnv: Record<string, any>) {
-  let mergedEnv = fixedEnv;
-  const needModReg = !!(ctx && ctx.moduleRegistry && !ctx._moduleRegistryPushed);
-  if (needModReg) {
-    mergedEnv = Object.assign({ __moduleRegistry: ctx.moduleRegistry }, fixedEnv);
+  for (const _k in fixedEnv) {
+    return ctx.sendWorker({ type: 'setEnv', env: fixedEnv, merge: true });
+  }
+  return Promise.resolve();
+}
+
+/**
+ * Push `ctx.moduleRegistry` (alias → {stdName, stdCompat}) onto the
+ * worker session env as `__moduleRegistry`, idempotent per ctx.
+ *
+ * Cross-module call dispatch (sampler.ts `_evaluateStandardModuleCall`)
+ * reads `env.__moduleRegistry` to resolve `(call target=({ns:
+ * <alias>, name: X}) ...)` to the standard-modules.ts registry's
+ * descriptor. The push happens ONCE per materialiser ctx — guarded
+ * by a `_moduleRegistryPushed` flag on the ctx itself so repeated
+ * calls short-circuit. Hosts that maintain their own setEnv plumbing
+ * (the viewer's `rebuildDerivations`) push it directly; this helper
+ * covers tests and any path that materialises through `matSession`-
+ * style entry points.
+ *
+ * Empty registries short-circuit. Idempotent: safe to call from
+ * every materialiser entry point as a defensive precondition.
+ */
+function pushModuleRegistry(ctx: any) {
+  if (!ctx || !ctx.moduleRegistry || ctx._moduleRegistryPushed) {
+    return Promise.resolve();
+  }
+  const reg = ctx.moduleRegistry;
+  // Empty registry → nothing to push.
+  let empty = true;
+  for (const _k in reg) { empty = false; break; }
+  if (empty) {
     ctx._moduleRegistryPushed = true;
+    return Promise.resolve();
   }
-  let hasAny = needModReg;
-  if (!hasAny) {
-    for (const _k in fixedEnv) { hasAny = true; break; }
-  }
-  if (!hasAny) return Promise.resolve();
-  return ctx.sendWorker({ type: 'setEnv', env: mergedEnv, merge: true });
+  ctx._moduleRegistryPushed = true;
+  return ctx.sendWorker({
+    type: 'setEnv',
+    env: { __moduleRegistry: reg },
+    merge: true,
+  });
 }
 
 /**
@@ -665,6 +686,7 @@ module.exports = {
   prepareDensityRefs,
   classifyProfileSelfRefs,
   pushFixedEnv,
+  pushModuleRegistry,
   fixedValueToMeasure,
   measureN,
   valueOf,

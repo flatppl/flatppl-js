@@ -277,11 +277,21 @@ export interface DerivationRecord {
   fields: Record<string, string>;
 }
 
-/** Sample N draws from `distIR` per atom (the universal leaf). */
+/** Sample N draws from `distIR` per atom (the universal leaf).
+ *
+ *  `logTotalmass` overrides the default 0 for unnormalised reference
+ *  measures whose sampling shape coincides with a probability measure
+ *  (e.g. `Lebesgue(interval(a, b))` samples like `Uniform(interval(a,
+ *  b))` but carries totalmass `b − a` rather than 1). matSample reads
+ *  this; consumers that downstream `normalize` discard it, consumers
+ *  that read totalmass directly (`totalmass(M)`, plotting an
+ *  unnormalised measure) see the spec-canonical value.
+ */
 export interface DerivationSample {
   kind: 'sample';
   name?: string;
   distIR: IRNode;
+  logTotalmass?: number;
 }
 
 /** Element-wise deterministic evaluation of `ir` over upstream sample arrays. */

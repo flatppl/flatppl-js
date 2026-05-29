@@ -67,6 +67,7 @@ const {
   prepareDensityRefs,
   classifyProfileSelfRefs,
   pushFixedEnv,
+  pushModuleRegistry,
   fixedValueToMeasure,
   inlineCallableRefs,
   measureFromValue,
@@ -92,9 +93,14 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
     }))
     .then((reply: any) => {
       const lw = reply.logWeights || null;
+      // Default 0 for probability measures; explicit overrides for
+      // unnormalised reference measures (Lebesgue / future Counting-
+      // over-finite-support) attach via the derivation's
+      // `logTotalmass` field. Cf. engine-types.d.ts DerivationSample.
+      const logTotalmass = (typeof d.logTotalmass === 'number') ? d.logTotalmass : 0;
       return scalarMeasureN(reply.samples, {
         logWeights: lw,
-        logTotalmass: 0,
+        logTotalmass,
         n_eff: reply.samples.length,
       });
     });
@@ -225,7 +231,16 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
                 + ' negative weight sample(s) treated as zero mass');
             }
           }
-          return finalise(empirical.logSumExp(w), w);
+          // Result totalmass = ∫ f · dM (spec §06). The empirical
+          // estimator logSumExp(baseLW + log(f(x_i))) gives
+          // log(avg(f)·exp(parent.logTotalmass / 1))... actually the
+          // parent's totalmass is implicit in baseLW only when it's
+          // 0; for unnormalised parents (Lebesgue with logTotalmass
+          // = log(b−a)) the parent mass lives on `parent.logTotalmass`
+          // and must be added explicitly. Cf. spec-canonical
+          // ∫_a^b f · dx = (b−a) · E_{Uniform}[f].
+          const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+          return finalise(parentLTM + empirical.logSumExp(w), w);
         });
       }
       // Constant shift fast path.
@@ -265,7 +280,12 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
               + ' negative weight sample(s) treated as zero mass');
           }
         }
-        const lTM = empirical.logSumExp(w);
+        // Spec §06 totalmass = ∫ f · dM. Parent's mass (e.g.
+        // log(b−a) for `Lebesgue(interval(a,b))`) lives on
+        // `parent.logTotalmass`; the empirical estimator captures
+        // only the avg(f) factor over the parent's atoms.
+        const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+        const lTM = parentLTM + empirical.logSumExp(w);
         const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
         return scalarMeasureN(lifted.samples,
           { logWeights: w, logTotalmass: lTM, n_eff: nEff });
@@ -939,7 +959,13 @@ function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // pipeline now. Each concern composes orthogonally; new concerns
   // (tracing, MCMC handlers, gradient capture) add stages without
   // touching this function.
-  return _runPipeline(name, ctx);
+  //
+  // Worker-session-env precondition: push the module registry once
+  // per ctx so any downstream `evaluateN`/`logDensityN`/`sampleN`
+  // call that traverses a `(call target=({ns: <alias>, …}) …)` can
+  // resolve through `env.__moduleRegistry`. Idempotent — the helper
+  // short-circuits after the first push.
+  return pushModuleRegistry(ctx).then(() => _runPipeline(name, ctx));
 }
 
 /**

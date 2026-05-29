@@ -1637,31 +1637,53 @@ function classifyAppliedChain(rhsIR: any, bindings: any): any {
 }
 
 // Lebesgue(support = interval(a, b)) — the canonical continuous
-// reference measure restricted to a finite interval. Sample-able via
-// Uniform(a, b): for any density-based consumer (weighted, bayes-
-// update via likelihoodof, etc.) the per-atom samples are the same as
-// `normalize(Lebesgue(support=interval(a,b)))`'s. The unnormalised
-// measure's `logTotalmass = log(b - a)` (spec §06: total mass equals
-// the support's Lebesgue measure) — currently not tracked separately;
-// downstream `normalize` discards it anyway. Higher-dim Lebesgue
-// supports (`cartpow`, `cartprod`) are a follow-up — each adds its
-// own multi-axis sampling path. Open in TODO §06.
-function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any): any {
-  void ast; void bindings;
+// reference measure restricted to a finite interval. Spec §06: total
+// mass equals the support's Lebesgue measure (= b − a for a 1-D
+// interval). Sampling shape coincides with `Uniform(support =
+// interval(a, b))` (same atom positions), so the derivation reuses
+// the standard 'sample' kind with a synthetic Uniform distIR — but
+// carries the correct `logTotalmass = log(b − a)` so a downstream
+// `totalmass(M)` reads the spec-canonical value, not 1. `normalize`
+// consumers cancel it out; `weighted(<function>, Lebesgue(...))`
+// composes it with the per-atom function weights.
+//
+// Bounds resolution. classifyLebesgueInterval consults `resolveConstant`
+// for each interval endpoint:
+//   - both literal → log(b − a) attached to the derivation.
+//   - either unresolvable (stochastic / refs-to-elementof) → the
+//     totalmass shift becomes per-atom and currently isn't tracked;
+//     the derivation drops it with `logTotalmass = undefined` and
+//     downstream sees the default 0. Documented as an open follow-up;
+//     in practice Lebesgue's interval bounds are literals.
+//
+// Higher-dim Lebesgue supports (`cartpow(interval, n)`, `cartprod(...)`)
+// are a follow-up — each adds its own multi-axis sampling path with
+// a corresponding totalmass formula. Tracked in TODO §06.
+function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
+  void ast;
   if (!rhsIR.kwargs) return null;
   const support = rhsIR.kwargs.support;
   if (!support || support.kind !== 'call' || support.op !== 'interval') return null;
   if (!Array.isArray(support.args) || support.args.length !== 2) return null;
-  // Synthetic Uniform(support = interval(a, b)) sample IR. `distIR`
-  // flows through the standard 'sample' derivation path; matSample's
-  // worker `sampleN` routes to sampler.REGISTRY.Uniform which reads
-  // the interval bounds via the same `support` kwarg.
+  const aIR = support.args[0], bIR = support.args[1];
+  // Synthetic Uniform sample distIR — same atom positions as
+  // Lebesgue, the (b − a) factor lives in the derivation's
+  // logTotalmass.
   const distIR = {
     kind: 'call', op: 'Uniform',
     kwargs: { support },
     loc: rhsIR.loc,
   };
-  return { kind: 'sample', distIR, discrete: false };
+  const out: any = { kind: 'sample', distIR, discrete: false };
+  const aVal = resolveConstant(aIR, bindings, new Set(), fixedValues);
+  const bVal = resolveConstant(bIR, bindings, new Set(), fixedValues);
+  if (typeof aVal === 'number' && typeof bVal === 'number'
+      && Number.isFinite(aVal) && Number.isFinite(bVal) && bVal > aVal) {
+    out.logTotalmass = Math.log(bVal - aVal);
+  }
+  // else: per-atom or improper-support case — totalmass tracking
+  // deferred (downstream sees default 0).
+  return out;
 }
 
 const MEASURE_OP_CLASSIFIERS = {

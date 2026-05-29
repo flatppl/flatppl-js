@@ -749,8 +749,8 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
   // std-module function like `resonance_breitwigner` returning the
   // BW amplitude). Without this packing, downstream ARITH_OPS_N
   // entries (mul / add) see a JS array of complex objects and emit
-  // NaN. Per the §2.1 shape contract, the canonical complex
-  // representation is `{shape: [N], dtype: 'complex', data, im}`.
+  // NaN. The canonical complex Value shape (engine-concepts §2.1)
+  // comes from `valueLib.complexValue`.
   let allComplex = true;
   for (let i = 0; i < N; i++) {
     const v = out[i];
@@ -763,7 +763,7 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
     const re = new Float64Array(N);
     const im = new Float64Array(N);
     for (let i = 0; i < N; i++) { re[i] = out[i].re; im[i] = out[i].im; }
-    return { shape: [N], dtype: 'complex', data: re, im };
+    return valueLib.complexValue(re, im, [N]);
   }
   // Per-atom uniform-length numeric array outputs (e.g.
   // softmax / l1unit / l2unit / logsoftmax on per-atom inputs) pack
