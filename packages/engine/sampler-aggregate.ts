@@ -30,6 +30,7 @@ const valueLib = require('./value.ts');
 const valueOps = require('./value-ops.ts');
 const perfConfig = require('./perf-config.ts');
 const { _matmul } = require('./sampler-linalg.ts');
+const aggregateShape = require('./aggregate-shape.ts');
 
 // Lazy access to sampler.ts (cycle: aggregate calls `evaluateExpr` /
 // `ARITH_OPS`, which the evaluator re-enters via `_evalAggregate`).
@@ -53,85 +54,72 @@ const ARITH_OPS: any = new Proxy({}, {
   get(_target, prop) { return _sampler()._internal.ARITH_OPS[prop]; },
 });
 
-// Axis length inference walks the IR looking for the FIRST get(...) or
-// get0(...) whose selector slot k is an axis ref; the length of that
-// axis is then the length of the container's dim-k. Walk stops at
-// nested aggregate boundaries — those have their own axis scope.
-function _inferAggregateAxisLengths(exprIR: any, axisNames: string[], env: any) {
-  const lengths: Record<string, number> = {};
-  function _shapeOf(val: any): number[] | null {
-    if (val == null) return null;
-    if (typeof val === 'number' || typeof val === 'boolean') return [];
-    if (Array.isArray(val)) {
-      // Nested-array form: shape from outer length + recurse for inner.
-      const inner: number[] = [];
-      if (val.length > 0 && Array.isArray(val[0])) {
-        const tail = _shapeOf(val[0]);
-        if (tail) for (const x of tail) inner.push(x);
-      }
-      return [val.length, ...inner];
+// Engine-internal helper: extract the runtime shape of a value an
+// aggregate body references. Returns null when the value is unknown
+// or scalar-only (no shape to read). Used by the runtime axis-length
+// resolver, ONLY for axes typeinfer left as `%dynamic`.
+function _runtimeShapeOf(val: any): number[] | null {
+  if (val == null) return null;
+  if (typeof val === 'number' || typeof val === 'boolean') return [];
+  if (Array.isArray(val)) {
+    const inner: number[] = [];
+    if (val.length > 0 && Array.isArray(val[0])) {
+      const tail = _runtimeShapeOf(val[0]);
+      if (tail) for (const x of tail) inner.push(x);
     }
-    if (val && (val as any).BYTES_PER_ELEMENT) return [(val as any).length];
-    if (val && Array.isArray((val as any).shape)) return (val as any).shape;
-    return null;
+    return [val.length, ...inner];
   }
-  function walk(n: any) {
-    if (!n || typeof n !== 'object') return;
-    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
-    if (n.kind === 'call' && n.op === 'aggregate') return;   // inner scope
-    if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
-      const args = n.args || [];
-      const container = args[0];
-      const sels = args.slice(1);
-      let containerVal: any = undefined;
-      for (let k = 0; k < sels.length; k++) {
-        const s = sels[k];
-        if (s && s.kind === 'axis' && !(s.name in lengths)) {
-          if (containerVal === undefined) {
-            try { containerVal = evaluateExpr(container, env); }
-            catch (_) { containerVal = null; }
-          }
-          if (containerVal == null) continue;
-          const shape = _shapeOf(containerVal);
-          if (shape && typeof shape[k] === 'number') {
-            lengths[s.name] = shape[k];
+  if (val && (val as any).BYTES_PER_ELEMENT) return [(val as any).length];
+  if (val && Array.isArray((val as any).shape)) return (val as any).shape;
+  return null;
+}
+
+// Build a per-axis length resolver for a single-point (non-atom-
+// batched) context: walks `get(arr, .axis, ...)` calls in the body
+// to read the container's dim-k length whenever the resolver is
+// asked for an axis not already resolved by typeinfer's annotation.
+function _makeRuntimeAxisLengthResolver(exprIR: any, env: any) {
+  // Memoise so repeated `.has(name)` queries don't re-walk the body.
+  const resolved: Record<string, number | null> = {};
+  return function lengthOf(axisName: string): number | null {
+    if (axisName in resolved) return resolved[axisName];
+    let found: number | null = null;
+    function walk(n: any) {
+      if (found != null) return;
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+      if (n.kind === 'call' && n.op === 'aggregate') return;   // inner scope
+      if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
+        const args = n.args || [];
+        const container = args[0];
+        const sels = args.slice(1);
+        let containerVal: any = undefined;
+        for (let k = 0; k < sels.length; k++) {
+          const s = sels[k];
+          if (s && s.kind === 'axis' && s.name === axisName) {
+            if (containerVal === undefined) {
+              try { containerVal = evaluateExpr(container, env); }
+              catch (_) { containerVal = null; }
+            }
+            if (containerVal == null) continue;
+            const shape = _runtimeShapeOf(containerVal);
+            if (shape && typeof shape[k] === 'number') {
+              found = shape[k];
+              return;
+            }
           }
         }
       }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'kind' || k === 'op'
+            || k === 'name' || k === 'ns') continue;
+        walk(n[k]);
+      }
     }
-    for (const k of Object.keys(n)) {
-      if (k === 'loc' || k === 'kind' || k === 'op' || k === 'name' || k === 'ns') continue;
-      walk(n[k]);
-    }
-  }
-  walk(exprIR);
-  // Verify every needed axis got a length; raise a clear error if not.
-  const missing = axisNames.filter((a: string) => !(a in lengths));
-  if (missing.length > 0) {
-    throw new Error(
-      `aggregate: could not infer length of axis ${missing.map((a: string) => '.' + a).join(', ')} ` +
-      `— each axis must index a known array at least once in expr`);
-  }
-  return lengths;
-}
-
-// Collect axis names that appear in expr, NOT descending into nested
-// aggregate(...) bodies (each aggregate has its own closed axis scope
-// per spec §05).
-function _collectInScopeAxisNames(exprIR: any): Set<string> {
-  const names = new Set<string>();
-  function walk(n: any) {
-    if (!n || typeof n !== 'object') return;
-    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
-    if (n.kind === 'axis') { names.add(n.name); return; }
-    if (n.kind === 'call' && n.op === 'aggregate') return;
-    for (const k of Object.keys(n)) {
-      if (k === 'loc' || k === 'kind' || k === 'op' || k === 'name' || k === 'ns') continue;
-      walk(n[k]);
-    }
-  }
-  walk(exprIR);
-  return names;
+    walk(exprIR);
+    resolved[axisName] = found;
+    return found;
+  };
 }
 
 // Pattern table — each entry recognises a specific aggregate shape
@@ -1045,29 +1033,25 @@ function _evalAggregateBroadcastReduce(ir: any, env: any): any {
   if (args.length !== 3) {
     throw new Error(`aggregate: expected 3 args, got ${args.length}`);
   }
-  const [fIR, axesIR, exprIR] = args;
+  const [fIR, , exprIR] = args;
 
   const fname = (fIR.kind === 'ref' && fIR.name)
               || (fIR.kind === 'const' && fIR.name);
   const reduce = fname && _AGGREGATE_REDUCTIONS[fname];
   if (!reduce) throw new Error(`aggregate: unknown reduction '${fname}'`);
 
-  if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
+  // P1: consume the canonical form from `ir.meta.aggregateCanonical`
+  // (typeinfer populated it). `getCanonical` reconstructs the
+  // structural skeleton if the annotation is missing (e.g. dissolver-
+  // rewritten aggregate before re-typeinfer); the runtime resolver
+  // fills in any axis lengths typeinfer left as `%dynamic`.
+  const canonical = aggregateShape.getCanonical(ir);
+  if (!canonical) {
     throw new Error('aggregate: output_axes must be an array literal of axis names');
   }
-  const outAxes = (axesIR.args || []).map((a: any) => {
-    if (a.kind !== 'axis') throw new Error('aggregate: output_axes entries must be axis names (.name)');
-    return a.name;
-  });
-
-  const usedAxes = _collectInScopeAxisNames(exprIR);
-  const reduceAxes: string[] = [];
-  for (const a of usedAxes) if (!outAxes.includes(a)) reduceAxes.push(a);
-
-  // Canonical axis order: [output…, reduce…]. With reduce axes at the
-  // end the final reduction is a tail-reduce over a contiguous block.
-  const canonicalAxes = [...outAxes, ...reduceAxes];
-  const lengths = _inferAggregateAxisLengths(exprIR, canonicalAxes, env);
+  const { outAxes, reduceAxes, canonicalAxes } = canonical;
+  const lengths = aggregateShape.resolveAxisLengths(
+    ir, canonical, _makeRuntimeAxisLengthResolver(exprIR, env));
 
   // Lift the body to an aligned tensor over the full canonical shape.
   const lifted = _liftAggregateExpr(exprIR, canonicalAxes, lengths, env);
@@ -1181,27 +1165,26 @@ function _evalAggregateBroadcastReduceN(
   if (args.length !== 3) {
     throw new Error(`aggregateN: expected 3 args, got ${args.length}`);
   }
-  const [fIR, axesIR, exprIR] = args;
+  const [fIR, , exprIR] = args;
   const fname = (fIR.kind === 'ref' && fIR.name)
               || (fIR.kind === 'const' && fIR.name);
   const reduce = fname && _AGGREGATE_REDUCTIONS[fname];
   if (!reduce) throw new Error(`aggregateN: unknown reduction '${fname}'`);
-  if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
+
+  // P1: consume the canonical form. Same source of truth as the
+  // single-point path — outAxes, reduceAxes, and the user-axis
+  // canonical ordering come from `aggregate-shape`. The atom axis
+  // is prepended to the user-axis ordering here (atom axis is engine-
+  // internal, never appears in user IR or typeinfer's annotation).
+  const canonical = aggregateShape.getCanonical(ir);
+  if (!canonical) {
     throw new Error('aggregateN: output_axes must be an array literal of axis names');
   }
-  const outAxes = (axesIR.args || []).map((a: any) => {
-    if (a.kind !== 'axis')
-      throw new Error('aggregateN: output_axes entries must be axis names (.name)');
-    return a.name;
-  });
-
+  const { outAxes, reduceAxes } = canonical;
   // Atom axis prepends to the canonical ordering. Its name uses a
   // double-underscore prefix to avoid colliding with any user-axis
   // name (spec §05 axis labels start with a letter).
   const ATOM_AXIS = '__atom_N';
-  const usedAxes = _collectInScopeAxisNames(exprIR);
-  const reduceAxes: string[] = [];
-  for (const a of usedAxes) if (!outAxes.includes(a)) reduceAxes.push(a);
   const canonicalAxes = [ATOM_AXIS, ...outAxes, ...reduceAxes];
 
   // Build an env for evaluating subtree containers. Containers may be
@@ -1613,8 +1596,6 @@ function _alignedTensorFromGetN(
 }
 
 module.exports = {
-  _inferAggregateAxisLengths,
-  _collectInScopeAxisNames,
   AGGREGATE_PATTERNS,
   _evalAggregate,
   _evalAggregateBroadcastReduceN,
