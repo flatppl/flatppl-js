@@ -1228,8 +1228,12 @@ function _ensureAtomBatchedRegistered(): void {
   function _makeBatchedAddLike(scalarFn: any, atomIndepImpl: any, opName: string) {
     return function batchedAddLike(args: any[], N: number) {
       const a = args[0], b = args[1];
-      const aBatched = valueLib.isValue(a) && a.shape.length === 2 && a.shape[0] === N;
-      const bBatched = valueLib.isValue(b) && b.shape.length === 2 && b.shape[0] === N;
+      // P3 follow-up: use the canonical isAtomBatched predicate.
+      // This variant is registered for `argPatterns: [{rank: 1}, {rank: 1}]`
+      // (atom-aware → rank-2 with leading dim N), so the rank check
+      // is implicit; `isAtomBatched` formalises the §2.1 contract.
+      const aBatched = valueLib.isAtomBatched(a, N) && a.shape.length === 2;
+      const bBatched = valueLib.isAtomBatched(b, N) && b.shape.length === 2;
       if (aBatched && bBatched) {
         // Same atom-batched shape: elementwise on flat data works.
         return atomIndepImpl(a, b);
