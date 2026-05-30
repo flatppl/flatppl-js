@@ -358,6 +358,343 @@ function readU32BE(arr: ArrayLike<number>, off: number) {
         | (arr[off + 2] << 8) |  arr[off + 3]) >>> 0);
 }
 
+// =====================================================================
+// Splittable PRNG primitives (commit 1 — JAX-style split/foldIn over
+// Philox-4x32)
+// =====================================================================
+//
+// The streaming `next*` API above is a state-threaded *sequential* view
+// of one Philox stream. The primitives in this section instead treat
+// Philox as a keyed bijection and derive *new keys* from a parent key
+// + a discriminator, in the manner of JAX's `jax.random.split` /
+// `fold_in`. This unlocks two things future commits will use:
+//
+//   - independent substreams per sampler node (no shared counter, no
+//     ordering coupling between unrelated draws);
+//   - bulk uniform/normal kernels that produce N values in one call,
+//     amortizing the per-call overhead of the state-threaded API.
+//
+// Nothing in this section mutates or replaces the existing streaming
+// API; `nextUniform` / `nextUint32` remain byte-compatible with the
+// pre-commit-1 implementation.
+
+// xxHash32 round constants. These are the canonical values from Yann
+// Collet's reference implementation (github.com/Cyan4973/xxHash,
+// xxhash32.c). They are coprime with 2^32 and chosen for good avalanche
+// behaviour on small inputs.
+
+const XXH_PRIME32_1 = 0x9E3779B1 | 0;   // |0 keeps these as int32 literals
+const XXH_PRIME32_2 = 0x85EBCA77 | 0;
+const XXH_PRIME32_3 = 0xC2B2AE3D | 0;
+const XXH_PRIME32_4 = 0x27D4EB2F | 0;
+const XXH_PRIME32_5 = 0x165667B1 | 0;
+
+// Lazy UTF-8 encoder for the xxhash32(string) path. Allocating
+// TextEncoder at module load would penalize callers that never hash
+// strings (the sampler hot path hashes bytes / ints, not strings).
+
+let _xxhTextEncoder: TextEncoder | null = null;
+function _getTextEncoder(): TextEncoder {
+  if (_xxhTextEncoder === null) _xxhTextEncoder = new TextEncoder();
+  return _xxhTextEncoder;
+}
+
+// 32-bit left rotate. `Math.imul` not needed here; `<<` / `>>>` keep
+// us inside int32 / uint32 lanes.
+function _xxhRotl32(x: number, r: number): number {
+  return ((x << r) | (x >>> (32 - r))) >>> 0;
+}
+
+// Non-streaming xxHash32 (Yann Collet's algorithm). Returns a uint32.
+//
+// Supported inputs:
+//   - `number` — hashed as a little-endian uint32. Useful for hashing
+//     tags / integer ids without manually packing them into bytes.
+//   - `Uint8Array` — hashed directly, zero-copy.
+//   - `string` — UTF-8 encoded via a lazily-allocated TextEncoder.
+//
+// Implementation follows the xxhash32.c reference: an accumulator-based
+// main loop for ≥16-byte inputs (4 lanes × 4-byte stripes), then a
+// shorter mixing path for the tail (4-byte chunks down to single bytes).
+// `Math.imul` is mandatory: JS multiplication of two 32-bit values
+// goes through doubles and silently loses low bits for products that
+// overflow 2^53.
+
+type Xxh32Input = number | Uint8Array | string;
+
+function xxhash32(input: Xxh32Input, seed: number = 0): number {
+  let bytes: Uint8Array;
+  if (typeof input === 'number') {
+    // Pack as little-endian uint32. We deliberately do NOT pack as a
+    // double — callers that want to hash a float should pass its byte
+    // representation as a Uint8Array.
+    const v = input >>> 0;
+    bytes = new Uint8Array(4);
+    bytes[0] =  v        & 0xff;
+    bytes[1] = (v >>>  8) & 0xff;
+    bytes[2] = (v >>> 16) & 0xff;
+    bytes[3] = (v >>> 24) & 0xff;
+  } else if (typeof input === 'string') {
+    bytes = _getTextEncoder().encode(input);
+  } else {
+    bytes = input;
+  }
+
+  const len = bytes.length;
+  const s   = seed >>> 0;
+  let h32: number;
+  let p = 0;
+
+  if (len >= 16) {
+    // Main loop: four parallel accumulators consume 16 bytes per
+    // iteration. Each accumulator is round(acc, lane) where
+    //   round(a, l) = rotl32(a + l*PRIME2, 13) * PRIME1.
+    let v1 = (s + XXH_PRIME32_1 + XXH_PRIME32_2) >>> 0;
+    let v2 = (s + XXH_PRIME32_2) >>> 0;
+    let v3 = (s + 0) >>> 0;
+    let v4 = (s - XXH_PRIME32_1) >>> 0;
+    const limit = len - 16;
+    while (p <= limit) {
+      const l1 = (bytes[p    ] | (bytes[p + 1] << 8) | (bytes[p + 2] << 16) | (bytes[p + 3] << 24)) >>> 0;
+      const l2 = (bytes[p + 4] | (bytes[p + 5] << 8) | (bytes[p + 6] << 16) | (bytes[p + 7] << 24)) >>> 0;
+      const l3 = (bytes[p + 8] | (bytes[p + 9] << 8) | (bytes[p + 10] << 16) | (bytes[p + 11] << 24)) >>> 0;
+      const l4 = (bytes[p + 12] | (bytes[p + 13] << 8) | (bytes[p + 14] << 16) | (bytes[p + 15] << 24)) >>> 0;
+      v1 = Math.imul(_xxhRotl32((v1 + Math.imul(l1, XXH_PRIME32_2)) >>> 0, 13), XXH_PRIME32_1) >>> 0;
+      v2 = Math.imul(_xxhRotl32((v2 + Math.imul(l2, XXH_PRIME32_2)) >>> 0, 13), XXH_PRIME32_1) >>> 0;
+      v3 = Math.imul(_xxhRotl32((v3 + Math.imul(l3, XXH_PRIME32_2)) >>> 0, 13), XXH_PRIME32_1) >>> 0;
+      v4 = Math.imul(_xxhRotl32((v4 + Math.imul(l4, XXH_PRIME32_2)) >>> 0, 13), XXH_PRIME32_1) >>> 0;
+      p += 16;
+    }
+    h32 = (_xxhRotl32(v1, 1) + _xxhRotl32(v2, 7) + _xxhRotl32(v3, 12) + _xxhRotl32(v4, 18)) >>> 0;
+  } else {
+    h32 = (s + XXH_PRIME32_5) >>> 0;
+  }
+
+  h32 = (h32 + len) >>> 0;
+
+  // 4-byte tail chunks: each lane mixes in with rotl17 then *PRIME4.
+  while (p + 4 <= len) {
+    const lane = (bytes[p] | (bytes[p + 1] << 8) | (bytes[p + 2] << 16) | (bytes[p + 3] << 24)) >>> 0;
+    h32 = Math.imul(_xxhRotl32((h32 + Math.imul(lane, XXH_PRIME32_3)) >>> 0, 17), XXH_PRIME32_4) >>> 0;
+    p += 4;
+  }
+
+  // 1-byte tail bytes: each byte mixes in with rotl11 then *PRIME1.
+  while (p < len) {
+    h32 = Math.imul(_xxhRotl32((h32 + Math.imul(bytes[p], XXH_PRIME32_5)) >>> 0, 11), XXH_PRIME32_1) >>> 0;
+    p += 1;
+  }
+
+  // Final avalanche: three xor-shift+multiply rounds.
+  h32 = Math.imul(h32 ^ (h32 >>> 15), XXH_PRIME32_2) >>> 0;
+  h32 = Math.imul(h32 ^ (h32 >>> 13), XXH_PRIME32_3) >>> 0;
+  h32 = (h32 ^ (h32 >>> 16)) >>> 0;
+
+  return h32;
+}
+
+// A Philox key is just a pair of uint32s. Aliased here for readability
+// of the split/foldIn signatures.
+type PhiloxKey = [number, number];
+
+// Derive a Philox key from a seed. Two input shapes:
+//
+//   - integer: lane 0 is the seed itself (zero-cost passthrough for
+//     `keyFromSeed(0)`); lane 1 is `seed * PRIME32_1`, which is a
+//     well-known cheap mixing step and matches the pattern xxhash32
+//     uses for its accumulator init. This is a deliberate change from
+//     the old `stateFromKey(seed, 0)` convention — splitting an
+//     unmixed (seed, 0) key concentrates entropy in one lane and
+//     produces visibly-correlated children at small split counts.
+//
+//   - byte vector: xxhash32 the bytes twice with two different seeds
+//     (0 and PRIME32_1). Two passes give us two well-mixed lanes from
+//     a single algorithm; using the same hash function for both lanes
+//     keeps the cross-engine reproducibility story simple.
+//
+// `stateFromKey` (unchanged above) still exists for callers that want
+// to build a state from an explicit key pair without going through
+// keyFromSeed; it remains byte-compatible with pre-commit-1 behaviour.
+
+function keyFromSeed(seed: number | Uint8Array): PhiloxKey {
+  if (typeof seed === 'number') {
+    const k0 = seed >>> 0;
+    const k1 = Math.imul(seed | 0, XXH_PRIME32_1) >>> 0;
+    return [k0, k1];
+  }
+  const k0 = xxhash32(seed, 0);
+  const k1 = xxhash32(seed, XXH_PRIME32_1 >>> 0);
+  return [k0, k1];
+}
+
+// JAX-style split. Produces `n` independent child keys from a parent
+// key, by running philox4x32_10 with counter `[i, n + i, 0, 0]` for
+// i in 0..n and taking the first 2 lanes of each output block as the
+// child key. The `(i, n + i)` layout (rather than just `i`) is the
+// JAX convention: it ensures that splitting twice with different `n`
+// values produces non-overlapping child-key sequences, so callers can
+// safely re-split a parent key at different fan-outs without aliasing.
+
+function split(key: PhiloxKey, n: number): PhiloxKey[] {
+  const out: PhiloxKey[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const block = philox4x32_10([i >>> 0, (n + i) >>> 0, 0, 0], key);
+    out[i] = [block[0] >>> 0, block[1] >>> 0];
+  }
+  return out;
+}
+
+// Derive a single child key from a parent + 32-bit tag. Used to absorb
+// a discriminator (loop index, branch id, hashed binding name, ...)
+// into a key without changing its "fan-out".
+//
+// Domain separation: foldIn uses counter `[0, tag, 0, 1]` — lane 3 = 1
+// is a constant that distinguishes the foldIn counter space from
+// `split`'s `[i, n+i, 0, 0]` counter space, guaranteeing
+// `foldIn(K, x) != split(K, n)[i]` for any (K, x, n, i). Without the
+// domain separator a collision exists when `tag = n+0 = n` (caught by
+// the structural-independence KAT test).
+
+function foldIn(key: PhiloxKey, tag: number): PhiloxKey {
+  const block = philox4x32_10([0, tag >>> 0, 0, 1], key);
+  return [block[0] >>> 0, block[1] >>> 0];
+}
+
+// =====================================================================
+// Bulk uniform / normal fast-paths (commit 1 — kernels only; wiring
+// into the sampler comes in commit 3)
+// =====================================================================
+//
+// These produce N values in one call, amortizing the per-call closure
+// / object-allocation cost of nextUniform. The contract is:
+//
+//   philoxNUniform(state, n, out?) MUST be bit-exact equivalent to
+//   calling nextUniform(state) n times in sequence — same uint32s,
+//   same `lane / 2^32` mapping, same counter advance, same cache
+//   semantics on the trailing partial block.
+//
+// philoxNNormal is a separate Box-Muller kernel and does NOT match
+// any scalar normal sampler bit-for-bit; it draws m = 2*ceil(n/2)
+// uniforms via philoxNUniform and pairs them into (cos, sin) outputs.
+
+interface PhiloxState {
+  key:      [number, number];
+  counter:  number[];
+  block:    number[] | null;
+  blockIdx: number;
+}
+
+interface PhiloxBulkResult {
+  state: PhiloxState;
+  out:   Float64Array;
+}
+
+function philoxNUniform(
+  state: PhiloxState,
+  n: number,
+  out?: Float64Array,
+): PhiloxBulkResult {
+  const dest = out ?? new Float64Array(n);
+  if (n <= 0) {
+    return { state, out: dest };
+  }
+
+  // Take a working copy of the parts we'll mutate. We never assign back
+  // into the caller's state object; the function is pure.
+  let counter  = state.counter;
+  let block    = state.block;
+  let blockIdx = state.blockIdx;
+  const key    = state.key;
+
+  let i = 0;
+
+  // 1. Drain any cached output from a previous nextUniform call. This
+  //    preserves bit-exact compatibility with scalar nextUniform: if
+  //    the caller had blockIdx=2, the next two values come from the
+  //    cached block before we start any new cipher calls.
+  if (block !== null) {
+    while (blockIdx < 4 && i < n) {
+      dest[i++] = (block[blockIdx++] >>> 0) / 0x100000000;
+    }
+  }
+
+  // 2. Bulk loop: while at least 4 outputs remain, run the cipher and
+  //    consume the full block of 4 uint32s without caching it.
+  while (i + 4 <= n) {
+    const b = philox4x32_10(counter, key);
+    counter = incrementCounter(counter);
+    dest[i    ] = (b[0] >>> 0) / 0x100000000;
+    dest[i + 1] = (b[1] >>> 0) / 0x100000000;
+    dest[i + 2] = (b[2] >>> 0) / 0x100000000;
+    dest[i + 3] = (b[3] >>> 0) / 0x100000000;
+    i += 4;
+    block    = null;
+    blockIdx = 4;
+  }
+
+  // 3. Tail: fewer than 4 outputs remain. Run one more cipher call,
+  //    consume what we need, and cache the rest so the next scalar /
+  //    bulk call sees an identical state to "scalar nextUniform was
+  //    called n times".
+  if (i < n) {
+    const b = philox4x32_10(counter, key);
+    counter = incrementCounter(counter);
+    blockIdx = 0;
+    while (blockIdx < 4 && i < n) {
+      dest[i++] = (b[blockIdx++] >>> 0) / 0x100000000;
+    }
+    block = b;
+  }
+
+  return {
+    state: { key, counter, block, blockIdx },
+    out:   dest,
+  };
+}
+
+// Bulk normal sampling via paired Box-Muller. Draws `m = 2*ceil(n/2)`
+// uniforms then pairs them into (r*cos(theta), r*sin(theta)). The
+// `max(u1, 2^-32)` floor avoids log(0) when the uniform draws the
+// smallest representable value (a 1-in-2^32 event, but worth guarding
+// since log(0) would silently produce -Inf -> NaN).
+//
+// Bit-equivalence to scalar nextNormal is NOT required: we'll wire
+// this in as a separate fast-path in commit 3 alongside a similarly
+// re-keyed scalar normal. Until then it's exported as a kernel only.
+
+const _BM_FLOOR = Math.pow(2, -32);    // smallest possible uniform draw
+
+function philoxNNormal(
+  state: PhiloxState,
+  n: number,
+  out?: Float64Array,
+): PhiloxBulkResult {
+  const dest = out ?? new Float64Array(n);
+  if (n <= 0) {
+    return { state, out: dest };
+  }
+
+  const m = 2 * Math.ceil(n / 2);
+  // Draw the uniforms into a scratch buffer; reusing `dest` would
+  // require `dest.length >= m`, which we can't assume when n is odd.
+  const uniforms = new Float64Array(m);
+  const { state: nextState } = philoxNUniform(state, m, uniforms);
+
+  for (let i = 0; i < n; i += 2) {
+    const u1Raw = uniforms[i];
+    const u2    = uniforms[i + 1];
+    const u1    = u1Raw < _BM_FLOOR ? _BM_FLOOR : u1Raw;
+    const r     = Math.sqrt(-2 * Math.log(u1));
+    const theta = 2 * Math.PI * u2;
+    dest[i] = r * Math.cos(theta);
+    if (i + 1 < n) {
+      dest[i + 1] = r * Math.sin(theta);
+    }
+  }
+
+  return { state: nextState, out: dest };
+}
+
 module.exports = {
   // Core cipher
   philox4x32_10,
@@ -372,6 +709,14 @@ module.exports = {
   // Serialization (per spec §sec:random)
   bytesFromState,
   stateFromBytes,
+
+  // Splittable PRNG primitives (commit 1)
+  xxhash32,
+  keyFromSeed,
+  split,
+  foldIn,
+  philoxNUniform,
+  philoxNNormal,
 
   // Internal — exported for tests; not part of the public surface.
   _internal: { mulhilo32, philox4x32Round, PHILOX_M_4x32_0, PHILOX_M_4x32_1 },

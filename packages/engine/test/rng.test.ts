@@ -32,6 +32,12 @@ const {
   nextUint32,
   nextUniform,
   incrementCounter,
+  xxhash32,
+  keyFromSeed,
+  split,
+  foldIn,
+  philoxNUniform,
+  philoxNNormal,
   _internal: { mulhilo32 },
 } = require('../rng.ts');
 
@@ -365,4 +371,245 @@ test('reproducibility: same seed → same stream, every time', () => {
   const first  = takeN(seed, 50);
   const second = takeN(seed, 50);
   assert.deepEqual(first, second);
+});
+
+// =====================================================================
+// 4. Splittable primitives (commit 1 — xxhash32 / keyFromSeed / split /
+//    foldIn) + bulk-uniform / bulk-normal fast-paths
+// =====================================================================
+
+// xxhash32 KAT — reference outputs from the xxHash spec. These pin the
+// implementation to the canonical xxh32 byte-for-byte; if any of these
+// fails, downstream key-derivation (keyFromSeed on Uint8Array seeds) is
+// also broken.
+
+test('xxhash32 KAT: empty string', () => {
+  assert.equal(xxhash32(''), 0x02CC5D05);
+});
+
+test('xxhash32 KAT: single char "a"', () => {
+  assert.equal(xxhash32('a'), 0x550D7456);
+});
+
+test('xxhash32 KAT: "Nobody inspects the spammish repetition"', () => {
+  assert.equal(xxhash32('Nobody inspects the spammish repetition'), 0xE2293B2F);
+});
+
+test('xxhash32 KAT: 4-byte vector [1,2,3,4], seed 0', () => {
+  // Cross-checked against an independent xxhash32 reference (Python port
+  // of xxhash32.c). Pins the byte-input path through the same tail-mixing
+  // logic that the string path exercises at len < 16.
+  assert.equal(xxhash32(new Uint8Array([1, 2, 3, 4]), 0), 0xFE96D19C);
+});
+
+// ---------------------------------------------------------------------
+// split / foldIn — JAX-style splittable PRNG primitives.
+// ---------------------------------------------------------------------
+
+test('split: deterministic — two calls produce identical child keys', () => {
+  const k = keyFromSeed(0xABCDEF01);
+  const a = split(k, 4);
+  const b = split(k, 4);
+  assert.equal(a.length, 4);
+  assert.deepEqual(a, b);
+});
+
+test('split: child keys are distinct from each other AND from parent', () => {
+  const k = keyFromSeed(0xABCDEF01);
+  const children = split(k, 4);
+  // Each child distinct from parent
+  for (const child of children) {
+    assert.notDeepEqual(child, k,
+      `child key ${JSON.stringify(child)} aliases parent ${JSON.stringify(k)}`);
+  }
+  // Each child distinct from every other child
+  for (let i = 0; i < children.length; i++) {
+    for (let j = i + 1; j < children.length; j++) {
+      assert.notDeepEqual(children[i], children[j],
+        `children[${i}] and children[${j}] collide: ${JSON.stringify(children[i])}`);
+    }
+  }
+});
+
+test('split: independence — streams from two children diverge bit-wise', () => {
+  // Sample 100 uniforms from each of two distinct children and assert the
+  // streams are not equal. A fragile-but-meaningful smoke test: two
+  // genuinely independent PRNG streams should disagree on essentially
+  // every value, so a single matching draw across 100 would be a
+  // ~2^-32 freak event; matching ALL 100 would be conclusive aliasing.
+  const k = keyFromSeed(12345);
+  const [c0, c1] = split(k, 2);
+  assert.notDeepEqual(c0, c1);
+
+  function drawN(key: any, n: any) {
+    const state = stateFromKey(key[0], key[1]);
+    const { out } = philoxNUniform(state, n);
+    return Array.from(out);
+  }
+  const a = drawN(c0, 100);
+  const b = drawN(c1, 100);
+
+  // Not just "any value differs" — the two streams must not be identical.
+  // Use deep-not-equal as the strong assertion.
+  assert.notDeepEqual(a, b);
+  // Belt-and-braces: at least 90% of pairs differ. (Should be ~100%.)
+  let diffs = 0;
+  for (let i = 0; i < 100; i++) if (a[i] !== b[i]) diffs++;
+  assert.ok(diffs >= 90,
+    `only ${diffs}/100 draws differ across the two child streams`);
+});
+
+test('foldIn: deterministic — same (key, tag) yields same child', () => {
+  const k = keyFromSeed(7);
+  const a = foldIn(k, 42);
+  const b = foldIn(k, 42);
+  assert.deepEqual(a, b);
+});
+
+test('foldIn: different tags → different child keys', () => {
+  const k = keyFromSeed(7);
+  const a = foldIn(k, 1);
+  const b = foldIn(k, 2);
+  const c = foldIn(k, 0xDEADBEEF);
+  assert.notDeepEqual(a, b);
+  assert.notDeepEqual(a, c);
+  assert.notDeepEqual(b, c);
+});
+
+test('foldIn vs split: foldIn(K, tag) is NOT a position in split(K, n)', () => {
+  // Structural check: confirm the two derivations don't accidentally
+  // collide because they share counter layout / constants. foldIn uses
+  // counter [0, tag, 0, 0]; split(n) uses [i, n+i, 0, 0]. They should
+  // produce distinct child keys for any (tag, n, i).
+  const k = keyFromSeed(0xBADF00D);
+  const fold5 = foldIn(k, 5);
+  // Try a handful of split fan-outs and positions; assert no position
+  // ever equals foldIn(K, 5).
+  for (const n of [1, 2, 4, 5, 6, 8, 16]) {
+    const children = split(k, n);
+    for (let i = 0; i < n; i++) {
+      assert.notDeepEqual(children[i], fold5,
+        `split(K, ${n})[${i}] aliases foldIn(K, 5) — derivations are not independent`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------
+// philoxNUniform — bulk uniform fast-path. Contract: bit-exact
+// equivalent to N calls of scalar nextUniform.
+// ---------------------------------------------------------------------
+
+test('philoxNUniform: golden equivalence to 16× scalar nextUniform', () => {
+  // Build two fresh states from the same key. Walk one with scalar
+  // nextUniform 16 times; walk the other with one bulk call. Assert
+  // element-by-element equality of the two streams.
+  const KEY: [number, number] = [0xCAFEBABE, 0xDEADBEEF];
+
+  let scalarState = stateFromKey(KEY[0], KEY[1]);
+  const scalar: number[] = [];
+  for (let i = 0; i < 16; i++) {
+    const [v, next] = nextUniform(scalarState);
+    scalar.push(v);
+    scalarState = next;
+  }
+
+  const bulkState = stateFromKey(KEY[0], KEY[1]);
+  const { out: bulk } = philoxNUniform(bulkState, 16);
+
+  assert.equal(bulk.length, 16);
+  for (let i = 0; i < 16; i++) {
+    assert.equal(bulk[i], scalar[i],
+      `philoxNUniform[${i}] = ${bulk[i]} but scalar nextUniform[${i}] = ${scalar[i]}`);
+  }
+});
+
+test('philoxNUniform: partial-block sizes match scalar prefix', () => {
+  // The contract: nUniform(state, k) is the prefix of length k of the
+  // scalar stream from that state. Sizes 1 and 3 land inside a block;
+  // 4 lands exactly on a block boundary; 5 and 7 straddle a boundary;
+  // 16 is four full blocks. Each must be a prefix of the scalar stream.
+  const KEY: [number, number] = [0x12345678, 0x9ABCDEF0];
+
+  // Precompute the scalar stream up to the largest size we'll need.
+  const SIZES = [1, 3, 4, 5, 7, 16];
+  const MAX = Math.max(...SIZES);
+  let scalarState = stateFromKey(KEY[0], KEY[1]);
+  const scalar: number[] = [];
+  for (let i = 0; i < MAX; i++) {
+    const [v, next] = nextUniform(scalarState);
+    scalar.push(v);
+    scalarState = next;
+  }
+
+  for (const n of SIZES) {
+    const freshState = stateFromKey(KEY[0], KEY[1]);
+    const { out } = philoxNUniform(freshState, n);
+    assert.equal(out.length, n);
+    for (let i = 0; i < n; i++) {
+      assert.equal(out[i], scalar[i],
+        `philoxNUniform(state, ${n})[${i}] = ${out[i]} but scalar[${i}] = ${scalar[i]}`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------
+// philoxNNormal — bulk Box-Muller fast-path. NOT bit-equivalent to
+// scalar nextNormal; only a moments-based smoke test.
+// ---------------------------------------------------------------------
+
+test('philoxNNormal: 1000-sample mean ≈ 0, variance ≈ 1', () => {
+  const state = stateFromKey(0xFEEDFACE, 0x0BADCAFE);
+  const n = 1000;
+  const { out } = philoxNNormal(state, n);
+  assert.equal(out.length, n);
+
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += out[i];
+  const mean = sum / n;
+
+  let sqsum = 0;
+  for (let i = 0; i < n; i++) {
+    const d = out[i] - mean;
+    sqsum += d * d;
+  }
+  const variance = sqsum / n;
+
+  // 1000 draws from N(0,1): σ_mean = 1/√n ≈ 0.0316, so 3σ ≈ 0.095.
+  // The |mean| < 0.1 envelope is just outside 3σ — comfortable for a CI
+  // test, fails on outright distributional bugs.
+  assert.ok(Math.abs(mean) < 0.1,
+    `sample mean ${mean} outside |mean| < 0.1 envelope`);
+  // Sample-variance σ for N(0,1) is √(2/n) ≈ 0.045 at n=1000; ~3σ ≈ 0.135.
+  // |var - 1| < 0.15 sits just outside 3σ — same rationale.
+  assert.ok(Math.abs(variance - 1) < 0.15,
+    `sample variance ${variance} outside |var - 1| < 0.15 envelope`);
+});
+
+// ---------------------------------------------------------------------
+// keyFromSeed — derives a PhiloxKey from a numeric seed or byte vector.
+// ---------------------------------------------------------------------
+
+test('keyFromSeed: deterministic — same seed → same key', () => {
+  const a = keyFromSeed(42);
+  const b = keyFromSeed(42);
+  assert.deepEqual(a, b);
+  // And same shape: a length-2 array of uint32s.
+  assert.equal(a.length, 2);
+  assert.ok(Number.isInteger(a[0]) && a[0] >= 0 && a[0] <= 0xFFFFFFFF);
+  assert.ok(Number.isInteger(a[1]) && a[1] >= 0 && a[1] <= 0xFFFFFFFF);
+});
+
+test('keyFromSeed: different seeds → different keys (probably)', () => {
+  // "Probably" because keyFromSeed(n) is a deterministic 32-bit mixing
+  // function; collisions exist somewhere in the input space, but a
+  // handful of small distinct seeds must not collide for the seed-→-key
+  // mapping to be useful.
+  const seeds = [0, 1, 2, 42, 1234, 0xDEADBEEF, 0xCAFEBABE];
+  const keys = seeds.map((s) => keyFromSeed(s));
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      assert.notDeepEqual(keys[i], keys[j],
+        `keyFromSeed(${seeds[i]}) = keyFromSeed(${seeds[j]}) = ${JSON.stringify(keys[i])}`);
+    }
+  }
 });
