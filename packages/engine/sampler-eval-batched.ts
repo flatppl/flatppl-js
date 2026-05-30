@@ -545,8 +545,18 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
       // batched evaluator lifts the body tensor to shape
       // [N, ...outAxes, ...reduceAxes] in one pass and tail-reduces
       // (~5 µs/atom). Returns a Value shape=[N, ...outAxes].
+      //
+      // P6: try the AGGREGATE_PATTERNS specialisers FIRST when the
+      // operation is a recognised matmul-family / matvec / outer
+      // shape AND the atom-aware variant registry can vectorise it
+      // (e.g. matvec with atom-batched vector dispatches to the
+      // existing `mul(rank-2, rank-1)` atom-aware variant). When no
+      // specialiser fires, fall through to the generic
+      // `_evalAggregateBroadcastReduceN` lowering.
       if (op === 'aggregate') {
         const agg = require('./sampler-aggregate.ts');
+        const r = agg._tryBatchedAggregatePatterns(ir, refArrays, N, baseEnv, overlay);
+        if (r !== null) return r;
         return agg._evalAggregateBroadcastReduceN(ir, refArrays, N, baseEnv, overlay);
       }
       // Non-batched op: per-atom dispatch through the existing

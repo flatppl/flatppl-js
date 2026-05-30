@@ -1271,6 +1271,59 @@ function _evalAggregateBroadcastReduce(ir: any, env: any): any {
   return _evalAggregateGeneric(ir, env, null);
 }
 
+// P6: try atom-batched AGGREGATE_PATTERNS specialisers before falling
+// through to the generic broadcast-reduce. Returns the specialiser's
+// result on hit; null on miss (caller falls through to
+// `_evalAggregateBroadcastReduceN`).
+//
+// Today only the matvec specialiser opportunistically vectorises in
+// atom-batched mode: `aggregate(sum, [.i], A[.i, .j] * v[.j])` with
+// atom-indep A and atom-batched v dispatches to `valueOps.mul(A, v)`
+// via the rank-2 × atom-batched rank-1 atom-aware variant (registered
+// in ops-declarations.ts). When the specialiser CAN'T handle the
+// atom-batched form (matmul rank-2 × rank-2 has no variant yet —
+// follow-up), it returns null and the generic pipeline runs.
+//
+// The wire lets the polyeval-style hot path AND linear-regression-
+// style `X · betas` AND any model with `A · v_per_atom` skip the
+// generic broadcast-reduce intermediate when a specialiser would
+// vectorise better.
+function _tryBatchedAggregatePatterns(
+  ir: any, refArrays: any, N: number, baseEnv: any, overlay: any,
+): any | null {
+  if (!perfConfig.getOptimization('aggregate')) return null;
+  // Build the same evaluation env the generic pipeline would use —
+  // overlay > refArrays > baseEnv — so specialiser execute() sees
+  // the atom-batched refArray Values when present.
+  const env: Record<string, any> = Object.assign({}, baseEnv || {});
+  if (refArrays) {
+    for (const k of Object.keys(refArrays)) env[k] = refArrays[k];
+  }
+  if (overlay) {
+    for (const k of Object.keys(overlay)) env[k] = overlay[k];
+  }
+  for (const p of AGGREGATE_PATTERNS) {
+    // Today's specialisers' execute() works on whatever operand
+    // shape comes out of evaluateExpr; for atom-batched refs, that
+    // returns the atom-batched Value verbatim. valueOps.mul +
+    // variant dispatch handle the supported shape combos
+    // (rank-2 × atom-batched rank-1 → vectorised matvec); for
+    // unsupported combos (rank-2 × rank-2 atom-batched matmul, etc.)
+    // the dispatch throws — we catch and return null to fall through.
+    const m = p.match(ir, env);
+    if (!m) continue;
+    try {
+      const r = p.execute(ir, env, m);
+      if (r === undefined || r === null) continue;
+      return r;
+    } catch (_) {
+      // Specialiser refused / threw — fall through to generic.
+      return null;
+    }
+  }
+  return null;
+}
+
 // Materialise a singleton-broadcast tensor to its full shape — copy
 // data so every dim equals its target length. After this the data
 // buffer is contiguous in row-major order over `targetShape`.
@@ -1356,5 +1409,6 @@ module.exports = {
   AGGREGATE_PATTERNS,
   _evalAggregate,
   _evalAggregateBroadcastReduceN,
+  _tryBatchedAggregatePatterns,
   _matmulDispatch,
 };
