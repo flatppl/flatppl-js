@@ -359,12 +359,173 @@ function _lstsq(A: any, b: any): any {
   return _vecValue(x, k);
 }
 
+// =====================================================================
+// Symmetric eigendecomposition via Jacobi rotations (spec §09)
+// =====================================================================
+//
+// `_symmetricEigen(A)` returns record(values, vectors) for a real
+// symmetric A: A · vectors = vectors · diag(values), with vectors'
+// columns orthonormal. Algorithm: cyclic Jacobi sweeps.
+//
+//   Repeatedly pick the off-diagonal pivot (p, q) with the largest
+//   |A[p, q]|; build the rotation R that zeros A[p, q] (and A[q, p]
+//   by symmetry); apply A ← R^T · A · R + accumulate R into the
+//   eigenvector matrix V (initialised to I). Each sweep visits all
+//   (p, q) with p < q. Converges quadratically once near a fixed
+//   point; for the size class FlatPPL targets (n in 2..50), 10-20
+//   sweeps are sufficient.
+//
+// Pros: trivial to implement, numerically stable for symmetric input,
+// produces highly accurate eigenpairs. Cons: O(n³) per sweep, slower
+// than tridiagonal-QR for large n. Defer Householder-tridiag+QR until
+// a profile shows the n > 50 case.
+//
+// **NON-SYMMETRIC matrices are NOT supported.** The spec's `eigen`
+// op allows complex eigenvalues, which would require a complex-output
+// path the engine doesn't yet have for matrix returns. Throw with a
+// clear diagnostic; the symmetric case covers Bayesian covariance /
+// precision-matrix workflows, which is the common case.
+
+const _JACOBI_MAX_SWEEPS = 50;
+const _JACOBI_TOL_REL    = 1e-12;
+
+function _isSymmetric(A: any, n: number, tol: number): boolean {
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (Math.abs(A.data[i * n + j] - A.data[j * n + i]) > tol) return false;
+    }
+  }
+  return true;
+}
+
+function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array; n: number } {
+  const n = A.shape[0];
+  if (n !== A.shape[1]) throw new Error('eigen: A must be a square matrix');
+  // Tolerance scales with the input magnitude — Frobenius norm of A.
+  let frob2 = 0;
+  for (let i = 0; i < n * n; i++) frob2 += A.data[i] * A.data[i];
+  const tol = _JACOBI_TOL_REL * Math.sqrt(frob2);
+  if (!_isSymmetric(A, n, Math.max(tol, 1e-10))) {
+    throw new Error('eigen: only symmetric matrices supported in this version '
+      + '(non-symmetric requires complex-output path; deferred)');
+  }
+  // Work on a fresh copy; symmetrise to ensure exact symmetry under
+  // the rotations.
+  const M = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const v = 0.5 * (A.data[i * n + j] + A.data[j * n + i]);
+      M[i * n + j] = v;
+    }
+  }
+  // V starts as identity; will hold eigenvectors as columns.
+  const V = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) V[i * n + i] = 1;
+
+  for (let sweep = 0; sweep < _JACOBI_MAX_SWEEPS; sweep++) {
+    // Off-diagonal sum-of-squares.
+    let off = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const v = M[i * n + j];
+        off += v * v;
+      }
+    }
+    if (off < tol * tol) break;
+
+    // Cyclic sweep: visit every (p, q) pair with p < q.
+    for (let p = 0; p < n - 1; p++) {
+      for (let q = p + 1; q < n; q++) {
+        const apq = M[p * n + q];
+        if (Math.abs(apq) < tol) continue;
+        const app = M[p * n + p];
+        const aqq = M[q * n + q];
+        // Compute c, s for the rotation that zeros apq using the
+        // Numerical Recipes convention (consistent with the rotation
+        // matrix R[p][q]=+s, R[q][p]=-s used in the off-diagonal
+        // updates below):
+        //   θ = (aqq - app) / (2·apq) = cot(2φ)
+        //   t = sign(θ) / (|θ| + sqrt(1 + θ²))   — root of t² + 2θt - 1 = 0
+        //   c = 1/sqrt(1 + t²),  s = t·c
+        // Earlier draft had θ = (app - aqq) / (2·apq) — opposite sign
+        // from NR — combined with the NR rotation convention this
+        // corrupted off-diagonal updates on n ≥ 3 matrices (caught by
+        // the 3×3 round-trip test before commit).
+        const theta = (aqq - app) / (2 * apq);
+        let t: number;
+        if (Math.abs(theta) > 1e150) {
+          // Avoid overflow when apq is tiny relative to (aqq - app).
+          t = 0.5 / theta;
+        } else {
+          const sign = theta >= 0 ? 1 : -1;
+          t = sign / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+        }
+        const c = 1 / Math.sqrt(t * t + 1);
+        const s = t * c;
+        // Update diagonal + zero off-diagonal.
+        M[p * n + p] = app - t * apq;
+        M[q * n + q] = aqq + t * apq;
+        M[p * n + q] = 0;
+        M[q * n + p] = 0;
+        // Rotate the other entries of rows/columns p and q.
+        for (let i = 0; i < n; i++) {
+          if (i !== p && i !== q) {
+            const aip = M[i * n + p], aiq = M[i * n + q];
+            M[i * n + p] = c * aip - s * aiq;
+            M[i * n + q] = s * aip + c * aiq;
+            M[p * n + i] = M[i * n + p];
+            M[q * n + i] = M[i * n + q];
+          }
+        }
+        // Accumulate the rotation into V.
+        for (let i = 0; i < n; i++) {
+          const vip = V[i * n + p], viq = V[i * n + q];
+          V[i * n + p] = c * vip - s * viq;
+          V[i * n + q] = s * vip + c * viq;
+        }
+      }
+    }
+  }
+  // Extract eigenvalues (diagonal of M).
+  const values = new Float64Array(n);
+  for (let i = 0; i < n; i++) values[i] = M[i * n + i];
+  return { values, vectors: V, n };
+}
+
+function _eigen(A: any): any {
+  const { values, vectors, n } = _jacobiSymmetric(A);
+  return {
+    shape: 'record',
+    fields: {
+      values:  _vecValue(values, n),
+      vectors: _matValue(vectors, n, n),
+    },
+  };
+}
+
+function _eigmax(A: any): number {
+  const { values } = _jacobiSymmetric(A);
+  let max = values[0];
+  for (let i = 1; i < values.length; i++) if (values[i] > max) max = values[i];
+  return max;
+}
+
+function _eigmin(A: any): number {
+  const { values } = _jacobiSymmetric(A);
+  let min = values[0];
+  for (let i = 1; i < values.length; i++) if (values[i] < min) min = values[i];
+  return min;
+}
+
 module.exports = {
   _lu,
   _kron,
   _matexp,
   _qr,
   _lstsq,
+  _eigen,
+  _eigmax,
+  _eigmin,
   // Test-only / internal helpers
   _internal: {
     _matmul,

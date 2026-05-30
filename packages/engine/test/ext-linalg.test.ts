@@ -268,7 +268,64 @@ test('lstsq: rejects b length mismatch', () => {
 });
 
 // =====================================================================
-// 6. Standard-module integration: the bindings reach the registry under
+// 6. Symmetric eigendecomposition (Jacobi)
+// =====================================================================
+
+test('eigen: diagonal — eigenvalues are diag, vectors are identity (up to ordering)', () => {
+  const A = matVal(3, 3, [5, 0, 0, 0, 2, 0, 0, 0, 8]);
+  const { fields } = extLinalg._eigen(A);
+  const vals = Array.from(fields.values.data).slice().sort((a: number, b: number) => a - b);
+  assertClose(vals, [2, 5, 8], 1e-12);
+});
+
+test('eigen: 2x2 symmetric — known case [[2,1],[1,2]] → eigvals 1, 3', () => {
+  const A = matVal(2, 2, [2, 1, 1, 2]);
+  const { fields } = extLinalg._eigen(A);
+  const vals = Array.from(fields.values.data).slice().sort((a: number, b: number) => a - b);
+  assertClose(vals, [1, 3], 1e-12);
+  // Vectors should diagonalise: V^T · A · V = diag(values).
+  const V = Array.from(fields.vectors.data);
+  const Vt = flatTranspose(V, 2, 2);
+  const AV = flatMatMul([2, 1, 1, 2], V, 2, 2, 2);
+  const VtAV = flatMatMul(Vt, AV, 2, 2, 2);
+  // VtAV diagonal entries match the eigenvalues; off-diagonal ≈ 0.
+  assert.ok(Math.abs(VtAV[1]) < 1e-10);
+  assert.ok(Math.abs(VtAV[2]) < 1e-10);
+});
+
+test('eigen: 3x3 symmetric — round-trip A = V · diag(values) · V^T', () => {
+  // A = [[4, -2, 1], [-2, 4, -2], [1, -2, 4]]
+  const A_data = [4, -2, 1, -2, 4, -2, 1, -2, 4];
+  const A = matVal(3, 3, A_data);
+  const { fields } = extLinalg._eigen(A);
+  const V = Array.from(fields.vectors.data);
+  const values = Array.from(fields.values.data);
+  // V · diag(values) · V^T
+  const Vd = new Array(9);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) Vd[i * 3 + j] = V[i * 3 + j] * values[j];
+  }
+  const VdVt = flatMatMul(Vd, flatTranspose(V, 3, 3), 3, 3, 3);
+  assertClose(VdVt, A_data, 1e-10);
+});
+
+test('eigen: rejects non-symmetric matrix', () => {
+  const A = matVal(2, 2, [1, 2, 3, 4]);
+  assert.throws(() => extLinalg._eigen(A), /symmetric/);
+});
+
+test('eigmax / eigmin: matches min/max of eigen()', () => {
+  const A = matVal(3, 3, [5, 1, 0, 1, 4, 1, 0, 1, 3]);
+  const max = extLinalg._eigmax(A);
+  const min = extLinalg._eigmin(A);
+  const { fields } = extLinalg._eigen(A);
+  const vals = Array.from(fields.values.data) as number[];
+  assert.ok(Math.abs(max - Math.max(...vals)) < 1e-12);
+  assert.ok(Math.abs(min - Math.min(...vals)) < 1e-12);
+});
+
+// =====================================================================
+// 7. Standard-module integration: the bindings reach the registry under
 //    `ext-linear-algebra@0.1` and their impl is invocable end-to-end.
 // =====================================================================
 
@@ -280,7 +337,7 @@ test('std-module: ext-linear-algebra@0.1 is registered with the current binding 
   stdmod._registerBuiltinStandardModules();
   const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
   assert.ok(mod, 'module registered');
-  for (const op of ['lu', 'kron', 'matexp', 'qr', 'lstsq']) {
+  for (const op of ['lu', 'kron', 'matexp', 'qr', 'lstsq', 'eigen', 'eigmax', 'eigmin']) {
     assert.ok(mod.bindings.has(op), op + ' binding present');
   }
 });

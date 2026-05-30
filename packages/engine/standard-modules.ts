@@ -363,6 +363,32 @@ function _registerExtLinearAlgebra() {
     impl: extLinalg._lstsq,
   });
 
+  // eigen(A) — symmetric eigendecomposition via Jacobi rotations.
+  // Returns record(values, vectors) where vectors' columns are the
+  // orthonormal eigenvectors. Non-symmetric input throws (spec
+  // allows complex eigenvalues but the matrix-return path doesn't
+  // have a complex-matrix surface yet; deferred).
+  bindings.set('eigen', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }],
+      T.record({ values: dynVec, vectors: dynMat }),
+    ),
+    impl: extLinalg._eigen,
+  });
+
+  // eigmax(A) / eigmin(A) — max/min eigenvalue of a symmetric A.
+  bindings.set('eigmax', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: dynMat }], T.REAL),
+    impl: extLinalg._eigmax,
+  });
+  bindings.set('eigmin', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: dynMat }], T.REAL),
+    impl: extLinalg._eigmin,
+  });
+
   registerStandardModule({
     name: 'ext-linear-algebra',
     compat: '0.1',
