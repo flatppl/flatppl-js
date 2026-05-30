@@ -23,6 +23,7 @@
 
 const valueLib = require('./value.ts');
 const valueOps = require('./value-ops.ts');
+const opsLib = require('./ops.ts');
 const { _isComplex } = require('./sampler-complex.ts');
 
 // Lazy access to sampler.ts (cycle: this module evaluates IR via the
@@ -631,6 +632,35 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
         const r = agg._tryBatchedAggregatePatterns(ir, refArrays, N, baseEnv, overlay);
         if (r !== null) return r;
         return agg._evalAggregateBroadcastReduceN(ir, refArrays, N, baseEnv, overlay);
+      }
+      // OpDecl batched dispatch (engine-concepts §18). When the op is
+      // declared with `kind: 'fixed-rank'` AND has a `batched` slot
+      // AND the call shape (arity + no kwargs) matches the declared
+      // signature, route through `ops.dispatch` with `atomN: N`. The
+      // registry's atom-aware variant matcher + batched fast-path
+      // handle per-atom rank-N inputs in one call instead of N
+      // per-atom JS dispatches via `_perAtomFallback`. The batched
+      // slots were registered in 2026-05-30's P1-P9 + follow-ups
+      // (cb5e88e: diagmat/det/logabsdet/row_gram/col_gram; earlier:
+      // cross/self_outer/trace/inv/transpose/adjoint/lower_cholesky/
+      // linsolve) but _evalN didn't consult them — every per-atom
+      // linalg call still flowed through evaluateExpr's per-atom JS
+      // dispatch in _perAtomFallback. Routing here closes the loop:
+      // the canonical OpDecl batched path now drives the worker eval
+      // for declared fixed-rank ops.
+      const irArgs = ir.args || [];
+      const hasKwargs = ir.kwargs && Object.keys(ir.kwargs).length > 0;
+      if (!hasKwargs && irArgs.length > 0) {
+        const decl = opsLib.lookup(op);
+        if (decl
+            && (!decl.kind || decl.kind === 'fixed-rank')
+            && decl.batched
+            && decl.argRanks
+            && decl.argRanks.length === irArgs.length) {
+          const args = irArgs.map((a: any) =>
+            _evalN(a, refArrays, N, baseEnv, overlay));
+          return opsLib.dispatch(op, args, { atomN: N });
+        }
       }
       // Non-batched op: per-atom dispatch through the existing
       // single-point evaluateExpr. Atom-indep when no per-atom refs
