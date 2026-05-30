@@ -771,17 +771,65 @@ const modElem = _makeElementwiseBinop((a: any, b: any) => a % b, 'modElem');
 // the flat data buffer regardless of rank. Diag-stored falls back to
 // densify (the scalar fn need not preserve zero, so we can't keep diag
 // storage in general).
-function _makeElementwiseUnop(scalarFn: any, opName: any) {
+// `_makeElementwiseUnop(scalarFn, opName, complexFn?)`.
+//
+// `complexFn` (optional) is a complex unary scalar function from
+// sampler-complex.ts (`_cExp` / `_cLog` / `_cSqrt` / `_cAbs` /
+// `_cAbs2` / etc.). When the input is a complex Value AND
+// `complexFn` is supplied, the elementwise loop iterates over the
+// flat re/im buffers in parallel and writes back to fresh re/im
+// outputs — exactly the planar/TF.js convention.
+//
+// Special case: `_cAbs` and `_cAbs2` return a REAL number from a
+// complex input. The factory detects this by sniffing the first
+// per-cell result; if it's a number, the output is a real Value
+// (no `im` buffer). Otherwise the output is complex.
+//
+// When `complexFn` is NOT supplied AND the input is complex, the
+// factory throws — preserves the legacy behaviour for ops that
+// haven't been complex-extended (most won't need it; e.g. floor /
+// ceil / round are integer-domain ops).
+function _makeElementwiseUnop(scalarFn: any, opName: any, complexFn?: any) {
   return function elementwiseUnop(a: any): any {
     if (!isValue(a)) {
       throw new Error('value-ops.' + opName + ': operand must be a Value');
     }
     if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
-    // Complex unary scalar maths route through _cxBroadcast in the
-    // sampler layer; keep this path real-only.
     if (isComplexValue(a)) {
-      throw new Error('value-ops.' + opName + ': complex input not supported '
-        + 'on this fast path; expected real-only Value');
+      if (!complexFn) {
+        throw new Error('value-ops.' + opName + ': complex input not supported '
+          + 'on this fast path; expected real-only Value');
+      }
+      // Planar complex unary loop: read each (re[i], im[i]) cell as
+      // a scalar complex, apply complexFn, write back. The §2.1
+      // shape contract is preserved (same shape; same atom-axis
+      // convention; same Klein-4 tag).
+      const n = a.data.length;
+      const cRe = a.data, cIm = a.im;
+      // Detect the result kind by peeking the first cell. If
+      // complexFn returns a number, the output is real; else
+      // complex. ({re, im} object).
+      const probe = complexFn({ re: cRe[0], im: cIm[0] });
+      const wantReal = typeof probe === 'number';
+      const outRe = new Float64Array(n);
+      const outIm = wantReal ? null : new Float64Array(n);
+      outRe[0] = wantReal ? probe : probe.re;
+      if (!wantReal) (outIm as Float64Array)[0] = probe.im;
+      for (let i = 1; i < n; i++) {
+        const r = complexFn({ re: cRe[i], im: cIm[i] });
+        if (wantReal) outRe[i] = r as number;
+        else { outRe[i] = (r as any).re; (outIm as Float64Array)[i] = (r as any).im; }
+      }
+      if (wantReal) {
+        const r: any = { shape: a.shape.slice(), data: outRe };
+        if (a.t && a.t !== 'N') r.t = a.t;
+        return r;
+      }
+      const r: any = {
+        shape: a.shape.slice(), data: outRe, im: outIm, dtype: 'complex',
+      };
+      if (a.t && a.t !== 'N') r.t = a.t;
+      return r;
     }
     const out = new Float64Array(a.data.length);
     for (let i = 0; i < a.data.length; i++) out[i] = scalarFn(a.data[i]);
@@ -796,14 +844,31 @@ function _makeElementwiseUnop(scalarFn: any, opName: any) {
 // applies the underlying JS scalar fn pointwise over flat data at any
 // rank. Names use the `<op>Elem` convention to keep them distinct
 // from the existing scalar-only `ARITH_OPS.<op>` entries.
-const expElem    = _makeElementwiseUnop(Math.exp,    'expElem');
-const logElem    = _makeElementwiseUnop(Math.log,    'logElem');
-const sqrtElem   = _makeElementwiseUnop(Math.sqrt,   'sqrtElem');
+// Complex-aware unary scalar fns from sampler-complex. Lazy require:
+// sampler-complex is a pure ESM leaf with no engine-internal deps,
+// so the load order is safe. Lazy access via getter to defer
+// resolution until first call (sampler-complex is a sibling module
+// in the same package).
+let _cx: any = null;
+function _cxImpl() {
+  if (_cx === null) {
+    _cx = require('./sampler-complex.ts');
+  }
+  return _cx;
+}
+// Complex unary functions paired with their real counterparts.
+// _cAbs / _cAbs2 return a REAL number (complex → real); the
+// factory detects this and outputs a real Value. The others
+// (exp/log/sqrt) return complex.
+const expElem    = _makeElementwiseUnop(Math.exp,    'expElem',    (z: any) => _cxImpl()._cExp(z));
+const logElem    = _makeElementwiseUnop(Math.log,    'logElem',    (z: any) => _cxImpl()._cLog(z));
+const sqrtElem   = _makeElementwiseUnop(Math.sqrt,   'sqrtElem',   (z: any) => _cxImpl()._cSqrt(z));
 const sinElem    = _makeElementwiseUnop(Math.sin,    'sinElem');
 const cosElem    = _makeElementwiseUnop(Math.cos,    'cosElem');
 const tanElem    = _makeElementwiseUnop(Math.tan,    'tanElem');
-const absElem    = _makeElementwiseUnop(Math.abs,    'absElem');
-const abs2Elem   = _makeElementwiseUnop((x: any) => x * x, 'abs2Elem');
+// abs / abs2 of complex returns a real value.
+const absElem    = _makeElementwiseUnop(Math.abs,    'absElem',    (z: any) => _cxImpl()._cAbs(z));
+const abs2Elem   = _makeElementwiseUnop((x: any) => x * x, 'abs2Elem', (z: any) => _cxImpl()._cAbs2(z));
 const log10Elem  = _makeElementwiseUnop(Math.log10,  'log10Elem');
 const log1pElem  = _makeElementwiseUnop(Math.log1p,  'log1pElem');
 const expm1Elem  = _makeElementwiseUnop(Math.expm1,  'expm1Elem');
@@ -1229,6 +1294,64 @@ function _cxMatBatchedVecMul(A: any, V: any, N: any) {
   return _packCx(re, im, [N, m], false);
 }
 
+// =====================================================================
+// Atom-batched complex matrix × matrix (planar re/im storage)
+// =====================================================================
+//
+// Three input patterns produce shape=[N, m, p] complex output:
+//   - A=[N, m, n] × B=[n, p]    → shared B
+//   - A=[m, n]    × B=[N, n, p] → shared A
+//   - A=[N, m, n] × B=[N, n, p] → both per-atom
+//
+// Adjoint tags on A or B route through readComplex's conjugate
+// folding (BLAS-gemm flag style); transpose flag on rank-3 inputs is
+// not supported in v1 (matches the real twin _matBatchedMatMul).
+function _cxMatBatchedMatMul(A: any, B: any, N: any) {
+  const aBatched = A.shape.length === 3 && A.shape[0] === N;
+  const bBatched = B.shape.length === 3 && B.shape[0] === N;
+  const aShape = aBatched ? A.shape.slice(1) : A.shape;
+  const bShape = bBatched ? B.shape.slice(1) : B.shape;
+  if (aShape.length !== 2 || bShape.length !== 2) {
+    throw new Error('mulN: complex matrix×matrix expected rank-2 per-atom shapes');
+  }
+  const [m, n] = aShape;
+  const [bRows, p] = bShape;
+  if (bRows !== n) {
+    throw new Error(
+      'mulN: complex matrix×matrix dimension mismatch per atom ('
+      + JSON.stringify(aShape) + ' × ' + JSON.stringify(bShape) + ')');
+  }
+  if (isTransposeView(A) || isTransposeView(B)) {
+    throw new Error(
+      'mulN: tagged complex matrix×matrix at rank-3 not supported '
+      + '(densify the transposed operand first)');
+  }
+  const cA = readComplex(A), cB = readComplex(B);
+  const aStride = m * n, bStride = n * p, oStride = m * p;
+  const re = new Float64Array(N * oStride), im = new Float64Array(N * oStride);
+  for (let atom = 0; atom < N; atom++) {
+    const aBase = aBatched ? atom * aStride : 0;
+    const bBase = bBatched ? atom * bStride : 0;
+    const oBase = atom * oStride;
+    for (let i = 0; i < m; i++) {
+      for (let j = 0; j < p; j++) {
+        let sr = 0, si = 0;
+        for (let k = 0; k < n; k++) {
+          const aIdx = aBase + i * n + k;
+          const bIdx = bBase + k * p + j;
+          const ar = cA.re[aIdx], aim = cA.im[aIdx];
+          const br = cB.re[bIdx], bim = cB.im[bIdx];
+          sr += ar * br - aim * bim;
+          si += ar * bim + aim * br;
+        }
+        const oIdx = oBase + i * p + j;
+        re[oIdx] = sr; im[oIdx] = si;
+      }
+    }
+  }
+  return _packCx(re, im, [N, m, p], false);
+}
+
 // Atom-indep value broadcast over the leading N axis of an atom-batched
 // value, applied via a binary scalar fn. `batched` has shape=[N, ...rest];
 // `indep` must have shape=rest (same orientation). Result has the
@@ -1452,6 +1575,7 @@ module.exports = {
   _matMatMul,
   _matBatchedVecMul,
   _matBatchedMatMul,
+  _cxMatBatchedMatMul,
   _atomBroadcastBinop,
   _scalarBroadcastMul,
   _scalarBroadcastBinop,
