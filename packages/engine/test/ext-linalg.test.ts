@@ -325,7 +325,96 @@ test('eigmax / eigmin: matches min/max of eigen()', () => {
 });
 
 // =====================================================================
-// 7. Standard-module integration: the bindings reach the registry under
+// 7. SVD (thin) — one-sided Jacobi
+// =====================================================================
+
+test('svd: 2x2 diagonal — singular values are |diag|, sorted descending', () => {
+  // A = [[3, 0], [0, 2]] → S = [3, 2]
+  const A = matVal(2, 2, [3, 0, 0, 2]);
+  const { fields } = extLinalg._svd(A);
+  assertClose(Array.from(fields.S.data), [3, 2], 1e-12);
+});
+
+test('svd: 2x2 symmetric — round-trip A = U · diag(S) · V^T', () => {
+  // A = [[2, 1], [1, 2]] — symmetric, singular values 3 and 1.
+  const A_data = [2, 1, 1, 2];
+  const A = matVal(2, 2, A_data);
+  const { fields } = extLinalg._svd(A);
+  const U = Array.from(fields.U.data);
+  const V = Array.from(fields.V.data);
+  const S = Array.from(fields.S.data);
+  // U · diag(S) · V^T
+  const US = new Array(4);
+  for (let i = 0; i < 2; i++) {
+    for (let j = 0; j < 2; j++) US[i * 2 + j] = U[i * 2 + j] * S[j];
+  }
+  const USVt = flatMatMul(US, flatTranspose(V, 2, 2), 2, 2, 2);
+  assertClose(USVt, A_data, 1e-10);
+});
+
+test('svd: 4x2 thin — round-trip + singular values descending', () => {
+  // A = arbitrary 4x2 matrix
+  const A_data = [1, 2, 3, 4, 5, 6, 7, 8];
+  const A = matVal(4, 2, A_data);
+  const { fields } = extLinalg._svd(A);
+  assert.deepEqual(fields.U.shape, [4, 2]);
+  assert.deepEqual(fields.V.shape, [2, 2]);
+  assert.deepEqual(fields.S.shape, [2]);
+  const U = Array.from(fields.U.data);
+  const V = Array.from(fields.V.data);
+  const S = Array.from(fields.S.data) as number[];
+  // S descending
+  assert.ok(S[0] >= S[1]);
+  // Round-trip A = U · diag(S) · V^T
+  const US = new Array(8);
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 2; j++) US[i * 2 + j] = U[i * 2 + j] * S[j];
+  }
+  const USVt = flatMatMul(US, flatTranspose(V, 2, 2), 4, 2, 2);
+  assertClose(USVt, A_data, 1e-9);
+  // U^T U = I (orthonormal columns)
+  const UtU = flatMatMul(flatTranspose(U, 4, 2), U, 2, 4, 2);
+  assertClose(UtU, [1, 0, 0, 1], 1e-10);
+});
+
+test('svd: rejects m < n', () => {
+  const A = matVal(2, 3, [1, 2, 3, 4, 5, 6]);
+  assert.throws(() => extLinalg._svd(A), /m >= n/);
+});
+
+// =====================================================================
+// 8. rank — numerical rank via SVD
+// =====================================================================
+
+test('rank: identity 3x3 → 3', () => {
+  const A = matVal(3, 3, [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  assert.equal(extLinalg._rank(A), 3);
+});
+
+test('rank: zero matrix → 0', () => {
+  const A = matVal(3, 3, [0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.equal(extLinalg._rank(A), 0);
+});
+
+test('rank: rank-2 3x3 (two duplicate rows) → 2', () => {
+  const A = matVal(3, 3, [1, 2, 3, 4, 5, 6, 1, 2, 3]);  // row 0 == row 2
+  assert.equal(extLinalg._rank(A), 2);
+});
+
+test('rank: rank-deficient via column-dependence → matches', () => {
+  // col 2 = col 0 + col 1
+  const A = matVal(3, 3, [1, 2, 3, 4, 5, 9, 7, 8, 15]);
+  assert.equal(extLinalg._rank(A), 2);
+});
+
+test('rank: 2x3 wide matrix (transpose path) → matches taller form', () => {
+  // 2x3 wide; transpose to 3x2 internally. Full rank = 2.
+  const A = matVal(2, 3, [1, 2, 3, 4, 5, 6]);
+  assert.equal(extLinalg._rank(A), 2);
+});
+
+// =====================================================================
+// 9. Standard-module integration: the bindings reach the registry under
 //    `ext-linear-algebra@0.1` and their impl is invocable end-to-end.
 // =====================================================================
 
@@ -337,7 +426,8 @@ test('std-module: ext-linear-algebra@0.1 is registered with the current binding 
   stdmod._registerBuiltinStandardModules();
   const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
   assert.ok(mod, 'module registered');
-  for (const op of ['lu', 'kron', 'matexp', 'qr', 'lstsq', 'eigen', 'eigmax', 'eigmin']) {
+  for (const op of ['lu', 'kron', 'matexp', 'qr', 'lstsq',
+                    'eigen', 'eigmax', 'eigmin', 'svd', 'rank']) {
     assert.ok(mod.bindings.has(op), op + ' binding present');
   }
 });

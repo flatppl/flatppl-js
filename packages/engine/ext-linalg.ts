@@ -517,6 +517,159 @@ function _eigmin(A: any): number {
   return min;
 }
 
+// =====================================================================
+// Thin SVD via one-sided Jacobi rotations (spec §09)
+// =====================================================================
+//
+// `_svd(A)` returns record(U, S, V) such that A = U · diag(S) · V^T,
+// where:
+//   - A is m × n with m ≥ n.
+//   - U is m × n with orthonormal columns.
+//   - S is a length-n vector of non-negative singular values (sorted
+//     descending).
+//   - V is n × n with orthonormal columns.
+//
+// Algorithm (one-sided Jacobi on A^T A, applied implicitly):
+//   We rotate pairs of COLUMNS of A by Givens angles chosen so the
+//   resulting column pair becomes orthogonal. Accumulate the rotations
+//   into V. After convergence, the column norms of the rotated A are
+//   the singular values, and the normalised columns form U.
+//
+// Pros: numerically stable for the size class FlatPPL targets;
+// terminates in O(n) sweeps. Cons: O(m·n²) per sweep, worse than
+// bidiag+QR for very tall thin matrices. Defer the more involved
+// algorithms until a profile shows it.
+
+function _svd(A: any): any {
+  const m = A.shape[0], n = A.shape[1];
+  if (m < n) throw new Error('svd: requires m >= n (got ' + m + 'x' + n + '); transpose first');
+  // Work on a fresh copy.
+  const B = new Float64Array(m * n);
+  for (let i = 0; i < m * n; i++) B[i] = A.data[i];
+  // V starts as identity (n × n).
+  const V = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) V[i * n + i] = 1;
+
+  // Frobenius² of A — used to set the convergence threshold.
+  let frob2 = 0;
+  for (let i = 0; i < m * n; i++) frob2 += B[i] * B[i];
+  const tol = _JACOBI_TOL_REL * frob2;
+
+  for (let sweep = 0; sweep < _JACOBI_MAX_SWEEPS; sweep++) {
+    // Sum of |col_p · col_q|² over all pairs — converges to 0.
+    let off2 = 0;
+    for (let p = 0; p < n - 1; p++) {
+      for (let q = p + 1; q < n; q++) {
+        // a = ||col_p||², b = ||col_q||², c = col_p · col_q.
+        let a = 0, b = 0, c = 0;
+        for (let i = 0; i < m; i++) {
+          const xp = B[i * n + p], xq = B[i * n + q];
+          a += xp * xp;
+          b += xq * xq;
+          c += xp * xq;
+        }
+        off2 += c * c;
+        if (Math.abs(c) < Math.sqrt(a * b) * _JACOBI_TOL_REL) continue;
+        // Givens rotation: zero c by rotating cols p, q by angle θ
+        // with tan(2θ) = 2c / (a - b).
+        const denom = a - b;
+        let t: number;
+        if (Math.abs(denom) < 1e-300) {
+          t = (c > 0 ? 1 : -1);
+        } else {
+          const theta = denom / (2 * c);
+          const sign = theta >= 0 ? 1 : -1;
+          t = sign / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+        }
+        const cs = 1 / Math.sqrt(t * t + 1);
+        const sn = t * cs;
+        // Rotate cols p, q of B:  new_col_p = cs·col_p + sn·col_q;
+        //                          new_col_q = -sn·col_p + cs·col_q
+        // (Convention chosen so new_col_p · new_col_q = 0.)
+        for (let i = 0; i < m; i++) {
+          const xp = B[i * n + p], xq = B[i * n + q];
+          B[i * n + p] =  cs * xp + sn * xq;
+          B[i * n + q] = -sn * xp + cs * xq;
+        }
+        // Accumulate the rotation into V (same column rotation).
+        for (let i = 0; i < n; i++) {
+          const vp = V[i * n + p], vq = V[i * n + q];
+          V[i * n + p] =  cs * vp + sn * vq;
+          V[i * n + q] = -sn * vp + cs * vq;
+        }
+      }
+    }
+    if (off2 < tol * tol) break;
+  }
+  // Extract singular values from the column norms of B; U columns
+  // are the normalised B columns.
+  const S = new Float64Array(n);
+  const U = new Float64Array(m * n);
+  for (let j = 0; j < n; j++) {
+    let norm2 = 0;
+    for (let i = 0; i < m; i++) norm2 += B[i * n + j] * B[i * n + j];
+    const norm = Math.sqrt(norm2);
+    S[j] = norm;
+    if (norm > 0) {
+      for (let i = 0; i < m; i++) U[i * n + j] = B[i * n + j] / norm;
+    } else {
+      // Zero singular value — keep e_j as a placeholder column for U.
+      U[j * n + j] = 1;
+    }
+  }
+  // Sort singular values descending. Permute U columns + V columns.
+  const order = new Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => S[b] - S[a]);
+  const Ssorted = new Float64Array(n);
+  const Usorted = new Float64Array(m * n);
+  const Vsorted = new Float64Array(n * n);
+  for (let newJ = 0; newJ < n; newJ++) {
+    const oldJ = order[newJ];
+    Ssorted[newJ] = S[oldJ];
+    for (let i = 0; i < m; i++) Usorted[i * n + newJ] = U[i * n + oldJ];
+    for (let i = 0; i < n; i++) Vsorted[i * n + newJ] = V[i * n + oldJ];
+  }
+  return {
+    shape: 'record',
+    fields: {
+      U: _matValue(Usorted, m, n),
+      S: _vecValue(Ssorted, n),
+      V: _matValue(Vsorted, n, n),
+    },
+  };
+}
+
+// =====================================================================
+// rank(A) — numerical rank via SVD (spec §09)
+// =====================================================================
+//
+// Counts singular values above the tolerance
+//   tol = max(m, n) · σ_max · ε_machine
+// (the conventional choice, matching NumPy / Octave defaults). Returns
+// an integer.
+
+function _rank(A: any): number {
+  // SVD requires m >= n; transpose if needed (singular values are
+  // identical for A and A^T).
+  let work = A;
+  const m0 = A.shape[0], n0 = A.shape[1];
+  if (m0 < n0) {
+    const data = new Float64Array(n0 * m0);
+    for (let i = 0; i < m0; i++) {
+      for (let j = 0; j < n0; j++) data[j * m0 + i] = A.data[i * n0 + j];
+    }
+    work = { shape: [n0, m0], data };
+  }
+  const { fields } = _svd(work);
+  const S = fields.S.data;
+  const sigmaMax = S[0];
+  const tol = Math.max(m0, n0) * sigmaMax * 2.220446049250313e-16;
+  let r = 0;
+  for (let i = 0; i < S.length; i++) if (S[i] > tol) r++;
+  return r;
+}
+
 module.exports = {
   _lu,
   _kron,
@@ -526,6 +679,8 @@ module.exports = {
   _eigen,
   _eigmax,
   _eigmin,
+  _svd,
+  _rank,
   // Test-only / internal helpers
   _internal: {
     _matmul,
