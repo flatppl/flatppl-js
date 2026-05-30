@@ -461,6 +461,30 @@ function _detLogical(A: any): any {
   return linalg._detLU(A);
 }
 
+// Batched fast-path: input [N, m, m] → output [N] scalars. Per-atom
+// _detLogical with subarray views into the flat buffer; avoids
+// allocating a new Value per atom.
+function _detBatched(args: any[], N: number): any {
+  const A = args[0];
+  if (!valueLib.isValue(A) || A.shape.length !== 3 || A.shape[0] !== N) {
+    // Per-atom fallback (rare; the dispatcher invokes batched
+    // unconditionally for atom-batched inputs).
+    const perAtom = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const r = _detLogical(_atomSlice(A, i, N));
+      perAtom[i] = valueLib.isValue(r) ? r.data[0] : r;
+    }
+    return { shape: [N], data: perAtom };
+  }
+  const out = new Float64Array(N);
+  for (let atom = 0; atom < N; atom++) {
+    const sub = _atomSlice(A, atom, N);
+    const r = _detLogical(sub);
+    out[atom] = valueLib.isValue(r) ? r.data[0] : r;
+  }
+  return { shape: [N], data: out };
+}
+
 ops.register({
   name: 'det',
   signature: {
@@ -470,6 +494,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _detLogical,
+  batched: _detBatched,
 });
 
 // =====================================================================
@@ -491,6 +516,25 @@ function _logabsdetLogical(A: any): any {
   return linalg._logAbsDetLU(A);
 }
 
+// Batched fast-path mirrors _detBatched.
+function _logabsdetBatched(args: any[], N: number): any {
+  const A = args[0];
+  if (!valueLib.isValue(A) || A.shape.length !== 3 || A.shape[0] !== N) {
+    const perAtom = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const r = _logabsdetLogical(_atomSlice(A, i, N));
+      perAtom[i] = valueLib.isValue(r) ? r.data[0] : r;
+    }
+    return { shape: [N], data: perAtom };
+  }
+  const out = new Float64Array(N);
+  for (let atom = 0; atom < N; atom++) {
+    const r = _logabsdetLogical(_atomSlice(A, atom, N));
+    out[atom] = valueLib.isValue(r) ? r.data[0] : r;
+  }
+  return { shape: [N], data: out };
+}
+
 ops.register({
   name: 'logabsdet',
   signature: {
@@ -500,6 +544,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _logabsdetLogical,
+  batched: _logabsdetBatched,
 });
 
 // =====================================================================
@@ -712,6 +757,25 @@ function _rowGramLogical(A: any): any {
   return linalg._matmul(A, samplerMod._internal.ARITH_OPS.transpose(A));
 }
 
+// Batched gram fast-paths: per-atom row_gram (A · Aᵀ) / col_gram
+// (Aᵀ · A). Each atom produces a square matrix; output is
+// [N, m, m] (row_gram) or [N, n, n] (col_gram).
+function _rowGramBatched(args: any[], N: number): any {
+  const A = args[0];
+  if (!valueLib.isValue(A) || A.shape.length !== 3 || A.shape[0] !== N) {
+    // Generic per-atom dispatch.
+    const perAtomResults: any[] = [];
+    for (let i = 0; i < N; i++) perAtomResults.push(_rowGramLogical(_atomSlice(A, i, N)));
+    return _packAtoms(perAtomResults, N, perAtomResults[0].shape);
+  }
+  const m = A.shape[1];
+  const perAtomResults: any[] = [];
+  for (let atom = 0; atom < N; atom++) {
+    perAtomResults.push(_rowGramLogical(_atomSlice(A, atom, N)));
+  }
+  return _packAtoms(perAtomResults, N, [m, m]);
+}
+
 ops.register({
   name: 'row_gram',
   signature: {
@@ -721,12 +785,28 @@ ops.register({
   },
   argRanks: [2],
   logical: _rowGramLogical,
+  batched: _rowGramBatched,
 });
 
 function _colGramLogical(A: any): any {
   if (valueLib.isValue(A)) return valueOps.mul(valueLib.adjoint(A), A);
   const samplerMod = require('./sampler.ts');
   return linalg._matmul(samplerMod._internal.ARITH_OPS.transpose(A), A);
+}
+
+function _colGramBatched(args: any[], N: number): any {
+  const A = args[0];
+  if (!valueLib.isValue(A) || A.shape.length !== 3 || A.shape[0] !== N) {
+    const perAtomResults: any[] = [];
+    for (let i = 0; i < N; i++) perAtomResults.push(_colGramLogical(_atomSlice(A, i, N)));
+    return _packAtoms(perAtomResults, N, perAtomResults[0].shape);
+  }
+  const n = A.shape[2];
+  const perAtomResults: any[] = [];
+  for (let atom = 0; atom < N; atom++) {
+    perAtomResults.push(_colGramLogical(_atomSlice(A, atom, N)));
+  }
+  return _packAtoms(perAtomResults, N, [n, n]);
 }
 
 ops.register({
@@ -738,6 +818,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _colGramLogical,
+  batched: _colGramBatched,
 });
 
 // =====================================================================
