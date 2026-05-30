@@ -47,6 +47,7 @@ import type { IRNode } from './engine-types';
 
 const T = require('./types.ts');
 const builtins = require('./builtins.ts');
+const aggregateShape = require('./aggregate-shape.ts');
 
 // =====================================================================
 // Constant maps (carried over from the AST-based version)
@@ -1145,7 +1146,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // sub-call types (which fills in container shapes); then we walk
     // the body looking for get/get0 indexings whose container type
     // is array-typed and read the dim length at the axis-occupied
-    // position.
+    // position. Repeated axis occurrences on the same source (e.g.
+    // `A[.i, .i]` for trace) all see the same length — spec §04 line
+    // 853 requires equal lengths under one label; if typeinfer sees a
+    // mismatch we'd surface a diagnostic, but for now the first-seen
+    // length wins (runtime detects mismatches via out-of-bounds reads
+    // — engine-concepts §16.4 follow-up: lift the check to analyze
+    // time).
     inferExpr(bodyIR, scopes);   // populate meta.type on sub-calls
 
     const lengths: Record<string, number | '%dynamic'> = {};
@@ -1190,6 +1197,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       }
     }
     walk(bodyIR);
+
+    // P1 (engine-concepts §11 / TODO): bake the canonical form onto
+    // the IR so the runtime broadcast-reduce evaluator (single-point
+    // AND atom-batched) doesn't re-walk the body. The annotation lives
+    // on `expr.meta.aggregateCanonical`; the runtime reads it through
+    // aggregate-shape.getCanonical and only re-resolves axis lengths
+    // that typeinfer left as `%dynamic`.
+    aggregateShape.annotate(expr, lengths);
 
     const outShape = axisNames.map((n) =>
       n in lengths ? lengths[n] : '%dynamic');
