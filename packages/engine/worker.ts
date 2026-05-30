@@ -48,6 +48,12 @@
 //        sample-step IRs feed into here. `seed` (if provided) re-keys
 //        Philox before drawing so per-binding seeding is deterministic.
 //
+//        `seed` accepts either a uint32 (legacy hosts) or a uint32-pair
+//        `[k0, k1]` PhiloxKey (post commit 2). The handler routes both
+//        through `_stateFromSeed`; uint32 inputs are mixed via
+//        `rng.keyFromSeed` to avoid the unmixed-lane key shape that
+//        single-arg `stateFromKey(seed)` would otherwise produce.
+//
 //   evaluateN { ir, count, refArrays }
 //        → samples { samples: Float64Array }
 //        Element-wise deterministic compute. Used for binding RHSs
@@ -131,11 +137,31 @@ function _unwrapRefArrays(refArrays: any) {
   return out;
 }
 
-function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown> } = {}) {
+// A Philox key as exchanged across the worker boundary: a uint32 pair.
+// Pre-commit-2 callers passed a single uint32 (the per-binding nameSeed
+// hash); migrated callers pass `[k0, k1]`. `_stateFromSeed` accepts
+// either shape so the protocol is forward-compatible if a host pre-
+// dates the migration.
+type SeedLike = number | [number, number] | undefined | null;
+
+function _stateFromSeed(seed: SeedLike): any {
+  if (seed == null) return rngLib.stateFromKey(0, 0);
+  if (typeof seed === 'number') {
+    // Legacy single-uint32 seed. Mix it into a two-lane key via
+    // rng.keyFromSeed so the seed isn't fed into Philox with lane 1
+    // left at 0 (the unmixed-key shape that motivated commit 2).
+    const k = rngLib.keyFromSeed(seed | 0);
+    return rngLib.stateFromKey(k[0], k[1]);
+  }
+  // PhiloxKey: [k0, k1] uint32 pair.
+  return rngLib.stateFromKey(seed[0], seed[1]);
+}
+
+function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unknown> } = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
   // when no explicit seed is passed. The new sampleN path takes a per-
   // call seed and doesn't touch this.
-  let philox: any = rngLib.stateFromKey(opts.seed ?? 0);
+  let philox: any = _stateFromSeed(opts.seed);
   let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
 
   function handle(msg: any) {
@@ -148,7 +174,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
     try {
       switch (msg.type) {
         case 'init': {
-          philox = rngLib.stateFromKey(msg.seed ?? 0);
+          philox = _stateFromSeed(msg.seed);
           env = { ...(msg.env ?? {}) };
           return { type: 'ready', id };
         }
@@ -157,7 +183,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
           return { type: 'ok', id };
         }
         case 'setSeed': {
-          philox = rngLib.stateFromKey(msg.seed ?? 0);
+          philox = _stateFromSeed(msg.seed);
           return { type: 'ok', id };
         }
         case 'sample': {
@@ -226,7 +252,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
           if (repeat <= 0) throw new Error(`sampleN.repeat must be positive integer (got ${msg.repeat})`);
           const refArrays = msg.refArrays || {};
           const refKeys = Object.keys(refArrays);
-          let state = msg.seed != null ? rngLib.stateFromKey(msg.seed) : philox;
+          let state = msg.seed != null ? _stateFromSeed(msg.seed) : philox;
           const total = count * repeat;
           const out = new Float64Array(total);
 
@@ -395,7 +421,7 @@ function createWorkerHandler(opts: { seed?: number; env?: Record<string, unknown
           if (!(hi >= lo)) {
             throw new Error('truncateSampleN: degenerate set bounds [' + lo + ', ' + hi + ']');
           }
-          let state = seed != null ? rngLib.stateFromKey(seed) : philox;
+          let state = seed != null ? _stateFromSeed(seed) : philox;
           const out = new Float64Array(count);
 
           if (mode === 'cdf') {

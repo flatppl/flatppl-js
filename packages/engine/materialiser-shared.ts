@@ -22,27 +22,40 @@ const valueLib     = require('./value.ts');
 // =====================================================================
 
 /**
- * FNV-1a 32-bit hash of `name` XOR'd against rootSeed. Gives each
- * binding its own deterministic RNG stream for sampleN — order-
- * independent so two unrelated bindings stay independent regardless
- * of which the user materialises first.
+ * Derive a per-binding Philox key from `rootKey` and the binding's
+ * name. Gives each binding its own deterministic, well-mixed RNG
+ * stream for sampleN — order-independent so two unrelated bindings
+ * stay independent regardless of which the user materialises first.
+ *
+ * Migration history (commit 2, 2026-05-30): the old shape was an
+ * FNV-1a-32 hash of `name` XOR'd against a single-uint32 rootSeed,
+ * returning one uint32 the worker fed into `stateFromKey(seed, 0)` —
+ * an unmixed key with all entropy in lane 0. We now thread a
+ * full 64-bit Philox key (`[k0, k1]`) end-to-end: rootKey is built
+ * once at the orchestrator boundary via `rng.keyFromSeed(rootSeed)`,
+ * and per-binding keys come from `foldIn(rootKey, xxhash32(name))`.
+ * xxhash32 has much better avalanche than FNV-1a-32 on short
+ * structured names (the bulk of our `name` domain — '%select_ir:b'+bi,
+ * 'name:jc'+i+'$'+li, etc.), and `foldIn` keeps the two-lane key
+ * fully mixed.
  */
-function nameSeed(name: any, rootSeed: any) {
-  let h = 2166136261;
-  for (let i = 0; i < name.length; i++) {
-    h = h ^ name.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h ^ (rootSeed | 0)) >>> 0;
+function nameSeed(name: string, rootKey: [number, number]): [number, number] {
+  return rng.foldIn(rootKey, rng.xxhash32(name));
 }
 
 /**
  * Wrap a Philox state in a closure returning U(0,1) uniforms — the
  * shape empirical.systematicResample / multinomialResample expect.
  * One closure per call; the state mutates internally.
+ *
+ * Post-commit-2: takes a full `PhiloxKey` (`[k0, k1]`) rather than a
+ * single uint32. The old single-arg `stateFromKey(seed)` call passed
+ * `k1=undefined` (silently coerced to 0), producing a one-lane key.
+ * We now spread both lanes explicitly so both halves of the Philox
+ * key carry the caller's entropy.
  */
-function makeMainThreadPrng(seed: any) {
-  let state = rng.stateFromKey(seed);
+function makeMainThreadPrng(key: [number, number]) {
+  let state = rng.stateFromKey(key[0], key[1]);
   return function () {
     const pair = rng.nextUniform(state);
     state = pair[1];

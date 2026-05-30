@@ -201,7 +201,7 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
       };
       return ctx.sendWorker({
         type: 'sampleN', ir: stdNormalIR, count: N, repeat: K,
-        refArrays: {}, seed: nameSeed(name, ctx.rootSeed),
+        refArrays: {}, seed: nameSeed(name, ctx.rootKey),
       }).then((reply: any) => {
         const z = { shape: [N, K], data: reply.samples };
         // Atom-batched L·z + μ via the registry's atom-aware
@@ -258,7 +258,7 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         const workerMsg: any = {
           type: 'sampleN', ir: distIR, count: N,
           refArrays: perAtomRefs,
-          seed: nameSeed(name + ':' + jj, ctx.rootSeed),
+          seed: nameSeed(name + ':' + jj, ctx.rootKey),
         };
         if (iidN > 1) workerMsg.repeat = iidN;
         return ctx.sendWorker(workerMsg).then((reply: any) => {

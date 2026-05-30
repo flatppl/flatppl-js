@@ -68,26 +68,23 @@ function materialiseReal(src: any, target: any, sampleCount: any) {
 
 const SAMPLE_COUNT = 2048;
 
-// Per-binding seed: same FNV-1a hash mix as visualPanel.nameSeed,
-// so test results are deterministic and match what the extension
-// would compute for the same source.
-function nameSeed(name: any, rootSeed: any) {
-  let h = 2166136261;
-  for (let i = 0; i < name.length; i++) {
-    h = h ^ name.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h ^ rootSeed) >>> 0;
+// Per-binding seed: same JAX-shape `foldIn(rootKey, xxhash32(name))`
+// derivation the engine's materialiser-shared.ts uses, so test
+// results match what the visualPanel/materialiser would compute for
+// the same source. (Pre-commit-2 this was a hardcoded FNV-1a-32 hash;
+// migrated 2026-05-30 with the engine-wide nameSeed → foldIn switch.)
+function nameSeed(name: any, rootKey: any) {
+  const rng = require('../rng.ts');
+  return rng.foldIn(rootKey, rng.xxhash32(name));
 }
 
 // Deterministic main-thread PRNG for systematic resampling — wraps
 // the engine's Philox in a U(0,1) callback. Mirrors visualPanel's
-// makeMainThreadPrng but uses Math.random as a stable fallback if
-// rng.nextUniform isn't accessible. We use rng so superpose draws are
-// reproducible across test runs.
-function makeMainThreadPrng(seed: any) {
+// makeMainThreadPrng. We use rng so superpose draws are reproducible
+// across test runs.
+function makeMainThreadPrng(key: any) {
   const rng = require('../rng.ts');
-  let state = rng.stateFromKey(seed);
+  let state = rng.stateFromKey(key[0], key[1]);
   return () => {
     const pair = rng.nextUniform(state);
     state = pair[1];
@@ -115,6 +112,9 @@ function materialise(name: any, bindings: any, opts?: any) {
   const cache        = opts.cache       || new Map();
   const worker       = opts.worker      || createWorkerHandler();
   if (!opts.worker) worker.handle({ type: 'init', seed: rootSeed });
+  // Derive a PhiloxKey at the test↔engine boundary so per-binding
+  // nameSeed below can foldIn against a properly-mixed root.
+  const rootKey = require('../rng.ts').keyFromSeed(rootSeed | 0);
 
   const { derivations } = orchestrator.buildDerivations(bindings);
   return go(name);
@@ -139,7 +139,7 @@ function materialise(name: any, bindings: any, opts?: any) {
           ir: d.distIR,
           count: sampleCount,
           refArrays,
-          seed: nameSeed(name, rootSeed),
+          seed: nameSeed(name, rootKey),
         });
         if (reply.type === 'error') throw new Error(reply.message);
         m = { samples: reply.samples, logWeights: reply.logWeights || null };
@@ -209,7 +209,7 @@ function materialise(name: any, bindings: any, opts?: any) {
           combinedLogWeights.set(lifted.logWeights, offset);
           offset += lifted.samples.length;
         }
-        const prng = makeMainThreadPrng(nameSeed(name, rootSeed));
+        const prng = makeMainThreadPrng(nameSeed(name, rootKey));
         const idx = empirical.systematicResample(combinedLogWeights, sampleCount, prng);
         const out = new Float64Array(sampleCount);
         for (let i = 0; i < sampleCount; i++) out[i] = combinedSamples[idx[i]];
@@ -235,7 +235,7 @@ function materialise(name: any, bindings: any, opts?: any) {
         const reply = worker.handle({
           type: 'sampleN', ir: distIR, count: sampleCount, repeat: k,
           refArrays,
-          seed: nameSeed(name, rootSeed),
+          seed: nameSeed(name, rootKey),
         });
         if (reply.type === 'error') throw new Error(reply.message);
         m = empirical.arrayMeasure(reply.samples, d.dims, null);

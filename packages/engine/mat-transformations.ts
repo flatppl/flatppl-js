@@ -118,7 +118,7 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
       const hasRefs = valueRefs.size > 0 || (Array.isArray(valueRefs) && valueRefs.length > 0);
       const cdfEligible = !hasRefs && orchestrator.SAMPLEABLE_DISTRIBUTIONS
         && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(expanded.op);
-      const seed = nameSeed(d.from + '|truncate', ctx.rootSeed);
+      const seed = nameSeed(d.from + '|truncate', ctx.rootKey);
 
       if (cdfEligible) {
         return ctx.sendWorker({

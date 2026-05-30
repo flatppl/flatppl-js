@@ -98,7 +98,7 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
   return ctx.sendWorker({
     type: 'sampleN', ir: stdNormalIR, count: N, repeat: n,
     refArrays: {},
-    seed: nameSeed(name, ctx.rootSeed),
+    seed: nameSeed(name, ctx.rootKey),
   }).then((reply: any) => {
     const z = { shape: [N, n], data: reply.samples };
     // Atom-batched mul: L (rank-2 [n,n]) × z (atom-batched rank-1
@@ -177,7 +177,7 @@ function matDirichlet(name: string, d: DerivationDirichlet, ctx: any): Promise<E
     promises.push(ctx.sendWorker({
       type: 'sampleN', ir: gammaIR, count: N,
       refArrays: {},
-      seed: nameSeed(name + '|' + k, ctx.rootSeed),
+      seed: nameSeed(name + '|' + k, ctx.rootKey),
     }));
   }
   return Promise.all(promises).then((replies: any[]) => {
@@ -265,7 +265,7 @@ function matMultinomial(name: string, d: DerivationMultinomial, ctx: any): Promi
   return ctx.sendWorker({
     type: 'sampleN', ir: catIR, count: N * n,
     refArrays: {},
-    seed: nameSeed(name, ctx.rootSeed),
+    seed: nameSeed(name, ctx.rootKey),
   }).then((reply: any) => {
     const draws = reply.samples; // Float64Array(N*n), each in 1..K
     const data = new Float64Array(N * K);
@@ -362,7 +362,7 @@ function wishartCore(name: string, distIR: any, ctx: any, invert: boolean): Prom
     diagPromises.push(ctx.sendWorker({
       type: 'sampleN', ir: gammaIR, count: N,
       refArrays: {},
-      seed: nameSeed(name + '|diag|' + i, ctx.rootSeed),
+      seed: nameSeed(name + '|diag|' + i, ctx.rootKey),
     }));
   }
   const offDiagPerAtom = n * (n - 1) / 2;
@@ -372,7 +372,7 @@ function wishartCore(name: string, distIR: any, ctx: any, invert: boolean): Prom
           kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } } },
     count: N * offDiagPerAtom,
     refArrays: {},
-    seed: nameSeed(name + '|offdiag', ctx.rootSeed),
+    seed: nameSeed(name + '|offdiag', ctx.rootKey),
   }) : Promise.resolve({ samples: new Float64Array(0) });
   return Promise.all([Promise.all(diagPromises), offDiagP]).then(([diagReplies, offDiagReply]: any[]) => {
     const data = new Float64Array(N * n * n);
@@ -481,7 +481,7 @@ function matLKJCholesky(name: string, d: DerivationLKJCholesky, ctx: any): Promi
     betaPromises.push(ctx.sendWorker({
       type: 'sampleN', ir: betaIR, count: N,
       refArrays: {},
-      seed: nameSeed(name + '|beta|' + i, ctx.rootSeed),
+      seed: nameSeed(name + '|beta|' + i, ctx.rootKey),
     }));
   }
   const totalNormals = N * (n * (n - 1) / 2);
@@ -491,7 +491,7 @@ function matLKJCholesky(name: string, d: DerivationLKJCholesky, ctx: any): Promi
           kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } } },
     count: totalNormals,
     refArrays: {},
-    seed: nameSeed(name + '|norm', ctx.rootSeed),
+    seed: nameSeed(name + '|norm', ctx.rootKey),
   });
   return Promise.all([Promise.all(betaPromises), normalP]).then(([betaReplies, normalReply]: any[]) => {
     const data = new Float64Array(N * n * n);
@@ -603,7 +603,7 @@ function matBinnedPoissonProcess(name: string, d: DerivationBinnedPoissonProcess
     promises.push(ctx.sendWorker({
       type: 'sampleN', ir: poissonIR, count: N,
       refArrays: {},
-      seed: nameSeed(name + '|bin|' + k, ctx.rootSeed),
+      seed: nameSeed(name + '|bin|' + k, ctx.rootKey),
     }));
   }
   return Promise.all(promises).then((replies: any[]) => {
