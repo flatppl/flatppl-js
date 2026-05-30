@@ -942,9 +942,9 @@ function _cxImpl() {
 const expElem    = _makeElementwiseUnop(Math.exp,    'expElem',    (z: any) => _cxImpl()._cExp(z));
 const logElem    = _makeElementwiseUnop(Math.log,    'logElem',    (z: any) => _cxImpl()._cLog(z));
 const sqrtElem   = _makeElementwiseUnop(Math.sqrt,   'sqrtElem',   (z: any) => _cxImpl()._cSqrt(z));
-const sinElem    = _makeElementwiseUnop(Math.sin,    'sinElem');
-const cosElem    = _makeElementwiseUnop(Math.cos,    'cosElem');
-const tanElem    = _makeElementwiseUnop(Math.tan,    'tanElem');
+const sinElem    = _makeElementwiseUnop(Math.sin,    'sinElem',    (z: any) => _cxImpl()._cSin(z));
+const cosElem    = _makeElementwiseUnop(Math.cos,    'cosElem',    (z: any) => _cxImpl()._cCos(z));
+const tanElem    = _makeElementwiseUnop(Math.tan,    'tanElem',    (z: any) => _cxImpl()._cTan(z));
 // abs / abs2 of complex returns a real value.
 const absElem    = _makeElementwiseUnop(Math.abs,    'absElem',    (z: any) => _cxImpl()._cAbs(z));
 const abs2Elem   = _makeElementwiseUnop((x: any) => x * x, 'abs2Elem', (z: any) => _cxImpl()._cAbs2(z));
@@ -992,15 +992,15 @@ const lnotElem  = _makeElementwiseUnop((x: any) => x ? 0 : 1, 'lnotElem');
 // atan2 (two-arg trig)
 const atan2Elem = _makeElementwiseBinop(Math.atan2, 'atan2Elem');
 // Remaining trig + hyperbolic
-const asinElem  = _makeElementwiseUnop(Math.asin,  'asinElem');
-const acosElem  = _makeElementwiseUnop(Math.acos,  'acosElem');
-const atanElem  = _makeElementwiseUnop(Math.atan,  'atanElem');
-const sinhElem  = _makeElementwiseUnop(Math.sinh,  'sinhElem');
-const coshElem  = _makeElementwiseUnop(Math.cosh,  'coshElem');
-const tanhElem  = _makeElementwiseUnop(Math.tanh,  'tanhElem');
-const asinhElem = _makeElementwiseUnop(Math.asinh, 'asinhElem');
-const acoshElem = _makeElementwiseUnop(Math.acosh, 'acoshElem');
-const atanhElem = _makeElementwiseUnop(Math.atanh, 'atanhElem');
+const asinElem  = _makeElementwiseUnop(Math.asin,  'asinElem',  (z: any) => _cxImpl()._cAsin(z));
+const acosElem  = _makeElementwiseUnop(Math.acos,  'acosElem',  (z: any) => _cxImpl()._cAcos(z));
+const atanElem  = _makeElementwiseUnop(Math.atan,  'atanElem',  (z: any) => _cxImpl()._cAtan(z));
+const sinhElem  = _makeElementwiseUnop(Math.sinh,  'sinhElem',  (z: any) => _cxImpl()._cSinh(z));
+const coshElem  = _makeElementwiseUnop(Math.cosh,  'coshElem',  (z: any) => _cxImpl()._cCosh(z));
+const tanhElem  = _makeElementwiseUnop(Math.tanh,  'tanhElem',  (z: any) => _cxImpl()._cTanh(z));
+const asinhElem = _makeElementwiseUnop(Math.asinh, 'asinhElem', (z: any) => _cxImpl()._cAsinh(z));
+const acoshElem = _makeElementwiseUnop(Math.acosh, 'acoshElem', (z: any) => _cxImpl()._cAcosh(z));
+const atanhElem = _makeElementwiseUnop(Math.atanh, 'atanhElem', (z: any) => _cxImpl()._cAtanh(z));
 
 // =====================================================================
 // Closure of ARITH_OPS_N — pos / ifelse / link functions / casts

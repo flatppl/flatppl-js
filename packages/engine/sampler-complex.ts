@@ -68,3 +68,98 @@ export function _cPow(base: any, exp: any) {
   // z^w = exp(w · log(z)), principal branch (spec §07).
   return _cExp(_cMul(exp, _cLog(base)));
 }
+
+// =====================================================================
+// Complex trig + hyperbolic (closed-form via the real/imaginary
+// decomposition; principal branches per spec §07)
+// =====================================================================
+//
+//   sin(z) = sin(re)·cosh(im) + i·cos(re)·sinh(im)
+//   cos(z) = cos(re)·cosh(im) − i·sin(re)·sinh(im)
+//   tan(z) = sin(z) / cos(z)            (could overflow near poles;
+//                                       use the safer formulation below)
+//   sinh(z) = i^{-1} · sin(i · z)       (= -i · sin(iz))
+//   cosh(z) =          cos(i · z)
+//   tanh(z) = sinh(z) / cosh(z)
+//
+// Inverse trig functions (asin / acos / atan / asinh / acosh / atanh)
+// derive from log via the standard identities; principal-branch
+// convention.
+
+export function _cSin(z: any) {
+  return { re: Math.sin(z.re) * Math.cosh(z.im),
+           im: Math.cos(z.re) * Math.sinh(z.im) };
+}
+export function _cCos(z: any) {
+  return { re:  Math.cos(z.re) * Math.cosh(z.im),
+           im: -Math.sin(z.re) * Math.sinh(z.im) };
+}
+export function _cTan(z: any) {
+  // tan(z) = sin(z) / cos(z) via the cosh-stable formulation:
+  //   tan(re + i·im) = (sin(2re) + i·sinh(2im)) / (cos(2re) + cosh(2im))
+  // Numerically stable for large |im|.
+  const r2 = 2 * z.re, i2 = 2 * z.im;
+  const d = Math.cos(r2) + Math.cosh(i2);
+  if (d === 0) return { re: NaN, im: NaN };
+  return { re: Math.sin(r2) / d, im: Math.sinh(i2) / d };
+}
+export function _cSinh(z: any) {
+  return { re: Math.sinh(z.re) * Math.cos(z.im),
+           im: Math.cosh(z.re) * Math.sin(z.im) };
+}
+export function _cCosh(z: any) {
+  return { re: Math.cosh(z.re) * Math.cos(z.im),
+           im: Math.sinh(z.re) * Math.sin(z.im) };
+}
+export function _cTanh(z: any) {
+  const r2 = 2 * z.re, i2 = 2 * z.im;
+  const d = Math.cosh(r2) + Math.cos(i2);
+  if (d === 0) return { re: NaN, im: NaN };
+  return { re: Math.sinh(r2) / d, im: Math.sin(i2) / d };
+}
+
+// Inverse trig / hyperbolic — principal branch (spec §07).
+// All derive from log:
+//   asin(z)   = -i · log(i·z + sqrt(1 - z²))
+//   acos(z)   = -i · log(z + i·sqrt(1 - z²))   = π/2 - asin(z)
+//   atan(z)   =  i/2 · log((i + z) / (i - z))
+//   asinh(z)  =  log(z + sqrt(z² + 1))
+//   acosh(z)  =  log(z + sqrt(z² - 1))
+//   atanh(z)  =  0.5 · log((1 + z) / (1 - z))
+function _cReal(x: number) { return { re: x, im: 0 }; }
+
+export function _cAsinh(z: any) {
+  // log(z + sqrt(z² + 1))
+  const z2 = _cMul(z, z);
+  const s = _cSqrt(_cAdd(z2, _cReal(1)));
+  return _cLog(_cAdd(z, s));
+}
+export function _cAcosh(z: any) {
+  // log(z + sqrt(z² - 1)) — principal branch as spec §07.
+  const z2 = _cMul(z, z);
+  const s = _cSqrt(_cSub(z2, _cReal(1)));
+  return _cLog(_cAdd(z, s));
+}
+export function _cAtanh(z: any) {
+  // 0.5 · log((1 + z) / (1 - z))
+  const num = _cAdd(_cReal(1), z);
+  const den = _cSub(_cReal(1), z);
+  return _cMul(_cReal(0.5), _cLog(_cDiv(num, den)));
+}
+export function _cAsin(z: any) {
+  // asin(z) = -i · asinh(i·z)
+  const iz = { re: -z.im, im: z.re };               // i·z = -im + i·re
+  const r = _cAsinh(iz);
+  return { re: r.im, im: -r.re };                    // -i · r
+}
+export function _cAcos(z: any) {
+  // acos(z) = π/2 - asin(z)
+  const a = _cAsin(z);
+  return { re: Math.PI / 2 - a.re, im: -a.im };
+}
+export function _cAtan(z: any) {
+  // atan(z) = -i · atanh(i·z)
+  const iz = { re: -z.im, im: z.re };
+  const r = _cAtanh(iz);
+  return { re: r.im, im: -r.re };
+}
