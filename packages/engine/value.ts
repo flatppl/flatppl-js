@@ -325,6 +325,29 @@ function atomShape(v: any, N: number): number[] | null {
   return (v.shape as number[]).slice(1);
 }
 
+// `isAtomBatchedScalar(v, N)` — the STRICTER atom-batched predicate
+// used by the per-atom scalar broadcast paths. True iff `v` is
+// atom-batched AND each per-atom slice is a bare scalar (i.e.
+// `atomShape(v, N)` is `[]`). Equivalent to `isAtomBatched(v, N) &&
+// (atomShape(v, N) || []).length === 0`, but skips the `.slice()` of
+// the looser form for the hot path.
+//
+// Concretely true for:
+//   - bare Float64Array of length N
+//   - Value with shape=[N] (rank-1 atom-batched scalar)
+// Returns false for shape=[N, k…] (per-atom vector/matrix) — those
+// are atom-batched but NOT scalar atoms. Used by sampler-eval-
+// batched's `isBatch` + complex argument accessors where the per-atom
+// scalar-broadcast inner loops only handle rank-1 inputs.
+function isAtomBatchedScalar(v: any, N: number): boolean {
+  if (v == null) return false;
+  if (v.BYTES_PER_ELEMENT !== undefined) return v.length === N;
+  if (!isValue(v)) return false;
+  if (v.shape.length !== 1 || v.shape[0] !== N) return false;
+  if (typeof v.outerRank === 'number' && v.outerRank < 1) return false;
+  return true;
+}
+
 // =====================================================================
 // Nested-vector tag (engine-concepts §2.1, outerRank)
 // =====================================================================
@@ -797,6 +820,7 @@ module.exports = {
   getImag: getImag,
   isBatched: isBatched,
   isAtomBatched: isAtomBatched,
+  isAtomBatchedScalar: isAtomBatchedScalar,
   atomShape: atomShape,
   numel: numel,
   // outerRank / nested-vector tag (engine-concepts §2.1)
