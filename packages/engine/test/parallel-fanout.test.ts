@@ -264,7 +264,15 @@ test('determinism: flag-off vs flag-on (N < threshold) is bit-identical', async 
 // =====================================================================
 
 test('statistical: flag-on N=4096 W=4 ≈ flag-off N=4096 (both Normal(0,1))', async (t: any) => {
-  t.after(restoreBackend);
+  // The test owns the flag for its duration. Save + restore the env
+  // var too so a globally-set `FLATPPL_PARALLEL_SAMPLE=1` (used by
+  // commit-5 wiring tests) doesn't override the in-test toggle.
+  const _savedEnv = process.env.FLATPPL_PARALLEL_SAMPLE;
+  delete process.env.FLATPPL_PARALLEL_SAMPLE;
+  t.after(() => {
+    if (_savedEnv != null) process.env.FLATPPL_PARALLEL_SAMPLE = _savedEnv;
+    restoreBackend();
+  });
   installMockBackend({ maxWorkers: 4, threshold: 1000 });
 
   const seed = rng.keyFromSeed(42);
@@ -272,7 +280,7 @@ test('statistical: flag-on N=4096 W=4 ≈ flag-off N=4096 (both Normal(0,1))', a
   const N = 4096;
 
   delete (globalThis as any).FLATPPL_PARALLEL_SAMPLE;
-  const offReply: any = sampler._dispatchSampleN(
+  const offReply: any = await sampler._dispatchSampleN(
     { ir, count: N, seed }, 'sampleN', scalarHandle);
 
   (globalThis as any).FLATPPL_PARALLEL_SAMPLE = 1;
@@ -486,6 +494,99 @@ test('edge: N == threshold → scalar path (strict-less-than guard)', async (t: 
   // W = min(4, ceil(4096 / 4096)) = 1 → fan-out spawned a single chunk
   // through the pool. Verify the pool was used.
   assert.ok(workerPool.getPool(), 'pool should exist after fan-out call');
+});
+
+// =====================================================================
+// 9. Commit 5 wiring: materialiser._ensureDispatchedSendWorker wraps
+//    ctx.sendWorker once per ctx, intercepts sampleN/truncateSampleN,
+//    passes other types through unchanged.
+// =====================================================================
+
+test('wiring: _ensureDispatchedSendWorker intercepts sampleN, passes evaluateN through', async (t: any) => {
+  t.after(restoreBackend);
+  installMockBackend({ maxWorkers: 4, threshold: 100 });
+  (globalThis as any).FLATPPL_PARALLEL_SAMPLE = 1;
+
+  const materialiser = require('../materialiser.ts');
+  const _internal = (materialiser as any)._internal || materialiser;
+
+  // Track every (msg-type, count) the underlying sendWorker sees.
+  const observed: Array<{ type: string; count?: number; seed?: any }> = [];
+  const original = async function (msg: any): Promise<any> {
+    observed.push({ type: msg.type, count: msg.count, seed: msg.seed });
+    if (msg.type === 'sampleN' || msg.type === 'truncateSampleN') {
+      // Return a fake reply with the expected shape.
+      return { samples: new Float64Array(msg.count | 0), n_eff: msg.count, totalDraws: msg.count };
+    }
+    return { ok: true };
+  };
+  const ctx: any = {
+    sendWorker: original,
+    rootSeed: 42,
+  };
+
+  // First entry: wrap.
+  _internal._ensureDispatchedSendWorker
+    ? _internal._ensureDispatchedSendWorker(ctx)
+    : (materialiser as any)._ensureDispatchedSendWorker(ctx);
+
+  assert.notEqual(ctx.sendWorker, original, 'sendWorker should be wrapped');
+  assert.equal(ctx._workerDispatched, true, 'idempotency flag set');
+
+  // Idempotent: re-calling doesn't double-wrap.
+  const wrapped1 = ctx.sendWorker;
+  ((materialiser as any)._ensureDispatchedSendWorker || (() => {}))(ctx);
+  assert.equal(ctx.sendWorker, wrapped1, 're-wrap is a no-op');
+
+  // sampleN flows through _dispatchSampleN, which (with the mock
+  // backend's spawnWorker present + threshold 100) takes the fan-out
+  // path. The pool's mock workers receive the chunked messages — NOT
+  // the test's `original` sendWorker. So observed should record zero
+  // sampleN entries.
+  const seed = rng.keyFromSeed(7);
+  const ir = distIR('Normal', { mu: 0, sigma: 1 });
+  await ctx.sendWorker({ type: 'sampleN', ir, count: 1000, seed });
+
+  const sampleNCount = observed.filter((o) => o.type === 'sampleN').length;
+  assert.equal(sampleNCount, 0,
+    'sampleN was intercepted by dispatch; pool consumed chunks, not original sendWorker');
+
+  // Other message types pass through unchanged.
+  await ctx.sendWorker({ type: 'setEnv', env: { foo: 1 } });
+  await ctx.sendWorker({ type: 'evaluateN', ir, count: 10 });
+  const passthroughTypes = observed.map((o) => o.type);
+  assert.ok(passthroughTypes.includes('setEnv'),  'setEnv passes through');
+  assert.ok(passthroughTypes.includes('evaluateN'), 'evaluateN passes through');
+});
+
+test('wiring: _ensureDispatchedSendWorker falls back to scalar when backend cannot spawn', async (t: any) => {
+  t.after(restoreBackend);
+  // No spawnWorker → scalar path. Dispatch wrapper STILL invokes (so
+  // the seed gets threaded through split(seed, 1)[0]); but the message
+  // reaches the original sendWorker — just with a re-keyed seed.
+  installMockBackend({ spawnable: false });
+  (globalThis as any).FLATPPL_PARALLEL_SAMPLE = 1;
+
+  const materialiser = require('../materialiser.ts');
+
+  const observed: any[] = [];
+  const original = async function (msg: any): Promise<any> {
+    observed.push(msg);
+    return { samples: new Float64Array(msg.count | 0) };
+  };
+  const ctx: any = { sendWorker: original, rootSeed: 42 };
+  (materialiser as any)._ensureDispatchedSendWorker(ctx);
+
+  const seed = rng.keyFromSeed(7);
+  const ir = distIR('Normal', { mu: 0, sigma: 1 });
+  await ctx.sendWorker({ type: 'sampleN', ir, count: 1000, seed });
+
+  assert.equal(observed.length, 1, 'scalar path: one message reaches original');
+  assert.equal(observed[0].type, 'sampleN');
+  // Determinism contract: seed is rekeyed via split(seed, 1)[0] even
+  // on the scalar path.
+  assert.notDeepEqual(observed[0].seed, seed,
+    'seed re-keyed via split(seed, 1)[0]');
 });
 
 test('edge: maxWorkers=1 routes to scalar path (no fan-out across a single worker)', async (t: any) => {
