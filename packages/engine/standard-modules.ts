@@ -389,6 +389,28 @@ function _registerExtLinearAlgebra() {
     impl: extLinalg._eigmin,
   });
 
+  // svd(A) — thin SVD via one-sided Jacobi rotations. For m × n A
+  // with m ≥ n, returns record(U, S, V) with U (m×n orthonormal),
+  // S (length-n descending singular values), V (n×n orthonormal),
+  // satisfying A = U · diag(S) · V^T.
+  bindings.set('svd', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }],
+      T.record({ U: dynMat, S: dynVec, V: dynMat }),
+    ),
+    impl: extLinalg._svd,
+  });
+
+  // rank(A) — numerical rank via SVD with the canonical
+  //   tol = max(m, n) · σ_max · ε_machine
+  // tolerance (matches NumPy / Octave defaults).
+  bindings.set('rank', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'A', type: dynMat }], T.INTEGER),
+    impl: extLinalg._rank,
+  });
+
   registerStandardModule({
     name: 'ext-linear-algebra',
     compat: '0.1',
