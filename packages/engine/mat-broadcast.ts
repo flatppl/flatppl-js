@@ -311,60 +311,16 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
 // Returns the unpacked descriptor on match (param names, the inner
 // builtin distOp, its kwargs IR, the literal iid count, etc.); null
 // otherwise.
+// Delegate to the shared classifier in `kernel-broadcast-shape.ts`.
+// P7 (LANDED 2026-05-30) hoisted the structural recognition into a
+// single source of truth; the runtime form passes `ctx.fixedValues`
+// to admit ref-to-fixed-integer n (in addition to literal n the
+// classify-time path accepts).
+const _kernelBroadcastShape = require('./kernel-broadcast-shape.ts');
 function _detectIidKernelBody(d: any, ctx: any): any | null {
   if (!ctx || !ctx.bindings) return null;
-  const b = ctx.bindings.get(d.distOp);
-  if (!b || !b.ir) return null;
-  const ir = b.ir;
-  if (ir.kind !== 'call' || ir.op !== 'functionof') return null;
-  const params: string[] = Array.isArray(ir.params) ? ir.params : [];
-  const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
-    ? ir.paramKwargs : params;
-  if (params.length === 0) return null;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
-  if (!innerMeasure || innerMeasure.kind !== 'call'
-      || innerMeasure.op !== 'iid') return null;
-  const iidArgs = innerMeasure.args || [];
-  if (iidArgs.length !== 2) return null;
-  // Dereference one level of anon ref. Post-lift, `iid(Normal(...),
-  // N)` becomes `iid(ref(__anonM), N)` where the anon's IR holds
-  // the literal Normal call.
-  let distCall = iidArgs[0];
-  if (distCall && distCall.kind === 'ref' && distCall.ns === 'self'
-      && ctx.bindings && ctx.bindings.has(distCall.name)) {
-    const anon = ctx.bindings.get(distCall.name);
-    if (anon && anon.ir) distCall = anon.ir;
-  }
-  const nArg = iidArgs[1];
-  if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
-  // n must be a literal positive integer (dynamic n is a follow-up
-  // — needs IR-level reshape support).
-  let nLit: any = null;
-  if (nArg.kind === 'lit') nLit = nArg.value;
-  // Allow ref to a fixed-phase integer binding (compile-time
-  // resolvable). Look up its value in ctx.fixedValues if present.
-  if (nLit === null && nArg.kind === 'ref' && nArg.ns === 'self'
-      && ctx.fixedValues && ctx.fixedValues.has(nArg.name)) {
-    nLit = ctx.fixedValues.get(nArg.name);
-  }
-  if (typeof nLit !== 'number' || !Number.isInteger(nLit) || nLit <= 0) {
-    return null;
-  }
-  // The inner distCall must reference a builtin distribution.
-  const sampler = require('./sampler.ts');
-  const distParams = (sampler._internal.REGISTRY[distCall.op] || {}).params;
-  if (!distParams) return null;
-  return {
-    binding: b,
-    params,
-    paramKwargs,
-    distOp: distCall.op,
-    distParams,
-    distKwargs: distCall.kwargs || {},
-    n: nLit,
-  };
+  return _kernelBroadcastShape.detectIidKernelBinding(
+    d.distOp, ctx.bindings, ctx.fixedValues);
 }
 
 // Substitute kernel placeholders in an IR expression with the
