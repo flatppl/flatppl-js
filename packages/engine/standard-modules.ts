@@ -286,6 +286,66 @@ function _registerParticlePhysics() {
   });
 }
 
+// --- ext-linear-algebra ----------------------------------------------
+//
+// Matrix factorisations, decompositions, and operations not in `base`.
+// Spec §09. Multi-output decompositions return records.
+//
+// Initial coverage (M-sized commit landing the foundations):
+//   - lu(A)        → record(P, L, U) with P·A = L·U
+//   - kron(A, B)   → Kronecker tensor product
+//   - matexp(A)    → matrix exponential via scaling + squaring Padé(13)
+//
+// Follow-up commits add qr / lstsq, symmetric eigen / eigmax / eigmin,
+// svd / rank — each algorithm class as its own commit per the
+// per-significant-step rule.
+
+const extLinalg = require('./ext-linalg.ts');
+
+function _registerExtLinearAlgebra() {
+  const bindings = new Map<string, BindingDescriptor>();
+
+  // For dynamic-shape matrix args + record returns, the signature uses
+  // %dynamic dims and a record-of-matrices result type. The dispatcher
+  // doesn't enforce concrete dims today — it threads the args through
+  // the impl unchanged. Concrete shape validation happens inside the
+  // impl (square-matrix checks, etc.).
+  const dynMat = T.array(2, ['%dynamic', '%dynamic'], T.REAL);
+
+  bindings.set('lu', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }],
+      T.record({ P: dynMat, L: dynMat, U: dynMat }),
+    ),
+    impl: extLinalg._lu,
+  });
+
+  bindings.set('kron', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }, { name: 'B', type: dynMat }],
+      dynMat,
+    ),
+    impl: extLinalg._kron,
+  });
+
+  bindings.set('matexp', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }],
+      dynMat,
+    ),
+    impl: extLinalg._matexp,
+  });
+
+  registerStandardModule({
+    name: 'ext-linear-algebra',
+    compat: '0.1',
+    bindings,
+  });
+}
+
 // Engine-startup registration: runs once on module require so the
 // registry is populated before typeinfer / orchestrator / sampler
 // consult it. Tests that need a clean slate (cross-test isolation)
@@ -294,6 +354,7 @@ function _registerParticlePhysics() {
 function _registerBuiltinStandardModules() {
   _registerPolynomials();
   _registerParticlePhysics();
+  _registerExtLinearAlgebra();
 }
 
 _registerBuiltinStandardModules();
