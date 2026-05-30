@@ -1099,6 +1099,61 @@ function _nestedToValue(nested: any) {
 //   - shape=[N] (batched scalar) ⊙ shape=[N, k]
 //   - per-atom matrix × per-atom matrix
 
+// Atom-batched matrix × matrix → atom-batched matrix. Per-atom
+// matmul; supports three operand-batching patterns:
+//   - A=[N,m,n] × B=[n,p]    → [N,m,p]
+//   - A=[m,n]   × B=[N,n,p]  → [N,m,p]
+//   - A=[N,m,n] × B=[N,n,p]  → [N,m,p]
+// Tags on A or B (transpose / adjoint) are NOT supported in v1 —
+// rank-3 transpose is a separate operation in spec §07 (transposes
+// of rank>=3 swap the last two axes). The variant matcher rejects
+// tagged operands at this rank.
+function _matBatchedMatMul(A: any, B: any, N: any) {
+  const aBatched = A.shape.length === 3 && A.shape[0] === N;
+  const bBatched = B.shape.length === 3 && B.shape[0] === N;
+  // Determine per-atom (m, n, p).
+  const aShape = aBatched ? A.shape.slice(1) : A.shape;
+  const bShape = bBatched ? B.shape.slice(1) : B.shape;
+  if (aShape.length !== 2 || bShape.length !== 2) {
+    throw new Error('mulN: matrix×matrix expected rank-2 per-atom shapes');
+  }
+  const [m, n] = aShape;
+  const [bRows, p] = bShape;
+  if (bRows !== n) {
+    throw new Error(
+      'mulN: matrix×matrix dimension mismatch per atom ('
+      + JSON.stringify(aShape) + ' × ' + JSON.stringify(bShape) + ')');
+  }
+  if (isTransposeView(A) || isTransposeView(B)) {
+    // Transposed rank-3 swaps the trailing two axes; the input would
+    // already arrive untagged after the dispatcher resolves the tag.
+    // Refuse here so the caller knows to densify-and-retry.
+    throw new Error(
+      'mulN: tagged matrix×matrix at rank-3 not supported '
+      + '(densify the transposed operand first)');
+  }
+  const out = new Float64Array(N * m * p);
+  const aStride = m * n;       // bytes per atom for A
+  const bStride = n * p;       // bytes per atom for B
+  const oStride = m * p;       // bytes per atom for output
+  for (let atom = 0; atom < N; atom++) {
+    const aBase = aBatched ? atom * aStride : 0;
+    const bBase = bBatched ? atom * bStride : 0;
+    const oBase = atom * oStride;
+    for (let i = 0; i < m; i++) {
+      const iRow = aBase + i * n;
+      for (let j = 0; j < p; j++) {
+        let s = 0;
+        for (let k = 0; k < n; k++) {
+          s += A.data[iRow + k] * B.data[bBase + k * p + j];
+        }
+        out[oBase + i * p + j] = s;
+      }
+    }
+  }
+  return { shape: [N, m, p], data: out };
+}
+
 // matrix(m, n) × shape=[N, n] → shape=[N, m]. Atom-major output;
 // per-atom matvec with shared matrix. Tag on the matrix is honoured
 // (BLAS gemm-flag style).
@@ -1396,6 +1451,7 @@ module.exports = {
   _vecMatMul,
   _matMatMul,
   _matBatchedVecMul,
+  _matBatchedMatMul,
   _atomBroadcastBinop,
   _scalarBroadcastMul,
   _scalarBroadcastBinop,
