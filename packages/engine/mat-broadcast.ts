@@ -24,6 +24,7 @@ const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
 const valueLib     = require('./value.ts');
 const shared       = require('./materialiser-shared.ts');
+const axisStackMod = require('./axis-stack.ts');
 
 const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 
@@ -97,9 +98,21 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     // Evaluate each parameter expression once over the atom batch.
     // The shape disambiguates: per-atom vs atom-indep; scalar vs
     // length-K vector. Mirrors density.walkBroadcast's classification.
+    //
+    // **P4 (advisory):** if the binding's IR carries an axisStack
+    // entry from kernel-broadcast (`source: 'kernel_broadcast'` with
+    // a literal-integer size), we initialise K from it — bypassing
+    // the runtime shape ladder for the K determination. The ladder
+    // still runs (it also enforces per-param shape consistency); the
+    // axisStack only seeds an *expected* K that the ladder validates
+    // against. When the axisStack is absent or symbolic, behaviour is
+    // identical to today's (the ladder discovers K from the first
+    // param with intrinsicK > 1).
+    const _bindingStack = axisStackMod.bindingAxisStack(name, ctx);
+    const _axisStackK = axisStackMod.outerAxisSize(_bindingStack, 'kernel_broadcast');
     const usesAtomBy: Record<string, boolean> = {};
     const paramVals: Record<string, any> = {};
-    let K = 1;
+    let K = (_axisStackK && _axisStackK > 1) ? _axisStackK : 1;
     for (const pn of pnames) {
       const paramRefs = orchestrator.collectSelfRefs(paramIRs[pn]);
       const usesAtom = refNames.some((n) => paramRefs.has(n));
