@@ -189,12 +189,21 @@ const ARITH_OPS_N: any = {};
 // vector/matrix shape (Value with rank ≥ 1 whose leading dim isn't the
 // atom count). Bare scalars and batched scalars (shape=[N]) stay on
 // the scalar broadcast path.
+//
+// Built on the P3 canonical predicate `value.isAtomBatched(v, N)` so
+// the "atom-batched scalar (shape=[N])" carve-out shares one source
+// of truth with every other consumer of the §2.1 contract. A Value
+// is shape-aware iff: it's a Value, rank >= 1, AND NOT a rank-1
+// batched scalar. (atomShape([N], N) === [] — empty inner shape — is
+// the batched-scalar case to skip.)
 function _shapeAwareCandidate(v: any, N: any) {
   if (!valueLib.isValue(v)) return false;
-  const r = v.shape.length;
-  if (r === 0) return false;
-  if (r === 1 && v.shape[0] === N) return false;  // batched scalar
-  return true;  // shape-rich OR atom-batched non-scalar
+  if (v.shape.length === 0) return false;
+  // Atom-batched scalar (shape=[N]) — inner shape is []; route
+  // through the scalar broadcast path, not value-ops.
+  const inner = valueLib.atomShape(v, N);
+  if (inner && inner.length === 0) return false;
+  return true;
 }
 
 function _wrapShapeAwareBinopN(opName: any, opNameN: any) {
