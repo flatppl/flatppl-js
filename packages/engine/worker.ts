@@ -257,14 +257,30 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const out = new Float64Array(total);
 
           if (refKeys.length === 0) {
-            // Static-params fast path: one sampler instance for the
-            // whole call, regardless of repeat. Pass session env so
-            // measures whose params reference fixed-phase bindings
-            // (e.g. `Normal(mean(random_data), 1)`) resolve at
-            // factory-build time rather than failing as unbound.
-            const s = samplerLib.makeSampler(state, msg.ir, env);
-            for (let i = 0; i < total; i++) out[i] = s.draw();
-            state = s.getState();
+            // Static-params fast path. Commit 3 (RNG split, Option C)
+            // routes this through `makeBulkSampler`:
+            //
+            //   * If the dist has an explicit `randNFn` (Normal /
+            //     LogNormal via Box-Muller; Uniform / Exponential via
+            //     vectorised transforms over philoxNUniform), one
+            //     batched call fills `out` directly — no per-atom JS
+            //     dispatch, single cipher amortization.
+            //
+            //   * Otherwise the scalar randFn loop runs as before but
+            //     is fed by a bulk-uniform PRNG adapter (N*4 uniforms
+            //     pre-filled in one cipher batch). Variable-rejection
+            //     dists (Gamma, Beta, …) work transparently: the
+            //     adapter refills on demand and returns the residual
+            //     state via getState().
+            //
+            // Pass session env so measures whose params reference
+            // fixed-phase bindings (e.g. `Normal(mean(random_data),
+            // 1)`) resolve at param-resolution time rather than failing
+            // as unbound.
+            const r = samplerLib.makeBulkSampler(state, msg.ir, env, total, out);
+            // makeBulkSampler writes into `out` when supplied, so we
+            // don't need to copy r.samples back — they share storage.
+            state = r.state;
           } else {
             // Per-i-params path. One parametric sampler for the whole
             // call; params resolved per draw via drawWith(env).

@@ -754,6 +754,70 @@ function logpdfDirac(x: any, value: any) {
 // REGISTRY
 // =====================================================================
 
+// Explicit batched samplers (commit 3, hybrid Option C). Each
+// `randNFn(state, params, n, out?) → { state, out }` produces n iid
+// draws in one bulk call — `rng.philoxN*` does the cipher amortization,
+// and the per-atom transform is a vectorised loop over the pre-filled
+// uniforms (no per-atom JS function dispatch). When a REGISTRY entry
+// has a randNFn, the worker's static-params sampleN path picks it over
+// the scalar `randFn` loop; absence falls back to the scalar path
+// (optionally fed by `makeBulkUniformPrngAdapter` for cipher
+// amortization alone).
+//
+// Pairing convention for Normal (and LogNormal, which exponentiates
+// Normal): philoxNNormal already documents that pair `i` of two
+// uniforms produces normal `i` = r*cos(theta) (first output) and
+// `i+1` = r*sin(theta) (second output). We inherit that ordering
+// without further reshuffling.
+
+function randNNormal(state: any, params: any, n: number, out?: Float64Array) {
+  // params = [mu, sigma]
+  const mu = +params[0];
+  const sigma = +params[1];
+  const dest = out ?? new Float64Array(n);
+  const r = rng.philoxNNormal(state, n, dest);
+  // Vectorised affine: x = mu + sigma * z. Inplace.
+  for (let i = 0; i < n; i++) r.out[i] = mu + sigma * r.out[i];
+  return r;
+}
+
+function randNExponential(state: any, params: any, n: number, out?: Float64Array) {
+  // params = [rate (= lambda)]
+  // Transform per stdlib: x = -ln(1 - u) / lambda. One uniform per draw.
+  // Bit-exact equivalent to scalar randExponential under the same
+  // Philox state, because philoxNUniform is bit-exact equivalent to
+  // n scalar nextUniform calls.
+  const lambda = +params[0];
+  const dest = out ?? new Float64Array(n);
+  const r = rng.philoxNUniform(state, n, dest);
+  for (let i = 0; i < n; i++) r.out[i] = -Math.log(1 - r.out[i]) / lambda;
+  return r;
+}
+
+function randNUniform(state: any, params: any, n: number, out?: Float64Array) {
+  // params = [a, b]  (lo, hi); one uniform per draw.
+  // Transform per stdlib uniform.js: x = b*u + (1-u)*a — numerically
+  // stable as written (vs. naive (b-a)*u + a) and bit-exact equivalent
+  // to the scalar-loop path.
+  const a = +params[0];
+  const b = +params[1];
+  const dest = out ?? new Float64Array(n);
+  const r = rng.philoxNUniform(state, n, dest);
+  for (let i = 0; i < n; i++) {
+    const u = r.out[i];
+    r.out[i] = b * u + (1 - u) * a;
+  }
+  return r;
+}
+
+function randNLogNormal(state: any, params: any, n: number, out?: Float64Array) {
+  // params = [mu, sigma]; x = exp(mu + sigma * z), z ~ Normal(0,1).
+  // Reuses the Box-Muller path via randNNormal then exp-in-place.
+  const r = randNNormal(state, params, n, out);
+  for (let i = 0; i < n; i++) r.out[i] = Math.exp(r.out[i]);
+  return r;
+}
+
 const REGISTRY = {
   Normal: {
     params:   ['mu', 'sigma'],
@@ -761,6 +825,13 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Normal,
     randFn:   randNormal,
+    // Explicit batched path: Box-Muller via philoxNNormal. NOT
+    // bit-equivalent to scalar randNormal (which uses ziggurat) —
+    // produces different sample bytes from the same key. The
+    // engine's seed→sample mapping was already broken in commit 2
+    // (PhiloxKey rework); commit 3 documents that ziggurat→Box-Muller
+    // is the additional reason scalar and batched paths differ.
+    randNFn:  randNNormal,
     logpdfFn: logpdfNormal,
   },
   Exponential: {
@@ -769,6 +840,10 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Exponential,
     randFn:   randExponential,
+    // Explicit batched path: -ln(1-u)/lambda, one uniform per draw.
+    // Bit-exact equivalent to scalar randExponential under the same
+    // initial Philox state (philoxNUniform contract guarantees this).
+    randNFn:  randNExponential,
     logpdfFn: logpdfExponential,
   },
   Uniform: {
@@ -777,6 +852,9 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Uniform,
     randFn:   randUniform,
+    // Explicit batched path: b*u + (1-u)*a (stdlib's stable form).
+    // Bit-exact equivalent to scalar randUniform.
+    randNFn:  randNUniform,
     logpdfFn: logpdfUniform,
     customResolveParams: function (measureIR: any, env: any) {
       const kwargs = measureIR.kwargs || {};
@@ -816,6 +894,10 @@ const REGISTRY = {
     discrete: false,
     Ctor:     LogNormal,
     randFn:   randLogNormal,
+    // Explicit batched path: exp(Normal(mu, sigma)) via Box-Muller.
+    // Same bit-equivalence caveat as Normal (Box-Muller ≠ scalar
+    // ziggurat-based randLogNormal).
+    randNFn:  randNLogNormal,
     logpdfFn: logpdfLogNormal,
   },
   Beta: {
@@ -1065,6 +1147,98 @@ function makePhiloxPrngAdapter(initialState: any) {
 }
 
 // =====================================================================
+// Bulk-uniform PRNG adapter (commit 3, hybrid Option C).
+//
+// Pre-fills a Float64Array of `N * factor` uniforms via the bit-exact
+// `rng.philoxNUniform` bulk path, then serves them via a per-call .prng
+// closure that simply pops the buffer at i++. When the buffer drains
+// (rejection-method dists consume variable uniforms per draw and may
+// exhaust the pre-fill estimate), the adapter transparently refills
+// from `rng.philoxNUniform` at the current state — bit-exact equivalent
+// to a sequence of scalar `nextUniform` calls, so any stdlib transform
+// closure built on top of this adapter produces samples identical to
+// the scalar-loop path (no stream-byte drift for the bulk-adapter case).
+//
+// `factor` is the over-sampling multiple. 1 is tight (only safe for
+// known-1U-per-draw dists); 4 is the audit's recommended default and
+// matches the typical worst case for ziggurat-style rejection samplers.
+// The cost of over-sampling is small: each extra uniform is ~one
+// Float64 read + one cipher amortization, far below the per-call
+// closure cost we're eliminating.
+//
+// Returns a prng closure with the same surface as
+// `makePhiloxPrngAdapter` (.getState / ._setState).
+//
+// On state retrieval (.getState()), the adapter "rewinds" the unused
+// tail of the pre-fill buffer: it returns the state that corresponds
+// to the residue of uniforms not yet handed out, so the caller's
+// next operation resumes seamlessly. This is achieved by running a
+// SECOND `philoxNUniform` of size `consumedSoFar` from the initial
+// state — bit-exact equivalence guarantees this lands on the same
+// state that scalar-loop execution would have reached after the same
+// number of `nextUniform` calls.
+
+function makeBulkUniformPrngAdapter(initialState: any, n: number, factor?: number) {
+  const f = factor != null ? (factor | 0) : 4;
+  const _factor = f > 0 ? f : 4;
+
+  // `baseState` is the cumulative "starting state" for the current
+  // buffer. Each refill advances baseState to the state AFTER the
+  // newly-filled buffer (returned by philoxNUniform), so a partial
+  // consumption of the current buffer can be unwound by re-running a
+  // smaller philoxNUniform from the PREVIOUS baseState.
+  let prevBaseState: any = initialState;
+  let baseState: any = initialState;
+  let bufLen = 0;
+  let cursor = 0;
+  let buf: Float64Array | null = null;
+
+  function _refill(requested: number) {
+    const size = Math.max(requested, 1);
+    prevBaseState = baseState;
+    const r = rng.philoxNUniform(baseState, size);
+    buf = r.out;
+    bufLen = size;
+    cursor = 0;
+    baseState = r.state;
+  }
+
+  // Initial pre-fill — size = max(n * factor, 1).
+  _refill(Math.max((n | 0) * _factor, 1));
+
+  function prng() {
+    if (cursor >= bufLen) {
+      // Refill on demand; use the original (over-)sampling factor as a
+      // rough heuristic for how much we still need.
+      _refill(Math.max((n | 0) * _factor, 4));
+    }
+    return (buf as Float64Array)[cursor++];
+  }
+
+  // Materialise the state corresponding to "exactly `cursor` uniforms
+  // consumed from `prevBaseState`". For cursor == bufLen this is just
+  // baseState. For cursor < bufLen we re-run philoxNUniform at the
+  // previous base for `cursor` outputs — bit-exact-equivalent to having
+  // called scalar `nextUniform` exactly `cursor` times.
+  prng.getState = function () {
+    if (cursor === bufLen) return baseState;
+    if (cursor === 0)       return prevBaseState;
+    const r = rng.philoxNUniform(prevBaseState, cursor);
+    return r.state;
+  };
+  prng._setState = function (s: any) {
+    // Reset: a downstream caller is overriding our state. Discard the
+    // buffer and reset both bases to the new state.
+    prevBaseState = s;
+    baseState = s;
+    buf = null;
+    bufLen = 0;
+    cursor = 0;
+  };
+  return prng;
+}
+
+// =====================================================================
 // stdlib distribution support normalization
 // =====================================================================
 
@@ -1085,5 +1259,6 @@ module.exports = {
   resolveParams,
   regionBoundsFromIR,
   makePhiloxPrngAdapter,
+  makeBulkUniformPrngAdapter,
   readSupport,
 };

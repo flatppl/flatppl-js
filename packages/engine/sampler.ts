@@ -94,6 +94,7 @@ const {
   resolveParams,
   regionBoundsFromIR,
   makePhiloxPrngAdapter,
+  makeBulkUniformPrngAdapter,
   readSupport,
 } = registry;
 
@@ -201,6 +202,59 @@ function makeParametricSampler(state: any, measureIR: any) {
     },
     getState: () => prng.getState(),
   };
+}
+
+/**
+ * Bulk-sample `n` iid draws from a fixed-parameter distribution in one
+ * call (commit 3 of the RNG splitting thread — Option C hybrid).
+ *
+ * Two paths:
+ *
+ *   1. If the registry entry exposes `randNFn`, take the explicit
+ *      batched path: one `philoxN*` cipher batch + vectorised
+ *      transform, no per-atom JS function dispatch. Used for Normal /
+ *      LogNormal (Box-Muller — NOT bit-equivalent to scalar randFn)
+ *      and Uniform / Exponential (bit-equivalent to scalar randFn).
+ *
+ *   2. Otherwise fall back to the scalar randFn loop, but feed it
+ *      through `makeBulkUniformPrngAdapter` so the Philox cipher
+ *      cost is amortized across N draws. Rejection samplers (Gamma,
+ *      Beta, …) consume variable uniforms per atom — the adapter
+ *      handles that transparently via its on-demand refill.
+ *
+ * `out` is optional; if provided the caller's Float64Array(n) is
+ * reused, avoiding a buffer alloc on the hot path.
+ *
+ * Returns `{ samples: Float64Array, state: PhiloxState }`. State is
+ * threaded back so the caller can continue without losing position.
+ *
+ * Caller must NOT use this when params depend on per-draw upstreams —
+ * use makeParametricSampler() for that path (per-i kwargs change the
+ * factory cost story, plus randNFn slots take static params only in
+ * this commit; a per-i randNFn variant is a future follow-up).
+ */
+function makeBulkSampler(
+  state: any, measureIR: any, env: any, n: number, out?: Float64Array,
+) {
+  const entry = lookupDistribution(measureIR);
+  const params = resolveParams(measureIR, entry, env);
+
+  if (typeof entry.randNFn === 'function') {
+    // Path 1: explicit batched. randNFn handles the philoxN* call +
+    // transform internally, returning { state, out }.
+    const r = entry.randNFn(state, params, n, out);
+    return { samples: r.out, state: r.state };
+  }
+
+  // Path 2: bulk-uniform adapter feeds the scalar randFn loop. The
+  // adapter pre-fills N*4 uniforms in one cipher batch and serves
+  // them via .prng() — closure dispatch becomes a buffer read, and
+  // rejection samplers refill on demand.
+  const prng = makeBulkUniformPrngAdapter(state, n);
+  const sampler = entry.randFn.factory(...params, { prng });
+  const dest = out ?? new Float64Array(n);
+  for (let i = 0; i < n; i++) dest[i] = sampler();
+  return { samples: dest, state: prng.getState() };
 }
 
 /**
@@ -2743,6 +2797,7 @@ module.exports = {
   rand,
   makeSampler,
   makeParametricSampler,
+  makeBulkSampler,
   density,
   makeAnalytical,
   evaluateExpr,
@@ -2754,6 +2809,7 @@ module.exports = {
   lookupDistribution,
   resolveParams,
   makePhiloxPrngAdapter,
+  makeBulkUniformPrngAdapter,
 
   // Introspection
   isKnownDistribution,
