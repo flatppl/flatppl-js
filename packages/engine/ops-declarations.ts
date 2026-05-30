@@ -1342,6 +1342,8 @@ function _ensureBroadcastedRegistered(): void {
     ['invlogit',  1, (vs) => vo.invlogitElem(vs[0])],
     ['probit',    1, (vs) => vo.probitElem(vs[0])],
     ['invprobit', 1, (vs) => vo.invprobitElem(vs[0])],
+    ['gamma',     1, (vs) => vo.gammaElem(vs[0])],
+    ['loggamma',  1, (vs) => vo.loggammaElem(vs[0])],
     ['ifelse',  3, (vs) => vo.ifelseElem(vs[0], vs[1], vs[2])],
   ];
   for (const [opName, arity, impl] of BCAST_TABLE) {

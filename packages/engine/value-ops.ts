@@ -1040,6 +1040,15 @@ const atanhElem = _makeElementwiseUnop(Math.atanh, 'atanhElem', (z: any) => _cxI
 // Pure identity (spec §07: pos = unary +).
 const posElem = _makeElementwiseUnop((x: any) => +x, 'posElem');
 
+// Spec §07 gamma family — Γ(x) and log|Γ(x)|. Real-only (complex
+// gamma needs stdlib's complex-gamma; deferred). External impls
+// match sampler.ARITH_OPS verbatim so the variant and the legacy
+// path agree by construction.
+const _stdlibGamma   = require('@stdlib/math-base-special-gamma');
+const _stdlibGammaln = require('@stdlib/math-base-special-gammaln');
+const gammaElem    = _makeElementwiseUnop((x: any) => _stdlibGamma(x), 'gammaElem');
+const loggammaElem = _makeElementwiseUnop((x: any) => _stdlibGammaln(x), 'loggammaElem');
+
 // Type-restrictor casts (spec §03 lattice booleans ⊂ integers ⊂ reals).
 const booleanElem = _makeElementwiseUnop((x: any) => x ? 1 : 0, 'booleanElem');
 const integerElem = _makeElementwiseUnop((x: any) => Math.trunc(x), 'integerElem');
@@ -1281,8 +1290,8 @@ function _nestedToValue(nested: any) {
 // of rank>=3 swap the last two axes). The variant matcher rejects
 // tagged operands at this rank.
 function _matBatchedMatMul(A: any, B: any, N: any) {
-  const aBatched = A.shape.length === 3 && A.shape[0] === N;
-  const bBatched = B.shape.length === 3 && B.shape[0] === N;
+  const aBatched = valueLib.isAtomBatched(A, N) && A.shape.length === 3;
+  const bBatched = valueLib.isAtomBatched(B, N) && B.shape.length === 3;
   // Determine per-atom (m, n, p).
   const aShape = aBatched ? A.shape.slice(1) : A.shape;
   const bShape = bBatched ? B.shape.slice(1) : B.shape;
@@ -1414,8 +1423,8 @@ function _cxMatBatchedVecMul(A: any, V: any, N: any) {
 // folding (BLAS-gemm flag style); transpose flag on rank-3 inputs is
 // not supported in v1 (matches the real twin _matBatchedMatMul).
 function _cxMatBatchedMatMul(A: any, B: any, N: any) {
-  const aBatched = A.shape.length === 3 && A.shape[0] === N;
-  const bBatched = B.shape.length === 3 && B.shape[0] === N;
+  const aBatched = valueLib.isAtomBatched(A, N) && A.shape.length === 3;
+  const bBatched = valueLib.isAtomBatched(B, N) && B.shape.length === 3;
   const aShape = aBatched ? A.shape.slice(1) : A.shape;
   const bShape = bBatched ? B.shape.slice(1) : B.shape;
   if (aShape.length !== 2 || bShape.length !== 2) {
@@ -1670,6 +1679,7 @@ module.exports = {
   posElem,
   booleanElem, integerElem,
   logitElem, invlogitElem, probitElem, invprobitElem,
+  gammaElem, loggammaElem,
   ifelseElem,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.

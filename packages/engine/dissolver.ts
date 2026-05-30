@@ -2045,15 +2045,24 @@ function _axisStackForIR(ir: any, bindings: any, depth: number = 0): any[] | nul
 
   if (ir.op === 'aggregate') {
     // aggregate(f, output_axes, body). One axisStack entry per output
-    // axis; size is %dynamic pending axis-length resolution.
+    // axis. Axis lengths come from P1's canonical-form annotation
+    // (typeinfer-populated `ir.meta.aggregateCanonical.axisLengths`)
+    // when present — fills in concrete sizes the previous
+    // `%dynamic`-only annotation lacked. Without the annotation
+    // (e.g. dissolver-rewritten aggregate not yet re-typeinferred),
+    // fall back to `%dynamic`.
     if (args.length < 3) return null;
     const axesIR = args[1];
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const axes: any[] = axesIR.args || [];
+    const canonical = ir.meta && ir.meta.aggregateCanonical;
+    const axisLengths = (canonical && canonical.axisLengths) || {};
     const stack: any[] = [];
     for (const ax of axes) {
       if (!ax || ax.kind !== 'axis') return null;
-      stack.push({ source: 'aggregate', size: '%dynamic', name: ax.name });
+      const len = axisLengths[ax.name];
+      const size = typeof len === 'number' ? len : '%dynamic';
+      stack.push({ source: 'aggregate', size, name: ax.name });
     }
     return stack.length > 0 ? stack : null;
   }
