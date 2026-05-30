@@ -689,18 +689,24 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
     }
     if (sa.length === 0) return _scalarBroadcastBinop(scalarFn, a.data[0], b, true);
     if (sb.length === 0) return _scalarBroadcastBinop(scalarFn, b.data[0], a, false);
-    // Both have shape. Shapes must match length-by-length.
+    // Both have shape. Shapes must match length-by-length OR allow
+    // singleton-axis broadcast (NumPy convention; spec §04: "size-
+    // one array axes are implicitly expanded by repetition to match
+    // the size of the other collection arguments along these axes").
     if (sa.length !== sb.length) {
       throw new Error(
         opName + ': rank mismatch (' + JSON.stringify(sa) +
         ' vs ' + JSON.stringify(sb) + ')');
     }
+    let needsBroadcast = false;
     for (let i = 0; i < sa.length; i++) {
-      if (sa[i] !== sb[i]) {
-        throw new Error(
-          opName + ': shape mismatch (' + JSON.stringify(sa) +
-          ' vs ' + JSON.stringify(sb) + ')');
-      }
+      if (sa[i] === sb[i]) continue;
+      if (sa[i] === 1 || sb[i] === 1) { needsBroadcast = true; continue; }
+      throw new Error(
+        opName + ': shape mismatch (' + JSON.stringify(sa) +
+        ' vs ' + JSON.stringify(sb) + '; singleton-axis '
+        + 'broadcast requires the differing dim to be 1 on at '
+        + 'least one operand)');
     }
     // Orientation (swapped bit) must agree.
     if (isTransposeView(a) !== isTransposeView(b)) {
@@ -708,19 +714,92 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
         opName + ': cannot combine values of opposite orientation ' +
         '(one is transposed). Apply transpose to align them first.');
     }
-    // Elementwise on the underlying buffers — since shape and swapped
-    // bit agree, the data is laid out identically.
-    const out = new Float64Array(a.data.length);
-    for (let i = 0; i < a.data.length; i++) {
-      out[i] = scalarFn(a.data[i], b.data[i]);
+    if (!needsBroadcast) {
+      // Equal shapes — flat elementwise on the underlying buffers.
+      const out = new Float64Array(a.data.length);
+      for (let i = 0; i < a.data.length; i++) {
+        out[i] = scalarFn(a.data[i], b.data[i]);
+      }
+      const r: any = { shape: a.shape.slice(), data: out };
+      if (a.t && a.t !== 'N') r.t = a.t;
+      if (a.dtype) r.dtype = a.dtype;
+      return r;
     }
-    const r: any = { shape: a.shape.slice(), data: out };
-    // Preserve tag — both operands share the swapped bit; for the
-    // conjugate bit (real-valued: no-op) prefer the LHS's tag.
+    // Singleton-axis broadcast: compute the per-operand row-major
+    // strides where any size-1 dim contributes stride 0 (the
+    // singleton broadcasts by repetition). Output shape: max of
+    // the two per-axis. NumPy convention.
+    const out_shape = new Array(sa.length);
+    for (let i = 0; i < sa.length; i++) {
+      out_shape[i] = Math.max(sa[i], sb[i]);
+    }
+    const aStrides = _broadcastStridesForShape(sa, out_shape);
+    const bStrides = _broadcastStridesForShape(sb, out_shape);
+    const N = sa.length;
+    const outSize = out_shape.reduce((p: number, n: number) => p * n, 1);
+    const out = new Float64Array(outSize);
+    // Rank-specific fast paths for the common cases (rank 1/2/3);
+    // generic coord-walker otherwise.
+    if (N === 1) {
+      const D = out_shape[0], aS = aStrides[0], bS = bStrides[0];
+      for (let i = 0; i < D; i++) out[i] = scalarFn(a.data[i * aS], b.data[i * bS]);
+    } else if (N === 2) {
+      const D0 = out_shape[0], D1 = out_shape[1];
+      const aS0 = aStrides[0], aS1 = aStrides[1];
+      const bS0 = bStrides[0], bS1 = bStrides[1];
+      let o = 0;
+      for (let i = 0; i < D0; i++) {
+        const aB = i * aS0, bB = i * bS0;
+        for (let j = 0; j < D1; j++) out[o++] = scalarFn(a.data[aB + j * aS1], b.data[bB + j * bS1]);
+      }
+    } else if (N === 3) {
+      const D0 = out_shape[0], D1 = out_shape[1], D2 = out_shape[2];
+      const aS0 = aStrides[0], aS1 = aStrides[1], aS2 = aStrides[2];
+      const bS0 = bStrides[0], bS1 = bStrides[1], bS2 = bStrides[2];
+      let o = 0;
+      for (let i = 0; i < D0; i++) {
+        const aB0 = i * aS0, bB0 = i * bS0;
+        for (let j = 0; j < D1; j++) {
+          const aB1 = aB0 + j * aS1, bB1 = bB0 + j * bS1;
+          for (let k = 0; k < D2; k++) out[o++] = scalarFn(a.data[aB1 + k * aS2], b.data[bB1 + k * bS2]);
+        }
+      }
+    } else {
+      const coord = new Array(N).fill(0);
+      for (let linear = 0; linear < outSize; linear++) {
+        let aOff = 0, bOff = 0;
+        for (let i = 0; i < N; i++) {
+          aOff += coord[i] * aStrides[i];
+          bOff += coord[i] * bStrides[i];
+        }
+        out[linear] = scalarFn(a.data[aOff], b.data[bOff]);
+        for (let i = N - 1; i >= 0; i--) {
+          coord[i]++;
+          if (coord[i] < out_shape[i]) break;
+          coord[i] = 0;
+        }
+      }
+    }
+    const r: any = { shape: out_shape, data: out };
     if (a.t && a.t !== 'N') r.t = a.t;
     if (a.dtype) r.dtype = a.dtype;
     return r;
   };
+}
+
+// Per-axis broadcasting stride for source shape `src` against target
+// `out_shape`. Stride is 0 wherever src[i] === 1 (singleton dim →
+// repeat-by-broadcast); else the row-major stride of src.
+function _broadcastStridesForShape(src: number[], out_shape: number[]): number[] {
+  const N = src.length;
+  const out = new Array(N);
+  // Row-major strides for src: stride[i] = product of src[i+1..].
+  let s = 1;
+  for (let i = N - 1; i >= 0; i--) {
+    out[i] = (src[i] === 1) ? 0 : s;
+    s *= src[i];
+  }
+  return out;
 }
 
 // scalar (JS number) + Value (any shape) → Value, with elementwise
