@@ -2057,6 +2057,36 @@ function _axisStackForIR(ir: any, bindings: any, depth: number = 0): any[] | nul
     return [entry];
   }
 
+  // Axis-structure-preserving wrappers: their output measure has the
+  // SAME axis layout as the inner measure they wrap, so the axisStack
+  // is whatever the inner has. Recurse into the inner-measure arg.
+  // Without this coverage a binding like
+  //   `M = normalize(iid(Normal(0,1), N))`
+  //   `M = truncate(iid(Normal(0,1), N), interval(0, inf))`
+  //   `M = pushfwd(fn(exp(_)), iid(Normal(0,1), N))`
+  // would produce a NULL axisStack — the consumer would fall back to
+  // its runtime ladder for no good reason. Listing each preserving op
+  // explicitly (rather than a blanket "recurse on first measure arg")
+  // keeps the contract auditable: a new wrapper that's NOT preserving
+  // (e.g. joint / superpose / kchain — variate shape differs from
+  // any single inner's) must opt-in by extension, not by default.
+  if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'weighted'
+      || ir.op === 'logweighted' || ir.op === 'pushfwd' || ir.op === 'bayesupdate') {
+    // Inner-measure position is op-dependent (spec §06):
+    //   normalize(M)             — M at arg 0
+    //   truncate(M, S)           — M at arg 0, S at arg 1
+    //   weighted(w, M)           — M at arg 1
+    //   logweighted(g, M)        — M at arg 1
+    //   pushfwd(f, M)            — M at arg 1
+    //   bayesupdate(L, prior)    — prior at arg 1 (the axis-shape
+    //                              source; the likelihood reweights,
+    //                              doesn't add axes)
+    const innerIdx = (ir.op === 'normalize' || ir.op === 'truncate') ? 0 : 1;
+    if (args.length <= innerIdx) return null;
+    const inner = args[innerIdx];
+    return _innerMeasureStack(inner, bindings, depth);
+  }
+
   if (ir.op === 'aggregate') {
     // aggregate(f, output_axes, body). One axisStack entry per output
     // axis. Axis lengths come from P1's canonical-form annotation

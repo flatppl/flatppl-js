@@ -147,6 +147,131 @@ test('axisStack: malformed iid (missing n) returns null', () => {
 });
 
 // =====================================================================
+// 1b. Axis-structure-preserving wrappers — produce the SAME stack as
+//     the inner measure (P4 producer-recursion follow-up).
+// =====================================================================
+
+test('axisStack: normalize(iid(M, n)) → inner iid stack passes through', () => {
+  const ir = {
+    kind: 'call', op: 'normalize',
+    args: [{
+      kind: 'call', op: 'iid',
+      args: [
+        { kind: 'ref', ns: 'self', name: 'M' },
+        { kind: 'lit', value: 8 },
+      ],
+    }],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 8 }]);
+});
+
+test('axisStack: truncate(iid(M, n), S) → inner iid stack passes through', () => {
+  const ir = {
+    kind: 'call', op: 'truncate',
+    args: [
+      {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'M' },
+          { kind: 'lit', value: 12 },
+        ],
+      },
+      { kind: 'ref', ns: 'self', name: 'S' },
+    ],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 12 }]);
+});
+
+test('axisStack: weighted(w, iid(M, n)) → inner iid stack passes through', () => {
+  const ir = {
+    kind: 'call', op: 'weighted',
+    args: [
+      { kind: 'lit', value: 2.5 },
+      {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'M' },
+          { kind: 'lit', value: 9 },
+        ],
+      },
+    ],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 9 }]);
+});
+
+test('axisStack: pushfwd(f, iid(M, n)) → inner iid stack passes through', () => {
+  const ir = {
+    kind: 'call', op: 'pushfwd',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'f' },
+      {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'M' },
+          { kind: 'lit', value: 16 },
+        ],
+      },
+    ],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 16 }]);
+});
+
+test('axisStack: bayesupdate(L, prior) → prior stack passes through', () => {
+  const ir = {
+    kind: 'call', op: 'bayesupdate',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'L' },
+      {
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'M' },
+          { kind: 'lit', value: 7 },
+        ],
+      },
+    ],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 7 }]);
+});
+
+test('axisStack: nested wrappers — normalize(truncate(iid(M, n), S)) → still iid stack', () => {
+  const ir = {
+    kind: 'call', op: 'normalize',
+    args: [{
+      kind: 'call', op: 'truncate',
+      args: [
+        {
+          kind: 'call', op: 'iid',
+          args: [
+            { kind: 'ref', ns: 'self', name: 'M' },
+            { kind: 'lit', value: 20 },
+          ],
+        },
+        { kind: 'ref', ns: 'self', name: 'S' },
+      ],
+    }],
+  };
+  const stack = dissolver._axisStackForIR(ir, null);
+  assert.deepEqual(stack, [{ source: 'iid', size: 20 }]);
+});
+
+test('axisStack: wrapper around non-axis-introducing inner → null', () => {
+  // normalize(Normal(0,1)) has no axis — should NOT fabricate one.
+  const ir = {
+    kind: 'call', op: 'normalize',
+    args: [{
+      kind: 'call', op: 'Normal',
+      kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
+    }],
+  };
+  assert.equal(dissolver._axisStackForIR(ir, null), null);
+});
+
+// =====================================================================
 // 2. Through dissolveBindings (the full dissolver entry point)
 // =====================================================================
 
