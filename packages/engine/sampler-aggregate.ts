@@ -211,6 +211,11 @@ function _matmulDispatch(A: any, B: any, transA: boolean, transB: boolean): any 
 // Scalar multiplication is commutative, so either factor order in
 // the `mul` body matches the same logical product.
 // ---------------------------------------------------------------------
+// P5: classification delegates to the shared `aggregate-patterns.ts`
+// module — same source of truth as the dissolver's matmul matchers.
+// The `execute` half stays here (runtime evaluation specific).
+const aggregatePatterns = require('./aggregate-patterns.ts');
+
 AGGREGATE_PATTERNS.push({
   name: 'matmul-family',
   match(ir: any, _env: any): any {
@@ -222,54 +227,9 @@ AGGREGATE_PATTERNS.push({
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 2) return null;
     if (outAxes[0].kind !== 'axis' || outAxes[1].kind !== 'axis') return null;
-    const iName = outAxes[0].name;
-    const kName = outAxes[1].name;
-    if (iName === kName) return null;
-    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
-    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
-
-    // A's standard matmul layout is `A[.i, .j]` — output dim first,
-    // reduce dim second; transposed is `A[.j, .i]`. B's standard is
-    // `B[.j, .k]` — reduce dim first, output dim second; transposed
-    // is `B[.k, .j]`. The two operands have ASYMMETRIC "normal"
-    // conventions, so they get separate classifiers.
-    function classifyA(fac: any):
-      { src: any; trans: boolean; jName: string } | null
-    {
-      if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
-      if (!fac.args || fac.args.length !== 3) return null;
-      const s0 = fac.args[1], s1 = fac.args[2];
-      if (!s0 || s0.kind !== 'axis') return null;
-      if (!s1 || s1.kind !== 'axis') return null;
-      if (s0.name === iName) return { src: fac.args[0], trans: false, jName: s1.name };
-      if (s1.name === iName) return { src: fac.args[0], trans: true,  jName: s0.name };
-      return null;
-    }
-    function classifyB(fac: any):
-      { src: any; trans: boolean; jName: string } | null
-    {
-      if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
-      if (!fac.args || fac.args.length !== 3) return null;
-      const s0 = fac.args[1], s1 = fac.args[2];
-      if (!s0 || s0.kind !== 'axis') return null;
-      if (!s1 || s1.kind !== 'axis') return null;
-      if (s1.name === kName) return { src: fac.args[0], trans: false, jName: s0.name };
-      if (s0.name === kName) return { src: fac.args[0], trans: true,  jName: s1.name };
-      return null;
-    }
-
-    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
-    // Try assigning (f1=A, f2=B), then (f1=B, f2=A).
-    for (const [fA, fB] of [[f1, f2], [f2, f1]]) {
-      const ca = classifyA(fA);
-      const cb = classifyB(fB);
-      if (!ca || !cb) continue;
-      // Same reduction axis from both sides.
-      if (ca.jName !== cb.jName) continue;
-      if (ca.jName === iName || ca.jName === kName) continue;
-      return { aIR: ca.src, bIR: cb.src, transA: ca.trans, transB: cb.trans };
-    }
-    return null;
+    const cls = aggregatePatterns.classifyMatmulBody(bodyIR, outAxes);
+    if (!cls || cls.kind !== 'matmul') return null;
+    return { aIR: cls.aIR, bIR: cls.bIR, transA: cls.transA, transB: cls.transB };
   },
   execute(_ir: any, env: any, match: any): any {
     const A = evaluateExpr(match.aIR, env);
@@ -299,31 +259,9 @@ AGGREGATE_PATTERNS.push({
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 1) return null;
     if (outAxes[0].kind !== 'axis') return null;
-    const iName = outAxes[0].name;
-    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
-    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
-    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
-    // The matrix factor has rank-2 indexing (3 args to `get`); the
-    // vector factor has rank-1 indexing (2 args). Try both orderings.
-    for (const [matGet, vecGet] of [[f1, f2], [f2, f1]]) {
-      if (!matGet || matGet.kind !== 'call' || matGet.op !== 'get') continue;
-      if (!vecGet || vecGet.kind !== 'call' || vecGet.op !== 'get') continue;
-      if (!matGet.args || matGet.args.length !== 3) continue;
-      if (!vecGet.args || vecGet.args.length !== 2) continue;
-      const mS = [matGet.args[1], matGet.args[2]];
-      const vS = vecGet.args[1];
-      if (mS[0].kind !== 'axis' || mS[1].kind !== 'axis') continue;
-      if (!vS || vS.kind !== 'axis') continue;
-      const jName = vS.name;
-      if (jName === iName) continue;
-      // Determine A's orientation: which dim is .i, which is .j?
-      let transA = false;
-      if (mS[0].name === iName && mS[1].name === jName) transA = false;
-      else if (mS[0].name === jName && mS[1].name === iName) transA = true;
-      else continue;
-      return { aIR: matGet.args[0], vIR: vecGet.args[0], transA };
-    }
-    return null;
+    const cls = aggregatePatterns.classifyMatmulBody(bodyIR, outAxes);
+    if (!cls || cls.kind !== 'matvec') return null;
+    return { aIR: cls.aIR, vIR: cls.vIR, transA: cls.transA };
   },
   execute(_ir: any, env: any, match: any): any {
     const A = evaluateExpr(match.aIR, env);
@@ -368,24 +306,9 @@ AGGREGATE_PATTERNS.push({
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 2) return null;
     if (outAxes[0].kind !== 'axis' || outAxes[1].kind !== 'axis') return null;
-    const iName = outAxes[0].name;
-    const jName = outAxes[1].name;
-    if (iName === jName) return null;
-    if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return null;
-    if (!bodyIR.args || bodyIR.args.length !== 2) return null;
-    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
-    // Two rank-1 indexings, one on `.i` one on `.j`.
-    for (const [uGet, vGet] of [[f1, f2], [f2, f1]]) {
-      if (!uGet || uGet.kind !== 'call' || uGet.op !== 'get') continue;
-      if (!vGet || vGet.kind !== 'call' || vGet.op !== 'get') continue;
-      if (!uGet.args || uGet.args.length !== 2) continue;
-      if (!vGet.args || vGet.args.length !== 2) continue;
-      const us = uGet.args[1], vs = vGet.args[1];
-      if (!us || us.kind !== 'axis' || us.name !== iName) continue;
-      if (!vs || vs.kind !== 'axis' || vs.name !== jName) continue;
-      return { uIR: uGet.args[0], vIR: vGet.args[0] };
-    }
-    return null;
+    const cls = aggregatePatterns.classifyMatmulBody(bodyIR, outAxes);
+    if (!cls || cls.kind !== 'outer') return null;
+    return { uIR: cls.uIR, vIR: cls.vIR };
   },
   execute(_ir: any, env: any, match: any): any {
     const u = evaluateExpr(match.uIR, env);

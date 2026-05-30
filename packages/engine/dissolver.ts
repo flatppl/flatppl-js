@@ -523,41 +523,19 @@ function _foldShapeCall(ir: any, bindings: any): any | null {
 // remains as the cold fallback for everything else (outer-product,
 // batched-matmul, pure-axis-reduction, non-matched shapes).
 
-function _aggregateBodyClassifyA(
-  fac: any, iName: string,
-): { src: any; trans: boolean; jName: string } | null {
-  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
-  if (!fac.args || fac.args.length !== 3) return null;
-  const s0 = fac.args[1], s1 = fac.args[2];
-  if (!s0 || s0.kind !== 'axis') return null;
-  if (!s1 || s1.kind !== 'axis') return null;
-  if (s0.name === iName) return { src: fac.args[0], trans: false, jName: s1.name };
-  if (s1.name === iName) return { src: fac.args[0], trans: true, jName: s0.name };
-  return null;
+// P5: the structural recognisers moved to `aggregate-patterns.ts`
+// (one source of truth shared with the runtime AGGREGATE_PATTERNS
+// table). These thin shims preserve the dissolver's existing call
+// sites; the bodies delegate to the canonical classifiers.
+const _aggregatePatterns = require('./aggregate-patterns.ts');
+function _aggregateBodyClassifyA(fac: any, iName: string) {
+  return _aggregatePatterns.classifyAxisGetA(fac, iName);
 }
-
-function _aggregateBodyClassifyB(
-  fac: any, kName: string,
-): { src: any; trans: boolean; jName: string } | null {
-  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
-  if (!fac.args || fac.args.length !== 3) return null;
-  const s0 = fac.args[1], s1 = fac.args[2];
-  if (!s0 || s0.kind !== 'axis') return null;
-  if (!s1 || s1.kind !== 'axis') return null;
-  if (s1.name === kName) return { src: fac.args[0], trans: false, jName: s0.name };
-  if (s0.name === kName) return { src: fac.args[0], trans: true, jName: s1.name };
-  return null;
+function _aggregateBodyClassifyB(fac: any, kName: string) {
+  return _aggregatePatterns.classifyAxisGetB(fac, kName);
 }
-
-function _aggregateBodyClassifyV(
-  fac: any, jName: string,
-): any | null {
-  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
-  if (!fac.args || fac.args.length !== 2) return null;
-  const s0 = fac.args[1];
-  if (!s0 || s0.kind !== 'axis') return null;
-  if (s0.name !== jName) return null;
-  return fac.args[0];
+function _aggregateBodyClassifyV(fac: any, jName: string) {
+  return _aggregatePatterns.classifyAxisGetV(fac, jName);
 }
 
 function _wrapTranspose(ir: any, doTranspose: boolean): any {
