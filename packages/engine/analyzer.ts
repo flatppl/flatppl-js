@@ -397,19 +397,16 @@ function validateSpecialOperation(valueNode: any) {
           loc: fArg.loc,
         });
       }
-      // Second arg: non-empty array literal of distinct AxisRef.
+      // Second arg: array literal of distinct AxisRef. The list may
+      // be empty (spec §04 §sec:aggregate: "The bracketed axis list
+      // may be empty for full reduction to a scalar") — `s = aggregate
+      // (sum, [], A[.i] * B[.i])` reduces over every axis in expr.
       const oaArg = args[1];
       if (oaArg.type !== 'ArrayLiteral') {
         diags.push({
           severity: 'error',
           message: `aggregate()'s second argument must be an array literal `
-            + `of axis names (e.g. [.i, .k])`,
-          loc: oaArg.loc,
-        });
-      } else if (oaArg.elements.length === 0) {
-        diags.push({
-          severity: 'error',
-          message: `aggregate() requires at least one output axis`,
+            + `of axis names (e.g. [.i, .k] — or [] for full reduction)`,
           loc: oaArg.loc,
         });
       } else {

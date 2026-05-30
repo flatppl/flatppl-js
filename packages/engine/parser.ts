@@ -777,11 +777,17 @@ function parse(tokens: any[], variant: any) {
   }
 
   // Look ahead past `Name [` for the AggregateBinding shape:
-  //   IDENT LBRACKET DOT IDENT (COMMA DOT IDENT)* RBRACKET COLON_EQ
+  //   IDENT LBRACKET (DOT IDENT (COMMA DOT IDENT)*)? RBRACKET COLON_EQ
+  // The axis list may be empty (`s[] := body`) for full reduction to
+  // a scalar (spec §04 §sec:aggregate).
   // Returns true only if that exact sequence matches; otherwise false
   // so the regular Binding/Decomposition path proceeds.
   function lookaheadIsAggregateBinding() {
     let i = pos + 2;  // skip IDENT then LBRACKET
+    // Empty axis list: `[ ] :=`
+    if (tokens[i] && tokens[i].type === T.RBRACKET) {
+      return tokens[i + 1] != null && tokens[i + 1].type === T.COLON_EQ;
+    }
     if (!tokens[i] || tokens[i].type !== T.DOT) return false;
     while (i < tokens.length) {
       if (!tokens[i] || tokens[i].type !== T.DOT) return false;
@@ -800,10 +806,12 @@ function parse(tokens: any[], variant: any) {
     return false;
   }
 
-  // Parse `Name [ .axis (, .axis)* ] := Expression`. The lookahead has
-  // already confirmed the shape; we consume tokens and desugar
-  // at parse time to `Name = aggregate(sum, [Axis, ...], Expression)`
-  // so downstream passes see only the canonical CallExpr form.
+  // Parse `Name [ (.axis (, .axis)*)? ] := Expression`. The axis list
+  // may be empty (`s[] := body` for full reduction to a scalar). The
+  // lookahead has already confirmed the shape; we consume tokens and
+  // desugar at parse time to `Name = aggregate(sum, [Axis, ...],
+  // Expression)` so downstream passes see only the canonical CallExpr
+  // form (with an empty array literal for the empty case).
   function parseAggregateBinding() {
     const nameTok = advance();              // IDENT
     advance();                              // [
@@ -859,14 +867,17 @@ function parse(tokens: any[], variant: any) {
     }
 
     // AggregateBinding (spec §05 Axis names + §04 §sec:aggregate):
-    //   Name "[" Axis ("," Axis)* "]" ":=" Expression
+    //   Name "[" (Axis ("," Axis)*)? "]" ":=" Expression
     // Lowers at parse time to:
     //   Name "=" aggregate(sum, [Axis, ...], Expression)
+    // The axis list may be empty (`s[] := body`); per spec §04 the
+    // empty form denotes full reduction to a scalar.
     // Recognised by lookahead: after the leading Name, peek for `[`
-    // then a sequence of `.IDENT` (axis) tokens separated by commas,
-    // then `]` `:=`. If the pattern doesn't match we fall through to
-    // the normal Binding/Tilde/Decomposition parse. The lookahead is
-    // bounded by the closing bracket, so it stays cheap.
+    // then either an immediate `]` `:=` (empty), or a sequence of
+    // `.IDENT` (axis) tokens separated by commas, then `]` `:=`. If
+    // the pattern doesn't match we fall through to the normal
+    // Binding/Tilde/Decomposition parse. The lookahead is bounded by
+    // the closing bracket, so it stays cheap.
     if (at(T.IDENT) && tokens[pos + 1] && tokens[pos + 1].type === T.LBRACKET
         && lookaheadIsAggregateBinding()) {
       return parseAggregateBinding();
