@@ -54,6 +54,7 @@ import type {
 
 const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
+const rng          = require('./rng.ts');
 const shared       = require('./materialiser-shared.ts');
 const multivariate = require('./mat-multivariate.ts');
 const broadcast    = require('./mat-broadcast.ts');
@@ -89,7 +90,7 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
       ir: d.distIR,
       count: ctx.sampleCount,
       refArrays: refArrays,
-      seed: nameSeed(name, ctx.rootSeed),
+      seed: nameSeed(name, ctx.rootKey),
     }))
     .then((reply: any) => {
       const lw = reply.logWeights || null;
@@ -427,7 +428,13 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     const inflatedCache = new Map();
     const inflatedCtx: any = Object.assign({}, ctx, {
       sampleCount: N * k,
-      rootSeed: nameSeed(name + ':iid_fallback', ctx.rootSeed),
+      // Domain-separated child rootKey: the ':iid_fallback' tag keeps
+      // this child's seed stream distinct from any sample-step seed
+      // derived at this same `name` higher up the call stack (e.g.
+      // matSample at line 92 / line 497 / line 1349). xxhash32-derived
+      // tags + foldIn give us the full 96 bits of separation between
+      // (parent rootKey + name vs. parent rootKey + name+':iid_fallback').
+      rootKey: nameSeed(name + ':iid_fallback', ctx.rootKey),
     });
     inflatedCtx.getMeasure = function(nn: string) {
       if (inflatedCache.has(nn)) return inflatedCache.get(nn);
@@ -473,7 +480,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         mode: 'rejection',
         budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
         refArrays: refArrays,
-        seed: nameSeed(name, ctx.rootSeed),
+        seed: nameSeed(name, ctx.rootKey),
       }))
       .then((reply: any) => {
         // outerRank=1 per the locked decision (see fallback above).
@@ -494,7 +501,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     .then((refArrays: any) => ctx.sendWorker({
       type: 'sampleN', ir: resolved.distIR, count: N, repeat: k,
       refArrays: refArrays,
-      seed: nameSeed(name, ctx.rootSeed),
+      seed: nameSeed(name, ctx.rootKey),
     }))
     .then((reply: any) => {
       // outerRank=1: iid output is a nested vector (N outer atoms ×
@@ -625,7 +632,7 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       combinedLogWeights.set(lifted.logWeights, offset);
       offset += lifted.samples.length;
     }
-    const prng = makeMainThreadPrng(nameSeed(name, ctx.rootSeed));
+    const prng = makeMainThreadPrng(nameSeed(name, ctx.rootKey));
     const idx = empirical.systematicResample(combinedLogWeights, ctx.sampleCount, prng);
     const out = new Float64Array(ctx.sampleCount);
     for (let i = 0; i < ctx.sampleCount; i++) out[i] = combinedSamples[idx[i]];
@@ -671,7 +678,7 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
     return collectRefArrays(b.ir, ctx)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'sampleN', ir: b.ir, count: ctx.sampleCount,
-        refArrays: refArrays, seed: nameSeed(name + ':b' + bi, ctx.rootSeed),
+        refArrays: refArrays, seed: nameSeed(name + ':b' + bi, ctx.rootKey),
       }))
       .then((reply: any) => scalarMeasureN(reply.samples, {
         logWeights: reply.logWeights || null, logTotalmass: 0,
@@ -749,7 +756,8 @@ const KIND_HANDLERS = {
  *   getMeasure:   (name) => Promise<Measure>,    // recursive callback
  *   sendWorker:   (msg)  => Promise<reply>,      // worker handle
  *   sampleCount:  number,                        // global N
- *   rootSeed:     number,                        // base for nameSeed
+ *   rootSeed:     number,                        // user-facing seed (legacy field)
+ *   rootKey:      PhiloxKey,                     // [k0,k1] base for nameSeed/foldIn
  * }
  *
  * Returns Promise<Measure>. The caller (typically a viewer cache) is
@@ -994,13 +1002,33 @@ function makeTracingStage(opts?: TracingStageOpts): MaterialiserStage {
   return stage;
 }
 
+// rootKey lazy-init (commit 2, 2026-05-30): hosts pass `rootSeed`
+// as a single uint32 at the orchestrator boundary; the engine works
+// internally with a two-lane `PhiloxKey` (`[k0, k1]`) so every
+// per-binding `nameSeed(name, ctx.rootKey)` derives a fully-mixed
+// Philox key via `foldIn(rootKey, xxhash32(name))`. Derive the
+// rootKey once per ctx and cache it on the ctx object so recursive
+// `getMeasure` calls (and the iid_fallback child ctx, which we
+// re-key explicitly) all see the same root.
+//
+// Called at every public-API materialiser entry — materialiseMeasure,
+// materialiseMeasureIR, materialiseKernelBroadcastIR, materialiseSelectIR
+// — because hosts (viewer plot-plan.ts, tests in kernel-broadcast.test.ts)
+// can land at any of those without going through materialiseMeasure
+// first. Idempotent and cheap (one assignment after the first call).
+function _ensureRootKey(ctx: any): void {
+  if (ctx && ctx.rootKey == null && ctx.rootSeed != null) {
+    ctx.rootKey = rng.keyFromSeed(ctx.rootSeed | 0);
+  }
+}
+
 function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // Pre-dispatch guards (callable-layer rejection, fixed-phase
   // short-circuit) plus the terminal kindDispatch all live in the
   // pipeline now. Each concern composes orthogonally; new concerns
   // (tracing, MCMC handlers, gradient capture) add stages without
   // touching this function.
-  //
+  _ensureRootKey(ctx);
   // Worker-session-env precondition: push the module registry once
   // per ctx so any downstream `evaluateN`/`logDensityN`/`sampleN`
   // call that traverses a `(call target=({ns: <alias>, …}) …)` can
@@ -1034,6 +1062,7 @@ function materialiseKernelBroadcastIR(ir: any, ctx: any) {
     return Promise.reject(new Error(
       'materialiseKernelBroadcastIR: not a broadcast call'));
   }
+  _ensureRootKey(ctx);
   if (!Array.isArray(ir.args) || ir.args.length < 1) {
     return Promise.reject(new Error(
       'materialiseKernelBroadcastIR: broadcast has no head arg'));
@@ -1056,10 +1085,11 @@ function materialiseKernelBroadcastIR(ir: any, ctx: any) {
   }
   const d: any = { kind: 'kernelbroadcast', distOp: head.name,
                    argIRs: argIRs, kwargIRs: kwargIRs };
-  // Synthetic name for `nameSeed(name, ctx.rootSeed)` inside
+  // Synthetic name for `nameSeed(name, ctx.rootKey)` inside
   // matKernelBroadcast — not used as a binding lookup. Callers
   // that need a stable distinct sample stream can override
-  // `ctx.rootSeed` before calling.
+  // `ctx.rootKey` (or `ctx.rootSeed`, from which rootKey derives)
+  // before calling.
   return broadcast.matKernelBroadcast('%broadcast_ir', d, ctx);
 }
 
@@ -1090,6 +1120,7 @@ function materialiseSelectIR(ir: any, ctx: any) {
   if (!ir || ir.kind !== 'call' || ir.op !== 'select') {
     return Promise.reject(new Error('materialiseSelectIR: not a select call'));
   }
+  _ensureRootKey(ctx);
   const branches = ir.branches;
   if (!Array.isArray(branches) || branches.length === 0) {
     return Promise.reject(new Error('materialiseSelectIR: select has no branches'));
@@ -1130,7 +1161,7 @@ function materialiseSelectIR(ir: any, ctx: any) {
       kwargs: { p: { kind: 'call', op: 'vector',
         args: probs.map((pp) => ({ kind: 'lit', value: pp, numType: 'real' })) } } };
   }
-  const selectorSeed = nameSeed('%select_ir:selector', ctx.rootSeed);
+  const selectorSeed = nameSeed('%select_ir:selector', ctx.rootKey);
   const selectorP = ctx.sendWorker({
     type: 'sampleN', ir: selectorIR, count: N, seed: selectorSeed,
   });
@@ -1154,7 +1185,7 @@ function materialiseSelectIR(ir: any, ctx: any) {
     return shared.collectRefArrays(inner, ctx)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'sampleN', ir: inner, count: N, refArrays: refArrays,
-        seed: nameSeed('%select_ir:b' + bi, ctx.rootSeed),
+        seed: nameSeed('%select_ir:b' + bi, ctx.rootKey),
       }))
       .then((reply: any) => scalarMeasureN(reply.samples, {
         logWeights: reply.logWeights || null,
@@ -1250,6 +1281,7 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
     return Promise.reject(new Error(
       "materialiseMeasureIR: non-call IR (kind '" + ir.kind + "')"));
   }
+  _ensureRootKey(ctx);
   // lawof(M) → peel, recurse on M.
   if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
     return materialiseMeasureIR(ir.args[0], ctx);
@@ -1273,7 +1305,7 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         ctx.sendWorker({
           type: 'sampleN', ir: inner, count: ctx.sampleCount, repeat: k,
           refArrays: refArrays,
-          seed: nameSeed('%materialise_ir:iid', ctx.rootSeed),
+          seed: nameSeed('%materialise_ir:iid', ctx.rootKey),
         })
       ).then((reply: any) => {
         const m = empirical.arrayMeasure(reply.samples, dims, null);
@@ -1311,9 +1343,16 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
     const fieldNames = ir.fields.map((f: any) => f.name);
     const fieldIRs   = ir.fields.map((f: any) => f.value);
     return Promise.all(fieldIRs.map((v: any, i: number) => {
+      // Per-field child key: foldIn the field index (1-based to keep
+      // i=0 from collapsing into the parent key). The XOR shape this
+      // replaced was a single-uint32 discriminator with no proper
+      // mixing; foldIn gives us a fully-mixed two-lane key for each
+      // field with the same independence guarantees split() would
+      // give but without forcing the caller to know the fan-out
+      // ahead of time.
       const subCtx = Object.assign({}, ctx, {
-        rootSeed: ctx.rootSeed != null
-          ? (ctx.rootSeed ^ ((i + 1) * 0x9e3779b1)) : ctx.rootSeed,
+        rootKey: ctx.rootKey != null
+          ? rng.foldIn(ctx.rootKey, i + 1) : ctx.rootKey,
       });
       return materialiseMeasureIR(v, subCtx);
     })).then((subs: any[]) => {
@@ -1346,7 +1385,7 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
     ctx.sendWorker({
       type: 'sampleN', ir: ir, count: ctx.sampleCount,
       refArrays: refArrays,
-      seed: nameSeed('%materialise_ir:leaf', ctx.rootSeed),
+      seed: nameSeed('%materialise_ir:leaf', ctx.rootKey),
     })
   ).then((reply: any) => {
     const data = reply.samples;

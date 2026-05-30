@@ -526,7 +526,7 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
     ? ctx.getMeasure(base.ref)
     : ctx.sendWorker({
         type: 'sampleN', ir: base.measureIR, count: ctx.sampleCount,
-        refArrays: {}, seed: nameSeed(name + ':jc0', ctx.rootSeed),
+        refArrays: {}, seed: nameSeed(name + ':jc0', ctx.rootKey),
       }).then((r: any) => measureFromReply(r, ctx.sampleCount,
         { logTotalmass: 0, n_eff: ctx.sampleCount }));
 
@@ -687,7 +687,7 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
                 .then((extra: any) => ctx.sendWorker({
                   type: 'sampleN', ir: bnd.ir, count: N, repeat: reps,
                   refArrays: Object.assign({}, extra, bnd.refArrays),
-                  seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootSeed),
+                  seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootKey),
                 })).then((reply: any) => {
                   const Mi = Object.assign(
                     empirical.arrayMeasure(reply.samples, [reps], null),
@@ -708,7 +708,7 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
             return ctx.sendWorker({
               type: 'sampleN', ir: bound.ir, count: N,
               refArrays: bound.refArrays,
-              seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootSeed),
+              seed: nameSeed(name + ':jc' + i + '$' + li, ctx.rootKey),
             }).then((reply: any) => {
               const Mi = measureFromReply(reply, N, {
                 logWeights: priorVars[0].m.logWeights,
