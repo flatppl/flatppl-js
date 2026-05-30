@@ -87,18 +87,22 @@ test('expElem(real): regression — real input still works', () => {
   assert.ok(Math.abs(r.data[1] - Math.E) < 1e-12);
 });
 
-test('tanElem(complex): not complex-extended → throws (regression for legacy gate)', () => {
-  // Only exp/log/sqrt/abs/abs2 have complex impls today; others
-  // still throw on complex input. Pins that the gate behaves
-  // consistently for un-extended ops.
+test('tanElem(complex): full complex coverage', () => {
+  // P9 follow-up: tan/sin/cos plus inverse trig + hyperbolics are
+  // now complex-extended via sampler-complex closed forms. Pin a
+  // representative value to catch regressions.
+  // tan(i) ≈ 0 + 0.76159i (= i·tanh(1))
   const v = {
     shape: [1],
-    data: new Float64Array([1]),
+    data: new Float64Array([0]),
     im:   new Float64Array([1]),
     dtype: 'complex',
   };
-  assert.throws(() => valueOps.tanElem(v),
-    /complex input not supported/);
+  const r = valueOps.tanElem(v);
+  assert.equal(r.dtype, 'complex');
+  assert.ok(Math.abs(r.data[0]) < 1e-12, 'tan(i) real part ≈ 0');
+  assert.ok(Math.abs(r.im[0] - Math.tanh(1)) < 1e-12,
+    'tan(i) imag part ≈ tanh(1)');
 });
 
 // =====================================================================
