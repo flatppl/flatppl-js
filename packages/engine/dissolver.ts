@@ -102,6 +102,20 @@ const DISSOLVE_AT_ANY_RANK_OPS: Set<string> = new Set([
   // the outer broadcast args still applies.
   'cross', 'self_outer', 'trace', 'det', 'logabsdet', 'diagmat',
   'inv', 'lower_cholesky', 'row_gram', 'col_gram',
+  // Closed-form spec §07 ops that operate on whole-value args (each
+  // produces a Value of derivable rank from the inputs; broadcast over
+  // these IS just the op call directly when there are no collection
+  // dims to iterate). Reshape / signal / extraction ops are all in
+  // ARITH_OPS today; promoting them to DISSOLVE_AT_ANY_RANK_OPS lets
+  // `broadcast(<op>, value-arg)` (no-collection broadcast) and broadcast
+  // bodies that include these dissolve cleanly.
+  'tile', 'splitblocks', 'joinblocks', 'bandedmat', 'blockdiagmat',
+  'diag', 'conv', 'crosscorr',
+  // quadform(A, x) = xᵀ A x — composition of mul + elementwise + sum
+  // already in ARITH_OPS; dissolving through it just inlines the call.
+  'quadform',
+  // Sequential / prefix-sum reductions (operate on whole vectors).
+  'cumsum', 'cumprod',
   // Klein-4 tag flips (transpose / adjoint) — free at any rank;
   // matrices swap their LAST TWO axes (NumPy / JAX convention);
   // vectors swap row/column orientation. value-ops handles every
