@@ -2792,6 +2792,174 @@ function _resolveKernelName(ir: any, _env: any): string {
   return name;
 }
 
+// =====================================================================
+// sampleN / truncateSampleN fan-out dispatch shim (commit 4 scaffold)
+// =====================================================================
+//
+// Single seam through which main-thread callers route sampleN /
+// truncateSampleN requests. Two paths:
+//
+//   1. Scalar — `pool` unavailable (no spawnWorker), the flag is off,
+//      N is below `parallelismThreshold`, or `maxWorkers <= 1`. We
+//      call `_scalarHandle({...payload, seed: split(seed,1)[0]}, msgType)`
+//      directly. Going through `split` even at W=1 keeps the PRNG
+//      key-tree shape stable across the threshold boundary — flag-off
+//      and flag-on-at-small-N are bit-identical.
+//
+//   2. Fan-out — pool + flag on + N above threshold. We split N into
+//      W roughly-even chunks, draw W child keys via `rng.split`, slice
+//      per-atom refArrays per chunk (atom-indep refs pass through),
+//      dispatch through the pool, and reduce. For sampleN that's a
+//      simple Float64Array concat; for truncateSampleN we pool
+//      `n_eff` and `totalDraws` across chunks and re-derive the joint
+//      `logShift = log(sumNeff / sumDraws)`.
+//
+// Sync / async contract. The scalar path returns whatever
+// `_scalarHandle` returns — if the caller passed a sync handler
+// (the in-process `worker.handle` direct-test path), the result is
+// sync. If `_scalarHandle` is async (true worker round-trip via
+// postMessage), the result is a Promise. The fan-out path is always
+// async (the pool's runChunked awaits worker replies). Callers that
+// might hit either branch should treat the result as
+// `await`-compatible (`await x` on a non-Promise just returns x in JS).
+//
+// The dispatch is exported as `_dispatchSampleN` for the orchestrator
+// / materialiser to wire in once the worker-pool module lands. Tests
+// that drive `worker.handle` directly today don't go through here —
+// they remain unchanged. The shim is the seam main-thread callers
+// (Plot panel, materialiser sampleN entry) will route through when
+// the host backend has `spawnWorker` populated.
+
+const backendLib = require('./backend.ts');
+
+function _splitEven(N: number, W: number): number[] {
+  // Distribute N atoms into W chunks as evenly as possible. The first
+  // `rem = N - base*W` chunks get one extra atom each; remaining chunks
+  // are `base`. Total sums to N.
+  const base = Math.floor(N / W);
+  const rem = N - base * W;
+  const out = new Array(W);
+  for (let i = 0; i < W; i++) out[i] = base + (i < rem ? 1 : 0);
+  return out;
+}
+
+function _chunkOffsets(sizes: number[]): number[] {
+  // Cumulative start indices for each chunk; offsets[0] = 0,
+  // offsets[c] = sum(sizes[0..c-1]).
+  const out = new Array(sizes.length);
+  out[0] = 0;
+  for (let i = 1; i < sizes.length; i++) out[i] = out[i - 1] + sizes[i - 1];
+  return out;
+}
+
+function _sliceRefArrays(refs: any, off: number, n: number, totalN: number): any {
+  // Atom-axis refs (length === totalN, typed-array .subarray available)
+  // get a zero-copy subarray slice. Atom-indep refs (constants,
+  // broadcast scalars, or anything not matching the length) pass
+  // through unchanged. This matches the worker's per-i loop semantics:
+  // `refArrays.X[i]` is read at atom index i regardless of whether X
+  // is shared across atoms or per-atom.
+  if (refs == null) return refs;
+  const out: Record<string, any> = {};
+  for (const k of Object.keys(refs)) {
+    const v = refs[k];
+    if (v && v.length === totalN && typeof v.subarray === 'function') {
+      out[k] = v.subarray(off, off + n);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function _reduceReplies(replies: any[], totalN: number, msgType: string): any {
+  // Concatenate samples in chunk order (sample-stream ordering is
+  // determined by chunk layout — chunk c's atoms occupy indices
+  // [offsets[c], offsets[c]+sizes[c]) in the output). For
+  // truncateSampleN we additionally pool n_eff + totalDraws to
+  // recompute logShift across the full set; logShift on individual
+  // chunks reflects only that chunk's empirical acceptance.
+  if (msgType === 'sampleN' || msgType === 'truncateSampleN') {
+    const out = new Float64Array(totalN);
+    let o = 0;
+    let sumNeff = 0;
+    let sumDraws = 0;
+    for (const r of replies) {
+      const s = r.samples;
+      out.set(s, o);
+      o += s.length;
+      if (msgType === 'truncateSampleN') {
+        sumNeff += (r.n_eff ?? 0);
+        sumDraws += (r.totalDraws ?? 0);
+      }
+    }
+    const reply: any = { samples: out };
+    if (msgType === 'truncateSampleN') {
+      reply.n_eff = sumNeff;
+      reply.totalDraws = sumDraws;
+      reply.logShift = sumNeff > 0 ? Math.log(sumNeff / sumDraws) : -Infinity;
+    }
+    return reply;
+  }
+  throw new Error('_reduceReplies: unsupported msgType ' + msgType);
+}
+
+function _dispatchSampleN(payload: any, msgType: string, _scalarHandle: any): any {
+  // The caller passes `_scalarHandle(payload, msgType)`-style invocable
+  // — a closure that runs the request through whichever worker
+  // transport the caller wants (in-process `worker.handle`, postMessage
+  // wrapper, mock, …). We keep the transport choice out of this
+  // module; the orchestrator wires it in at call time.
+  const be = backendLib.getBackend();
+  const flagOn = backendLib.parallelSampleEnabled();
+  // Lazy require: worker-pool.ts arrives in a follow-up commit; this
+  // module must keep loading whether or not it's present yet.
+  let pool: any = null;
+  if (flagOn && typeof be.spawnWorker === 'function') {
+    try {
+      const workerPool = require('./worker-pool.ts');
+      pool = workerPool.getPool ? workerPool.getPool() : null;
+    } catch (_e) {
+      pool = null;
+    }
+  }
+  const totalN = payload.count | 0;
+
+  // Always thread through `rng.split` for determinism, even at W=1.
+  // This pins the key-tree shape so flag-off vs flag-on at small N
+  // produce bit-identical streams; crossing the threshold only
+  // changes the fan-out width, not the PRNG semantics.
+  if (!pool || !flagOn || totalN < be.parallelismThreshold || be.maxWorkers <= 1) {
+    // Scalar path: still go through split. W=1 means child key is
+    // split(seed, 1)[0]. If `seed` is absent (caller relies on the
+    // worker's session philox state), we don't re-key — preserving
+    // legacy behaviour.
+    if (payload.seed != null) {
+      const childKey = rng.split(payload.seed, 1)[0];
+      return _scalarHandle({ ...payload, seed: childKey }, msgType);
+    }
+    return _scalarHandle(payload, msgType);
+  }
+
+  // Fan-out path. W chosen to keep each chunk above the threshold —
+  // ceil(totalN / threshold) bounded by maxWorkers. The pool runs
+  // chunks in parallel and the reducer concatenates / pools metrics.
+  const W = Math.min(be.maxWorkers, Math.ceil(totalN / be.parallelismThreshold));
+  const chunkSizes = _splitEven(totalN, W);
+  const offsets = _chunkOffsets(chunkSizes);
+  const childKeys = rng.split(payload.seed, W);
+  const chunks = chunkSizes.map((cN: number, c: number) => ({
+    ...payload,
+    count: cN,
+    seed: childKeys[c],
+    refArrays: _sliceRefArrays(payload.refArrays, offsets[c], cN, totalN),
+  }));
+  // pool.runChunked is async; return its Promise (the caller awaits).
+  return pool.runChunked(msgType, chunks).then((replies: any[]) =>
+    _reduceReplies(replies, totalN, msgType)
+  );
+}
+
 module.exports = {
   // Primary API
   rand,
@@ -2803,6 +2971,11 @@ module.exports = {
   evaluateExpr,
   evaluateExprN,
   isBatch,
+
+  // Fan-out dispatch shim (commit 4 scaffold) — main-thread callers
+  // route sampleN / truncateSampleN through here; the orchestrator
+  // wires the scalar fallback (worker.handle or postMessage closure).
+  _dispatchSampleN,
 
   // Shared with traceeval.js — both modules need to dispatch on the
   // distribution registry and resolve param expressions against an env.

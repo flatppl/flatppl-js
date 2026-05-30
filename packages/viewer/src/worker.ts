@@ -21,34 +21,61 @@
  */
 import type { Ctx } from './types';
 
+/**
+ * Spawn a sampler Worker from a URL, with a blob-URL fallback for
+ * CSP-restricted hosts (notably the VS Code webview, where some
+ * versions reject `new Worker(webview-uri)` outright). The fallback
+ * fetches the bundle text via the same URI (which connect-src does
+ * allow), wraps it in a same-origin blob, and constructs the Worker
+ * from that.
+ *
+ * Exported so per-host bootstraps (web's main app entry,
+ * vscode-extension's webview script) can pass the same spawn
+ * function into the engine Backend's `spawnWorker` slot — the
+ * pool then uses one consistent spawning path for every Worker it
+ * creates, instead of each host re-implementing the CSP dance.
+ *
+ * Synchronous-on-the-happy-path: `new Worker(url)` returns
+ * immediately on hosts where it works, so the parallel-pool's
+ * spawnSlots() loop doesn't have to be async. The fallback path
+ * uses synchronous XHR (the only browser primitive that fetches a
+ * URL string -> bytes without going through a Promise) so the same
+ * sync contract holds for CSP-restricted hosts too. The 5-second
+ * blob-URL revoke timer protects against URL leaks once the worker
+ * has finished parsing its source; the worker keeps running.
+ */
+export function spawnSamplerWorker(url: string): Worker {
+  try {
+    return new Worker(url);
+  } catch (e) {
+    console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:',
+      e instanceof Error ? e.message : e);
+    // CSP-restricted host (VS Code webview, some Firefox configs).
+    // Synchronously fetch + blob the bundle so this stays a plain
+    // (non-Promise) spawn — matches the engine Backend.spawnWorker
+    // contract used by the parallel worker pool.
+    const req = new XMLHttpRequest();
+    req.open('GET', url, /* async */ false);
+    req.send();
+    if (req.status !== 0 && (req.status < 200 || req.status >= 300)) {
+      throw new Error('failed to fetch worker bundle: ' + req.status + ' ' + req.statusText);
+    }
+    const blob = new Blob([req.responseText], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    const w = new Worker(blobUrl);
+    setTimeout(function() { try { URL.revokeObjectURL(blobUrl); } catch (_) {} }, 5000);
+    return w;
+  }
+}
+
 export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
   ctx.samplerWorkerPromise = (async function() {
-    // Try direct construction first — cheapest path on hosts where
-    // it works. Fall back to blob: on any failure (security error,
-    // cross-origin block, etc.).
-    let w: Worker | null = null;
-    try {
-      w = new Worker(ctx.SAMPLER_WORKER_URL);
-    } catch (e) {
-      // continue to blob fallback
-      console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:',
-        e instanceof Error ? e.message : e);
-    }
-    if (!w) {
-      const resp = await fetch(ctx.SAMPLER_WORKER_URL);
-      if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status + ' ' + resp.statusText);
-      const src = await resp.text();
-      const blob = new Blob([src], { type: 'application/javascript' });
-      const url = URL.createObjectURL(blob);
-      w = new Worker(url);
-      // The blob URL only needs to live until the Worker has parsed
-      // its source — revoke after a short delay so the URL isn't
-      // leaked (the worker keeps running independently).
-      setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
-    }
+    // Route through the shared helper so the CSP / blob-URL fallback
+    // logic lives in exactly one place — see spawnSamplerWorker above.
+    const w: Worker = spawnSamplerWorker(ctx.SAMPLER_WORKER_URL);
     wireWorker(ctx, w);
     ctx.samplerWorker = w;
     // Initialize with a fixed seed for deterministic output. Future:
@@ -128,5 +155,16 @@ export function cancelAllSampling(ctx: Ctx) {
   ctx.pendingRequests = new Map();
   for (const entry of entries) {
     try { entry.reject(new Error('cancelled')); } catch (_) {}
+  }
+  // Tear down the parallel worker pool too — Stop button / page-
+  // unload should free every pool worker, not just the single-thread
+  // sampler held in ctx. disposePool is a no-op when the pool was
+  // never spawned, so this is safe to call unconditionally. Reached
+  // via the FlatPPLEngine global so the viewer bundle doesn't pull
+  // worker-pool into its own dependency graph (the engine bundle
+  // owns it).
+  const FE: any = (typeof window !== 'undefined') ? (window as any).FlatPPLEngine : null;
+  if (FE && FE.workerPool && typeof FE.workerPool.disposePool === 'function') {
+    try { FE.workerPool.disposePool(); } catch (_) {}
   }
 }
