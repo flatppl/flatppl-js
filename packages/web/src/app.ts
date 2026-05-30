@@ -1146,6 +1146,20 @@
       ev.returnValue = '';
     });
 
+    // Terminate any parallel-pool workers on tab close / navigation
+    // so they can't outlive the page (some browsers leak them across
+    // bfcache restores otherwise). Pairs with the cancelAllSampling
+    // teardown that fires from the Stop button. The engine global
+    // also surfaces `workerPool.disposePool` so we don't have to
+    // import it here; the call is a no-op when the pool was never
+    // spawned (e.g. plot tab was never opened).
+    window.addEventListener('pagehide', function () {
+      const FE: any = (window as any).FlatPPLEngine;
+      if (FE && FE.workerPool && typeof FE.workerPool.disposePool === 'function') {
+        try { FE.workerPool.disposePool(); } catch (_) {}
+      }
+    });
+
     if (!window.FlatPPLViewer || typeof window.FlatPPLViewer.mount !== 'function') {
       console.error('[@flatppl/web] FlatPPLViewer.mount is not available');
       return;

@@ -25,6 +25,14 @@ const pirSexpr = require('./pir-sexpr.ts');
 const standardModules = require('./standard-modules.ts');
 const dataload = require('./dataload.ts');
 const perfConfig = require('./perf-config.ts');
+// Backend + worker-pool seam: per-host bootstraps (web / vscode-
+// extension) install a Backend at startup via setBackend(...) so the
+// pool can spawn Workers in CSP-restricted environments. Both modules
+// are tiny and dependency-free; surfacing them on the engine global
+// lets the viewer reach disposePool() from cancelAllSampling without
+// pulling its own copy of worker-pool into the viewer bundle.
+const backend = require('./backend.ts');
+const workerPool = require('./worker-pool.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
 // stdlib's distribution packages (~1 MB after bundling) and are intended
 // for the sampler-worker bundle only. Main-thread / extension-host code
@@ -112,4 +120,10 @@ module.exports = {
   types, typeinfer, pir, pirSexpr, standardModules, dataload,
   // Optimization toggles for dual-mode testing (engine-concepts §15).
   perfConfig,
+  // Backend abstraction + worker-pool: hosts call
+  //   FlatPPLEngine.backend.setBackend({ ...FlatPPLEngine.backend.jsBackend,
+  //     maxWorkers, spawnWorker })
+  // at bootstrap, and FlatPPLEngine.workerPool.disposePool() on Stop
+  // or page-unload.
+  backend, workerPool,
 };
