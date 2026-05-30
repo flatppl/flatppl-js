@@ -339,6 +339,30 @@ function _registerExtLinearAlgebra() {
     impl: extLinalg._matexp,
   });
 
+  // qr(A) — Householder reflections, returns record(Q, R) per spec §07.
+  // For an m×n matrix with m ≥ n, Q is m×n with orthonormal columns
+  // and R is n×n upper-triangular such that A = Q · R.
+  bindings.set('qr', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }],
+      T.record({ Q: dynMat, R: dynMat }),
+    ),
+    impl: extLinalg._qr,
+  });
+
+  // lstsq(A, b) — minimum-norm least-squares via QR. b is a length-m
+  // vector; result x is a length-k vector minimising ||A·x - b||₂.
+  const dynVec = T.array(1, ['%dynamic'], T.REAL);
+  bindings.set('lstsq', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'A', type: dynMat }, { name: 'b', type: dynVec }],
+      dynVec,
+    ),
+    impl: extLinalg._lstsq,
+  });
+
   registerStandardModule({
     name: 'ext-linear-algebra',
     compat: '0.1',

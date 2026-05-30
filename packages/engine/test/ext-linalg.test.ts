@@ -176,11 +176,103 @@ test('matexp: known small case — [[0, -π], [π, 0]] = rotation by π', () => 
 });
 
 // =====================================================================
-// 4. Standard-module integration: the bindings reach the registry under
+// 4. qr — Householder reflections (spec §07; surfaced in §09 module)
+// =====================================================================
+
+function flatTranspose(M: number[], rows: number, cols: number): number[] {
+  const out = new Array(rows * cols);
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) out[j * rows + i] = M[i * cols + j];
+  }
+  return out;
+}
+
+test('qr: 2x2 — round-trip A = Q · R', () => {
+  // A = [[4, 3], [2, 1]]
+  const A_data = [4, 3, 2, 1];
+  const A = matVal(2, 2, A_data);
+  const { fields } = extLinalg._qr(A);
+  const Q = Array.from(fields.Q.data);
+  const R = Array.from(fields.R.data);
+  // Q · R should equal A.
+  const QR = flatMatMul(Q, R, 2, 2, 2);
+  assertClose(QR, A_data, 1e-12);
+  // Q has orthonormal columns: Q^T Q = I.
+  const Qt = flatTranspose(Q, 2, 2);
+  const QtQ = flatMatMul(Qt, Q, 2, 2, 2);
+  assertClose(QtQ, [1, 0, 0, 1], 1e-12);
+});
+
+test('qr: 4x2 thin QR — Q is 4x2 orthonormal, R is 2x2 upper', () => {
+  // A = arbitrary 4x2 matrix
+  const A_data = [1, 2, 3, 4, 5, 6, 7, 8];
+  const A = matVal(4, 2, A_data);
+  const { fields } = extLinalg._qr(A);
+  assert.deepEqual(fields.Q.shape, [4, 2]);
+  assert.deepEqual(fields.R.shape, [2, 2]);
+  const Q = Array.from(fields.Q.data);
+  const R = Array.from(fields.R.data);
+  // Q · R = A.
+  const QR = flatMatMul(Q, R, 4, 2, 2);
+  assertClose(QR, A_data, 1e-10);
+  // Q^T · Q = I (Q has orthonormal columns).
+  const Qt = flatTranspose(Q, 4, 2);
+  const QtQ = flatMatMul(Qt, Q, 2, 4, 2);
+  assertClose(QtQ, [1, 0, 0, 1], 1e-12);
+  // R is upper-triangular: R[1, 0] = 0.
+  assert.ok(Math.abs(R[2]) < 1e-12, 'R[1,0] = 0');
+});
+
+test('qr: rejects m < n', () => {
+  const A = matVal(2, 4, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.throws(() => extLinalg._qr(A), /m >= n/);
+});
+
+// =====================================================================
+// 5. lstsq — least-squares via QR
+// =====================================================================
+
+test('lstsq: square 2x2 — recovers exact solution (no residual)', () => {
+  // A · x = b where A = [[4, 3], [2, 1]], x = [1, 2], b = [10, 4].
+  const A = matVal(2, 2, [4, 3, 2, 1]);
+  const b = { shape: [2], data: new Float64Array([10, 4]) };
+  const x = extLinalg._lstsq(A, b);
+  assertClose(Array.from(x.data), [1, 2], 1e-12);
+});
+
+test('lstsq: overdetermined 4x2 — matches normal-equations solution', () => {
+  // Linear-regression-style: 4 data points, fit slope + intercept.
+  // y = 2·x + 1 with noise → exact data: x = [1,2,3,4], y = [3,5,7,9]
+  // A = [[1,1],[1,2],[1,3],[1,4]] (column 0 = intercept, column 1 = x).
+  // True params: [intercept, slope] = [1, 2].
+  const A = matVal(4, 2, [1, 1, 1, 2, 1, 3, 1, 4]);
+  const b = { shape: [4], data: new Float64Array([3, 5, 7, 9]) };
+  const x = extLinalg._lstsq(A, b);
+  assertClose(Array.from(x.data), [1, 2], 1e-10);
+});
+
+test('lstsq: overdetermined 4x2 with noise — minimises residual', () => {
+  // Same shape but with noise in b — least-squares fit.
+  const A = matVal(4, 2, [1, 1, 1, 2, 1, 3, 1, 4]);
+  const b = { shape: [4], data: new Float64Array([3.1, 4.9, 7.2, 8.8]) };
+  const x = extLinalg._lstsq(A, b);
+  // Computed by hand / known formula: x ≈ [1.05, 1.97]
+  assert.ok(Math.abs(x.data[0] - 1.05) < 0.1);
+  assert.ok(Math.abs(x.data[1] - 1.97) < 0.1);
+});
+
+test('lstsq: rejects b length mismatch', () => {
+  const A = matVal(3, 2, [1, 2, 3, 4, 5, 6]);
+  const b = { shape: [4], data: new Float64Array([1, 2, 3, 4]) };
+  assert.throws(() => extLinalg._lstsq(A, b), /vector/);
+});
+
+// =====================================================================
+// 6. Standard-module integration: the bindings reach the registry under
 //    `ext-linear-algebra@0.1` and their impl is invocable end-to-end.
 // =====================================================================
 
-test('std-module: ext-linear-algebra@0.1 is registered with lu/kron/matexp bindings', () => {
+test('std-module: ext-linear-algebra@0.1 is registered with the current binding set', () => {
   // Built-in modules are registered at module-load time, but the
   // standard-modules.test.ts file calls _clearStandardModules in its
   // setup — if that ran first in the test process, the registry is
@@ -188,9 +280,9 @@ test('std-module: ext-linear-algebra@0.1 is registered with lu/kron/matexp bindi
   stdmod._registerBuiltinStandardModules();
   const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
   assert.ok(mod, 'module registered');
-  assert.ok(mod.bindings.has('lu'),     'lu binding present');
-  assert.ok(mod.bindings.has('kron'),   'kron binding present');
-  assert.ok(mod.bindings.has('matexp'), 'matexp binding present');
+  for (const op of ['lu', 'kron', 'matexp', 'qr', 'lstsq']) {
+    assert.ok(mod.bindings.has(op), op + ' binding present');
+  }
 });
 
 test('std-module: ext-linear-algebra.lu impl reachable via registry', () => {
