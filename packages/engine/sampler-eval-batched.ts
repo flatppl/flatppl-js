@@ -84,62 +84,139 @@ function _scalarVal(v: any) {
   return v;
 }
 
-// Any input is a Value? Triggers Value-wrapped output.
-function _anyValue1(a: any)       { return isValueObj(a); }
-function _anyValue2(a: any, b: any)    { return isValueObj(a) || isValueObj(b); }
-function _anyValue3(a: any, b: any, c: any) { return isValueObj(a) || isValueObj(b) || isValueObj(c); }
+// =====================================================================
+// Unified atom-batched scalar broadcast (P8)
+// =====================================================================
+//
+// `broadcastN(fn, args, N)` is the single arity-polymorphic
+// atom-batched scalar dispatcher — replaces the fixed-arity
+// `broadcast1` / `broadcast2` / `broadcast3` trio. Per the §2.1
+// shape contract, each input is one of:
+//   - bare number / boolean  → atom-indep scalar
+//   - Float64Array of length N → atom-batched scalar (raw)
+//   - Value with shape=[]    → atom-indep scalar (wrapped)
+//   - Value with shape=[N]   → atom-batched scalar (wrapped)
+//
+// Returns:
+//   - rank-0 result (no atom-batched input) → number or Value([])
+//     depending on wantValue.
+//   - rank-1 result (≥1 atom-batched input) → Float64Array(N) or
+//     Value([N]) depending on wantValue.
+//
+// **wantValue.** If ANY input is a Value, the output is Value-wrapped
+// (per the §2.1 contract — Values propagate; raw types only outputted
+// when every input is raw). This is the standing convention across
+// broadcast1/2/3 too — preserved here verbatim.
+//
+// Rank-1/2/3 fast paths are inlined (V8 JIT loves the fixed-arity
+// nested form); higher arities take the generic per-atom dispatch.
+// `broadcast1/2/3` survive as thin shims for back-compat callers.
 
-function broadcast1(fn: any, a: any, N: any) {
-  const wantValue = _anyValue1(a);
-  if (!isBatch(a, N)) {
-    const r = fn(_scalarVal(a));
-    return wantValue ? valueLib.scalar(r) : r;
+function _anyValueArr(args: any[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (isValueObj(args[i])) return true;
   }
-  const ad = _batchData(a);
-  const out = new Float64Array(N);
-  for (let i = 0; i < N; i++) out[i] = +fn(ad[i]);
-  return wantValue ? valueLib.batchedScalar(out) : out;
+  return false;
 }
 
-function broadcast2(fn: any, a: any, b: any, N: any) {
-  const aB = isBatch(a, N), bB = isBatch(b, N);
-  const wantValue = _anyValue2(a, b);
-  if (!aB && !bB) {
-    const r = fn(_scalarVal(a), _scalarVal(b));
+function broadcastN(fn: any, args: any[], N: any) {
+  const ar = args.length;
+  // Fast paths for arity 1/2/3 — V8 JITs the fixed-arity form much
+  // better than the generic loop. The runtime hits these almost
+  // exclusively (the highest declared scalar-primitive arity today
+  // is 3, for `ifelse`).
+  if (ar === 1) {
+    const a = args[0];
+    const wantValue = _anyValueArr(args);
+    if (!isBatch(a, N)) {
+      const r = fn(_scalarVal(a));
+      return wantValue ? valueLib.scalar(r) : r;
+    }
+    const ad = _batchData(a);
+    const out = new Float64Array(N);
+    for (let i = 0; i < N; i++) out[i] = +fn(ad[i]);
+    return wantValue ? valueLib.batchedScalar(out) : out;
+  }
+  if (ar === 2) {
+    const a = args[0], b = args[1];
+    const aB = isBatch(a, N), bB = isBatch(b, N);
+    const wantValue = _anyValueArr(args);
+    if (!aB && !bB) {
+      const r = fn(_scalarVal(a), _scalarVal(b));
+      return wantValue ? valueLib.scalar(r) : r;
+    }
+    const out = new Float64Array(N);
+    if (aB && bB) {
+      const ad = _batchData(a), bd = _batchData(b);
+      for (let i = 0; i < N; i++) out[i] = +fn(ad[i], bd[i]);
+    } else if (aB) {
+      const ad = _batchData(a), bs = _scalarVal(b);
+      for (let i = 0; i < N; i++) out[i] = +fn(ad[i], bs);
+    } else {
+      const as = _scalarVal(a), bd = _batchData(b);
+      for (let i = 0; i < N; i++) out[i] = +fn(as, bd[i]);
+    }
+    return wantValue ? valueLib.batchedScalar(out) : out;
+  }
+  if (ar === 3) {
+    const a = args[0], b = args[1], c = args[2];
+    const aB = isBatch(a, N), bB = isBatch(b, N), cB = isBatch(c, N);
+    const wantValue = _anyValueArr(args);
+    if (!aB && !bB && !cB) {
+      const r = fn(_scalarVal(a), _scalarVal(b), _scalarVal(c));
+      return wantValue ? valueLib.scalar(r) : r;
+    }
+    const ad = aB ? _batchData(a) : null;
+    const bd = bB ? _batchData(b) : null;
+    const cd = cB ? _batchData(c) : null;
+    const as = aB ? null : _scalarVal(a);
+    const bs = bB ? null : _scalarVal(b);
+    const cs = cB ? null : _scalarVal(c);
+    const out = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      out[i] = +fn(aB ? ad[i] : as, bB ? bd[i] : bs, cB ? cd[i] : cs);
+    }
+    return wantValue ? valueLib.batchedScalar(out) : out;
+  }
+  // Generic arity: pre-extract per-arg data/scalar, run a per-atom
+  // loop. The generic path's per-atom callback overhead is real but
+  // arity > 3 is rare — no declared scalar primitive uses it today.
+  const wantValue = _anyValueArr(args);
+  const flags = new Array(ar);
+  const datas: any[] = new Array(ar);
+  const scalars: any[] = new Array(ar);
+  let anyBatched = false;
+  for (let k = 0; k < ar; k++) {
+    flags[k] = isBatch(args[k], N);
+    if (flags[k]) { datas[k] = _batchData(args[k]); anyBatched = true; }
+    else { scalars[k] = _scalarVal(args[k]); }
+  }
+  if (!anyBatched) {
+    const r = fn(...scalars);
     return wantValue ? valueLib.scalar(r) : r;
   }
   const out = new Float64Array(N);
-  if (aB && bB) {
-    const ad = _batchData(a), bd = _batchData(b);
-    for (let i = 0; i < N; i++) out[i] = +fn(ad[i], bd[i]);
-  } else if (aB) {
-    const ad = _batchData(a), bs = _scalarVal(b);
-    for (let i = 0; i < N; i++) out[i] = +fn(ad[i], bs);
-  } else {
-    const as = _scalarVal(a), bd = _batchData(b);
-    for (let i = 0; i < N; i++) out[i] = +fn(as, bd[i]);
-  }
-  return wantValue ? valueLib.batchedScalar(out) : out;
-}
-
-function broadcast3(fn: any, a: any, b: any, c: any, N: any) {
-  const aB = isBatch(a, N), bB = isBatch(b, N), cB = isBatch(c, N);
-  const wantValue = _anyValue3(a, b, c);
-  if (!aB && !bB && !cB) {
-    const r = fn(_scalarVal(a), _scalarVal(b), _scalarVal(c));
-    return wantValue ? valueLib.scalar(r) : r;
-  }
-  const ad = aB ? _batchData(a) : null;
-  const bd = bB ? _batchData(b) : null;
-  const cd = cB ? _batchData(c) : null;
-  const as = aB ? null : _scalarVal(a);
-  const bs = bB ? null : _scalarVal(b);
-  const cs = cB ? null : _scalarVal(c);
-  const out = new Float64Array(N);
+  const slot: any[] = new Array(ar);
   for (let i = 0; i < N; i++) {
-    out[i] = +fn(aB ? ad[i] : as, bB ? bd[i] : bs, cB ? cd[i] : cs);
+    for (let k = 0; k < ar; k++) {
+      slot[k] = flags[k] ? datas[k][i] : scalars[k];
+    }
+    out[i] = +fn(...slot);
   }
   return wantValue ? valueLib.batchedScalar(out) : out;
+}
+
+// Thin shims — broadcast1/2/3 delegate to broadcastN. Kept for any
+// external caller that imports them directly; internal call sites
+// (ARITH_OPS_N initialiser, line ~442) now call broadcastN directly.
+function broadcast1(fn: any, a: any, N: any) {
+  return broadcastN(fn, [a], N);
+}
+function broadcast2(fn: any, a: any, b: any, N: any) {
+  return broadcastN(fn, [a, b], N);
+}
+function broadcast3(fn: any, a: any, b: any, c: any, N: any) {
+  return broadcastN(fn, [a, b, c], N);
 }
 
 // =====================================================================
@@ -439,10 +516,13 @@ function initARITHOPSN(ARITH_OPS: any) {
     if (typeof fn !== 'function') {
       throw new Error(`ARITH_OPS_N: scalar primitive '${op}' has no ARITH_OPS entry`);
     }
-    if (arity === 1) ARITH_OPS_N[op] = (args: any, N: any) => broadcast1(fn, args[0], N);
-    else if (arity === 2) ARITH_OPS_N[op] = (args: any, N: any) => broadcast2(fn, args[0], args[1], N);
-    else if (arity === 3) ARITH_OPS_N[op] = (args: any, N: any) => broadcast3(fn, args[0], args[1], args[2], N);
-    else throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}'`);
+    // P8: unified `broadcastN` replaces the fixed-arity `broadcast1/
+    // 2/3` dispatchers. Arity is still validated for early error.
+    if (arity < 1 || arity > 3) {
+      throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}' `
+        + `(scalar primitive arity must be 1, 2, or 3 today)`);
+    }
+    ARITH_OPS_N[op] = (args: any, N: any) => broadcastN(fn, args, N);
   }
 
   // Shape-aware mul / add / sub / neg.
@@ -843,4 +923,5 @@ module.exports = {
   broadcast1,
   broadcast2,
   broadcast3,
+  broadcastN,
 };
