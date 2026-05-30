@@ -102,6 +102,22 @@ const DISSOLVE_AT_ANY_RANK_OPS: Set<string> = new Set([
   // the outer broadcast args still applies.
   'cross', 'self_outer', 'trace', 'det', 'logabsdet', 'diagmat',
   'inv', 'lower_cholesky', 'row_gram', 'col_gram',
+  // Klein-4 tag flips (transpose / adjoint) — free at any rank;
+  // matrices swap their LAST TWO axes (NumPy / JAX convention);
+  // vectors swap row/column orientation. value-ops handles every
+  // case via the tag, no per-rank dispatch needed. Adjoint also
+  // toggles the conjugate bit for complex; both are tag-only ops.
+  'transpose', 'adjoint',
+  // Restructuring ops that are spec-level identity at the value
+  // level. `relabel` renames fields/columns; for measure-/function-
+  // typed inputs it's a structural rewrite, but at the broadcast-
+  // body value level (where the dissolver fires) it's a no-op
+  // wrapper that passes data through. `addaxes` inserts singleton
+  // axes that the elementwise broadcast machinery already expands
+  // via stride-0 reads. `identity` is the literal identity fn from
+  // spec §07; promoting it from SCALAR_ONLY to ANY_RANK matches
+  // its semantic (identity is identity at every rank).
+  'relabel', 'addaxes', 'identity',
 ]);
 
 const DISSOLVE_SCALAR_ONLY_OPS: Set<string> = new Set([
@@ -123,8 +139,9 @@ const DISSOLVE_SCALAR_ONLY_OPS: Set<string> = new Set([
   'land', 'lor', 'lxor', 'lnot', 'ifelse',
   // Scalar restrictors + complex constructors.
   'boolean', 'integer', 'real', 'imag', 'conj', 'complex', 'cis',
-  // Identity (broadcast(identity, A) ≡ A; harmless dissolution).
-  'identity',
+  // (`identity` is in DISSOLVE_AT_ANY_RANK_OPS above — moved out so
+  // `broadcast(identity, A)` dissolves for matrix A too, not just
+  // scalars.)
 ]);
 
 // Composite check: op is safe to dissolve at all? (Either tier.)
@@ -1449,43 +1466,70 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   if (bcIR.kwargs && Object.keys(bcIR.kwargs).length > 0) return null;
 
   // Classify each broadcast arg: Ref-wrap (per-cell value = inner)
-  // or rank-1 broadcast-over (per-cell value = get(arg, .atom)).
-  // Build the placeholder→replacement map.
+  // or rank-K broadcast-over (per-cell value = get(arg, .atom_0,
+  // ..., .atom_{K-1})). Build the placeholder→replacement map.
+  //
+  // **Multi-axis broadcast** (engine-concepts §20.10.8 follow-up):
+  // when broadcast-over args have rank K > 1, the broadcast
+  // iterates over K outer axes; the fusion emits K output axes on
+  // the aggregate. Spec §04 requires all collection args to have
+  // the same number of axes (size-1 axes expand by repetition),
+  // so K is the common rank of every broadcast-over arg.
   //
   // **No phase gate** (lifted 2026-05-29). The substituted body
   // works for both fixed and stochastic broadcast-over args:
-  //   - Fixed-phase: aggregate runs once over the static axis
-  //     sizes.
+  //   - Fixed-phase: aggregate runs once over the static axis sizes.
   //   - Stochastic: the per-atom fallback in `_perAtomFallback`
-  //     slices the rank-2 Value to rank-1 per engine atom; the
-  //     aggregate body's `get(X, .atom)` indexes the rank-1 view
-  //     correctly. Engine atom axis prepends to the result via
-  //     `_perAtomFallback`'s atom-major packing. The collapse from
-  //     interpreted per-cell broadcast recursion to one aggregate-
-  //     per-atom evaluation is the perf win on the polyeval-slow
-  //     case.
-  //   - Future batched-aggregate runtime can collapse the
-  //     per-engine-atom loop further (a single aggregate IR
-  //     evaluated across all engine atoms in one tight loop).
-  const atomAxisName = _freshAxisName(innerExpr, 'atom');
+  //     slices the rank-(K+1) Value to rank-K per engine atom; the
+  //     aggregate body's `get(X, .atom_0, ..., .atom_{K-1})` indexes
+  //     the rank-K view correctly. Engine atom axis prepends to
+  //     the result via `_perAtomFallback`'s atom-major packing.
+  //
+  // First pass: discover the broadcast rank K from the first
+  // broadcast-over arg, then validate every other broadcast-over
+  // arg has the same rank.
+  let broadcastRank = -1;
+  for (let i = 0; i < params.length; i++) {
+    const arg = posArgs[i];
+    if (_refWrapInner(arg, bindings) !== null) continue;
+    const tp = _argTypeAndPhase(arg, bindings);
+    if (!tp || !tp.type) return null;
+    if (tp.type.kind !== 'array') return null;
+    if (!Array.isArray(tp.type.shape) || tp.type.shape.length === 0) return null;
+    if (broadcastRank < 0) broadcastRank = tp.type.shape.length;
+    else if (tp.type.shape.length !== broadcastRank) {
+      // Mixed-rank broadcast-over args fall back to runtime.
+      return null;
+    }
+  }
+  // No broadcast-over args means there's nothing to iterate.
+  if (broadcastRank <= 0) return null;
+  // Generate K fresh atom-axis names (.atom, .atom1, .atom2, ...).
+  const atomAxisNames: string[] = new Array(broadcastRank);
+  let seedBody: any = innerExpr;
+  for (let k = 0; k < broadcastRank; k++) {
+    atomAxisNames[k] = _freshAxisName(seedBody, k === 0 ? 'atom' : 'atom' + k);
+    // Thread the name into a synthetic body so subsequent calls
+    // see it as "used" and pick a non-colliding alternative.
+    seedBody = { kind: 'call', op: '_used', args: [
+      seedBody, { kind: 'axis', name: atomAxisNames[k] },
+    ]};
+  }
   const paramReplacement: Map<string, any> = new Map();
   for (let i = 0; i < params.length; i++) {
     const arg = posArgs[i];
     const inner = _refWrapInner(arg, bindings);
     if (inner !== null) {
-      // Ref-wrap: substitute the placeholder with the unwrapped inner.
       paramReplacement.set(params[i], inner);
       continue;
     }
-    // Broadcast-over: arg must be a binding ref with array-typed
-    // inferredType so its first axis can be indexed by .atom.
-    const tp = _argTypeAndPhase(arg, bindings);
-    if (!tp || !tp.type) return null;
-    if (tp.type.kind !== 'array') return null;
-    if (!Array.isArray(tp.type.shape) || tp.type.shape.length === 0) return null;
+    // Broadcast-over: emit `get(arg, .atom_0, ..., .atom_{K-1})`.
+    const getArgs: any[] = [arg];
+    for (let k = 0; k < broadcastRank; k++) {
+      getArgs.push({ kind: 'axis', name: atomAxisNames[k] });
+    }
     paramReplacement.set(params[i], {
-      kind: 'call', op: 'get',
-      args: [arg, { kind: 'axis', name: atomAxisName }],
+      kind: 'call', op: 'get', args: getArgs,
     });
   }
 
@@ -1513,17 +1557,16 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   const wrapped = _wrapVectorLeaves(folded, jName, bindings);
   if (!wrapped) return null;
 
-  // Emit the aggregate IR. Output axis = [.atom]; reduction axis .j
-  // is implicit (it appears in the wrapped body but not in the
-  // output_axes vector).
+  // Emit the aggregate IR. Output axes = the K atom axes (one per
+  // broadcast dim); reduction axis .j is implicit (it appears in
+  // the wrapped body but not in the output_axes vector).
+  const outAxisIRs: any[] = atomAxisNames.map((n) =>
+    ({ kind: 'axis', name: n }));
   const aggIR: any = {
     kind: 'call', op: 'aggregate',
     args: [
       { kind: 'ref', ns: 'self', name: reducerName },
-      {
-        kind: 'call', op: 'vector',
-        args: [{ kind: 'axis', name: atomAxisName }],
-      },
+      { kind: 'call', op: 'vector', args: outAxisIRs },
       wrapped,
     ],
   };
