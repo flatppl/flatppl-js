@@ -54,21 +54,12 @@ function resolveConst(name: any): any {
 
 const isValueObj = valueLib.isValue;
 
-function isBatch(v: any, N: any) {
-  if (v == null) return false;
-  // Bare Float64Array of length N (legacy path; also catches any
-  // typed array with matching length — same as before).
-  if (v.BYTES_PER_ELEMENT !== undefined
-      && typeof v.length === 'number' && v.length === N) {
-    return true;
-  }
-  // Value with shape=[N].
-  if (isValueObj(v)
-      && v.shape.length === 1 && v.shape[0] === N) {
-    return true;
-  }
-  return false;
-}
+// Atom-batched-scalar predicate for the per-atom scalar broadcast
+// inner loops. Aliases the canonical `valueLib.isAtomBatchedScalar`
+// (engine-concepts §2.1) — kept under the local name `isBatch` for
+// hot-path readability inside this file. True iff v is a bare
+// Float64Array of length N OR a Value with shape=[N].
+const isBatch = valueLib.isAtomBatchedScalar;
 
 // Underlying Float64Array for a batched input (either bare or wrapped).
 function _batchData(v: any) {
@@ -333,6 +324,8 @@ function _cxInPlay(args: any) {
 // Per-arg accessor: returns a function i → (number | {re, im}) plus an
 // `atomBatched` flag. Mirrors isBatch/_scalarVal/_batchData but is
 // complex-aware and rejects shape-rich complex (handled elsewhere).
+// Atom-batched-scalar dispatch routes through the canonical
+// `valueLib.isAtomBatchedScalar` predicate (engine-concepts §2.1).
 function _cxArgAccessor(v: any, N: any) {
   if (_isComplex(v)) return { batched: false, at: () => v };
   if (valueLib.isComplexValue(v)) {
@@ -341,7 +334,7 @@ function _cxArgAccessor(v: any, N: any) {
       const z = { re: c.re[0], im: c.im[0] };
       return { batched: false, at: () => z };
     }
-    if (v.shape.length === 1 && v.shape[0] === N) {
+    if (valueLib.isAtomBatchedScalar(v, N)) {
       const c = valueLib.readComplex(v);   // resolves conj once
       return { batched: true, at: (i: any) => ({ re: c.re[i], im: c.im[i] }) };
     }
@@ -353,12 +346,12 @@ function _cxArgAccessor(v: any, N: any) {
   }
   if (valueLib.isValue(v)) {
     if (v.shape.length === 0) { const s = v.data[0]; return { batched: false, at: () => s }; }
-    if (v.shape.length === 1 && v.shape[0] === N) {
+    if (valueLib.isAtomBatchedScalar(v, N)) {
       const d = v.data; return { batched: true, at: (i: any) => d[i] };
     }
     const s0 = v.data[0]; return { batched: false, at: () => s0 };
   }
-  if (v instanceof Float64Array && v.length === N) {
+  if (valueLib.isAtomBatchedScalar(v, N)) {
     return { batched: true, at: (i: any) => v[i] };
   }
   const s = (typeof v === 'boolean') ? (v ? 1 : 0) : +v;
