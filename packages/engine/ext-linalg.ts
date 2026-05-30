@@ -228,10 +228,143 @@ function _matexp(A: any): any {
   return _matValue(R, n, n);
 }
 
+// =====================================================================
+// qr(A) — QR factorisation via Householder reflections (spec §07 +
+// §09; surfaces in the ext-linear-algebra standard module).
+// =====================================================================
+//
+// For A of shape (m, n) with m ≥ n, returns record(Q, R) where Q is
+// m×n with orthonormal columns and R is n×n upper-triangular such that
+// A = Q · R. The algorithm:
+//
+//   1. For each column k in 0..n:
+//        Compute the Householder reflector v_k that zeros A[k+1:m, k].
+//        Apply (I - 2 v_k v_k^T) to A[k:, k:] in-place.
+//   2. R is the upper-triangular part of the modified A.
+//   3. Q = (I - 2 v_0 v_0^T) · ... · (I - 2 v_{n-1} v_{n-1}^T),
+//      built by accumulating reflectors into an identity matrix.
+//
+// Stable for m × n matrices in the size range FlatPPL targets.
+// Spec §07 mandates `qr` in base (currently unimplemented there);
+// surfacing here also satisfies the §09 ext-linear-algebra surface.
+// When base later gains its own qr, this binding can route to the
+// same impl.
+
+function _qr(A: any): any {
+  const m = A.shape[0], n = A.shape[1];
+  if (m < n) throw new Error('qr: requires m >= n (got ' + m + 'x' + n + ')');
+  // Work on a fresh copy of A; we'll modify it into R in-place.
+  const R_full = new Float64Array(m * n);
+  for (let i = 0; i < m * n; i++) R_full[i] = A.data[i];
+  // Accumulate Q via implicit application of each reflector to an
+  // identity matrix.
+  const Q_full = new Float64Array(m * m);
+  for (let i = 0; i < m; i++) Q_full[i * m + i] = 1;
+
+  const v = new Float64Array(m);                 // reflector workspace
+  for (let k = 0; k < n; k++) {
+    // Extract column k from row k down: x = R_full[k:m, k].
+    let normX2 = 0;
+    for (let i = k; i < m; i++) {
+      const xi = R_full[i * n + k];
+      normX2 += xi * xi;
+    }
+    if (normX2 === 0) continue;                  // column already zero
+    const normX = Math.sqrt(normX2);
+    // alpha = -sign(x[0]) * normX (Householder convention; flip sign
+    // to avoid catastrophic cancellation in v[0]).
+    const x0 = R_full[k * n + k];
+    const alpha = (x0 >= 0 ? -1 : 1) * normX;
+    // v = x - alpha · e_1, then normalise so v^T v = 2 (the standard
+    // convention that turns the reflector into I - v v^T instead of
+    // I - 2 v v^T / (v^T v)).
+    v[k] = x0 - alpha;
+    let vNorm2 = v[k] * v[k];
+    for (let i = k + 1; i < m; i++) {
+      v[i] = R_full[i * n + k];
+      vNorm2 += v[i] * v[i];
+    }
+    if (vNorm2 === 0) continue;
+    // Apply H = I - (2 / vNorm2) v v^T to R_full[k:m, k:n] in-place.
+    const beta = 2 / vNorm2;
+    for (let j = k; j < n; j++) {
+      let dot = 0;
+      for (let i = k; i < m; i++) dot += v[i] * R_full[i * n + j];
+      const s = beta * dot;
+      for (let i = k; i < m; i++) R_full[i * n + j] -= s * v[i];
+    }
+    // Apply the same H to Q_full[:, k:m] on the right.
+    // Q = Q · H_k means Q[:, k:] gets Q[:, k:] - beta · (Q[:, k:] · v) · v^T.
+    for (let i = 0; i < m; i++) {
+      let dot = 0;
+      for (let j = k; j < m; j++) dot += Q_full[i * m + j] * v[j];
+      const s = beta * dot;
+      for (let j = k; j < m; j++) Q_full[i * m + j] -= s * v[j];
+    }
+  }
+  // Thin slices: Q = first n columns of Q_full; R = top n rows of R_full.
+  const Q = new Float64Array(m * n);
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < n; j++) Q[i * n + j] = Q_full[i * m + j];
+  }
+  const R = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) R[i * n + j] = R_full[i * n + j];
+  }
+  return {
+    shape: 'record',
+    fields: {
+      Q: _matValue(Q, m, n),
+      R: _matValue(R, n, n),
+    },
+  };
+}
+
+// =====================================================================
+// lstsq(A, b) — least-squares solve for min_x ||A·x - b||₂ (spec §09)
+// =====================================================================
+//
+// Computes the minimum-norm least-squares solution to A·x = b for
+// A of shape (m, k), b of shape (m,). Uses the QR factorisation:
+// if A = Q·R with Q orthonormal and R upper-triangular, then
+// x = R^{-1} · Q^T · b. Numerically stable; the normal-equations
+// path (x = (A^T A)^{-1} A^T b) is faster but loses precision when
+// A is poorly conditioned.
+
+function _lstsq(A: any, b: any): any {
+  const m = A.shape[0], k = A.shape[1];
+  if (b.shape.length !== 1 || b.shape[0] !== m) {
+    throw new Error('lstsq: b must be a length-m vector (got shape '
+      + JSON.stringify(b.shape) + '; A is ' + m + 'x' + k + ')');
+  }
+  if (m < k) throw new Error('lstsq: requires m >= k (got ' + m + 'x' + k + ')');
+  const { fields } = _qr(A);
+  const Q = fields.Q.data, R = fields.R.data;
+  // y = Q^T · b — shape (k,).
+  const y = new Float64Array(k);
+  for (let j = 0; j < k; j++) {
+    let s = 0;
+    for (let i = 0; i < m; i++) s += Q[i * k + j] * b.data[i];
+    y[j] = s;
+  }
+  // Back-substitute R · x = y.
+  const x = new Float64Array(k);
+  for (let i = k - 1; i >= 0; i--) {
+    let s = y[i];
+    for (let j = i + 1; j < k; j++) s -= R[i * k + j] * x[j];
+    const diag = R[i * k + i];
+    if (diag === 0) throw new Error('lstsq: A is rank-deficient (zero on R diagonal at row ' + i + ')');
+    x[i] = s / diag;
+  }
+  return _vecValue(x, k);
+}
+
 module.exports = {
   _lu,
   _kron,
   _matexp,
+  _qr,
+  _lstsq,
   // Test-only / internal helpers
   _internal: {
     _matmul,
