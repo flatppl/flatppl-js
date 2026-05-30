@@ -368,6 +368,66 @@ function _diagmatLogical(v: any): any {
   return valueLib.diagMatrix(v instanceof Float64Array ? v : Float64Array.from(v));
 }
 
+// Shared atom-batched slice helper: given an atom-batched Value v
+// (shape=[N, ...inner]), return the i-th per-atom Value
+// (shape=[...inner]) as a subarray view into the flat buffer.
+// Avoids per-atom allocations of the data buffer.
+function _atomSlice(v: any, i: number, N: number): any {
+  if (!valueLib.isValue(v) || v.shape.length === 0 || v.shape[0] !== N) return v;
+  const inner = v.shape.slice(1);
+  const innerLen = inner.reduce((a: number, b: number) => a * b, 1) || 1;
+  const sub: any = {
+    shape: inner,
+    data: v.data.subarray(i * innerLen, (i + 1) * innerLen),
+  };
+  if (v.dtype === 'complex' && v.im) {
+    sub.dtype = 'complex';
+    sub.im = v.im.subarray(i * innerLen, (i + 1) * innerLen);
+  }
+  return sub;
+}
+
+// Pack N per-atom Float64Array results (each of length k) into one
+// atom-batched Value shape=[N, ...inner]. Helper for batched linalg
+// outputs.
+function _packAtoms(perAtom: any[], N: number, innerShape: number[]): any {
+  const innerLen = innerShape.reduce((a, b) => a * b, 1) || 1;
+  const out = new Float64Array(N * innerLen);
+  for (let i = 0; i < N; i++) {
+    const r = perAtom[i];
+    const src = valueLib.isValue(r) ? r.data : (typeof r === 'number' ? null : r);
+    if (typeof r === 'number') out[i] = r;
+    else if (src) out.set(src, i * innerLen);
+  }
+  return { shape: [N].concat(innerShape), data: out };
+}
+
+// diagmat batched: input [N, k] → output [N, k, k]. Per-atom
+// constructs a diagonal matrix; uses diag-stored representation
+// (struct = ST_DIAG) when the inner logical produces one.
+function _diagmatBatched(args: any[], N: number): any {
+  const v = args[0];
+  if (!valueLib.isValue(v) || v.shape.length !== 2 || v.shape[0] !== N) {
+    // Not atom-batched in the canonical sense — defer to per-atom.
+    const perAtom: any[] = new Array(N);
+    for (let i = 0; i < N; i++) perAtom[i] = _diagmatLogical(_atomSlice(v, i, N));
+    return _packAtoms(perAtom, N, perAtom[0].shape);
+  }
+  const k = v.shape[1];
+  // Output: [N, k, k] dense. (Could store diag-tagged, but the
+  // variant dispatcher's downstream consumers may densify anyway;
+  // dense is the safe baseline.)
+  const out = new Float64Array(N * k * k);
+  for (let i = 0; i < N; i++) {
+    const oBase = i * k * k;
+    const dBase = i * k;
+    for (let j = 0; j < k; j++) {
+      out[oBase + j * k + j] = v.data[dBase + j];
+    }
+  }
+  return { shape: [N, k, k], data: out };
+}
+
 ops.register({
   name: 'diagmat',
   signature: {
@@ -377,6 +437,7 @@ ops.register({
   },
   argRanks: [1],
   logical: _diagmatLogical,
+  batched: _diagmatBatched,
 });
 
 // =====================================================================
@@ -1347,6 +1408,30 @@ function _ensureAtomBatchedRegistered(): void {
       return vo._matBatchedMatMul(A, B, N);
     },
     label: 'mul(rank-2, rank-2) atom-aware → matBatchedMatMul',
+  });
+
+  // Complex counterpart — per-atom complex matmul over [N, m, n] ×
+  // [N, n, p]. Routes through _cxMatBatchedMatMul (planar re/im).
+  // The dtype: 'complex' pattern matches when either operand is
+  // complex; the impl handles real/complex auto-promotion via
+  // readComplex inside.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 2, dtype: 'complex' },
+      { rank: 2, dtype: 'complex' },
+    ],
+    impl: (vs: any[]) => vo.mul(vs[0], vs[1]),     // delegate to dense mul
+    batched: (args: any[], N: number) => {
+      const A = args[0], B = args[1];
+      if ((valueLib.isDiagStored && valueLib.isDiagStored(A))
+          || (valueLib.isDiagStored && valueLib.isDiagStored(B))) {
+        throw new Error(
+          'ops.mul.batched(complex rank-2, complex rank-2): diag-stored '
+          + 'operand should route through value-ops.mulN densify-and-retry');
+      }
+      return vo._cxMatBatchedMatMul(A, B, N);
+    },
+    label: 'mul(complex rank-2, complex rank-2) atom-aware → cxMatBatchedMatMul',
   });
 }
 
