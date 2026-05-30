@@ -99,6 +99,34 @@ const {
  *   discrete:    { [name: string]: boolean },  // resolved-leaf discreteness
  * }}
  */
+// ---------------------------------------------------------------------
+// Callable-like binding-type predicate (canonical).
+//
+// Every classifier site that needs to recognise "this binding holds a
+// function-like callable" consults this predicate instead of inlining
+// its own `b.type === 'fn' || b.type === 'functionof' || ...` chain.
+// Without a single source of truth the sets drifted across sites:
+// fchain was missing from every callable-acceptance check, bijection
+// was missing from some, etc.
+//
+// **Included**: every analyzer-tagged callable producer that can hold
+// a function or kernel that's referenceable elsewhere (broadcast head,
+// pushfwd map, filter / reduce / scan head, etc.). Specifically:
+//   - 'fn'         — fn(...) hole-lifted anonymous function
+//   - 'functionof' — explicit functionof / lambda
+//   - 'kernelof'   — kernelof — reifies a stochastic sub-DAG as a kernel
+//   - 'bijection'  — bijection(f, finv, logvol) — annotated function
+//   - 'fchain'     — fchain(f1, f2, ...) — composition; surface-level
+//                    fchain bindings whose value is the composed function
+//
+// **Excluded**: any binding type whose value is a measure or a non-
+// callable object. The `isKernel` predicate elsewhere is intentionally
+// narrower (kernel-producing only) and stays separate.
+function isCallableLikeBindingType(t: string | undefined): boolean {
+  return t === 'fn' || t === 'functionof' || t === 'kernelof'
+      || t === 'bijection' || t === 'fchain';
+}
+
 function buildDerivations(bindings: Map<string, BindingInfo>) {
   // Pre-pass: lift inline subexpressions so every measure-arg position
   // is a bare ref and every value-arg is evaluable. After lifting, the
@@ -494,10 +522,17 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // error far from the cause. The broader stochastic-side overloading
   // is real debt tracked for the derivation-kind unification refactor.
   const diagnostics: any[] = [];
-  const OBJECT_BINDING_TYPES = new Set([
-    'input', 'functionof', 'fn', 'kernelof', 'bijection', 'lawof',
-    'likelihood',
-  ]);
+  // Binding types that are "legitimately underived" — they hold
+  // first-class objects (callables, measures, likelihoods, raw
+  // inputs) whose value isn't a sample-able derivation. The
+  // dead-end check below skips these. Callable types route through
+  // `isCallableLikeBindingType` so adding a new callable producer
+  // (e.g. a future first-class `fchain`-via-aggregate combinator)
+  // updates one place, not seven.
+  function _isObjectBindingType(t: string): boolean {
+    if (t === 'input' || t === 'lawof' || t === 'likelihood') return true;
+    return isCallableLikeBindingType(t);
+  }
   function bindingLoc(name: any) {
     const b = bindings.get(name);
     return (b && b.node && b.node.loc) || undefined;
@@ -526,7 +561,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // deterministic computation.
   for (const [name, b] of bindings) {
     if (!b || b.phase !== 'fixed') continue;
-    if (OBJECT_BINDING_TYPES.has(b.type)) continue;     // legit underived
+    if (_isObjectBindingType(b.type)) continue;         // legit underived
     if (derivations[name]) continue;
     if (fixedValues.has(name)) continue;
     diagnostics.push({
@@ -1391,8 +1426,12 @@ function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPush
   // functionof-shaped (the underlying f's body); they classify here
   // identically and density-side dispatch reads the bijection metadata
   // separately via opts.resolveBijection.
-  if (fBinding.type !== 'fn' && fBinding.type !== 'functionof'
-      && fBinding.type !== 'kernelof' && fBinding.type !== 'bijection') {
+  // Callable-like binding-type check via the canonical predicate.
+  // pushfwd(f, M) accepts every function-like callable producer
+  // (fn / functionof / kernelof / bijection / fchain) — fchain
+  // bindings as the map were missing before the consolidation;
+  // routing through the predicate closes the gap.
+  if (!isCallableLikeBindingType(fBinding.type)) {
     return null;
   }
   return { kind: 'pushfwd', from: mIR.name, fnRef: fIR.name };
@@ -1731,8 +1770,12 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       const head = ir.args[0];
       if (head && head.kind === 'ref' && head.ns === 'self') {
         const b = bindings.get(head.name);
-        if (b && (b.type === 'fn' || b.type === 'functionof'
-                  || b.type === 'kernelof' || b.type === 'bijection')) {
+        // Callable-like binding-type check via the canonical
+        // predicate — recognises every function/kernel-like
+        // callable producer (fn / functionof / kernelof / bijection
+        // / fchain) as a legitimate head ref. Adding fchain here
+        // surfaces `broadcast(myFchain, xs)` and similar correctly.
+        if (b && isCallableLikeBindingType(b.type)) {
           seen.add(head.name);
         }
         // Aggregate's first arg is the REDUCER (sum / mean / prod /
@@ -2908,6 +2951,9 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
 module.exports = {
   buildDerivations,
   classifyDerivation,
+  // Canonical callable-binding-type predicate — see comment at its
+  // definition for the included / excluded set.
+  isCallableLikeBindingType,
   classifyWeighted,
   classifyLogWeighted,
   classifyNormalize,
