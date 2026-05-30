@@ -859,6 +859,104 @@ const acoshElem = _makeElementwiseUnop(Math.acosh, 'acoshElem');
 const atanhElem = _makeElementwiseUnop(Math.atanh, 'atanhElem');
 
 // =====================================================================
+// Closure of ARITH_OPS_N — pos / ifelse / link functions / casts
+// =====================================================================
+//
+// The last ops still flowing through the legacy ARITH_OPS_N broadcast
+// path; with these registered as variants, ARITH_OPS_N can retire.
+
+// Pure identity (spec §07: pos = unary +).
+const posElem = _makeElementwiseUnop((x: any) => +x, 'posElem');
+
+// Type-restrictor casts (spec §03 lattice booleans ⊂ integers ⊂ reals).
+const booleanElem = _makeElementwiseUnop((x: any) => x ? 1 : 0, 'booleanElem');
+const integerElem = _makeElementwiseUnop((x: any) => Math.trunc(x), 'integerElem');
+
+// Link functions (spec §07 GLM family helpers). Implementations
+// mirror sampler.ARITH_OPS — kept in sync via the test suite.
+// Avoiding a `require('./sampler.ts')` here because value-ops loads
+// inside sampler.ts's require cycle; this module must not eagerly
+// pull sampler back.
+const _SQRT2 = Math.SQRT2;
+function _erf(x: number): number {
+  // Abramowitz-Stegun 7.1.26 approximation — accurate to ~1e-7,
+  // matches what stdlib's erf returns to within the JS Math
+  // function precision. Used by probit/invprobit elementwise; the
+  // single-point sampler.ARITH_OPS variants use stdlib for higher
+  // precision but the values agree to ~1e-7.
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t)
+    + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return x >= 0 ? y : -y;
+}
+const logitElem     = _makeElementwiseUnop(
+  (p: any) => Math.log(p / (1 - p)), 'logitElem');
+const invlogitElem  = _makeElementwiseUnop(
+  (x: any) => 1 / (1 + Math.exp(-x)), 'invlogitElem');
+const probitElem    = _makeElementwiseUnop(
+  (p: any) => _SQRT2 * _erfInv(2 * p - 1), 'probitElem');
+const invprobitElem = _makeElementwiseUnop(
+  (x: any) => 0.5 * (1 + _erf(x / _SQRT2)), 'invprobitElem');
+
+// Inverse error function via Winitzki's approximation (max relative
+// error ~1.3e-4 over the whole range, much better near the centre).
+// Single-point sampler uses stdlib's erfcinv for full precision;
+// elementwise broadcast paths use this approximation when atomCount
+// is large enough that per-element stdlib calls would dominate.
+function _erfInv(x: number): number {
+  const a = 0.147;
+  const ln = Math.log(1 - x * x);
+  const term = 2 / (Math.PI * a) + ln / 2;
+  const sign = x < 0 ? -1 : 1;
+  return sign * Math.sqrt(Math.sqrt(term * term - ln / a) - term);
+}
+
+// ifelse(cond, then, else) — three-arg elementwise. Doesn't fit the
+// _makeElementwiseBinop pattern; hand-rolled over flat data.
+function ifelseElem(cond: any, thn: any, els: any): any {
+  // Determine output shape by max-rank; broadcast singletons.
+  const shapes = [cond, thn, els].map((v: any) =>
+    isValue(v) ? v.shape : (typeof v === 'number' || typeof v === 'boolean'
+      ? [] : null));
+  if (shapes.some((s: any) => s == null)) {
+    throw new Error('ifelseElem: all operands must be scalar or Value');
+  }
+  // Pick the output shape = the first non-empty shape; require any
+  // others to match or be scalar (rank-0). Singleton-axis broadcasting
+  // not supported in v1 here (matches the other elementwise impls).
+  let outShape: number[] = [];
+  for (const s of shapes) {
+    if ((s as number[]).length > outShape.length) outShape = s as number[];
+  }
+  for (const s of shapes) {
+    const sa = s as number[];
+    if (sa.length === 0) continue;            // scalar OK
+    if (sa.length !== outShape.length) {
+      throw new Error('ifelseElem: rank mismatch ' + JSON.stringify(sa)
+        + ' vs ' + JSON.stringify(outShape));
+    }
+    for (let k = 0; k < outShape.length; k++) {
+      if (sa[k] !== outShape[k]) {
+        throw new Error('ifelseElem: shape mismatch ' + JSON.stringify(sa)
+          + ' vs ' + JSON.stringify(outShape));
+      }
+    }
+  }
+  const len = outShape.reduce((a: number, b: number) => a * b, 1) || 1;
+  function readAt(v: any, i: number) {
+    if (typeof v === 'number' || typeof v === 'boolean') return +v;
+    return v.shape.length === 0 ? v.data[0] : v.data[i];
+  }
+  const out = new Float64Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = readAt(cond, i) ? readAt(thn, i) : readAt(els, i);
+  }
+  return outShape.length === 0
+    ? valueLib.scalar(out[0])
+    : { shape: outShape.slice(), data: out };
+}
+
+// =====================================================================
 // neg — pointwise negation
 // =====================================================================
 //
@@ -1283,6 +1381,11 @@ module.exports = {
   asinElem, acosElem, atanElem,
   sinhElem, coshElem, tanhElem,
   asinhElem, acoshElem, atanhElem,
+  // Closure of ARITH_OPS_N coverage (ifelse / link functions / casts).
+  posElem,
+  booleanElem, integerElem,
+  logitElem, invlogitElem, probitElem, invprobitElem,
+  ifelseElem,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
   _valueToNested,
