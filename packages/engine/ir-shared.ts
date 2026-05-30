@@ -498,7 +498,7 @@ const EVALUABLE_OPS = new Set([
   // vectors; dispatch through ARITH_OPS.
   'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer', 'cross',
   'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
-  'row_gram', 'col_gram',
+  'row_gram', 'col_gram', 'quadform',
   // Diagonal extract / block-matrix constructors (spec §07)
   'diag', 'blockdiagmat', 'bandedmat',
   // Signal-processing 1-D ops (spec §07)

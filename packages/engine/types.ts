@@ -952,6 +952,11 @@ const SIGNATURE_FACTORIES = {
                            result: deferred(), special: 'adjoint' }),
   trace:          () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
                            kwargs: {}, result: REAL }),
+  // quadform(A, x) = xᵀ A x (spec §07). A is a square matrix, x a
+  // length-n vector; result is a scalar.
+  quadform:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL),
+                                  array(1, ['%dynamic'], REAL)],
+                           kwargs: {}, result: REAL }),
   diagmat:        () => ({ args: [array(1, ['%dynamic'], REAL)],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),

@@ -705,6 +705,23 @@ const ARITH_OPS = {
   lower_cholesky: (A: any): any => opsModule.dispatch('lower_cholesky', [A]),
   row_gram:       (A: any): any => opsModule.dispatch('row_gram',       [A]),
   col_gram:       (A: any): any => opsModule.dispatch('col_gram',       [A]),
+  // quadform(A, x) — quadratic form xᵀ A x (spec §07). Implemented
+  // as the closed-form composition `dot(x, mul(A, x))`. Numerically
+  // stable; reuses the existing matvec + inner-product dispatch
+  // (auto-batched: if x is atom-batched, mul(A, x) routes through
+  // the rank-2 × rank-1 atom-aware variant and the dot folds via
+  // the elementwise + sum pair).
+  quadform:       (A: any, x: any): any => {
+    const Ax = valueOps.mul(valueLib.asValue(A), valueLib.asValue(x));
+    // dot(x, Ax) = sum(x ⊙ Ax).
+    const elem = valueOps.mulElem(valueLib.asValue(x), Ax);
+    // Reduce to scalar — sum over all dims (rank-1 input has only
+    // one).
+    const data = elem.data;
+    let s = 0;
+    for (let i = 0; i < data.length; i++) s += data[i];
+    return s;
+  },
   // array(data, size, dimorder) — n-D array from a flat data vector
   // per spec §07. size is an n-vector of positive dimensions;
   // dimorder is a permutation of [1..n] listing axes from slowest- to
