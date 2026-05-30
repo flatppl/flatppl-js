@@ -114,6 +114,46 @@ test('value-ops add: same shape — fast-path preserved (regression)', () => {
 // 3. Multi-axis broadcast fusion in _tryDissolveBroadcastReduction
 // =====================================================================
 
+test('_tryDissolveBroadcastReduction: body uses reduce(add, xs) → maps to sum(xs)', () => {
+  const dissolver = require('../dissolver.ts');
+  const bindings = new Map();
+  bindings.set('X', {
+    ir: { kind: 'call', op: 'vector', args: [] },
+    inferredType: { kind: 'array', rank: 1, shape: [4], elem: { kind: 'scalar', prim: 'real' } },
+  });
+  // user fn: f = (x) -> reduce(add, x).
+  // (Semantically equivalent to `sum(x)` per spec §07.)
+  bindings.set('f', {
+    ir: {
+      kind: 'call', op: 'functionof',
+      params: ['x'],
+      paramKwargs: ['x'],
+      body: {
+        kind: 'call', op: 'reduce',
+        args: [
+          { kind: 'ref', ns: 'self', name: 'add' },
+          { kind: 'ref', ns: '%local', name: 'x' },
+        ],
+      },
+    },
+  });
+  const bcIR = {
+    kind: 'call', op: 'broadcast',
+    args: [
+      { kind: 'ref', ns: 'self', name: 'f' },
+      { kind: 'ref', ns: 'self', name: 'X' },
+    ],
+  };
+  const dissolved = dissolver._tryDissolveBroadcastReduction(bcIR, bindings);
+  assert.ok(dissolved, 'fusion fires after reduce(add, _) → sum(_) normalisation');
+  assert.equal(dissolved.op, 'aggregate');
+  // Reducer arg is `sum`.
+  const reducerIR = dissolved.args[0];
+  assert.equal(reducerIR.kind, 'ref');
+  assert.equal(reducerIR.name, 'sum',
+    'reduce(add, _) normalised to sum(_) so fusion-(a) gate passes');
+});
+
 test('_tryDissolveBroadcastReduction: rank-2 broadcast-over → 2 output axes', () => {
   const dissolver = require('../dissolver.ts');
   // Synthesise the IR for:

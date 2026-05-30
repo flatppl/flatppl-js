@@ -636,9 +636,9 @@ function perAtomColumnAtJ(v: any, j: number, N: number): Float64Array {
   if (valueLib.isValue(v)) {
     const shape = v.shape;
     const data = v.data;
-    if (shape.length === 1 && shape[0] === N) {
+    if (valueLib.isAtomBatched(v, N) && shape.length === 1) {
       col.set(data);
-    } else if (shape.length === 2 && shape[0] === N) {
+    } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
       const stride = shape[1];
       const off = stride === 1 ? 0 : j;
       for (let i = 0; i < N; i++) col[i] = data[i * stride + off];

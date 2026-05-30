@@ -126,7 +126,7 @@ function _crossBatched(args: any[], N: number): any {
     if (v.shape.length === 1 && v.shape[0] === 3) {
       return { data: v.data, isBatched: false };
     }
-    if (v.shape.length === 2 && v.shape[0] === N && v.shape[1] === 3) {
+    if (valueLib.isAtomBatched(v, N) && v.shape.length === 2 && v.shape[1] === 3) {
       return { data: v.data, isBatched: true };
     }
     return null;
@@ -168,7 +168,7 @@ function _crossBatchedOrFallback(args: any[], N: number): any {
   const perAtom: any[] = new Array(N);
   for (let i = 0; i < N; i++) {
     const sliced = args.map((v: any) => {
-      if (valueLib.isValue(v) && v.shape.length === 2 && v.shape[0] === N) {
+      if (valueLib.isAtomBatched(v, N) && v.shape.length === 2) {
         const tailLen = v.shape[1];
         const subData = v.data.subarray(i * tailLen, (i + 1) * tailLen);
         const sub: any = { shape: [tailLen], data: subData };
@@ -610,7 +610,7 @@ function _invBatchedOrFallback(args: any[], N: number): any {
   const A = args[0];
   for (let i = 0; i < N; i++) {
     let atomA: any = A;
-    if (valueLib.isValue(A) && A.shape.length === 3 && A.shape[0] === N) {
+    if (valueLib.isAtomBatched(A, N) && A.shape.length === 3) {
       const stride = A.shape[1] * A.shape[2];
       const subData = A.data.subarray(i * stride, (i + 1) * stride);
       atomA = { shape: [A.shape[1], A.shape[2]], data: subData };
@@ -705,7 +705,7 @@ function _lowerCholeskyBatchedOrFallback(args: any[], N: number): any {
   const A = args[0];
   for (let i = 0; i < N; i++) {
     let atomA: any = A;
-    if (valueLib.isValue(A) && A.shape.length === 3 && A.shape[0] === N) {
+    if (valueLib.isAtomBatched(A, N) && A.shape.length === 3) {
       const stride = A.shape[1] * A.shape[2];
       const subData = A.data.subarray(i * stride, (i + 1) * stride);
       atomA = { shape: [A.shape[1], A.shape[2]], data: subData };
@@ -903,6 +903,52 @@ ops.register({
   name: 'linsolve',
   kind: 'rank-polymorphic',
   logical: _linsolveLogical,
+});
+
+// linsolve atom-aware variant: A=rank-2 square × b=rank-1 vector,
+// atom-batched b → per-atom solve with shared A. Output shape=[N, m].
+//
+// The most common Bayesian use case: whiten a per-atom vector by a
+// shared (atom-indep) precision/covariance Cholesky factor. Without
+// this variant, the rank-polymorphic dispatch path called
+// `_linsolveLogical` with rank-1 expectation and would error on
+// rank-2 atom-batched b.
+//
+// A atom-batched is NOT covered (would need a rank-3 A pattern);
+// users for whom that's a hot path can use `broadcast(fn(linsolve
+// (_, b)), A_per_atom)`.
+function _linsolveBatchedVec(args: any[], N: number): any {
+  const A = args[0], b = args[1];
+  if (!valueLib.isValue(A) || A.shape.length !== 2) {
+    throw new Error('linsolve.batched(rank-2, rank-1): A must be rank-2');
+  }
+  if (!valueLib.isAtomBatched(b, N) || b.shape.length !== 2) {
+    throw new Error('linsolve.batched(rank-2, rank-1): b must be atom-batched rank-1 (shape=[N, m])');
+  }
+  const m = A.shape[1];
+  if (b.shape[1] !== m) {
+    throw new Error('linsolve.batched: A is ' + JSON.stringify(A.shape)
+      + ', b is ' + JSON.stringify(b.shape) + ' — incompatible inner dim');
+  }
+  const out = new Float64Array(N * m);
+  for (let atom = 0; atom < N; atom++) {
+    const subData = b.data.subarray(atom * m, (atom + 1) * m);
+    const subB: any = { shape: [m], data: subData };
+    const x = _linsolveLogical(A, subB);
+    // _linsolveLogical may return a Value or a plain array; normalise.
+    const xData = valueLib.isValue(x) ? x.data : x;
+    for (let j = 0; j < m; j++) out[atom * m + j] = xData[j];
+  }
+  return { shape: [N, m], data: out };
+}
+ops.registerVariant('linsolve', {
+  argPatterns: [
+    { rank: 2, dtype: 'real' },
+    { rank: 1, dtype: 'real' },
+  ],
+  impl: (vs: any[]) => _linsolveLogical(vs[0], vs[1]),
+  batched: _linsolveBatchedVec,
+  label: 'linsolve(rank-2, rank-1) atom-aware → per-atom solve, shared A',
 });
 
 // =====================================================================
