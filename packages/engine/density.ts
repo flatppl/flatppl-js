@@ -933,7 +933,9 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       } else if (shape.length === 1) {
         // Length-N is ambiguous when N === K; `usesAtom` is the
         // disambiguator: a per-atom expression always produces leading-N.
-        if (usesAtom && shape[0] === N) {
+        // The canonical `valueLib.isAtomBatched` predicate consults
+        // outerRank too (P3) so a producer-tagged value is honoured.
+        if (usesAtom && valueLib.isAtomBatched(v, N)) {
           access = (i, _j) => data[i];
         } else {
           intrinsicK = shape[0];
@@ -944,7 +946,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
             access = (_i, j) => data[j];
           }
         }
-      } else if (shape.length === 2 && shape[0] === N) {
+      } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
         intrinsicK = shape[1];
         if (intrinsicK === 1) {
           access = (i, _j) => data[i];
@@ -960,7 +962,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     } else if (v && v.BYTES_PER_ELEMENT !== undefined
                 && typeof v.length === 'number') {
       const data: any = v;
-      if (usesAtom && data.length === N) {
+      if (usesAtom && valueLib.isAtomBatched(v, N)) {
         access = (i, _j) => data[i];
       } else {
         intrinsicK = data.length;

@@ -1164,6 +1164,48 @@ function _substituteBody(
 
 const REDUCERS_FUSION_A: Set<string> = new Set(['sum', 'mean', 'prod']);
 
+// Spec §07 says `reduce(f, xs)` is a left-fold; when `f` is one of the
+// recognised associative-elementwise primitives below, `reduce(f, xs)`
+// is mathematically equivalent to a spec reducer. The mapping lets
+// fusion (a) catch user-written `reduce(add, xs)` / `reduce(mul, xs)`
+// as if the user had written `sum(xs)` / `prod(xs)` — the more
+// common spec form. `reduce(max, xs)` and `reduce(min, xs)` map to
+// the spec `maximum` / `minimum` (n-ary max/min).
+const _REDUCE_OP_TO_REDUCER: Record<string, string> = {
+  add:    'sum',
+  mul:    'prod',
+  max:    'maximum',
+  min:    'minimum',
+};
+
+// Rewrite `reduce(<elem-fn>, xs)` to `<reducer>(xs)` when the function
+// arg is a ref to one of the recognised associative-elementwise
+// primitives. Returns the rewritten IR on match, the unchanged IR
+// otherwise. Pure rewrite — preserves the IR shape outside the
+// matched node.
+function _normaliseReduceToReducer(expr: any): any {
+  if (!expr || expr.kind !== 'call' || expr.op !== 'reduce') return expr;
+  const args = expr.args || [];
+  if (args.length !== 2) return expr;
+  const fnArg = args[0];
+  if (!fnArg || fnArg.kind !== 'ref' || fnArg.ns !== 'self') return expr;
+  const reducer = _REDUCE_OP_TO_REDUCER[fnArg.name];
+  if (!reducer) return expr;
+  // Only rewrite when the ref isn't shadowed by a user binding (the
+  // dissolver has no bindings map here; defer that check to the
+  // caller's broader bindings-aware path if needed). The risk: a
+  // user-defined `add` binding shadowing the built-in would cause
+  // semantic divergence. Conservative: accept the rewrite — the
+  // spec disallows shadowing built-in names in arithmetic contexts
+  // anyway (the analyzer flags it elsewhere).
+  const rebuilt: any = {
+    kind: 'call', op: reducer,
+    args: [args[1]],
+  };
+  if (expr.loc) rebuilt.loc = expr.loc;
+  return rebuilt;
+}
+
 // Higher-order / non-plain ops that fusion (a) Step 2 still refuses
 // inside the reduction body. `broadcast` is allowed now —
 // `_inlineBroadcastInAggregate` inlines `broadcast(<fn>(<op>(_)),
@@ -1444,7 +1486,12 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   if (!head || head.kind !== 'call' || head.op !== 'functionof') return null;
   const params: string[] = Array.isArray(head.params) ? head.params : [];
   if (params.length === 0) return null;
-  const body = head.body;
+  // Normalise `reduce(<assoc-fn>, xs)` to its spec-reducer form before
+  // the gate (`reduce(add, _)` → `sum(_)`; `reduce(mul, _)` → `prod(_)`;
+  // etc.). Lets user-defined fns written via `reduce` participate in
+  // fusion (a) when their body's outer call uses the higher-order
+  // surface rather than the direct reducer.
+  const body = _normaliseReduceToReducer(head.body);
   if (!body || body.kind !== 'call') return null;
   if (!body.op || !REDUCERS_FUSION_A.has(body.op)) return null;
   if (!Array.isArray(body.args) || body.args.length !== 1) return null;

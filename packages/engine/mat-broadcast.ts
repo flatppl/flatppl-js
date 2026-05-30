@@ -132,8 +132,14 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         const shape = v.shape;
         if (shape.length === 0) intrinsicK = 1;
         else if (shape.length === 1) {
-          intrinsicK = (usesAtom && shape[0] === N) ? 1 : shape[0];
-        } else if (shape.length === 2 && shape[0] === N) {
+          // shape=[N] is atom-batched scalar (K=1) ONLY when this param
+          // references an atom-batched ref (`usesAtom`); a stand-alone
+          // length-N vector that doesn't ref any atom-batched ref is
+          // K=N (a true length-N collection arg). The canonical
+          // `value.isAtomBatched` would flag both as "shape match";
+          // here the name-based guard is the disambiguator.
+          intrinsicK = (usesAtom && valueLib.isAtomBatched(v, N)) ? 1 : shape[0];
+        } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
           intrinsicK = shape[1];
         } else {
           return Promise.reject(new Error('broadcast(' + d.distOp
@@ -142,7 +148,7 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         }
       } else if (v && v.BYTES_PER_ELEMENT !== undefined
                   && typeof v.length === 'number') {
-        intrinsicK = (usesAtom && v.length === N) ? 1 : v.length;
+        intrinsicK = (usesAtom && valueLib.isAtomBatched(v, N)) ? 1 : v.length;
       } else if (Array.isArray(v)) {
         intrinsicK = v.length;
       } else {
