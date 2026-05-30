@@ -789,17 +789,26 @@ function _alignedTensorFromGet(
   const sourceStrides = _rowMajorStrides(src.shape);
 
   // Walk selectors. For each, decide:
-  //   - axis ref: remember this dim corresponds to a canonical axis.
+  //   - axis ref: this dim corresponds to a canonical axis. The
+  //     SAME axis name may appear in multiple selector positions
+  //     (e.g. `A[.i, .i]` for trace) — spec §04 §sec:aggregate:
+  //     "All array dimensions indexed with the same axis name must
+  //     have the same length." When axis .i indexes both dim 0 and
+  //     dim 1, the lifter must advance ONE coordinate across BOTH
+  //     source dims simultaneously, so we accumulate strides (sum of
+  //     all per-position source strides for that axis). The repeated
+  //     axis is the standard einsum repeated-index pattern
+  //     (np.einsum('ii->...', A)).
   //   - integer / 'only': collapse this dim (advance baseOffset).
   //   - 'all': not supported in aggregate body (per §04 spec the body
   //     uses axis names; `all`/':' would mean "keep an unnamed dim"
   //     which has no defined semantics for the contraction).
-  const axisAt: Record<string, number> = {};   // axisName → source dim
+  const axisStrideSum: Record<string, number> = {};
   let baseOffset = 0;
   for (let k = 0; k < sels.length; k++) {
     const s = sels[k];
     if (s && s.kind === 'axis') {
-      axisAt[s.name] = k;
+      axisStrideSum[s.name] = (axisStrideSum[s.name] || 0) + sourceStrides[k];
       continue;
     }
     if (s && s.kind === 'const' && s.name === 'only') {
@@ -832,9 +841,11 @@ function _alignedTensorFromGet(
   const sourceStrideAt: number[] = new Array(N);
   for (let i = 0; i < N; i++) {
     const axisName = canonicalAxes[i];
-    if (axisName in axisAt) {
+    if (axisName in axisStrideSum) {
       alignedShape[i] = axisLengths[axisName];
-      sourceStrideAt[i] = sourceStrides[axisAt[axisName]];
+      // Sum-of-strides for repeated occurrences (trace pattern); for
+      // a single occurrence this collapses to the one position's stride.
+      sourceStrideAt[i] = axisStrideSum[axisName];
     } else {
       alignedShape[i] = 1;
       sourceStrideAt[i] = 0;
@@ -1486,13 +1497,16 @@ function _alignedTensorFromGetN(
   // Per-sel-dim stride into src.shape (after the atom dim if any).
   const selStrides = atomBatched ? sourceStrides.slice(1) : sourceStrides;
 
-  // Resolve selectors.
-  const axisAt: Record<string, number> = {};
+  // Resolve selectors. Repeated axis names (e.g. `A[.i, .i]` for
+  // trace) accumulate their strides — the lifter advances ONE
+  // coordinate across BOTH source dims simultaneously. Mirrors the
+  // single-atom path; see `_alignedTensorFromGet`.
+  const axisStrideSum: Record<string, number> = {};
   let baseOffset = 0;
   for (let k = 0; k < sels.length; k++) {
     const s = sels[k];
     if (s && s.kind === 'axis') {
-      axisAt[s.name] = k;
+      axisStrideSum[s.name] = (axisStrideSum[s.name] || 0) + selStrides[k];
       continue;
     }
     if (s && s.kind === 'const' && s.name === 'only') {
@@ -1517,7 +1531,8 @@ function _alignedTensorFromGetN(
 
   // Build aligned shape + per-canonical-position source stride.
   // The atom axis at position 0 → atomStride; other canonical axes →
-  // selStrides if the get binds them, else singleton (stride 0).
+  // axisStrideSum if the get binds them (sum-of-strides handles
+  // repeated occurrences), else singleton (stride 0).
   const M = canonicalAxes.length;
   const alignedShape = new Array(M);
   const sourceStrideAt: number[] = new Array(M);
@@ -1529,9 +1544,9 @@ function _alignedTensorFromGetN(
       sourceStrideAt[i] = atomStride;
       continue;
     }
-    if (axisName in axisAt) {
+    if (axisName in axisStrideSum) {
       alignedShape[i] = axisLengths[axisName];
-      sourceStrideAt[i] = selStrides[axisAt[axisName]];
+      sourceStrideAt[i] = axisStrideSum[axisName];
     } else {
       alignedShape[i] = 1;
       sourceStrideAt[i] = 0;

@@ -4,19 +4,24 @@
 // einsum-patterns.test.ts — pins the einsum/contraction surface
 // =====================================================================
 //
-// Loads `test/fixtures/einsum-patterns.flatppl` (mirrored from
-// flatppl-examples/examples/einsum_patterns.flatppl per the
-// engine's local-copy convention) and pins each canonical
+// Loads `test/fixtures/einsum-patterns.flatppl` (engine-local
+// regression fixture — flatppl-dev/CONVENTIONS.md permits engine-
+// owned fixtures that pin an internal edge case not worth
+// showcasing as a public example) and pins each canonical
 // contraction pattern's:
 //
 //   - Dissolved IR shape  (matmul / matvec → mul; outer → mul;
-//                          inner / frob → sum + dotted-elementwise)
+//                          inner / frob → scalar aggregate via the
+//                          `s[] := …` shorthand for full reduction)
 //   - Pre-evaluated value (fixed-phase inputs → fixedValues hit)
 //
-// The fixture's introduction documents two engine gaps the test
-// pins separately (so a regression in either direction shows up):
-//   - Empty output_axes `aggregate(sum, [], body)` is rejected;
-//     scalar-output contractions use `sum(...)` directly.
+// Scalar contractions (inner product, Frobenius inner product,
+// trace) lower through the canonical `aggregate(sum, [], body)`
+// form (spec §04 §sec:aggregate "the bracketed axis list may be
+// empty for full reduction to a scalar").
+//
+// The fixture's introduction documents one engine gap the test
+// pins separately:
 //   - Rank-3 batched matmul parses but doesn't pre-evaluate yet.
 
 const { test } = require('node:test');
@@ -127,42 +132,44 @@ test('einsum: outer[.i,.j] := u[.i] * v[.j] — IR + value', () => {
 });
 
 // =====================================================================
-// Scalar contractions via sum(elementwise product) — until
-// aggregate gains empty-output-axes support, these are the
-// idiomatic FlatPPL spellings for inner-product / Frobenius.
+// Scalar contractions via the `s[] := …` shorthand. Spec §04
+// §sec:aggregate: "the bracketed axis list may be empty for full
+// reduction to a scalar." Inner product, Frobenius inner product,
+// and trace all lower to `aggregate(sum, [], body)`.
 // =====================================================================
 
-test('einsum: inner_prod = sum(u .* v) — scalar contraction', () => {
+test('einsum: inner_prod[] := u[.i] * v[.i] — scalar reduction', () => {
   // u·v = 1*10 + 2*20 + 3*30 = 140.
   const v = built.fixedValues.get('inner_prod');
   assert.ok(approxEq(v, 140),
     `inner_prod = ${v}, want 140`);
 });
 
-test('einsum: frob_prod = sum(A .* B) — Frobenius inner product', () => {
+test('einsum: frob_prod[] := A[.i,.j] * B[.i,.j] — Frobenius inner product', () => {
   // A·B (elementwise) with B = I_3: diag(A) only → 1+5+9 = 15.
   const v = built.fixedValues.get('frob_prod');
   assert.ok(approxEq(v, 15),
     `frob_prod = ${v}, want 15`);
 });
 
-// =====================================================================
-// Engine-gap regressions: the introduction documents two gaps;
-// pin them so a future fix surfaces the change clearly.
-// =====================================================================
-
-test('engine gap: aggregate(sum, [], body) refused — empty output_axes', () => {
-  const r = processSource(`
-u = [1.0, 2.0, 3.0]
-v = [4.0, 5.0, 6.0]
-inner = aggregate(sum, [], u[.i] * v[.i])
-`);
-  const errors = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
-  assert.ok(errors.length > 0,
-    'empty output_axes currently rejected — pin so a future fix surfaces');
-  assert.match(errors[0].message,
-    /at least one output axis|output_axes/i);
+test('einsum: trace[] := A[.i, .i] — trace via empty-output aggregate', () => {
+  // trace(A) = A[1,1] + A[2,2] + A[3,3] = 1 + 5 + 9 = 15.
+  const v = built.fixedValues.get('tr');
+  assert.ok(approxEq(v, 15),
+    `tr = ${v}, want 15`);
 });
+
+test('einsum: prod_all[] := prod-reduction over an indexed vector', () => {
+  // prod(u) = 1 * 2 * 3 = 6.
+  const v = built.fixedValues.get('prod_all');
+  assert.ok(approxEq(v, 6),
+    `prod_all = ${v}, want 6`);
+});
+
+// =====================================================================
+// Engine-gap regressions: the introduction documents one gap;
+// pin it so a future fix surfaces the change clearly.
+// =====================================================================
 
 test('engine gap: rank-3 batched-matmul parses but pre-eval lacks value', () => {
   // Pins that the parser + classifier accept the pattern (so the

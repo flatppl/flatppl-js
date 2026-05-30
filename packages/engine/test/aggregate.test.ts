@@ -11,7 +11,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource } = require('../index.ts');
+const { processSource, orchestrator } = require('../index.ts');
 const sampler = require('../sampler.ts');
 const lowerMod = require('../lower.ts');
 const { inBothModes } = require('./_perf-helpers.ts');
@@ -496,13 +496,16 @@ R = aggregate(exp, [.i], A[.i, .j])
     /must be one of: sum, prod, mean, var, std, maximum, minimum/.test(d.message)));
 });
 
-test('aggregate: rejects empty output_axes', () => {
+test('aggregate: accepts empty output_axes (full reduction to scalar)', () => {
+  // Spec §04 §sec:aggregate: "The bracketed axis list may be empty
+  // for full reduction to a scalar." `aggregate(sum, [], A[.i, .j])`
+  // reduces over every axis in expr.
   const errs = errors(`
 A = [[1.0, 2.0]]
 R = aggregate(sum, [], A[.i, .j])
 `);
-  assert.ok(errs.some((d: any) =>
-    /requires at least one output axis/.test(d.message)));
+  assert.equal(errs.length, 0,
+    `unexpected errors: ${JSON.stringify(errs)}`);
 });
 
 test('aggregate: rejects duplicate output axes', () => {
@@ -613,21 +616,62 @@ R = aggregate(sum, [.i], A[.i])
     (d: any) => d.severity === 'error').length, 0);
 });
 
-test('aggregate: scalar contraction (dot product via aggregate)', () => {
-  // `aggregate(sum, [.i], A[.i] * B[.i])` is undefined (no reduction
-  // axis — every output cell is just A[i]*B[i]). For an actual dot
-  // product we declare a single output axis we don't want kept; but
-  // the spec requires at least ONE output axis. So a "true" scalar
-  // contraction isn't expressible with `aggregate` alone — wrap with
-  // a trailing scalar `sum`:
-  //   d = sum(aggregate(sum, [.i], A[.i] * B[.i]))
-  // The aggregate part should at least parse cleanly.
+test('aggregate: scalar contraction (dot product via empty output_axes)', () => {
+  // Spec §04 §sec:aggregate: `aggregate(sum, [], A[.i] * B[.i])`
+  // performs full reduction to a scalar — every axis in expr is a
+  // reduce axis. The `s[] := …` shorthand desugars to this.
+  // A · B = 1*4 + 2*5 + 3*6 = 32.
   const src = `
 A = [1.0, 2.0, 3.0]
 B = [4.0, 5.0, 6.0]
-d_array = aggregate(sum, [.i], A[.i] * B[.i])
+d = aggregate(sum, [], A[.i] * B[.i])
 `;
-  assert.equal(errors(src).length, 0);
+  const ctx = processSource(src);
+  assert.equal(ctx.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  const v = built.fixedValues.get('d');
+  assert.equal(v, 32, `dot product = ${v}, want 32`);
+});
+
+test('aggregate: scalar contraction via `s[] := …` shorthand', () => {
+  // Spec §04 §sec:aggregate: `s[] := A[.i] * B[.i]` is the shorthand
+  // for the `aggregate(sum, [], …)` form above.
+  const src = `
+A = [1.0, 2.0, 3.0]
+B = [4.0, 5.0, 6.0]
+d[] := A[.i] * B[.i]
+`;
+  const ctx = processSource(src);
+  assert.equal(ctx.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  assert.equal(built.fixedValues.get('d'), 32);
+});
+
+test('aggregate: full-reduction prod over a single axis', () => {
+  // Spec §04: full-reduction with prod over a single index.
+  const src = `
+A = [2.0, 3.0, 5.0]
+p[] := A[.i]
+`;
+  const ctx = processSource(src);
+  // Default reducer is `sum` — verify the := form computes sum first.
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  assert.equal(built.fixedValues.get('p'), 10);
+});
+
+test('aggregate: full reduction over two axes (Frobenius inner product)', () => {
+  // Sum of all entries of A elementwise-multiplied with B — Frobenius
+  // inner product expressed via aggregate.
+  const src = `
+A = [[1.0, 2.0], [3.0, 4.0]]
+B = [[5.0, 6.0], [7.0, 8.0]]
+f[] := A[.i, .j] * B[.i, .j]
+`;
+  const ctx = processSource(src);
+  assert.equal(ctx.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  // 1*5 + 2*6 + 3*7 + 4*8 = 5 + 12 + 21 + 32 = 70
+  assert.equal(built.fixedValues.get('f'), 70);
 });
 
 // ---------------------------------------------------------------------

@@ -1198,6 +1198,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // default to REAL (the most common contraction result type).
     const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
     const elemT = (bodyT && (bodyT.kind === 'scalar')) ? bodyT : T.REAL;
+    // Empty output_axes (spec §04 §sec:aggregate: "The bracketed axis
+    // list may be empty for full reduction to a scalar") returns the
+    // body's scalar element type directly — rank-0 arrays aren't a
+    // distinct type in FlatPIR.
+    if (axisNames.length === 0) return elemT;
     return T.array(axisNames.length, outShape, elemT);
   }
 
