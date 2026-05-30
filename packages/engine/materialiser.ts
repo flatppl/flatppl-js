@@ -395,6 +395,30 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // threaded through the kind-dispatch pipeline alongside the
     // atom axis (engine-concepts §20.1 axisStack work / P3a-P3b
     // follow-ups); not yet wired.
+    //
+    // **P4 (advisory diagnostic):** when the inner binding carries
+    // an axisStack annotation signalling its own iid structure, this
+    // fallback is structurally insufficient for the per-atom-shared-
+    // prior case. We emit a diagnostic in `ctx.diagnostics` (when
+    // present) so the host / viewer can warn; the fallback STILL
+    // runs (returns the correct marginal). Replaces a documentation-
+    // only caveat with a runtime-surfaced advisory the user can act
+    // on. The principled fix (repeat-axis-threading) lands later as
+    // an extension of P3+P4 once the axisStack producer covers nested
+    // measure-op IR.
+    const axisStackMod = require('./axis-stack.ts');
+    const innerStack = axisStackMod.bindingAxisStack(d.from, ctx);
+    if (innerStack && innerStack.length > 0 && ctx.diagnostics) {
+      ctx.diagnostics.push({
+        severity: 'info',
+        message: 'iid: inner binding "' + d.from
+          + '" carries upstream stochastic axis structure; the '
+          + 'inflated-count fallback produces the correct marginal '
+          + 'but loses within-atom conditional independence. See '
+          + 'engine-concepts §20.10.10 / TODO P4 for the principled '
+          + 'repeat-axis-threading fix.',
+      });
+    }
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
