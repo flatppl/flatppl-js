@@ -812,6 +812,53 @@ const ceilElem   = _makeElementwiseUnop(Math.ceil,   'ceilElem');
 const roundElem  = _makeElementwiseUnop(Math.round,  'roundElem');
 
 // =====================================================================
+// P9 additions — comparisons / predicates / logic / extra trig + math
+// =====================================================================
+//
+// Element-wise impls for the remaining ARITH_OPS_N entries. Each is
+// a one-liner over the shared `_makeElementwise*` factories. Once
+// registered as broadcast variants (ops-declarations.ts BCAST_TABLE),
+// these flow through the unified variant dispatcher instead of
+// falling through to ARITH_OPS_N's broadcast1/2/3.
+//
+// Bool / predicate ops return 0/1 (the JS convention for boolean-
+// in-Float64Array); the type system already tags these as boolean
+// via SIGNATURE_FACTORIES.
+
+// Pairwise reductions
+const minElem    = _makeElementwiseBinop((a: any, b: any) => Math.min(a, b), 'minElem');
+const maxElem    = _makeElementwiseBinop((a: any, b: any) => Math.max(a, b), 'maxElem');
+// Comparisons (return 0/1)
+const ltElem     = _makeElementwiseBinop((a: any, b: any) => a <  b ? 1 : 0, 'ltElem');
+const leElem     = _makeElementwiseBinop((a: any, b: any) => a <= b ? 1 : 0, 'leElem');
+const gtElem     = _makeElementwiseBinop((a: any, b: any) => a >  b ? 1 : 0, 'gtElem');
+const geElem     = _makeElementwiseBinop((a: any, b: any) => a >= b ? 1 : 0, 'geElem');
+const equalElem  = _makeElementwiseBinop((a: any, b: any) => a === b ? 1 : 0, 'equalElem');
+const unequalElem = _makeElementwiseBinop((a: any, b: any) => a !== b ? 1 : 0, 'unequalElem');
+// Predicates
+const isfiniteElem = _makeElementwiseUnop((x: any) => Number.isFinite(x) ? 1 : 0, 'isfiniteElem');
+const isinfElem    = _makeElementwiseUnop((x: any) => (!Number.isFinite(x) && !Number.isNaN(x)) ? 1 : 0, 'isinfElem');
+const isnanElem    = _makeElementwiseUnop((x: any) => Number.isNaN(x) ? 1 : 0, 'isnanElem');
+const iszeroElem   = _makeElementwiseUnop((x: any) => x === 0 ? 1 : 0, 'iszeroElem');
+// Logic — assumes inputs are 0/1 booleans-as-numbers
+const landElem  = _makeElementwiseBinop((a: any, b: any) => (a && b) ? 1 : 0, 'landElem');
+const lorElem   = _makeElementwiseBinop((a: any, b: any) => (a || b) ? 1 : 0, 'lorElem');
+const lxorElem  = _makeElementwiseBinop((a: any, b: any) => ((!a) !== (!b)) ? 1 : 0, 'lxorElem');
+const lnotElem  = _makeElementwiseUnop((x: any) => x ? 0 : 1, 'lnotElem');
+// atan2 (two-arg trig)
+const atan2Elem = _makeElementwiseBinop(Math.atan2, 'atan2Elem');
+// Remaining trig + hyperbolic
+const asinElem  = _makeElementwiseUnop(Math.asin,  'asinElem');
+const acosElem  = _makeElementwiseUnop(Math.acos,  'acosElem');
+const atanElem  = _makeElementwiseUnop(Math.atan,  'atanElem');
+const sinhElem  = _makeElementwiseUnop(Math.sinh,  'sinhElem');
+const coshElem  = _makeElementwiseUnop(Math.cosh,  'coshElem');
+const tanhElem  = _makeElementwiseUnop(Math.tanh,  'tanhElem');
+const asinhElem = _makeElementwiseUnop(Math.asinh, 'asinhElem');
+const acoshElem = _makeElementwiseUnop(Math.acosh, 'acoshElem');
+const atanhElem = _makeElementwiseUnop(Math.atanh, 'atanhElem');
+
+// =====================================================================
 // neg — pointwise negation
 // =====================================================================
 //
@@ -1223,6 +1270,19 @@ module.exports = {
   floorElem,
   ceilElem,
   roundElem,
+  // P9 additions — broadcast variants for the remaining ARITH_OPS_N
+  // ops. Each is a one-liner over the shared _makeElementwise*
+  // factories; collectively retire the broadcast1/2/3 dispatch
+  // fallback for these ops in favour of the unified variant
+  // registry.
+  minElem, maxElem,
+  ltElem, leElem, gtElem, geElem, equalElem, unequalElem,
+  isfiniteElem, isinfElem, isnanElem, iszeroElem,
+  landElem, lorElem, lxorElem, lnotElem,
+  atan2Elem,
+  asinElem, acosElem, atanElem,
+  sinhElem, coshElem, tanhElem,
+  asinhElem, acoshElem, atanhElem,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
   _valueToNested,
