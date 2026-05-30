@@ -639,28 +639,56 @@ function _complexLinearBinop(scalarFn: any, a: any, b: any, opName: any) {
     }
     return _packCx(re, im, arrV.shape, isTransposeView(arrV));
   }
-  // array ∘ array — shapes + orientation must agree (same checks as real)
+  // array ∘ array — same rank required; per-axis sizes match OR one
+  // is size 1 (NumPy / spec §04 singleton-axis broadcast).
   if (sa.length !== sb.length) {
     throw new Error(opName + ': rank mismatch (' + JSON.stringify(sa) +
       ' vs ' + JSON.stringify(sb) + ')');
   }
+  let needsBroadcast = false;
   for (let i = 0; i < sa.length; i++) {
-    if (sa[i] !== sb[i]) {
-      throw new Error(opName + ': shape mismatch (' + JSON.stringify(sa) +
-        ' vs ' + JSON.stringify(sb) + ')');
-    }
+    if (sa[i] === sb[i]) continue;
+    if (sa[i] === 1 || sb[i] === 1) { needsBroadcast = true; continue; }
+    throw new Error(opName + ': shape mismatch (' + JSON.stringify(sa) +
+      ' vs ' + JSON.stringify(sb) + ')');
   }
   if (isTransposeView(a) !== isTransposeView(b)) {
     throw new Error(opName + ': cannot combine values of opposite ' +
       'orientation (one is transposed). Apply transpose to align them first.');
   }
-  const n = ca.re.length;
-  const re = new Float64Array(n), im = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    re[i] = scalarFn(ca.re[i], cb.re[i]);
-    im[i] = scalarFn(ca.im[i], cb.im[i]);
+  if (!needsBroadcast) {
+    const n = ca.re.length;
+    const re = new Float64Array(n), im = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      re[i] = scalarFn(ca.re[i], cb.re[i]);
+      im[i] = scalarFn(ca.im[i], cb.im[i]);
+    }
+    return _packCx(re, im, sa, isTransposeView(a));
   }
-  return _packCx(re, im, sa, isTransposeView(a));
+  // Singleton-axis broadcast — same coord-walker as the real path,
+  // applied separately to re and im buffers.
+  const out_shape = new Array(sa.length);
+  for (let i = 0; i < sa.length; i++) out_shape[i] = Math.max(sa[i], sb[i]);
+  const aStrides = _broadcastStridesForShape(sa, out_shape);
+  const bStrides = _broadcastStridesForShape(sb, out_shape);
+  const outSize = out_shape.reduce((p, n) => p * n, 1);
+  const re = new Float64Array(outSize), im = new Float64Array(outSize);
+  const coord = new Array(sa.length).fill(0);
+  for (let linear = 0; linear < outSize; linear++) {
+    let aOff = 0, bOff = 0;
+    for (let i = 0; i < sa.length; i++) {
+      aOff += coord[i] * aStrides[i];
+      bOff += coord[i] * bStrides[i];
+    }
+    re[linear] = scalarFn(ca.re[aOff], cb.re[bOff]);
+    im[linear] = scalarFn(ca.im[aOff], cb.im[bOff]);
+    for (let i = sa.length - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < out_shape[i]) break;
+      coord[i] = 0;
+    }
+  }
+  return _packCx(re, im, out_shape, isTransposeView(a));
 }
 
 function _makeElementwiseBinop(scalarFn: any, opName: any) {

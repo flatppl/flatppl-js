@@ -155,6 +155,31 @@ test('_cxMatBatchedMatMul: shared real A × batched complex B', () => {
   assert.equal(out.data[7], 0); assert.equal(out.im[7], 2);
 });
 
+test('complex singleton-axis broadcast: [3, 1] + [1, 2] → [3, 2]', () => {
+  const a = {
+    shape: [3, 1],
+    data: new Float64Array([1, 2, 3]),     // re
+    im:   new Float64Array([10, 20, 30]),  // im → 1+10i, 2+20i, 3+30i
+    dtype: 'complex',
+  };
+  const b = {
+    shape: [1, 2],
+    data: new Float64Array([100, 200]),     // re → 100+0i, 200+0i
+    im:   new Float64Array([0, 0]),
+    dtype: 'complex',
+  };
+  const r = valueOps.add(a, b);
+  assert.deepEqual(r.shape, [3, 2]);
+  assert.equal(r.dtype, 'complex');
+  // Row 0 (a=1+10i): [101+10i, 201+10i]
+  assert.equal(r.data[0], 101); assert.equal(r.im[0], 10);
+  assert.equal(r.data[1], 201); assert.equal(r.im[1], 10);
+  // Row 1 (a=2+20i): [102+20i, 202+20i]
+  assert.equal(r.data[2], 102); assert.equal(r.im[2], 20);
+  // Row 2 (a=3+30i): [103+30i, 203+30i]
+  assert.equal(r.data[5], 203); assert.equal(r.im[5], 30);
+});
+
 test('_cxMatBatchedMatMul: both per-atom — i·I × B[atom]', () => {
   const N = 2;
   // A: atom 0 = real I, atom 1 = i·I
