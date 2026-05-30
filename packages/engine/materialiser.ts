@@ -418,7 +418,15 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         return Promise.reject(new Error(
           'iid: inner measure for ' + d.from + ' produced no samples'));
       }
-      const value = { shape: [N | 0].concat(d.dims), data: samples };
+      // outerRank=1: the [N, ...d.dims] Value is a nested vector —
+      // N outer atoms × inner-of-shape-d.dims SAMPLES from the inner
+      // measure. Per locked decision (TODO P3, 2026-05-30): iid output
+      // carries `outerRank=1` so downstream consumers (density walker,
+      // pushfwd, kernel-broadcast) distinguish iid's sample axis from
+      // a "per-atom k-vector" (where outerRank would be absent or 0).
+      const value = {
+        shape: [N | 0].concat(d.dims), data: samples, outerRank: 1,
+      };
       return Object.assign(
         empirical.arrayMeasure(samples, d.dims, null),
         { value: value, logTotalmass: 0, n_eff: N },
@@ -444,7 +452,10 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         seed: nameSeed(name, ctx.rootSeed),
       }))
       .then((reply: any) => {
-        const value = { shape: [N | 0].concat(d.dims), data: reply.samples };
+        // outerRank=1 per the locked decision (see fallback above).
+        const value = {
+          shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
+        };
         return Object.assign(
           empirical.arrayMeasure(reply.samples, d.dims, null),
           // logTotalmass scales by k (independent product of k iid
@@ -462,7 +473,13 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       seed: nameSeed(name, ctx.rootSeed),
     }))
     .then((reply: any) => {
-      const value = { shape: [N | 0].concat(d.dims), data: reply.samples };
+      // outerRank=1: iid output is a nested vector (N outer atoms ×
+      // k inner samples from the inner measure). Per locked TODO P3
+      // decision (2026-05-30), set the tag so downstream consumers
+      // distinguish iid's sample axis from a per-atom k-vector.
+      const value = {
+        shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
+      };
       return Object.assign(
         empirical.arrayMeasure(reply.samples, d.dims, null),
         { value: value, logTotalmass: 0, n_eff: N },
@@ -1234,12 +1251,36 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
           refArrays: refArrays,
           seed: nameSeed('%materialise_ir:iid', ctx.rootSeed),
         })
-      ).then((reply: any) => empirical.arrayMeasure(reply.samples, dims, null));
+      ).then((reply: any) => {
+        const m = empirical.arrayMeasure(reply.samples, dims, null);
+        // outerRank=1: nested-vector tag for iid output (TODO P3).
+        if (m && !m.value) {
+          m.value = {
+            shape: [ctx.sampleCount | 0].concat(dims),
+            data: reply.samples,
+            outerRank: 1,
+          };
+        } else if (m && m.value) {
+          (m.value as any).outerRank = 1;
+        }
+        return m;
+      });
     }
     // Nested inner — recurse with count*k, then reshape.
     const innerCtx = Object.assign({}, ctx, { sampleCount: ctx.sampleCount * k });
-    return materialiseMeasureIR(inner, innerCtx).then((innerM: any) =>
-      empirical.arrayMeasure(innerM.samples, dims, null));
+    return materialiseMeasureIR(inner, innerCtx).then((innerM: any) => {
+      const m = empirical.arrayMeasure(innerM.samples, dims, null);
+      if (m && !m.value) {
+        m.value = {
+          shape: [ctx.sampleCount | 0].concat(dims),
+          data: innerM.samples,
+          outerRank: 1,
+        };
+      } else if (m && m.value) {
+        (m.value as any).outerRank = 1;
+      }
+      return m;
+    });
   }
   // joint / record → field-wise materialise + recordMeasure.
   if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {

@@ -269,6 +269,63 @@ function isBatched(v: any, N: number) {
 }
 
 // =====================================================================
+// Atom-axis canonical predicates (P3 — engine-concepts §2.1, §18, §20)
+// =====================================================================
+//
+// "Atom-batched" = the value has a LEADING axis of size N = the engine
+// atom count, i.e. each per-atom slice is `atomShape(v, N)`-shaped.
+// Per the §2.1 shape contract every Value carries shape with the
+// leading axis as the batch (atom) axis.
+//
+// Before P3 the engine had FOUR parallel predicates answering the same
+// question — `_shapeAwareCandidate` (sampler-eval-batched.ts),
+// `_classifyArg` (ops.ts), `_hasAtomAxis` (value-ops.ts), and inline
+// `shape[0] === N` checks scattered across ~20 sites in 10 files.
+// Each carried subtly different conventions about what "atom-batched"
+// meant for shape=[N] vs shape=[N,k] vs raw Float64Array(N).
+//
+// The canonical contract:
+//   - `isAtomBatched(v, N)` → boolean. True iff v is a Value or
+//     Float64Array with leading dim of size N. When `v.outerRank` is
+//     set (the producer signalled nested-vector semantics), require
+//     `v.outerRank >= 1` so an iid output (outerRank=1, shape=[N,k])
+//     is atom-batched but a per-atom matrix (no outerRank,
+//     shape=[N,m,n]) is also atom-batched — both have the atom dim at
+//     position 0 regardless. The outerRank tag only DISAMBIGUATES the
+//     intrinsic structure of the per-atom slice; it doesn't gate the
+//     atom-axis-presence check.
+//   - `atomShape(v, N)` → number[] | null. Returns `v.shape.slice(1)`
+//     when isAtomBatched, else null.
+//
+// These are PURELY shape-based, NOT name-based. Atom-batched
+// detection by REF NAME (the safer convention used inside the
+// aggregate body lifter — see sampler-aggregate.ts) still applies
+// when a value coming through could be atom-indep with a coincidental
+// shape[0] === N; that's a stricter check the call sites that need it
+// continue to implement. `isAtomBatched(v, N)` answers "could this be
+// atom-batched on the §2.1 contract"; the caller decides whether to
+// promote that to "is".
+
+function isAtomBatched(v: any, N: number): boolean {
+  if (v == null) return false;
+  // Raw Float64Array of length N — atom-batched scalar.
+  if (v.BYTES_PER_ELEMENT !== undefined && v.length === N) return true;
+  if (!isValue(v)) return false;
+  if (v.shape.length === 0 || v.shape[0] !== N) return false;
+  // If outerRank is set, it must include the atom axis (>= 1).
+  // If unset, default behaviour: every leading axis is a loop axis,
+  // so atom-batched is true.
+  if (typeof v.outerRank === 'number' && v.outerRank < 1) return false;
+  return true;
+}
+
+function atomShape(v: any, N: number): number[] | null {
+  if (!isAtomBatched(v, N)) return null;
+  if (v.BYTES_PER_ELEMENT !== undefined) return [];   // [N] Float64Array
+  return (v.shape as number[]).slice(1);
+}
+
+// =====================================================================
 // Nested-vector tag (engine-concepts §2.1, outerRank)
 // =====================================================================
 //
@@ -739,6 +796,8 @@ module.exports = {
   isComplexValue: isComplexValue,
   getImag: getImag,
   isBatched: isBatched,
+  isAtomBatched: isAtomBatched,
+  atomShape: atomShape,
   numel: numel,
   // outerRank / nested-vector tag (engine-concepts §2.1)
   outerRankOf: outerRankOf,

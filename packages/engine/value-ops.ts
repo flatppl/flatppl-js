@@ -1102,9 +1102,13 @@ function _atomBroadcastBinop(scalarFn: any, batched: any, indep: any, N: any, sw
 }
 
 // Atom-batched marker: leading axis is the atom count AND there is a
-// non-trivial per-atom shape (rank ≥ 2).
+// non-trivial per-atom shape (rank ≥ 2). Delegates to the P3 canonical
+// `value.isAtomBatched(v, N)` and additionally requires a non-trivial
+// per-atom shape (rules out shape=[N] which is a batched scalar — the
+// scalar-broadcast path handles that, not the matrix-vector dispatch
+// this predicate gates).
 function _hasAtomAxis(v: any, N: any) {
-  return v.shape.length >= 2 && v.shape[0] === N;
+  return valueLib.isAtomBatched(v, N) && v.shape.length >= 2;
 }
 
 // mulN: atom-aware multiplication. Routes the MvNormal-style
