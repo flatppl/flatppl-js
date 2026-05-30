@@ -1143,6 +1143,18 @@ function _ensureBroadcastedRegistered(): void {
     ['asinh',  1, (vs) => vo.asinhElem(vs[0])],
     ['acosh',  1, (vs) => vo.acoshElem(vs[0])],
     ['atanh',  1, (vs) => vo.atanhElem(vs[0])],
+    // Closure of ARITH_OPS_N coverage — pos / link fns / casts /
+    // ifelse. With these, every entry in _SCALAR_PRIM_ARITY flows
+    // through the variant registry; ARITH_OPS_N becomes a thin
+    // legacy facade that future work can retire.
+    ['pos',     1, (vs) => vo.posElem(vs[0])],
+    ['boolean', 1, (vs) => vo.booleanElem(vs[0])],
+    ['integer', 1, (vs) => vo.integerElem(vs[0])],
+    ['logit',     1, (vs) => vo.logitElem(vs[0])],
+    ['invlogit',  1, (vs) => vo.invlogitElem(vs[0])],
+    ['probit',    1, (vs) => vo.probitElem(vs[0])],
+    ['invprobit', 1, (vs) => vo.invprobitElem(vs[0])],
+    ['ifelse',  3, (vs) => vo.ifelseElem(vs[0], vs[1], vs[2])],
   ];
   for (const [opName, arity, impl] of BCAST_TABLE) {
     const argPatterns = new Array(arity).fill(null).map(() => ({}));
