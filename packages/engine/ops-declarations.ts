@@ -1308,6 +1308,42 @@ function _ensureAtomBatchedRegistered(): void {
     },
     label: 'mul(rank-2, rank-1) atom-aware → matBatchedVecMul',
   });
+
+  // -----------------------------------------------------------------
+  // P6 follow-up: rank-2 × rank-2 atom-batched matmul
+  // -----------------------------------------------------------------
+  //
+  // Three input patterns produce the same shape=[N, m, p] output:
+  //   - A=[N, m, n] × B=[n, p]    → per-atom matmul, shared B
+  //   - A=[m, n]    × B=[N, n, p] → per-atom matmul, shared A
+  //   - A=[N, m, n] × B=[N, n, p] → per-atom matmul, both per-atom
+  // The variant matcher dispatches via atom-aware rank classification:
+  // `argRanks: [2, 2]` means each operand is "logical rank 2 OR
+  // rank-3 with leading dim N". `_matBatchedMatMul` inspects whether
+  // each operand has the [N, ...] shape and dispatches accordingly.
+  //
+  // Routes Bayesian per-atom linear-algebra hot paths (X · per_atom_B
+  // for hierarchical models; per_atom_A · per_atom_B for time-series
+  // state-space models) into one batched-gemm call.
+  ops.registerVariant('mul', {
+    argPatterns: [
+      { rank: 2, dtype: 'real' },
+      { rank: 2, dtype: 'real' },
+    ],
+    impl: (vs: any[]) => vo._matMatMul(vs[0], vs[1]),
+    batched: (args: any[], N: number) => {
+      const A = args[0], B = args[1];
+      // Refuse diag-stored — keep on the densify-and-retry pre-check.
+      if ((valueLib.isDiagStored && valueLib.isDiagStored(A))
+          || (valueLib.isDiagStored && valueLib.isDiagStored(B))) {
+        throw new Error(
+          'ops.mul.batched(rank-2, rank-2): diag-stored operand should '
+          + 'route through value-ops.mulN densify-and-retry');
+      }
+      return vo._matBatchedMatMul(A, B, N);
+    },
+    label: 'mul(rank-2, rank-2) atom-aware → matBatchedMatMul',
+  });
 }
 
 // =====================================================================
