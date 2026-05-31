@@ -43,6 +43,17 @@ import type { Ctx } from './types';
  * sync contract holds for CSP-restricted hosts too. The 5-second
  * blob-URL revoke timer protects against URL leaks once the worker
  * has finished parsing its source; the worker keeps running.
+ *
+ * **Use this ONLY when sync is mandatory** — i.e. the parallel
+ * worker pool's `Backend.spawnWorker` contract. The single-thread
+ * sampler bootstrap in `ensureSamplerWorker` uses async fetch for
+ * its blob fallback because (a) it's already in an async function
+ * so the cost is free, and (b) sync XHR is restricted in the VS
+ * Code webview's Chromium for `vscode-webview:` URIs — the sync
+ * path silently fails there and the worker spawns from empty
+ * content, leaving the visualization perpetually empty. This sync
+ * path only ever runs when FLATPPL_PARALLEL_SAMPLE=1 is set (off
+ * by default).
  */
 export function spawnSamplerWorker(url: string): Worker {
   try {
@@ -73,9 +84,37 @@ export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
   ctx.samplerWorkerPromise = (async function() {
-    // Route through the shared helper so the CSP / blob-URL fallback
-    // logic lives in exactly one place — see spawnSamplerWorker above.
-    const w: Worker = spawnSamplerWorker(ctx.SAMPLER_WORKER_URL);
+    // Try direct construction first — cheapest path on hosts where
+    // it works. Fall back to blob: on any failure (security error,
+    // cross-origin block, etc.). Async-fetch blob fallback (not the
+    // sync-XHR path in `spawnSamplerWorker`) because (a) we're
+    // already inside an async function, so the cost is free, and
+    // (b) sync XHR is restricted in the VS Code webview's Chromium
+    // for `vscode-webview:` URIs — the sync path silently fails
+    // there and the worker spawns from empty content. The pool's
+    // `spawnSamplerWorker` keeps sync XHR because Backend.spawnWorker
+    // demands a sync contract, but that path only runs when
+    // FLATPPL_PARALLEL_SAMPLE=1 is set.
+    let w: Worker | null = null;
+    try {
+      w = new Worker(ctx.SAMPLER_WORKER_URL);
+    } catch (e) {
+      console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:',
+        e instanceof Error ? e.message : e);
+    }
+    if (!w) {
+      const resp = await fetch(ctx.SAMPLER_WORKER_URL);
+      if (!resp.ok) throw new Error('failed to fetch worker bundle: '
+        + resp.status + ' ' + resp.statusText);
+      const src = await resp.text();
+      const blob = new Blob([src], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      w = new Worker(url);
+      // The blob URL only needs to live until the Worker has parsed
+      // its source — revoke after a short delay so the URL isn't
+      // leaked (the worker keeps running independently).
+      setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
+    }
     wireWorker(ctx, w);
     ctx.samplerWorker = w;
     // Initialize with a fixed seed for deterministic output. Future:
