@@ -453,10 +453,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               // Empty intersection M ∩ S: every atom NaN, mass shift = -Inf.
               for (let i = 0; i < count; i++) out[i] = NaN;
               if (seed == null) philox = state;
-              // totalDraws=0 here: no atoms ever drew, so the pool-reduce
-              // sumNeff/sumDraws collapses cleanly to log(0/0)=-Infinity.
               return { type: 'samples', id, samples: out, logWeights: null,
-                       logShift: -Infinity, n_eff: 0, totalDraws: 0 };
+                       logShift: -Infinity, n_eff: 0 };
             }
             for (let i = 0; i < count; i++) {
               const pair = rngLib.nextUniform(state);
@@ -464,12 +462,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               out[i] = dist.quantile(Flo + pair[0] * dF);
             }
             if (seed == null) philox = state;
-            // CDF path: exactly one (Q-mapped) draw per atom, so
-            // totalDraws == count; n_eff == count too. The pool-reduce
-            // logShift recovers log(dF) exactly when concatenating
-            // bit-equivalent CDF-path chunks.
             return { type: 'samples', id, samples: out, logWeights: null,
-                     logShift: Math.log(dF), n_eff: count, totalDraws: count };
+                     logShift: Math.log(dF), n_eff: count };
           }
 
           // Rejection-redraw path. Build one sampler (static or
@@ -511,17 +505,11 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // Empirical acceptance probability → log-mass shift. When no
           // atom accepted (n_eff == 0), report -Infinity so downstream
           // sees zero truncated mass cleanly.
-          //
-          // `totalDraws` is surfaced in the reply so the fan-out reducer
-          // (sampler._dispatchSampleN's _reduceReplies) can pool n_eff
-          // and totalDraws across worker chunks and re-derive the
-          // joint logShift = log(sumNeff / sumDraws). For W=1 / scalar
-          // callers it's an extra field they may ignore.
           const logShift = n_eff > 0
             ? Math.log(n_eff / totalDraws)
             : -Infinity;
           return { type: 'samples', id, samples: out, logWeights: null,
-                   logShift, n_eff, totalDraws };
+                   logShift, n_eff };
         }
         case 'profileN': {
           // Profile-plot evaluator. Sweeps a single scalar input over
