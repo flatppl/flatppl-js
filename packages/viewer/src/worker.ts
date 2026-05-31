@@ -21,64 +21,6 @@
  */
 import type { Ctx } from './types';
 
-/**
- * Spawn a sampler Worker from a URL, with a blob-URL fallback for
- * CSP-restricted hosts (notably the VS Code webview, where some
- * versions reject `new Worker(webview-uri)` outright). The fallback
- * fetches the bundle text via the same URI (which connect-src does
- * allow), wraps it in a same-origin blob, and constructs the Worker
- * from that.
- *
- * Exported so per-host bootstraps (web's main app entry,
- * vscode-extension's webview script) can pass the same spawn
- * function into the engine Backend's `spawnWorker` slot — the
- * pool then uses one consistent spawning path for every Worker it
- * creates, instead of each host re-implementing the CSP dance.
- *
- * Synchronous-on-the-happy-path: `new Worker(url)` returns
- * immediately on hosts where it works, so the parallel-pool's
- * spawnSlots() loop doesn't have to be async. The fallback path
- * uses synchronous XHR (the only browser primitive that fetches a
- * URL string -> bytes without going through a Promise) so the same
- * sync contract holds for CSP-restricted hosts too. The 5-second
- * blob-URL revoke timer protects against URL leaks once the worker
- * has finished parsing its source; the worker keeps running.
- *
- * **Use this ONLY when sync is mandatory** — i.e. the parallel
- * worker pool's `Backend.spawnWorker` contract. The single-thread
- * sampler bootstrap in `ensureSamplerWorker` uses async fetch for
- * its blob fallback because (a) it's already in an async function
- * so the cost is free, and (b) sync XHR is restricted in the VS
- * Code webview's Chromium for `vscode-webview:` URIs — the sync
- * path silently fails there and the worker spawns from empty
- * content, leaving the visualization perpetually empty. This sync
- * path only ever runs when FLATPPL_PARALLEL_SAMPLE=1 is set (off
- * by default).
- */
-export function spawnSamplerWorker(url: string): Worker {
-  try {
-    return new Worker(url);
-  } catch (e) {
-    console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:',
-      e instanceof Error ? e.message : e);
-    // CSP-restricted host (VS Code webview, some Firefox configs).
-    // Synchronously fetch + blob the bundle so this stays a plain
-    // (non-Promise) spawn — matches the engine Backend.spawnWorker
-    // contract used by the parallel worker pool.
-    const req = new XMLHttpRequest();
-    req.open('GET', url, /* async */ false);
-    req.send();
-    if (req.status !== 0 && (req.status < 200 || req.status >= 300)) {
-      throw new Error('failed to fetch worker bundle: ' + req.status + ' ' + req.statusText);
-    }
-    const blob = new Blob([req.responseText], { type: 'application/javascript' });
-    const blobUrl = URL.createObjectURL(blob);
-    const w = new Worker(blobUrl);
-    setTimeout(function() { try { URL.revokeObjectURL(blobUrl); } catch (_) {} }, 5000);
-    return w;
-  }
-}
-
 export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
@@ -86,15 +28,9 @@ export function ensureSamplerWorker(ctx: Ctx) {
   ctx.samplerWorkerPromise = (async function() {
     // Try direct construction first — cheapest path on hosts where
     // it works. Fall back to blob: on any failure (security error,
-    // cross-origin block, etc.). Async-fetch blob fallback (not the
-    // sync-XHR path in `spawnSamplerWorker`) because (a) we're
-    // already inside an async function, so the cost is free, and
-    // (b) sync XHR is restricted in the VS Code webview's Chromium
-    // for `vscode-webview:` URIs — the sync path silently fails
-    // there and the worker spawns from empty content. The pool's
-    // `spawnSamplerWorker` keeps sync XHR because Backend.spawnWorker
-    // demands a sync contract, but that path only runs when
-    // FLATPPL_PARALLEL_SAMPLE=1 is set.
+    // cross-origin block, etc.). Async fetch (not sync XHR — sync
+    // XHR is blocked in the VS Code webview's Chromium for
+    // `vscode-webview:` URIs).
     let w: Worker | null = null;
     try {
       w = new Worker(ctx.SAMPLER_WORKER_URL);
@@ -194,16 +130,5 @@ export function cancelAllSampling(ctx: Ctx) {
   ctx.pendingRequests = new Map();
   for (const entry of entries) {
     try { entry.reject(new Error('cancelled')); } catch (_) {}
-  }
-  // Tear down the parallel worker pool too — Stop button / page-
-  // unload should free every pool worker, not just the single-thread
-  // sampler held in ctx. disposePool is a no-op when the pool was
-  // never spawned, so this is safe to call unconditionally. Reached
-  // via the FlatPPLEngine global so the viewer bundle doesn't pull
-  // worker-pool into its own dependency graph (the engine bundle
-  // owns it).
-  const FE: any = (typeof window !== 'undefined') ? (window as any).FlatPPLEngine : null;
-  if (FE && FE.workerPool && typeof FE.workerPool.disposePool === 'function') {
-    try { FE.workerPool.disposePool(); } catch (_) {}
   }
 }

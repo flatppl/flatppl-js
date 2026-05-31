@@ -1022,46 +1022,6 @@ function _ensureRootKey(ctx: any): void {
   }
 }
 
-// Wrap ctx.sendWorker once per ctx so every internal sampleN /
-// truncateSampleN message threads through the worker-range fan-out
-// dispatcher (sampler._dispatchSampleN; commit 4 scaffold). Other
-// message types (evaluateN / logDensityN / setEnv / etc.) pass
-// straight through. Idempotent — guarded by `_workerDispatched`.
-//
-// The scalar transport (the original ctx.sendWorker) becomes
-// _dispatchSampleN's fallback for the W=1 branch (still routed
-// through `split(seed, 1)[0]` for determinism). When the host
-// installs a backend with spawnWorker + the FLATPPL_PARALLEL_SAMPLE
-// flag is on, sampleN/truncateSampleN with count >= threshold fan
-// out into chunks via the worker pool; otherwise everything stays
-// on the original transport unchanged.
-//
-// Lazy sampler require to avoid a module-load cycle: sampler.ts is
-// resolved at first call, not at this module's load time.
-let _samplerMod: any = null;
-function _samplerLazy(): any {
-  if (_samplerMod === null) _samplerMod = require('./sampler.ts');
-  return _samplerMod;
-}
-
-function _ensureDispatchedSendWorker(ctx: any): void {
-  if (!ctx || ctx._workerDispatched) return;
-  const original = ctx.sendWorker;
-  if (typeof original !== 'function') return;
-  ctx._workerDispatched = true;
-  ctx.sendWorker = function (msg: any): any {
-    if (msg && (msg.type === 'sampleN' || msg.type === 'truncateSampleN')) {
-      // Hand the original sendWorker to the dispatch shim as the
-      // scalar handler — it gets called once per chunk (in the
-      // fan-out path) or once total (in the scalar path).
-      return _samplerLazy()._dispatchSampleN(msg, msg.type, function (chunkMsg: any) {
-        return original.call(ctx, chunkMsg);
-      });
-    }
-    return original.call(ctx, msg);
-  };
-}
-
 function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // Pre-dispatch guards (callable-layer rejection, fixed-phase
   // short-circuit) plus the terminal kindDispatch all live in the
@@ -1069,7 +1029,6 @@ function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
   // (tracing, MCMC handlers, gradient capture) add stages without
   // touching this function.
   _ensureRootKey(ctx);
-  _ensureDispatchedSendWorker(ctx);
   // Worker-session-env precondition: push the module registry once
   // per ctx so any downstream `evaluateN`/`logDensityN`/`sampleN`
   // call that traverses a `(call target=({ns: <alias>, …}) …)` can
@@ -1104,7 +1063,6 @@ function materialiseKernelBroadcastIR(ir: any, ctx: any) {
       'materialiseKernelBroadcastIR: not a broadcast call'));
   }
   _ensureRootKey(ctx);
-  _ensureDispatchedSendWorker(ctx);
   if (!Array.isArray(ir.args) || ir.args.length < 1) {
     return Promise.reject(new Error(
       'materialiseKernelBroadcastIR: broadcast has no head arg'));
@@ -1163,7 +1121,6 @@ function materialiseSelectIR(ir: any, ctx: any) {
     return Promise.reject(new Error('materialiseSelectIR: not a select call'));
   }
   _ensureRootKey(ctx);
-  _ensureDispatchedSendWorker(ctx);
   const branches = ir.branches;
   if (!Array.isArray(branches) || branches.length === 0) {
     return Promise.reject(new Error('materialiseSelectIR: select has no branches'));
@@ -1325,7 +1282,6 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       "materialiseMeasureIR: non-call IR (kind '" + ir.kind + "')"));
   }
   _ensureRootKey(ctx);
-  _ensureDispatchedSendWorker(ctx);
   // lawof(M) → peel, recurse on M.
   if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
     return materialiseMeasureIR(ir.args[0], ctx);
@@ -1446,11 +1402,6 @@ module.exports = {
   materialiseKernelBroadcastIR,
   materialiseSelectIR,
   materialiseMeasureIR,
-  // Commit-5 wiring helper — wraps ctx.sendWorker once per ctx to
-  // route sampleN/truncateSampleN through the fan-out dispatcher.
-  // Exported so conformance tests can pin the contract; called
-  // internally at every public entry alongside _ensureRootKey.
-  _ensureDispatchedSendWorker,
   // P3b — materialiser pipeline (engine-concepts §18.11 / §20.10.5
   // item 5). Stages get prepended to the default pipeline via
   // `registerMaterialiserStage(stage)`; they wrap the terminal

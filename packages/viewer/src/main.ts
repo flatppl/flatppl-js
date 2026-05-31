@@ -59,7 +59,6 @@ import {
   ensureSamplerWorker,
   sendWorker,
   sendWorkerNow,
-  spawnSamplerWorker,
   wireWorker,
 } from './worker.js';
 import {
@@ -425,47 +424,6 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // user picks a binding for which the Plot tab is enabled (a 'draw'
     // of a known distribution with literal params).
     ctx.SAMPLER_WORKER_URL = ctx.CONFIG.samplerWorkerUrl || '';
-
-    // ---- Backend install (per-host bootstrap fallback) ----
-    //
-    // The engine's parallel worker pool calls
-    //   getBackend().spawnWorker()
-    // to spawn each Worker. Today the only host bootstrap that runs
-    // before viewer.mount is the inline <script> that sets
-    // __FLATPPL_CONFIG__.samplerWorkerUrl (both the web gallery and
-    // the vscode-extension webview use this same pattern). So this
-    // mount() body is the de-facto "host bootstrap" — install a
-    // Backend here whose spawnWorker reuses the same CSP-aware
-    // helper the single-thread sampler does. Web and vscode-extension
-    // automatically inherit parallel-pool support; no extra wiring
-    // in either host's main.ts / visualPanel.ts.
-    //
-    // Worker cap heuristic: hardwareConcurrency - 2 (one core for the
-    // main thread, one for the OS / UI), clamped to [1, 8]. The 8
-    // upper bound is conservative — Float64 sample fan-out hits
-    // diminishing returns above ~8 workers because postMessage
-    // serialization + transferable hand-off start to dominate.
-    if (ctx.SAMPLER_WORKER_URL
-        && typeof window !== 'undefined'
-        && (window as any).FlatPPLEngine
-        && (window as any).FlatPPLEngine.backend) {
-      const FE: any = (window as any).FlatPPLEngine;
-      const HW = (typeof navigator !== 'undefined' && (navigator as any).hardwareConcurrency) || 4;
-      const maxWorkers = Math.max(1, Math.min(8, HW - 2));
-      const samplerUrl = ctx.SAMPLER_WORKER_URL;
-      FE.backend.setBackend({
-        ...FE.backend.jsBackend,
-        name: 'js-pool',
-        maxWorkers: maxWorkers,
-        spawnWorker: function () {
-          try { return spawnSamplerWorker(samplerUrl); }
-          catch (e) {
-            console.warn('FlatPPL: pool spawnWorker failed:', e);
-            return null;
-          }
-        },
-      });
-    }
 
 
   // ---- Palette ----
