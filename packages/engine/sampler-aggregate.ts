@@ -184,13 +184,27 @@ function _evalAggregate(ir: any, env: any): any {
 // transposes either operand before the multiplication. For shape-
 // rich Values the transpose is a free Klein-4 tag flip; for nested
 // arrays it's `ARITH_OPS.transpose`.
+//
+// When `atomN` is set (atom-batched aggregate path), the mul dispatch
+// passes `{ atomN }` so the rank-2 × rank-2 atom-aware variant
+// (`_matBatchedMatMul`, registered in ops-declarations.ts) fires for
+// per-atom matmul — shape `[N, m, n] × [N, n, p] → [N, m, p]`. Without
+// `atomN`, the dispatcher treats those as rank-3 × rank-3 (no
+// matching variant) and throws, which `_tryBatchedAggregatePatterns`
+// catches as a fall-through signal.
 // ---------------------------------------------------------------------
-function _matmulDispatch(A: any, B: any, transA: boolean, transB: boolean): any {
+function _matmulDispatch(
+  A: any, B: any, transA: boolean, transB: boolean, atomN?: number,
+): any {
   if (valueLib.isValue(A) || valueLib.isValue(B)) {
     let aV = valueLib.asValue(A);
     let bV = valueLib.asValue(B);
     if (transA) aV = valueLib.transpose(aV);
     if (transB) bV = valueLib.transpose(bV);
+    if (typeof atomN === 'number') {
+      const ops = require('./ops.ts');
+      return ops.dispatch('mul', [aV, bV], { atomN, wrappingOp: 'direct' });
+    }
     return valueOps.mul(aV, bV);
   }
   const aN = transA ? (ARITH_OPS as any).transpose(A) : A;
@@ -234,7 +248,8 @@ AGGREGATE_PATTERNS.push({
   execute(_ir: any, env: any, match: any): any {
     const A = evaluateExpr(match.aIR, env);
     const B = evaluateExpr(match.bIR, env);
-    return _matmulDispatch(A, B, match.transA, match.transB);
+    return _matmulDispatch(A, B, match.transA, match.transB,
+      env && env.__atomN);
   },
 });
 
@@ -1280,12 +1295,18 @@ function _evalAggregateBroadcastReduce(ir: any, env: any): any {
 // atom-batched mode: `aggregate(sum, [.i], A[.i, .j] * v[.j])` with
 // atom-indep A and atom-batched v dispatches to `valueOps.mul(A, v)`
 // via the rank-2 × atom-batched rank-1 atom-aware variant (registered
-// in ops-declarations.ts). When the specialiser CAN'T handle the
-// atom-batched form (matmul rank-2 × rank-2 has no variant yet —
-// follow-up), it returns null and the generic pipeline runs.
+// in ops-declarations.ts). Phase 2.2 (2026-05-31) extended this to
+// rank-2 × rank-2 atom-batched matmul: the env carries `__atomN`,
+// which the matmul-family specialiser's `_matmulDispatch` reads and
+// passes to `ops.dispatch('mul', ..., { atomN })` so the atom-aware
+// `_matBatchedMatMul` variant fires for `[N, m, n] × [N, n, p] →
+// [N, m, p]`. Without `__atomN`, the dispatcher treats the operands
+// as rank-3 × rank-3 (no matching variant) and throws, which we
+// catch as a fall-through signal.
 //
 // The wire lets the polyeval-style hot path AND linear-regression-
-// style `X · betas` AND any model with `A · v_per_atom` skip the
+// style `X · betas` AND any model with `A · v_per_atom` AND batched
+// matmul shapes (state-space transition × covariance, etc.) skip the
 // generic broadcast-reduce intermediate when a specialiser would
 // vectorise better.
 function _tryBatchedAggregatePatterns(
@@ -1302,14 +1323,21 @@ function _tryBatchedAggregatePatterns(
   if (overlay) {
     for (const k of Object.keys(overlay)) env[k] = overlay[k];
   }
+  // Stash the atom count under a private key so specialisers' execute
+  // can propagate it to the variant dispatcher (`ops.dispatch(..., {
+  // atomN })`). Specialisers that don't need it just ignore the key.
+  // The underscore prefix puts it out of reach of any user binding
+  // name (binding names can't start with `__` per spec §04).
+  env.__atomN = N;
   for (const p of AGGREGATE_PATTERNS) {
     // Today's specialisers' execute() works on whatever operand
     // shape comes out of evaluateExpr; for atom-batched refs, that
     // returns the atom-batched Value verbatim. valueOps.mul +
-    // variant dispatch handle the supported shape combos
-    // (rank-2 × atom-batched rank-1 → vectorised matvec); for
-    // unsupported combos (rank-2 × rank-2 atom-batched matmul, etc.)
-    // the dispatch throws — we catch and return null to fall through.
+    // variant dispatch handle the supported shape combos:
+    //   - rank-2 × atom-batched rank-1 → vectorised matvec
+    //   - rank-2 × rank-2 atom-batched → batched matmul (Phase 2.2)
+    // For unsupported combos the dispatch throws — we catch and
+    // return null to fall through to the generic broadcast-reduce.
     const m = p.match(ir, env);
     if (!m) continue;
     try {
