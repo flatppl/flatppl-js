@@ -25,6 +25,10 @@ const orchestrator = require('./orchestrator.ts');
 const valueLib     = require('./value.ts');
 const shared       = require('./materialiser-shared.ts');
 const axisStackMod = require('./axis-stack.ts');
+// Loading this module registers the built-in KERNEL_BROADCAST_FAST_PATHS
+// handlers (Normal etc.) as a side effect. The dispatch helper is
+// looked up below before falling through to the general per-cell path.
+const fastPaths    = require('./kernel-broadcast-handlers.ts');
 
 const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 
@@ -170,56 +174,18 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     }
     const anyAtomDep = pnames.some((pn) => usesAtomBy[pn]);
 
-    // ATOM-INDEP HOT PATH (closed-form Normal): broadcast(Normal,
-    // μ_vec, σ_vec) with both params atom-independent ⇒ MvNormal(μ,
-    // diag(σ²)). Uses the structured-matrix diag Cholesky for O(N·K)
-    // generation.
-    if (!anyAtomDep && d.distOp === 'Normal' && paramVals.mu && paramVals.sigma) {
-      const valueOps = require('./value-ops.ts');
-      const ops      = require('./ops.ts');
-      const muV  = valueLib.asValue(paramVals.mu);
-      const sigV = valueLib.asValue(paramVals.sigma);
-      const muLen  = muV.shape.length === 0 ? 1 : muV.shape[0];
-      const sigLen = sigV.shape.length === 0 ? 1 : sigV.shape[0];
-      const muVec  = new Float64Array(K);
-      const sigSq  = new Float64Array(K);
-      for (let j = 0; j < K; j++) {
-        muVec[j] = muV.data[muLen === 1 ? 0 : j];
-        const s = sigV.data[sigLen === 1 ? 0 : j];
-        sigSq[j] = s * s;
-      }
-      const cov = valueLib.diagMatrix(sigSq);
-      let L;
-      try {
-        L = sampler._internal.ARITH_OPS.lower_cholesky(cov);
-      } catch (err) {
-        return Promise.reject(new Error('broadcast(Normal): ' + (err as any).message));
-      }
-      const stdNormalIR = {
-        kind: 'call', op: 'Normal',
-        kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
-      };
-      return ctx.sendWorker({
-        type: 'sampleN', ir: stdNormalIR, count: N, repeat: K,
-        refArrays: {}, seed: nameSeed(name, ctx.rootKey),
-      }).then((reply: any) => {
-        const z = { shape: [N, K], data: reply.samples };
-        // Atom-batched L·z + μ via the registry's atom-aware
-        // variants (TODO-flatppl-js P1 follow-up). L is shape=[K,K]
-        // (Cholesky factor of diag(σ²) — diag-stored on this hot
-        // path); z is atom-batched rank-1 shape=[N, K]; μ is rank-1
-        // shape=[K]. Diag-stored L stays on value-ops.mulN (its
-        // null-fallthrough fast-path doesn't fit variant dispatch).
-        const Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
-          ? valueOps.mulN(L, z, N)
-          : ops.dispatch('mul', [L, z], { atomN: N });
-        const result = ops.dispatch('add',
-          [{ shape: [K], data: muVec }, Lz], { atomN: N });
-        return measureFromValue(result, {
-          logWeights: null, logTotalmass: 0, n_eff: N,
-        });
-      });
-    }
+    // CLOSED-FORM FAST PATHS via the KERNEL_BROADCAST_FAST_PATHS
+    // registry (kernel-broadcast-handlers.ts). Each per-distOp handler
+    // declares its own match predicate (typically: atom-indep params,
+    // specific param presence) and execute body. Returns null if no
+    // registered handler matches; falls through to the general per-
+    // cell path below. See kernel-broadcast-handlers.ts for the
+    // registry surface + currently-registered handlers (Normal as of
+    // Phase 1.1).
+    const fastResult = fastPaths.tryKernelBroadcastFastPath({
+      d, ctx, name, K, N, paramVals, anyAtomDep,
+    });
+    if (fastResult) return fastResult;
 
     // GENERAL PATH: K worker sampleN calls, each with per-atom
     // refArrays carrying the (i, j) value of each per-atom parameter.
