@@ -1345,6 +1345,14 @@ function _ensureBroadcastedRegistered(): void {
     ['gamma',     1, (vs) => vo.gammaElem(vs[0])],
     ['loggamma',  1, (vs) => vo.loggammaElem(vs[0])],
     ['ifelse',  3, (vs) => vo.ifelseElem(vs[0], vs[1], vs[2])],
+    // Phase 3.2: complex constructor / accessors elementwise.
+    // `complex.(re, im)` / `real.(z)` / `imag.(z)` / `conj.(z)` /
+    // `cis.(theta)` lower to `broadcast(<op>, args)` and route here.
+    ['complex', 2, (vs) => vo.complexElem(vs[0], vs[1])],
+    ['real',    1, (vs) => vo.realElem(vs[0])],
+    ['imag',    1, (vs) => vo.imagElem(vs[0])],
+    ['conj',    1, (vs) => vo.conjElem(vs[0])],
+    ['cis',     1, (vs) => vo.cisElem(vs[0])],
   ];
   for (const [opName, arity, impl] of BCAST_TABLE) {
     const argPatterns = new Array(arity).fill(null).map(() => ({}));
