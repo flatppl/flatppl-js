@@ -103,6 +103,27 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     ? compositeBody.distOp : d.distOp;
   const iidN = (compositeBody && compositeBody.kind === 'iid')
     ? compositeBody.n : 1;
+
+  // Phase 4.1 fast-detect: iid-composite vec-per-cell case.
+  //
+  // If the kernel binding is iid-composite AND any BROADCAST ARG has
+  // shape [K, D] (atom-indep) or [N, K, D] (atom-batched) where D ==
+  // iidN, then the body's per-cell parameters are length-D vectors —
+  // each iid component within a cell uses a DIFFERENT param value.
+  // The existing per-cell loop's `repeat = iidN` assumes shared
+  // per-cell params across the iid axis; that's not valid here.
+  //
+  // Branch to the new `_executeIidCompositeVecPerCell` path BEFORE
+  // batched evaluation of paramIRs[*] (which would otherwise fail —
+  // the substituted body mixes atom-batched scalar refs with rank-2
+  // atom-indep refs, and `value-ops.addN` rejects the per-atom shape
+  // mismatch). The new path substitutes broadcast args per (j, r) so
+  // every leaf in the body resolves to per-atom scalar before
+  // evaluation.
+  if (compositeBody && compositeBody.kind === 'iid'
+      && _shouldUseVecPerCell(d, ctx, iidN)) {
+    return _executeIidCompositeVecPerCell(name, d, ctx, compositeBody, paramIRs);
+  }
   const pnames = Object.keys(paramIRs);
   // Synthesize a containing IR so prepareDensityRefs collects every
   // free name across all parameter expressions in one pass.
@@ -346,6 +367,325 @@ function _substituteKernelParams(
     return out;
   }
   return expr;
+}
+
+// =====================================================================
+// Phase 4.1 — vec-per-cell iid-composite execution
+// =====================================================================
+//
+// When a kernel-broadcast wraps `kernelof(iid(<Dist>, n), …)` and at
+// least one broadcast arg is rank-2 atom-indep `[K, D]` or rank-3
+// atom-batched `[N, K, D]` (with D == iidN), the per-cell parameter
+// expression — e.g. `intercept + slope .* x_group` in random-
+// intercepts — evaluates to a length-D vector per cell. The inner
+// iid axis IS the vector D axis: each iid component within a cell
+// uses a DIFFERENT param value (varies along r ∈ [0, D)).
+//
+// The existing per-cell loop in `matKernelBroadcast` pre-evaluates
+// the substituted body in batched mode and then slices per cell.
+// That fails on these inputs because the substituted body's batched
+// evaluation mixes atom-batched scalar refs `[N]` with rank-2 atom-
+// indep refs `[K, D]`, and `value-ops.addN` doesn't broadcast across
+// such mixed shapes.
+//
+// The vec-per-cell path inverts the order: substitute per (j, r)
+// FIRST (so each broadcast arg becomes a per-atom scalar or a
+// literal), then evaluate the substituted body in batched mode. All
+// the body's arithmetic reduces to per-atom-scalar operations —
+// shapes that `evaluateExprN` handles cleanly.
+//
+// Cost: K * D worker sampleN calls instead of K calls with
+// `repeat = D`. For typical hierarchical models (K, D small; N >> 1)
+// the overhead is negligible.
+
+// Should we route to the vec-per-cell path? True iff ANY broadcast
+// arg classifies as `KD` (atom-indep [K, D]) or `NKD` (atom-batched
+// [N, K, D]) where D == iidN. We do a CHEAP shape probe (evaluate
+// each broadcast arg once, classify) — paramVals get reused inside
+// `_executeIidCompositeVecPerCell` so the cost amortises.
+function _shouldUseVecPerCell(d: any, ctx: any, iidN: number): boolean {
+  if (iidN <= 1) return false;
+  if (!d.kwargIRs) return false;
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  // Inspect each broadcast arg's inferred shape via a quick type
+  // probe — read the binding's inferred type when the arg is a
+  // simple `self`-ref, falling back to a value-eval if needed.
+  // We're conservative: only fire when at least one arg has a
+  // statically observable rank-2 (atom-indep) or rank-3 (atom-
+  // batched) shape whose last dim equals iidN.
+  for (const argName of Object.keys(d.kwargIRs)) {
+    const argIR = d.kwargIRs[argName];
+    if (!argIR || argIR.kind !== 'ref' || argIR.ns !== 'self') continue;
+    if (!ctx.bindings || !ctx.bindings.has(argIR.name)) continue;
+    const b = ctx.bindings.get(argIR.name);
+    const t = b && b.inferredType;
+    if (!t || t.kind !== 'array' || !Array.isArray(t.shape)) continue;
+    const shape = t.shape;
+    if (shape.length === 2 && shape[1] === iidN) return true;
+    if (shape.length === 3 && shape[2] === iidN) return true;
+  }
+  // Fallback: probe by evaluating each broadcast arg once and
+  // inspecting the runtime shape. This catches cases where typeinfer
+  // hasn't populated the full shape (or where evaluateExprN runs a
+  // shape-folding pass that produces a more-precise concrete shape
+  // than the static type carries).
+  //
+  // We don't reuse these evaluations here — `_executeIidComposite-
+  // VecPerCell` re-evaluates them through `prepareDensityRefs` so
+  // worker / fixedEnv plumbing stays in one place. This duplicate
+  // eval is bounded by the per-broadcast-arg cost (small ops) and
+  // only fires on the iid-composite path; fine for now, can be
+  // memoised later if it shows in profiles.
+  for (const argName of Object.keys(d.kwargIRs)) {
+    try {
+      const argIR = d.kwargIRs[argName];
+      const refs = require('./orchestrator.ts').collectSelfRefs(argIR);
+      const fixedValues = ctx.fixedValues || new Map();
+      const env: Record<string, any> = {};
+      for (const refName of refs) {
+        if (fixedValues.has && fixedValues.has(refName)) {
+          env[refName] = fixedValues.get(refName);
+        }
+      }
+      const v = sampler.evaluateExpr(argIR, env);
+      if (v && Array.isArray(v.shape)) {
+        const shape = v.shape;
+        if (shape.length === 2 && shape[1] === iidN) return true;
+        if (shape.length === 3 && shape[2] === iidN) return true;
+      }
+    } catch (_) {
+      // Couldn't evaluate this arg statically — fall through. The
+      // existing batched path will run and either succeed (scalar-
+      // per-cell case) or surface a clearer error.
+    }
+  }
+  return false;
+}
+
+function _executeIidCompositeVecPerCell(
+  name: string, d: any, ctx: any, compositeBody: any,
+  paramIRs: Record<string, any>,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const iidN = compositeBody.n;
+
+  // Build an aggregateIR that mirrors the existing scalar-per-cell
+  // path: `broadcast(<distOp_ref>, paramIRs)` where `paramIRs` is
+  // the body kwargs WITH kernel placeholders pre-substituted to the
+  // broadcast args' IRs (built by matKernelBroadcast above). This
+  // surfaces every closed-over self-ref (`slope`, `sigma`, …) AND
+  // every broadcast arg ref (`intercepts`, `x_per_group`, …) to
+  // `prepareDensityRefs`'s collectSelfRefs walk — yielding a
+  // refArrays map populated with all upstream values.
+  //
+  // The per-(j, r) loop below RE-substitutes the body kwargs with
+  // cell-sliced bcKwargs (a literal scalar for atom-indep args; a
+  // ref to a `__bc_<arg>_j_r` per-atom column for atom-batched args)
+  // so each iteration evaluates with concrete per-atom-scalar shapes.
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: paramIRs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+
+    // Evaluate each broadcast arg once to determine shape + atom-dep.
+    const argVals: Record<string, any> = {};
+    const argClass: Record<string, any> = {};
+    let K = 1;
+    for (const argName of Object.keys(d.kwargIRs)) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      argVals[argName] = v;
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      argClass[argName] = cls;
+      const argK = cls.K || 1;
+      if (argK > 1) {
+        if (K === 1) K = argK;
+        else if (K !== argK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): incompatible cell-axis lengths (' + K + ' vs '
+            + argK + ') on arg \'' + argName + '\''));
+        }
+      }
+      const argD = cls.D || 1;
+      if (argD > 1 && argD !== iidN) {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): vec-per-cell dim ' + argD + ' on arg \''
+          + argName + '\' must equal the inner iid count ' + iidN));
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+
+    // Per (j, r) loop: substitute each broadcast arg with its
+    // (j, r) per-atom slice and evaluate the substituted body
+    // kwargs in batched mode. Each substituted kwarg evaluates to
+    // a per-atom scalar Value or a plain scalar; worker sampleN
+    // takes those as the inner builtin dist's params.
+    const cells = new Array(K * iidN);
+    let chain = Promise.resolve();
+    for (let j = 0; j < K; j++) {
+      for (let r = 0; r < iidN; r++) {
+        const jj = j, rr = r;
+        chain = chain.then(() => {
+          // Build per-(j, r) bcKwargs: each surface kwarg maps to
+          // either a lit scalar (atom-indep) or a ref to a per-atom
+          // column refArray (atom-batched).
+          const bcKwargs: Record<string, any> = {};
+          const perAtomRefs: Record<string, any> = {};
+          for (const argName of Object.keys(d.kwargIRs)) {
+            const cls = argClass[argName];
+            const v = argVals[argName];
+            const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
+                              || cls.kind === 'NKD';
+            if (isAtomDep) {
+              const col = shared.perAtomColumnAtJR(v, jj, rr, N);
+              const refName = '__bc_' + argName + '_' + jj + '_' + rr;
+              perAtomRefs[refName] = valueLib.batchedScalar(col);
+              bcKwargs[argName] = { kind: 'ref', ns: 'self', name: refName };
+            } else {
+              const s = shared.elemScalarAtJR(v, jj, rr, N);
+              bcKwargs[argName] = { kind: 'lit', value: s };
+            }
+          }
+
+          // Substitute the kernel placeholders in the body's kwargs
+          // and evaluate each substituted body-kwarg in batched mode.
+          // The result is per-atom scalar — we pass it to the worker
+          // either as a `lit` (closed-form scalar) or as a fresh
+          // `__body_<pn>_j_r` refArray (atom-batched scalar). The
+          // worker's sampleN re-evaluates the IR; we resolve the
+          // per-atom value up-front so the IR is just a ref/lit.
+          const distKwargs: Record<string, any> = {};
+          for (const pn of Object.keys(compositeBody.distKwargs)) {
+            const subIR = _substituteKernelParams(
+              compositeBody.distKwargs[pn],
+              compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+            // Batched-evaluate the substituted body kwarg. We extend
+            // refArrays with the per-(j, r) cell refs so the body's
+            // refs to the synthetic __bc_*_j_r names resolve.
+            const cellRefArrays: Record<string, any> = {};
+            for (const k in refArrays) cellRefArrays[k] = refArrays[k];
+            for (const k in perAtomRefs) cellRefArrays[k] = perAtomRefs[k];
+            let bodyVal: any;
+            try {
+              bodyVal = sampler.evaluateExprN(
+                subIR, cellRefArrays, N, baseEnv, undefined);
+            } catch (err) {
+              throw err instanceof Error ? err : new Error(String(err));
+            }
+            // Convert the per-atom scalar Value into a worker kwarg:
+            //   - rank-0 Value or plain number → lit scalar
+            //   - atom-batched scalar [N] → ref entry
+            //   - JS array of length N (per-atom fallback result) → ref
+            //     entry; the engine's batched `broadcast` cold path
+            //     returns a per-atom array rather than packing into a
+            //     flat Value, so we re-pack here.
+            if (typeof bodyVal === 'number' || typeof bodyVal === 'boolean') {
+              distKwargs[pn] = { kind: 'lit', value: +bodyVal };
+            } else if (valueLib.isValue(bodyVal)) {
+              const bs = bodyVal.shape;
+              if (bs.length === 0) {
+                distKwargs[pn] = { kind: 'lit', value: bodyVal.data[0] };
+              } else if (bs.length === 1 && bs[0] === N) {
+                const refName = '__body_' + pn + '_' + jj + '_' + rr;
+                perAtomRefs[refName] = valueLib.batchedScalar(bodyVal.data);
+                distKwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
+              } else if (bs.length === 1 && bs[0] === 1) {
+                // Singleton-vector eval result; treat as scalar.
+                distKwargs[pn] = { kind: 'lit', value: bodyVal.data[0] };
+              } else {
+                throw new Error('broadcast(' + d.distOp
+                  + '): vec-per-cell body kwarg \'' + pn
+                  + '\' evaluated to unsupported shape '
+                  + JSON.stringify(bs) + ' at (j=' + jj + ',r=' + rr + ')');
+              }
+            } else if (bodyVal && bodyVal.BYTES_PER_ELEMENT !== undefined
+                       && bodyVal.length === N) {
+              const refName = '__body_' + pn + '_' + jj + '_' + rr;
+              perAtomRefs[refName] = valueLib.batchedScalar(bodyVal);
+              distKwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
+            } else if (Array.isArray(bodyVal) && bodyVal.length === N) {
+              // Per-atom fallback result: array of per-atom values
+              // (numbers OR rank-0 Values). Pack into a flat
+              // Float64Array(N).
+              const flat = new Float64Array(N);
+              for (let i = 0; i < N; i++) {
+                const cell = bodyVal[i];
+                if (typeof cell === 'number') flat[i] = cell;
+                else if (typeof cell === 'boolean') flat[i] = cell ? 1 : 0;
+                else if (valueLib.isValue(cell) && cell.shape.length === 0) {
+                  flat[i] = cell.data[0];
+                } else if (valueLib.isValue(cell) && cell.shape.length === 1
+                           && cell.shape[0] === 1) {
+                  flat[i] = cell.data[0];
+                } else {
+                  throw new Error('broadcast(' + d.distOp
+                    + '): vec-per-cell body kwarg \'' + pn
+                    + '\' produced per-atom non-scalar at (j='
+                    + jj + ',r=' + rr + ',i=' + i + ')');
+                }
+              }
+              const refName = '__body_' + pn + '_' + jj + '_' + rr;
+              perAtomRefs[refName] = valueLib.batchedScalar(flat);
+              distKwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
+            } else {
+              throw new Error('broadcast(' + d.distOp
+                + '): vec-per-cell body kwarg \'' + pn
+                + '\' evaluated to unexpected type at (j='
+                + jj + ',r=' + rr + ')');
+            }
+          }
+
+          const distIR = {
+            kind: 'call', op: compositeBody.distOp, kwargs: distKwargs,
+          };
+          const workerMsg: any = {
+            type: 'sampleN', ir: distIR, count: N,
+            refArrays: perAtomRefs,
+            seed: nameSeed(name + ':' + jj + ':' + rr, ctx.rootKey),
+          };
+          return ctx.sendWorker(workerMsg).then((reply: any) => {
+            cells[jj * iidN + rr] = reply.samples;
+          });
+        });
+      }
+    }
+    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
+      // Stitch results: shape=[N, K, iidN] atom-major.
+      const out = new Float64Array(N * K * iidN);
+      for (let j = 0; j < K; j++) {
+        for (let r = 0; r < iidN; r++) {
+          const col = cells[j * iidN + r];
+          for (let i = 0; i < N; i++) {
+            out[i * K * iidN + j * iidN + r] = col[i];
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, iidN], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K, iidN], null),
+        { value: value, logTotalmass: 0, n_eff: N },
+      );
+    });
+  });
 }
 
 module.exports = { matKernelBroadcast };

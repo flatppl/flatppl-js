@@ -109,48 +109,109 @@ test('hierarchical-repeated-measures: classifies + materialises (Phase F)', asyn
 // placeholder `intercept` (scalar per group) and `x_group` (rank-1
 // per group), making it a more complex composite-body case than
 // the simpler hierarchical test above.
+//
+// **Phase 4.1 unblocks this case.** The vec-per-cell broadcast arg
+// `x_group` (shape [G, N_per_group] atom-indep) triggers the new
+// `_executeIidCompositeVecPerCell` path in mat-broadcast.ts: each
+// (j, r) is sampled independently with the (j, r) per-atom slice
+// of every broadcast arg, side-stepping the substituted-body
+// batched-eval shape mismatch that the existing scalar-per-cell
+// path produced.
 
-test('random-intercepts: classifies + materialises (target: Phase F)', async () => {
+test('random-intercepts: vec-per-cell iid composite materialises (Phase 4.1)', async () => {
   const src = readFixture('random-intercepts.flatppl');
-  let setupOk = false;
-  try {
-    const { derivations } = setupCtx(src, 50);
-    // y_obs SHOULD classify; failure happens at materialise.
-    assert.ok(derivations.y_obs,
-      'y_obs has a derivation (classifier accepts the broadcast IR)');
-    setupOk = true;
-  } catch (e: any) {
-    // Some fixture features may not have full typeinfer support yet
-    // (e.g. multi-dim literal x_per_group). Pin if so.
-    assert.match(e.message,
-      /typeinfer|not implemented|unsupported|Cannot read/i,
-      'documented setup gap');
+  const { ctx, derivations } = setupCtx(src, 100);
+
+  // Classify.
+  assert.ok(derivations.y_obs,
+    'y_obs has a derivation (classifier accepts the broadcast IR)');
+  assert.equal(derivations.y_obs.kind, 'kernelbroadcast',
+    'composite-body iid kernel routes via matKernelBroadcast');
+
+  // Materialise.
+  const m = await ctx.getMeasure('y_obs');
+  assert.deepEqual(m.value.shape, [100, 3, 4],
+    'Phase 4.1 result shape: [N_atom, G, N_per_group]');
+
+  // No NaN: the Phase 4.1 substitute-then-evaluate path produces
+  // finite samples (vs. NaN that earlier scalar-per-cell-only path
+  // produced for vec-per-cell args).
+  for (let i = 0; i < m.value.data.length; i++) {
+    assert.ok(Number.isFinite(m.value.data[i]),
+      'y_obs sample at flat index ' + i + ' is finite');
   }
 
-  // If setup didn't classify, the materialise check below is moot.
-  if (!setupOk) return;
+  // Conformance oracle: SAMPLES VARY ACROSS (j, r). For each atom i
+  // the (j, r) layout should produce distinguishable values because
+  // x_per_group[j][r] varies with r (linear-predictor changes) AND
+  // intercepts[j] varies with j (per-group intercept). A trivial
+  // collapsed-axis bug would produce identical samples across (j, r);
+  // a misaligned-stride bug would produce identical samples along
+  // one of the two axes.
+  //
+  // We probe by computing the cross-(j, r) std at fixed atom across
+  // the (j, r) plane — this excludes per-atom RNG variance and
+  // isolates structural variation. Expected: substantially > 0.
+  const N = 100, G = 3, NPG = 4;
+  function flatStd(buf: Float64Array, start: number, end: number, step = 1): number {
+    let n = 0, mean = 0, m2 = 0;
+    for (let k = start; k < end; k += step) {
+      n++;
+      const d = buf[k] - mean;
+      mean += d / n;
+      m2 += d * (buf[k] - mean);
+    }
+    return Math.sqrt(m2 / Math.max(1, n - 1));
+  }
+  let nonzeroVariationCount = 0;
+  for (let i = 0; i < N; i++) {
+    const std = flatStd(m.value.data, i * G * NPG, (i + 1) * G * NPG);
+    if (std > 1e-9) nonzeroVariationCount++;
+  }
+  assert.ok(nonzeroVariationCount >= N * 0.95,
+    'samples vary across (j, r) for almost every atom (got '
+    + nonzeroVariationCount + '/' + N + ')');
+});
 
-  const { ctx } = setupCtx(src, 50);
-  let didError: Error | null = null;
-  try {
-    const m = await ctx.getMeasure('y_obs');
-    // Phase F target shape: [N_atom=50, G=3, N_per_group=4].
-    assert.equal(m.value.shape[0], 50);
-    assert.equal(m.value.shape[1], 3);
-    assert.equal(m.value.shape[2], 4);
-  } catch (e: any) {
-    didError = e;
+// =====================================================================
+// 3. Eight-schools reference fixture — baseline (Phase 1.1 Normal hot
+//    path, copied from flatppl-examples per CONVENTIONS.md examples-
+//    vs-test-fixtures convention)
+// =====================================================================
+//
+// Used by the Phase 4 reference-fixture set as the "scalar-per-cell"
+// baseline: each school's `y` is a single Normal observation
+// parameterised by `theta[j]` and `std_errs_data[j]`. Kernel broadcast
+// hits the Normal closed-form fast path (Phase 1.1
+// kernel-broadcast-handlers.ts). Result shape: [N_atom, J=8].
+
+test('eight-schools: kernel broadcast (scalar-per-cell baseline)', async () => {
+  const src = readFixture('eight-schools.flatppl');
+  const { ctx, derivations } = setupCtx(src, 50);
+
+  assert.ok(derivations.y, 'y has a derivation');
+  // y = Normal.(theta, std_errs_data) — broadcast over theta and
+  // std_errs_data. Both are length-J vectors; per cell j the params
+  // are scalars. The analyser lifts the inline `Normal.(...)` into
+  // an `__anon` binding (alias on `y`); the anon classifies as
+  // kernelbroadcast (the Normal hot path in
+  // kernel-broadcast-handlers.ts handles it).
+  assert.equal(derivations.y.kind, 'alias',
+    'y aliases the lifted broadcast binding');
+  // The aliased binding is the actual kernel-broadcast derivation.
+  const anonName = (derivations.y as any).target;
+  if (anonName && derivations[anonName]) {
+    assert.equal(derivations[anonName].kind, 'kernelbroadcast',
+      'y\'s lifted alias target is kernel-broadcast');
   }
 
-  if (didError) {
-    // Phase F's simple-iid-body case lands; random-intercepts has a
-    // more complex inner DistCall (`Normal(mu = intercept + slope
-    // .* x_group, sigma)` — per-cell parameter is itself a vector
-    // expression). The runtime extension's per-cell sampleN loop
-    // doesn't yet handle vector-valued per-cell params for the
-    // composite case. Track in TODO + log the failure shape.
-    assert.match(didError.message,
-      /shape mismatch|addN|undefined|kernelbroadcast|broadcast/i,
-      'documented failure mode for the more complex composite case');
+  const m = await ctx.getMeasure('y');
+  assert.deepEqual(m.value.shape, [50, 8],
+    'eight-schools y shape: [N_atom, J=8]');
+
+  // No NaN.
+  for (let i = 0; i < m.value.data.length; i++) {
+    assert.ok(Number.isFinite(m.value.data[i]),
+      'y sample at flat index ' + i + ' is finite');
   }
 });
