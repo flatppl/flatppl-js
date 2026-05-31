@@ -288,6 +288,94 @@ test('joint-obs-regression: positional joint also classifies + materialises', as
   }
 });
 
+// =====================================================================
+// 5. Jointchain-bodied composite kernel — hierarchical state-space (Phase 4.3)
+// =====================================================================
+//
+// Per spec §06 jointchain is a Markov chain: step 0 is a base
+// measure; each step k > 0 applies a kernel to the previous variate.
+// Phase 4.3 lands the jointchain composite-body recogniser + the
+// `_executeJointChainComposite` execution path with per-step state
+// threading (step k's sampleN sees step k-1's per-atom column as a
+// refArray).
+//
+// Fixture: AR-1 random walk per group, 3 transition steps. The
+// per-step variance follows the random walk formula
+// Var(x_k) ≈ sigma_init^2 + k * sigma_step^2 → with sigma_init=0.1,
+// sigma_step=0.5 the predicted values are {0.01, 0.26, 0.51, 0.76}.
+// Increments x_k - x_{k-1} are Normal(0, sigma_step) → sample
+// variance approaches 0.25.
+
+test('hierarchical-state-space: jointchain composite materialises (Phase 4.3)', async () => {
+  const src = readFixture('hierarchical-state-space.flatppl');
+  const { ctx, derivations } = setupCtx(src, 500);
+
+  // Classify.
+  assert.ok(derivations.y,
+    'y has a derivation (classifier accepts jointchain-bodied user kernel)');
+  assert.equal(derivations.y.kind, 'kernelbroadcast',
+    'jointchain-bodied user kernel routes via matKernelBroadcast');
+
+  // Materialise.
+  const m = await ctx.getMeasure('y');
+  assert.deepEqual(m.value.shape, [500, 3, 4],
+    'state-space result shape: [N_atom, G, chain_length]');
+
+  // No NaN.
+  for (let i = 0; i < m.value.data.length; i++) {
+    assert.ok(Number.isFinite(m.value.data[i]),
+      'y sample at flat index ' + i + ' is finite');
+  }
+
+  // AR-1 calibration. The KEY conformance signal — state threading
+  // is correct iff the per-cell increments behave like AR-1
+  // increments AND the per-step marginal variance grows linearly.
+  const N = 500, G = 3, C = 4;
+  const sigmaStep = 0.5, sigmaInit = 0.1;
+  const x0List = [0.0, 0.5, 1.0];
+  for (let g = 0; g < G; g++) {
+    // Step 0 marginal: mean ≈ x0_g, var ≈ sigma_init^2.
+    let sum0 = 0, sumSq0 = 0;
+    for (let i = 0; i < N; i++) {
+      const v = m.value.data[i * G * C + g * C + 0];
+      sum0 += v; sumSq0 += v * v;
+    }
+    const m0 = sum0 / N, v0 = sumSq0 / N - m0 * m0;
+    assert.ok(Math.abs(m0 - x0List[g]) < 0.05,
+      'group ' + g + ' step 0 mean (' + m0.toFixed(3)
+      + ') near x0=' + x0List[g]);
+    assert.ok(Math.abs(v0 - sigmaInit * sigmaInit) < 0.01,
+      'group ' + g + ' step 0 var (' + v0.toFixed(3)
+      + ') near sigma_init^2 = ' + (sigmaInit * sigmaInit));
+
+    // Each transition step's increment distribution: per atom,
+    // delta = x_k - x_{k-1}. With state threading this is a fresh
+    // Normal(0, sigma_step) draw; the per-atom correlation between
+    // x_k and x_{k-1} carries the random walk.
+    for (let k = 1; k < C; k++) {
+      let dSum = 0, dSumSq = 0;
+      for (let i = 0; i < N; i++) {
+        const xk = m.value.data[i * G * C + g * C + k];
+        const xkm1 = m.value.data[i * G * C + g * C + (k - 1)];
+        dSum += (xk - xkm1);
+        dSumSq += (xk - xkm1) * (xk - xkm1);
+      }
+      const dMean = dSum / N;
+      const dVar = dSumSq / N - dMean * dMean;
+      assert.ok(Math.abs(dMean) < 0.08,
+        'group ' + g + ' step ' + k + ' increment mean ('
+        + dMean.toFixed(3) + ') near 0');
+      assert.ok(Math.abs(dVar - sigmaStep * sigmaStep) < 0.05,
+        'group ' + g + ' step ' + k + ' increment var ('
+        + dVar.toFixed(3) + ') near sigma_step^2 = '
+        + (sigmaStep * sigmaStep)
+        + ' — STATE THREADING ORACLE (a chain that drew steps '
+        + 'independently would have increment var ≈ sigma_step^2 + '
+        + 'Var(x_{k-1}) → much larger than 0.25 once k > 1)');
+    }
+  }
+});
+
 test('eight-schools: kernel broadcast (scalar-per-cell baseline)', async () => {
   const src = readFixture('eight-schools.flatppl');
   const { ctx, derivations } = setupCtx(src, 50);

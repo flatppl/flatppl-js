@@ -65,6 +65,13 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     if (compositeBody.kind === 'joint') {
       return _executeJointComposite(name, d, ctx, compositeBody);
     }
+    // Phase 4.3: jointchain-bodied composite — execute via the per-cell
+    // state-threaded chain walker. Step k's sampleN consumes step k-1's
+    // per-atom column as a refArray, so the inner loop is sequential
+    // (within a cell). See `_executeJointChainComposite`.
+    if (compositeBody.kind === 'jointchain') {
+      return _executeJointChainComposite(name, d, ctx, compositeBody);
+    }
     if (compositeBody.kind !== 'iid') {
       return Promise.reject(new Error(
         'broadcast: composite kernel-body kind \'' + compositeBody.kind
@@ -884,6 +891,272 @@ function _executeJointComposite(
           const col = cells[j * C + c];
           for (let i = 0; i < N; i++) {
             out[i * K * C + j * C + c] = col[i];
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, C], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K, C], null),
+        { value: value, logTotalmass: 0, n_eff: N },
+      );
+    });
+  });
+}
+
+// =====================================================================
+// Phase 4.3 — jointchain-composite execution
+// =====================================================================
+//
+// Markov-chain kernel-broadcast: `kernelof(jointchain(<base>, <K_1>,
+// <K_2>, …), …)`. Per spec §06 the chain factorises as
+//
+//     p(v_0, v_1, …, v_n) = p_base(v_0) · K_1(v_0)(v_1) · K_2(v_1)(v_2) · …
+//
+// Phase 4.3 MVP scope (matches the recogniser's gate):
+// - Step 0 is a closed-first base measure (anon-ref to sampleable
+//   DistCall, kernel placeholders embedded).
+// - Each subsequent step is a single-input kernel binding whose body
+//   is `lawof(<sampleable DistCall>)`. The kernel's single param
+//   receives the previous step's variate.
+// - Positional layout only; chain length ≥ 2.
+//
+// Execution per cell j (K cells in total):
+//   1. Build bcKwargs from cell-sliced broadcast args (one slice per
+//      broadcast arg — lit for atom-indep, per-atom refArray for
+//      atom-batched). These resolve outer kernel placeholders inside
+//      the base measure's distKwargs.
+//   2. Step 0: substitute outer placeholders in the base distKwargs,
+//      sampleN → column[j, 0] (Float64Array(N) of per-atom scalars).
+//   3. Step k > 0: build per-step substitution:
+//        - The step kernel's input param resolves to a refArray named
+//          `__prev_<j>_<k-1>` whose data is column[j, k-1].
+//        - Substitute outer placeholders + the prev-variate refArray
+//          into the step's distKwargs.
+//      sampleN → column[j, k].
+//   4. Stitch: out[i*K*C + j*C + k] = column[j, k][i].
+//
+// State threading is the new ingredient vs Phase 4.2: each step k's
+// sampleN waits on step k-1's reply (per cell). Cells could run
+// concurrently but we sequence them too to match Phase 4.2's chain
+// promise shape; ordering doesn't affect correctness (each cell has
+// its own seed namespace).
+//
+// Cost: K * C worker calls, K cells × C steps each. For modest chain
+// length (typical MCMC fragments) this is the natural granularity.
+// A backend lowering to vectorised codegen folds the inner loop into
+// a scan; the JS engine's sequential walk is the interpretation
+// analogue.
+
+function _executeJointChainComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const steps = compositeBody.steps;
+  const C = steps.length;
+  if (C < 2) {
+    return Promise.reject(new Error(
+      'broadcast: jointchain composite requires chain length ≥ 2, got ' + C));
+  }
+
+  // Pre-substitute outer kernel placeholders in every step's distKwargs
+  // so the aggregateIR sees the broadcast args (not the kernel's local
+  // placeholder names). For the kernel-step case the inputParam stays
+  // unbound here — it gets a refArray substitution per (j, k) in the
+  // inner loop.
+  const substBaseKwargs: Record<string, any> = {};
+  for (const pn of Object.keys(steps[0].base.distKwargs)) {
+    substBaseKwargs[pn] = _substituteKernelParams(
+      steps[0].base.distKwargs[pn],
+      compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+  }
+  const substStepKwargs: Array<Record<string, any>> = [substBaseKwargs];
+  for (let k = 1; k < C; k++) {
+    const subst: Record<string, any> = {};
+    for (const pn of Object.keys(steps[k].kernel.distKwargs)) {
+      subst[pn] = _substituteKernelParams(
+        steps[k].kernel.distKwargs[pn],
+        compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+    }
+    substStepKwargs.push(subst);
+  }
+
+  // Aggregate IR: flatten every step's substituted kwargs into a
+  // single broadcast-shaped node so `prepareDensityRefs` discovers all
+  // outer refs in one pass (closed-over fixed-phase values like
+  // `sigma_init`, `sigma_step`).
+  const flatKwargs: Record<string, any> = {};
+  for (let k = 0; k < C; k++) {
+    for (const pn of Object.keys(substStepKwargs[k])) {
+      flatKwargs['__chain_s' + k + '_' + pn] = substStepKwargs[k][pn];
+    }
+  }
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: flatKwargs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+
+    // Determine cell count K + atom-dep classification per broadcast arg.
+    // Same shape contract as Phase 4.2's joint executor — broadcast args
+    // can be lit-scalar, [K] atom-indep, [N] atom-batched, or [N, K]
+    // atom-batched; inner-D shapes reject (vec-per-cell is iid territory).
+    const argVals: Record<string, any> = {};
+    const argClass: Record<string, any> = {};
+    let K = 1;
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      argVals[argName] = v;
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      argClass[argName] = cls;
+      const argK = cls.K || 1;
+      if (argK > 1) {
+        if (K === 1) K = argK;
+        else if (K !== argK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): incompatible cell-axis lengths (' + K + ' vs '
+            + argK + ') on arg \'' + argName + '\''));
+        }
+      }
+      const argD = cls.D || 1;
+      if (argD > 1) {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): jointchain-composite broadcast arg \'' + argName
+          + '\' has inner dim ' + argD + ' (vec-per-cell shapes belong '
+          + 'to iid-composite, not jointchain)'));
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+
+    // Per-cell sequential chain walk. cells[j*C + k] holds step k's
+    // sampled per-atom column for cell j.
+    const cells = new Array(K * C);
+    let chain = Promise.resolve();
+    for (let j = 0; j < K; j++) {
+      const jj = j;
+      chain = chain.then(() => {
+        // Build the cell-j bcKwargs once — these resolve OUTER kernel
+        // placeholders inside each step's distKwargs. The bcKwargs IR
+        // shape mirrors Phase 4.2's joint executor.
+        const bcKwargs: Record<string, any> = {};
+        const cellRefs: Record<string, any> = {};
+        for (const argName of Object.keys(d.kwargIRs || {})) {
+          const cls = argClass[argName];
+          const v = argVals[argName];
+          const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
+                            || cls.kind === 'NKD';
+          if (isAtomDep) {
+            const col = shared.perAtomColumnAtJ(v, jj, N);
+            const refName = '__bc_' + argName + '_' + jj;
+            cellRefs[refName] = valueLib.batchedScalar(col);
+            bcKwargs[argName] = { kind: 'ref', ns: 'self', name: refName };
+          } else {
+            const s = shared.elemScalarAtJ(v, jj, N);
+            bcKwargs[argName] = { kind: 'lit', value: s };
+          }
+        }
+
+        // Sequential chain walk for this cell. Each step's refArrays
+        // include cellRefs PLUS the prev-variate ref accumulated so
+        // far (step k sees __prev_<j>_<0…k-1>).
+        const cellStepRefs: Record<string, any> = {};
+        for (const rk in cellRefs) cellStepRefs[rk] = cellRefs[rk];
+
+        let stepChain = Promise.resolve();
+        for (let k = 0; k < C; k++) {
+          const kk = k;
+          stepChain = stepChain.then(() => {
+            const step = steps[kk];
+            let distOp: string;
+            let stepKwargsRaw: Record<string, any>;
+            if (kk === 0) {
+              // Base step — re-substitute outer kernel placeholders
+              // with this cell's bcKwargs. (Pre-substitution above used
+              // d.kwargIRs which is the IR-level binding; the per-cell
+              // pass uses the lit/ref bcKwargs that carry the j-slice.)
+              distOp = step.base.distOp;
+              stepKwargsRaw = {};
+              for (const pn of Object.keys(step.base.distKwargs)) {
+                stepKwargsRaw[pn] = _substituteKernelParams(
+                  step.base.distKwargs[pn],
+                  compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+              }
+            } else {
+              // Kernel step — outer placeholders + the prev-variate
+              // refArray. inputParam is the kernel's single param name
+              // (e.g. `prev`); we bind it to the refArray that holds
+              // step kk-1's sampled column for this cell.
+              distOp = step.kernel.distOp;
+              const prevRefName = '__prev_' + jj + '_' + (kk - 1);
+              // cellStepRefs[prevRefName] was set in the kk-1 iteration
+              // below. Build a kernel-input map so substituteKernelParams
+              // resolves the step kernel's single param.
+              const stepInputKwargs: Record<string, any> = Object.assign(
+                {}, bcKwargs);
+              stepInputKwargs[step.kernel.inputParam] = {
+                kind: 'ref', ns: 'self', name: prevRefName,
+              };
+              // The step kernel uses inputParam as its sole param. The
+              // outer kernel's params (e.g. `x0`) might ALSO appear in
+              // the step kwargs (closed-over) — bcKwargs already binds
+              // them. Substitute against BOTH name sets in one pass.
+              const stepParamNames = [step.kernel.inputParam].concat(
+                compositeBody.params);
+              const stepParamKwargs = [step.kernel.inputParam].concat(
+                compositeBody.paramKwargs);
+              stepKwargsRaw = {};
+              for (const pn of Object.keys(step.kernel.distKwargs)) {
+                stepKwargsRaw[pn] = _substituteKernelParams(
+                  step.kernel.distKwargs[pn],
+                  stepParamNames, stepParamKwargs, stepInputKwargs);
+              }
+            }
+            const distIR = {
+              kind: 'call', op: distOp, kwargs: stepKwargsRaw,
+            };
+            const workerMsg: any = {
+              type: 'sampleN', ir: distIR, count: N,
+              refArrays: cellStepRefs,
+              seed: nameSeed(name + ':j' + jj + ':k' + kk, ctx.rootKey),
+            };
+            return ctx.sendWorker(workerMsg).then((reply: any) => {
+              cells[jj * C + kk] = reply.samples;
+              // Stage the just-sampled column as the prev-variate ref
+              // for step kk+1. cellStepRefs persists across iterations
+              // within this cell.
+              const prevRefName = '__prev_' + jj + '_' + kk;
+              cellStepRefs[prevRefName] = valueLib.batchedScalar(reply.samples);
+            });
+          });
+        }
+        return stepChain;
+      });
+    }
+    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
+      // Stitch: shape [N, K, C] atom-major.
+      const out = new Float64Array(N * K * C);
+      for (let j = 0; j < K; j++) {
+        for (let k = 0; k < C; k++) {
+          const col = cells[j * C + k];
+          for (let i = 0; i < N; i++) {
+            out[i * K * C + j * C + k] = col[i];
           }
         }
       }

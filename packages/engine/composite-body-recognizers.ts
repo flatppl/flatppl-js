@@ -81,6 +81,28 @@ type CompositeBody =
       n: number;
     })
   | (CompositeBodyBase & {
+      kind: 'jointchain';
+      /** Ordered chain steps (length ≥ 2). Step 0 is the base measure
+       *  (a closed-first sampleable DistCall, kernel placeholders
+       *  embedded). Each subsequent step is a single-input kernel
+       *  whose body is `lawof(<sampleable DistCall>)`; the step's
+       *  `inputParam` receives the previous step's per-atom column at
+       *  execute time. */
+      steps: Array<{
+        base?: {
+          distOp: string;
+          distParams: string[];
+          distKwargs: Record<string, any>;
+        };
+        kernel?: {
+          inputParam: string;
+          distOp: string;
+          distParams: string[];
+          distKwargs: Record<string, any>;
+        };
+      }>;
+    })
+  | (CompositeBodyBase & {
       kind: 'joint';
       /** Component layout: 'positional' produces a concatenated per-cell
        *  vector; 'keyword' carries field names for record-typed variates.
@@ -215,6 +237,29 @@ registerCompositeBodyRecognizer((d, ctx) => {
     paramKwargs: desc.paramKwargs,
     layout: desc.layout,
     components: desc.components,
+  };
+});
+
+// ---------- jointchain: `lawof(jointchain(<base>, <K_1>, …))` ------
+//
+// Phase 4.3 entry. Closed-first chains where step 0 is a base measure
+// (sampleable DistCall via an anon binding) and each subsequent step
+// is a single-input kernel whose body is `lawof(<sampleable DistCall>)`.
+// The executor (`_executeJointChainComposite` in mat-broadcast.ts)
+// threads state step-by-step within each cell: step k's sampleN sees
+// the prev-variate parameter bound to a per-atom column from step k-1.
+
+registerCompositeBodyRecognizer((d, ctx) => {
+  if (!ctx || !ctx.bindings) return null;
+  const desc = kernelBroadcastShape.detectJointChainKernelBinding(
+    d.distOp, ctx.bindings);
+  if (!desc) return null;
+  return {
+    kind: 'jointchain',
+    binding: desc.binding,
+    params: desc.params,
+    paramKwargs: desc.paramKwargs,
+    steps: desc.steps,
   };
 });
 

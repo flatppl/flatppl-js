@@ -1,0 +1,50 @@
+%%%
+Hierarchical state-space chain — jointchain-bodied composite kernel.
+
+Per group g, an AR-1 random walk x_t = x_{t-1} + N(0, sigma_step)
+starting from a noisy initial condition x_0 ~ Normal(x0_g, sigma_init).
+The chain has 3 transition steps, giving 4 variates per cell:
+x_0 (base) and x_1, x_2, x_3 (kernel steps).
+
+Phase 4.3 lands the jointchain composite-body recogniser and the
+`_executeJointChainComposite` execution path. The new ingredient
+vs Phases 4.1/4.2 is per-step state threading: step k's sampleN
+consumes step k-1's per-atom sampled column as a refArray input,
+so the chain walks sequentially within each broadcast cell.
+
+Per spec §06 the chain factorises as
+  p(x_0, x_1, …, x_3) = p_base(x_0) · K(x_0)(x_1) · K(x_1)(x_2) · K(x_2)(x_3)
+The materialiser mirrors that factorisation step-by-step; the
+density walker's `walkJointchain` (engine-concepts §19) already
+factorises this way.
+
+Result shape per atom: [G, C] where C = chain length = 4. AR-1
+calibration: increments x_k - x_{k-1} are Normal(0, sigma_step), so
+their sample variance approaches sigma_step^2 = 0.25. Per-step
+marginal variance grows linearly: Var(x_k) ≈ sigma_init^2 +
+k * sigma_step^2.
+%%%
+flatppl_compat = "0.1"
+
+G = 3            % number of groups
+x0_per_group = [0.0, 0.5, 1.0]
+sigma_init = 0.1
+sigma_step = 0.5
+
+% AR-1 step kernel: x_t | x_{t-1} ~ Normal(x_{t-1}, sigma_step).
+% Single placeholder `prev` binds to the previous step's variate at
+% execute time.
+step_kernel = kernelof(
+  Normal(mu = prev, sigma = sigma_step),
+  prev = prev)
+
+% Per-group chain: 3-step AR-1 starting from a noisy x0.
+group_chain = kernelof(
+  jointchain(Normal(mu = x0, sigma = sigma_init),
+             step_kernel,
+             step_kernel,
+             step_kernel),
+  x0 = x0)
+
+% Kernel-broadcast over per-group x0.
+y = broadcast(group_chain, x0 = x0_per_group)
