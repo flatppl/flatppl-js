@@ -1632,6 +1632,143 @@ function negN(a: any, _N: any) {
   return neg(a);
 }
 
+// ---------------------------------------------------------------------
+// Complex constructors / accessors — elementwise primitives (Phase 3.1)
+// ---------------------------------------------------------------------
+//
+// These mirror the scalar versions in `sampler.ts:ARITH_OPS` but
+// operate on shape-tagged Values, preserving the §2.1 contract: any
+// rank, any leading-axis batch, planar real/imaginary buffers.
+//
+// Registered in `BCAST_TABLE` (ops-declarations.ts) as `wrappingOp:
+// 'broadcast'` variants so `complex.(re, im)` / `real.(z)` / etc. and
+// `broadcast(complex, re, im)` dispatch through the fast path.
+
+// complex(re, im) — combine two real Values of matching shape into a
+// single complex Value (planar layout: re's data → .data; im's data →
+// .im). Inputs are validated as real (no incoming complex), and shapes
+// must match exactly (spec §07 takes two reals). The orientation tag
+// is propagated from the `re` operand; the `im` operand's tag must
+// agree (mismatched orientation is an error).
+function complexElem(re: any, im: any): any {
+  if (!isValue(re) || !isValue(im)) {
+    throw new Error('value-ops.complexElem: both operands must be Values');
+  }
+  if (re.dtype === 'complex' || im.dtype === 'complex') {
+    throw new Error('value-ops.complexElem: arguments must be real Values; '
+      + 'got complex re or im');
+  }
+  const sa = re.shape, sb = im.shape;
+  if (sa.length !== sb.length) {
+    throw new Error('value-ops.complexElem: shape rank mismatch ('
+      + JSON.stringify(sa) + ' vs ' + JSON.stringify(sb) + ')');
+  }
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i] !== sb[i]) {
+      throw new Error('value-ops.complexElem: shape mismatch ('
+        + JSON.stringify(sa) + ' vs ' + JSON.stringify(sb) + ')');
+    }
+  }
+  if (isTransposeView(re) !== isTransposeView(im)) {
+    throw new Error('value-ops.complexElem: operand orientations differ '
+      + '(one is transposed). Apply transpose to align them first.');
+  }
+  // Copy each buffer so re/im aren't shared with the caller's source
+  // Values (predictable lifetime — downstream complex ops may mutate
+  // via _packCx after readComplex).
+  const reCopy = new Float64Array(re.data);
+  const imCopy = new Float64Array(im.data);
+  return _packCx(reCopy, imCopy, re.shape.slice(), isTransposeView(re));
+}
+
+// real(z) — real part of a Value. Identity on real inputs (returns
+// the input unchanged, no copy). For complex inputs, returns a real
+// Value carrying the `.data` (real-part) buffer. Honors the Klein-4
+// conjugate bit: realElem(conj(z)) === real(z) — the real component
+// is invariant under conjugation.
+function realElem(z: any): any {
+  if (!isValue(z)) {
+    throw new Error('value-ops.realElem: argument must be a Value');
+  }
+  if (z.dtype !== 'complex') return z;   // real → identity
+  // Complex input: re buffer is the real part (the conj bit doesn't
+  // change it). Strip dtype + im to produce a real Value.
+  const out: any = { shape: z.shape.slice(), data: z.data };
+  if (z.t && z.t !== 'N') {
+    // Map conjugate-only tags to their non-conjugate counterparts —
+    // the real-typed value has no imaginary bit to flip.
+    const swapped = isTransposeView(z);
+    out.t = swapped ? 'T' : 'N';
+  }
+  return out;
+}
+
+// imag(z) — imaginary part of a Value. Zero array (matching shape) on
+// real inputs; the `.im` buffer (with conj-bit sign correction) on
+// complex inputs.
+function imagElem(z: any): any {
+  if (!isValue(z)) {
+    throw new Error('value-ops.imagElem: argument must be a Value');
+  }
+  if (z.dtype !== 'complex') {
+    // Real input → zero Value of same shape (and orientation).
+    const out: any = { shape: z.shape.slice(), data: new Float64Array(z.data.length) };
+    if (z.t && z.t !== 'N') {
+      const swapped = isTransposeView(z);
+      out.t = swapped ? 'T' : 'N';
+    }
+    return out;
+  }
+  // Complex input — copy the im buffer; flip signs when conj bit set.
+  const conjugated = isConjugateView(z);
+  const src = z.im as Float64Array;
+  const out_data = new Float64Array(src.length);
+  if (conjugated) {
+    for (let i = 0; i < src.length; i++) out_data[i] = -src[i];
+  } else {
+    for (let i = 0; i < src.length; i++) out_data[i] = src[i];
+  }
+  const out: any = { shape: z.shape.slice(), data: out_data };
+  if (z.t && z.t !== 'N') {
+    const swapped = isTransposeView(z);
+    out.t = swapped ? 'T' : 'N';
+  }
+  return out;
+}
+
+// conj(z) — complex conjugate. O(1) tag flip via valueLib.conjugate
+// (toggles the conjugate bit); real inputs return identity since the
+// conj bit is observationally a no-op on them, but the tag is still
+// tracked for correctness once mixed-real/complex algebra crosses.
+function conjElem(z: any): any {
+  if (!isValue(z)) {
+    throw new Error('value-ops.conjElem: argument must be a Value');
+  }
+  return valueLib.conjugate(z);
+}
+
+// cis(theta) — complex exponential e^(i·theta) elementwise. Theta is
+// a real Value (any rank, any orientation); the output is a complex
+// Value of the same shape with re=cos(θ), im=sin(θ).
+function cisElem(theta: any): any {
+  if (!isValue(theta)) {
+    throw new Error('value-ops.cisElem: argument must be a Value');
+  }
+  if (theta.dtype === 'complex') {
+    throw new Error('value-ops.cisElem: argument must be a real Value, '
+      + 'got complex');
+  }
+  const src = theta.data;
+  const re = new Float64Array(src.length);
+  const im = new Float64Array(src.length);
+  for (let i = 0; i < src.length; i++) {
+    const t = src[i];
+    re[i] = Math.cos(t);
+    im[i] = Math.sin(t);
+  }
+  return _packCx(re, im, theta.shape.slice(), isTransposeView(theta));
+}
+
 module.exports = {
   mul,
   add,
@@ -1681,6 +1818,9 @@ module.exports = {
   logitElem, invlogitElem, probitElem, invprobitElem,
   gammaElem, loggammaElem,
   ifelseElem,
+  // Phase 3.1: complex constructor + accessors over Values
+  // (spec §03 / §07; mirrors sampler ARITH_OPS scalar versions).
+  complexElem, realElem, imagElem, conjElem, cisElem,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
   _valueToNested,
