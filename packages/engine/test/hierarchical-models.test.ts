@@ -376,6 +376,77 @@ test('hierarchical-state-space: jointchain composite materialises (Phase 4.3)', 
   }
 });
 
+// =====================================================================
+// 6. Nested-broadcast composite kernel (Phase 4.4)
+// =====================================================================
+//
+// Outer kernel body is itself a broadcast. Per spec §04 the inner
+// broadcast realises an independent-product measure over its inner
+// kwargs' collection axes; nesting inside an outer kernel-broadcast
+// yields shape [N, K_outer, K_inner] per atom.
+//
+// Fixture: per-patient observations across visits. Outer iterates
+// patients (sigmas_per_patient); inner iterates visits (visit_means).
+// Per-(p, v) calibration: mean ≈ visit_means[v], var ≈ sigmas[p]^2.
+
+test('nested-broadcast: nested obs composite materialises (Phase 4.4)', async () => {
+  const src = readFixture('nested-broadcast.flatppl');
+  const { ctx, derivations } = setupCtx(src, 500);
+
+  // Classify.
+  assert.ok(derivations.y,
+    'y has a derivation (classifier accepts nested-broadcast-bodied user kernel)');
+  assert.equal(derivations.y.kind, 'kernelbroadcast',
+    'nested-broadcast-bodied user kernel routes via matKernelBroadcast');
+
+  // Materialise.
+  const m = await ctx.getMeasure('y');
+  assert.deepEqual(m.value.shape, [500, 3, 4],
+    'nested-broadcast result shape: [N_atom, P, V]');
+
+  // No NaN.
+  for (let i = 0; i < m.value.data.length; i++) {
+    assert.ok(Number.isFinite(m.value.data[i]),
+      'y sample at flat index ' + i + ' is finite');
+  }
+
+  // Per-(p, v) calibration: KEY conformance oracle. Each cell is
+  // independent draws of Normal(visit_means[v], sigmas[p]) — sample
+  // mean / variance pin BOTH the outer-cell substitution (sigmas[p]
+  // bound to the right patient) AND the inner-cell substitution
+  // (visit_means[v] sliced to the right visit). A broken executor
+  // that crossed axes would produce mean / variance values that
+  // mismatch the (p, v) grid.
+  const N = 500, P = 3, V = 4;
+  const visitMeans = [10.0, 20.0, 30.0, 40.0];
+  const sigmas = [0.5, 1.0, 1.5];
+  for (let p = 0; p < P; p++) {
+    for (let v = 0; v < V; v++) {
+      let sum = 0, sumSq = 0;
+      for (let i = 0; i < N; i++) {
+        const x = m.value.data[i * P * V + p * V + v];
+        sum += x; sumSq += x * x;
+      }
+      const mean = sum / N;
+      const variance = sumSq / N - mean * mean;
+      // 4-sigma margin on the sample mean: SE = sigma / sqrt(N).
+      const meanSE = sigmas[p] / Math.sqrt(N);
+      assert.ok(Math.abs(mean - visitMeans[v]) < 4 * meanSE,
+        '(p=' + p + ', v=' + v + ') mean (' + mean.toFixed(3)
+        + ') near visit_means[v]=' + visitMeans[v]
+        + ' (4-sigma margin ' + (4 * meanSE).toFixed(3) + ')');
+      // 4-sigma margin on the sample variance: SE ≈ var * sqrt(2/(N-1)).
+      const expectedVar = sigmas[p] * sigmas[p];
+      const varSE = expectedVar * Math.sqrt(2 / (N - 1));
+      assert.ok(Math.abs(variance - expectedVar) < 4 * varSE,
+        '(p=' + p + ', v=' + v + ') var (' + variance.toFixed(3)
+        + ') near sigmas[p]^2=' + expectedVar
+        + ' (4-sigma margin ' + (4 * varSE).toFixed(3) + ') '
+        + '— TWO-AXIS SUBSTITUTION ORACLE');
+    }
+  }
+});
+
 test('eight-schools: kernel broadcast (scalar-per-cell baseline)', async () => {
   const src = readFixture('eight-schools.flatppl');
   const { ctx, derivations } = setupCtx(src, 50);

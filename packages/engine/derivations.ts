@@ -1292,8 +1292,14 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   // COMPOSITE_BODY_RECOGNIZERS table.
   const isJointChainComposite = !isBareDist && !isIidComposite && !isJointComposite
     && _isJointChainCompositeKernelBinding(k.name, bindings);
+  // Phase 4.4: nested-broadcast-bodied user kernels — body shape is
+  // `lawof(broadcast(<bare_dist>, <kwargs>))`. Outer kernel-broadcast
+  // dispatches to `_executeNestedBroadcastComposite`.
+  const isNestedBroadcastComposite = !isBareDist && !isIidComposite
+    && !isJointComposite && !isJointChainComposite
+    && _isNestedBroadcastCompositeKernelBinding(k.name, bindings);
   if (!isBareDist && !isIidComposite && !isJointComposite
-      && !isJointChainComposite) return null;
+      && !isJointChainComposite && !isNestedBroadcastComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
   if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
@@ -1315,6 +1321,9 @@ function _isJointCompositeKernelBinding(name: string, bindings: any): boolean {
 }
 function _isJointChainCompositeKernelBinding(name: string, bindings: any): boolean {
   return _kernelBroadcastShape.isJointChainCompositeKernelBinding(name, bindings);
+}
+function _isNestedBroadcastCompositeKernelBinding(name: string, bindings: any): boolean {
+  return _kernelBroadcastShape.isNestedBroadcastCompositeKernelBinding(name, bindings);
 }
 
 // broadcast(logdensityof, M, points) — evaluate a measure's density
