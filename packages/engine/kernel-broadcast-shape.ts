@@ -190,7 +190,178 @@ function isIidCompositeKernelBinding(name: string, bindings: any): boolean {
   return detectIidKernelBinding(name, bindings) !== null;
 }
 
+// =====================================================================
+// Joint-bodied composite kernel (Phase 4.2)
+// =====================================================================
+//
+// A `kernelof(joint(<components>), <kw>)` body — each cell of the
+// surrounding `broadcast(K, …)` produces ONE draw from the joint
+// product measure of the components. Components may be positional
+// (`joint(M1, M2, ...)`) or keyword (`joint(name1 = M1, name2 = M2,
+// ...)`); both lower to the same `joint` IR with `args` or `fields`
+// populated. Phase 4.2 MVP restricts each component to a built-in
+// sampleable scalar distribution (Normal, Beta, Gamma, ...). Vector-
+// valued components (MvNormal) defer to Phase 5.1 where MvNormal joins
+// the sampler REGISTRY so the worker's sampleN can handle it through
+// the same kwarg-driven path; the joint executor will then route
+// vector components without further changes.
+//
+// Per spec §06: positional and keyword joints both denote the same
+// independent-product measure construction; they differ only in
+// surface variate shape (concat-vector vs named record). The
+// recogniser carries the layout flag for the executor to honour.
+
+interface JointKernelComponent {
+  /** Surface field name (keyword joint only). Undefined for positional. */
+  surfaceName?: string;
+  /** Component's built-in distribution opcode (e.g. 'Normal'). */
+  distOp: string;
+  /** Component's REGISTRY param names. */
+  distParams: string[];
+  /** Component's kwargs IR with kernel placeholders still embedded —
+   *  the executor substitutes them per cell. */
+  distKwargs: Record<string, any>;
+}
+
+interface JointKernelDescriptor {
+  /** The user-kernel binding's IR (the functionof node). */
+  binding: any;
+  /** Kernel parameter names. */
+  params: string[];
+  /** Kernel surface kwarg names. */
+  paramKwargs: string[];
+  /** Component layout: 'positional' (concat-vector variate) vs
+   *  'keyword' (named-record variate). */
+  layout: 'positional' | 'keyword';
+  /** Ordered components. Length ≥ 1. */
+  components: JointKernelComponent[];
+}
+
+/**
+ * Recognise a joint-composite user-kernel binding. Returns a
+ * `JointKernelDescriptor` on match, null otherwise.
+ *
+ * Accepts the following IR shapes (post-lowering):
+ *
+ *     functionof(
+ *       lawof(joint(args = [<componentRef>, ...])),      # positional
+ *       kernel_kwargs...
+ *     )
+ *
+ *     functionof(
+ *       lawof(joint(fields = [{name, value: <componentRef>}, ...])),
+ *       kernel_kwargs...
+ *     )
+ *
+ * - Each `<componentRef>` must be a `self`-ref to an anon binding
+ *   whose `ir` is a direct call to a sampler-REGISTRY-known
+ *   distribution (kernel placeholders inside the component's kwargs
+ *   resolve at execute time via the per-cell substitution pass).
+ * - Phase 4.2 MVP does not recurse into nested composites; a
+ *   component that is itself a `joint` / `iid` / `broadcast` returns
+ *   null here. Future phases (4.3 jointchain, 4.4 nested broadcast)
+ *   extend the recogniser with their own kinds.
+ */
+function detectJointKernelBinding(
+  name: string, bindings: any,
+): JointKernelDescriptor | null {
+  if (!bindings || !bindings.has || !bindings.has(name)) return null;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length === 0) return null;
+  const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
+    ? ir.paramKwargs : params;
+  const body = ir.body;
+  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
+  const innerMeasure = body.args && body.args[0];
+  if (!innerMeasure || innerMeasure.kind !== 'call'
+      || innerMeasure.op !== 'joint') return null;
+
+  // Discriminate layout. Positional joint sets `args`; keyword joint
+  // sets `fields`. The two are mutually exclusive in canonical IR.
+  let componentRefs: any[];
+  let surfaceNames: (string | undefined)[];
+  let layout: 'positional' | 'keyword';
+  if (Array.isArray(innerMeasure.fields) && innerMeasure.fields.length > 0) {
+    layout = 'keyword';
+    componentRefs = innerMeasure.fields.map((f: any) => f && f.value);
+    surfaceNames = innerMeasure.fields.map((f: any) => f && f.name);
+  } else if (Array.isArray(innerMeasure.args) && innerMeasure.args.length > 0) {
+    layout = 'positional';
+    componentRefs = innerMeasure.args;
+    surfaceNames = componentRefs.map(() => undefined);
+  } else {
+    return null;
+  }
+
+  // Each component must dereference (one level of anon) to a direct
+  // sampleable DistCall. Reject any nested composite — those are
+  // future-phase recogniser targets.
+  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+
+  // sampler REGISTRY lookup — lazy-required to avoid the import cycle
+  // that bites at module load. When sampler is loadable, distParams
+  // come from the entry; when not, the descriptor caller (classify-
+  // time) only needs the yes/no decision, and distParams stay empty.
+  let samplerLoaded = false;
+  let samplerRegistry: any = null;
+  try {
+    const sampler = require('./sampler.ts');
+    if (sampler && sampler._internal && sampler._internal.REGISTRY) {
+      samplerLoaded = true;
+      samplerRegistry = sampler._internal.REGISTRY;
+    }
+  } catch (_) { /* deep import cycle; fall through */ }
+
+  const components: JointKernelComponent[] = [];
+  for (let i = 0; i < componentRefs.length; i++) {
+    const ref = componentRefs[i];
+    if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
+        || !bindings.has(ref.name)) return null;
+    const anon = bindings.get(ref.name);
+    if (!anon || !anon.ir) return null;
+    const distCall = anon.ir;
+    if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
+    if (!SAMPLEABLE || !SAMPLEABLE.has(distCall.op)) return null;
+    let distParams: string[] = [];
+    if (samplerLoaded) {
+      const entry = samplerRegistry[distCall.op];
+      if (entry && Array.isArray(entry.params)) distParams = entry.params;
+      else return null;       // sampler loaded but doesn't know this dist
+    }
+    components.push({
+      surfaceName: surfaceNames[i],
+      distOp: distCall.op,
+      distParams,
+      distKwargs: distCall.kwargs || {},
+    });
+  }
+
+  return {
+    binding: b,
+    params,
+    paramKwargs,
+    layout,
+    components,
+  };
+}
+
+/**
+ * Lighter check: does `name` resolve to a joint-composite kernel
+ * binding? Mirrors `isIidCompositeKernelBinding`. Used by classify-
+ * time (`derivations.classifyKernelBroadcast`) to gate the recogniser
+ * before the runtime path runs.
+ */
+function isJointCompositeKernelBinding(name: string, bindings: any): boolean {
+  return detectJointKernelBinding(name, bindings) !== null;
+}
+
 module.exports = {
   detectIidKernelBinding,
   isIidCompositeKernelBinding,
+  detectJointKernelBinding,
+  isJointCompositeKernelBinding,
 };

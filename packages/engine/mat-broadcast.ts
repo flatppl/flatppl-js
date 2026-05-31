@@ -57,8 +57,14 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
       return Promise.reject(new Error(
         'broadcast: unknown distribution kernel ' + d.distOp));
     }
-    // Phase 1.2: only the 'iid' kind is registered. Future kinds get
-    // their own execution branches before this point.
+    // Phase 4.2: joint-bodied composite — execute via the per-cell
+    // multi-component pathway. paramIRs assembly + the per-cell loop
+    // live in `_executeJointComposite`; we route there before touching
+    // paramIRs since joint's component model differs from iid's single
+    // inner-dist model.
+    if (compositeBody.kind === 'joint') {
+      return _executeJointComposite(name, d, ctx, compositeBody);
+    }
     if (compositeBody.kind !== 'iid') {
       return Promise.reject(new Error(
         'broadcast: composite kernel-body kind \'' + compositeBody.kind
@@ -682,6 +688,208 @@ function _executeIidCompositeVecPerCell(
       const value = { shape: [N | 0, K, iidN], data: out };
       return Object.assign(
         empirical.arrayMeasure(out, [K, iidN], null),
+        { value: value, logTotalmass: 0, n_eff: N },
+      );
+    });
+  });
+}
+
+// =====================================================================
+// Phase 4.2 — joint-composite execution
+// =====================================================================
+//
+// When a kernel-broadcast wraps `kernelof(joint(<components>), …)`,
+// each cell of the outer broadcast produces ONE draw from the joint
+// product measure. Per spec §06 the components are independent: each
+// produces its own variate slice and the joint variate is the
+// concat-vector (positional layout) or named record (keyword layout)
+// of those slices.
+//
+// Phase 4.2 MVP restricts each component to a built-in sampleable
+// scalar distribution (Normal, Beta, Gamma, …). Vector-valued
+// components (MvNormal) wait for Phase 5.1, where MvNormal joins the
+// sampler REGISTRY so the same kwarg-driven sampleN dispatch handles
+// it uniformly.
+//
+// Execution shape per (j, c):
+//   1. Build per-cell `bcKwargs` — atom-indep broadcast args become
+//      `lit` kwargs; atom-batched args become per-atom refArrays
+//      (`__bc_<argName>_<j>`).
+//   2. Substitute kernel placeholders in component c's `distKwargs`
+//      with those bcKwargs (via `_substituteKernelParams`).
+//   3. Send one sampleN worker call for component c with the
+//      substituted IR; the worker returns a length-N column of per-
+//      atom scalars.
+//
+// Stitching: out[i * K * C + j * C + c] = col_jc[i], where
+// C = components.length. Result Value shape = [N, K, C] atom-major,
+// matching the iid-composite layout for downstream broadcast / density
+// consumers.
+//
+// Cost: K * C worker calls. For typical multi-output regressions
+// (K small, C small, N large) the per-cell sampling dominates, not
+// the dispatch overhead.
+
+function _executeJointComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const components = compositeBody.components;
+  const C = components.length;
+
+  // Synthesize a containing IR so prepareDensityRefs sees every free
+  // name across all components' substituted kwargs PLUS every
+  // broadcast arg. We pre-substitute the kernel placeholders in each
+  // component's kwargs so the aggregateIR closes over the broadcast
+  // args (not the kernel-local placeholder names like `mu` that
+  // collectSelfRefs would otherwise try — and fail — to materialise).
+  const substComponentKwargs: Array<Record<string, any>> = [];
+  for (const comp of components) {
+    const subst: Record<string, any> = {};
+    for (const pn of Object.keys(comp.distKwargs)) {
+      subst[pn] = _substituteKernelParams(
+        comp.distKwargs[pn],
+        compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+    }
+    substComponentKwargs.push(subst);
+  }
+  // Aggregate the substituted kwargs into a single IR for refArrays
+  // discovery. Wrap as a broadcast(...) so the structure mirrors what
+  // the iid-composite executor passes — both consumers of
+  // `prepareDensityRefs` see the same shape.
+  const flatKwargs: Record<string, any> = {};
+  for (let c = 0; c < C; c++) {
+    for (const pn of Object.keys(substComponentKwargs[c])) {
+      flatKwargs['__joint_c' + c + '_' + pn] = substComponentKwargs[c][pn];
+    }
+  }
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: flatKwargs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+
+    // Evaluate each broadcast arg once to determine cell-axis length K
+    // and atom-dep classification. This mirrors the iid-composite
+    // vec-per-cell pathway; the same `classifyBroadcastArg` shape
+    // contract applies — joint just doesn't have an inner D axis (each
+    // component yields a scalar variate in Phase 4.2 scope).
+    const argVals: Record<string, any> = {};
+    const argClass: Record<string, any> = {};
+    let K = 1;
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      argVals[argName] = v;
+      // Pass usesAtom hint so a stand-alone length-N atom-indep vector
+      // (rare for joint args but legal) doesn't get mis-classified as
+      // atom-batched scalar.
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      argClass[argName] = cls;
+      const argK = cls.K || 1;
+      if (argK > 1) {
+        if (K === 1) K = argK;
+        else if (K !== argK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): incompatible cell-axis lengths (' + K + ' vs '
+            + argK + ') on arg \'' + argName + '\''));
+        }
+      }
+      // Phase 4.2 rejects inner-vector args (D > 1) — those are the
+      // vec-per-cell pattern handled by Phase 4.1's iid-composite
+      // executor, not by the joint pathway.
+      const argD = cls.D || 1;
+      if (argD > 1) {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): joint-composite broadcast arg \'' + argName
+          + '\' has inner dim ' + argD + ' (vec-per-cell shapes are '
+          + 'iid-composite territory, not joint composites)'));
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+
+    // Per (j, c) loop: build bcKwargs cell-slice, re-substitute the
+    // component's distKwargs with the cell-sliced bcKwargs, sampleN
+    // through the worker. The per-cell substitution is what reduces
+    // the body to leaves the worker can evaluate without ambiguity.
+    const cells = new Array(K * C);
+    let chain = Promise.resolve();
+    for (let j = 0; j < K; j++) {
+      for (let c = 0; c < C; c++) {
+        const jj = j, cc = c;
+        chain = chain.then(() => {
+          const bcKwargs: Record<string, any> = {};
+          const perAtomRefs: Record<string, any> = {};
+          for (const argName of Object.keys(d.kwargIRs || {})) {
+            const cls = argClass[argName];
+            const v = argVals[argName];
+            const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
+                              || cls.kind === 'NKD';
+            if (isAtomDep) {
+              const col = shared.perAtomColumnAtJ(v, jj, N);
+              const refName = '__bc_' + argName + '_' + jj;
+              perAtomRefs[refName] = valueLib.batchedScalar(col);
+              bcKwargs[argName] = { kind: 'ref', ns: 'self', name: refName };
+            } else {
+              const s = shared.elemScalarAtJ(v, jj, N);
+              bcKwargs[argName] = { kind: 'lit', value: s };
+            }
+          }
+
+          const comp = components[cc];
+          const distKwargs: Record<string, any> = {};
+          for (const pn of Object.keys(comp.distKwargs)) {
+            distKwargs[pn] = _substituteKernelParams(
+              comp.distKwargs[pn],
+              compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+          }
+
+          const distIR = {
+            kind: 'call', op: comp.distOp, kwargs: distKwargs,
+          };
+          const workerMsg: any = {
+            type: 'sampleN', ir: distIR, count: N,
+            refArrays: perAtomRefs,
+            seed: nameSeed(name + ':j' + jj + ':c' + cc, ctx.rootKey),
+          };
+          return ctx.sendWorker(workerMsg).then((reply: any) => {
+            cells[jj * C + cc] = reply.samples;
+          });
+        });
+      }
+    }
+    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
+      // Stitch: out shape [N, K, C] atom-major. Each cells[j*C+c] is
+      // a Float64Array(N) of per-atom samples for component c at cell j.
+      const out = new Float64Array(N * K * C);
+      for (let j = 0; j < K; j++) {
+        for (let c = 0; c < C; c++) {
+          const col = cells[j * C + c];
+          for (let i = 0; i < N; i++) {
+            out[i * K * C + j * C + c] = col[i];
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, C], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K, C], null),
         { value: value, logTotalmass: 0, n_eff: N },
       );
     });
