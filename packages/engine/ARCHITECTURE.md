@@ -166,6 +166,74 @@ separate items in `TODO-flatppl-js.md` under "Multi-file models".
 
 ---
 
+## Bundle build gotchas — ESM/CJS mixing
+
+esbuild infers the module format of each engine source file from
+its syntax. Engine modules must fall into exactly one of two camps:
+
+- **Pure CJS.** No top-level `export` / `import` keywords. Runtime
+  exports happen via a single `module.exports = { … }` at the
+  bottom of the file. Most older engine modules are written this
+  way.
+- **Pure ESM.** Every runtime binding uses `export function` /
+  `export const`. No `module.exports` anywhere.
+
+**Failure mode.** A file that declares `export interface Foo { … }`
+at the top (types-only) but still ends with `module.exports = { … }`
+makes esbuild see the `export` keyword, classify the file as ESM,
+and emit one warning per offending file:
+
+```
+[WARNING] The CommonJS "module" variable is treated as a global
+variable in an ECMAScript module and may not work as expected
+[commonjs-variable-in-esm]
+```
+
+The build still succeeds and the bundle **loads fine in Node**
+(Node's CJS wrapper makes `module` a global) and in a permissive
+browser. It then crashes inside the **VS Code webview's strict-CSP
+Chromium sandbox**, where `module` is undefined:
+`Uncaught ReferenceError: module is not defined`. The engine global
+is never initialised, the viewer can't reach `processSource`, and
+the visualization stays empty with no obvious engine-side error.
+
+Concretely this bit us in `aggregate-shape.ts`, `axis-stack.ts`,
+and `kernel-broadcast-shape.ts` (commit `9c8ee9e`). The broken
+pattern:
+
+```ts
+export interface AggregateShape { … }       // <-- makes the file ESM
+module.exports = { computeAggregateShape }; // <-- now invalid
+```
+
+Fix (three characters per file):
+
+```ts
+interface AggregateShape { … }              // type-only, no export
+module.exports = { computeAggregateShape };
+```
+
+**Rule going forward:**
+
+- Types-only `interface` / `type` declarations in a CJS file must
+  drop the `export` keyword. They're already visible to TypeScript
+  within the file.
+- If a type must be importable from another module, the whole file
+  becomes pure ESM — convert every `module.exports`'d binding to a
+  top-level `export` and remove the trailing `module.exports = …`.
+  Don't try to keep both.
+
+**CI / pre-commit guard.** `npm run build` already prints the
+`commonjs-variable-in-esm` warning on every offending file. Treat
+it as fatal: pass `--log-override:commonjs-variable-in-esm=error`
+to esbuild in the build scripts, or wrap the build with a post-
+build check that greps the captured output and exits non-zero on
+match. Either catches the regression at build time rather than at
+webview load time, where the symptom (blank viewer) is far from
+the cause.
+
+---
+
 ## Module reference
 
 Each section: responsibility · key exports · invariants · gotchas. Line
