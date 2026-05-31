@@ -1285,7 +1285,15 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   // COMPOSITE_BODY_RECOGNIZERS table.
   const isJointComposite = !isBareDist && !isIidComposite
     && _isJointCompositeKernelBinding(k.name, bindings);
-  if (!isBareDist && !isIidComposite && !isJointComposite) return null;
+  // Phase 4.3: jointchain-bodied user kernels — body shape is
+  // `lawof(jointchain(<base>, <K_1>, …))`. Markov chain where each
+  // step depends on the previous step's variate. matKernelBroadcast
+  // dispatches to `_executeJointChainComposite` via the
+  // COMPOSITE_BODY_RECOGNIZERS table.
+  const isJointChainComposite = !isBareDist && !isIidComposite && !isJointComposite
+    && _isJointChainCompositeKernelBinding(k.name, bindings);
+  if (!isBareDist && !isIidComposite && !isJointComposite
+      && !isJointChainComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
   if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
@@ -1304,6 +1312,9 @@ function _isIidCompositeKernelBinding(name: string, bindings: any): boolean {
 }
 function _isJointCompositeKernelBinding(name: string, bindings: any): boolean {
   return _kernelBroadcastShape.isJointCompositeKernelBinding(name, bindings);
+}
+function _isJointChainCompositeKernelBinding(name: string, bindings: any): boolean {
+  return _kernelBroadcastShape.isJointChainCompositeKernelBinding(name, bindings);
 }
 
 // broadcast(logdensityof, M, points) — evaluate a measure's density

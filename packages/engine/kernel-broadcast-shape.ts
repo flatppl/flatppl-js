@@ -359,9 +359,238 @@ function isJointCompositeKernelBinding(name: string, bindings: any): boolean {
   return detectJointKernelBinding(name, bindings) !== null;
 }
 
+// =====================================================================
+// Jointchain-bodied composite kernel (Phase 4.3)
+// =====================================================================
+//
+// A `kernelof(jointchain(<base>, <K_1>, <K_2>, ...), <kw>)` body — a
+// Markov-chain measure: step 0 draws from a base measure, each
+// subsequent step k draws from kernel K_k applied to the previous
+// step's variate. Per spec §06 jointchain factorises as
+// p(v_0, v_1, …, v_n) = p_base(v_0) · K_1(v_0)(v_1) · K_2(v_1)(v_2) · …
+//
+// Phase 4.3 MVP scope:
+//
+// - **Closed-first only.** Step 0 is a base measure (a self-ref to an
+//   anon binding whose `ir` is a sampleable DistCall with kernel
+//   placeholders embedded). Kernel-first jointchain — where step 0 is
+//   itself a kernel that takes the broadcast args as input — defers
+//   to a follow-up; its admissibility hooks differ enough from the
+//   closed-first surface that landing them together would muddle the
+//   recogniser's contract.
+//
+// - **Scalar-step kernels only.** Each step k ≥ 1 must be a self-ref
+//   to a kernel binding with body `lawof(<sampleable DistCall>)` —
+//   single component, not joint or iid. Composite step bodies
+//   (iid-step, joint-step) defer to a Phase 4.3 follow-up that wires
+//   recursive composite recognition (similarly relevant to Phase 4.4
+//   nested broadcast).
+//
+// - **Single-input kernel steps.** Each step kernel must have exactly
+//   one parameter — bound to the immediately previous step's variate.
+//   Multi-input steps (kernels that consume `cat(v_0, …, v_{k-1})`,
+//   admissible per `classifyJointchain`) defer; the MVP fixture
+//   (AR-1) doesn't exercise them.
+//
+// - **Positional layout only.** Keyword-form jointchain
+//   (`jointchain(s0 = M, s1 = K)`, populating IR `fields`) is
+//   admitted by `classifyJointchain` and produces a record-typed
+//   variate; the MVP fixture uses positional, and record-typed
+//   variates need additional plumbing in the materialiser's Value
+//   contract. Defer to a follow-up.
+//
+// Per-step state threading: at execute time, step k's sampleN sees
+// the prev-variate parameter bound to a per-atom refArray whose data
+// is step k-1's already-sampled column. The executor walks the chain
+// step-by-step within each broadcast cell; step k waits on step k-1.
+
+interface JointChainStep {
+  /** Closed-first base measure (step 0). The DistCall whose kwargs
+   *  reference kernel placeholders (substituted per cell at execute
+   *  time via `_substituteKernelParams`). */
+  base?: {
+    distOp: string;
+    distParams: string[];
+    distKwargs: Record<string, any>;
+  };
+  /** Kernel step (k ≥ 1). The single-component inner DistCall plus
+   *  the kernel's parameter name (which receives the previous variate
+   *  at execute time). */
+  kernel?: {
+    /** Kernel binding's parameter name. The step's DistCall references
+     *  this name as a `%local` or `self` ref — the executor swaps it
+     *  with a refArray pointing to step k-1's per-atom column. */
+    inputParam: string;
+    distOp: string;
+    distParams: string[];
+    distKwargs: Record<string, any>;
+  };
+}
+
+interface JointChainKernelDescriptor {
+  /** The user-kernel binding's IR (the functionof node). */
+  binding: any;
+  /** Outer kernel parameter names. */
+  params: string[];
+  /** Outer kernel surface kwarg names. */
+  paramKwargs: string[];
+  /** Chain length (including base). Length ≥ 2 (base + at least one
+   *  kernel step — chains of length 1 are equivalent to plain joints
+   *  and would route through that recogniser). */
+  steps: JointChainStep[];
+}
+
+/**
+ * Recognise a jointchain-composite user-kernel binding. Returns a
+ * `JointChainKernelDescriptor` on match, null otherwise.
+ *
+ * Accepts the following IR shape (post-lowering):
+ *
+ *     functionof(
+ *       lawof(jointchain(
+ *         args = [
+ *           <baseRef>,      # anon-ref to sampleable DistCall
+ *           <kernelRef_1>,  # binding-ref to single-step kernel
+ *           <kernelRef_2>,
+ *           …]
+ *       )),
+ *       outer_kernel_kwargs...
+ *     )
+ *
+ * - `<baseRef>` derefs to an anon binding whose `ir` is a sampleable
+ *   DistCall. The DistCall's kwargs may reference outer kernel
+ *   placeholders (substituted per cell at execute time).
+ * - Each `<kernelRef_k>` derefs to a kernel binding with `ir.op ===
+ *   'functionof'`, exactly one param, body `lawof(<DistCall>)`. The
+ *   DistCall's kwargs reference that single param (the prev variate).
+ *
+ * Phase 4.3 MVP rejections (return null):
+ *  - Kernel-first chains (step 0 is itself a kernel binding).
+ *  - Composite step bodies (step kernel's body isn't a direct DistCall).
+ *  - Multi-input step kernels (more than one param).
+ *  - Keyword-form jointchain (`fields:` populated).
+ *  - Chains of length < 2.
+ */
+function detectJointChainKernelBinding(
+  name: string, bindings: any,
+): JointChainKernelDescriptor | null {
+  if (!bindings || !bindings.has || !bindings.has(name)) return null;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length === 0) return null;
+  const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
+    ? ir.paramKwargs : params;
+  const body = ir.body;
+  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
+  const innerMeasure = body.args && body.args[0];
+  if (!innerMeasure || innerMeasure.kind !== 'call'
+      || innerMeasure.op !== 'jointchain') return null;
+  // MVP: positional layout only. Keyword (record-typed variate) defers.
+  if (Array.isArray(innerMeasure.fields) && innerMeasure.fields.length > 0) {
+    return null;
+  }
+  if (!Array.isArray(innerMeasure.args) || innerMeasure.args.length < 2) {
+    return null;
+  }
+
+  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+  let samplerLoaded = false;
+  let samplerRegistry: any = null;
+  try {
+    const sampler = require('./sampler.ts');
+    if (sampler && sampler._internal && sampler._internal.REGISTRY) {
+      samplerLoaded = true;
+      samplerRegistry = sampler._internal.REGISTRY;
+    }
+  } catch (_) { /* fall through */ }
+
+  // Look up REGISTRY params for a distOp. Returns null when sampler is
+  // loaded but doesn't recognise the op; empty when sampler isn't
+  // loadable (classify-time conservatism — accept the structural
+  // match, leave param resolution to runtime).
+  const lookupDistParams = (distOp: string): string[] | null => {
+    if (!samplerLoaded) return [];
+    const entry = samplerRegistry[distOp];
+    if (entry && Array.isArray(entry.params)) return entry.params;
+    return null;
+  };
+
+  const steps: JointChainStep[] = [];
+  for (let i = 0; i < innerMeasure.args.length; i++) {
+    const ref = innerMeasure.args[i];
+    if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
+        || !bindings.has(ref.name)) return null;
+    const dep = bindings.get(ref.name);
+    if (!dep || !dep.ir) return null;
+    if (i === 0) {
+      // Base step: dep.ir must be a sampleable DistCall (closed-first).
+      const distCall = dep.ir;
+      if (distCall.kind !== 'call' || !distCall.op) return null;
+      if (!SAMPLEABLE || !SAMPLEABLE.has(distCall.op)) return null;
+      const distParams = lookupDistParams(distCall.op);
+      if (distParams === null) return null;
+      steps.push({
+        base: {
+          distOp: distCall.op,
+          distParams,
+          distKwargs: distCall.kwargs || {},
+        },
+      });
+    } else {
+      // Kernel step: dep must be a kernel binding with single param,
+      // body lawof(<sampleable DistCall>).
+      const stepIR = dep.ir;
+      if (stepIR.kind !== 'call' || stepIR.op !== 'functionof') return null;
+      const stepParams: string[] = Array.isArray(stepIR.params)
+        ? stepIR.params : [];
+      // MVP: single-input kernels only (the canonical prev-variate
+      // form). Multi-input kernels defer.
+      if (stepParams.length !== 1) return null;
+      const stepBody = stepIR.body;
+      if (!stepBody || stepBody.kind !== 'call'
+          || stepBody.op !== 'lawof') return null;
+      const stepDist = stepBody.args && stepBody.args[0];
+      if (!stepDist || stepDist.kind !== 'call' || !stepDist.op) return null;
+      if (!SAMPLEABLE || !SAMPLEABLE.has(stepDist.op)) return null;
+      const distParams = lookupDistParams(stepDist.op);
+      if (distParams === null) return null;
+      steps.push({
+        kernel: {
+          inputParam: stepParams[0],
+          distOp: stepDist.op,
+          distParams,
+          distKwargs: stepDist.kwargs || {},
+        },
+      });
+    }
+  }
+
+  return {
+    binding: b,
+    params,
+    paramKwargs,
+    steps,
+  };
+}
+
+/**
+ * Lighter check: does `name` resolve to a jointchain-composite
+ * kernel binding? Mirrors `isIid…` / `isJoint…`.
+ */
+function isJointChainCompositeKernelBinding(
+  name: string, bindings: any,
+): boolean {
+  return detectJointChainKernelBinding(name, bindings) !== null;
+}
+
 module.exports = {
   detectIidKernelBinding,
   isIidCompositeKernelBinding,
   detectJointKernelBinding,
   isJointCompositeKernelBinding,
+  detectJointChainKernelBinding,
+  isJointChainCompositeKernelBinding,
 };
