@@ -668,6 +668,130 @@ function perAtomColumnAtJ(v: any, j: number, N: number): Float64Array {
   return col;
 }
 
+// Phase 4.1 extension — per-atom slice at cell (j, r) for the
+// vector-per-cell broadcast shape contract.
+//
+// In matKernelBroadcast's iid-composite path, a broadcast arg may
+// itself be rank-2 atom-indep `[K, D]` (e.g. `x_per_group` in the
+// random-intercepts regression) or rank-3 atom-batched `[N, K, D]`.
+// The K axis is the outer kernel-broadcast cell axis; the D axis is
+// the INNER iid axis (matches the composite kernel body's `iid(M, n)`
+// count). Iterating (j, r) reduces such a value to a per-atom scalar.
+//
+// `elemScalarAtJR` returns the atom-indep scalar at (j, r). Handles
+// scalar / [K] / [K, D]; size-1 axes broadcast by repetition.
+//
+// `perAtomColumnAtJR` returns the per-atom column at (j, r). Handles
+// atom-batched [N] / [N, K] / [N, K, D]; size-1 inner axes broadcast.
+function elemScalarAtJR(
+  v: any, j: number, r: number, _N: number,
+): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (valueLib.isValue(v)) {
+    const shape = v.shape;
+    if (shape.length === 0) return v.data[0];
+    if (shape.length === 1) {
+      // [K] axis only; index j (size-1 broadcasts).
+      return v.data[shape[0] === 1 ? 0 : j];
+    }
+    if (shape.length === 2) {
+      // [K, D] atom-indep, row-major.
+      const K = shape[0], D = shape[1];
+      const jj = K === 1 ? 0 : j;
+      const rr = D === 1 ? 0 : r;
+      return v.data[jj * D + rr];
+    }
+  }
+  if (v && v.BYTES_PER_ELEMENT !== undefined
+      && typeof v.length === 'number') {
+    return v[v.length === 1 ? 0 : j];
+  }
+  if (Array.isArray(v)) return +v[v.length === 1 ? 0 : j];
+  throw new Error('broadcast: cannot scalarise atom-indep value at (j='
+    + j + ',r=' + r + ')');
+}
+
+function perAtomColumnAtJR(
+  v: any, j: number, r: number, N: number,
+): Float64Array {
+  const col = new Float64Array(N);
+  if (valueLib.isValue(v)) {
+    const shape = v.shape;
+    const data = v.data;
+    if (valueLib.isAtomBatched(v, N) && shape.length === 1) {
+      // [N] — atom-batched scalar; same per-atom for all (j, r).
+      col.set(data);
+    } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
+      // [N, K] — atom-batched scalar-per-cell; index j.
+      const K = shape[1];
+      const off = K === 1 ? 0 : j;
+      for (let i = 0; i < N; i++) col[i] = data[i * K + off];
+    } else if (valueLib.isAtomBatched(v, N) && shape.length === 3) {
+      // [N, K, D] — atom-batched vector-per-cell; index (j, r).
+      const K = shape[1], D = shape[2];
+      const jj = K === 1 ? 0 : j;
+      const rr = D === 1 ? 0 : r;
+      const stride2 = K * D;
+      for (let i = 0; i < N; i++) col[i] = data[i * stride2 + jj * D + rr];
+    } else {
+      throw new Error('broadcast: unexpected per-atom shape '
+        + JSON.stringify(shape) + ' at (j=' + j + ',r=' + r + ')');
+    }
+  } else if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === N) {
+    col.set(v);
+  } else {
+    throw new Error('broadcast: per-atom param has unexpected type '
+      + (typeof v) + ' at (j=' + j + ',r=' + r + ')');
+  }
+  return col;
+}
+
+// Classify a broadcast-arg or param Value's shape relative to atom N
+// AND a known set of atom-batched ref names. Returns one of:
+//
+//   { kind: 'scalar' }                  — rank-0 / number / boolean
+//   { kind: 'K',   K }                  — atom-indep, rank-1 [K]
+//   { kind: 'KD',  K, D }               — atom-indep, rank-2 [K, D]
+//   { kind: 'N' }                       — atom-batched scalar [N]
+//   { kind: 'NK',  K }                  — atom-batched scalar-per-cell [N, K]
+//   { kind: 'NKD', K, D }               — atom-batched vec-per-cell [N, K, D]
+//
+// `usesAtom` is the disambiguator for rank-1 [N]: a stand-alone
+// length-N vector that DOESN'T reference any atom-batched ref is
+// treated as `K = N` (a real length-N collection arg), not as
+// `kind: 'N'`. Mirrors mat-broadcast's existing per-param classifier.
+function classifyBroadcastArg(
+  v: any, N: number, usesAtom: boolean,
+): { kind: string; K?: number; D?: number } {
+  if (typeof v === 'number' || typeof v === 'boolean') return { kind: 'scalar' };
+  if (valueLib.isValue(v)) {
+    const shape = v.shape;
+    if (shape.length === 0) return { kind: 'scalar' };
+    if (shape.length === 1) {
+      if (usesAtom && valueLib.isAtomBatched(v, N)) return { kind: 'N' };
+      return { kind: 'K', K: shape[0] };
+    }
+    if (shape.length === 2) {
+      if (valueLib.isAtomBatched(v, N)) return { kind: 'NK', K: shape[1] };
+      return { kind: 'KD', K: shape[0], D: shape[1] };
+    }
+    if (shape.length === 3) {
+      if (valueLib.isAtomBatched(v, N)) {
+        return { kind: 'NKD', K: shape[1], D: shape[2] };
+      }
+    }
+    return { kind: 'unsupported' };
+  }
+  if (v && v.BYTES_PER_ELEMENT !== undefined
+      && typeof v.length === 'number') {
+    if (usesAtom && v.length === N) return { kind: 'N' };
+    return { kind: 'K', K: v.length };
+  }
+  if (Array.isArray(v)) return { kind: 'K', K: v.length };
+  return { kind: 'unsupported' };
+}
+
 function resolveFnBody(binding: any, bindings: any): any {
   if (!binding) return null;
   if (binding.type === 'bijection') {
@@ -709,5 +833,8 @@ module.exports = {
   setBoundsForMat,
   elemScalarAtJ,
   perAtomColumnAtJ,
+  elemScalarAtJR,
+  perAtomColumnAtJR,
+  classifyBroadcastArg,
   resolveFnBody,
 };

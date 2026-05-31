@@ -865,6 +865,25 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
     for (let i = 0; i < N; i++) arr[i] = +out[i];
     return arr;
   }
+  // Pack rank-0 Values: per-atom inner ops (e.g. nested `broadcast(fn(
+  // <op>(_)), scalar_args)`) can produce a JS array of rank-0 Values
+  // — semantically these ARE numbers (Value-typed). Pack into a
+  // batched-scalar Value so outer ops see a Value [N] and dispatch
+  // correctly. Without this, downstream ARITH_OPS_N entries (add /
+  // mul / …) treat the array as a scalar and emit NaN.
+  let allRank0Values = true;
+  for (let i = 0; i < N; i++) {
+    const v = out[i];
+    if (!valueLib.isValue(v) || v.shape.length !== 0
+        || typeof v.data[0] !== 'number') {
+      allRank0Values = false; break;
+    }
+  }
+  if (allRank0Values) {
+    const re = new Float64Array(N);
+    for (let i = 0; i < N; i++) re[i] = out[i].data[0];
+    return valueLib.batchedScalar(re);
+  }
   // Pack to a complex Value (shape=[N], dtype='complex') when every
   // result is a scalar complex `{re, im}` — the per-atom return of
   // user-defined functions that compute complex arithmetic (e.g. a
