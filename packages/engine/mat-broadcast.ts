@@ -29,26 +29,42 @@ const axisStackMod = require('./axis-stack.ts');
 // handlers (Normal etc.) as a side effect. The dispatch helper is
 // looked up below before falling through to the general per-cell path.
 const fastPaths    = require('./kernel-broadcast-handlers.ts');
+// Loading this module registers the built-in COMPOSITE_BODY_RECOGNIZERS
+// (iid etc.) as a side effect. matKernelBroadcast dispatches into the
+// table when d.distOp resolves to a user kernel binding (i.e. not in
+// sampler.REGISTRY); the table grows in Phase 4 with joint /
+// jointchain / nested broadcast / vector-per-cell recognizers.
+const compositeBodies = require('./composite-body-recognizers.ts');
 
 const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 
 function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any) {
   const sampler = require('./sampler.ts');
   let params: string[] = (sampler._internal.REGISTRY[d.distOp] || {}).params;
-  // Composite iid-bodied kernel (fusion (b) Phase F, engine-concepts
-  // §20.10.11). When d.distOp resolves to a user-defined kernel
-  // binding whose body is `lawof(iid(<BuiltinDistCall>, <n_literal>))`,
-  // unfold the placeholders and route through the existing per-cell
-  // sampleN loop with `repeat = n_inner` so each broadcast cell
-  // produces an iid block of size n. Result shape per atom: [G, n].
-  let iidComposite: any = null;
+  // Composite kernel-body case: when d.distOp resolves to a user-
+  // defined kernel binding (not a builtin REGISTRY entry), dispatch
+  // through the COMPOSITE_BODY_RECOGNIZERS table. Today (Phase 1.2)
+  // the table holds only the iid recognizer — `lawof(iid(<BuiltinDist>
+  // (<kw>), <n>))` — which unfolds the placeholders and routes through
+  // the per-cell sampleN loop with `repeat = n_inner` so each cell
+  // produces an iid block. Phase 4 adds joint / jointchain / nested-
+  // broadcast / vector-per-cell recognizers; each gets its own
+  // execution branch keyed on body.kind.
+  let compositeBody: any = null;
   if (!params) {
-    iidComposite = _detectIidKernelBody(d, ctx);
-    if (!iidComposite) {
+    compositeBody = compositeBodies.tryRecognizeCompositeBody(d, ctx);
+    if (!compositeBody) {
       return Promise.reject(new Error(
         'broadcast: unknown distribution kernel ' + d.distOp));
     }
-    params = iidComposite.distParams;
+    // Phase 1.2: only the 'iid' kind is registered. Future kinds get
+    // their own execution branches before this point.
+    if (compositeBody.kind !== 'iid') {
+      return Promise.reject(new Error(
+        'broadcast: composite kernel-body kind \'' + compositeBody.kind
+        + '\' recognised but not yet executable (Phase 4 work)'));
+    }
+    params = compositeBody.distParams;
   }
   // Map parameter slot → its IR (kwarg form wins, else positional).
   // For the iid-composite case, the params come from the INNER dist
@@ -56,13 +72,13 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
   // broadcast args); other kwargs (closed-over self-refs) pass
   // through unchanged.
   const paramIRs: Record<string, any> = {};
-  if (iidComposite) {
+  if (compositeBody && compositeBody.kind === 'iid') {
     // Substitute kernel placeholders in distCall's kwargs with the
     // broadcast args (d.kwargIRs maps surface kw → broadcast arg IR).
-    for (const pn of Object.keys(iidComposite.distKwargs)) {
+    for (const pn of Object.keys(compositeBody.distKwargs)) {
       paramIRs[pn] = _substituteKernelParams(
-        iidComposite.distKwargs[pn],
-        iidComposite.params, iidComposite.paramKwargs, d.kwargIRs || {});
+        compositeBody.distKwargs[pn],
+        compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
     }
   } else if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
     for (const pn of params) {
@@ -83,8 +99,10 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
   // we sample from the inner builtin distribution (e.g. Normal) with
   // the substituted kwargs; the outer "iid" structure is realised by
   // the per-cell `repeat = n` argument to sampleN.
-  const effectiveDistOp = iidComposite ? iidComposite.distOp : d.distOp;
-  const iidN = iidComposite ? iidComposite.n : 1;
+  const effectiveDistOp = (compositeBody && compositeBody.kind === 'iid')
+    ? compositeBody.distOp : d.distOp;
+  const iidN = (compositeBody && compositeBody.kind === 'iid')
+    ? compositeBody.n : 1;
   const pnames = Object.keys(paramIRs);
   // Synthesize a containing IR so prepareDensityRefs collects every
   // free name across all parameter expressions in one pass.
@@ -270,30 +288,15 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
 }
 
 // =====================================================================
-// Composite iid-bodied kernel detection + param substitution
-// (engine-concepts §20.10.11 / fusion (b) Phase F)
+// Kernel parameter substitution
 // =====================================================================
 //
-// Detects when `d.distOp` is a user binding whose IR is
-//   functionof(lawof(iid(<BuiltinDistCall>(<kw>), <n_literal>)),
-//              <kernel_params>)
-// — the kernelof(iid(...)) pattern motivating hierarchical models
-// (Pyro plate-over-plate, lme4 / Bambi random-intercepts).
-//
-// Returns the unpacked descriptor on match (param names, the inner
-// builtin distOp, its kwargs IR, the literal iid count, etc.); null
-// otherwise.
-// Delegate to the shared classifier in `kernel-broadcast-shape.ts`.
-// P7 (LANDED 2026-05-30) hoisted the structural recognition into a
-// single source of truth; the runtime form passes `ctx.fixedValues`
-// to admit ref-to-fixed-integer n (in addition to literal n the
-// classify-time path accepts).
-const _kernelBroadcastShape = require('./kernel-broadcast-shape.ts');
-function _detectIidKernelBody(d: any, ctx: any): any | null {
-  if (!ctx || !ctx.bindings) return null;
-  return _kernelBroadcastShape.detectIidKernelBinding(
-    d.distOp, ctx.bindings, ctx.fixedValues);
-}
+// Composite kernel-body recognition has moved to the
+// COMPOSITE_BODY_RECOGNIZERS table in composite-body-recognizers.ts
+// (which wraps the structural detectors in kernel-broadcast-shape.ts).
+// matKernelBroadcast above dispatches through that table; on a hit it
+// uses _substituteKernelParams below to bind the broadcast args into
+// the inner dist call's kwargs.
 
 // Substitute kernel placeholders in an IR expression with the
 // corresponding broadcast arg from `bcKwargs`. Matches BOTH `%local.
