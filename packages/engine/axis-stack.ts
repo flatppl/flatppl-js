@@ -37,7 +37,7 @@
 // The ragged-storage path (when implemented per TODO §08) handles
 // these cases separately.
 
-export interface AxisStackEntry {
+interface AxisStackEntry {
   source: 'iid' | 'broadcast' | 'kernel_broadcast' | 'aggregate';
   size: number | string;        // integer literal | binding-ref name | '%dynamic'
   name?: string;                // aggregate output-axis name

@@ -40,7 +40,7 @@
 // recognisers in TraceEnum / NUTS. Our kernel-broadcast shape is the
 // analogous "one IR shape, many consumers" pattern.
 
-export interface IidKernelDescriptor {
+interface IidKernelDescriptor {
   /** The user-kernel binding's IR (the functionof node). */
   binding: any;
   /** The kernel's parameter names. */
