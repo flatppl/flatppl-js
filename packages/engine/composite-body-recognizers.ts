@@ -81,6 +81,19 @@ type CompositeBody =
       n: number;
     })
   | (CompositeBodyBase & {
+      kind: 'nested_broadcast';
+      /** Inner broadcast's distOp (bare sampler-REGISTRY scalar dist). */
+      innerDistOp: string;
+      /** Inner distribution's REGISTRY param names. */
+      innerDistParams: string[];
+      /** Inner broadcast's kwargs IR. Each kwarg's IR may reference outer
+       *  kernel placeholders (`%local`) AND/OR closed-over self-refs
+       *  (`self`). The executor's per-(outer_j, inner_k) loop substitutes
+       *  outer placeholders cell-by-cell and slices inner-collection args
+       *  per inner cell. */
+      innerKwargs: Record<string, any>;
+    })
+  | (CompositeBodyBase & {
       kind: 'jointchain';
       /** Ordered chain steps (length ≥ 2). Step 0 is the base measure
        *  (a closed-first sampleable DistCall, kernel placeholders
@@ -260,6 +273,30 @@ registerCompositeBodyRecognizer((d, ctx) => {
     params: desc.params,
     paramKwargs: desc.paramKwargs,
     steps: desc.steps,
+  };
+});
+
+// ---------- nested_broadcast: `lawof(broadcast(<bare_dist>, kw))` ---
+//
+// Phase 4.4 entry. Outer kernel body is itself a broadcast — typical
+// pattern for nested observation models (per-group, per-observation).
+// MVP: inner broadcast head is a sampler-REGISTRY-known scalar
+// distribution; inner kwargs may mix outer placeholders + closed-over
+// self-refs. Composite-bodied inner kernels defer.
+
+registerCompositeBodyRecognizer((d, ctx) => {
+  if (!ctx || !ctx.bindings) return null;
+  const desc = kernelBroadcastShape.detectNestedBroadcastKernelBinding(
+    d.distOp, ctx.bindings);
+  if (!desc) return null;
+  return {
+    kind: 'nested_broadcast',
+    binding: desc.binding,
+    params: desc.params,
+    paramKwargs: desc.paramKwargs,
+    innerDistOp: desc.innerDistOp,
+    innerDistParams: desc.innerDistParams,
+    innerKwargs: desc.innerKwargs,
   };
 });
 

@@ -72,6 +72,12 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     if (compositeBody.kind === 'jointchain') {
       return _executeJointChainComposite(name, d, ctx, compositeBody);
     }
+    // Phase 4.4: nested-broadcast-bodied composite — outer body is
+    // itself `broadcast(<bare_dist>, kw)`. Executor walks two per-cell
+    // axes (outer j × inner k); see `_executeNestedBroadcastComposite`.
+    if (compositeBody.kind === 'nested_broadcast') {
+      return _executeNestedBroadcastComposite(name, d, ctx, compositeBody);
+    }
     if (compositeBody.kind !== 'iid') {
       return Promise.reject(new Error(
         'broadcast: composite kernel-body kind \'' + compositeBody.kind
@@ -1163,6 +1169,280 @@ function _executeJointChainComposite(
       const value = { shape: [N | 0, K, C], data: out };
       return Object.assign(
         empirical.arrayMeasure(out, [K, C], null),
+        { value: value, logTotalmass: 0, n_eff: N },
+      );
+    });
+  });
+}
+
+// =====================================================================
+// Phase 4.4 — nested-broadcast-composite execution
+// =====================================================================
+//
+// Outer kernel-broadcast body is itself `broadcast(<bare_dist>, kw)`:
+//
+//     broadcast(<outer_kernel>, outer_kwargs)
+//        with outer_kernel = kernelof(broadcast(D, inner_kw), outer_kw)
+//
+// Each atom yields a [K_outer, K_inner] block. The new architectural
+// ingredient vs Phases 4.1-4.3 is **two-axis per-cell iteration**:
+//
+//   for outer j in [0, K_outer):
+//     substitute outer placeholders into inner kwargs (per outer cell)
+//     evaluate inner kwargs to discover K_inner + per-arg shape
+//     for inner k in [0, K_inner):
+//       slice inner kwargs at index k (lit or per-atom refArray)
+//       sampleN with the substituted inner distOp → column[j, k]
+//
+// Inner kwargs may mix `%local`-as-outer-placeholder refs with `self`-
+// as-closed-over refs; `_substituteKernelParams` handles both via the
+// same `params` / `paramKwargs` mapping used by Phases 4.1-4.3.
+//
+// MVP scope (matches recogniser gate):
+// - Inner broadcast head is a bare sampler-REGISTRY scalar dist.
+// - Inner kwargs use kwarg form (positional defers).
+// - No vec-per-cell inner D axis (the inner cells are scalars).
+//
+// Cost: K_outer * K_inner worker calls. A future optimisation can
+// detect when the inner cell axis has no atom-dep AFTER outer
+// substitution and route through `KERNEL_BROADCAST_FAST_PATHS` for a
+// single vectorised inner pass per outer cell; the recogniser surface
+// stays unchanged.
+
+function _executeNestedBroadcastComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const innerKwargs = compositeBody.innerKwargs;
+
+  // Pre-substitute outer placeholders in inner kwargs so the aggregate
+  // IR closes over the right refs (broadcast args + outer-scope refs).
+  const substInnerKwargs: Record<string, any> = {};
+  for (const pn of Object.keys(innerKwargs)) {
+    substInnerKwargs[pn] = _substituteKernelParams(
+      innerKwargs[pn],
+      compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+  }
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: substInnerKwargs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+
+    // Determine OUTER cell axis K from the outer broadcast args (same
+    // shape contract Phase 4.2 uses).
+    const argVals: Record<string, any> = {};
+    const argClass: Record<string, any> = {};
+    let K = 1;
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      argVals[argName] = v;
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      argClass[argName] = cls;
+      const argK = cls.K || 1;
+      if (argK > 1) {
+        if (K === 1) K = argK;
+        else if (K !== argK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): incompatible outer cell-axis lengths (' + K + ' vs '
+            + argK + ') on arg \'' + argName + '\''));
+        }
+      }
+      const argD = cls.D || 1;
+      if (argD > 1) {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): nested-broadcast outer arg \'' + argName
+          + '\' has inner dim ' + argD + ' (vec-per-cell shapes belong '
+          + 'to iid-composite)'));
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty outer collection argument'));
+    }
+
+    // Build the cell-j bcKwargs map once per outer j; then per
+    // outer cell we determine K_inner by evaluating the substituted
+    // inner kwargs and per inner cell we sampleN.
+    //
+    // Two passes within each outer cell:
+    //   (a) evaluate each inner kwarg against this cell's bcKwargs to
+    //       extract the per-(j, k) value (scalar or per-atom column).
+    //   (b) sampleN with those values.
+    //
+    // The "K_inner" is the largest cell-axis size across the inner
+    // kwargs (mirrors the standalone broadcast shape ladder); inner
+    // kwargs that resolve to scalars or atom-batched-scalars pass
+    // through unchanged.
+    type CellResult = { K_inner: number; cells: Float64Array[] };
+    const outerCells: CellResult[] = new Array(K);
+    let chain = Promise.resolve();
+    for (let j = 0; j < K; j++) {
+      const jj = j;
+      chain = chain.then(() => {
+        const bcKwargs: Record<string, any> = {};
+        const outerRefs: Record<string, any> = {};
+        for (const argName of Object.keys(d.kwargIRs || {})) {
+          const cls = argClass[argName];
+          const v = argVals[argName];
+          const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
+                            || cls.kind === 'NKD';
+          if (isAtomDep) {
+            const col = shared.perAtomColumnAtJ(v, jj, N);
+            const refName = '__bc_' + argName + '_' + jj;
+            outerRefs[refName] = valueLib.batchedScalar(col);
+            bcKwargs[argName] = { kind: 'ref', ns: 'self', name: refName };
+          } else {
+            const s = shared.elemScalarAtJ(v, jj, N);
+            bcKwargs[argName] = { kind: 'lit', value: s };
+          }
+        }
+
+        // Inner kwargs after substituting outer placeholders with the
+        // cell-j bcKwargs (refs to per-atom columns or lit scalars).
+        const innerKwargsCellJ: Record<string, any> = {};
+        for (const pn of Object.keys(innerKwargs)) {
+          innerKwargsCellJ[pn] = _substituteKernelParams(
+            innerKwargs[pn],
+            compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+        }
+
+        // Evaluate each inner kwarg to determine K_inner + per-arg shape.
+        // Inner refArrays = refArrays (outer prep) + outerRefs (this
+        // cell's per-atom slices).
+        const cellRefArrays: Record<string, any> = {};
+        for (const rk in refArrays) cellRefArrays[rk] = refArrays[rk];
+        for (const rk in outerRefs) cellRefArrays[rk] = outerRefs[rk];
+        const innerVals: Record<string, any> = {};
+        const innerClass: Record<string, any> = {};
+        let K_inner = 1;
+        for (const pn of Object.keys(innerKwargsCellJ)) {
+          let v: any;
+          try {
+            v = sampler.evaluateExprN(
+              innerKwargsCellJ[pn], cellRefArrays, N, baseEnv, undefined);
+          } catch (err) {
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          innerVals[pn] = v;
+          // For shape classification we need to know if the kwarg
+          // references any per-atom refs (i.e. is atom-batched). After
+          // the cell-j substitution, atom-batched is propagated through
+          // the outerRefs entries — collectSelfRefs would still see
+          // those names so we can classify.
+          const refs = orchestrator.collectSelfRefs(innerKwargsCellJ[pn]);
+          const usesAtom = Object.keys(cellRefArrays).some((n) =>
+            refs.has(n));
+          const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+          innerClass[pn] = cls;
+          const innerK = cls.K || 1;
+          if (innerK > 1) {
+            if (K_inner === 1) K_inner = innerK;
+            else if (K_inner !== innerK) {
+              throw new Error('broadcast(' + d.distOp
+                + '): incompatible inner cell-axis lengths (' + K_inner
+                + ' vs ' + innerK + ') on inner kwarg \'' + pn
+                + '\' at outer cell ' + jj);
+            }
+          }
+          const innerD = cls.D || 1;
+          if (innerD > 1) {
+            throw new Error('broadcast(' + d.distOp
+              + '): nested-broadcast inner kwarg \'' + pn
+              + '\' has inner D ' + innerD + ' (vec-per-cell shapes '
+              + 'belong to iid-composite)');
+          }
+        }
+        if (K_inner < 1) {
+          throw new Error('broadcast(' + d.distOp
+            + '): empty inner collection argument at outer cell ' + jj);
+        }
+
+        // Per inner cell k: build inner-cell kwargs (lit or refArray)
+        // and sampleN. Inner sampler IR is the bare innerDistOp.
+        const innerCells: Float64Array[] = new Array(K_inner);
+        let innerChain = Promise.resolve();
+        for (let k = 0; k < K_inner; k++) {
+          const kk = k;
+          innerChain = innerChain.then(() => {
+            const distKwargs: Record<string, any> = {};
+            const innerCellRefs: Record<string, any> = {};
+            for (const rk in outerRefs) innerCellRefs[rk] = outerRefs[rk];
+            for (const pn of Object.keys(innerVals)) {
+              const cls = innerClass[pn];
+              const v = innerVals[pn];
+              const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
+                                || cls.kind === 'NKD';
+              if (isAtomDep) {
+                const col = shared.perAtomColumnAtJ(v, kk, N);
+                const refName = '__inbc_' + pn + '_' + jj + '_' + kk;
+                innerCellRefs[refName] = valueLib.batchedScalar(col);
+                distKwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
+              } else {
+                const s = shared.elemScalarAtJ(v, kk, N);
+                distKwargs[pn] = { kind: 'lit', value: s };
+              }
+            }
+            const distIR = {
+              kind: 'call', op: compositeBody.innerDistOp, kwargs: distKwargs,
+            };
+            const workerMsg: any = {
+              type: 'sampleN', ir: distIR, count: N,
+              refArrays: innerCellRefs,
+              seed: nameSeed(name + ':j' + jj + ':k' + kk, ctx.rootKey),
+            };
+            return ctx.sendWorker(workerMsg).then((reply: any) => {
+              innerCells[kk] = reply.samples;
+            });
+          });
+        }
+        return innerChain.then(() => {
+          outerCells[jj] = { K_inner, cells: innerCells };
+        });
+      });
+    }
+
+    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
+      // Enforce uniform K_inner across outer cells (the recogniser's
+      // contract). Different K_inner per outer cell would be a ragged
+      // shape — defer to a follow-up if motivated.
+      let K_inner = outerCells[0].K_inner;
+      for (let j = 1; j < K; j++) {
+        if (outerCells[j].K_inner !== K_inner) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): ragged inner cell-axis lengths across outer cells ('
+            + K_inner + ' vs ' + outerCells[j].K_inner + ' at outer '
+            + j + ') — Phase 4.4 MVP requires uniform inner K'));
+        }
+      }
+      // Stitch [N, K_outer, K_inner] atom-major.
+      const out = new Float64Array(N * K * K_inner);
+      for (let j = 0; j < K; j++) {
+        for (let k = 0; k < K_inner; k++) {
+          const col = outerCells[j].cells[k];
+          for (let i = 0; i < N; i++) {
+            out[i * K * K_inner + j * K_inner + k] = col[i];
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, K_inner], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K, K_inner], null),
         { value: value, logTotalmass: 0, n_eff: N },
       );
     });

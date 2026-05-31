@@ -1,0 +1,44 @@
+%%%
+Nested broadcast — outer kernel body is itself a broadcast.
+
+Per-patient observations across visits: each patient has noise scale
+sigma_p (varying across patients); each visit has baseline mean
+visit_mean_v (varying across visits, shared across patients). The
+outer kernel-broadcast iterates patients; per patient the kernel body
+is itself a broadcast over visit_means with the patient's sigma.
+
+Phase 4.4 lands the nested-broadcast composite-body recogniser + the
+`_executeNestedBroadcastComposite` execution path with two-axis
+per-cell iteration (outer K_outer * inner K_inner worker calls).
+
+The lift's `inlineOnce` collapses simple `kernelof(<DistCall>, …)`
+inner kernels into the inner broadcast as the bare DistCall ref, so
+the canonical user surface (`broadcast(<simple_kernel>, args…)`
+inside a kernelof body) reaches the recogniser as
+`lawof(broadcast(<bare_dist>, kw))` — captured by the MVP scope.
+
+Result shape per atom: [P, V] where P = patients, V = visits per
+patient. Calibration: per-(p, v) cell mean ≈ visit_means[v]; per-(p,
+v) cell variance ≈ sigmas_per_patient[p]^2.
+%%%
+flatppl_compat = "0.1"
+
+% Per-visit baseline means (fixed, shared across patients).
+visit_means = [10.0, 20.0, 30.0, 40.0]
+
+% Per-patient noise scales.
+sigmas_per_patient = [0.5, 1.0, 1.5]
+
+% Inner observation kernel — `inlineOnce` collapses this into the
+% inner broadcast's bare-dist head at lift time.
+obs_kernel = kernelof(Normal(mu = mu, sigma = sigma),
+                      mu = mu, sigma = sigma)
+
+% Per-patient outer kernel: broadcast obs_kernel over visit_means
+% with sigma_g (the patient's sigma) modulating the noise scale.
+patient_kernel = kernelof(
+  broadcast(obs_kernel, mu = visit_means, sigma = sigma_g),
+  sigma_g = sigma_g)
+
+% Kernel-broadcast over per-patient sigmas.
+y = broadcast(patient_kernel, sigma_g = sigmas_per_patient)

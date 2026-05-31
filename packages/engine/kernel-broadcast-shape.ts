@@ -586,6 +586,154 @@ function isJointChainCompositeKernelBinding(
   return detectJointChainKernelBinding(name, bindings) !== null;
 }
 
+// =====================================================================
+// Nested-broadcast composite kernel (Phase 4.4)
+// =====================================================================
+//
+// A `kernelof(broadcast(<inner_kernel>, <inner_kwargs>), <outer_kw>)`
+// body — the outer kernel-broadcast's per-cell measure is itself a
+// broadcast. Per spec §04 the inner broadcast realises an independent-
+// product measure over the inner kwargs' collection axes; nesting it
+// inside an outer kernel-broadcast yields shape `[N, K_outer, K_inner]`
+// per atom.
+//
+// Phase 4.4 MVP scope:
+//
+// - **Bare-dist inner head.** The inner broadcast's first arg must be
+//   a self-ref to a sampleable-distribution constructor (`Normal`,
+//   `Beta`, …) — NOT shadowed by a user binding. In practice the
+//   lift's `inlineOnce` pass already collapses simple `kernelof
+//   (<DistCall>, …)` user-kernel heads into the inner broadcast as
+//   the bare DistCall, so this MVP captures the canonical user
+//   surface. A composite-bodied inner kernel (whose body is itself
+//   iid / joint / jointchain) is the genuine "recursive composite"
+//   case — defer to a follow-up.
+//
+// - **No inner closed-form fast-path coupling.** The executor walks
+//   per (outer_j, inner_k) and dispatches a worker sampleN per inner
+//   cell. A future optimisation can recognise when the inner cell
+//   axis has no atom-dep and route through the per-distOp
+//   `KERNEL_BROADCAST_FAST_PATHS` registry for a vectorised inner
+//   pass; the recogniser surface stays unchanged.
+//
+// - **Inner kwargs reference outer placeholders + closed-over self-
+//   refs.** The recogniser doesn't restrict which refs appear in
+//   inner kwargs — the executor's per-cell substitution machinery
+//   handles `%local`-as-outer-placeholder vs `self`-as-closed-over
+//   uniformly (Phase 4.2's `_substituteKernelParams` already
+//   distinguishes them).
+
+interface NestedBroadcastKernelDescriptor {
+  /** The user-kernel binding's IR (the outer functionof node). */
+  binding: any;
+  /** Outer kernel parameter names. */
+  params: string[];
+  /** Outer kernel surface kwarg names. */
+  paramKwargs: string[];
+  /** Inner broadcast's distOp (a sampler-REGISTRY-known scalar dist). */
+  innerDistOp: string;
+  /** Inner distribution's REGISTRY param names. */
+  innerDistParams: string[];
+  /** Inner broadcast's kwargs IR. May reference outer kernel
+   *  placeholders (`%local`) AND closed-over self-refs (`self`).
+   *  Positional `args` (other than the head) are NOT supported in
+   *  the MVP — every inner param must arrive via kwargs. */
+  innerKwargs: Record<string, any>;
+}
+
+/**
+ * Recognise a nested-broadcast user-kernel binding. Returns a
+ * `NestedBroadcastKernelDescriptor` on match, null otherwise.
+ *
+ * Accepts the following IR shape (post-lowering + post-lift):
+ *
+ *     functionof(
+ *       lawof(broadcast(
+ *         <innerDistRef>,         # bare sampleable-dist ref
+ *         kwargs = { … }          # per-inner-axis collection args
+ *       )),
+ *       outer_kernel_kwargs...
+ *     )
+ *
+ * Rejections (return null):
+ *  - Inner broadcast head is not a `self`-ref to a sampler-REGISTRY-
+ *    known scalar distribution.
+ *  - Inner broadcast uses positional args for inner params (post-lift
+ *    canonical surface always emits kwargs for inner kernel-broadcast
+ *    invocation; positional form is a follow-up).
+ *  - Outer body isn't `lawof(broadcast(…))`.
+ */
+function detectNestedBroadcastKernelBinding(
+  name: string, bindings: any,
+): NestedBroadcastKernelDescriptor | null {
+  if (!bindings || !bindings.has || !bindings.has(name)) return null;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length === 0) return null;
+  const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
+    ? ir.paramKwargs : params;
+  const body = ir.body;
+  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
+  const innerMeasure = body.args && body.args[0];
+  if (!innerMeasure || innerMeasure.kind !== 'call'
+      || innerMeasure.op !== 'broadcast') return null;
+
+  // Inner broadcast head must be a sampleable-dist ref. The lift
+  // collapses simple kernelof-DistCall user kernels into this form,
+  // so the MVP captures the canonical surface for nested obs models.
+  if (!Array.isArray(innerMeasure.args) || innerMeasure.args.length < 1) {
+    return null;
+  }
+  const head = innerMeasure.args[0];
+  if (!head || head.kind !== 'ref' || head.ns !== 'self') return null;
+  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+  if (!SAMPLEABLE || !SAMPLEABLE.has(head.name)) return null;
+  // Inner head must NOT be shadowed by a user binding (else it's a
+  // composite-bodied inner kernel — defer to a follow-up).
+  if (bindings.has(head.name)) return null;
+
+  // Inner broadcast must use kwargs for inner params (positional form
+  // is a follow-up; canonical post-lift surface is kwargs).
+  const innerKwargs = innerMeasure.kwargs;
+  if (!innerKwargs || typeof innerKwargs !== 'object'
+      || Object.keys(innerKwargs).length === 0) return null;
+  // Reject extra positional args beyond the head.
+  if (innerMeasure.args.length > 1) return null;
+
+  let innerDistParams: string[] = [];
+  try {
+    const sampler = require('./sampler.ts');
+    if (sampler && sampler._internal && sampler._internal.REGISTRY) {
+      const entry = sampler._internal.REGISTRY[head.name];
+      if (entry && Array.isArray(entry.params)) innerDistParams = entry.params;
+      else return null;
+    }
+  } catch (_) { /* sampler not loadable; leave distParams empty for
+                     classify-time conservatism */ }
+
+  return {
+    binding: b,
+    params,
+    paramKwargs,
+    innerDistOp: head.name,
+    innerDistParams,
+    innerKwargs,
+  };
+}
+
+/**
+ * Lighter check: does `name` resolve to a nested-broadcast composite
+ * kernel binding? Mirrors `isIid…` / `isJoint…` / `isJointChain…`.
+ */
+function isNestedBroadcastCompositeKernelBinding(
+  name: string, bindings: any,
+): boolean {
+  return detectNestedBroadcastKernelBinding(name, bindings) !== null;
+}
+
 module.exports = {
   detectIidKernelBinding,
   isIidCompositeKernelBinding,
@@ -593,4 +741,6 @@ module.exports = {
   isJointCompositeKernelBinding,
   detectJointChainKernelBinding,
   isJointChainCompositeKernelBinding,
+  detectNestedBroadcastKernelBinding,
+  isNestedBroadcastCompositeKernelBinding,
 };
