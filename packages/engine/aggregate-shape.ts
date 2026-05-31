@@ -36,7 +36,7 @@
 // CJS module (mirrors sampler-aggregate / standard-modules — anything
 // that consumes via require() and may participate in cycles).
 
-export interface AggregateCanonical {
+interface AggregateCanonical {
   /** Output axes in spec-declared order (args[1]'s vector entries). */
   outAxes: string[];
   /** Axes referenced in body but NOT in outAxes — order is first-
