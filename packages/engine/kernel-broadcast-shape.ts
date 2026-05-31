@@ -734,6 +734,316 @@ function isNestedBroadcastCompositeKernelBinding(
   return detectNestedBroadcastKernelBinding(name, bindings) !== null;
 }
 
+// =====================================================================
+// Near-miss diagnostic (Phase 4.5 — diagnostic surface)
+// =====================================================================
+//
+// When `matKernelBroadcast` falls through every composite-body
+// recogniser, today's error is generic: "broadcast: unknown
+// distribution kernel <name>". Phase 4.5's diagnostic surface walks
+// the kernel binding's IR, compares against the four recogniser
+// shapes (iid / joint / jointchain / nested_broadcast), and produces
+// a structured "near-miss" report — what the body LOOKS like, which
+// recogniser shape it ALMOST matches, and what's structurally off.
+//
+// The diagnostic is informational, not prescriptive: it doesn't tell
+// the user how to rewrite the model, but it names the recogniser
+// shape so the user can either rewrite OR file a precise feature
+// request ("I have a kernel-first jointchain — please support it").
+//
+// Phase 4.5's per-atom catch-all walker (always-correct slow path)
+// is deferred to a follow-up. Sampling arbitrary measure IR per atom
+// would require new worker machinery; landing that without a
+// motivating fixture risks unused complexity. The diagnostic landing
+// here converts the dispatcher's bare error into actionable feedback;
+// when a concrete fixture demands the slow path, the walker lands
+// alongside it.
+
+interface NearMissReport {
+  /** Recogniser kind the body's outer shape MOST CLOSELY resembles. */
+  closestKind: 'iid' | 'joint' | 'jointchain' | 'nested_broadcast' | 'unknown';
+  /** Human-readable summary suitable for the dispatcher's error. */
+  message: string;
+  /** Structured detail for downstream tooling (e.g. viewer
+   *  diagnostics, IDE hovers). */
+  detail: {
+    bodyOp?: string;     // outer body's `lawof` arg op
+    innerOp?: string;    // one level deeper
+    issues: string[];    // bullet list of structural mismatches
+  };
+}
+
+/**
+ * Inspect a user-kernel binding's IR and report what structural
+ * shape it MOST CLOSELY resembles among the four recogniser kinds,
+ * plus what's off. Returns a `NearMissReport` always — never null;
+ * if nothing matches, the report calls out 'unknown' with what was
+ * actually seen.
+ *
+ * Cheap structural walk (no worker dispatch, no Value materialisation).
+ * Safe to call after a recogniser returns null to compose a
+ * dispatcher error message.
+ */
+function diagnoseKernelBodyNearMiss(
+  name: string, bindings: any,
+): NearMissReport {
+  const issues: string[] = [];
+  const detail: NearMissReport['detail'] = { issues };
+
+  if (!bindings || !bindings.has(name)) {
+    return {
+      closestKind: 'unknown',
+      message: 'kernel binding \'' + name + '\' not found',
+      detail,
+    };
+  }
+  const b = bindings.get(name);
+  if (!b || !b.ir) {
+    return {
+      closestKind: 'unknown',
+      message: 'kernel binding \'' + name + '\' has no IR (not lowered)',
+      detail,
+    };
+  }
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') {
+    return {
+      closestKind: 'unknown',
+      message: 'kernel binding \'' + name + '\' is not a functionof '
+        + '(got ' + (ir.kind || '?') + '/' + (ir.op || '?') + '); '
+        + 'kernel-broadcast requires a kernelof-typed binding',
+      detail,
+    };
+  }
+  const body = ir.body;
+  if (!body || body.kind !== 'call' || body.op !== 'lawof') {
+    return {
+      closestKind: 'unknown',
+      message: 'kernel \'' + name + '\' body is not lawof(...) '
+        + '(got ' + (body && body.op) + '); canonical kernelof '
+        + 'lowering produces functionof(body=lawof(...))',
+      detail,
+    };
+  }
+  const inner = body.args && body.args[0];
+  if (!inner || inner.kind !== 'call') {
+    return {
+      closestKind: 'unknown',
+      message: 'kernel \'' + name + '\' body lawof has no inner call',
+      detail,
+    };
+  }
+  detail.bodyOp = 'lawof';
+  detail.innerOp = inner.op;
+
+  // Dispatch by inner op. For each, compare the body's structure
+  // against the recogniser's contract and enumerate what's off.
+  if (inner.op === 'iid') {
+    issues.push('inner is iid(...) — matches the iid recogniser '
+      + 'shape `lawof(iid(<DistCall>, n))`');
+    if (!Array.isArray(inner.args) || inner.args.length !== 2) {
+      issues.push('iid arity is ' + (inner.args && inner.args.length)
+        + ', expected 2 (the measure + the repeat count)');
+    } else {
+      let distCall = inner.args[0];
+      if (distCall && distCall.kind === 'ref' && distCall.ns === 'self'
+          && bindings.has(distCall.name)) {
+        const anon = bindings.get(distCall.name);
+        if (anon && anon.ir) distCall = anon.ir;
+      }
+      if (!distCall || distCall.kind !== 'call' || !distCall.op) {
+        issues.push('iid first arg does not resolve to a direct call '
+          + '(after one level of anon deref)');
+      } else {
+        const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+        if (!SAMPLEABLE.has(distCall.op)) {
+          issues.push('iid inner distOp is \'' + distCall.op
+            + '\', not a sampler-REGISTRY-known scalar distribution; '
+            + 'the iid composite-body recogniser requires a built-in '
+            + 'sampleable scalar distribution as the inner call');
+        }
+      }
+      const nArg = inner.args[1];
+      if (nArg && nArg.kind !== 'lit'
+          && !(nArg.kind === 'ref' && nArg.ns === 'self')) {
+        issues.push('iid repeat-count is not a literal or self-ref '
+          + '(got ' + (nArg && nArg.kind) + ')');
+      }
+    }
+    return {
+      closestKind: 'iid',
+      message: 'kernel \'' + name + '\' body almost matches iid '
+        + 'composite shape; ' + issues.join('; '),
+      detail,
+    };
+  }
+
+  if (inner.op === 'joint') {
+    issues.push('inner is joint(...) — matches the joint recogniser '
+      + 'shape `lawof(joint(<components>))`');
+    const fields = Array.isArray(inner.fields) ? inner.fields : null;
+    const args = Array.isArray(inner.args) ? inner.args : null;
+    if (!fields && !args) {
+      issues.push('joint has neither fields (keyword) nor args (positional)');
+    } else {
+      const componentRefs = fields ? fields.map((f: any) => f && f.value)
+                                   : args;
+      const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+      for (let i = 0; i < componentRefs.length; i++) {
+        const ref = componentRefs[i];
+        if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
+            || !bindings.has(ref.name)) {
+          issues.push('component ' + i + ' is not a self-ref to a '
+            + 'known binding');
+          continue;
+        }
+        const anon = bindings.get(ref.name);
+        if (!anon || !anon.ir || anon.ir.kind !== 'call' || !anon.ir.op) {
+          issues.push('component ' + i + ' (binding \'' + ref.name
+            + '\') does not resolve to a direct call');
+          continue;
+        }
+        if (!SAMPLEABLE.has(anon.ir.op)) {
+          issues.push('component ' + i + ' (binding \'' + ref.name
+            + '\') has distOp \'' + anon.ir.op + '\', not in '
+            + 'sampler.REGISTRY — joint composite-body recogniser '
+            + 'requires scalar sampleable components (vector-valued '
+            + 'components like MvNormal defer to Phase 5.1)');
+        }
+      }
+    }
+    return {
+      closestKind: 'joint',
+      message: 'kernel \'' + name + '\' body almost matches joint '
+        + 'composite shape; ' + (issues.length > 1 ? issues.slice(1).join('; ')
+                                                   : 'shape match'),
+      detail,
+    };
+  }
+
+  if (inner.op === 'jointchain' || inner.op === 'kchain') {
+    issues.push('inner is ' + inner.op + '(...) — closest match is '
+      + 'the jointchain recogniser shape `lawof(jointchain(<base>, '
+      + '<K_1>, …))`');
+    if (Array.isArray(inner.fields) && inner.fields.length > 0) {
+      issues.push('keyword-layout jointchain (fields:) — Phase 4.3 '
+        + 'MVP supports positional layout only (record-typed variates '
+        + 'need additional materialiser Value plumbing)');
+    } else if (!Array.isArray(inner.args) || inner.args.length < 2) {
+      issues.push('chain length < 2 — jointchain requires at least a '
+        + 'base + one transition step');
+    } else {
+      // Check each step's shape.
+      const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+      for (let i = 0; i < inner.args.length; i++) {
+        const ref = inner.args[i];
+        if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
+            || !bindings.has(ref.name)) {
+          issues.push('step ' + i + ' is not a self-ref to a known binding');
+          continue;
+        }
+        const dep = bindings.get(ref.name);
+        if (!dep || !dep.ir) {
+          issues.push('step ' + i + ' (binding \'' + ref.name
+            + '\') has no IR');
+          continue;
+        }
+        if (i === 0) {
+          // Step 0: must be a sampleable DistCall (closed-first).
+          if (dep.ir.kind !== 'call' || !SAMPLEABLE.has(dep.ir.op)) {
+            issues.push('base step (binding \'' + ref.name
+              + '\') is not a sampleable DistCall — Phase 4.3 MVP '
+              + 'supports closed-first chains only (kernel-first '
+              + 'defers)');
+          }
+        } else {
+          // Subsequent steps: must be single-input kernel with body
+          // lawof(<sampleable DistCall>).
+          if (dep.ir.op !== 'functionof') {
+            issues.push('step ' + i + ' (binding \'' + ref.name
+              + '\') is not a kernel binding (functionof)');
+            continue;
+          }
+          const stepParams = Array.isArray(dep.ir.params) ? dep.ir.params : [];
+          if (stepParams.length !== 1) {
+            issues.push('step ' + i + ' has ' + stepParams.length
+              + ' params (expected 1 — multi-input chain kernels '
+              + 'defer)');
+          }
+          const stepBody = dep.ir.body;
+          if (!stepBody || stepBody.op !== 'lawof') {
+            issues.push('step ' + i + ' body is not lawof(...)');
+            continue;
+          }
+          const stepDist = stepBody.args && stepBody.args[0];
+          if (!stepDist || stepDist.kind !== 'call'
+              || !SAMPLEABLE.has(stepDist.op)) {
+            issues.push('step ' + i + ' inner is not a sampleable '
+              + 'DistCall (got ' + (stepDist && stepDist.op)
+              + ') — composite-step kernels defer');
+          }
+        }
+      }
+    }
+    return {
+      closestKind: 'jointchain',
+      message: 'kernel \'' + name + '\' body almost matches jointchain '
+        + 'composite shape; ' + (issues.length > 1 ? issues.slice(1).join('; ')
+                                                   : 'shape match'),
+      detail,
+    };
+  }
+
+  if (inner.op === 'broadcast') {
+    issues.push('inner is broadcast(...) — matches the nested-'
+      + 'broadcast recogniser shape `lawof(broadcast(<bare_dist>, '
+      + 'kwargs))`');
+    if (!Array.isArray(inner.args) || inner.args.length < 1) {
+      issues.push('inner broadcast has no head arg');
+    } else {
+      const head = inner.args[0];
+      if (!head || head.kind !== 'ref' || head.ns !== 'self') {
+        issues.push('inner broadcast head is not a self-ref');
+      } else {
+        const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+        if (!SAMPLEABLE.has(head.name)) {
+          issues.push('inner broadcast head \'' + head.name
+            + '\' is not a sampler-REGISTRY-known scalar distribution '
+            + '— Phase 4.4 MVP requires a bare-dist inner head; '
+            + 'composite-bodied inner kernels (whose body is itself '
+            + 'iid / joint / jointchain) defer to a follow-up');
+        } else if (bindings.has(head.name)) {
+          issues.push('inner broadcast head \'' + head.name + '\' is '
+            + 'shadowed by a user binding — composite-bodied inner '
+            + 'kernels defer to a follow-up');
+        }
+      }
+      if (inner.args.length > 1) {
+        issues.push('inner broadcast has positional args beyond the '
+          + 'head — Phase 4.4 MVP requires kwarg form for inner params');
+      }
+      if (!inner.kwargs || Object.keys(inner.kwargs).length === 0) {
+        issues.push('inner broadcast has no kwargs');
+      }
+    }
+    return {
+      closestKind: 'nested_broadcast',
+      message: 'kernel \'' + name + '\' body almost matches nested-'
+        + 'broadcast composite shape; '
+        + (issues.length > 1 ? issues.slice(1).join('; ') : 'shape match'),
+      detail,
+    };
+  }
+
+  return {
+    closestKind: 'unknown',
+    message: 'kernel \'' + name + '\' body inner op is \'' + inner.op
+      + '\' — no composite-body recogniser handles this shape (known '
+      + 'kinds: iid / joint / jointchain / nested_broadcast)',
+    detail,
+  };
+}
+
 module.exports = {
   detectIidKernelBinding,
   isIidCompositeKernelBinding,
@@ -743,4 +1053,5 @@ module.exports = {
   isJointChainCompositeKernelBinding,
   detectNestedBroadcastKernelBinding,
   isNestedBroadcastCompositeKernelBinding,
+  diagnoseKernelBodyNearMiss,
 };

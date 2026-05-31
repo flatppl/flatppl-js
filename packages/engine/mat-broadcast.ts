@@ -54,8 +54,19 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
   if (!params) {
     compositeBody = compositeBodies.tryRecognizeCompositeBody(d, ctx);
     if (!compositeBody) {
+      // Phase 4.5: emit the near-miss diagnostic naming the closest
+      // recogniser shape + structural issues that kept the body from
+      // matching. Beats the bare "unknown kernel" error today's
+      // codepath emitted — users get an actionable pointer to either
+      // rewrite the model OR file a precise feature request. The
+      // per-atom catch-all walker (slow always-correct path) is
+      // deferred to a follow-up; landing it without a motivating
+      // fixture would add unused worker / materialiser surface.
+      const shapeLib = require('./kernel-broadcast-shape.ts');
+      const diag = shapeLib.diagnoseKernelBodyNearMiss(d.distOp, ctx.bindings);
       return Promise.reject(new Error(
-        'broadcast: unknown distribution kernel ' + d.distOp));
+        'broadcast: no composite-body recogniser matches kernel \''
+        + d.distOp + '\'. ' + diag.message));
     }
     // Phase 4.2: joint-bodied composite — execute via the per-cell
     // multi-component pathway. paramIRs assembly + the per-cell loop

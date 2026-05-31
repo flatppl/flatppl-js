@@ -150,3 +150,102 @@ test('isIidCompositeKernelBinding: returns false for non-composite', () => {
   assert.equal(kbShape.isIidCompositeKernelBinding('missing', new Map()),
     false);
 });
+
+// =====================================================================
+// 6. diagnoseKernelBodyNearMiss — Phase 4.5 near-miss diagnostic
+// =====================================================================
+//
+// When a kernel binding doesn't match any composite-body recogniser,
+// the diagnostic walks the IR and reports the closest recogniser
+// shape + structural issues. Used by matKernelBroadcast's fall-
+// through path to produce actionable errors instead of bare
+// "unknown kernel" messages.
+
+test('diagnoseKernelBodyNearMiss: missing binding → unknown', () => {
+  const r = kbShape.diagnoseKernelBodyNearMiss('missing', new Map());
+  assert.equal(r.closestKind, 'unknown');
+  assert.match(r.message, /not found/);
+});
+
+test('diagnoseKernelBodyNearMiss: non-functionof binding → unknown', () => {
+  const bindings = new Map([['K', { ir: { kind: 'lit', value: 1 } }]]);
+  const r = kbShape.diagnoseKernelBodyNearMiss('K', bindings);
+  assert.equal(r.closestKind, 'unknown');
+  assert.match(r.message, /not a functionof/);
+});
+
+test('diagnoseKernelBodyNearMiss: iid body with unknown inner dist → iid near-miss', () => {
+  const bindings = new Map([['K', {
+    ir: {
+      kind: 'call', op: 'functionof',
+      params: ['mu'], paramKwargs: ['mu'],
+      body: { kind: 'call', op: 'lawof', args: [{
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'call', op: 'NotADist', kwargs: { mu: refr('mu') } },
+          lit(4),
+        ],
+      }] },
+    },
+  }]]);
+  const r = kbShape.diagnoseKernelBodyNearMiss('K', bindings);
+  assert.equal(r.closestKind, 'iid');
+  assert.match(r.message, /iid composite shape/);
+  assert.match(r.message, /sampler-REGISTRY-known/);
+});
+
+test('diagnoseKernelBodyNearMiss: jointchain with composite-step kernel → jointchain near-miss', () => {
+  // Step 0 is a Normal anon; step 1 is a kernel binding with body
+  // lawof(iid(...)) — a composite-step kernel, which Phase 4.3 MVP
+  // doesn't support.
+  const bindings = new Map<string, any>([
+    ['__anon_base', { ir: { kind: 'call', op: 'Normal',
+      kwargs: { mu: lit(0), sigma: lit(1) } } }],
+    ['step_K', { ir: {
+      kind: 'call', op: 'functionof',
+      params: ['prev'], paramKwargs: ['prev'],
+      body: { kind: 'call', op: 'lawof', args: [{
+        kind: 'call', op: 'iid',     // <-- composite step body
+        args: [
+          { kind: 'call', op: 'Normal', kwargs: {} },
+          lit(3),
+        ],
+      }] },
+    } }],
+    ['K', { ir: {
+      kind: 'call', op: 'functionof',
+      params: ['x0'], paramKwargs: ['x0'],
+      body: { kind: 'call', op: 'lawof', args: [{
+        kind: 'call', op: 'jointchain',
+        args: [refr('__anon_base'), refr('step_K')],
+      }] },
+    } }],
+  ]);
+  const r = kbShape.diagnoseKernelBodyNearMiss('K', bindings);
+  assert.equal(r.closestKind, 'jointchain');
+  assert.match(r.message, /jointchain composite shape/);
+  assert.match(r.message, /not a sampleable DistCall|composite-step/);
+});
+
+test('diagnoseKernelBodyNearMiss: broadcast inner with non-sampleable head → nested_broadcast near-miss', () => {
+  const bindings = new Map<string, any>([
+    ['user_kernel', { ir: { kind: 'call', op: 'functionof',
+      params: ['mu'], body: { kind: 'call', op: 'lawof', args: [{
+        kind: 'call', op: 'Normal', kwargs: { mu: refr('mu'), sigma: lit(1) }
+      }] }
+    } }],
+    ['K', { ir: {
+      kind: 'call', op: 'functionof',
+      params: ['p'], paramKwargs: ['p'],
+      body: { kind: 'call', op: 'lawof', args: [{
+        kind: 'call', op: 'broadcast',
+        args: [refr('user_kernel')],     // <-- composite-bodied inner
+        kwargs: { mu: refr('p') },
+      }] },
+    } }],
+  ]);
+  const r = kbShape.diagnoseKernelBodyNearMiss('K', bindings);
+  assert.equal(r.closestKind, 'nested_broadcast');
+  assert.match(r.message, /nested-broadcast composite shape/);
+  assert.match(r.message, /bare-dist inner head|composite-bodied inner|shadowed by/);
+});
