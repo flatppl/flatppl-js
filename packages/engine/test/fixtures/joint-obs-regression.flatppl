@@ -1,0 +1,50 @@
+%%%
+Joint-bodied composite kernel — multi-output regression.
+
+Each group g has parameters (mu_g, sigma_g). Within a group we
+observe a pair (y1, y2) where y1 ~ Normal(mu_g, sigma_g) and
+y2 ~ Normal(mu_g, 2*sigma_g) are conditionally independent given
+the group params. The pair structure is a (keyword) `joint(...)` —
+each cell of the surrounding `broadcast(...)` produces ONE joint
+draw, and each draw factors as independent component samples per
+spec §06.
+
+Phase 4.2 lands the joint composite-body recogniser
+(`composite-body-recognizers.ts`) and the corresponding
+`_executeJointComposite` execution path in `mat-broadcast.ts`. The
+classifier (`derivations.classifyKernelBroadcast`) accepts joint-
+bodied user kernels alongside iid-bodied ones.
+
+Result shape per atom: [G, C] where C = 2 components. Atom-major.
+
+MvNormal vector-valued components defer to Phase 5.1 — MvNormal
+joins the sampler REGISTRY there, after which the joint executor
+handles vector components through the same kwarg-driven sampleN
+dispatch without further changes.
+%%%
+flatppl_compat = "0.1"
+
+G = 3  % number of groups
+
+% Hierarchical group-level parameters.
+mu_pop ~ Normal(0, 5)
+tau ~ truncate(Normal(0, 2), interval(0, inf))
+mus_per_group ~ iid(Normal(mu_pop, tau), G)
+
+% Per-group noise scales (fixed-phase array — atom-indep).
+sigmas_per_group = [1.0, 0.5, 0.8]
+
+% Per-group joint observation kernel — kwarg-form, two scalar Normal
+% components. Body uses placeholder names `mu`, `sigma` which the
+% kernel-broadcast args (`mu = mus_per_group`, `sigma = sigmas_per_group`)
+% substitute per cell.
+group_kernel = kernelof(
+  joint(y1 = Normal(mu = mu, sigma = sigma),
+        y2 = Normal(mu = mu, sigma = mul(2.0, sigma))),
+  mu = mu, sigma = sigma)
+
+% Kernel-broadcast: per group g, draw a (y1, y2) pair with
+% mu = mus_per_group[g] and sigma = sigmas_per_group[g].
+y_obs = broadcast(group_kernel,
+                  mu = mus_per_group,
+                  sigma = sigmas_per_group)

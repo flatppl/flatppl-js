@@ -1278,7 +1278,14 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   // `functionof(lawof(iid(<BuiltinDist>, n)), kw)`). The runtime
   // (matKernelBroadcast) detects and handles this case.
   const isIidComposite = !isBareDist && _isIidCompositeKernelBinding(k.name, bindings);
-  if (!isBareDist && !isIidComposite) return null;
+  // Phase 4.2: joint-bodied user kernels — body shape is
+  // `lawof(joint(<components>))` (positional or keyword), with each
+  // component an anon-ref to a sampleable distribution. matKernel-
+  // Broadcast dispatches to `_executeJointComposite` via the
+  // COMPOSITE_BODY_RECOGNIZERS table.
+  const isJointComposite = !isBareDist && !isIidComposite
+    && _isJointCompositeKernelBinding(k.name, bindings);
+  if (!isBareDist && !isIidComposite && !isJointComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
   if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
@@ -1294,6 +1301,9 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
 const _kernelBroadcastShape = require('./kernel-broadcast-shape.ts');
 function _isIidCompositeKernelBinding(name: string, bindings: any): boolean {
   return _kernelBroadcastShape.isIidCompositeKernelBinding(name, bindings);
+}
+function _isJointCompositeKernelBinding(name: string, bindings: any): boolean {
+  return _kernelBroadcastShape.isJointCompositeKernelBinding(name, bindings);
 }
 
 // broadcast(logdensityof, M, points) — evaluate a measure's density

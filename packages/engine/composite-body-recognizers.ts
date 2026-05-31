@@ -79,6 +79,31 @@ type CompositeBody =
       /** iid repetition count. Integer at runtime; NaN at classify
        *  time when sourced from a non-fixed ref. */
       n: number;
+    })
+  | (CompositeBodyBase & {
+      kind: 'joint';
+      /** Component layout: 'positional' produces a concatenated per-cell
+       *  vector; 'keyword' carries field names for record-typed variates.
+       *  Phase 4.2 produces flat per-cell vectors in both cases, with
+       *  keyword field names retained as metadata for downstream
+       *  consumers. */
+      layout: 'positional' | 'keyword';
+      /** Ordered components — each a sampleable scalar distribution call.
+       *  Phase 4.2 MVP scope: all components are in sampler.REGISTRY and
+       *  produce scalar variates. Vector-variate components (MvNormal)
+       *  defer to Phase 5.1 (MvNormal sampler-REGISTRY entry). */
+      components: Array<{
+        /** Surface field name; undefined for positional layout. */
+        surfaceName?: string;
+        /** Component distribution opcode. */
+        distOp: string;
+        /** Component params per sampler.REGISTRY. */
+        distParams: string[];
+        /** Component kwargs IR with kernel placeholders still embedded —
+         *  the executor substitutes them per cell via
+         *  `_substituteKernelParams`. */
+        distKwargs: Record<string, any>;
+      }>;
     });
 
 /**
@@ -164,6 +189,32 @@ registerCompositeBodyRecognizer((d, ctx) => {
     distParams: desc.distParams,
     distKwargs: desc.distKwargs,
     n: desc.n,
+  };
+});
+
+// ---------- joint: `lawof(joint(<components>))` --------------------
+//
+// Phase 4.2 entry. Components are either positional (concat-vector
+// variate) or keyword (named record). The executor (`_executeJoint-
+// Composite` in mat-broadcast.ts) handles both layouts; the recogniser
+// preserves the layout flag and per-component surface names so the
+// stitching pass can label outputs.
+//
+// Component scope: built-in sampleable scalar distributions (anything
+// in sampler.REGISTRY). Vector-valued components defer to Phase 5.1.
+
+registerCompositeBodyRecognizer((d, ctx) => {
+  if (!ctx || !ctx.bindings) return null;
+  const desc = kernelBroadcastShape.detectJointKernelBinding(
+    d.distOp, ctx.bindings);
+  if (!desc) return null;
+  return {
+    kind: 'joint',
+    binding: desc.binding,
+    params: desc.params,
+    paramKwargs: desc.paramKwargs,
+    layout: desc.layout,
+    components: desc.components,
   };
 });
 
