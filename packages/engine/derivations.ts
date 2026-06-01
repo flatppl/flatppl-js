@@ -746,7 +746,17 @@ function classifyDerivation(
     // handlers (matMvNormal etc.) — they produce vector atoms
     // (shape=[N, n]) rather than scalar atoms, and use closed-form
     // density walkers (walkMvNormal etc.) instead of the per-leaf
-    // logpdf dispatch in walkLeaf. 
+    // logpdf dispatch in walkLeaf.
+    //
+    // Post-5f, an `MvNormal` IR node only survives to this branch when
+    // the §22 lift gate SKIPPED it (static-D MvNormal is already
+    // `pushfwd(affine, iid)` by the time we classify — no MvNormal node
+    // left). So `kind='mvnormal'` is now the gate-skip fallback for:
+    // dynamic-shape cov, matrix-form mean (rank-1 guard), and positional
+    // form. It dispatches to matMvNormal (materialiser.ts), the §22
+    // terminal materialiser. Intentional; retirement gated on 5h
+    // (dynamic-D iid routing). See lift.inlineMvNormalLift +
+    // mat-multivariate.matMvNormal's docstring.
     if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
         && normalizedRhsIR.op === 'MvNormal') {
       return { kind: 'mvnormal', distIR: normalizedRhsIR };

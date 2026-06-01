@@ -433,3 +433,56 @@ X = MvNormal(mu = muv, cov = cov)
       `dim ${d}: mean ${mean.toFixed(4)} vs ${muExpected[d]} (margin ${margin.toFixed(4)})`);
   }
 });
+
+// =====================================================================
+// 8. 5g — fallback contract: gate-skip cases stay on matMvNormal
+// =====================================================================
+//
+// Session 5g rescoped from "retire matMvNormal" to documenting +
+// PINNING the intentional fallback contract: matMvNormal is the §22
+// terminal materialiser for the cases the 5f lift gate provably can't
+// statically lower (its body IS the same affine decomposition). These
+// tests lock that reachability as intentional so a future "delete dead
+// matMvNormal" PR fails loudly. Full retirement is gated on 5h-A
+// (dynamic-D iid routing). See mat-multivariate.matMvNormal docstring.
+
+test('5g fallback: positional-form MvNormal stays kind=mvnormal (unsupported at materialise)', async () => {
+  // The lift gate parses kwargs only (lift.ts inlineMvNormalLift), so a
+  // positional MvNormal(mu_vec, cov_mat) does NOT lower — it classifies
+  // as kind='mvnormal'. But matMvNormal also requires kwargs, so
+  // positional is unsupported end-to-end (matches its zero surface usage
+  // — the spec/examples always use kwarg form). This pins the honest
+  // contract: positional is neither lowered NOR silently mis-handled; it
+  // surfaces a clear kwargs error. 5h-A's positional-parsing sub-task
+  // would make it lower; until then it's an explicit error.
+  const ctx = makeCtx(`
+mu_vec = [1.0, 2.0]
+cov_mat = rowstack([[1.0, 0.0], [0.0, 1.0]])
+X = MvNormal(mu_vec, cov_mat)
+`);
+  const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
+  assert.equal(bijName, undefined, 'positional form → no lift lowering');
+  assert.equal(ctx.derivations.X.kind, 'mvnormal',
+    'positional MvNormal stays on the matMvNormal terminal path');
+  await assert.rejects(ctx.getMeasure('X'), /requires mu and cov kwargs/,
+    'positional matMvNormal surfaces a clear kwargs error (unsupported)');
+});
+
+test('5g fallback: dynamic-D eye(<param>) cov stays kind=mvnormal + materialises', async () => {
+  // `eye(n)` with n an external (non-literal) integer has a `%dynamic`
+  // inferredType, so __discoveredMvNormalD can't determine D statically
+  // and the gate skips — matMvNormal materialises X with the runtime D.
+  // Complements the diagmat dynamic-D test above with the eye(param) case.
+  const src = `
+n = external(posintegers)
+mu_vec = [1.0, 2.0]
+cov_mat = eye(n)
+X = MvNormal(mu = mu_vec, cov = cov_mat)
+`;
+  const lifted = processSource(src);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const bijName = Array.from(built.bindings.keys()).find((n: any) => /^__bij/.test(n));
+  assert.equal(bijName, undefined, 'dynamic-D eye(param) → no lift lowering');
+  assert.equal(built.derivations.X.kind, 'mvnormal',
+    'dynamic-D MvNormal stays on the matMvNormal terminal path');
+});

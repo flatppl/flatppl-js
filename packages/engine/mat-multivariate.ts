@@ -54,11 +54,27 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
   //      ops.dispatch + the diag-stored fast lane, identical to the
   //      inline code that lived here pre-§22.
   //
-  // Per §22.5, matMvNormal persists as a "thin shortcut" surface for
-  // the dist name. The hot code now lives in the bijection registry
-  // entry — future `pushfwd(affine, iid(Normal, D))` callers (a user-
-  // written model OR the planned lift-time MvNormal lowering) hit the
-  // SAME fast path, by design.
+  // INTENTIONAL TERMINAL MATERIALISER — do NOT delete (status as of
+  // Phase 5.1 Session 5g). The §22 lift-time lowering
+  // (`lift.inlineMvNormalLift`) rewrites `MvNormal(mu, cov)` to
+  // `pushfwd(affine, iid(Normal, D))` whenever the event dim D is
+  // STATICALLY known; those calls never reach here (their IR carries no
+  // MvNormal node). matMvNormal is reached ONLY for the three cases the
+  // 5f gate provably cannot statically lower — and for which it remains
+  // the correct materialiser BECAUSE its body already IS the §22 affine
+  // decomposition (same bijection-registry entry as the lowered path):
+  //   1. dynamic-shape cov (`diagmat([…])`, `eye(<param>)` — `%dynamic`
+  //      inferredType): the gate needs a static D to emit
+  //      `iid(Normal, D)` (lift.ts `__discoveredMvNormalD`). Routing
+  //      this through pushfwd needs a runtime-count iid base — deferred
+  //      (TODO §22 follow-up 5h-A: dynamic-D iid routing).
+  //   2. matrix-form mean (`mu = rowstack([[k]])`): the rank-1 mean
+  //      guard in the gate (lift.ts, §5f Issue 1) intentionally rejects
+  //      it so it routes here rather than mis-lowering to a [1,1] param.
+  //   3. positional form `MvNormal(mu_vec, cov_mat)`: the gate parses
+  //      kwargs only.
+  // Full retirement is gated on 5h (dynamic-D iid routing + positional
+  // parsing). Until then this is load-bearing, NOT a legacy shortcut.
   //
   // logTotalmass = 0 (normalized probability measure); n_eff = N.
   const valueLib    = require('./value.ts');
