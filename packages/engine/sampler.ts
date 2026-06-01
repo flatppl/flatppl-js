@@ -750,6 +750,10 @@ const ARITH_OPS = {
   det:       (A: any): any => opsModule.dispatch('det', [A]),
   logabsdet: (A: any): any => opsModule.dispatch('logabsdet', [A]),
   inv:       (A: any): any => opsModule.dispatch('inv', [A]),
+  // Engine-internal metricsum symmetry guard (engine-concepts §23) —
+  // dispatch shim mirroring `inv`. Throws on non-symmetric / non-
+  // square metrics; returns the input unchanged on success.
+  _ms_check_symmetric: (A: any): any => opsModule.dispatch('_ms_check_symmetric', [A]),
   // Migrated to ops-declarations.ts as kind='rank-polymorphic'
   // (engine-concepts §18.7 Phase 5a): A is square matrix, b is
   // vector OR matrix. The dispatcher passes both through to logical

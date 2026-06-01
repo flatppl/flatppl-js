@@ -525,6 +525,13 @@ const EVALUABLE_OPS = new Set([
   // as fallback; both surface here through the standard `evaluate`
   // derivation.
   'aggregate',
+  // Engine-internal metricsum runtime symmetry guard (engine-concepts
+  // §23). Validating passthrough on the metric argument — pure value
+  // op, phase matches its input. Registered here so `isEvaluable`
+  // recognises it and the metricsum lift's synthetic
+  // `__ms_checked_metric_N = _ms_check_symmetric(metric)` flows
+  // through the standard `evaluate` derivation.
+  '_ms_check_symmetric',
 ]);
 
 // =====================================================================

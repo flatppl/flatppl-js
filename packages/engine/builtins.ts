@@ -69,6 +69,13 @@ const SPECIAL_OPERATIONS = new Set([
   // to `aggregate(sum, ...)` with metric / inv(metric) factor
   // insertions; nothing downstream of lift sees `metricsum` directly.
   'metricsum',
+  // Engine-internal runtime guard emitted by lift.inlineMetricsumLift
+  // to validate the metric argument is approximately symmetric (spec
+  // §sec:metricsum requires symmetric metrics). Validating passthrough:
+  // returns its input unchanged on success, throws a metricsum-
+  // attributed error on failure. Not user-facing — the leading
+  // underscore signals it's a private engine-internal built-in.
+  '_ms_check_symmetric',
   // Function composition / annotation
   'fchain', 'bijection',
   // Assertions

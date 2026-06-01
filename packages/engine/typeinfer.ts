@@ -1260,14 +1260,134 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // canonical storage rule means the rank-N result has the same shape
   // as the sum-aggregate contraction over the same axis lengths.
   // Delegates to `_inferAxisAggregateShape` for the shared work;
-  // metricsum-specific bits stay here (no aggregateShape annotation —
-  // the post-lift aggregate IR is a different node and gets its
-  // annotation lazily).
+  // metricsum-specific bits stay here:
+  //   1. No `aggregateShape.annotate` call — the post-lift aggregate IR
+  //      is a different node and gets its annotation lazily.
+  //   2. Enforces spec §sec:metricsum "Expression restrictions" via
+  //      type-shape inference: metric + every variance-marked-axis-
+  //      indexed container must be arrays of scalars; body must produce
+  //      a scalar value. These checks are TYPE-AWARE — the engine has
+  //      full shape inference at typeinfer time, so a non-scalar body
+  //      or a tensor-of-tensors metric surfaces here as a parse-time
+  //      diagnostic rather than a silent miscomputation at runtime.
   function inferMetricsum(expr: any, scopes: any) {
     const args = expr.args || [];
     if (args.length !== 3) return T.deferred();
     const shape = _inferAxisAggregateShape(args[1], args[2], scopes);
     if (!shape) return T.deferred();
+
+    // ─── Static check: spec §sec:metricsum "Expression restrictions" ───
+    // (a) The metric argument itself must be an array of scalars.
+    const metricT: any = inferExpr(args[0], scopes);
+    if (metricT && metricT.kind !== 'failed') {
+      const isDeferred = (metricT.kind === 'deferred'
+                        || metricT.kind === 'any' || metricT.kind === 'var');
+      if (!isDeferred) {
+        if (metricT.kind !== 'array') {
+          diagnostics.push({
+            severity: 'error',
+            message: 'metricsum: metric must be a rank-2 array of scalars, got '
+              + T.show(metricT),
+            loc: args[0].loc,
+          });
+          return T.failed('metricsum metric not array');
+        }
+        const metricFlat = _flattenArrayType(metricT);
+        const metricElem = metricFlat.elem;
+        const metricElemDeferred = metricElem && (metricElem.kind === 'deferred'
+          || metricElem.kind === 'any' || metricElem.kind === 'var');
+        if (metricElem && metricElem.kind !== 'scalar' && !metricElemDeferred) {
+          diagnostics.push({
+            severity: 'error',
+            message: 'metricsum: metric must be an array of scalars, got '
+              + T.show(metricT),
+            loc: args[0].loc,
+          });
+          return T.failed('metricsum metric not array-of-scalars');
+        }
+      }
+    }
+
+    // (b) Each container indexed by a variance-marked axis in the body
+    // must be an array of scalars. We walk the body looking for
+    // get/get0 calls whose selector list contains an axis with a
+    // variance marker — those are the metricsum-specific accesses.
+    let varianceContainerOK = true;
+    const bodyIR = args[2];
+    function checkVarianceContainers(n: any) {
+      if (!n || typeof n !== 'object' || !varianceContainerOK) return;
+      if (Array.isArray(n)) { for (const c of n) checkVarianceContainers(c); return; }
+      // Stop at nested aggregate / metricsum (separate scope).
+      if (n.kind === 'call' && (n.op === 'aggregate' || n.op === 'metricsum')) return;
+      if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
+        const innerArgs = n.args || [];
+        if (innerArgs.length >= 2) {
+          const sels = innerArgs.slice(1);
+          let hasVarianceAxis = false;
+          for (const s of sels) {
+            if (s && s.kind === 'axis' && s.variance) { hasVarianceAxis = true; break; }
+          }
+          if (hasVarianceAxis) {
+            const container = innerArgs[0];
+            let containerT: any;
+            try { containerT = inferExpr(container, scopes); }
+            catch (_) { containerT = null; }
+            if (containerT && containerT.kind !== 'failed') {
+              const cDeferred = (containerT.kind === 'deferred'
+                || containerT.kind === 'any' || containerT.kind === 'var');
+              if (!cDeferred && containerT.kind === 'array') {
+                const flat = _flattenArrayType(containerT);
+                const elem = flat.elem;
+                const elemDeferred = elem && (elem.kind === 'deferred'
+                  || elem.kind === 'any' || elem.kind === 'var');
+                if (elem && elem.kind !== 'scalar' && !elemDeferred) {
+                  diagnostics.push({
+                    severity: 'error',
+                    message: 'metricsum: arrays indexed by a variance-marked '
+                      + 'axis must have scalar elements, got ' + T.show(containerT),
+                    loc: (container && container.loc) || n.loc,
+                  });
+                  varianceContainerOK = false;
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'kind' || k === 'op'
+            || k === 'name' || k === 'ns') continue;
+        const v = n[k];
+        if (v && typeof v === 'object') {
+          if (Array.isArray(v)) v.forEach(checkVarianceContainers);
+          else checkVarianceContainers(v);
+        }
+      }
+    }
+    checkVarianceContainers(bodyIR);
+    if (!varianceContainerOK) return T.failed('metricsum tensor not array-of-scalars');
+
+    // (c) The body must produce scalar values for all combinations of
+    // axis indices. `_inferAxisAggregateShape` already called inferExpr
+    // on bodyIR, so its meta.type is set. If it resolved to non-scalar
+    // (record, array, measure, tuple, …), emit a diagnostic. Deferred /
+    // any / failed are silently passed through (already-failed cases
+    // suppressed for cascade hygiene).
+    const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
+    if (bodyT && bodyT.kind !== 'failed') {
+      const bodyDeferred = (bodyT.kind === 'deferred'
+        || bodyT.kind === 'any' || bodyT.kind === 'var');
+      if (!bodyDeferred && bodyT.kind !== 'scalar') {
+        diagnostics.push({
+          severity: 'error',
+          message: 'metricsum: body must produce a scalar value, got ' + T.show(bodyT),
+          loc: bodyIR.loc,
+        });
+        return T.failed('metricsum non-scalar body');
+      }
+    }
+
     const outShape = shape.axisNames.map((n) =>
       n in shape.lengths ? shape.lengths[n] : '%dynamic');
     if (shape.axisNames.length === 0) return shape.elemT;
