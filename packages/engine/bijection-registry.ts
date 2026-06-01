@@ -28,12 +28,19 @@
 //     §22's "matMvNormal is a thin shortcut over the canonical
 //     decomposition" claim concretely.
 //
+// Phase 5.1 Session 2 also lands:
+//   - The `affine` entry's density side — atom-batched inverse
+//     (forward-substitute against lower-triangular L; elementwise for
+//     diag-stored L) and logDetJ (-sum(log|diag(L)|), constant in y
+//     for affine maps).
+//
 // Phase 5.1 follow-ups (later sessions):
-//   - `affine` density-side: atom-batched inverse (forward-substitution
-//     against L) + logDetJ (-sum(log|diag(L)|)).
 //   - `matPushfwd` atom-aware fast path that pattern-matches
 //     `pushfwd(<bijection-typed-binding>, iid(scalar, D))` and consults
 //     the registry directly (no separate matMvNormal needed).
+//   - `walkPushfwd` vector-base extension that consumes a D-vector
+//     atom-batched and dispatches to the registry's
+//     `atomBatchedInverse` + `logDetJ`.
 //   - Surface lowering at lift time: `MvNormal(mu, Sigma)` →
 //     `pushfwd(<affine-binding>, iid(Normal(0,1), D))`. Once landed, the
 //     joint / nested-broadcast composite-body detectors can accept
@@ -142,9 +149,11 @@ function registeredNames(): string[] {
 //     (mul, atom-batched); the diag-stored path takes the existing
 //     `valueOps.mulN` fast lane (matMvNormal's null-fallthrough
 //     pre-check).
-//   - `b`: rank-1 vector (shape `[D]`). Atom-independent in Session 1
-//     — per-atom `b` arrives with the matPushfwd vector-base extension
-//     (Phase 5.1 Session 2+).
+//   - `b`: rank-1 vector (shape `[D]`). Atom-independent through
+//     Sessions 1+2 — per-atom `b` arrives with the matPushfwd
+//     vector-base extension (Phase 5.1 Session 3+) so per-cell affine
+//     pushforwards over outer-batch axes can land without changing the
+//     registry contract.
 //
 // Sample-side atom-batched contract:
 //   Input  z: shape `[N, D]` (post-iid stack of standard scalar draws).
@@ -180,13 +189,143 @@ function affineAtomBatchedForward(z: any, params: any, N: number): any {
   return ops.dispatch('add', [b, Lz], { atomN: N });
 }
 
+// ---------------------------------------------------------------------
+// Affine density side — y → z = L⁻¹·(y - b)
+// ---------------------------------------------------------------------
+//
+// Density-side contract symmetric to the forward map:
+//   - `atomBatchedInverse(y, {L, b}, N)` returns atom-batched
+//     z = L⁻¹·(y - b). For Cholesky-positive lower-triangular L (the
+//     MvNormal case) we forward-substitute against L per atom — O(N·D²)
+//     and exact. Diag-stored L collapses to elementwise (y - b) / L.
+//   - `logDetJ({L}, N)` returns log|det J_{f⁻¹}(y)| = -log|det(L)| =
+//     -sum(log|diag(L)|). For affine maps the determinant doesn't
+//     depend on `y`, so the contract returns a scalar (the registry
+//     entry's return type is `number | Float64Array` — a scalar means
+//     the same value for every atom).
+//
+// Both feed into walkPushfwd's vector-base extension (Phase 5.1
+// Session 3+) and into matPushfwd's vector-base extension; both are
+// already callable standalone so user code that constructs affine
+// pushforwards through the registry can score against them today.
+
+/**
+ * Density-side affine inverse: z[n, :] = L⁻¹ · (y[n, :] - b).
+ *
+ * For dense lower-triangular L, solves L·z = (y - b) per atom by
+ * forward-substitution. For `valueLib.isDiagStored` L, the inverse is
+ * the elementwise reciprocal — `z = (y - b) / diag(L)`.
+ *
+ * Returns a fresh `[N, D]` Float64Array Value.
+ */
+function affineAtomBatchedInverse(y: any, params: any, N: number): any {
+  const valueLib = require('./value.ts');
+  const L = params.L;
+  const b = params.b;
+  if (!L || !b) {
+    throw new Error('bijection.affine: params must include L and b');
+  }
+  if (!y || !y.shape || y.shape.length !== 2 || y.shape[0] !== N) {
+    throw new Error('bijection.affine: inverse expects y of shape [N, D]; '
+      + 'got ' + JSON.stringify(y && y.shape));
+  }
+  const D = y.shape[1];
+  const yData = y.data;
+  const bData = b.data;
+  if (b.shape.length !== 1 || b.shape[0] !== D) {
+    throw new Error('bijection.affine: b shape [' + (b.shape && b.shape.join(','))
+      + '] mismatched against y\'s D=' + D);
+  }
+  const out = new Float64Array(N * D);
+  const diag = valueLib.isDiagStored && valueLib.isDiagStored(L);
+  if (diag) {
+    // L diag-stored: z[n, i] = (y[n, i] - b[i]) / L[i].
+    if (L.data.length !== D) {
+      throw new Error('bijection.affine: diag-stored L of length '
+        + L.data.length + ' mismatched against D=' + D);
+    }
+    for (let n = 0; n < N; n++) {
+      const baseN = n * D;
+      for (let i = 0; i < D; i++) {
+        const Lii = L.data[i];
+        if (!(Lii !== 0)) {
+          throw new Error('bijection.affine: diag L has zero entry at index '
+            + i + ' — inverse undefined');
+        }
+        out[baseN + i] = (yData[baseN + i] - bData[i]) / Lii;
+      }
+    }
+    return { shape: [N, D], data: out };
+  }
+  // Dense lower-triangular L: forward-substitute per atom.
+  // L·z = (y - b) ⇒ z[i] = ((y[i] - b[i]) - sum_{j<i} L[i,j]·z[j]) / L[i,i].
+  if (L.shape.length !== 2 || L.shape[0] !== D || L.shape[1] !== D) {
+    throw new Error('bijection.affine: dense L shape ['
+      + (L.shape && L.shape.join(',')) + '] mismatched against D=' + D);
+  }
+  const Ld = L.data;
+  for (let n = 0; n < N; n++) {
+    const baseN = n * D;
+    for (let i = 0; i < D; i++) {
+      let acc = yData[baseN + i] - bData[i];
+      for (let j = 0; j < i; j++) acc -= Ld[i * D + j] * out[baseN + j];
+      const Lii = Ld[i * D + i];
+      if (!(Lii !== 0)) {
+        throw new Error('bijection.affine: dense L has zero diagonal at index '
+          + i + ' — inverse undefined');
+      }
+      out[baseN + i] = acc / Lii;
+    }
+  }
+  return { shape: [N, D], data: out };
+}
+
+/**
+ * Density-side affine log|det J_{f⁻¹}(y)| = -log|det(L)| =
+ * -sum(log|diag(L)|). Independent of `y` — returned as a scalar.
+ *
+ * `y` is accepted for signature symmetry with non-affine bijections;
+ * it's unused (the Jacobian of an affine map is the constant L).
+ */
+function affineLogDetJ(_y: any, params: any, _N: number): number {
+  const valueLib = require('./value.ts');
+  const L = params.L;
+  if (!L) {
+    throw new Error('bijection.affine: logDetJ requires params.L');
+  }
+  let s = 0;
+  if (valueLib.isDiagStored && valueLib.isDiagStored(L)) {
+    for (let i = 0; i < L.data.length; i++) {
+      const v = L.data[i];
+      if (!(v !== 0)) {
+        throw new Error('bijection.affine: diag L has zero entry at index '
+          + i + ' — logDetJ undefined');
+      }
+      s += Math.log(Math.abs(v));
+    }
+  } else {
+    if (L.shape.length !== 2 || L.shape[0] !== L.shape[1]) {
+      throw new Error('bijection.affine: dense L must be square; got '
+        + JSON.stringify(L.shape));
+    }
+    const D = L.shape[0];
+    for (let i = 0; i < D; i++) {
+      const v = L.data[i * D + i];
+      if (!(v !== 0)) {
+        throw new Error('bijection.affine: dense L has zero diagonal at index '
+          + i + ' — logDetJ undefined');
+      }
+      s += Math.log(Math.abs(v));
+    }
+  }
+  return -s;
+}
+
 registerBijection({
   name: 'affine',
   atomBatchedForward: affineAtomBatchedForward,
-  // Density side: atomBatchedInverse + logDetJ land in Phase 5.1
-  // Session 2+ alongside the matPushfwd vector-base extension. Until
-  // then, MvNormal density evaluation continues to route through the
-  // dedicated walkMvNormal closed-form path.
+  atomBatchedInverse: affineAtomBatchedInverse,
+  logDetJ: affineLogDetJ,
   shapeContract: { inShape: '[D]', outShape: '[D]' },
 });
 
@@ -195,7 +334,9 @@ module.exports = {
   getBijection,
   hasBijection,
   registeredNames,
-  // Direct handle so callers (matMvNormal today; matPushfwd tomorrow)
+  // Direct handles so callers (matMvNormal today; matPushfwd tomorrow)
   // that know they want the affine entry can skip the lookup.
   affineAtomBatchedForward,
+  affineAtomBatchedInverse,
+  affineLogDetJ,
 };
