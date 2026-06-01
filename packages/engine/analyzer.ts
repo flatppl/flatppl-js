@@ -450,6 +450,171 @@ function validateSpecialOperation(valueNode: any) {
       break;
     }
 
+    case 'metricsum': {
+      // metricsum(metric, output_axes, expr) — spec §04 §sec:metricsum.
+      // Three distinguished positional inputs, no kwargs. The surface
+      // shorthand `metric: result[output_indices] := expr` desugars to
+      // this form in the parser, so most well-formed metricsums arrive
+      // here with the canonical shape; user-written direct calls land
+      // here too and get the same checks.
+      if (args.length !== 3) {
+        diags.push({
+          severity: 'error',
+          message: `metricsum() takes exactly three arguments (metric, output_axes, expr)`,
+          loc: valueNode.loc,
+        });
+        break;
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({
+            severity: 'error',
+            message: `metricsum() takes positional arguments only`,
+            loc: arg.loc,
+          });
+        }
+      }
+      // Second arg: array literal of variance-marked AxisRefs (or empty).
+      // The empty case `[]` reduces to a scalar (same semantics as
+      // aggregate's empty case); no metric raise is needed because there
+      // are no output axes to raise to upper canonical storage.
+      const oaArg = args[1];
+      const declared: { name: string; variance?: 'upper' | 'lower' }[] = [];
+      if (oaArg.type !== 'ArrayLiteral') {
+        diags.push({
+          severity: 'error',
+          message: `metricsum()'s second argument must be an array literal `
+            + `of variance-marked axis names (e.g. [.mu^, .nu_])`,
+          loc: oaArg.loc,
+        });
+      } else {
+        const seen = new Set<string>();
+        for (const el of oaArg.elements) {
+          if (el.type !== 'AxisRef') {
+            diags.push({
+              severity: 'error',
+              message: `metricsum() output_axes entries must be axis names (.name^ or .name_)`,
+              loc: el.loc,
+            });
+            continue;
+          }
+          if (seen.has(el.name)) {
+            diags.push({
+              severity: 'error',
+              message: `metricsum() output_axes contains duplicate axis '.${el.name}'`,
+              loc: el.loc,
+            });
+          }
+          seen.add(el.name);
+          declared.push({ name: el.name, variance: el.variance });
+        }
+      }
+      // Body axis-name usage map: name → list of {variance, loc} entries
+      // for every AxisRef occurrence in expr (under nested aggregates /
+      // metricsums we'd cross scopes; collectAxisRefsWithVariance stops
+      // descent at nested calls of either kind to mirror typeinfer's
+      // scope rule).
+      const exprArg = args[2];
+      const bodyOccurrences = exprArg
+        ? collectAxisRefsWithVariance(exprArg)
+        : new Map<string, { variance?: string; loc: any }[]>();
+
+      // Static check #1 (spec §sec:metricsum "Static checks"):
+      // **bare neutral aggregate axes (`.i` without a variance marker) are
+      // not allowed inside `metricsum`**. Each body occurrence must carry
+      // a variance marker. Same goes for output axes (which are also
+      // checked in the inner loop below, but doing it here too gives a
+      // sharper "in expr" diagnostic).
+      for (const [name, occs] of bodyOccurrences) {
+        for (const occ of occs) {
+          if (!occ.variance) {
+            diags.push({
+              severity: 'error',
+              message: `metricsum(): bare-neutral axis '.${name}' is not allowed `
+                + `inside metricsum() — use '.${name}^' (upper) or '.${name}_' (lower)`,
+              loc: occ.loc,
+            });
+          }
+        }
+      }
+      // Output axis must carry a variance marker — the shorthand parse
+      // always produces marked axes, but a direct metricsum() call could
+      // pass bare-neutral axes through.
+      for (const d of declared) {
+        if (!d.variance) {
+          diags.push({
+            severity: 'error',
+            message: `metricsum(): output axis '.${d.name}' is missing a variance `
+              + `marker — use '.${d.name}^' (upper) or '.${d.name}_' (lower)`,
+            loc: oaArg.loc,
+          });
+        }
+      }
+
+      // Static check #2 (spec §sec:metricsum "Static checks"):
+      // **every output index must occur in `expr` with the same variance
+      // and may not also be contracted** — i.e. it must appear in the body
+      // with the same variance, and the body must use it only as that
+      // variance (no second occurrence under the opposite marker).
+      for (const d of declared) {
+        if (!d.variance) continue;  // already diagnosed above
+        const occs = bodyOccurrences.get(d.name);
+        if (!occs || occs.length === 0) {
+          diags.push({
+            severity: 'error',
+            message: `metricsum(): output axis '.${d.name}${d.variance === 'upper' ? '^' : '_'}'`
+              + ` does not appear in expr`,
+            loc: oaArg.loc,
+          });
+          continue;
+        }
+        // Every body occurrence of an output-axis must match the output
+        // variance — otherwise the user has implicitly asked to contract
+        // an output index, which spec forbids.
+        for (const occ of occs) {
+          if (occ.variance && occ.variance !== d.variance) {
+            diags.push({
+              severity: 'error',
+              message: `metricsum(): output axis '.${d.name}${d.variance === 'upper' ? '^' : '_'}'`
+                + ` also appears in expr with opposite variance — output indices `
+                + `may not also be contracted`,
+              loc: occ.loc,
+            });
+          }
+        }
+      }
+
+      // Static check #3 (spec §sec:metricsum "Static checks"):
+      // **every repeated non-output index in `expr` must occur exactly
+      // twice — once upper and once lower**. Walk body occurrences,
+      // skipping any names that ARE output indices (they're checked above);
+      // for each non-output name, count upper / lower occurrences and
+      // require exactly one of each.
+      const outNames = new Set(declared.map(d => d.name));
+      for (const [name, occs] of bodyOccurrences) {
+        if (outNames.has(name)) continue;
+        let uppers = 0, lowers = 0;
+        for (const occ of occs) {
+          if (occ.variance === 'upper') uppers++;
+          else if (occ.variance === 'lower') lowers++;
+        }
+        if (uppers !== 1 || lowers !== 1) {
+          // Pick the first occurrence of this name for the diagnostic
+          // location — pointing at any one occurrence is enough to find
+          // the offending axis in the source.
+          const loc = occs[0] && occs[0].loc;
+          diags.push({
+            severity: 'error',
+            message: `metricsum(): contracted axis '.${name}' must appear exactly `
+              + `twice in expr — once upper ('.${name}^') and once lower ('.${name}_'); `
+              + `got ${uppers} upper, ${lowers} lower`,
+            loc: loc || valueNode.loc,
+          });
+        }
+      }
+      break;
+    }
+
     case 'reduce': {
       // reduce(f, xs) — two positional args (spec §07).
       if (args.length !== 2) {
@@ -1513,14 +1678,17 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
         }
         return;
       case 'AxisRef':
-        // Per spec §05 Axis names: an axis label `.name` is legal only
-        // inside an enclosing aggregate(...) — as an entry of output_axes,
-        // as an `[...]` index in the body, or as a binder on the LHS of
-        // `:=` (which the parser desugars to `aggregate(...)`).
-        if (scope !== 'aggregate') {
+        // Per spec §05 Axis names: an axis label `.name` (or its
+        // variance-marked form `.name^` / `.name_`) is legal only inside
+        // an enclosing `aggregate(...)` or `metricsum(...)` — as an entry
+        // of output_axes, as an `[...]` index in the body, or as a binder
+        // on the LHS of `:=` (which the parser desugars to `aggregate(...)`
+        // or `metricsum(...)`).
+        if (scope !== 'aggregate' && scope !== 'metricsum') {
           diagnostics.push({
             severity: 'error',
-            message: `Axis name '.${node.name}' may only appear inside aggregate(...)`,
+            message: `Axis name '.${node.name}' may only appear inside `
+              + `aggregate(...) or metricsum(...)`,
             loc: node.loc,
           });
         }
@@ -1531,6 +1699,7 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
           if (node.callee.name === 'fn') inner = 'fn';
           else if (node.callee.name === 'functionof' || node.callee.name === 'kernelof') inner = 'reify';
           else if (node.callee.name === 'aggregate') inner = 'aggregate';
+          else if (node.callee.name === 'metricsum') inner = 'metricsum';
         }
         walk(node.callee, scope);
         for (const a of node.args) walk(a, inner);
@@ -1582,6 +1751,41 @@ function collectAxisRefs(node: any): Set<string> {
   }
   walk(node);
   return names;
+}
+
+/**
+ * Walk an AST collecting every axis-ref occurrence with its variance
+ * marker and location, grouped by axis name. Used by
+ * `validateSpecialOperation` for `metricsum` to enforce the
+ * paired-upper/lower-twice rule and the same-variance / not-contracted
+ * rule (spec §04 §sec:metricsum "Static checks"). We stop descending
+ * at nested `aggregate(...)` / `metricsum(...)` calls because those
+ * introduce a fresh axis-name scope per spec §05.
+ */
+function collectAxisRefsWithVariance(node: any): Map<string, { variance?: string; loc: any }[]> {
+  const m = new Map<string, { variance?: string; loc: any }[]>();
+  function walk(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const c of n) walk(c); return; }
+    // Stop descending into nested aggregate / metricsum — their axes
+    // live in a separate lexical scope.
+    if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+        && (n.callee.name === 'aggregate' || n.callee.name === 'metricsum')) {
+      return;
+    }
+    if (n.type === 'AxisRef') {
+      const occs = m.get(n.name);
+      const entry = { variance: n.variance, loc: n.loc };
+      if (occs) occs.push(entry); else m.set(n.name, [entry]);
+      return;
+    }
+    for (const k of Object.keys(n)) {
+      if (k === 'loc') continue;
+      walk(n[k]);
+    }
+  }
+  walk(node);
+  return m;
 }
 
 /**

@@ -395,6 +395,32 @@ function liftInlineSubexpressions(bindings: any) {
     };
   }
 
+  // Metricsum-lift counter state + helpers. Declared at the top of the
+  // function scope so the binding loop's first call into inlineUser
+  // Call → inlineMetricsumLift → freshGDownName doesn't hit a TDZ
+  // violation on `gDownCounter`. (Function declarations hoist; `let`
+  // bindings do not — they enter scope at their textual position.)
+  let gDownCounter = 0;
+  function freshGDownName() {
+    let n: string;
+    do { n = '__g_down_' + (gDownCounter++); } while (out.has(n));
+    return n;
+  }
+  let lowerInternalAxisCounter = 0;
+  function freshLowerInternalAxisName() {
+    return '__ms_lo_' + (lowerInternalAxisCounter++);
+  }
+  let upperOutputAxisCounter = 0;
+  function freshUpperOutputAxisName() {
+    return '__ms_up_' + (upperOutputAxisCounter++);
+  }
+  function makeAxisRef(name: string, loc: any) {
+    // Bare AxisRef — variance marker stripped. AST shape mirrors the
+    // ast.AxisRef ctor (variance is omitted when undefined, so we
+    // never emit `variance: undefined` keys).
+    return { type: 'AxisRef', name, loc: loc || null };
+  }
+
   // Deep-clone each binding's RHS before walking so the lift's
   // mutations stay local; the caller's bindings map is untouched.
   // We lift TWO ASTs per binding when present:
@@ -707,6 +733,19 @@ function liftInlineSubexpressions(bindings: any) {
       // ArrayLiteral bindings). Non-resolvable cases fall through to
       // the AST-preserved matMvNormal path.
       astArg = inlineMvNormalLift(astArg);
+      // Metric-aware Einstein summation (spec §04 §sec:metricsum). The
+      // surface shorthand `metric: result[output_indices] := expr`
+      // desugars (in the parser) to `metricsum(metric, [output_axes], expr)`
+      // with variance-marked axes (`.name^` / `.name_`). The lift pass
+      // rewrites every metricsum() call to a sum-`aggregate(...)` with
+      // metric / inv(metric) factor insertions per the spec lowering
+      // ("Each `_` axis name in `expr` becomes an `inv(metric)`
+      // contraction; each `_` output axis becomes a `metric` contraction
+      // after the sum, raising the result to all-upper canonical
+      // storage"). After this pass the IR contains no `metricsum`
+      // nodes — only the aggregate the rest of the engine already
+      // handles.
+      astArg = inlineMetricsumLift(astArg);
       astArg = inlineFilterLift(astArg);
       astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
@@ -986,6 +1025,229 @@ function liftInlineSubexpressions(bindings: any) {
     astArg.args = [
       makeIdent(bijName, astArg.loc),
       makeIdent(iidName, astArg.loc),
+    ];
+    if (astArg.kwargs) delete astArg.kwargs;
+    return astArg;
+  }
+
+  /**
+   * Rewrite `metricsum(metric, [output_axes_with_variance], expr)` to
+   * `aggregate(sum, [output_axes_no_variance], wrapped_expr)` per spec
+   * §04 §sec:metricsum lowering rule. Hoists a single synthetic
+   * `__g_down_N = inv(<metric>)` binding when the body contains any
+   * lower-variance axis occurrence. Mutates the call in place so the
+   * caller's binding slot now references the aggregate.
+   *
+   * Rewrite recipe (spec §sec:metricsum "Lowering to `aggregate`"):
+   *   - For each lower-variance occurrence `.X_` of a tensor access in
+   *     `expr`, replace it with a fresh internal axis `.X__lo_N` (still
+   *     indexing the stored all-upper tensor) and append a factor
+   *     `__g_down[.X__lo_N, .X]` to the body. `.X` is the body's running
+   *     bare-name axis after variance strip; the factor contracts the
+   *     fresh internal index against it.
+   *   - For each lower-variance output axis `.X_`, rename it to a fresh
+   *     output upper axis `.X__up_N` and append a factor
+   *     `metric[.X, .X__up_N]` to the body — this raises the
+   *     lower-component result tensor to all-upper canonical storage
+   *     (spec: "the actual result returned is automatically raised to
+   *     all-upper canonical storage").
+   *   - Strip variance markers from every other axis occurrence (upper-
+   *     variance occurrences just drop the `^`).
+   *   - Reduce via `sum` (per spec equivalence: `metricsum(eye(n), ...)`
+   *     is equivalent to `aggregate(sum, ...)` with bare axes — and
+   *     non-eye metrics are handled exactly by the inserted factors).
+   *
+   * The body is rewritten via deep walk; nested `aggregate(...)` and
+   * `metricsum(...)` calls are skipped (their axes are in a separate
+   * lexical scope per spec §05). Fresh axis names use a `__` prefix that
+   * users can't write at the source level — the spec axis-name grammar
+   * forbids leading underscore — so collisions with user axes are
+   * structurally impossible.
+   */
+  function inlineMetricsumLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'metricsum') return astArg;
+    if (!astArg.args || astArg.args.length !== 3) return astArg;
+    const metricArg = astArg.args[0];
+    const axesArg   = astArg.args[1];
+    const bodyArg   = astArg.args[2];
+    // Defensive shape checks (analyzer surfaces these as user-facing
+    // diagnostics; here we just guard the rewrite from non-canonical
+    // shapes — fall through unchanged on mismatch).
+    if (!metricArg) return astArg;
+    if (!axesArg || axesArg.type !== 'ArrayLiteral') return astArg;
+    if (!bodyArg) return astArg;
+    const outputAxes = axesArg.elements || [];
+
+    // The metric arg flows into the `inv(metric)` hoist (used for every
+    // lower-variance body access) AND into the output-raise factor
+    // (`metric[.X, .X__up_N]`). For both, we need a bare Identifier ref
+    // — `inv(...)` and `get(...)` accept any value expression but the
+    // lift's downstream classifiers are simplest when the args are
+    // Identifiers pointing at named bindings. Hoist any non-Identifier
+    // metric expression to a synthetic anon binding so the rewrite has
+    // a single, stable name to reference everywhere.
+    let metricRef: any;
+    if (metricArg.type === 'Identifier') {
+      metricRef = metricArg;
+    } else {
+      const mName = freshName();
+      out.set(mName, makeSyntheticBinding(mName, metricArg));
+      metricRef = makeIdent(mName, metricArg.loc);
+    }
+
+    // Scan body for any lower-variance axis occurrence — that determines
+    // whether we need the synthetic `__g_down = inv(metric)` binding.
+    // Nested aggregate / metricsum calls have their own axis scope per
+    // spec §05; we stop descending at their boundary.
+    let needsInverseMetric = false;
+    function probeLower(n: any) {
+      if (!n || typeof n !== 'object' || needsInverseMetric) return;
+      if (Array.isArray(n)) { for (const c of n) probeLower(c); return; }
+      if (n.type === 'AxisRef' && n.variance === 'lower') {
+        needsInverseMetric = true;
+        return;
+      }
+      if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+          && (n.callee.name === 'aggregate' || n.callee.name === 'metricsum')) {
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc') continue;
+        probeLower(n[k]);
+      }
+    }
+    probeLower(bodyArg);
+
+    // Hoist `__g_down_N = inv(metric)` once when the body uses any
+    // lower-variance axis. Output-axis raise factors use `metric`
+    // directly (not its inverse), so they don't drive this hoist.
+    let gDownIdent: any = null;
+    if (needsInverseMetric) {
+      const gDownName = freshGDownName();
+      const invCall = {
+        type: 'CallExpr',
+        callee: makeIdent('inv', astArg.loc),
+        args: [makeIdent(metricRef.name, metricRef.loc)],
+        loc: astArg.loc,
+      };
+      out.set(gDownName, makeSyntheticBinding(gDownName, invCall));
+      gDownIdent = makeIdent(gDownName, astArg.loc);
+    }
+
+    // Deep-walk body cloning structure as we go (so the source AST stays
+    // untouched). Each lower-variance occurrence gets its own fresh
+    // internal axis name + an `__g_down[.internal, .X]` factor. Upper-
+    // variance occurrences just lose the variance marker. Nested
+    // aggregate / metricsum boundaries are passed through verbatim.
+    const bodyFactors: any[] = [];
+    function rewriteBody(n: any): any {
+      if (!n) return n;
+      if (Array.isArray(n)) return n.map(rewriteBody);
+      if (typeof n !== 'object') return n;
+      if (n.type === 'AxisRef') {
+        if (n.variance === 'lower') {
+          const internalName = freshLowerInternalAxisName();
+          const factor = {
+            type: 'IndexExpr',
+            object: makeIdent(gDownIdent!.name, n.loc),
+            indices: [
+              makeAxisRef(internalName, n.loc),
+              makeAxisRef(n.name, n.loc),
+            ],
+            loc: n.loc,
+            indexOp: 'get',
+          };
+          bodyFactors.push(factor);
+          return makeAxisRef(internalName, n.loc);
+        }
+        // Upper-variance or unmarked: strip marker (the unmarked case
+        // already surfaced as a static-error diagnostic; we pass it
+        // through bare for defence-in-depth).
+        return makeAxisRef(n.name, n.loc);
+      }
+      // Nested aggregate / metricsum: pass through without descending.
+      if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+          && (n.callee.name === 'aggregate' || n.callee.name === 'metricsum')) {
+        return n;
+      }
+      const rebuilt: any = {};
+      for (const k of Object.keys(n)) {
+        if (k === 'loc') { rebuilt[k] = n[k]; continue; }
+        rebuilt[k] = rewriteBody(n[k]);
+      }
+      return rebuilt;
+    }
+    const rewrittenBody = rewriteBody(bodyArg);
+
+    // Build the post-strip output-axes list and collect output-raise
+    // factors for each lower-variance output. Upper output axes drop
+    // their marker directly; lower output axes get renamed to a fresh
+    // upper axis (so the aggregate output is stored upper-canonical)
+    // and a `metric[.X, .X__up_N]` factor is multiplied into the body.
+    const newOutputAxes: any[] = [];
+    const raiseFactors: any[] = [];
+    for (const ax of outputAxes) {
+      if (!ax || ax.type !== 'AxisRef') {
+        newOutputAxes.push(ax);
+        continue;
+      }
+      if (ax.variance === 'lower') {
+        const upperName = freshUpperOutputAxisName();
+        newOutputAxes.push(makeAxisRef(upperName, ax.loc));
+        const factor = {
+          type: 'IndexExpr',
+          object: makeIdent(metricRef.name, ax.loc),
+          indices: [
+            makeAxisRef(ax.name, ax.loc),
+            makeAxisRef(upperName, ax.loc),
+          ],
+          loc: ax.loc,
+          indexOp: 'get',
+        };
+        raiseFactors.push(factor);
+      } else {
+        // Upper (or unmarked, already diagnosed): strip the marker.
+        newOutputAxes.push(makeAxisRef(ax.name, ax.loc));
+      }
+    }
+
+    // Build the final body: rewrittenBody * factor1 * factor2 * ...
+    // Multiplicatively folded via BinaryExpr nodes. The fold order
+    // doesn't matter for `mul` (associative-commutative on scalars,
+    // which the analyzer guarantees the body is via the "arrays of
+    // scalars" restriction).
+    let wrappedBody = rewrittenBody;
+    for (const f of bodyFactors) {
+      wrappedBody = {
+        type: 'BinaryExpr',
+        op: '*',
+        left: wrappedBody,
+        right: f,
+        loc: astArg.loc,
+      };
+    }
+    for (const f of raiseFactors) {
+      wrappedBody = {
+        type: 'BinaryExpr',
+        op: '*',
+        left: wrappedBody,
+        right: f,
+        loc: astArg.loc,
+      };
+    }
+
+    // Rewrite the metricsum call in place to `aggregate(sum, [stripped_axes], wrappedBody)`.
+    astArg.callee = makeIdent('aggregate', astArg.loc);
+    astArg.args = [
+      makeIdent('sum', astArg.loc),
+      {
+        type: 'ArrayLiteral',
+        elements: newOutputAxes,
+        loc: axesArg.loc,
+      },
+      wrappedBody,
     ];
     if (astArg.kwargs) delete astArg.kwargs;
     return astArg;

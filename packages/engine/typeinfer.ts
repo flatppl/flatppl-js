@@ -394,6 +394,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // (statically-resolvable when the indexed array's shape is
       // known).
       case 'aggregate': return write(inferAggregate(expr, scopes), expr);
+      // Metric-aware Einstein summation (spec §04 §sec:metricsum).
+      // Pre-lift type-shape: identical to aggregate (axis lengths come
+      // from the body's indexings; result shape = lengths-per-output-axis,
+      // element type = body element type, scalar for empty axis list).
+      // Variance markers on output axes are TYPE-IRRELEVANT here — the
+      // post-lift result tensor is stored in all-upper canonical layout,
+      // so its rank-N shape matches a plain `aggregate(sum, ...)` over
+      // the same axis lengths. The metricsum → aggregate lift pass
+      // strips variance markers; typeinfer just needs to surface the
+      // right shape for downstream consumers BEFORE lift runs.
+      case 'metricsum':  return write(inferMetricsum(expr, scopes), expr);
       // Density-evaluation ops (spec §06 / §07): the inferred type
       // comes from the static signature, BUT we additionally run the
       // type-mode consume/rest walker over (measure-IR, variate-type)
@@ -1217,6 +1228,82 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // list may be empty for full reduction to a scalar") returns the
     // body's scalar element type directly — rank-0 arrays aren't a
     // distinct type in FlatPIR.
+    if (axisNames.length === 0) return elemT;
+    return T.array(axisNames.length, outShape, elemT);
+  }
+
+  // Metricsum type inference (spec §04 §sec:metricsum). Pre-lift the IR
+  // shape is `metricsum(<metric>, [.axis^/_ ...], body)`. Shape-wise this
+  // is identical to `aggregate(sum, [.axis ...], body)` modulo the
+  // variance markers — the all-upper canonical storage rule (spec) means
+  // the rank-N result tensor has the same shape as the sum-aggregate
+  // contraction over the same axis lengths. We compute axis lengths
+  // exactly like aggregate, ignoring variance markers (which are
+  // consumed by the lift pass that rewrites to aggregate). The third
+  // arg is the body expression; the second is the array literal of
+  // variance-marked axis refs.
+  function inferMetricsum(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 3) return T.deferred();
+    const [_metricIR, axesIR, bodyIR] = args;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
+      return T.deferred();
+    }
+    const axisNames: string[] = [];
+    for (const a of axesIR.args || []) {
+      if (!a || a.kind !== 'axis') return T.deferred();
+      axisNames.push(a.name);
+    }
+    inferExpr(bodyIR, scopes);  // populate meta.type on sub-calls
+
+    // Reuse the same length-discovery walk as inferAggregate: find a
+    // get/get0 indexing whose container is array-typed and read the
+    // dim length at the axis-occupied position. Variance markers on
+    // body axis-refs don't affect length discovery — `A[.mu^]` and
+    // `A[.mu_]` both index into the array with axis name `mu`, and
+    // both legitimate occurrences pin the same length.
+    const lengths: Record<string, number | '%dynamic'> = {};
+    function walk(n: any) {
+      if (!n || typeof n !== 'object') return;
+      // Don't descend into a nested aggregate / metricsum — their axes
+      // are in a separate scope per spec §05.
+      if (n.kind === 'call' && (n.op === 'aggregate' || n.op === 'metricsum')) return;
+      if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
+        const innerArgs = n.args || [];
+        if (innerArgs.length >= 2) {
+          const container = innerArgs[0];
+          let containerT: any;
+          try { containerT = inferExpr(container, scopes); }
+          catch (_) { containerT = null; }
+          if (containerT && containerT.kind === 'array') {
+            const flat = _flattenArrayType(containerT);
+            const sels = innerArgs.slice(1);
+            for (let k = 0; k < sels.length; k++) {
+              const s = sels[k];
+              if (s && s.kind === 'axis' && !(s.name in lengths)) {
+                const dim = flat.shape[k];
+                lengths[s.name] = (typeof dim === 'number') ? dim : '%dynamic';
+              }
+            }
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'kind' || k === 'op'
+            || k === 'name' || k === 'ns') continue;
+        const v = n[k];
+        if (v && typeof v === 'object') {
+          if (Array.isArray(v)) v.forEach(walk);
+          else walk(v);
+        }
+      }
+    }
+    walk(bodyIR);
+
+    const outShape = axisNames.map((n) =>
+      n in lengths ? lengths[n] : '%dynamic');
+    const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
+    const elemT = (bodyT && (bodyT.kind === 'scalar')) ? bodyT : T.REAL;
     if (axisNames.length === 0) return elemT;
     return T.array(axisNames.length, outShape, elemT);
   }

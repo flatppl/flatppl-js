@@ -78,8 +78,18 @@ function Hole(loc: any) {
 // Distinguished from FieldAccess (which is `.name` AFTER a postfix-able
 // expression — those have a parent object). An AxisRef appears at the
 // start of a Primary; it carries no parent.
-function AxisRef(name: any, loc: any) {
-  return { type: 'AxisRef', name, loc };
+//
+// `variance` is optional and only meaningful inside `metricsum(...)`
+// (spec §04 §sec:metricsum, §05 Axis names + VarianceMarker grammar):
+// 'upper' for contravariant `.name^`, 'lower' for covariant `.name_`,
+// `undefined` for a bare-neutral axis (the default for `aggregate`).
+// The metricsum lift pass consumes the variance marker and rewrites
+// the axis to a bare axis, so post-lift `AxisRef` always has
+// `variance === undefined`.
+function AxisRef(name: any, loc: any, variance?: 'upper' | 'lower') {
+  const node: any = { type: 'AxisRef', name, loc };
+  if (variance) node.variance = variance;
+  return node;
 }
 
 function ArrayLiteral(elements: any, loc: any) {
