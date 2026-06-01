@@ -77,7 +77,15 @@ function _exprToSexpr(e: any, ind: string): string {
     case 'lit':   return _atomToSexpr(e.value);
     case 'hole':  return '_';
     case 'const': return String(e.name);
-    case 'axis':  return '(%axis ' + e.name + ')';
+    case 'axis': {
+      // Bare axis (no variance marker) → `(%axis <name>)`. Variance-
+      // marked axes inside `metricsum(...)` lower to per-variance heads
+      // per spec §11 (FlatPIR): `(%uaxis <name>)` for upper /
+      // contravariant, `(%laxis <name>)` for lower / covariant.
+      if (e.variance === 'upper') return '(%uaxis ' + e.name + ')';
+      if (e.variance === 'lower') return '(%laxis ' + e.name + ')';
+      return '(%axis ' + e.name + ')';
+    }
     case 'ref':   return '(%ref ' + e.ns + ' ' + e.name + ')';
     case 'call':  return _callToSexpr(e, ind);
     default:
@@ -219,6 +227,13 @@ function fromSexpr(text: any) {
       if (head.value === '%public')   return readPublicForm();
       if (head.value === '%ref')      return readRefForm();
       if (head.value === '%axis')     return readAxisForm();
+      // Variance-marked axes (spec §11): `(%uaxis <name>)` is the
+      // contravariant / upper-variance form; `(%laxis <name>)` is the
+      // covariant / lower. Both lower to the same `{kind:'axis'}` IR
+      // shape, with the `variance` field set, mirroring the AST
+      // representation.
+      if (head.value === '%uaxis')    return readUAxisForm();
+      if (head.value === '%laxis')    return readLAxisForm();
       if (head.value === '%kwarg')    return readKwargForm();
       if (head.value === '%field')    return readFieldForm();
       if (head.value === '%assign')   return readAssignForm();
@@ -333,6 +348,20 @@ function fromSexpr(text: any) {
     const name = eat();
     if (peek() && peek().type === ')') eat();
     return { kind: 'axis', name: name ? name.value : '?' };
+  }
+
+  function readUAxisForm(): any {
+    eat(); // %uaxis
+    const name = eat();
+    if (peek() && peek().type === ')') eat();
+    return { kind: 'axis', name: name ? name.value : '?', variance: 'upper' };
+  }
+
+  function readLAxisForm(): any {
+    eat(); // %laxis
+    const name = eat();
+    if (peek() && peek().type === ')') eat();
+    return { kind: 'axis', name: name ? name.value : '?', variance: 'lower' };
   }
 
   function readKwargForm(): any {

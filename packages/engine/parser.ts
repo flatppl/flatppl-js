@@ -578,12 +578,17 @@ function parse(tokens: any[], variant: any) {
     // notes: "A `.Name` token is `FieldAccess` when it follows a
     // `Postfix`-able expression, and `Axis` otherwise (at the start of
     // a `Primary`)."
+    //
+    // Variance markers (spec §05 Axis grammar, used only inside
+    // `metricsum(...)`): `.name^` ⇒ upper / contravariant,
+    // `.name_` ⇒ lower / covariant (the trailing-`_` rule is why
+    // `AxisName` itself can't end in `_`). The tokenizer emits the
+    // identifier `mu_` as a single IDENT and `^` as a separate CARET;
+    // we detect the variance marker via `parseAxisFromTokens` and rewrite
+    // the axis name accordingly. Axis-name validity (no leading `_`,
+    // no double trailing `_`) is enforced inline.
     if (at(T.DOT) && tokens[pos + 1] && tokens[pos + 1].type === T.IDENT) {
-      const dotTok = advance();
-      const nameTok = advance();
-      return AST.AxisRef(nameTok.value,
-        AST.loc(dotTok.loc.start.line, dotTok.loc.start.col,
-                nameTok.loc.end.line, nameTok.loc.end.col));
+      return parseAxisFromTokens();
     }
 
     // Parenthesized expression or tuple literal: (expr) | (expr, expr [, expr...])
@@ -776,10 +781,61 @@ function parse(tokens: any[], variant: any) {
     return parseExpr();
   }
 
+  // Parse `.name`, `.name^` (upper / contravariant), or `.name_` (lower /
+  // covariant) into an AxisRef. Spec §05 Axis grammar:
+  //   Axis ::= "." AxisName VarianceMarker?
+  //   AxisName ::= Letter | Letter (Letter | Digit | "_")* (Letter | Digit)
+  //   VarianceMarker ::= "^" | "_"
+  // The trailing `_` of `.mu_` is part of the IDENT token (since IDENT
+  // chars include `_`); we detect it post-tokenisation. The leading
+  // letter rule (no `_` start) and the trailing-`_` rule (variance
+  // marker, not part of the name) are enforced here. The caller must
+  // have already verified the next token is DOT followed by IDENT.
+  function parseAxisFromTokens() {
+    const dotTok = advance();   // .
+    const nameTok = advance();  // IDENT
+    let axisName: string = nameTok.value;
+    let variance: 'upper' | 'lower' | undefined;
+    // Lower-variance marker: trailing `_` on the IDENT. Per spec §05,
+    // AxisName can't end with `_`, so a single trailing underscore is
+    // unambiguously the variance marker. Two trailing `_`s (e.g.
+    // `.foo__`) would leave an axis name that still ends with `_` —
+    // a static error from the analyzer.
+    if (axisName.endsWith('_')) {
+      axisName = axisName.slice(0, -1);
+      variance = 'lower';
+    }
+    // Upper-variance marker: explicit `^` token after the IDENT. May not
+    // combine with a trailing `_` (already an error from spec — a name
+    // can't end with `_` AND carry an explicit `^`); we let the leading-
+    // underscore / empty-name checks below catch the malformed form.
+    if (at(T.CARET) && variance === undefined) {
+      advance();
+      variance = 'upper';
+    }
+    // Disallow axis names that start with `_` (spec §05 axis grammar:
+    // AxisName must start with Letter). Also disallow empty names — that
+    // happens if the user wrote a lone `._` or `._^`.
+    if (axisName.length === 0 || axisName.startsWith('_')) {
+      diagnostics.push({
+        severity: 'error',
+        message: `Invalid axis name '.${nameTok.value}' — axis names must start `
+          + `with a letter; trailing '_' is reserved as the lower-variance marker`,
+        loc: nameTok.loc,
+      });
+    }
+    return AST.AxisRef(axisName,
+      AST.loc(dotTok.loc.start.line, dotTok.loc.start.col,
+              nameTok.loc.end.line, nameTok.loc.end.col),
+      variance);
+  }
+
   // Look ahead past `Name [` for the AggregateBinding shape:
   //   IDENT LBRACKET (DOT IDENT (COMMA DOT IDENT)*)? RBRACKET COLON_EQ
   // The axis list may be empty (`s[] := body`) for full reduction to
-  // a scalar (spec §04 §sec:aggregate).
+  // a scalar (spec §04 §sec:aggregate). Axes inside the lookahead may
+  // optionally carry a CARET variance marker (`.name^`) — the trailing
+  // `_` of `.name_` is part of the IDENT token so it's transparent here.
   // Returns true only if that exact sequence matches; otherwise false
   // so the regular Binding/Decomposition path proceeds.
   function lookaheadIsAggregateBinding() {
@@ -794,6 +850,50 @@ function parse(tokens: any[], variant: any) {
       i++;
       if (!tokens[i] || tokens[i].type !== T.IDENT) return false;
       i++;
+      // Optional explicit upper-variance marker `^`.
+      if (tokens[i] && tokens[i].type === T.CARET) i++;
+      if (tokens[i] && tokens[i].type === T.COMMA) {
+        i++;
+        continue;
+      }
+      if (tokens[i] && tokens[i].type === T.RBRACKET) {
+        return tokens[i + 1] != null && tokens[i + 1].type === T.COLON_EQ;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  // Look ahead past `Name COLON Name [` for the MetricsumBinding shape
+  // (spec §05 Statements):
+  //   IDENT COLON IDENT LBRACKET (DOT IDENT (CARET)? (COMMA ...)*)? RBRACKET COLON_EQ
+  // The `Name : Name` prefix distinguishes a metricsum binding from an
+  // aggregate binding (where the LHS is a bare `Name`). The body of the
+  // bracket list and the COLON_EQ requirement are otherwise identical
+  // to AggregateBinding. Returns true only if the full sequence matches.
+  function lookaheadIsMetricsumBinding() {
+    // tokens[pos]: IDENT (the metric name)
+    // tokens[pos + 1]: COLON
+    if (!tokens[pos + 1] || tokens[pos + 1].type !== T.COLON) return false;
+    // tokens[pos + 2]: IDENT (the result-binding name)
+    if (!tokens[pos + 2] || tokens[pos + 2].type !== T.IDENT) return false;
+    // tokens[pos + 3]: LBRACKET
+    if (!tokens[pos + 3] || tokens[pos + 3].type !== T.LBRACKET) return false;
+    let i = pos + 4;
+    // Empty axis list `[ ] :=` is admissible — same as aggregate's
+    // empty-output-axes case (full reduction to scalar). Pragmatically
+    // empty metricsum is identical to empty sum-aggregate (no output
+    // axis needs raising), but we accept it for symmetry.
+    if (tokens[i] && tokens[i].type === T.RBRACKET) {
+      return tokens[i + 1] != null && tokens[i + 1].type === T.COLON_EQ;
+    }
+    while (i < tokens.length) {
+      if (!tokens[i] || tokens[i].type !== T.DOT) return false;
+      i++;
+      if (!tokens[i] || tokens[i].type !== T.IDENT) return false;
+      i++;
+      // Optional explicit upper-variance marker `^` for `.name^`.
+      if (tokens[i] && tokens[i].type === T.CARET) i++;
       if (tokens[i] && tokens[i].type === T.COMMA) {
         i++;
         continue;
@@ -817,11 +917,7 @@ function parse(tokens: any[], variant: any) {
     advance();                              // [
     const axes: any[] = [];
     while (at(T.DOT)) {
-      const dotTok = advance();
-      const axisNameTok = advance();
-      axes.push(AST.AxisRef(axisNameTok.value,
-        AST.loc(dotTok.loc.start.line, dotTok.loc.start.col,
-                axisNameTok.loc.end.line, axisNameTok.loc.end.col)));
+      axes.push(parseAxisFromTokens());
       if (at(T.COMMA)) advance();
     }
     expect(T.RBRACKET);
@@ -847,6 +943,50 @@ function parse(tokens: any[], variant: any) {
       stmtLoc);
   }
 
+  // Parse `MetricName : ResultName [ (.axis^/_ (, .axis^/_)*)? ] := Expression`.
+  // The lookahead (`lookaheadIsMetricsumBinding`) has confirmed the
+  // shape. Desugars at parse time to:
+  //   <result> = metricsum(<metric>, [ax1^/_, ax2^/_, ...], <body>)
+  // — leaving variance markers on the axes so the metricsum lift pass
+  // (engine-concepts §22-style rewrite + spec §sec:metricsum lowering
+  // to aggregate) can consume them. Spec §04 §sec:metricsum says the
+  // shorthand `metric: result[output_indices] := expr` lowers to
+  // `result = metricsum(metric, [output_indices], expr)`.
+  function parseMetricsumBinding() {
+    const metricTok = advance();            // IDENT (metric)
+    advance();                              // COLON
+    const resultTok = advance();            // IDENT (result)
+    advance();                              // LBRACKET
+    const axes: any[] = [];
+    while (at(T.DOT)) {
+      axes.push(parseAxisFromTokens());
+      if (at(T.COMMA)) advance();
+    }
+    expect(T.RBRACKET);
+    expect(T.COLON_EQ);
+    const body = parseExpr();
+    const stmtLoc = AST.loc(
+      metricTok.loc.start.line, metricTok.loc.start.col,
+      body.loc.end.line, body.loc.end.col);
+
+    // Build the canonical desugar:
+    //   <result> = metricsum(<metric>, [ax1, ax2, ...], <body>)
+    // The metric reference uses the original metricTok's location so a
+    // later "metric not found" diagnostic points at the source token.
+    const mCall = AST.CallExpr(
+      AST.Identifier('metricsum', stmtLoc),
+      [
+        AST.Identifier(metricTok.value, metricTok.loc),
+        AST.ArrayLiteral(axes, stmtLoc),
+        body,
+      ],
+      stmtLoc);
+    return AST.AssignStatement(
+      [AST.Identifier(resultTok.value, resultTok.loc)],
+      mCall,
+      stmtLoc);
+  }
+
   // --- Statement parsing ---
 
   function parseStatement() {
@@ -864,6 +1004,20 @@ function parse(tokens: any[], variant: any) {
       });
       skipToNewline();
       return AST.ErrorStatement(startTok.value, startTok.loc);
+    }
+
+    // MetricsumBinding (spec §05 + §04 §sec:metricsum):
+    //   Name ":" Name "[" (Axis ("," Axis)*)? "]" ":=" Expression
+    // Lowers at parse time to:
+    //   Name "=" metricsum(<metric>, [Axis, ...], Expression)
+    // — leaving variance markers (`.name^` / `.name_`) on the axes so
+    // the metricsum lift pass can consume them. The `Name : Name [` prefix
+    // distinguishes this from the AggregateBinding form (`Name [`).
+    // Check this BEFORE AggregateBinding because the metricsum shape
+    // begins with the same `Name` as a regular Binding; the colon is
+    // the disambiguator.
+    if (at(T.IDENT) && lookaheadIsMetricsumBinding()) {
+      return parseMetricsumBinding();
     }
 
     // AggregateBinding (spec §05 Axis names + §04 §sec:aggregate):

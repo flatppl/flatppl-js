@@ -235,13 +235,21 @@ function _lowerExpr(node: any, ctx: any): IRNode {
     case 'Hole':
       return { kind: 'hole', loc: node.loc };
 
-    case 'AxisRef':
-      // Axis label `.name` (spec §05) used by `aggregate`. Per FlatPIR
-      // §11 it lowers to `(%axis <name>)`. The analyzer enforces that
-      // axes only appear inside an enclosing aggregate(...); the IR
-      // shape carries the axis name through so the materialiser can
-      // bind it to the running iteration value.
-      return { kind: 'axis', name: node.name, loc: node.loc };
+    case 'AxisRef': {
+      // Axis label `.name` (spec §05) used by `aggregate` and
+      // `metricsum`. Per FlatPIR §11 the bare axis lowers to
+      // `(%axis <name>)`; variance-marked axes (only legal inside
+      // `metricsum`, spec §04 §sec:metricsum) lower to
+      // `(%uaxis <name>)` (contravariant / upper) or
+      // `(%laxis <name>)` (covariant / lower). The analyzer enforces
+      // that axes only appear inside an enclosing aggregate / metricsum;
+      // the IR shape carries the axis name + variance so the metricsum
+      // lift pass (which rewrites to `aggregate(sum, ...)` with metric /
+      // inv(metric) factor insertions) can read the variance directly.
+      const ir: any = { kind: 'axis', name: node.name, loc: node.loc };
+      if (node.variance) ir.variance = node.variance;
+      return ir;
+    }
 
     case 'Placeholder':
       // Inside a reified scope, surface `_x_` references the param of the

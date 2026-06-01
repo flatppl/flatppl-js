@@ -62,6 +62,13 @@ const SPECIAL_OPERATIONS = new Set([
   // derivation kind in derivations.ts; materialiser dispatches via a
   // pattern table with a general nested-loop interpreter as fallback.
   'aggregate',
+  // Metric-aware Einstein summation (spec §04 §sec:metricsum): metric +
+  // variance-marked output axes + body expression. Surface shorthand
+  // `metric: result[output_indices] := expr` desugars to a metricsum
+  // call in the parser. The lift pass rewrites every metricsum() call
+  // to `aggregate(sum, ...)` with metric / inv(metric) factor
+  // insertions; nothing downstream of lift sees `metricsum` directly.
+  'metricsum',
   // Function composition / annotation
   'fchain', 'bijection',
   // Assertions

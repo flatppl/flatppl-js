@@ -6,7 +6,7 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 
 > **Status (updated 2026-06-01):** Reference implementation of FlatPPL
 > v0.1. All sources in TypeScript with `strict: true` (migration
-> complete 2026-05). **2951 engine tests pass**; the engine drives the
+> complete 2026-05). **2975 engine tests pass**; the engine drives the
 > VS Code visualizer and the web gallery end-to-end. The measure-
 > algebra core is feature-complete for the spec's Bayesian /
 > measure-theoretic vocabulary; multivariate distributions (MvNormal,
@@ -14,6 +14,20 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 > BinnedPoissonProcess) and the FlatPDL measure-eval primitives
 > (`builtin_logdensityof` / `builtin_sample` / the four transports)
 > all landed in May 2026.
+>
+> **`metricsum` (metric-aware Einstein summation, spec §04 §sec:metricsum)
+> landed 2026-06-01.** Surface shorthand `g: result[.μ^, .ρ_] := expr`
+> desugars (in the parser) to `metricsum(g, [...], expr)`; the lift
+> pass (`lift.inlineMetricsumLift`) rewrites every metricsum call to
+> `aggregate(sum, [stripped_axes], wrapped_body)` with inv(metric) +
+> metric factor insertions per the spec lowering rule. Variance markers
+> (`.name^` / `.name_`) flow through the AST, lower to FlatPIR's
+> `(%uaxis name)` / `(%laxis name)`, and are consumed by lift; no
+> downstream consumer sees a raw metricsum call. See
+> `test/fixtures/metricsum-tensor.flatppl` for the Minkowski-metric
+> tensor-algebra demo + `metricsum.test.ts` for the 24 conformance
+> tests (parse + static-checks + lift IR shape + numerical correctness
+> + PIR roundtrip).
 >
 > **Architectural arc in progress: Phase 5.1 §22 multivariate-as-
 > derived-measure reframe.** Sessions 1-5e (May-June 2026) landed
