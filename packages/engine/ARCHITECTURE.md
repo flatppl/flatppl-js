@@ -644,6 +644,18 @@ ctx)` dispatches to per-kind handlers in `KIND_HANDLERS` (~27 entries:
 the 13 measure-algebra derivation kinds + 8 multivariate distribution
 kinds + the FlatPDL primitives surface — see engine-concepts §13.6).
 
+**Bijection-binding contract extension** (Phase 5.1 Session 5c =
+`188ffb5`). `binding.bijection` gains an optional `registryName:
+string` field forwarded through `derivations.resolveBijectionMeta` to
+`ir.bijection.registryName`. Producers of closed-form bijections
+(Session 5d+'s lift-time MvNormal lowering) mark a binding with the
+registry-entry key ('affine' etc.); consumers (matPushfwd /
+walkPushfwd vector-base — Session 5d+) read the marker to dispatch
+through the registry's atom-batched fast paths. **Invariant:
+registryName is PURELY ADDITIVE.** `fName` / `fInvName` / `logVolume`
+MUST remain present and valid when registryName is set; the registry
+path is an OPTIMISATION over the AST path, never a replacement.
+
 **Bijection registry** (`bijection-registry.ts`, ~330 lines, Phase 5.1
 Sessions 1+2) — engine-concepts §22 lands the canonical decomposition
 view of multivariate distributions: every practical multivariate is
