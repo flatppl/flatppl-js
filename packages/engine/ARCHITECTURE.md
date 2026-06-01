@@ -4,19 +4,31 @@ Deep-dive companion to the root [`AGENTS.md`](../../AGENTS.md). This document co
 the engine package only. For the language semantics it implements, read the FlatPPL
 language spec in the **flatppl-design** repository (resolution order in `AGENTS.md`).
 
-> **Status:** Reference implementation of FlatPPL v0.1. All sources in
-> TypeScript with `strict: true` (migration complete 2026-05). 2187 engine
-> tests pass; the engine drives the VS Code visualizer and the web gallery
-> end-to-end. The measure-algebra core is feature-complete for the spec's
-> Bayesian / measure-theoretic vocabulary; multivariate distributions
-> (MvNormal, Dirichlet, Multinomial, Wishart, InverseWishart, LKJ /
-> LKJCholesky, BinnedPoissonProcess) and the FlatPDL measure-eval
-> primitives (`builtin_logdensityof` / `builtin_sample` / the four
-> transports) all landed in May 2026. Outstanding spec features are
-> tracked in `flatppl-dev/TODO-flatppl-js.md` — primarily the standard
-> modules (particle-physics, GLM family, ext-linear-algebra,
-> special-functions), `PoissonProcess`, multi-file `load_module`
-> end-to-end wiring, and finer typeinfer coverage.
+> **Status (updated 2026-06-01):** Reference implementation of FlatPPL
+> v0.1. All sources in TypeScript with `strict: true` (migration
+> complete 2026-05). **2951 engine tests pass**; the engine drives the
+> VS Code visualizer and the web gallery end-to-end. The measure-
+> algebra core is feature-complete for the spec's Bayesian /
+> measure-theoretic vocabulary; multivariate distributions (MvNormal,
+> Dirichlet, Multinomial, Wishart, InverseWishart, LKJ / LKJCholesky,
+> BinnedPoissonProcess) and the FlatPDL measure-eval primitives
+> (`builtin_logdensityof` / `builtin_sample` / the four transports)
+> all landed in May 2026.
+>
+> **Architectural arc in progress: Phase 5.1 §22 multivariate-as-
+> derived-measure reframe.** Sessions 1-5e (May-June 2026) landed
+> end-to-end registry-driven `pushfwd(affine, iid(Normal, D))` for
+> literal-mu / literal-cov `MvNormal`. matMvNormal stays as safety
+> fallback. Read `flatppl-dev/flatppl-engine-concepts.md` §22 + the
+> "Session resume point" in `flatppl-dev/TODO-flatppl-js.md` to pick
+> up. Remaining: Sessions 5f (widen lift gate + atom-dep params), 5g
+> (retire matMvNormal + VECTOR_OUTPUT_DISTRIBUTIONS gates), 5h+
+> (additional bijection registry entries for MvLogNormal / Dirichlet /
+> Wishart / etc.). Outstanding spec features are tracked in
+> `flatppl-dev/TODO-flatppl-js.md` — primarily the standard modules
+> (particle-physics, GLM family, ext-linear-algebra, special-
+> functions), `PoissonProcess`, multi-file `load_module` end-to-end
+> wiring, and finer typeinfer coverage.
 
 ## Pipeline overview
 
