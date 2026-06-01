@@ -770,6 +770,7 @@ const ARITH_OPS = {
   // the rank-2 × rank-1 atom-aware variant and the dot folds via
   // the elementwise + sum pair).
   quadform:       (A: any, x: any): any => {
+    valueLib.requireMatrix(valueLib.asValue(A), 'quadform');
     const Ax = valueOps.mul(valueLib.asValue(A), valueLib.asValue(x));
     // dot(x, Ax) = sum(x ⊙ Ax).
     const elem = valueOps.mulElem(valueLib.asValue(x), Ax);

@@ -127,6 +127,10 @@ function _asVectorOfLength(x: any, n: number, kernelName: string): Float64Array 
 // Value{shape:[n,n], data:...}.
 function _asMatrixOfSize(x: any, n: number, kernelName: string): any {
   const v = _toValue(x);
+  // Spec §03: a vec-of-vec is NOT a matrix. Density kernels with
+  // matrix variates require a true rank-2 array of scalars; reject
+  // the nested-vector form so the user is told to `rowstack(...)`.
+  valueLib.requireMatrix(v, `builtin_logdensityof(${kernelName}): variate`);
   if (v.shape.length === 2 && v.shape[0] === n && v.shape[1] === n) return v;
   if (v.shape.length === 1 && v.shape[0] === n * n) {
     return { shape: [n, n], data: v.data };
@@ -148,6 +152,9 @@ function _paramAsNumberArray(v: any, kernelName: string, paramName: string): num
 // rank-2 Value.
 function _paramAsMatrix(v: any, kernelName: string, paramName: string): any {
   const m = _toValue(v);
+  // Spec §03: a vec-of-vec is NOT a matrix. Multivariate kernel params
+  // (cov, scale, …) must be a true rank-2 array of scalars.
+  valueLib.requireMatrix(m, `builtin_logdensityof(${kernelName}): param '${paramName}'`);
   if (m.shape.length !== 2 || m.shape[0] !== m.shape[1]) {
     throw new Error(`builtin_logdensityof(${kernelName}): param '${paramName}' must be a square matrix, `
       + `got shape=${JSON.stringify(m.shape)}`);

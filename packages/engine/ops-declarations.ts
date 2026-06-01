@@ -448,6 +448,7 @@ ops.register({
 // product of the diagonal (O(n)).
 
 function _detLogical(A: any): any {
+  if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'det');
   if (valueLib.isDiagStored(A) && !A.im) {
     let p = 1; for (let i = 0; i < A.data.length; i++) p *= A.data[i];
     return valueLib.scalar(p);
@@ -502,6 +503,7 @@ ops.register({
 // =====================================================================
 
 function _logabsdetLogical(A: any): any {
+  if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'logabsdet');
   if (valueLib.isDiagStored(A) && !A.im) {
     let s = 0;
     for (let i = 0; i < A.data.length; i++) s += Math.log(Math.abs(A.data[i]));
@@ -555,6 +557,7 @@ ops.register({
 // diagonal (O(n)). Throws on singular matrices.
 
 function _invLogical(A: any): any {
+  if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'inv');
   if (valueLib.isDiagStored(A) && !A.im) {
     const d = new Float64Array(A.data.length);
     for (let i = 0; i < d.length; i++) {
@@ -670,6 +673,9 @@ function _msCheckSymmetricLogical(A: any): any {
   // regardless of input format (nested JS array, nested Float64Array,
   // diag-stored Value, dense Value).
   const v = valueLib.densify(valueLib.asValue(A));
+  // Spec §sec:metricsum: metric is a rank-2 array of scalars. Refuse a
+  // vector-of-vectors per §03 — `requireMatrix` emits the rowstack hint.
+  valueLib.requireMatrix(v, 'metricsum: metric');
   if (!Array.isArray(v.shape) || v.shape.length !== 2) {
     throw new Error('metricsum: metric must be a rank-2 matrix, got shape ['
       + (Array.isArray(v.shape) ? v.shape.join(',') : '?') + ']');
@@ -757,6 +763,7 @@ ops.register({
 // still lower-triangular). O(n). Throws if A is not PD.
 
 function _lowerCholeskyLogical(A: any): any {
+  if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'lower_cholesky');
   if (valueLib.isDiagStored(A) && !A.im) {
     const d = new Float64Array(A.data.length);
     for (let i = 0; i < d.length; i++) {
@@ -853,7 +860,10 @@ ops.register({
 // LKJCholesky conversions and Gram-matrix priors.
 
 function _rowGramLogical(A: any): any {
-  if (valueLib.isValue(A)) return valueOps.mul(A, valueLib.adjoint(A));
+  if (valueLib.isValue(A)) {
+    valueLib.requireMatrix(A, 'row_gram');
+    return valueOps.mul(A, valueLib.adjoint(A));
+  }
   // Nested-array path uses ARITH_OPS.transpose, which isn't migrated
   // to ops.ts yet. Lazy-require to avoid a module-load cycle.
   const samplerMod = require('./sampler.ts');
@@ -892,7 +902,10 @@ ops.register({
 });
 
 function _colGramLogical(A: any): any {
-  if (valueLib.isValue(A)) return valueOps.mul(valueLib.adjoint(A), A);
+  if (valueLib.isValue(A)) {
+    valueLib.requireMatrix(A, 'col_gram');
+    return valueOps.mul(valueLib.adjoint(A), A);
+  }
   const samplerMod = require('./sampler.ts');
   return linalg._matmul(samplerMod._internal.ARITH_OPS.transpose(A), A);
 }
@@ -978,6 +991,7 @@ ops.register({
 // or matrix (rank 2). Diagonal A: vector b → reciprocal × b (O(n)).
 // Otherwise: LU + back-substitution.
 function _linsolveLogical(A: any, b: any): any {
+  if (valueLib.isValue(A)) valueLib.requireMatrix(A, 'linsolve');
   if (valueLib.isDiagStored(A) && !A.im) {
     const d = A.data, m = d.length;
     const bv = valueLib.isValue(b) ? b : null;

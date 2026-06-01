@@ -179,7 +179,7 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
 
 test('5e: inline-literal mu / cov also trigger the lift gate', () => {
   const ctx = makeCtx(`
-X = MvNormal(mu = [1.0, 2.0], cov = [[2.0, 0.5], [0.5, 1.0]])
+X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))
 `);
   const names = Array.from(ctx.bindings.keys());
   const bijName = names.find((n: any) => /^__bij/.test(n));
@@ -205,7 +205,7 @@ test('5e: walkPushfwd registry density matches density-prims MvNormal closed for
   // pins the registry-walker density math directly via the
   // top-level density.logDensity entry point.
   const ctx = makeCtx(`
-X = MvNormal(mu = [1.0, 2.0], cov = [[2.0, 0.5], [0.5, 1.0]])
+X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))
 `);
   const expanded = orchestrator.expandMeasure(
     'X', { derivations: ctx.derivations, bindings: ctx.bindings });
