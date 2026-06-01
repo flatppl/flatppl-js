@@ -27,22 +27,38 @@ const {
   collectRefArrays,
   scalarMeasureN,
   measureFromReply,
+  measureFromValue,
   setBoundsForMat,
   resolveFnBody,
 } = shared;
+// Bijection-registry handle (Phase 5.1 Session 5d): when the bijection
+// binding carries `registryName` + `paramIRs`, matPushfwd short-
+// circuits the AST evaluateN path and calls the registry's atom-
+// batched forward directly — same hot path matMvNormal consumes.
+const bijRegistry = require('./bijection-registry.ts');
+const derivations = require('./derivations.ts');
 
 function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
   // pushfwd(f, M): the pushforward of M through function f. Per spec
-  // §06, samples are { f(x) : x ~ M }. We get M's samples via the
-  // recursive getMeasure, then run one batched evaluateN over f's
-  // body with refArrays binding f's param name to M's samples — same
-  // mass / logWeights / n_eff propagate through unchanged (the
-  // pushforward map preserves total mass; bijection or not).
+  // §06, samples are { f(x) : x ~ M }.
   //
-  // For density evaluation, density.walkPushfwd consults f's
-  // bijection annotation via opts.resolveBijection (set up by
-  // matLogdensityof / matBayesupdate when they encounter pushfwd in
-  // the expanded IR).
+  // Two paths:
+  //   (1) **Registry fast path (Phase 5.1 Session 5d).** When f is a
+  //       bijection binding carrying `registryName` + `paramIRs` AND
+  //       the base measure is vector-atom (M.value with outerRank===1,
+  //       i.e. an iid(scalar, D) shape), short-circuit through the
+  //       bijection-registry's atomBatchedForward. Same hot code path
+  //       matMvNormal consumes for the scalar-broadcast case — now
+  //       generalised across multivariate dists once their lowering
+  //       (Session 5e+) lands.
+  //   (2) **Scalar AST path (pre-§22 baseline).** Run one batched
+  //       evaluateN over f's body with refArrays binding f's param
+  //       name to M's samples. Mass / logWeights / n_eff propagate
+  //       through unchanged.
+  //
+  // For density evaluation, density.walkPushfwd's registry fast path
+  // (Session 5d commit 3) mirrors path (1); the legacy AST f_inv path
+  // mirrors path (2).
   const fBinding = ctx.bindings && ctx.bindings.get(d.fnRef);
   if (!fBinding) {
     return Promise.reject(new Error(`pushfwd: function binding '${d.fnRef}' not found`));
@@ -52,7 +68,97 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     return Promise.reject(new Error(`pushfwd: function binding '${d.fnRef}' has no callable body`
       + ` (type=${fBinding.type})`));
   }
+  // Resolve the bijection-binding's metadata once (registryName /
+  // paramIRs). resolveBijectionMeta also validates fInv / logVolume
+  // remain present per the additive invariant; failure returns null,
+  // and we fall through to the scalar path which still works for
+  // pre-§22 bindings (no registryName).
+  const bijMeta = (fBinding.bijection)
+    ? derivations.resolveBijectionMeta(fBinding.bijection, ctx.bindings)
+    : null;
   return ctx.getMeasure(d.from).then((M: any) => {
+    // Registry fast path. Activates only when ALL three conditions
+    // hold: (a) bijection-binding marks registryName, (b) paramIRs is
+    // attached (additive-invariant pair), (c) M is vector-atom
+    // (M.value.shape=[N,D] with outerRank===1 — the iid-of-scalar
+    // shape). Otherwise fall through to the scalar AST path; this
+    // matches the §22.5 doctrine that the registry path is an
+    // OPTIMISATION, not a REPLACEMENT.
+    if (bijMeta && bijMeta.registryName
+        && M.value && M.value.outerRank === 1
+        && Array.isArray(M.value.shape) && M.value.shape.length === 2) {
+      if (!bijMeta.paramIRs) {
+        return Promise.reject(new Error(
+          `pushfwd: registryName='${bijMeta.registryName}' set without `
+          + `paramIRs (additive-invariant violation — producer bug)`));
+      }
+      const entry = bijRegistry.getBijection(bijMeta.registryName);
+      if (!entry) {
+        return Promise.reject(new Error(
+          `pushfwd: registryName='${bijMeta.registryName}' not found in `
+          + `bijection-registry`));
+      }
+      if (!entry.atomBatchedForward) {
+        return Promise.reject(new Error(
+          `pushfwd: bijection-registry entry '${bijMeta.registryName}' `
+          + `has no atomBatchedForward (sample-side not yet implemented)`));
+      }
+      const N = M.value.shape[0];
+      // Resolve each paramIR to a Value at materialise-time scope.
+      // Session 5d MVP: atom-independent params only (literal IRs or
+      // fixed-phase refs). Per-atom paramIRs defer to Session 5f
+      // (matPushfwd vector-base atom-dep extension).
+      const params: any = {};
+      for (const k of Object.keys(bijMeta.paramIRs)) {
+        const v = orchestrator.resolveIRToValue(
+          bijMeta.paramIRs[k], ctx.bindings, ctx.fixedValues);
+        if (v == null) {
+          return Promise.reject(new Error(
+            `pushfwd: cannot resolve paramIRs.${k} for `
+            + `registryName='${bijMeta.registryName}' (per-atom params `
+            + `deferred to Session 5f+)`));
+        }
+        const valueLib = require('./value.ts');
+        // Wrap arrays/matrices into Value form. Nested arrays go through
+        // valueOps._nestedToValue; rank-1 arrays use valueLib.asValue.
+        const valueOps = require('./value-ops.ts');
+        if (Array.isArray(v) && v.length > 0 && Array.isArray(v[0])) {
+          params[k] = valueOps._nestedToValue(v);
+        } else {
+          params[k] = valueLib.asValue(v);
+        }
+      }
+      // Hand off to the registry. atomBatchedForward returns a Value
+      // of the bijection's output shape (per its shapeContract). For
+      // 'affine' the contract is [D]→[D], so result is shape [N, D]
+      // atom-major mirroring the base.
+      const z = M.value;
+      let result;
+      try {
+        result = entry.atomBatchedForward(z, params, N);
+      } catch (err) {
+        return Promise.reject(new Error(
+          `pushfwd: registry '${bijMeta.registryName}' atomBatched`
+          + `Forward failed: ` + (err as any).message));
+      }
+      // Preserve the outerRank=1 marker from the base. Iid measures
+      // carry outerRank=1 (materialiser.ts:459); a pushfwd of an
+      // iid base preserves that structure — the result is still an
+      // atom-batched stack of D-vectors. Downstream consumers
+      // (kernel-broadcast classifier, density walker) read outerRank
+      // to distinguish iid output from a per-atom k-vector.
+      if (M.value.outerRank === 1 && result && !('outerRank' in result)) {
+        result.outerRank = 1;
+      }
+      // Mass / weights propagate through unchanged — pushfwd preserves
+      // total mass regardless of the bijection.
+      return measureFromValue(result, {
+        logWeights:   M.logWeights || null,
+        logTotalmass: (typeof M.logTotalmass === 'number') ? M.logTotalmass : 0,
+        n_eff:        (typeof M.n_eff === 'number') ? M.n_eff : N,
+      });
+    }
+    // Scalar AST path (pre-§22 baseline). Unchanged from Session 5b.
     if (!M.samples) {
       return Promise.reject(new Error(`pushfwd: base measure '${d.from}' is not scalar `
         + `(record/tuple/iid not yet supported for first-class pushfwd materialisation)`));
