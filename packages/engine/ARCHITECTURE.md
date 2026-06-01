@@ -644,6 +644,37 @@ ctx)` dispatches to per-kind handlers in `KIND_HANDLERS` (~27 entries:
 the 13 measure-algebra derivation kinds + 8 multivariate distribution
 kinds + the FlatPDL primitives surface — see engine-concepts §13.6).
 
+**Bijection registry** (`bijection-registry.ts`, ~330 lines, Phase 5.1
+Sessions 1+2) — engine-concepts §22 lands the canonical decomposition
+view of multivariate distributions: every practical multivariate is
+`pushfwd(known_bijection, iid(scalar, D))` (`MvNormal = pushfwd(
+affine(L, mu), iid(Normal, n))`). The registry is the single point of
+bijection support — sample-side `atomBatchedForward`, density-side
+`atomBatchedInverse` + `logDetJ`, declared shape contract. Session 1
+landed the surface + `affine` sample-side; Session 2 added the
+density-side and pinned equivalence with `density-prims.MvNormal`;
+Session 3 routed the LIVE density-prims path through the registry, so
+both sides of MvNormal materialisation + scoring consume the registry
+entry concretely. `mat-multivariate.matMvNormal` and
+`density-prims.MV_DENSITY_FNS.MvNormal` are now both "thin shortcuts
+over the canonical decomposition" per §22.5. Adding a new bijection
+(`exp` / `log` / `stick-breaking` / `Cholesky-pack` / `projection`)
+is one registry entry; future multivariates lower surface-side to a
+one-line pushfwd composition.
+
+**Bare vector-output kernel-broadcast** (`mat-broadcast.
+_executeBareVectorOutputBroadcast`, Phase 5.1 Session 4 = `039031a`).
+`broadcast(MvNormal, mu = mu_per_group, cov = cov_shared)` —
+classifier recognises bare `VECTOR_OUTPUT_DISTRIBUTIONS` heads (set
+in `ir-shared.ts` parallel to `SAMPLEABLE_DISTRIBUTIONS`), runtime
+dispatches per outer cell through the bijection registry's `affine`
+atom-batched forward — same hot path matMvNormal consumes, iterated
+over the K cell axis. Output stitched into `[N, K, n]` atom-major.
+Session 4 MVP scope: per-cell mu (rank-2 `[K, n]`) or shared mu
+(rank-1 `[n]`); SHARED cov (rank-2 `[n, n]`). Per-cell cov / per-atom
+stochastic mu / cov defer to Session 5+ alongside the matPushfwd
+vector-base extension that gives walker symmetry.
+
 **Shared plumbing** (engine-concepts §17.1, commit `38135f2`):
 - `prepareDensityRefs(ir, ctx, label)` — one owner of the
   collectSelfRefs → filter (function-like / non-binding /
@@ -727,7 +758,13 @@ covers 11 measure ops:
 
 **Density primitives** (`density-prims.ts`, engine-concepts §13.6) — the
 FlatPDL `builtin_logdensityof` ABI surface. Holds the per-kernel
-log-density math for the eight multivariate kernels (MvNormal,
+log-density math for the eight multivariate kernels (**MvNormal** —
+since Phase 5.1 Session 3 (`8fbce44`), MvNormal's density routes
+through the `bijection-registry.affine` entry's `atomBatchedInverse` +
+`logDetJ` rather than inline forward-substitute + log-det math, so the
+closed-form has ONE owner — engine-concepts §22.5 "thin shortcut over
+the canonical decomposition" applies live on the density side just as
+matMvNormal applies it on the sample side),
 Dirichlet, Multinomial, Wishart, InverseWishart, LKJ, LKJCholesky,
 BinnedPoissonProcess), the FlatPDL dispatch helpers
 (`builtinLogdensityof(name, kwRecord, x)` and the positional shortcut
