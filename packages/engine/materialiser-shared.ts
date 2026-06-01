@@ -134,6 +134,52 @@ function measureToRefValue(m: any, name: string, label: string) {
 }
 
 /**
+ * Convert a materialised measure to an atom-batched `[N, D]` Value for
+ * use as a per-atom parameter (Phase 5.1 Session 5f-2). Handles three
+ * shapes a vector-valued binding can take:
+ *   - `m.value` (already a shape-tagged Value, e.g. an iid / pushfwd
+ *     output `[N, D]`) — returned as-is.
+ *   - composite `m.elems` (a tuple / array measure whose components are
+ *     scalar measures, e.g. `muv = [m1, m2]`) — the per-atom component
+ *     samples are STACKED into an atom-major `[N, D]` buffer
+ *     (`data[n*D + d] = elems[d].samples[n]`), tagged `outerRank: 1`.
+ *   - scalar `m.samples` ([N] batched scalar) — wrapped as `[N]`.
+ *
+ * Unlike `measureToRefValue`, this knows how to flatten a composite
+ * vector variate into the contiguous `[N, D]` storage the bijection
+ * registry's atom-batched param contract expects. Throws for shapes it
+ * can't flatten (ragged / nested-composite elems).
+ */
+function measureToParamValue(m: any, name: string, label: string) {
+  if (m == null) {
+    throw new Error(label + ': param measure for "' + name + '" is null/undefined');
+  }
+  if (m.value && Array.isArray(m.value.shape)) return m.value;
+  if (Array.isArray(m.elems) && m.elems.length > 0
+      && m.elems.every((e: any) => e && e.samples
+        && e.samples.BYTES_PER_ELEMENT !== undefined)) {
+    const D = m.elems.length;
+    const N = m.elems[0].samples.length;
+    const data = new Float64Array(N * D);
+    for (let d = 0; d < D; d++) {
+      const s = m.elems[d].samples;
+      if (s.length !== N) {
+        throw new Error(label + ': ragged composite param measure for "'
+          + name + '" (component ' + d + ' length ' + s.length + ' ≠ ' + N + ')');
+      }
+      for (let n = 0; n < N; n++) data[n * D + d] = s[n];
+    }
+    return { shape: [N, D], data, outerRank: 1 };
+  }
+  if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined) {
+    return valueLib.batchedScalar(m.samples);
+  }
+  throw new Error(label + ': param measure for "' + name
+    + '" is not a vector-valued shape this path can flatten to [N, D] '
+    + '(needs .value, scalar-component .elems, or scalar .samples)');
+}
+
+/**
  * Resolve every value-position self-ref in `ir` to its parent's
  * Value, returning a refName→Value map for the worker primitives'
  * refArrays. Fixed-phase refs are auto-pushed into the worker
@@ -850,6 +896,7 @@ module.exports = {
   isFunctionLikeBinding,
   isCallableLayerBinding,
   measureToRefValue,
+  measureToParamValue,
   collectRefArrays,
   prepareDensityRefs,
   classifyProfileSelfRefs,
