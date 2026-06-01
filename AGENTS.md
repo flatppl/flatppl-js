@@ -110,6 +110,30 @@ These are the things that catch out first-time contributors. Read each one.
   See "Cross-file invariants" in `packages/engine/ARCHITECTURE.md` before
   adding distributions, built-in functions, or measure-algebra ops.
 
+- **Vectors of vectors are NOT matrices (spec §03).** A bare nested
+  literal `[[1, 2], [3, 4]]` is a vector-of-vectors, semantically
+  distinct from a 2x2 matrix; only `rowstack(...)` (rows = inner
+  vectors) or `colstack(...)` (columns = inner vectors) commits a
+  layout interpretation. FlatPPL is row/column-major-agnostic — the
+  engine uses flat row-major Float64Array storage as its INTERNAL
+  convention (the ArrayOfSimilarArrays-style "vec-of-equal-sized-
+  vecs backed by flat n-d storage", cf. Julia ArraysOfArrays.jl), but
+  the SEMANTIC distinction is enforced end-to-end:
+    - `value.ts` Values carry an optional `outerRank` tag; user
+      nested literals get it set via `asValue`; matrix-input ops
+      refuse it via `valueLib.requireMatrix(v, opName)`.
+    - Typeinfer signature unification rejects vec-of-vec input to
+      matrix-input ops; `argError` appends a `rowstack(...)` hint.
+    - Aggregate body indexing `A[.i, .j]` stays SPEC-LEGAL on
+      vec-of-vec (spec §04 sec:aggregate: `A[.i, .j] ≡ A[.i][.j]`);
+      the runtime row-major convention makes the numerical result
+      equivalent.
+    - When you write a fixture or test that uses a matrix, wrap it
+      with `rowstack(...)` explicitly. New fixtures that bypass this
+      will fail at typeinfer with the §03 diagnostic.
+    - See `test/spec-vec-of-vec-not-matrix.test.ts` for the 29
+      pinned invariants.
+
 - **Fixed-phase bindings flow through `fixedValues`, not refArrays.** The
   orchestrator pre-evaluates fixed-phase bindings and exposes the values via
   `buildDerivations(...).fixedValues`. The viewer pushes that map to the
