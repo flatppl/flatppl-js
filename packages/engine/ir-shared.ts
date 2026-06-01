@@ -386,9 +386,26 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
 // AREN'T in `SAMPLEABLE_DISTRIBUTIONS` (the worker's sampleN is scalar-
 // only by design — engine-concepts §22.2(a)), so a kernel-broadcast
 // whose head is one of these falls through the bare-dist fast path and
-// needs an explicit per-cell materialiser dispatch. Phase 5.1 Session 4
-// adds MvNormal here; further multivariates land alongside their
-// matPushfwd-of-iid lowering in subsequent sessions.
+// needs an explicit per-cell materialiser dispatch.
+//
+// LOAD-BEARING for COMPOSITE-BODY MvNormal — do NOT empty/delete the
+// MvNormal entry (status as of Phase 5.1 Session 5g). The §22 lift
+// lowering rewrites a TOP-LEVEL static-D MvNormal to `pushfwd(affine,
+// iid)`, but it CANNOT lower a composite-body MvNormal whose `mu` is a
+// kernel-broadcast `%local` placeholder (e.g. `joint(loc = MvNormal(mu
+// = m, cov = …))` or `broadcast(MvNormal, mu = mu_per_cell, …)`) — the
+// placeholder isn't a module binding, so the gate has no static D to
+// discover. Such MvNormal stays an IR node, and these four read sites
+// rely on this set to flag it as a vector-output component:
+//   - derivations.ts (`isBareVectorDist` bare-kernel-broadcast gate)
+//   - mat-broadcast.ts (`_executeBareVectorOutputBroadcast` dispatch)
+//   - kernel-broadcast-shape.ts (joint detector + nested-broadcast
+//     detector component admission)
+// Retirement is gated on follow-up 5h-B (teaching the composite
+// detectors to recognise a lowered `pushfwd(<bij>, iid)` component) and
+// is sequenced AFTER 5h-A; until then the per-cell affine path
+// (mat-broadcast `_sampleMvNormalAtCell`) already IS the §22
+// decomposition, so there is no simplification to gain by forcing it.
 //
 // The set is structurally distinct from SAMPLEABLE_DISTRIBUTIONS — a
 // dist can't simultaneously belong to both (no worker REGISTRY entry
