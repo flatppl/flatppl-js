@@ -816,19 +816,24 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   // The registry path ADDS log|det J_{f^{-1}}(y)| — same number,
   // opposite-sign field.
   if (bij.registryName) {
+    const fRefForErr = ir.args[0];
+    const fNameForErr = (fRefForErr && fRefForErr.name) || '<?>';
     if (!bij.paramIRs) {
-      throw new Error("density: pushfwd registryName='" + bij.registryName
-        + "' requires paramIRs (additive-invariant violation — producer bug)");
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' has registryName='" + bij.registryName
+        + "' without paramIRs (additive-invariant violation — producer bug)");
     }
     const bijRegistry = require('./bijection-registry.ts');
     const entry = bijRegistry.getBijection(bij.registryName);
     if (!entry) {
-      throw new Error("density: pushfwd registryName='" + bij.registryName
-        + "' not found in bijection-registry");
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' has registryName='" + bij.registryName
+        + "' which is not found in bijection-registry");
     }
     if (!entry.atomBatchedInverse || !entry.logDetJ) {
-      throw new Error("density: bijection-registry entry '"
-        + bij.registryName + "' missing inverse or logDetJ (density not "
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' uses bijection-registry entry '" + bij.registryName
+        + "' which is missing inverse or logDetJ (density not "
         + "supported for this bijection yet)");
     }
     // Resolve each paramIR against baseEnv ∪ overlay. Session 5d MVP:
@@ -874,7 +879,8 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       }
     }
     if (typeof D !== 'number') {
-      throw new Error("density: cannot determine D for bijection-registry '"
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' cannot determine D for bijection-registry '"
         + bij.registryName + "'");
     }
     // Consume a length-D vector head from value. wrap into [1, D]
@@ -886,15 +892,17 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
     try {
       z = entry.atomBatchedInverse(yValue, params, /*N=*/1);
     } catch (err) {
-      throw new Error("density: registry '" + bij.registryName
-        + "' atomBatchedInverse failed: " + (err as any).message);
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' registry call to '" + bij.registryName
+        + "'.atomBatchedInverse failed: " + (err as any).message);
     }
     let logDetJ;
     try {
       logDetJ = entry.logDetJ(yValue, params, /*N=*/1);
     } catch (err) {
-      throw new Error("density: registry '" + bij.registryName
-        + "' logDetJ failed: " + (err as any).message);
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' registry call to '" + bij.registryName
+        + "'.logDetJ failed: " + (err as any).message);
     }
     // Recurse on M scoring at z. The base measure is iid(scalar, D),
     // which walkIid loops over scalar leaves consuming from a length-D

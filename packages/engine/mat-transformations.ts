@@ -89,19 +89,22 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         && Array.isArray(M.value.shape) && M.value.shape.length === 2) {
       if (!bijMeta.paramIRs) {
         return Promise.reject(new Error(
-          `pushfwd: registryName='${bijMeta.registryName}' set without `
-          + `paramIRs (additive-invariant violation — producer bug)`));
+          `pushfwd: bijection binding '${d.fnRef}' has registryName=`
+          + `'${bijMeta.registryName}' set without paramIRs `
+          + `(additive-invariant violation — producer bug)`));
       }
       const entry = bijRegistry.getBijection(bijMeta.registryName);
       if (!entry) {
         return Promise.reject(new Error(
-          `pushfwd: registryName='${bijMeta.registryName}' not found in `
+          `pushfwd: bijection binding '${d.fnRef}' has registryName=`
+          + `'${bijMeta.registryName}' which is not found in `
           + `bijection-registry`));
       }
       if (!entry.atomBatchedForward) {
         return Promise.reject(new Error(
-          `pushfwd: bijection-registry entry '${bijMeta.registryName}' `
-          + `has no atomBatchedForward (sample-side not yet implemented)`));
+          `pushfwd: bijection binding '${d.fnRef}' uses registry entry `
+          + `'${bijMeta.registryName}' which has no atomBatchedForward `
+          + `(sample-side not yet implemented)`));
       }
       const N = M.value.shape[0];
       // Resolve each paramIR to a Value at materialise-time scope.
@@ -114,9 +117,9 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
           bijMeta.paramIRs[k], ctx.bindings, ctx.fixedValues);
         if (v == null) {
           return Promise.reject(new Error(
-            `pushfwd: cannot resolve paramIRs.${k} for `
-            + `registryName='${bijMeta.registryName}' (per-atom params `
-            + `deferred to Session 5f+)`));
+            `pushfwd: bijection binding '${d.fnRef}' cannot resolve `
+            + `paramIRs.${k} for registryName='${bijMeta.registryName}' `
+            + `(per-atom params deferred to Session 5f+)`));
         }
         const valueLib = require('./value.ts');
         // Wrap arrays/matrices into Value form. Nested arrays go through
@@ -138,8 +141,9 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         result = entry.atomBatchedForward(z, params, N);
       } catch (err) {
         return Promise.reject(new Error(
-          `pushfwd: registry '${bijMeta.registryName}' atomBatched`
-          + `Forward failed: ` + (err as any).message));
+          `pushfwd: bijection binding '${d.fnRef}' registry call to '`
+          + `${bijMeta.registryName}'.atomBatchedForward failed: `
+          + (err as any).message));
       }
       // Preserve the outerRank=1 marker from the base. Iid measures
       // carry outerRank=1 (materialiser.ts:459); a pushfwd of an
