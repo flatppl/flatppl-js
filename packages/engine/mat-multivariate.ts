@@ -38,24 +38,32 @@ const { nameSeed, measureFromValue } = shared;
 
 function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
   // MvNormal(mu, cov) — per spec §08, samples are n-vectors with
-  // x ~ Normal_n(mu, cov). Implementation routes through the spec
-  // equivalence  pushfwd(fn(mu + L*_), iid(Normal(0,1), n))  but
-  // without the AST rewrite — we do the matvec / vector-add directly
-  // via value-ops so the per-atom batched form short-circuits.
+  // x ~ Normal_n(mu, cov). Implementation IS the canonical
+  // decomposition (engine-concepts §22):
+  //     MvNormal(mu, Sigma) = pushfwd(affine(L, mu), iid(Normal(0,1), n))
+  // with L = lower_cholesky(Sigma). Pipeline:
+  //   1. Resolve mu (atom-indep vector, shape=[n]) and cov ([n,n]).
+  //   2. L = lower_cholesky(cov) — one O(n³) call, once per
+  //      materialise (Sigma is atom-independent today; per-atom Sigma
+  //      lands with the matPushfwd vector-base extension).
+  //   3. Draw N atoms of n standard normals → shape=[N, n]. This IS
+  //      the iid(Normal(0,1), n) leaf of the decomposition.
+  //   4. Apply the `affine` bijection registry entry's atom-batched
+  //      forward — `y = L·z + mu`. This IS the pushfwd half of the
+  //      decomposition; the registry entry routes the matmul through
+  //      ops.dispatch + the diag-stored fast lane, identical to the
+  //      inline code that lived here pre-§22.
   //
-  // Pipeline:
-  //   1. Resolve mu (atom-indep vector, shape=[n]) and cov (shape=[n, n]).
-  //   2. L = lower_cholesky(cov)         — one O(n³) call.
-  //   3. Draw N atoms of n standard normals → shape=[N, n].
-  //   4. result = mu + L * z via ops.dispatch with opts.atomN=N —
-  //      the registered atom-batched variants for mul(rank-2, rank-1)
-  //      and add(rank-1, rank-1) handle the L·z gemv + mu broadcast.
+  // Per §22.5, matMvNormal persists as a "thin shortcut" surface for
+  // the dist name. The hot code now lives in the bijection registry
+  // entry — future `pushfwd(affine, iid(Normal, D))` callers (a user-
+  // written model OR the planned lift-time MvNormal lowering) hit the
+  // SAME fast path, by design.
   //
   // logTotalmass = 0 (normalized probability measure); n_eff = N.
-  const valueOps = require('./value-ops.ts');
-  const valueLib = require('./value.ts');
-  const sampler  = require('./sampler.ts');
-  const ops      = require('./ops.ts');
+  const valueLib    = require('./value.ts');
+  const sampler     = require('./sampler.ts');
+  const bijRegistry = require('./bijection-registry.ts');
   const distIR = d.distIR;
   if (!distIR || !distIR.kwargs || !distIR.kwargs.mu || !distIR.kwargs.cov) {
     return Promise.reject(new Error('MvNormal: requires mu and cov kwargs'));
@@ -70,6 +78,7 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
   if (covVal == null) {
     return Promise.reject(new Error('MvNormal: cannot resolve cov (per-atom params deferred)'));
   }
+  const valueOps = require('./value-ops.ts');
   const muValue = valueLib.asValue(muVal);
   if (muValue.shape.length !== 1) {
     return Promise.reject(new Error(
@@ -101,19 +110,12 @@ function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
     seed: nameSeed(name, ctx.rootKey),
   }).then((reply: any) => {
     const z = { shape: [N, n], data: reply.samples };
-    // Atom-batched mul: L (rank-2 [n,n]) × z (atom-batched rank-1
-    // [N,n]) → result shape=[N, n]. The registry's atom-aware variant
-    // routes to _matBatchedVecMul. Diag-stored L stays on the
-    // value-ops.mulN pre-check path (its null-fallthrough semantics
-    // don't fit variant dispatch); we route through valueOps.mulN
-    // only when L is diag-stored.
-    const Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
-      ? valueOps.mulN(L, z, N)
-      : ops.dispatch('mul', [L, z], { atomN: N });
-    // Atom-batched add: mu (rank-1 [n]) + Lz (atom-batched rank-1
-    // [N, n]) → result shape=[N, n]. The registry's atom-aware
-    // variant routes to _atomBroadcastBinop.
-    const result = ops.dispatch('add', [muValue, Lz], { atomN: N });
+    // Hand the affine pushforward off to the bijection registry.
+    // Atom-batched forward = `L·z + mu`; the registry entry routes
+    // the matmul through ops.dispatch (dense L) or valueOps.mulN
+    // (diag-stored L) and the shift through ops.dispatch atom-aware.
+    const result = bijRegistry.affineAtomBatchedForward(
+      z, { L: L, b: muValue }, N);
     return measureFromValue(result, {
       logWeights: null,
       logTotalmass: 0,
