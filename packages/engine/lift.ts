@@ -190,6 +190,13 @@ function inferSyntheticType(astNode: any) {
       case 'functionof': return 'functionof';
       case 'kernelof':   return 'kernelof';
       case 'fn':         return 'fn';
+      // Phase 5.1 Session 5e — recognise synthetic bijection bindings
+      // emitted by `inlineMvNormalLift`. Without this case the lift
+      // post-pass + buildDerivations' bijection-construction loop
+      // (derivations.ts:159-179, gated on binding.type === 'bijection')
+      // skip the synthetic binding entirely, leaving binding.bijection
+      // unpopulated and registryName + paramIRs unattached.
+      case 'bijection':  return 'bijection';
     }
     return 'call';
   }
@@ -346,6 +353,31 @@ function liftInlineSubexpressions(bindings: any) {
     do { n = '__anon' + (counter++); } while (out.has(n));
     return n;
   }
+  // Phase 5.1 Session 5e — separate name families for the synthetic
+  // bijection-binding and iid-base-binding produced by the MvNormal
+  // lowering helper. Counter is shared so collisions across families
+  // are structurally impossible.
+  function freshBijName() {
+    let n: string;
+    do { n = '__bij' + (counter++); } while (out.has(n));
+    return n;
+  }
+  function freshIidName() {
+    let n: string;
+    do { n = '__iid' + (counter++); } while (out.has(n));
+    return n;
+  }
+  // Module-name set hoisted up here (it was previously built after
+  // the binding loop) so `inlineMvNormalLift` can call `lowerExpr`
+  // on the synthetic-binding's muIR / covIR with the same
+  // lower-context the post-pass uses. Module-typed bindings are
+  // entered into `out` at the top of this function via the spread
+  // from `bindings`; they aren't created by lift itself.
+  const moduleNames = new Set<string>();
+  for (const [bname, b] of out) {
+    if (b && b.type === 'module') moduleNames.add(bname);
+  }
+  const liftLowerCtx = { localScope: null, moduleNames };
   function makeIdent(name: string, loc: any) {
     return { type: 'Identifier', name, loc: loc || null };
   }
@@ -429,15 +461,14 @@ function liftInlineSubexpressions(bindings: any) {
   // loweredModule; lift's re-lower bypasses that, so we run the
   // same canonicalisation on `.ir` here to keep the two views in
   // lockstep).
-  const moduleNames = new Set<string>();
-  for (const [bname, b] of out) {
-    if (b && b.type === 'module') moduleNames.add(bname);
-  }
-  const lowerCtx = { localScope: null, moduleNames };
+  // moduleNames + liftLowerCtx are hoisted to the top of this function
+  // (Phase 5.1 Session 5e) so the inlineMvNormalLift helper can lower
+  // muIR / covIR with the same lower-context. The post-pass below
+  // continues to use them unchanged.
   for (const [name, b] of out) {
     if (!b || !b.node || !b.node.value) continue;
     let ir = null;
-    try { ir = lowerExpr(b.effectiveValue || b.node.value, lowerCtx); } catch (_) { ir = null; }
+    try { ir = lowerExpr(b.effectiveValue || b.node.value, liftLowerCtx); } catch (_) { ir = null; }
     out.set(name, { ...b, ir });
   }
   const { resolveAliasesOnBindings } = require('./alias-resolution.ts');
@@ -668,6 +699,14 @@ function liftInlineSubexpressions(bindings: any) {
       // classifier sees a clean self-ref.
       astArg = inlinePushfwdLift(astArg);
       astArg = inlineBijectionLift(astArg);
+      // Phase 5.1 Session 5e — lower MvNormal CallExpr to the
+      // canonical pushfwd-of-iid decomposition (engine-concepts §22).
+      // Emits two synthetic bindings (__bij_N + __iid_N) and rewrites
+      // the MvNormal call in place to `pushfwd(__bij_N, __iid_N)`.
+      // Gate: literal-ArrayLiteral mu + cov (or one-level refs to
+      // ArrayLiteral bindings). Non-resolvable cases fall through to
+      // the AST-preserved matMvNormal path.
+      astArg = inlineMvNormalLift(astArg);
       astArg = inlineFilterLift(astArg);
       astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
@@ -802,6 +841,194 @@ function liftInlineSubexpressions(bindings: any) {
       astArg.args[i] = makeIdent(n, astArg.loc);
     }
     return astArg;
+  }
+
+  /**
+   * Phase 5.1 Session 5e — lower `MvNormal(mu = ..., cov = ...)` calls
+   * to the canonical pushfwd-of-iid decomposition per engine-concepts
+   * §22:
+   *
+   *   MvNormal(mu, cov)  →  pushfwd(<bij>, <iid>)
+   *
+   * where:
+   *   __bij_N = bijection(fn(_), fn(_), 0.0)
+   *             // additionally marked via the binding's
+   *             // .__mvnormalLowering field, which buildDerivations'
+   *             // bijection-construction loop reads to populate
+   *             // binding.bijection.registryName = 'affine' and
+   *             // binding.bijection.paramIRs = {L: lower_cholesky(cov),
+   *             //                                b: mu}.
+   *   __iid_N = iid(Normal(mu = 0.0, sigma = 1.0), D)
+   *
+   * Gate (conservative MVP — see ast_construction_recipes RECIPE 4):
+   *   - kwarg form `MvNormal(mu = X, cov = Y)`. Positional 2-arg form
+   *     is uncommon in production code; defer.
+   *   - X and Y both resolve to ArrayLiteral via __resolveLiteralArrayRef
+   *     (literal at the call site OR one-level ref to an ArrayLiteral
+   *     binding). D = X.elements.length; covLit dimensions must match
+   *     [D, D].
+   *   - Element types of X and Y are NOT constrained — `[base, base+1]`
+   *     is admissible. resolveIRToValue at materialise time handles
+   *     non-literal elements (as long as they're atom-independent).
+   *
+   * When the gate doesn't fire (non-literal mu / cov, deeper ref
+   * chains, MvNormal as a kernel-broadcast head etc.), `astArg` is
+   * returned unchanged and the existing matMvNormal path handles the
+   * MvNormal IR at materialise time as before.
+   *
+   * After Session 5e lands, matMvNormal is structurally unreachable
+   * for any binding whose lift gate fires (the IR contains no MvNormal
+   * node), so matPushfwd's vector-base + registry fast path (Session
+   * 5d) is the sole materialiser for the rewritten cases.
+   */
+  function inlineMvNormalLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'MvNormal') return astArg;
+    // Parse kwargs: kwarg form only in 5e MVP.
+    const kw: Record<string, any> = {};
+    for (const a of (astArg.args || [])) {
+      if (a && a.type === 'KeywordArg') kw[a.name] = a.value;
+    }
+    const muAst = kw.mu;
+    const covAst = kw.cov;
+    if (!muAst || !covAst) return astArg;
+    // Resolve D via one-level ArrayLiteral lookup.
+    const muLit = __resolveLiteralArrayRef(muAst, out);
+    if (!muLit) return astArg;
+    const D = muLit.elements.length;
+    if (!Number.isInteger(D) || D < 1) return astArg;
+    const covLit = __resolveLiteralArrayRef(covAst, out);
+    if (!covLit) return astArg;
+    if (covLit.elements.length !== D) return astArg;
+    for (const row of covLit.elements) {
+      if (!row || row.type !== 'ArrayLiteral'
+          || row.elements.length !== D) return astArg;
+    }
+    // Emit the synthetic bijection binding `__bij_N`. AST shape is the
+    // same identity-stub form used in test/bijection-registry-
+    // dispatch.test.ts — `fn(_)` for forward AND inverse, scalar 0
+    // for log-volume. The bijection registry's affine entry provides
+    // the real implementation; the AST stubs satisfy the additive-
+    // invariant (resolveFnBody must still find a callable body even
+    // when registryName is set).
+    //
+    // The fn(_) sub-expressions MUST be pre-hoisted to anon bindings
+    // so buildDerivations' bijection-construction loop
+    // (derivations.ts:159-179) sees args[0] and args[1] as
+    // Identifiers. Synthetic bindings inserted into `out` during the
+    // inlineUserCall loop bypass the per-binding visit() pass that
+    // would normally hoist them via inlineBijectionLift.
+    const fwdAnon = freshName();
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(astArg.loc)));
+    const invAnon = freshName();
+    out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(astArg.loc)));
+    const bijAst = {
+      type: 'CallExpr',
+      callee: makeIdent('bijection', astArg.loc),
+      args: [
+        makeIdent(fwdAnon, astArg.loc),
+        makeIdent(invAnon, astArg.loc),
+        makeNumLit(0, astArg.loc),
+      ],
+      loc: astArg.loc,
+    };
+    const bijName = freshBijName();
+    const bijBinding = makeSyntheticBinding(bijName, bijAst);
+    // STEP-1 patched inferSyntheticType to return 'bijection' for this
+    // AST head; if the patch is in place, bijBinding.type ==='bijection'.
+    // Side-channel marker for buildDerivations' bijection-construction
+    // loop (derivations.ts:159-179) to forward registryName +
+    // paramIRs onto binding.bijection. The marker carries the lowered
+    // IR for mu and cov so the materialiser-time resolveIRToValue
+    // pass evaluates them through their actual binding refs (closed
+    // over the user's surface bindings, not a copy).
+    bijBinding.__mvnormalLowering = {
+      muIR:  lowerExpr(cloneAst(muAst),  liftLowerCtx),
+      covIR: lowerExpr(cloneAst(covAst), liftLowerCtx),
+    };
+    out.set(bijName, bijBinding);
+    // Emit the synthetic iid base binding `__iid_N`. The inner
+    // `Normal(mu=0, sigma=1)` MUST be pre-hoisted to an anon binding
+    // so classifyIid's `resolveMeasureBaseName(ast.args[0], bindings)`
+    // sees an Identifier (the only shape it admits besides
+    // `lawof(<ref>)`). Same pattern as fwd/inv fn stubs above.
+    const normalAst = {
+      type: 'CallExpr',
+      callee: makeIdent('Normal', astArg.loc),
+      args: [
+        { type: 'KeywordArg', name: 'mu',
+          value: makeNumLit(0, astArg.loc),
+          loc: astArg.loc },
+        { type: 'KeywordArg', name: 'sigma',
+          value: makeNumLit(1, astArg.loc),
+          loc: astArg.loc },
+      ],
+      loc: astArg.loc,
+    };
+    const normalAnon = freshName();
+    out.set(normalAnon, makeSyntheticBinding(normalAnon, normalAst));
+    const iidAst = {
+      type: 'CallExpr',
+      callee: makeIdent('iid', astArg.loc),
+      args: [
+        makeIdent(normalAnon, astArg.loc),
+        makeNumLit(D, astArg.loc),
+      ],
+      loc: astArg.loc,
+    };
+    const iidName = freshIidName();
+    out.set(iidName, makeSyntheticBinding(iidName, iidAst));
+    // Rewrite the original MvNormal call IN PLACE — the caller's
+    // slot (e.g. the user's binding X = MvNormal(...)) now references
+    // pushfwd(__bij_N, __iid_N).
+    astArg.callee = makeIdent('pushfwd', astArg.loc);
+    astArg.args = [
+      makeIdent(bijName, astArg.loc),
+      makeIdent(iidName, astArg.loc),
+    ];
+    if (astArg.kwargs) delete astArg.kwargs;
+    return astArg;
+  }
+
+  // Helpers used by inlineMvNormalLift (small AST builders + literal
+  // array resolver). Scoped inside liftInlineSubexpressions so they
+  // share `counter`, `out`, `makeIdent`, etc.
+  function makeNumLit(value: any, loc: any) {
+    return {
+      type: 'NumberLiteral',
+      value: +value,
+      raw: String(value),
+      loc: loc || null,
+    };
+  }
+  function makeHole(loc: any) {
+    return { type: 'Hole', loc: loc || null };
+  }
+  function makeFnHole(loc: any) {
+    // `fn(_)` — identity-stub used as the bijection's forward / inverse.
+    return {
+      type: 'CallExpr',
+      callee: makeIdent('fn', loc),
+      args: [makeHole(loc)],
+      loc: loc || null,
+    };
+  }
+  function __resolveLiteralArrayRef(ast: any, bindings: any): any {
+    // Returns the ArrayLiteral AST node when `ast` is one OR is a
+    // direct ref to a binding whose RHS is one. Otherwise null. No
+    // deep resolution — non-literal bindings fall through to the
+    // matMvNormal safety path.
+    if (!ast) return null;
+    if (ast.type === 'ArrayLiteral') return ast;
+    if (ast.type === 'Identifier') {
+      const b = bindings.get(ast.name);
+      if (b && b.node && b.node.value
+          && b.node.value.type === 'ArrayLiteral') {
+        return b.node.value;
+      }
+    }
+    return null;
   }
 
   /**
