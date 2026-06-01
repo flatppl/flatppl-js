@@ -40,6 +40,18 @@ const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 
 function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any) {
   const sampler = require('./sampler.ts');
+  const irShared = require('./ir-shared.ts');
+  // Phase 5.1 Session 4: bare vector-output dist case (MvNormal etc.).
+  // These distributions sit OUTSIDE the worker's scalar-only sampleN
+  // REGISTRY (engine-concepts §22.2(a)); we per-cell dispatch through
+  // the bijection registry's atom-batched affine forward — same path
+  // matMvNormal uses, but iterated over the outer broadcast cell axis.
+  // The branch runs BEFORE the REGISTRY lookup so we don't shadow it
+  // with a "not in REGISTRY" composite-body recogniser dispatch.
+  if (irShared.VECTOR_OUTPUT_DISTRIBUTIONS
+      && irShared.VECTOR_OUTPUT_DISTRIBUTIONS.has(d.distOp)) {
+    return _executeBareVectorOutputBroadcast(name, d, ctx);
+  }
   let params: string[] = (sampler._internal.REGISTRY[d.distOp] || {}).params;
   // Composite kernel-body case: when d.distOp resolves to a user-
   // defined kernel binding (not a builtin REGISTRY entry), dispatch
@@ -1457,6 +1469,184 @@ function _executeNestedBroadcastComposite(
         { value: value, logTotalmass: 0, n_eff: N },
       );
     });
+  });
+}
+
+// =====================================================================
+// Phase 5.1 Session 4 — bare vector-output dist broadcast (MvNormal)
+// =====================================================================
+//
+// `broadcast(MvNormal, mu = mu_arr, cov = cov_arg)` — per spec §04
+// kernel-broadcast over a multivariate distribution. Engine-concepts
+// §22 frames this case as the canonical decomposition
+//     broadcast(pushfwd(affine_per_cell, iid(Normal, n)), …)
+// without yet committing to surface lowering (deliverable a). Instead,
+// this executor materialises per outer cell via the SAME registry
+// entry matMvNormal consumes: build per-cell (L, mu) from the
+// broadcast args, draw an iid Normal base, apply
+// `bijectionRegistry.affineAtomBatchedForward`. Output is a
+// [N, K, n] atom-major Value mirroring the joint-composite stitcher.
+//
+// Scope (Session 4 MVP):
+//   - `mu` may be per-cell (rank-2 [K, n] when atom-indep, rank-3
+//     [N, K, n] when atom-batched) or shared (rank-1 [n] for atom-
+//     indep, rank-2 [N, n] for atom-batched broadcasted scalars on a
+//     per-atom random mu).
+//   - `cov` is SHARED across cells in Session 4 (rank-2 [n, n]
+//     atom-indep). Per-cell cov adds (a) per-cell Cholesky and
+//     (b) shape-2 broadcast-arg slicing — deferred to Session 5+ once
+//     a fixture motivates it.
+//   - Both kwarg and positional `mu / cov` admitted (kwarg form is
+//     the canonical FlatPPL surface for MvNormal).
+//
+// Deferred (no forcing fixture yet):
+//   - Per-cell `cov_arr` of shape [K, n, n] — needs per-cell Cholesky
+//     plus cell-axis slicing of rank-3 broadcast args.
+//   - Per-atom stochastic `mu` / `cov` (atom-batched broadcast args
+//     where the value's leading atom axis aligns with the per-atom
+//     refArrays).
+//   - Per-cell Cholesky factor `chol = lower_cholesky(cov)` supplied
+//     directly to spare the per-cell Cholesky — falls out of the
+//     pushfwd-of-iid lift-time decomposition once landed.
+
+function _executeBareVectorOutputBroadcast(
+  name: string, d: any, ctx: any,
+): Promise<any> {
+  if (d.distOp !== 'MvNormal') {
+    return Promise.reject(new Error(
+      'broadcast: bare vector-output distribution \'' + d.distOp
+      + '\' not yet supported (Phase 5.1 Session 4 ships MvNormal only)'));
+  }
+  return _executeMvNormalBroadcast(name, d, ctx);
+}
+
+function _executeMvNormalBroadcast(
+  name: string, d: any, ctx: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const bijRegistry = require('./bijection-registry.ts');
+  const N = ctx.sampleCount;
+
+  // Resolve mu / cov IRs. Both kwargs and positional admitted: MvNormal's
+  // canonical kw layout is (mu, cov).
+  const kw = d.kwargIRs || {};
+  let muIR = kw.mu;
+  let covIR = kw.cov;
+  if ((!muIR || !covIR) && Array.isArray(d.argIRs) && d.argIRs.length >= 2) {
+    if (!muIR) muIR = d.argIRs[0];
+    if (!covIR) covIR = d.argIRs[1];
+  }
+  if (!muIR || !covIR) {
+    return Promise.reject(new Error('broadcast(MvNormal): requires mu and cov '
+      + '(kwarg or positional)'));
+  }
+
+  // Static resolution — Session 4 scope assumes mu/cov are atom-indep
+  // (literals or fixed-phase / closed-form refs). Per-atom stochastic
+  // mu/cov defers to Session 5+ alongside the matPushfwd vector-base
+  // extension that gives walker symmetry.
+  const muVal = orchestrator.resolveIRToValue(muIR, ctx.bindings, ctx.fixedValues);
+  const covVal = orchestrator.resolveIRToValue(covIR, ctx.bindings, ctx.fixedValues);
+  if (muVal == null) {
+    return Promise.reject(new Error('broadcast(MvNormal): cannot resolve mu '
+      + '(per-atom mu deferred to Session 5+)'));
+  }
+  if (covVal == null) {
+    return Promise.reject(new Error('broadcast(MvNormal): cannot resolve cov '
+      + '(per-atom cov / per-cell cov deferred to Session 5+)'));
+  }
+
+  // mu shape: [n] (shared) or [K, n] (per-cell). cov shape: [n, n]
+  // (Session 4 shared-cov scope). Determine n and K.
+  const muValue = valueLib.asValue(muVal);
+  if (!muValue.shape || muValue.shape.length < 1 || muValue.shape.length > 2) {
+    return Promise.reject(new Error('broadcast(MvNormal): mu must be rank-1 '
+      + '(shared) or rank-2 [K, n] (per-cell); got shape='
+      + JSON.stringify(muValue.shape)));
+  }
+  const muIsPerCell = muValue.shape.length === 2;
+  const n = muIsPerCell ? muValue.shape[1] : muValue.shape[0];
+  const K = muIsPerCell ? muValue.shape[0] : 1;
+
+  // cov to a square Value — accept nested-array form (the historical
+  // matMvNormal shape) as well as a direct shape-rank-2 Value.
+  const valueOps = require('./value-ops.ts');
+  const covValue = Array.isArray(covVal) && covVal.length > 0 && Array.isArray(covVal[0])
+    ? valueOps._nestedToValue(covVal)
+    : valueLib.asValue(covVal);
+  if (covValue.shape.length !== 2 || covValue.shape[0] !== n
+      || covValue.shape[1] !== n) {
+    return Promise.reject(new Error('broadcast(MvNormal): cov must be ' + n
+      + 'x' + n + ' (Session 4 shared-cov scope); got shape='
+      + JSON.stringify(covValue.shape)));
+  }
+
+  // Single Cholesky for the shared cov — the per-cell Cholesky case
+  // lands when per-cell cov support arrives.
+  let L: any;
+  try {
+    L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
+  } catch (err) {
+    return Promise.reject(new Error('broadcast(MvNormal): ' + (err as any).message));
+  }
+
+  // Shared-mu degenerate case: K=1, every cell has the same mu and
+  // cov, so the output is just a [N, 1, n] block. Materialise once.
+  // Per-cell case: K cells × n-vector samples each.
+  return ctx.sendWorker({
+    type: 'sampleN',
+    ir: { kind: 'call', op: 'Normal',
+          kwargs: { mu: { kind: 'lit', value: 0 },
+                    sigma: { kind: 'lit', value: 1 } } },
+    count: N, repeat: K * n,
+    refArrays: {},
+    seed: nameSeed(name + ':iidbase', ctx.rootKey),
+  }).then((reply: any) => {
+    // Reply.samples is Float64Array(N * K * n) atom-major, iid Normal.
+    // For each cell j, apply affine(L, mu_j) to the [N, n] slice of z.
+    const z = reply.samples;
+    const out = new Float64Array(N * K * n);
+    for (let j = 0; j < K; j++) {
+      // Slice z into per-cell [N, n] atom-batched view, then apply
+      // affine. Cheapest construction: build a contiguous [N, n]
+      // Float64Array per cell so the registry's atom-batched paths
+      // accept it directly.
+      const zCell = new Float64Array(N * n);
+      for (let i = 0; i < N; i++) {
+        for (let k = 0; k < n; k++) {
+          zCell[i * n + k] = z[i * K * n + j * n + k];
+        }
+      }
+      const zCellValue = { shape: [N, n], data: zCell };
+      // mu_j slice: rank-1 [n] (shared) or rank-1 [n] sliced from
+      // rank-2 [K, n] at row j.
+      let muSliceData: Float64Array;
+      if (muIsPerCell) {
+        muSliceData = new Float64Array(n);
+        for (let k = 0; k < n; k++) {
+          muSliceData[k] = muValue.data[j * n + k];
+        }
+      } else {
+        muSliceData = muValue.data instanceof Float64Array
+          ? muValue.data
+          : new Float64Array(muValue.data);
+      }
+      const muSlice = { shape: [n], data: muSliceData };
+      const yCell = bijRegistry.affineAtomBatchedForward(
+        zCellValue, { L: L, b: muSlice }, N);
+      // Splat yCell into out at cell j: out[i, j, :] = yCell[i, :].
+      const yData = yCell.data;
+      for (let i = 0; i < N; i++) {
+        for (let k = 0; k < n; k++) {
+          out[i * K * n + j * n + k] = yData[i * n + k];
+        }
+      }
+    }
+    const value = { shape: [N | 0, K, n], data: out };
+    return Object.assign(
+      empirical.arrayMeasure(out, [K, n], null),
+      { value: value, logTotalmass: 0, n_eff: N },
+    );
   });
 }
 
