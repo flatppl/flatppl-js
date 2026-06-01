@@ -675,6 +675,19 @@ Session 4 MVP scope: per-cell mu (rank-2 `[K, n]`) or shared mu
 stochastic mu / cov defer to Session 5+ alongside the matPushfwd
 vector-base extension that gives walker symmetry.
 
+**Joint composite-body with vector-output components**
+(`mat-broadcast._executeJointComposite` extension, Phase 5.1 Session
+5a = `f7546a9`). `joint(loc = MvNormal(mu, cov), obs = Normal(…))` as
+a kernel-broadcast body. `detectJointKernelBinding` records
+`isVectorOutput` + `eventDim` per component; the executor dispatches
+vector-output components through `_sampleVectorOutputAtCell` (which
+consumes the same registry path matMvNormal uses), scalar components
+through the existing worker `sampleN` path. Stitching is per-component
+event-dim aware: output `[N, K, sum_c(eventDim_c)]` atom-major. D > 1
+broadcast args admitted when any component is vector-output — per-cell
+vector slicing builds a literal `vector(...)` IR for the substituted
+MvNormal kwarg.
+
 **Shared plumbing** (engine-concepts §17.1, commit `38135f2`):
 - `prepareDensityRefs(ir, ctx, label)` — one owner of the
   collectSelfRefs → filter (function-like / non-binding /
