@@ -164,3 +164,31 @@ test('joint-mvnormal-component: Normal obs mean ≈ 0 (4-sigma margin)', async (
       + `(margin ${margin.toFixed(4)})`);
   }
 });
+
+// =====================================================================
+// Composition proof (Phase 5.1 Session 5f) — gate widening does NOT
+// disturb the joint composite path.
+// =====================================================================
+//
+// 5f-1 widened the MvNormal lift gate to fire for module-level refs with
+// a statically-known inferredType. The MvNormal HERE is a joint
+// component whose `mu = m` is a kernel-broadcast cell placeholder (a
+// `%local`, not a module binding with inferredType), so the gate skips
+// it — no `__bij` binding is synthesised, the MvNormal IR node survives,
+// and the joint detector's VECTOR_OUTPUT_DISTRIBUTIONS path stays the
+// materialiser. Teaching the composite detectors to recognise a
+// lowered `pushfwd(<bij>, iid)` component (so they could consume the
+// §22 decomposition uniformly) is 5g scope; 5f must leave this path
+// untouched, which this pins.
+
+test('joint-mvnormal-component: gate widening leaves composite path intact (no __bij)', () => {
+  const src = readFixture('joint-mvnormal-component.flatppl');
+  const lifted = processSource(src);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const synthBij = Array.from(built.bindings.keys())
+    .filter((n: any) => /^__bij/.test(n));
+  assert.equal(synthBij.length, 0,
+    'kernel-placeholder mu does not trigger the 5f-1 gate — MvNormal '
+    + 'component stays on the composite/matMvNormal path, not lowered '
+    + 'to pushfwd');
+});
