@@ -958,17 +958,38 @@ function liftInlineSubexpressions(bindings: any) {
     const muAst = kw.mu;
     const covAst = kw.cov;
     if (!muAst || !covAst) return astArg;
-    // Resolve D via one-level ArrayLiteral lookup.
-    const muLit = __resolveLiteralArrayRef(muAst, out);
-    if (!muLit) return astArg;
-    const D = muLit.elements.length;
-    if (!Number.isInteger(D) || D < 1) return astArg;
+    // 5f-1 widened gate: discover the static event dim D from mu, via
+    // (a) literal / ref-to-literal / inline-rowstack-literal, OR (b) a
+    // named ref whose binding carries a statically-known inferredType
+    // array (shape[0] a concrete integer). When D can't be determined
+    // statically (e.g. `%dynamic` shapes, inline non-ref expressions,
+    // kernel-placeholder mu), return unchanged → the matMvNormal
+    // terminal materialiser handles the MvNormal IR as before.
+    const D = __discoveredMvNormalD(muAst, out);
+    if (D == null || !Number.isInteger(D) || D < 1) return astArg;
+    const covD = __discoveredMvNormalD(covAst, out);
+    if (covD !== D) return astArg;
+    // Literal-form cov gets the full square-[D,D] structural check.
+    // Ref-form cov is validated by its inferredType being a
+    // statically-square rank-2 array (covD only told us shape[0]; we
+    // re-confirm rank 2 + shape[1] === D for the ref case so a [D, k≠D]
+    // ref doesn't slip through).
     const covLit = __resolveLiteralArrayRef(covAst, out);
-    if (!covLit) return astArg;
-    if (covLit.elements.length !== D) return astArg;
-    for (const row of covLit.elements) {
-      if (!row || row.type !== 'ArrayLiteral'
-          || row.elements.length !== D) return astArg;
+    if (covLit) {
+      if (covLit.elements.length !== D) return astArg;
+      for (const row of covLit.elements) {
+        if (!row || row.type !== 'ArrayLiteral'
+            || row.elements.length !== D) return astArg;
+      }
+    } else if (covAst.type === 'Identifier') {
+      const cb = out.get(covAst.name);
+      const ct = cb && cb.inferredType;
+      if (!(ct && ct.kind === 'array' && ct.rank === 2
+            && Number.isInteger(ct.shape[1]) && ct.shape[1] === D)) {
+        return astArg;   // not a statically square [D,D] ref → matMvNormal
+      }
+    } else {
+      return astArg;     // cov is neither literal nor a named ref → matMvNormal
     }
     // Emit the synthetic bijection binding `__bij_N`. AST shape is the
     // same identity-stub form used in test/bijection-registry-
@@ -1513,11 +1534,38 @@ function liftInlineSubexpressions(bindings: any) {
         return b.node.value;
       }
       // Note: a ref to a `rowstack(<ArrayLiteral>)` binding is NOT
-      // unwrapped here — the lift gate's materialiser side relies on
-      // the bindings env carrying all the names paramIRs touches,
-      // and a `rowstack`-wrapped ref binding stays on the safer
-      // matMvNormal path. The Session 5f follow-up widens this case
-      // alongside the matMvNormal retirement.
+      // unwrapped here — this helper only resolves per-row LITERAL
+      // structure. Ref-form rowstack is instead covered by
+      // `__discoveredMvNormalD` path (b) via the binding's inferredType
+      // (`array(2,[D,D])`), so 5f-1 lowers it through the registry
+      // without needing literal-structure access.
+    }
+    return null;
+  }
+
+  // 5f-1: discover the static event dim D of an MvNormal mu/cov argument.
+  // Order:
+  //   (a) literal / ref-to-literal / inline-rowstack-literal — via
+  //       `__resolveLiteralArrayRef`; D = number of (outer) elements.
+  //   (b) a named Identifier ref whose binding carries a statically-known
+  //       inferredType array — D = shape[0] (the leading dim is the event
+  //       dim for both a [D] vector and a [D,D] matrix). Requires shape[0]
+  //       to be a concrete integer, NOT '%dynamic'.
+  // Returns null when D is not statically known — the gate then falls
+  // through to the matMvNormal terminal materialiser. inferredType is
+  // populated on every binding at lift time (analyzer copies it from the
+  // typeinfer pass onto the bindings buildDerivations hands to lift).
+  function __discoveredMvNormalD(ast: any, bindings: any): number | null {
+    if (!ast) return null;
+    const lit = __resolveLiteralArrayRef(ast, bindings);       // path (a)
+    if (lit && lit.type === 'ArrayLiteral') return lit.elements.length;
+    if (ast.type === 'Identifier') {                            // path (b)
+      const b = bindings.get(ast.name);
+      const t = b && b.inferredType;
+      if (t && t.kind === 'array' && Array.isArray(t.shape)
+          && Number.isInteger(t.shape[0])) {
+        return t.shape[0];
+      }
     }
     return null;
   }

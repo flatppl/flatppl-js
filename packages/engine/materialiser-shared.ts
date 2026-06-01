@@ -272,6 +272,29 @@ function inlineCallableRefs(ir: any, bindings: any): any {
 
 function prepareDensityRefs(ir: any, ctx: any, label: string) {
   const refs = orchestrator.collectSelfRefs(ir);
+  // Bijection bindings reachable from `ir` carry their registry
+  // parameters (affine's mu/cov → {b, L} paramIRs) in a side-channel on
+  // `binding.bijection`, NOT in the walked IR tree — so collectSelfRefs
+  // can't see them, and the bijection binding itself is skipped below as
+  // function-like. The density walker's registry fast path (walkPushfwd)
+  // evaluates those paramIRs and needs their upstream refs in the eval
+  // env. Without this, a lifted MvNormal whose cov/mu is a NAMED REF
+  // (e.g. `cov = sigma` where `sigma = rowstack(...)`, enabled by the
+  // 5f-1 gate widening) throws "unbound self reference 'sigma'" at
+  // density time. Gather those refs so they flow into fixedEnv /
+  // perAtom alongside the rest. (The sample side avoids this because
+  // matPushfwd resolves paramIRs on the main thread via
+  // resolveIRToValue, which has the binding map.)
+  for (const n of Array.from(refs)) {
+    const b = ctx.bindings && ctx.bindings.get(n);
+    if (b && b.bijection && b.bijection.paramIRs) {
+      for (const k of Object.keys(b.bijection.paramIRs)) {
+        for (const r of orchestrator.collectSelfRefs(b.bijection.paramIRs[k])) {
+          refs.add(r);
+        }
+      }
+    }
+  }
   const perAtomNames: string[] = [];
   const fixedEnv: Record<string, any> = {};
   refs.forEach((n: any) => {
