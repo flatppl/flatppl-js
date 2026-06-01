@@ -171,20 +171,33 @@ function numel(shape: ArrayLike<number>) {
 // Infer shape from a nested JS Array. Validates rectangularity at every
 // level; throws on ragged structure. Empty array → shape=[0]; nested
 // empties (e.g. [[]]) → shape=[1, 0].
+//
+// Returns `{ shape, jsNestingDepth }` where `jsNestingDepth` is the
+// number of CONSECUTIVE JS-Array container levels walked from the
+// outside before hitting a typed-array (Float64Array) or scalar leaf.
+// Used by `asValue` to set `outerRank` per spec §03 (vectors of
+// vectors are NOT matrices implicitly): a user-written `[[1,2],[3,4]]`
+// has jsNestingDepth=2 → outerRank=1 (one outer loop axis, the inner
+// is the cell vector); the engine-internal broadcast-reduce default
+// emission `[Float64Array, Float64Array]` has jsNestingDepth=1 → no
+// outerRank tag (the F64 rows are flat storage of a matrix).
 function inferShapeFromNested(arr: any) {
-  // Treat both JS Arrays and Float64Arrays as "nested-level" containers.
-  // The legacy broadcast-reduce default in sampler-aggregate.ts emits
-  // results in the shape `[Float64Array, Float64Array, …]` (array of
-  // typed-array rows) — that's a rank-2 matrix, not a rank-1 vector
-  // with NaN entries. Detect via instanceof Float64Array so the deeper
-  // dim is captured and `flattenNested` copies the actual numeric data.
   const shape: number[] = [];
   let cur = arr;
+  let jsNestingDepth = 0;
   function isNestable(x: any) {
     return Array.isArray(x) || x instanceof Float64Array;
   }
   while (isNestable(cur)) {
     shape.push(cur.length);
+    // Count CONSECUTIVE JS-Array levels from the outside. Stops on the
+    // first Float64Array (engine-internal storage form). Subsequent
+    // JS-Array levels nested under a Float64Array would be unusual and
+    // are not counted — this matches the "outer-JS, inner-F64 storage"
+    // pattern that comes from broadcast-reduce default emissions.
+    if (Array.isArray(cur) && jsNestingDepth === shape.length - 1) {
+      jsNestingDepth = shape.length;
+    }
     if (cur.length === 0) break;
     // Check rectangularity at this level.
     const first = cur[0];
@@ -205,7 +218,7 @@ function inferShapeFromNested(arr: any) {
     }
     cur = cur[0];
   }
-  return shape;
+  return { shape, jsNestingDepth };
 }
 
 // Flatten a (possibly nested) JS Array into a Float64Array in row-major
@@ -592,6 +605,8 @@ function densify(v: any) {
       out.im = im;
       out.dtype = 'complex';
     }
+    // Diag-stored ⇒ matrix semantics; outerRank tag (if any) does not
+    // carry through expansion. The expanded form is a flat m×m matrix.
     return out;                       // struct cleared ⇒ dense
   }
   // Flagged-dense structure (tri/sym in later versions): data is already
@@ -602,6 +617,11 @@ function densify(v: any) {
   if (v.t && v.t !== 'N') out.t = v.t;
   if (v.dtype) out.dtype = v.dtype;
   if (v.im instanceof Float64Array) out.im = v.im;
+  // Preserve the nested-vector tag — spec §03 distinguishes vectors of
+  // vectors from matrices; `densify` strips structural fast-path tags
+  // (diag etc.) but the nested-vs-flat semantic distinction must
+  // survive the round-trip.
+  if (typeof v.outerRank === 'number') out.outerRank = v.outerRank;
   return out;
 }
 
@@ -783,12 +803,54 @@ function asValue(x: any): any {
     return { shape: [data.length], data: data };
   }
   if (Array.isArray(x)) {
-    const shape = inferShapeFromNested(x);
+    const inferred = inferShapeFromNested(x);
+    const shape = inferred.shape;
     const data = new Float64Array(numel(shape));
     flattenNested(x, data, 0, 0, shape);
-    return { shape: shape, data: data };
+    const out: any = { shape: shape, data: data };
+    // Set outerRank for user-nested-literal input per spec §03: a
+    // value like `[[1,2],[3,4]]` (two consecutive JS-Array levels) is
+    // a vector-of-vectors, NOT a matrix. The flat storage is
+    // preserved (ArrayOfSimilarArrays-style); the tag carries the
+    // semantic distinction so matrix-input ops can refuse it via
+    // valueLib.requireMatrix(). When the input was engine-internal
+    // (e.g. broadcast-reduce default emits `[Float64Array, …]`,
+    // jsNestingDepth = 1 only), no tag is set: that form IS a flat
+    // matrix in the engine's storage convention.
+    if (inferred.jsNestingDepth >= 2 && shape.length >= 2) {
+      out.outerRank = inferred.jsNestingDepth - 1;
+    }
+    return out;
   }
   throw new Error('asValue: cannot coerce ' + typeof x + ' to Value');
+}
+
+// promoteNestedToMatrix(v) — explicit lift from a nested-vector Value
+// (carries `outerRank < shape.length`) to a matrix-typed Value (no
+// `outerRank` tag, every axis is a loop axis). The flat storage is
+// reused as-is — semantics only. This is the SANCTIONED way to bridge
+// the spec §03 distinction "vectors of vectors are NOT matrices
+// implicitly" at the host-API seam: tests, internal lifts, and the
+// `rowstack`/`colstack` ops use it to commit a layout interpretation.
+//
+// Rules:
+//   - If `v` already has no `outerRank` tag, returned unchanged.
+//   - If `v.outerRank === v.shape.length` (every axis is a loop —
+//     "flat tensor" per the doc convention), returned with the tag
+//     stripped.
+//   - If `v.outerRank < v.shape.length`, the storage is reinterpreted
+//     as a flat tensor: every axis becomes a loop axis (cell=scalar).
+//     For shape=[N, k] with outerRank=1, the result is a matrix N×k
+//     stored row-major (the same data, no copy).
+function promoteNestedToMatrix(v: any) {
+  if (!isValue(v)) throw new Error('promoteNestedToMatrix: argument is not a Value');
+  if (typeof v.outerRank !== 'number') return v;     // already flat
+  const out: any = { shape: v.shape.slice(), data: v.data };
+  if (v.t && v.t !== 'N') out.t = v.t;
+  if (v.dtype) out.dtype = v.dtype;
+  if (v.im instanceof Float64Array) out.im = v.im;
+  if (v.struct !== undefined) out.struct = v.struct;
+  return out;
 }
 
 // Extract a JS number from a shape=[] Value. Strict: anything else
@@ -869,4 +931,5 @@ module.exports = {
   asValue: asValue,
   asScalar: asScalar,
   asBatch: asBatch,
+  promoteNestedToMatrix: promoteNestedToMatrix,
 };

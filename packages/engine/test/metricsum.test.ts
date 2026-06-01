@@ -328,7 +328,12 @@ test('_ms_check_symmetric: passthrough on symmetric matrix', () => {
   // direct rather than via the undefined-on-failure side channel.
   const ops = require('../ops.ts');
   const valueLib = require('../value.ts');
-  const sym = valueLib.asValue([[1.0, 0.5], [0.5, -1.0]]);
+  // promoteNestedToMatrix: spec §03 says a JS nested literal IS a
+  // vec-of-vec; the op contract is matrix; promote to commit the
+  // layout interpretation (storage stays flat).
+  const sym = valueLib.promoteNestedToMatrix(
+    valueLib.asValue([[1.0, 0.5], [0.5, -1.0]])
+  );
   const result = ops.dispatch('_ms_check_symmetric', [sym]);
   assert.strictEqual(result, sym, 'returns the input unchanged on success');
 });
@@ -339,7 +344,9 @@ test('_ms_check_symmetric: throws on asymmetric matrix with metricsum-attributed
   // dispatch error.
   const ops = require('../ops.ts');
   const valueLib = require('../value.ts');
-  const asym = valueLib.asValue([[1.0, 0.5], [0.7, -1.0]]);
+  const asym = valueLib.promoteNestedToMatrix(
+    valueLib.asValue([[1.0, 0.5], [0.7, -1.0]])
+  );
   let threw = false;
   try {
     ops.dispatch('_ms_check_symmetric', [asym]);
@@ -358,7 +365,9 @@ test('_ms_check_symmetric: throws on non-square matrix', () => {
   // singular" error from LU).
   const ops = require('../ops.ts');
   const valueLib = require('../value.ts');
-  const nonSquare = valueLib.asValue([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0]]);
+  const nonSquare = valueLib.promoteNestedToMatrix(
+    valueLib.asValue([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+  );
   let threw = false;
   try {
     ops.dispatch('_ms_check_symmetric', [nonSquare]);
@@ -376,7 +385,9 @@ test('_ms_check_symmetric: tolerance accepts numerically-symmetric near-floating
   // A 1e-13 absolute deviation on O(1) entries must pass.
   const ops = require('../ops.ts');
   const valueLib = require('../value.ts');
-  const nearSym = valueLib.asValue([[1.0, 0.5 + 1e-13], [0.5, -1.0]]);
+  const nearSym = valueLib.promoteNestedToMatrix(
+    valueLib.asValue([[1.0, 0.5 + 1e-13], [0.5, -1.0]])
+  );
   // Should not throw.
   const r = ops.dispatch('_ms_check_symmetric', [nearSym]);
   assert.strictEqual(r, nearSym, 'within-tolerance asymmetry is accepted');

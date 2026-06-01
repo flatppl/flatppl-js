@@ -56,6 +56,18 @@ export interface Value {
   im?: Float64Array;
   /** Structured-matrix bitmask (engine-concepts §2.2). Absent ⇒ dense. */
   struct?: number;
+  /**
+   * Number of LEADING axes that are outer/loop axes; the trailing
+   * `shape.length - outerRank` axes are the inner cell axes (engine-
+   * concepts §2.1). Per spec §03, a user-written nested literal like
+   * `[[1,2],[3,4]]` is a vector-of-vectors (NOT a matrix): the engine
+   * carries it as `{shape:[2,2], outerRank:1, data:F64[4]}` — flat
+   * row-major storage (ArrayOfSimilarArrays-style) plus the semantic
+   * tag. Absent ⇒ every axis is a loop axis (flat tensor / matrix);
+   * matrix-input linalg ops refuse Values where this tag is set via
+   * `valueLib.requireMatrix(v, opName)`.
+   */
+  outerRank?: number;
 }
 
 // ---------------------------------------------------------------------
