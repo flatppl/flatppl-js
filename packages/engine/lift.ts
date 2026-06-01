@@ -414,6 +414,32 @@ function liftInlineSubexpressions(bindings: any) {
   function freshUpperOutputAxisName() {
     return '__ms_up_' + (upperOutputAxisCounter++);
   }
+  // Mixed-variance pre-mix cascade names (one per cascade step in
+  // Form-B metricsum lift; engine-concepts §23). Distinct counter from
+  // freshGDownName / freshName so multiple metricsum calls in the same
+  // module produce non-overlapping mixed names without polluting the
+  // generic anon namespace.
+  let mixedCounter = 0;
+  function freshMixedName() {
+    let n: string;
+    do { n = '__ms_mixed_' + (mixedCounter++); } while (out.has(n));
+    return n;
+  }
+  // Output-raise cascade names (one per lower-variance output axis).
+  let raisedCounter = 0;
+  function freshRaisedName() {
+    let n: string;
+    do { n = '__ms_raised_' + (raisedCounter++); } while (out.has(n));
+    return n;
+  }
+  // Hidden binding for the main aggregate when a raise cascade follows
+  // (so the user's RHS gets redirected to the final raise step).
+  let mainCounter = 0;
+  function freshMainName() {
+    let n: string;
+    do { n = '__ms_main_' + (mainCounter++); } while (out.has(n));
+    return n;
+  }
   function makeAxisRef(name: string, loc: any) {
     // Bare AxisRef — variance marker stripped. AST shape mirrors the
     // ast.AxisRef ctor (variance is omitted when undefined, so we
@@ -1072,22 +1098,15 @@ function liftInlineSubexpressions(bindings: any) {
     const metricArg = astArg.args[0];
     const axesArg   = astArg.args[1];
     const bodyArg   = astArg.args[2];
-    // Defensive shape checks (analyzer surfaces these as user-facing
-    // diagnostics; here we just guard the rewrite from non-canonical
-    // shapes — fall through unchanged on mismatch).
     if (!metricArg) return astArg;
     if (!axesArg || axesArg.type !== 'ArrayLiteral') return astArg;
     if (!bodyArg) return astArg;
     const outputAxes = axesArg.elements || [];
 
-    // The metric arg flows into the `inv(metric)` hoist (used for every
-    // lower-variance body access) AND into the output-raise factor
-    // (`metric[.X, .X__up_N]`). For both, we need a bare Identifier ref
-    // — `inv(...)` and `get(...)` accept any value expression but the
-    // lift's downstream classifiers are simplest when the args are
-    // Identifiers pointing at named bindings. Hoist any non-Identifier
-    // metric expression to a synthetic anon binding so the rewrite has
-    // a single, stable name to reference everywhere.
+    // ─── STEP 1: stable metric Identifier ──────────────────────────
+    // The metric flows into the optional `inv(metric)` hoist AND into
+    // the output-raise cascade. We need a bare Identifier so synthetic
+    // bindings reference a single stable name.
     let metricRef: any;
     if (metricArg.type === 'Identifier') {
       metricRef = metricArg;
@@ -1097,10 +1116,10 @@ function liftInlineSubexpressions(bindings: any) {
       metricRef = makeIdent(mName, metricArg.loc);
     }
 
-    // Scan body for any lower-variance axis occurrence — that determines
-    // whether we need the synthetic `__g_down = inv(metric)` binding.
-    // Nested aggregate / metricsum calls have their own axis scope per
-    // spec §05; we stop descending at their boundary.
+    // ─── STEP 2: probe body for any lower-variance axis ───────────
+    // Decides whether `__g_down = inv(metric)` is needed. Stops at
+    // nested aggregate / metricsum boundaries (separate scope per
+    // spec §05).
     let needsInverseMetric = false;
     function probeLower(n: any) {
       if (!n || typeof n !== 'object' || needsInverseMetric) return;
@@ -1120,9 +1139,7 @@ function liftInlineSubexpressions(bindings: any) {
     }
     probeLower(bodyArg);
 
-    // Hoist `__g_down_N = inv(metric)` once when the body uses any
-    // lower-variance axis. Output-axis raise factors use `metric`
-    // directly (not its inverse), so they don't drive this hoist.
+    // ─── STEP 3: hoist `__g_down = inv(metric)` (once per metricsum) ─
     let gDownIdent: any = null;
     if (needsInverseMetric) {
       const gDownName = freshGDownName();
@@ -1136,35 +1153,154 @@ function liftInlineSubexpressions(bindings: any) {
       gDownIdent = makeIdent(gDownName, astArg.loc);
     }
 
-    // Deep-walk body cloning structure as we go (so the source AST stays
-    // untouched). Each lower-variance occurrence gets its own fresh
-    // internal axis name + an `__g_down[.internal, .X]` factor. Upper-
-    // variance occurrences just lose the variance marker. Nested
-    // aggregate / metricsum boundaries are passed through verbatim.
-    const bodyFactors: any[] = [];
+    // ─── STEP 4/5: per-(source, variance-pattern) mixed-variance cascade ─
+    // For each body IndexExpr `T[axisRefs...]` with at least one lower
+    // variance axis, emit a CASCADE of K aggregate bindings (K = number of
+    // lower axes), one per lower position (left-to-right). Each step
+    // contracts one axis with __g_down via a clean matmul-shaped
+    // aggregate that the dissolver's matmul-family pattern matcher
+    // (aggregate-patterns.classifyMatmulBody) recognises and specialises
+    // into a `mul(prev, __g_down)` IR for rank-2 / rank-1 cases.
+    //
+    // CSE: a single Map<sourceName + variance-pattern, finalMixedIdent>
+    // ensures two accesses of the same tensor with the same pattern share
+    // a single cascade. Engine-concepts §23 describes the design.
+    const mixedCSE = new Map<string, any>();
+
+    function buildCSEKey(sourceName: string, indexList: any[]): string {
+      const partFragments: string[] = [];
+      for (const idx of indexList) {
+        if (idx && idx.type === 'AxisRef') {
+          partFragments.push(idx.name + '|' + (idx.variance || 'bare'));
+        } else {
+          // Non-axis index slot (literal, expression). Include a stable
+          // tag so two accesses with different non-axis indices don't CSE.
+          partFragments.push('@' + (idx && idx.type || '?'));
+        }
+      }
+      return sourceName + '||' + partFragments.join(',');
+    }
+
+    function emitMixedCascade(sourceIdent: any, indexList: any[], anchorLoc: any): any {
+      const cseKey = buildCSEKey(sourceIdent.name, indexList);
+      const cached = mixedCSE.get(cseKey);
+      if (cached) return cached;
+      let prevIdent: any = sourceIdent;
+      // Cascade one lower position at a time (left-to-right). At each
+      // step the contracted axis is `.__ms_lo_N` (internal); the output
+      // axis takes the user-given name (.j, .rho, etc.) so the OUTER
+      // aggregate body indexes the mixed binding with the user's axis
+      // names directly.
+      for (let p = 0; p < indexList.length; p++) {
+        const ax = indexList[p];
+        if (!ax || ax.type !== 'AxisRef' || ax.variance !== 'lower') continue;
+        const internalAxis = freshLowerInternalAxisName();
+        // Aggregate output axes: full index list with variance markers
+        // stripped (and any earlier lower-variance positions already
+        // bare from previous cascade steps; their names persist via
+        // identity-on-rebuild here).
+        const stepOutputAxes = indexList.map((idx: any) => {
+          if (idx && idx.type === 'AxisRef') {
+            return makeAxisRef(idx.name, idx.loc || anchorLoc);
+          }
+          return idx;
+        });
+        // Body: prev[<indices with internal at position p>] * __g_down[.internal, .name_at_p]
+        const stepBodyIndices = indexList.map((idx: any, k: number) => {
+          if (k === p) return makeAxisRef(internalAxis, ax.loc || anchorLoc);
+          if (idx && idx.type === 'AxisRef') {
+            return makeAxisRef(idx.name, idx.loc || anchorLoc);
+          }
+          return idx;
+        });
+        const prevAccess = {
+          type: 'IndexExpr',
+          object: makeIdent(prevIdent.name, anchorLoc),
+          indices: stepBodyIndices,
+          loc: anchorLoc,
+          indexOp: 'get',
+        };
+        const gDownFactor = {
+          type: 'IndexExpr',
+          object: makeIdent(gDownIdent!.name, anchorLoc),
+          indices: [
+            makeAxisRef(internalAxis, anchorLoc),
+            makeAxisRef(ax.name, anchorLoc),
+          ],
+          loc: anchorLoc,
+          indexOp: 'get',
+        };
+        const stepBody = {
+          type: 'BinaryExpr',
+          op: '*',
+          left: prevAccess,
+          right: gDownFactor,
+          loc: anchorLoc,
+        };
+        const stepAggregate = {
+          type: 'CallExpr',
+          callee: makeIdent('aggregate', anchorLoc),
+          args: [
+            makeIdent('sum', anchorLoc),
+            { type: 'ArrayLiteral', elements: stepOutputAxes, loc: anchorLoc },
+            stepBody,
+          ],
+          loc: anchorLoc,
+        };
+        const stepName = freshMixedName();
+        out.set(stepName, makeSyntheticBinding(stepName, stepAggregate));
+        prevIdent = makeIdent(stepName, anchorLoc);
+      }
+      mixedCSE.set(cseKey, prevIdent);
+      return prevIdent;
+    }
+
+    // ─── STEP 6: body rewrite ──────────────────────────────────────
+    // Deep-walk the body, cloning as we go (the source AST stays
+    // untouched). For each IndexExpr with any lower-variance index AND
+    // an Identifier source, emit (or look up) a mixed cascade and
+    // replace the IndexExpr with `__ms_mixed_N[bare_axes]`. Other
+    // AxisRef occurrences lose their variance markers. Nested
+    // aggregate/metricsum subtrees pass through verbatim.
     function rewriteBody(n: any): any {
       if (!n) return n;
       if (Array.isArray(n)) return n.map(rewriteBody);
       if (typeof n !== 'object') return n;
-      if (n.type === 'AxisRef') {
-        if (n.variance === 'lower') {
-          const internalName = freshLowerInternalAxisName();
-          const factor = {
-            type: 'IndexExpr',
-            object: makeIdent(gDownIdent!.name, n.loc),
-            indices: [
-              makeAxisRef(internalName, n.loc),
-              makeAxisRef(n.name, n.loc),
-            ],
-            loc: n.loc,
-            indexOp: 'get',
-          };
-          bodyFactors.push(factor);
-          return makeAxisRef(internalName, n.loc);
+      // IndexExpr with a lower-variance axis: cascade-rewrite if the
+      // source is an Identifier. (Non-Identifier sources fall through
+      // to default recurse — variance markers are stripped, but no
+      // metric factor is inserted; the analyzer / spec discourage
+      // non-Identifier tensor sources in metricsum bodies, so this is
+      // a documented best-effort path.)
+      if (n.type === 'IndexExpr' && n.object && n.object.type === 'Identifier'
+          && Array.isArray(n.indices)) {
+        let hasLower = false;
+        for (const idx of n.indices) {
+          if (idx && idx.type === 'AxisRef' && idx.variance === 'lower') {
+            hasLower = true; break;
+          }
         }
-        // Upper-variance or unmarked: strip marker (the unmarked case
-        // already surfaced as a static-error diagnostic; we pass it
-        // through bare for defence-in-depth).
+        if (hasLower && gDownIdent) {
+          const mixedIdent = emitMixedCascade(n.object, n.indices, n.loc);
+          const bareIndices = n.indices.map((idx: any) => {
+            if (idx && idx.type === 'AxisRef') {
+              return makeAxisRef(idx.name, idx.loc);
+            }
+            return rewriteBody(idx);
+          });
+          return {
+            type: 'IndexExpr',
+            object: makeIdent(mixedIdent.name, n.loc),
+            indices: bareIndices,
+            loc: n.loc,
+            indexOp: n.indexOp || 'get',
+          };
+        }
+      }
+      // Standalone AxisRef (not handled by the IndexExpr case above):
+      // strip variance marker. The standalone case shows up in output-
+      // axis arrays handled outside this walker; here it's defensive.
+      if (n.type === 'AxisRef') {
         return makeAxisRef(n.name, n.loc);
       }
       // Nested aggregate / metricsum: pass through without descending.
@@ -1172,6 +1308,7 @@ function liftInlineSubexpressions(bindings: any) {
           && (n.callee.name === 'aggregate' || n.callee.name === 'metricsum')) {
         return n;
       }
+      // Default: deep-clone with recursive rewrite.
       const rebuilt: any = {};
       for (const k of Object.keys(n)) {
         if (k === 'loc') { rebuilt[k] = n[k]; continue; }
@@ -1181,76 +1318,128 @@ function liftInlineSubexpressions(bindings: any) {
     }
     const rewrittenBody = rewriteBody(bodyArg);
 
-    // Build the post-strip output-axes list and collect output-raise
-    // factors for each lower-variance output. Upper output axes drop
-    // their marker directly; lower output axes get renamed to a fresh
-    // upper axis (so the aggregate output is stored upper-canonical)
-    // and a `metric[.X, .X__up_N]` factor is multiplied into the body.
-    const newOutputAxes: any[] = [];
-    const raiseFactors: any[] = [];
+    // ─── STEP 7: partition output axes for the main aggregate ──────
+    // Strip variance markers from every output axis. The bare names
+    // stay on the main aggregate's output. Lower-variance axes are
+    // recorded for the post-main raise cascade — the raise cascade
+    // renames each lower-variance output axis (one at a time) via a
+    // metric contraction.
+    const mainOutputAxes: any[] = [];
+    const lowerOutputs: { origName: string; loc: any }[] = [];
     for (const ax of outputAxes) {
       if (!ax || ax.type !== 'AxisRef') {
-        newOutputAxes.push(ax);
+        mainOutputAxes.push(ax);
         continue;
       }
+      mainOutputAxes.push(makeAxisRef(ax.name, ax.loc));
       if (ax.variance === 'lower') {
-        const upperName = freshUpperOutputAxisName();
-        newOutputAxes.push(makeAxisRef(upperName, ax.loc));
-        const factor = {
-          type: 'IndexExpr',
-          object: makeIdent(metricRef.name, ax.loc),
-          indices: [
-            makeAxisRef(ax.name, ax.loc),
-            makeAxisRef(upperName, ax.loc),
-          ],
-          loc: ax.loc,
-          indexOp: 'get',
-        };
-        raiseFactors.push(factor);
-      } else {
-        // Upper (or unmarked, already diagnosed): strip the marker.
-        newOutputAxes.push(makeAxisRef(ax.name, ax.loc));
+        lowerOutputs.push({ origName: ax.name, loc: ax.loc });
       }
     }
 
-    // Build the final body: rewrittenBody * factor1 * factor2 * ...
-    // Multiplicatively folded via BinaryExpr nodes. The fold order
-    // doesn't matter for `mul` (associative-commutative on scalars,
-    // which the analyzer guarantees the body is via the "arrays of
-    // scalars" restriction).
-    let wrappedBody = rewrittenBody;
-    for (const f of bodyFactors) {
-      wrappedBody = {
-        type: 'BinaryExpr',
-        op: '*',
-        left: wrappedBody,
-        right: f,
-        loc: astArg.loc,
-      };
-    }
-    for (const f of raiseFactors) {
-      wrappedBody = {
-        type: 'BinaryExpr',
-        op: '*',
-        left: wrappedBody,
-        right: f,
-        loc: astArg.loc,
-      };
+    // ─── STEP 8: build the main aggregate ─────────────────────────
+    // Body has only bare-axis indexing (no metric factors interspersed).
+    // Output axes are the user's axis names with variance markers
+    // stripped. When no lower-variance output axis exists, we mutate the
+    // metricsum call IN PLACE to the aggregate (same return shape as
+    // Form-A's degenerate path; the caller-side handling is unchanged
+    // for this case).
+    if (lowerOutputs.length === 0) {
+      astArg.callee = makeIdent('aggregate', astArg.loc);
+      astArg.args = [
+        makeIdent('sum', astArg.loc),
+        { type: 'ArrayLiteral', elements: mainOutputAxes, loc: axesArg.loc },
+        rewrittenBody,
+      ];
+      if (astArg.kwargs) delete astArg.kwargs;
+      return astArg;
     }
 
-    // Rewrite the metricsum call in place to `aggregate(sum, [stripped_axes], wrappedBody)`.
-    astArg.callee = makeIdent('aggregate', astArg.loc);
-    astArg.args = [
-      makeIdent('sum', astArg.loc),
-      {
-        type: 'ArrayLiteral',
-        elements: newOutputAxes,
-        loc: axesArg.loc,
-      },
-      wrappedBody,
-    ];
-    if (astArg.kwargs) delete astArg.kwargs;
-    return astArg;
+    // ─── STEP 9: hoist main aggregate as a hidden binding, emit raises ──
+    // When at least one output axis is lower-variance, the main
+    // aggregate produces the body's mixed-variance components; a per-
+    // axis raise cascade then transforms those into the all-upper
+    // canonical storage layout (spec §sec:metricsum: "the actual result
+    // returned by metricsum is automatically raised to all-upper
+    // canonical storage"). The user's binding RHS gets redirected to
+    // the final raise step's Identifier — this matches the
+    // inlineMvNormalLift pattern (return a replacement node from the
+    // inline-lift; caller's `astArg = inlineXxxLift(astArg)` accepts
+    // the new value).
+    const mainAggregate = {
+      type: 'CallExpr',
+      callee: makeIdent('aggregate', astArg.loc),
+      args: [
+        makeIdent('sum', astArg.loc),
+        { type: 'ArrayLiteral', elements: mainOutputAxes, loc: axesArg.loc },
+        rewrittenBody,
+      ],
+      loc: astArg.loc,
+    };
+    const mainName = freshMainName();
+    out.set(mainName, makeSyntheticBinding(mainName, mainAggregate));
+
+    // Raise cascade — one synthetic aggregate per lower-variance output.
+    // Each step renames a single lower-variance axis (.X) to a fresh
+    // upper axis (.X_up_N) by contracting with `metric[.X, .X_up_N]`.
+    let prevIdent: any = makeIdent(mainName, astArg.loc);
+    let prevAxes: { name: string; loc: any }[] = mainOutputAxes
+      .filter((ax: any) => ax && ax.type === 'AxisRef')
+      .map((ax: any) => ({ name: ax.name, loc: ax.loc }));
+
+    for (const { origName, loc } of lowerOutputs) {
+      const freshUp = freshUpperOutputAxisName();
+      // Raise step output axes: prev's axes with origName replaced by
+      // freshUp (the new upper-storage axis).
+      const raiseOutputAxes = prevAxes.map((ax) =>
+        ax.name === origName
+          ? makeAxisRef(freshUp, ax.loc || loc)
+          : makeAxisRef(ax.name, ax.loc || loc)
+      );
+      // Raise body: prev[<prev's axes verbatim>] * metric[.origName, .freshUp]
+      const prevAccess = {
+        type: 'IndexExpr',
+        object: makeIdent(prevIdent.name, loc),
+        indices: prevAxes.map((ax) => makeAxisRef(ax.name, ax.loc || loc)),
+        loc: loc,
+        indexOp: 'get',
+      };
+      const metricFactor = {
+        type: 'IndexExpr',
+        object: makeIdent(metricRef.name, loc),
+        indices: [
+          makeAxisRef(origName, loc),
+          makeAxisRef(freshUp, loc),
+        ],
+        loc: loc,
+        indexOp: 'get',
+      };
+      const raiseBody = {
+        type: 'BinaryExpr',
+        op: '*',
+        left: prevAccess,
+        right: metricFactor,
+        loc: loc,
+      };
+      const raiseAggregate = {
+        type: 'CallExpr',
+        callee: makeIdent('aggregate', loc),
+        args: [
+          makeIdent('sum', loc),
+          { type: 'ArrayLiteral', elements: raiseOutputAxes, loc: loc },
+          raiseBody,
+        ],
+        loc: loc,
+      };
+      const raiseName = freshRaisedName();
+      out.set(raiseName, makeSyntheticBinding(raiseName, raiseAggregate));
+      prevIdent = makeIdent(raiseName, loc);
+      prevAxes = raiseOutputAxes.map((ax: any) => ({ name: ax.name, loc: ax.loc }));
+    }
+
+    // Return the final raise Ident — the caller redirects the user's
+    // binding RHS to this.
+    return prevIdent;
   }
 
   // Helpers used by inlineMvNormalLift (small AST builders + literal

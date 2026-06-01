@@ -172,24 +172,33 @@ function numel(shape: ArrayLike<number>) {
 // level; throws on ragged structure. Empty array → shape=[0]; nested
 // empties (e.g. [[]]) → shape=[1, 0].
 function inferShapeFromNested(arr: any) {
+  // Treat both JS Arrays and Float64Arrays as "nested-level" containers.
+  // The legacy broadcast-reduce default in sampler-aggregate.ts emits
+  // results in the shape `[Float64Array, Float64Array, …]` (array of
+  // typed-array rows) — that's a rank-2 matrix, not a rank-1 vector
+  // with NaN entries. Detect via instanceof Float64Array so the deeper
+  // dim is captured and `flattenNested` copies the actual numeric data.
   const shape: number[] = [];
   let cur = arr;
-  while (Array.isArray(cur)) {
+  function isNestable(x: any) {
+    return Array.isArray(x) || x instanceof Float64Array;
+  }
+  while (isNestable(cur)) {
     shape.push(cur.length);
     if (cur.length === 0) break;
     // Check rectangularity at this level.
     const first = cur[0];
-    if (Array.isArray(first)) {
+    if (isNestable(first)) {
       const len = first.length;
       for (let i = 1; i < cur.length; i++) {
         const sib = cur[i];
-        if (!Array.isArray(sib) || sib.length !== len) {
+        if (!isNestable(sib) || sib.length !== len) {
           throw new Error('asValue: nested array is ragged at depth ' + shape.length);
         }
       }
     } else {
       for (let i = 1; i < cur.length; i++) {
-        if (Array.isArray(cur[i])) {
+        if (isNestable(cur[i])) {
           throw new Error('asValue: nested array mixes scalars and arrays at depth ' + shape.length);
         }
       }
