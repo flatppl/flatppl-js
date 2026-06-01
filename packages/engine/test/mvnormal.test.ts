@@ -123,12 +123,18 @@ m = MvNormal(mu = mu, cov = sigma)
 
 test('MvNormal: error on non-PD cov', async () => {
   // [[1, 2], [2, 1]] has eigenvalues 3, -1; not positive definite.
+  // Since the 5f-1 gate widening, a static-shape ref cov (sigma =
+  // rowstack(...)) lowers to the pushfwd-of-iid path, so the Cholesky
+  // failure surfaces from `lower_cholesky` directly rather than from
+  // matMvNormal's wrapper. Either attribution is acceptable — both name
+  // the positive-definiteness violation.
   const ctx = makeCtx(`
 mu = [0.0, 0.0]
 sigma = rowstack([[1.0, 2.0], [2.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
-  await assert.rejects(ctx.getMeasure('m'), /MvNormal:.*positive definite/i);
+  await assert.rejects(ctx.getMeasure('m'),
+    /(MvNormal|lower_cholesky):.*positive definite/i);
 });
 
 test('MvNormal: dim mismatch error mu vs cov', async () => {

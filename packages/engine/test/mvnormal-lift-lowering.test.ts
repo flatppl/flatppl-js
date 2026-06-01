@@ -235,20 +235,25 @@ X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))
 // 5. Fallback — non-literal cov stays on matMvNormal (kind=mvnormal)
 // =====================================================================
 
-test('5e: non-literal cov falls through to matMvNormal (kind=mvnormal preserved)', async () => {
-  // Use a CallExpr binding for cov that the lift literal-resolver
-  // can't unwrap (e.g. `eye(2)` — a function call, not ArrayLiteral).
-  // The lift gate skips this case; matMvNormal materialises X.
+test('5f-1: dynamic-shape cov falls through to matMvNormal (kind=mvnormal preserved)', async () => {
+  // 5f-1 widened the gate to accept cov whose D is statically known
+  // (literal, ref-to-literal, inline rowstack, OR a named ref with a
+  // static inferredType). `diagmat([1.0, 1.0])` is an inline non-ref
+  // CallExpr whose inferredType is `%dynamic`-shaped (diagmat doesn't
+  // const-fold the vector length), so D is NOT statically known and
+  // the gate correctly skips — matMvNormal still materialises X. This
+  // pins the matMvNormal fallback now that eye(2)/rowstack DO flip
+  // (see the two positive tests below).
   const ctx = makeCtx(`
 mu_vec = [1.0, 2.0]
-cov_mat = eye(2)
+cov_mat = diagmat([1.0, 1.0])
 X = MvNormal(mu = mu_vec, cov = cov_mat)
 `);
   // No __bij_N / __iid_N synthesised.
   const names = Array.from(ctx.bindings.keys());
   const bijName = names.find((n: any) => /^__bij/.test(n));
   assert.equal(bijName, undefined,
-    'non-literal cov → no synthetic bijection binding (gate skipped)');
+    'dynamic-shape cov → no synthetic bijection binding (gate skipped)');
   assert.equal(ctx.derivations.X.kind, 'mvnormal',
     'X stays on the kind=mvnormal classifier branch — matMvNormal handles it');
 
@@ -256,6 +261,61 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
   const X = await ctx.getMeasure('X');
   assert.ok(X && X.value, 'fallback path materialises');
   assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 2]);
+});
+
+// =====================================================================
+// 5b. 5f-1 — widened gate: static-shape non-literal cov DOES flip
+// =====================================================================
+
+test('5f-1: eye(2) cov (static [2,2] inferredType) flips to pushfwd', async () => {
+  // `eye(2)` resolves to a static T.array(2,[2,2],REAL) at typeinfer
+  // time, so D=2 is statically known — the widened gate fires and X
+  // lowers to pushfwd(<affine>, iid(Normal, 2)). cov = I → L = I, so
+  // X ≈ Normal(mu, I) and the empirical mean ≈ mu.
+  const ctx = makeCtx(`
+mu_vec = [1.0, 2.0]
+cov_mat = eye(2)
+X = MvNormal(mu = mu_vec, cov = cov_mat)
+`);
+  const names = Array.from(ctx.bindings.keys());
+  const bijName = names.find((n: any) => /^__bij/.test(n));
+  assert.ok(bijName, 'eye(2) cov → synthetic bijection binding (gate fired)');
+  assert.equal(ctx.bindings.get(bijName).bijection.registryName, 'affine');
+  assert.notEqual(ctx.derivations.X.kind, 'mvnormal',
+    'X flipped off the kind=mvnormal branch');
+
+  const X = await ctx.getMeasure('X');
+  assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 2]);
+  // Empirical mean ≈ mu_vec (sigma=1 per dim). Inline column mean over
+  // the [N, 2] atom-major buffer; generous margin for the small N.
+  const N = SAMPLE_COUNT;
+  const muExpected = [1.0, 2.0];
+  for (let d = 0; d < 2; d++) {
+    let sum = 0;
+    for (let i = 0; i < N; i++) sum += X.value.data[i * 2 + d];
+    const mean = sum / N;
+    const margin = 5 / Math.sqrt(N);   // ~0.31 at N=256
+    assert.ok(Math.abs(mean - muExpected[d]) < margin,
+      `dim ${d}: mean ${mean.toFixed(4)} vs ${muExpected[d]} (margin ${margin.toFixed(3)})`);
+  }
+});
+
+test('5f-1: ref-form rowstack cov flips to pushfwd (via inferredType)', () => {
+  // `sigma = rowstack([[…]])` then `cov = sigma`: the ref's binding
+  // carries a static inferredType array(2,[2,2]), so D=2 is known and
+  // the gate fires. (Pre-5f-1 the literal-resolver refused to unwrap a
+  // rowstack *ref*; the inferredType path now covers it.)
+  const ctx = makeCtx(`
+mu_vec = [1.0, 2.0]
+sigma = rowstack([[2.0, 0.5], [0.5, 1.0]])
+X = MvNormal(mu = mu_vec, cov = sigma)
+`);
+  const names = Array.from(ctx.bindings.keys());
+  const bijName = names.find((n: any) => /^__bij/.test(n));
+  assert.ok(bijName, 'rowstack-ref cov → synthetic bijection binding (gate fired)');
+  assert.equal(ctx.bindings.get(bijName).bijection.registryName, 'affine');
+  assert.notEqual(ctx.derivations.X.kind, 'mvnormal',
+    'X flipped off the kind=mvnormal branch');
 });
 
 // =====================================================================

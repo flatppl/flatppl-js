@@ -254,6 +254,18 @@ function valueToPlain(v: any): any {
   // Shape-tagged Value → nested JS array (row-major), scalar → number.
   if (typeof v === 'object' && Array.isArray(v.shape)
       && v.data instanceof Float64Array) {
+    // Densify structured Values (diag-stored, etc.) first. A diag-stored
+    // matrix carries `data` of length D (the diagonal) but logical shape
+    // [D, D]; the row-major walk below assumes dense storage of length
+    // numel(shape), so reading a structured `data` directly produces
+    // garbage (undefined / wrong entries). `eye(n)`, `diagmat(v)`, and
+    // any other structured producer reach here via resolveIRToValue
+    // (e.g. MvNormal cov, kernel-broadcast params). densify is a no-op
+    // for already-dense Values.
+    if (v.struct !== undefined) {
+      const valueLib = require('./value.ts');
+      v = valueLib.densify(v);
+    }
     const data = v.data;
     const build = (axis: number, offset: number, stride: number): any => {
       if (axis === v.shape.length) return data[offset];
