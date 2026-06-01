@@ -6,7 +6,7 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 
 > **Status (updated 2026-06-01):** Reference implementation of FlatPPL
 > v0.1. All sources in TypeScript with `strict: true` (migration
-> complete 2026-05). **2975 engine tests pass**; the engine drives the
+> complete 2026-05). **3017 engine tests pass**; the engine drives the
 > VS Code visualizer and the web gallery end-to-end. The measure-
 > algebra core is feature-complete for the spec's Bayesian /
 > measure-theoretic vocabulary; multivariate distributions (MvNormal,
@@ -53,6 +53,54 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 > parameterised / non-deterministic, so static enforcement isn't
 > possible; the runtime guard reports a metricsum-attributed error
 > (not an opaque LU `matrix is singular` from inv).
+>
+> **Vector-of-vectors ≠ matrix enforcement (spec §03, 2026-06-01):**
+> The §2.1 `outerRank` tag is now load-bearing. Per spec §03 a user
+> nested literal like `[[1, 2], [3, 4]]` is a vector-of-vectors (NOT
+> a matrix); only `rowstack(...)` / `colstack(...)` commit a layout
+> interpretation. FlatPPL itself is row/column-major-agnostic — the
+> engine uses flat row-major Float64Array storage as its INTERNAL
+> convention (the ArrayOfSimilarArrays-style "nested-vec backed by
+> flat n-d storage", cf. Julia ArraysOfArrays.jl), but the semantic
+> distinction is preserved end-to-end:
+>
+> - `value.ts:asValue` sets `outerRank = jsNestingDepth - 1` on
+>   nested-JS-Array input (e.g. `[[1,2],[3,4]]` → `outerRank=1`,
+>   storage stays a contiguous `Float64Array(4)`). Engine-internal
+>   `[Float64Array, …]` (broadcast-reduce default emission) stays
+>   matrix-typed (no tag).
+> - `valueLib.promoteNestedToMatrix(v)` is the ONLY sanctioned way
+>   to strip the tag — used by rowstack/colstack/_nestedToValue when
+>   a matrix interpretation is intentional. Storage shared (no copy).
+> - `valueLib.requireMatrix(v, opName)` gates every matrix-input op
+>   at runtime: transpose, adjoint, inv, det, logabsdet,
+>   lower_cholesky, row_gram, col_gram, linsolve, quadform,
+>   _ms_check_symmetric, density-prims._paramAsMatrix /
+>   _asMatrixOfSize. Throws a §03-citing error pointing the user at
+>   rowstack/colstack. NOT applied to `mul` — its matmul branch is
+>   also dispatched by the aggregate dissolver on spec-legal
+>   vec-of-vec patterns, and the engine row-major convention makes
+>   the numerical result correct either way.
+> - Typeinfer signature unification rejects vec-of-vec input to
+>   matrix-input op signatures (`array(2, [%dyn,%dyn], real)` doesn't
+>   unify with `array(1, [n], array(1, [n], real))`). `argError` /
+>   `kwargError` append a "this is a vector-of-vectors per spec §03,
+>   wrap with rowstack(...)" hint when the pattern matches.
+> - Metricsum's "Expression restrictions" check inspects the
+>   un-flattened element type so the vec-of-vec case is rejected at
+>   parse time with a dedicated diagnostic.
+> - Aggregate over vec-of-vec stays SPEC-LEGAL (`A[.i, .j] ≡ A[.i][.j]`
+>   per spec §04 sec:aggregate). The aggregate runtime uses
+>   `val.shape` + row-major strides; numerical result matches
+>   `rowstack(A)`-typed evaluation.
+> - Lift gate widens to unwrap inline `rowstack(<ArrayLiteral>)` so
+>   Session 5e's MvNormal lowering continues to fire when users wrap
+>   their `cov` arg per §03.
+> - Viewer defense in depth: `materialiser-shared.fixedValueToMeasure`
+>   skips `intrinsicShape` when the source Value is a nested-vector,
+>   so the matrix-mode heatmap renderer can't fire on it.
+>
+> 29 invariants pinned in `test/spec-vec-of-vec-not-matrix.test.ts`.
 >
 > **Architectural arc in progress: Phase 5.1 §22 multivariate-as-
 > derived-measure reframe.** Sessions 1-5e (May-June 2026) landed
