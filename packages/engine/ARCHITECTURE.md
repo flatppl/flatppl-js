@@ -4,9 +4,9 @@ Deep-dive companion to the root [`AGENTS.md`](../../AGENTS.md). This document co
 the engine package only. For the language semantics it implements, read the FlatPPL
 language spec in the **flatppl-design** repository (resolution order in `AGENTS.md`).
 
-> **Status (updated 2026-06-01):** Reference implementation of FlatPPL
+> **Status (updated 2026-06-02):** Reference implementation of FlatPPL
 > v0.1. All sources in TypeScript with `strict: true` (migration
-> complete 2026-05). **3017 engine tests pass**; the engine drives the
+> complete 2026-05). **3032 engine tests pass**; the engine drives the
 > VS Code visualizer and the web gallery end-to-end. The measure-
 > algebra core is feature-complete for the spec's Bayesian /
 > measure-theoretic vocabulary; multivariate distributions (MvNormal,
@@ -103,13 +103,27 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 > 29 invariants pinned in `test/spec-vec-of-vec-not-matrix.test.ts`.
 >
 > **Architectural arc in progress: Phase 5.1 §22 multivariate-as-
-> derived-measure reframe.** Sessions 1-5e (May-June 2026) landed
+> derived-measure reframe.** Sessions 1-5f (May-June 2026) landed
 > end-to-end registry-driven `pushfwd(affine, iid(Normal, D))` for
-> literal-mu / literal-cov `MvNormal`. matMvNormal stays as safety
-> fallback. Read `flatppl-dev/flatppl-engine-concepts.md` §22 + the
-> "Session resume point" in `flatppl-dev/TODO-flatppl-js.md` to pick
-> up. Remaining: Sessions 5f (widen lift gate + atom-dep params), 5g
-> (retire matMvNormal + VECTOR_OUTPUT_DISTRIBUTIONS gates), 5h+
+> `MvNormal`. Session 5f widened the lift gate from literal-only mu/cov
+> to any statically-known-D mu/cov (named refs read D from
+> `inferredType`; ref-form `rowstack` covered for free) AND added
+> atom-DEPENDENT params: the affine registry's forward/inverse/logDetJ
+> accept atom-batched `b=[N,D]` / `L=[N,D,D]`, and matPushfwd fetches a
+> per-atom mean's measure (composite `.elems` → `[N,D]` via
+> `measureToParamValue`) so hierarchical MvNormal (`muv = [m1, m2]`
+> drawn per atom) samples e2e — new capability matMvNormal rejects.
+> Kernel-placeholder mu (joint/nested-broadcast components) does NOT
+> satisfy the static-D gate, so those composite paths are unaffected;
+> teaching the composite detectors to walk a lowered `pushfwd`
+> component is 5g. matMvNormal stays as the terminal materialiser for
+> dynamic-shape / compound-atom-dep cases. Marginal density of a
+> hierarchical pushfwd (atom-dep params in a `logdensityof`) is a Monte
+> Carlo estimate, deferred with an actionable diagnostic. Read
+> `flatppl-dev/flatppl-engine-concepts.md` §22 + the "Session resume
+> point" in `flatppl-dev/TODO-flatppl-js.md` to pick up. Remaining:
+> Session 5g (retire matMvNormal + VECTOR_OUTPUT_DISTRIBUTIONS gates;
+> teach composite detectors to walk pushfwd components), 5h+
 > (additional bijection registry entries for MvLogNormal / Dirichlet /
 > Wishart / etc.). Outstanding spec features are tracked in
 > `flatppl-dev/TODO-flatppl-js.md` — primarily the standard modules
