@@ -347,3 +347,66 @@ Y = pushfwd(b, Base)
   assert.ok(Y && Y.value && Y.value.shape[1] === 2,
     'hand-marker dispatch still produces a [N, 2] Value');
 });
+
+// =====================================================================
+// 7. 5f-2 — atom-DEPENDENT params: hierarchical MvNormal samples e2e
+// =====================================================================
+//
+// `muv = [m1, m2]` with m1, m2 drawn → a per-atom mean. The lift gate
+// fires (D=2 from muv's static inferredType array(1,[2])), lowering X to
+// pushfwd(<affine>, iid(Normal, 2)). matPushfwd resolves the per-atom
+// mean by FETCHING muv's measure (a composite tuple measure) and
+// stacking its component samples into an atom-batched [N, 2] param.
+// The registry's affine forward then computes X_n = muv_n + L·z_n per
+// atom (the reparameterisation). This is NEW capability — matMvNormal
+// rejects per-atom mu.
+
+test('5f-2: hierarchical MvNormal (per-atom drawn mean) samples e2e', async () => {
+  const src = `
+m1 ~ Normal(mu = 5.0, sigma = 0.01)
+m2 ~ Normal(mu = -3.0, sigma = 0.01)
+muv = [m1, m2]
+cov = rowstack([[1.0, 0.0], [0.0, 1.0]])
+X = MvNormal(mu = muv, cov = cov)
+`;
+  const lifted = processSource(src);
+  const built  = orchestrator.buildDerivations(lifted.bindings);
+  // The gate fires: X is a pushfwd, not kind=mvnormal.
+  assert.notEqual(built.derivations.X.kind, 'mvnormal',
+    'per-atom-mean MvNormal flips to pushfwd');
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: ROOT_SEED });
+  const N = 4000;
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure:  (name: any) => {
+      if (cache.has(name)) return cache.get(name);
+      const p = materialiser.materialiseMeasure(name, ctx);
+      cache.set(name, p);
+      return p;
+    },
+    sendWorker:  (msg: any) => Promise.resolve(worker.handle(msg)),
+    sampleCount: N,
+    rootSeed:    ROOT_SEED,
+  };
+  const X = await ctx.getMeasure('X');
+  assert.deepEqual(Array.from(X.value.shape), [N, 2], 'shape [N, 2]');
+  assert.equal(X.value.outerRank, 1, 'outerRank=1 preserved');
+  for (let i = 0; i < X.value.data.length; i++) {
+    assert.ok(Number.isFinite(X.value.data[i]), `data[${i}] finite`);
+  }
+  // Per-atom mean ≈ drawn mu (m has tight prior sigma; the iid-normal
+  // noise has unit variance). Mean over atoms ≈ E[m] = [5, -3].
+  const muExpected = [5.0, -3.0];
+  for (let d = 0; d < 2; d++) {
+    let sum = 0;
+    for (let i = 0; i < N; i++) sum += X.value.data[i * 2 + d];
+    const mean = sum / N;
+    const margin = 4 / Math.sqrt(N);   // unit-variance noise dominates
+    assert.ok(Math.abs(mean - muExpected[d]) < margin,
+      `dim ${d}: mean ${mean.toFixed(4)} vs ${muExpected[d]} (margin ${margin.toFixed(4)})`);
+  }
+});
