@@ -82,9 +82,16 @@ type CompositeBody =
     })
   | (CompositeBodyBase & {
       kind: 'nested_broadcast';
-      /** Inner broadcast's distOp (bare sampler-REGISTRY scalar dist). */
+      /** Inner broadcast's distOp — either a bare scalar sampler-
+       *  REGISTRY dist (Phase 4.4 original scope) OR a
+       *  VECTOR_OUTPUT_DISTRIBUTIONS entry like MvNormal (Phase 5.1
+       *  Session 5b extension). The executor branches on
+       *  `innerIsVectorOutput` to dispatch vector-output inner per
+       *  (outer_j, inner_k) cell through the registry-backed
+       *  materialiser. */
       innerDistOp: string;
-      /** Inner distribution's REGISTRY param names. */
+      /** Inner distribution's REGISTRY param names. Empty for vector-
+       *  output inner dists. */
       innerDistParams: string[];
       /** Inner broadcast's kwargs IR. Each kwarg's IR may reference outer
        *  kernel placeholders (`%local`) AND/OR closed-over self-refs
@@ -92,6 +99,13 @@ type CompositeBody =
        *  outer placeholders cell-by-cell and slices inner-collection args
        *  per inner cell. */
       innerKwargs: Record<string, any>;
+      /** True when `innerDistOp` is in `VECTOR_OUTPUT_DISTRIBUTIONS`
+       *  (Phase 5.1 Session 5b). */
+      innerIsVectorOutput: boolean;
+      /** Per-inner-cell event dim along the nested stitching axis: 1
+       *  for scalar dists, n for MvNormal etc. NaN at classify-time
+       *  without literal mu; materialiser resolves at runtime. */
+      innerEventDim: number;
     })
   | (CompositeBodyBase & {
       kind: 'jointchain';
@@ -316,6 +330,9 @@ registerCompositeBodyRecognizer((d, ctx) => {
     innerDistOp: desc.innerDistOp,
     innerDistParams: desc.innerDistParams,
     innerKwargs: desc.innerKwargs,
+    // Phase 5.1 Session 5b — MvNormal inner support.
+    innerIsVectorOutput: desc.innerIsVectorOutput,
+    innerEventDim: desc.innerEventDim,
   };
 });
 
