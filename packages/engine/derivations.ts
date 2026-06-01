@@ -87,6 +87,7 @@ const {
   parseSetIR,
   normalizeMeasureIR,
   SAMPLEABLE_DISTRIBUTIONS,
+  VECTOR_OUTPUT_DISTRIBUTIONS,
   DISCRETE_DISTRIBUTIONS,
 } = require('./ir-shared.ts');
 
@@ -1272,33 +1273,42 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   if (!k || k.kind !== 'ref' || k.ns !== 'self') return null;
   // Bare distribution-constructor kernel, not shadowed by a binding.
   const isBareDist = SAMPLEABLE_DISTRIBUTIONS.has(k.name) && !bindings.has(k.name);
+  // Phase 5.1 Session 4: bare vector-output dist (MvNormal etc.).
+  // Falls outside SAMPLEABLE_DISTRIBUTIONS because the worker's
+  // sampleN is scalar-only by design — engine-concepts §22.2(a). The
+  // runtime (matKernelBroadcast) dispatches these to a per-cell
+  // materialiser path that consumes the bijection registry directly.
+  const isBareVectorDist = VECTOR_OUTPUT_DISTRIBUTIONS.has(k.name)
+    && !bindings.has(k.name);
   // Composite kernel-of-iid binding — fusion (b) Phase F shape.
   // Recognise broadcast(<user-kernel-binding>, …) when the binding
   // is `kernelof(iid(<BuiltinDist>, n), kw)` (lowered to
   // `functionof(lawof(iid(<BuiltinDist>, n)), kw)`). The runtime
   // (matKernelBroadcast) detects and handles this case.
-  const isIidComposite = !isBareDist && _isIidCompositeKernelBinding(k.name, bindings);
+  const isIidComposite = !isBareDist && !isBareVectorDist
+    && _isIidCompositeKernelBinding(k.name, bindings);
   // Phase 4.2: joint-bodied user kernels — body shape is
   // `lawof(joint(<components>))` (positional or keyword), with each
   // component an anon-ref to a sampleable distribution. matKernel-
   // Broadcast dispatches to `_executeJointComposite` via the
   // COMPOSITE_BODY_RECOGNIZERS table.
-  const isJointComposite = !isBareDist && !isIidComposite
+  const isJointComposite = !isBareDist && !isBareVectorDist && !isIidComposite
     && _isJointCompositeKernelBinding(k.name, bindings);
   // Phase 4.3: jointchain-bodied user kernels — body shape is
   // `lawof(jointchain(<base>, <K_1>, …))`. Markov chain where each
   // step depends on the previous step's variate. matKernelBroadcast
   // dispatches to `_executeJointChainComposite` via the
   // COMPOSITE_BODY_RECOGNIZERS table.
-  const isJointChainComposite = !isBareDist && !isIidComposite && !isJointComposite
+  const isJointChainComposite = !isBareDist && !isBareVectorDist
+    && !isIidComposite && !isJointComposite
     && _isJointChainCompositeKernelBinding(k.name, bindings);
   // Phase 4.4: nested-broadcast-bodied user kernels — body shape is
   // `lawof(broadcast(<bare_dist>, <kwargs>))`. Outer kernel-broadcast
   // dispatches to `_executeNestedBroadcastComposite`.
-  const isNestedBroadcastComposite = !isBareDist && !isIidComposite
-    && !isJointComposite && !isJointChainComposite
+  const isNestedBroadcastComposite = !isBareDist && !isBareVectorDist
+    && !isIidComposite && !isJointComposite && !isJointChainComposite
     && _isNestedBroadcastCompositeKernelBinding(k.name, bindings);
-  if (!isBareDist && !isIidComposite && !isJointComposite
+  if (!isBareDist && !isBareVectorDist && !isIidComposite && !isJointComposite
       && !isJointChainComposite && !isNestedBroadcastComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;

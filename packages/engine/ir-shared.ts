@@ -370,6 +370,22 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
   'Dirac',
 ]);
 
+// Bare multivariate / vector-output distribution constructors. These
+// AREN'T in `SAMPLEABLE_DISTRIBUTIONS` (the worker's sampleN is scalar-
+// only by design — engine-concepts §22.2(a)), so a kernel-broadcast
+// whose head is one of these falls through the bare-dist fast path and
+// needs an explicit per-cell materialiser dispatch. Phase 5.1 Session 4
+// adds MvNormal here; further multivariates land alongside their
+// matPushfwd-of-iid lowering in subsequent sessions.
+//
+// The set is structurally distinct from SAMPLEABLE_DISTRIBUTIONS — a
+// dist can't simultaneously belong to both (no worker REGISTRY entry
+// AND no shared-scalar contract). Classifier order: bare-sampleable →
+// bare-vector-output → composite-body recognisers → reject.
+const VECTOR_OUTPUT_DISTRIBUTIONS = new Set([
+  'MvNormal',
+]);
+
 // Subset of the above whose density is over the counting reference (a
 // pmf, integer atoms). Used by the worker to switch between KDE and
 // integer-histogram density estimation.
@@ -597,6 +613,7 @@ module.exports = {
   normalizeMeasureIR,
   isFixedPhaseValueIR,
   SAMPLEABLE_DISTRIBUTIONS,
+  VECTOR_OUTPUT_DISTRIBUTIONS,
   DISCRETE_DISTRIBUTIONS,
   EVALUABLE_OPS,
 };

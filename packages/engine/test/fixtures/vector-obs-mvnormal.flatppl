@@ -1,0 +1,25 @@
+# Phase 5.1 Session 4 — vector-observation MvNormal kernel-broadcast.
+#
+# Per-group bivariate observation model:
+#
+#   - K groups, each with a 2-dim mu vector and a shared 2x2 covariance.
+#   - `broadcast(MvNormal, mu = mu_per_group, cov = cov_shared)` samples
+#     one length-2 atom per group, per outer atom. Output is a
+#     [N, K, 2] atom-major Value.
+#   - Phase 5.1 Session 4's `_executeBareVectorOutputBroadcast` materialises
+#     this case via the bijection registry's `affine` entry — same
+#     hot path matMvNormal consumes for the scalar-broadcast case,
+#     iterated over the K outer-cell axis.
+#
+# Test oracles (in vector-obs-mvnormal.test.ts):
+#   - Shape: y.value.shape == [N, K, 2]
+#   - Per-group sample mean of y[:, j, :] ≈ mu_per_group[j] within
+#     a 4-sigma margin (cov is shared so std-error scales identically).
+#   - Per-group sample variance ≈ diagonal of cov_shared, off-diagonals
+#     within the same margin.
+
+K = 3
+mu_per_group = rowstack([[0.0, 0.0], [1.0, -1.0], [-2.0, 3.0]])
+cov_shared = rowstack([[1.0, 0.3], [0.3, 0.5]])
+
+y ~ broadcast(MvNormal, mu = mu_per_group, cov = cov_shared)
