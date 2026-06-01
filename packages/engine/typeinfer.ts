@@ -1141,37 +1141,51 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // reductions are all scalar-in / scalar-out, so the body's element
   // type passes through unchanged.
 
-  function inferAggregate(expr: any, scopes: any) {
-    const args = expr.args || [];
-    if (args.length !== 3) return T.deferred();
-    const [_fIR, axesIR, bodyIR] = args;
+  // Shared core for `aggregate` and `metricsum` shape inference. Both
+  // ops carry the same `(axes_vector, body)` shape (modulo the first arg
+  // — reducer ref for aggregate, metric ref for metricsum — neither of
+  // which affects output shape or element type). The function returns
+  // `{ axisNames, lengths, elemT }` on success or `null` to signal a
+  // deferred / non-canonical IR shape. Callers add op-specific side
+  // effects (aggregate's `aggregateShape.annotate` for the runtime
+  // broadcast-reduce evaluator; metricsum has none — its IR gets rewritten
+  // to a fresh aggregate at lift time which gets annotated lazily by
+  // `aggregateShape.getCanonical`).
+  //
+  // Per-axis lengths come from get/get0 indexings in the body whose
+  // container's shape is statically known. Repeated axis occurrences on
+  // the same source (e.g. `A[.i, .i]` for trace) all see the same length
+  // — spec §04 line 853 requires equal lengths under one label; if
+  // typeinfer sees a mismatch we'd surface a diagnostic, but for now the
+  // first-seen length wins (runtime detects mismatches via out-of-bounds
+  // reads — engine-concepts §16.4 follow-up: lift the check to analyze
+  // time). Variance markers on body axes (only legal inside metricsum)
+  // don't affect length discovery — `A[.mu^]` and `A[.mu_]` both index
+  // the same axis-name slot on the same stored array.
+  function _inferAxisAggregateShape(axesIR: any, bodyIR: any, scopes: any): {
+    axisNames: string[];
+    lengths: Record<string, number | '%dynamic'>;
+    elemT: any;
+  } | null {
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
-      return T.deferred();
+      return null;
     }
     const axisNames: string[] = [];
     for (const a of axesIR.args || []) {
-      if (!a || a.kind !== 'axis') return T.deferred();
+      if (!a || a.kind !== 'axis') return null;
       axisNames.push(a.name);
     }
-    // Determine each axis's length from the body. We pre-infer all
-    // sub-call types (which fills in container shapes); then we walk
-    // the body looking for get/get0 indexings whose container type
-    // is array-typed and read the dim length at the axis-occupied
-    // position. Repeated axis occurrences on the same source (e.g.
-    // `A[.i, .i]` for trace) all see the same length — spec §04 line
-    // 853 requires equal lengths under one label; if typeinfer sees a
-    // mismatch we'd surface a diagnostic, but for now the first-seen
-    // length wins (runtime detects mismatches via out-of-bounds reads
-    // — engine-concepts §16.4 follow-up: lift the check to analyze
-    // time).
-    inferExpr(bodyIR, scopes);   // populate meta.type on sub-calls
+    inferExpr(bodyIR, scopes);  // populate meta.type on sub-calls
 
     const lengths: Record<string, number | '%dynamic'> = {};
     function walk(n: any) {
       if (!n || typeof n !== 'object') return;
-      // Don't descend into a nested aggregate — its axes are in a
-      // separate scope per spec §05.
-      if (n.kind === 'call' && n.op === 'aggregate') return;
+      // Don't descend into a nested aggregate / metricsum — their axes
+      // are in a separate scope per spec §05. Both ops' axes are
+      // lexically scoped to the immediately enclosing aggregation, so
+      // we treat the boundary identically regardless of which one we
+      // started in.
+      if (n.kind === 'call' && (n.op === 'aggregate' || n.op === 'metricsum')) return;
       if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
         const innerArgs = n.args || [];
         if (innerArgs.length >= 2) {
@@ -1209,103 +1223,55 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     }
     walk(bodyIR);
 
+    // Element type: best-effort. If we have a meta.type on the body and
+    // it's a scalar (or array of scalars), pass that through; else
+    // default to REAL (the most common contraction result type).
+    const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
+    const elemT = (bodyT && (bodyT.kind === 'scalar')) ? bodyT : T.REAL;
+    return { axisNames, lengths, elemT };
+  }
+
+  function inferAggregate(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 3) return T.deferred();
+    const shape = _inferAxisAggregateShape(args[1], args[2], scopes);
+    if (!shape) return T.deferred();
     // P1 (engine-concepts §11 / TODO): bake the canonical form onto
     // the IR so the runtime broadcast-reduce evaluator (single-point
     // AND atom-batched) doesn't re-walk the body. The annotation lives
     // on `expr.meta.aggregateCanonical`; the runtime reads it through
     // aggregate-shape.getCanonical and only re-resolves axis lengths
-    // that typeinfer left as `%dynamic`.
-    aggregateShape.annotate(expr, lengths);
-
-    const outShape = axisNames.map((n) =>
-      n in lengths ? lengths[n] : '%dynamic');
-    // Element type: best-effort. If we have a meta.type on the body
-    // and it's a scalar (or array of scalars), pass that through; else
-    // default to REAL (the most common contraction result type).
-    const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
-    const elemT = (bodyT && (bodyT.kind === 'scalar')) ? bodyT : T.REAL;
+    // that typeinfer left as `%dynamic`. Metricsum doesn't run this
+    // path — its IR gets rewritten to a fresh aggregate at lift time
+    // which gets annotated lazily.
+    aggregateShape.annotate(expr, shape.lengths);
+    const outShape = shape.axisNames.map((n) =>
+      n in shape.lengths ? shape.lengths[n] : '%dynamic');
     // Empty output_axes (spec §04 §sec:aggregate: "The bracketed axis
     // list may be empty for full reduction to a scalar") returns the
     // body's scalar element type directly — rank-0 arrays aren't a
     // distinct type in FlatPIR.
-    if (axisNames.length === 0) return elemT;
-    return T.array(axisNames.length, outShape, elemT);
+    if (shape.axisNames.length === 0) return shape.elemT;
+    return T.array(shape.axisNames.length, outShape, shape.elemT);
   }
 
-  // Metricsum type inference (spec §04 §sec:metricsum). Pre-lift the IR
-  // shape is `metricsum(<metric>, [.axis^/_ ...], body)`. Shape-wise this
-  // is identical to `aggregate(sum, [.axis ...], body)` modulo the
-  // variance markers — the all-upper canonical storage rule (spec) means
-  // the rank-N result tensor has the same shape as the sum-aggregate
-  // contraction over the same axis lengths. We compute axis lengths
-  // exactly like aggregate, ignoring variance markers (which are
-  // consumed by the lift pass that rewrites to aggregate). The third
-  // arg is the body expression; the second is the array literal of
-  // variance-marked axis refs.
+  // Metricsum type inference (spec §04 §sec:metricsum). Shape-wise
+  // identical to aggregate(sum, [stripped_axes], body) — the all-upper
+  // canonical storage rule means the rank-N result has the same shape
+  // as the sum-aggregate contraction over the same axis lengths.
+  // Delegates to `_inferAxisAggregateShape` for the shared work;
+  // metricsum-specific bits stay here (no aggregateShape annotation —
+  // the post-lift aggregate IR is a different node and gets its
+  // annotation lazily).
   function inferMetricsum(expr: any, scopes: any) {
     const args = expr.args || [];
     if (args.length !== 3) return T.deferred();
-    const [_metricIR, axesIR, bodyIR] = args;
-    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') {
-      return T.deferred();
-    }
-    const axisNames: string[] = [];
-    for (const a of axesIR.args || []) {
-      if (!a || a.kind !== 'axis') return T.deferred();
-      axisNames.push(a.name);
-    }
-    inferExpr(bodyIR, scopes);  // populate meta.type on sub-calls
-
-    // Reuse the same length-discovery walk as inferAggregate: find a
-    // get/get0 indexing whose container is array-typed and read the
-    // dim length at the axis-occupied position. Variance markers on
-    // body axis-refs don't affect length discovery — `A[.mu^]` and
-    // `A[.mu_]` both index into the array with axis name `mu`, and
-    // both legitimate occurrences pin the same length.
-    const lengths: Record<string, number | '%dynamic'> = {};
-    function walk(n: any) {
-      if (!n || typeof n !== 'object') return;
-      // Don't descend into a nested aggregate / metricsum — their axes
-      // are in a separate scope per spec §05.
-      if (n.kind === 'call' && (n.op === 'aggregate' || n.op === 'metricsum')) return;
-      if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
-        const innerArgs = n.args || [];
-        if (innerArgs.length >= 2) {
-          const container = innerArgs[0];
-          let containerT: any;
-          try { containerT = inferExpr(container, scopes); }
-          catch (_) { containerT = null; }
-          if (containerT && containerT.kind === 'array') {
-            const flat = _flattenArrayType(containerT);
-            const sels = innerArgs.slice(1);
-            for (let k = 0; k < sels.length; k++) {
-              const s = sels[k];
-              if (s && s.kind === 'axis' && !(s.name in lengths)) {
-                const dim = flat.shape[k];
-                lengths[s.name] = (typeof dim === 'number') ? dim : '%dynamic';
-              }
-            }
-          }
-        }
-      }
-      for (const k of Object.keys(n)) {
-        if (k === 'loc' || k === 'kind' || k === 'op'
-            || k === 'name' || k === 'ns') continue;
-        const v = n[k];
-        if (v && typeof v === 'object') {
-          if (Array.isArray(v)) v.forEach(walk);
-          else walk(v);
-        }
-      }
-    }
-    walk(bodyIR);
-
-    const outShape = axisNames.map((n) =>
-      n in lengths ? lengths[n] : '%dynamic');
-    const bodyT: any = bodyIR && bodyIR.meta && bodyIR.meta.type;
-    const elemT = (bodyT && (bodyT.kind === 'scalar')) ? bodyT : T.REAL;
-    if (axisNames.length === 0) return elemT;
-    return T.array(axisNames.length, outShape, elemT);
+    const shape = _inferAxisAggregateShape(args[1], args[2], scopes);
+    if (!shape) return T.deferred();
+    const outShape = shape.axisNames.map((n) =>
+      n in shape.lengths ? shape.lengths[n] : '%dynamic');
+    if (shape.axisNames.length === 0) return shape.elemT;
+    return T.array(shape.axisNames.length, outShape, shape.elemT);
   }
 
   function inferVector(expr: any, scopes: any) {

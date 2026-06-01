@@ -18,15 +18,28 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 > **`metricsum` (metric-aware Einstein summation, spec §04 §sec:metricsum)
 > landed 2026-06-01.** Surface shorthand `g: result[.μ^, .ρ_] := expr`
 > desugars (in the parser) to `metricsum(g, [...], expr)`; the lift
-> pass (`lift.inlineMetricsumLift`) rewrites every metricsum call to
-> `aggregate(sum, [stripped_axes], wrapped_body)` with inv(metric) +
-> metric factor insertions per the spec lowering rule. Variance markers
+> pass (`lift.inlineMetricsumLift`) rewrites every metricsum call to a
+> chain of `aggregate(sum, ...)` calls per spec §sec:metricsum
+> "Lowering to aggregate" (Form-B / precomputed mixed-variance
+> intermediates): each body IndexExpr with a lower-variance axis
+> becomes a per-(tensor, variance-pattern) `__ms_mixed_N` aggregate
+> binding contracting that axis with `inv(metric)`; the main aggregate
+> body has only bare-axis indexing; each lower-variance output axis
+> becomes a per-axis `__ms_raised_N` aggregate that contracts the main
+> result with `metric` to lift back to all-upper canonical storage. The
+> per-(tensor, variance-pattern) bindings CSE within a single metricsum
+> call. Every emitted synthetic binding is itself an
+> `aggregate(sum, ...)` whose body shape matches
+> `aggregate-patterns.classifyMatmulBody`, so the dissolver's
+> matmul/matvec specialisers handle rank-1/rank-2 cases directly;
+> rank-3+ falls to broadcast-reduce default. Variance markers
 > (`.name^` / `.name_`) flow through the AST, lower to FlatPIR's
 > `(%uaxis name)` / `(%laxis name)`, and are consumed by lift; no
 > downstream consumer sees a raw metricsum call. See
 > `test/fixtures/metricsum-tensor.flatppl` for the Minkowski-metric
-> tensor-algebra demo + `metricsum.test.ts` for the 24 conformance
-> tests (parse + static-checks + lift IR shape + numerical correctness
+> tensor-algebra demo + `metricsum.test.ts` for the 28 conformance
+> tests (parse + static-checks + lift IR shape + Form-B
+> per-(tensor, variance) mixed-binding emission + numerical correctness
 > + PIR roundtrip).
 >
 > **Architectural arc in progress: Phase 5.1 §22 multivariate-as-
