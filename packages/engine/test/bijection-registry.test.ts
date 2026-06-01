@@ -261,7 +261,7 @@ test('affine.logDetJ: rejects non-square L', () => {
   const L = { shape: [2, 3], data: new Float64Array(6) };
   assert.throws(
     () => bij.affineLogDetJ(null, { L: L }, 1),
-    /must be square/);
+    /must be \[D,D\] or \[N,D,D\]/);   // 5f-2: wording widened for atom-batched L
 });
 
 // =====================================================================

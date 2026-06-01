@@ -181,11 +181,45 @@ function affineAtomBatchedForward(z: any, params: any, N: number): any {
   if (!L || !b) {
     throw new Error('bijection.affine: params must include L and b');
   }
-  // L·z — dense vs diag-stored split (matMvNormal historical fast lane).
-  const Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
-    ? valueOps.mulN(L, z, N)
-    : ops.dispatch('mul', [L, z], { atomN: N });
-  // b + Lz, atom-batched broadcast of b ([D]) over Lz ([N, D]).
+  // L·z. Three cases:
+  //   - atom-BATCHED dense L [N, D, D] (5f-2 hierarchical scale): the
+  //     generic `mul`-with-atomN dispatch does NOT do per-atom matvec
+  //     for rank-3 L (it mis-shapes to [N, D, D-broadcast]); do the
+  //     per-atom y[n,:] = L[n] · z[n,:] explicitly here.
+  //   - diag-stored L (atom-indep): `valueOps.mulN` fast lane.
+  //   - atom-INDEPENDENT dense L [D, D]: `ops.dispatch('mul', …,
+  //     {atomN})` matvecs the shared L against every atom (the
+  //     matMvNormal historical path).
+  let Lz;
+  if (!(valueLib.isDiagStored && valueLib.isDiagStored(L))
+      && L.shape && L.shape.length === 3 && L.shape[0] === N) {
+    const D = L.shape[1];
+    if (L.shape[2] !== D) {
+      throw new Error('bijection.affine: atom-batched L must be [N, D, D]; got '
+        + JSON.stringify(L.shape));
+    }
+    if (!z || !z.shape || z.shape.length !== 2 || z.shape[0] !== N || z.shape[1] !== D) {
+      throw new Error('bijection.affine: z must be [N, D]=[' + N + ',' + D
+        + '] for atom-batched L; got ' + JSON.stringify(z && z.shape));
+    }
+    const out = new Float64Array(N * D);
+    const Ld = L.data, zd = z.data;
+    for (let n = 0; n < N; n++) {
+      const baseN = n * D, Ln = n * D * D;
+      for (let i = 0; i < D; i++) {
+        let acc = 0;
+        for (let j = 0; j < D; j++) acc += Ld[Ln + i * D + j] * zd[baseN + j];
+        out[baseN + i] = acc;
+      }
+    }
+    Lz = { shape: [N, D], data: out };
+  } else {
+    Lz = (valueLib.isDiagStored && valueLib.isDiagStored(L))
+      ? valueOps.mulN(L, z, N)
+      : ops.dispatch('mul', [L, z], { atomN: N });
+  }
+  // b + Lz, atom-aware: b may be atom-indep [D] (broadcast over [N, D])
+  // OR atom-batched [N, D] (elementwise) — `add` with atomN handles both.
   return ops.dispatch('add', [b, Lz], { atomN: N });
 }
 
@@ -232,47 +266,69 @@ function affineAtomBatchedInverse(y: any, params: any, N: number): any {
   const D = y.shape[1];
   const yData = y.data;
   const bData = b.data;
-  if (b.shape.length !== 1 || b.shape[0] !== D) {
+  // 5f-2: b may be atom-independent [D] (shared mean) OR atom-batched
+  // [N, D] (per-atom mean, hierarchical priors). `bStride === 0` reuses
+  // b[i] for every atom — making the atom-indep path numerically
+  // IDENTICAL to the pre-5f-2 code (stride-0 reuse, no separate branch).
+  const bAtomBatched = b.shape.length === 2 && b.shape[0] === N && b.shape[1] === D;
+  const bAtomIndep   = b.shape.length === 1 && b.shape[0] === D;
+  if (!bAtomBatched && !bAtomIndep) {
     throw new Error('bijection.affine: b shape [' + (b.shape && b.shape.join(','))
-      + '] mismatched against y\'s D=' + D);
+      + '] must be [D] or [N, D] for D=' + D + ', N=' + N);
   }
+  const bStride = bAtomBatched ? D : 0;
   const out = new Float64Array(N * D);
   const diag = valueLib.isDiagStored && valueLib.isDiagStored(L);
   if (diag) {
-    // L diag-stored: z[n, i] = (y[n, i] - b[i]) / L[i].
+    // L diag-stored (atom-indep only — diag format has no atom axis):
+    // z[n, i] = (y[n, i] - b[n*bStride + i]) / L[i].
     if (L.data.length !== D) {
       throw new Error('bijection.affine: diag-stored L of length '
         + L.data.length + ' mismatched against D=' + D);
     }
     for (let n = 0; n < N; n++) {
       const baseN = n * D;
+      const bn = n * bStride;
       for (let i = 0; i < D; i++) {
         const Lii = L.data[i];
         if (!(Lii !== 0)) {
           throw new Error('bijection.affine: diag L has zero entry at index '
             + i + ' — inverse undefined');
         }
-        out[baseN + i] = (yData[baseN + i] - bData[i]) / Lii;
+        out[baseN + i] = (yData[baseN + i] - bData[bn + i]) / Lii;
       }
     }
     return { shape: [N, D], data: out };
   }
   // Dense lower-triangular L: forward-substitute per atom.
   // L·z = (y - b) ⇒ z[i] = ((y[i] - b[i]) - sum_{j<i} L[i,j]·z[j]) / L[i,i].
-  if (L.shape.length !== 2 || L.shape[0] !== D || L.shape[1] !== D) {
+  //
+  // 5f-2: L may be atom-independent [D, D] (shared scale) OR atom-batched
+  // [N, D, D] (per-atom scale). `LStride === 0` reuses the single L for
+  // every atom — the atom-indep path is byte-identical to pre-5f-2.
+  const LAtomBatched = L.shape.length === 3 && L.shape[0] === N
+    && L.shape[1] === D && L.shape[2] === D;
+  const LAtomIndep   = L.shape.length === 2 && L.shape[0] === D && L.shape[1] === D;
+  if (!LAtomBatched && !LAtomIndep) {
     throw new Error('bijection.affine: dense L shape ['
-      + (L.shape && L.shape.join(',')) + '] mismatched against D=' + D);
+      + (L.shape && L.shape.join(',')) + '] must be [D, D] or [N, D, D] for D='
+      + D + ', N=' + N);
   }
+  const LStride = LAtomBatched ? D * D : 0;
   const Ld = L.data;
   for (let n = 0; n < N; n++) {
-    const baseN = n * D;
+    const baseN = n * D;   // row offset into yData / out (the solution)
+    const Ln = n * LStride;   // 0 for atom-indep L
+    const bn = n * bStride;   // 0 for atom-indep b
     for (let i = 0; i < D; i++) {
-      let acc = yData[baseN + i] - bData[i];
-      for (let j = 0; j < i; j++) acc -= Ld[i * D + j] * out[baseN + j];
-      const Lii = Ld[i * D + i];
+      let acc = yData[baseN + i] - bData[bn + i];
+      // sum_{j<i} L[n,i,j] · z[n,j]: L is atom-strided (Ln), the
+      // already-solved z entries are atom-strided too (baseN, same atom).
+      for (let j = 0; j < i; j++) acc -= Ld[Ln + i * D + j] * out[baseN + j];
+      const Lii = Ld[Ln + i * D + i];
       if (!(Lii !== 0)) {
         throw new Error('bijection.affine: dense L has zero diagonal at index '
-          + i + ' — inverse undefined');
+          + i + (LAtomBatched ? ' atom ' + n : '') + ' — inverse undefined');
       }
       out[baseN + i] = acc / Lii;
     }
@@ -282,19 +338,49 @@ function affineAtomBatchedInverse(y: any, params: any, N: number): any {
 
 /**
  * Density-side affine log|det J_{f⁻¹}(y)| = -log|det(L)| =
- * -sum(log|diag(L)|). Independent of `y` — returned as a scalar.
+ * -sum(log|diag(L)|). Independent of `y` — the Jacobian of an affine
+ * map is the constant L.
+ *
+ * Return type (per the BijectionEntry contract, `number | Float64Array`):
+ *   - atom-INDEPENDENT L ([D,D] dense or diag-stored) → scalar `number`,
+ *     the same value for every atom.
+ *   - atom-BATCHED L ([N,D,D] dense, 5f-2 hierarchical case) →
+ *     `Float64Array(N)`, one log-det per atom.
  *
  * `y` is accepted for signature symmetry with non-affine bijections;
- * it's unused (the Jacobian of an affine map is the constant L).
+ * it's unused here.
  */
-function affineLogDetJ(_y: any, params: any, _N: number): number {
+function affineLogDetJ(_y: any, params: any, N: number): number | Float64Array {
   const valueLib = require('./value.ts');
   const L = params.L;
   if (!L) {
     throw new Error('bijection.affine: logDetJ requires params.L');
   }
+  // Atom-batched dense L [N, D, D] → per-atom Float64Array. (Diag-stored
+  // L has no atom axis, so it can only be the scalar atom-indep case.)
+  const diagStored = valueLib.isDiagStored && valueLib.isDiagStored(L);
+  if (!diagStored && L.shape.length === 3
+      && L.shape[0] === N && L.shape[1] === L.shape[2]) {
+    const D = L.shape[1];
+    const outJ = new Float64Array(N);
+    for (let n = 0; n < N; n++) {
+      let s = 0;
+      const Ln = n * D * D;
+      for (let i = 0; i < D; i++) {
+        const v = L.data[Ln + i * D + i];
+        if (!(v !== 0)) {
+          throw new Error('bijection.affine: dense L has zero diagonal at index '
+            + i + ' atom ' + n + ' — logDetJ undefined');
+        }
+        s += Math.log(Math.abs(v));
+      }
+      outJ[n] = -s;
+    }
+    return outJ;
+  }
+  // Atom-independent L → scalar.
   let s = 0;
-  if (valueLib.isDiagStored && valueLib.isDiagStored(L)) {
+  if (diagStored) {
     for (let i = 0; i < L.data.length; i++) {
       const v = L.data[i];
       if (!(v !== 0)) {
@@ -305,7 +391,7 @@ function affineLogDetJ(_y: any, params: any, _N: number): number {
     }
   } else {
     if (L.shape.length !== 2 || L.shape[0] !== L.shape[1]) {
-      throw new Error('bijection.affine: dense L must be square; got '
+      throw new Error('bijection.affine: dense L must be [D,D] or [N,D,D]; got '
         + JSON.stringify(L.shape));
     }
     const D = L.shape[0];
