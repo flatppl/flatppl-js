@@ -800,6 +800,117 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       + "bijection annotation — use bijection(f, f_inv, logvolume) to enable "
       + "pushforward density");
   }
+  // Phase 5.1 Session 5d commit 3 — registry fast path.
+  //
+  // When bij carries `registryName` + `paramIRs` (Sessions 5c+5d
+  // additive markers), dispatch through the bijection-registry's
+  // atom-batched inverse + logDetJ rather than evaluating the AST
+  // f_inv against a scalar y. This handles vector-base pushforwards
+  // (e.g. lowered MvNormal: `pushfwd(<affine-marked-bij>, iid(Normal,
+  // D))`) that the scalar AST walker can't represent today.
+  //
+  // Sign convention: registry.logDetJ returns log|det J_{f^{-1}}(y)|
+  // (= -log|det J_f(x)| = -log|det L| for affine). The scalar AST
+  // path below SUBTRACTS forward logvolume per the formula
+  //   log p_{f*M}(y) = log p_M(f_inv(y)) − log|det J_f(x)|
+  // The registry path ADDS log|det J_{f^{-1}}(y)| — same number,
+  // opposite-sign field.
+  if (bij.registryName) {
+    if (!bij.paramIRs) {
+      throw new Error("density: pushfwd registryName='" + bij.registryName
+        + "' requires paramIRs (additive-invariant violation — producer bug)");
+    }
+    const bijRegistry = require('./bijection-registry.ts');
+    const entry = bijRegistry.getBijection(bij.registryName);
+    if (!entry) {
+      throw new Error("density: pushfwd registryName='" + bij.registryName
+        + "' not found in bijection-registry");
+    }
+    if (!entry.atomBatchedInverse || !entry.logDetJ) {
+      throw new Error("density: bijection-registry entry '"
+        + bij.registryName + "' missing inverse or logDetJ (density not "
+        + "supported for this bijection yet)");
+    }
+    // Resolve each paramIR against baseEnv ∪ overlay. Session 5d MVP:
+    // atom-independent params only (per-atom params defer to a later
+    // session alongside per-atom MvNormal mu/cov). The eval-env wrap
+    // mirrors the AST path's finvEnv construction.
+    const paramEnv: Record<string, any> = Object.assign({}, baseEnv);
+    if (overlay) Object.assign(paramEnv, overlay);
+    const params: any = {};
+    for (const k of Object.keys(bij.paramIRs)) {
+      const v = samplerLib.evaluateExpr(bij.paramIRs[k], paramEnv);
+      // Wrap arrays/matrices into Value form for the registry contract.
+      // Literals come through as nested arrays for matrices, flat arrays
+      // for vectors, or numbers for scalars.
+      if (Array.isArray(v) && v.length > 0 && Array.isArray(v[0])) {
+        // rank-2 matrix literal — pack into Value.
+        const rows = v.length;
+        const cols = v[0].length;
+        const data = new Float64Array(rows * cols);
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) data[i * cols + j] = v[i][j];
+        }
+        params[k] = { shape: [rows, cols], data };
+      } else if (Array.isArray(v)) {
+        params[k] = { shape: [v.length], data: Float64Array.from(v) };
+      } else if (typeof v === 'number') {
+        params[k] = v;
+      } else if (v && v.shape && v.data) {
+        params[k] = v;
+      } else {
+        throw new Error("density: paramIRs." + k + " resolved to "
+          + "unsupported type " + (typeof v) + " for registry '"
+          + bij.registryName + "'");
+      }
+    }
+    // Discover D from the bijection's shapeContract or — pragmatically
+    // for 'affine' — from params.b's length. Future bijections add
+    // shape-contract-driven lookup here.
+    let D;
+    if (bij.registryName === 'affine') {
+      if (params.b && params.b.shape && params.b.shape[0]) {
+        D = params.b.shape[0];
+      }
+    }
+    if (typeof D !== 'number') {
+      throw new Error("density: cannot determine D for bijection-registry '"
+        + bij.registryName + "'");
+    }
+    // Consume a length-D vector head from value. wrap into [1, D]
+    // atom-batched Value for the registry contract (single observation;
+    // an N-atom case wired through matLogdensityof would pre-wrap).
+    const { head: yHead, rest: yRest } = consumeVector(value, D);
+    const yValue = { shape: [1, D], data: yHead };
+    let z;
+    try {
+      z = entry.atomBatchedInverse(yValue, params, /*N=*/1);
+    } catch (err) {
+      throw new Error("density: registry '" + bij.registryName
+        + "' atomBatchedInverse failed: " + (err as any).message);
+    }
+    let logDetJ;
+    try {
+      logDetJ = entry.logDetJ(yValue, params, /*N=*/1);
+    } catch (err) {
+      throw new Error("density: registry '" + bij.registryName
+        + "' logDetJ failed: " + (err as any).message);
+    }
+    // Recurse on M scoring at z. The base measure is iid(scalar, D),
+    // which walkIid loops over scalar leaves consuming from a length-D
+    // value. We hand z.data (Float64Array length D) — walkIid +
+    // walkLeaf + consumeScalar peel scalars off in order.
+    const zForRecurse = { shape: [D], data: z.data };
+    walkAcc(M_ir, zForRecurse, refArrays, N, opts, acc, baseEnv, overlay);
+    // ADD logDetJ per atom (sign convention — see comment block above).
+    if (typeof logDetJ === 'number') {
+      if (logDetJ !== 0) for (let i = 0; i < N; i++) acc[i] += logDetJ;
+    } else {
+      // Float64Array per-atom logDetJ (future: per-atom params).
+      for (let i = 0; i < N; i++) acc[i] += logDetJ[i];
+    }
+    return yRest;
+  }
   // Consume the head — pushfwd's variate footprint matches M's.
   const { head: y, rest } = consumeScalar(value);
   // Compute x = f_inv(y). Atom-indep eval against baseEnv ∪ overlay.
