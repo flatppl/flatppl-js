@@ -1,0 +1,23 @@
+# Phase 5.1 Session 5a — joint composite-body kernel-broadcast
+# with an MvNormal component.
+#
+# Per spec §06, `joint(loc = MvNormal(mu_g, cov), obs = Normal(0, sigma))`
+# is a joint product of a 2-D MvNormal location vector + a 1-D Normal
+# scalar observation, per outer broadcast cell. The kernel-broadcast
+# wraps the joint kernel so each of K groups gets its own mu_g.
+#
+# Total cell event dim: 2 (loc) + 1 (obs) = 3. Output shape is
+# [N, K, 3] atom-major. Per group g, columns [0:2] are MvNormal(mu_g,
+# cov) draws and column [2] is a Normal(0, sigma) scalar.
+
+mu_per_group = rowstack([[0.0, 0.0], [1.0, -1.0], [-2.0, 3.0]])
+cov_shared = rowstack([[1.0, 0.3], [0.3, 0.5]])
+sigma_obs = 0.7
+
+joint_kernel = kernelof(
+  joint(loc = MvNormal(mu = m, cov = cov_shared),
+        obs = Normal(mu = 0.0, sigma = sigma_obs)),
+  m = m
+)
+
+y ~ broadcast(joint_kernel, m = mu_per_group)

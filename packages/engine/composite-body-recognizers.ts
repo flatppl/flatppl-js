@@ -123,21 +123,36 @@ type CompositeBody =
        *  keyword field names retained as metadata for downstream
        *  consumers. */
       layout: 'positional' | 'keyword';
-      /** Ordered components — each a sampleable scalar distribution call.
-       *  Phase 4.2 MVP scope: all components are in sampler.REGISTRY and
-       *  produce scalar variates. Vector-variate components (MvNormal)
-       *  defer to Phase 5.1 (MvNormal sampler-REGISTRY entry). */
+      /** Ordered components — each either a sampleable scalar
+       *  distribution call (Phase 4.2 original scope) OR a
+       *  VECTOR_OUTPUT distribution call like MvNormal (Phase 5.1
+       *  Session 5a extension). `eventDim` records the per-cell output
+       *  width: 1 for scalar dists, n for MvNormal-style vector
+       *  outputs. The joint executor stitches into
+       *  `[N, K, sum_c(eventDim_c)]` atom-major. */
       components: Array<{
         /** Surface field name; undefined for positional layout. */
         surfaceName?: string;
         /** Component distribution opcode. */
         distOp: string;
-        /** Component params per sampler.REGISTRY. */
+        /** Component params per sampler.REGISTRY (scalar) — empty for
+         *  vector-output dists, which the executor materialises through
+         *  a kind-specific path (matMvNormal etc.) rather than the
+         *  worker's sampleN. */
         distParams: string[];
         /** Component kwargs IR with kernel placeholders still embedded —
          *  the executor substitutes them per cell via
          *  `_substituteKernelParams`. */
         distKwargs: Record<string, any>;
+        /** True when `distOp` belongs to `ir-shared.VECTOR_OUTPUT_
+         *  DISTRIBUTIONS`. The executor dispatches per-cell through
+         *  the materialiser (registry-backed) rather than sampleN. */
+        isVectorOutput: boolean;
+        /** Per-cell output dim along the joint's stitching axis: 1 for
+         *  scalar dists, n for MvNormal etc. NaN at classify-time when
+         *  recogniser ran without binding env (recogniser caller
+         *  resolves at materialise-time). */
+        eventDim: number;
       }>;
     });
 
@@ -249,6 +264,10 @@ registerCompositeBodyRecognizer((d, ctx) => {
     params: desc.params,
     paramKwargs: desc.paramKwargs,
     layout: desc.layout,
+    // Components carry `isVectorOutput` + `eventDim` since Phase 5.1
+    // Session 5a — the joint executor branches on isVectorOutput to
+    // dispatch vector-output components through the registry-backed
+    // per-cell materialiser path.
     components: desc.components,
   };
 });
