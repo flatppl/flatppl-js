@@ -845,15 +845,21 @@ function _executeJointComposite(
             + argK + ') on arg \'' + argName + '\''));
         }
       }
-      // Phase 4.2 rejects inner-vector args (D > 1) — those are the
-      // vec-per-cell pattern handled by Phase 4.1's iid-composite
-      // executor, not by the joint pathway.
+      // Inner-vector args (D > 1) used to be rejected as "vec-per-cell
+      // iid territory". Phase 5.1 Session 5a admits them when ANY
+      // joint component is vector-output: an MvNormal component's
+      // `mu` parameter IS a per-cell n-vector, not a scalar. The
+      // per-cell slicing below builds a literal `vector(...)` IR for
+      // such args at each j, so the substituted MvNormal kwargs end
+      // up as `mu = [m_j0, m_j1, …]` (closed at runtime).
       const argD = cls.D || 1;
-      if (argD > 1) {
+      const anyVectorComponent = components.some((c: any) => c.isVectorOutput);
+      if (argD > 1 && !anyVectorComponent) {
         return Promise.reject(new Error('broadcast(' + d.distOp
           + '): joint-composite broadcast arg \'' + argName
           + '\' has inner dim ' + argD + ' (vec-per-cell shapes are '
-          + 'iid-composite territory, not joint composites)'));
+          + 'iid-composite territory unless a vector-output component '
+          + 'consumes them, which this joint kernel has none of)'));
       }
     }
     if (K < 1) {
@@ -862,10 +868,20 @@ function _executeJointComposite(
     }
 
     // Per (j, c) loop: build bcKwargs cell-slice, re-substitute the
-    // component's distKwargs with the cell-sliced bcKwargs, sampleN
-    // through the worker. The per-cell substitution is what reduces
-    // the body to leaves the worker can evaluate without ambiguity.
-    const cells = new Array(K * C);
+    // component's distKwargs with the cell-sliced bcKwargs, then
+    // sample. Scalar components go through the worker's sampleN
+    // (Float64Array(N) of per-atom scalars). Vector-output components
+    // (Phase 5.1 Session 5a) materialise via _sampleVectorOutputAtCell,
+    // which consumes the bijection registry directly — returning a
+    // Float64Array(N * eventDim) of per-atom vectors.
+    //
+    // Each per-cell cell entry carries `{data: Float64Array, eventDim}`
+    // so the stitcher knows how to splat. Component event-dims are
+    // resolved at execute-time here (not classify-time) because the
+    // dim depends on the substituted-kwargs Value shape, not just the
+    // surface IR.
+    type JointCell = { data: Float64Array; eventDim: number };
+    const cells: JointCell[] = new Array(K * C);
     let chain = Promise.resolve();
     for (let j = 0; j < K; j++) {
       for (let c = 0; c < C; c++) {
@@ -876,13 +892,35 @@ function _executeJointComposite(
           for (const argName of Object.keys(d.kwargIRs || {})) {
             const cls = argClass[argName];
             const v = argVals[argName];
+            const argD = cls.D || 1;
             const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
                               || cls.kind === 'NKD';
             if (isAtomDep) {
+              if (argD > 1) {
+                // Atom-dep per-cell vector — defers to Session 5+
+                // alongside matPushfwd vector-base (atom-batched
+                // affine forward needs walker symmetry).
+                throw new Error('joint composite: atom-dep per-cell '
+                  + 'vector broadcast args (' + argName
+                  + ' with D=' + argD + ') deferred to Session 5+; '
+                  + 'use atom-indep mu / cov in Session 5a scope');
+              }
               const col = shared.perAtomColumnAtJ(v, jj, N);
               const refName = '__bc_' + argName + '_' + jj;
               perAtomRefs[refName] = valueLib.batchedScalar(col);
               bcKwargs[argName] = { kind: 'ref', ns: 'self', name: refName };
+            } else if (argD > 1) {
+              // Atom-indep per-cell vector — extract v[jj, :] as a
+              // literal `vector(…)` IR so the substituted MvNormal
+              // kwarg becomes a concrete n-vector. v.shape is [K, D]
+              // or [D] (singleton K=1 broadcast).
+              const baseOff = (v.shape && v.shape.length === 2)
+                ? jj * argD : 0;
+              const litArgs: any[] = [];
+              for (let k = 0; k < argD; k++) {
+                litArgs.push({ kind: 'lit', value: v.data[baseOff + k] });
+              }
+              bcKwargs[argName] = { kind: 'call', op: 'vector', args: litArgs };
             } else {
               const s = shared.elemScalarAtJ(v, jj, N);
               bcKwargs[argName] = { kind: 'lit', value: s };
@@ -897,6 +935,22 @@ function _executeJointComposite(
               compositeBody.params, compositeBody.paramKwargs, bcKwargs);
           }
 
+          if (comp.isVectorOutput) {
+            // Per-cell vector-output dispatch through the registry.
+            // The substituted distKwargs are now closed expressions
+            // resolvable through the standard orchestrator helpers
+            // (atom-dep refs end up in perAtomRefs — Session 5a's
+            // shared-cov / closed-mu MVP scope rejects atom-dep here
+            // because the affine forward needs an atom-indep L per
+            // cell; per-atom-stochastic mu/cov defers to Session 5+
+            // alongside the matPushfwd vector-base extension).
+            return _sampleVectorOutputAtCell(
+              name, comp.distOp, distKwargs, perAtomRefs, jj, cc, ctx, N
+            ).then((res: any) => {
+              cells[jj * C + cc] = res;
+            });
+          }
+
           const distIR = {
             kind: 'call', op: comp.distOp, kwargs: distKwargs,
           };
@@ -906,29 +960,161 @@ function _executeJointComposite(
             seed: nameSeed(name + ':j' + jj + ':c' + cc, ctx.rootKey),
           };
           return ctx.sendWorker(workerMsg).then((reply: any) => {
-            cells[jj * C + cc] = reply.samples;
+            cells[jj * C + cc] = { data: reply.samples, eventDim: 1 };
           });
         });
       }
     }
     return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
-      // Stitch: out shape [N, K, C] atom-major. Each cells[j*C+c] is
-      // a Float64Array(N) of per-atom samples for component c at cell j.
-      const out = new Float64Array(N * K * C);
+      // Stitch with per-component event-dim awareness. Output width
+      // along the joint axis = sum_c(eventDim_c); scalar components
+      // contribute 1 each (compatibility with Phase 4.2 layout for
+      // all-scalar joints), vector components contribute their n.
+      const eventDims = new Array(C);
+      let totalEventDim = 0;
+      const eventOffsets = new Array(C);
+      for (let c = 0; c < C; c++) {
+        // Read per-cell eventDim from cell j=0 (executor guarantees
+        // consistent dim across cells for a given component).
+        eventDims[c] = cells[c].eventDim;
+        eventOffsets[c] = totalEventDim;
+        totalEventDim += eventDims[c];
+      }
+      const out = new Float64Array(N * K * totalEventDim);
       for (let j = 0; j < K; j++) {
         for (let c = 0; c < C; c++) {
-          const col = cells[j * C + c];
-          for (let i = 0; i < N; i++) {
-            out[i * K * C + j * C + c] = col[i];
+          const ed = eventDims[c];
+          const off = eventOffsets[c];
+          const cell = cells[j * C + c];
+          const col = cell.data;
+          if (ed === 1) {
+            // Scalar component — col is Float64Array(N) of scalars.
+            for (let i = 0; i < N; i++) {
+              out[i * K * totalEventDim + j * totalEventDim + off] = col[i];
+            }
+          } else {
+            // Vector-output component — col is Float64Array(N*ed)
+            // atom-major (each atom's ed-vector is contiguous).
+            for (let i = 0; i < N; i++) {
+              for (let k = 0; k < ed; k++) {
+                out[i * K * totalEventDim + j * totalEventDim + off + k]
+                  = col[i * ed + k];
+              }
+            }
           }
         }
       }
-      const value = { shape: [N | 0, K, C], data: out };
+      const value = { shape: [N | 0, K, totalEventDim], data: out };
       return Object.assign(
-        empirical.arrayMeasure(out, [K, C], null),
+        empirical.arrayMeasure(out, [K, totalEventDim], null),
         { value: value, logTotalmass: 0, n_eff: N },
       );
     });
+  });
+}
+
+// =====================================================================
+// Phase 5.1 Session 5a — per-cell vector-output dispatch for joint
+// composite components. Returns `{data: Float64Array(N*eventDim),
+// eventDim}` — atom-major per-cell n-vector samples. Today (Session
+// 5a MVP) only MvNormal is supported; the helper extends naturally
+// to any VECTOR_OUTPUT_DISTRIBUTIONS entry whose materialiser path
+// the registry covers.
+// =====================================================================
+
+function _sampleVectorOutputAtCell(
+  name: string, distOp: string, distKwargs: Record<string, any>,
+  perAtomRefs: Record<string, any>, jj: number, cc: number,
+  ctx: any, N: number,
+): Promise<{ data: Float64Array; eventDim: number }> {
+  if (distOp !== 'MvNormal') {
+    return Promise.reject(new Error('joint composite: vector-output '
+      + 'component dist \'' + distOp + '\' not supported (Session 5a '
+      + 'ships MvNormal only; further multivariates land alongside '
+      + 'their registry entries in Phase 5.x)'));
+  }
+  return _sampleMvNormalAtCell(name, distKwargs, perAtomRefs, jj, cc, ctx, N);
+}
+
+function _sampleMvNormalAtCell(
+  name: string, distKwargs: Record<string, any>,
+  perAtomRefs: Record<string, any>, jj: number, cc: number,
+  ctx: any, N: number,
+): Promise<{ data: Float64Array; eventDim: number }> {
+  const sampler = require('./sampler.ts');
+  const bijRegistry = require('./bijection-registry.ts');
+  const muIR = distKwargs.mu;
+  const covIR = distKwargs.cov;
+  if (!muIR || !covIR) {
+    return Promise.reject(new Error('joint composite: MvNormal component '
+      + 'at cell j=' + jj + ' c=' + cc + ' requires mu and cov kwargs'));
+  }
+  // Cell-substituted distKwargs may still reference fixed-phase
+  // bindings via self-refs. resolveIRToValue handles literal + ref
+  // forms uniformly; per-atom refs (which perAtomRefs would expose)
+  // are NOT supported in this MVP — atom-batched mu/cov needs the
+  // matPushfwd vector-base extension (Session 5c) for walker
+  // symmetry. Reject up front when perAtomRefs has any entry — the
+  // current substituted kwargs would otherwise silently miss them.
+  if (perAtomRefs && Object.keys(perAtomRefs).length > 0) {
+    return Promise.reject(new Error('joint composite: MvNormal component '
+      + 'with per-atom-stochastic mu/cov is not yet supported (atom-dep '
+      + 'broadcast args produced ' + Object.keys(perAtomRefs).length
+      + ' perAtomRefs at cell j=' + jj + '). Per-atom-stochastic '
+      + 'multivariate params land with Session 5c (matPushfwd '
+      + 'vector-base extension).'));
+  }
+  const muVal = orchestrator.resolveIRToValue(muIR, ctx.bindings, ctx.fixedValues);
+  const covVal = orchestrator.resolveIRToValue(covIR, ctx.bindings, ctx.fixedValues);
+  if (muVal == null) {
+    return Promise.reject(new Error('joint composite: MvNormal component '
+      + 'cannot resolve mu at cell j=' + jj));
+  }
+  if (covVal == null) {
+    return Promise.reject(new Error('joint composite: MvNormal component '
+      + 'cannot resolve cov at cell j=' + jj));
+  }
+  const valueOps = require('./value-ops.ts');
+  const muValue = valueLib.asValue(muVal);
+  if (muValue.shape.length !== 1) {
+    return Promise.reject(new Error('joint composite: MvNormal component '
+      + 'mu must be a vector at cell j=' + jj + '; got shape='
+      + JSON.stringify(muValue.shape)));
+  }
+  const n = muValue.shape[0];
+  const covValue = Array.isArray(covVal) && covVal.length > 0 && Array.isArray(covVal[0])
+    ? valueOps._nestedToValue(covVal)
+    : valueLib.asValue(covVal);
+  if (covValue.shape.length !== 2 || covValue.shape[0] !== n
+      || covValue.shape[1] !== n) {
+    return Promise.reject(new Error('joint composite: MvNormal cov must '
+      + 'be ' + n + 'x' + n + ' at cell j=' + jj + '; got shape='
+      + JSON.stringify(covValue.shape)));
+  }
+  let L: any;
+  try {
+    L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
+  } catch (err) {
+    return Promise.reject(new Error('joint composite: MvNormal Cholesky '
+      + 'failed at cell j=' + jj + ': ' + (err as any).message));
+  }
+  // Draw N atoms of n standard normals → flat Float64Array(N*n) atom-
+  // major. The registry's affineAtomBatchedForward then computes
+  // L·z + mu per atom — same hot path matMvNormal consumes for the
+  // single-cell case.
+  return ctx.sendWorker({
+    type: 'sampleN',
+    ir: { kind: 'call', op: 'Normal',
+          kwargs: { mu: { kind: 'lit', value: 0 },
+                    sigma: { kind: 'lit', value: 1 } } },
+    count: N, repeat: n,
+    refArrays: {},
+    seed: nameSeed(name + ':j' + jj + ':c' + cc + ':iidbase', ctx.rootKey),
+  }).then((reply: any) => {
+    const z = { shape: [N, n], data: reply.samples };
+    const y = bijRegistry.affineAtomBatchedForward(
+      z, { L: L, b: muValue }, N);
+    return { data: y.data as Float64Array, eventDim: n };
   });
 }
 

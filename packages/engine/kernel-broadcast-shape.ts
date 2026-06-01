@@ -216,11 +216,22 @@ interface JointKernelComponent {
   surfaceName?: string;
   /** Component's built-in distribution opcode (e.g. 'Normal'). */
   distOp: string;
-  /** Component's REGISTRY param names. */
+  /** Component's REGISTRY param names. Empty for vector-output dists
+   *  (no scalar REGISTRY entry); the executor dispatches them via a
+   *  kind-specific materialiser (matMvNormal etc.) instead. */
   distParams: string[];
   /** Component's kwargs IR with kernel placeholders still embedded —
    *  the executor substitutes them per cell. */
   distKwargs: Record<string, any>;
+  /** True when `distOp` is in `VECTOR_OUTPUT_DISTRIBUTIONS` (MvNormal
+   *  etc.). Phase 5.1 Session 5a addition; the executor dispatches
+   *  these through the materialiser/registry path rather than the
+   *  worker's scalar-only sampleN. */
+  isVectorOutput: boolean;
+  /** Per-cell output dim along the joint's stitching axis: 1 for
+   *  scalar dists, n for MvNormal. NaN at classify-time without
+   *  bindings; the materialiser resolves the actual value. */
+  eventDim: number;
 }
 
 interface JointKernelDescriptor {
@@ -298,9 +309,17 @@ function detectJointKernelBinding(
   }
 
   // Each component must dereference (one level of anon) to a direct
-  // sampleable DistCall. Reject any nested composite — those are
-  // future-phase recogniser targets.
-  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+  // DistCall. Phase 4.2 accepted only sampler-REGISTRY-known scalar
+  // dists; Phase 5.1 Session 5a extends to VECTOR_OUTPUT_DISTRIBUTIONS
+  // (MvNormal etc.) — the executor dispatches vector components
+  // through the materialiser-backed registry path rather than the
+  // scalar-only worker sampleN. Nested composites (component IR is
+  // itself a joint / iid / broadcast) still return null; the lift-time
+  // surface lowering (Session 5b deliverable a) is what makes those
+  // pass through uniformly as `pushfwd(<bij>, iid(...))`.
+  const irShared = require('./ir-shared.ts');
+  const SAMPLEABLE = irShared.SAMPLEABLE_DISTRIBUTIONS;
+  const VECTOR_OUT = irShared.VECTOR_OUTPUT_DISTRIBUTIONS;
 
   // sampler REGISTRY lookup — lazy-required to avoid the import cycle
   // that bites at module load. When sampler is loadable, distParams
@@ -325,18 +344,33 @@ function detectJointKernelBinding(
     if (!anon || !anon.ir) return null;
     const distCall = anon.ir;
     if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
-    if (!SAMPLEABLE || !SAMPLEABLE.has(distCall.op)) return null;
+    const op = distCall.op;
+    const isScalarSampleable = SAMPLEABLE && SAMPLEABLE.has(op);
+    const isVectorOutput = VECTOR_OUT && VECTOR_OUT.has(op);
+    if (!isScalarSampleable && !isVectorOutput) return null;
     let distParams: string[] = [];
-    if (samplerLoaded) {
-      const entry = samplerRegistry[distCall.op];
+    if (isScalarSampleable && samplerLoaded) {
+      const entry = samplerRegistry[op];
       if (entry && Array.isArray(entry.params)) distParams = entry.params;
       else return null;       // sampler loaded but doesn't know this dist
     }
+    // eventDim: scalars contribute 1; vector-output dists contribute
+    // their structural n. For MvNormal we read `mu`'s length when
+    // resolvable as a literal array; ref-form mu's length resolves at
+    // execute time via the materialiser-shared shape helpers. Classify-
+    // time gate accepts NaN here — the runtime materialiser is the
+    // ultimate authority on the cell width.
+    let eventDim = 1;
+    if (isVectorOutput) {
+      eventDim = _resolveVectorEventDim(op, distCall, bindings);
+    }
     components.push({
       surfaceName: surfaceNames[i],
-      distOp: distCall.op,
+      distOp: op,
       distParams,
       distKwargs: distCall.kwargs || {},
+      isVectorOutput: isVectorOutput,
+      eventDim: eventDim,
     });
   }
 
@@ -347,6 +381,46 @@ function detectJointKernelBinding(
     layout,
     components,
   };
+}
+
+/**
+ * Best-effort static resolution of a vector-output dist's event-dim
+ * from its IR. Returns NaN when the dim isn't statically resolvable
+ * (e.g. mu is a ref to a non-literal binding); the materialiser
+ * resolves the actual length at runtime via shape probes. The
+ * classify-time gate accepts NaN — the eventDim field is metadata for
+ * downstream consumers, not a correctness contract.
+ *
+ * MvNormal: dim = `mu`'s length. Literal array IR `vector([…])` /
+ * `[…]` / `rowstack([…])`-form gives the length directly; ref to a
+ * binding whose IR is a literal array unwraps one level.
+ */
+function _resolveVectorEventDim(
+  op: string, distCall: any, bindings: any,
+): number {
+  if (op !== 'MvNormal') return NaN;
+  const muIR = (distCall.kwargs && distCall.kwargs.mu)
+    || (Array.isArray(distCall.args) && distCall.args[0]);
+  return _literalArrayLength(muIR, bindings);
+}
+
+/** Walk an IR node looking for a directly-resolvable array length.
+ *  Accepts literal arrays + one-level deref through self-refs. */
+function _literalArrayLength(ir: any, bindings: any): number {
+  if (!ir) return NaN;
+  // Lit-form array (parser's surface array literal).
+  if (ir.kind === 'lit' && Array.isArray(ir.value)) return ir.value.length;
+  // `vector(…)` builtin call wraps a positional argument list.
+  if (ir.kind === 'call' && ir.op === 'vector' && Array.isArray(ir.args)) {
+    return ir.args.length;
+  }
+  // Ref → unwrap one level. Binding's own IR may be a literal array.
+  if (ir.kind === 'ref' && ir.ns === 'self' && bindings && bindings.has
+      && bindings.has(ir.name)) {
+    const b = bindings.get(ir.name);
+    return _literalArrayLength(b && b.ir, bindings);
+  }
+  return NaN;
 }
 
 /**
