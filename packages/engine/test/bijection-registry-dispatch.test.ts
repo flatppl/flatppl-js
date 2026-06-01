@@ -181,6 +181,85 @@ Y = pushfwd(b, M)
 });
 
 // =====================================================================
-// 5. (Session 5d commit 3 — walkPushfwd vector-base density tests
-//    land alongside the walker extension.)
+// 5. walkPushfwd vector-base density via registry (commit 3)
 // =====================================================================
+//
+// Score a hand-built observation through the lowered form; the
+// density-side registry path consumes a vector head, runs
+// atomBatchedInverse + logDetJ, recurses on the iid base. Compare to
+// a hand-computed MvNormal density.
+
+test('walkPushfwd 5d: vector-base + registryName dispatch matches hand-computed MvNormal density', () => {
+  const ctx = makeCtx(`
+Base = iid(Normal(mu = 0.0, sigma = 1.0), 2)
+b = bijection(fn(_), fn(_), 0.0)
+Y = pushfwd(b, Base)
+`);
+  const bBinding = ctx.bindings.get('b');
+  bBinding.bijection.registryName = 'affine';
+  bBinding.bijection.paramIRs = {
+    L: { kind: 'lit', value: [[2, 0], [1, 3]] },
+    b: { kind: 'lit', value: [10, -5] },
+  };
+
+  const expanded = orchestrator.expandMeasure(
+    'Y', { derivations: ctx.derivations, bindings: ctx.bindings });
+  assert.equal(expanded.bijection.registryName, 'affine');
+  assert.ok(expanded.bijection.paramIRs);
+
+  // Observation y. Hand-compute expected density.
+  //   z = L^{-1}(y - b)
+  //   for y = [12, 1]: y - b = [2, 6]; solve L·z = [2, 6]:
+  //     z[0] = 2/2 = 1; z[1] = (6 - 1·1)/3 = 5/3 ≈ 1.6666...
+  //   log p_iid_Normal_2(z) = sum_i log p_Normal(z_i, 0, 1)
+  //                         = -log(2π) - 0.5 * (z0^2 + z1^2)
+  //   logDetJ = -log|det L| = -(log 2 + log 3) = -log 6
+  //
+  // Total: -log(2π) - (1 + (5/3)^2)/2 - log(6)
+  const density = require('../density.ts');
+  const obs = { shape: [2], data: new Float64Array([12, 1]) };
+  const lp = density.logDensity(expanded, obs, {}, {});
+  const z0 = 1.0, z1 = 5/3;
+  const expected = -Math.log(2 * Math.PI)
+    - 0.5 * (z0*z0 + z1*z1)
+    - Math.log(6);
+  assert.ok(Number.isFinite(lp), 'density is finite (got ' + lp + ')');
+  assert.ok(Math.abs(lp - expected) < 1e-10,
+    'density ' + lp + ' vs hand-computed ' + expected);
+});
+
+// =====================================================================
+// 6. walkPushfwd fall-through — scalar-base AST path unaltered
+// =====================================================================
+
+test('walkPushfwd 5d: existing scalar-base density unchanged when registry not engaged', () => {
+  const ctx = makeCtx(`
+M = Normal(mu = 0.0, sigma = 1.0)
+b = bijection(fn(exp(_)), fn(log(_)), fn(_))
+LN = pushfwd(b, M)
+`);
+  // Mark with registryName + paramIRs but scalar base — the registry
+  // fast path's D-discovery is affine-specific; for non-affine
+  // registry names with a scalar base, we don't enter the fast path
+  // because we'd fail D-discovery. The AST path is the source of
+  // truth for scalar bases.
+  //
+  // Specifically: scalar base means consumeVector wouldn't apply; the
+  // density walker's registry path is for vector-atom bases produced
+  // by iid composites.
+  //
+  // Here we test the parallel case: bij carries registryName but
+  // base is scalar, so the registry path's vector contracts can't
+  // match. The walker should still produce the AST path result.
+  const bBinding = ctx.bindings.get('b');
+  // INTENTIONALLY don't set registryName/paramIRs — we want the
+  // AST scalar path to fire untouched.
+  void bBinding;
+
+  const density = require('../density.ts');
+  const expanded = orchestrator.expandMeasure(
+    'LN', { derivations: ctx.derivations, bindings: ctx.bindings });
+  const lp = density.logDensity(expanded, 2.5, {}, {});
+  assert.ok(Number.isFinite(lp),
+    'scalar AST density unchanged (no registryName marker)');
+});

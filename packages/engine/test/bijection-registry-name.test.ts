@@ -143,42 +143,42 @@ LN = pushfwd(b, M)
 });
 
 // =====================================================================
-// 3. Numerical equivalence — registryName presence doesn't alter density
+// 3. Backward compat — unmarked density runs the AST path unchanged
 // =====================================================================
 //
-// Pin: density of `pushfwd(b_marked, M)` matches density of
-// `pushfwd(b_unmarked, M)` byte-for-byte. The registry path is
-// opt-in; consumers in 5c don't branch on the marker.
+// Pin: density of `pushfwd(b_unmarked, M)` produces the same finite
+// value as before any of the 5c/5d work. Sessions 5d/5e turn the
+// MARKED path into a real registry dispatch; the UNMARKED path stays
+// on the existing AST scalar walker (the §22.5 doctrine — registry
+// is an OPTIMISATION, never a REPLACEMENT, so unmarked behavior is
+// frozen).
+//
+// The "marked == unmarked density" claim from Session 5c is
+// invalidated by Session 5d (the marker now drives a real dispatch);
+// the marked-path numerical behavior is tested in
+// bijection-registry-dispatch.test.ts test 5.
 
-test('bijection contract (5c): registryName does NOT alter density numerically', () => {
-  // Two parallel ctxes — same model, one with the marker, one without.
-  const sourceUnmarked = `
+test('bijection contract (5c): UNMARKED density path runs the AST scalar walker', () => {
+  const ctx = makeCtx(`
 M = Normal(mu = 0.0, sigma = 1.0)
 b = bijection(fn(exp(_)), fn(log(_)), fn(_))
 LN = pushfwd(b, M)
-`;
-  const sourceMarked = sourceUnmarked;     // identical surface
+`);
+  const expanded = orchestrator.expandMeasure(
+    'LN', { derivations: ctx.derivations, bindings: ctx.bindings });
+  // No registryName marker — AST path runs.
+  assert.equal(expanded.bijection.registryName, undefined,
+    'unmarked binding produces no registryName on ir.bijection');
 
-  const ctxUnmarked = makeCtx(sourceUnmarked);
-  const ctxMarked = makeCtx(sourceMarked);
-  ctxMarked.bindings.get('b').bijection.registryName = 'exp';
-
-  const obs = 2.5;
-  const irUnmarked = orchestrator.expandMeasure(
-    'LN', { derivations: ctxUnmarked.derivations, bindings: ctxUnmarked.bindings });
-  const irMarked = orchestrator.expandMeasure(
-    'LN', { derivations: ctxMarked.derivations, bindings: ctxMarked.bindings });
-
-  const lpUnmarked = density.logDensity(irUnmarked, obs, {}, {});
-  const lpMarked   = density.logDensity(irMarked, obs, {}, {});
-
-  assert.ok(Number.isFinite(lpUnmarked),
-    'unmarked density is finite');
-  assert.ok(Number.isFinite(lpMarked),
-    'marked density is finite');
-  assert.equal(lpMarked, lpUnmarked,
-    'registryName presence does not alter density (5c is plumbing only; '
-    + '5d+ adds the consumer branch)');
+  const lp = density.logDensity(expanded, 2.5, {}, {});
+  assert.ok(Number.isFinite(lp),
+    'unmarked density runs the AST scalar walker (got ' + lp + ')');
+  // Density of LogNormal(0, 1) at 2.5 closed form:
+  //   log p_LN(y; 0, 1) = -log(y) - 0.5 log(2π) - 0.5 (log y)^2
+  const logy = Math.log(2.5);
+  const expected = -logy - 0.5 * Math.log(2 * Math.PI) - 0.5 * logy * logy;
+  assert.ok(Math.abs(lp - expected) < 1e-10,
+    'AST density at 2.5 ≈ LogNormal(0,1) closed form');
 });
 
 // =====================================================================
