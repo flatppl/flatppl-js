@@ -644,17 +644,35 @@ ctx)` dispatches to per-kind handlers in `KIND_HANDLERS` (~27 entries:
 the 13 measure-algebra derivation kinds + 8 multivariate distribution
 kinds + the FlatPDL primitives surface — see engine-concepts §13.6).
 
-**Bijection-binding contract extension** (Phase 5.1 Session 5c =
-`188ffb5`). `binding.bijection` gains an optional `registryName:
-string` field forwarded through `derivations.resolveBijectionMeta` to
-`ir.bijection.registryName`. Producers of closed-form bijections
-(Session 5d+'s lift-time MvNormal lowering) mark a binding with the
-registry-entry key ('affine' etc.); consumers (matPushfwd /
-walkPushfwd vector-base — Session 5d+) read the marker to dispatch
-through the registry's atom-batched fast paths. **Invariant:
-registryName is PURELY ADDITIVE.** `fName` / `fInvName` / `logVolume`
-MUST remain present and valid when registryName is set; the registry
-path is an OPTIMISATION over the AST path, never a replacement.
+**Bijection-binding contract extension** (Phase 5.1 Sessions 5c+5d).
+`binding.bijection` gains two optional additive fields forwarded
+through `derivations.resolveBijectionMeta` to `ir.bijection`:
+  - `registryName: string` (Session 5c, `188ffb5`) — the registry-
+    entry key ('affine' etc.).
+  - `paramIRs: Record<string, IRNode>` (Session 5d, `eea8e41`) — the
+    parameter IRs the registry entry consumes at materialise / density
+    time. Required-with: paramIRs MUST be present when registryName is.
+
+**Consumer dispatchers** (Session 5d):
+  - `mat-transformations.matPushfwd` (`87c37d7`) — fast path activates
+    when bijection has registryName + paramIRs AND base measure is
+    vector-atom (M.value with outerRank===1, shape=[N,D]). Resolves
+    paramIRs via orchestrator.resolveIRToValue, calls
+    `bijRegistry.getBijection(name).atomBatchedForward(z, params, N)`,
+    preserves outerRank=1 on output, propagates mass/weights/n_eff.
+    Falls through to scalar AST path otherwise.
+  - `density.walkPushfwd` (`449e8af`) — symmetric density-side fast
+    path. Resolves paramIRs via samplerLib.evaluateExpr(baseEnv+overlay),
+    discovers D from params.b.shape (affine convention), consumes a
+    length-D vector head, calls atomBatchedInverse + logDetJ, recurses
+    walkAcc on the base measure with z as a length-D vector, ADDs
+    logDetJ to acc per atom (sign convention — registry returns
+    inverse Jacobian).
+
+**Invariant: registryName / paramIRs are PURELY ADDITIVE.** `fName` /
+`fInvName` / `logVolume` MUST remain present and valid when
+registryName is set; the registry path is an OPTIMISATION over the AST
+path, never a replacement.
 
 **Bijection registry** (`bijection-registry.ts`, ~330 lines, Phase 5.1
 Sessions 1+2) — engine-concepts §22 lands the canonical decomposition
