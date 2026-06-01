@@ -965,9 +965,14 @@ function liftInlineSubexpressions(bindings: any) {
     // statically (e.g. `%dynamic` shapes, inline non-ref expressions,
     // kernel-placeholder mu), return unchanged → the matMvNormal
     // terminal materialiser handles the MvNormal IR as before.
-    const D = __discoveredMvNormalD(muAst, out);
+    // mu must be a rank-1 vector, cov a rank-2 matrix — pass the
+    // expected rank so a matrix-form mean (`rowstack([[2.0]])`, shape
+    // [1,1]) is REJECTED here and routes to matMvNormal, rather than
+    // lowering to a [1,1] param that the density guard later misreads
+    // as atom-batched (Session 5f adversarial-verify Issue 1).
+    const D = __discoveredMvNormalD(muAst, out, 1);
     if (D == null || !Number.isInteger(D) || D < 1) return astArg;
-    const covD = __discoveredMvNormalD(covAst, out);
+    const covD = __discoveredMvNormalD(covAst, out, 2);
     if (covD !== D) return astArg;
     // Literal-form cov gets the full square-[D,D] structural check.
     // Ref-form cov is validated by its inferredType being a
@@ -1543,27 +1548,43 @@ function liftInlineSubexpressions(bindings: any) {
     return null;
   }
 
-  // 5f-1: discover the static event dim D of an MvNormal mu/cov argument.
-  // Order:
+  // 5f-1: discover the static event dim D of an MvNormal mu/cov argument,
+  // requiring the argument to have rank `expectedRank` (1 for mu, 2 for
+  // cov). Order:
   //   (a) literal / ref-to-literal / inline-rowstack-literal — via
-  //       `__resolveLiteralArrayRef`; D = number of (outer) elements.
+  //       `__resolveLiteralArrayRef`; D = number of (outer) elements,
+  //       BUT only when the literal's nesting matches expectedRank (a
+  //       rank-1 mu must have scalar elements; a rank-2 cov must have
+  //       ArrayLiteral rows). This rejects a matrix-form mean
+  //       `rowstack([[2.0]])` (a [1,1] matrix where a [1] vector is
+  //       wanted), which would otherwise lower to a [1,1] param the
+  //       density guard later misreads as atom-batched (5f Issue 1).
   //   (b) a named Identifier ref whose binding carries a statically-known
-  //       inferredType array — D = shape[0] (the leading dim is the event
-  //       dim for both a [D] vector and a [D,D] matrix). Requires shape[0]
-  //       to be a concrete integer, NOT '%dynamic'.
+  //       inferredType array of EXACTLY rank `expectedRank` — D =
+  //       shape[0] (the leading dim is the event dim for both a [D]
+  //       vector and a [D,D] matrix). Requires shape[0] a concrete
+  //       integer, NOT '%dynamic'.
   // Returns null when D is not statically known — the gate then falls
   // through to the matMvNormal terminal materialiser. inferredType is
   // populated on every binding at lift time (analyzer copies it from the
   // typeinfer pass onto the bindings buildDerivations hands to lift).
-  function __discoveredMvNormalD(ast: any, bindings: any): number | null {
+  function __discoveredMvNormalD(ast: any, bindings: any,
+                                 expectedRank: number): number | null {
     if (!ast) return null;
     const lit = __resolveLiteralArrayRef(ast, bindings);       // path (a)
-    if (lit && lit.type === 'ArrayLiteral') return lit.elements.length;
+    if (lit && lit.type === 'ArrayLiteral') {
+      const firstElemIsArray = lit.elements.length > 0
+        && lit.elements[0] && lit.elements[0].type === 'ArrayLiteral';
+      // rank-1 wants scalar elements; rank-2 wants ArrayLiteral rows.
+      if (expectedRank === 1 && firstElemIsArray) return null;
+      if (expectedRank === 2 && !firstElemIsArray) return null;
+      return lit.elements.length;
+    }
     if (ast.type === 'Identifier') {                            // path (b)
       const b = bindings.get(ast.name);
       const t = b && b.inferredType;
-      if (t && t.kind === 'array' && Array.isArray(t.shape)
-          && Number.isInteger(t.shape[0])) {
+      if (t && t.kind === 'array' && t.rank === expectedRank
+          && Array.isArray(t.shape) && Number.isInteger(t.shape[0])) {
         return t.shape[0];
       }
     }

@@ -331,14 +331,36 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
   // perAtom alongside the rest. (The sample side avoids this because
   // matPushfwd resolves paramIRs on the main thread via
   // resolveIRToValue, which has the binding map.)
+  const paramIRRefs = new Set<string>();   // refs sourced from bijection paramIRs
   for (const n of Array.from(refs)) {
     const b = ctx.bindings && ctx.bindings.get(n);
     if (b && b.bijection && b.bijection.paramIRs) {
       for (const k of Object.keys(b.bijection.paramIRs)) {
         for (const r of orchestrator.collectSelfRefs(b.bijection.paramIRs[k])) {
           refs.add(r);
+          paramIRRefs.add(r);
         }
       }
+    }
+  }
+  // 5f-2 / adversarial-verify Issue 2: a per-atom (stochastic) ref
+  // sourced from a bijection's paramIRs means a marginal density of a
+  // hierarchical pushfwd (per-atom mean/scale) — a Monte Carlo estimate
+  // the closed-form single-observation density walker can't compute.
+  // Detect it HERE and emit the actionable deferred diagnostic, rather
+  // than letting the composite param measure crash `measureToRefValue`
+  // below with a confusing "neither .value nor .samples". (Sampling such
+  // models works via matPushfwd; only the closed-form density defers.)
+  for (const n of paramIRRefs) {
+    const isFixed = !!(ctx.fixedValues && ctx.fixedValues.has(n));
+    const isBinding = !!(ctx.bindings && ctx.bindings.has(n));
+    if (isBinding && !isFixed
+        && !isFunctionLikeBinding(ctx.bindings.get(n))) {
+      throw new Error(label + ": pushfwd bijection has an atom-dependent "
+        + "registry param (per-atom mean/scale via '" + n + "'); the "
+        + "marginal density of a hierarchical pushfwd is a Monte Carlo "
+        + "estimate not supported on the closed-form path (deferred — "
+        + "sampling such models works via matPushfwd)");
     }
   }
   const perAtomNames: string[] = [];

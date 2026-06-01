@@ -263,6 +263,29 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
   assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 2]);
 });
 
+test('5f-1: matrix-form mean (rowstack([[k]])) does NOT flip — routes to matMvNormal', async () => {
+  // 5f adversarial-verify Issue 1: a [1,1] matrix-shaped mean must be
+  // REJECTED by the gate (mu must be rank-1). Otherwise it lowers to a
+  // [1,1] param the density guard misreads as atom-batched, breaking a
+  // density that worked pre-5f. The rank-1 guard in __discoveredMvNormalD
+  // routes it to matMvNormal; density(N(2,4) at 3) = -1.737085713764618.
+  const ctx = makeCtx(`
+mu = rowstack([[2.0]])
+sigma = rowstack([[4.0]])
+m = MvNormal(mu = mu, cov = sigma)
+lp = logdensityof(m, [3.0])
+`);
+  const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
+  assert.equal(bijName, undefined,
+    'matrix-form mean → gate skipped (no synthetic bijection)');
+  assert.equal(ctx.derivations.m.kind, 'mvnormal',
+    'm stays on the matMvNormal path');
+  const lp = await ctx.getMeasure('lp');
+  const got = lp.samples ? lp.samples[0] : lp.value.data[0];
+  assert.ok(Math.abs(got - (-1.737085713764618)) < 1e-9,
+    `density N(2,4) at 3: got ${got}, expected -1.737085713764618`);
+});
+
 // =====================================================================
 // 5b. 5f-1 — widened gate: static-shape non-literal cov DOES flip
 // =====================================================================
