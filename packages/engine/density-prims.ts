@@ -167,10 +167,23 @@ function _paramAsMatrix(v: any, kernelName: string, paramName: string): any {
 const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
 
   // MvNormal(mu, cov) — n-variate normal.
-  //   log p(x) = -½n log(2π) - ½ log|cov| - ½ (x-μ)ᵀ cov⁻¹ (x-μ)
-  // Computed via L = lower_cholesky(cov):
-  //   log|cov| = 2 Σ log L_ii
-  //   (x-μ)ᵀ cov⁻¹ (x-μ) = ‖L⁻¹(x-μ)‖²
+  //
+  // Implementation IS the canonical decomposition per engine-concepts
+  // §22:  MvNormal(mu, Sigma) = pushfwd(affine(L, mu), iid(Normal, n))
+  // with L = lower_cholesky(cov). The log-density factorises as
+  //   log p_MvNormal(x | mu, Sigma)
+  //     = log p_iidNormal(L⁻¹(x − mu), n) + log|det J_{f⁻¹}(x)|
+  //     = (-½ n log(2π) - ½ ‖z‖²) + (-Σ log|diag(L)|)
+  // where `z = L⁻¹(x − mu)` and `logDetJ = -Σ log|diag(L)|` come from
+  // the `affine` bijection registry entry. This is the SAME numerical
+  // path the legacy inline code took (forward-sub against L, log-det
+  // via diag(L)), now expressed as a registry composition so the
+  // closed-form math has ONE owner — `bijection-registry.ts` — instead
+  // of two parallel implementations drifting.
+  //
+  // Equivalence is pinned by `test/bijection-registry.test.ts`:
+  // "affine density: registry-composed MvNormal score equals
+  // density-prim closed form".
   MvNormal: function (x: any, kw: any): number {
     if (kw == null || !('mu' in kw) || !('cov' in kw)) {
       throw new Error('builtin_logdensityof(MvNormal): requires mu and cov');
@@ -184,21 +197,18 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     }
     const xv = _asVectorOfLength(x, n, 'MvNormal');
     const L = samplerLib._internal.ARITH_OPS.lower_cholesky(cov);
-    let logDet = 0;
-    for (let i = 0; i < n; i++) logDet += Math.log(L.data[i * n + i]);
-    logDet *= 2;
-    const d = new Float64Array(n);
-    for (let i = 0; i < n; i++) d[i] = xv[i] - muArr[i];
-    // Forward solve L y = d.
-    const y = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      let s = d[i];
-      for (let k = 0; k < i; k++) s -= L.data[i * n + k] * y[k];
-      y[i] = s / L.data[i * n + i];
-    }
+    // Registry path: z = affine.atomBatchedInverse(x, {L, b=mu}) with
+    // a single-atom batch (N=1). The registry's forward-substitute is
+    // the same closed-form as the legacy inline d-/y-loops.
+    const bijRegistry = require('./bijection-registry.ts');
+    const xMat = { shape: [1, n], data: xv };
+    const muVec = { shape: [n], data: new Float64Array(muArr) };
+    const z = bijRegistry.affineAtomBatchedInverse(
+      xMat, { L: L, b: muVec }, /*N=*/1);
+    const logDetJ = bijRegistry.affineLogDetJ(null, { L: L }, /*N=*/1);
     let mahal2 = 0;
-    for (let i = 0; i < n; i++) mahal2 += y[i] * y[i];
-    return -0.5 * (n * Math.log(2 * Math.PI) + logDet + mahal2);
+    for (let i = 0; i < n; i++) mahal2 += z.data[i] * z.data[i];
+    return -0.5 * (n * Math.log(2 * Math.PI) + mahal2) + logDetJ;
   },
 
   // Dirichlet(alpha) on the standard simplex of dim n=length(alpha):
