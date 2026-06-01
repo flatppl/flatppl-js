@@ -85,7 +85,7 @@ function approxEq(got: number, want: number, eps = 1e-9): boolean {
 
 test('metricsum: direct call form parses cleanly', () => {
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 norm = metricsum(g, [], p[.mu^] * p[.mu_])
 `;
@@ -98,7 +98,7 @@ test('metricsum: `g: r[axes] := body` shorthand parses cleanly', () => {
   // parser-level lookahead distinguishes this from the AggregateBinding
   // shape (`Name [` vs `Name : Name [`).
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: norm[] := p[.mu^] * p[.mu_]
 `;
@@ -111,7 +111,7 @@ test('metricsum: shorthand desugars to metricsum(metric, [...], body)', () => {
   // bound binding's RHS shape — both should have `op === 'metricsum'`
   // and matching outputAxes shape.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: short[.mu^] := p[.mu^]
 long = metricsum(g, [.mu^], p[.mu^])
@@ -148,8 +148,8 @@ test('metricsum: variance-marked axes parse as AxisRef with variance field', () 
   // axes so the analyzer doesn't fire the "output index also
   // contracted" diagnostic.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
-A = [[1.0, 2.0], [3.0, 4.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
 p = [3.0, 2.0]
 g: r[.mu^] := A[.mu^, .nu_] * p[.nu^]
 `;
@@ -187,7 +187,7 @@ test('metricsum: bare-neutral axis inside metricsum is a static error', () => {
   // Spec: "bare neutral aggregate axes (`.i` without a variance
   // marker) are not allowed inside `metricsum`."
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^] := p[.mu]
 `;
@@ -203,9 +203,9 @@ test('metricsum: contracted axis without paired upper/lower is a static error', 
   // of `.nu^` is not a valid contraction (would be `delta^{nu nu}` with
   // no metric inserted — semantically ambiguous).
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
-A = [[1.0, 0.0], [0.0, 1.0]]
-B = [[1.0, 0.0], [0.0, 1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
+A = rowstack([[1.0, 0.0], [0.0, 1.0]])
+B = rowstack([[1.0, 0.0], [0.0, 1.0]])
 g: r[.mu^] := A[.mu^, .nu^] * B[.nu^, .rho_]
 `;
   const ds = errors(src);
@@ -220,7 +220,7 @@ test('metricsum: output index appearing with opposite variance in body is a stat
   // body `B[.mu_]` (lower) requests contracting the output index,
   // which spec forbids.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^] := p[.mu_]
 `;
@@ -233,7 +233,7 @@ g: r[.mu^] := p[.mu_]
 test('metricsum: output index missing from body is a static error', () => {
   // Spec: every output axis must occur in expr.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.nu^] := p[.mu^] * p[.mu_]
 `;
@@ -245,7 +245,7 @@ g: r[.nu^] := p[.mu^] * p[.mu_]
 
 test('metricsum: duplicate output axis is a static error', () => {
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^, .mu^] := p[.mu^]
 `;
@@ -257,7 +257,7 @@ g: r[.mu^, .mu^] := p[.mu^]
 
 test('metricsum: kwargs rejected (positional-only per spec)', () => {
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 r = metricsum(metric = g, output_axes = [.mu^], expr = p[.mu^])
 `;
@@ -269,7 +269,7 @@ r = metricsum(metric = g, output_axes = [.mu^], expr = p[.mu^])
 
 test('metricsum: wrong arg count is a static error', () => {
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 r = metricsum(g, [.mu^])
 `;
   const ds = errors(src);
@@ -292,7 +292,7 @@ test('metricsum: non-scalar body (record) is a static error', () => {
   // error (spec §sec:metricsum "Expression restrictions"). We construct
   // a body via `record(...)` so its inferred type is a record.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^] := record(a = p[.mu^])
 `;
@@ -307,7 +307,7 @@ test('metricsum: tensor-of-records indexed by variance-marked axis is a static e
   // axis is rejected — the metric raise/lower operations don't make
   // sense for non-scalar element types.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 T = [record(a = 1.0), record(a = 2.0)]
 g: r[.mu^] := T[.mu^]
 `;
@@ -389,7 +389,7 @@ test('metricsum: runtime symmetry guard passes on symmetric metric (e2e)', () =>
   // fixture-driven norm_pp test asserts, but pinned here as the
   // explicit positive case for the symmetry-guard wiring.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: norm[] := p[.i^] * p[.i_]
 `;
@@ -406,7 +406,7 @@ test('metricsum: runtime symmetry guard prevents asymmetric-metric evaluation (e
   // graph never produces a (wrong) numerical answer. Pin the
   // undefined-on-asymmetric behaviour.
   const src = `
-g = [[1.0, 0.5], [0.7, -1.0]]
+g = rowstack([[1.0, 0.5], [0.7, -1.0]])
 p = [3.0, 2.0]
 g: norm[] := p[.i^] * p[.i_]
 `;
@@ -426,7 +426,7 @@ test('metricsum: scalar-bodied + array-of-scalars tensors pass the type check', 
   // use scalar bodies + arrays of scalars and shouldn't trigger any
   // type diagnostics. This guard pins the no-false-positive invariant.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^] := p[.mu^] * p[.mu_]
 `;
@@ -441,7 +441,7 @@ test('metricsum: variance-marked axis outside metricsum is a static error', () =
   // only appear inside aggregate or metricsum. Outside, even a plain
   // axis (no variance) is illegal — this test pins the rule.
   const src = `
-A = [[1.0, 2.0], [3.0, 4.0]]
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
 x = A[.mu^]
 `;
   const ds = errors(src);
@@ -461,7 +461,7 @@ test('metricsum: lift rewrites metricsum() to aggregate(sum, ...)', () => {
   // this shape so downstream consumers know they never see a raw
   // metricsum call.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: norm[] := p[.mu^] * p[.mu_]
 `;
@@ -485,7 +485,7 @@ test('metricsum: lift hoists __g_down = inv(<checked metric>) when body has any 
   // symmetry guard, engine-concepts §23); inv operates on the
   // checked version. We pin both bindings here.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: norm[] := p[.mu^] * p[.mu_]
 `;
@@ -523,7 +523,7 @@ test('metricsum: lift skips __g_down hoist when body has no lower-variance axis'
   // still produces an aggregate (with stripped markers) but no inv-
   // metric is needed. We pin the no-emit case.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^] := p[.mu^]
 `;
@@ -549,7 +549,7 @@ test('Form-B: lift emits __ms_mixed_N synthetic for each lower-variance body acc
   // Two distinct lower-variance body accesses (different sources) → at
   // least two __ms_mixed bindings.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 q = [1.0, 4.0]
 g: r[] := p[.mu_] * q[.mu^]
@@ -575,7 +575,7 @@ test('Form-B: lift CSE shares one __ms_mixed for repeated identical-pattern acce
   // sum-aggregate body. Both accesses share `p|mu|lower` as their CSE
   // key, so only one cascade is emitted.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[] := p[.mu_] * p[.mu_]
 `;
@@ -602,7 +602,7 @@ test('Form-B: lift emits __ms_raised_N for each lower-variance output axis', () 
   // __ms_raised_0. The main aggregate is hoisted to __ms_main_0; the
   // user's binding RHS becomes an Identifier ref to __ms_raised_0.
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 q = [1.0, 4.0]
 g: r[.i^, .j_] := p[.i^] * q[.j_]
@@ -754,7 +754,7 @@ test('metricsum: PIR roundtrip emits + parses (%uaxis name) / (%laxis name)', ()
   const lowerMod = require('../lower.ts');
   const pir      = require('../pir-sexpr.ts');
   const src = `
-g = [[1.0, 0.0], [0.0, -1.0]]
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 p = [3.0, 2.0]
 g: r[.mu^, .rho_] := p[.mu^] * p[.rho_]
 `;
@@ -800,9 +800,9 @@ test('metricsum: identity metric matches plain aggregate(sum, ...)', () => {
   // analogous AggregateBinding without variance markers. Both should
   // produce the same A @ B = [[19, 22], [43, 50]].
   const src = `
-eye2 = [[1.0, 0.0], [0.0, 1.0]]
-A = [[1.0, 2.0], [3.0, 4.0]]
-B = [[5.0, 6.0], [7.0, 8.0]]
+eye2 = rowstack([[1.0, 0.0], [0.0, 1.0]])
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B = rowstack([[5.0, 6.0], [7.0, 8.0]])
 eye2: ms[.i^, .k^] := A[.i^, .j_] * B[.j^, .k^]
 plain[.i, .k]   := A[.i, .j]   * B[.j, .k]
 `;
