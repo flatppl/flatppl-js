@@ -1,0 +1,41 @@
+# Phase 5.1 Session 5b — nested broadcast with MvNormal inner body.
+#
+# Per spec §04: kernel-broadcast over a user kernel whose body is
+# itself a `broadcast(MvNormal, …)`. The Phase 4.4 nested-broadcast
+# detector already recognises the two-axis pattern; Session 5b
+# extends it to accept VECTOR_OUTPUT_DISTRIBUTIONS (MvNormal) as the
+# inner head — closing the §22.2(d) story for the INNER case.
+#
+# Model shape:
+#   - K_outer = 3 (groups, each with its own scale_outer).
+#   - K_inner = 4 (per-group "subject" observations, each with its
+#     own per-cell n-vector mu_inner).
+#   - Inner body draws MvNormal(mu_inner, cov_shared) where mu_inner
+#     varies per inner cell.
+#
+# Output shape: [N, K_outer, K_inner * n] atom-major, where n=2
+# (MvNormal event dim). Per (outer, inner, dim) the value is a
+# Normal(mu_inner[dim], cov_shared[dim, dim]).
+#
+# Test oracles (in nested-broadcast-mvnormal-inner.test.ts):
+#   - Shape: y.value.shape == [N, K_outer, K_inner * n].
+#   - Finite output values.
+#   - Per (outer, inner) sample mean ≈ mu_inner_per_cell.
+
+mu_inner_per_cell = rowstack([
+  [0.0, 0.0], [1.0, -1.0], [-2.0, 3.0], [0.5, 0.5]
+])
+cov_shared = rowstack([[1.0, 0.3], [0.3, 0.5]])
+
+# Outer kernel takes a scale-out param but doesn't actually use it
+# in the inner body (Session 5b MVP doesn't yet thread outer per-
+# atom refs into MvNormal params; that lands in Session 5c+).
+# The outer broadcast iterates K_outer=3 times.
+
+inner_kernel = kernelof(
+  broadcast(MvNormal, mu = mu_inner_per_cell, cov = cov_shared),
+  scale_outer = scale_outer
+)
+
+scales = [1.0, 1.0, 1.0]
+y = broadcast(inner_kernel, scale_outer = scales)

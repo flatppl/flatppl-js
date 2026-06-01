@@ -1487,18 +1487,27 @@ function _executeNestedBroadcastComposite(
 
     // Build the cell-j bcKwargs map once per outer j; then per
     // outer cell we determine K_inner by evaluating the substituted
-    // inner kwargs and per inner cell we sampleN.
+    // inner kwargs and per inner cell we materialise (sampleN for
+    // scalar inner dists; registry-backed _sampleVectorOutputAtCell
+    // for VECTOR_OUTPUT inner dists — Phase 5.1 Session 5b).
     //
     // Two passes within each outer cell:
     //   (a) evaluate each inner kwarg against this cell's bcKwargs to
     //       extract the per-(j, k) value (scalar or per-atom column).
-    //   (b) sampleN with those values.
+    //   (b) materialise per (j, k).
     //
     // The "K_inner" is the largest cell-axis size across the inner
     // kwargs (mirrors the standalone broadcast shape ladder); inner
     // kwargs that resolve to scalars or atom-batched-scalars pass
     // through unchanged.
-    type CellResult = { K_inner: number; cells: Float64Array[] };
+    //
+    // Per-inner-cell output is `{data: Float64Array, eventDim}` so
+    // the stitcher knows the per-cell width — scalar inner dists
+    // produce eventDim=1 (compat with Phase 4.4 layout), vector
+    // inner dists produce their n. Output shape becomes
+    // [N, K_outer, K_inner * eventDim] atom-major.
+    type InnerCellResult = { data: Float64Array; eventDim: number };
+    type CellResult = { K_inner: number; cells: InnerCellResult[] };
     const outerCells: CellResult[] = new Array(K);
     let chain = Promise.resolve();
     for (let j = 0; j < K; j++) {
@@ -1570,11 +1579,12 @@ function _executeNestedBroadcastComposite(
             }
           }
           const innerD = cls.D || 1;
-          if (innerD > 1) {
+          if (innerD > 1 && !compositeBody.innerIsVectorOutput) {
             throw new Error('broadcast(' + d.distOp
               + '): nested-broadcast inner kwarg \'' + pn
               + '\' has inner D ' + innerD + ' (vec-per-cell shapes '
-              + 'belong to iid-composite)');
+              + 'belong to iid-composite unless inner is a vector-'
+              + 'output dist, which this nested-broadcast has none of)');
           }
         }
         if (K_inner < 1) {
@@ -1582,9 +1592,13 @@ function _executeNestedBroadcastComposite(
             + '): empty inner collection argument at outer cell ' + jj);
         }
 
-        // Per inner cell k: build inner-cell kwargs (lit or refArray)
-        // and sampleN. Inner sampler IR is the bare innerDistOp.
-        const innerCells: Float64Array[] = new Array(K_inner);
+        // Per inner cell k: build inner-cell kwargs (lit, refArray, or
+        // per-cell literal vector for D > 1 atom-indep kwargs) and
+        // materialise. Scalar inner dists go through sampleN; vector-
+        // output inner dists (Session 5b — MvNormal) dispatch through
+        // _sampleVectorOutputAtCell. Each cell's result carries an
+        // eventDim so the final stitch knows the per-cell width.
+        const innerCells: InnerCellResult[] = new Array(K_inner);
         let innerChain = Promise.resolve();
         for (let k = 0; k < K_inner; k++) {
           const kk = k;
@@ -1595,17 +1609,79 @@ function _executeNestedBroadcastComposite(
             for (const pn of Object.keys(innerVals)) {
               const cls = innerClass[pn];
               const v = innerVals[pn];
+              const innerD = cls.D || 1;
               const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
                                 || cls.kind === 'NKD';
               if (isAtomDep) {
+                if (innerD > 1) {
+                  throw new Error('nested-broadcast: atom-dep per-cell '
+                    + 'vector inner kwarg \'' + pn + '\' (D=' + innerD
+                    + ') deferred to Session 5c+ (matPushfwd vector-base '
+                    + 'extension)');
+                }
                 const col = shared.perAtomColumnAtJ(v, kk, N);
                 const refName = '__inbc_' + pn + '_' + jj + '_' + kk;
                 innerCellRefs[refName] = valueLib.batchedScalar(col);
                 distKwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
+              } else if (innerD > 1) {
+                // Atom-indep per-cell vector — extract v[kk, :] as a
+                // literal `vector(...)` IR (e.g. inner MvNormal's mu
+                // per inner cell).
+                const baseOff = (v.shape && v.shape.length === 2)
+                  ? kk * innerD : 0;
+                const litArgs: any[] = [];
+                for (let z = 0; z < innerD; z++) {
+                  litArgs.push({ kind: 'lit', value: v.data[baseOff + z] });
+                }
+                distKwargs[pn] = {
+                  kind: 'call', op: 'vector', args: litArgs };
               } else {
                 const s = shared.elemScalarAtJ(v, kk, N);
                 distKwargs[pn] = { kind: 'lit', value: s };
               }
+            }
+
+            if (compositeBody.innerIsVectorOutput) {
+              // Phase 5.1 Session 5b — MvNormal (or future vector-
+              // output dist) as the inner dist. Dispatch through the
+              // shared per-cell helper that consumes the bijection
+              // registry. The helper rejects perAtomRefs in the MVP
+              // (atom-dep mu/cov defers to Session 5c+); the outer-
+              // cell's outerRefs ARE atom-dep refs, so we filter them
+              // out — they don't bind any inner kwarg in this scope
+              // (atom-dep outer ARGS feed via per-atom slices into mu
+              // / cov only if the inner MvNormal references them
+              // through outer placeholders, which Session 5b's MVP
+              // doesn't yet handle).
+              const atomIndepRefs = {};   // empty by design — MVP gate
+              const refKeys = Object.keys(innerCellRefs);
+              if (refKeys.length > 0) {
+                // Detect whether any innerCellRef is actually used by
+                // a remaining distKwarg ref (post-substitution). If
+                // it is, we'd need the matPushfwd vector-base
+                // extension — reject up front.
+                const usedRefs = new Set<string>();
+                for (const pn of Object.keys(distKwargs)) {
+                  const refs = orchestrator.collectSelfRefs(distKwargs[pn]);
+                  refs.forEach((n: string) => usedRefs.add(n));
+                }
+                for (const rk of refKeys) {
+                  if (usedRefs.has(rk)) {
+                    throw new Error('nested-broadcast: inner MvNormal '
+                      + 'with atom-dep mu/cov via outer-cell per-atom '
+                      + 'refs is not supported in Session 5b MVP. '
+                      + 'Outer arg threading into MvNormal params '
+                      + 'defers to Session 5c+ (matPushfwd '
+                      + 'vector-base extension).');
+                  }
+                }
+              }
+              return _sampleVectorOutputAtCell(
+                name, compositeBody.innerDistOp, distKwargs,
+                atomIndepRefs, jj, kk, ctx, N
+              ).then((res: any) => {
+                innerCells[kk] = res;
+              });
             }
             const distIR = {
               kind: 'call', op: compositeBody.innerDistOp, kwargs: distKwargs,
@@ -1616,7 +1692,7 @@ function _executeNestedBroadcastComposite(
               seed: nameSeed(name + ':j' + jj + ':k' + kk, ctx.rootKey),
             };
             return ctx.sendWorker(workerMsg).then((reply: any) => {
-              innerCells[kk] = reply.samples;
+              innerCells[kk] = { data: reply.samples, eventDim: 1 };
             });
           });
         }
@@ -1639,19 +1715,54 @@ function _executeNestedBroadcastComposite(
             + j + ') — Phase 4.4 MVP requires uniform inner K'));
         }
       }
-      // Stitch [N, K_outer, K_inner] atom-major.
-      const out = new Float64Array(N * K * K_inner);
+      // Stitch with per-(j, k) event-dim awareness. For scalar inner
+      // dists every (j, k) cell contributes 1 scalar (compat with the
+      // Phase 4.4 layout). For vector-output inner dists every (j, k)
+      // cell contributes an eventDim-vector; we splat them along a
+      // unified inner axis to keep the output rank-3 (the trailing n
+      // multiplies into the K_inner axis):
+      //   shape = [N, K_outer, K_inner * eventDim]   atom-major
+      // Sane downstream consumption (reductions, slicing) treats the
+      // last axis as the natural value axis of each (outer, inner)
+      // cell — matches the bare-vector-output kernel-broadcast output.
+      const eventDim = outerCells[0].cells[0].eventDim;
       for (let j = 0; j < K; j++) {
         for (let k = 0; k < K_inner; k++) {
-          const col = outerCells[j].cells[k];
-          for (let i = 0; i < N; i++) {
-            out[i * K * K_inner + j * K_inner + k] = col[i];
+          if (outerCells[j].cells[k].eventDim !== eventDim) {
+            return Promise.reject(new Error('broadcast(' + d.distOp
+              + '): ragged inner event-dim across (j=' + j + ', k='
+              + k + '): expected ' + eventDim + ', got '
+              + outerCells[j].cells[k].eventDim));
           }
         }
       }
-      const value = { shape: [N | 0, K, K_inner], data: out };
+      const innerWidth = K_inner * eventDim;
+      const out = new Float64Array(N * K * innerWidth);
+      for (let j = 0; j < K; j++) {
+        for (let k = 0; k < K_inner; k++) {
+          const cell = outerCells[j].cells[k];
+          const col = cell.data;
+          if (eventDim === 1) {
+            for (let i = 0; i < N; i++) {
+              out[i * K * innerWidth + j * innerWidth + k] = col[i];
+            }
+          } else {
+            // Vector inner — each atom contributes an eventDim-vector
+            // at inner cell k; splat into the [k*eventDim, (k+1)*eventDim)
+            // slot of the inner axis.
+            const off = k * eventDim;
+            for (let i = 0; i < N; i++) {
+              for (let z = 0; z < eventDim; z++) {
+                out[i * K * innerWidth + j * innerWidth + off + z]
+                  = col[i * eventDim + z];
+              }
+            }
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, innerWidth], data: out };
       return Object.assign(
-        empirical.arrayMeasure(out, [K, K_inner], null),
+        empirical.arrayMeasure(out, [K, innerWidth], null),
         { value: value, logTotalmass: 0, n_eff: N },
       );
     });

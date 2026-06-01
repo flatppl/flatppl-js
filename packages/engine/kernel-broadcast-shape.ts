@@ -704,15 +704,27 @@ interface NestedBroadcastKernelDescriptor {
   params: string[];
   /** Outer kernel surface kwarg names. */
   paramKwargs: string[];
-  /** Inner broadcast's distOp (a sampler-REGISTRY-known scalar dist). */
+  /** Inner broadcast's distOp — either a sampler-REGISTRY-known scalar
+   *  dist (Phase 4.4 scope) or a VECTOR_OUTPUT_DISTRIBUTIONS entry
+   *  (Phase 5.1 Session 5b — MvNormal inner). The executor branches on
+   *  `innerIsVectorOutput` to dispatch vector-output inner per
+   *  (outer, inner) cell through the registry-backed materialiser. */
   innerDistOp: string;
-  /** Inner distribution's REGISTRY param names. */
+  /** Inner distribution's REGISTRY param names. Empty for vector-
+   *  output inner dists (no scalar REGISTRY entry). */
   innerDistParams: string[];
   /** Inner broadcast's kwargs IR. May reference outer kernel
    *  placeholders (`%local`) AND closed-over self-refs (`self`).
    *  Positional `args` (other than the head) are NOT supported in
    *  the MVP — every inner param must arrive via kwargs. */
   innerKwargs: Record<string, any>;
+  /** True when `innerDistOp` belongs to
+   *  `ir-shared.VECTOR_OUTPUT_DISTRIBUTIONS` (Phase 5.1 Session 5b). */
+  innerIsVectorOutput: boolean;
+  /** Per-inner-cell event dim along the nested stitching axis: 1 for
+   *  scalar inner dists, n for MvNormal etc. NaN at classify-time
+   *  without literal mu shapes; materialiser resolves at runtime. */
+  innerEventDim: number;
 }
 
 /**
@@ -755,16 +767,23 @@ function detectNestedBroadcastKernelBinding(
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'broadcast') return null;
 
-  // Inner broadcast head must be a sampleable-dist ref. The lift
-  // collapses simple kernelof-DistCall user kernels into this form,
-  // so the MVP captures the canonical surface for nested obs models.
+  // Inner broadcast head must be either a sampler-REGISTRY-known
+  // scalar dist (Phase 4.4 original scope) OR a VECTOR_OUTPUT_
+  // DISTRIBUTIONS entry like MvNormal (Phase 5.1 Session 5b
+  // extension). The lift collapses simple kernelof-DistCall user
+  // kernels into this form, so the MVP captures the canonical surface
+  // for nested obs models.
   if (!Array.isArray(innerMeasure.args) || innerMeasure.args.length < 1) {
     return null;
   }
   const head = innerMeasure.args[0];
   if (!head || head.kind !== 'ref' || head.ns !== 'self') return null;
-  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
-  if (!SAMPLEABLE || !SAMPLEABLE.has(head.name)) return null;
+  const irShared = require('./ir-shared.ts');
+  const SAMPLEABLE = irShared.SAMPLEABLE_DISTRIBUTIONS;
+  const VECTOR_OUT = irShared.VECTOR_OUTPUT_DISTRIBUTIONS;
+  const isScalarSampleable = SAMPLEABLE && SAMPLEABLE.has(head.name);
+  const isVectorOutput = VECTOR_OUT && VECTOR_OUT.has(head.name);
+  if (!isScalarSampleable && !isVectorOutput) return null;
   // Inner head must NOT be shadowed by a user binding (else it's a
   // composite-bodied inner kernel — defer to a follow-up).
   if (bindings.has(head.name)) return null;
@@ -778,15 +797,27 @@ function detectNestedBroadcastKernelBinding(
   if (innerMeasure.args.length > 1) return null;
 
   let innerDistParams: string[] = [];
-  try {
-    const sampler = require('./sampler.ts');
-    if (sampler && sampler._internal && sampler._internal.REGISTRY) {
-      const entry = sampler._internal.REGISTRY[head.name];
-      if (entry && Array.isArray(entry.params)) innerDistParams = entry.params;
-      else return null;
-    }
-  } catch (_) { /* sampler not loadable; leave distParams empty for
-                     classify-time conservatism */ }
+  if (isScalarSampleable) {
+    try {
+      const sampler = require('./sampler.ts');
+      if (sampler && sampler._internal && sampler._internal.REGISTRY) {
+        const entry = sampler._internal.REGISTRY[head.name];
+        if (entry && Array.isArray(entry.params)) innerDistParams = entry.params;
+        else return null;
+      }
+    } catch (_) { /* sampler not loadable; leave distParams empty for
+                       classify-time conservatism */ }
+  }
+  // Inner event dim. For vector-output inner dists, attempt the
+  // literal-array unwrap via the joint detector's helper (mu IR
+  // sees the inner kwargs which mix outer placeholders + closed
+  // refs); kernel-placeholder mu produces NaN and the materialiser
+  // resolves at runtime.
+  let innerEventDim = 1;
+  if (isVectorOutput) {
+    innerEventDim = _resolveVectorEventDim(
+      head.name, { kwargs: innerKwargs }, bindings);
+  }
 
   return {
     binding: b,
@@ -795,6 +826,8 @@ function detectNestedBroadcastKernelBinding(
     innerDistOp: head.name,
     innerDistParams,
     innerKwargs,
+    innerIsVectorOutput: isVectorOutput,
+    innerEventDim,
   };
 }
 
