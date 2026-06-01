@@ -1108,12 +1108,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     return T.deferred();
   }
 
-  // Flatten nested array types so `array(1, [m], array(1, [n], T))`
-  // looks like `array(2, [m, n], T)` for the purposes of indexing
-  // (`A[i, j]` ≡ `A[i][j]`). The spec doesn't distinguish nested
-  // and flat array types at the value level — engines may use either
-  // internal representation, and surface multi-d indexing applies to
-  // both.
+  // Flatten nested array types for INDEX-DEPTH resolution only:
+  // `array(1, [m], array(1, [n], T))` looks like
+  // `array(2, [m, n], T)` for the purpose of `inferGet`'s multi-d
+  // indexing sugar (spec §05/§07: `A[i, j]` ≡ `A[i][j]` is defined
+  // on both flat arrays and arrays of arrays). The flattening here
+  // is ONLY for resolving the element type after N selectors and
+  // discovering axis lengths in aggregate bodies — it does NOT
+  // collapse the spec §03 semantic distinction between a flat matrix
+  // and a vector-of-vectors at any other site.
+  //
+  // Callers that care about the spec-§03 distinction (matrix-input
+  // signature unification, metricsum's "arrays of scalars"
+  // Expression restrictions, the runtime requireMatrix guard) must
+  // inspect the ORIGINAL un-flattened type, not the result of this
+  // helper. See e.g. `inferMetricsum` which checks `metricT.elem`
+  // directly for the strict scalar-element invariant.
   function _flattenArrayType(t: any): any {
     if (!t || t.kind !== 'array') return t;
     const dims: any[] = [...t.shape];
@@ -1277,7 +1287,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     if (!shape) return T.deferred();
 
     // ─── Static check: spec §sec:metricsum "Expression restrictions" ───
-    // (a) The metric argument itself must be an array of scalars.
+    // (a) The metric argument must be a rank-2 array of scalars. Spec
+    //     §sec:metricsum: "It must be a square, symmetric, and
+    //     invertible rank-2 array." Per spec §03, a nested vec-of-vec
+    //     `array(1, …, array(1, …, scalar))` is NOT a matrix; the user
+    //     must wrap with `rowstack(...)` to make it one. Check the
+    //     UN-FLATTENED type so the vec-of-vec form fails here with a
+    //     diagnostic pointing the user at the explicit lift.
     const metricT: any = inferExpr(args[0], scopes);
     if (metricT && metricT.kind !== 'failed') {
       const isDeferred = (metricT.kind === 'deferred'
@@ -1292,10 +1308,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
           });
           return T.failed('metricsum metric not array');
         }
-        const metricFlat = _flattenArrayType(metricT);
-        const metricElem = metricFlat.elem;
+        // Strict: metric.elem must be a scalar (NOT an array — that
+        // would be a vector-of-vectors per spec §03).
+        const metricElem = metricT.elem;
         const metricElemDeferred = metricElem && (metricElem.kind === 'deferred'
           || metricElem.kind === 'any' || metricElem.kind === 'var');
+        if (metricElem && metricElem.kind === 'array') {
+          diagnostics.push({
+            severity: 'error',
+            message: 'metricsum: metric is a vector-of-vectors '
+              + '(' + T.show(metricT) + ') per spec §03; metricsum requires '
+              + 'a rank-2 array of scalars. Wrap with `rowstack(...)` (rows = '
+              + 'inner vectors) or `colstack(...)` (columns = inner vectors) '
+              + 'to commit the storage-order interpretation.',
+            loc: args[0].loc,
+          });
+          return T.failed('metricsum metric is vec-of-vec');
+        }
         if (metricElem && metricElem.kind !== 'scalar' && !metricElemDeferred) {
           diagnostics.push({
             severity: 'error',
@@ -1336,10 +1365,29 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
               const cDeferred = (containerT.kind === 'deferred'
                 || containerT.kind === 'any' || containerT.kind === 'var');
               if (!cDeferred && containerT.kind === 'array') {
-                const flat = _flattenArrayType(containerT);
-                const elem = flat.elem;
+                // Spec §sec:metricsum "Expression restrictions":
+                // "metric itself and all arrays indexed with
+                // co-/contravariant axis names in `expr` must be
+                // arrays of scalars." Per spec §03, a vec-of-vec
+                // (array-of-array) is NOT an array of scalars; check
+                // the UN-FLATTENED elem directly.
+                const elem = containerT.elem;
                 const elemDeferred = elem && (elem.kind === 'deferred'
                   || elem.kind === 'any' || elem.kind === 'var');
+                if (elem && elem.kind === 'array') {
+                  diagnostics.push({
+                    severity: 'error',
+                    message: 'metricsum: variance-marked-axis container is a '
+                      + 'vector-of-vectors (' + T.show(containerT) + ') per '
+                      + 'spec §03; metricsum body containers must be flat '
+                      + 'arrays of scalars. Wrap with `rowstack(...)` (rows = '
+                      + 'inner vectors) or `colstack(...)` (columns = inner '
+                      + 'vectors) to commit the storage-order interpretation.',
+                    loc: (container && container.loc) || n.loc,
+                  });
+                  varianceContainerOK = false;
+                  return;
+                }
                 if (elem && elem.kind !== 'scalar' && !elemDeferred) {
                   diagnostics.push({
                     severity: 'error',
