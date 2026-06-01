@@ -28,8 +28,11 @@ Lower-indexing a vector flips the sign of the spatial component.
 flatppl_compat = "0.1"
 
 # 2D Minkowski metric: g^{ij} = diag(+1, -1). Self-inverse under
-# inversion. Stored as a 2x2 array of scalars.
-g = [[1.0, 0.0], [0.0, -1.0]]
+# inversion. Per spec §03, a bare nested-array literal [[…], […]] is a
+# vector-of-vectors (semantically distinct from a matrix). `rowstack`
+# is the explicit lift to a 2x2 matrix of scalars (rows = inner vecs),
+# which metricsum requires for the metric argument.
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
 
 # Vectors stored as all-upper components.
 # p^i = (E=3, px=2), q^i = (1, 4).
@@ -37,11 +40,11 @@ p = [3.0, 2.0]
 q = [1.0, 4.0]
 
 # 2x2 identity matrix, stored upper-upper. Three copies for the
-# Lorentz-composition test below.
-M_id = [[1.0, 0.0], [0.0, 1.0]]
-L1   = [[1.0, 0.0], [0.0, 1.0]]
-L2   = [[1.0, 0.0], [0.0, 1.0]]
-L3   = [[1.0, 0.0], [0.0, 1.0]]
+# Lorentz-composition test below. Same rowstack lift as the metric.
+M_id = rowstack([[1.0, 0.0], [0.0, 1.0]])
+L1   = rowstack([[1.0, 0.0], [0.0, 1.0]])
+L2   = rowstack([[1.0, 0.0], [0.0, 1.0]])
+L3   = rowstack([[1.0, 0.0], [0.0, 1.0]])
 
 %%%
 Lorentz-invariant norm: `p . p = p^i p_i = (p^0)^2 - (p^1)^2 = 9 - 4 = 5`.
@@ -106,7 +109,10 @@ the numerical result matches the corresponding plain matmul.
 For A_mat = [[1,2],[3,4]], B_mat = [[5,6],[7,8]]:
     A @ B = [[19, 22], [43, 50]]
 %%%
-eye2 = [[1.0, 0.0], [0.0, 1.0]]
-A_mat = [[1.0, 2.0], [3.0, 4.0]]
-B_mat = [[5.0, 6.0], [7.0, 8.0]]
+# Matrices wrapped via rowstack: bare nested literals would be
+# vectors-of-vectors per spec §03, NOT matrices, and metricsum's
+# metric arg + the bilinear body require true rank-2 arrays of scalars.
+eye2 = rowstack([[1.0, 0.0], [0.0, 1.0]])
+A_mat = rowstack([[1.0, 2.0], [3.0, 4.0]])
+B_mat = rowstack([[5.0, 6.0], [7.0, 8.0]])
 eye2: AB_eye[.i^, .k^] := A_mat[.i^, .j_] * B_mat[.j^, .k^]
