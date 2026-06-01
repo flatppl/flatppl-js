@@ -176,6 +176,36 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
       continue;
     }
     binding.bijection = { fName: fA.name, fInvName: fIA.name, logVolume };
+    // Phase 5.1 Session 5e — synthetic MvNormal-lowering marker.
+    //
+    // `lift.inlineMvNormalLift` rewrites `MvNormal(mu, cov)` IR to
+    // `pushfwd(<bij>, <iid>)` and emits a synthetic bijection binding
+    // marked via `__mvnormalLowering = {muIR, covIR}`. The loop above
+    // populates the AST-path metadata (fName / fInvName / logVolume)
+    // from the synthetic `bijection(fn(_), fn(_), 0.0)` stubs as for
+    // any user-written bijection; THIS block layers the §22 registry
+    // contract on top — additively, per the load-bearing invariant
+    // documented in resolveBijectionMeta (line ~2090).
+    //
+    // The marker is the single source of truth: lift recognises the
+    // MvNormal shape and attaches __mvnormalLowering; the construction
+    // loop here forwards it into binding.bijection.{registryName,
+    // paramIRs} without itself trying to recognise MvNormal patterns.
+    // Loose coupling: lift owns AST recognition, derivations owns the
+    // registry-binding contract.
+    //
+    // paramIRs.L: lower_cholesky is an EVALUABLE_OPS member
+    // (ir-shared.ts), so matPushfwd's resolveIRToValue pass evaluates
+    // this call on demand at materialise time — same numerical path
+    // matMvNormal's L computation already uses.
+    if ((binding as any).__mvnormalLowering) {
+      const m = (binding as any).__mvnormalLowering;
+      binding.bijection.registryName = 'affine';
+      binding.bijection.paramIRs = {
+        L: { kind: 'call', op: 'lower_cholesky', args: [m.covIR] },
+        b: m.muIR,
+      };
+    }
   }
 
   const derivations = Object.create(null);
