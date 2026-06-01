@@ -653,6 +653,26 @@ through `derivations.resolveBijectionMeta` to `ir.bijection`:
     parameter IRs the registry entry consumes at materialise / density
     time. Required-with: paramIRs MUST be present when registryName is.
 
+**Producer** (Session 5e, `f24d058`):
+  - `lift.inlineMvNormalLift` runs in the inlineUserCall fixed-point
+    loop; detects kwarg-form `MvNormal(mu, cov)` calls with literal
+    (or one-level-ref-to-literal) mu and cov; emits two synthetic
+    bindings (`__bij_N` carrying the AST stub
+    `bijection(fn(_), fn(_), 0.0)` + the side-channel marker
+    `__mvnormalLowering = {muIR, covIR}`; `__iid_N` carrying
+    `iid(Normal(mu=0, sigma=1), D)` with the inner Normal pre-hoisted
+    to a fn anon); rewrites the original MvNormal call's RHS in place
+    to `pushfwd(__bij_N, __iid_N)`. The fn(_) stubs satisfy the
+    additive invariant (the AST path remains a valid fallback);
+    paramIRs.L = `lower_cholesky(covIR)` evaluates lazily at
+    materialise time via the existing `EVALUABLE_OPS` path.
+  - `derivations` bijection-construction loop (line ~178) reads the
+    `__mvnormalLowering` marker and layers `binding.bijection.
+    registryName = 'affine'` + `paramIRs = {L, b}` onto the same
+    object the AST-path metadata sits on. Producer / consumer
+    loosely coupled by the marker — lift owns AST recognition,
+    derivations owns the registry-binding contract.
+
 **Consumer dispatchers** (Session 5d):
   - `mat-transformations.matPushfwd` (`87c37d7`) — fast path activates
     when bijection has registryName + paramIRs AND base measure is
