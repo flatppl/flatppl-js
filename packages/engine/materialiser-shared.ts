@@ -423,7 +423,15 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
     const m: any = scalarMeasureN(flat, {
       logWeights: null, logTotalmass: 0, n_eff: flat.length,
     });
-    if (dense.shape.length >= 2) m.intrinsicShape = dense.shape.slice();
+    // Set `intrinsicShape` (the viewer's matrix-mode trigger) ONLY for
+    // true matrices / tensors, NOT for nested-vector values. Spec §03:
+    // a vec-of-vec is not a matrix; the viewer must not render it as
+    // a heatmap. The user-facing type system already routes vec-of-vec
+    // to the array-mode step plot via `inferredType.kind === 'array'`
+    // with rank-1 elem-array; this is the runtime defense-in-depth.
+    if (dense.shape.length >= 2 && !valueLib.isNestedVectorValue(dense)) {
+      m.intrinsicShape = dense.shape.slice();
+    }
     return m;
   }
   // Complex scalar `z = complex(re, im)` → planar complex Value of shape=[1].
