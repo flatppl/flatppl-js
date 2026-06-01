@@ -2445,12 +2445,31 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     });
     return T.failed(op + ' arity');
   }
+  // _rowstackHint(expected, got) — when a matrix-input signature site
+  // is fed a vector-of-vectors, append a §03-citing hint that points
+  // the user at the explicit `rowstack(...)` / `colstack(...)` lift.
+  // Returns the trailing hint string (possibly empty).
+  function _rowstackHint(expected: any, got: any): string {
+    // Expected: array(2, [...], scalar). Got: array(1, [...], array(...)).
+    // Detect the "matrix-wanted, vec-of-vec-given" pattern at the
+    // outermost level — the engine's matrix-input signatures all use
+    // rank=2 with scalar elem, and vec-of-vec lowers to rank=1 with
+    // array elem.
+    if (!expected || expected.kind !== 'array' || expected.rank !== 2) return '';
+    if (!expected.elem || expected.elem.kind !== 'scalar') return '';
+    if (!got || got.kind !== 'array' || got.rank !== 1) return '';
+    if (!got.elem || got.elem.kind !== 'array') return '';
+    return ' — this is a vector-of-vectors per spec §03, not a matrix; '
+      + 'wrap with `rowstack(...)` (rows = inner vectors) or `colstack(...)` '
+      + '(columns = inner vectors) to commit the storage-order interpretation.';
+  }
+
   function argError(op: any, i: any, expected: any, got: any, loc: any) {
     if (got && got.kind === 'failed') return T.failed(op + ' arg type (cascade)');
     diagnostics.push({
       severity: 'error',
       message: op + ': arg ' + (i + 1) + ' expects ' + T.show(expected)
-        + ', got ' + T.show(got),
+        + ', got ' + T.show(got) + _rowstackHint(expected, got),
       loc,
     });
     return T.failed(op + ' arg type');
@@ -2460,7 +2479,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     diagnostics.push({
       severity: 'error',
       message: op + ': kwarg "' + k + '" expects ' + T.show(expected)
-        + ', got ' + T.show(got),
+        + ', got ' + T.show(got) + _rowstackHint(expected, got),
       loc,
     });
     return T.failed(op + ' kwarg type');
