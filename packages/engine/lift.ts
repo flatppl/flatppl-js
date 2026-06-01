@@ -1103,7 +1103,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (!bodyArg) return astArg;
     const outputAxes = axesArg.elements || [];
 
-    // ─── STEP 1: stable metric Identifier ──────────────────────────
+    // ─── STEP 1: stable metric Identifier + runtime symmetry guard ────
     // The metric flows into the optional `inv(metric)` hoist AND into
     // the output-raise cascade. We need a bare Identifier so synthetic
     // bindings reference a single stable name.
@@ -1115,6 +1115,26 @@ function liftInlineSubexpressions(bindings: any) {
       out.set(mName, makeSyntheticBinding(mName, metricArg));
       metricRef = makeIdent(mName, metricArg.loc);
     }
+    // Spec §sec:metricsum mandates symmetric metrics. The engine can't
+    // check this statically (the metric may be sampled / parameterised
+    // / non-deterministic), so we wrap metricRef once with a runtime-
+    // guard `_ms_check_symmetric(metric)` (engine-concepts §23). The
+    // guard is a validating passthrough: returns the metric unchanged
+    // on success, throws a metricsum-attributed Error on shape or
+    // symmetry violation. Wrapping once at this point covers both the
+    // inv() hoist AND every raise factor — those downstream uses
+    // reference the checked metric Ident, so the check fires exactly
+    // once per metricsum call.
+    const checkedMetricCall = {
+      type: 'CallExpr',
+      callee: makeIdent('_ms_check_symmetric', astArg.loc),
+      args: [makeIdent(metricRef.name, metricRef.loc)],
+      loc: astArg.loc,
+    };
+    const checkedMetricName = freshName();
+    out.set(checkedMetricName,
+      makeSyntheticBinding(checkedMetricName, checkedMetricCall));
+    metricRef = makeIdent(checkedMetricName, astArg.loc);
 
     // ─── STEP 2: probe body for any lower-variance axis ───────────
     // Decides whether `__g_down = inv(metric)` is needed. Stops at

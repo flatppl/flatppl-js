@@ -278,6 +278,164 @@ r = metricsum(g, [.mu^])
     `expected wrong-arg-count diagnostic; got: ${ds.map((d: any) => d.message).join('; ')}`);
 });
 
+// =====================================================================
+// 2b. Type-aware static checks (spec §sec:metricsum "Expression restrictions")
+// =====================================================================
+// Spec mandates: "metric itself and all arrays indexed with co-/
+// contravariant axis names in expr must be arrays of scalars. expr
+// must produce scalar values for all combinations of axis index
+// values." The reference engine has full type/shape inference, so
+// these restrictions are enforced statically by typeinfer.
+
+test('metricsum: non-scalar body (record) is a static error', () => {
+  // The body must produce a scalar; a record-valued body is a static
+  // error (spec §sec:metricsum "Expression restrictions"). We construct
+  // a body via `record(...)` so its inferred type is a record.
+  const src = `
+g = [[1.0, 0.0], [0.0, -1.0]]
+p = [3.0, 2.0]
+g: r[.mu^] := record(a = p[.mu^])
+`;
+  const ds = errors(src);
+  assert.ok(ds.some((d: any) =>
+    /metricsum: body must produce a scalar value/.test(d.message)),
+    `expected non-scalar-body diagnostic; got: ${ds.map((d: any) => d.message).join('; ')}`);
+});
+
+test('metricsum: tensor-of-records indexed by variance-marked axis is a static error', () => {
+  // An array of records (not scalars) indexed by a variance-marked
+  // axis is rejected — the metric raise/lower operations don't make
+  // sense for non-scalar element types.
+  const src = `
+g = [[1.0, 0.0], [0.0, -1.0]]
+T = [record(a = 1.0), record(a = 2.0)]
+g: r[.mu^] := T[.mu^]
+`;
+  // Note: T's type might be 'array of records' or 'record per element';
+  // depends on inferVector's promotion rules. The check covers any
+  // non-scalar element type.
+  const ds = errors(src);
+  assert.ok(ds.some((d: any) =>
+    /metricsum: arrays indexed by a variance-marked axis must have scalar elements/.test(d.message)
+    || /must produce a scalar value/.test(d.message)),
+    `expected non-scalar-element diagnostic; got: ${ds.map((d: any) => d.message).join('; ')}`);
+});
+
+test('_ms_check_symmetric: passthrough on symmetric matrix', () => {
+  // Direct unit test of the op (engine-concepts §23). For a symmetric
+  // input the op returns its argument unchanged — no throw, no
+  // mutation. Bypasses fixed-eval's catch-all so the assertion is
+  // direct rather than via the undefined-on-failure side channel.
+  const ops = require('../ops.ts');
+  const valueLib = require('../value.ts');
+  const sym = valueLib.asValue([[1.0, 0.5], [0.5, -1.0]]);
+  const result = ops.dispatch('_ms_check_symmetric', [sym]);
+  assert.strictEqual(result, sym, 'returns the input unchanged on success');
+});
+
+test('_ms_check_symmetric: throws on asymmetric matrix with metricsum-attributed message', () => {
+  // The error message must mention metricsum so users see WHERE in
+  // the spec the symmetry requirement comes from, not just an opaque
+  // dispatch error.
+  const ops = require('../ops.ts');
+  const valueLib = require('../value.ts');
+  const asym = valueLib.asValue([[1.0, 0.5], [0.7, -1.0]]);
+  let threw = false;
+  try {
+    ops.dispatch('_ms_check_symmetric', [asym]);
+  } catch (e: any) {
+    threw = true;
+    assert.ok(/metricsum.*symmetric/.test(e.message),
+      `expected metricsum symmetry error; got: ${e.message}`);
+  }
+  assert.ok(threw, 'asymmetric matrix should throw');
+});
+
+test('_ms_check_symmetric: throws on non-square matrix', () => {
+  // Squareness is a precondition for symmetry; the guard reports the
+  // shape problem with a metricsum-specific message before any inv()
+  // call runs (which would otherwise produce a generic "matrix is
+  // singular" error from LU).
+  const ops = require('../ops.ts');
+  const valueLib = require('../value.ts');
+  const nonSquare = valueLib.asValue([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0]]);
+  let threw = false;
+  try {
+    ops.dispatch('_ms_check_symmetric', [nonSquare]);
+  } catch (e: any) {
+    threw = true;
+    assert.ok(/metricsum.*square/.test(e.message),
+      `expected metricsum squareness error; got: ${e.message}`);
+  }
+  assert.ok(threw, 'non-square matrix should throw');
+});
+
+test('_ms_check_symmetric: tolerance accepts numerically-symmetric near-floating-point-noise', () => {
+  // The mixed atol+rtol tolerance accepts pairs that differ within
+  // ~1e-9 relative or 1e-12 absolute (NumPy `allclose` convention).
+  // A 1e-13 absolute deviation on O(1) entries must pass.
+  const ops = require('../ops.ts');
+  const valueLib = require('../value.ts');
+  const nearSym = valueLib.asValue([[1.0, 0.5 + 1e-13], [0.5, -1.0]]);
+  // Should not throw.
+  const r = ops.dispatch('_ms_check_symmetric', [nearSym]);
+  assert.strictEqual(r, nearSym, 'within-tolerance asymmetry is accepted');
+});
+
+test('metricsum: runtime symmetry guard passes on symmetric metric (e2e)', () => {
+  // E2E positive: the Minkowski metric `diag(1, -1)` is symmetric;
+  // the lift's `_ms_check_symmetric(g)` wrapper validates without
+  // throwing. norm_pp evaluates to 5 (= 9 - 4) — same value the
+  // fixture-driven norm_pp test asserts, but pinned here as the
+  // explicit positive case for the symmetry-guard wiring.
+  const src = `
+g = [[1.0, 0.0], [0.0, -1.0]]
+p = [3.0, 2.0]
+g: norm[] := p[.i^] * p[.i_]
+`;
+  const ctx = processSource(src);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  const v = built.fixedValues.get('norm');
+  assert.ok(approxEq(valueAt(v), 5), `norm = ${valueAt(v)}, want 5`);
+});
+
+test('metricsum: runtime symmetry guard prevents asymmetric-metric evaluation (e2e)', () => {
+  // E2E negative: an asymmetric metric reaches the runtime guard via
+  // the lift's `_ms_check_symmetric(g)` wrapper. fixed-eval catches
+  // the throw and leaves the dependent binding undefined; the binding
+  // graph never produces a (wrong) numerical answer. Pin the
+  // undefined-on-asymmetric behaviour.
+  const src = `
+g = [[1.0, 0.5], [0.7, -1.0]]
+p = [3.0, 2.0]
+g: norm[] := p[.i^] * p[.i_]
+`;
+  const ctx = processSource(src);
+  assert.equal(ctx.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  // The asymmetric metric makes _ms_check_symmetric throw; fixed-eval
+  // catches it, so norm stays undefined (no incorrect numeric value
+  // surfaces).
+  const v = built.fixedValues.get('norm');
+  assert.equal(v, undefined,
+    'asymmetric metric should leave dependent bindings undefined');
+});
+
+test('metricsum: scalar-bodied + array-of-scalars tensors pass the type check', () => {
+  // Positive case: the standard metricsum tests (all from the fixture)
+  // use scalar bodies + arrays of scalars and shouldn't trigger any
+  // type diagnostics. This guard pins the no-false-positive invariant.
+  const src = `
+g = [[1.0, 0.0], [0.0, -1.0]]
+p = [3.0, 2.0]
+g: r[.mu^] := p[.mu^] * p[.mu_]
+`;
+  const ds = errors(src).filter(d =>
+    /metricsum: (body|metric|arrays)/.test(d.message));
+  assert.equal(ds.length, 0,
+    `unexpected metricsum-restrictions diagnostic: ${ds.map((d: any) => d.message).join('; ')}`);
+});
+
 test('metricsum: variance-marked axis outside metricsum is a static error', () => {
   // Per analyzer's scope-check, an AxisRef with variance marker can
   // only appear inside aggregate or metricsum. Outside, even a plain
@@ -319,10 +477,13 @@ g: norm[] := p[.mu^] * p[.mu_]
   assert.equal(rhs.callee.name, 'aggregate', 'metricsum was rewritten to aggregate');
 });
 
-test('metricsum: lift hoists __g_down = inv(metric) when body has any lower-variance axis', () => {
-  // The lift emits a synthetic `__g_down_N = inv(metric)` binding so
-  // every lower-variance body access can multiply by the same shared
-  // inv-metric matrix. We pin its presence + its `inv(...)` RHS shape.
+test('metricsum: lift hoists __g_down = inv(<checked metric>) when body has any lower-variance axis', () => {
+  // The lift emits a synthetic `__g_down_N = inv(<checked_metric>)`
+  // binding so every lower-variance body access can multiply by the
+  // same shared inv-metric matrix. The metric itself is wrapped in
+  // an upstream `_ms_check_symmetric(metric)` synthetic (the runtime
+  // symmetry guard, engine-concepts §23); inv operates on the
+  // checked version. We pin both bindings here.
   const src = `
 g = [[1.0, 0.0], [0.0, -1.0]]
 p = [3.0, 2.0]
@@ -330,22 +491,31 @@ g: norm[] := p[.mu^] * p[.mu_]
 `;
   const ctx = processSource(src);
   const built = orchestrator.buildDerivations(ctx.bindings);
-  // Walk the bindings map looking for any synthetic name starting
-  // with __g_down_.
+  // The lift emits two related synthetics:
+  //   __anon_N  = _ms_check_symmetric(g)
+  //   __g_down_M = inv(__anon_N)
   let gDown: any = null;
   for (const [n, b] of built.bindings) {
     if (n.startsWith('__g_down_')) { gDown = b; break; }
   }
   assert.ok(gDown, '__g_down synthetic binding emitted');
-  const rhs = gDown.node.value;
-  assert.equal(rhs.type, 'CallExpr');
-  assert.equal(rhs.callee.name, 'inv');
-  // The inv() call's single arg is an Identifier ref to the user's
-  // metric binding (or a hoisted synthetic when the metric arg was
-  // a non-Identifier expression — the test above only exercises the
-  // Identifier case).
-  assert.equal(rhs.args[0].type, 'Identifier');
-  assert.equal(rhs.args[0].name, 'g');
+  const gDownRhs = gDown.node.value;
+  assert.equal(gDownRhs.type, 'CallExpr');
+  assert.equal(gDownRhs.callee.name, 'inv');
+  // inv's argument now references the checked-metric synthetic, not
+  // the user's `g` directly.
+  assert.equal(gDownRhs.args[0].type, 'Identifier');
+  const checkedName = gDownRhs.args[0].name;
+  // Find that checked-metric binding and verify it's
+  // `_ms_check_symmetric(g)`.
+  const checkedBinding = built.bindings.get(checkedName);
+  assert.ok(checkedBinding,
+    `expected synthetic ${checkedName} for the symmetry-checked metric`);
+  const checkedRhs = checkedBinding.node.value;
+  assert.equal(checkedRhs.type, 'CallExpr');
+  assert.equal(checkedRhs.callee.name, '_ms_check_symmetric');
+  assert.equal(checkedRhs.args[0].type, 'Identifier');
+  assert.equal(checkedRhs.args[0].name, 'g');
 });
 
 test('metricsum: lift skips __g_down hoist when body has no lower-variance axis', () => {

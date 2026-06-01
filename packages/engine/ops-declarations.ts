@@ -647,6 +647,109 @@ ops.register({
 });
 
 // =====================================================================
+// _ms_check_symmetric(A) — engine-internal metricsum runtime guard
+// =====================================================================
+//
+// Validating passthrough: returns its input unchanged after asserting
+// it's a rank-2 square matrix that's approximately symmetric. Emitted
+// by lift.inlineMetricsumLift to wrap the metric argument once per
+// metricsum call (engine-concepts §23). Spec §sec:metricsum mandates
+// symmetric metrics; squareness comes for free via inv()'s own runtime
+// check, but symmetry was unchecked under both Form-A and the initial
+// Form-B landings — the wrapper closes that gap with a metricsum-
+// attributed error message (instead of opaque downstream NaNs).
+//
+// Tolerance: mixed absolute + relative (NumPy `allclose` convention).
+//   |A[i,j] - A[j,i]| ≤ ATOL + RTOL · max(|A[i,j]|, |A[j,i]|)
+// Defaults are baked in (not user-tunable) to keep the op's arity at 1.
+const _MS_SYM_ATOL = 1e-12;
+const _MS_SYM_RTOL = 1e-9;
+
+function _msCheckSymmetricLogical(A: any): any {
+  // Densify to a canonical Value so the shape + data are uniform
+  // regardless of input format (nested JS array, nested Float64Array,
+  // diag-stored Value, dense Value).
+  const v = valueLib.densify(valueLib.asValue(A));
+  if (!Array.isArray(v.shape) || v.shape.length !== 2) {
+    throw new Error('metricsum: metric must be a rank-2 matrix, got shape ['
+      + (Array.isArray(v.shape) ? v.shape.join(',') : '?') + ']');
+  }
+  const m = v.shape[0];
+  const n = v.shape[1];
+  if (m !== n) {
+    throw new Error('metricsum: metric must be square, got shape ['
+      + m + ',' + n + ']');
+  }
+  const data = v.data;
+  for (let i = 0; i < m; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const aij = data[i * n + j];
+      const aji = data[j * n + i];
+      const diff = Math.abs(aij - aji);
+      const tol = _MS_SYM_ATOL + _MS_SYM_RTOL * Math.max(
+        Math.abs(aij), Math.abs(aji));
+      if (diff > tol) {
+        throw new Error('metricsum: metric is not symmetric: A['
+          + i + ',' + j + '] = ' + aij + ' but A['
+          + j + ',' + i + '] = ' + aji);
+      }
+    }
+  }
+  // Return the original input — Value-identity preservation matters
+  // for caches that key off binding handles, and we want zero overhead
+  // beyond the symmetry walk itself.
+  return A;
+}
+
+function _msCheckSymmetricBatched(args: any[], N: number): any {
+  const A = args[0];
+  // Atom-batched [N, m, n] matrix: validate each slice. The dispatcher
+  // calls this when atomN is set; if A's shape doesn't fit the [N, m, n]
+  // expectation we return null so dispatch falls back to per-atom.
+  if (!valueLib.isValue(A) || !Array.isArray(A.shape) || A.shape.length !== 3
+      || A.shape[0] !== N) {
+    return null;
+  }
+  const m = A.shape[1];
+  const n = A.shape[2];
+  if (m !== n) {
+    throw new Error('metricsum: metric must be square per atom, got shape ['
+      + A.shape.join(',') + ']');
+  }
+  const stride = m * n;
+  for (let atom = 0; atom < N; atom++) {
+    const base = atom * stride;
+    for (let i = 0; i < m; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const aij = A.data[base + i * n + j];
+        const aji = A.data[base + j * n + i];
+        const diff = Math.abs(aij - aji);
+        const tol = _MS_SYM_ATOL + _MS_SYM_RTOL * Math.max(
+          Math.abs(aij), Math.abs(aji));
+        if (diff > tol) {
+          throw new Error('metricsum: metric is not symmetric at atom '
+            + atom + ': A[' + i + ',' + j + '] = ' + aij
+            + ' but A[' + j + ',' + i + '] = ' + aji);
+        }
+      }
+    }
+  }
+  return A;
+}
+
+ops.register({
+  name: '_ms_check_symmetric',
+  signature: {
+    args: [_array(2, ['%dynamic', '%dynamic'], _REAL)],
+    kwargs: {},
+    result: _array(2, ['%dynamic', '%dynamic'], _REAL),
+  },
+  argRanks: [2],
+  logical: _msCheckSymmetricLogical,
+  batched: _msCheckSymmetricBatched,
+});
+
+// =====================================================================
 // lower_cholesky(A) — lower-triangular L with A = L Lᵀ (PD A)
 // =====================================================================
 //

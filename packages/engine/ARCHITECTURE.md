@@ -42,6 +42,18 @@ language spec in the **flatppl-design** repository (resolution order in `AGENTS.
 > per-(tensor, variance) mixed-binding emission + numerical correctness
 > + PIR roundtrip).
 >
+> **metricsum validation hardening (2026-06-01):** Typeinfer now
+> enforces spec §sec:metricsum "Expression restrictions" — body must
+> produce a scalar value; metric + every container indexed by a
+> variance-marked axis must be arrays of scalars. The lift also wraps
+> the metric arg with a `_ms_check_symmetric(metric)` runtime guard
+> that validates rank-2 squareness + approximate symmetry (NumPy
+> `allclose` mixed atol+rtol tolerance) once per metricsum call.
+> Spec mandates symmetric metrics but the metric can be sampled /
+> parameterised / non-deterministic, so static enforcement isn't
+> possible; the runtime guard reports a metricsum-attributed error
+> (not an opaque LU `matrix is singular` from inv).
+>
 > **Architectural arc in progress: Phase 5.1 §22 multivariate-as-
 > derived-measure reframe.** Sessions 1-5e (May-June 2026) landed
 > end-to-end registry-driven `pushfwd(affine, iid(Normal, D))` for
