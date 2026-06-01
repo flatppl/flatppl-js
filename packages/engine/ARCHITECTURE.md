@@ -675,6 +675,20 @@ Session 4 MVP scope: per-cell mu (rank-2 `[K, n]`) or shared mu
 stochastic mu / cov defer to Session 5+ alongside the matPushfwd
 vector-base extension that gives walker symmetry.
 
+**Nested-broadcast with vector-output inner**
+(`mat-broadcast._executeNestedBroadcastComposite` extension, Phase 5.1
+Session 5b = `5371a32`).
+`detectNestedBroadcastKernelBinding` accepts MvNormal as the inner
+head, recording `innerIsVectorOutput` + `innerEventDim`. The executor
+dispatches vector-output inner per (outer, inner) cell through
+`_sampleVectorOutputAtCell`; scalar inner stays on the worker's
+sampleN path. Stitching is per-cell event-dim aware: output
+`[N, K_outer, K_inner * eventDim]` atom-major. **Recognition-layer
+only in Session 5b** — end-to-end meaningful nested pattern requires
+atom-dep MvNormal params (Session 5c+'s matPushfwd vector-base
+extension), since the outer kernel param needs to thread into the
+inner MvNormal kwarg.
+
 **Joint composite-body with vector-output components**
 (`mat-broadcast._executeJointComposite` extension, Phase 5.1 Session
 5a = `f7546a9`). `joint(loc = MvNormal(mu, cov), obs = Normal(…))` as
