@@ -218,6 +218,65 @@ LN = pushfwd(b, M)
 // resolveFnBody walk. Density check in test 3 + sample check here
 // jointly verify the seam holds in both directions.
 
+// =====================================================================
+// 6. Session 5d commit 1 — paramIRs round-trip
+// =====================================================================
+//
+// Pin: a binding marked with both registryName AND paramIRs has BOTH
+// fields forwarded onto ir.bijection. The downstream consumers
+// (matPushfwd / walkPushfwd vector-base — Session 5d commits 2-3) read
+// these together to dispatch through the registry. Producer contract:
+// when registryName is set, paramIRs MUST also be set.
+
+test('bijection contract (5d): paramIRs round-trip alongside registryName', () => {
+  const ctx = makeCtx(`
+M = Normal(mu = 0.0, sigma = 1.0)
+b = bijection(fn(exp(_)), fn(log(_)), fn(_))
+LN = pushfwd(b, M)
+`);
+  const bBinding = ctx.bindings.get('b');
+  // Synthetic producer marker — paramIRs alongside registryName.
+  bBinding.bijection.registryName = 'affine';
+  bBinding.bijection.paramIRs = {
+    L: { kind: 'lit', value: [[2.0]] },
+    b: { kind: 'lit', value: [3.0] },
+  };
+
+  const expanded = orchestrator.expandMeasure(
+    'LN', { derivations: ctx.derivations, bindings: ctx.bindings });
+  assert.equal(expanded.bijection.registryName, 'affine',
+    'registryName still forwards');
+  assert.ok(expanded.bijection.paramIRs,
+    'paramIRs forwarded onto ir.bijection');
+  assert.deepEqual(expanded.bijection.paramIRs.L,
+    { kind: 'lit', value: [[2.0]] },
+    'paramIRs.L round-trips intact');
+  assert.deepEqual(expanded.bijection.paramIRs.b,
+    { kind: 'lit', value: [3.0] },
+    'paramIRs.b round-trips intact');
+  // Additive invariant: AST fields still present.
+  assert.ok(expanded.bijection.fInv && expanded.bijection.fInv.body);
+  assert.ok(expanded.bijection.logVolume);
+});
+
+test('bijection contract (5d): paramIRs without registryName also rides through', () => {
+  // Lenient on the producer side: forwarding is independent. Consumers
+  // are responsible for checking the pair together.
+  const ctx = makeCtx(`
+M = Normal(mu = 0.0, sigma = 1.0)
+b = bijection(fn(exp(_)), fn(log(_)), fn(_))
+LN = pushfwd(b, M)
+`);
+  ctx.bindings.get('b').bijection.paramIRs = { foo: { kind: 'lit', value: 1 } };
+  const expanded = orchestrator.expandMeasure(
+    'LN', { derivations: ctx.derivations, bindings: ctx.bindings });
+  assert.equal(expanded.bijection.registryName, undefined,
+    'registryName absent');
+  assert.deepEqual(expanded.bijection.paramIRs,
+    { foo: { kind: 'lit', value: 1 } },
+    'paramIRs forwards even without registryName');
+});
+
 test('bijection contract (5c): matPushfwd samples a marked binding via AST path', async () => {
   const ctx = makeCtx(`
 M = Normal(mu = 0.0, sigma = 1.0)
