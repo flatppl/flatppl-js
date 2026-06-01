@@ -1490,14 +1490,34 @@ function liftInlineSubexpressions(bindings: any) {
     // direct ref to a binding whose RHS is one. Otherwise null. No
     // deep resolution — non-literal bindings fall through to the
     // matMvNormal safety path.
+    //
+    // Also unwraps one level of `rowstack(<ArrayLiteral>)`: spec §03
+    // requires the user to wrap matrix literals in `rowstack(...)` to
+    // commit a row-major interpretation; the lift treats the wrapped
+    // form as semantically identical to a bare ArrayLiteral for the
+    // purpose of resolving the per-row literal structure (the
+    // resulting Value is the same row-major flat storage either way).
     if (!ast) return null;
     if (ast.type === 'ArrayLiteral') return ast;
+    if (ast.type === 'CallExpr'
+        && ast.callee && ast.callee.type === 'Identifier'
+        && ast.callee.name === 'rowstack'
+        && Array.isArray(ast.args) && ast.args.length === 1
+        && ast.args[0] && ast.args[0].type === 'ArrayLiteral') {
+      return ast.args[0];
+    }
     if (ast.type === 'Identifier') {
       const b = bindings.get(ast.name);
       if (b && b.node && b.node.value
           && b.node.value.type === 'ArrayLiteral') {
         return b.node.value;
       }
+      // Note: a ref to a `rowstack(<ArrayLiteral>)` binding is NOT
+      // unwrapped here — the lift gate's materialiser side relies on
+      // the bindings env carrying all the names paramIRs touches,
+      // and a `rowstack`-wrapped ref binding stays on the safer
+      // matMvNormal path. The Session 5f follow-up widens this case
+      // alongside the matMvNormal retirement.
     }
     return null;
   }

@@ -413,6 +413,36 @@ function isNestedVectorValue(v: any): boolean {
     && v.outerRank < v.shape.length;
 }
 
+// requireMatrix(v, opName) — gate at the entry of matrix-input
+// linalg ops (inv, det, logabsdet, lower_cholesky, row_gram, col_gram,
+// self_outer, diagmat, linsolve, quadform, transpose,
+// _ms_check_symmetric, density-prim cov/scale args, …). Refuses
+// Values that carry an explicit `outerRank` tag less than their
+// shape rank — those are vectors-of-vectors per spec §03 and the
+// engine's nested-vector storage convention; matrix-input ops are
+// undefined on them. The error message names the op and points the
+// user at `rowstack(...)` as the explicit lift.
+//
+// NOT applied to the generic `mul` operator: spec-legal
+// aggregate-over-vec-of-vec patterns are dissolved into matmul
+// internally and arrive via the same code path. The user-facing
+// matmul case is gated at typeinfer-signature time (matrix args
+// required); the runtime kernel works correctly on both forms
+// because the engine uses row-major flat storage as its internal
+// convention.
+function requireMatrix(v: any, opName: string): any {
+  if (isValue(v) && isNestedVectorValue(v)) {
+    throw new Error(
+      opName + ': argument is a vector-of-vectors (outerRank=' + v.outerRank +
+      ', shape=[' + v.shape.join(',') + ']) per spec §03; matrix-input ops ' +
+      'require a true rank-2 array of scalars. Wrap with `rowstack(...)` ' +
+      '(rows = inner vectors) or `colstack(...)` (columns = inner vectors) ' +
+      'to commit the storage-order interpretation.'
+    );
+  }
+  return v;
+}
+
 // Inner-shape (cell-shape) of a tagged value. Returns the trailing
 // axes after the outer-rank split. For a flat tensor (tag absent or
 // outerRank == shape.length) this is `[]`.
@@ -497,6 +527,10 @@ function _swappedShape(shape: number[]) {
 // vectors (rank 1) transpose toggles the tag without changing shape.
 function transpose(v: any) {
   if (!isValue(v)) throw new Error('transpose: argument is not a Value');
+  // Per spec §07 (linear algebra) transpose is defined on vectors and
+  // matrices. A vector-of-vectors (outerRank tag set) is neither —
+  // refuse at the value layer.
+  if (v.shape.length >= 2) requireMatrix(v, 'transpose');
   const newTag = _TAG_TRANSPOSE[getTag(v)];
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
   const out: any = { shape: newShape, data: v.data, t: newTag };
@@ -516,6 +550,9 @@ function transpose(v: any) {
 // complex values arrive.
 function adjoint(v: any) {
   if (!isValue(v)) throw new Error('adjoint: argument is not a Value');
+  // Same nested-vector refusal as transpose — adjoint = transpose +
+  // conjugate; the matrix-only restriction applies identically.
+  if (v.shape.length >= 2) requireMatrix(v, 'adjoint');
   const newTag = _TAG_ADJOINT[getTag(v)];
   const newShape = (v.shape.length >= 2) ? _swappedShape(v.shape) : v.shape.slice();
   const out: any = { shape: newShape, data: v.data, t: newTag };
@@ -897,6 +934,7 @@ module.exports = {
   // outerRank / nested-vector tag (engine-concepts §2.1)
   outerRankOf: outerRankOf,
   isNestedVectorValue: isNestedVectorValue,
+  requireMatrix: requireMatrix,
   innerShapeOf: innerShapeOf,
   outerShapeOf: outerShapeOf,
   asVectorOfVectors: asVectorOfVectors,
