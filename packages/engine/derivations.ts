@@ -2064,7 +2064,35 @@ function resolveBijectionMeta(bij: any, bindings: any) {
     if (!lvBody) return null;
     logVolume = { kind: 'fn', body: lvBody.body, paramName: lvBody.paramName };
   }
-  return { fInv, logVolume };
+  // Phase 5.1 Session 5c — additive registry handle.
+  //
+  // Engine-concepts §22 architectural reframe: multivariate dists
+  // decompose as `pushfwd(known_bijection, iid(scalar, D))`. When the
+  // forward / inverse / logvolume functions of a bijection binding
+  // implement a closed-form transform that's also in the open
+  // bijection-registry (`bijection-registry.ts`), the producer marks
+  // the binding with `binding.bijection.registryName = '<name>'`.
+  // Downstream consumers (matPushfwd vector-base — Session 5d+;
+  // walkPushfwd vector-base — Session 5d+) read this marker to dispatch
+  // through the registry's atom-batched fast paths.
+  //
+  // Invariant: registryName is PURELY ADDITIVE. `fName` / `fInvName` /
+  // `logVolume` MUST remain present and valid even when `registryName`
+  // is set — the registry path is an OPTIMISATION over the AST path,
+  // not a REPLACEMENT. matPushfwd's existing resolveFnBody → fName
+  // walk continues to resolve a callable body for every bijection
+  // binding regardless of registryName presence. This eliminates the
+  // "degenerate binding" risk surface: callers that don't opt into the
+  // registry path continue to work identically to pre-§22.
+  //
+  // Plumbing: bij is binding.bijection (built in buildDerivations'
+  // construction loop at lines 159-179); we forward registryName here
+  // so it reaches ir.bijection via expandMeasureIR (call site in the
+  // pushfwd case, search the file for `out.bijection = bijMeta`) and
+  // becomes visible to density.walkPushfwd.
+  const out: any = { fInv, logVolume };
+  if (bij.registryName) out.registryName = bij.registryName;
+  return out;
 }
 
 // Closed-form total mass (in log) of an already-expanded measure IR,
