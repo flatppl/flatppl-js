@@ -30,6 +30,7 @@ const {
   measureFromValue,
   setBoundsForMat,
   resolveFnBody,
+  measureToParamValue,
 } = shared;
 // Bijection-registry handle (Phase 5.1 Session 5d): when the bijection
 // binding carries `registryName` + `paramIRs`, matPushfwd short-
@@ -107,59 +108,110 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
           + `(sample-side not yet implemented)`));
       }
       const N = M.value.shape[0];
+      const valueLib = require('./value.ts');
+      const valueOps = require('./value-ops.ts');
       // Resolve each paramIR to a Value at materialise-time scope.
-      // Session 5d MVP: atom-independent params only (literal IRs or
-      // fixed-phase refs). Per-atom paramIRs defer to Session 5f
-      // (matPushfwd vector-base atom-dep extension).
-      const params: any = {};
-      for (const k of Object.keys(bijMeta.paramIRs)) {
-        const v = orchestrator.resolveIRToValue(
-          bijMeta.paramIRs[k], ctx.bindings, ctx.fixedValues);
-        if (v == null) {
-          return Promise.reject(new Error(
-            `pushfwd: bijection binding '${d.fnRef}' cannot resolve `
-            + `paramIRs.${k} for registryName='${bijMeta.registryName}' `
-            + `(per-atom params deferred to Session 5f+)`));
+      //   - Atom-INDEPENDENT / fixed-phase params (literal IRs, refs to
+      //     fixed bindings, `lower_cholesky(<fixed cov>)`, …) resolve via
+      //     resolveIRToValue — the fast, synchronous path.
+      //   - Atom-DEPENDENT params (5f-2): a paramIR that is a direct ref
+      //     to a per-atom (stochastic / parameterized) binding can't
+      //     resolve that way — resolveIRToValue is fixed-phase only and
+      //     THROWS on a `draw`. We instead materialise that binding's
+      //     measure and use its per-atom `[N, …]` samples as an
+      //     atom-batched param (the registry's affine entry consumes
+      //     b=[N,D] / L=[N,D,D] per Session 5f-2). The reparameterisation
+      //     X_n = b_n + L·z_n draws (b_n, z_n) independently at atom n —
+      //     a valid sample from the hierarchical marginal of X.
+      const paramKeys = Object.keys(bijMeta.paramIRs);
+      const paramFetches = paramKeys.map((k: string) => {
+        const pir = bijMeta.paramIRs[k];
+        // Decide the resolution path by INSPECTING the paramIR's
+        // self-refs against fixed-phase — NOT by catching resolve
+        // errors. A paramIR all of whose self-refs are fixed-phase (or
+        // which has none — inline literals) is resolvable synchronously
+        // via resolveIRToValue, and any error it raises (non-PD
+        // Cholesky, singular matrix, …) is a GENUINE fixed-phase failure
+        // that must propagate, not be misread as "atom-dependent". A
+        // paramIR with a non-fixed self-ref is atom-dependent.
+        const refs = orchestrator.collectSelfRefs(pir);
+        let allFixed = true;
+        for (const r of refs) {
+          if (ctx.fixedValues && ctx.fixedValues.has(r)) continue;
+          allFixed = false;
+          break;
         }
-        const valueLib = require('./value.ts');
-        // Wrap arrays/matrices into Value form. Nested arrays go through
-        // valueOps._nestedToValue; rank-1 arrays use valueLib.asValue.
-        const valueOps = require('./value-ops.ts');
-        if (Array.isArray(v) && v.length > 0 && Array.isArray(v[0])) {
-          params[k] = valueOps._nestedToValue(v);
-        } else {
-          params[k] = valueLib.asValue(v);
+        if (allFixed) {
+          const v = orchestrator.resolveIRToValue(pir, ctx.bindings, ctx.fixedValues);
+          if (v == null) {
+            return Promise.reject(new Error(
+              `pushfwd: bijection binding '${d.fnRef}' cannot resolve `
+              + `fixed-phase paramIRs.${k} for registryName='${bijMeta.registryName}'`));
+          }
+          // Wrap arrays/matrices into Value form. Nested arrays go
+          // through valueOps._nestedToValue; rank-1 arrays use asValue.
+          const wrapped = (Array.isArray(v) && v.length > 0 && Array.isArray(v[0]))
+            ? valueOps._nestedToValue(v)
+            : valueLib.asValue(v);
+          return Promise.resolve({ k, value: wrapped });
         }
-      }
-      // Hand off to the registry. atomBatchedForward returns a Value
-      // of the bijection's output shape (per its shapeContract). For
-      // 'affine' the contract is [D]→[D], so result is shape [N, D]
-      // atom-major mirroring the base.
-      const z = M.value;
-      let result;
-      try {
-        result = entry.atomBatchedForward(z, params, N);
-      } catch (err) {
+        // Atom-dependent param (5f-2). Only a DIRECT binding ref is
+        // supported — a compound expression over a per-atom binding
+        // (e.g. `lower_cholesky(<per-atom random cov>)`) would need
+        // per-atom expression evaluation, which is deferred.
+        if (pir && pir.kind === 'ref' && pir.ns === 'self'
+            && pir.name && ctx.bindings && ctx.bindings.has(pir.name)) {
+          return ctx.getMeasure(pir.name).then((pm: any) => {
+            // Flatten the param binding's measure to an atom-batched
+            // [N, …] Value. Handles .value (already a Value), composite
+            // .elems (e.g. `muv = [m1, m2]` → [N, D]), and scalar
+            // .samples — see measureToParamValue.
+            return {
+              k,
+              value: measureToParamValue(pm, pir.name,
+                `pushfwd param '${k}' for '${d.fnRef}'`),
+            };
+          });
+        }
         return Promise.reject(new Error(
-          `pushfwd: bijection binding '${d.fnRef}' registry call to '`
-          + `${bijMeta.registryName}'.atomBatchedForward failed: `
-          + (err as any).message));
-      }
-      // Preserve the outerRank=1 marker from the base. Iid measures
-      // carry outerRank=1 (materialiser.ts:459); a pushfwd of an
-      // iid base preserves that structure — the result is still an
-      // atom-batched stack of D-vectors. Downstream consumers
-      // (kernel-broadcast classifier, density walker) read outerRank
-      // to distinguish iid output from a per-atom k-vector.
-      if (M.value.outerRank === 1 && result && !('outerRank' in result)) {
-        result.outerRank = 1;
-      }
-      // Mass / weights propagate through unchanged — pushfwd preserves
-      // total mass regardless of the bijection.
-      return measureFromValue(result, {
-        logWeights:   M.logWeights || null,
-        logTotalmass: (typeof M.logTotalmass === 'number') ? M.logTotalmass : 0,
-        n_eff:        (typeof M.n_eff === 'number') ? M.n_eff : N,
+          `pushfwd: bijection binding '${d.fnRef}' paramIRs.${k} for `
+          + `registryName='${bijMeta.registryName}' is a compound atom-`
+          + `dependent expression (not a direct binding ref) — e.g. `
+          + `lower_cholesky of a per-atom covariance; deferred`));
+      });
+      return Promise.all(paramFetches).then((entries: any[]) => {
+        const params: any = {};
+        for (const e of entries) params[e.k] = e.value;
+        // Hand off to the registry. atomBatchedForward returns a Value
+        // of the bijection's output shape (per its shapeContract). For
+        // 'affine' the contract is [D]→[D], so result is shape [N, D]
+        // atom-major mirroring the base.
+        const z = M.value;
+        let result;
+        try {
+          result = entry.atomBatchedForward(z, params, N);
+        } catch (err) {
+          return Promise.reject(new Error(
+            `pushfwd: bijection binding '${d.fnRef}' registry call to '`
+            + `${bijMeta.registryName}'.atomBatchedForward failed: `
+            + (err as any).message));
+        }
+        // Preserve the outerRank=1 marker from the base. Iid measures
+        // carry outerRank=1 (materialiser.ts:459); a pushfwd of an
+        // iid base preserves that structure — the result is still an
+        // atom-batched stack of D-vectors. Downstream consumers
+        // (kernel-broadcast classifier, density walker) read outerRank
+        // to distinguish iid output from a per-atom k-vector.
+        if (M.value.outerRank === 1 && result && !('outerRank' in result)) {
+          result.outerRank = 1;
+        }
+        // Mass / weights propagate through unchanged — pushfwd preserves
+        // total mass regardless of the bijection.
+        return measureFromValue(result, {
+          logWeights:   M.logWeights || null,
+          logTotalmass: (typeof M.logTotalmass === 'number') ? M.logTotalmass : 0,
+          n_eff:        (typeof M.n_eff === 'number') ? M.n_eff : N,
+        });
       });
     }
     // Scalar AST path (pre-§22 baseline). Unchanged from Session 5b.

@@ -870,18 +870,40 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       }
     }
     // Discover D from the bijection's shapeContract or — pragmatically
-    // for 'affine' — from params.b's length. Future bijections add
+    // for 'affine' — from params.b's LAST dim. Future bijections add
     // shape-contract-driven lookup here.
+    //
+    // 5f-2 / R4: use the last dim, not shape[0]. For atom-INDEP b=[D]
+    // they coincide; for atom-BATCHED b=[N,D] (per-atom mean) the event
+    // dim is shape[1]. Reading shape[0] there would mistake N for D and
+    // over-consume the variate.
     let D;
     if (bij.registryName === 'affine') {
-      if (params.b && params.b.shape && params.b.shape[0]) {
-        D = params.b.shape[0];
+      if (params.b && params.b.shape && params.b.shape.length >= 1) {
+        D = params.b.shape[params.b.shape.length - 1];
       }
     }
     if (typeof D !== 'number') {
       throw new Error("density: pushfwd bijection '" + fNameForErr
         + "' cannot determine D for bijection-registry '"
         + bij.registryName + "'");
+    }
+    // 5f-2: atom-DEPENDENT params (per-atom mean b=[N,D] or per-atom
+    // scale L=[N,D,D]) reaching this single-observation registry path
+    // means a marginal density `logdensityof(hierarchical_X, y)` — the
+    // density of a pushfwd whose bijection parameters are themselves
+    // random. That's a Monte Carlo marginal, not the closed-form
+    // single-obs score this path computes; the y-batch widening that
+    // would handle it is deferred. Fail with an actionable diagnostic
+    // rather than a cryptic registry shape-mismatch.
+    const bAtomBatched = params.b && params.b.shape && params.b.shape.length === 2;
+    const LAtomBatched = params.L && params.L.shape && params.L.shape.length === 3;
+    if (bAtomBatched || LAtomBatched) {
+      throw new Error("density: pushfwd bijection '" + fNameForErr
+        + "' has atom-dependent registry params (per-atom mean/scale); "
+        + "marginal density of a hierarchical pushfwd is a Monte Carlo "
+        + "estimate not supported on the closed-form single-observation "
+        + "path (deferred — sampling such models works via matPushfwd)");
     }
     // Consume a length-D vector head from value. wrap into [1, D]
     // atom-batched Value for the registry contract (single observation;
