@@ -1981,8 +1981,8 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
 
   // Same number of OUTER axes across all collections. For flat slots
   // that's shape.length; for nested-vector slots it's the JS-array
-  // nesting depth (1 in v1 — see test/nested-broadcast.test.ts skipped
-  // v2 cases for deeper nesting).
+  // nesting depth (any depth — `test/nested-broadcast.test.ts` covers
+  // the multi-level "v2" cases, e.g. `[[C]]` over a 2-D collection).
   const rank = colls[0].outerRank;
   for (let c = 1; c < colls.length; c++) {
     if (colls[c].outerRank !== rank) {
