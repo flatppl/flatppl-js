@@ -553,6 +553,30 @@ R = aggregate(f = sum, axes = [.i], e = A[.i, .j])
     /takes positional arguments only/.test(d.message)));
 });
 
+test('aggregate: rejects a repeated axis indexed at conflicting lengths (spec §04 L853)', () => {
+  // `A[.i, .i]` on a non-square [2, 3] binds axis .i to BOTH 2 (dim 0)
+  // and 3 (dim 1). Formerly first-seen-wins silently kept 2 and read out
+  // of bounds at runtime; the consistency check now makes it a static
+  // error at analyze time.
+  const errs = errors(`
+A = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+R = aggregate(sum, [], A[.i, .i])
+`);
+  assert.ok(errs.some((d: any) =>
+    /axis '\.i' is indexed at conflicting lengths \(2 and 3\)/.test(d.message)),
+    `expected a conflicting-length diagnostic; got: `
+    + errs.map((d: any) => d.message).join('; '));
+});
+
+test('aggregate: a repeated axis on a square source (the trace) stays legal', () => {
+  // `A[.i, .i]` on a square [2, 2] is the diagonal/trace — equal lengths,
+  // so NO conflict diagnostic (the check must not false-positive), and the
+  // contraction computes tr(A) = A[0,0] + A[1,1] = 1 + 4 = 5.
+  const A = [[1, 2], [3, 4]];
+  const got = evalAggregateRHS('R = aggregate(sum, [], A[.i, .i])', 'R', { A });
+  assert.equal(got, 5);
+});
+
 // ---------------------------------------------------------------------
 // Axis-name scope (lexical to enclosing aggregate)
 // ---------------------------------------------------------------------
