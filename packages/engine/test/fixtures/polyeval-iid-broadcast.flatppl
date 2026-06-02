@@ -24,3 +24,10 @@ X ~ iid(Normal(0, 1), 10)
 
 % Polynomial evaluated at each of X's 10 elements, per atom.
 Y = polyeval.([C], X)
+
+% Law of Y
+Y_dist = lawof(Y)
+
+rstate = rnginit([1, 2, 3, 4])
+% Samples of the law of Y
+Y_samples, _ = rand(rstate, iid(Y_dist, 1000))
