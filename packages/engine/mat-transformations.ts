@@ -214,17 +214,25 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         });
       });
     }
-    // Scalar AST path (pre-§22 baseline). Unchanged from Session 5b.
+    // Scalar AST path (pre-§22 baseline).
     if (!M.samples) {
       return Promise.reject(new Error(`pushfwd: base measure '${d.from}' is not scalar `
         + `(record/tuple/iid not yet supported for first-class pushfwd materialisation)`));
     }
-    return ctx.sendWorker({
+    // The body may reference values BEYOND f's own parameter — e.g.
+    // `pushfwd(fn(_ + mu), base)` where `mu` is a per-atom draw or a
+    // fixed binding. Collect those external self-refs (fixed refs are
+    // auto-pushed to the worker session env by collectRefArrays); the
+    // param itself is a `%local` placeholder, not a self-ref, so it
+    // isn't double-collected. Under an iid composite fallback ctx these
+    // external refs are the tiled per-atom values (the repeat axis), so
+    // f's body sees atom i's shared `mu` across the k inner draws.
+    return collectRefArrays(fnInfo.body, ctx).then((bodyRefs: any) => ctx.sendWorker({
       type: 'evaluateN',
       ir: fnInfo.body,
       count: M.samples.length,
-      refArrays: { [fnInfo.paramName]: M.samples },
-    }).then((reply: any) => {
+      refArrays: Object.assign({}, bodyRefs, { [fnInfo.paramName]: M.samples }),
+    })).then((reply: any) => {
       return measureFromReply(reply, M.samples.length, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
