@@ -12,10 +12,10 @@
 //   1. detectJointKernelBinding accepts MvNormal as a component
 //      alongside scalar SAMPLEABLE_DISTRIBUTIONS, recording
 //      isVectorOutput + eventDim.
-//   2. _executeJointComposite dispatches vector components to a
-//      registry-backed per-cell materialiser (_sampleVectorOutputAtCell)
-//      that consumes the affine bijection entry — same hot path
-//      matMvNormal uses, run per joint cell × component.
+//   2. _executeJointComposite folds vector components via the shared
+//      `_mvNormalFoldOverCells` affine (`_jointVectorComponentCol`) —
+//      one Cholesky + one `affineAtomBatchedForward` over count = N·K,
+//      the same registry hot path matMvNormal uses.
 //   3. Output Value shape becomes [N, K, sum_c(eventDim_c)] atom-major
 //      with per-component event-dim slot widths.
 //

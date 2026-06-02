@@ -986,111 +986,6 @@ function _executeJointComposite(
 }
 
 // =====================================================================
-// Phase 5.1 Session 5a — per-cell vector-output dispatch for joint
-// composite components. Returns `{data: Float64Array(N*eventDim),
-// eventDim}` — atom-major per-cell n-vector samples. Today (Session
-// 5a MVP) only MvNormal is supported; the helper extends naturally
-// to any VECTOR_OUTPUT_DISTRIBUTIONS entry whose materialiser path
-// the registry covers.
-// =====================================================================
-
-function _sampleVectorOutputAtCell(
-  name: string, distOp: string, distKwargs: Record<string, any>,
-  perAtomRefs: Record<string, any>, jj: number, cc: number,
-  ctx: any, N: number,
-): Promise<{ data: Float64Array; eventDim: number }> {
-  if (distOp !== 'MvNormal') {
-    return Promise.reject(new Error('joint composite: vector-output '
-      + 'component dist \'' + distOp + '\' not supported (Session 5a '
-      + 'ships MvNormal only; further multivariates land alongside '
-      + 'their registry entries in Phase 5.x)'));
-  }
-  return _sampleMvNormalAtCell(name, distKwargs, perAtomRefs, jj, cc, ctx, N);
-}
-
-function _sampleMvNormalAtCell(
-  name: string, distKwargs: Record<string, any>,
-  perAtomRefs: Record<string, any>, jj: number, cc: number,
-  ctx: any, N: number,
-): Promise<{ data: Float64Array; eventDim: number }> {
-  const sampler = require('./sampler.ts');
-  const bijRegistry = require('./bijection-registry.ts');
-  const muIR = distKwargs.mu;
-  const covIR = distKwargs.cov;
-  if (!muIR || !covIR) {
-    return Promise.reject(new Error('joint composite: MvNormal component '
-      + 'at cell j=' + jj + ' c=' + cc + ' requires mu and cov kwargs'));
-  }
-  // Cell-substituted distKwargs may still reference fixed-phase
-  // bindings via self-refs. resolveIRToValue handles literal + ref
-  // forms uniformly; per-atom refs (which perAtomRefs would expose)
-  // are NOT supported in this MVP — atom-batched mu/cov needs the
-  // matPushfwd vector-base extension (Session 5c) for walker
-  // symmetry. Reject up front when perAtomRefs has any entry — the
-  // current substituted kwargs would otherwise silently miss them.
-  if (perAtomRefs && Object.keys(perAtomRefs).length > 0) {
-    return Promise.reject(new Error('joint composite: MvNormal component '
-      + 'with per-atom-stochastic mu/cov is not yet supported (atom-dep '
-      + 'broadcast args produced ' + Object.keys(perAtomRefs).length
-      + ' perAtomRefs at cell j=' + jj + '). Per-atom-stochastic '
-      + 'multivariate params land with Session 5c (matPushfwd '
-      + 'vector-base extension).'));
-  }
-  const muVal = orchestrator.resolveIRToValue(muIR, ctx.bindings, ctx.fixedValues);
-  const covVal = orchestrator.resolveIRToValue(covIR, ctx.bindings, ctx.fixedValues);
-  if (muVal == null) {
-    return Promise.reject(new Error('joint composite: MvNormal component '
-      + 'cannot resolve mu at cell j=' + jj));
-  }
-  if (covVal == null) {
-    return Promise.reject(new Error('joint composite: MvNormal component '
-      + 'cannot resolve cov at cell j=' + jj));
-  }
-  const valueOps = require('./value-ops.ts');
-  const muValue = valueLib.asValue(muVal);
-  if (muValue.shape.length !== 1) {
-    return Promise.reject(new Error('joint composite: MvNormal component '
-      + 'mu must be a vector at cell j=' + jj + '; got shape='
-      + JSON.stringify(muValue.shape)));
-  }
-  const n = muValue.shape[0];
-  const covValue = Array.isArray(covVal) && covVal.length > 0 && Array.isArray(covVal[0])
-    ? valueOps._nestedToValue(covVal)
-    : valueLib.asValue(covVal);
-  if (covValue.shape.length !== 2 || covValue.shape[0] !== n
-      || covValue.shape[1] !== n) {
-    return Promise.reject(new Error('joint composite: MvNormal cov must '
-      + 'be ' + n + 'x' + n + ' at cell j=' + jj + '; got shape='
-      + JSON.stringify(covValue.shape)));
-  }
-  let L: any;
-  try {
-    L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
-  } catch (err) {
-    return Promise.reject(new Error('joint composite: MvNormal Cholesky '
-      + 'failed at cell j=' + jj + ': ' + (err as any).message));
-  }
-  // Draw N atoms of n standard normals → flat Float64Array(N*n) atom-
-  // major. The registry's affineAtomBatchedForward then computes
-  // L·z + mu per atom — same hot path matMvNormal consumes for the
-  // single-cell case.
-  return ctx.sendWorker({
-    type: 'sampleN',
-    ir: { kind: 'call', op: 'Normal',
-          kwargs: { mu: { kind: 'lit', value: 0 },
-                    sigma: { kind: 'lit', value: 1 } } },
-    count: N, repeat: n,
-    refArrays: {},
-    seed: nameSeed(name + ':j' + jj + ':c' + cc + ':iidbase', ctx.rootKey),
-  }).then((reply: any) => {
-    const z = { shape: [N, n], data: reply.samples };
-    const y = bijRegistry.affineAtomBatchedForward(
-      z, { L: L, b: muValue }, N);
-    return { data: y.data as Float64Array, eventDim: n };
-  });
-}
-
-// =====================================================================
 // Phase 8 — jointchain-composite de-nesting (scan over steps)
 // =====================================================================
 //
@@ -1335,17 +1230,33 @@ function _executeJointChainComposite(
 function _executeNestedBroadcastComposite(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
-  // Dispatch: a scalar-inner nested broadcast with a statically-known
-  // axis ladder folds; everything else uses the per-cell reference.
-  if (!compositeBody.innerIsVectorOutput) {
-    const stack = axisStackMod.bindingAxisStack(name, ctx);
-    const Kout = axisStackMod.outerAxisSize(stack, 'kernel_broadcast');
-    const Kin = axisStackMod.outerAxisSize(stack, 'broadcast');
-    if (Kout && Kout >= 1 && Kin && Kin >= 1) {
-      return _executeNestedBroadcastBatchFlatten(name, d, ctx, compositeBody, Kout, Kin);
-    }
+  // Both nested-broadcast classes fold through the shared layout/affine
+  // primitives — there is no per-cell path (Phase 8 de-nesting endgame).
+  //
+  //   - VECTOR-OUTPUT inner (MvNormal): the two-axis vector fold derives
+  //     K_outer / K_inner from the resolved (atom-indep) outer args + mu
+  //     grid, so it doesn't lean on the static ladder — the inner [K_in,n]
+  //     `mu` is a KD-shaped arg that would muddy a ladder read anyway.
+  //   - SCALAR inner: the authoritative `[kernel_broadcast K_out,
+  //     broadcast K_in]` ladder (dissolver enabler) drives the fold.
+  if (compositeBody.innerIsVectorOutput) {
+    return _executeNestedBroadcastVectorFold(name, d, ctx, compositeBody);
   }
-  return _executeNestedBroadcastPerCell(name, d, ctx, compositeBody);
+  const stack = axisStackMod.bindingAxisStack(name, ctx);
+  const Kout = axisStackMod.outerAxisSize(stack, 'kernel_broadcast');
+  const Kin = axisStackMod.outerAxisSize(stack, 'broadcast');
+  if (Kout && Kout >= 1 && Kin && Kin >= 1) {
+    return _executeNestedBroadcastBatchFlatten(name, d, ctx, compositeBody, Kout, Kin);
+  }
+  // A non-static ladder (a symbolic axis length) is not folded — no silent
+  // per-cell fallback (the fold is the only path, as for jointchain). The
+  // concrete-need-gated follow-up is to resolve symbolic axis sizes from
+  // fixedValues at materialise time and feed the fold (TODO Phase 8).
+  return Promise.reject(new Error('broadcast: nested-broadcast \'' + name
+    + '\' has a non-static axis ladder (outer=' + Kout + ', inner=' + Kin
+    + ') — folding a symbolic nested ladder is not yet supported; the axis '
+    + 'sizes must be statically resolvable (use literal / fixed-phase '
+    + 'collection lengths).'));
 }
 
 function _executeNestedBroadcastBatchFlatten(
@@ -1377,7 +1288,12 @@ function _executeNestedBroadcastBatchFlatten(
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
-    const fallback = () => _executeNestedBroadcastPerCell(name, d, ctx, compositeBody);
+    // No per-cell fallback — the fold is the only path (Phase 8). An arg
+    // shape the fold can't lay out is a clear error with the offending
+    // reason, not a silent reroute.
+    const unfoldable = (reason: string) => Promise.reject(new Error(
+      'broadcast: nested-broadcast scalar fold for \'' + name
+      + '\' cannot fold: ' + reason));
 
     const flatRefs: Record<string, any> = {};
 
@@ -1394,7 +1310,12 @@ function _executeNestedBroadcastBatchFlatten(
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
       const cls = shared.classifyBroadcastArg(v, N, usesAtom);
-      if (((cls.K || 1) > 1 && cls.K !== Kout) || (cls.D || 1) > 1) return fallback();
+      if (((cls.K || 1) > 1 && cls.K !== Kout) || (cls.D || 1) > 1) {
+        return unfoldable('outer arg \'' + argName + '\' has cell axis '
+          + (cls.K || 1) + ' / inner dim ' + (cls.D || 1) + ' (expected a '
+          + 'scalar-per-cell arg on the K_outer=' + Kout + ' axis; vec-per-'
+          + 'cell shapes belong to iid-composite)');
+      }
       const sp = _spanOf(cls, 2, 0, 1);                 // cell axis → outer (0)
       const flatName = '__o_' + argName;
       flatRefs[flatName] = valueLib.batchedScalar(
@@ -1417,7 +1338,7 @@ function _executeNestedBroadcastBatchFlatten(
     // Inner collections span the INNER axis (1); closed-over per-atom
     // scalars span neither. A non-`__o_` ref whose cell length is K_inner
     // is an inner collection; an 'N'/'scalar' is closed over; anything
-    // else falls back to the per-cell reference.
+    // else is unfoldable (a clear error — no per-cell fallback).
     for (const rn of bodyRefNames) {
       if (Object.prototype.hasOwnProperty.call(flatRefs, rn)) continue;   // `__o_*`
       const fromRefs = refArrays[rn] !== undefined;
@@ -1434,7 +1355,9 @@ function _executeNestedBroadcastBatchFlatten(
         flatRefs[rn] = valueLib.batchedScalar(
           _layoutFlat(v, N, axes, sp.atomVaries, sp.axisSizes));
       } else {
-        return fallback();
+        return unfoldable('inner-body ref \'' + rn + '\' is neither closed-'
+          + 'over (N/scalar) nor a K_inner=' + Kin + ' collection (got cell '
+          + 'axis ' + (cls.K || 1) + ' / inner dim ' + (cls.D || 1) + ')');
       }
     }
 
@@ -1449,7 +1372,10 @@ function _executeNestedBroadcastBatchFlatten(
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
       const r = _resolveBatchFlattenParam(pv, count);
-      if (!r) return fallback();
+      if (!r) {
+        return unfoldable('inner-dist param \'' + pn + '\' did not resolve to '
+          + 'a constant or a length-' + count + ' column over the count batch');
+      }
       if (r.kind === 'col') {
         const pr = '__p_' + pn;
         sampleRefs[pr] = valueLib.batchedScalar(r.data);
@@ -1480,382 +1406,188 @@ function _executeNestedBroadcastBatchFlatten(
 }
 
 // =====================================================================
-// Phase 4.4 — nested-broadcast per-cell execution (reference + vector-
-// output-inner path; scalar-inner with a static ladder folds above)
+// Phase 8 — nested-broadcast de-nesting: VECTOR-OUTPUT inner (MvNormal)
 // =====================================================================
 //
-// Outer kernel-broadcast body is itself `broadcast(<bare_dist>, kw)`:
+// Outer kernel-broadcast body is itself `broadcast(MvNormal, mu, cov)`:
 //
-//     broadcast(<outer_kernel>, outer_kwargs)
-//        with outer_kernel = kernelof(broadcast(D, inner_kw), outer_kw)
+//     broadcast(<outer_kernel>, outer_args)
+//        with outer_kernel = kernelof(broadcast(MvNormal, mu, cov), outer_kw)
 //
-// Each atom yields a [K_outer, K_inner] block via **two-axis per-cell
-// iteration**:
+// The two parallel axes (outer cell K_out × inner cell K_in) fold into ONE
+// affine forward over count = N·K_out·K_in — the vector-output twin of the
+// scalar nested fold (`_executeNestedBroadcastBatchFlatten`), built on the
+// shared `_mvNormalFoldOverCells` primitive (engine-concepts §20.10 + §22).
 //
-//   for outer j in [0, K_outer):
-//     substitute outer placeholders into inner kwargs (per outer cell)
-//     evaluate inner kwargs to discover K_inner + per-arg shape
-//     for inner k in [0, K_inner):
-//       slice inner kwargs at index k (lit or per-atom refArray)
-//       sampleN with the substituted inner distOp → column[j, k]
+// Scope — atom-INDEPENDENT per-cell mean grid + a SHARED cov, matching the
+// bare/joint vector-output folds: the inner MvNormal's mu/cov resolve
+// statically (`resolveIRToValue`), so the outer kernel param threads into
+// `mu` only through atom-indep collections / fixed values. Per-atom-
+// stochastic mu/cov (a latent outer mean threaded into the inner draw) and
+// per-cell cov (one Cholesky per cell) defer to the matPushfwd vector-base
+// extension — the same boundary the bare / joint vector-output folds hold.
 //
-// Inner kwargs may mix `%local`-as-outer-placeholder refs with `self`-
-// as-closed-over refs; `_substituteKernelParams` handles both via the
-// same `params` / `paramKwargs` mapping used by Phases 4.1-4.3.
-//
-// This is the dual-mode reference (engine-concepts §15) for the scalar-
-// inner case (folded above when the ladder is static) AND the live path
-// for the vector-output-inner (MvNormal) sub-case, which dispatches per
-// (j, k) through the bijection registry rather than scalar sampleN.
-
-function _executeNestedBroadcastPerCell(
+// We walk the OUTER axis once (cheap — no worker calls): per outer cell j we
+// substitute the kernel formals with that cell's arg slice and resolve the
+// inner `mu` to [K_in, n] (inner-cell-varying) or [n] (inner-shared), laying
+// it into row (j·K_in + k) of a [K_out·K_in, n] grid. The shared cov resolves
+// once → one Cholesky → L. `_mvNormalFoldOverCells` over count = N·K_out·K_in
+// then writes its [count, n] output in (i, j_out, k_in, :) order — EXACTLY
+// the [N, K_out, K_in·n] atom-major contract, so no restitch is needed.
+// (§03: K_out, K_in are PARALLEL axes folded ABOVE the intrinsic n axis.)
+function _executeNestedBroadcastVectorFold(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
   const sampler = require('./sampler.ts');
+  const valueOps = require('./value-ops.ts');
   const N = ctx.sampleCount;
-  const innerKwargs = compositeBody.innerKwargs;
-
-  // Pre-substitute outer placeholders in inner kwargs so the aggregate
-  // IR closes over the right refs (broadcast args + outer-scope refs).
-  const substInnerKwargs: Record<string, any> = {};
-  for (const pn of Object.keys(innerKwargs)) {
-    substInnerKwargs[pn] = _substituteKernelParams(
-      innerKwargs[pn],
-      compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+  const distOp = compositeBody.innerDistOp;
+  if (distOp !== 'MvNormal') {
+    return Promise.reject(new Error('broadcast: nested-broadcast vector-output '
+      + 'inner \'' + distOp + '\' not supported (MvNormal only; further '
+      + 'multivariates land alongside their bijection-registry entries)'));
   }
-  const aggregateIR: any = {
-    kind: 'call', op: 'broadcast',
-    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
-    kwargs: substInnerKwargs,
-  };
+  const innerKwargs = compositeBody.innerKwargs || {};
+  const muInnerIR = innerKwargs.mu;
+  const covInnerIR = innerKwargs.cov;
+  if (!muInnerIR || !covInnerIR) {
+    return Promise.reject(new Error('broadcast: nested-broadcast MvNormal inner '
+      + 'requires mu and cov kwargs'));
+  }
 
-  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
-    const baseEnv: Record<string, any> = {};
-    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
-    const refNames = Object.keys(refArrays);
+  // (1) Outer broadcast args → atom-indep values (scope); derive K_outer.
+  //     A scalar-per-cell collection [K_out] supplies the outer axis; a
+  //     plain scalar broadcasts. Atom-dep / vec-per-cell / unresolved outer
+  //     args are out of scope (a clear error, not a silent reroute).
+  const outerArgVals: Record<string, any> = {};
+  let Kout = 1;
+  for (const argName of Object.keys(d.kwargIRs || {})) {
+    const rv = orchestrator.resolveIRToValue(
+      d.kwargIRs[argName], ctx.bindings, ctx.fixedValues);
+    if (rv == null) {
+      return Promise.reject(new Error('broadcast: nested-broadcast MvNormal '
+        + 'inner with atom-dep / unresolved outer arg \'' + argName + '\' is '
+        + 'not supported (atom-indep scope; per-atom-stochastic threading '
+        + 'defers to the matPushfwd vector-base extension)'));
+    }
+    const av = valueLib.asValue(rv);
+    if (av.shape.length > 1) {
+      return Promise.reject(new Error('broadcast: nested-broadcast outer arg \''
+        + argName + '\' is vec-per-cell (shape ' + JSON.stringify(av.shape)
+        + ') — vec-per-cell shapes belong to iid-composite'));
+    }
+    const len = av.shape.length === 0 ? 1 : av.shape[0];
+    if (len > 1) {
+      if (Kout === 1) Kout = len;
+      else if (Kout !== len) {
+        return Promise.reject(new Error('broadcast: nested-broadcast '
+          + 'incompatible outer cell-axis lengths (' + Kout + ' vs ' + len
+          + ') on arg \'' + argName + '\''));
+      }
+    }
+    outerArgVals[argName] = av;
+  }
 
-    // Determine OUTER cell axis K from the outer broadcast args (same
-    // shape contract Phase 4.2 uses).
-    const argVals: Record<string, any> = {};
-    const argClass: Record<string, any> = {};
-    let K = 1;
+  // (2) Shared cov — resolve ONCE (no per-cell substitution). A cov that
+  //     references the outer kernel formal is per-cell cov (one Cholesky per
+  //     cell) → does not resolve here → out of scope, like the bare gate.
+  const covVal = orchestrator.resolveIRToValue(
+    covInnerIR, ctx.bindings, ctx.fixedValues);
+  if (covVal == null) {
+    return Promise.reject(new Error('broadcast: nested-broadcast MvNormal cov '
+      + 'did not resolve to a shared value (per-cell / outer-param-dependent '
+      + 'cov defers to per-cell Cholesky support)'));
+  }
+  const covValue = Array.isArray(covVal) && covVal.length > 0 && Array.isArray(covVal[0])
+    ? valueOps._nestedToValue(covVal)
+    : valueLib.asValue(covVal);
+  if (covValue.shape.length !== 2 || covValue.shape[0] !== covValue.shape[1]) {
+    return Promise.reject(new Error('broadcast: nested-broadcast MvNormal cov '
+      + 'must be a square n×n matrix; got shape='
+      + JSON.stringify(covValue.shape)));
+  }
+  const n = covValue.shape[0];
+  let L: any;
+  try {
+    L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
+  } catch (err) {
+    return Promise.reject(new Error('broadcast: nested-broadcast MvNormal '
+      + 'Cholesky failed: ' + (err as any).message));
+  }
+
+  // (3) Per outer cell j: substitute the kernel formals with cell j's arg
+  //     slice, resolve the inner mu, and lay it into the [K_out·K_in, n]
+  //     grid in (j_out, k_in) row-major order. K_inner is established from
+  //     the first cell's mu and required uniform across cells (rectangular
+  //     nesting — a ragged inner axis is rejected, not silently flattened).
+  let Kin = -1;
+  let grid: Float64Array | null = null;
+  for (let j = 0; j < Kout; j++) {
+    const bcKwargs: Record<string, any> = {};
     for (const argName of Object.keys(d.kwargIRs || {})) {
-      const argIR = d.kwargIRs[argName];
-      const argRefs = orchestrator.collectSelfRefs(argIR);
-      const usesAtom = refNames.some((n) => argRefs.has(n));
-      let v: any;
-      try {
-        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
-      } catch (err) {
-        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
-      }
-      argVals[argName] = v;
-      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
-      argClass[argName] = cls;
-      const argK = cls.K || 1;
-      if (argK > 1) {
-        if (K === 1) K = argK;
-        else if (K !== argK) {
-          return Promise.reject(new Error('broadcast(' + d.distOp
-            + '): incompatible outer cell-axis lengths (' + K + ' vs '
-            + argK + ') on arg \'' + argName + '\''));
-        }
-      }
-      const argD = cls.D || 1;
-      if (argD > 1) {
-        return Promise.reject(new Error('broadcast(' + d.distOp
-          + '): nested-broadcast outer arg \'' + argName
-          + '\' has inner dim ' + argD + ' (vec-per-cell shapes belong '
-          + 'to iid-composite)'));
-      }
+      const av = outerArgVals[argName];
+      const s = av.data.length === 1 ? av.data[0] : av.data[j];
+      bcKwargs[argName] = { kind: 'lit', value: s };
     }
-    if (K < 1) {
-      return Promise.reject(new Error('broadcast(' + d.distOp
-        + '): empty outer collection argument'));
+    const muSub = _substituteKernelParams(
+      muInnerIR, compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+    const mv = orchestrator.resolveIRToValue(muSub, ctx.bindings, ctx.fixedValues);
+    if (mv == null) {
+      return Promise.reject(new Error('broadcast: nested-broadcast MvNormal '
+        + 'inner mu did not resolve at outer cell ' + j + ' (atom-indep '
+        + 'scope; per-atom-stochastic mu defers to the matPushfwd vector-base '
+        + 'extension)'));
     }
-
-    // Build the cell-j bcKwargs map once per outer j; then per
-    // outer cell we determine K_inner by evaluating the substituted
-    // inner kwargs and per inner cell we materialise (sampleN for
-    // scalar inner dists; registry-backed _sampleVectorOutputAtCell
-    // for VECTOR_OUTPUT inner dists — Phase 5.1 Session 5b).
-    //
-    // Two passes within each outer cell:
-    //   (a) evaluate each inner kwarg against this cell's bcKwargs to
-    //       extract the per-(j, k) value (scalar or per-atom column).
-    //   (b) materialise per (j, k).
-    //
-    // The "K_inner" is the largest cell-axis size across the inner
-    // kwargs (mirrors the standalone broadcast shape ladder); inner
-    // kwargs that resolve to scalars or atom-batched-scalars pass
-    // through unchanged.
-    //
-    // Per-inner-cell output is `{data: Float64Array, eventDim}` so
-    // the stitcher knows the per-cell width — scalar inner dists
-    // produce eventDim=1 (compat with Phase 4.4 layout), vector
-    // inner dists produce their n. Output shape becomes
-    // [N, K_outer, K_inner * eventDim] atom-major.
-    type InnerCellResult = { data: Float64Array; eventDim: number };
-    type CellResult = { K_inner: number; cells: InnerCellResult[] };
-    const outerCells: CellResult[] = new Array(K);
-    let chain = Promise.resolve();
-    for (let j = 0; j < K; j++) {
-      const jj = j;
-      chain = chain.then(() => {
-        const bcKwargs: Record<string, any> = {};
-        const outerRefs: Record<string, any> = {};
-        for (const argName of Object.keys(d.kwargIRs || {})) {
-          const cls = argClass[argName];
-          const v = argVals[argName];
-          const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
-                            || cls.kind === 'NKD';
-          if (isAtomDep) {
-            const col = shared.perAtomColumnAtJ(v, jj, N);
-            const refName = '__bc_' + argName + '_' + jj;
-            outerRefs[refName] = valueLib.batchedScalar(col);
-            bcKwargs[argName] = { kind: 'ref', ns: 'self', name: refName };
-          } else {
-            const s = shared.elemScalarAtJ(v, jj, N);
-            bcKwargs[argName] = { kind: 'lit', value: s };
-          }
-        }
-
-        // Inner kwargs after substituting outer placeholders with the
-        // cell-j bcKwargs (refs to per-atom columns or lit scalars).
-        const innerKwargsCellJ: Record<string, any> = {};
-        for (const pn of Object.keys(innerKwargs)) {
-          innerKwargsCellJ[pn] = _substituteKernelParams(
-            innerKwargs[pn],
-            compositeBody.params, compositeBody.paramKwargs, bcKwargs);
-        }
-
-        // Evaluate each inner kwarg to determine K_inner + per-arg shape.
-        // Inner refArrays = refArrays (outer prep) + outerRefs (this
-        // cell's per-atom slices).
-        const cellRefArrays: Record<string, any> = {};
-        for (const rk in refArrays) cellRefArrays[rk] = refArrays[rk];
-        for (const rk in outerRefs) cellRefArrays[rk] = outerRefs[rk];
-        const innerVals: Record<string, any> = {};
-        const innerClass: Record<string, any> = {};
-        let K_inner = 1;
-        for (const pn of Object.keys(innerKwargsCellJ)) {
-          let v: any;
-          try {
-            v = sampler.evaluateExprN(
-              innerKwargsCellJ[pn], cellRefArrays, N, baseEnv, undefined);
-          } catch (err) {
-            throw err instanceof Error ? err : new Error(String(err));
-          }
-          innerVals[pn] = v;
-          // For shape classification we need to know if the kwarg
-          // references any per-atom refs (i.e. is atom-batched). After
-          // the cell-j substitution, atom-batched is propagated through
-          // the outerRefs entries — collectSelfRefs would still see
-          // those names so we can classify.
-          const refs = orchestrator.collectSelfRefs(innerKwargsCellJ[pn]);
-          const usesAtom = Object.keys(cellRefArrays).some((n) =>
-            refs.has(n));
-          const cls = shared.classifyBroadcastArg(v, N, usesAtom);
-          innerClass[pn] = cls;
-          const innerK = cls.K || 1;
-          if (innerK > 1) {
-            if (K_inner === 1) K_inner = innerK;
-            else if (K_inner !== innerK) {
-              throw new Error('broadcast(' + d.distOp
-                + '): incompatible inner cell-axis lengths (' + K_inner
-                + ' vs ' + innerK + ') on inner kwarg \'' + pn
-                + '\' at outer cell ' + jj);
-            }
-          }
-          const innerD = cls.D || 1;
-          if (innerD > 1 && !compositeBody.innerIsVectorOutput) {
-            throw new Error('broadcast(' + d.distOp
-              + '): nested-broadcast inner kwarg \'' + pn
-              + '\' has inner D ' + innerD + ' (vec-per-cell shapes '
-              + 'belong to iid-composite unless inner is a vector-'
-              + 'output dist, which this nested-broadcast has none of)');
-          }
-        }
-        if (K_inner < 1) {
-          throw new Error('broadcast(' + d.distOp
-            + '): empty inner collection argument at outer cell ' + jj);
-        }
-
-        // Per inner cell k: build inner-cell kwargs (lit, refArray, or
-        // per-cell literal vector for D > 1 atom-indep kwargs) and
-        // materialise. Scalar inner dists go through sampleN; vector-
-        // output inner dists (Session 5b — MvNormal) dispatch through
-        // _sampleVectorOutputAtCell. Each cell's result carries an
-        // eventDim so the final stitch knows the per-cell width.
-        const innerCells: InnerCellResult[] = new Array(K_inner);
-        let innerChain = Promise.resolve();
-        for (let k = 0; k < K_inner; k++) {
-          const kk = k;
-          innerChain = innerChain.then(() => {
-            const distKwargs: Record<string, any> = {};
-            const innerCellRefs: Record<string, any> = {};
-            for (const rk in outerRefs) innerCellRefs[rk] = outerRefs[rk];
-            for (const pn of Object.keys(innerVals)) {
-              const cls = innerClass[pn];
-              const v = innerVals[pn];
-              const innerD = cls.D || 1;
-              const isAtomDep = cls.kind === 'N' || cls.kind === 'NK'
-                                || cls.kind === 'NKD';
-              if (isAtomDep) {
-                if (innerD > 1) {
-                  throw new Error('nested-broadcast: atom-dep per-cell '
-                    + 'vector inner kwarg \'' + pn + '\' (D=' + innerD
-                    + ') deferred to Session 5c+ (matPushfwd vector-base '
-                    + 'extension)');
-                }
-                const col = shared.perAtomColumnAtJ(v, kk, N);
-                const refName = '__inbc_' + pn + '_' + jj + '_' + kk;
-                innerCellRefs[refName] = valueLib.batchedScalar(col);
-                distKwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
-              } else if (innerD > 1) {
-                // Atom-indep per-cell vector — extract v[kk, :] as a
-                // literal `vector(...)` IR (e.g. inner MvNormal's mu
-                // per inner cell).
-                const baseOff = (v.shape && v.shape.length === 2)
-                  ? kk * innerD : 0;
-                const litArgs: any[] = [];
-                for (let z = 0; z < innerD; z++) {
-                  litArgs.push({ kind: 'lit', value: v.data[baseOff + z] });
-                }
-                distKwargs[pn] = {
-                  kind: 'call', op: 'vector', args: litArgs };
-              } else {
-                const s = shared.elemScalarAtJ(v, kk, N);
-                distKwargs[pn] = { kind: 'lit', value: s };
-              }
-            }
-
-            if (compositeBody.innerIsVectorOutput) {
-              // Phase 5.1 Session 5b — MvNormal (or future vector-
-              // output dist) as the inner dist. Dispatch through the
-              // shared per-cell helper that consumes the bijection
-              // registry. The helper rejects perAtomRefs in the MVP
-              // (atom-dep mu/cov defers to Session 5c+); the outer-
-              // cell's outerRefs ARE atom-dep refs, so we filter them
-              // out — they don't bind any inner kwarg in this scope
-              // (atom-dep outer ARGS feed via per-atom slices into mu
-              // / cov only if the inner MvNormal references them
-              // through outer placeholders, which Session 5b's MVP
-              // doesn't yet handle).
-              const atomIndepRefs = {};   // empty by design — MVP gate
-              const refKeys = Object.keys(innerCellRefs);
-              if (refKeys.length > 0) {
-                // Detect whether any innerCellRef is actually used by
-                // a remaining distKwarg ref (post-substitution). If
-                // it is, we'd need the matPushfwd vector-base
-                // extension — reject up front.
-                const usedRefs = new Set<string>();
-                for (const pn of Object.keys(distKwargs)) {
-                  const refs = orchestrator.collectSelfRefs(distKwargs[pn]);
-                  refs.forEach((n: string) => usedRefs.add(n));
-                }
-                for (const rk of refKeys) {
-                  if (usedRefs.has(rk)) {
-                    throw new Error('nested-broadcast: inner MvNormal '
-                      + 'with atom-dep mu/cov via outer-cell per-atom '
-                      + 'refs is not supported in Session 5b MVP. '
-                      + 'Outer arg threading into MvNormal params '
-                      + 'defers to Session 5c+ (matPushfwd '
-                      + 'vector-base extension).');
-                  }
-                }
-              }
-              return _sampleVectorOutputAtCell(
-                name, compositeBody.innerDistOp, distKwargs,
-                atomIndepRefs, jj, kk, ctx, N
-              ).then((res: any) => {
-                innerCells[kk] = res;
-              });
-            }
-            const distIR = {
-              kind: 'call', op: compositeBody.innerDistOp, kwargs: distKwargs,
-            };
-            const workerMsg: any = {
-              type: 'sampleN', ir: distIR, count: N,
-              refArrays: innerCellRefs,
-              seed: nameSeed(name + ':j' + jj + ':k' + kk, ctx.rootKey),
-            };
-            return ctx.sendWorker(workerMsg).then((reply: any) => {
-              innerCells[kk] = { data: reply.samples, eventDim: 1 };
-            });
-          });
-        }
-        return innerChain.then(() => {
-          outerCells[jj] = { K_inner, cells: innerCells };
-        });
-      });
+    const muValue = valueLib.asValue(mv);
+    let cellKin: number;
+    if (muValue.shape.length === 2) {
+      if (muValue.shape[1] !== n) {
+        return Promise.reject(new Error('broadcast: nested-broadcast MvNormal '
+          + 'mu event-dim (' + muValue.shape[1] + ') != cov n (' + n
+          + ') at outer cell ' + j));
+      }
+      cellKin = muValue.shape[0];
+    } else if (muValue.shape.length === 1) {
+      if (muValue.shape[0] !== n) {
+        return Promise.reject(new Error('broadcast: nested-broadcast MvNormal '
+          + 'shared mu length (' + muValue.shape[0] + ') != cov n (' + n
+          + ') at outer cell ' + j));
+      }
+      cellKin = 1;            // inner-shared mu (degenerate K_inner = 1)
+    } else {
+      return Promise.reject(new Error('broadcast: nested-broadcast MvNormal '
+        + 'mu must be [n] or [K_inner, n]; got shape='
+        + JSON.stringify(muValue.shape) + ' at outer cell ' + j));
     }
+    if (Kin < 0) { Kin = cellKin; grid = new Float64Array(Kout * Kin * n); }
+    else if (cellKin !== Kin) {
+      return Promise.reject(new Error('broadcast: nested-broadcast ragged '
+        + 'inner cell-axis lengths across outer cells (' + Kin + ' vs '
+        + cellKin + ' at outer ' + j + ') — rectangular nesting required'));
+    }
+    const perInner = muValue.shape.length === 2 && cellKin > 1;
+    for (let k = 0; k < Kin; k++) {
+      const src = perInner ? k * n : 0;
+      const dst = (j * Kin + k) * n;
+      for (let l = 0; l < n; l++) grid![dst + l] = muValue.data[src + l];
+    }
+  }
 
-    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
-      // Enforce uniform K_inner across outer cells (the recogniser's
-      // contract). Different K_inner per outer cell would be a ragged
-      // shape — defer to a follow-up if motivated.
-      let K_inner = outerCells[0].K_inner;
-      for (let j = 1; j < K; j++) {
-        if (outerCells[j].K_inner !== K_inner) {
-          return Promise.reject(new Error('broadcast(' + d.distOp
-            + '): ragged inner cell-axis lengths across outer cells ('
-            + K_inner + ' vs ' + outerCells[j].K_inner + ' at outer '
-            + j + ') — Phase 4.4 MVP requires uniform inner K'));
-        }
-      }
-      // Stitch with per-(j, k) event-dim awareness. For scalar inner
-      // dists every (j, k) cell contributes 1 scalar (compat with the
-      // Phase 4.4 layout). For vector-output inner dists every (j, k)
-      // cell contributes an eventDim-vector; we splat them along a
-      // unified inner axis to keep the output rank-3 (the trailing n
-      // multiplies into the K_inner axis):
-      //   shape = [N, K_outer, K_inner * eventDim]   atom-major
-      // Sane downstream consumption (reductions, slicing) treats the
-      // last axis as the natural value axis of each (outer, inner)
-      // cell — matches the bare-vector-output kernel-broadcast output.
-      const eventDim = outerCells[0].cells[0].eventDim;
-      for (let j = 0; j < K; j++) {
-        for (let k = 0; k < K_inner; k++) {
-          if (outerCells[j].cells[k].eventDim !== eventDim) {
-            return Promise.reject(new Error('broadcast(' + d.distOp
-              + '): ragged inner event-dim across (j=' + j + ', k='
-              + k + '): expected ' + eventDim + ', got '
-              + outerCells[j].cells[k].eventDim));
-          }
-        }
-      }
-      const innerWidth = K_inner * eventDim;
-      const out = new Float64Array(N * K * innerWidth);
-      for (let j = 0; j < K; j++) {
-        for (let k = 0; k < K_inner; k++) {
-          const cell = outerCells[j].cells[k];
-          const col = cell.data;
-          if (eventDim === 1) {
-            for (let i = 0; i < N; i++) {
-              out[i * K * innerWidth + j * innerWidth + k] = col[i];
-            }
-          } else {
-            // Vector inner — each atom contributes an eventDim-vector
-            // at inner cell k; splat into the [k*eventDim, (k+1)*eventDim)
-            // slot of the inner axis.
-            const off = k * eventDim;
-            for (let i = 0; i < N; i++) {
-              for (let z = 0; z < eventDim; z++) {
-                out[i * K * innerWidth + j * innerWidth + off + z]
-                  = col[i * eventDim + z];
-              }
-            }
-          }
-        }
-      }
-      const value = { shape: [N | 0, K, innerWidth], data: out };
-      return Object.assign(
-        empirical.arrayMeasure(out, [K, innerWidth], null),
-        { value: value, logTotalmass: 0, n_eff: N },
-      );
-    });
+  // (4) Fold over count = N · K_out · K_in: one shared Cholesky, the per-cell
+  //     means laid out, ONE affine forward. `_mvNormalFoldOverCells` returns
+  //     [count, n] in (i, jk, :) order = the [N, K_out, K_in·n] contract.
+  const muGrid = { shape: [Kout * Kin, n], data: grid as Float64Array };
+  return _mvNormalFoldOverCells(
+    muGrid, L, n, true, N, Kout * Kin,
+    nameSeed(name + ':iidbase', ctx.rootKey), ctx,
+  ).then((res: { data: Float64Array }) => {
+    const out = res.data;
+    const innerWidth = Kin * n;
+    const value = { shape: [N | 0, Kout, innerWidth], data: out };
+    return Object.assign(
+      empirical.arrayMeasure(out, [Kout, innerWidth], null),
+      { value: value, logTotalmass: 0, n_eff: N },
+    );
   });
 }
 
