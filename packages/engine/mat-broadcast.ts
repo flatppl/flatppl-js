@@ -2157,58 +2157,39 @@ function _executeMvNormalBroadcast(
     return Promise.reject(new Error('broadcast(MvNormal): ' + (err as any).message));
   }
 
-  // Shared-mu degenerate case: K=1, every cell has the same mu and
-  // cov, so the output is just a [N, 1, n] block. Materialise once.
-  // Per-cell case: K cells × n-vector samples each.
+  // Batch-flatten the cell axis K into the affine forward (Phase 8): fold
+  // (atom N × cell K) into ONE count = N·K batch. The shared cov gives a
+  // shared L, so one `affineAtomBatchedForward` over count matvecs L
+  // against every (i, j) position and adds the per-cell mean — replacing
+  // the former per-cell loop (K affine forwards + z-slicing) with one.
+  // The intrinsic n axis stays intrinsic (it is NOT folded — §03).
+  const count = N * K;
+  // mu laid out to [count, n] in (i, j, :) order; atom-indep, so cell j's
+  // mean repeats across atoms. (`_layoutFlat` is for scalar-per-position
+  // folds — mu carries an intrinsic n axis, laid out by hand here.)
+  const muFlat = new Float64Array(count * n);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < K; j++) {
+      const dst = (i * K + j) * n;
+      const src = muIsPerCell ? j * n : 0;
+      for (let l = 0; l < n; l++) muFlat[dst + l] = muValue.data[src + l];
+    }
+  }
   return ctx.sendWorker({
     type: 'sampleN',
     ir: { kind: 'call', op: 'Normal',
           kwargs: { mu: { kind: 'lit', value: 0 },
                     sigma: { kind: 'lit', value: 1 } } },
-    count: N, repeat: K * n,
+    count: count, repeat: n,
     refArrays: {},
     seed: nameSeed(name + ':iidbase', ctx.rootKey),
   }).then((reply: any) => {
-    // Reply.samples is Float64Array(N * K * n) atom-major, iid Normal.
-    // For each cell j, apply affine(L, mu_j) to the [N, n] slice of z.
-    const z = reply.samples;
-    const out = new Float64Array(N * K * n);
-    for (let j = 0; j < K; j++) {
-      // Slice z into per-cell [N, n] atom-batched view, then apply
-      // affine. Cheapest construction: build a contiguous [N, n]
-      // Float64Array per cell so the registry's atom-batched paths
-      // accept it directly.
-      const zCell = new Float64Array(N * n);
-      for (let i = 0; i < N; i++) {
-        for (let k = 0; k < n; k++) {
-          zCell[i * n + k] = z[i * K * n + j * n + k];
-        }
-      }
-      const zCellValue = { shape: [N, n], data: zCell };
-      // mu_j slice: rank-1 [n] (shared) or rank-1 [n] sliced from
-      // rank-2 [K, n] at row j.
-      let muSliceData: Float64Array;
-      if (muIsPerCell) {
-        muSliceData = new Float64Array(n);
-        for (let k = 0; k < n; k++) {
-          muSliceData[k] = muValue.data[j * n + k];
-        }
-      } else {
-        muSliceData = muValue.data instanceof Float64Array
-          ? muValue.data
-          : new Float64Array(muValue.data);
-      }
-      const muSlice = { shape: [n], data: muSliceData };
-      const yCell = bijRegistry.affineAtomBatchedForward(
-        zCellValue, { L: L, b: muSlice }, N);
-      // Splat yCell into out at cell j: out[i, j, :] = yCell[i, :].
-      const yData = yCell.data;
-      for (let i = 0; i < N; i++) {
-        for (let k = 0; k < n; k++) {
-          out[i * K * n + j * n + k] = yData[i * n + k];
-        }
-      }
-    }
+    // reply.samples is Float64Array(count·n) atom-major = z[(i·K+j)·n + l].
+    const z = { shape: [count, n], data: reply.samples };
+    const y = bijRegistry.affineAtomBatchedForward(
+      z, { L: L, b: { shape: [count, n], data: muFlat } }, count);
+    // y.data is [count, n] = [N, K, n] in (i, j, :) order already.
+    const out = y.data as Float64Array;
     const value = { shape: [N | 0, K, n], data: out };
     return Object.assign(
       empirical.arrayMeasure(out, [K, n], null),
