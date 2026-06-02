@@ -2045,16 +2045,22 @@ function _axisStackForIR(ir: any, bindings: any, depth: number = 0): any[] | nul
     }
     if (!firstArg) return null;
     const size = _argSizeIdentifier(firstArg, bindings);
-    const source = _isKernelHead(head, bindings) ? 'kernel_broadcast' : 'broadcast';
+    const isKernel = _isKernelHead(head, bindings);
+    const source = isKernel ? 'kernel_broadcast' : 'broadcast';
     const entry: any = { source, size };
     if (firstArg.kind === 'ref' && firstArg.ns === 'self') entry.name = firstArg.name;
-    // For kernel-broadcast the inner measure context is the kernel's
-    // body (in a separate binding); recursing into a `self`-ref to a
-    // kernel binding would require materialise-time inlining (future
-    // fusion (b) work). For value-broadcast there's no inner measure
-    // — the head is a function producing values. Either way no
-    // within-IR recursion applies; the entry stands alone.
-    return [entry];
+    // For a kernel-broadcast the per-cell variate carries whatever INNER
+    // axes the kernel's reified body introduces (§22.4 nested-recursive):
+    // a `kernelof(broadcast(D, …), …)` body adds an inner broadcast axis
+    // (groups×subjects, patients×visits); a `kernelof(iid(D, n), …)` body
+    // adds the iid axis. Resolve the kernel binding's body and append its
+    // stack so the outer binding's axisStack is the FULL parallel-axis
+    // ladder [kernel_broadcast K_outer, <inner axes…>]. Bodies with no
+    // single inner axis (joint / superpose / scalar dist) contribute
+    // nothing. For value-broadcast there's no inner measure — the head is
+    // a function producing values — so the entry stands alone.
+    const inner = isKernel ? _kernelBodyInnerStack(head, bindings, depth) : null;
+    return inner ? [entry].concat(inner) : [entry];
   }
 
   // Axis-structure-preserving wrappers: their output measure has the
@@ -2137,6 +2143,28 @@ function _innerMeasureStack(measureArg: any, bindings: any, depth: number): any[
     }
   }
   return null;
+}
+
+// Resolve a kernel-broadcast head (a `self` ref to a kernel binding) to
+// the axisStack of the measure its reified body produces — the INNER
+// axes the per-cell variate carries (§22.4). The kernel binding's IR is
+// `functionof(<body>, …)`; post-lift, `<body>` is `lawof(<inner measure>)`
+// (the canonical form `detectNestedBroadcastKernelBinding` /
+// `detectIid…` consume) or the inner measure directly. Recurse
+// `_axisStackForIR` on that inner measure: a `broadcast` body yields the
+// inner broadcast axis, an `iid` body the iid axis, and a joint /
+// superpose / scalar-dist body yields null (no single inner axis to
+// record). Depth-bounded via the shared `_axisStackForIR` cap.
+function _kernelBodyInnerStack(head: any, bindings: any, depth: number): any[] | null {
+  if (!head || head.kind !== 'ref' || head.ns !== 'self') return null;
+  if (!bindings || !bindings.get) return null;
+  const b = bindings.get(head.name);
+  if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'functionof') return null;
+  let body = b.ir.body;
+  if (!body || body.kind !== 'call') return null;
+  if (body.op === 'lawof') body = (body.args && body.args[0]) || null;   // unwrap lawof
+  if (!body || body.kind !== 'call') return null;
+  return _axisStackForIR(body, bindings, depth + 1);
 }
 
 // Compare two axisStack arrays for content equality.

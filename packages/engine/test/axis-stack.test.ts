@@ -438,3 +438,78 @@ test('axisStack nested: iid(broadcast(K, args), n) produces iid + kernel_broadca
     { source: 'kernel_broadcast', size: 50, name: 'data' },
   ]);
 });
+
+// ---------------------------------------------------------------------
+// Enabler (§22.4): a kernel-broadcast records the INNER axis its kernel
+// body introduces — _axisStackForIR recurses into the kernel head's
+// reified body. This is the static K_inner the (deferred) nested /
+// joint / jointchain batch-flatten folds consume (TODO Phase 8).
+// ---------------------------------------------------------------------
+
+test('axisStack: nested kernel-broadcast records [kernel_broadcast K_outer, broadcast K_inner]', () => {
+  // y = broadcast(patient_kernel, sigma_g = sigmas_per_patient)
+  // patient_kernel = kernelof(broadcast(Normal, mu = visit_means,
+  //                                     sigma = sigma_g), sigma_g = sigma_g)
+  const patientKernelIR = {
+    kind: 'call', op: 'functionof', params: ['sigma_g'],
+    body: {
+      kind: 'call', op: 'lawof',
+      args: [{
+        kind: 'call', op: 'broadcast',
+        args: [{ kind: 'ref', ns: 'self', name: 'Normal' }],
+        kwargs: {
+          mu: { kind: 'ref', ns: 'self', name: 'visit_means' },
+          sigma: { kind: 'ref', ns: 'self', name: 'sigma_g' },
+        },
+      }],
+    },
+  };
+  const yIR = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: 'patient_kernel' }],
+    kwargs: { sigma_g: { kind: 'ref', ns: 'self', name: 'sigmas_per_patient' } },
+  };
+  const bindings = mkBindings({
+    patient_kernel:     { ir: patientKernelIR, inferredType: { kind: 'kernel' } },
+    visit_means:        { inferredType: { kind: 'array', rank: 1, shape: [4], elem: { kind: 'scalar', prim: 'real' } } },
+    sigmas_per_patient: { inferredType: { kind: 'array', rank: 1, shape: [3], elem: { kind: 'scalar', prim: 'real' } } },
+    y:                  { ir: yIR, phase: 'stochastic' },
+  });
+  dissolver.propagateAxisStack(bindings);
+  assert.deepEqual(bindings.get('y').ir.axisStack, [
+    { source: 'kernel_broadcast', size: 3, name: 'sigmas_per_patient' },
+    { source: 'broadcast', size: 4, name: 'visit_means' },
+  ]);
+});
+
+test('axisStack: iid-composite kernel-broadcast records [kernel_broadcast K, iid D]', () => {
+  // y = broadcast(obs_kernel, mu = means);  obs_kernel = kernelof(iid(Normal(mu), D), mu = mu)
+  const obsKernelIR = {
+    kind: 'call', op: 'functionof', params: ['mu'],
+    body: {
+      kind: 'call', op: 'lawof',
+      args: [{
+        kind: 'call', op: 'iid',
+        args: [
+          { kind: 'call', op: 'Normal', kwargs: { mu: { kind: 'ref', ns: 'self', name: 'mu' }, sigma: { kind: 'lit', value: 1 } } },
+          { kind: 'lit', value: 5 },
+        ],
+      }],
+    },
+  };
+  const yIR = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: 'obs_kernel' }],
+    kwargs: { mu: { kind: 'ref', ns: 'self', name: 'means' } },
+  };
+  const bindings = mkBindings({
+    obs_kernel: { ir: obsKernelIR, inferredType: { kind: 'kernel' } },
+    means:      { inferredType: { kind: 'array', rank: 1, shape: [6], elem: { kind: 'scalar', prim: 'real' } } },
+    y:          { ir: yIR, phase: 'stochastic' },
+  });
+  dissolver.propagateAxisStack(bindings);
+  assert.deepEqual(bindings.get('y').ir.axisStack, [
+    { source: 'kernel_broadcast', size: 6, name: 'means' },
+    { source: 'iid', size: 5 },
+  ]);
+});
