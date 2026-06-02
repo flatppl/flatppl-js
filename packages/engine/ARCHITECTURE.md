@@ -403,7 +403,12 @@ per-atom path. **`propagateAxisStack`** annotates measure-op IR with outer-axis
 outer-to-inner; the atom axis is deliberately excluded (engine-internal). It is
 **authoritative** (via `axis-stack.ts`) for the literal-size axes it records:
 the matIid repeat axis and mat-broadcast's K trust it, the runtime shape-sniff
-remaining only for symbolic ('%dynamic' / ref-name) sizes. Composites whose
+remaining only for symbolic ('%dynamic' / ref-name) sizes. It **descends into
+kernel-broadcast bodies** (`_kernelBodyInnerStack`: kernel head ref → `functionof`
+body → unwrap `lawof` → recurse), so a kernel-broadcast binding carries the full
+parallel-axis ladder — `[kernel_broadcast K_outer, broadcast K_inner]` (nested)
+or `[kernel_broadcast K, iid D]` (iid-composite) — the static K_inner the Phase 8
+nested/joint/jointchain de-nesting folds consume (§22.4). Composites whose
 variate shape isn't a single inner's (superpose / select / joint) carry no
 stack by design.
 
