@@ -397,88 +397,77 @@ function _substituteKernelParams(
 // the variate's intrinsic structure. Here the inner dist is scalar so
 // there is none; the fold never reshapes an intrinsic vec-of-vec axis.
 
-// Lay a value out as a single flat Float64Array of length N·K·D in
-// (i, j, r) row-major order, with size-1 axes broadcasting. `cls` is
-// materialiser-shared.classifyBroadcastArg's verdict for `v`
-// (kind ∈ scalar / K / KD / N / NK / NKD).
+// Lay a value out as a single flat Float64Array of length `lead·∏axes`
+// in row-major (lead, axes…) order — the general N-axis fold primitive
+// (vmap-like). `lead` is the leading-axis size (the atom count N).
+// `axes` are the parallel axis sizes being folded in. `atomVaries` says
+// whether `v` carries a leading `lead` axis; `axisSizes[a]` is `v`'s
+// source size along parallel axis `a` (1 ⇒ `v` is constant on that axis
+// and broadcasts). `v`'s data is row-major over `[ (lead?), axisSizes… ]`.
+// One odometer walk copies each source element into every broadcast
+// position. The iid-composite fold uses axes = [K, D]; the nested fold
+// uses [K_outer, K_inner] — same primitive, different axis tuple.
 function _layoutFlat(
-  v: any, cls: { kind: string; K?: number; D?: number },
-  N: number, K: number, D: number,
+  v: any, lead: number, axes: number[],
+  atomVaries: boolean, axisSizes: number[],
 ): Float64Array {
-  const KD = K * D;
-  const out = new Float64Array(N * KD);
+  const m = axes.length;
+  let pProd = 1;
+  for (let a = 0; a < m; a++) pProd *= axes[a];
+  const out = new Float64Array(lead * pProd);
   const data: any = valueLib.isValue(v) ? v.data
     : (v && v.BYTES_PER_ELEMENT !== undefined) ? v
     : Array.isArray(v) ? v
     : null;
-  switch (cls.kind) {
-    case 'scalar': {
-      const s = (typeof v === 'number') ? v
-        : (typeof v === 'boolean') ? (v ? 1 : 0)
-        : data[0];
-      out.fill(s);
-      return out;
-    }
-    case 'K': {                       // atom-indep [K]; broadcast over i, r
-      const Kv = data.length;
-      for (let i = 0; i < N; i++) {
-        const ib = i * KD;
-        for (let j = 0; j < K; j++) {
-          const val = data[Kv === 1 ? 0 : j];
-          const jb = ib + j * D;
-          for (let r = 0; r < D; r++) out[jb + r] = val;
-        }
-      }
-      return out;
-    }
-    case 'KD': {                      // atom-indep [K, D]
-      const Kv = cls.K as number, Dv = cls.D as number;
-      for (let i = 0; i < N; i++) {
-        const ib = i * KD;
-        for (let j = 0; j < K; j++) {
-          const jj = Kv === 1 ? 0 : j;
-          const jb = ib + j * D;
-          for (let r = 0; r < D; r++) out[jb + r] = data[jj * Dv + (Dv === 1 ? 0 : r)];
-        }
-      }
-      return out;
-    }
-    case 'N': {                       // atom-batched [N]; broadcast over j, r
-      for (let i = 0; i < N; i++) {
-        const val = data[i];
-        const ib = i * KD;
-        for (let p = 0; p < KD; p++) out[ib + p] = val;
-      }
-      return out;
-    }
-    case 'NK': {                      // atom-batched [N, K]; broadcast over r
-      const Kv = cls.K as number;
-      for (let i = 0; i < N; i++) {
-        const ib = i * KD, irow = i * Kv;
-        for (let j = 0; j < K; j++) {
-          const val = data[irow + (Kv === 1 ? 0 : j)];
-          const jb = ib + j * D;
-          for (let r = 0; r < D; r++) out[jb + r] = val;
-        }
-      }
-      return out;
-    }
-    case 'NKD': {                     // atom-batched [N, K, D]
-      const Kv = cls.K as number, Dv = cls.D as number;
-      const stride = Kv * Dv;
-      for (let i = 0; i < N; i++) {
-        const ib = i * KD, irow = i * stride;
-        for (let j = 0; j < K; j++) {
-          const jj = Kv === 1 ? 0 : j;
-          const jb = ib + j * D;
-          for (let r = 0; r < D; r++) out[jb + r] = data[irow + jj * Dv + (Dv === 1 ? 0 : r)];
-        }
-      }
-      return out;
-    }
-    default:
-      throw new Error('batch-flatten: cannot lay out arg of kind ' + cls.kind);
+  if (data == null) {                 // plain scalar / boolean
+    out.fill(typeof v === 'boolean' ? (v ? 1 : 0) : v);
+    return out;
   }
+  // Source strides over [ (lead?), axisSizes… ] row-major.
+  const srcStride = new Array(m);
+  let acc = 1;
+  for (let a = m - 1; a >= 0; a--) { srcStride[a] = acc; acc *= axisSizes[a]; }
+  const leadStride = acc;             // = ∏ axisSizes
+  const tIdx = new Array(m).fill(0);
+  for (let i = 0; i < lead; i++) {
+    const leadBase = atomVaries ? i * leadStride : 0;
+    const tBase = i * pProd;
+    for (let a = 0; a < m; a++) tIdx[a] = 0;
+    for (let p = 0; p < pProd; p++) {
+      let srcOff = leadBase;
+      for (let a = 0; a < m; a++) {
+        if (axisSizes[a] !== 1) srcOff += tIdx[a] * srcStride[a];
+      }
+      out[tBase + p] = data[srcOff];
+      for (let a = m - 1; a >= 0; a--) {     // odometer, last axis fastest
+        if (++tIdx[a] < axes[a]) break;
+        tIdx[a] = 0;
+      }
+    }
+  }
+  return out;
+}
+
+// Translate a classifyBroadcastArg verdict into the (atomVaries,
+// axisSizes) descriptor `_layoutFlat` consumes, mapping the verdict's
+// cell axis (cls.K) onto parallel-axis `kAxis` and its inner axis (cls.D)
+// onto `dAxis` of a length-`m` tuple; unmapped axes stay size-1. The
+// iid-composite fold maps {K→0, D→1} (m=2); the nested fold maps an
+// OUTER arg's cell axis to {K→0} and an INNER collection's to {K→1}.
+function _spanOf(
+  cls: { kind: string; K?: number; D?: number },
+  m: number, kAxis: number, dAxis: number,
+): { atomVaries: boolean; axisSizes: number[] } {
+  const atomVaries = cls.kind === 'N' || cls.kind === 'NK' || cls.kind === 'NKD';
+  const axisSizes = new Array(m).fill(1);
+  if (cls.kind === 'K' || cls.kind === 'KD'
+      || cls.kind === 'NK' || cls.kind === 'NKD') {
+    axisSizes[kAxis] = cls.K || 1;
+  }
+  if (cls.kind === 'KD' || cls.kind === 'NKD') {
+    axisSizes[dAxis] = cls.D || 1;
+  }
+  return { atomVaries, axisSizes };
 }
 
 function _executeIidCompositeBatchFlatten(
@@ -565,12 +554,14 @@ function _executeIidCompositeBatchFlatten(
     // the cell/inner-axis carriers (K / KD / N / NK / NKD), so their
     // intrinsic dims ARE the (K, D) axes by construction. They feed the
     // kernel formals.
+    const axes = [K, D];                // parallel axes: cell K, inner-iid D
     const flatRefs: Record<string, any> = {};
     const bcKwargs: Record<string, any> = {};
     for (const argName of Object.keys(d.kwargIRs || {})) {
       const flatName = '__bf_' + argName;
+      const sp = _spanOf(argCls[argName], 2, 0, 1);
       flatRefs[flatName] = valueLib.batchedScalar(
-        _layoutFlat(argVals[argName], argCls[argName], N, K, D));
+        _layoutFlat(argVals[argName], N, axes, sp.atomVaries, sp.axisSizes));
       bcKwargs[argName] = { kind: 'ref', ns: 'self', name: flatName };
     }
 
@@ -609,7 +600,9 @@ function _executeIidCompositeBatchFlatten(
           + ' the body is unsupported; the lift normally hoists such a'
           + ' reduction to its own per-atom-scalar binding)'));
       }
-      flatRefs[rn] = valueLib.batchedScalar(_layoutFlat(rv, cls, N, K, D));
+      const sp = _spanOf(cls, 2, 0, 1);
+      flatRefs[rn] = valueLib.batchedScalar(
+        _layoutFlat(rv, N, axes, sp.atomVaries, sp.axisSizes));
     }
 
     // Evaluate each inner-dist param ONCE over the count = N·K·D batch.
