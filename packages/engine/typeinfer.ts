@@ -1163,15 +1163,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // `aggregateShape.getCanonical`).
   //
   // Per-axis lengths come from get/get0 indexings in the body whose
-  // container's shape is statically known. Repeated axis occurrences on
-  // the same source (e.g. `A[.i, .i]` for trace) all see the same length
-  // — spec §04 line 853 requires equal lengths under one label; if
-  // typeinfer sees a mismatch we'd surface a diagnostic, but for now the
-  // first-seen length wins (runtime detects mismatches via out-of-bounds
-  // reads — engine-concepts §16.4 follow-up: lift the check to analyze
-  // time). Variance markers on body axes (only legal inside metricsum)
-  // don't affect length discovery — `A[.mu^]` and `A[.mu_]` both index
-  // the same axis-name slot on the same stored array.
+  // container's shape is statically known. A repeated axis label (e.g.
+  // `A[.i, .i]` — the diagonal/trace) binds ONE length across every index
+  // position per spec §04 line 853; a statically-known mismatch is a hard
+  // diagnostic here (formerly first-seen-wins, which then silently read
+  // out of bounds at runtime). A `%dynamic` occurrence upgrades to a later
+  // concrete length. Variance markers on body axes (only legal inside
+  // metricsum) don't affect length discovery — `A[.mu^]` and `A[.mu_]`
+  // both index the same axis-name slot on the same stored array.
   function _inferAxisAggregateShape(axesIR: any, bodyIR: any, scopes: any): {
     axisNames: string[];
     lengths: Record<string, number | '%dynamic'>;
@@ -1211,9 +1210,33 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
             const sels = innerArgs.slice(1);
             for (let k = 0; k < sels.length; k++) {
               const s = sels[k];
-              if (s && s.kind === 'axis' && !(s.name in lengths)) {
-                const dim = flat.shape[k];
-                lengths[s.name] = (typeof dim === 'number') ? dim : '%dynamic';
+              if (!s || s.kind !== 'axis') continue;
+              const dim = flat.shape[k];
+              const thisLen: number | '%dynamic' =
+                (typeof dim === 'number') ? dim : '%dynamic';
+              if (!(s.name in lengths)) {
+                lengths[s.name] = thisLen;
+                continue;
+              }
+              // Repeated axis label — spec §04 line 853 binds ONE length
+              // across every index position. A statically-known mismatch
+              // is a hard diagnostic (formerly first-seen-wins, which then
+              // silently read out of bounds at runtime). A `%dynamic`
+              // occurrence upgrades to a later concrete length; both
+              // dynamic stays dynamic (runtime re-resolves).
+              const prev = lengths[s.name];
+              if (typeof prev === 'number' && typeof thisLen === 'number'
+                  && prev !== thisLen) {
+                diagnostics.push({
+                  severity: 'error',
+                  message: `axis '.${s.name}' is indexed at conflicting lengths `
+                    + `(${prev} and ${thisLen}) — spec §04 binds one length per `
+                    + `axis label, so a repeated index like [.${s.name}, .${s.name}] `
+                    + `requires equal-length dimensions`,
+                  loc: s.loc || (n as any).loc,
+                });
+              } else if (prev === '%dynamic' && typeof thisLen === 'number') {
+                lengths[s.name] = thisLen;
               }
             }
           }
