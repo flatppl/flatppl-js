@@ -27,9 +27,11 @@
 //     specific axis's size for the common consumer patterns.
 //
 // Once propagateAxisStack coverage includes every axis-introducing
-// position (the open follow-ups in dissolver.ts:1855-1880), the
-// advisory contract flips to authoritative: gaps become bugs, and
-// the runtime shape-sniff fallback retires.
+// position (the producer's "out of scope" notes on `_axisStackForIR`
+// in dissolver.ts), the advisory contract flips to authoritative:
+// gaps become bugs, and the runtime shape-sniff fallback retires.
+// The matIid repeat-axis consumer (materialiser.ts) is the first
+// authoritative reader — it relies on the iid axis being recorded.
 //
 // **PoissonProcess (ragged arrays) opt out either way.** Ragged
 // per-atom-length arrays have no statically-known axis size, so they
