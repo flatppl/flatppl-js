@@ -693,7 +693,211 @@ function _executeIidCompositeBatchFlatten(
 }
 
 // =====================================================================
-// Phase 4.2 — joint-composite execution
+// Phase 8 — joint-composite de-nesting (per-component fold = product)
+// =====================================================================
+//
+// `broadcast(kernelof(joint(<components>), …), args)` draws, per atom, ONE
+// joint product variate per cell: K cells × C independent components
+// (spec §06), variate = the concat of the components' slices. The
+// components are the variate STRUCTURE (eventShape), not a parallel axis,
+// so they are NOT folded into the batch — each is its own draw. But the
+// outer cell axis K IS a parallel axis: batch-flatten folds it into each
+// component's sampleN (count = N·K, one call per component) and the joint
+// is the product (concat) of the per-component results → [N, K, C]. That
+// turns the per-cell K·C worker calls into C.
+//
+// Only all-scalar-component joints fold; a vector-output component
+// (MvNormal → bijection registry, §22) and atom-dep per-cell vector args
+// fall back to the per-cell reference, which dispatches those through
+// `_sampleVectorOutputAtCell`.
+
+function _executeJointComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  // All-scalar joints fold; any vector-output component uses the per-cell
+  // reference (its registry-dispatched components aren't scalar sampleN).
+  const anyVectorComponent = compositeBody.components.some((c: any) => c.isVectorOutput);
+  if (anyVectorComponent) return _executeJointCompositePerCell(name, d, ctx, compositeBody);
+  return _executeJointCompositeBatchFlatten(name, d, ctx, compositeBody);
+}
+
+function _executeJointCompositeBatchFlatten(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const components = compositeBody.components;
+  const C = components.length;
+
+  // Surface every free name (broadcast args + closed-over refs across all
+  // components) via the components' kwargs with outer formals substituted
+  // to the broadcast args. Same shape prepareDensityRefs sees elsewhere.
+  const flatKwargs: Record<string, any> = {};
+  for (let c = 0; c < C; c++) {
+    for (const pn of Object.keys(components[c].distKwargs)) {
+      flatKwargs['__joint_c' + c + '_' + pn] = _substituteKernelParams(
+        components[c].distKwargs[pn], compositeBody.params,
+        compositeBody.paramKwargs, d.kwargIRs || {});
+    }
+  }
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: flatKwargs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+    const fallback = () => _executeJointCompositePerCell(name, d, ctx, compositeBody);
+
+    // Determine the cell axis K (axisStack authoritative; else discover
+    // from the first broadcast arg with a cell axis) + classify each arg.
+    const stack = axisStackMod.bindingAxisStack(name, ctx);
+    const axisStackK = axisStackMod.outerAxisSize(stack, 'kernel_broadcast');
+    const kFromStack = !!(axisStackK && axisStackK > 1);
+    let K = kFromStack ? (axisStackK as number) : 1;
+    const argVals: Record<string, any> = {};
+    const argCls: Record<string, any> = {};
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      if ((cls.D || 1) > 1) return fallback();        // per-cell vector arg → vector-output territory
+      argVals[argName] = v;
+      argCls[argName] = cls;
+      const argK = cls.K || 1;
+      if (argK > 1) {
+        if (K === 1) K = argK;
+        else if (K !== argK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp + '): '
+            + (kFromStack
+              ? 'internal: static axisStack kernel-broadcast axis (' + K
+                + ') disagrees with runtime cell length (' + argK
+                + ') on arg \'' + argName + '\' — producer/runtime drift'
+              : 'incompatible cell-axis lengths (' + K + ' vs ' + argK
+                + ') on arg \'' + argName + '\'')));
+        }
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+
+    const axes = [K];                   // single parallel axis: the cell K
+    const count = N * K;
+
+    // Lay broadcast args → __o_<formal> (span the cell axis), shared
+    // across components.
+    const flatRefs: Record<string, any> = {};
+    const outerBcKwargs: Record<string, any> = {};
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const sp = _spanOf(argCls[argName], 1, 0, 0);
+      const flatName = '__o_' + argName;
+      flatRefs[flatName] = valueLib.batchedScalar(
+        _layoutFlat(argVals[argName], N, axes, sp.atomVaries, sp.axisSizes));
+      outerBcKwargs[argName] = { kind: 'ref', ns: 'self', name: flatName };
+    }
+
+    // Substitute outer formals → __o_ in every component; collect the
+    // closed-over refs the bodies use (per-atom scalars, span neither).
+    const subComps: Array<Record<string, any>> = [];
+    const bodyRefNames = new Set<string>();
+    for (let c = 0; c < C; c++) {
+      const sub: Record<string, any> = {};
+      for (const pn of Object.keys(components[c].distKwargs)) {
+        const s = _substituteKernelParams(
+          components[c].distKwargs[pn], compositeBody.params,
+          compositeBody.paramKwargs, outerBcKwargs);
+        sub[pn] = s;
+        orchestrator.collectSelfRefs(s).forEach((n: string) => bodyRefNames.add(n));
+      }
+      subComps.push(sub);
+    }
+    for (const rn of bodyRefNames) {
+      if (Object.prototype.hasOwnProperty.call(flatRefs, rn)) continue;   // __o_*
+      const v = refArrays[rn] !== undefined ? refArrays[rn] : baseEnv[rn];
+      if (v === undefined) continue;                                      // baseEnv (fixed)
+      const cls = shared.classifyBroadcastArg(v, N, refArrays[rn] !== undefined);
+      if (cls.kind !== 'N' && cls.kind !== 'scalar') return fallback();
+      const sp = _spanOf(cls, 1, 0, 0);
+      flatRefs[rn] = valueLib.batchedScalar(
+        _layoutFlat(v, N, axes, sp.atomVaries, sp.axisSizes));
+    }
+
+    // One sampleN per component over the count = N·K batch (independent
+    // components → independent seeds). cols[c] is flat [count] in (i, j)
+    // order = [N, K].
+    const cols: Float64Array[] = new Array(C);
+    let chain = Promise.resolve();
+    let bailed: Promise<any> | null = null;
+    for (let c = 0; c < C; c++) {
+      const cc = c;
+      chain = chain.then(() => {
+        if (bailed) return;
+        const distKwargs: Record<string, any> = {};
+        const sampleRefs: Record<string, any> = {};
+        for (const pn of Object.keys(subComps[cc])) {
+          let pv: any;
+          try {
+            pv = sampler.evaluateExprN(subComps[cc][pn], flatRefs, count, baseEnv, undefined);
+          } catch (err) {
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          const r = _resolveBatchFlattenParam(pv, count);
+          if (!r) { bailed = fallback(); return; }
+          if (r.kind === 'col') {
+            const pr = '__p_c' + cc + '_' + pn;
+            sampleRefs[pr] = valueLib.batchedScalar(r.data);
+            distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
+          } else {
+            distKwargs[pn] = { kind: 'lit', value: r.value };
+          }
+        }
+        const distIR = { kind: 'call', op: components[cc].distOp, kwargs: distKwargs };
+        const workerMsg: any = {
+          type: 'sampleN', ir: distIR, count: count,
+          refArrays: sampleRefs,
+          seed: nameSeed(name + ':c' + cc, ctx.rootKey),
+        };
+        return ctx.sendWorker(workerMsg).then((reply: any) => { cols[cc] = reply.samples; });
+      });
+    }
+    return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
+      if (bailed) return bailed;
+      // Stitch the C scalar components into [N, K, C] atom-major
+      // (out[i*K*C + j*C + c] = cols[c][i*K + j]) — matching the per-cell
+      // joint layout's all-scalar case (totalEventDim = C).
+      const out = new Float64Array(N * K * C);
+      for (let c = 0; c < C; c++) {
+        const col = cols[c];
+        for (let i = 0; i < N; i++) {
+          for (let j = 0; j < K; j++) {
+            out[i * K * C + j * C + c] = col[i * K + j];
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, C], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K, C], null),
+        { value: value, logTotalmass: 0, n_eff: N });
+    });
+  });
+}
+
+// =====================================================================
+// Phase 4.2 — joint-composite per-cell execution (reference + vector-
+// output-component path; all-scalar joints fold above)
 // =====================================================================
 //
 // When a kernel-broadcast wraps `kernelof(joint(<components>), …)`,
@@ -703,32 +907,18 @@ function _executeIidCompositeBatchFlatten(
 // concat-vector (positional layout) or named record (keyword layout)
 // of those slices.
 //
-// Phase 4.2 MVP restricts each component to a built-in sampleable
-// scalar distribution (Normal, Beta, Gamma, …). Vector-valued
-// components (MvNormal) wait for Phase 5.1, where MvNormal joins the
-// sampler REGISTRY so the same kwarg-driven sampleN dispatch handles
-// it uniformly.
+// Execution shape per (j, c): build the cell-`j` bcKwargs (atom-indep
+// args → `lit`, atom-batched → per-atom refArrays, atom-indep per-cell
+// vectors → literal `vector(…)`); substitute kernel placeholders into
+// component c's `distKwargs`; sampleN (scalar component) or
+// `_sampleVectorOutputAtCell` (vector-output component, e.g. MvNormal via
+// the bijection registry). Stitch: out[i·K·E + j·E + off_c] = col_jc,
+// E = Σ_c eventDim_c. Result Value shape = [N, K, E] atom-major.
 //
-// Execution shape per (j, c):
-//   1. Build per-cell `bcKwargs` — atom-indep broadcast args become
-//      `lit` kwargs; atom-batched args become per-atom refArrays
-//      (`__bc_<argName>_<j>`).
-//   2. Substitute kernel placeholders in component c's `distKwargs`
-//      with those bcKwargs (via `_substituteKernelParams`).
-//   3. Send one sampleN worker call for component c with the
-//      substituted IR; the worker returns a length-N column of per-
-//      atom scalars.
-//
-// Stitching: out[i * K * C + j * C + c] = col_jc[i], where
-// C = components.length. Result Value shape = [N, K, C] atom-major,
-// matching the iid-composite layout for downstream broadcast / density
-// consumers.
-//
-// Cost: K * C worker calls. For typical multi-output regressions
-// (K small, C small, N large) the per-cell sampling dominates, not
-// the dispatch overhead.
+// This is the dual-mode reference (engine-concepts §15) for the all-scalar
+// case (folded above) AND the live path for vector-output components.
 
-function _executeJointComposite(
+function _executeJointCompositePerCell(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
   const sampler = require('./sampler.ts');
