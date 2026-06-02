@@ -470,6 +470,40 @@ function _spanOf(
   return { atomVaries, axisSizes };
 }
 
+// Resolve a batch-flatten param value (an inner-dist kwarg evaluated over
+// the count batch) to a worker kwarg: a constant → `{kind:'lit'}`; a
+// length-`count` column → `{kind:'col'}`. Returns null for any other
+// shape/type — the caller decides (the iid fold rejects; the nested fold
+// falls back to its per-cell reference). Handles number / boolean / Value
+// / typed-array / per-position JS-array (cold-path) forms.
+function _resolveBatchFlattenParam(
+  pv: any, count: number,
+): { kind: 'lit'; value: number } | { kind: 'col'; data: Float64Array } | null {
+  if (typeof pv === 'number' || typeof pv === 'boolean') return { kind: 'lit', value: +pv };
+  if (valueLib.isValue(pv)) {
+    const bs = pv.shape;
+    if (bs.length === 0 || (bs.length === 1 && bs[0] === 1)) return { kind: 'lit', value: pv.data[0] };
+    if (bs.length === 1 && bs[0] === count) return { kind: 'col', data: pv.data };
+    return null;
+  }
+  if (pv && pv.BYTES_PER_ELEMENT !== undefined && pv.length === count) {
+    return { kind: 'col', data: pv };
+  }
+  if (Array.isArray(pv) && pv.length === count) {
+    const buf = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      const c = pv[i];
+      if (typeof c === 'number') buf[i] = c;
+      else if (typeof c === 'boolean') buf[i] = c ? 1 : 0;
+      else if (valueLib.isValue(c) && (c.shape.length === 0
+               || (c.shape.length === 1 && c.shape[0] === 1))) buf[i] = c.data[0];
+      else return null;
+    }
+    return { kind: 'col', data: buf };
+  }
+  return null;
+}
+
 function _executeIidCompositeBatchFlatten(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
@@ -617,48 +651,19 @@ function _executeIidCompositeBatchFlatten(
       } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
-      if (typeof pv === 'number' || typeof pv === 'boolean') {
-        distKwargs[pn] = { kind: 'lit', value: +pv };
-      } else if (valueLib.isValue(pv)) {
-        const bs = pv.shape;
-        if (bs.length === 0 || (bs.length === 1 && bs[0] === 1)) {
-          distKwargs[pn] = { kind: 'lit', value: pv.data[0] };
-        } else if (bs.length === 1 && bs[0] === count) {
-          const pr = '__p_' + pn;
-          sampleRefs[pr] = valueLib.batchedScalar(pv.data);
-          distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
-        } else {
-          return Promise.reject(new Error('broadcast(' + d.distOp
-            + '): batch-flatten param \'' + pn + '\' resolved to shape '
-            + JSON.stringify(bs) + ' (expected scalar or [' + count + '])'));
-        }
-      } else if (pv && pv.BYTES_PER_ELEMENT !== undefined && pv.length === count) {
+      const r = _resolveBatchFlattenParam(pv, count);
+      if (!r) {
+        const shp = valueLib.isValue(pv) ? JSON.stringify(pv.shape) : typeof pv;
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): batch-flatten param \'' + pn + '\' resolved to ' + shp
+          + ' (expected scalar or [' + count + '])'));
+      }
+      if (r.kind === 'col') {
         const pr = '__p_' + pn;
-        sampleRefs[pr] = valueLib.batchedScalar(pv);
-        distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
-      } else if (Array.isArray(pv) && pv.length === count) {
-        // Cold-path broadcast may return a per-position JS array (numbers
-        // or rank-0 / [1] Values). Pack into a flat [count] buffer —
-        // parity with the former per-cell executor's body handling.
-        const buf = new Float64Array(count);
-        for (let i = 0; i < count; i++) {
-          const c = pv[i];
-          if (typeof c === 'number') buf[i] = c;
-          else if (typeof c === 'boolean') buf[i] = c ? 1 : 0;
-          else if (valueLib.isValue(c) && (c.shape.length === 0
-                   || (c.shape.length === 1 && c.shape[0] === 1))) buf[i] = c.data[0];
-          else {
-            return Promise.reject(new Error('broadcast(' + d.distOp
-              + '): batch-flatten param \'' + pn + '\' produced a per-position'
-              + ' non-scalar at index ' + i));
-          }
-        }
-        const pr = '__p_' + pn;
-        sampleRefs[pr] = valueLib.batchedScalar(buf);
+        sampleRefs[pr] = valueLib.batchedScalar(r.data);
         distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
       } else {
-        return Promise.reject(new Error('broadcast(' + d.distOp
-          + '): batch-flatten param \'' + pn + '\' resolved to an unsupported type'));
+        distKwargs[pn] = { kind: 'lit', value: r.value };
       }
     }
 
@@ -1342,7 +1347,178 @@ function _executeJointChainComposite(
 }
 
 // =====================================================================
-// Phase 4.4 — nested-broadcast-composite execution
+// Phase 8 — nested-broadcast de-nesting (single-shot two-axis fold)
+// =====================================================================
+//
+// A nested kernel-broadcast `broadcast(kernelof(broadcast(D, inner_kw),
+// outer_kw), outer_args)` yields a [K_outer, K_inner] block per atom.
+// Batch-flatten folds BOTH parallel axes (outer K_outer × inner K_inner)
+// into ONE count = N·K_outer·K_inner batch — the iid leg's move with two
+// user axes (engine-concepts §20.10). It reads the static axis ladder
+// `[kernel_broadcast K_outer, broadcast K_inner]` the dissolver now
+// records on the binding (enabler 2f1a542), lays every input out to the
+// count via the shared `_layoutFlat` (outer args span axis 0, inner
+// collections span axis 1, closed-over per-atom scalars span neither),
+// evaluates the inner dist's params ONCE, issues ONE sampleN, reshapes.
+//
+// Laying every input out BEFORE evaluating is what makes it MIXING-
+// TOLERANT: an inner kwarg like `mu = patient_intercept .+ visit_effect`
+// combines an outer-axis and an inner-axis term, which only resolves once
+// both are materialised on the common count axis — the per-cell loop
+// couldn't (it evaluated inner kwargs per outer cell). The vector-output-
+// inner sub-case (MvNormal → bijection registry, §22) and any symbolic /
+// unrecognised shape fall back to the per-cell reference below.
+
+function _executeNestedBroadcastComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  // Dispatch: a scalar-inner nested broadcast with a statically-known
+  // axis ladder folds; everything else uses the per-cell reference.
+  if (!compositeBody.innerIsVectorOutput) {
+    const stack = axisStackMod.bindingAxisStack(name, ctx);
+    const Kout = axisStackMod.outerAxisSize(stack, 'kernel_broadcast');
+    const Kin = axisStackMod.outerAxisSize(stack, 'broadcast');
+    if (Kout && Kout >= 1 && Kin && Kin >= 1) {
+      return _executeNestedBroadcastBatchFlatten(name, d, ctx, compositeBody, Kout, Kin);
+    }
+  }
+  return _executeNestedBroadcastPerCell(name, d, ctx, compositeBody);
+}
+
+function _executeNestedBroadcastBatchFlatten(
+  name: string, d: any, ctx: any, compositeBody: any, Kout: number, Kin: number,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const innerKwargs = compositeBody.innerKwargs;
+  const distOp = compositeBody.innerDistOp;
+  const axes = [Kout, Kin];           // parallel axes: outer cell, inner cell
+  const count = N * Kout * Kin;
+
+  // Surface every free name (outer args + inner collections + closed-over
+  // refs) to prepareDensityRefs via the inner kwargs with outer formals
+  // substituted to the outer broadcast args.
+  const substForRefs: Record<string, any> = {};
+  for (const pn of Object.keys(innerKwargs)) {
+    substForRefs[pn] = _substituteKernelParams(
+      innerKwargs[pn], compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+  }
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: distOp }],
+    kwargs: substForRefs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+    const fallback = () => _executeNestedBroadcastPerCell(name, d, ctx, compositeBody);
+
+    const flatRefs: Record<string, any> = {};
+
+    // Outer args → `__o_<formal>` refs spanning the OUTER axis (0).
+    const outerBcKwargs: Record<string, any> = {};
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      if (((cls.K || 1) > 1 && cls.K !== Kout) || (cls.D || 1) > 1) return fallback();
+      const sp = _spanOf(cls, 2, 0, 1);                 // cell axis → outer (0)
+      const flatName = '__o_' + argName;
+      flatRefs[flatName] = valueLib.batchedScalar(
+        _layoutFlat(v, N, axes, sp.atomVaries, sp.axisSizes));
+      outerBcKwargs[argName] = { kind: 'ref', ns: 'self', name: flatName };
+    }
+
+    // Substitute outer formals → `__o_` refs; collect the inner body's
+    // free names so we lay out exactly the inner collections + closed-over
+    // refs it uses.
+    const subKwargs: Record<string, any> = {};
+    const bodyRefNames = new Set<string>();
+    for (const pn of Object.keys(innerKwargs)) {
+      const sub = _substituteKernelParams(
+        innerKwargs[pn], compositeBody.params, compositeBody.paramKwargs, outerBcKwargs);
+      subKwargs[pn] = sub;
+      orchestrator.collectSelfRefs(sub).forEach((n: string) => bodyRefNames.add(n));
+    }
+
+    // Inner collections span the INNER axis (1); closed-over per-atom
+    // scalars span neither. A non-`__o_` ref whose cell length is K_inner
+    // is an inner collection; an 'N'/'scalar' is closed over; anything
+    // else falls back to the per-cell reference.
+    for (const rn of bodyRefNames) {
+      if (Object.prototype.hasOwnProperty.call(flatRefs, rn)) continue;   // `__o_*`
+      const fromRefs = refArrays[rn] !== undefined;
+      const v = fromRefs ? refArrays[rn] : baseEnv[rn];
+      if (v === undefined) continue;                                      // resolved elsewhere
+      const cls = shared.classifyBroadcastArg(v, N, fromRefs);
+      if (cls.kind === 'N' || cls.kind === 'scalar') {
+        const sp = _spanOf(cls, 2, 0, 1);                                 // spans neither
+        flatRefs[rn] = valueLib.batchedScalar(
+          _layoutFlat(v, N, axes, sp.atomVaries, sp.axisSizes));
+      } else if ((cls.kind === 'K' || cls.kind === 'NK')
+                 && cls.K === Kin && (cls.D || 1) === 1) {
+        const sp = _spanOf(cls, 2, 1, 0);                                 // cell axis → inner (1)
+        flatRefs[rn] = valueLib.batchedScalar(
+          _layoutFlat(v, N, axes, sp.atomVaries, sp.axisSizes));
+      } else {
+        return fallback();
+      }
+    }
+
+    // Evaluate each inner-dist param ONCE over the count batch.
+    const distKwargs: Record<string, any> = {};
+    const sampleRefs: Record<string, any> = {};
+    for (const pn of Object.keys(subKwargs)) {
+      let pv: any;
+      try {
+        pv = sampler.evaluateExprN(subKwargs[pn], flatRefs, count, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      const r = _resolveBatchFlattenParam(pv, count);
+      if (!r) return fallback();
+      if (r.kind === 'col') {
+        const pr = '__p_' + pn;
+        sampleRefs[pr] = valueLib.batchedScalar(r.data);
+        distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
+      } else {
+        distKwargs[pn] = { kind: 'lit', value: r.value };
+      }
+    }
+
+    const distIR = { kind: 'call', op: distOp, kwargs: distKwargs };
+    const workerMsg: any = {
+      type: 'sampleN', ir: distIR, count: count,
+      refArrays: sampleRefs,
+      seed: nameSeed(name, ctx.rootKey),
+    };
+    return pushFixedEnv(ctx, fixedEnv)
+      .then(() => ctx.sendWorker(workerMsg))
+      .then((reply: any) => {
+        // reply.samples is flat [count] in (i, j_outer, k_inner) order
+        // = [N, K_outer, K_inner].
+        const out = reply.samples;
+        const value = { shape: [N | 0, Kout, Kin], data: out };
+        return Object.assign(
+          empirical.arrayMeasure(out, [Kout, Kin], null),
+          { value: value, logTotalmass: 0, n_eff: N });
+      });
+  });
+}
+
+// =====================================================================
+// Phase 4.4 — nested-broadcast per-cell execution (reference + vector-
+// output-inner path; scalar-inner with a static ladder folds above)
 // =====================================================================
 //
 // Outer kernel-broadcast body is itself `broadcast(<bare_dist>, kw)`:
@@ -1350,8 +1526,8 @@ function _executeJointChainComposite(
 //     broadcast(<outer_kernel>, outer_kwargs)
 //        with outer_kernel = kernelof(broadcast(D, inner_kw), outer_kw)
 //
-// Each atom yields a [K_outer, K_inner] block. The new architectural
-// ingredient vs Phases 4.1-4.3 is **two-axis per-cell iteration**:
+// Each atom yields a [K_outer, K_inner] block via **two-axis per-cell
+// iteration**:
 //
 //   for outer j in [0, K_outer):
 //     substitute outer placeholders into inner kwargs (per outer cell)
@@ -1364,18 +1540,12 @@ function _executeJointChainComposite(
 // as-closed-over refs; `_substituteKernelParams` handles both via the
 // same `params` / `paramKwargs` mapping used by Phases 4.1-4.3.
 //
-// MVP scope (matches recogniser gate):
-// - Inner broadcast head is a bare sampler-REGISTRY scalar dist.
-// - Inner kwargs use kwarg form (positional defers).
-// - No vec-per-cell inner D axis (the inner cells are scalars).
-//
-// Cost: K_outer * K_inner worker calls. A future optimisation can
-// detect when the inner cell axis has no atom-dep AFTER outer
-// substitution and route through `KERNEL_BROADCAST_FAST_PATHS` for a
-// single vectorised inner pass per outer cell; the recogniser surface
-// stays unchanged.
+// This is the dual-mode reference (engine-concepts §15) for the scalar-
+// inner case (folded above when the ladder is static) AND the live path
+// for the vector-output-inner (MvNormal) sub-case, which dispatches per
+// (j, k) through the bijection registry rather than scalar sampleN.
 
-function _executeNestedBroadcastComposite(
+function _executeNestedBroadcastPerCell(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
   const sampler = require('./sampler.ts');
