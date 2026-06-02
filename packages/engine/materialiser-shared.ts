@@ -179,6 +179,74 @@ function measureToParamValue(m: any, name: string, label: string) {
     + '(needs .value, scalar-component .elems, or scalar .samples)');
 }
 
+// Repeat each per-atom block `k` times into a fresh contiguous buffer:
+// `dst[(i*k + j)*blockLen + l] = src[i*blockLen + l]`. The constructor
+// is reused so dtype is preserved (Float64Array / Int32Array / …).
+function _tileAtomMajor(src: any, N: number, k: number, blockLen: number): any {
+  const dst = new src.constructor(N * k * blockLen);
+  for (let i = 0; i < N; i++) {
+    const sOff = i * blockLen;
+    for (let j = 0; j < k; j++) {
+      const dOff = (i * k + j) * blockLen;
+      for (let l = 0; l < blockLen; l++) dst[dOff + l] = src[sOff + l];
+    }
+  }
+  return dst;
+}
+
+/**
+ * Repeat each atom's draw `k` times, atom-major, producing an
+ * `N·k`-atom measure where atom `i·k + j == atom i` for every
+ * `j ∈ [0, k)`. Copies all other fields through unchanged.
+ *
+ * This realises the **repeat axis** for the matIid composite fallback
+ * (engine-concepts §20.1 / §22.4 — the `iid` entry that
+ * `dissolver.propagateAxisStack` records). When `iid(M, k)` over a
+ * composite `M` is materialised by inflating `M` to `N·k` atoms, the
+ * atom-level VALUE draws `M` conditions on (e.g. a per-atom `psi`) must
+ * stay CONSTANT across the `k` inner draws — spec §06's within-atom
+ * conditional independence: "draw `psi_i` per atom, then `k` iid draws
+ * from `M` *at that `psi_i`*". Tiling the parent's `N`-atom value to
+ * `N·k` makes the inflated dispatch reuse `psi_i` for atom `i`'s `k`
+ * inner positions, while `M`'s measure structure (branch selection,
+ * leaf draws) redraws freshly per position. The caller's `[N, k]`
+ * reshape is row-major, so the repeat is atom-major (block `i·k+j` ←
+ * block `i`).
+ *
+ * Only the per-atom payloads a refArray param can carry are tiled
+ * (`.samples` / `.value` (+ `.im`) / `.logWeights` / `.elems`); a no-op
+ * when `k <= 1` or the leading axis isn't `N` (rank-0 constants ride
+ * the fixedValues path and never reach here).
+ */
+function tileMeasureAtomMajor(m: any, N: number, k: number): any {
+  if (!m || k <= 1) return m;
+  const out = Object.assign({}, m);
+  if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined
+      && m.samples.length === N) {
+    out.samples = _tileAtomMajor(m.samples, N, k, 1);
+  }
+  if (m.value && Array.isArray(m.value.shape) && m.value.shape[0] === N
+      && m.value.data && m.value.data.BYTES_PER_ELEMENT !== undefined) {
+    const inner = m.value.shape.slice(1);
+    const blockLen = inner.reduce((a: number, b: number) => a * b, 1);
+    const nv = Object.assign({}, m.value);
+    nv.shape = [N * k].concat(inner);
+    nv.data = _tileAtomMajor(m.value.data, N, k, blockLen);
+    if (m.value.im && m.value.im.BYTES_PER_ELEMENT !== undefined) {
+      nv.im = _tileAtomMajor(m.value.im, N, k, blockLen);
+    }
+    out.value = nv;
+  }
+  if (m.logWeights && m.logWeights.BYTES_PER_ELEMENT !== undefined
+      && m.logWeights.length === N) {
+    out.logWeights = _tileAtomMajor(m.logWeights, N, k, 1);
+  }
+  if (Array.isArray(m.elems)) {
+    out.elems = m.elems.map((e: any) => tileMeasureAtomMajor(e, N, k));
+  }
+  return out;
+}
+
 /**
  * Resolve every value-position self-ref in `ir` to its parent's
  * Value, returning a refName→Value map for the worker primitives'
@@ -919,6 +987,7 @@ module.exports = {
   isCallableLayerBinding,
   measureToRefValue,
   measureToParamValue,
+  tileMeasureAtomMajor,
   collectRefArrays,
   prepareDensityRefs,
   classifyProfileSelfRefs,
