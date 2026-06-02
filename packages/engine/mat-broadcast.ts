@@ -1271,7 +1271,219 @@ function _sampleMvNormalAtCell(
 }
 
 // =====================================================================
-// Phase 4.3 — jointchain-composite execution
+// Phase 8 — jointchain-composite de-nesting (scan over steps)
+// =====================================================================
+//
+// A jointchain-bodied kernel-broadcast is a Markov chain per cell: step 0
+// is a base measure, each step k>0 a kernel consuming step k-1's variate
+// (the carry). The steps are SEQUENTIAL (a scan), the cell axis K is
+// parallel. Batch-flatten folds K into each step's sampleN (count = N·K,
+// one call per step) while scanning the steps: step k-1's flat [count]
+// result is ALREADY in (i, j) order, so it binds directly as step k's
+// input refArray — no re-layout. K·C per-cell worker calls collapse to C
+// (sequential across steps, parallel across atom×cell). This is the
+// lax.scan analogue (carry = previous variate).
+//
+// jointchain steps are scalar dists (recogniser scope), so there is no
+// vector-output sub-case; only a per-cell vector arg or symbolic/
+// unrecognised shape falls back to the per-cell reference.
+
+function _executeJointChainComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  return _executeJointChainScan(name, d, ctx, compositeBody);
+}
+
+function _executeJointChainScan(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const steps = compositeBody.steps;
+  const C = steps.length;
+  if (C < 2) {
+    return Promise.reject(new Error(
+      'broadcast: jointchain composite requires chain length ≥ 2, got ' + C));
+  }
+  const inputParams = new Set<string>();
+  for (let k = 1; k < C; k++) inputParams.add(steps[k].kernel.inputParam);
+
+  // Surface every free name (broadcast args + closed-over refs across all
+  // steps) via the steps' kwargs with outer formals substituted to the
+  // broadcast args; the inputParam stays unbound (it's the scan carry).
+  const flatKwargs: Record<string, any> = {};
+  const rawOf = (k: number) => (k === 0 ? steps[0].base : steps[k].kernel);
+  for (let k = 0; k < C; k++) {
+    const raw = rawOf(k).distKwargs;
+    for (const pn of Object.keys(raw)) {
+      flatKwargs['__chain_s' + k + '_' + pn] = _substituteKernelParams(
+        raw[pn], compositeBody.params, compositeBody.paramKwargs, d.kwargIRs || {});
+    }
+  }
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: flatKwargs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+    const fallback = () => _executeJointChainPerCell(name, d, ctx, compositeBody);
+
+    // Cell axis K (axisStack authoritative; else discover from args).
+    const stack = axisStackMod.bindingAxisStack(name, ctx);
+    const axisStackK = axisStackMod.outerAxisSize(stack, 'kernel_broadcast');
+    const kFromStack = !!(axisStackK && axisStackK > 1);
+    let K = kFromStack ? (axisStackK as number) : 1;
+    const argVals: Record<string, any> = {};
+    const argCls: Record<string, any> = {};
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const argIR = d.kwargIRs[argName];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+      if ((cls.D || 1) > 1) return fallback();        // per-cell vector arg
+      argVals[argName] = v;
+      argCls[argName] = cls;
+      const argK = cls.K || 1;
+      if (argK > 1) {
+        if (K === 1) K = argK;
+        else if (K !== argK) {
+          return Promise.reject(new Error('broadcast(' + d.distOp + '): '
+            + (kFromStack
+              ? 'internal: static axisStack kernel-broadcast axis (' + K
+                + ') disagrees with runtime cell length (' + argK
+                + ') on arg \'' + argName + '\' — producer/runtime drift'
+              : 'incompatible cell-axis lengths (' + K + ' vs ' + argK
+                + ') on arg \'' + argName + '\'')));
+        }
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+
+    const axes = [K];
+    const count = N * K;
+
+    // Broadcast args → __o_<formal> (span the cell axis); shared by steps.
+    const flatRefs: Record<string, any> = {};
+    const outerBcKwargs: Record<string, any> = {};
+    for (const argName of Object.keys(d.kwargIRs || {})) {
+      const sp = _spanOf(argCls[argName], 1, 0, 0);
+      const flatName = '__o_' + argName;
+      flatRefs[flatName] = valueLib.batchedScalar(
+        _layoutFlat(argVals[argName], N, axes, sp.atomVaries, sp.axisSizes));
+      outerBcKwargs[argName] = { kind: 'ref', ns: 'self', name: flatName };
+    }
+
+    // Closed-over refs across all steps (per-atom scalars, span neither);
+    // the inputParam (carry) is bound per step during the scan, not here.
+    const bodyRefNames = new Set<string>();
+    for (let k = 0; k < C; k++) {
+      const raw = rawOf(k).distKwargs;
+      for (const pn of Object.keys(raw)) {
+        const s = _substituteKernelParams(
+          raw[pn], compositeBody.params, compositeBody.paramKwargs, outerBcKwargs);
+        orchestrator.collectSelfRefs(s).forEach((n: string) => bodyRefNames.add(n));
+      }
+    }
+    for (const rn of bodyRefNames) {
+      if (Object.prototype.hasOwnProperty.call(flatRefs, rn)) continue;   // __o_*
+      if (inputParams.has(rn)) continue;                                  // scan carry
+      const v = refArrays[rn] !== undefined ? refArrays[rn] : baseEnv[rn];
+      if (v === undefined) continue;
+      const cls = shared.classifyBroadcastArg(v, N, refArrays[rn] !== undefined);
+      if (cls.kind !== 'N' && cls.kind !== 'scalar') return fallback();
+      const sp = _spanOf(cls, 1, 0, 0);
+      flatRefs[rn] = valueLib.batchedScalar(
+        _layoutFlat(v, N, axes, sp.atomVaries, sp.axisSizes));
+    }
+
+    // Scan: one sampleN per step over count = N·K, threading the carry.
+    // cols[k] is flat [count] in (i, j) order = [N, K]; step k binds its
+    // inputParam to cols[k-1] directly (already count-aligned).
+    const cols: Float64Array[] = new Array(C);
+    let bailed: Promise<any> | null = null;
+    let acc = Promise.resolve();
+    for (let k = 0; k < C; k++) {
+      const kk = k;
+      acc = acc.then(() => {
+        if (bailed) return;
+        const step = rawOf(kk);
+        const subMap: Record<string, any> = Object.assign({}, outerBcKwargs);
+        const stepRefs: Record<string, any> = Object.assign({}, flatRefs);
+        let paramNames = compositeBody.params;
+        let paramKwargs = compositeBody.paramKwargs;
+        if (kk > 0) {
+          subMap[steps[kk].kernel.inputParam] = { kind: 'ref', ns: 'self', name: '__carry' };
+          stepRefs.__carry = valueLib.batchedScalar(cols[kk - 1]);
+          paramNames = [steps[kk].kernel.inputParam].concat(compositeBody.params);
+          paramKwargs = [steps[kk].kernel.inputParam].concat(compositeBody.paramKwargs);
+        }
+        const distKwargs: Record<string, any> = {};
+        const sampleRefs: Record<string, any> = {};
+        for (const pn of Object.keys(step.distKwargs)) {
+          const subIR = _substituteKernelParams(
+            step.distKwargs[pn], paramNames, paramKwargs, subMap);
+          let pv: any;
+          try {
+            pv = sampler.evaluateExprN(subIR, stepRefs, count, baseEnv, undefined);
+          } catch (err) {
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          const r = _resolveBatchFlattenParam(pv, count);
+          if (!r) { bailed = fallback(); return; }
+          if (r.kind === 'col') {
+            const pr = '__p_s' + kk + '_' + pn;
+            sampleRefs[pr] = valueLib.batchedScalar(r.data);
+            distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
+          } else {
+            distKwargs[pn] = { kind: 'lit', value: r.value };
+          }
+        }
+        const distIR = { kind: 'call', op: step.distOp, kwargs: distKwargs };
+        const workerMsg: any = {
+          type: 'sampleN', ir: distIR, count: count,
+          refArrays: sampleRefs,
+          seed: nameSeed(name + ':s' + kk, ctx.rootKey),
+        };
+        return ctx.sendWorker(workerMsg).then((reply: any) => { cols[kk] = reply.samples; });
+      });
+    }
+    return pushFixedEnv(ctx, fixedEnv).then(() => acc).then(() => {
+      if (bailed) return bailed;
+      // Stitch the C steps into [N, K, C] atom-major
+      // (out[i*K*C + j*C + k] = cols[k][i*K + j]).
+      const out = new Float64Array(N * K * C);
+      for (let k = 0; k < C; k++) {
+        const col = cols[k];
+        for (let i = 0; i < N; i++) {
+          for (let j = 0; j < K; j++) {
+            out[i * K * C + j * C + k] = col[i * K + j];
+          }
+        }
+      }
+      const value = { shape: [N | 0, K, C], data: out };
+      return Object.assign(
+        empirical.arrayMeasure(out, [K, C], null),
+        { value: value, logTotalmass: 0, n_eff: N });
+    });
+  });
+}
+
+// =====================================================================
+// Phase 4.3 — jointchain-composite per-cell execution (reference)
 // =====================================================================
 //
 // Markov-chain kernel-broadcast: `kernelof(jointchain(<base>, <K_1>,
@@ -1314,7 +1526,7 @@ function _sampleMvNormalAtCell(
 // a scan; the JS engine's sequential walk is the interpretation
 // analogue.
 
-function _executeJointChainComposite(
+function _executeJointChainPerCell(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
   const sampler = require('./sampler.ts');
