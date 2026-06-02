@@ -184,20 +184,23 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     // The shape disambiguates: per-atom vs atom-indep; scalar vs
     // length-K vector. Mirrors density.walkBroadcast's classification.
     //
-    // **P4 (advisory):** if the binding's IR carries an axisStack
-    // entry from kernel-broadcast (`source: 'kernel_broadcast'` with
-    // a literal-integer size), we initialise K from it — bypassing
-    // the runtime shape ladder for the K determination. The ladder
-    // still runs (it also enforces per-param shape consistency); the
-    // axisStack only seeds an *expected* K that the ladder validates
-    // against. When the axisStack is absent or symbolic, behaviour is
-    // identical to today's (the ladder discovers K from the first
-    // param with intrinsicK > 1).
+    // **axisStack (authoritative):** if the binding's IR carries a
+    // kernel-broadcast axisStack entry (`source: 'kernel_broadcast'`
+    // with a literal-integer size), that K is the TRUSTED static fact
+    // — we seed K from it and the per-param ladder below VALIDATES
+    // against it. A param with intrinsicK > 1 that disagrees is then a
+    // producer/runtime drift (engine invariant violation), reported as
+    // such rather than as a user collection-length error. When the
+    // axisStack is absent or symbolic ('%dynamic' / a binding-ref name
+    // — e.g. dynamic-D, PoissonProcess ragged), there is no static
+    // fact to trust and the ladder discovers K from the first param
+    // with intrinsicK > 1 (the runtime shape-sniff fallback).
     const _bindingStack = axisStackMod.bindingAxisStack(name, ctx);
     const _axisStackK = axisStackMod.outerAxisSize(_bindingStack, 'kernel_broadcast');
+    const _kFromAxisStack = !!(_axisStackK && _axisStackK > 1);
     const usesAtomBy: Record<string, boolean> = {};
     const paramVals: Record<string, any> = {};
-    let K = (_axisStackK && _axisStackK > 1) ? _axisStackK : 1;
+    let K = _kFromAxisStack ? (_axisStackK as number) : 1;
     for (const pn of pnames) {
       const paramRefs = orchestrator.collectSelfRefs(paramIRs[pn]);
       const usesAtom = refNames.some((n) => paramRefs.has(n));
@@ -243,9 +246,13 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
       if (intrinsicK > 1) {
         if (K === 1) K = intrinsicK;
         else if (K !== intrinsicK) {
-          return Promise.reject(new Error('broadcast(' + d.distOp
-            + '): incompatible collection lengths (' + K + ' vs '
-            + intrinsicK + ') on parameter \'' + pn + '\''));
+          return Promise.reject(new Error('broadcast(' + d.distOp + '): '
+            + (_kFromAxisStack
+              ? 'internal: static axisStack kernel-broadcast axis (' + K
+                + ') disagrees with runtime collection length (' + intrinsicK
+                + ') on parameter \'' + pn + '\' — producer/runtime drift'
+              : 'incompatible collection lengths (' + K + ' vs '
+                + intrinsicK + ') on parameter \'' + pn + '\'')));
         }
       }
     }

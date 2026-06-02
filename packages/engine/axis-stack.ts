@@ -11,14 +11,13 @@
 // aggregate / value broadcast). The annotation is PURE METADATA — it
 // doesn't change IR structure or runtime semantics.
 //
-// **Before P4 (this file)** the annotation was populated and NEVER read
-// by any engine consumer. The audit (TODO-flatppl-js.md "In-flight
-// P1-P9") flagged this as a documented design lever sitting idle.
-//
-// **P4 contract (advisory mode, user-locked 2026-05-30):**
-// Consumers PREFER axisStack when present; when absent they fall back
-// to today's runtime shape-sniffing. This lets P4 land incrementally
-// without flag-day on the dissolver's coverage:
+// The annotation was first populated and read advisorily; it is now
+// **authoritative** for the axis-introducing / axis-preserving shapes
+// the producer covers (iid / kernel_broadcast / aggregate + the
+// preserving wrappers — see `_axisStackForIR` in dissolver.ts). The
+// producer's coverage boundary is principled, not a gap: composites
+// whose variate shape isn't a single inner's (superpose / select /
+// joint / kchain) deliberately carry NO stack.
 //
 //   - `getAxisStack(ir)` reads `ir.axisStack` and returns it (or null).
 //   - `bindingAxisStack(name, ctx)` looks up the binding by name in
@@ -26,12 +25,20 @@
 //   - Higher-level helpers `outerAxisSize(stack, sourceTag)` extract a
 //     specific axis's size for the common consumer patterns.
 //
-// Once propagateAxisStack coverage includes every axis-introducing
-// position (the producer's "out of scope" notes on `_axisStackForIR`
-// in dissolver.ts), the advisory contract flips to authoritative:
-// gaps become bugs, and the runtime shape-sniff fallback retires.
-// The matIid repeat-axis consumer (materialiser.ts) is the first
-// authoritative reader — it relies on the iid axis being recorded.
+// **Authoritative contract.** When a literal-size axis entry is
+// present, consumers TRUST it: a runtime disagreement is producer/
+// runtime drift (engine invariant violation), not a user error.
+// Consumers:
+//   - matIid (materialiser.ts) — the iid axis is the **repeat axis**:
+//     iid(M, k) over a composite M holds M's atom-level params constant
+//     across the k inner draws (spec §06 within-atom conditional
+//     independence). The size comes from the derivation's `dims`, which
+//     the producer also records as the `iid` stack entry.
+//   - mat-broadcast (mat-broadcast.ts) — trusts the kernel_broadcast
+//     axis K; the per-param ladder validates against it.
+// Only SYMBOLIC sizes ('%dynamic' / a binding-ref name — dynamic-D,
+// ragged) fall back to runtime shape-sniffing; `outerAxisSize` returns
+// null for those, signalling the fallback.
 //
 // **PoissonProcess (ragged arrays) opt out either way.** Ragged
 // per-atom-length arrays have no statically-known axis size, so they

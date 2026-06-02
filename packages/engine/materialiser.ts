@@ -71,6 +71,7 @@ const {
   pushModuleRegistry,
   fixedValueToMeasure,
   inlineCallableRefs,
+  tileMeasureAtomMajor,
   measureFromValue,
   measureFromReply,
   scalarMeasureN,
@@ -380,46 +381,26 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // so the inflated-count materialisation doesn't pollute the
     // parent ctx's cache for the same name at N atoms.
     //
-    // **Semantic caveat (TODO §06).** With stochastic upstream
-    // parameters in M (e.g. `psi ~ Beta(1, 1); zib_one = superpose
-    // (weighted(psi, …), …); y ~ iid(zib_one, k)`), strict spec
-    // §06 semantics is "draw N atoms of psi; for each, take k iid
-    // draws from zib_one *at that psi_i*". This fallback instead
-    // draws N×k independent (psi, …, zib_one) triples and reshapes
-    // — producing the correct *marginal* over y but losing the
-    // within-atom conditional independence structure (the k inner
-    // draws no longer share atom-i's psi_i). For marginal-density
-    // / histogram consumers the two distributions are observationally
-    // identical; for joint diagnostics or downstream density
-    // evaluation against an observed iid block, the difference
-    // matters. The principled fix is an explicit "repeat axis"
-    // threaded through the kind-dispatch pipeline alongside the
-    // atom axis (engine-concepts §20.1 axisStack work / P3a-P3b
-    // follow-ups); not yet wired.
-    //
-    // **P4 (advisory diagnostic):** when the inner binding carries
-    // an axisStack annotation signalling its own iid structure, this
-    // fallback is structurally insufficient for the per-atom-shared-
-    // prior case. We emit a diagnostic in `ctx.diagnostics` (when
-    // present) so the host / viewer can warn; the fallback STILL
-    // runs (returns the correct marginal). Replaces a documentation-
-    // only caveat with a runtime-surfaced advisory the user can act
-    // on. The principled fix (repeat-axis-threading) lands later as
-    // an extension of P3+P4 once the axisStack producer covers nested
-    // measure-op IR.
-    const axisStackMod = require('./axis-stack.ts');
-    const innerStack = axisStackMod.bindingAxisStack(d.from, ctx);
-    if (innerStack && innerStack.length > 0 && ctx.diagnostics) {
-      ctx.diagnostics.push({
-        severity: 'info',
-        message: 'iid: inner binding "' + d.from
-          + '" carries upstream stochastic axis structure; the '
-          + 'inflated-count fallback produces the correct marginal '
-          + 'but loses within-atom conditional independence. See '
-          + 'engine-concepts §20.10.10 / TODO P4 for the principled '
-          + 'repeat-axis-threading fix.',
-      });
-    }
+    // **Repeat axis (spec §06 within-atom conditional independence).**
+    // The `iid` axis of size k recorded on this binding's axisStack
+    // (`dissolver.propagateAxisStack`; engine-concepts §22.4) is a
+    // REPEAT axis: with stochastic upstream params in M (e.g.
+    // `psi ~ Beta(1,1); zib = superpose(weighted(psi,…),…);
+    // y ~ iid(zib, k)`), spec §06 is "draw psi_i per atom, then k iid
+    // draws from M *at that psi_i*". A naive inflate-to-N×k would draw
+    // N×k INDEPENDENT psi — correct marginal, wrong joint (the k inner
+    // draws wouldn't share atom-i's psi_i). The child `getMeasure`
+    // below splits the dependency graph along measure-vs-value: M's
+    // iid-replicated MEASURE subtree (branch selection, leaf draws)
+    // redraws freshly at N×k, while the atom-level VALUE draws it
+    // conditions on are materialised once at parent-N and TILED ×k
+    // (atom-major, via `tileMeasureAtomMajor`) so atom i's k inner
+    // positions all see psi_i. Classification is by inferred type
+    // (non-measure ⇒ value draw); an unknown type defaults to fresh
+    // (the pre-repeat-axis behaviour), so tiling only ever engages for
+    // a positively-identified value — it can never mis-share a measure.
+    // Tiling also makes y's psi the SAME canonical draw every other
+    // consumer of psi sees (the old redraw used a separate seed stream).
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
@@ -428,6 +409,12 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     const inflatedCache = new Map();
     const inflatedCtx: any = Object.assign({}, ctx, {
       sampleCount: N * k,
+      // Repeat axis: the inflated batch is N blocks of k contiguous
+      // inner draws ([N, k] row-major). Resampling handlers (matSuperpose)
+      // read this to resample WITHIN each k-block, so atom b's k inner
+      // draws stay conditioned on atom b's params (within-atom conditional
+      // independence, spec §06) instead of mixing across atoms.
+      repeatBlock: k,
       // Domain-separated child rootKey: the ':iid_fallback' tag keeps
       // this child's seed stream distinct from any sample-step seed
       // derived at this same `name` higher up the call stack (e.g.
@@ -438,7 +425,22 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     });
     inflatedCtx.getMeasure = function(nn: string) {
       if (inflatedCache.has(nn)) return inflatedCache.get(nn);
-      const p = materialiseMeasure(nn, inflatedCtx);
+      // Repeat-axis split (see the block comment above). A binding is
+      // an atom-level VALUE draw iff its inferred type is non-measure;
+      // those are held constant across the k inner draws by tiling the
+      // parent's N-atom draw ×k. Everything else — M itself and its
+      // sub-measures — redraws freshly at the inflated N×k count.
+      const bdef = (ctx.bindings && ctx.bindings.get)
+        ? ctx.bindings.get(nn) : null;
+      const bt = bdef && bdef.inferredType;
+      const isValueDraw = !!(bt && bt.kind && bt.kind !== 'measure');
+      let p: any;
+      if (isValueDraw) {
+        p = Promise.resolve(ctx.getMeasure(nn))
+          .then((m: any) => tileMeasureAtomMajor(m, N, k));
+      } else {
+        p = materialiseMeasure(nn, inflatedCtx);
+      }
       inflatedCache.set(nn, p);
       return p;
     };
@@ -615,6 +617,19 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   // resample to ctx.sampleCount. Mass-faithful: result's totalmass
   // equals the sum of parents' totalmasses; resampling produces
   // equally-weighted atoms each carrying (totalInputMass / N) of mass.
+  //
+  // **Repeat axis (spec §06).** Under an `iid(superpose(…), k)`
+  // composite fallback, matIid sets `ctx.repeatBlock = k` (the iid
+  // axis recorded on the binding's axisStack). The k inner draws of
+  // atom b are iid from atom b's mixture: each must INDEPENDENTLY
+  // select a component, but all share atom b's per-atom params
+  // (weights / component params, tiled into the inflated batch by
+  // `tileMeasureAtomMajor`). A global pool-resample would mix atoms
+  // across the [N, k] block boundary (atom b's draws drawing from
+  // atom b'≠b's components) — correct marginal, wrong joint. The
+  // repeat-block path resamples WITHIN each contiguous k-block, so
+  // atom b's k slots draw only from atom b's per-component pool:
+  // independent per-draw selection, shared per-atom conditioning.
   return Promise.all(d.fromNames.map(ctx.getMeasure)).then((parents: any[]) => {
     let totalN = 0;
     for (const p of parents) totalN += p.samples.length;
@@ -623,28 +638,56 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
         { shape: [0], data: new Float64Array(0) },
         { logWeights: null, logTotalmass: -Infinity, n_eff: 0 });
     }
+    const sc = ctx.sampleCount;
     const combinedSamples = new Float64Array(totalN);
     const combinedLogWeights = new Float64Array(totalN);
     let offset = 0;
-    for (const p of parents) {
-      const lifted = empirical.materialiseUniform(p);
-      combinedSamples.set(lifted.samples, offset);
-      combinedLogWeights.set(lifted.logWeights, offset);
-      offset += lifted.samples.length;
+    const lifted = parents.map((p: any) => empirical.materialiseUniform(p));
+    for (const l of lifted) {
+      combinedSamples.set(l.samples, offset);
+      combinedLogWeights.set(l.logWeights, offset);
+      offset += l.samples.length;
     }
     const prng = makeMainThreadPrng(nameSeed(name, ctx.rootKey));
-    const idx = empirical.systematicResample(combinedLogWeights, ctx.sampleCount, prng);
-    const out = new Float64Array(ctx.sampleCount);
-    for (let i = 0; i < ctx.sampleCount; i++) out[i] = combinedSamples[idx[i]];
+    const out = new Float64Array(sc);
+
+    const K = ctx.repeatBlock;
+    const blockAware = typeof K === 'number' && K > 1 && sc % K === 0
+      && lifted.every((l: any) => l.samples.length === sc);
+    if (blockAware) {
+      // Per-atom mixture: resample each k-block from its own
+      // P×K component pool (P = number of superposed parents).
+      const P = lifted.length;
+      const poolSamples = new Float64Array(P * K);
+      const poolLW = new Float64Array(P * K);
+      for (let base = 0; base < sc; base += K) {
+        for (let p = 0; p < P; p++) {
+          const ls = lifted[p].samples;
+          const lw = lifted[p].logWeights;
+          for (let j = 0; j < K; j++) {
+            poolSamples[p * K + j] = ls[base + j];
+            poolLW[p * K + j] = lw[base + j];
+          }
+        }
+        const bidx = empirical.systematicResample(poolLW, K, prng);
+        for (let j = 0; j < K; j++) out[base + j] = poolSamples[bidx[j]];
+      }
+    } else {
+      const idx = empirical.systematicResample(combinedLogWeights, sc, prng);
+      for (let i = 0; i < sc; i++) out[i] = combinedSamples[idx[i]];
+    }
+
+    // Total mass = sum of parents' masses (unchanged by which atoms the
+    // resampling keeps); resampled atoms are equally weighted.
     const totalLogMass = empirical.logSumExp(combinedLogWeights);
-    const perAtom = totalLogMass - Math.log(ctx.sampleCount);
-    const outW = new Float64Array(ctx.sampleCount);
+    const perAtom = totalLogMass - Math.log(sc);
+    const outW = new Float64Array(sc);
     outW.fill(perAtom);
     return scalarMeasureN(out, {
       logWeights: outW,
       logTotalmass: totalLogMass,
       // After systematic resampling the atoms are uniform → n_eff = N.
-      n_eff: ctx.sampleCount,
+      n_eff: sc,
     });
   });
 }
