@@ -561,17 +561,11 @@ function _executeIidCompositeBatchFlatten(
 
     const count = N * K * D;
 
-    // Lay every count-varying input out as a single flat [count] buffer
-    // in (i, j, r) order. Closed-over self-refs (per-atom values) and
-    // the broadcast args alike fold onto the common count axis; the
-    // broadcast args feed the kernel formals via dedicated `__bf_*`
-    // refs, so the body's param expressions evaluate in ONE batched pass.
+    // Lay the broadcast args out as `__bf_<formal>` buffers — these are
+    // the cell/inner-axis carriers (K / KD / N / NK / NKD), so their
+    // intrinsic dims ARE the (K, D) axes by construction. They feed the
+    // kernel formals.
     const flatRefs: Record<string, any> = {};
-    for (const rn of refNames) {
-      const rv = refArrays[rn];
-      const cls = shared.classifyBroadcastArg(rv, N, true);
-      flatRefs[rn] = valueLib.batchedScalar(_layoutFlat(rv, cls, N, K, D));
-    }
     const bcKwargs: Record<string, any> = {};
     for (const argName of Object.keys(d.kwargIRs || {})) {
       const flatName = '__bf_' + argName;
@@ -580,22 +574,56 @@ function _executeIidCompositeBatchFlatten(
       bcKwargs[argName] = { kind: 'ref', ns: 'self', name: flatName };
     }
 
-    // Substitute formals in the body kwargs with the laid-out args, then
-    // evaluate each inner-dist param ONCE over the count = N·K·D batch.
-    const distKwargs: Record<string, any> = {};
-    const sampleRefs: Record<string, any> = {};
+    // Substitute formals → `__bf_` refs in the inner-dist body kwargs and
+    // collect the body's free names, so we lay out EXACTLY the closed-over
+    // refs it touches — not every name prepareDensityRefs surfaced (the
+    // raw broadcast-arg bindings are superseded by their `__bf_` layouts).
+    const subKwargs: Record<string, any> = {};
+    const bodyRefNames = new Set<string>();
     for (const pn of Object.keys(compositeBody.distKwargs)) {
-      const subIR = _substituteKernelParams(
+      const sub = _substituteKernelParams(
         compositeBody.distKwargs[pn], compositeBody.params,
         compositeBody.paramKwargs, bcKwargs);
+      subKwargs[pn] = sub;
+      orchestrator.collectSelfRefs(sub).forEach((n: string) => bodyRefNames.add(n));
+    }
+
+    // A closed-over ref the body uses is a per-atom SCALAR: it broadcasts
+    // across the cell (K) and inner (D) axes (kind 'N'). Fold each to the
+    // count axis. A per-atom VECTOR closed-over ref ([N, m] reduced or
+    // indexed inside the body) is outside the scalar-inner body class —
+    // refuse it loudly rather than fold its intrinsic m axis into the cell
+    // axis (which would read out of bounds / corrupt silently). Fixed-phase
+    // refs resolve via baseEnv and aren't in refArrays (rv === undefined).
+    for (const rn of bodyRefNames) {
+      if (Object.prototype.hasOwnProperty.call(flatRefs, rn)) continue;   // `__bf_*`
+      const rv = refArrays[rn];
+      if (rv === undefined) continue;                                     // baseEnv (fixed)
+      const cls = shared.classifyBroadcastArg(rv, N, true);
+      if (cls.kind !== 'N' && cls.kind !== 'scalar') {
+        const shp = valueLib.isValue(rv) ? JSON.stringify(rv.shape) : typeof rv;
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): closed-over ref \'' + rn + '\' resolved to ' + shp
+          + ' (kind ' + cls.kind + ') — batch-flatten scalar-inner bodies'
+          + ' take per-atom scalars (a per-atom vector reduced/indexed in'
+          + ' the body is unsupported; the lift normally hoists such a'
+          + ' reduction to its own per-atom-scalar binding)'));
+      }
+      flatRefs[rn] = valueLib.batchedScalar(_layoutFlat(rv, cls, N, K, D));
+    }
+
+    // Evaluate each inner-dist param ONCE over the count = N·K·D batch.
+    // Resolve each to a worker kwarg: a constant → lit; a [count] column →
+    // ref (carried in sampleRefs, the only refs the worker needs).
+    const distKwargs: Record<string, any> = {};
+    const sampleRefs: Record<string, any> = {};
+    for (const pn of Object.keys(subKwargs)) {
       let pv: any;
       try {
-        pv = sampler.evaluateExprN(subIR, flatRefs, count, baseEnv, undefined);
+        pv = sampler.evaluateExprN(subKwargs[pn], flatRefs, count, baseEnv, undefined);
       } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
-      // Resolve to a worker kwarg: a constant → lit; a [count] column →
-      // ref (carried in sampleRefs, the only refs the worker needs).
       if (typeof pv === 'number' || typeof pv === 'boolean') {
         distKwargs[pn] = { kind: 'lit', value: +pv };
       } else if (valueLib.isValue(pv)) {
@@ -614,6 +642,26 @@ function _executeIidCompositeBatchFlatten(
       } else if (pv && pv.BYTES_PER_ELEMENT !== undefined && pv.length === count) {
         const pr = '__p_' + pn;
         sampleRefs[pr] = valueLib.batchedScalar(pv);
+        distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
+      } else if (Array.isArray(pv) && pv.length === count) {
+        // Cold-path broadcast may return a per-position JS array (numbers
+        // or rank-0 / [1] Values). Pack into a flat [count] buffer —
+        // parity with the former per-cell executor's body handling.
+        const buf = new Float64Array(count);
+        for (let i = 0; i < count; i++) {
+          const c = pv[i];
+          if (typeof c === 'number') buf[i] = c;
+          else if (typeof c === 'boolean') buf[i] = c ? 1 : 0;
+          else if (valueLib.isValue(c) && (c.shape.length === 0
+                   || (c.shape.length === 1 && c.shape[0] === 1))) buf[i] = c.data[0];
+          else {
+            return Promise.reject(new Error('broadcast(' + d.distOp
+              + '): batch-flatten param \'' + pn + '\' produced a per-position'
+              + ' non-scalar at index ' + i));
+          }
+        }
+        const pr = '__p_' + pn;
+        sampleRefs[pr] = valueLib.batchedScalar(buf);
         distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
       } else {
         return Promise.reject(new Error('broadcast(' + d.distOp
