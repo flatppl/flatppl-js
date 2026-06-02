@@ -403,9 +403,10 @@ const SAMPLEABLE_DISTRIBUTIONS = new Set([
 //     detector component admission)
 // Retirement is gated on follow-up 5h-B (teaching the composite
 // detectors to recognise a lowered `pushfwd(<bij>, iid)` component) and
-// is sequenced AFTER 5h-A; until then the per-cell affine path
-// (mat-broadcast `_sampleMvNormalAtCell`) already IS the §22
-// decomposition, so there is no simplification to gain by forcing it.
+// is sequenced AFTER 5h-A; until then the materialise-time affine fold
+// (mat-broadcast `_mvNormalFoldOverCells`, shared by the bare / nested /
+// joint vector-output paths) already IS the §22 decomposition, so there
+// is no simplification to gain by forcing it.
 //
 // The set is structurally distinct from SAMPLEABLE_DISTRIBUTIONS — a
 // dist can't simultaneously belong to both (no worker REGISTRY entry

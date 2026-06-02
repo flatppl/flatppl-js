@@ -13,17 +13,17 @@
 //      innerIsVectorOutput + innerEventDim.
 //   2. The composite-body-recognizers nested-broadcast variant
 //      forwards the new fields.
-//   3. _executeNestedBroadcastComposite is wired to dispatch
-//      vector-output inner via _sampleVectorOutputAtCell + per-cell
-//      event-dim aware stitching ([N, K_outer, K_inner * eventDim]).
+//   3. _executeNestedBroadcastComposite dispatches vector-output inner
+//      to the Phase 8 fold `_executeNestedBroadcastVectorFold` (the
+//      per-cell reference is retired): the two parallel axes fold into
+//      ONE affine over count = N·K_outer·K_inner, output shape
+//      [N, K_outer, K_inner * eventDim].
 //
-// **End-to-end exercise deferred to Session 5c+:** a meaningful
-// nested-broadcast pattern requires the outer kernel param to thread
-// into the inner MvNormal kwarg (mu / cov), which means atom-dep
-// MvNormal params — not yet supported in Session 5b MVP. The
-// detector + executor extensions land in this commit as the
-// recognition layer that Session 5c's atom-dep extension will
-// consume.
+// Test 4 closes the formerly-deferred end-to-end exercise: the fold
+// materialises + calibrates (per-(outer, inner) mean + shared cov).
+// Atom-INDEP scope (per-cell mu resolves statically) — a latent outer
+// mean threaded per-atom into the inner draw still defers to the
+// matPushfwd vector-base extension.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -31,6 +31,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { processSource, orchestrator } = require('..');
+const materialiser = require('../materialiser.ts');
+const { createWorkerHandler } = require('../worker.ts');
 
 function readFixture(name: string): string {
   const p = path.join(__dirname, 'fixtures', name);
@@ -100,4 +102,76 @@ test('nested-broadcast scalar-inner: detector flags non-vector-output', () => {
   assert.equal(desc.innerIsVectorOutput, false,
     'scalar Normal stays non-vector-output (no regression)');
   assert.equal(desc.innerEventDim, 1);
+});
+
+// =====================================================================
+// 4. End-to-end fold: vector-output inner materialises + calibrates
+// =====================================================================
+//
+// The Phase 8 vector fold (`_executeNestedBroadcastVectorFold`) is now the
+// only path — the per-cell reference is retired. It folds the two parallel
+// axes (K_outer × K_inner) into ONE affine forward over count =
+// N·K_outer·K_inner: one shared Cholesky of cov_shared, the per-(outer,
+// inner)-cell means laid out, ONE `affineAtomBatchedForward`. The fixture's
+// outer param is unused, so every outer cell repeats the same per-inner
+// MvNormal(mu_inner_per_cell[k], cov_shared); a broken per-cell mu layout
+// would smear the means, a broken affine would distort the covariance.
+
+test('nested-broadcast-mvnormal-inner fold: per-(outer,inner) mean + shared cov at [N,3,8]', async () => {
+  const N = 20000;
+  const src = readFixture('nested-broadcast-mvnormal-inner.flatppl');
+  const built = liftAndBuild(src);
+  assert.ok(built.derivations && built.derivations.y, 'y has a derivation');
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 7 });
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations, bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure: (nm: string) => {
+      if (cache.has(nm)) return cache.get(nm);
+      const p = materialiser.materialiseMeasure(nm, ctx);
+      cache.set(nm, p);
+      return p;
+    },
+    sendWorker: (msg: any) => Promise.resolve(worker.handle(msg)),
+    sampleCount: N, rootKey: [7, 0],
+  };
+
+  const Kout = 3, Kin = 4, n = 2;
+  const m = await ctx.getMeasure('y');
+  assert.deepEqual(m.value.shape, [N, Kout, Kin * n],
+    'shape [N, K_outer, K_inner * eventDim]');
+
+  const muInner = [[0, 0], [1, -1], [-2, 3], [0.5, 0.5]];
+  const Sigma = [[1, 0.3], [0.3, 0.5]];
+  const d = m.value.data;
+  const W = Kout * Kin * n;                       // per-atom stride = 24
+
+  // (a) Per-(outer, inner) cell sample mean ≈ mu_inner[k] (outer-independent).
+  for (let j = 0; j < Kout; j++) {
+    for (let k = 0; k < Kin; k++) {
+      const base = j * Kin * n + k * n;           // (j, k) offset in the atom
+      let m0 = 0, m1 = 0;
+      for (let i = 0; i < N; i++) { m0 += d[i * W + base]; m1 += d[i * W + base + 1]; }
+      m0 /= N; m1 /= N;
+      assert.ok(Math.abs(m0 - muInner[k][0]) < 0.08 && Math.abs(m1 - muInner[k][1]) < 0.08,
+        `(out=${j}, in=${k}) mean ≈ [${muInner[k]}]; got [${m0.toFixed(2)}, ${m1.toFixed(2)}]`);
+    }
+  }
+
+  // (b) Sample covariance at one cell ≈ cov_shared (the shared affine).
+  const base = 1 * Kin * n + 2 * n;               // outer cell 1, inner cell 2
+  let mm0 = 0, mm1 = 0;
+  for (let i = 0; i < N; i++) { mm0 += d[i * W + base]; mm1 += d[i * W + base + 1]; }
+  mm0 /= N; mm1 /= N;
+  let v00 = 0, v11 = 0, v01 = 0;
+  for (let i = 0; i < N; i++) {
+    const a = d[i * W + base] - mm0, b = d[i * W + base + 1] - mm1;
+    v00 += a * a; v11 += b * b; v01 += a * b;
+  }
+  v00 /= N; v11 /= N; v01 /= N;
+  assert.ok(Math.abs(v00 - Sigma[0][0]) < 0.1, `var0 ≈ ${Sigma[0][0]}; got ${v00.toFixed(3)}`);
+  assert.ok(Math.abs(v11 - Sigma[1][1]) < 0.08, `var1 ≈ ${Sigma[1][1]}; got ${v11.toFixed(3)}`);
+  assert.ok(Math.abs(v01 - Sigma[0][1]) < 0.08, `cov01 ≈ ${Sigma[0][1]}; got ${v01.toFixed(3)}`);
 });
