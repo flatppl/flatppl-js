@@ -2076,6 +2076,44 @@ function _executeNestedBroadcastPerCell(
 //     directly to spare the per-cell Cholesky — falls out of the
 //     pushfwd-of-iid lift-time decomposition once landed.
 
+// Fold a per-cell MvNormal over the cell axis K into ONE affine forward
+// over count = N·K (engine-concepts §20.10 + §22). `muValue` is the
+// per-cell mean ([n] shared, muIsPerCell=false, or [K, n]); `L` is the
+// shared lower-Cholesky of the cov ([n, n]). Returns the flat [count·n]
+// buffer = [N, K, n] in (i, j, :) order with its eventDim n: the shared L
+// matvecs every (i, j) position, the atom-indep per-cell mean lays out
+// repeated across atoms. The intrinsic n axis is NOT folded (§03). Reused
+// by the bare MvNormal broadcast and the joint vector-output-component
+// fold (both shared-cov, Session-5b scope).
+function _mvNormalFoldOverCells(
+  muValue: any, L: any, n: number, muIsPerCell: boolean,
+  N: number, K: number, seed: [number, number], ctx: any,
+): Promise<{ data: Float64Array; eventDim: number }> {
+  const bijRegistry = require('./bijection-registry.ts');
+  const count = N * K;
+  const muFlat = new Float64Array(count * n);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < K; j++) {
+      const dst = (i * K + j) * n;
+      const src = muIsPerCell ? j * n : 0;
+      for (let l = 0; l < n; l++) muFlat[dst + l] = muValue.data[src + l];
+    }
+  }
+  return ctx.sendWorker({
+    type: 'sampleN',
+    ir: { kind: 'call', op: 'Normal',
+          kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } } },
+    count: count, repeat: n,
+    refArrays: {},
+    seed: seed,
+  }).then((reply: any) => {
+    const z = { shape: [count, n], data: reply.samples };
+    const y = bijRegistry.affineAtomBatchedForward(
+      z, { L: L, b: { shape: [count, n], data: muFlat } }, count);
+    return { data: y.data as Float64Array, eventDim: n };
+  });
+}
+
 function _executeBareVectorOutputBroadcast(
   name: string, d: any, ctx: any,
 ): Promise<any> {
@@ -2091,7 +2129,6 @@ function _executeMvNormalBroadcast(
   name: string, d: any, ctx: any,
 ): Promise<any> {
   const sampler = require('./sampler.ts');
-  const bijRegistry = require('./bijection-registry.ts');
   const N = ctx.sampleCount;
 
   // Resolve mu / cov IRs. Both kwargs and positional admitted: MvNormal's
@@ -2157,39 +2194,14 @@ function _executeMvNormalBroadcast(
     return Promise.reject(new Error('broadcast(MvNormal): ' + (err as any).message));
   }
 
-  // Batch-flatten the cell axis K into the affine forward (Phase 8): fold
-  // (atom N × cell K) into ONE count = N·K batch. The shared cov gives a
-  // shared L, so one `affineAtomBatchedForward` over count matvecs L
-  // against every (i, j) position and adds the per-cell mean — replacing
-  // the former per-cell loop (K affine forwards + z-slicing) with one.
-  // The intrinsic n axis stays intrinsic (it is NOT folded — §03).
-  const count = N * K;
-  // mu laid out to [count, n] in (i, j, :) order; atom-indep, so cell j's
-  // mean repeats across atoms. (`_layoutFlat` is for scalar-per-position
-  // folds — mu carries an intrinsic n axis, laid out by hand here.)
-  const muFlat = new Float64Array(count * n);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < K; j++) {
-      const dst = (i * K + j) * n;
-      const src = muIsPerCell ? j * n : 0;
-      for (let l = 0; l < n; l++) muFlat[dst + l] = muValue.data[src + l];
-    }
-  }
-  return ctx.sendWorker({
-    type: 'sampleN',
-    ir: { kind: 'call', op: 'Normal',
-          kwargs: { mu: { kind: 'lit', value: 0 },
-                    sigma: { kind: 'lit', value: 1 } } },
-    count: count, repeat: n,
-    refArrays: {},
-    seed: nameSeed(name + ':iidbase', ctx.rootKey),
-  }).then((reply: any) => {
-    // reply.samples is Float64Array(count·n) atom-major = z[(i·K+j)·n + l].
-    const z = { shape: [count, n], data: reply.samples };
-    const y = bijRegistry.affineAtomBatchedForward(
-      z, { L: L, b: { shape: [count, n], data: muFlat } }, count);
-    // y.data is [count, n] = [N, K, n] in (i, j, :) order already.
-    const out = y.data as Float64Array;
+  // Batch-flatten the cell axis K into ONE affine forward over count =
+  // N·K (Phase 8 §20.10): see `_mvNormalFoldOverCells`. Replaces the
+  // former per-cell loop (K affine forwards + z-slicing) with one call.
+  return _mvNormalFoldOverCells(
+    muValue, L, n, muIsPerCell, N, K,
+    nameSeed(name + ':iidbase', ctx.rootKey), ctx,
+  ).then((res: { data: Float64Array }) => {
+    const out = res.data;
     const value = { shape: [N | 0, K, n], data: out };
     return Object.assign(
       empirical.arrayMeasure(out, [K, n], null),
