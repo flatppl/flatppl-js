@@ -258,6 +258,51 @@ function makeBulkSampler(
 }
 
 /**
+ * Batched leaf-distribution draw — the FlatPDL `builtin_sample` leaf
+ * endpoint, realised over the in-process bulk sampler.
+ *
+ * Draws prod(dims) iid samples from a SCALAR built-in leaf distribution
+ * in ONE `makeBulkSampler` batch (no per-draw walker loop), then shapes
+ * the flat result to the FlatPDL `builtin_sample` / spec-§06 `iid`
+ * output contract:
+ *
+ *   dims = []        → a scalar number                      (one draw)
+ *   dims = [n]       → a length-n JS number[]               (vector of scalars)
+ *   dims = [n,m,...] → a shape-explicit Value {shape, data} (rank ≥ 2, spec §03)
+ *
+ * State is THREADED (not split): returns the advanced rng state so the
+ * caller continues — matching `rand`'s `(value, new_state)` and
+ * `builtin_sample`'s `(X, new_rngstate)` contracts (spec §07). This is
+ * the single batched realisation of the leaf endpoint that
+ * `builtin_sample` and `rand(state, iid(<leaf>, dims))` share (both via
+ * traceeval's leaf-iid branch today), so all paths agree bit-for-bit and
+ * leaves are batched draws per engine-concepts §11.
+ *
+ * Caller owns param resolution: any value-position refs in `distIR`'s
+ * kwargs must already be resolved into `env` (iid semantics — the leaf's
+ * params are drawn ONCE and shared across all prod(dims) draws). `distIR`
+ * must be a REGISTRY (scalar) distribution call; multivariate kernels are
+ * derived measures handled by the materialiser, not this leaf endpoint.
+ */
+function sampleLeafN(state: any, distIR: any, env: any, dims: number[]) {
+  const total = dims.reduce((p: number, d: number) => p * d, 1);
+  // 0-dim and n-dim share one path: a scalar draw is just a batch of 1,
+  // so the leaf math (randNFn / bulk-uniform) is identical regardless of
+  // whether the caller asked for a scalar or a vector.
+  const n = (dims.length === 0) ? 1 : total;
+  const r = makeBulkSampler(state, distIR, env, n);
+  if (dims.length === 0) return { value: r.samples[0], state: r.state };
+  // 1-D: a plain JS number[] (a vector of scalars, spec §03) — the
+  // shape-explicit Value form is reserved for rank ≥ 2. Matches the
+  // historic per-draw walkIid output so consumers index it unchanged.
+  if (dims.length === 1) return { value: Array.from(r.samples), state: r.state };
+  // Multi-axis: an explicit rank-≥2 array as a shape-explicit Value
+  // (spec §03 "vectors of vectors are not matrices" — flat storage + a
+  // dims descriptor; the form downstream mul/add/sub recognise).
+  return { value: { shape: dims.slice(), data: r.samples }, state: r.state };
+}
+
+/**
  * Build a parameterized stdlib constructor for analytical queries.
  * Returns the stdlib distribution instance — has methods like .pdf(x),
  * .cdf(x), .quantile(p), .mean, .variance, .stdev, .support, etc.
@@ -2804,6 +2849,7 @@ module.exports = {
   makeSampler,
   makeParametricSampler,
   makeBulkSampler,
+  sampleLeafN,
   density,
   makeAnalytical,
   evaluateExpr,
