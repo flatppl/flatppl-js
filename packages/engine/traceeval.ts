@@ -182,6 +182,32 @@ function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
   state = fillEnvFromRefs(state, args[1], env, ctx);
   const sizeVal: any = samplerLib.evaluateExpr(args[1], env);
   const dims = _sizeAsDims(sizeVal);
+
+  // Leaf-distribution inner: batch all prod(dims) draws in ONE
+  // makeBulkSampler call (sampler.sampleLeafN — the FlatPDL leaf
+  // endpoint) instead of looping the per-draw walker. iid semantics:
+  // the leaf's params are resolved ONCE here and shared across every
+  // draw, exactly matching the shared-env per-draw loop below — but
+  // batched (engine-concepts §11, "leaves are batched draws"). Both
+  // builtin_sample and rand(state, iid(<leaf>, dims)) route through
+  // here, so they stay bit-for-bit equal. Composite inner measures
+  // (joint / record / iid / a derived measure ref) keep the per-draw
+  // recursion below, which handles their structure + state threading.
+  // The lift pass hoists an inline inner measure to an anon binding, so
+  // M can arrive as a `(ref self <anon>)` (this is the rand(state,
+  // iid(<leaf>, n)) shape) rather than an inline call (the builtin_sample
+  // shape). Resolve a measure-ref to its IR first — exactly what the
+  // per-draw walkInner below does — so both shapes reach the leaf check.
+  let leafM = M;
+  if (leafM && leafM.kind === 'ref' && leafM.ns === 'self' && ctx.resolveRef) {
+    const resolved = ctx.resolveRef(leafM.name);
+    if (resolved) leafM = resolved;
+  }
+  if (leafM && leafM.kind === 'call' && leafM.op && samplerLib.isKnownDistribution(leafM.op)) {
+    state = fillEnvFromRefs(state, leafM, env, ctx);   // resolve leaf params once
+    return samplerLib.sampleLeafN(state, leafM, env, dims);
+  }
+
   const total = dims.reduce((p: number, n: number) => p * n, 1);
   // Sequential draws: total `total` samples threading state.
   const flat = new Array(total);
