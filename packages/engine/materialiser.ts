@@ -568,6 +568,80 @@ function _resolveIidLeaf(
   return null;
 }
 
+// Resolve a `rand` state-arg IR to its rng state object {key, counter}.
+// The common shape is a `self`-ref to a fixed-phase `rnginit` binding
+// (in fixedValues) — return it verbatim (no valueToPlain, which would
+// flatten the opaque state). Fall back to resolveIRToValue for inline /
+// chained forms.
+function _resolveRandState(ir: any, ctx: any): any {
+  if (ir && ir.kind === 'ref' && ir.ns === 'self'
+      && ctx.fixedValues && ctx.fixedValues.has(ir.name)) {
+    return ctx.fixedValues.get(ir.name);
+  }
+  return orchestrator.resolveIRToValue(ir, ctx.bindings, ctx.fixedValues);
+}
+
+function matRandSample(name: string, d: any, ctx: any) {
+  // Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2;
+  // classifier: derivations.classifyRandSample). `samples, _ =
+  // rand(state, iid(M, count))` for a COMPOSITE M: produce `count`
+  // independent iid draws by materialising M in a CHILD ctx at
+  // sampleCount = count — each atom IS one iid draw (the materialiser
+  // draws M's whole ancestor DAG fresh per atom). The result is a fixed
+  // value (deterministic given `state`): the same [count, …variate]
+  // array regardless of the session's display N.
+  //
+  // Seeding: split the rand state's Philox key into [drawKey, _stateKey]
+  // and seed the child ctx's rootKey from drawKey, so the draws are
+  // (a) reproducible from `state` and (b) domain-separated from the
+  // session's own draws of M's ancestors (which use the session
+  // rootKey). The unused stateKey is the advanced state for chaining
+  // (stage-2 follow-up). NB this changes exact draw values vs the old
+  // traceeval path; distributions are preserved (calibration tests
+  // check distributions, not specific draws).
+  //
+  // FRESH cache: the inflated-count materialisation must not pollute
+  // the parent ctx's cache for these binding names at the session N
+  // (mirrors matIid's composite-fallback child ctx).
+  const state = _resolveRandState(d.stateIR, ctx);
+  if (!state || !state.key) {
+    return Promise.reject(new Error(
+      "rand: could not resolve the rng state for '" + name + "'"));
+  }
+  const drawKey = rng.split(state.key, 2)[0];
+  const count = d.count | 0;
+  const childCache = new Map();
+  const childCtx: any = Object.assign({}, ctx, {
+    sampleCount: count,
+    rootKey: drawKey,
+  });
+  childCtx.getMeasure = function (nn: string) {
+    if (childCache.has(nn)) return childCache.get(nn);
+    const p = materialiseMeasure(nn, childCtx);
+    childCache.set(nn, p);
+    return p;
+  };
+  return childCtx.getMeasure(d.from).then(function (innerM: any) {
+    const data = (innerM.value && innerM.value.data) || innerM.samples;
+    if (!data) {
+      return Promise.reject(new Error(
+        "rand: composite inner measure '" + d.from + "' produced no samples"));
+    }
+    // The inner measure's leading axis IS the iid/sample axis (count
+    // atoms = count draws); its trailing axes are the per-draw variate
+    // shape. outerRank=1 marks the leading axis as the sample axis for
+    // downstream consumers (matIid's iid-output contract, §22.4) — only
+    // meaningful when the draw has sub-structure (a vector variate).
+    const innerShape = (innerM.value && innerM.value.shape) || [count];
+    const variateDims = innerShape.slice(1);
+    const value: any = { shape: [count].concat(variateDims), data: data };
+    if (variateDims.length > 0) value.outerRank = 1;
+    return Object.assign(
+      empirical.arrayMeasure(data, variateDims, null),
+      { value: value, logTotalmass: 0, n_eff: count });
+  });
+}
+
 function matTuple(d: DerivationTuple, ctx: any) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
@@ -764,6 +838,7 @@ const KIND_HANDLERS = {
   weighted:     (name: any, d: any, ctx: any) => matWeighted(d, ctx),
   normalize:    (name: any, d: any, ctx: any) => matNormalize(d, ctx),
   iid:          (name: any, d: any, ctx: any) => matIid(name, d, ctx),
+  randsample:   (name: any, d: any, ctx: any) => matRandSample(name, d, ctx),
   tuple:        (name: any, d: any, ctx: any) => matTuple(d, ctx),
   record:       (name: any, d: any, ctx: any) => matRecord(d, ctx),
   superpose:    (name: any, d: any, ctx: any) => matSuperpose(name, d, ctx),

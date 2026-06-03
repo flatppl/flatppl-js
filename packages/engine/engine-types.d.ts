@@ -217,6 +217,7 @@ export type DerivationKind =
   | 'normalize'
   | 'superpose'
   | 'iid'
+  | 'randsample'
   | 'jointchain'
   | 'truncate'
   | 'pushfwd'
@@ -349,6 +350,27 @@ export interface DerivationIid {
   from: string;
   /** Per-axis sizes (multi-axis iid is single-axis today, dims = [n]). */
   dims: number[];
+}
+
+/**
+ * Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2).
+ * The draw half (`samples, _ = rand(state, iid(M, count))`, i.e.
+ * `tuple_get(<rand>, 0)`) for a COMPOSITE inner measure `M` — one the
+ * per-draw traceeval walker can't sample (a forward `lawof` of a
+ * broadcast / aggregate, a `pushfwd`, …). Materialised on demand by
+ * drawing `count` independent realizations of `from` in a child ctx
+ * seeded off `stateIR`. Leaf-distribution inner stays on the batched
+ * `sampleLeafN` path (see `classifyRandSample`'s leaf gate).
+ */
+export interface DerivationRandSample {
+  kind: 'randsample';
+  name?: string;
+  /** Measure-binding ref name to draw from (the iid's inner / the bare M). */
+  from: string;
+  /** Number of iid draws (the iid `size`; 1 for a bare `rand(state, M)`). */
+  count: number;
+  /** IR of the rand's first arg (the rng state) — resolved at materialise. */
+  stateIR: any;
 }
 
 /** Truncate `from` measure to `setDescr`. */
@@ -506,6 +528,7 @@ export type Derivation =
   | DerivationNormalize
   | DerivationSuperpose
   | DerivationIid
+  | DerivationRandSample
   | DerivationJointchain
   | DerivationTruncate
   | DerivationPushfwd

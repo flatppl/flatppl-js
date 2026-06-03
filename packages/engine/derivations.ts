@@ -876,6 +876,18 @@ function classifyDerivation(
       const appliedChain = classifyAppliedChain(rhsIR, bindings);
       if (appliedChain) return appliedChain;
     }
+    // `samples, _ = rand(state, iid(<composite M>, n))` destructures to
+    // `tuple_get(<rand>, 0)`. The DRAW of a forward composite measure
+    // (lawof of a broadcast/aggregate, a pushfwd, …) can't be sampled by
+    // the per-draw traceeval walker, but the batched materialiser can —
+    // so route it there on demand (engine-concepts §17.4 stage 2). Leaf
+    // rand stays on the existing batched-leaf path (sampleLeafN via
+    // pre-eval); the gate lives in classifyRandSample. Checked before the
+    // generic `evaluate` fallback below (tuple_get is otherwise evaluable).
+    {
+      const randSample = classifyRandSample(rhsIR, bindings, fixedValues);
+      if (randSample) return randSample;
+    }
     // Deterministic arithmetic on cached samples.
     if (isEvaluable(rhsIR)) {
       return { kind: 'evaluate', ir: rhsIR };
@@ -1292,6 +1304,89 @@ function classifyIid(
     dims.push(n);
   }
   return { kind: 'iid', from: baseName, dims };
+}
+
+// Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2).
+//
+// `samples, _ = rand(state, iid(M, count))` lowers (multi-LHS) to
+// `samples = tuple_get(%mlhs, 0)` / `_ = tuple_get(%mlhs, 1)` with
+// `%mlhs = rand(state, iid(M, count))`. This classifier intercepts the
+// DRAW half — `tuple_get(<rand>, 0)` — and, when `M` is a COMPOSITE
+// measure, routes it to the batched materialiser (kind `randsample`)
+// instead of the per-draw traceeval walker that `evaluate` would use.
+//
+// Why: traceeval can sample leaf distributions and simple measure
+// algebra, but not a forward composite like `lawof(<broadcast over a
+// stochastic iid vector>)` — it has no walker for `aggregate` /
+// arbitrary value ops in measure position. The materialiser already
+// samples such a measure correctly (it materialises the whole ancestor
+// DAG); we just need `count` independent draws, which is exactly
+// "materialise M at sampleCount = count" (each atom = one iid draw).
+//
+// Leaf gate: a single known-distribution inner stays on the existing
+// path (pre-eval computes it via the batched `sampleLeafN`, preserving
+// the bit-for-bit `builtin_sample ≡ rand+iid` invariant from stage 1).
+// The fixedValues short-circuit in the materialiser keeps that path
+// authoritative even if a randsample derivation were also present, but
+// gating here keeps intent honest and avoids dead derivations.
+//
+// Scope: the DRAW half (index 0) only. The state half (`tuple_get(…,1)`
+// = split(state)) matters only for chaining composite rand, which no
+// current fixture exercises; it stays on its existing classification
+// (TODO §06 follow-up).
+function classifyRandSample(
+  rhsIR: IRNode, bindings: any, fixedValues?: any,
+): any {
+  if (!rhsIR || (rhsIR as any).op !== 'tuple_get'
+      || !Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const src: any = rhsIR.args[0];
+  const idxNode: any = rhsIR.args[1];
+  if (!src || src.kind !== 'ref' || src.ns !== 'self') return null;
+  if (!idxNode || idxNode.kind !== 'lit' || idxNode.value !== 0) return null;
+
+  const randB = bindings.get(src.name);
+  const randIR = randB && randB.ir;
+  if (!randIR || randIR.op !== 'rand' || !Array.isArray(randIR.args)
+      || randIR.args.length !== 2) return null;
+  const stateIR = randIR.args[0];
+
+  // Decompose the measure arg. `iid(M, size)` → (M, size); a bare
+  // measure → (M, 1). The iid may be inline (the surface shape) or a
+  // lift-hoisted anon ref — resolve a ref one level to its IR first.
+  let measureIR: any = randIR.args[1];
+  if (measureIR && measureIR.kind === 'ref' && measureIR.ns === 'self') {
+    const mb = bindings.get(measureIR.name);
+    if (mb && mb.ir) measureIR = mb.ir;
+  }
+  let fromIR: any, countIR: any;
+  if (measureIR && measureIR.kind === 'call' && measureIR.op === 'iid'
+      && Array.isArray(measureIR.args) && measureIR.args.length === 2) {
+    fromIR = measureIR.args[0];
+    countIR = measureIR.args[1];
+  } else {
+    fromIR = measureIR;
+    countIR = { kind: 'lit', value: 1, numType: 'integer' };
+  }
+  // The inner measure must be a named binding (lift hoists inline inner
+  // measures to anons). Inline non-ref inner isn't expected post-lift;
+  // leave it to the existing path.
+  if (!fromIR || fromIR.kind !== 'ref' || fromIR.ns !== 'self') return null;
+
+  // Leaf gate (see header): resolve one ref level; a known-distribution
+  // inner stays on the batched-leaf path, NOT randsample.
+  let innerIR: any = fromIR;
+  const innerB = bindings.get(fromIR.name);
+  if (innerB && innerB.ir) innerIR = innerB.ir;
+  if (innerIR && innerIR.kind === 'call'
+      && SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op)) return null;
+
+  // Resolve the iid count (literal, or a fixed-phase binding ref via the
+  // pre-eval cache). Null until fixedValues is populated → returning
+  // null defers classification to the post-pre-eval pass.
+  const count = resolveConstant(countIR, bindings, new Set(), fixedValues);
+  if (count == null || !Number.isInteger(count) || count <= 0) return null;
+
+  return { kind: 'randsample', from: fromIR.name, count, stateIR };
 }
 
 // Stochastic kernel-broadcast: `broadcast(K, c1, c2, …)` where K is a
