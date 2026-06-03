@@ -1938,6 +1938,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // arg may be an integer (rank-1 result) or an integer vector
   // (rank-N result, one dim per element). Tries literal forms first;
   // falls back to the resolver. Returns null if neither works.
+  // Demand-driven fixed-value boundary (engine-concepts §17.4): a shape
+  // position asked the resolver for a value and every input resolved (so
+  // the computation is fixed-phase and computable in principle), but an
+  // operation in it isn't implemented in simple-eval mode — so the shape
+  // can't be folded. Per the demand-driven contract this is a hard error
+  // (the value is genuinely needed for inference and should be
+  // computable), NOT a silent %dynamic. A value that's merely
+  // not-statically-known (external / elementof / draw / load_data) comes
+  // back as `undefined`, never as UNSUPPORTED, and legitimately stays
+  // %dynamic.
+  function _shapeValueUncomputable(ir: any): null {
+    const where = (ir && ir.kind === 'ref' && typeof ir.name === 'string')
+      ? `the value of '${ir.name}'`
+      : 'a value';
+    diagnostics.push({
+      severity: 'error',
+      message: `could not compute ${where}, needed here for type/shape `
+        + `inference — it uses an operation not supported in fixed-phase `
+        + `(simple) evaluation`,
+      loc: (ir && ir.loc) || undefined,
+    });
+    return null;
+  }
+
   function resolveIntegerVectorShape(ir: any): number[] | null {
     // Literal integer → rank-1 of that length.
     const litInt = literalIntFromIR(ir);
@@ -1957,6 +1981,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // or a shape-explicit Value carrying the dims (rank-N).
     if (!resolveFixed) return null;
     const v = resolveFixed(ir);
+    if (v === (resolveFixed as any).UNSUPPORTED) { _shapeValueUncomputable(ir); return null; }
     if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return [v];
     if (v && typeof v === 'object'
         && Array.isArray(v.shape) && v.shape.length === 1
@@ -2155,6 +2180,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // %dynamic — same behaviour as before the const-eval pass.
     if (!resolveFixed) return null;
     const v = resolveFixed(ir);
+    if (v === (resolveFixed as any).UNSUPPORTED) return _shapeValueUncomputable(ir);
     if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return v;
     return null;
   }
