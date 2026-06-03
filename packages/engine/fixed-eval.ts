@@ -36,6 +36,28 @@
 
 const samplerLib = require('./sampler.ts');
 
+// Distinguished resolver outcome (engine-concepts §17.4, demand-driven
+// fixed-value model). The resolver has TWO failure modes, not one:
+//
+//   undefined    — the value isn't statically knowable: it depends on
+//                  an input that has no value at inference time (an
+//                  `external`/`elementof`/`draw` leaf, a measure, a ref
+//                  to a non-fixed binding, load_data). A shape that
+//                  needs it is legitimately `%dynamic` — NOT an error.
+//
+//   UNSUPPORTED  — every input resolved to a concrete value (so the
+//                  computation is fixed-phase and computable in
+//                  principle), but the op itself isn't implemented in
+//                  this simple-eval mode. A shape that needs it should
+//                  raise a clear "could not compute <name>" error rather
+//                  than silently degrade to `%dynamic` — that's an engine
+//                  gap or a value that only the materialiser can produce,
+//                  and the user asked to surface it loudly.
+//
+// The sentinel is a unique symbol so it can't collide with any real
+// resolved value; typeinfer compares against it by identity.
+const UNSUPPORTED: unique symbol = Symbol('fixed-eval:unsupported-op');
+
 /**
  * Build a demand-driven const-eval resolver typeinfer can use at
  * shape positions. Returns a callable `(ir, env?) → value | undefined`.
@@ -144,6 +166,7 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
     const evaledArgs: any[] = new Array(args.length);
     for (let i = 0; i < args.length; i++) {
       const v = evalIR(args[i], env);
+      if (v === UNSUPPORTED) return UNSUPPORTED;   // op-gap dominates: propagate
       if (v === undefined) return undefined;
       evaledArgs[i] = v;
     }
@@ -154,6 +177,7 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
       for (const k in ir.kwargs) {
         if (!Object.prototype.hasOwnProperty.call(ir.kwargs, k)) continue;
         const v = evalIR(ir.kwargs[k], env);
+        if (v === UNSUPPORTED) return UNSUPPORTED;   // op-gap dominates: propagate
         if (v === undefined) return undefined;
         evaledKwargs[k] = v;
       }
@@ -170,13 +194,29 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
       for (const k in evaledKwargs) sk[k] = { kind: 'lit', value: evaledKwargs[k] };
       synthIR.kwargs = sk;
     }
+    // All inputs resolved to concrete values, so the call is
+    // fixed-phase and computable in principle. If evaluateExpr can't
+    // do it because the OP isn't implemented in this simple-eval mode,
+    // that's the `UNSUPPORTED` case — surface it so a shape that needs
+    // this value errors clearly rather than silently degrading to
+    // `%dynamic`. Any other throw (a genuinely malformed call) stays
+    // `undefined` — conservative; we only escalate the op-gap signal.
     try { return samplerLib.evaluateExpr(synthIR, baseEnv); }
-    catch { return undefined; }
+    catch (e: any) {
+      const msg = (e && e.message) || '';
+      if (/not evaluable in sampler context/.test(msg)) return UNSUPPORTED;
+      return undefined;
+    }
   }
 
   // Test/inspection surface
   (evalIR as any).knownFixed = cache;
+  // Carry the UNSUPPORTED sentinel ON the resolver so callers
+  // (typeinfer) can recognise the op-gap outcome by identity without
+  // importing this module (keeps fixed-eval → sampler out of the
+  // main-bundle dependency graph of typeinfer's consumers).
+  (evalIR as any).UNSUPPORTED = UNSUPPORTED;
   return evalIR as any;
 }
 
-module.exports = { makeResolver };
+module.exports = { makeResolver, UNSUPPORTED };
