@@ -223,7 +223,7 @@ await syncDemoTree({ clean: !WATCH });
 //    fetches flatppl-js, so the sibling is absent there).
 
 await syncExamples();
-await syncGrammars();
+const hasCmHighlighter = await syncGrammars();
 
 // ---------------------------------------------------------------------
 // 6. Generate dist/models.json from the assembled dist/{demo,examples}.
@@ -314,22 +314,28 @@ const viewerBuildOpts = {
 };
 
 if (WATCH) {
-  const engineCtx           = await esbuild.context(engineBuildOpts);
-  const workerCtx           = await esbuild.context(samplerWorkerBuildOpts);
-  const codemirrorCtx       = await esbuild.context(codemirrorBuildOpts);
-  const textmateHighlightCtx = await esbuild.context(textmateHighlightBuildOpts);
-  const viewerCtx           = await esbuild.context(viewerBuildOpts);
-  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
-                     codemirrorCtx.rebuild(), textmateHighlightCtx.rebuild(),
-                     viewerCtx.rebuild()]);
+  const engineCtx            = await esbuild.context(engineBuildOpts);
+  const workerCtx            = await esbuild.context(samplerWorkerBuildOpts);
+  const codemirrorCtx        = await esbuild.context(codemirrorBuildOpts);
+  const textmateHighlightCtx = hasCmHighlighter ? await esbuild.context(textmateHighlightBuildOpts) : null;
+  const viewerCtx            = await esbuild.context(viewerBuildOpts);
+  await Promise.all([
+    engineCtx.rebuild(), workerCtx.rebuild(),
+    codemirrorCtx.rebuild(),
+    ...(textmateHighlightCtx ? [textmateHighlightCtx.rebuild()] : []),
+    viewerCtx.rebuild(),
+  ]);
   console.log('  bundled engine        -> dist/vendor/engine.min.js');
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
   console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
-  console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
+  if (hasCmHighlighter) console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
   console.log('  bundled viewer        -> dist/vendor/viewer.js');
-  await Promise.all([engineCtx.watch(), workerCtx.watch(),
-                     codemirrorCtx.watch(), textmateHighlightCtx.watch(),
-                     viewerCtx.watch()]);
+  await Promise.all([
+    engineCtx.watch(), workerCtx.watch(),
+    codemirrorCtx.watch(),
+    ...(textmateHighlightCtx ? [textmateHighlightCtx.watch()] : []),
+    viewerCtx.watch(),
+  ]);
 
   // esbuild's context.watch() only re-fires the four bundles above.
   // The src/ transpile-or-copy loop and the demo/ tree copy run ONCE
@@ -372,13 +378,13 @@ if (WATCH) {
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
     esbuild.build(codemirrorBuildOpts),
-    esbuild.build(textmateHighlightBuildOpts),
+    ...(hasCmHighlighter ? [esbuild.build(textmateHighlightBuildOpts)] : []),
     esbuild.build(viewerBuildOpts),
   ]);
   console.log('  bundled engine        -> dist/vendor/engine.min.js');
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
   console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
-  console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
+  if (hasCmHighlighter) console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
   console.log('  bundled viewer        -> dist/vendor/viewer.js');
 }
 
@@ -508,6 +514,10 @@ async function syncGrammars() {
   // Clean the vendored drop dir so an upstream rename can't leave a stale file
   // that esbuild's pinned entryPoint would keep bundling. Safe: this runs once
   // at startup before any watcher attaches.
+  //
+  // Returns true if the CM highlighter module was vendored (so the caller can
+  // conditionally enable the textmate-highlight esbuild bundle), false if it
+  // was absent (the grammar JSON is always required and exits on failure).
   await rm(srcVendorDir, { recursive: true, force: true });
   await mkdir(srcVendorDir, { recursive: true });
   const tmDst = join(vendorDir, 'flatppl.tmLanguage.json');
@@ -515,12 +525,15 @@ async function syncGrammars() {
   if (existsSync(grammarsSibling)) {
     const tmSrc = join(grammarsSibling, 'textmate', 'flatppl.tmLanguage.json');
     const modSrc = join(grammarsSibling, 'codemirror', 'textmate-highlight.ts');
-    for (const [s, d] of [[tmSrc, tmDst], [modSrc, modDst]]) {
-      if (!existsSync(s)) { console.error(`  ! sibling exists but ${s} not found`); process.exit(1); }
-      await copyFile(s, d);
+    if (!existsSync(tmSrc)) { console.error(`  ! sibling exists but ${tmSrc} not found`); process.exit(1); }
+    await copyFile(tmSrc, tmDst);
+    if (existsSync(modSrc)) {
+      await copyFile(modSrc, modDst);
+      console.log('  grammars: copied tmLanguage + CM highlighter from sibling');
+      return true;
     }
-    console.log('  grammars: copied tmLanguage + CM module from sibling');
-    return;
+    console.warn('  grammars: CM highlighter (codemirror/textmate-highlight.ts) not found in sibling; skipping highlighter bundle (editor degrades to plain text)');
+    return false;
   }
   console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
   const res = await fetch(grammarsRemote, { redirect: 'follow' });
@@ -541,10 +554,15 @@ async function syncGrammars() {
     const top = join(tmpExtract, entries[0]);
     const tmSrc = join(top, 'textmate', 'flatppl.tmLanguage.json');
     const modSrc = join(top, 'codemirror', 'textmate-highlight.ts');
-    if (!existsSync(tmSrc) || !existsSync(modSrc)) throw new Error('expected textmate/ + codemirror/ in archive');
+    if (!existsSync(tmSrc)) throw new Error('expected textmate/flatppl.tmLanguage.json in archive');
     await copyFile(tmSrc, tmDst);
-    await copyFile(modSrc, modDst);
-    console.log('  grammars: copied tmLanguage + CM module from tarball');
+    if (existsSync(modSrc)) {
+      await copyFile(modSrc, modDst);
+      console.log('  grammars: copied tmLanguage + CM highlighter from tarball');
+      return true;
+    }
+    console.warn('  grammars: CM highlighter not in archive (pinned ref lacks codemirror/textmate-highlight.ts); skipping highlighter bundle');
+    return false;
   } finally {
     await rm(tmpFile, { force: true }).catch(() => {});
     await rm(tmpExtract, { recursive: true, force: true }).catch(() => {});

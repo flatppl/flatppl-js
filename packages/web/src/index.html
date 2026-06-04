@@ -150,6 +150,9 @@
        editor.js on the first edit-toggle click; the gallery now
        always needs it on first source render. -->
   <script src="vendor/codemirror.min.js"></script>
+  <!-- Optional: FlatPPL TextMate highlighter (vendored from flatppl-grammars at
+       build time). Absent if the grammars repo lacks the CM module; the editor
+       degrades to plain text + binding overlay. -->
   <script src="vendor/textmate-highlight.js"></script>
   <script src="ephemeral.js"></script>
   <script src="user-store.js"></script>
