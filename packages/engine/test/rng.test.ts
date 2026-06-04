@@ -36,6 +36,7 @@ const {
   keyFromSeed,
   split,
   foldIn,
+  randSplitLanes,
   philoxNUniform,
   philoxNNormal,
   _internal: { mulhilo32 },
@@ -492,6 +493,23 @@ test('foldIn vs split: foldIn(K, tag) is NOT a position in split(K, n)', () => {
         `split(K, ${n})[${i}] aliases foldIn(K, 5) — derivations are not independent`);
     }
   }
+});
+
+test('randSplitLanes: lane 0 = draw, lane 1 = successor, single source of truth', () => {
+  // The composite-rand lane contract: draw and successor are exactly the
+  // two lanes of one split(key, 2), so the helper can never desync them
+  // from a site that re-derives the same lanes.
+  const k = keyFromSeed(0xC0FFEE);
+  const lanes = split(k, 2);
+  const { drawKey, succKey } = randSplitLanes(k);
+  assert.deepEqual(drawKey, lanes[0], 'draw lane must be split(key,2)[0]');
+  assert.deepEqual(succKey, lanes[1], 'successor lane must be split(key,2)[1]');
+  // Domain separation: draw and successor are independent keys.
+  assert.notDeepEqual(drawKey, succKey, 'draw and successor lanes must differ');
+  // Deterministic.
+  const again = randSplitLanes(k);
+  assert.deepEqual(again.drawKey, drawKey);
+  assert.deepEqual(again.succKey, succKey);
 });
 
 // ---------------------------------------------------------------------

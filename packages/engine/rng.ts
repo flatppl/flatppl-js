@@ -560,6 +560,24 @@ function foldIn(key: PhiloxKey, tag: number): PhiloxKey {
   return [block[0] >>> 0, block[1] >>> 0];
 }
 
+// Composite-rand lane contract (engine-concepts §11, §17.4). A composite
+// `rand(state, M)` derives BOTH its draw seed and its successor rngstate
+// from the parent key via ONE 2-way split: lane 0 seeds the draw (consumed
+// by the materialiser's matRandSample), lane 1 IS the successor rngstate
+// (consumed by the value-domain `rand_succ` op when a chained `rand`
+// threads the state half). Splitting once HERE — rather than each site
+// re-splitting the same key independently — makes the draw/successor lane
+// assignment a single source of truth, so a future change to the
+// materialiser's draw fan-out cannot silently realias draw and successor.
+// The two lanes are domain-separated by construction (split's `[i, n+i]`
+// counter layout). NB this is the COMPOSITE succession paradigm (split
+// key-derivation); a LEAF rand's successor is the threaded counter-advanced
+// state from sampleLeafN — the two paradigms are kept orthogonal.
+function randSplitLanes(key: PhiloxKey): { drawKey: PhiloxKey, succKey: PhiloxKey } {
+  const lanes = split(key, 2);
+  return { drawKey: lanes[0], succKey: lanes[1] };
+}
+
 // =====================================================================
 // Bulk uniform / normal fast-paths (commit 1 — kernels only; wiring
 // into the sampler comes in commit 3)
@@ -715,6 +733,7 @@ module.exports = {
   keyFromSeed,
   split,
   foldIn,
+  randSplitLanes,
   philoxNUniform,
   philoxNNormal,
 
