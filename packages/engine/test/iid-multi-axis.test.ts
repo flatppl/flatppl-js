@@ -8,7 +8,7 @@
 //   1. classifyIid  (derivations) — unpacks `vector(...)` → dims[]
 //   2. inferIid     (typeinfer)   — unpacks `vector(...)` → shape
 //   3. matIid       (materialiser)— takes dims[] from the derivation
-//   4. walkIid      (traceeval)   — must compute prod(size) draws
+//   4. walkIid      (sampler)     — must compute prod(size) draws
 //                                    and reshape into nested array
 //   5. walkIid      (density)     — must compute prod(size) for the
 //                                    reduce loop over the footprint
@@ -19,7 +19,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const sampler = require('../sampler.ts');
-const traceeval = require('../traceeval.ts');
 const rng = require('../rng.ts');
 const { processSource } = require('../index.ts');
 
@@ -49,7 +48,7 @@ test('iid multi-axis: traceeval walk produces a rank-2 matrix Value', () => {
   // explicit Value so downstream `*`/`+`/`-` route through the
   // value-ops shape dispatch (matrix multiplication for `*`).
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
-  const r = traceeval.walk(state, makeIid(vec(3, 3)), {}, {});
+  const r = sampler.walk(state, makeIid(vec(3, 3)), {}, {});
   assert.deepEqual(r.value.shape, [3, 3], 'matrix Value with shape [3, 3]');
   assert.equal(r.value.data.length, 9, 'flat Float64Array of length 9');
   for (let i = 0; i < 9; i++) {
@@ -59,14 +58,14 @@ test('iid multi-axis: traceeval walk produces a rank-2 matrix Value', () => {
 
 test('iid multi-axis: rank-3 shape produces rank-3 Value', () => {
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
-  const r = traceeval.walk(state, makeIid(vec(2, 3, 4)), {}, {});
+  const r = sampler.walk(state, makeIid(vec(2, 3, 4)), {}, {});
   assert.deepEqual(r.value.shape, [2, 3, 4]);
   assert.equal(r.value.data.length, 24);
 });
 
 test('iid multi-axis: scalar size still produces a flat array (back-compat)', () => {
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
-  const r = traceeval.walk(state, makeIid(lit(5)), {}, {});
+  const r = sampler.walk(state, makeIid(lit(5)), {}, {});
   assert.equal(r.value.length, 5);
   assert.equal(typeof r.value[0], 'number',
     'scalar-size form remains flat (not wrapped in an extra dim)');
@@ -74,7 +73,7 @@ test('iid multi-axis: scalar size still produces a flat array (back-compat)', ()
 
 test('iid multi-axis: zero-prod size produces an empty Value', () => {
   const state = rng.stateFromKey([1, 2, 3, 4, 5, 6, 7, 8]);
-  const r = traceeval.walk(state, makeIid(vec(0, 3)), {}, {});
+  const r = sampler.walk(state, makeIid(vec(0, 3)), {}, {});
   // prod = 0 — empty matrix. Still a shape-explicit Value.
   assert.deepEqual(r.value.shape, [0, 3]);
   assert.equal(r.value.data.length, 0);
