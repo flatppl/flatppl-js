@@ -439,6 +439,45 @@ test('sampleN: refArrays supply per-i values for ref kwargs', () => {
   assert.ok(Math.abs(mean - 100) < 0.01);
 });
 
+test('sampleN per-i Gamma: non-randNFn dist stays on the scalar fallback (Q2 fold)', () => {
+  // Gamma has no randNFn, so the per-i fold leaves it on the per-draw
+  // makeParametricSampler loop (one endpoint, not one algorithm — the
+  // rejection sampler is retained). This locks that the worker's
+  // hasRandNFn dispatch does NOT perturb the non-randNFn per-i stream:
+  // per-atom block means must track Gamma(shape_i, rate).mean = shape_i/rate.
+  const w = createWorkerHandler();
+  const count = 20;
+  const repeat = 3000;
+  const rate = 2;
+  const shape = new Float64Array(count);
+  for (let i = 0; i < count; i++) shape[i] = i + 1;   // shapes 1..20
+  const ir = {
+    kind: 'call', op: 'Gamma',
+    kwargs: {
+      shape: refIR('shape'),
+      rate:  { kind: 'lit', value: rate, loc: synthLoc() },
+    },
+    loc: synthLoc(),
+  };
+  const r = w.handle({ type: 'sampleN', ir, count, repeat, refArrays: { shape }, seed: 11 });
+  assert.equal(r.type, 'samples');
+  assert.equal(r.samples.length, count * repeat);
+  for (let i = 0; i < count; i++) {
+    const mu = shape[i] / rate;                       // Gamma mean
+    const sd = Math.sqrt(shape[i]) / rate;            // Gamma stddev
+    let s = 0;
+    const base = i * repeat;
+    for (let j = 0; j < repeat; j++) {
+      assert.ok(r.samples[base + j] >= 0, 'Gamma draws must be non-negative');
+      s += r.samples[base + j];
+    }
+    const m = s / repeat;
+    const stderr = sd / Math.sqrt(repeat);
+    assert.ok(Math.abs(m - mu) < 6 * stderr,
+      `atom ${i}: Gamma block mean ${m} drifted from shape_i/rate=${mu} (6σ=${6 * stderr})`);
+  }
+});
+
 test('sampleN: without seed, advances session RNG', () => {
   // Two calls with no explicit seed should produce different output —
   // the session state advances between them.
