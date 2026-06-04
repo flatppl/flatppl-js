@@ -2686,8 +2686,8 @@ function evaluateCall(ir: any, env: any): any {
   // builtin_sample(rngstate, kernel, kernel_input, [n, m, ...]) — FlatPDL
   // primitive. We synthesise the measure IR `kernel(...kernel_input)`
   // (optionally wrapped in `iid(..., size)` for the trailing dims) and
-  // route through traceeval, exactly the path `rand` takes — same
-  // RNG-state threading, same per-distribution math.
+  // route through the in-module measure walker, exactly the path `rand`
+  // takes — same RNG-state threading, same per-distribution math.
   if (op === 'builtin_sample') {
     const args = ir.args || [];
     if (args.length < 3) {
@@ -2708,7 +2708,7 @@ function evaluateCall(ir: any, env: any): any {
     if (env && typeof env.__resolveValueRef === 'function') {
       opts.resolveValueRef = env.__resolveValueRef;
     }
-    const r: any = getTraceeval().walk(state, mIR, env, opts);
+    const r: any = walk(state, mIR, env, opts);
     return [r.value, r.state];
   }
   // Calls to other built-ins, user-defined functions, etc. aren't expected
@@ -2735,15 +2735,6 @@ function isByteVector(x: any) {
   return true;
 }
 
-// Local require to break the cyclic dependency (traceeval.js requires
-// sampler.js for the leaf-distribution machinery; we lazy-import here so
-// the back-reference doesn't blow up module loading).
-let _traceeval: any = null;
-function getTraceeval() {
-  if (!_traceeval) _traceeval = require('./traceeval.ts');
-  return _traceeval;
-}
-
 function evaluateRand(ir: any, env: any): any {
   const args = ir.args || [];
   if (args.length !== 2) {
@@ -2754,10 +2745,10 @@ function evaluateRand(ir: any, env: any): any {
     throw new Error(`evaluateExpr: rand's first arg must be an rngstate (got ${typeof state})`);
   }
   // resolveMeasureRef: when the measure arg is a self-ref to another
-  // binding (e.g. `m_alias`), traceeval needs an IR for that binding.
+  // binding (e.g. `m_alias`), the walker needs an IR for that binding.
   // The orchestrator supplies a closure when calling us; the bare-
   // sampler path resolves only literal measure calls inline. If a ref
-  // shows up without resolveMeasureRef, traceeval throws a clear error.
+  // shows up without resolveMeasureRef, the walker throws a clear error.
   //
   // resolveValueRef: parallel hook for value-position refs inside the
   // measure's distribution params (e.g. `Normal(mu = ref a)` where `a`
@@ -2772,14 +2763,14 @@ function evaluateRand(ir: any, env: any): any {
   if (env && typeof env.__resolveValueRef === 'function') {
     opts.resolveValueRef = env.__resolveValueRef;
   }
-  const r: any = getTraceeval().walk(state, args[1], env, opts);
+  const r: any = walk(state, args[1], env, opts);
   return [r.value, r.state];
 }
 
 // Build a synthetic measure IR `kernel(...kernelInputKwargs)` from a
 // kernel name + the kernel_input IR + optional trailing dim IRs. Used
 // by `builtin_sample(rngstate, kernel, kernel_input, n, m, ...)` to
-// route through `traceeval.walk` — same path `rand(state, m)` takes.
+// route through the in-module `walk` — same path `rand(state, m)` takes.
 //
 // `kernelInputIR` MUST be either:
 //   - an inline `record(...)` call (fields → kernel call kwargs), or
@@ -3107,8 +3098,9 @@ module.exports = {
   evaluateExprN,
   isBatch,
 
-  // Shared with traceeval.js — both modules need to dispatch on the
-  // distribution registry and resolve param expressions against an env.
+  // Used by the in-module measure walker + the fixed-values value-ref
+  // resolver — both dispatch on the distribution registry and resolve
+  // param expressions against an env.
   lookupDistribution,
   resolveParams,
   makePhiloxPrngAdapter,
