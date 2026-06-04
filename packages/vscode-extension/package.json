@@ -172,6 +172,13 @@
           "maximum": 10000000,
           "markdownDescription": "Number of Monte Carlo samples drawn per binding when the visualizer renders a histogram. Higher values give smoother plots; lower values are faster. Changing this clears the visualizer's sample cache."
         },
+        "flatppl.visualization.marginalizationSampleCount": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 100000,
+          "markdownDescription": "Monte Carlo sample count `M` used to **marginalize internal latent draws** when estimating an *intractable* density — a likelihood or posterior whose model marginalizes a latent (e.g. `densityof(L, pars)` for a generative model where the observation marginalizes a hidden draw). Each density value averages the tractable conditional over `M` draws of the marginalized latent (the §6 `logsumexp − log M` estimator). This is **separate from `sampleCount`**: the inner marginalization integral usually needs far fewer samples than the outer histogram (≈100 is typically enough; raise it if the likelihood looks noisy in the tails). Changing this clears the visualizer's sample cache."
+        },
         "flatppl.visualization.dagNavigationHistoryCap": {
           "type": "integer",
           "default": 1000,

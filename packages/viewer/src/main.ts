@@ -667,6 +667,16 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // arrives — the panel always boots with a config push from the host.
   ctx.SAMPLE_COUNT = 100000;
 
+  // Monte Carlo sample count M for marginalizing internal latent draws
+  // when estimating an INTRACTABLE density (likelihood / posterior of a
+  // generative model whose observation marginalizes a hidden draw — spec
+  // §06 case 3 / engine-concepts §6 logsumexp − log M estimator). This is
+  // SEPARATE from SAMPLE_COUNT: the inner marginalization integral needs
+  // far fewer samples than the outer histogram (≈100). Owned by VS Code's
+  // flatppl.visualization.marginalizationSampleCount; pushed via
+  // configUpdate. In-flight default until the first push.
+  ctx.MARGINALIZATION_COUNT = 100;
+
   // Per-atom rejection budget for matTruncate's rejection-redraw path
   // (spec §06 truncate). When the parent measure isn't CDF-invertible,
   // the worker redraws from the underlying distribution up to this
@@ -1451,6 +1461,21 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
           && cfg.sampleCount > 0
           && cfg.sampleCount !== ctx.SAMPLE_COUNT) {
         ctx.SAMPLE_COUNT = cfg.sampleCount | 0;
+        ctx.measureCache = new Map();
+        ctx.histogramCache = new Map();
+        if (ctx.plotEnabled) renderPlotForCurrent(ctx);
+      }
+
+      // marginalizationSampleCount: re-bind M. Drop the cache because any
+      // cached intractable-density measure (likelihood / posterior) was
+      // estimated by marginalizing over the old M draws — its values
+      // would no longer reflect the current setting. Re-render to
+      // recompute. (Independent of sampleCount: tractable plots are
+      // unaffected and just re-render from fresh draws.)
+      if (typeof cfg.marginalizationSampleCount === 'number'
+          && cfg.marginalizationSampleCount >= 1
+          && cfg.marginalizationSampleCount !== ctx.MARGINALIZATION_COUNT) {
+        ctx.MARGINALIZATION_COUNT = cfg.marginalizationSampleCount | 0;
         ctx.measureCache = new Map();
         ctx.histogramCache = new Map();
         if (ctx.plotEnabled) renderPlotForCurrent(ctx);
