@@ -2843,9 +2843,260 @@ function _resolveKernelName(ir: any, _env: any): string {
 }
 
 
+// =====================================================================
+// Measure walker (was traceeval.ts) — value-position sampling primitive
+// =====================================================================
+//
+// The single per-draw sample-side walker for FlatPPL measure expressions.
+// Given a measure IR and an env mapping value-position refs to numerics,
+// draw a value from that measure, threading rng state through any
+// stochastic ancestors that env doesn't already carry. It is the engine's
+// recursive composite / lazy-ancestor sampling primitive — the leaf base
+// case delegates to the single batched leaf endpoint (`sampleLeafN`), and
+// composite measures (joint / record / iid-of-composite / weighted / lawof)
+// recurse here. Scoring lives in density.ts (the single density impl); this
+// is sample-side only. Folded in from the former traceeval.ts so the
+// sampler↔traceeval require cycle disappears and there is one sampling
+// model in one module (engine-concepts §11 / §17.4 stage 4).
+//
+// Public entry: walk(state, ir, env, opts) → { value, state }
+//   opts.resolveMeasureRef - `(name) → measureIR` for measure self-refs.
+//   opts.resolveValueRef   - `(name, state) → [value, newState]` lazy
+//                            resolution of value-position self-refs (e.g.
+//                            `rand(state, M)` where M's params reference
+//                            stochastic ancestors); threads state and is
+//                            expected to cache through env so two refs to
+//                            one name share a draw.
+
+function walk(state: any, ir: IRNode, env: any, opts: any) {
+  opts = opts || {};
+  const ctx = {
+    resolveRef: opts.resolveMeasureRef || null,
+    resolveValueRef: opts.resolveValueRef || null,
+  };
+  return walkInner(state, ir, env, ctx);
+}
+
+function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
+  // Self-ref to another measure binding — dereference via the supplied
+  // resolver so the binding map isn't baked into the walker.
+  if (ir && ir.kind === 'ref' && ir.ns === 'self') {
+    if (!ctx.resolveRef) {
+      throw new Error(
+        `sampler.walk: encountered measure ref '${ir.name}' but no ` +
+        `resolveMeasureRef was supplied. Inline the measure or pass ` +
+        `opts.resolveMeasureRef.`
+      );
+    }
+    const inner = ctx.resolveRef(ir.name);
+    if (!inner) {
+      throw new Error(`sampler.walk: resolveMeasureRef returned no IR for '${ir.name}'`);
+    }
+    return walkInner(state, inner, env, ctx);
+  }
+
+  if (!ir || ir.kind !== 'call') {
+    throw new Error(
+      `sampler.walk: expected a measure call IR (or self-ref), got ` +
+      `kind=${ir && ir.kind}`
+    );
+  }
+  const op = ir.op;
+
+  // Leaf distribution — base case.
+  if (isKnownDistribution(op)) {
+    return walkLeaf(state, ir, env, ctx);
+  }
+
+  // Dispatch through MEASURE_OP_WALKERS (composite escape-hatch). Adding a
+  // new measure-algebra walker is one entry there plus the handler.
+  const handler: any = op != null ? (MEASURE_OP_WALKERS as any)[op] : null;
+  if (handler) return handler(state, ir, env, ctx);
+  throw new Error(
+    `sampler.walk: op '${op}' is not a measure expression we can ` +
+    `sample. Known: leaf distributions, ` +
+    Object.keys(MEASURE_OP_WALKERS).join(', ') + '.'
+  );
+}
+
+function walkLeaf(state: any, ir: IRNode, env: any, ctx: any) {
+  // Pre-fill env with any value-position refs in the kwargs that aren't
+  // already known (the leaf's params may reference stochastic ancestors
+  // the caller hasn't materialised yet). fillEnvFromRefs threads state
+  // through any recursive sampling the resolver does.
+  state = fillEnvFromRefs(state, ir, env, ctx);
+  const entry = lookupDistribution(ir);
+  const params = resolveParams(ir, entry, env);
+  const prng = makePhiloxPrngAdapter(state);
+  const sampler = entry.randFn.factory(...params, { prng });
+  const value = sampler();
+  return { value, state: prng.getState() };
+}
+
+function walkJoint(state: any, ir: IRNode, env: any, ctx: any) {
+  // kwarg-joint / record → record keyed by field name; positional joint →
+  // array of per-component samples. Sequential per-component recursion
+  // threading state.
+  if (Array.isArray(ir.fields)) {
+    const out: Record<string, any> = {};
+    let st = state;
+    for (let i = 0; i < ir.fields.length; i++) {
+      const f = ir.fields[i];
+      const r = walkInner(st, f.value, env, ctx);
+      out[f.name] = r.value;
+      st = r.state;
+    }
+    return { value: out, state: st };
+  }
+  if (Array.isArray(ir.args)) {
+    const components = ir.args;
+    const out = new Array(components.length);
+    let st = state;
+    for (let i = 0; i < components.length; i++) {
+      const r = walkInner(st, components[i], env, ctx);
+      out[i] = r.value;
+      st = r.state;
+    }
+    return { value: out, state: st };
+  }
+  throw new Error('sampler.walk: joint with neither fields nor args');
+}
+
+function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
+  // iid(M, size): `size` is a positive integer or a vector of positive
+  // integers (multi-axis shape). Draw prod(size) iid samples of M sharing
+  // params (that's what makes it iid vs a vectorised per-index call).
+  const args = ir.args || [];
+  if (args.length !== 2) {
+    throw new Error(`sampler.walk: iid expected 2 args (measure, size), got ${args.length}`);
+  }
+  const M = args[0];
+  // size may reference fixed-phase value bindings — pre-fill before eval.
+  state = fillEnvFromRefs(state, args[1], env, ctx);
+  const sizeVal: any = evaluateExpr(args[1], env);
+  const dims = _sizeAsDims(sizeVal);
+
+  // Leaf-distribution inner: batch all prod(dims) draws in ONE
+  // makeBulkSampler call (the single batched leaf endpoint, sampleLeafN)
+  // instead of looping the per-draw walker. iid semantics: the leaf's
+  // params are resolved ONCE here and shared across every draw. Both
+  // builtin_sample and rand(state, iid(<leaf>, dims)) route through here,
+  // so they stay bit-for-bit equal (engine-concepts §11). Composite inner
+  // measures keep the per-draw recursion below. The lift pass hoists an
+  // inline inner measure to an anon, so M can arrive as `(ref self <anon>)`
+  // — resolve a measure-ref to its IR first so both shapes reach the leaf
+  // check.
+  let leafM = M;
+  if (leafM && leafM.kind === 'ref' && leafM.ns === 'self' && ctx.resolveRef) {
+    const resolved = ctx.resolveRef(leafM.name);
+    if (resolved) leafM = resolved;
+  }
+  if (leafM && leafM.kind === 'call' && leafM.op && isKnownDistribution(leafM.op)) {
+    state = fillEnvFromRefs(state, leafM, env, ctx);   // resolve leaf params once
+    return sampleLeafN(state, leafM, env, dims);
+  }
+
+  const total = dims.reduce((p: number, n: number) => p * n, 1);
+  // Sequential composite draws: total `total` samples threading state.
+  const flat = new Array(total);
+  let st = state;
+  let allNumeric = true;
+  for (let j = 0; j < total; j++) {
+    const r = walkInner(st, M, env, ctx);
+    flat[j] = r.value;
+    const t = typeof r.value;
+    if (t !== 'number' && t !== 'boolean') allNumeric = false;
+    st = r.state;
+  }
+  if (dims.length <= 1) return { value: flat, state: st };
+  // Multi-axis scalar atoms → shape-explicit rank-≥2 Value (spec §03:
+  // vectors of vectors are not matrices; downstream value-ops need the tag).
+  if (allNumeric) {
+    const data = new Float64Array(total);
+    for (let j = 0; j < total; j++) data[j] = +flat[j];
+    return { value: { shape: dims.slice(), data }, state: st };
+  }
+  // Heterogeneous / structured atoms: keep the nested-array v0.1 form.
+  return { value: _reshapeNested(flat, dims), state: st };
+}
+
+// Reshape a flat array of length prod(dims) into a nested JS array of
+// shape `dims` (row-major), used by walkIid for heterogeneous atoms.
+function _reshapeNested(flat: any[], dims: number[]): any {
+  if (dims.length === 0) return flat[0];
+  if (dims.length === 1) return flat;
+  const n = dims[0];
+  const innerDims = dims.slice(1);
+  const innerSize = innerDims.reduce((p, n) => p * n, 1);
+  const out: any[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = _reshapeNested(flat.slice(i * innerSize, (i + 1) * innerSize), innerDims);
+  }
+  return out;
+}
+
+// weighted / logweighted: sampling is a pure pass-through (the weight only
+// affects density, which lives in density.ts).
+function walkWeightedPassThrough(state: any, ir: IRNode, env: any, ctx: any): any {
+  const args = ir.args || [];
+  if (args.length !== 2) {
+    throw new Error(`sampler.walk: weighted/logweighted expected 2 args, got ${args.length}`);
+  }
+  return walkInner(state, args[1], env, ctx);
+}
+
+// lawof(M) / draw(M): pass-through wrappers per `lawof(draw(M)) ≡ M`.
+function walkUnwrap(state: any, ir: IRNode, env: any, ctx: any): any {
+  const args = ir.args || [];
+  if (args.length !== 1) {
+    throw new Error(`sampler.walk: ${ir.op} expected 1 arg, got ${args.length}`);
+  }
+  return walkInner(state, args[0], env, ctx);
+}
+
+const MEASURE_OP_WALKERS = {
+  joint:       walkJoint,
+  record:      walkJoint,
+  iid:         walkIid,
+  weighted:    walkWeightedPassThrough,
+  logweighted: walkWeightedPassThrough,
+  lawof:       walkUnwrap,
+  draw:        walkUnwrap,
+};
+
+// Walk a value-position IR collecting every `(ref self <name>)` env doesn't
+// know; resolve each via ctx.resolveValueRef (threading state), mutating
+// env so a subsequent evaluateExpr sees a populated environment. Value
+// position only — measure-position children are handled by the walker's
+// own recursion / ctx.resolveRef. Returns the (possibly advanced) state.
+function fillEnvFromRefs(state: any, ir: any, env: any, ctx: any) {
+  if (!ctx || !ctx.resolveValueRef) return state;
+  const refs = new Set<string>();
+  collectValueRefs(ir, refs);
+  for (const name of refs) {
+    if (env && env[name] !== undefined) continue;
+    const r = ctx.resolveValueRef(name, state);
+    if (!r) continue;
+    env[name] = r[0];
+    state = r[1];
+  }
+  return state;
+}
+
+function collectValueRefs(ir: any, out: Set<string>) {
+  if (ir == null || typeof ir !== 'object') return;
+  if (ir.kind === 'ref' && ir.ns === 'self') { out.add(ir.name); return; }
+  if (Array.isArray(ir.args)) for (const a of ir.args) collectValueRefs(a, out);
+  if (ir.kwargs) for (const k in ir.kwargs) collectValueRefs(ir.kwargs[k], out);
+  // Don't descend into `fields` / `body` — measure / scope boundaries
+  // handled by the surrounding walker's recursion.
+}
+
+
 module.exports = {
   // Primary API
   rand,
+  walk,
   makeSampler,
   makeParametricSampler,
   makeBulkSampler,
