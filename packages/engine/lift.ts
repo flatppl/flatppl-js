@@ -525,6 +525,10 @@ function liftInlineSubexpressions(bindings: any) {
   }
   const { resolveAliasesOnBindings } = require('./alias-resolution.ts');
   resolveAliasesOnBindings(out, 'ir');
+  // Rewrite the state half of a composite `rand` to the value-domain
+  // `rand_succ` successor (engine-concepts §11 / §17.4). After the IR-cache
+  // loop + alias-resolution, so every `b.ir` and inner-measure ref resolves.
+  rewriteCompositeRandSucc(out);
   return out;
 
   function cloneAst(node: any): any {
@@ -2304,6 +2308,93 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
   }
 }
 
+// =====================================================================
+// Composite-`rand` successor rewrite (engine-concepts §11 / §17.4)
+// =====================================================================
+
+// Shared gate for the two halves of a composite `rand` tuple_get. Given a
+// binding RHS `tuple_get(<self-ref to a rand binding>, idx)` at the
+// expected index, validate it, pick up the rand's state arg, decompose the
+// measure (`iid(M, size)` → (M, size); bare M → (M, 1)), and classify the
+// inner as a leaf distribution vs a composite measure. Returns
+// `{ stateIR, fromIR, countIR, isComposite }` or null (not a composite-rand
+// tuple_get at `idx`: not a tuple_get, wrong index, rand binding missing,
+// or inner not a self-ref). `isComposite` is false when the inner resolves
+// to a known leaf distribution — then the draw stays on the batched-leaf /
+// pre-eval path and the state half stays threaded via sampleLeafN.
+//
+// Used by BOTH the index-0 draw classifier (derivations.classifyRandSample)
+// and the index-1 successor rewrite (rewriteCompositeRandSucc below), so the
+// decompose + leaf gate can never drift between the draw and successor
+// halves (drift would be a silent correctness bug — a leaf successor wrongly
+// key-split, or a composite draw wrongly walked).
+function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
+  if (!rhsIR || rhsIR.op !== 'tuple_get'
+      || !Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const src: any = rhsIR.args[0];
+  const idxNode: any = rhsIR.args[1];
+  if (!src || src.kind !== 'ref' || src.ns !== 'self') return null;
+  if (!idxNode || idxNode.kind !== 'lit' || idxNode.value !== idx) return null;
+
+  const randB = bindings.get(src.name);
+  const randIR = randB && randB.ir;
+  if (!randIR || randIR.op !== 'rand' || !Array.isArray(randIR.args)
+      || randIR.args.length !== 2) return null;
+  const stateIR = randIR.args[0];
+
+  // Decompose the measure arg (iid inline or a lift-hoisted anon ref).
+  let measureIR: any = randIR.args[1];
+  if (measureIR && measureIR.kind === 'ref' && measureIR.ns === 'self') {
+    const mb = bindings.get(measureIR.name);
+    if (mb && mb.ir) measureIR = mb.ir;
+  }
+  let fromIR: any, countIR: any;
+  if (measureIR && measureIR.kind === 'call' && measureIR.op === 'iid'
+      && Array.isArray(measureIR.args) && measureIR.args.length === 2) {
+    fromIR = measureIR.args[0];
+    countIR = measureIR.args[1];
+  } else {
+    fromIR = measureIR;
+    countIR = { kind: 'lit', value: 1, numType: 'integer' };
+  }
+  // The inner measure must be a named binding (lift hoists inline inner
+  // measures to anons). Inline non-ref inner isn't expected post-lift.
+  if (!fromIR || fromIR.kind !== 'ref' || fromIR.ns !== 'self') return null;
+
+  // Leaf gate: resolve one ref level; a known-distribution inner is a LEAF.
+  let innerIR: any = fromIR;
+  const innerB = bindings.get(fromIR.name);
+  if (innerB && innerB.ir) innerIR = innerB.ir;
+  const isComposite = !(innerIR && innerIR.kind === 'call'
+                        && SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op));
+
+  return { stateIR, fromIR, countIR, isComposite };
+}
+
+// Post-lift binding-IR rewrite: the STATE half of a COMPOSITE `rand`
+// (`tuple_get(<rand>, 1)`) becomes a pure value-domain successor op
+// `rand_succ(stateIR)`. This MUST mutate the binding IR (not a derivation):
+// the consumers of a composite successor — FixedValues._compute and
+// orchestrator.resolveIRToValue — both read `binding.ir`, and the raw
+// `tuple_get(rand, 1)` over a composite would route through the per-draw
+// walker and throw (a throw FixedValues._compute swallows into a SILENT
+// unresolved). Rewriting `binding.ir` once here makes every consumer agree
+// and converts 'state half of a tuple' into 'pure successor value' exactly
+// once. Leaf state-halves are left untouched so they keep threading the
+// counter-advanced successor via sampleLeafN (bit-for-bit builtin_sample ≡
+// rand + iid preserved). Runs after the IR-caching post-pass loop populates
+// every `b.ir` and after alias-resolution, so inner-measure refs resolve.
+function rewriteCompositeRandSucc(out: any): void {
+  for (const [name, b] of out) {
+    if (!b || !b.ir) continue;
+    const t = classifyRandTuple(b.ir, out, 1);   // 1 = the STATE half
+    if (!t || !t.isComposite) continue;           // leaf state-half stays threaded
+    out.set(name, { ...b, ir: {
+      kind: 'call', op: 'rand_succ', args: [t.stateIR], loc: b.ir.loc,
+    } });
+  }
+}
+
 module.exports = {
   argSignature,
   opUsesValueKwargs,
@@ -2313,4 +2404,5 @@ module.exports = {
   bfsImplicitElementofLeavesAst,
   liftInlineSubexpressions,
   isEvaluable,
+  classifyRandTuple,
 };

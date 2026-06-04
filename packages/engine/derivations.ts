@@ -74,7 +74,7 @@ import type {
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
-const { isEvaluable, liftInlineSubexpressions } = require('./lift.ts');
+const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf, substituteLocals } = require('./signatures.ts');
 const { FixedValues } = require('./fixed-values.ts');
@@ -1107,63 +1107,25 @@ function classifyIid(
 // authoritative even if a randsample derivation were also present, but
 // gating here keeps intent honest and avoids dead derivations.
 //
-// Scope: the DRAW half (index 0) only. The state half (`tuple_get(…,1)`
-// = split(state)) matters only for chaining composite rand, which no
-// current fixture exercises; it stays on its existing classification
-// (TODO §06 follow-up).
+// Scope: the DRAW half (index 0). The composite STATE half
+// (`tuple_get(…,1)` — a successor rngstate for chaining a second rand) is
+// handled UPSTREAM by lift's `rewriteCompositeRandSucc`, which rewrites the
+// binding IR to the value-domain `rand_succ` op (so it arrives here as an
+// ordinary evaluable, classified `kind:'evaluate'`); the leaf state half
+// stays threaded via sampleLeafN. The decompose + leaf gate is the shared
+// `classifyRandTuple` (lift.ts) so the draw and successor halves can't drift.
 function classifyRandSample(
   rhsIR: IRNode, bindings: any, fixedValues?: any,
 ): any {
-  if (!rhsIR || (rhsIR as any).op !== 'tuple_get'
-      || !Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
-  const src: any = rhsIR.args[0];
-  const idxNode: any = rhsIR.args[1];
-  if (!src || src.kind !== 'ref' || src.ns !== 'self') return null;
-  if (!idxNode || idxNode.kind !== 'lit' || idxNode.value !== 0) return null;
-
-  const randB = bindings.get(src.name);
-  const randIR = randB && randB.ir;
-  if (!randIR || randIR.op !== 'rand' || !Array.isArray(randIR.args)
-      || randIR.args.length !== 2) return null;
-  const stateIR = randIR.args[0];
-
-  // Decompose the measure arg. `iid(M, size)` → (M, size); a bare
-  // measure → (M, 1). The iid may be inline (the surface shape) or a
-  // lift-hoisted anon ref — resolve a ref one level to its IR first.
-  let measureIR: any = randIR.args[1];
-  if (measureIR && measureIR.kind === 'ref' && measureIR.ns === 'self') {
-    const mb = bindings.get(measureIR.name);
-    if (mb && mb.ir) measureIR = mb.ir;
-  }
-  let fromIR: any, countIR: any;
-  if (measureIR && measureIR.kind === 'call' && measureIR.op === 'iid'
-      && Array.isArray(measureIR.args) && measureIR.args.length === 2) {
-    fromIR = measureIR.args[0];
-    countIR = measureIR.args[1];
-  } else {
-    fromIR = measureIR;
-    countIR = { kind: 'lit', value: 1, numType: 'integer' };
-  }
-  // The inner measure must be a named binding (lift hoists inline inner
-  // measures to anons). Inline non-ref inner isn't expected post-lift;
-  // leave it to the existing path.
-  if (!fromIR || fromIR.kind !== 'ref' || fromIR.ns !== 'self') return null;
-
-  // Leaf gate (see header): resolve one ref level; a known-distribution
-  // inner stays on the batched-leaf path, NOT randsample.
-  let innerIR: any = fromIR;
-  const innerB = bindings.get(fromIR.name);
-  if (innerB && innerB.ir) innerIR = innerB.ir;
-  if (innerIR && innerIR.kind === 'call'
-      && SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op)) return null;
-
+  const t = classifyRandTuple(rhsIR, bindings, 0);   // 0 = the DRAW half
+  if (!t || !t.isComposite) return null;             // leaf draw stays on the batched path
   // Resolve the iid count (literal, or a fixed-phase binding ref via the
   // pre-eval cache). Null until fixedValues is populated → returning
   // null defers classification to the post-pre-eval pass.
-  const count = resolveConstant(countIR, bindings, new Set(), fixedValues);
+  const count = resolveConstant(t.countIR, bindings, new Set(), fixedValues);
   if (count == null || !Number.isInteger(count) || count <= 0) return null;
 
-  return { kind: 'randsample', from: fromIR.name, count, stateIR };
+  return { kind: 'randsample', from: t.fromIR.name, count, stateIR: t.stateIR };
 }
 
 // Stochastic kernel-broadcast: `broadcast(K, c1, c2, …)` where K is a
