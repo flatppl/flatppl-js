@@ -2149,7 +2149,26 @@ function liftInlineSubexpressions(bindings: any) {
 
     // Substitute identifiers in a deep-cloned body. Different call
     // sites get independent ASTs.
-    return substituteIdents(cloneAst(bodyAst), argMap);
+    const inlined = substituteIdents(cloneAst(bodyAst), argMap);
+    // A `kernelof` reifies its argument to a MEASURE (the law of the
+    // reified value), so applying it yields that measure — NOT the bare
+    // value. At the AST surface level `kernelof(x, kw)`'s body arg is the
+    // raw value `x`, so the inlined application must be wrapped in
+    // `lawof(...)` to be measure-valued. This mirrors lower.ts's IR-level
+    // `kernelof(x, kw) → functionof(lawof(x), kw)` lowering. Without it,
+    // `generator(pars)` (with `generator = kernelof(x, …)`) inlined to the variate `x`
+    // instead of `lawof(x)`, so e.g. `iid(generator(pars), n)` became the
+    // malformed `iid(draw(<dist>), n)` (an iid over a variate, not a
+    // measure) and never classified. functionof / fn yield the value
+    // itself and are NOT wrapped (the fn branch returned earlier).
+    if (fnAst.callee && fnAst.callee.type === 'Identifier'
+        && fnAst.callee.name === 'kernelof') {
+      return {
+        type: 'CallExpr', callee: makeIdent('lawof', astArg.loc),
+        args: [inlined], loc: astArg.loc,
+      };
+    }
+    return inlined;
   }
 
   /**
