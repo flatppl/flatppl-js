@@ -356,7 +356,7 @@ export interface DerivationIid {
  * Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2).
  * The draw half (`samples, _ = rand(state, iid(M, count))`, i.e.
  * `tuple_get(<rand>, 0)`) for a COMPOSITE inner measure `M` — one the
- * per-draw traceeval walker can't sample (a forward `lawof` of a
+ * per-draw measure walker (sampler.walk) can't sample (a forward `lawof` of a
  * broadcast / aggregate, a `pushfwd`, …). Materialised on demand by
  * drawing `count` independent realizations of `from` in a child ctx
  * seeded off `stateIR`. Leaf-distribution inner stays on the batched

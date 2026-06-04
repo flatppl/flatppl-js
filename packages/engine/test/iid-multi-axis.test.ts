@@ -39,10 +39,10 @@ function vec(...vs: number[]) {
 function lit(v: number) { return { kind: 'lit', value: v }; }
 
 // ---------------------------------------------------------------------
-// traceeval.walk (used by `rand`) — multi-axis shape
+// sampler.walk (used by `rand`) — multi-axis shape
 // ---------------------------------------------------------------------
 
-test('iid multi-axis: traceeval walk produces a rank-2 matrix Value', () => {
+test('iid multi-axis: sampler walk produces a rank-2 matrix Value', () => {
   // Per spec §03 — `iid(Normal, [3, 3])` produces a rank-2 array
   // (matrix), not a vector-of-vectors. The engine returns a shape-
   // explicit Value so downstream `*`/`+`/`-` route through the

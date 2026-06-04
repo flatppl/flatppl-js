@@ -61,11 +61,12 @@
 //
 //   logDensityN { ir, count, refArrays?, observed?, tally?, seed? }
 //        → samples { samples: Float64Array, logWeights: null }
-//        Per-i density evaluation via traceeval.walk. The same trace
-//        walker that sampleN dispatches into for structural cases (joint,
-//        iid, weighted, …) is invoked once per atom with `tally` mode
-//        set ('all' for full joint log-density of a sampled trace,
-//        'clamped' for likelihood / bayesupdate scoring). The reply's
+//        Per-i density evaluation via density.ts (logDensityConsumeN —
+//        the single consume/rest density implementation; the old
+//        tally/score sample-walker protocol was retired into density.ts
+//        long ago). `tally` selects the mode ('all' for full joint
+//        log-density of a sampled trace, 'clamped' for likelihood /
+//        bayesupdate scoring). The reply's
 //        `samples` array carries one log-density per outer atom — we
 //        reuse the 'samples' reply shape so the main-thread cache and
 //        zero-copy transfer logic don't need a new path.

@@ -682,7 +682,7 @@ function liftInlineSubexpressions(bindings: any) {
     // Two value-position calls produce non-evaluable JS results so
     // they must be lifted to their own anon bindings:
     //   - draw(...)        — needs a fresh sample step
-    //   - logdensityof(M,x)— needs traceeval.walk over M's expanded IR
+    //   - logdensityof(M,x)— needs density.ts over M's expanded IR
     // Everything else (literals, identifiers, arithmetic) stays in
     // place for the IR evaluator.
     if (astArg.type === 'CallExpr' && astArg.callee

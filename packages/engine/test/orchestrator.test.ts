@@ -598,7 +598,7 @@ r = relabel([1, 2, 3], ["x", "y"])
 //
 // `r = logdensityof(M, x)` classifies as kind='logdensityof' with the
 // measure name and the resolved obs value attached. The materialiser
-// computes per-prior-atom log-densities via traceeval.walk —
+// computes per-prior-atom log-densities via density.ts —
 // implemented in the viewer; here we only check the orchestrator
 // correctly identifies the binding and primes the cascade.
 //

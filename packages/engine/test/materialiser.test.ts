@@ -743,7 +743,7 @@ test('jointchain: positional scalar form logdensityof', async () => {
   // with a ~ Exp(1) and b ~ Normal(1, a). Positional jointchain lifts
   // both components to anon bindings; expandMeasureIR turns the
   // tuple-classified result into `joint([a's distIR, b's distIR])`
-  // which traceeval's positional-args branch splits per footprint.
+  // which density.ts's positional-args (consume/rest) branch splits per footprint.
   //
   // BUT: the 2-arg positional jointchain rewrite drops a alias (b's
   // sample IR has a self-ref to a's anon, not a literal 'a' binding
@@ -763,8 +763,8 @@ lp = logdensityof(funnel, [1.0, 2.0])
 
 test('joint positional: logdensityof matches summed component logpdfs', async () => {
   // densityof(joint(M1, M2), [x, y]) = pdf_M1(x) · pdf_M2(y) — no
-  // marginalisation, no normalising constant. Verifies traceeval's
-  // positional-args branch routes the observation through each
+  // marginalisation, no normalising constant. Verifies density.ts's
+  // positional-args (consume/rest) branch routes the observation through each
   // component's footprint.
   const ctx = makeCtx(`
 M1 = Normal(mu = 0.0, sigma = 1.0)

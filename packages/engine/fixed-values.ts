@@ -211,8 +211,9 @@ class FixedValues {
           continue;
         }
         // A binding classified as a measure derivation: recurse through
-        // the canonical sampleable expansion (what traceeval walks at
-        // runtime) and mark everything beyond it as measure-context.
+        // the canonical sampleable expansion (what the measure walker
+        // sampler.walk walks at runtime) and mark everything beyond it as
+        // measure-context.
         if (derivations[r]) {
           if (seenMeasure.has(r)) continue;
           seenMeasure.add(r);

@@ -140,7 +140,7 @@ function isSelfRef(ir: IRNode | null | undefined) {
  * array of values, plain object). Used by the viewer's bayesupdate /
  * logdensityof / likelihood materialisers to translate a recorded
  * `obsIR` (the AST shape of `observed_data` or `record(obs = ...)`,
- * etc.) into the JS value traceeval clamps against at sample time.
+ * etc.) into the JS value the density walker (density.ts) clamps against.
  *
  * Resolution order on `ref self <name>`:
  *   1. fixedValues, if supplied — pre-eval may have materialised a
@@ -512,8 +512,8 @@ const EVALUABLE_OPS = new Set([
   // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
   // Per-kernel log-density, sampling, and canonical transports to/from
   // the standard uniform / standard normal references. Dispatch goes
-  // through density-prims.ts (transports / logdensity) and traceeval.ts
-  // (sampling).
+  // through density-prims.ts (transports / logdensity) and sampler.ts
+  // (the in-module measure walker, sampling).
   'builtin_logdensityof', 'builtin_sample',
   'builtin_touniform', 'builtin_fromuniform',
   'builtin_tonormal',  'builtin_fromnormal',

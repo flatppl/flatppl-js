@@ -2634,11 +2634,12 @@ function evaluateCall(ir: any, env: any): any {
   // rand(<state>, <measure-IR>) — generate a sample from a closed
   // measure with explicit state threading. Per spec §sec:random rand
   // returns a tuple (value, new_state). The measure arg is NOT
-  // evaluated as a value — it's passed verbatim to traceeval.walk
-  // which handles iid / joint / record / leaf-distribution recursion
-  // and threads the rng state. Refused for measures rand can't sample
-  // (weighted, logweighted, bayesupdate, multivariate truncation) by
-  // traceeval's dispatch — those throw with a clear message.
+  // evaluated as a value — it's passed verbatim to the in-module measure
+  // walker (`walk`, below) which handles iid / joint / record /
+  // leaf-distribution recursion and threads the rng state. Refused for
+  // measures rand can't sample (weighted, logweighted, bayesupdate,
+  // multivariate truncation) by the walker's dispatch — those throw with
+  // a clear message.
   if (op === 'rand') {
     return evaluateRand(ir, env);
   }

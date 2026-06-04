@@ -9,7 +9,7 @@
 //
 //  1. `builtin_sample(rngstate, kernel, kernel_input, [n, m, ...])` —
 //     synthesises a kernel call (optionally wrapped in iid) and threads
-//     RNG state through traceeval. The cross-engine ABI: same kernel
+//     RNG state through the measure walker (sampler.walk). The cross-engine ABI: same kernel
 //     + same input + same root state ⇒ same samples. We check
 //     equivalence with `rand(state, Kernel(kw))` and confirm
 //     state-threading produces independent successive draws.

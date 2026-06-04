@@ -245,18 +245,19 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // injected into the resolver below.
   const samplerLib = require('./sampler.ts');
   // resolveMeasureRef closure threaded through evaluateExpr → evaluateRand
-  // → traceeval. When traceeval hits a `(ref self <name>)` for a
-  // measure operand it consults this to recover the measure IR.
+  // → the measure walker (sampler.walk). When the walker hits a
+  // `(ref self <name>)` for a measure operand it consults this to recover
+  // the measure IR.
   //
   // Two paths here. For named bindings that classify as a measure
   // derivation (sample / record / iid / weighted / alias), use
   // expandMeasureIR — this canonicalises through the derivation
   // graph, turning e.g. `prior = lawof(record(theta1=draw(M1),
   // theta2=draw(M2)))` into the sampleable `joint(theta1=M1,
-  // theta2=M2)` shape that traceeval can walk directly. For
+  // theta2=M2)` shape that the walker can sample directly. For
   // anonymous lift-introduced bindings or any case expandMeasureIR
   // can't resolve, fall back to the raw lowered IR — those tend to
-  // already be primitive distribution calls that traceeval handles.
+  // already be primitive distribution calls that the walker handles.
   function resolveMeasureRef(refName: any) {
     const expanded = expandMeasureIR(refName, derivations);
     if (expanded) return expanded;
@@ -454,10 +455,10 @@ function classifyDerivation(
   // and per spec §sec:likelihoodof,
   //   logdensityof(likelihoodof(K, obs), theta)  ≡  logdensityof(K(theta), obs)
   // So per atom i: logw_i = logdensityof(K_body[θ_i], obs), evaluated
-  // by traceeval.walk on K's body with env carrying the prior's atom
-  // and tally='clamped'. We carry that out at materialise time
-  // rather than synthesising an intermediate logweighted IR — the
-  // walker already implements the lowered primitive.
+  // by density.ts (logDensityConsumeN) on K's body with env carrying the
+  // prior's atom (tally='clamped'). We carry that out at materialise time
+  // rather than synthesising an intermediate logweighted IR — density.ts
+  // already implements the lowered primitive.
   if (binding.type === 'bayesupdate') {
     return classifyBayesupdate(binding, bindings);
   }
@@ -654,7 +655,7 @@ function classifyDerivation(
     // `samples, _ = rand(state, iid(<composite M>, n))` destructures to
     // `tuple_get(<rand>, 0)`. The DRAW of a forward composite measure
     // (lawof of a broadcast/aggregate, a pushfwd, …) can't be sampled by
-    // the per-draw traceeval walker, but the batched materialiser can —
+    // the per-draw measure walker (sampler.walk), but the batched materialiser can —
     // so route it there on demand (engine-concepts §17.4 stage 2). Leaf
     // rand stays on the existing batched-leaf path (sampleLeafN via
     // pre-eval); the gate lives in classifyRandSample. Checked before the
@@ -1088,9 +1089,10 @@ function classifyIid(
 // `%mlhs = rand(state, iid(M, count))`. This classifier intercepts the
 // DRAW half — `tuple_get(<rand>, 0)` — and, when `M` is a COMPOSITE
 // measure, routes it to the batched materialiser (kind `randsample`)
-// instead of the per-draw traceeval walker that `evaluate` would use.
+// instead of the per-draw measure walker (sampler.walk) that `evaluate`
+// would use.
 //
-// Why: traceeval can sample leaf distributions and simple measure
+// Why: the walker can sample leaf distributions and simple measure
 // algebra, but not a forward composite like `lawof(<broadcast over a
 // stochastic iid vector>)` — it has no walker for `aggregate` /
 // arbitrary value ops in measure position. The materialiser already
@@ -1283,7 +1285,7 @@ function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationBr
 // `logdensityof(M, x)` — per spec §sec:posterior, evaluate M's
 // log-density at x. Result is REAL (a value, not a measure), but the
 // classifier dispatch lives here uniformly: the materialiser computes
-// per-prior-atom values via traceeval.walk + tally='clamped', so each
+// per-prior-atom values via density.ts (logDensityConsumeN, tally='clamped'), so each
 // prior atom θ_i contributes logp = logdensityof(M[θ_i], x). This is
 // the same primitive that drives bayesupdate's reweight, just exposed
 // as a scalar binding rather than folded into a posterior.
@@ -1956,7 +1958,7 @@ function leafSampleIR(name: any, derivations: any, visited: any) {
 
 /**
  * Expand a binding's derivation into a self-contained measure IR
- * suitable for traceeval.walk. Walks the derivation graph,
+ * suitable for the measure walker (sampler.walk). Walks the derivation graph,
  * substituting measure refs with their referenced derivations until
  * every internal ref points at a value (not a measure) — those value
  * refs are the names callers need to populate refArrays for during
@@ -2910,7 +2912,7 @@ function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited?: an
 // Why classify here and not as an AST rewrite to logweighted? The
 // spec lowering `bayesupdate(L, prior) → logweighted(fn(logdensityof(L, _)), prior)`
 // works mathematically, but realising it as an IR would require
-// extending the evaluator to call traceeval.walk for a
+// extending the evaluator to call density.ts (logDensityConsumeN) for a
 // `logdensityof` op inside a logweighted weightIR. Doing the
 // dispatch at the derivation layer is the same in spirit (one
 // primitive — the trace walker — handles all density evaluation),
