@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, computeSubDAG, findBindingAtLine } = require('../index.ts');
+const { processSource, computeSubDAG, computeFullDAG, findBindingAtLine, orchestrator } = require('../index.ts');
 
 function dagOf(src: any, target: any) {
   const { bindings } = processSource(src);
@@ -193,4 +193,50 @@ c = b * 2
 `, 'c');
   const ids = dag.nodes.map((n: any) => n.id).sort();
   assert.deepEqual(ids, ['a', 'b', 'c']);
+});
+
+// =====================================================================
+// Recursive reified callables must not hang the pipeline.
+// =====================================================================
+//
+// A self-referential reified callable (`k = pars -> k(...)`) is an
+// invalid FlatPPL program (the language is a static flat graph — no
+// recursion). It must NOT be beta-reduced to a fixed point: the lift
+// inliner refuses to expand a recursive callable, so liftInline-
+// Subexpressions / buildDerivations / signatureOf / the DAG builders
+// all TERMINATE (previously they spun forever, freezing the browser /
+// VS-Code DAG view even with plotting off). These tests pass simply by
+// completing — a regression would hang the run.
+
+test('dag: direct self-recursive callable terminates (no inline fixpoint blow-up)', () => {
+  const src = `
+data = [1.0, 2.0, 3.0]
+k_model = pars -> k_model(length(data), pars)
+`;
+  const { bindings } = processSource(src);
+  const built = orchestrator.buildDerivations(bindings);
+  // The recursive callable survives as a binding (un-inlined), and every
+  // downstream pass returns instead of hanging.
+  assert.ok(built.bindings.has('k_model'));
+  const sig = orchestrator.signatureOf('k_model', built.bindings);  // must not hang
+  assert.ok(sig === null || typeof sig === 'object');
+  const full = computeFullDAG(built.bindings);
+  assert.ok(full.nodes.some((n: any) => n.id === 'k_model'));
+  const sub = computeSubDAG(built.bindings, 'k_model');
+  assert.ok(sub.nodes.length >= 1);
+});
+
+test('dag: mutually-recursive callables terminate', () => {
+  const src = `
+f = x -> g(x)
+g = x -> f(x)
+`;
+  const { bindings } = processSource(src);
+  const built = orchestrator.buildDerivations(bindings);  // must not hang
+  assert.ok(built.bindings.has('f') && built.bindings.has('g'));
+  // Signatures + full DAG resolve without spinning.
+  orchestrator.signatureOf('f', built.bindings);
+  orchestrator.signatureOf('g', built.bindings);
+  const full = computeFullDAG(built.bindings);
+  assert.ok(full.nodes.length >= 2);
 });
