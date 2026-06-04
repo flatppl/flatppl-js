@@ -179,15 +179,16 @@ test('synthesized callable is a functionof wrapping the op', () => {
 // --- lexer corner cases -----------------------------------------------
 
 test('Julia trailing-dot rule: 1./y is float-divide, 1 ./ y broadcasts', () => {
-  // `1./y` → `1.` munches as the real literal 1.0; plain `/`.
+  // `1./y` → `1.` munches as the real literal 1.0; plain `/` (= divide,
+  // spec §07 true division — not floor `div`).
   const a = lowerExpr('1.0 / y');
   const plain = lowerExpr('1./y');
-  assert.equal(plain.op, 'div');
+  assert.equal(plain.op, 'divide');
   assert.deepEqual(stripLoc(plain), stripLoc(a));
   // `1 ./ y` → dotted divide (broadcast).
   const bc = lowerExpr('1 ./ y');
   assert.equal(bc.op, 'broadcast');
-  assert.equal(bc.args[0].body.op, 'div');
+  assert.equal(bc.args[0].body.op, 'divide');
 });
 
 test('dotted op needs no space when LHS is an identifier (A.+B)', () => {

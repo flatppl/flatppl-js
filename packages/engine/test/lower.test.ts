@@ -177,7 +177,7 @@ test('lower: full set of binary operators desugar', () => {
   const cases = [
     { src: 'a - b',  op: 'sub' },
     { src: 'a * b',  op: 'mul' },
-    { src: 'a / b',  op: 'div' },
+    { src: 'a / b',  op: 'divide' },  // spec §07: `/` is divide (true division), not floor `div`
     { src: 'a < b',  op: 'lt' },
     { src: 'a <= b', op: 'le' },
     { src: 'a > b',  op: 'gt' },
