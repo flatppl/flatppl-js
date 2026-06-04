@@ -2242,6 +2242,14 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         if (args.length !== 2) return false;
         return isEvaluable(args[0]);
       }
+      // rand_succ(state) — the value-domain composite-rand successor
+      // (split lane 1). One arg, the rngstate (itself evaluable).
+      // Synthesised by the lift rand_succ rewrite; never surface syntax.
+      if (ir.op === 'rand_succ') {
+        const args = ir.args || [];
+        if (args.length !== 1) return false;
+        return isEvaluable(args[0]);
+      }
       // aggregate(f_reduction, output_axes, expr) — the second arg is
       // always a `vector(...)` of axis refs by construction (the
       // analyzer enforces). vector is deliberately NOT in EVALUABLE_OPS

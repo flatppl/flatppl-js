@@ -509,6 +509,13 @@ const EVALUABLE_OPS = new Set([
   // ordinary value-typed functions whose phase propagates from
   // their inputs. sampler.evaluateCall dispatches each.
   'rnginit', 'rngstate', 'rand',
+  // rand_succ(state): the composite-rand successor rngstate (split lane 1
+  // of the parent key; engine-concepts §11/§17.4). Engine-INTERNAL —
+  // synthesised by the lift `rand_succ` rewrite for the state half of a
+  // composite `rand`, never written in surface syntax. Value-typed (an
+  // rngstate), so sampler.evaluateCall dispatches it like rand/rngstate,
+  // NOT through ARITH_OPS.
+  'rand_succ',
   // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
   // Per-kernel log-density, sampling, and canonical transports to/from
   // the standard uniform / standard normal references. Dispatch goes
