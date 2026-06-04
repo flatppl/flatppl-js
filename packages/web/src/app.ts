@@ -259,10 +259,9 @@
   /** Tiny debounce: collapse rapid calls into one delayed call.
       Used by the playground's onChange path so the viewer re-renders
       after the user pauses typing rather than on every keystroke. */
-  function debounce(fn: any, ms: any) {
+  function debounce(fn: any, ms: any): (...args: any[]) => void {
     let t: any = null;
-    return function () {
-      const args = arguments;
+    return function (...args: any[]) {
       if (t) clearTimeout(t);
       t = setTimeout(function () { t = null; fn.apply(null, args); }, ms);
     };
