@@ -2707,6 +2707,13 @@ function evaluateCall(ir: any, env: any): any {
   // synchronously so a chained `rand` consumes it via fixedValues /
   // evaluateExpr. The lane assignment is the single-source-of-truth
   // randSplitLanes helper shared with matRandSample.
+  //
+  // The successor is derived from state.key ONLY — state.counter is read as
+  // a type guard but not used (the SPLIT paradigm: a fresh key per lane,
+  // not a counter advance). This is sound because composite state halves
+  // always originate from rnginit or a prior rand_succ, both counter-zero;
+  // two composite chains that share a key would need to share an rnginit
+  // seed, which already makes them the same stream by design.
   if (op === 'rand_succ') {
     const args = ir.args || [];
     if (args.length !== 1) {
@@ -2951,10 +2958,21 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
   // resolver so the binding map isn't baked into the walker.
   if (ir && ir.kind === 'ref' && ir.ns === 'self') {
     if (!ctx.resolveRef) {
+      // This is where a BARE un-destructured composite `rand` surfaces: a
+      // `r = rand(state, iid(<composite>, n))` reaches the worker's bare
+      // evaluate path (no resolver), and walking its inner measure ref hits
+      // here. The supported surface is to DESTRUCTURE — the draw half then
+      // materialises (matRandSample) and the state half threads via
+      // rand_succ; the bare 2-tuple (display-array draw + rngstate
+      // successor) has no value representation yet (deferred). Fail loud
+      // with that guidance rather than a wrong value.
       throw new Error(
         `sampler.walk: encountered measure ref '${ir.name}' but no ` +
-        `resolveMeasureRef was supplied. Inline the measure or pass ` +
-        `opts.resolveMeasureRef.`
+        `resolveMeasureRef was supplied. If this is a bare ` +
+        `\`rand(state, <measure>)\`, destructure it — \`draw, succ = rand(...)\` ` +
+        `— so the draw materialises and the state half threads via rand_succ ` +
+        `(a bare un-destructured composite rand is not yet supported). ` +
+        `Otherwise inline the measure or pass opts.resolveMeasureRef.`
       );
     }
     const inner = ctx.resolveRef(ir.name);
@@ -2982,25 +3000,16 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
   const handler: any = op != null ? (MEASURE_OP_WALKERS as any)[op] : null;
   if (handler) return handler(state, ir, env, ctx);
   // A forward-composite value-op in measure position (broadcast / aggregate
-  // / scan / reduce / filter / pushfwd, typically reached by unwrapping a
-  // `lawof`) is a COMPOSITE rand. A DESTRUCTURED composite rand never
-  // reaches here — its draw half is handled by the materialiser
-  // (matRandSample) and its state half by the lift rand_succ rewrite. A
-  // BARE un-destructured `r = rand(state, iid(<composite>, n))` has no such
-  // projection to reclassify, so it lands here. That bare 2-tuple
-  // (async display-array draw + sync rngstate successor) has no value
-  // representation yet (deferred — see TODO); fail loud with a pointer to
-  // the supported surface rather than producing a wrong value.
-  const FORWARD_COMPOSITE = ['broadcast', 'aggregate', 'scan', 'reduce', 'filter', 'pushfwd'];
-  const hint = (op != null && FORWARD_COMPOSITE.indexOf(op) >= 0)
-    ? ` This is a composite \`rand\`: destructure it — \`draw, succ = rand(...)\` ` +
-      `— so the draw materialises and the state half threads via rand_succ. ` +
-      `A bare un-destructured composite rand is not yet supported.`
-    : '';
+  // / scan / reduce / filter, typically under a `lawof`) is a COMPOSITE
+  // rand whose DRAW half the materialiser samples (matRandSample) and whose
+  // STATE half the lift rand_succ rewrite handles — neither walks here. A
+  // bare un-destructured composite rand surfaces earlier, at the
+  // measure-ref guard above (its inner measure is a hoisted ref). So this
+  // throw is the generic "not a sampleable measure" wall.
   throw new Error(
     `sampler.walk: op '${op}' is not a measure expression we can ` +
     `sample. Known: leaf distributions, ` +
-    Object.keys(MEASURE_OP_WALKERS).join(', ') + '.' + hint
+    Object.keys(MEASURE_OP_WALKERS).join(', ') + '.'
   );
 }
 
