@@ -1,0 +1,37 @@
+%%%
+Chained composite `rand`: thread the SUCCESSOR rngstate from one composite
+draw into a second (engine-concepts §11 / §17.4).
+
+`Y_dist = lawof(Y)` with `Y = polyeval.([C], X)` is a forward composite the
+per-draw measure walker cannot sample, so each DRAW half routes to the
+materialiser's matRandSample (seeded from split lane 0 of the rng key) and
+the non-discard STATE half routes to the value-domain `rand_succ` op (split
+lane 1) — the composite-succession paradigm (SPLIT key-derivation),
+orthogonal to a leaf rand's threaded counter-advance successor.
+
+`Y1` and `Y2` must be independent: `Y1` draws off lane 0 of `rstate`, the
+successor `s2` is lane 1 of `rstate`, and `Y2` draws off lane 0 of `s2`.
+%%%
+flatppl_compat = "0.1"
+
+polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+
+% Coefficients of the polynomial 2.3 + 1.5*x + 0.7*x^2.
+C = [2.3, 1.5, 0.7]
+
+% Stochastic length-10 vector of iid standard normal draws per atom.
+X ~ iid(Normal(0, 1), 10)
+
+% Polynomial evaluated at each of X's 10 elements, per atom.
+Y = polyeval.([C], X)
+
+% Law of Y.
+Y_dist = lawof(Y)
+
+rstate = rnginit([1, 2, 3, 4])
+
+% First composite draw + its successor rngstate (NON-discard state half).
+Y1, s2 = rand(rstate, iid(Y_dist, 200))
+
+% Chain a second composite draw off the successor.
+Y2, _ = rand(s2, iid(Y_dist, 200))

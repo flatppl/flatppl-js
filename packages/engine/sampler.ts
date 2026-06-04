@@ -2981,10 +2981,26 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
   // new measure-algebra walker is one entry there plus the handler.
   const handler: any = op != null ? (MEASURE_OP_WALKERS as any)[op] : null;
   if (handler) return handler(state, ir, env, ctx);
+  // A forward-composite value-op in measure position (broadcast / aggregate
+  // / scan / reduce / filter / pushfwd, typically reached by unwrapping a
+  // `lawof`) is a COMPOSITE rand. A DESTRUCTURED composite rand never
+  // reaches here — its draw half is handled by the materialiser
+  // (matRandSample) and its state half by the lift rand_succ rewrite. A
+  // BARE un-destructured `r = rand(state, iid(<composite>, n))` has no such
+  // projection to reclassify, so it lands here. That bare 2-tuple
+  // (async display-array draw + sync rngstate successor) has no value
+  // representation yet (deferred — see TODO); fail loud with a pointer to
+  // the supported surface rather than producing a wrong value.
+  const FORWARD_COMPOSITE = ['broadcast', 'aggregate', 'scan', 'reduce', 'filter', 'pushfwd'];
+  const hint = (op != null && FORWARD_COMPOSITE.indexOf(op) >= 0)
+    ? ` This is a composite \`rand\`: destructure it — \`draw, succ = rand(...)\` ` +
+      `— so the draw materialises and the state half threads via rand_succ. ` +
+      `A bare un-destructured composite rand is not yet supported.`
+    : '';
   throw new Error(
     `sampler.walk: op '${op}' is not a measure expression we can ` +
     `sample. Known: leaf distributions, ` +
-    Object.keys(MEASURE_OP_WALKERS).join(', ') + '.'
+    Object.keys(MEASURE_OP_WALKERS).join(', ') + '.' + hint
   );
 }
 
