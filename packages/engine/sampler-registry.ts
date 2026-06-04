@@ -1152,6 +1152,125 @@ function regionBoundsFromIR(ir: any, env: any) {
     + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');
 }
 
+// True iff `measureIR` is a registry distribution that has an explicit
+// batched kernel (randNFn). The worker's per-i materialisation path uses
+// this to dispatch: randNFn dists fold onto the single batched leaf math
+// (makeBulkSampler perI mode); everything else keeps the per-draw scalar
+// sampler. Never throws — a non-call / unknown op is simply not a
+// randNFn dist.
+function hasRandNFn(measureIR: any) {
+  if (!measureIR || measureIR.kind !== 'call') return false;
+  const entry = (REGISTRY as any)[measureIR.op];
+  return !!entry && typeof entry.randNFn === 'function';
+}
+
+// Normalise one evaluateExprN result into a randNFn param column:
+//   number / boolean       → a scalar (atom-independent stride-0 read)
+//   Float64Array(count)    → a per-atom column
+//   Value shape=[count]    → its .data (atom-batched scalar)
+//   anything else          → null (signal: cannot batch-resolve, the
+//                            caller should fall back to the scalar path)
+//
+// A vector-atom result (Value shape=[count, k]) is NOT a hard error: it
+// falls back like everything else. The per-draw scalar path (the canonical
+// handler — e.g. a nested-chain param that batch-evaluates to a per-atom
+// vector but resolves to a scalar per atom) takes over, and if a parameter
+// is genuinely a vector into a scalar distribution it fails loud THERE, at
+// the same site it always has. Falling back is never silently wrong;
+// throwing on this hot dispatch would regress paths the scalar sampler
+// handles correctly.
+function _normalizeParamColumn(result: any, count: number, op: string): any {
+  if (typeof result === 'number') return result;
+  if (typeof result === 'boolean') return +result;
+  if (result && result.BYTES_PER_ELEMENT !== undefined && result.length === count) {
+    return result;   // Float64Array(count) — per-atom scalar column
+  }
+  if (result && Array.isArray(result.shape) && result.data
+      && result.data.BYTES_PER_ELEMENT !== undefined
+      && result.shape.length === 1 && result.shape[0] === count) {
+    return result.data;   // atom-batched scalar
+  }
+  return null;   // scalar-incompatible (vector-atom / unexpected) — fall back
+}
+
+function _columnAllFinite(col: any): boolean {
+  if (typeof col === 'number') return Number.isFinite(col);
+  for (let i = 0; i < col.length; i++) if (!Number.isFinite(col[i])) return false;
+  return true;
+}
+
+// Per-i parameter resolution — the per-atom analogue of resolveParams.
+// Each declared parameter expression is evaluated OVER THE BATCH via
+// evaluateExprN, yielding a column that is either a plain number (the
+// parameter is atom-independent, read as a stride-0 broadcast) or a
+// Float64Array(count) (the parameter varies per atom, e.g. it references
+// an upstream draw). Single-sources the kwargs>aliases>positional
+// precedence and the Uniform custom-support handling with resolveParams,
+// so the per-i caller never re-derives them.
+//
+// Returns null — a "cannot batch-resolve, fall back" SIGNAL, not an error
+// — when a parameter can't be resolved as a scalar/column: a Uniform
+// whose support is not interval(lo, hi), a non-finite Uniform bound, or
+// any unexpected result shape. The caller (makeBulkSampler perI mode)
+// turns null into { unhandled: true } and the worker keeps its per-draw
+// scalar fallback (which reproduces the canonical error path for genuinely
+// invalid params, and correctly handles cases like nested-chain params
+// that batch-evaluate to a vector-atom but resolve to a scalar per atom).
+// resolveParamsN never throws for a scalar-incompatible column — it falls
+// back, so it can't regress a path the scalar sampler handles.
+function resolveParamsN(
+  measureIR: any, entry: any, refArrays: any, count: number, baseEnv: any,
+) {
+  const evaluateExprN = require('./sampler.ts').evaluateExprN;
+  const kwargs = measureIR.kwargs || {};
+  const positional = measureIR.args || [];
+
+  // Custom-resolve dists (Uniform): only the interval(lo, hi) support
+  // shape can be batch-resolved; const-region / ref-region supports fall
+  // back. Mirrors customResolveParams' kwargs.support|positional[0] pick.
+  if (typeof entry.customResolveParams === 'function') {
+    const supportIR = ('support' in kwargs) ? kwargs.support
+                    : (positional.length > 0 ? positional[0] : null);
+    if (!supportIR || supportIR.kind !== 'call' || supportIR.op !== 'interval'
+        || !Array.isArray(supportIR.args) || supportIR.args.length !== 2) {
+      return null;   // non-interval support — fall back to the scalar path
+    }
+    const lo = _normalizeParamColumn(
+      evaluateExprN(supportIR.args[0], refArrays, count, baseEnv), count, measureIR.op);
+    const hi = _normalizeParamColumn(
+      evaluateExprN(supportIR.args[1], refArrays, count, baseEnv), count, measureIR.op);
+    if (lo === null || hi === null) return null;
+    // Bounded support required (matches customResolveParams' finiteness
+    // guard); a non-finite bound falls back so the scalar path raises the
+    // canonical "requires a bounded support" error.
+    if (!_columnAllFinite(lo) || !_columnAllFinite(hi)) return null;
+    return [lo, hi];
+  }
+
+  // Generic: iterate declared params with resolveParams' precedence.
+  const out: any[] = [];
+  for (let i = 0; i < entry.params.length; i++) {
+    const paramName = entry.params[i];
+    let exprIR;
+    if (paramName in kwargs) {
+      exprIR = kwargs[paramName];
+    } else if (entry.aliases[paramName] && entry.aliases[paramName] in kwargs) {
+      exprIR = kwargs[entry.aliases[paramName]];
+    } else if (i < positional.length) {
+      exprIR = positional[i];
+    } else {
+      throw new Error(
+        `sampler: '${measureIR.op}' missing parameter '${paramName}'`
+      );
+    }
+    const col = _normalizeParamColumn(
+      evaluateExprN(exprIR, refArrays, count, baseEnv), count, measureIR.op);
+    if (col === null) return null;
+    out.push(col);
+  }
+  return out;
+}
+
 // =====================================================================
 // Philox PRNG adapter — bridges pure-functional Philox to stdlib's
 // stateful `opts.prng` callback contract.
@@ -1280,6 +1399,8 @@ module.exports = {
   listDistributions,
   lookupDistribution,
   resolveParams,
+  resolveParamsN,
+  hasRandNFn,
   regionBoundsFromIR,
   makePhiloxPrngAdapter,
   makeBulkUniformPrngAdapter,

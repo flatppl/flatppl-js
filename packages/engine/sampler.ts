@@ -92,6 +92,8 @@ const {
   listDistributions,
   lookupDistribution,
   resolveParams,
+  resolveParamsN,
+  hasRandNFn,
   regionBoundsFromIR,
   makePhiloxPrngAdapter,
   makeBulkUniformPrngAdapter,
@@ -233,10 +235,52 @@ function makeParametricSampler(state: any, measureIR: any) {
  * factory cost story, plus randNFn slots take static params only in
  * this commit; a per-i randNFn variant is a future follow-up).
  */
+// Expand a per-atom param column to atom-major length n = count*repeat:
+// atom i's value is shared across its `repeat` inner draws, matching the
+// output layout out[i*repeat + j] (the iid(M, repeat) per-outer-atom
+// fan-out). A scalar column is atom-independent and stays scalar (the
+// transform reads it as a stride-0 broadcast — no allocation). When
+// repeat === 1 the column is already length count === n, so it's
+// returned unchanged.
+function _expandPerAtomColumn(col: any, count: number, repeat: number): any {
+  if (typeof col === 'number') return col;
+  if (repeat === 1) return col;
+  const n = count * repeat;
+  const exp = new Float64Array(n);
+  for (let i = 0; i < count; i++) {
+    const v = col[i];
+    const base = i * repeat;
+    for (let j = 0; j < repeat; j++) exp[base + j] = v;
+  }
+  return exp;
+}
+
 function makeBulkSampler(
   state: any, measureIR: any, env: any, n: number, out?: Float64Array,
+  perI?: { refArrays: any, count: number, repeat?: number },
 ) {
   const entry = lookupDistribution(measureIR);
+
+  // Per-i batched mode: at least one distribution parameter varies per
+  // outer atom (it references an upstream draw). Only the randNFn family
+  // can batch this — one philoxN* draw + the per-element transform loop
+  // (the SAME loop body the static path uses, fed per-atom param columns
+  // instead of scalars). This retires the worker's per-draw stdlib
+  // randFn.factory (ziggurat) second realisation for those dists
+  // (engine-concepts §11, Q2 fold). Anything we can't batch — a
+  // non-randNFn dist, or a Uniform whose support isn't interval(lo, hi)
+  // — returns { unhandled: true } so the worker keeps its per-draw
+  // scalar makeParametricSampler loop (one endpoint, not one algorithm).
+  if (perI) {
+    if (typeof entry.randNFn !== 'function') return { unhandled: true } as any;
+    const cols = resolveParamsN(measureIR, entry, perI.refArrays, perI.count, env);
+    if (cols === null) return { unhandled: true } as any;
+    const repeat = perI.repeat || 1;
+    const expanded = cols.map((c: any) => _expandPerAtomColumn(c, perI.count, repeat));
+    const r = entry.randNFn(state, expanded, n, out);
+    return { samples: r.out, state: r.state };
+  }
+
   const params = resolveParams(measureIR, entry, env);
 
   if (typeof entry.randNFn === 'function') {
@@ -3115,6 +3159,7 @@ module.exports = {
   // Introspection
   isKnownDistribution,
   listDistributions,
+  hasRandNFn,
 
   // Internal — exported for tests + the sampler-eval-batched cycle
   // (`resolveConst` is read lazily by _evalN's `const` case) +

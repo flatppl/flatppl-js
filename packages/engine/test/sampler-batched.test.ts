@@ -340,3 +340,210 @@ test('makeBulkSampler: caller-supplied `out` is filled in place', () => {
   for (let i = 0; i < n; i++) { if (out[i] !== 0) { allZero = false; break; } }
   assert.ok(!allZero, 'out array was not populated');
 });
+
+// =====================================================================
+// Per-i batched mode (Q2 one-leaf-realisation fold)
+// =====================================================================
+//
+// makeBulkSampler(..., out, perI) draws with PER-ATOM parameter columns:
+// resolveParamsN evaluates each param expr over the batch, randNFn runs
+// one philoxN* draw + the per-element transform. This replaces the
+// worker's per-draw stdlib randFn.factory loop (ziggurat for Normal/
+// LogNormal) for the randNFn family with the single batched leaf math.
+//
+// What this pins:
+//   - Uniform / Exponential per-i are BIT-EXACT to the old per-atom
+//     makeParametricSampler.drawWith loop (same uniform stream + same
+//     per-draw transform, atom-major order), incl. repeat>1.
+//   - Normal / LogNormal per-i preserve the distribution (per-atom mean
+//     tracks mu_i) — the accepted ziggurat→Box-Muller shift.
+//   - resolveParamsN normalisation: scalar passthrough, ref→column,
+//     Uniform interval support, non-interval fall-through; hasRandNFn.
+
+const registry = require('../sampler-registry.ts');
+
+function refIR(name: any) {
+  return { kind: 'ref', ns: 'self', name, loc: synthLoc() };
+}
+
+// Uniform with per-atom support bounds: interval(<ref lo>, <ref hi>).
+function uniformPerIIR(loName: any, hiName: any) {
+  return {
+    kind: 'call', op: 'Uniform',
+    kwargs: { support: {
+      kind: 'call', op: 'interval',
+      args: [refIR(loName), refIR(hiName)],
+      loc: synthLoc(),
+    } },
+    loc: synthLoc(),
+  };
+}
+
+// The pre-fold per-i path: one parametric sampler, drawWith(per-atom env)
+// in atom-major order. The baseline the batched path must match bit-for-
+// bit for the bit-equivalent dists (Uniform / Exponential).
+function perAtomScalarBaseline(state: any, ir: any, refArrays: any, count: number, repeat: number) {
+  const s = sampler.makeParametricSampler(state, ir);
+  const total = count * repeat;
+  const out = new Float64Array(total);
+  const refKeys = Object.keys(refArrays);
+  const env: any = {};
+  for (let i = 0; i < count; i++) {
+    for (const k of refKeys) env[k] = refArrays[k][i];
+    const base = i * repeat;
+    for (let j = 0; j < repeat; j++) out[base + j] = s.drawWith(env);
+  }
+  return { samples: out, state: s.getState() };
+}
+
+test('makeBulkSampler perI Uniform: bit-exact to per-atom scalar drawWith loop', () => {
+  const state = rng.seedFromBytes([3, 1, 4, 1, 5]);
+  const count = 256;
+  const lo = new Float64Array(count);
+  const hi = new Float64Array(count);
+  for (let i = 0; i < count; i++) { lo[i] = -1 - i * 0.01; hi[i] = 2 + i * 0.02; }
+  const refArrays = { lo_i: lo, hi_i: hi };
+  const ir = uniformPerIIR('lo_i', 'hi_i');
+
+  const baseline = perAtomScalarBaseline(state, ir, refArrays, count, 1);
+  const r = sampler.makeBulkSampler(state, ir, {}, count, undefined,
+    { refArrays, count, repeat: 1 });
+  assert.ok(!r.unhandled, 'perI Uniform should be handled by the batched path');
+  for (let i = 0; i < count; i++) {
+    assert.equal(r.samples[i], baseline.samples[i],
+      `perI Uniform mismatch at i=${i}: batched=${r.samples[i]} scalar=${baseline.samples[i]}`);
+    assert.ok(r.samples[i] >= lo[i] && r.samples[i] < hi[i] + 1e-9,
+      `sample ${r.samples[i]} outside per-atom [${lo[i]}, ${hi[i]})`);
+  }
+  assertStatesEquivalent(r.state, baseline.state, 'perI Uniform trailing state differs');
+});
+
+test('makeBulkSampler perI Exponential: bit-exact to per-atom scalar drawWith loop', () => {
+  const state = rng.seedFromBytes([2, 7, 1, 8]);
+  const count = 200;
+  const rate = new Float64Array(count);
+  for (let i = 0; i < count; i++) rate[i] = 0.5 + i * 0.01;
+  const refArrays = { rate_i: rate };
+  const ir = { kind: 'call', op: 'Exponential', kwargs: { rate: refIR('rate_i') }, loc: synthLoc() };
+
+  const baseline = perAtomScalarBaseline(state, ir, refArrays, count, 1);
+  const r = sampler.makeBulkSampler(state, ir, {}, count, undefined,
+    { refArrays, count, repeat: 1 });
+  assert.ok(!r.unhandled);
+  for (let i = 0; i < count; i++) {
+    assert.equal(r.samples[i], baseline.samples[i], `perI Exp mismatch at i=${i}`);
+    assert.ok(r.samples[i] >= 0);
+  }
+  assertStatesEquivalent(r.state, baseline.state, 'perI Exp trailing state differs');
+});
+
+test('makeBulkSampler perI Uniform repeat>1: atom-major bit-exact', () => {
+  const state = rng.seedFromBytes([9, 9, 1]);
+  const count = 32;
+  const repeat = 5;
+  const lo = new Float64Array(count);
+  const hi = new Float64Array(count);
+  for (let i = 0; i < count; i++) { lo[i] = i; hi[i] = i + 1; }
+  const refArrays = { lo_i: lo, hi_i: hi };
+  const ir = uniformPerIIR('lo_i', 'hi_i');
+
+  const baseline = perAtomScalarBaseline(state, ir, refArrays, count, repeat);
+  const total = count * repeat;
+  const r = sampler.makeBulkSampler(state, ir, {}, total, undefined,
+    { refArrays, count, repeat });
+  assert.ok(!r.unhandled);
+  for (let k = 0; k < total; k++) {
+    assert.equal(r.samples[k], baseline.samples[k], `perI repeat mismatch at k=${k}`);
+    const atom = Math.floor(k / repeat);
+    assert.ok(r.samples[k] >= lo[atom] && r.samples[k] < hi[atom] + 1e-9,
+      `slot ${k} (atom ${atom}) sample ${r.samples[k]} outside [${lo[atom]}, ${hi[atom]})`);
+  }
+  assertStatesEquivalent(r.state, baseline.state, 'perI repeat trailing state differs');
+});
+
+test('makeBulkSampler perI Normal: per-atom mean tracks mu_i (distribution preserved)', () => {
+  const state = rng.seedFromBytes([4, 2, 4, 2]);
+  const count = 40;
+  const repeat = 4000;
+  const muCol = new Float64Array(count);
+  for (let i = 0; i < count; i++) muCol[i] = -5 + i * 0.25;
+  const refArrays = { mu_i: muCol };
+  // sigma fixed (atom-independent) → resolveParamsN returns it as a scalar.
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: { mu: refIR('mu_i'), sigma: { kind: 'lit', value: 1, loc: synthLoc() } },
+    loc: synthLoc(),
+  };
+  const total = count * repeat;
+  const r = sampler.makeBulkSampler(state, ir, {}, total, undefined,
+    { refArrays, count, repeat });
+  assert.ok(!r.unhandled);
+  const stderr = 1 / Math.sqrt(repeat);   // sigma = 1
+  for (let i = 0; i < count; i++) {
+    let s = 0;
+    const base = i * repeat;
+    for (let j = 0; j < repeat; j++) s += r.samples[base + j];
+    const m = s / repeat;
+    assert.ok(Math.abs(m - muCol[i]) < 6 * stderr,
+      `atom ${i}: block mean ${m} drifted from mu_i=${muCol[i]} (6σ=${6 * stderr})`);
+  }
+});
+
+test('resolveParamsN: atom-independent params stay scalar', () => {
+  const ir = distIR('Normal', { mu: 2, sigma: 0.5 });
+  const entry = registry.lookupDistribution(ir);
+  const cols = registry.resolveParamsN(ir, entry, {}, 16, {});
+  assert.equal(cols.length, 2);
+  assert.equal(cols[0], 2);     // scalar, not a column
+  assert.equal(cols[1], 0.5);
+});
+
+test('resolveParamsN: per-atom ref params become Float64Array columns', () => {
+  const count = 8;
+  const mu = new Float64Array(count);
+  for (let i = 0; i < count; i++) mu[i] = i;
+  const ir = {
+    kind: 'call', op: 'Normal',
+    kwargs: { mu: refIR('mu_i'), sigma: { kind: 'lit', value: 1, loc: synthLoc() } },
+    loc: synthLoc(),
+  };
+  const entry = registry.lookupDistribution(ir);
+  const cols = registry.resolveParamsN(ir, entry, { mu_i: mu }, count, {});
+  assert.ok(cols[0] && cols[0].BYTES_PER_ELEMENT !== undefined, 'mu should be a column');
+  assert.equal(cols[0].length, count);
+  assert.deepEqual(Array.from(cols[0]), Array.from(mu));
+  assert.equal(cols[1], 1);     // sigma scalar
+});
+
+test('resolveParamsN: Uniform interval support → two per-atom columns', () => {
+  const count = 5;
+  const lo = Float64Array.from([0, 1, 2, 3, 4]);
+  const hi = Float64Array.from([1, 2, 3, 4, 5]);
+  const ir = uniformPerIIR('lo_i', 'hi_i');
+  const entry = registry.lookupDistribution(ir);
+  const cols = registry.resolveParamsN(ir, entry, { lo_i: lo, hi_i: hi }, count, {});
+  assert.equal(cols.length, 2);
+  assert.deepEqual(Array.from(cols[0]), [0, 1, 2, 3, 4]);
+  assert.deepEqual(Array.from(cols[1]), [1, 2, 3, 4, 5]);
+});
+
+test('resolveParamsN: Uniform non-interval support → null (fall back to scalar path)', () => {
+  const ir = {
+    kind: 'call', op: 'Uniform',
+    kwargs: { support: { kind: 'const', name: 'unitinterval', loc: synthLoc() } },
+    loc: synthLoc(),
+  };
+  const entry = registry.lookupDistribution(ir);
+  const cols = registry.resolveParamsN(ir, entry, {}, 4, {});
+  assert.equal(cols, null);
+});
+
+test('hasRandNFn: true for the batched family, false otherwise', () => {
+  assert.equal(registry.hasRandNFn(distIR('Normal', { mu: 0, sigma: 1 })), true);
+  assert.equal(registry.hasRandNFn(distIR('Exponential', { rate: 1 })), true);
+  assert.equal(registry.hasRandNFn(uniformIR(0, 1)), true);
+  assert.equal(registry.hasRandNFn(distIR('LogNormal', { mu: 0, sigma: 1 })), true);
+  assert.equal(registry.hasRandNFn(distIR('Gamma', { shape: 2, rate: 1 })), false);
+  assert.equal(registry.hasRandNFn({ kind: 'call', op: 'broadcast', args: [], loc: synthLoc() }), false);
+  assert.equal(registry.hasRandNFn(null), false);
+});
