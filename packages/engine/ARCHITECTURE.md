@@ -37,7 +37,7 @@ not here.
 ```
 source → tokenizer.ts → parser.ts → analyzer.ts → pir.ts (LoweredModule)
          → typeinfer.ts (+ fixed-eval.ts) → orchestrator.ts
-         → materialiser.ts → worker.ts → sampler / density / traceeval
+         → materialiser.ts → worker.ts → sampler / density
 ```
 
 ```
@@ -71,7 +71,7 @@ source → tokenizer.ts → parser.ts → analyzer.ts → pir.ts (LoweredModule)
 └──────┬──────────┘  (samples + value + logWeights + n_eff + logTotalmass)
        │ worker messages (postMessage)
 ┌──────▼──────┐
-│ worker.ts   │  thin shell over sampler / density / traceeval
+│ worker.ts   │  thin shell over sampler / density
 └─────────────┘
 ```
 
@@ -159,11 +159,10 @@ after the table.
 | `bijection-registry.ts` (~330) | Single point of bijection support (engine-concepts §22): per-entry `atomBatchedForward` (sample) / `atomBatchedInverse` + `logDetJ` (density) / shape contract. `affine` entry done (covers MvNormal/MvStudentT/MvLogNormal); accepts atom-batched `b=[N,D]` / `L=[N,D,D]` via stride-0 reuse. Adding a bijection = one entry. |
 | `density.ts` (~1400) + `density-prims.ts` (~1100) | Single density implementation. `logDensityConsumeN(ir, value, refArrays, count, opts)` foundation + 3 wrappers; `OP_HANDLERS` consume/rest table (engine-concepts §4) over 11 measure ops + 8 multivariate kernels (via `walkMultivariate` → `density-prims.builtinLogdensityof`). `density-prims` is the FlatPDL `builtin_logdensityof` ABI + the four transports; MvNormal density routes through the `affine` registry entry. Also hosts the type-mode `staticConsume` / `staticDensityShapeCheck` (§17). |
 | `value.ts` (~700) + `value-ops.ts` (~1100) | The shape-tagged `Value` (engine-concepts §2.1): `shape`/`data`/`dtype`/`im`/`t` (Klein-4)/`struct`/`outerRank`. `transpose`/`adjoint`/`conjugate` toggle tag bits (no storage). `struct` bitmask (§2.2). `requireMatrix(v, op)` gates matrix-input ops (refuses nested-vector, spec §03); `promoteNestedToMatrix` is the sanctioned tag-stripper; `densify(v)` the one structured→dense fallback (**correctness never depends on a fast-path existing**). `value-ops`: shape-aware add/sub/neg/mul (+ batched `mulN`/`addN`), structured Cholesky/det/inv, complex (planar). |
-| `worker.ts` (~430) + `worker-entry.ts` (~90) | Stateless message handler over sampler/traceeval; transport shim sniffs Web Worker vs Node. Messages: init/sample/density/evaluate/sampleN/evaluateN/logDensityN/profileN/dispose (transferable-aware). `sampleN` static-params vs parametric path (parametric is critical — naive per-draw factory rebuild makes setup ~10× the sampling cost). |
-| `sampler.ts` (~2800) + splits | Single-point deterministic evaluator (`evaluateExpr`/`evaluateCall`), `ARITH_OPS`, worker entry points (`rand`/`makeSampler`/`makeParametricSampler`/`density`). Split: `sampler-registry` (REGISTRY + custom Ctors + PRNG bridge), `sampler-complex` (ESM leaf), `sampler-linalg` (ESM leaf — nested-array + Value-native LU/Cholesky/etc.), `sampler-aggregate` (CJS — `AGGREGATE_PATTERNS` + broadcast-reduce default), `sampler-eval-batched` (CJS — `evaluateExprN` + `ARITH_OPS_N` + complex-batched). ESM=pure-leaf, CJS=needs require()-back-to-sampler cycle (lazy, non-memoised). |
+| `worker.ts` (~430) + `worker-entry.ts` (~90) | Stateless message handler over sampler/density; transport shim sniffs Web Worker vs Node. Messages: init/sample/density/evaluate/sampleN/evaluateN/logDensityN/profileN/dispose (transferable-aware). `sampleN` static-params vs parametric path (parametric is critical — naive per-draw factory rebuild makes setup ~10× the sampling cost). |
+| `sampler.ts` (~2800) + splits | Single-point deterministic evaluator (`evaluateExpr`/`evaluateCall`), `ARITH_OPS`, worker entry points (`rand`/`makeSampler`/`makeParametricSampler`/`density`). **Hosts the measure walker** `walk` (was `traceeval.ts`; folded in §17.4 stage 4, so the sampler↔traceeval require cycle is gone) — the per-draw value-position sampling primitive for `rand(state, M)` / `builtin_sample`. Leaf base case → the **single batched leaf endpoint** `sampleLeafN` (scalar = batch-of-1, so `rand(state, <leaf>)` ≡ `rand(state, iid(<leaf>, 1))[0]`); composite (joint / record / iid-of-composite / weighted / lawof) recurses via `MEASURE_OP_WALKERS`. Sample-side only — scoring is `density.ts`. Split: `sampler-registry` (REGISTRY + custom Ctors + PRNG bridge), `sampler-complex` (ESM leaf), `sampler-linalg` (ESM leaf — nested-array + Value-native LU/Cholesky/etc.), `sampler-aggregate` (CJS — `AGGREGATE_PATTERNS` + broadcast-reduce default), `sampler-eval-batched` (CJS — `evaluateExprN` + `ARITH_OPS_N` + complex-batched). ESM=pure-leaf, CJS=needs require()-back-to-sampler cycle (lazy, non-memoised). |
 | `ops.ts` (~250) + `ops-declarations.ts` (~650) | Unified op-declaration registry + atom-batched dispatcher (engine-concepts §18). 20 ops across fixed-rank / rank-polymorphic / variadic / higher-order kinds; 3 batched fast-paths (cross/inv/lower_cholesky). **Shape-pattern variants** (`OpVariant` with `argPatterns` + `wrappingOp` + specificity scoring): 19 broadcasted primitives + 11 `mul` direct variants register as variants; `dispatch`/`dispatchVariant`/`dispatchTyped`(ArgInfo value+measure). |
 | `dissolver.ts` (~750) | Broadcast/aggregate dissolution term-rewriter (engine-concepts §20; JS specifics below). `dissolveBindings` runs in `buildDerivations` after lift; rewrites `.ir` in place. Phases 1–6 + shape-fold + fusion (a)/(b) MVPs + `propagateAxisStack` (authoritative for the iid / kernel_broadcast / aggregate axes it records; consumed by `axis-stack.ts` → matIid repeat axis + mat-broadcast K). |
-| `traceeval.ts` (~400) | Per-draw **sample-side** walker for measure IR — the `rand(state, M)` / `builtin_sample` path (`MEASURE_OP_WALKERS` table). No scoring: the old `tally`/score protocol was lifted into `density.ts` long ago. **Being retired** (engine-concepts §11, TODO): the batched materialiser is the single sample evaluator — `iid` is just a batch axis, leaves are `sampleN`. **Step 1 landed:** the leaf-iid draw already batches through `sampler.sampleLeafN` (the FlatPDL leaf endpoint — one `makeBulkSampler` batch), shared by `builtin_sample` + `rand(state, iid(<leaf>, dims))` via `walkIid`'s leaf branch (resolves a lift-hoisted inner ref first), so the two stay bit-for-bit equal. **Step 2 landed:** `rand`/`iid` of a forward *composite* measure no longer routes here at all — `derivations.classifyRandSample` sends `tuple_get(rand(state, iid(<composite>, n)), 0)` to the `randsample` materialiser (child ctx, fresh cache, `rootKey` split off the rand state), so the per-draw walker is bypassed for composites; shared-vs-fresh draws are a cache-scope choice (session vs child). Remaining (stage 4): leaf `rand` + `builtin_sample` move off this walker too, then delete it. The composite-`rand` state-half (`split(state)` for chaining) + a bare `r = rand(...)` tuple binding are open follow-ups (TODO §06). |
 | `empirical.ts` (~700) | Weighted empirical measure utilities (log-space, ESS, resample). Null-uniform-weight protocol (null = uniform, no alloc); `logSumExp` max-subtraction; `totalLogMass` = 0 for null. |
 | `histogram.ts` (~350) | Freedman-Diaconis / integer-atom binning, weighted histogram + quantile + plot range. |
 | `rng.ts` (~400) | Pure Philox-4x32-10 counter-PRNG (`(key,counter)→4-tuple`, no sequential state — reproducible, parallel, cross-impl parity). 32×32→64 via 16-bit decomposition (no BigInt on the hot path). |
@@ -192,8 +191,8 @@ The cleanly-checkable ones ARE enforced by `test/invariants.test.ts`
 (distribution ↔ REGISTRY both ways, discrete flag, EVALUABLE_OPS ↔ ARITH_OPS,
 BIN_OP_MAP/UN_OP_MAP signatures, REGISTRY params ↔ types kwargs, sampleable/
 discrete ⊆ `builtins.DISTRIBUTIONS`) — a failing test names the mirror to
-update. The `MEASURE_OP_*` catalogs (`MEASURE_OP_CLASSIFIERS`, traceeval
-`MEASURE_OP_WALKERS`, density `OP_HANDLERS`, materialiser `KIND_HANDLERS`) are
+update. The `MEASURE_OP_*` catalogs (`MEASURE_OP_CLASSIFIERS`, the measure walker's
+`MEASURE_OP_WALKERS` in `sampler.ts`, density `OP_HANDLERS`, materialiser `KIND_HANDLERS`) are
 intentionally NOT invariant-tested (cross-cut by structural vs algebraic vs
 density-routed handling — a clean equivalence would be false); watch them by
 hand. The unified `ops.ts` declaration model (engine-concepts §18) collapses
@@ -240,7 +239,7 @@ ways by `invariants.test.ts`, modulo documented `vector`/`cat` exemptions).
 | `typeinfer.ts` | special-case handler in `inferCall` if `special` set |
 | `lower.ts` | `'baz'` in `FIELD_FORMS` if it has ordered named entries |
 | `derivations.ts` | `classifyBaz` + `MEASURE_OP_CLASSIFIERS` entry + `_expandByName` arm |
-| `traceeval.ts` | walker + `MEASURE_OP_WALKERS` (sampling) |
+| `sampler.ts` | walker + `MEASURE_OP_WALKERS` (sampling — the in-module measure walker) |
 | `density.ts` | walker + `OP_HANDLERS` (scoring) |
 | `materialiser.ts` | handler + `KIND_HANDLERS` |
 | `disintegrate.ts` | dispatch entry if it can appear in a joint-measure RHS |
@@ -376,7 +375,7 @@ test`.
 | "Canonical measure IR for this binding?" | `derivations.ts` `expandMeasure(name, {derivations, bindings})` |
 | "How is this distribution sampled?" | `sampler.ts` REGISTRY; multivariate: `materialiser.ts` `mat*` |
 | "How is its density computed?" | `density.ts` `OP_HANDLERS`; `density-prims.ts` per-kernel math |
-| "How is this measure-algebra op handled?" | `derivations.ts` classifier + `_expandByName`; `materialiser.KIND_HANDLERS`; `density.OP_HANDLERS`; `traceeval.MEASURE_OP_WALKERS` |
+| "How is this measure-algebra op handled?" | `derivations.ts` classifier + `_expandByName`; `materialiser.KIND_HANDLERS`; `density.OP_HANDLERS`; `sampler.ts` `MEASURE_OP_WALKERS` (the measure walker) |
 | "Why does the DAG render this way?" | `dag.ts` |
 | "Why did disintegrate produce this Plan?" | `disintegrate.ts` (`disintegratePlan`) |
 | "Why is the RNG result this number?" | `rng.ts` (Philox); `sampler.ts` PRNG adapter |
