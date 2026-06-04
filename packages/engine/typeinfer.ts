@@ -1573,6 +1573,34 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   //     declared result type, monomorphic-at-definition (the same
   //     simplification `inferUserCall` makes for scalar calls).
   // Anything else falls back to deferred.
+  // For a BARE measure-producing builtin head under `broadcast`
+  // (e.g. `Normal.(means, sigmas)`, `Binomial.(n, p)`), the per-cell
+  // result is the head applied to the per-cell arg types. A bare
+  // distribution constructor IS a (Markov) kernel (spec §06 uniform
+  // kernel extension, §04 functionof-of-measure; engine-concepts §19),
+  // so broadcasting it yields an array-valued measure exactly like a
+  // user kernel does. Returns the per-cell measure type, or null if
+  // `opName` is not a measure-producing builtin. Best-effort tvar
+  // binding (e.g. `Dirac(value=T)`); shape/type mismatches in the cell
+  // args are not diagnosed here (the result type is all we need).
+  function inferMeasureHeadCellResult(opName: any, cellTypes: any): any {
+    const sig: any = T.signatureOf(opName);
+    if (!sig || !T.isMeasure(sig.result)) return null;
+    let s = new Map();
+    // Distributions are kwargs-only (sig.args === null) but accept
+    // positional binding (spec §05); map the per-cell arg types onto the
+    // declared params in order.
+    const params: any[] = (sig.args && sig.args.length)
+      ? sig.args
+      : (sig.kwargs ? Object.keys(sig.kwargs).map((k) => sig.kwargs[k]) : []);
+    const m = Math.min(params.length, cellTypes.length);
+    for (let i = 0; i < m; i++) {
+      const next = T.unify(params[i], cellTypes[i], s);
+      if (next != null) s = next;
+    }
+    return T.substitute(sig.result, s);
+  }
+
   function inferBroadcast(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length < 2) return T.deferred();
@@ -1678,16 +1706,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       if (T.isCallable(calleeType)) {
         elem = calleeType.result;
       } else {
-        return T.deferred();
+        // Not a user-defined callable binding. A bare builtin
+        // measure-producing head (`Normal`, `Binomial`, …) shadows to
+        // `failed`/non-callable here; treat it as the kernel it is and
+        // infer the head applied to the per-cell arg types, so the
+        // measure-wrap below tightens `Normal.(…)` to an array-valued
+        // measure (spec §04/§06; engine-concepts §19). This is also what
+        // lets a `(n,p) -> Binomial.(n,p)` lambda reify to a kernel:
+        // its body's broadcast now types as a measure, so inferReification
+        // makes the lambda a kernelType rather than a function.
+        const headResult = inferMeasureHeadCellResult(fn.name, cellTypes);
+        if (headResult) elem = headResult;
+        else return T.deferred();
       }
     } else {
-      // Bare distribution name, computed callable, anything else —
-      // conservative defer. Kernel-broadcast results are semantically
-      // arrays of measures; downstream consumers (`joint(name =
-      // broadcast(K, ...))`, `draw(broadcast(K, ...))`) accept them
-      // via the deferred passthrough. Tightening to `array(measure)`
-      // would need `joint`/`draw` to accept arrays of measures
-      // explicitly — a separate refactor.
+      // Computed/dynamic head, or anything not matching the forms above
+      // — conservative defer (downstream consumers accept a deferred
+      // broadcast result via the passthrough).
       return T.deferred();
     }
     if (elem && elem.kind === 'failed') return T.failed('broadcast cascade');
