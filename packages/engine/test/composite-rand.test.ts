@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // `samples, _ = rand(state, iid(M, count))` for a COMPOSITE M — a
-// forward measure the per-draw traceeval walker can't sample (here
+// forward measure the per-draw measure walker (sampler.walk) can't sample (here
 // `Y_dist = lawof(Y)` with `Y = polyeval.([C], X)`, a deterministic
 // transform of a stochastic iid vector). The classifier routes the
 // DRAW half (`tuple_get(<rand>, 0)`) to a `randsample` derivation; the
@@ -47,7 +47,8 @@ test('composite rand: Y_samples materialises to [1000,10] with E≈3.0', async (
   const { ctx, built } = makeMatCtx(src, { sampleCount: 64 });
 
   // The draw half classifies as `randsample`, not `evaluate` (which
-  // would route to the worker → traceeval → "no resolveMeasureRef").
+  // would route through evaluateRand → the measure walker, which can't
+  // sample this composite).
   const d = built.derivations.Y_samples;
   assert.equal(d.kind, 'randsample', 'Y_samples should be a randsample derivation');
   assert.equal(d.from, 'Y_dist', 'randsample draws from the iid inner measure');

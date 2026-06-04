@@ -107,7 +107,7 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   // Dispatched in evaluateCall: builtin_logdensityof / builtin_touniform
   // / builtin_fromuniform / builtin_tonormal / builtin_fromnormal go to
   // density-prims.ts; builtin_sample synthesises a measure IR and walks
-  // traceeval.
+  // it via the measure walker (sampler.walk).
   'builtin_logdensityof', 'builtin_sample',
   'builtin_touniform', 'builtin_fromuniform',
   'builtin_tonormal',  'builtin_fromnormal',
@@ -220,7 +220,7 @@ test('invariant: every UN_OP_MAP target has a type signature', () => {
 // the parser/analyzer never recognised.
 //
 // (Deliberately NOT asserting MEASURE_OP_CLASSIFIERS ⊆
-// builtins.MEASURE_OPS, nor ⊆ traceeval MEASURE_OP_WALKERS: the
+// builtins.MEASURE_OPS, nor ⊆ sampler.walk's MEASURE_OP_WALKERS: the
 // classifier map is intentionally cross-cut — it also keys structural
 // ops (record/tuple/draw/broadcast) that aren't measure-algebra ops,
 // and only the trace-sampled subset has a walker. Both would be false

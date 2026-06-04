@@ -496,8 +496,8 @@ test('evaluateN: missing ref array → error from evaluator', () => {
 });
 
 // =====================================================================
-// logDensityN — per-i scoring via traceeval.walk. Builds on the unit
-// tests in traceeval.test.js; here we verify the worker plumbing
+// logDensityN — per-i scoring via density.ts (logDensityConsumeN).
+// Builds on the density unit tests; here we verify the worker plumbing
 // (refArrays per-i env, observed sharing across atoms, reply shape).
 // =====================================================================
 
@@ -864,7 +864,7 @@ test('profileN: domain-of-definition error becomes NaN, not abort', () => {
 test('profileN: logdensity mode evaluates Normal logpdf along mu axis', () => {
   // Sweep mu over [-2, 2] for a Normal(mu, 1) at observed = 0. Per
   // point the log-density is the Gaussian logpdf — peak at mu = 0,
-  // symmetric. Verifies the traceeval.walk wiring + observed plumbing.
+  // symmetric. Verifies the density.ts wiring + observed plumbing.
   const w = createWorkerHandler();
   const ir = {
     kind: 'call', op: 'Normal',

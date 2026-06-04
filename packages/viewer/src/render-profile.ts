@@ -117,8 +117,8 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       sweepSlotIdx = seg.idx[0] - 1;
     }
   }
-  // For kernels / likelihoods we walk the kernel body via
-  // traceeval — peel any outer lawof and substitute self-refs to
+  // For kernels / likelihoods we walk the kernel body via the
+  // measure walker (sampler.walk) — peel any outer lawof and substitute self-refs to
   // other measure bindings via expandMeasureRefsInIR (the same
   // helper bayesupdate uses). Functions evaluate the body
   // verbatim through evaluateExpr.

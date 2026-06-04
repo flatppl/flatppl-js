@@ -468,7 +468,7 @@ test('makeParametricSampler: factory built once across many draws', () => {
 // entry point the orchestrator and worker dispatch to. tuple_get is the
 // internal IR op emitted by the analyzer's multi-LHS rewriter; rnginit
 // builds an opaque rngstate from a byte seed; rand threads state
-// through measure draws via traceeval.
+// through measure draws via the measure walker (sampler.walk).
 
 function lit(v: any)   { return { kind: 'lit', value: v, loc: synthLoc() }; }
 function call(op: any, args: any, kwargs?: any) {

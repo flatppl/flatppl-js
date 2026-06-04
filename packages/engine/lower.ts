@@ -716,7 +716,7 @@ function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
 // builtin_sample(rngstate, kernel, kernel_input, n, m, ...) — FlatPDL
 // primitive. Variadic trailing dims (each a positive-integer expression).
 // Returns the spec-defined tuple `(X, new_rngstate)`. We keep the
-// kernel_input IR intact so the evaluator can pass it to traceeval (no
+// kernel_input IR intact so the evaluator can pass it to the measure walker (no
 // kwarg pre-evaluation, no special record-only restriction at lower
 // time — the evaluator enforces shape constraints with clearer errors).
 function _lowerBuiltinSample(node: any, ctx: any): any {

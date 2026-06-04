@@ -19,7 +19,7 @@
 //                         `synthesize` plan (emit fresh AST)
 //   - select / mixture  : closed-form `logsumexp` + MC-estimated
 //                         weights (resolveRuntimeWeights)
-//   - density walkers   : closed-form per-distribution + traceeval.walk
+//   - density walkers   : closed-form per-distribution + density.ts
 //                         MC density estimator
 //
 // The specialised paths are correctness-equivalent to the general
