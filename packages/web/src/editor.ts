@@ -46,12 +46,22 @@
   }
 
   /** Build the FlatPPL highlight ViewPlugin. Base lexical highlight comes from
-      the canonical TextMate grammar (window.FlatPPLTextmate, async-loaded and
-      added separately in the extensions list). This plugin adds ONLY the
-      engine-derived semantic overlay: identifiers that resolve to a defined
-      binding get `tok-ident-binding` + a `data-binding` attribute (the gallery's
-      Ctrl-click navigation). Base + overlay are separate marks on the same
-      range; `.tok-ident-binding` wins by CSS source order. */
+      the canonical TextMate grammar (window.FlatPPLTextmate, loaded eagerly via
+      the <script> tag in index.html; its grammar parse is async and repaints
+      when ready). This plugin adds ONLY the engine-derived semantic overlay:
+      identifiers that resolve to a defined binding get `tok-ident-binding` + a
+      `data-binding` attribute (the gallery's Ctrl-click navigation).
+
+      Base + overlay are two separate mark decorations over the same range, so
+      CodeMirror renders them as NESTED spans (not one element with two classes).
+      The inner span wraps the text node directly, so its colour wins by the CSS
+      cascade — and in CM6 the HIGHER-precedence decoration is the inner span.
+      So for `.tok-ident-binding` to win over the TextMate base mark, this plugin
+      must outrank FlatPPLTextmate's; the caller wraps it in `bundle.Prec.high(...)`
+      to guarantee that regardless of extension-list order. (Verified in-browser:
+      without the Prec bump the base scope, e.g. `tok-reserved`, nests inside and
+      the binding colour is lost. Not "CSS source order" — decoration precedence
+      drives the span nesting.) */
   function makeHighlightPlugin(bundle: any) {
     const ViewPlugin = bundle.ViewPlugin;
     const Decoration = bundle.Decoration;
@@ -383,6 +393,16 @@
       { decorations: function (v: any) { return v.decorations; } }
     );
 
+    // TextMate base highlighter, when its bundle loaded. init() kicks off the
+    // async grammar/WASM load (fire-and-forget; the plugin repaints on ready).
+    // Must precede the binding overlay below — see makeHighlightPlugin's doc on
+    // span-nesting precedence.
+    let textmateExt: any[] = [];
+    if (globalScope.FlatPPLTextmate) {
+      globalScope.FlatPPLTextmate.init();
+      textmateExt = [globalScope.FlatPPLTextmate.makeHighlightPlugin(bundle)];
+    }
+
     const extensions: any[] = [
       bundle.lineNumbers(),
       bundle.highlightActiveLine(),
@@ -407,10 +427,11 @@
           bundle.searchKeymap || []
         )
       ),
-      ...(globalScope.FlatPPLTextmate
-        ? [(globalScope.FlatPPLTextmate.init(), globalScope.FlatPPLTextmate.makeHighlightPlugin(bundle))]
-        : []),
-      makeHighlightPlugin(bundle),
+      ...textmateExt,
+      // Prec.high so the binding overlay nests INSIDE the TextMate base mark
+      // (higher precedence => inner span => its colour wins). See
+      // makeHighlightPlugin's doc comment.
+      bundle.Prec.high(makeHighlightPlugin(bundle)),
       makeHoverTooltip(bundle),
       flashPlugin,
       makeTheme(bundle),

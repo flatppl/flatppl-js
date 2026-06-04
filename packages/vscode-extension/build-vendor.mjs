@@ -46,11 +46,10 @@ const libDir   = join(here, 'lib');
 const gramDir  = join(here, 'grammars');
 const nm       = join(repoRoot, 'node_modules');             // hoisted by npm workspaces
 
-// flatppl-grammars sibling: the natural sibling layout where developers
-// clone all FlatPPL repos next to each other. When this exists we copy
-// from it directly; otherwise we fetch the pinned ref from GitHub.
-// GRAMMARS_DIR (set by CI to a checked-out flatppl-grammars) takes precedence;
-// otherwise the natural sibling layout for local dev. Tarball fallback if neither.
+// flatppl-grammars source resolution: GRAMMARS_DIR env (CI) takes precedence,
+// else the sibling clone for local dev, else the pinned GitHub tarball below.
+// This rule is intentionally duplicated in packages/web/build.mjs (separate
+// package, no shared module) — that file is the source of truth; keep in sync.
 const grammarsSibling = process.env.GRAMMARS_DIR || join(dirname(repoRoot), 'flatppl-grammars');
 // Pin to a branch (`main`) during dev; switch to a commit SHA or release tag
 // for stable nightly builds. The GitHub archive URL has separate forms for

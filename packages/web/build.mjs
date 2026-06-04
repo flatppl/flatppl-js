@@ -30,7 +30,7 @@
 //   npm run build         # one-shot
 //   npm run watch         # rebuild engine bundles on source changes
 
-import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, statSync, watch as fsWatch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -315,31 +315,26 @@ const viewerBuildOpts = {
   legalComments: 'inline',
 };
 
-if (WATCH) {
-  const engineCtx            = await esbuild.context(engineBuildOpts);
-  const workerCtx            = await esbuild.context(samplerWorkerBuildOpts);
-  const codemirrorCtx        = await esbuild.context(codemirrorBuildOpts);
-  const textmateHighlightCtx = hasCmHighlighter ? await esbuild.context(textmateHighlightBuildOpts) : null;
-  const viewerCtx            = await esbuild.context(viewerBuildOpts);
-  await Promise.all([
-    engineCtx.rebuild(), workerCtx.rebuild(),
-    codemirrorCtx.rebuild(),
-    ...(textmateHighlightCtx ? [textmateHighlightCtx.rebuild()] : []),
-    viewerCtx.rebuild(),
-  ]);
-  console.log('  bundled engine        -> dist/vendor/engine.min.js');
-  console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
-  console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
-  if (hasCmHighlighter) console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
-  console.log('  bundled viewer        -> dist/vendor/viewer.js');
-  await Promise.all([
-    engineCtx.watch(), workerCtx.watch(),
-    codemirrorCtx.watch(),
-    ...(textmateHighlightCtx ? [textmateHighlightCtx.watch()] : []),
-    viewerCtx.watch(),
-  ]);
+// All browser bundles, in emit order. The TextMate highlighter is only
+// included when syncGrammars() vendored the CM module (hasCmHighlighter);
+// otherwise a stub already sits at dist/vendor/textmate-highlight.js.
+const BUNDLES = [
+  { opts: engineBuildOpts,        label: 'engine             -> dist/vendor/engine.min.js' },
+  { opts: samplerWorkerBuildOpts, label: 'sampler-worker     -> dist/vendor/sampler-worker.min.js' },
+  { opts: codemirrorBuildOpts,    label: 'codemirror         -> dist/vendor/codemirror.min.js' },
+  ...(hasCmHighlighter
+    ? [{ opts: textmateHighlightBuildOpts, label: 'textmate-highlight -> dist/vendor/textmate-highlight.js' }]
+    : []),
+  { opts: viewerBuildOpts,        label: 'viewer             -> dist/vendor/viewer.js' },
+];
 
-  // esbuild's context.watch() only re-fires the four bundles above.
+if (WATCH) {
+  const ctxs = await Promise.all(BUNDLES.map(b => esbuild.context(b.opts)));
+  await Promise.all(ctxs.map(c => c.rebuild()));
+  for (const b of BUNDLES) console.log(`  bundled ${b.label}`);
+  await Promise.all(ctxs.map(c => c.watch()));
+
+  // esbuild's context.watch() only re-fires the bundles above.
   // The src/ transpile-or-copy loop and the demo/ tree copy run ONCE
   // at startup, so without these additional fs.watch handlers edits
   // to index.html, style.css, src/*.ts, demo/*.flatppl, etc. would
@@ -376,18 +371,8 @@ if (WATCH) {
   });
   console.log('  watching for changes (Ctrl+C to exit)…');
 } else {
-  await Promise.all([
-    esbuild.build(engineBuildOpts),
-    esbuild.build(samplerWorkerBuildOpts),
-    esbuild.build(codemirrorBuildOpts),
-    ...(hasCmHighlighter ? [esbuild.build(textmateHighlightBuildOpts)] : []),
-    esbuild.build(viewerBuildOpts),
-  ]);
-  console.log('  bundled engine        -> dist/vendor/engine.min.js');
-  console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
-  console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
-  if (hasCmHighlighter) console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
-  console.log('  bundled viewer        -> dist/vendor/viewer.js');
+  await Promise.all(BUNDLES.map(b => esbuild.build(b.opts)));
+  for (const b of BUNDLES) console.log(`  bundled ${b.label}`);
 }
 
 // ---------------------------------------------------------------------
@@ -452,8 +437,7 @@ async function syncExamples() {
     console.log(`  examples: using sibling clone at ${examplesSibling}`);
     const src = join(examplesSibling, 'examples');
     if (!existsSync(src)) {
-      console.error(`  ! sibling exists but ${src} not found — flatppl-examples may have moved its content`);
-      process.exit(1);
+      throw new Error(`sibling exists but ${src} not found — flatppl-examples may have moved its content`);
     }
     await copyDirRecursive(src, dst);
   } else {
@@ -462,24 +446,24 @@ async function syncExamples() {
   }
 }
 
-async function fetchAndExtractExamples(url, dstDir) {
-  // Pull the tarball, write to a temp file, extract the whole archive
-  // to a temp directory, then copy the `examples/` subdir into dstDir.
-  // Same two-step "extract then copy" pattern the grammars sync uses
-  // — avoids tar wildcard portability issues across GNU tar / bsdtar /
-  // macOS / Windows MSYS / CI ubuntu-latest.
+// Fetch a .tar.gz, extract the whole archive into a fresh temp dir, and
+// return its single top-level directory (GitHub archives unpack into one
+// `<repo>-<ref>/` dir) plus a cleanup() to remove the temp tree. The
+// caller copies whatever subdir it needs out of `topLevel`, then awaits
+// cleanup() in a finally. Two-step "extract then copy" (vs a tar wildcard)
+// avoids portability issues across GNU tar / bsdtar / macOS / Windows
+// MSYS / CI ubuntu-latest. Shared by syncExamples and syncGrammars.
+async function fetchAndExtractTarball(url, prefix) {
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) {
-    throw new Error(`failed to fetch examples: ${res.status} ${res.statusText} ${url}`);
+    throw new Error(`failed to fetch ${url}: ${res.status} ${res.statusText}`);
   }
-
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const tmpFile = join(tmpdir(), `flatppl-examples-${stamp}.tar.gz`);
-  const tmpExtract = join(tmpdir(), `flatppl-examples-${stamp}`);
-
+  const tmpRoot = await mkdtemp(join(tmpdir(), prefix));
+  const tmpFile = join(tmpRoot, 'archive.tar.gz');
+  const tmpExtract = join(tmpRoot, 'extract');
+  const cleanup = () => rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
   try {
-    const buf = Buffer.from(await res.arrayBuffer());
-    await writeFile(tmpFile, buf);
+    await writeFile(tmpFile, Buffer.from(await res.arrayBuffer()));
     await mkdir(tmpExtract, { recursive: true });
     await new Promise((resolve, reject) => {
       const tar = spawn('tar', ['-xzf', tmpFile, '-C', tmpExtract], {
@@ -490,23 +474,28 @@ async function fetchAndExtractExamples(url, dstDir) {
         code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))
       );
     });
-
-    // GitHub archives unpack into a single top-level directory named
-    // `<repo>-<ref>/`. Find it (the only entry) and copy its
-    // examples/ subdir over.
-    const entries = await readdir(tmpExtract);
-    if (entries.length === 0) {
-      throw new Error(`examples archive extracted empty: ${tmpExtract}`);
+    const entries = await readdir(tmpExtract, { withFileTypes: true });
+    const topDir = entries.find(e => e.isDirectory());
+    if (!topDir) {
+      throw new Error(`archive extracted no top-level directory: ${url}`);
     }
-    const topLevel = join(tmpExtract, entries[0]);
+    return { topLevel: join(tmpExtract, topDir.name), cleanup };
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+}
+
+async function fetchAndExtractExamples(url, dstDir) {
+  const { topLevel, cleanup } = await fetchAndExtractTarball(url, 'flatppl-examples-');
+  try {
     const src = join(topLevel, 'examples');
     if (!existsSync(src)) {
       throw new Error(`expected examples/ subdir under ${topLevel}, not found`);
     }
     await copyDirRecursive(src, dstDir);
   } finally {
-    await rm(tmpFile,    { force: true }).catch(() => {});
-    await rm(tmpExtract, { recursive: true, force: true }).catch(() => {});
+    await cleanup();
   }
 }
 
@@ -517,57 +506,46 @@ async function syncGrammars() {
   // that esbuild's pinned entryPoint would keep bundling. Safe: this runs once
   // at startup before any watcher attaches.
   //
-  // Returns true if the CM highlighter module was vendored (so the caller can
-  // conditionally enable the textmate-highlight esbuild bundle), false if it
-  // was absent (the grammar JSON is always required and exits on failure).
+  // Source resolution mirrors syncExamples: GRAMMARS_DIR / sibling clone (no
+  // tarball, no network), else the pinned GitHub tarball. The tmLanguage JSON
+  // is always required (throws if missing). The CM highlighter module is
+  // optional; when absent we emit a no-op stub at dist/vendor/textmate-
+  // highlight.js so index.html's unconditional <script> never 404s, and
+  // return false so the caller skips the (now pointless) esbuild bundle.
   await rm(srcVendorDir, { recursive: true, force: true });
   await mkdir(srcVendorDir, { recursive: true });
   const tmDst = join(vendorDir, 'flatppl.tmLanguage.json');
   const modDst = join(srcVendorDir, 'textmate-highlight.ts');
+  const stubDst = join(vendorDir, 'textmate-highlight.js');
+
+  // Resolve `top` — the directory holding textmate/ and codemirror/.
+  let top, cleanup = () => {};
   if (existsSync(grammarsSibling)) {
-    const tmSrc = join(grammarsSibling, 'textmate', 'flatppl.tmLanguage.json');
-    const modSrc = join(grammarsSibling, 'codemirror', 'textmate-highlight.ts');
-    if (!existsSync(tmSrc)) { console.error(`  ! sibling exists but ${tmSrc} not found`); process.exit(1); }
-    await copyFile(tmSrc, tmDst);
-    if (existsSync(modSrc)) {
-      await copyFile(modSrc, modDst);
-      console.log('  grammars: copied tmLanguage + CM highlighter from sibling');
-      return true;
-    }
-    console.warn('  grammars: CM highlighter (codemirror/textmate-highlight.ts) not found in sibling; skipping highlighter bundle (editor degrades to plain text)');
-    return false;
+    top = grammarsSibling;
+    console.log(`  grammars: using ${process.env.GRAMMARS_DIR ? 'GRAMMARS_DIR' : 'sibling'} at ${grammarsSibling}`);
+  } else {
+    console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
+    ({ topLevel: top, cleanup } = await fetchAndExtractTarball(grammarsRemote, 'flatppl-grammars-'));
   }
-  console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
-  const res = await fetch(grammarsRemote, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`failed to fetch grammars: ${res.status} ${res.statusText}`);
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const tmpFile = join(tmpdir(), `flatppl-grammars-${stamp}.tar.gz`);
-  const tmpExtract = join(tmpdir(), `flatppl-grammars-${stamp}`);
+
   try {
-    await writeFile(tmpFile, Buffer.from(await res.arrayBuffer()));
-    await mkdir(tmpExtract, { recursive: true });
-    await new Promise((resolve, reject) => {
-      const tar = spawn('tar', ['-xzf', tmpFile, '-C', tmpExtract], { stdio: ['ignore', 'inherit', 'inherit'] });
-      tar.on('error', reject);
-      tar.on('exit', code => code === 0 ? resolve() : reject(new Error(`tar exit ${code}`)));
-    });
-    const entries = await readdir(tmpExtract);
-    if (entries.length === 0) throw new Error('grammars archive extracted empty');
-    const top = join(tmpExtract, entries[0]);
     const tmSrc = join(top, 'textmate', 'flatppl.tmLanguage.json');
     const modSrc = join(top, 'codemirror', 'textmate-highlight.ts');
-    if (!existsSync(tmSrc)) throw new Error('expected textmate/flatppl.tmLanguage.json in archive');
+    if (!existsSync(tmSrc)) throw new Error(`grammars: required ${tmSrc} not found`);
     await copyFile(tmSrc, tmDst);
     if (existsSync(modSrc)) {
       await copyFile(modSrc, modDst);
-      console.log('  grammars: copied tmLanguage + CM highlighter from tarball');
+      console.log('  grammars: copied tmLanguage + CM highlighter');
       return true;
     }
-    console.warn('  grammars: CM highlighter not in archive (pinned ref lacks codemirror/textmate-highlight.ts); skipping highlighter bundle');
+    await writeFile(stubDst,
+      '/* FlatPPL TextMate highlighter unavailable: the grammars source lacks '
+      + 'codemirror/textmate-highlight.ts. Editor degrades to plain text + '
+      + 'binding overlay. Stub kept so index.html\'s <script> tag does not 404. */\n');
+    console.warn('  grammars: CM highlighter (codemirror/textmate-highlight.ts) absent; wrote stub, editor degrades to plain text + binding overlay');
     return false;
   } finally {
-    await rm(tmpFile, { force: true }).catch(() => {});
-    await rm(tmpExtract, { recursive: true, force: true }).catch(() => {});
+    await cleanup();
   }
 }
 

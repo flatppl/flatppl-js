@@ -10,7 +10,7 @@
 // hover / find / decorations / virtual-scrolling work uniformly
 // at any file size. See packages/web/src/editor.ts for the wiring.
 
-import { EditorState, Compartment } from '@codemirror/state';
+import { EditorState, Compartment, Prec } from '@codemirror/state';
 import {
   EditorView, keymap, lineNumbers, highlightActiveLine,
   highlightActiveLineGutter, ViewPlugin, Decoration, hoverTooltip,
@@ -19,7 +19,7 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { searchKeymap } from '@codemirror/search';
 
 window.FlatPPLEditorBundle = {
-  EditorState, Compartment,
+  EditorState, Compartment, Prec,
   EditorView, keymap, lineNumbers, highlightActiveLine,
   highlightActiveLineGutter, ViewPlugin, Decoration, hoverTooltip,
   defaultKeymap, history, historyKeymap,
