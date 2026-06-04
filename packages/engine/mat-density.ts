@@ -661,7 +661,13 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
                 try {
                   const env: Record<string, any> = {};
                   if (ctx.fixedValues) {
-                    for (const [k2, v2] of ctx.fixedValues) env[k2] = v2;
+                    // Selective (demand-driven §17.4): pull only the fixed
+                    // refs this count expression names — NOT the whole map
+                    // (iterating fixedValues would force-resolve every fixed
+                    // value via FixedValues' iterate-forces-all).
+                    for (const n of orchestrator.collectSelfRefs(cIR)) {
+                      if (ctx.fixedValues.has(n)) env[n] = ctx.fixedValues.get(n);
+                    }
                   }
                   const cv = require('./sampler.ts').evaluateExpr(cIR, env);
                   if (typeof cv === 'number' && Number.isFinite(cv)) {

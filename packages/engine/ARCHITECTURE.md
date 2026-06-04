@@ -152,7 +152,8 @@ after the table.
 | `orchestrator.ts` (~460) + splits | `buildSampleChain`, `buildDerivations` (→ `{derivations, discrete, bindings, fixedValues}`), `signatureOf`, profile-plot range derivation, scope materialisation. Facade over 5 one-way-dependency modules (below). |
 | `ir-shared.ts` | Dependency ROOT: constant folding (`resolveConstant`), IR→value (`resolveIRToValue`, `valueToPlain`), `collectSelfRefs`, set parsing, measure-IR canonicalisation, and the **static gates** `SAMPLEABLE_DISTRIBUTIONS` / `DISCRETE_DISTRIBUTIONS` / `EVALUABLE_OPS` / `VECTOR_OUTPUT_DISTRIBUTIONS`. |
 | `lift.ts` | Inline-subexpression lifting (`liftInlineSubexpressions`, `isEvaluable`). Hosts `inlineMvNormalLift` (lift-time MvNormal → `pushfwd(affine, iid)`) and `inlineMetricsumLift` (metricsum → aggregate + metric factors, Form-B). |
-| `derivations.ts` | Measure-algebra heart: `buildDerivations`, `classifyDerivation`, `MEASURE_OP_CLASSIFIERS`, the unified `expandMeasure(input, ctx, visited)` walker (replaces the former 4-walker maze; two back-compat shims survive). 16 derivation kinds: alias / sample / mvnormal / iid / randsample / record / tuple / superpose / select / jointchain / weighted / normalize / pushfwd / kernelbroadcast (+ structural fallback). `randsample` (`classifyRandSample`) is the demand-driven composite-`rand` draw (engine-concepts §17.4 stage 2): `tuple_get(rand(state, iid(<composite M>, n)), 0)` → materialise M at count n; leaf-dist inner stays on the batched-leaf path via pre-eval. |
+| `derivations.ts` | Measure-algebra heart: `buildDerivations`, `classifyDerivation`, `MEASURE_OP_CLASSIFIERS`, the unified `expandMeasure(input, ctx, visited)` walker (replaces the former 4-walker maze; two back-compat shims survive). 16 derivation kinds: alias / sample / mvnormal / iid / randsample / record / tuple / superpose / select / jointchain / weighted / normalize / pushfwd / kernelbroadcast (+ structural fallback). `randsample` (`classifyRandSample`) is the demand-driven composite-`rand` draw (engine-concepts §17.4 stage 2): `tuple_get(rand(state, iid(<composite M>, n)), 0)` → materialise M at count n; leaf-dist inner stays on the batched-leaf path via pre-eval. `buildDerivations` returns `fixedValues` as a `FixedValues` resolver (below). |
+| `fixed-values.ts` (~280) | `FixedValues` — demand-driven, memoised, cycle-guarded resolver for fixed-phase VALUES (engine-concepts §17.4); Map-compatible (`.has`/`.get`/`.set`/iterate). Replaces the former eager `while (progress)` pre-eval sweep in `buildDerivations` (per-binding logic moved verbatim into `_compute`). Dependency-injected (zero engine imports). Load-bearing: **iterate-forces-all**, **no negative cache**. See "Fixed-phase values" below. |
 | `signatures.ts` / `profile-plan.ts` | Callable introspection + profile-plot range/preset derivation for the viewer. |
 | `materialiser.ts` (~2800) | Per-binding-name → `EmpiricalMeasure`. `KIND_HANDLERS` (~28: measure-algebra kinds + multivariate dists + FlatPDL surface). `matRandSample` materialises a composite `rand` draw in a child ctx (fresh cache + `sampleCount=count` + `rootKey` split off the rand state) — the demand-driven analogue of matIid's composite fallback (engine-concepts §17.4 stage 2). Bijection-binding contract (`binding.bijection.{registryName, paramIRs}`, purely additive over `fName`/`fInvName`/`logVolume`); consumer fast paths `matPushfwd` / `density.walkPushfwd` (vector-atom base, outerRank=1). `mat-broadcast` composite executors. **Batch-flatten** (Phase 8, engine-concepts §20.10): all four composite kernel-broadcast bodies fold through ONE shared N-axis layout primitive (`_layoutFlat(v, lead, axes[], atomVaries, axisSizes[])` row-major odometer + `_spanOf` + `_resolveBatchFlattenParam`) driven by the axisStack ladder — lay every input out to `count = N·∏(parallel axes)`, evaluate the inner dist's params once, one `sampleN`, reshape: **iid** `_executeIidCompositeBatchFlatten` (axes `[K,D]`; within-atom conditional independence falls out of the layout — a per-atom draw, kind 'N', lays out constant along the cell/inner axes); **nested** `_executeNestedBroadcastBatchFlatten` (scalar inner; axes `[K_outer,K_inner]`, two-axis, mixing-tolerant) + `_executeNestedBroadcastVectorFold` (MvNormal inner — per-(outer,inner)-cell mu laid over `count = N·K_outer·K_inner`, shared cov → `[N,K_outer,K_inner·n]`); **joint** `_executeJointCompositeBatchFlatten` (product — one `sampleN` per component over `[K]`, concat → `[N,K,C]`); **jointchain** `_executeJointChainScan` (scan — one `sampleN` per step, carry = prev step's `[count]` column). One worker call (or one-per-component/step) replaces the former per-cell K·… loops. **All `_execute*PerCell` siblings are retired** — the folds are the only path (an unfoldable shape is a clear error, not a silent reroute); vector-output inner/component draws fold via the shared `_mvNormalFoldOverCells` affine (MvNormal → bijection registry §22, not a scalar `sampleN`). **matIid repeat axis**: `iid(composite, k)` re-enters the pipeline at inflated count `N·k` with `ctx.repeatBlock=k`; shared atom-level value draws tile ×k (`tileMeasureAtomMajor`, atom-major) while the measure subtree redraws freshly — within-atom conditional independence (spec §06, engine-concepts §22.4). Resampling handlers honour `repeatBlock` (matSuperpose resamples within each k-block); order-preserving handlers ride tiling alone. Shared plumbing `prepareDensityRefs` / `measureToRefValue` / `tileMeasureAtomMajor` / `pushFixedEnv` / `collectRefArrays` (one owner; auto-pushes fixed refs to worker session env). |
 | `bijection-registry.ts` (~330) | Single point of bijection support (engine-concepts §22): per-entry `atomBatchedForward` (sample) / `atomBatchedInverse` + `logDetJ` (density) / shape contract. `affine` entry done (covers MvNormal/MvStudentT/MvLogNormal); accepts atom-batched `b=[N,D]` / `L=[N,D,D]` via stride-0 reuse. Adding a bijection = one entry. |
@@ -282,24 +283,53 @@ Degenerate-Dirac sharpening: `draw(Dirac(value=e))` / `draw(lawof(e))` →
 phase(e). Inline draws (`s = 2 * draw(m)`) caught by `rhsContainsInlineDraw`
 (doesn't recurse into reification bodies — different scope).
 
-## Fixed-phase pre-eval and `fixedValues`
+## Fixed-phase values: `fixedValues` (demand-driven, `fixed-values.ts`)
 
-Per spec §04, fixed-phase bindings are compile-time-determinate.
-`buildDerivations` runs an iterative (fixed-point) pre-eval pass over
-fixed-phase bindings in topological order via `sampler.evaluateExpr`, exposing
-`fixedValues: Map<name, JSValue>`. This matters whenever a fixed value isn't a
-per-atom `Float64Array` slice: compile-time-known-length numeric arrays
-(`rand(rstate, iid(Normal,10))` → length 10, not `N`), records/tuples, opaque
-values (rngstate). Per binding: walk self-refs (recursing measure subtrees via
-`expandMeasure`), skip measure-typed refs (resolved by traceeval at runtime),
-require value refs in `fixedValues` (else defer), `evaluateExpr` (catch+skip,
-retry next iteration). **Cascade-prune** (`derivationRefsValid`, runs after
-pre-eval) accepts refs resolving through `fixedValues`, not just refs with their
-own derivations. **Viewer**: pushes `fixedValues` to the worker via `setEnv` on
-every `rebuildDerivations`; `collectRefArrays` drops fixed-phase refs (so the
-per-atom path doesn't shadow the session value); `getMeasure` short-circuits any
-binding in `fixedValues` (synthesising the SoA shape). Opaque values aren't
-plottable (`buildPlotPlan` returns null for `rngstate`).
+Per spec §04, fixed-phase bindings are compile-time-determinate. Their value
+resolution is **demand-driven** (engine-concepts §17.4): `buildDerivations`
+returns `fixedValues` as a **`FixedValues`** instance (`fixed-values.ts`) — a
+lazy, memoised, cycle-guarded resolver, NOT an eagerly-populated map. A binding's
+value is computed only when first asked for, then cached. This matters whenever a
+fixed value isn't a per-atom `Float64Array` slice: compile-time-known-length
+numeric arrays (`rand(rstate, iid(Normal,10))` → length 10, not `N`),
+records/tuples, opaque values (rngstate). The per-binding evaluation logic (walk
+self-refs, recursing measure subtrees via `expandMeasure`; skip measure-typed
+refs; resolve value-context refs via `this._resolve`; `evaluateExpr`,
+catch→UNRESOLVED) is `FixedValues._compute` — moved verbatim from the former
+eager `while (progress)` sweep.
+
+**Map-compatible** (`.has`/`.get`/`.set` + iteration) so the ~100 consumers that
+read it as a `Map` are untouched. `.has(name)`/`.get(name)` resolve on demand
+(compute + cache). **iterate-forces-all**: `size`/`forEach`/`keys`/`values`/
+`entries`/`[Symbol.iterator]` force-resolve every fixed-phase binding then
+delegate to the cache (iteration means "all fixed values" — can't be lazy; keeps
+test harnesses that mirror the old bulk push green). **No negative cache**: an
+UNRESOLVED outcome (cycle / evaluator throw / unresolvable dep) is not remembered
+— recomputed on next demand (preserves the old fixpoint's retry).
+
+**Who demands (and the one bounded eager site).** `resolveConstant` pulls an iid
+count during pass-2 classification (only that subgraph). **Cascade-prune**
+(`derivationRefsValid.resolvable`) answers by PHASE for derivation-having
+bindings (no resolve — the laziness win for a never-displayed `B = expensive(A)`)
+and only force-resolves an *underived* fixed binding to confirm it has a value
+(faithful prune of a dead-end's dependents). The **fixed-phase dead-end
+diagnostic** force-resolves underived fixed-phase non-object bindings — the one
+intentional bounded eager site (a bare such binding is still resolved at build
+time, same as before; full zero-eval needs a reachability gate — TODO §06).
+Materialisation demands a fixed value via `collectRefArrays`/`prepareDensityRefs`
+→ `pushFixedEnv` (per-materialisation, `setEnv merge:true`); the fixed-phase
+short-circuit (`fixedPhaseStage`) synthesises the measure for a fixed-phase
+target plotted directly.
+
+**Viewer** (no longer bulk-pushes the map): per `rebuildDerivations` it sends one
+`setEnv {merge:false}` carrying only `__moduleRegistry` — the stale-env RESET
+(always fires). Each materialisation pushes its own fixed refs on demand;
+`render-profile` pushes the profile body's fixed self-refs (`setEnv merge:true`)
+before `profileN`. is-fixed-phase SIGNALS read `binding.phase === 'fixed'`
+(`render-kernel`, `overrides`); `plot-plan` keeps `fixedValues.has` (value-
+presence — distinguishes opaque rngstate). `collectRefArrays` drops fixed-phase
+refs from refArrays (session env owns them); opaque values aren't plottable
+(`buildPlotPlan` returns null for `rngstate`).
 
 ## Type inference details
 

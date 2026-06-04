@@ -463,8 +463,12 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
  * The viewer's profile-plot path (`render-profile.ts`) needs the same
  * filtering as `prepareDensityRefs` — drop function-like bindings, drop
  * built-in distribution names and other unbound refs, drop fixed-phase
- * refs (already in the worker session env via setEnv) — but NOT the
- * async per-atom measure-fetch. `profileN` doesn't accept refArrays;
+ * refs — but NOT the async per-atom measure-fetch. (Demand-driven, §17.4:
+ * fixed-phase refs are no longer pre-loaded by a bulk setEnv push;
+ * render-profile now pushes THIS profile body's own fixed refs to the
+ * worker session env on demand before the profileN call. The filter
+ * logic here is unchanged — still correct, just for that new reason.)
+ * `profileN` doesn't accept refArrays;
  * non-swept random-phase parents need a single first-cut value, not a
  * per-atom slice.
  *

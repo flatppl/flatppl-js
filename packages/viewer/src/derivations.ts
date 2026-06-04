@@ -174,33 +174,32 @@ export function rebuildDerivations(ctx: Ctx) {
     }
   });
 
-  // Push fixed-phase pre-evaluated values into the worker's
-  // session env. The orchestrator computed these once at module-
-  // build time (rnginit / rand results, fixed scalar reductions,
-  // etc.); the worker resolves refs to them via env rather than
-  // through per-atom refArrays — the only correct semantics for
-  // non-scalar fixed values like a length-10 `random_data` array.
-  // setEnv with merge=false replaces (so a stale fixedValues map
-  // from the previous source can't leak into the new one).
+  // Per-rebuild worker session-env RESET + module registry push.
   //
-  // Module registry threaded under `__moduleRegistry` for
-  // cross-module call dispatch (sampler.ts's
-  // `_evaluateStandardModuleCall`). One push per derivations
-  // rebuild — replaces the previous module registry on every
-  // source-change so a removed `standard_module(...)` binding
-  // can't leave stale entries behind.
-  const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
+  // Demand-driven fixed values (engine-concepts §17.4): we NO LONGER
+  // bulk-push the whole fixedValues map here. Fixed-phase values are
+  // computed lazily, and each materialisation pushes exactly the fixed
+  // refs its IR needs — `collectRefArrays` / `prepareDensityRefs` →
+  // `pushFixedEnv` (merge:true) for sample/density/evaluate, and the
+  // profile path bakes its own fixed refs into the IR (render-profile).
+  // A bulk push would force-resolve every fixed value (via FixedValues'
+  // iterate-forces-all), defeating the laziness.
+  //
+  // What MUST remain is the RESET. The per-materialisation pushes are
+  // merge:true and never clear, so without a per-rebuild merge:false the
+  // previous source's fixed env (and a removed `standard_module(...)`)
+  // would leak into the new one. So send ONE setEnv merge:false on every
+  // rebuild — ALWAYS, even when there are no fixed values and no module
+  // registry — carrying only `__moduleRegistry` (for cross-module call
+  // dispatch in sampler.ts's `_evaluateStandardModuleCall`).
   const moduleRegistry = ctx.derivationsState && ctx.derivationsState.moduleRegistry;
-  const hasFV = fixedValues && fixedValues.size > 0;
-  const hasMR = moduleRegistry && Object.keys(moduleRegistry).length > 0;
-  if (hasFV || hasMR) {
-    const envObj: Record<string, any> = {};
-    if (hasFV) fixedValues.forEach(function(v: any, k: any) { envObj[k] = v; });
-    if (hasMR) envObj.__moduleRegistry = moduleRegistry;
-    ensureSamplerWorker(ctx).then(function(w: any) {
-      sendWorkerNow(ctx, w, { type: 'setEnv', env: envObj, merge: false });
-    }).catch(function(err: any) {
-      console.error('FlatPPL: setEnv push failed:', err);
-    });
+  const envObj: Record<string, any> = {};
+  if (moduleRegistry && Object.keys(moduleRegistry).length > 0) {
+    envObj.__moduleRegistry = moduleRegistry;
   }
+  ensureSamplerWorker(ctx).then(function(w: any) {
+    sendWorkerNow(ctx, w, { type: 'setEnv', env: envObj, merge: false });
+  }).catch(function(err: any) {
+    console.error('FlatPPL: setEnv reset failed:', err);
+  });
 }

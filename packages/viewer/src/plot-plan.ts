@@ -122,10 +122,18 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   }
 
   const d = ctx.derivationsState.derivations[name];
-  // A binding with no derivation can still be plottable when the
-  // orchestrator's pre-eval pass put a value in fixedValues
-  // (typically a record / array from rand). The phase-driven
-  // dispatch below routes those by inferredType alone.
+  // A binding with no derivation can still be plottable when it has a
+  // concrete fixed VALUE (typically a record / array from rand). The
+  // phase-driven dispatch below routes those by inferredType alone.
+  //
+  // Demand-driven note (§17.4): the `fixedValues.has(name)` test in the
+  // `if` below is intentionally VALUE-PRESENCE, NOT a phase check — it
+  // distinguishes a fixed binding with a materialisable value from an
+  // opaque one (e.g. rngstate: fixed-phase but no plottable value) that
+  // must fall through to the implicit-kernel / Not-plottable branch. So
+  // it stays `.has`, not `binding.phase === 'fixed'`. Under the lazy
+  // resolver this resolves only THIS plotted binding (the user asked to
+  // plot it — demand-driven by definition, not a build-time sweep).
   const fixedValues = ctx.derivationsState.fixedValues;
   // Or — and this is the implicit-kernelof escape hatch — a
   // stochastic binding can have its derivation pruned because
