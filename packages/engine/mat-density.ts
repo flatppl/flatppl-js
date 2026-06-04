@@ -783,10 +783,107 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
   });
 }
 
+// =====================================================================
+// MC-marginalised log-likelihood (generative model, intractable density)
+// =====================================================================
+//
+// For a generative model whose observation is a BIJECTIVE pushforward of
+// one RETAINED internal draw (the innovation) but MARGINALISES another
+// latent draw, the density is intractable in closed form yet estimable
+// efficiently (spec §06 case-3 opt-in; engine-concepts §6). This lifts
+// the §21 generative-density refusal for that tractable sub-case.
+//
+// Per-event law  z = f(retained, marginalised; θ), f bijective in
+// `retained`, the marginalised latent integrated by Monte Carlo:
+//   log p(z=d | θ) ≈ logsumexp_m[ logp_ret(u*_m) − ladj_fwd(u*_m) ] − log M
+//   u*_m = f⁻¹(d; x_m, θ),   x_m ~ marginalised,   m = 1..M.
+// The retained-draw inversion f⁻¹ and the forward LADJ are EXACT
+// (bijection-registry.invertExpr); only the marginalisation over x is MC,
+// so M is small (ctx.MARGINALIZATION_COUNT ≈ 100). iid data ⇒
+//   log L(θ) = Σ_d log p(z=d | θ).
+//
+// Because invertExpr returns ordinary value IR, the whole D×M grid of
+// (data point, MC draw) inversions evaluates in TWO batched worker passes
+// (inverse, LADJ) — the §20.10 vertical collapse, count = D·M.
+//
+// v1 scope: `retained` is a Uniform innovation on `retainedInterval`
+// [lo,hi] (its logp is the interval indicator −log(hi−lo)); a general
+// leaf-density retained latent is the extension. `recipeIR` must carry θ
+// baked as lits (or resolvable refs supplied to the worker session env);
+// the retained + marginalised leaves are refs named `retainedRef.name` /
+// `marginalRef.name`. Returns null when `recipeIR` is not bijective in
+// `retainedRef` — the caller then refuses (or, later, falls back to KDE).
+
+function mcMarginalLogDensity(opts: any): Promise<number | null> {
+  const bijReg = require('./bijection-registry.ts');
+  const { recipeIR, retainedRef, retainedInterval, marginalRef, marginalDistIR,
+          data, M, ctx, seedTag } = opts;
+  // Output-value placeholder the inverse is expressed in terms of.
+  const OUT = { kind: 'ref', ns: '%mc', name: '__mc_z__' };
+  const inv = bijReg.invertExpr({ outputExpr: recipeIR, freeRef: retainedRef, outputValue: OUT });
+  if (!inv) return Promise.resolve(null);   // not bijective in the retained draw
+  const D = data.length;
+  if (D === 0 || M <= 0) return Promise.resolve(0);
+  const count = D * M;
+  const tag = seedTag || '%mcmarg';
+  // 1. Draw M marginalised latents x_m ~ marginalDistIR.
+  return ctx.sendWorker({
+    type: 'sampleN', ir: marginalDistIR, count: M, refArrays: {},
+    seed: nameSeed(tag + ':marg', ctx.rootKey),
+  }).then((xReply: any) => {
+    const xs = xReply.samples;
+    // 2. Lay out the D×M grid, d-major: atom d*M+m ↦ (z=data[d], x=xs[m]).
+    const zcol = new Float64Array(count);
+    const xcol = new Float64Array(count);
+    for (let d = 0; d < D; d++) {
+      const zd = data[d];
+      for (let m = 0; m < M; m++) {
+        zcol[d * M + m] = zd;
+        xcol[d * M + m] = xs[m];
+      }
+    }
+    // 3. u*_m = inverseIR(z; x), one batched pass.
+    return ctx.sendWorker({
+      type: 'evaluateN', ir: inv.inverseIR, count,
+      refArrays: { [OUT.name]: zcol, [marginalRef.name]: xcol },
+    }).then((uReply: any) => {
+      const ustar = uReply.samples;
+      // 4. ladj_fwd(u*; x), one batched pass.
+      return ctx.sendWorker({
+        type: 'evaluateN', ir: inv.ladjIR, count,
+        refArrays: { [retainedRef.name]: ustar, [marginalRef.name]: xcol },
+      }).then((ladjReply: any) => {
+        const ladj = ladjReply.samples;
+        // 5. Conditional log-density per atom: logp_ret(u*) − ladj_fwd(u*).
+        //    Uniform innovation on [lo,hi]: logp_ret = −log(hi−lo) inside,
+        //    −inf outside (the support mask that bounds the fiber).
+        const lo = retainedInterval[0], hi = retainedInterval[1];
+        const logWidth = Math.log(hi - lo);
+        const cond = new Float64Array(count);
+        for (let i = 0; i < count; i++) {
+          const u = ustar[i];
+          cond[i] = (u >= lo && u <= hi && Number.isFinite(ladj[i]))
+            ? (-logWidth - ladj[i]) : -Infinity;
+        }
+        // 6. Per data point: logsumexp over the M innovations − log M.
+        //    iid ⇒ sum the per-event log-densities.
+        const logM = Math.log(M);
+        let logL = 0;
+        for (let d = 0; d < D; d++) {
+          const slice = cond.subarray(d * M, d * M + M);
+          logL += empirical.logSumExp(slice) - logM;
+        }
+        return logL;
+      });
+    });
+  });
+}
+
 module.exports = {
   matBayesupdate,
   matLogdensityof,
   matBroadcastLogdensity,
   matTotalmass,
   matJointchain,
+  mcMarginalLogDensity,
 };
