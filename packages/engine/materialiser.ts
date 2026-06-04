@@ -591,15 +591,18 @@ function matRandSample(name: string, d: any, ctx: any) {
   // value (deterministic given `state`): the same [count, …variate]
   // array regardless of the session's display N.
   //
-  // Seeding: split the rand state's Philox key into [drawKey, _stateKey]
-  // and seed the child ctx's rootKey from drawKey, so the draws are
+  // Seeding (the composite-rand lane contract, engine-concepts §11): one
+  // randSplitLanes(state.key) gives { drawKey, succKey }. The child ctx's
+  // rootKey is seeded from drawKey (split lane 0), so the draws are
   // (a) reproducible from `state` and (b) domain-separated from the
-  // session's own draws of M's ancestors (which use the session
-  // rootKey). The unused stateKey is the advanced state for chaining
-  // (a deferred follow-up — composite-rand succession; see TODO). NB the
-  // split-seeded child draws differ in exact values from a per-draw walker
-  // threading the rand state sequentially; distributions are preserved
-  // (calibration tests check distributions, not specific draws).
+  // session's own draws of M's ancestors (which use the session rootKey).
+  // The successor (split lane 1) is the chaining state — now consumed by
+  // the value-domain `rand_succ` op via the SAME shared helper, so the
+  // draw and successor lanes can never desync. NB the split-seeded child
+  // draws differ in exact values from a per-draw walker threading the rand
+  // state sequentially; distributions are preserved (calibration tests
+  // check distributions, not specific draws) — composite succession chains
+  // by SPLIT key-derivation, orthogonal to leaf succession (counter-advance).
   //
   // FRESH cache: the inflated-count materialisation must not pollute
   // the parent ctx's cache for these binding names at the session N
@@ -609,7 +612,7 @@ function matRandSample(name: string, d: any, ctx: any) {
     return Promise.reject(new Error(
       "rand: could not resolve the rng state for '" + name + "'"));
   }
-  const drawKey = rng.split(state.key, 2)[0];
+  const { drawKey } = rng.randSplitLanes(state.key);
   const count = d.count | 0;
   const childCache = new Map();
   const childCtx: any = Object.assign({}, ctx, {

@@ -87,6 +87,10 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   // positional-spread ARITH_OPS shape).
   'get', 'get0',
   'rnginit', 'rngstate', 'rand',
+  // rand_succ(state): composite-rand successor (split lane 1), synthesised
+  // by the lift rand_succ rewrite; dispatched inline in evaluateCall like
+  // rand/rngstate (value-typed rngstate, not ARITH_OPS).
+  'rand_succ',
   // Shape functions (spec §07 Approximation functions). Dispatched
   // by sampler.evaluateCall via dedicated cases because they take
   // kwargs (coefficients / edges / values + x) that ARITH_OPS's

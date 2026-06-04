@@ -2695,6 +2695,30 @@ function evaluateCall(ir: any, env: any): any {
   if (op === 'rand') {
     return evaluateRand(ir, env);
   }
+  // rand_succ(state) — the value-domain successor rngstate for a COMPOSITE
+  // `rand` (engine-concepts §11/§17.4). Synthesised by the lift rand_succ
+  // rewrite for the state half `tuple_get(rand(state, iid(<composite>,n)), 1)`;
+  // never surface syntax. The composite draw (matRandSample) takes split
+  // lane 0 of the parent key; the successor is split lane 1 — so this
+  // depends ONLY on the parent state and never walks the (unwalkable)
+  // composite measure. Composite succession chains by SPLIT key-derivation,
+  // orthogonal to a leaf rand's successor (the threaded counter-advanced
+  // state from sampleLeafN). Returns a fresh rngstate, evaluable
+  // synchronously so a chained `rand` consumes it via fixedValues /
+  // evaluateExpr. The lane assignment is the single-source-of-truth
+  // randSplitLanes helper shared with matRandSample.
+  if (op === 'rand_succ') {
+    const args = ir.args || [];
+    if (args.length !== 1) {
+      throw new Error(`evaluateExpr: rand_succ expects 1 arg (state), got ${args.length}`);
+    }
+    const state: any = evaluateExpr(args[0], env);
+    if (!state || typeof state !== 'object' || !state.key || !state.counter) {
+      throw new Error(`evaluateExpr: rand_succ's arg must be an rngstate (got ${typeof state})`);
+    }
+    const { succKey } = rng.randSplitLanes(state.key);
+    return rng.stateFromKey(succKey[0], succKey[1]);
+  }
   // builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive,
   // spec §07 §sec:measure-eval-prims. The single per-kernel
   // log-density ABI: dispatch lives in `density-prims.ts`'s
