@@ -1841,6 +1841,53 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
+  // A reified callable that (directly or mutually) references itself can
+  // NOT be beta-reduced to a fixed point — inlining its body re-introduces
+  // a call to itself, so the inlineUserCall fixpoint loop would spin
+  // forever. FlatPPL is a static flat graph; recursion is not a valid
+  // program (the analyzer flags the cycle separately). inlineOnce refuses
+  // to expand a recursive callable, leaving the call un-inlined so the
+  // fixpoint converges and the pipeline (lift → derivations → DAG viz)
+  // stays responsive. Memoised: the recursion property of a callable is
+  // stable across the lift. A reachability walk from `fnName` through every
+  // referenced binding (visited-guarded) is recursive iff it reaches
+  // `fnName` again — catches direct and mutual recursion. For an acyclic
+  // (valid) program no callable is ever reachable from itself, so this
+  // never refuses a legitimate inline.
+  function isRecursiveCallable(fnName: string): boolean {
+    // Cache on the (hoisted) function object — fresh per liftInline-
+    // Subexpressions call, and free of the temporal-dead-zone a textually-
+    // late `const` would hit (the visit pass calls inlineOnce before this
+    // point in the function body is reached).
+    const cache: Map<string, boolean> = (isRecursiveCallable as any)._cache
+      || ((isRecursiveCallable as any)._cache = new Map<string, boolean>());
+    if (cache.has(fnName)) return cache.get(fnName)!;
+    const visited = new Set<string>();
+    const stack = [fnName];
+    let recursive = false;
+    while (stack.length > 0 && !recursive) {
+      const cur = stack.pop()!;
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      const b = out.get(cur) || bindings.get(cur);
+      const v = b && (b.effectiveValue || (b.node && b.node.value));
+      if (!v) continue;
+      const refs: string[] = [];
+      (function collect(node: any) {
+        if (node == null || typeof node !== 'object') return;
+        if (Array.isArray(node)) { for (const c of node) collect(c); return; }
+        if (node.type === 'Identifier' && typeof node.name === 'string') refs.push(node.name);
+        for (const k in node) collect(node[k]);
+      })(v);
+      for (const rn of refs) {
+        if (rn === fnName) { recursive = true; break; }
+        if (!visited.has(rn)) stack.push(rn);
+      }
+    }
+    cache.set(fnName, recursive);
+    return recursive;
+  }
+
   function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
@@ -1849,6 +1896,9 @@ function liftInlineSubexpressions(bindings: any) {
     // during the lift pass are visible to inlineOnce too.
     const fnBinding = out.get(fnName);
     if (!fnBinding) return astArg;
+    // Recursive callable → can't beta-reduce; leave the call un-inlined so
+    // the fixpoint converges (see isRecursiveCallable above).
+    if (isRecursiveCallable(fnName)) return astArg;
     // We only inline real reified callables. fn and kernelof are
     // lowered to functionof in the IR (see lower.js); for AST-level
     // inlining we still see the surface forms, so we accept all
