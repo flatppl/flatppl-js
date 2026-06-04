@@ -59,7 +59,7 @@ manifest-driven model discovery on top.
 ## Engine pipeline (one-paragraph version)
 
 `tokenizer → parser → analyzer → pir.lowerToModule → typeinfer → orchestrator
-→ worker (sampler / traceeval / empirical / histogram / rng)`. The engine's
+→ worker (sampler / density / empirical / histogram / rng)`. The engine's
 `processSource(src)` runs the first six stages and returns
 `{ ast, bindings, loweredModule, symbols, diagnostics }`. The worker runs in a
 separate thread (Web Worker in browser, `worker_threads` in Node) and is

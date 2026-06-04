@@ -596,9 +596,10 @@ function matRandSample(name: string, d: any, ctx: any) {
   // (a) reproducible from `state` and (b) domain-separated from the
   // session's own draws of M's ancestors (which use the session
   // rootKey). The unused stateKey is the advanced state for chaining
-  // (stage-2 follow-up). NB this changes exact draw values vs the old
-  // traceeval path; distributions are preserved (calibration tests
-  // check distributions, not specific draws).
+  // (a deferred follow-up — composite-rand succession; see TODO). NB the
+  // split-seeded child draws differ in exact values from a per-draw walker
+  // threading the rand state sequentially; distributions are preserved
+  // (calibration tests check distributions, not specific draws).
   //
   // FRESH cache: the inflated-count materialisation must not pollute
   // the parent ctx's cache for these binding names at the session N
