@@ -270,7 +270,6 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     resolveMeasureRef,
     isMeasureBinding,
     samplerLib,
-    traceeval: require('./traceeval.ts'),
     expandMeasureIR,
     collectSelfRefs,
     lowerExpr,

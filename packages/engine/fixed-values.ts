@@ -74,7 +74,6 @@ interface FixedValuesDeps {
   resolveMeasureRef: any;   // (name) → measure IR | null
   isMeasureBinding: any;    // (binding) → boolean
   samplerLib: any;          // require('./sampler.ts')
-  traceeval: any;           // require('./traceeval.ts')
   expandMeasureIR: any;     // (name, derivations) → IR | null
   collectSelfRefs: any;     // (ir) → Set<name>
   lowerExpr: any;           // (ast) → IR
@@ -166,7 +165,7 @@ class FixedValues {
     const self = this;
     const {
       bindings, derivations, resolveMeasureRef, isMeasureBinding,
-      samplerLib, traceeval, expandMeasureIR, collectSelfRefs, lowerExpr,
+      samplerLib, expandMeasureIR, collectSelfRefs, lowerExpr,
     } = this._deps;
     if (!binding) return UNRESOLVED;
 
@@ -251,8 +250,9 @@ class FixedValues {
     }
 
     // State-threading resolver closed over the local env and the binding
-    // graph. Called from traceeval (via evaluateRand → opts.resolveValueRef)
-    // whenever a measure-context ref isn't already in env. env is the SAME
+    // graph. Called from the measure walker (via evaluateRand →
+    // opts.resolveValueRef) whenever a measure-context ref isn't already
+    // in env. env is the SAME
     // object the outer evaluateExpr consults, so resolved values cache
     // implicitly — two refs to the same name share one draw.
     function localResolveValueRef(refName: any, state: any): any {
@@ -277,7 +277,13 @@ class FixedValues {
         if (!measureIR) {
           throw new Error(`resolveValueRef: cannot expand measure for '${refName}'`);
         }
-        const r = traceeval.walk(state, measureIR, env, {
+        // samplerLib.walk is the in-module measure walker (was
+        // traceeval.walk; relocated into sampler.ts in stage 4). It
+        // dispatches a bare leaf → walkLeaf → sampleLeafN, iid(<leaf>,n)
+        // → walkIid → sampleLeafN, lawof/draw → unwrap, and a genuine
+        // composite (joint/record/iid-of-composite/weighted) → its
+        // recursive walkers — exactly as before, byte-identical.
+        const r = samplerLib.walk(state, measureIR, env, {
           resolveMeasureRef,
           resolveValueRef: localResolveValueRef,
         });
