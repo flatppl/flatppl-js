@@ -529,6 +529,41 @@ export function defaultValueForLeafType(leafType: any) {
 }
 
 /**
+ * Structural default for a whole callable input type, used to seed the
+ * env for an input no active preset covers. Mirrors the shape the
+ * input-supply path then lowers via `substituteLocals`/`envValueToIR`:
+ *
+ *   - scalar / any / dynamic  → `defaultValueForLeafType` (a scalar)
+ *   - record                  → a plain object of per-field defaults
+ *   - static-shape array      → a flat Array of per-element defaults
+ *
+ * Recursive, so a record input like `pars = elementof(cartprod(a, b,
+ * mu))` seeds `{a: 0, b: 0, mu: 0}` (a real default per field) rather
+ * than a single scalar — which is what made the kernel body's
+ * `pars.mu` crash with "get_field target is not a record". The real
+ * parameter point comes from the `glob_pars` preset; this is just the
+ * pre-selection placeholder so the binding plots at all.
+ */
+export function defaultValueForInputType(type: any): any {
+  if (type && type.kind === 'record' && type.fields) {
+    const rec: Record<string, any> = {};
+    for (const f in type.fields) {
+      if (!Object.prototype.hasOwnProperty.call(type.fields, f)) continue;
+      rec[f] = defaultValueForInputType(type.fields[f]);
+    }
+    return rec;
+  }
+  if (type && type.kind === 'array' && Array.isArray(type.shape)
+      && !type.shape.some((d: any) => d === '%dynamic')) {
+    let n = 1;
+    for (const d of type.shape) n *= d;
+    const def = defaultValueForInputType(type.elem);
+    return new Array(n).fill(def);
+  }
+  return defaultValueForLeafType(type);
+}
+
+/**
  * Total slot count of an array-typed callable input, or null if the
  * type isn't a statically-shaped array. Thin wrapper over engine's
  * `orchestrator.arrayInputLength` — single source of truth in the
