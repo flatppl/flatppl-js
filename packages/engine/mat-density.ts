@@ -817,7 +817,7 @@ function matJointchain(name: string, d: DerivationJointchain, ctx: any) {
 function mcMarginalLogDensity(opts: any): Promise<number | null> {
   const bijReg = require('./bijection-registry.ts');
   const { recipeIR, retainedRef, retainedInterval, marginalRef, marginalDistIR,
-          data, M, ctx, seedTag } = opts;
+          data, M, ctx, seedTag, frozenEnv } = opts;
   // Output-value placeholder the inverse is expressed in terms of.
   const OUT = { kind: 'ref', ns: '%mc', name: '__mc_z__' };
   const inv = bijReg.invertExpr({ outputExpr: recipeIR, freeRef: retainedRef, outputValue: OUT });
@@ -826,11 +826,17 @@ function mcMarginalLogDensity(opts: any): Promise<number | null> {
   if (D === 0 || M <= 0) return Promise.resolve(0);
   const count = D * M;
   const tag = seedTag || '%mcmarg';
+  // Frozen leaves (θ point + fixed globals like `sigma`) flow through the
+  // worker session env — the recipe / marginal-dist refs (`pars`, `sigma`)
+  // resolve there. merge:true; a sweep overwrites `pars` per point.
+  const setup = (frozenEnv && Object.keys(frozenEnv).length > 0)
+    ? ctx.sendWorker({ type: 'setEnv', env: frozenEnv, merge: true })
+    : Promise.resolve(null);
   // 1. Draw M marginalised latents x_m ~ marginalDistIR.
-  return ctx.sendWorker({
+  return setup.then(() => ctx.sendWorker({
     type: 'sampleN', ir: marginalDistIR, count: M, refArrays: {},
     seed: nameSeed(tag + ':marg', ctx.rootKey),
-  }).then((xReply: any) => {
+  })).then((xReply: any) => {
     const xs = xReply.samples;
     // 2. Lay out the D×M grid, d-major: atom d*M+m ↦ (z=data[d], x=xs[m]).
     const zcol = new Float64Array(count);
@@ -879,6 +885,105 @@ function mcMarginalLogDensity(opts: any): Promise<number | null> {
   });
 }
 
+// =====================================================================
+// Auto-derivation of the MC-likelihood recipe from model bindings
+// =====================================================================
+
+// Inline value bindings into a self-contained recipe (cf. mat-broadcast
+// `_inlineGenerativeBody`): draws / boundary / fixed / function-like
+// bindings stay as refs; every other value binding is inlined. Bounded
+// recursion (spec §04 modules are DAGs).
+function _inlineRecipe(ir: any, bindings: any, drawNames: Set<string>, boundary: Set<string>): any {
+  if (!ir || typeof ir !== 'object') return ir;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    const nm = ir.name;
+    if (drawNames.has(nm) || boundary.has(nm)) return ir;
+    const b = bindings.get(nm);
+    if (!b || !b.ir || shared.isFunctionLikeBinding(b) || b.phase === 'fixed') return ir;
+    return _inlineRecipe(b.ir, bindings, drawNames, boundary);
+  }
+  if (ir.kind !== 'call') return ir;
+  const out: any = { kind: 'call' };
+  if (ir.op) out.op = ir.op;
+  if (ir.target) out.target = ir.target;
+  if (Array.isArray(ir.args)) out.args = ir.args.map((a: any) => _inlineRecipe(a, bindings, drawNames, boundary));
+  if (ir.kwargs) { out.kwargs = {}; for (const k in ir.kwargs) out.kwargs[k] = _inlineRecipe(ir.kwargs[k], bindings, drawNames, boundary); }
+  if (Array.isArray(ir.fields)) out.fields = ir.fields.map((f: any) => ({ ...f, value: _inlineRecipe(f && f.value, bindings, drawNames, boundary) }));
+  return out;
+}
+
+// Follow a draw binding `name = draw(ref M)` to its measure IR (M's ir).
+function _drawMeasureIR(name: string, bindings: any): any {
+  const b = bindings.get(name);
+  if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'draw') return null;
+  const arg = b.ir.args && b.ir.args[0];
+  if (arg && arg.kind === 'ref' && arg.ns === 'self') {
+    const mb = bindings.get(arg.name);
+    return (mb && mb.ir) ? mb.ir : arg;
+  }
+  return arg || null;
+}
+
+// [lo,hi] from a Uniform(interval(lo,hi)) measure IR (constant bounds),
+// else null. v1 retained-innovation support.
+function _uniformInterval(mIR: any, bindings: any): number[] | null {
+  if (!mIR || mIR.kind !== 'call' || mIR.op !== 'Uniform') return null;
+  let supp = (mIR.args && mIR.args[0]) || (mIR.kwargs && (mIR.kwargs.support || mIR.kwargs.set));
+  if (supp && supp.kind === 'ref' && supp.ns === 'self') {
+    const sb = bindings.get(supp.name); if (sb && sb.ir) supp = sb.ir;
+  }
+  if (!supp || supp.kind !== 'call' || supp.op !== 'interval') return null;
+  const resolveConstant = require('./ir-shared.ts').resolveConstant;
+  const lo = resolveConstant(supp.args[0], bindings, new Set());
+  const hi = resolveConstant(supp.args[1], bindings, new Set());
+  if (typeof lo !== 'number' || typeof hi !== 'number') return null;
+  return [lo, hi];
+}
+
+/**
+ * Auto-derive the MC-likelihood inputs from the model bindings, for a
+ * scalar per-event variate `eventVar` reified over boundary params
+ * `boundaryNames` (e.g. 'z' over ['pars'] for the transport model).
+ *
+ * Walks eventVar's ancestor DAG to its draw bindings, inlines the recipe
+ * (boundary + draws left as refs), and classifies the draws by trying
+ * `invertExpr` on each — NO heuristic: the invertible draw is the
+ * RETAINED innovation, the rest are MARGINALISED. Resolves the retained
+ * latent's support (Uniform, v1) and each marginalised latent's
+ * distribution IR. Returns null when the structure isn't the v1 shape
+ * (no invertible-Uniform draw, or ≠1 marginalised latent).
+ */
+function deriveMcLikelihoodRecipe(eventVar: string, boundaryNames: string[], bindings: any): any {
+  const boundary = new Set(boundaryNames);
+  const drawNames = new Set<string>();
+  const seen = new Set<string>();
+  (function walk(name: string) {
+    if (seen.has(name) || boundary.has(name)) return;
+    seen.add(name);
+    const b = bindings.get(name);
+    if (!b || !b.ir) return;
+    if (b.ir.kind === 'call' && b.ir.op === 'draw') { drawNames.add(name); return; }
+    for (const r of orchestrator.collectSelfRefs(b.ir)) walk(r);
+  })(eventVar);
+  const evB = bindings.get(eventVar);
+  if (!evB || !evB.ir) return null;
+  const recipeIR = _inlineRecipe(evB.ir, bindings, drawNames, boundary);
+  const bijReg = require('./bijection-registry.ts');
+  const OUT = { kind: 'ref', ns: '%mc', name: '__mc_z__' };
+  let retainedRef: any = null; let retainedInterval: any = null;
+  const marginals: string[] = [];
+  for (const dn of drawNames) {
+    const r = !retainedRef && bijReg.invertExpr({ outputExpr: recipeIR, freeRef: { name: dn }, outputValue: OUT });
+    const ivl = r ? _uniformInterval(_drawMeasureIR(dn, bindings), bindings) : null;
+    if (r && ivl) { retainedRef = { name: dn }; retainedInterval = ivl; }
+    else marginals.push(dn);
+  }
+  if (!retainedRef || marginals.length !== 1) return null;   // v1 shape
+  const marginalDistIR = _drawMeasureIR(marginals[0], bindings);
+  if (!marginalDistIR) return null;
+  return { recipeIR, retainedRef, retainedInterval, marginalRef: { name: marginals[0] }, marginalDistIR };
+}
+
 module.exports = {
   matBayesupdate,
   matLogdensityof,
@@ -886,4 +991,5 @@ module.exports = {
   matTotalmass,
   matJointchain,
   mcMarginalLogDensity,
+  deriveMcLikelihoodRecipe,
 };
