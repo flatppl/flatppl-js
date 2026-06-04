@@ -1500,6 +1500,42 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   if (ir.op === 'select' && Array.isArray(ir.branches) && ir.branches.length >= 1) {
     return materialiseSelectIR(ir, ctx);
   }
+  // Generative pushforward: lawof(<value expr>). After the lawof peel
+  // (above), a body like transport's `y = (x + δ)³ · exp(x − b)` is a
+  // deterministic SCALAR transform of captured draws — the internal
+  // `δ = (2·draw(Uniform)+1)·a` survives (post-inline) as an `__anon*`
+  // ref to a Uniform draw. It is NOT a distribution to sample; it is a
+  // transform to EVALUATE per atom over its sampled draws. So
+  // collectRefArrays materialises each captured draw (count fresh
+  // samples) and `evaluateN` evaluates the transform — the law of the
+  // value is the empirical pushforward of its draws (spec §04 §sec:lawof;
+  // engine-concepts §21 for the broadcast analogue). Gate: a scalar
+  // value op (in EVALUABLE_OPS) that is NOT a structural collection op —
+  // `broadcast`/`broadcasted`/`aggregate` route through their own
+  // composite executors (a broadcast of a generative kernel is the §21
+  // generative-composite path), and a leaf distribution stays on the
+  // sampleN path below.
+  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+  const EVALUABLE = require('./ir-shared.ts').EVALUABLE_OPS;
+  const isLeafDist = !!(SAMPLEABLE && SAMPLEABLE.has(ir.op));
+  const isScalarPushforward = !isLeafDist && !!(EVALUABLE && EVALUABLE.has(ir.op))
+    && ir.op !== 'broadcast' && ir.op !== 'broadcasted' && ir.op !== 'aggregate';
+  if (isScalarPushforward) {
+    return shared.collectRefArrays(ir, ctx).then((refArrays: any) =>
+      ctx.sendWorker({
+        type: 'evaluateN', ir: ir, count: ctx.sampleCount,
+        refArrays: refArrays,
+        seed: nameSeed('%materialise_ir:pushfwd', ctx.rootKey),
+      })
+    ).then((reply: any) => {
+      const data = reply.samples;
+      return {
+        samples: data,
+        value: { shape: [data.length], data: data },
+        logWeights: reply.logWeights || null,
+      };
+    });
+  }
   // Leaf distribution (or any unrecognised call op — the worker's
   // sampleN throws if the op isn't in the sampler REGISTRY,
   // surfacing a clear diagnostic).
