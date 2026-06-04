@@ -144,13 +144,10 @@ test('composite-rand succession: a BARE composite rand fails loud (deferred)', a
   // A bare un-destructured `r = rand(state, iid(<composite>, n))` has no
   // tuple_get projection to reclassify, so its 2-tuple (async display-array
   // draw + sync rngstate successor) has no value representation yet
-  // (deferred — see TODO). The load-bearing guarantee is that it FAILS LOUD
-  // at the walker (never silently wrong): the walker is the authority that
-  // refuses to sample the forward composite. (It trips the measure-ref
-  // resolution guard before the forward-composite op throw that carries the
-  // destructure hint, since the inner measure is a hoisted self-ref the
-  // bare evaluate-path can't resolve — either way it's a clear sampler.walk
-  // error, not a wrong value.)
+  // (deferred — see TODO). It FAILS LOUD at the walker (never silently
+  // wrong): the inner measure is a hoisted self-ref the bare evaluate-path
+  // can't resolve, so it surfaces at the measure-ref guard — which carries
+  // the destructure guidance pointing at the supported form.
   const src = `
 polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
 C = [2.3, 1.5, 0.7]
@@ -163,6 +160,6 @@ r = rand(rstate, iid(Y_dist, 200))
   const { ctx } = makeMatCtx(src, { sampleCount: 16 });
   await assert.rejects(
     async () => { await ctx.getMeasure('r'); },
-    (e: any) => /sampler\.walk:/.test(e.message),
-    'bare composite rand should fail loud at the walker, not silently');
+    (e: any) => /sampler\.walk:/.test(e.message) && /destructure it/.test(e.message),
+    'bare composite rand should fail loud with the destructure guidance');
 });

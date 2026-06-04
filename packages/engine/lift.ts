@@ -2361,10 +2361,21 @@ function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
   // measures to anons). Inline non-ref inner isn't expected post-lift.
   if (!fromIR || fromIR.kind !== 'ref' || fromIR.ns !== 'self') return null;
 
-  // Leaf gate: resolve one ref level; a known-distribution inner is a LEAF.
+  // Leaf gate: resolve the inner-measure ref to its IR, following ref
+  // chains to a fixed point. alias-resolution (run immediately before this
+  // pass) normally collapses measure-alias chains to a direct call, but we
+  // loop (cycle-guarded) so the gate is sound even if one survives — a leaf
+  // must NEVER be misclassified composite and wrongly key-split. A
+  // known-distribution inner is a LEAF; anything else is composite.
   let innerIR: any = fromIR;
-  const innerB = bindings.get(fromIR.name);
-  if (innerB && innerB.ir) innerIR = innerB.ir;
+  const seen = new Set<string>();
+  while (innerIR && innerIR.kind === 'ref' && innerIR.ns === 'self'
+         && !seen.has(innerIR.name)) {
+    seen.add(innerIR.name);
+    const ib = bindings.get(innerIR.name);
+    if (!ib || !ib.ir) break;
+    innerIR = ib.ir;
+  }
   const isComposite = !(innerIR && innerIR.kind === 'call'
                         && SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op));
 
