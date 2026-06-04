@@ -31,7 +31,7 @@
 //   npm run watch         # rebuild engine bundles on source changes
 
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync, watch as fsWatch } from 'node:fs';
+import { existsSync, statSync, watch as fsWatch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -57,6 +57,14 @@ const examplesSibling = join(dirname(repoRoot), 'flatppl-examples');
 const examplesPin = 'main';
 const examplesRemote = `https://github.com/flatppl/flatppl-examples/archive/refs/heads/${examplesPin}.tar.gz`;
 
+// flatppl-grammars sibling: same sibling-first / GitHub-tarball pattern as the
+// examples sync. Provides the canonical TextMate grammar AND the CodeMirror
+// highlighter module (codemirror/textmate-highlight.ts).
+const grammarsSibling = join(dirname(repoRoot), 'flatppl-grammars');
+const grammarsPin = 'main';
+const grammarsRemote = `https://github.com/flatppl/flatppl-grammars/archive/refs/heads/${grammarsPin}.tar.gz`;
+const srcVendorDir = join(here, 'src', 'vendor');
+
 const WATCH = process.argv.includes('--watch');
 
 await mkdir(vendorDir, { recursive: true });
@@ -71,6 +79,7 @@ const COPY_LIBS = [
   { pkg: 'cytoscape-bubblesets', src: 'cytoscape-bubblesets/build/index.umd.min.js', dst: 'cytoscape-bubblesets.min.js' },
   { pkg: 'cytoscape-layers',     src: 'cytoscape-layers/build/index.umd.min.js',     dst: 'cytoscape-layers.min.js' },
   { pkg: 'echarts',              src: 'echarts/dist/echarts.min.js',                 dst: 'echarts.min.js' },
+  { pkg: 'vscode-oniguruma',     src: 'vscode-oniguruma/release/onig.wasm',           dst: 'onig.wasm' },
   // Temml: MathML styling + the (small, optional) script-capital font.
   // Temml-Local.css sets a font-family chain that picks up locally-
   // installed math fonts (Cambria Math / STIX Two Math / Noto Sans
@@ -156,6 +165,10 @@ async function transpileOrCopySrcFile(name) {
   if (name.endsWith('.d.ts')) return false;
   const srcPath = join(here, 'src', name);
   if (!existsSync(srcPath)) return false;
+  // Skip directories (e.g. src/vendor/, the vendored-grammar drop dir): the
+  // per-file transpile/copy loop and the src/ watcher both reach here, and
+  // copyFile/transform on a directory throws EISDIR.
+  if (!statSync(srcPath).isFile()) return false;
   if (name.endsWith('.ts')) {
     const src = await readFile(srcPath, 'utf8');
     const result = await esbuild.transform(src, {
@@ -173,9 +186,10 @@ async function transpileOrCopySrcFile(name) {
   return true;
 }
 
-const SRC_FILES = await readdir(join(here, 'src'));
-for (const name of SRC_FILES) {
-  await transpileOrCopySrcFile(name);
+const SRC_FILES = await readdir(join(here, 'src'), { withFileTypes: true });
+for (const ent of SRC_FILES) {
+  if (!ent.isFile()) continue;  // skip src/vendor/ and any other subdirs
+  await transpileOrCopySrcFile(ent.name);
 }
 
 // ---------------------------------------------------------------------
@@ -209,6 +223,7 @@ await syncDemoTree({ clean: !WATCH });
 //    fetches flatppl-js, so the sibling is absent there).
 
 await syncExamples();
+await syncGrammars();
 
 // ---------------------------------------------------------------------
 // 6. Generate dist/models.json from the assembled dist/{demo,examples}.
@@ -265,6 +280,21 @@ const codemirrorBuildOpts = {
   legalComments: 'inline',
 };
 
+// Bundle the vendored FlatPPL CodeMirror highlighter (from flatppl-grammars)
+// into an IIFE that bundles vscode-textmate + vscode-oniguruma and publishes
+// window.FlatPPLTextmate. CodeMirror is NOT bundled here — the module receives
+// the editor's CM instance via window.FlatPPLEditorBundle at call time.
+const textmateHighlightBuildOpts = {
+  entryPoints: [join(srcVendorDir, 'textmate-highlight.ts')],
+  outfile: join(vendorDir, 'textmate-highlight.js'),
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  platform: 'browser',
+  target: ['es2020'],
+  legalComments: 'inline',
+};
+
 const viewerBuildOpts = {
   entryPoints: [join(viewerPkg, 'src', 'index.ts')],
   outfile: join(vendorDir, 'viewer.js'),
@@ -284,29 +314,36 @@ const viewerBuildOpts = {
 };
 
 if (WATCH) {
-  const engineCtx     = await esbuild.context(engineBuildOpts);
-  const workerCtx     = await esbuild.context(samplerWorkerBuildOpts);
-  const codemirrorCtx = await esbuild.context(codemirrorBuildOpts);
-  const viewerCtx     = await esbuild.context(viewerBuildOpts);
+  const engineCtx           = await esbuild.context(engineBuildOpts);
+  const workerCtx           = await esbuild.context(samplerWorkerBuildOpts);
+  const codemirrorCtx       = await esbuild.context(codemirrorBuildOpts);
+  const textmateHighlightCtx = await esbuild.context(textmateHighlightBuildOpts);
+  const viewerCtx           = await esbuild.context(viewerBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
-                     codemirrorCtx.rebuild(), viewerCtx.rebuild()]);
+                     codemirrorCtx.rebuild(), textmateHighlightCtx.rebuild(),
+                     viewerCtx.rebuild()]);
   console.log('  bundled engine        -> dist/vendor/engine.min.js');
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
   console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
+  console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
   console.log('  bundled viewer        -> dist/vendor/viewer.js');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
-                     codemirrorCtx.watch(), viewerCtx.watch()]);
+                     codemirrorCtx.watch(), textmateHighlightCtx.watch(),
+                     viewerCtx.watch()]);
 
   // esbuild's context.watch() only re-fires the four bundles above.
   // The src/ transpile-or-copy loop and the demo/ tree copy run ONCE
   // at startup, so without these additional fs.watch handlers edits
   // to index.html, style.css, src/*.ts, demo/*.flatppl, etc. would
   // not propagate to dist/ — and the dev server (which serves dist/)
-  // would keep showing stale content. We watch src/ flat (no nested
-  // dirs in practice) and demo/ recursive (it contains the curated
-  // .flatppl programs). Both are debounced with a tiny coalescing
-  // window because fs.watch can fire multiple events per save
-  // (rename + change, editor swap-file pattern, etc.).
+  // would keep showing stale content. We watch src/ non-recursively
+  // (src/vendor/ exists but its vendored contents are re-bundled by
+  // esbuild's watch context above; transpileOrCopySrcFile skips
+  // directories, so a 'vendor' event is a safe no-op) and demo/
+  // recursive (it contains the curated .flatppl programs). Both are
+  // debounced with a tiny coalescing window because fs.watch can fire
+  // multiple events per save (rename + change, editor swap-file
+  // pattern, etc.).
   watchDirDebounced(join(here, 'src'), { recursive: false }, (filename) => {
     if (!filename) return;
     transpileOrCopySrcFile(filename).catch((err) => {
@@ -335,11 +372,13 @@ if (WATCH) {
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
     esbuild.build(codemirrorBuildOpts),
+    esbuild.build(textmateHighlightBuildOpts),
     esbuild.build(viewerBuildOpts),
   ]);
   console.log('  bundled engine        -> dist/vendor/engine.min.js');
   console.log('  bundled sampler-worker -> dist/vendor/sampler-worker.min.js');
   console.log('  bundled codemirror     -> dist/vendor/codemirror.min.js');
+  console.log('  bundled textmate-highlight -> dist/vendor/textmate-highlight.js');
   console.log('  bundled viewer        -> dist/vendor/viewer.js');
 }
 
@@ -459,6 +498,55 @@ async function fetchAndExtractExamples(url, dstDir) {
     await copyDirRecursive(src, dstDir);
   } finally {
     await rm(tmpFile,    { force: true }).catch(() => {});
+    await rm(tmpExtract, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function syncGrammars() {
+  // Vendor flatppl.tmLanguage.json -> dist/vendor/ (fetched at runtime) and
+  // codemirror/textmate-highlight.ts -> src/vendor/ (esbuild entry below).
+  // Clean the vendored drop dir so an upstream rename can't leave a stale file
+  // that esbuild's pinned entryPoint would keep bundling. Safe: this runs once
+  // at startup before any watcher attaches.
+  await rm(srcVendorDir, { recursive: true, force: true });
+  await mkdir(srcVendorDir, { recursive: true });
+  const tmDst = join(vendorDir, 'flatppl.tmLanguage.json');
+  const modDst = join(srcVendorDir, 'textmate-highlight.ts');
+  if (existsSync(grammarsSibling)) {
+    const tmSrc = join(grammarsSibling, 'textmate', 'flatppl.tmLanguage.json');
+    const modSrc = join(grammarsSibling, 'codemirror', 'textmate-highlight.ts');
+    for (const [s, d] of [[tmSrc, tmDst], [modSrc, modDst]]) {
+      if (!existsSync(s)) { console.error(`  ! sibling exists but ${s} not found`); process.exit(1); }
+      await copyFile(s, d);
+    }
+    console.log('  grammars: copied tmLanguage + CM module from sibling');
+    return;
+  }
+  console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
+  const res = await fetch(grammarsRemote, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`failed to fetch grammars: ${res.status} ${res.statusText}`);
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const tmpFile = join(tmpdir(), `flatppl-grammars-${stamp}.tar.gz`);
+  const tmpExtract = join(tmpdir(), `flatppl-grammars-${stamp}`);
+  try {
+    await writeFile(tmpFile, Buffer.from(await res.arrayBuffer()));
+    await mkdir(tmpExtract, { recursive: true });
+    await new Promise((resolve, reject) => {
+      const tar = spawn('tar', ['-xzf', tmpFile, '-C', tmpExtract], { stdio: ['ignore', 'inherit', 'inherit'] });
+      tar.on('error', reject);
+      tar.on('exit', code => code === 0 ? resolve() : reject(new Error(`tar exit ${code}`)));
+    });
+    const entries = await readdir(tmpExtract);
+    if (entries.length === 0) throw new Error('grammars archive extracted empty');
+    const top = join(tmpExtract, entries[0]);
+    const tmSrc = join(top, 'textmate', 'flatppl.tmLanguage.json');
+    const modSrc = join(top, 'codemirror', 'textmate-highlight.ts');
+    if (!existsSync(tmSrc) || !existsSync(modSrc)) throw new Error('expected textmate/ + codemirror/ in archive');
+    await copyFile(tmSrc, tmDst);
+    await copyFile(modSrc, modDst);
+    console.log('  grammars: copied tmLanguage + CM module from tarball');
+  } finally {
+    await rm(tmpFile, { force: true }).catch(() => {});
     await rm(tmpExtract, { recursive: true, force: true }).catch(() => {});
   }
 }
