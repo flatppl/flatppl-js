@@ -404,6 +404,7 @@ function activate(context: any) {
     const cfg = vscode.workspace.getConfiguration('flatppl.visualization');
     return {
       sampleCount: cfg.get('sampleCount', 100000),
+      marginalizationSampleCount: cfg.get('marginalizationSampleCount', 100),
       dagNavigationHistoryCap: cfg.get('dagNavigationHistoryCap', 1000),
       truncateRejectionBudget: cfg.get('truncateRejectionBudget', 1000),
     };

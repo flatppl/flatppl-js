@@ -200,6 +200,10 @@ export interface Ctx {
   CONFIG: FlatPPLConfig;
   HINT: string;
   SAMPLE_COUNT: number;
+  /** MC sample count M for marginalizing internal latents in an
+   *  intractable density (likelihood / posterior); separate from
+   *  SAMPLE_COUNT. VS Code: flatppl.visualization.marginalizationSampleCount. */
+  MARGINALIZATION_COUNT: number;
   REJECTION_BUDGET: number;
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
