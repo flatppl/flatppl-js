@@ -547,3 +547,24 @@ test('hasRandNFn: true for the batched family, false otherwise', () => {
   assert.equal(registry.hasRandNFn({ kind: 'call', op: 'broadcast', args: [], loc: synthLoc() }), false);
   assert.equal(registry.hasRandNFn(null), false);
 });
+
+test('makeBulkSampler: static and per-i agree on a shared scalar param (one realisation)', () => {
+  // A per-i call whose params are all atom-INDEPENDENT (empty refArrays →
+  // resolveParamsN returns scalar columns) must produce byte-identical
+  // output to the static call from the same state: the static path is the
+  // degenerate case of the per-i path, not a second realisation. (Numeric
+  // byte-identity to the OLD scalar loop is pinned by the bit-exact gates;
+  // this pins static≡per-i for the same scalar.)
+  const state = rng.seedFromBytes([6, 6, 6]);
+  const n = 64;
+  const ir = distIR('Exponential', { rate: 2 });
+  const stat = sampler.makeBulkSampler(state, ir, {}, n);
+  const peri = sampler.makeBulkSampler(state, ir, {}, n, undefined,
+    { refArrays: {}, count: n, repeat: 1 });
+  assert.ok(!peri.unhandled, 'per-i with scalar params should still be handled');
+  for (let i = 0; i < n; i++) {
+    assert.equal(peri.samples[i], stat.samples[i],
+      `static vs per-i scalar-param mismatch at i=${i}`);
+  }
+  assertStatesEquivalent(peri.state, stat.state, 'static vs per-i trailing state differs');
+});

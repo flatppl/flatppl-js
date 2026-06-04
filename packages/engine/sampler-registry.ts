@@ -784,7 +784,15 @@ function logpdfDirac(x: any, value: any) {
 // byte-for-byte) identical to the old hoisted-scalar form. The static
 // Uniform/Exponential bit-exact gate (sampler-batched.test.ts) pins this.
 function _p(c: any, i: number): number {
-  return (typeof c === 'number') ? c : c[i];
+  // A param COLUMN is a typed array (Float64Array) — read it per atom.
+  // Anything else is a SCALAR: coerce with unary `+`, matching the
+  // pre-fold `+params[k]` exactly. So a numeric scalar is byte-for-byte
+  // identical to the old hoisted-scalar form, and a non-numeric scalar
+  // (a boolean/string from a malformed param) coerces the WHOLE value
+  // rather than mis-indexing it character-by-character. Keying on
+  // ArrayBuffer.isView (not `typeof === 'number'`) keeps the static and
+  // per-i paths agreeing on every input — one realisation, not two.
+  return ArrayBuffer.isView(c) ? (c as any)[i] : +c;
 }
 
 function randNNormal(state: any, params: any, n: number, out?: Float64Array) {
@@ -1187,7 +1195,8 @@ function _normalizeParamColumn(result: any, count: number, op: string): any {
   }
   if (result && Array.isArray(result.shape) && result.data
       && result.data.BYTES_PER_ELEMENT !== undefined
-      && result.shape.length === 1 && result.shape[0] === count) {
+      && result.shape.length === 1 && result.shape[0] === count
+      && result.data.length === count) {
     return result.data;   // atom-batched scalar
   }
   return null;   // scalar-incompatible (vector-atom / unexpected) — fall back

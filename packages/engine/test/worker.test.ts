@@ -478,6 +478,37 @@ test('sampleN per-i Gamma: non-randNFn dist stays on the scalar fallback (Q2 fol
   }
 });
 
+test('sampleN per-i Uniform: folded randNFn dispatch — per-atom bands + determinism', () => {
+  // Uniform with per-atom support bounds takes the FOLDED makeBulkSampler
+  // perI path (Uniform hasRandNFn) through the worker. Disjoint per-atom
+  // bands prove each atom draws from its own [lo_i, hi_i); same seed →
+  // identical bytes (the worker-level coverage for the folded dispatch).
+  const w = createWorkerHandler();
+  const count = 3;
+  const repeat = 2000;
+  const lo = Float64Array.from([0, 100, 1000]);
+  const hi = Float64Array.from([1, 101, 1001]);
+  const ir = {
+    kind: 'call', op: 'Uniform',
+    kwargs: { support: {
+      kind: 'call', op: 'interval', args: [refIR('lo'), refIR('hi')], loc: synthLoc(),
+    } },
+    loc: synthLoc(),
+  };
+  const r1 = w.handle({ type: 'sampleN', ir, count, repeat, refArrays: { lo, hi }, seed: 21 });
+  assert.equal(r1.type, 'samples');
+  assert.equal(r1.samples.length, count * repeat);
+  for (let k = 0; k < count * repeat; k++) {
+    const atom = Math.floor(k / repeat);
+    assert.ok(r1.samples[k] >= lo[atom] && r1.samples[k] < hi[atom],
+      `slot ${k} (atom ${atom}) ${r1.samples[k]} outside [${lo[atom]}, ${hi[atom]})`);
+  }
+  const r2 = w.handle({ type: 'sampleN', ir, count, repeat, refArrays: { lo, hi }, seed: 21 });
+  for (let k = 0; k < count * repeat; k++) {
+    assert.equal(r2.samples[k], r1.samples[k], `non-deterministic at k=${k}`);
+  }
+});
+
 test('sampleN: without seed, advances session RNG', () => {
   // Two calls with no explicit seed should produce different output —
   // the session state advances between them.
