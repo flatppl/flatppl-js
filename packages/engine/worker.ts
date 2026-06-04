@@ -236,17 +236,16 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           //     dominant cost.
           //   * per-i-params (refArrays non-empty) — at least one
           //     kwarg references an upstream sample, so params change
-          //     per outer atom. We build ONE parametric sampler for
-          //     the whole call (factory closure with prng bound but
-          //     params unbound) and call .drawWith(env) per atom,
-          //     resolving the per-i env into stdlib's params on each
-          //     draw. This is generic across every distribution in
-          //     the registry — the stdlib `factory(opts)` form
-          //     returns a closure that accepts params per call, so
+          //     per outer atom. randNFn dists fold onto the single
+          //     batched leaf math (makeBulkSampler perI mode: one
+          //     philoxN* draw + per-element transform over per-atom
+          //     param columns). Everything else falls back to ONE
+          //     parametric sampler (factory closure, prng bound /
+          //     params unbound) called .drawWith(env) per atom — the
+          //     stdlib `factory(opts)` form accepts params per call so
           //     the expensive factory setup runs once instead of N
           //     times. For repeat>1, atom i's k inner draws share
-          //     atom i's env so we just call drawWith k times in
-          //     succession with the same env.
+          //     atom i's env. See the branch below for the dispatch.
           const count  = msg.count  | 0;
           const repeat = (msg.repeat | 0) || 1;
           if (count  <= 0) throw new Error(`sampleN.count must be positive integer (got ${msg.count})`);
@@ -283,26 +282,54 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // don't need to copy r.samples back — they share storage.
             state = r.state;
           } else {
-            // Per-i-params path. One parametric sampler for the whole
-            // call; params resolved per draw via drawWith(env).
-            // drawEnv merges session env (fixed-phase bindings) with
-            // the per-atom refArrays slice — same precedence as
-            // evaluateN above.
-            const s = samplerLib.makeParametricSampler(state, msg.ir);
-            const drawEnv = { ...env };
-            if (repeat === 1) {
-              for (let i = 0; i < count; i++) {
-                for (const k of refKeys) drawEnv[k] = refArrays[k][i];
-                out[i] = s.drawWith(drawEnv);
-              }
-            } else {
-              for (let i = 0; i < count; i++) {
-                for (const k of refKeys) drawEnv[k] = refArrays[k][i];
-                const base = i * repeat;
-                for (let j = 0; j < repeat; j++) out[base + j] = s.drawWith(drawEnv);
+            // Per-i-params path: at least one kwarg references an upstream
+            // sample, so params change per outer atom.
+            //
+            // randNFn dists fold onto the single batched leaf math:
+            // makeBulkSampler's perI mode resolves each param into a
+            // per-atom column (resolveParamsN over the SAME refArrays) and
+            // runs ONE philoxN* draw + the per-element transform, writing
+            // `out` in place — no per-draw stdlib factory dispatch, the SAME
+            // leaf realisation as the static path (engine-concepts §11, Q2
+            // fold). Uniform/Exponential stay bit-exact to the old per-draw
+            // scalar loop (same uniform stream + transform, atom-major
+            // order); Normal/LogNormal shift ziggurat→Box-Muller
+            // (distribution preserved), matching the static path and the
+            // stage-4 value-position fold.
+            //
+            // Everything else keeps the per-draw makeParametricSampler loop
+            // VERBATIM — no randNFn (Dirac/Gamma/Beta/Weibull/…), or a
+            // Uniform whose support isn't interval(lo, hi). One factory
+            // closure (prng bound, params unbound), .drawWith(per-atom env).
+            // One endpoint, not one algorithm: ziggurat/rejection survive
+            // here. drawEnv merges session env with the per-atom refArrays
+            // slice — refArrays wins, same precedence as resolveParamsN.
+            let handled = false;
+            if (samplerLib.hasRandNFn(msg.ir)) {
+              const r = samplerLib.makeBulkSampler(
+                state, msg.ir, env, total, out, { refArrays, count, repeat });
+              if (!r.unhandled) {
+                state = r.state;
+                handled = true;
               }
             }
-            state = s.getState();
+            if (!handled) {
+              const s = samplerLib.makeParametricSampler(state, msg.ir);
+              const drawEnv = { ...env };
+              if (repeat === 1) {
+                for (let i = 0; i < count; i++) {
+                  for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+                  out[i] = s.drawWith(drawEnv);
+                }
+              } else {
+                for (let i = 0; i < count; i++) {
+                  for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+                  const base = i * repeat;
+                  for (let j = 0; j < repeat; j++) out[base + j] = s.drawWith(drawEnv);
+                }
+              }
+              state = s.getState();
+            }
           }
 
           // Only update session RNG if no explicit seed was given. Per-
