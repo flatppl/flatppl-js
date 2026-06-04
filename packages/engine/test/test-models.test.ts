@@ -677,23 +677,24 @@ LW = weighted(3.0, L)
     `weighted(3.0, Lebesgue([0.2, 1.7])) logTotalmass = log(4.5); got ${LWm.logTotalmass}`);
 });
 
-test('beta-binomial-pushfwd: full fixture exposes user-kernel-composition gap', () => {
-  // Pin the failure mode of the full fixture so a regression in
-  // either direction (fix lands → catch flips green; gap reopens
-  // → assertion fails) is detected. The deeper gap: a user fn
-  // returning `Binomial.(n_row, p_row)` (kernel-broadcast) doesn't
-  // typeinfer as a measure when the user fn is called via dotted
-  // broadcast (`binomial_row_K.(n_data, p)`) — the outer broadcast
-  // sees `array of real` instead of `array of measure`.
+test('beta-binomial-pushfwd: full fixture type-checks; measure-bodied lambdas reify to kernels', () => {
+  // A user lambda whose body is measure-valued IS a kernel (spec §04
+  // functionof-of-measure, §06 uniform kernel extension; engine-concepts
+  // §19): `(n_row, p_row) -> Binomial.(n_row, p_row)` has a body that is
+  // a bare-distribution broadcast, which now types as an array-valued
+  // measure (inferBroadcast measure-head path) — so inferReification
+  // makes the lambda a kernelType, and the outer dotted broadcast
+  // `binomial_row_K.(n_data, p)` types as a measure that `draw` accepts.
+  // (Previously this whole fixture failed at L39 "draw: expects measure,
+  // got array of real" — the user-kernel-composition gap.)
   const src = readFixture('beta-binomial-pushfwd.flatppl');
-  const r = processSource(src);
-  const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
-  // Pre-fix: would fail at L27 (iid: expects measure, got deferred).
-  // Post-fix: pushfwd typeinfer now produces measure(real); first
-  // failure moves to L39 (draw: expects measure, got array of
-  // real) — the user-kernel-composition gap.
-  assert.ok(errs.length > 0, 'still has remaining typeinfer errors');
-  assert.match(errs[0].message,
-    /draw|measure|user.*kernel|broadcast|expected/i,
-    `first error is the user-kernel-composition gap: ${errs[0]?.message}`);
+  const { bindings, diagnostics } = processSource(src);
+  const errs = (diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    `full fixture should type-check cleanly; got: ${errs.map((e: any) => e.message).join(' | ')}`);
+  const kindOf = (n: string) => bindings.get(n)?.inferredType?.kind;
+  assert.equal(kindOf('binomial_row_K'), 'kernel', 'bare-dist-broadcast body reifies to a kernel');
+  assert.equal(kindOf('beta_row_K'), 'kernel', 'iid-body lambda reifies to a kernel');
+  assert.equal(kindOf('forward_kernel'), 'kernel');
+  assert.equal(kindOf('prior'), 'measure');
 });
