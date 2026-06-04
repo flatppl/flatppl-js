@@ -1715,11 +1715,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       const merged: any[] = [];
       for (let a = 0; a < outerShape.length; a++) {
         const ai = outerShape[a], bi = c.outerShape[a];
-        if (ai === '%dynamic') merged.push(bi);
+        // Singleton expansion takes precedence over %dynamic: a size-1
+        // axis expands to the OTHER axis's length, even when that length
+        // is dynamic. (Checking %dynamic first would wrongly collapse
+        // `%dynamic ∧ 1` to 1 — e.g. `transport.(xs, [pars])` with xs of
+        // length n=%dynamic and a singleton [pars] must stay %dynamic,
+        // not become length 1.)
+        if (ai === 1) merged.push(bi);
+        else if (bi === 1) merged.push(ai);
+        else if (ai === '%dynamic') merged.push(bi);
         else if (bi === '%dynamic') merged.push(ai);
         else if (ai === bi) merged.push(ai);
-        else if (ai === 1) merged.push(bi);
-        else if (bi === 1) merged.push(ai);
         else return T.deferred();
       }
       outerShape = merged;
