@@ -144,6 +144,19 @@ function funcType(inputs: any, result: any)   { return { kind: 'function', input
  *  collision with the `fn` and `kernelof` built-in surface forms. */
 function kernelType(inputs: any, result: any) { return { kind: 'kernel',   inputs, result }; }
 
+/** Likelihood object (spec §06 likelihoodof): the density of a kernel at
+ *  observed data, as a function of the kernel's input parameters. It is
+ *  NOT a measure and NOT callable — it is consumed via densityof /
+ *  logdensityof / bayesupdate, which is how FlatPPL keeps density vs
+ *  log-density values explicit. `inputs` mirrors the source kernel's
+ *  parameter interface ([{name,type}…]); it may be undefined when the
+ *  kernel's inputs aren't statically known. */
+function likelihood(inputs?: any) {
+  const t: any = { kind: 'likelihood' };
+  if (inputs !== undefined) t.inputs = inputs;
+  return t;
+}
+
 /**
  * Opaque RNG-state type (per spec §sec:random / §03 `rngstates`):
  *  rng = rnginit(seed)             — produces an rngstate
@@ -222,6 +235,9 @@ function equal(a: any, b: any): boolean {
     case 'rngstate':
       // Opaque — kind match alone is sufficient.
       return true;
+    case 'likelihood':
+      // Opaque object at the type level — kind match suffices.
+      return true;
     case 'function':
     case 'kernel': {
       if (a.inputs.length !== b.inputs.length) return false;
@@ -278,6 +294,9 @@ function substitute(t: any, subst: Map<any, any>): any {
       inputs: t.inputs.map((i: any) => ({ name: i.name, type: substitute(i.type, subst) })),
       result: substitute(t.result, subst) };
   }
+  if (t.kind === 'likelihood' && t.inputs) {
+    return likelihood(t.inputs.map((i: any) => ({ name: i.name, type: substitute(i.type, subst) })));
+  }
   return t;
 }
 
@@ -321,6 +340,9 @@ function unify(a: any, b: any, subst: any): any {
       return null;
     case 'measure':
       return unify(a.domain, b.domain, subst);
+    case 'likelihood':
+      // Opaque at the type level (like rngstate) — kind match suffices.
+      return subst;
     case 'array': {
       if (a.rank !== b.rank) return null;
       if (a.shape.length !== b.shape.length) return null;
@@ -459,6 +481,7 @@ function show(t: any): string {
     case 'rngstate': return 'rngstate';
     case 'function': return showCallable('function', t);
     case 'kernel':   return showCallable('kernel',   t);
+    case 'likelihood': return 'likelihood';
     case 'var':      return 'any';  // unresolved → user-facing "any"
   }
   return '<unknown>';
@@ -1379,7 +1402,7 @@ function hasSignature(opName: string) {
 module.exports = {
   // Constructors
   deferred, failed, any, scalar, array, tvector, record, table, tuple, measure, rngstate, tvar,
-  funcType, kernelType,
+  funcType, kernelType, likelihood,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Operations
   equal, substitute, unify, unifyArith, show, isMeasure, isValue, isCallable,
