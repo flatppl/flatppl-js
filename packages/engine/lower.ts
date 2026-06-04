@@ -147,7 +147,13 @@ const BIN_OP_MAP: Record<string, string> = {
   '+':  'add',
   '-':  'sub',
   '*':  'mul',
-  '/':  'div',
+  // Spec §07: `/` is `divide` (true division, real/complex result), NOT
+  // `div` (which is ⌊a/b⌋ integer floor division). Mapping `/`→`div`
+  // mis-typed every `/` as integer-preserving (it routes through the
+  // BINARY_ARITH_OPS unifyArith path) even though the runtime already
+  // computed a/b. `divide` has a REAL signature and is not in
+  // BINARY_ARITH_OPS, so it types via inferGenericCall → real.
+  '/':  'divide',
   '<':  'lt',
   '<=': 'le',
   '>':  'gt',
