@@ -33,8 +33,8 @@ function makeFV(bindingsObj: any) {
     isMeasureBinding: () => false,
     samplerLib: {
       evaluateExpr: (ir: any, env: any) => { evalCalls++; if (ir._name) evaluated.push(ir._name); return ir.val(env); },
+      walk: () => { throw new Error('walker should not run in these tests'); },
     },
-    traceeval: { walk: () => { throw new Error('traceeval should not run in these tests'); } },
     expandMeasureIR: () => null,
     collectSelfRefs: (ir: any) => new Set((ir && ir.refs) || []),
     lowerExpr: (x: any) => x,
@@ -94,8 +94,7 @@ test('FixedValues: a binding whose evaluator throws is UNRESOLVED (no negative c
   const fv = new FixedValues({
     bindings, derivations: {},
     resolveMeasureRef: () => null, isMeasureBinding: () => false,
-    samplerLib: { evaluateExpr: () => { if (throwIt) throw new Error('boom'); return 42; } },
-    traceeval: { walk: () => { throw new Error('no'); } },
+    samplerLib: { evaluateExpr: () => { if (throwIt) throw new Error('boom'); return 42; }, walk: () => { throw new Error('no'); } },
     expandMeasureIR: () => null, collectSelfRefs: () => new Set(), lowerExpr: (x: any) => x,
   });
   assert.equal(fv.get('t'), undefined, 'throw → UNRESOLVED');
