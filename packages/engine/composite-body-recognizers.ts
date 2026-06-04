@@ -168,6 +168,26 @@ type CompositeBody =
          *  resolves at materialise-time). */
         eventDim: number;
       }>;
+    })
+  | (CompositeBodyBase & {
+      kind: 'generative';
+      /** The kernel head name (== d.distOp). Carried for parity with the
+       *  other variants' opcode fields and for the executor's errors. */
+      distOp: string;
+      /** The lawof arg — the value-expr whose law is the per-cell measure
+       *  (a bare ref to a module value binding, or an inline op tree). The
+       *  executor inlines it (substituting value bindings + boundary
+       *  formals) into one self-contained expression evaluated batched. */
+      bodyValueExprIR: any;
+      /** The internal draws the value-expr closes over: each a hoisted
+       *  `draw(<DistCall>)` binding NOT a kernel boundary. The executor
+       *  issues one worker `sampleN` per draw over count = N·K and binds
+       *  the flat [count] result to the draw's `bindingName` (engine-
+       *  concepts §22.4 — fresh per (atom, cell) position). */
+      internalDraws: Array<{ bindingName: string; distIR: any }>;
+      /** Always true on a successful match (the recogniser declines a
+       *  draw-free deterministic pushforward). */
+      hasInternalDraw: boolean;
     });
 
 /**
@@ -333,6 +353,37 @@ registerCompositeBodyRecognizer((d, ctx) => {
     // Phase 5.1 Session 5b — MvNormal inner support.
     innerIsVectorOutput: desc.innerIsVectorOutput,
     innerEventDim: desc.innerEventDim,
+  };
+});
+
+// ---------- generative: `lawof(<value-expr-with-internal-draw>)` ----
+//
+// engine-concepts §21 — the 5th recogniser kind. The kernel body is the
+// LAW of an ordinary deterministic value-expression that closes over one
+// or more INTERNAL DRAWS (hoisted `draw(<DistCall>)` bindings that aren't
+// kernel boundaries). This is the residual case after the four measure-
+// CONSTRUCTION recognisers, so it is registered LAST (most permissive):
+// it matches any `lawof(<value-expr>)` body that the earlier recognisers
+// declined, provided the value-expr actually embeds a stochastic draw (a
+// draw-free body is a deterministic pushforward, handled elsewhere). The
+// executor (`_executeGenerativeComposite` in mat-broadcast.ts) inlines the
+// transform, samples each internal draw fresh per (atom, cell) position,
+// and threads it through the batched evaluator.
+
+registerCompositeBodyRecognizer((d, ctx) => {
+  if (!ctx || !ctx.bindings) return null;
+  const desc = kernelBroadcastShape.detectGenerativeKernelBinding(
+    d.distOp, ctx.bindings);
+  if (!desc) return null;
+  return {
+    kind: 'generative',
+    binding: desc.binding,
+    params: desc.params,
+    paramKwargs: desc.paramKwargs,
+    distOp: d.distOp,
+    bodyValueExprIR: desc.bodyValueExprIR,
+    internalDraws: desc.internalDraws,
+    hasInternalDraw: desc.hasInternalDraw,
   };
 });
 
