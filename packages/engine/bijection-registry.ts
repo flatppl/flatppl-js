@@ -415,6 +415,209 @@ registerBijection({
   shapeContract: { inShape: '[D]', outShape: '[D]' },
 });
 
+// =====================================================================
+// Elementary scalar bijections + symbolic path inversion (spec §06)
+// =====================================================================
+//
+// The general analogue of Julia's InverseFunctions.jl + Changes-
+// OfVariables.jl, but operating on FlatPIR value expressions rather
+// than host functions — the engine-concepts term-rewriting philosophy.
+// Two parts:
+//
+//   1. ELEMENTARY_BIJECTIONS — a per-op rule table for the spec §06
+//      case-1 "known-bijection registry" set. Each entry gives the
+//      INVERSE rewrite and the FORWARD log-abs-det-Jacobian (LADJ)
+//      rewrite of one op, as a function of WHICH ARGUMENT is the free
+//      (inversion) variable. A binary op (`add`/`sub`/`mul`/`divide`/
+//      `pow`) is a bijection only once the OTHER argument is frozen
+//      (closed over) — exactly Julia's `Base.Fix1`/`Fix2`. "Which arg
+//      is free" is not declared; it is read structurally from the IR
+//      by `invertExpr` (the free variable flows through exactly one
+//      argument; the rest are frozen).
+//
+//   2. invertExpr — the path-inversion pass over a STRAIGHT-LINE value
+//      expression of ONE free input. It peels the expression
+//      output→input, reverse-composing per-op inverses, and sums the
+//      per-op forward LADJs. Output is ORDINARY value IR, so both the
+//      inverse and the LADJ evaluate through the normal batched
+//      evaluator (`evaluateExprN`) — they ride the batch-flatten
+//      machinery for free (the §20.10 vertical collapse applies to a
+//      whole grid of inversion points in one pass).
+//
+// v1 is symbolic-registry-only: no numerical root-find fallback (a
+// non-registry monotone op refuses), and no general multivariate
+// nonlinear inversion (the `affine` entry above already covers the
+// linear multivariate case). `bijection(f, f_inv, logvolume)` (spec
+// §04) is the user-supplied complement — it hands the inverse + volume
+// in directly, bypassing this synthesis.
+//
+// CONVENTION. `ladjIR` is the FORWARD LADJ, log|d(out)/d(free)|. The
+// pushforward density relation is
+//     log p_out(y) = log p_free(f⁻¹(y)) − ladjIR(f⁻¹(y))
+// i.e. the registry's inverse-volume `logDetJ(y) = −ladjIR(f⁻¹(y))`.
+// A caller ingesting `bijection`'s FORWARD `logvolume` negates to match
+// `logDetJ`; a caller using `ladjIR` directly subtracts it.
+
+function _isLit(n: any): boolean {
+  return !!(n && n.kind === 'lit' && typeof n.value === 'number');
+}
+function _lit(v: number): any {
+  return { kind: 'lit', value: v, numType: Number.isInteger(v) ? 'integer' : 'real' };
+}
+function _call(op: string, args: any[]): any {
+  return { kind: 'call', op, args };
+}
+/** log|e| — the per-op LADJ building block for non-constant Jacobians. */
+function _logAbs(e: any): any {
+  return _call('log', [_call('abs', [e])]);
+}
+
+/**
+ * Does `ir` contain a node matching `matches` anywhere in its sub-IR?
+ * Walks every IR sub-position (args / kwargs / fields / body / branches
+ * / selector) so the free-variable search can't miss an occurrence.
+ */
+function _irContainsRef(ir: any, matches: (n: any) => boolean): boolean {
+  if (!ir || typeof ir !== 'object') return false;
+  if (matches(ir)) return true;
+  if (Array.isArray(ir.args)) {
+    for (const a of ir.args) if (_irContainsRef(a, matches)) return true;
+  }
+  if (ir.kwargs) {
+    for (const k in ir.kwargs) {
+      if (Object.prototype.hasOwnProperty.call(ir.kwargs, k)
+          && _irContainsRef(ir.kwargs[k], matches)) return true;
+    }
+  }
+  if (Array.isArray(ir.fields)) {
+    for (const f of ir.fields) if (f && _irContainsRef(f.value, matches)) return true;
+  }
+  if (ir.body && _irContainsRef(ir.body, matches)) return true;
+  if (Array.isArray(ir.branches)) {
+    for (const b of ir.branches) if (_irContainsRef(b, matches)) return true;
+  }
+  if (ir.selector && _irContainsRef(ir.selector, matches)) return true;
+  return false;
+}
+
+// Per-op inverse + forward-LADJ rules. `idx` is the on-path (free)
+// argument index; `args` the node's args; `Y` the running inverse
+// expression (what the op's OUTPUT equals); `X` the on-path argument's
+// forward subexpression (what flows INTO the op, in terms of the free
+// variable). A rule returns `null` when the shape is not invertible
+// (e.g. `pow` with a non-literal exponent, or the base-frozen `a^x`
+// case deferred from v1).
+const ELEMENTARY_BIJECTIONS: Record<string, {
+  invert: (idx: number, args: any[], Y: any) => any,
+  ladj: (idx: number, args: any[], X: any) => any,
+}> = {
+  // y = e^x → x = log y ; log|d e^x/dx| = x.
+  exp: { invert: (_i, _a, Y) => _call('log', [Y]), ladj: (_i, _a, X) => X },
+  // y = log x → x = e^y ; log|d log x/dx| = −log|x|.
+  log: { invert: (_i, _a, Y) => _call('exp', [Y]), ladj: (_i, _a, X) => _call('neg', [_logAbs(X)]) },
+  // y = −x → x = −y ; LADJ 0.
+  neg: { invert: (_i, _a, Y) => _call('neg', [Y]), ladj: () => _lit(0) },
+  // y = a + x (commutative) → x = y − a ; LADJ 0.
+  add: { invert: (i, a, Y) => _call('sub', [Y, a[1 - i]]), ladj: () => _lit(0) },
+  // y = a − b. free=arg0: x = y + b. free=arg1: x = a − y. LADJ 0.
+  sub: {
+    invert: (i, a, Y) => i === 0 ? _call('add', [Y, a[1]]) : _call('sub', [a[0], Y]),
+    ladj: () => _lit(0),
+  },
+  // y = c · x (commutative) → x = y / c ; log|c|.
+  mul: { invert: (i, a, Y) => _call('divide', [Y, a[1 - i]]), ladj: (i, a) => _logAbs(a[1 - i]) },
+  // y = a / b. free=arg0 (x/c): x = y·c, LADJ −log|c|. free=arg1 (a/x):
+  // x = a/y, LADJ log|a| − 2 log|x|.
+  divide: {
+    invert: (i, a, Y) => i === 0 ? _call('mul', [Y, a[1]]) : _call('divide', [a[0], Y]),
+    ladj: (i, a, X) => i === 0
+      ? _call('neg', [_logAbs(a[1])])
+      : _call('sub', [_logAbs(a[0]), _call('mul', [_lit(2), _logAbs(X)])]),
+  },
+  // y = x^k, k a literal exponent (the spec §06 case-1 form; base free).
+  //   inverse: x = y^(1/k).   LADJ: log|k·x^(k−1)| = log|k| + (k−1)log|x|.
+  // NOTE (v1 limitation): `pow(Y, 1/k)` is NaN for an odd-integer root of
+  // a negative output — fine for positive-support maps (transport's
+  // base x+δ > 0); a sign-preserving root / numerical fallback is the
+  // refinement. Base-frozen `a^x` (idx 1) is deferred → null.
+  pow: {
+    invert: (i, a, Y) => (i === 0 && _isLit(a[1])) ? _call('pow', [Y, _lit(1 / a[1].value)]) : null,
+    ladj: (i, a, X) => (i === 0 && _isLit(a[1]))
+      ? _call('add', [_lit(Math.log(Math.abs(a[1].value))), _call('mul', [_lit(a[1].value - 1), _logAbs(X)])])
+      : null,
+  },
+};
+
+/**
+ * Symbolically invert a straight-line FlatPIR value expression of one
+ * free input (spec §06 case-1 known-bijection composition).
+ *
+ * `outputExpr` is the IR for `y = f(free, …frozen)`. `freeRef` selects
+ * the free input — either a predicate `(node) => boolean` or a
+ * `{ ns?, name }` ref descriptor. `outputValue` is the IR node to stand
+ * in for `y` in the returned inverse (the caller binds it to the
+ * observed value at eval time).
+ *
+ * Returns `{ inverseIR, ladjIR }` or `null` when `f` is not a
+ * single-occurrence straight-line composition of registry bijections
+ * (free input absent, appears in more than one argument, or an op on
+ * the path has no rule). `inverseIR` is in terms of `outputValue` +
+ * the frozen leaves; `ladjIR` (FORWARD LADJ, see CONVENTION above) is in
+ * terms of `freeRef` + the frozen leaves — the caller evaluates it at
+ * the inverted free value.
+ */
+function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): { inverseIR: any, ladjIR: any } | null {
+  const { outputExpr, freeRef, outputValue } = spec;
+  const matches: (n: any) => boolean = typeof freeRef === 'function'
+    ? freeRef
+    : (n: any) => !!(n && n.kind === 'ref' && n.name === freeRef.name
+        && (freeRef.ns == null || n.ns === freeRef.ns));
+  if (!_irContainsRef(outputExpr, matches)) return null;
+
+  // 1. Trace the straight-line path output→leaf. At each node exactly
+  //    one argument may contain the free variable (the on-path arg);
+  //    the rest are frozen. More than one → not single-input straight-
+  //    line (e.g. `u * u`) → refuse.
+  const path: Array<{ node: any, onPathIdx: number }> = [];
+  let cur = outputExpr;
+  while (!(cur.kind === 'ref' && matches(cur))) {
+    if (cur.kind !== 'call' || !Array.isArray(cur.args)) return null;
+    let onPathIdx = -1;
+    for (let i = 0; i < cur.args.length; i++) {
+      if (_irContainsRef(cur.args[i], matches)) {
+        if (onPathIdx !== -1) return null;   // free var in >1 arg
+        onPathIdx = i;
+      }
+    }
+    if (onPathIdx === -1) return null;
+    if (!ELEMENTARY_BIJECTIONS[cur.op]) return null;   // op not invertible
+    path.push({ node: cur, onPathIdx });
+    cur = cur.args[onPathIdx];
+  }
+  // Identity: outputExpr IS the free ref.
+  if (path.length === 0) return { inverseIR: outputValue, ladjIR: _lit(0) };
+
+  // 2. inverseIR: fold output→input, applying each op's inverse rule.
+  let Y = outputValue;
+  for (const { node, onPathIdx } of path) {
+    const inv = ELEMENTARY_BIJECTIONS[node.op].invert(onPathIdx, node.args, Y);
+    if (inv == null) return null;
+    Y = inv;
+  }
+
+  // 3. ladjIR: sum the per-op forward LADJ, each evaluated at the op's
+  //    on-path INPUT subexpression (already in terms of the free var).
+  const terms: any[] = [];
+  for (const { node, onPathIdx } of path) {
+    const lj = ELEMENTARY_BIJECTIONS[node.op].ladj(onPathIdx, node.args, node.args[onPathIdx]);
+    if (lj == null) return null;
+    terms.push(lj);
+  }
+  const ladjIR = terms.reduce((acc: any, t: any) => acc == null ? t : _call('add', [acc, t]), null);
+
+  return { inverseIR: Y, ladjIR };
+}
+
 module.exports = {
   registerBijection,
   getBijection,
@@ -425,4 +628,8 @@ module.exports = {
   affineAtomBatchedForward,
   affineAtomBatchedInverse,
   affineLogDetJ,
+  // Symbolic scalar inverse + LADJ (spec §06 case-1; the InverseFunctions
+  // + ChangesOfVariables analogue over FlatPIR).
+  invertExpr,
+  ELEMENTARY_BIJECTIONS,
 };
