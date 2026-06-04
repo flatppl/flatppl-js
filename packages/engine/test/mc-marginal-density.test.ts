@@ -141,6 +141,54 @@ test('deriveMcLikelihoodRecipe: auto-derives transport recipe from model binding
   }
 });
 
+test('mcMarginalLogDensity: full likelihood profile over pars.mu is peaked in the interior', async () => {
+  // The acid test: a correct likelihood profile over the data must be a
+  // PEAKED curve (a proper MLE), not monotone/flat. We sweep pars.mu with
+  // a/b at glob_pars, score the model's 20 observations, and require the
+  // maximum to fall in the interior of the sweep (a real optimum).
+  const { processSource, orchestrator } = require(ENG + 'index.ts');
+  const { deriveMcLikelihoodRecipe } = require(ENG + 'mat-density.ts');
+  const fs = require('node:fs');
+  const src = fs.readFileSync(
+    '/homedir/Data/Science/Projects/BAT/Projects/FlatPPL/flatppl-examples/examples/tmp_transport_model.flatppl', 'utf8');
+  const { bindings } = processSource(src);
+  const built = orchestrator.buildDerivations(bindings);
+  const r = deriveMcLikelihoodRecipe('z', ['pars'], built.bindings);
+  assert.ok(r, 'derivation failed');
+  const data = [3.81359, 2.91195, 3.20085, 3.09185, 3.34005, 4.96067, 0.842412,
+    2.34128, 3.06224, 2.59162, 2.5017, 5.39892, 1.19806, 1.60855, 1.44647,
+    0.771489, 0.26153, 1.56184, 0.561171, 4.4823];
+  const ctx = makeCtx();
+  const mus = [0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0];
+  const curve: number[] = [];
+  for (const mu of mus) {
+    const ll = await mcMarginalLogDensity({
+      ...r, data, M: 6000, ctx,
+      frozenEnv: { pars: { a: 0.1, b: 0.3, mu }, sigma: 0.2 },
+      seedTag: 'profile:mu=' + mu,
+    });
+    // −inf is VALID and correct: where mu pushes m_z's (hard, deterministic)
+    // support off the data, the likelihood is genuinely zero. A proper
+    // peaked profile has −inf tails flanking a finite interior optimum.
+    assert.ok(ll != null, `log L(mu=${mu}) returned null`);
+    curve.push(ll!);
+  }
+  // Diagnostic: the profile curve (relative to its max), for the record.
+  const top = Math.max(...curve);
+  process.stderr.write('  log-likelihood profile over pars.mu:\n');
+  for (let i = 0; i < mus.length; i++) {
+    process.stderr.write(`    mu=${mus[i].toFixed(1)}  logL=${curve[i].toFixed(2)}  Δ=${(curve[i] - top).toFixed(2)}\n`);
+  }
+  assert.ok(Number.isFinite(top), 'no finite likelihood anywhere in the sweep');
+  const argmax = curve.indexOf(top);
+  assert.ok(argmax > 0 && argmax < mus.length - 1,
+    `profile peak at the sweep boundary (mu=${mus[argmax]}), not an interior MLE`);
+  // Peaked, not flat: the endpoints must be clearly below the max (−inf
+  // tails trivially satisfy this — a proper hard-support likelihood).
+  assert.ok(top - curve[0] > 1 && top - curve[mus.length - 1] > 1,
+    `profile too flat to be a real likelihood (Δ ends: ${(top - curve[0]).toFixed(2)}, ${(top - curve[mus.length - 1]).toFixed(2)})`);
+});
+
 test('mcMarginalLogDensity: returns null when the recipe is not bijective in the retained draw', async () => {
   const ctx = makeCtx();
   // z = x·u — appears in u AND (if we asked for x) … here ask to retain
