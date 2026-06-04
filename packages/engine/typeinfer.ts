@@ -415,7 +415,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'densityof':
       case 'bayesupdate':
       case 'likelihoodof': {
-        const t = inferGenericCall(expr, scopes);
+        const t = inferLikelihoodOps(expr, scopes);
         _checkDensityShapes(expr);
         return write(t, expr);
       }
@@ -543,6 +543,41 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       s = next;
     }
     return T.substitute(sig.result, s);
+  }
+
+  // Likelihood-object ops (spec §06). `likelihoodof(K, obs)` produces a
+  // first-class LIKELIHOOD object (not a measure, not callable) whose
+  // parameter interface is the kernel's inputs — so its inferredType is
+  // a concrete `likelihood`, not `deferred`. `densityof`/`logdensityof`
+  // accept either a measure (→ existing signature path) OR a likelihood
+  // (→ a real density/log-density value). `bayesupdate(L, prior)` is the
+  // unnormalized posterior measure over the prior's domain.
+  function inferLikelihoodOps(expr: any, scopes: any): any {
+    const op = expr.op;
+    const args = expr.args || [];
+    if (op === 'likelihoodof') {
+      const kT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
+      if (args.length > 1) inferExpr(args[1], scopes);   // keep obs typed/written
+      // K is a kernel; a measure (nullary kernel) has no parameter
+      // interface. Carry the kernel's inputs as the likelihood's params.
+      const inputs = (kT && kT.kind === 'kernel') ? kT.inputs : undefined;
+      return T.likelihood(inputs);
+    }
+    if (op === 'densityof' || op === 'logdensityof') {
+      const mT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
+      if (mT && mT.kind === 'likelihood') {
+        if (args.length > 1) inferExpr(args[1], scopes);   // theta (param point)
+        return T.REAL;
+      }
+      return inferGenericCall(expr, scopes);   // measure(T) signature path
+    }
+    if (op === 'bayesupdate') {
+      const lT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
+      const pT: any = args.length > 1 ? inferExpr(args[1], scopes) : T.deferred();
+      if (lT && lT.kind === 'likelihood' && T.isMeasure(pT)) return pT;
+      return inferGenericCall(expr, scopes);
+    }
+    return inferGenericCall(expr, scopes);
   }
 
   // -------------------------------------------------------------------
