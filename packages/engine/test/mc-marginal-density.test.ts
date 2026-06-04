@@ -106,6 +106,41 @@ test('mcMarginalLogDensity: iid total = sum of per-event log-densities', async (
     `iid factorisation broken: total=${total} vs Σ per-event=${sum}`);
 });
 
+test('deriveMcLikelihoodRecipe: auto-derives transport recipe from model bindings, matches oracle', async () => {
+  const { processSource, orchestrator } = require(ENG + 'index.ts');
+  const { deriveMcLikelihoodRecipe } = require(ENG + 'mat-density.ts');
+  const fs = require('node:fs');
+  const src = fs.readFileSync(
+    '/homedir/Data/Science/Projects/BAT/Projects/FlatPPL/flatppl-examples/examples/tmp_transport_model.flatppl', 'utf8');
+  const { bindings } = processSource(src);
+  const built = orchestrator.buildDerivations(bindings);
+
+  // Auto-derive from the scalar per-event variate `z` over boundary `pars`
+  // — no hand-built recipe.
+  const r = deriveMcLikelihoodRecipe('z', ['pars'], built.bindings);
+  assert.ok(r, 'deriveMcLikelihoodRecipe returned null');
+  assert.ok(/^__anon/.test(r.retainedRef.name),
+    `retained should be the internal uniform draw, got ${r.retainedRef.name}`);
+  assert.strictEqual(r.marginalRef.name, 'x', 'marginalised latent should be the gun draw x');
+  assert.deepStrictEqual(r.retainedInterval, [0, 1], 'retained Uniform support');
+  assert.strictEqual(r.marginalDistIR.op, 'Normal', 'marginal dist is the gun Normal');
+
+  // Feed the AUTO-DERIVED recipe to the estimator at θ = glob_pars; the
+  // frozen point + sigma flow through the worker session env. Compare to
+  // the same independent forward-sim oracle.
+  const ctx = makeCtx();
+  const frozenEnv = { pars: { a: 0.1, b: 0.3, mu: 1.1 }, sigma: 0.2 };
+  for (const d of [2.0, 3.0]) {
+    const est = await mcMarginalLogDensity({
+      ...r, data: [d], M: 8000, ctx, frozenEnv, seedTag: 'derived:d=' + d,
+    });
+    assert.ok(est != null && Number.isFinite(est), `non-finite est at d=${d}: ${est}`);
+    const ora = oracleLogP(d, 2_000_000);
+    assert.ok(Math.abs(est - ora) < 0.15,
+      `d=${d}: auto-derived estimator log p=${est.toFixed(4)} vs oracle=${ora.toFixed(4)} (Δ=${(est - ora).toFixed(4)})`);
+  }
+});
+
 test('mcMarginalLogDensity: returns null when the recipe is not bijective in the retained draw', async () => {
   const ctx = makeCtx();
   // z = x·u — appears in u AND (if we asked for x) … here ask to retain
