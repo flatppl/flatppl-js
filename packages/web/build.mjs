@@ -60,7 +60,9 @@ const examplesRemote = `https://github.com/flatppl/flatppl-examples/archive/refs
 // flatppl-grammars sibling: same sibling-first / GitHub-tarball pattern as the
 // examples sync. Provides the canonical TextMate grammar AND the CodeMirror
 // highlighter module (codemirror/textmate-highlight.ts).
-const grammarsSibling = join(dirname(repoRoot), 'flatppl-grammars');
+// GRAMMARS_DIR (set by CI to a checked-out flatppl-grammars) takes precedence;
+// otherwise the natural sibling layout for local dev. Tarball fallback if neither.
+const grammarsSibling = process.env.GRAMMARS_DIR || join(dirname(repoRoot), 'flatppl-grammars');
 const grammarsPin = 'main';
 const grammarsRemote = `https://github.com/flatppl/flatppl-grammars/archive/refs/heads/${grammarsPin}.tar.gz`;
 const srcVendorDir = join(here, 'src', 'vendor');
