@@ -770,42 +770,65 @@ function logpdfDirac(x: any, value: any) {
 // `i+1` = r*sin(theta) (second output). We inherit that ordering
 // without further reshuffling.
 
+// Per-element parameter read for the randNFn transforms. A param column
+// is either a plain number (the STATIC case — one value shared by every
+// atom, the degenerate stride-0 broadcast) or a Float64Array of length n
+// (the PER-I case — one value per atom, used by the materialiser's
+// per-binding sampling when a distribution parameter references an
+// upstream draw). Both callers run the SAME transform loop body, so there
+// is exactly one leaf-math realisation per distribution — not a static
+// kernel plus a separate per-i kernel (engine-concepts §11, Q2 fold).
+//
+// Bit-exactness corollary: with a scalar param, `_p(c, i)` returns the
+// identical value on every iteration, so the loop is arithmetically (and
+// byte-for-byte) identical to the old hoisted-scalar form. The static
+// Uniform/Exponential bit-exact gate (sampler-batched.test.ts) pins this.
+function _p(c: any, i: number): number {
+  return (typeof c === 'number') ? c : c[i];
+}
+
 function randNNormal(state: any, params: any, n: number, out?: Float64Array) {
-  // params = [mu, sigma]
-  const mu = +params[0];
-  const sigma = +params[1];
+  // params = [mu, sigma]; each is a scalar (static) or a Float64Array(n)
+  // column (per-i). The raw Box-Muller draw is unchanged — only the
+  // affine transform reads params per element.
+  const mu = params[0];
+  const sigma = params[1];
   const dest = out ?? new Float64Array(n);
   const r = rng.philoxNNormal(state, n, dest);
   // Vectorised affine: x = mu + sigma * z. Inplace.
-  for (let i = 0; i < n; i++) r.out[i] = mu + sigma * r.out[i];
+  for (let i = 0; i < n; i++) r.out[i] = _p(mu, i) + _p(sigma, i) * r.out[i];
   return r;
 }
 
 function randNExponential(state: any, params: any, n: number, out?: Float64Array) {
-  // params = [rate (= lambda)]
+  // params = [rate (= lambda)]; scalar (static) or Float64Array(n) (per-i).
   // Transform per stdlib: x = -ln(1 - u) / lambda. One uniform per draw.
   // Bit-exact equivalent to scalar randExponential under the same
   // Philox state, because philoxNUniform is bit-exact equivalent to
-  // n scalar nextUniform calls.
-  const lambda = +params[0];
+  // n scalar nextUniform calls (and per-i changes only the divisor, not
+  // the uniform stream or its order).
+  const lambda = params[0];
   const dest = out ?? new Float64Array(n);
   const r = rng.philoxNUniform(state, n, dest);
-  for (let i = 0; i < n; i++) r.out[i] = -Math.log(1 - r.out[i]) / lambda;
+  for (let i = 0; i < n; i++) r.out[i] = -Math.log(1 - r.out[i]) / _p(lambda, i);
   return r;
 }
 
 function randNUniform(state: any, params: any, n: number, out?: Float64Array) {
-  // params = [a, b]  (lo, hi); one uniform per draw.
+  // params = [a, b]  (lo, hi); each scalar (static) or Float64Array(n)
+  // (per-i). One uniform per draw.
   // Transform per stdlib uniform.js: x = b*u + (1-u)*a — numerically
   // stable as written (vs. naive (b-a)*u + a) and bit-exact equivalent
-  // to the scalar-loop path.
-  const a = +params[0];
-  const b = +params[1];
+  // to the scalar-loop path. The a/b reads live INSIDE the loop now (via
+  // _p) so the per-i column case works; for scalar params each iteration
+  // reads the same value, so the bytes are unchanged.
+  const a = params[0];
+  const b = params[1];
   const dest = out ?? new Float64Array(n);
   const r = rng.philoxNUniform(state, n, dest);
   for (let i = 0; i < n; i++) {
     const u = r.out[i];
-    r.out[i] = b * u + (1 - u) * a;
+    r.out[i] = _p(b, i) * u + (1 - u) * _p(a, i);
   }
   return r;
 }
