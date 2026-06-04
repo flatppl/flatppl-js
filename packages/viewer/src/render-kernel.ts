@@ -14,7 +14,7 @@ import { getMeasure, tryGetMeasure } from './engine-facade.js';
 import { activePresetFor } from './overrides.js';
 import { showPlotMessage } from './render-frame.js';
 import { renderConstantRecord } from './render-record.js';
-import { arrayInputLength, defaultValueForLeafType, esc } from './util.js';
+import { arrayInputLength, defaultValueForInputType, esc } from './util.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
   showPlotMessage(ctx, 'Loading…', { hint: true });
@@ -71,12 +71,11 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
       env[inp.paramName] = active.values[ax.kwargName];
       continue;
     }
-    if (arrayLen != null) {
-      const def = defaultValueForLeafType(ax.leafType);
-      env[inp.paramName] = new Array(arrayLen).fill(def);
-    } else {
-      env[inp.paramName] = defaultValueForLeafType(ax.leafType);
-    }
+    // Structural default for the WHOLE input (scalar / array / record),
+    // so a record-typed input (`pars = elementof(cartprod(a,b,mu))`)
+    // seeds a record `{a,b,mu}` rather than a scalar. `arrayLen` is
+    // still used below for the binding-source-sample override path.
+    env[inp.paramName] = defaultValueForInputType(inp.type);
     if (ax.source && ax.source.kind === 'binding') {
       // Queue an empirical-sample lookup unconditionally —
       // tryGetMeasure soft-fails to null for sources that can't

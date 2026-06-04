@@ -257,7 +257,57 @@ function walkArraySlots(arrayType: any, path: any[], emit: (p: any[], t: any) =>
 }
 
 /**
- * Walk an IR replacing every (ref %local <name>) with a literal of
+ * Convert a concrete env value (the kind the viewer's kernel/profile
+ * input-supply path builds for a callable input) into an IR node:
+ *
+ *   - scalar (number/boolean)        → `lit`
+ *   - array / typed array            → `vector(elem, …)`
+ *   - record (plain object)          → `record(%field name value, …)`
+ *   - pre-built IR node (`.kind`)    → passed through unchanged
+ *
+ * The pre-built-IR case is how a profile sweep threads a varying slot
+ * through an otherwise-fixed structured input: the per-slot / per-field
+ * value is a `(ref %local sweepName)` IR so `profileN` sweeps just that
+ * leaf while the rest of the array/record stays fixed.
+ *
+ * Records compose recursively (a record input nested inside another, or
+ * a record field that is itself an array), so the same routine handles
+ * arbitrarily-nested structured inputs — e.g. `pars = elementof(cartprod(
+ * a = reals, b = reals, mu = reals))` used as a single kernel input
+ * binds `env.pars = {a, b, mu}` here and lowers to a `record(...)` IR,
+ * so the kernel body's `pars.mu` (a `get_field`) resolves at sample time.
+ */
+function envValueToIR(v: any, loc: any): any {
+  // Pre-built IR node (sweep ref, or an already-lowered sub-expression).
+  if (v != null && typeof v === 'object' && (v as any).kind != null) return v;
+  // Array / typed-array → vector(...).
+  if (Array.isArray(v) || (v != null && typeof v === 'object'
+      && typeof (v as any).length === 'number'
+      && (typeof (v as any).BYTES_PER_ELEMENT === 'number'
+          || (v as any)[0] !== undefined))) {
+    const len = (v as any).length;
+    const args: any[] = [];
+    for (let i = 0; i < len; i++) args.push(envValueToIR((v as any)[i], loc));
+    return { kind: 'call', op: 'vector', args, loc };
+  }
+  // Record (plain object, not array-like, not an IR node) → record(...)
+  // with FIELD_FORM entries (matching lower's `record` shape). Field
+  // order follows the object's own key order — the env-assembly path
+  // builds it in the input's declared field order.
+  if (v != null && typeof v === 'object') {
+    const fields: any[] = [];
+    for (const k in v) {
+      if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+      fields.push({ name: k, value: envValueToIR((v as any)[k], loc) });
+    }
+    return { kind: 'call', op: 'record', fields, loc };
+  }
+  // Scalar leaf.
+  return { kind: 'lit', value: v, numType: 'real', loc };
+}
+
+/**
+ * Walk an IR replacing every (ref %local <name>) with the IR form of
  * env[name] when env contains a value for that name. Used by the
  * kernel-plot path to substitute preset parameter values into a
  * kernel body before sampling it as a concrete measure.
@@ -271,31 +321,7 @@ function substituteLocals(ir: any, env: any): any {
   return mapIR(ir, function(node: any): any {
     if (node && node.kind === 'ref' && node.ns === '%local'
         && Object.prototype.hasOwnProperty.call(env, node.name)) {
-      const v = env[node.name];
-      // Array env value (e.g. an array-typed kernel/likelihood input
-      // whose source binding has shape `[J]`): emit `vector(elem, …)`
-      // IR. Each element is either a plain JS scalar (→ lit) OR a
-      // pre-built IR node — the per-slot profile-sweep path puts a
-      // `(ref %local sweepName)` into one slot so profileN sweeps
-      // that element while the rest of the array stays fixed.
-      if (Array.isArray(v) || (v != null && typeof v === 'object'
-          && typeof v.length === 'number'
-          && (typeof (v as any).BYTES_PER_ELEMENT === 'number'
-              || (v as any)[0] !== undefined))) {
-        const len = (v as any).length;
-        const args: any[] = [];
-        for (let i = 0; i < len; i++) {
-          const e = (v as any)[i];
-          if (e && typeof e === 'object' && e.kind != null) {
-            // Pre-built IR (e.g. a sweep ref).
-            args.push(e);
-          } else {
-            args.push({ kind: 'lit', value: e, numType: 'real', loc: node.loc });
-          }
-        }
-        return { kind: 'call', op: 'vector', args, loc: node.loc };
-      }
-      return { kind: 'lit', value: v, numType: 'real', loc: node.loc };
+      return envValueToIR(env[node.name], node.loc);
     }
     return node;
   });
