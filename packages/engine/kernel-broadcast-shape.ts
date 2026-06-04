@@ -842,6 +842,221 @@ function isNestedBroadcastCompositeKernelBinding(
 }
 
 // =====================================================================
+// Generative-bodied composite kernel (engine-concepts §21 — 5th kind)
+// =====================================================================
+//
+// A `kernelof(<value-expr>, <kw>)` body whose value-expr is an ordinary
+// deterministic transform that closes over ONE OR MORE INTERNAL DRAWS —
+// hoisted `draw(<DistCall>)` bindings that are NOT kernel boundary
+// params. The canonical motivating model is the stochastic transport
+// kernel (flatppl-examples/simple-transport.flatppl):
+//
+//   delta_alpha = (2 * draw(Uniform(interval(0,1))) + 1) * a
+//   y           = (x + delta_alpha)^3 * exp(x - b)
+//   transport   = kernelof(y, x = x, pars = pars)
+//
+// The body `lawof(y)` is the LAW of a value-expression `y` that embeds
+// an internal `draw` (the Uniform). The earlier recognisers all require
+// the lawof arg to be a measure CONSTRUCTION (iid / joint / jointchain /
+// broadcast); this one matches the residual case — `lawof(<value-expr>)`
+// — and is registered LAST (most permissive) so it never shadows them.
+//
+// Generative ≠ deterministic pushforward: a value-expr with NO internal
+// draw is just `pushfwd(<f>, <base>)` (or a fixed-phase constant) and is
+// handled by the existing pushforward path. The internal-draw requirement
+// is the discriminator: at least one ancestor binding must be a
+// `draw(<sampleable DistCall>)` reached WITHOUT crossing a kernel
+// boundary param. Materialisation (mat-broadcast `_executeGenerative-
+// Composite`) samples each internal draw fresh per (atom, cell) position
+// and threads it through the deterministic transform (engine-concepts
+// §22.4 within-atom independence).
+//
+// Density is INTRACTABLE for the general case (the transform is a non-
+// bijection that marginalises the internal draws); per spec §06 case 3
+// that is a static error, not a silent NaN — the density walker refuses
+// loudly (mat-broadcast / density.walkBroadcast).
+
+interface GenerativeKernelDescriptor {
+  /** The user-kernel binding's IR (the functionof node). */
+  binding: any;
+  /** Kernel parameter names (boundaries). */
+  params: string[];
+  /** Kernel surface kwarg names. */
+  paramKwargs: string[];
+  /** The lawof arg — the value-expr whose law is the per-cell measure.
+   *  A bare `ref` (to a module value binding) or an inline op tree. */
+  bodyValueExprIR: any;
+  /** The internal draws the value-expr closes over: each a hoisted
+   *  `draw(<DistCall>)` binding that is NOT a kernel boundary. `distIR`
+   *  is the (anon-deref'd) sampleable DistCall the worker's sampleN
+   *  consumes; `bindingName` is the draw binding's name (the value-expr
+   *  refers to it, and the executor binds a fresh [count] column to it). */
+  internalDraws: Array<{ bindingName: string; distIR: any }>;
+  /** Always true on a successful match (kept explicit so the descriptor
+   *  reads as a tagged record alongside the others). */
+  hasInternalDraw: boolean;
+}
+
+// Measure-construction ops the EARLIER recognisers claim. A lawof arg
+// whose (deref'd) op is one of these is NOT a generative value-expr —
+// decline so the dedicated recogniser keeps it.
+const _MEASURE_CONSTRUCTION_OPS = new Set([
+  'iid', 'joint', 'jointchain', 'kchain', 'broadcast', 'aggregate',
+  'superpose', 'weighted', 'normalize', 'truncate', 'pushfwd',
+  'mixture', 'lawof',
+]);
+
+// Deref a `self`-ref through module VALUE bindings one level. Returns the
+// binding's IR when `ir` is a `self`-ref to a known binding, else `ir`.
+function _derefSelfBinding(ir: any, bindings: any): any {
+  if (ir && ir.kind === 'ref' && ir.ns === 'self'
+      && bindings && bindings.has && bindings.has(ir.name)) {
+    const b = bindings.get(ir.name);
+    if (b && b.ir) return b.ir;
+  }
+  return ir;
+}
+
+// Is `ir` a `draw(<measure>)` binding whose measure derefs (one anon
+// level) to a sampleable DistCall? Returns the DistCall on yes, else null.
+function _internalDrawDist(ir: any, bindings: any): any {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'draw'
+      || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
+  let m = ir.args[0];
+  // The draw's argument is typically a `self`-ref to an anon binding
+  // that holds the literal DistCall (the lift hoists distribution
+  // calls). Deref one level.
+  if (m && m.kind === 'ref' && m.ns === 'self'
+      && bindings && bindings.has && bindings.has(m.name)) {
+    const anon = bindings.get(m.name);
+    if (anon && anon.ir) m = anon.ir;
+  }
+  if (!m || m.kind !== 'call' || !m.op) return null;
+  const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
+  if (!SAMPLEABLE || !SAMPLEABLE.has(m.op)) return null;
+  return m;
+}
+
+/**
+ * Recognise a generative-bodied user-kernel binding. Returns a
+ * `GenerativeKernelDescriptor` on match, null otherwise.
+ *
+ * Accepts the following IR shape (post-lowering + post-lift):
+ *
+ *     functionof(
+ *       lawof(<value-expr>),       # NOT iid/joint/jointchain/broadcast/…
+ *       kernel_kwargs...
+ *     )
+ *
+ * where `<value-expr>` (after one level of value-binding deref) closes
+ * over at least one INTERNAL DRAW — a `draw(<sampleable DistCall>)`
+ * binding reachable from the value-expr's self-refs WITHOUT crossing a
+ * kernel boundary param. Boundary refs (the kernel `params`) terminate
+ * the walk: they are supplied by the broadcast args, never followed into
+ * their definitions (`x` here is the boundary `x`, itself a `draw` in the
+ * MODULE, but as a kernel formal it is data, not an internal draw).
+ *
+ * Declines (returns null) when:
+ *  - The binding isn't `functionof(lawof(<arg>), params…)`.
+ *  - The lawof arg derefs to a measure-construction call (claimed by an
+ *    earlier recogniser).
+ *  - The value-expr has NO internal draw — it's a deterministic
+ *    pushforward (or fixed-phase constant), not generative.
+ */
+function detectGenerativeKernelBinding(
+  name: string, bindings: any,
+): GenerativeKernelDescriptor | null {
+  if (!bindings || !bindings.has || !bindings.has(name)) return null;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length === 0) return null;
+  const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
+    ? ir.paramKwargs : params;
+  const body = ir.body;
+  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
+  const lawArg = body.args && body.args[0];
+  if (!lawArg) return null;
+
+  // The lawof arg must NOT be a measure construction (those belong to the
+  // earlier recognisers). Deref one level so `lawof(<ref M>)` where M is
+  // an anon iid/joint binding is also rejected here.
+  const derefArg = _derefSelfBinding(lawArg, bindings);
+  if (derefArg && derefArg.kind === 'call'
+      && _MEASURE_CONSTRUCTION_OPS.has(derefArg.op)) return null;
+
+  // Walk the value-expr's ancestor value bindings, collecting internal
+  // draws. A `self`-ref is:
+  //   - a kernel BOUNDARY param → terminate (data supplied at call site);
+  //   - a `draw(<DistCall>)` binding → an internal draw (record it,
+  //     don't follow into the DistCall's own refs — those are the dist's
+  //     params, handled by the worker's sampleN);
+  //   - any other module value binding → follow into its IR (multi-level
+  //     value chains: y → delta_alpha → __anon4).
+  // Cycles can't form (spec §04 modules are DAGs); a `visited` set guards
+  // against accidental re-walks (and keeps the work linear).
+  const boundary = new Set<string>(params);
+  const internalDraws: Array<{ bindingName: string; distIR: any }> = [];
+  const seenDraw = new Set<string>();
+  const visited = new Set<string>();
+  const stack: any[] = [lawArg];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (node.kind === 'ref' && node.ns === 'self') {
+      if (boundary.has(node.name)) continue;          // boundary formal: data
+      if (!bindings.has(node.name)) continue;          // free/builtin name
+      if (visited.has(node.name)) continue;
+      visited.add(node.name);
+      const dep = bindings.get(node.name);
+      const depIR = dep && dep.ir;
+      const distIR = _internalDrawDist(depIR, bindings);
+      if (distIR) {
+        if (!seenDraw.has(node.name)) {
+          seenDraw.add(node.name);
+          internalDraws.push({ bindingName: node.name, distIR });
+        }
+        continue;     // don't descend into the dist's own param refs
+      }
+      if (depIR) stack.push(depIR);
+      continue;
+    }
+    if (node.kind === 'call') {
+      if (Array.isArray(node.args)) for (const a of node.args) stack.push(a);
+      if (node.kwargs) for (const k in node.kwargs) stack.push(node.kwargs[k]);
+      if (Array.isArray(node.fields)) {
+        for (const f of node.fields) stack.push(f && f.value);
+      }
+      // functionof bodies inside a value-expr are not walked for draws
+      // (a nested kernel definition's draws are that kernel's, not ours).
+    }
+  }
+
+  if (internalDraws.length === 0) return null;   // deterministic pushfwd
+  return {
+    binding: b,
+    params,
+    paramKwargs,
+    bodyValueExprIR: lawArg,
+    internalDraws,
+    hasInternalDraw: true,
+  };
+}
+
+/**
+ * Lighter check: does `name` resolve to a generative-composite kernel
+ * binding? Mirrors `isIid…` / `isJoint…` / `isJointChain…` /
+ * `isNestedBroadcast…`.
+ */
+function isGenerativeCompositeKernelBinding(
+  name: string, bindings: any,
+): boolean {
+  return detectGenerativeKernelBinding(name, bindings) !== null;
+}
+
+// =====================================================================
 // Near-miss diagnostic (Phase 4.5 — diagnostic surface)
 // =====================================================================
 //
@@ -868,7 +1083,8 @@ function isNestedBroadcastCompositeKernelBinding(
 
 interface NearMissReport {
   /** Recogniser kind the body's outer shape MOST CLOSELY resembles. */
-  closestKind: 'iid' | 'joint' | 'jointchain' | 'nested_broadcast' | 'unknown';
+  closestKind: 'iid' | 'joint' | 'jointchain' | 'nested_broadcast'
+    | 'generative' | 'unknown';
   /** Human-readable summary suitable for the dispatcher's error. */
   message: string;
   /** Structured detail for downstream tooling (e.g. viewer
@@ -933,14 +1149,38 @@ function diagnoseKernelBodyNearMiss(
     };
   }
   const inner = body.args && body.args[0];
-  if (!inner || inner.kind !== 'call') {
+  detail.bodyOp = 'lawof';
+  // A bare-ref / value-expr lawof arg (`lawof(y)` where y is a value
+  // binding, or an inline op tree that isn't a measure construction) is
+  // the generative shape's territory. Describe it via the generative
+  // recogniser rather than the legacy "no inner call" dead end — the
+  // recogniser tells us whether the value-expr actually closes over an
+  // internal draw (generative) or is a deterministic pushforward.
+  if (!inner || inner.kind !== 'call'
+      || !_MEASURE_CONSTRUCTION_OPS.has(inner.op)) {
+    const gen = detectGenerativeKernelBinding(name, bindings);
+    if (gen) {
+      const drawNames = gen.internalDraws.map((dr) => dr.bindingName).join(', ');
+      issues.push('inner is a value-expression `lawof(<value-expr>)` '
+        + 'closing over internal draw(s) [' + drawNames + '] — matches the '
+        + 'generative recogniser shape');
+      return {
+        closestKind: 'generative',
+        message: 'kernel \'' + name + '\' body is a generative value-'
+          + 'expression (internal draws: ' + drawNames + ')',
+        detail,
+      };
+    }
+    detail.innerOp = inner && inner.op;
     return {
-      closestKind: 'unknown',
-      message: 'kernel \'' + name + '\' body lawof has no inner call',
+      closestKind: 'generative',
+      message: 'kernel \'' + name + '\' body is `lawof(<value-expr>)` with '
+        + 'NO internal draw — that is a deterministic pushforward, not a '
+        + 'measure construction; wrap the deterministic map with pushfwd(...) '
+        + 'or add a stochastic draw to make it generative',
       detail,
     };
   }
-  detail.bodyOp = 'lawof';
   detail.innerOp = inner.op;
 
   // Dispatch by inner op. For each, compare the body's structure
@@ -1160,5 +1400,7 @@ module.exports = {
   isJointChainCompositeKernelBinding,
   detectNestedBroadcastKernelBinding,
   isNestedBroadcastCompositeKernelBinding,
+  detectGenerativeKernelBinding,
+  isGenerativeCompositeKernelBinding,
   diagnoseKernelBodyNearMiss,
 };

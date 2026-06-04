@@ -1182,8 +1182,21 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   const isNestedBroadcastComposite = !isBareDist && !isBareVectorDist
     && !isIidComposite && !isJointComposite && !isJointChainComposite
     && _isNestedBroadcastCompositeKernelBinding(k.name, bindings);
+  // engine-concepts §21 5th kind: generative-bodied user kernels — body
+  // shape is `lawof(<value-expr>)` where the value-expr closes over an
+  // internal draw (a hoisted `draw(<DistCall>)` that isn't a boundary).
+  // Tried LAST (most permissive) so it never shadows the four measure-
+  // construction recognisers. matKernelBroadcast dispatches to
+  // `_executeGenerativeComposite` via the COMPOSITE_BODY_RECOGNIZERS table.
+  // Without this gate the binding falls through to the silent `null` below
+  // (no derivation → the variate never materialises).
+  const isGenerativeComposite = !isBareDist && !isBareVectorDist
+    && !isIidComposite && !isJointComposite && !isJointChainComposite
+    && !isNestedBroadcastComposite
+    && _isGenerativeCompositeKernelBinding(k.name, bindings);
   if (!isBareDist && !isBareVectorDist && !isIidComposite && !isJointComposite
-      && !isJointChainComposite && !isNestedBroadcastComposite) return null;
+      && !isJointChainComposite && !isNestedBroadcastComposite
+      && !isGenerativeComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
   if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
@@ -1208,6 +1221,9 @@ function _isJointChainCompositeKernelBinding(name: string, bindings: any): boole
 }
 function _isNestedBroadcastCompositeKernelBinding(name: string, bindings: any): boolean {
   return _kernelBroadcastShape.isNestedBroadcastCompositeKernelBinding(name, bindings);
+}
+function _isGenerativeCompositeKernelBinding(name: string, bindings: any): boolean {
+  return _kernelBroadcastShape.isGenerativeCompositeKernelBinding(name, bindings);
 }
 
 // broadcast(logdensityof, M, points) — evaluate a measure's density
