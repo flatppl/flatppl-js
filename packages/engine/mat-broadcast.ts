@@ -110,6 +110,14 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     if (compositeBody.kind === 'iid') {
       return _executeIidCompositeBatchFlatten(name, d, ctx, compositeBody);
     }
+    // engine-concepts §21 5th kind: generative-bodied composite — the
+    // body is `lawof(<value-expr-with-internal-draw>)`. Sample each
+    // internal draw fresh per (atom, cell) position over count = N·K and
+    // thread it through the inlined deterministic transform. axes = [K]
+    // (m = 1; the generative body is scalar-per-cell, no inner D).
+    if (compositeBody.kind === 'generative') {
+      return _executeGenerativeComposite(name, d, ctx, compositeBody);
+    }
     return Promise.reject(new Error(
       'broadcast: composite kernel-body kind \'' + compositeBody.kind
       + '\' recognised but not yet executable (Phase 4 work)'));
@@ -690,6 +698,429 @@ function _executeIidCompositeBatchFlatten(
           { value: value, logTotalmass: 0, n_eff: N });
       });
   });
+}
+
+// =====================================================================
+// engine-concepts §21 — generative-composite de-nesting (5th kind)
+// =====================================================================
+//
+// `broadcast(kernelof(<value-expr-with-internal-draw>, …), args)` draws,
+// per atom, ONE scalar variate per cell: K cells, each the LAW of an
+// ordinary deterministic transform that closes over one or more INTERNAL
+// DRAWS (the transport model's `delta_alpha = (2·draw(Uniform)+1)·a`). The
+// body is scalar-per-cell — no inner D — so the fold uses axes = [K] (m=1),
+// count = N·K, mirroring the joint executor's single parallel axis.
+//
+// The execution is the batch-flatten move applied to a forward recipe
+// (engine-concepts §22.4): fold the (atom N, cell K) axes into one count =
+// N·K batch, sample each internal draw ONCE over that batch (a FRESH draw
+// per (atom, cell) position — each flat slot is a distinct RNG slot, never
+// tiled), then evaluate the inlined deterministic transform ONCE over the
+// batch with the draw columns and the broadcast-arg columns supplied.
+//
+// Inlining strategy: the body's value-expr is INLINED into ONE self-
+// contained expression whose only free refs are {boundary kernel-formals,
+// internal-draw names, fixed names}. We substitute a closed-over `self`-ref
+// with its binding's IR for EVERY module value binding except:
+//   (a) boundary kernel-formals — supplied at the call site; left as refs
+//       and re-rooted to the broadcast args below;
+//   (b) internal-draw bindings — left as refs (each gets a freshly-sampled
+//       [count] column);
+//   (c) fixed-phase / free / function-like bindings — left as refs (resolved
+//       via baseEnv or carried as data).
+// This DISSOLVES the per-atom closed-over scalars (`a`, `b` = pars.a/pars.b)
+// down to `get_field(<boundary pars>, 'a')` over the boundary `pars`, so
+// they never need a separate materialisation of the module `a`/`b` (which
+// reference the parametric module `pars`, NOT the broadcast-supplied one).
+// The boundary `pars` is then re-rooted to the broadcast arg `[glob]`: a
+// record-valued boundary is placed in baseEnv (non-numeric, can't go through
+// `_layoutFlat`); a numeric boundary (x ← xs) is laid out as a `__bf_`
+// column. `evaluateExprN` resolves `get_field` / `tuple_get` over the
+// baseEnv record (verified), so a/b evaluate per-atom from the supplied
+// record.
+
+// A module value binding is "inlinable" when it is a value binding with an
+// IR and is not a boundary formal, an internal draw, a fixed-phase binding,
+// or a callable. Fixed-phase bindings are left as refs (resolved via the
+// worker's session env / baseEnv); callables aren't values.
+function _isInlinableValueBinding(
+  name: string, bindings: any, drawNames: Set<string>, boundary: Set<string>,
+): boolean {
+  if (drawNames.has(name) || boundary.has(name)) return false;
+  if (!bindings || !bindings.has || !bindings.has(name)) return false;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return false;
+  if (shared.isFunctionLikeBinding(b)) return false;
+  if (b.phase === 'fixed') return false;            // resolved via baseEnv
+  return true;
+}
+
+// Recursively inline the generative body's value-expr. See the strategy
+// note above. Bounded recursion (spec §04 modules are DAGs).
+function _inlineGenerativeBody(
+  ir: any, bindings: any, drawNames: Set<string>, boundary: Set<string>,
+): any {
+  if (!ir || typeof ir !== 'object') return ir;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (!_isInlinableValueBinding(ir.name, bindings, drawNames, boundary)) {
+      return ir;
+    }
+    const b = bindings.get(ir.name);
+    return _inlineGenerativeBody(b.ir, bindings, drawNames, boundary);
+  }
+  if (ir.kind !== 'call') return ir;
+  const out: any = { kind: 'call' };
+  if (ir.op) out.op = ir.op;
+  if (ir.target) out.target = ir.target;
+  if (Array.isArray(ir.args)) {
+    out.args = ir.args.map((a: any) =>
+      _inlineGenerativeBody(a, bindings, drawNames, boundary));
+  }
+  if (ir.kwargs) {
+    out.kwargs = {};
+    for (const k in ir.kwargs) {
+      out.kwargs[k] = _inlineGenerativeBody(ir.kwargs[k], bindings, drawNames, boundary);
+    }
+  }
+  if (Array.isArray(ir.fields)) {
+    out.fields = ir.fields.map((f: any) =>
+      ({ ...f, value: _inlineGenerativeBody(f && f.value, bindings, drawNames, boundary) }));
+  }
+  if (ir.loc) out.loc = ir.loc;
+  return out;
+}
+
+// Replace every boundary-formal ref and internal-draw ref in `ir` with a
+// neutral `lit 0`, so the residual tree carries ONLY the body's genuinely-
+// fixed / closed-over refs (e.g. a global `sigma`). Surfacing that residual
+// to prepareDensityRefs lands those refs in fixedEnv without it ever calling
+// getMeasure on a boundary formal (which is also a module binding here — x,
+// pars — and would otherwise try, and fail, to materialise it as a measure).
+function _stripNonFixedRefs(
+  ir: any, drawNames: Set<string>, boundary: Set<string>,
+): any {
+  if (!ir || typeof ir !== 'object') return ir;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (boundary.has(ir.name) || drawNames.has(ir.name)) {
+      return { kind: 'lit', value: 0 };
+    }
+    return ir;
+  }
+  if (ir.kind !== 'call') return ir;
+  const out: any = { kind: 'call' };
+  if (ir.op) out.op = ir.op;
+  if (Array.isArray(ir.args)) {
+    out.args = ir.args.map((a: any) => _stripNonFixedRefs(a, drawNames, boundary));
+  }
+  if (ir.kwargs) {
+    out.kwargs = {};
+    for (const k in ir.kwargs) out.kwargs[k] = _stripNonFixedRefs(ir.kwargs[k], drawNames, boundary);
+  }
+  if (Array.isArray(ir.fields)) {
+    out.fields = ir.fields.map((f: any) =>
+      ({ ...f, value: _stripNonFixedRefs(f && f.value, drawNames, boundary) }));
+  }
+  return out;
+}
+
+// Resolve a per-atom-constant broadcast arg (the `[pars]` idiom — a length-1
+// collection that broadcasts across every cell) to a single JS value the
+// inlined body can field-access via baseEnv. Accepts a bare JS object/array
+// (a record / nested value), a 1-element JS array, or a length-1 Value.
+// Returns `{ ok, value }`; `ok:false` means it isn't a per-atom-constant
+// scalar-or-record (the caller falls back to the numeric column path).
+function _resolvePerAtomConstArg(v: any): { ok: boolean; value?: any } {
+  if (v && typeof v === 'object' && !Array.isArray(v)
+      && v.BYTES_PER_ELEMENT === undefined && !valueLib.isValue(v)) {
+    return { ok: true, value: v };               // bare record object
+  }
+  if (Array.isArray(v) && v.length === 1) return { ok: true, value: v[0] };
+  if (valueLib.isValue(v) && v.shape.length === 1 && v.shape[0] === 1
+      && (v as any).objects && Array.isArray((v as any).objects)) {
+    return { ok: true, value: (v as any).objects[0] };
+  }
+  return { ok: false };
+}
+
+function _executeGenerativeComposite(
+  name: string, d: any, ctx: any, compositeBody: any,
+): Promise<any> {
+  const sampler = require('./sampler.ts');
+  const N = ctx.sampleCount;
+  const distOp = compositeBody.distOp;
+  const boundary = new Set<string>(compositeBody.params);
+  const drawNames = new Set<string>(
+    compositeBody.internalDraws.map((dr: any) => dr.bindingName));
+
+  // (2) Inline the body's value-expr into one self-contained expression
+  //     whose only refs are {boundary formals, internal-draw names, fixed
+  //     names}. The per-atom closed-over scalars (a, b) dissolve into
+  //     `get_field(<boundary pars>, …)` over the boundary.
+  const inlinedBody = _inlineGenerativeBody(
+    compositeBody.bodyValueExprIR, ctx.bindings, drawNames, boundary);
+
+  // (3) Map kernel boundary formals → their broadcast-arg IRs. The broadcast
+  //     args (d.kwargIRs / d.argIRs) carry the per-cell / per-atom inputs;
+  //     map formals onto their surface kwargs. POSITIONAL args bind to
+  //     paramKwargs positionally (the canonical `transport.(xs, [pars])`
+  //     surface lowers to positional argIRs).
+  const bcArgIRByFormal: Record<string, any> = {};   // formal name → arg IR
+  if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
+    for (let i = 0; i < compositeBody.params.length; i++) {
+      const surf = compositeBody.paramKwargs[i];
+      if (Object.prototype.hasOwnProperty.call(d.kwargIRs, surf)) {
+        bcArgIRByFormal[compositeBody.params[i]] = d.kwargIRs[surf];
+      }
+    }
+  } else if (Array.isArray(d.argIRs)) {
+    for (let i = 0; i < compositeBody.params.length && i < d.argIRs.length; i++) {
+      bcArgIRByFormal[compositeBody.params[i]] = d.argIRs[i];
+    }
+  }
+
+  // Surface the broadcast-arg expressions (under synthetic names) to
+  // prepareDensityRefs so their upstream measures / values resolve into
+  // refArrays + fixedEnv. We do NOT surface the inlined body — its refs are
+  // boundary formals (re-rooted below), internal draws (sampled), and fixed
+  // names (already in fixedEnv via the args' own refs / the module).
+  const surfaceKwargs: Record<string, any> = {};
+  for (const formal of Object.keys(bcArgIRByFormal)) {
+    surfaceKwargs['__bcarg_' + formal] = bcArgIRByFormal[formal];
+  }
+  // Also surface the inlined body's FIXED / closed-over refs (e.g. a global
+  // `sigma`) so they land in fixedEnv. Boundary formals and internal-draw
+  // names are not bindings prepareDensityRefs would resolve to a measure
+  // (formals aren't module bindings here; draws are aliases) — but to be
+  // safe we strip them so prepareDensityRefs never calls getMeasure on a
+  // non-materialisable name.
+  surfaceKwargs.__bodyfixed = _stripNonFixedRefs(
+    inlinedBody, drawNames, boundary);
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: distOp }],
+    kwargs: surfaceKwargs,
+  };
+
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+
+    // (1) K-discovery: axisStack authoritative for a literal kernel_-
+    //     broadcast size; else discover from the first broadcast arg with
+    //     a cell axis > 1. n (= xs length) is dynamic, so K comes from xs's
+    //     runtime shape here. IDENTICAL to the iid executor.
+    const _bindingStack = axisStackMod.bindingAxisStack(name, ctx);
+    const _axisStackK = axisStackMod.outerAxisSize(_bindingStack, 'kernel_broadcast');
+    const _kFromAxisStack = !!(_axisStackK && _axisStackK > 1);
+    let K = _kFromAxisStack ? (_axisStackK as number) : 1;
+
+    // Evaluate each broadcast arg over the atom batch and split into NUMERIC
+    // boundaries (laid out as `__bf_` columns over the count axis) vs PER-
+    // ATOM-CONSTANT non-numeric boundaries (the `[pars]` record idiom — put
+    // verbatim in baseEnv under `__bf_<formal>`, so the inlined body's
+    // `get_field(__bf_pars, …)` field-accesses resolve per atom). x (from
+    // xs) is per-cell numeric (kind K / NK); pars/[pars] is a per-atom-
+    // constant record.
+    const numArgVal: Record<string, any> = {};      // formal → numeric Value
+    const numArgCls: Record<string, any> = {};      // formal → classifyBroadcastArg
+    for (const formal of Object.keys(bcArgIRByFormal)) {
+      const argIR = bcArgIRByFormal[formal];
+      const argRefs = orchestrator.collectSelfRefs(argIR);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIR, refArrays, N, baseEnv, undefined);
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      const isNumeric = typeof v === 'number' || typeof v === 'boolean'
+        || valueLib.isValue(v)
+        || (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number')
+        || (Array.isArray(v) && (v.length === 0 || typeof v[0] === 'number'));
+      if (isNumeric) {
+        const cls = shared.classifyBroadcastArg(v, N, usesAtom);
+        numArgVal[formal] = v;
+        numArgCls[formal] = cls;
+        const argK = cls.K || 1;
+        if (argK > 1) {
+          if (K === 1) K = argK;
+          else if (K !== argK) {
+            return Promise.reject(new Error('broadcast(' + d.distOp + '): '
+              + (_kFromAxisStack
+                ? 'internal: static axisStack kernel-broadcast axis (' + K
+                  + ') disagrees with runtime cell length (' + argK
+                  + ') on arg \'' + formal + '\' — producer/runtime drift'
+                : 'incompatible cell-axis lengths (' + K + ' vs ' + argK
+                  + ') on arg \'' + formal + '\'')));
+          }
+        }
+        // A generative body is scalar-per-cell: inner D > 1 has no axis to
+        // map onto here (that is iid-composite territory).
+        if ((cls.D || 1) > 1) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): generative-body broadcast arg \'' + formal + '\' has inner '
+            + 'dim ' + cls.D + ' — the generative body is scalar-per-cell '
+            + '(vec-per-cell shapes are iid-composite territory)'));
+        }
+      } else {
+        // Non-numeric boundary (record). The canonical `[pars]` idiom is a
+        // per-atom-constant single record broadcast across every cell.
+        const res = _resolvePerAtomConstArg(v);
+        if (!res.ok) {
+          return Promise.reject(new Error('broadcast(' + d.distOp
+            + '): generative boundary \'' + formal + '\' resolved to a non-'
+            + 'numeric value that is not a per-atom-constant record (the '
+            + '`[pars]` broadcast idiom); per-cell-varying record boundaries '
+            + 'are unsupported'));
+        }
+        // Stash for placement in baseEnv after K is known.
+        numArgVal[formal] = res.value;
+        numArgCls[formal] = { kind: 'record' };
+      }
+    }
+    if (K < 1) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): empty collection argument'));
+    }
+
+    const axes = [K];                   // single parallel axis: the cell K
+    const count = N * K;
+
+    // (3) Lay numeric boundaries out as `__bf_<formal>` columns; place
+    //     record boundaries verbatim in baseEnv under `__bf_<formal>`. The
+    //     inlined body's boundary formals get substituted to `ref __bf_` —
+    //     numeric ones resolve to columns in flatRefs, record ones to the
+    //     baseEnv record (field-accessed by the body).
+    const flatRefs: Record<string, any> = {};
+    const bcKwargs: Record<string, any> = {};
+    for (const formal of Object.keys(bcArgIRByFormal)) {
+      const flatName = '__bf_' + formal;
+      const cls = numArgCls[formal];
+      if (cls.kind === 'record') {
+        baseEnv[flatName] = numArgVal[formal];
+      } else {
+        const sp = _spanOf(cls, 1, 0, 0);
+        flatRefs[flatName] = valueLib.batchedScalar(
+          _layoutFlat(numArgVal[formal], N, axes, sp.atomVaries, sp.axisSizes));
+      }
+      bcKwargs[formal] = { kind: 'ref', ns: 'self', name: flatName };
+    }
+
+    // Substitute boundary formals → `__bf_` refs in the inlined body. After
+    // inlining + this substitution the body's only free names are `__bf_`
+    // (columns / baseEnv records), internal-draw names (sampled columns,
+    // bound below), and genuinely-fixed refs (baseEnv via fixedEnv).
+    const subBody = _substituteKernelParams(
+      inlinedBody, compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+
+    // (5) For EACH internal draw: issue ONE worker sampleN over count =
+    //     N·K with its DistCall IR (boundary-substituted if its params
+    //     reference boundaries), domain-separated seed fresh per the N·K
+    //     positions. The flat [count] result becomes a column under the
+    //     draw's binding name (§22.4 — a FRESH draw per (atom, cell), NOT
+    //     sampled per-atom and tiled). Draws are mutually independent →
+    //     independent seeds; collected in parallel.
+    const drawTasks: Array<Promise<void>> = [];
+    for (const dr of compositeBody.internalDraws) {
+      const bindingName = dr.bindingName;
+      // The dist's params may reference boundary formals (none in the
+      // transport Uniform, but substitute uniformly for generality). Any
+      // free names the dist's params touch must already be in flatRefs /
+      // baseEnv — evaluate them over the count batch into worker kwargs.
+      const subDist = _substituteKernelParams(
+        dr.distIR, compositeBody.params, compositeBody.paramKwargs, bcKwargs);
+      const distKwargs: Record<string, any> = {};
+      const sampleRefs: Record<string, any> = {};
+      let kwErr: any = null;
+      const distArgs = subDist.args;
+      // Carry positional args verbatim (e.g. Uniform's support region) and
+      // evaluate kwarg params over the count batch. Region / set args are
+      // not numeric columns — pass them through unchanged.
+      const passArgs = Array.isArray(distArgs) ? distArgs.slice() : undefined;
+      if (subDist.kwargs) {
+        for (const pn of Object.keys(subDist.kwargs)) {
+          let pv: any;
+          try {
+            pv = sampler.evaluateExprN(subDist.kwargs[pn], flatRefs, count, baseEnv, undefined);
+          } catch (err) {
+            kwErr = err instanceof Error ? err : new Error(String(err));
+            break;
+          }
+          const r = _resolveBatchFlattenParam(pv, count);
+          if (!r) {
+            const shp = valueLib.isValue(pv) ? JSON.stringify(pv.shape) : typeof pv;
+            kwErr = new Error('broadcast(' + d.distOp + '): generative internal-'
+              + 'draw \'' + bindingName + '\' param \'' + pn + '\' resolved to '
+              + shp + ' (expected scalar or [' + count + '])');
+            break;
+          }
+          if (r.kind === 'col') {
+            const pr = '__pd_' + bindingName + '_' + pn;
+            sampleRefs[pr] = valueLib.batchedScalar(r.data);
+            distKwargs[pn] = { kind: 'ref', ns: 'self', name: pr };
+          } else {
+            distKwargs[pn] = { kind: 'lit', value: r.value };
+          }
+        }
+      }
+      if (kwErr) return Promise.reject(kwErr);
+      const distIR: any = { kind: 'call', op: subDist.op };
+      if (passArgs) distIR.args = passArgs;
+      if (Object.keys(distKwargs).length > 0) distIR.kwargs = distKwargs;
+      const workerMsg: any = {
+        type: 'sampleN', ir: distIR, count: count,
+        refArrays: sampleRefs,
+        seed: nameSeed(name + ':idraw:' + bindingName, ctx.rootKey),
+      };
+      drawTasks.push(ctx.sendWorker(workerMsg).then((reply: any) => {
+        // Add the flat [count] draw column under the draw's binding name
+        // so the inlined body's `ref <bindingName>` resolves to it.
+        flatRefs[bindingName] = valueLib.batchedScalar(reply.samples);
+      }));
+    }
+
+    // (6) ONE evaluateExprN over count = N·K → flat [count] in (i, j) =
+    //     (atom, cell) row-major order. (7) Reshape to [N, K].
+    return pushFixedEnv(ctx, fixedEnv)
+      .then(() => Promise.all(drawTasks))
+      .then(() => {
+        let out: Float64Array;
+        try {
+          const ev = sampler.evaluateExprN(subBody, flatRefs, count, baseEnv, undefined);
+          out = _coerceCountColumn(ev, count, d.distOp);
+        } catch (err) {
+          return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+        }
+        const value = { shape: [N | 0, K], data: out };
+        return Object.assign(
+          empirical.arrayMeasure(out, [K], null),
+          { value: value, logTotalmass: 0, n_eff: N });
+      });
+  });
+}
+
+// Coerce an evaluateExprN result (the inlined generative body over the
+// count batch) to a flat [count] Float64Array. The body is scalar-per-cell,
+// so a constant (N·K all equal) is admissible too. Loud on any other shape.
+function _coerceCountColumn(ev: any, count: number, distOp: string): Float64Array {
+  if (typeof ev === 'number' || typeof ev === 'boolean') {
+    const o = new Float64Array(count); o.fill(+ev); return o;
+  }
+  if (valueLib.isValue(ev)) {
+    if (ev.shape.length === 1 && ev.shape[0] === count) return ev.data;
+    if (ev.shape.length === 0 || (ev.shape.length === 1 && ev.shape[0] === 1)) {
+      const o = new Float64Array(count); o.fill(ev.data[0]); return o;
+    }
+    throw new Error('broadcast(' + distOp + '): generative body evaluated to '
+      + 'shape ' + JSON.stringify(ev.shape) + ' (expected scalar or [' + count + '])');
+  }
+  if (ev && ev.BYTES_PER_ELEMENT !== undefined && ev.length === count) {
+    return ev instanceof Float64Array ? ev : Float64Array.from(ev);
+  }
+  throw new Error('broadcast(' + distOp + '): generative body evaluated to a '
+    + 'non-numeric / wrong-length value (expected [' + count + '])');
 }
 
 // =====================================================================

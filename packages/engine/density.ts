@@ -1017,6 +1017,36 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   if (hd && hd.kind === 'ref' && hd.ns === 'self') kernelName = hd.name;
   else if (hd && hd.kind === 'lit' && typeof hd.value === 'string') kernelName = hd.value;
   if (!kernelName || !samplerLib.isKnownDistribution(kernelName)) {
+    // A user-kernel head (not a built-in distribution) reaching the density
+    // path is, in the generative-bodied case (engine-concepts §21), the
+    // INTRACTABLE-density situation spec §06 case 3 calls out: the kernel
+    // body is `lawof(<value-expr-with-internal-draw>)` — a non-bijective
+    // transform that MARGINALISES the internal draw, so its pushforward
+    // density has no closed form. We refuse LOUDLY with the actionable
+    // §06 guidance rather than ever returning a silent NaN. `resolve-
+    // MeasureRef` (when supplied) lets us recognise the user-kernel head;
+    // without it, the generic refusal still fires (never silent).
+    const resolver = opts && opts.resolveMeasureRef;
+    let headIsUserKernel = false;
+    if (kernelName && typeof resolver === 'function') {
+      try {
+        const headIR = resolver(kernelName);
+        headIsUserKernel = !!(headIR && headIR.kind === 'call'
+          && headIR.op === 'functionof');
+      } catch (_) { /* resolver may throw for non-bindings; ignore */ }
+    }
+    if (headIsUserKernel) {
+      throw new Error('density: broadcast head \'' + kernelName + '\' is a '
+        + 'user-defined kernel, not a built-in distribution. If its body is a '
+        + 'generative value-expression that closes over an internal draw '
+        + '(engine-concepts §21), its pushforward marginalises that draw and '
+        + 'has NO tractable density (spec §06 case 3: the density of the '
+        + 'pushforward of an unannotated non-bijection is a static error). '
+        + 'Wrap the deterministic map with bijection(f, f_inv, logvolume) to '
+        + 'enable the closed-form pushforward density, or opt into a Monte '
+        + 'Carlo density estimate. (Sampling/DRAW of this kernel works via '
+        + 'the generative kernel-broadcast executor.)');
+    }
     throw new Error('density: broadcast head ' + (kernelName ? "'" + kernelName + "'" : '<?>')
       + ' is not a built-in distribution kernel');
   }
