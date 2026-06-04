@@ -194,32 +194,51 @@ function resolveAxisBaseSet(source: any, bindings: any) {
  * populate its preset-point dropdown — selecting one fills fixedEnv
  * with its values for non-swept axes.
  *
- * Match rule (strict — top-level scalars only):
- *   - b.ir.op === 'record'
- *   - the set of record kwarg names equals the set of signature
- *     input kwargNames (no missing inputs, no extra record fields)
- *   - every value is constant-resolvable to a finite number via
- *     resolveConstant, after first unwrapping any fixed(...) marker.
- *     resolveConstant folds literals, named constants, and simple
- *     arithmetic (e.g. `-3.5` lowers to `neg(lit 3.5)`).
+ * Match rules (two interpretations, spec §03 preset points):
+ *   - b.ir.op === 'record', every value constant-resolvable (after
+ *     unwrapping any `fixed(...)` marker).
+ *   (A) FLAT — the set of record field names equals the set of
+ *       signature input kwargNames. Each field is a held-constant /
+ *       sweepable value for the like-named input. `values` is keyed
+ *       by kwargName.
+ *   (B) RECORD-INPUT — the signature has a SINGLE record-typed input
+ *       and the record's field names equal that input's field names
+ *       (spec §03: a preset record "that take[s] a record of this
+ *       shape as an input"). The whole resolved record becomes the
+ *       value of that one input. `values` is keyed by the input's
+ *       kwargName, with the assembled record as its value.
+ *
+ * resolveConstant folds literals, named constants, simple arithmetic
+ * (`-3.5` → `neg(lit 3.5)`), and chases refs through anon-lifted
+ * bindings; `vector(...)` fields resolve to arrays.
  *
  * Returns an array of { name, values, fixedNames } where:
- *   - values    : kwargName → JS number (held-constant + sweepable)
- *   - fixedNames: Set<kwargName> for kwargs wrapped in `fixed(...)` —
+ *   - values    : kwargName → JS number | array | record (held-
+ *                 constant + sweepable)
+ *   - fixedNames: Set of record field names wrapped in `fixed(...)` —
  *                 the spec's "hold constant during optimization" hint.
- *                 Tooling uses this to e.g. exclude these kwargs from
- *                 the x-axis sweep selector.
- *
- * Future work (deferred): unify nested record / array preset
- * shapes against record-input signatures.
  */
 function findMatchingPresets(signature: any, bindings: any) {
   if (!signature || !bindings || !Array.isArray(signature.inputs)) return [];
-  const expected = new Set();
+  const expected = new Set<string>();
   for (const inp of signature.inputs) {
     if (inp.kwargName) expected.add(inp.kwargName);
   }
   if (expected.size === 0) return [];
+  // Case (B) precondition: a single record-typed input. Capture its
+  // kwargName + field-name set so a flat preset record can bind it.
+  let recordInputKwarg: string | null = null;
+  let recordFieldSet: Set<string> | null = null;
+  if (signature.inputs.length === 1) {
+    const only = signature.inputs[0];
+    const t = only && only.type;
+    if (t && t.kind === 'record' && t.fields) {
+      recordInputKwarg = only.kwargName;
+      recordFieldSet = new Set(Object.keys(t.fields));
+    }
+  }
+  const setEq = (a: Set<string>, names: string[]) =>
+    a.size === names.length && names.every((n) => a.has(n));
   const out: any[] = [];
   for (const [name, b] of bindings) {
     if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'record') continue;
@@ -230,12 +249,17 @@ function findMatchingPresets(signature: any, bindings: any) {
     // the underlying value. Before constant-folding, peek through any
     // `fixed(...)` wrapper so the hint doesn't block the match.
     const fields = Array.isArray(b.ir.fields) ? b.ir.fields : [];
-    if (fields.length !== expected.size) continue;
+    const fieldNames = fields.map((f: any) => f.name);
+    // The field-name set must match EITHER interpretation, else skip
+    // without resolving any values.
+    const matchesFlat = setEq(expected, fieldNames);
+    const matchesRecordInput = recordFieldSet != null
+      && setEq(recordFieldSet, fieldNames);
+    if (!matchesFlat && !matchesRecordInput) continue;
     let allMatch = true;
-    const values: Record<string, any> = {};
+    const fieldVals: Record<string, any> = {};
     const fixedNames = new Set();
     for (const f of fields) {
-      if (!expected.has(f.name)) { allMatch = false; break; }
       let inner = f.value;
       // Unwrap fixed(...) at the top of the field value. The wrapper
       // may be a direct call or a ref to a lifted __anon binding
@@ -284,16 +308,23 @@ function findMatchingPresets(signature: any, bindings: any) {
           arr.push(elV);
         }
         if (arrayMatch) {
-          values[f.name] = arr;
+          fieldVals[f.name] = arr;
           continue;
         }
         allMatch = false; break;
       }
       const v = resolveConstant(inner, bindings, new Set());
       if (v == null) { allMatch = false; break; }
-      values[f.name] = v;
+      fieldVals[f.name] = v;
     }
     if (!allMatch) continue;
+    // Package per the matched interpretation. Flat takes precedence
+    // when both could apply (a single-record-input callable whose
+    // field names happen to equal its own kwarg — not possible here
+    // since a record input contributes one kwarg, not its fields).
+    const values: Record<string, any> = matchesFlat
+      ? fieldVals
+      : { [recordInputKwarg as string]: fieldVals };
     out.push({ name, values, fixedNames });
   }
   return out;
@@ -769,9 +800,21 @@ function inlineForProfile(ir: IRNode | null | undefined, paramNames: any, bindin
       const target = bindings && bindings.get(n.name);
       const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, n.name)
         ? derivations[n.name] : null;
+      // Inline a computed-value binding into the body so its dependence
+      // on a boundary param (e.g. `a = pars.a` inside a kernel reified
+      // with boundary `pars`) survives substitution. Key off the *IR
+      // shape* (`ir.kind === 'call'`), NOT the binding's `type` label: a
+      // multi-LHS target like `a, b = (pars.a, pars.b)` is classified
+      // `type:'literal'` (tuple-literal RHS) yet its IR is a `tuple_get`
+      // call — it must still inline. The `!drv` guard already excludes
+      // the bindings that must stay captured refs: pure draws and
+      // measures carry a sample / non-'evaluate' derivation. Inline-draw
+      // value bindings (`delta_alpha = (2*draw(Uniform)+1)*a`) have NO
+      // derivation and DO inline — their internal draw surfaces as a
+      // nested `__anon*` ref that is itself sampled per-atom.
       const isEvaluate =
         (drv && drv.kind === 'evaluate')
-        || (!drv && target && target.type === 'call' && target.ir);
+        || (!drv && target && target.ir && target.ir.kind === 'call');
       if (isEvaluate && target && target.ir) {
         visiting.add(n.name);
         const expanded = walk(target.ir);
