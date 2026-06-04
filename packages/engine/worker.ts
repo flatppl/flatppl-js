@@ -422,12 +422,20 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // numbers are log-densities, not draws.
           const count = msg.count | 0;
           if (count <= 0) throw new Error(`logDensityN.count must be positive integer (got ${msg.count})`);
+          // Monte-Carlo marginalising-pushforward density (density.walkMc-
+          // Marginal, spec §06 case-3 opt-in) draws latents IN-WORKER. Thread
+          // a dedicated RNG state (re-keyed from msg.mcSeed when supplied so a
+          // profile sweep can reuse common random numbers for a smooth curve;
+          // else the session philox) plus the marginalisation count. Pure
+          // closed-form density paths ignore both.
+          const mcRng = msg.mcSeed != null ? _stateFromSeed(msg.mcSeed) : philox;
           const logps = densityLib.logDensityN(
             msg.ir,
             msg.observed,
             msg.refArrays || null,
             count,
-            { baseEnv: env, pointsBatched: !!msg.pointsBatched });
+            { baseEnv: env, pointsBatched: !!msg.pointsBatched,
+              mcRng, mcMarginalizationCount: (msg.mcMarginalizationCount | 0) || 100 });
           return { type: 'samples', id, samples: logps, logWeights: null };
         }
         case 'truncateSampleN': {

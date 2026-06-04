@@ -975,6 +975,131 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   return rest;
 }
 
+// ---- Marginalising pushforward: change-of-variables + MC-integration --
+//
+// `mcmarginal{…}` is the density rule for a per-event observation that is
+// a pushforward BIJECTIVE in one RETAINED innovation but MARGINALISES a
+// latent draw (spec §06 case-3 opt-in; engine-concepts §6). It is the
+// density sibling of `walkPushfwd`: the retained-innovation inverse and
+// forward LADJ are EXACT (bijection-registry.invertExpr), and only the
+// latent is integrated — by Monte Carlo, so M is small (≈100).
+//
+//   log p(z=d | θ) ≈ logsumexp_m[ logp_ret(u*_m) − ladj_fwd(u*_m) ] − log M
+//   u*_m = f⁻¹(d; x_m, θ),  x_m ~ marginal,  m = 1..M.
+//
+// The node is SELF-CONTAINED (the main-thread composition transform folds
+// any deterministic outer maps into `inverseIR`/`ladjIR` and inlines the
+// marginal's dist IR), so the worker resolves everything from its session
+// env + the threaded RNG — no bindings needed here (the dumb-worker
+// contract). Per-event: `walkIid` factorises the iid product and calls us
+// once per event, consuming one scalar.
+//
+// v1 scope mirrors mat-density.mcMarginalLogDensity: the retained latent
+// is a Uniform innovation on `retainedInterval` (logp_ret = −log(hi−lo)
+// inside the fibre, −inf outside) and the marginal is ATOM-INDEPENDENT
+// (the profile use case: θ in the session env). A per-atom marginal (the
+// hierarchical/posterior case, θ in refArrays) is the documented next
+// extension — refused loudly here, never silently mis-scored.
+
+// Numerically-stable log Σ exp over a Float64Array (all −inf ⇒ −inf).
+function _logSumExp(a: Float64Array): number {
+  let mx = -Infinity;
+  for (let i = 0; i < a.length; i++) if (a[i] > mx) mx = a[i];
+  if (!Number.isFinite(mx)) return mx;          // all −inf (or +inf)
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += Math.exp(a[i] - mx);
+  return mx + Math.log(s);
+}
+
+// Collect every `self`-namespace ref name reachable in an IR (for the
+// atom-dependence check below).
+function _collectSelfRefNames(ir: any, out: Set<string>): void {
+  if (!ir || typeof ir !== 'object') return;
+  if (ir.kind === 'ref' && ir.ns === 'self' && ir.name) { out.add(ir.name); return; }
+  if (Array.isArray(ir.args)) for (const a of ir.args) _collectSelfRefNames(a, out);
+  if (ir.kwargs) for (const k in ir.kwargs) _collectSelfRefNames(ir.kwargs[k], out);
+  if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectSelfRefNames(f && f.value, out);
+}
+
+function walkMcMarginal(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const node: any = ir;
+  const { head: z, rest } = consumeScalar(value);
+  const M = ((opts && opts.mcMarginalizationCount) | 0) || 100;
+  const rng = opts && opts.mcRng;
+  if (!rng) {
+    throw new Error('density: mcmarginal requires the worker RNG (opts.mcRng) — '
+      + 'the logDensityN handler must thread it (Monte Carlo marginalisation '
+      + 'draws latents in-worker)');
+  }
+  // Atom-dependence: if any self-ref in the marginal dist / inverse / LADJ
+  // is supplied PER-ATOM (refArrays), the marginal differs per atom — the
+  // hierarchical/posterior case. v1 handles the atom-INDEPENDENT profile
+  // case (θ resolved from the session env); defer per-atom loudly.
+  const refKeys = refArrays ? Object.keys(refArrays) : [];
+  if (refKeys.length > 0) {
+    const names = new Set<string>();
+    _collectSelfRefNames(node.marginalDistIR, names);
+    _collectSelfRefNames(node.inverseIR, names);
+    _collectSelfRefNames(node.ladjIR, names);
+    for (const k of refKeys) {
+      if (k !== node.outName && names.has(k)) {
+        throw new Error("density: mcmarginal has a per-atom marginal/recipe ref '"
+          + k + "' (hierarchical pushforward — e.g. a posterior whose θ varies "
+          + 'per prior atom). The per-atom Monte Carlo marginal is deferred; v1 '
+          + 'supports an atom-independent marginal (θ in the session env, the '
+          + 'likelihood-profile case).');
+      }
+    }
+  }
+  const env = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(env, overlay);
+  // 1. Draw M marginalised latents x_m ~ marginalDistIR (sync, in-worker).
+  //    Thread the RNG state back so successive events draw fresh latents.
+  const drawn = samplerLib.sampleLeafN(rng, node.marginalDistIR, env, [M]);
+  opts.mcRng = drawn.state;
+  const xcol = Float64Array.from(drawn.value);
+  // 2. u*_m = inverseIR(z; x), one batched pass (the §20.10 vertical
+  //    collapse over the M latents).
+  const zcol = new Float64Array(M);
+  zcol.fill(z);
+  const invRefs: any = { [node.outName]: zcol, [node.marginalRef]: xcol };
+  const ustarRaw = samplerLib.evaluateExprN(node.inverseIR, invRefs, M, env);
+  const ustar = _asFloatColumn(ustarRaw, M);
+  // 3. ladj_fwd(u*; x), one batched pass.
+  const ladjRefs: any = { [node.retainedRef]: ustar, [node.marginalRef]: xcol };
+  const ladjRaw = samplerLib.evaluateExprN(node.ladjIR, ladjRefs, M, env);
+  const ladj = _asFloatColumn(ladjRaw, M);
+  // 4. Conditional log-density per latent: logp_ret(u*) − ladj_fwd(u*).
+  //    Uniform innovation on [lo,hi]: logp_ret = −log(hi−lo) inside, −inf
+  //    outside (the support mask bounding the fibre).
+  const lo = node.retainedInterval[0], hi = node.retainedInterval[1];
+  const logWidth = Math.log(hi - lo);
+  const cond = new Float64Array(M);
+  for (let m = 0; m < M; m++) {
+    const u = ustar[m];
+    cond[m] = (u >= lo && u <= hi && Number.isFinite(ladj[m]))
+      ? (-logWidth - ladj[m]) : -Infinity;
+  }
+  // 5. logsumexp over the M innovations − log M. Atom-independent here →
+  //    one estimate fanned out to every atom (iid ⇒ walkIid sums events).
+  const logp = _logSumExp(cond) - Math.log(M);
+  for (let i = 0; i < N; i++) acc[i] += logp;
+  return rest;
+}
+
+// evaluateExprN may return a Float64Array(count) (batched), a number (atom-
+// independent broadcast), or a shape-[count] Value. Normalise to a length-M
+// Float64Array for the MC reduction.
+function _asFloatColumn(r: any, M: number): Float64Array {
+  if (r && r.BYTES_PER_ELEMENT !== undefined && r.length === M) return r;
+  if (typeof r === 'number') { const a = new Float64Array(M); a.fill(r); return a; }
+  if (r && Array.isArray(r.shape) && r.data && r.data.BYTES_PER_ELEMENT !== undefined
+      && r.shape.length === 1 && r.shape[0] === M) return r.data;
+  if (Array.isArray(r) && r.length === M) return Float64Array.from(r);
+  throw new Error('density: mcmarginal batched evaluation produced an '
+    + 'unexpected shape (expected length-' + M + ' column)');
+}
+
 // ---- Kernel-broadcast: array-valued independent product measure ----
 //
 // `broadcast(Dist, c1, c2, …)` (spec §04 sec:higher-order) — independent
@@ -1413,6 +1538,7 @@ const OP_HANDLERS = {
   iid:         walkIid,
   jointchain:  walkJointchainStub,
   pushfwd:     walkPushfwd,
+  mcmarginal:  walkMcMarginal,
   select:      walkSelect,
   broadcast:   walkBroadcast,
   // Multivariate leaves all route through the generic walker that
