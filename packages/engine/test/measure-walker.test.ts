@@ -163,3 +163,19 @@ test('walk: unknown op gives a clear "not a measure expression" error', () => {
   assert.throws(() => sampler.walk(rng.stateFromKey(1), bogus, {}),
     /not a measure expression we can sample/);
 });
+
+// =====================================================================
+// Single leaf endpoint (§17.4 stage 4): a scalar leaf draw and the first
+// element of a 1-element iid draw of the same leaf are bit-for-bit equal
+// — both route through the one batched leaf endpoint (sampleLeafN), with
+// no separate ziggurat scalar realisation. Pins the leaf-collapse.
+// =====================================================================
+
+test('walk: rand(state, Normal) === rand(state, iid(Normal, 1))[0] (one leaf endpoint)', () => {
+  const scalar = sampler.walk(rng.stateFromKey(21), STD_NORMAL, {});
+  const single = sampler.walk(rng.stateFromKey(21), iid(STD_NORMAL, 1), {});
+  assert.equal(Array.isArray(single.value), true);
+  assert.equal(single.value.length, 1);
+  assert.equal(scalar.value, single.value[0],
+    'scalar leaf draw and 1-element iid leaf draw share the single batched endpoint');
+});

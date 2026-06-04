@@ -273,10 +273,11 @@ function makeBulkSampler(
  * State is THREADED (not split): returns the advanced rng state so the
  * caller continues — matching `rand`'s `(value, new_state)` and
  * `builtin_sample`'s `(X, new_rngstate)` contracts (spec §07). This is
- * the single batched realisation of the leaf endpoint that
- * `builtin_sample` and `rand(state, iid(<leaf>, dims))` share (both via
- * traceeval's leaf-iid branch today), so all paths agree bit-for-bit and
- * leaves are batched draws per engine-concepts §11.
+ * the single batched realisation of the leaf endpoint shared by
+ * `builtin_sample`, `rand(state, iid(<leaf>, dims))`, and a bare scalar
+ * leaf draw `rand(state, <leaf>)` (walkLeaf delegates here at dims=[]),
+ * so all leaf paths in the value-position rand primitive agree
+ * bit-for-bit and leaves are batched draws per engine-concepts §11.
  *
  * Caller owns param resolution: any value-position refs in `distIR`'s
  * kwargs must already be resolved into `env` (iid semantics — the leaf's
@@ -2916,12 +2917,16 @@ function walkLeaf(state: any, ir: IRNode, env: any, ctx: any) {
   // the caller hasn't materialised yet). fillEnvFromRefs threads state
   // through any recursive sampling the resolver does.
   state = fillEnvFromRefs(state, ir, env, ctx);
-  const entry = lookupDistribution(ir);
-  const params = resolveParams(ir, entry, env);
-  const prng = makePhiloxPrngAdapter(state);
-  const sampler = entry.randFn.factory(...params, { prng });
-  const value = sampler();
-  return { value, state: prng.getState() };
+  // Single leaf endpoint: a scalar draw is sampleLeafN at dims=[] (a batch
+  // of 1). Collapses the former scalar realisation (a per-draw stdlib
+  // randFn.factory — ziggurat for Normal/LogNormal) onto the one batched
+  // endpoint, so `rand(state, <leaf>)` and `rand(state, iid(<leaf>, 1))[0]`
+  // are now bit-for-bit identical with no second leaf realisation in the
+  // value-position rand / builtin_sample path (engine-concepts §11 / §17.4
+  // stage 4). The worker's per-binding materialisation samplers (rand /
+  // makeSampler / makeParametricSampler) are a separate path; folding them
+  // onto sampleLeafN too is a follow-up (TODO RNG).
+  return sampleLeafN(state, ir, env, []);
 }
 
 function walkJoint(state: any, ir: IRNode, env: any, ctx: any) {
