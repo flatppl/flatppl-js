@@ -311,7 +311,26 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     // substituteLocals (no env entry for the swept param), so we
     // sweep the paramName directly.
     const effectiveSweepName = isPerSlotSweep ? SWEEP_VAR : sweepParamName;
-    return sendWorker(ctx, {
+    // Demand-driven fixed values (engine-concepts §17.4): fixed-phase
+    // `(ref self …)` in the profile body — a `x_data = [...]` array a
+    // likelihood consumes, an `external` input, a fixed reduction —
+    // used to be resolved from the worker session env via the
+    // per-rebuild BULK setEnv push of the whole fixedValues map, which
+    // is now removed (it would force-resolve every fixed value).
+    // substituteLocals only bakes %local params, so push only THIS
+    // body's fixed self-refs (merge:true), scoped and on demand, before
+    // the profileN call — chained so the env lands first. The worker
+    // resolves `(ref self name)` via env[name], exactly as the bulk push
+    // did. Random-phase parents are unaffected (they ride the fixedEnv /
+    // substituteLocals path, never the bulk push).
+    const profileFixedEnv: Record<string, any> = {};
+    const fvMap = ctx.derivationsState && ctx.derivationsState.fixedValues;
+    if (fvMap) {
+      for (const n of FlatPPLEngine.orchestrator.collectSelfRefs(ir)) {
+        if (fvMap.has(n)) profileFixedEnv[n] = fvMap.get(n);
+      }
+    }
+    const profileMsg = {
       type: 'profileN',
       ir: irForWorker,
       sweepName: effectiveSweepName,
@@ -321,7 +340,11 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       fixedEnv: {},
       observed: observed,
       tally: 'clamped',
-    });
+    };
+    return (Object.keys(profileFixedEnv).length > 0
+      ? sendWorker(ctx, { type: 'setEnv', env: profileFixedEnv, merge: true })
+          .then(function() { return sendWorker(ctx, profileMsg); })
+      : sendWorker(ctx, profileMsg));
   }).then(function(reply: any) {
     if (!reply) return;
     if (ctx.currentPlotPlan !== planForCall) return;

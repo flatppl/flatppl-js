@@ -77,6 +77,7 @@ const { MEASURE_PRODUCING } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf, substituteLocals } = require('./signatures.ts');
+const { FixedValues } = require('./fixed-values.ts');
 const {
   collectSelfRefs,
   isCallOp,
@@ -227,36 +228,21 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     }
   }
 
-  // Fixed-phase pre-evaluation. Walk fixed-phase bindings in topo
-  // order and try to compute each one's value end-to-end via the
-  // sampler's evaluator (which now handles rnginit / rand / rngstate
-  // / tuple_get on top of the existing arithmetic). Two outputs:
+  // Fixed-phase value resolution is DEMAND-DRIVEN (engine-concepts §17.4).
+  // `fixedValues` is a lazy, memoised, cycle-guarded resolver (FixedValues
+  // — see fixed-values.ts), NOT an eager map. A binding's fixed value is
+  // computed only when a consumer first asks for it — a shape const-eval
+  // during pass-2 classification, the dead-end diagnostic below, or a
+  // worker-env push at materialise time — then cached. The per-binding
+  // evaluation logic (formerly the eager `while (progress)` sweep here)
+  // lives verbatim in FixedValues._compute. `fixedValues` exposes a
+  // Map-compatible surface (.has / .get / iterate) so the ~100 downstream
+  // consumers that read it as a Map are untouched; only WHEN values are
+  // computed changed (eager-sweep → first-demand).
   //
-  //   - fixedValues: name → JS value. Exposed so consumers (worker,
-  //     viewer) can resolve refs to fixed bindings as global env
-  //     entries rather than as per-atom slices, which is the only
-  //     correct semantics for non-scalar fixed values (e.g. a
-  //     length-10 array from `rand(rstate, iid(Normal, 10))`).
-  //
-  //   - derivation overrides:
-  //       * numeric JS array → reclassify as { kind: 'array', values }
-  //         so the existing array-plot path renders it (mirrors
-  //         the treatment of literal arrays like `[1, 2, 3]`).
-  //       * opaque values (rngstate, plain JS objects, non-numeric
-  //         arrays) → drop the derivation so the viewer reports
-  //         "not plottable" cleanly. The value remains in
-  //         fixedValues so downstream evaluators can resolve refs.
-  //       * scalar numbers → keep the existing 'evaluate' kind. The
-  //         worker's evaluateN runs N iterations with the scalar in
-  //         env, producing a Float64Array(N) of the same scalar —
-  //         the right shape for a fixed-phase scalar plotted as a
-  //         delta. (No reclassification needed: existing path works.)
-  //
-  // The pass is iterative: each round evaluates any binding whose
-  // deps are already in fixedValues, until no progress. Bindings
-  // we can't evaluate (refs to non-fixed names, ops outside the
-  // evaluator) silently stay at their original classification.
-  const fixedValues = new Map();
+  // `resolveMeasureRef` and `isMeasureBinding` are defined / available
+  // here (they also consult `derivations` / `expandMeasureIR`) and are
+  // injected into the resolver below.
   const samplerLib = require('./sampler.ts');
   // resolveMeasureRef closure threaded through evaluateExpr → evaluateRand
   // → traceeval. When traceeval hits a `(ref self <name>)` for a
@@ -278,251 +264,28 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     return (b && b.ir) || null;
   }
 
-  // True when a binding's value is a measure. Two ways to know:
-  //   1. typeinfer: inferredType.kind in {measure, function, kernel}.
-  //   2. lift-introduced synthetic anons that don't carry inferredType
-  //      yet but whose IR head is a measure-producing op — exactly
-  //      the `MEASURE_PRODUCING` set the surface analyzer uses, so we
-  //      reuse it rather than maintaining a parallel list.
-  function isMeasureBinding(b: any) {
-    if (!b) return false;
-    const t = b.inferredType;
-    if (t && (t.kind === 'measure' || t.kind === 'function' || t.kind === 'kernel')) return true;
-    if (b.synthetic && b.ir && b.ir.kind === 'call' && b.ir.op
-        && MEASURE_PRODUCING.has(b.ir.op)) return true;
-    return false;
-  }
+  const fixedValues = new FixedValues({
+    bindings,
+    derivations,
+    resolveMeasureRef,
+    isMeasureBinding,
+    samplerLib,
+    traceeval: require('./traceeval.ts'),
+    expandMeasureIR,
+    collectSelfRefs,
+    lowerExpr,
+  });
 
-  let progress = true;
-  while (progress) {
-    progress = false;
-    for (const [name, binding] of bindings) {
-      if (fixedValues.has(name)) continue;
-      // Pre-eval is restricted to fixed-phase bindings. Lift-
-      // synthesised anonymous bindings have phase=undefined; we
-      // include them so anonymous *value* bindings (a lifted scalar
-      // expression) are computed too. Anonymous *measure* bindings
-      // (Normal, iid, ...) will be tried but evaluateExpr will throw
-      // on them and we'll silently skip; that's fine — they're
-      // resolved later via resolveMeasureRef.
-      if (binding.phase != null && binding.phase !== 'fixed') continue;
-
-      // Use the post-lift cached IR if present (set by the lift
-      // pass at the bottom of liftInlineSubexpressions); fall back
-      // to lowering on demand for bindings the lift never touched.
-      const ir = binding.ir
-        || (function () {
-          try { return lowerExpr(binding.effectiveValue || binding.node.value); }
-          catch (_) { return null; }
-        })();
-      if (!ir) continue;
-
-      // Collect self-refs into TWO buckets based on where they're
-      // reached: "value-context" refs that must be in fixedValues
-      // before we can evaluate (the classic gate), and "measure-
-      // context" refs reached through a measure subtree (e.g.
-      // `rand(rstate, ref d)` where d's expansion has
-      // `Normal(mu = ref a, sigma = ref b)`). The latter never block
-      // pre-eval — they're resolved lazily at evaluation time via
-      // __resolveValueRef, which threads rng state through any
-      // stochastic ancestor sampling. This is what makes
-      //   data, _ = rand(rstate, lawof(obs))
-      // pre-eval successfully even when obs's distribution params
-      // depend on stochastic ancestors (theta1, theta2): rand owns
-      // the state thread, and the resolver hands it the values it
-      // needs by walking back through the binding graph the same
-      // way traceeval would.
-      const env: any = { __resolveMeasureRef: resolveMeasureRef };
-      let depsReady = true;
-      const seenMeasure = new Set();
-      const valueRefs = new Set<string>();
-      const deferredRefs = new Set();
-
-      function collectFor(walkIr: any, inMeasureContext: any) {
-        const refs = collectSelfRefs(walkIr);
-        for (const r of refs) {
-          if (!bindings.has(r)) continue;
-          const dep = bindings.get(r);
-          // Function-typed bindings (fn / functionof / kernelof) aren't
-          // looked up as values during evaluation — the ones that flow
-          // through evaluator dispatch (filter, broadcast, etc.) get
-          // resolved via env.__resolveFnBody at the call site, not
-          // through env[name]. Skip them from the value-ref gate so
-          // pre-eval doesn't block on them being in fixedValues
-          // (they never will be — there's no value to set). But the
-          // FUNCTION'S BODY may reference fixed-phase value bindings
-          // (e.g. `fn(_ > threshold)` closes over `threshold`); we
-          // need those values preloaded into env before evaluating
-          // the surrounding call (filter, broadcast). Recurse into
-          // the body's refs.
-          if (dep && (dep.type === 'fn' || dep.type === 'functionof'
-                      || dep.type === 'kernelof')) {
-            if (dep.ir && dep.ir.kind === 'call'
-                && dep.ir.op === 'functionof' && dep.ir.body) {
-              // Walk the body, but only follow refs to value-typed
-              // bindings (not refs to the function's own parameters,
-              // which are %local). collectSelfRefs already filters
-              // for ns === 'self'.
-              collectFor(dep.ir.body, inMeasureContext);
-            }
-            continue;
-          }
-          // A binding the orchestrator has classified as a measure
-          // derivation: recurse through the canonical sampleable
-          // expansion (what traceeval actually walks at runtime).
-          // expandMeasureIR resolves variate aliases to their
-          // distribution and rewrites lawof(record(...)) → joint(...).
-          // The resulting tree contains exactly the value refs
-          // traceeval will look up in env at sample time — and we
-          // mark anything beyond this point as measure-context.
-          if (derivations[r]) {
-            if (seenMeasure.has(r)) continue;
-            seenMeasure.add(r);
-            const expanded = expandMeasureIR(r, derivations);
-            if (expanded) { collectFor(expanded, true); continue; }
-            // Not a sample-shape derivation — fall through to
-            // value-binding treatment below.
-          }
-          if (dep && isMeasureBinding(dep)) {
-            // Synthetic anon with measure-construction IR but no
-            // derivation entry (e.g. dropped during cascade-prune):
-            // recurse through the raw IR and hope distribution
-            // params reach value bindings we can resolve.
-            if (seenMeasure.has(r)) continue;
-            seenMeasure.add(r);
-            if (dep.ir) collectFor(dep.ir, true);
-            continue;
-          }
-          if (inMeasureContext) deferredRefs.add(r);
-          else                  valueRefs.add(r);
-        }
-      }
-      collectFor(ir, false);
-
-      for (const r of valueRefs) {
-        const dep = bindings.get(r);
-        if (dep && dep.phase != null && dep.phase !== 'fixed') { depsReady = false; break; }
-        if (!fixedValues.has(r))                                { depsReady = false; break; }
-        env[r] = fixedValues.get(r);
-      }
-      if (!depsReady) continue;
-
-      // Build a state-threading resolver closed over the local env
-      // and the binding graph. Called from traceeval (via
-      // evaluateRand → opts.resolveValueRef) whenever a measure-
-      // context ref isn't already in env. Two cases:
-      //   - measure-shaped derivation (a draw, an iid, an alias, …):
-      //     expandMeasureIR + traceeval.walk samples it through the
-      //     same recursive walker. State threads through.
-      //   - deterministic derivation (a = c * theta1, etc.): inline
-      //     the binding's IR, recursively pre-fill its own refs
-      //     through this same resolver, then evaluateExpr.
-      // env is the SAME object the outer evaluateExpr will consult,
-      // so resolved values are cached implicitly — two refs to the
-      // same name share one draw.
-      const traceeval = require('./traceeval.ts');
-      function localResolveValueRef(refName: any, state: any) {
-        if (env[refName] !== undefined) return [env[refName], state];
-        if (fixedValues.has(refName)) {
-          env[refName] = fixedValues.get(refName);
-          return [env[refName], state];
-        }
-        const dep = bindings.get(refName);
-        if (!dep) throw new Error(`resolveValueRef: unknown binding '${refName}'`);
-        const d = derivations[refName];
-        if (d && (d.kind === 'sample' || d.kind === 'alias'
-                  || d.kind === 'iid' || d.kind === 'record'
-                  || d.kind === 'weighted')) {
-          const measureIR = expandMeasureIR(refName, derivations);
-          if (!measureIR) {
-            throw new Error(`resolveValueRef: cannot expand measure for '${refName}'`);
-          }
-          const r = traceeval.walk(state, measureIR, env, {
-            resolveMeasureRef,
-            resolveValueRef: localResolveValueRef,
-          });
-          env[refName] = r.value;
-          return [r.value, r.state];
-        }
-        // Deterministic binding (evaluate-kind, lifted anon, …):
-        // walk its own refs through this resolver first, then evaluate.
-        const innerIR = (d && d.kind === 'evaluate' && d.ir) || dep.ir;
-        if (!innerIR) {
-          throw new Error(`resolveValueRef: no IR for '${refName}'`);
-        }
-        // Pre-fill nested refs depth-first by calling ourselves.
-        const inner = collectSelfRefs(innerIR);
-        for (const n of inner) {
-          if (env[n] !== undefined) continue;
-          const sub = localResolveValueRef(n, state);
-          state = sub[1];
-        }
-        const v = samplerLib.evaluateExpr(innerIR, env);
-        env[refName] = v;
-        return [v, state];
-      }
-      env.__resolveValueRef = localResolveValueRef;
-
-      // filter(pred, data) needs to walk pred's body per element of
-      // data. The sampler's evaluateCall picks up this hook to
-      // resolve a binding name to its (body IR + parameter name)
-      // pair when the binding is a unary fn / functionof / kernelof.
-      env.__resolveFnBody = function (bname: any) {
-        const fb = bindings.get(bname);
-        if (!fb || (fb.type !== 'fn' && fb.type !== 'functionof'
-                    && fb.type !== 'kernelof')) {
-          return null;
-        }
-        const fIR = fb.ir;
-        if (!fIR || fIR.kind !== 'call' || fIR.op !== 'functionof'
-            || !Array.isArray(fIR.params) || !fIR.body) {
-          return null;
-        }
-        // Return all params + surface kwarg names so higher-order
-        // callers can name both slots. broadcast's kwargs form needs
-        // surface names (paramKwargs); filter / reduce / scan use
-        // internal params for env-keying.
-        return {
-          body:        fIR.body,
-          params:      fIR.params,
-          paramKwargs: fIR.paramKwargs,
-          paramName:   fIR.params[0],
-        };
-      };
-
-      // The synthesised disintegrate effectiveValue can be a measure
-      // expression (e.g. `lawof(...)`); evaluating that as a value is
-      // a category error. Skip cleanly — sampler.evaluateExpr would
-      // throw, but iterating across all bindings per analyze means
-      // catching cheaply is easier than detecting up front. Same for
-      // anonymous bindings whose lifted IR is a measure construction
-      // (Normal, etc.).
-      let value;
-      try {
-        value = samplerLib.evaluateExpr(ir, env);
-      } catch (_) { continue; }
-      fixedValues.set(name, value);
-      progress = true;
-      // No derivation reclassification here — fixedValues IS the
-      // source of truth for the binding's value. The viewer's
-      // getMeasure short-circuits any binding present in fixedValues
-      // to the appropriate measure shape (Float64Array for numeric
-      // arrays / scalars, fields-SoA for records, null for opaque
-      // rngstate). Existing derivation kinds set by classifyDerivation
-      // (sample / iid / record / weighted / alias / array / …) stay
-      // unchanged — the viewer's per-kind paths still apply for
-      // bindings without fixedValues entries.
-    }
-  }
-
-  // Second classification pass — pre-eval is now finished and
-  // `fixedValues` is populated, so classifiers that depend on
+  // Second classification pass. Classifiers that depend on
   // constant-resolution of a fixed-phase binding (e.g. classifyIid
   // resolving `iid(M, n)` where `n = lengthof(data)` is a fixed-phase
-  // binding) can succeed here even though the first pass at line 145
-  // ran with an empty fixedValues map. Only re-classify bindings that
-  // didn't already get a derivation in pass 1 — pre-eval may have
-  // overridden some derivations (e.g. converting a `vector(...)`
+  // binding) can succeed here even though the first pass ran with the
+  // derivations table still incomplete: `fixedValues` is the lazy
+  // resolver (FixedValues), so `resolveConstant(n, …, fixedValues)`
+  // computes `n` (and only `n`'s subgraph) ON DEMAND now that pass-1
+  // derivations exist. Only re-classify bindings that didn't already get
+  // a derivation in pass 1 — a pass-1 classification may be load-bearing
+  // (e.g. a `vector(...)`
   // sample call to an `array` kind), which we don't want to clobber.
   for (const [name, binding] of bindings) {
     if (derivations[name]) continue;
@@ -587,9 +350,22 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   }
 
   // Fixed-phase dead end (mode b). A fixed-phase value computation
-  // must end up either pre-evaluated (fixedValues) or classified
+  // must end up either resolvable (fixedValues) or classified
   // (derivations); neither means the engine silently gave up on a
   // deterministic computation.
+  //
+  // Demand-driven note (§17.4): with the lazy resolver this `.has(name)`
+  // is the ONE intentional bounded forcing point. It resolves only
+  // bindings that are fixed-phase AND not object-typed AND have no
+  // derivation — exactly the set the old eager sweep would have left
+  // without a value (an engine gap). Bindings with a derivation are
+  // skipped above, so this never force-resolves the common case. The
+  // headline laziness win (`A = load_huge_matrix(); B = expensive(A)`
+  // never displayed) holds whenever A/B carry a derivation or are
+  // object-typed; a *bare* underived fixed-phase value binding is still
+  // resolved here, same as before. Fully eliminating that residual would
+  // need a reachability-from-plotted-target gate not available at build
+  // time — deferred (TODO §06).
   for (const [name, b] of bindings) {
     if (!b || b.phase !== 'fixed') continue;
     if (_isObjectBindingType(b.type)) continue;         // legit underived
@@ -1901,20 +1677,57 @@ const MEASURE_OP_CLASSIFIERS = {
  * has a derivation. Aliases / weighted / normalize just check the
  * target.
  */
+// True when a binding's value is a measure (not a plottable value).
+// One owner, two consumers: the fixed-value resolver (so measure-context
+// recursion never treats a measure as a value ref) and cascade-prune (a
+// measure binding is resolvable downstream only via a derivation, never
+// as a fixed value). Two ways to know: typeinfer's inferredType, or a
+// lift-introduced synthetic anon whose IR head is measure-producing (the
+// `MEASURE_PRODUCING` set the surface analyzer uses, reused rather than
+// maintaining a parallel list).
+function isMeasureBinding(b: any): boolean {
+  if (!b) return false;
+  const t = b.inferredType;
+  if (t && (t.kind === 'measure' || t.kind === 'function' || t.kind === 'kernel')) return true;
+  if (b.synthetic && b.ir && b.ir.kind === 'call' && b.ir.op
+      && MEASURE_PRODUCING.has(b.ir.op)) return true;
+  return false;
+}
+
 function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<string, BindingInfo>, fixedValues: any) {
   // A name is "resolvable downstream" if there's a derivation for it
-  // (the materialiser knows how to compute samples) OR it has a
-  // fixed-phase value the worker resolves through its session env.
+  // (the materialiser knows how to compute samples) OR it is a
+  // fixed-phase VALUE the worker resolves through its session env.
   // The viewer's collectRefArrays already drops fixed-phase refs from
   // refArrays, so a binding whose only deps are fixed values can
   // still sample correctly via session env. Without this, a Normal(
   // mu=get_field(ref(rp), "theta1"), …) classified as 'sample' would
   // cascade-prune the moment the orchestrator dropped rp's
   // derivation (it's a record, not numeric — pre-eval drops those).
+  //
+  // Demand-driven (§17.4), but FAITHFUL to the old prune. Three cases:
+  //   1. Has a derivation → resolvable (the materialiser computes it).
+  //      First, and cheapest — no value resolution. This is the headline
+  //      laziness win: a never-displayed `B = expensive(A)` where A/B
+  //      carry derivations returns here WITHOUT resolving A.
+  //   2. A measure binding with no derivation → NOT resolvable (measures
+  //      are resolvable only via a derivation, so dropping one must
+  //      cascade to dependents).
+  //   3. A NON-measure fixed-phase / lift-anon binding with no derivation
+  //      → confirm it actually HAS a value (`fixedValues.has`, which
+  //      resolves on demand). This restores the old behavior exactly: a
+  //      dependent of an UNEVALUABLE fixed binding (an engine-gap dead
+  //      end) still cascade-prunes rather than surviving to fail at
+  //      materialise. The forcing is bounded — underived fixed bindings
+  //      are the same small set the dead-end diagnostic resolves anyway —
+  //      so it costs no laziness beyond what's already paid, while a
+  //      derivation-having (case 1) binding is never resolved here.
   function resolvable(name: any) {
     if (Object.prototype.hasOwnProperty.call(derivations, name)) return true;
-    if (fixedValues && fixedValues.has(name)) return true;
-    return false;
+    const b = bindings.get(name);
+    if (!b || isMeasureBinding(b)) return false;
+    if (b.phase != null && b.phase !== 'fixed') return false;
+    return !!(fixedValues && fixedValues.has(name));
   }
 
   // Refs in CALLABLE-HEAD positions (args[0] of broadcast / aggregate

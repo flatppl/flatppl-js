@@ -136,7 +136,9 @@ export function activeInputValues(ctx: Ctx, plan: any): Record<string, any> {
     if (!cache || !cache.has(name)) return null;
     const src = bindings && bindings.get(name);
     if (FlatPPLEngine.materialiser.isFunctionLikeBinding(src)) return null;
-    if (fixedValues && fixedValues.has(name)) return null;
+    // Demand-driven (§17.4): is-fixed-phase is a phase question — read
+    // binding.phase, not `fixedValues.has` (which would force-resolve).
+    if (src && src.phase === 'fixed') return null;
     const m = cache.get(name);
     if (!m || !m.samples || m.samples.length === 0) return null;
     return m.samples;
@@ -267,10 +269,11 @@ export function computeAutoValues(ctx: Ctx, plan: any) {
     if (!cache || !cache.has(name)) return null;
     // Skip function-like and fixed-phase sources (same latent guard
     // as before — fixed-phase array bindings collapse to samples[0]
-    // under naive override).
+    // under naive override). Demand-driven (§17.4): is-fixed-phase is a
+    // phase question — read binding.phase, not `fixedValues.has`.
     const src = bindings && bindings.get(name);
     if (FlatPPLEngine.materialiser.isFunctionLikeBinding(src)) return null;
-    if (fixedValues && fixedValues.has(name)) return null;
+    if (src && src.phase === 'fixed') return null;
     const m = cache.get(name);
     if (!m || !m.samples || m.samples.length === 0) return null;
     // Always return the samples view; computeAutoInputs slices to

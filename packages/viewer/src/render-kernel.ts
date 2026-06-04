@@ -132,11 +132,13 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // lines 44-49). Today it's latent — fixing now keeps the code
   // resilient when F4a lifts.
   const bindings = ctx.derivationsState && ctx.derivationsState.bindings;
-  const fixedValues = ctx.derivationsState && ctx.derivationsState.fixedValues;
   Promise.all(bindingSourceLookups.map(function(s) {
     const src = bindings && bindings.get(s.sourceName);
     const isFunctionLike = FlatPPLEngine.materialiser.isFunctionLikeBinding(src);
-    const isFixedPhase = fixedValues && fixedValues.has(s.sourceName);
+    // Demand-driven (§17.4): "is this source fixed-phase?" is a PHASE
+    // question — read binding.phase, don't `fixedValues.has` (which under
+    // the lazy resolver would force-resolve the value just to answer it).
+    const isFixedPhase = !!(src && src.phase === 'fixed');
     if (isFunctionLike || isFixedPhase) return null;
     return tryGetMeasure(ctx, s.sourceName);
   })).then(function(srcMeasures) {
