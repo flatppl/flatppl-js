@@ -168,10 +168,14 @@ function makeSampler(state: any, measureIR: any, env: any) {
 
 /**
  * Build a sampler whose params are supplied per draw rather than baked
- * in at factory time. Use this for the per-i-params path: the stdlib
+ * in at factory time. This is the per-i-params FALLBACK path: the stdlib
  * factory closure is built ONCE (with only the prng bound), then each
  * `drawWith(env)` call resolves the IR's param expressions against the
- * current env and invokes the closure with those numerics.
+ * current env and invokes the closure with those numerics. The randNFn
+ * family (Normal/LogNormal/Uniform/Exponential) is folded onto
+ * makeBulkSampler's `perI` mode instead; this remains the per-i
+ * realisation for everything else (Gamma/Beta/Dirac/… and non-interval
+ * Uniforms).
  *
  * Why this matters: stdlib's distribution `factory(...params, opts)`
  * does non-trivial setup work — argument validation, internal
@@ -230,10 +234,14 @@ function makeParametricSampler(state: any, measureIR: any) {
  * Returns `{ samples: Float64Array, state: PhiloxState }`. State is
  * threaded back so the caller can continue without losing position.
  *
- * Caller must NOT use this when params depend on per-draw upstreams —
- * use makeParametricSampler() for that path (per-i kwargs change the
- * factory cost story, plus randNFn slots take static params only in
- * this commit; a per-i randNFn variant is a future follow-up).
+ * Per-draw-upstream params (per-i kwargs) ARE supported via the optional
+ * trailing `perI = { refArrays, count, repeat }` arg: for the randNFn
+ * family it resolves each param into a per-atom column (resolveParamsN),
+ * atom-major-expands for repeat>1, and runs one philoxN* draw through the
+ * SAME per-element transform as the static path — the single batched leaf
+ * math (engine-concepts §11, Q2 fold). A non-randNFn dist or a Uniform
+ * whose support isn't interval(lo,hi) returns `{ unhandled: true }` so the
+ * caller falls back to makeParametricSampler. Omit `perI` for static params.
  */
 // Expand a per-atom param column to atom-major length n = count*repeat:
 // atom i's value is shared across its `repeat` inner draws, matching the
