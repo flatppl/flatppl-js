@@ -14,8 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GRAMMARS_DIR: ${{ github.workspace }}/.grammars
     steps:
       - uses: actions/checkout@v6
+
+      - name: Check out flatppl-grammars (deterministic grammar source)
+        uses: actions/checkout@v6
+        with:
+          repository: flatppl/flatppl-grammars
+          ref: main
+          path: .grammars
 
       - uses: actions/setup-node@v6
         with:
