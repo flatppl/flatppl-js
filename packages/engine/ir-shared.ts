@@ -304,7 +304,17 @@ function valueToPlain(v: any): any {
 function collectSelfRefs(ir: IRNode | null | undefined) {
   const seen = new Set<string>();
   walkIR(ir, (n: any) => {
-    if (n && n.kind === 'ref' && n.ns === 'self') seen.add(n.name);
+    if (!n) return;
+    if (n.kind === 'ref' && n.ns === 'self') { seen.add(n.name); return; }
+    // The `mcmarginal` density node (density.walkMcMarginal) carries a
+    // self-contained recipe in custom fields (inverseIR / ladjIR /
+    // marginalDistIR) that `forEachIRChild` does NOT descend — the worker
+    // supplies the retained/marginal/out refs internally. It declares the
+    // refs it still needs from the env (frozen or per-atom θ) in
+    // `externalRefs`; surface those so prepareDensityRefs resolves them.
+    if (n.kind === 'call' && n.op === 'mcmarginal' && Array.isArray(n.externalRefs)) {
+      for (const nm of n.externalRefs) seen.add(nm);
+    }
   });
   return seen;
 }

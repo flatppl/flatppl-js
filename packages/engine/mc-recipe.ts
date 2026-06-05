@@ -215,11 +215,26 @@ function _buildFromGenerative(genBcastIR: any, gen: any, detMaps: Array<{ paramN
   const inv = bijReg.invertExpr({ outputExpr: recipe, freeRef: { name: retainedRef }, outputValue: OUT });
   if (!inv) return null;                          // not bijective in the retained draw
 
+  // EXTERNAL refs the worker resolves from its env (session-fixed θ like
+  // `pars`/`sigma`, or per-atom in a posterior): the free `self`-refs of the
+  // recipe MINUS the internally-supplied retained / marginal draws (the
+  // output placeholder is `%mc`-namespaced, never collected). The node's
+  // recipe lives in custom fields `walkIR`/`collectSelfRefs` do not descend,
+  // so this list is how the main-thread ref-collection (prepareDensityRefs)
+  // sees through the otherwise-opaque node — see ir-shared.collectSelfRefs.
+  const ext = new Set<string>();
+  for (const r of shared.collectSelfRefs(inv.inverseIR)) ext.add(r);
+  for (const r of shared.collectSelfRefs(inv.ladjIR)) ext.add(r);
+  for (const r of shared.collectSelfRefs(marginalDistIR)) ext.add(r);
+  ext.delete(retainedRef);
+  ext.delete(marginalRef);
+
   const node = {
     kind: 'call', op: 'mcmarginal',
     inverseIR: inv.inverseIR, ladjIR: inv.ladjIR, outName: OUT_NAME,
     retainedRef, retainedInterval,
     marginalRef, marginalDistIR,
+    externalRefs: Array.from(ext),
   };
   return { kind: 'call', op: 'iid', args: [node, nIR] };
 }

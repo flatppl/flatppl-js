@@ -26,6 +26,7 @@ import type {
 const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
 const shared       = require('./materialiser-shared.ts');
+const mcRecipe     = require('./mc-recipe.ts');
 
 const {
   nameSeed,
@@ -40,6 +41,32 @@ const {
   resolveFnBody,
 } = shared;
 
+// Density-path recognition of a generative-composite measure (spec §06
+// case-3 opt-in; engine-concepts §6): re-express it as the canonical
+// `iid(mcmarginal{…}, n)` MC form (mc-recipe.buildMcMarginalForm) so the
+// density walker scores it via walkMcMarginal. Returns null when the
+// measure isn't that shape — the caller keeps its closed-form / refusal
+// path. DENSITY-path only; sampling is untouched (the dissolver-side
+// unification that feeds the same form to sampling is a later step).
+function mcDensityForm(measureIR: any, ctx: any): any {
+  try {
+    return mcRecipe.buildMcMarginalForm(measureIR, ctx.bindings,
+      (name: string) => orchestrator.expandMeasure(name,
+        { derivations: ctx.derivations, bindings: ctx.bindings })) || null;
+  } catch (_) { return null; }
+}
+
+// Marginalisation count + a stable MC seed for the worker's logDensityN
+// (a profile sweep reuses common random numbers → a smooth curve). Pure
+// closed-form density paths never see these.
+function mcDensityOpts(ctx: any): any {
+  return {
+    mcMarginalizationCount: (ctx.marginalizationCount | 0)
+      || (ctx.MARGINALIZATION_COUNT | 0) || 100,
+    mcSeed: nameSeed('%mcdensity', ctx.rootKey),
+  };
+}
+
 // =====================================================================
 // Bayesupdate — reweight prior atoms by per-atom log-likelihood
 // =====================================================================
@@ -53,20 +80,25 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   if (!bodyIR) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
+  // Generative-composite likelihood (the transport model): score via the
+  // MC marginalising-pushforward form instead of refusing (§06 case-3).
+  const mcForm = mcDensityForm(bodyIR, ctx);
+  const densIR = mcForm || bodyIR;
   return Promise.all([
     ctx.getMeasure(d.from),
-    prepareDensityRefs(bodyIR, ctx, 'bayesupdate'),
+    prepareDensityRefs(densIR, ctx, 'bayesupdate'),
   ]).then(([parent, prep]: [any, any]) => {
     const { refArrays, fixedEnv } = prep;
     const observed = orchestrator.resolveIRToValue(
       d.obsIR, ctx.bindings, ctx.fixedValues);
     return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
       type: 'logDensityN',
-      ir: bodyIR,
+      ir: densIR,
       count: ctx.sampleCount,
       refArrays: refArrays,
       observed: observed,
       tally: 'clamped',
+      ...(mcForm ? mcDensityOpts(ctx) : {}),
     })).then((reply: any) => {
       const N = measureN(parent);
       const existingLW = parent.logWeights;
@@ -225,6 +257,11 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
       + d.measureName + '" into a self-contained IR'));
   }
   return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
+  // Generative-composite measure (the transport model): score via the MC
+  // marginalising-pushforward form (§06 case-3) instead of refusing. Not a
+  // kchain, so the N-ary kchain branch below stays inert for it.
+  const mcForm = mcDensityForm(measureIR, ctx);
+  const densIR = mcForm || measureIR;
   const naryKchain = isChain && measureDeriv
     && Array.isArray(measureDeriv.steps) && measureDeriv.steps.length > 2
     && !measureDeriv.labels;
@@ -234,7 +271,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
           steps: measureDeriv.steps.slice(0, -1) }, ctx)
     : Promise.resolve(null);
   return Promise.all([
-    prepareDensityRefs(measureIR, ctx, 'logdensityof'),
+    prepareDensityRefs(densIR, ctx, 'logdensityof'),
     innerJointP,
   ]).then(([prep, innerJoint]: [any, any]) => {
     const { refArrays, fixedEnv } = prep;
@@ -260,11 +297,12 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
       d.obsIR, ctx.bindings, ctx.fixedValues);
     return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
       type: 'logDensityN',
-      ir: measureIR,
+      ir: densIR,
       count: ctx.sampleCount,
       refArrays: refArrays,
       observed: observed,
       tally: 'clamped',
+      ...(mcForm ? mcDensityOpts(ctx) : {}),
     })).then((reply: any) => {
       if (!isChain) {
         return scalarMeasureN(reply.samples, {
