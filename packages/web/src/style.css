@@ -389,7 +389,6 @@ html, body {
 .tok-string         { color: #ce9178; }
 .tok-number         { color: #b5cea8; }
 .tok-op             { color: #d4d4d4; }
-.tok-punct          { color: #d4d4d4; }
 .tok-placeholder    { color: #9cdcfe; }
 .tok-hole           { color: #9cdcfe; }
 .tok-ident          { color: #9cdcfe; }

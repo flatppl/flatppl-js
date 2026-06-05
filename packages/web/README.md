@@ -51,6 +51,24 @@ are not present in deployed builds.
 Demo content is composed of `web/demo` and
 [flatppl-examples](https://github.com/flatppl/flatppl-examples)
 
+## Syntax highlighting (flatppl-grammars)
+
+The editor's lexical highlighting comes from the canonical TextMate
+grammar in [flatppl-grammars](https://github.com/flatppl/flatppl-grammars)
+(its `textmate/flatppl.tmLanguage.json` plus the optional CodeMirror
+module `codemirror/textmate-highlight.ts`), vendored at build time. The
+build resolves the grammar source in this order:
+
+1. `GRAMMARS_DIR` env var (CI checks out flatppl-grammars and points this
+   at it for deterministic, offline builds);
+2. a sibling `../flatppl-grammars` clone (the natural local-dev layout);
+3. otherwise the pinned `main` tarball is fetched from GitHub.
+
+The `flatppl.tmLanguage.json` is required; the CodeMirror module is
+optional — if absent, the build writes a no-op stub and the editor
+degrades to plain text plus the engine's binding overlay. Same
+sibling-first / tarball-fallback pattern as the flatppl-examples sync.
+
 ## License
 
 [MIT](LICENSE)
