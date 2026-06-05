@@ -32,47 +32,6 @@
 'use strict';
 
 (function (globalScope: any) {
-  // Surface keywords / operator-spelled names that the engine
-  // tokenizer emits as IDENT but the highlighter wants to colour
-  // distinctly (spec §05): `in` is the membership comparison
-  // operator; `true`/`false` are boolean literals.
-  const KEYWORD_NAMES = new Set([
-    'in', 'true', 'false',
-  ]);
-
-  function classifyIdentifier(name: any, bindings: any, B: any) {
-    if (KEYWORD_NAMES.has(name))        return 'tok-keyword';
-    if (bindings && bindings.has(name)) return 'tok-ident-binding';
-    if (B.isSpecialOperation(name))     return 'tok-special';
-    if (B.MEASURE_OPS.has(name))        return 'tok-mop';
-    if (B.DISTRIBUTIONS.has(name))      return 'tok-dist';
-    if (B.SET_CONSTRUCTORS.has(name))   return 'tok-set';
-    if (B.isSet(name))                  return 'tok-set';
-    if (B.BUILTIN_FUNCTIONS.has(name))  return 'tok-func';
-    if (B.isConstant(name))             return 'tok-const';
-    if (B.isReserved(name))             return 'tok-reserved';
-    if (B.SPECIAL_BINDINGS.has(name))   return 'tok-reserved';
-    return 'tok-ident';
-  }
-
-  const OP_TOKEN_TYPES = new Set([
-    'EQUALS', 'EQEQ', 'NEQ',
-    'LT', 'GT', 'LTE', 'GTE',
-    'PLUS', 'MINUS', 'STAR', 'SLASH',
-    'TILDE', 'CARET', 'AMPAMP', 'PIPEPIPE', 'BANG',
-  ]);
-
-  function classifyToken(tok: any) {
-    const t = tok.type;
-    if (t === 'COMMENT')     return 'tok-comment';
-    if (t === 'STRING')      return 'tok-string';
-    if (t === 'NUMBER')      return 'tok-number';
-    if (t === 'PLACEHOLDER') return 'tok-placeholder';
-    if (t === 'HOLE')        return 'tok-hole';
-    if (OP_TOKEN_TYPES.has(t)) return 'tok-op';
-    return 'tok-punct';
-  }
-
   function computeLineStarts(src: any) {
     const starts = [0];
     for (let i = 0; i < src.length; i++) {
@@ -86,62 +45,52 @@
     return (typeof ls === 'number' ? ls : 0) + loc.col;
   }
 
-  function escapeHtml(s: any) {
-    return String(s).replace(/[&<>"']/g, function (ch: any) {
-      if (ch === '&') return '&amp;';
-      if (ch === '<') return '&lt;';
-      if (ch === '>') return '&gt;';
-      if (ch === '"') return '&quot;';
-      return '&#39;';
-    });
-  }
+  /** Build the FlatPPL highlight ViewPlugin. Base lexical highlight comes from
+      the canonical TextMate grammar (window.FlatPPLTextmate, loaded eagerly via
+      the <script> tag in index.html; its grammar parse is async and repaints
+      when ready). This plugin adds ONLY the engine-derived semantic overlay:
+      identifiers that resolve to a defined binding get `tok-ident-binding` + a
+      `data-binding` attribute (the gallery's Ctrl-click navigation).
 
-  /** Build the FlatPPL highlight ViewPlugin. Closure over the
-      bundle so this module doesn't import CodeMirror directly
-      (which would force the gallery to depend on it even in
-      non-CodeMirror deploys — a hypothetical we no longer
-      support, but the indirection costs nothing). */
+      Base + overlay are two separate mark decorations over the same range, so
+      CodeMirror renders them as NESTED spans (not one element with two classes).
+      The inner span wraps the text node directly, so its colour wins by the CSS
+      cascade — and in CM6 the HIGHER-precedence decoration is the inner span.
+      So for `.tok-ident-binding` to win over the TextMate base mark, this plugin
+      must outrank FlatPPLTextmate's; the caller wraps it in `bundle.Prec.high(...)`
+      to guarantee that regardless of extension-list order. (Verified in-browser:
+      without the Prec bump the base scope, e.g. `tok-reserved`, nests inside and
+      the binding colour is lost. Not "CSS source order" — decoration precedence
+      drives the span nesting.) */
   function makeHighlightPlugin(bundle: any) {
     const ViewPlugin = bundle.ViewPlugin;
     const Decoration = bundle.Decoration;
     const FE = globalScope.FlatPPLEngine;
-    const B = FE && FE.builtins;
 
-    function buildDecorations(view: any) {
+    function bindingOverlay(view: any) {
+      const B = FE && FE.builtins;
       if (!FE || !B) return Decoration.none;
       const text = view.state.doc.toString();
       let bindings: Set<unknown> | null = null;
       try {
         const processed = FE.processSource(text);
-        if (processed && processed.bindings) {
-          bindings = new Set(processed.bindings.keys());
-        }
+        if (processed && processed.bindings) bindings = new Set(processed.bindings.keys());
       } catch (_) { bindings = null; }
+      if (!bindings) return Decoration.none;
 
       const tokens = FE.tokenize(text).tokens || [];
       const lineStarts = computeLineStarts(text);
       const ranges: any[] = [];
       for (let i = 0; i < tokens.length; i++) {
         const tok = tokens[i];
-        if (tok.type === 'EOF' || tok.type === 'NEWLINE') continue;
+        if (tok.type !== 'IDENT' || !bindings.has(tok.value)) continue;
         const from = offsetOf(tok.loc.start, lineStarts);
         const to   = offsetOf(tok.loc.end,   lineStarts);
         if (to <= from) continue;
-
-        var cls;
-        let attrs: { 'data-binding': any } | null = null;
-        if (tok.type === 'IDENT') {
-          cls = classifyIdentifier(tok.value, bindings, B);
-          if (bindings && bindings.has(tok.value)) {
-            attrs = { 'data-binding': tok.value };
-          }
-        } else {
-          cls = classifyToken(tok);
-        }
         ranges.push(
           Decoration.mark({
-            class: cls,
-            attributes: attrs || undefined,
+            class: 'tok-ident-binding',
+            attributes: { 'data-binding': tok.value },
           }).range(from, to)
         );
       }
@@ -150,10 +99,10 @@
 
     return ViewPlugin.fromClass(
       function (this: any, view: any) {
-        this.decorations = buildDecorations(view);
+        this.decorations = bindingOverlay(view);
         this.update = function (this: any, u: any) {
           if (u.docChanged || u.viewportChanged) {
-            this.decorations = buildDecorations(u.view);
+            this.decorations = bindingOverlay(u.view);
           }
         };
       },
@@ -444,6 +393,16 @@
       { decorations: function (v: any) { return v.decorations; } }
     );
 
+    // TextMate base highlighter, when its bundle loaded. init() kicks off the
+    // async grammar/WASM load (fire-and-forget; the plugin repaints on ready).
+    // Must precede the binding overlay below — see makeHighlightPlugin's doc on
+    // span-nesting precedence.
+    let textmateExt: any[] = [];
+    if (globalScope.FlatPPLTextmate) {
+      globalScope.FlatPPLTextmate.init();
+      textmateExt = [globalScope.FlatPPLTextmate.makeHighlightPlugin(bundle)];
+    }
+
     const extensions: any[] = [
       bundle.lineNumbers(),
       bundle.highlightActiveLine(),
@@ -468,7 +427,11 @@
           bundle.searchKeymap || []
         )
       ),
-      makeHighlightPlugin(bundle),
+      ...textmateExt,
+      // Prec.high so the binding overlay nests INSIDE the TextMate base mark
+      // (higher precedence => inner span => its colour wins). See
+      // makeHighlightPlugin's doc comment.
+      bundle.Prec.high(makeHighlightPlugin(bundle)),
       makeHoverTooltip(bundle),
       flashPlugin,
       makeTheme(bundle),
