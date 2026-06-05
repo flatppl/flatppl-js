@@ -63,6 +63,29 @@ test('buildMcMarginalForm: auto-derives the canonical iid(mcmarginal) density fo
   assert.ok(node.inverseIR && node.ladjIR, 'inverse + LADJ present');
 });
 
+test('mcmarginal node: externalRefs + collectSelfRefs treat the recipe opaquely', () => {
+  // Main-thread ref-collection (prepareDensityRefs) must see the refs the
+  // worker resolves from its env (frozen / per-atom θ) but NOT the
+  // internally-supplied retained / marginal / output draws — else it would
+  // try to materialise `x` (a draw) as a measure.
+  const { collectSelfRefs } = require(ENG + 'orchestrator.ts');
+  const form = buildForm();
+  const node = form.args[0];
+  assert.ok(Array.isArray(node.externalRefs), 'node carries externalRefs');
+  assert.ok(node.externalRefs.includes('pars'), 'pars (θ) is external');
+  assert.ok(node.externalRefs.includes('sigma'), 'sigma is external');
+  assert.ok(!node.externalRefs.includes(node.retainedRef), 'retained draw is NOT external');
+  assert.ok(!node.externalRefs.includes(node.marginalRef), 'marginal latent x is NOT external');
+  // collectSelfRefs over the whole iid(mcmarginal,n) form surfaces the
+  // externals + the iid count, and descends into NONE of the recipe internals.
+  const refs = collectSelfRefs(form);
+  assert.ok(refs.has('pars') && refs.has('sigma'), 'collectSelfRefs surfaces externalRefs');
+  assert.ok(refs.has('n'), 'collectSelfRefs collects the iid count');
+  assert.ok(!refs.has('x'), 'collectSelfRefs does NOT collect the internally-supplied latent x');
+  assert.ok(!refs.has(node.retainedRef), 'collectSelfRefs does NOT collect the retained draw');
+  assert.ok(!refs.has('__mc_z__'), 'collectSelfRefs does NOT collect the output placeholder');
+});
+
 test('logdensityof path: per-event log p(z=d|θ) matches a forward-sim oracle', () => {
   const node = buildForm().args[0];          // score one event directly
   const w = createWorkerHandler();
@@ -76,6 +99,55 @@ test('logdensityof path: per-event log p(z=d|θ) matches a forward-sim oracle', 
     assert.ok(Math.abs(est - ora) < 0.1,
       `d=${d}: est=${est.toFixed(4)} vs oracle=${ora.toFixed(4)} (Δ=${(est - ora).toFixed(4)})`);
   }
+});
+
+test('matLogdensityof: routes a generative-composite measure through the MC form end-to-end', () => {
+  // Drive the REAL main-thread density handler (expandMeasure → mcDensityForm
+  // → prepareDensityRefs → logDensityN → walkMcMarginal → scalarMeasureN),
+  // with θ supplied as fixed values (the likelihood-profile case). getMeasure
+  // must NEVER be called — every external ref (pars/sigma/n) resolves as
+  // fixed, proving the externalRefs/collectSelfRefs opacity holds through
+  // prepareDensityRefs (the internally-supplied x/retained draw never leak).
+  const { matLogdensityof } = require(ENG + 'mat-density.ts');
+  const src = fs.readFileSync(MODEL, 'utf8');
+  const { bindings } = processSource(src);
+  const built = orchestrator.buildDerivations(bindings);
+  const data = [3.81359, 2.91195, 3.20085, 3.09185, 3.34005, 4.96067, 0.842412,
+    2.34128, 3.06224, 2.59162, 2.5017, 5.39892, 1.19806, 1.60855, 1.44647,
+    0.771489, 0.26153, 1.56184, 0.561171, 4.4823];
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 4242 });
+  const ctxFor = (mu: number) => {
+    const fixedValues = new Map(built.fixedValues || []);
+    fixedValues.set('pars', { a: 0.1, b: 0.3, mu });
+    fixedValues.set('sigma', 0.2);
+    fixedValues.set('n', data.length);
+    return {
+      derivations: built.derivations, bindings: built.bindings, fixedValues,
+      sampleCount: 1, rootKey: 4242, marginalizationCount: 5000,
+      getMeasure: (name: string) => Promise.reject(new Error('getMeasure leaked for ' + name)),
+      sendWorker: (m: any) => {
+        const r = worker.handle(m);
+        return r && r.type === 'error' ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+      },
+    };
+  };
+  const d = { kind: 'logdensityof', measureName: 'zs',
+    obsIR: { kind: 'ref', ns: 'self', name: 'data' } };
+  // Score SEQUENTIALLY: matLogdensityof mutates the shared worker session
+  // env (pushFixedEnv) per call, so a profile is sweep-point-serial — the
+  // same constraint the viewer honours (one logDensityN at a time).
+  const mus = [0.8, 1.0, 1.2];
+  return mus.reduce((p: Promise<number[]>, mu) => p.then((acc) =>
+    matLogdensityof(d as any, ctxFor(mu)).then((m: any) => { acc.push(m.samples[0]); return acc; })),
+    Promise.resolve([] as number[]))
+    .then((curve: number[]) => {
+      process.stderr.write('  matLogdensityof profile: '
+        + mus.map((m, i) => `mu=${m}:${curve[i].toFixed(1)}`).join('  ') + '\n');
+      assert.ok(curve.every(Number.isFinite), 'all three log-L finite');
+      assert.ok(curve[1] > curve[0] && curve[1] > curve[2],
+        `matLogdensityof profile not peaked at mu=1.0: ${curve.map((c) => c.toFixed(1))}`);
+    });
 });
 
 test('logdensityof path: likelihood profile over pars.mu peaks at the generating parameter', () => {
