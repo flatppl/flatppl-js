@@ -27,6 +27,12 @@ const valueLib = require('./value.ts');
 // Math special functions for gamma / loggamma / erf-based math.
 const stdlibGamma       = require('@stdlib/math-base-special-gamma');
 const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
+// @stdlib's own `ln` (not native Math.log). The scalar Exponential path
+// goes through @stdlib/random-base-exponential, whose transform is
+// `-ln(1 - u) / lambda` using THIS ln; the batched randNExponential must
+// use the same primitive to stay bit-exact (the two ln impls differ in
+// the last ULP on ~1.6% of inputs).
+const stdlibLn          = require('@stdlib/math-base-special-ln');
 const stdlibErfc        = require('@stdlib/math-base-special-erfc');
 const stdlibErfcinv     = require('@stdlib/math-base-special-erfcinv');
 const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
@@ -811,14 +817,17 @@ function randNNormal(state: any, params: any, n: number, out?: Float64Array) {
 function randNExponential(state: any, params: any, n: number, out?: Float64Array) {
   // params = [rate (= lambda)]; scalar (static) or Float64Array(n) (per-i).
   // Transform per stdlib: x = -ln(1 - u) / lambda. One uniform per draw.
-  // Bit-exact equivalent to scalar randExponential under the same
-  // Philox state, because philoxNUniform is bit-exact equivalent to
-  // n scalar nextUniform calls (and per-i changes only the divisor, not
-  // the uniform stream or its order).
+  // Bit-exact equivalent to scalar randExponential under the same Philox
+  // state because (a) philoxNUniform is bit-exact equivalent to n scalar
+  // nextUniform calls (uniform stream + order identical), (b) per-i
+  // changes only the divisor, and (c) we use @stdlib's `ln` here — the
+  // SAME primitive scalar randExponential uses — not native Math.log.
+  // Math.log differs from @stdlib ln in the last ULP on ~1.6% of inputs,
+  // which broke the bit-exact gate before this used stdlibLn.
   const lambda = params[0];
   const dest = out ?? new Float64Array(n);
   const r = rng.philoxNUniform(state, n, dest);
-  for (let i = 0; i < n; i++) r.out[i] = -Math.log(1 - r.out[i]) / _p(lambda, i);
+  for (let i = 0; i < n; i++) r.out[i] = -stdlibLn(1 - r.out[i]) / _p(lambda, i);
   return r;
 }
 
