@@ -65,7 +65,12 @@ const lower = require('./lower.ts');
  *                                 was lowered from. Optional only for
  *                                 unit tests; production code always sets it.
  */
-function loweredModule(opts?: any) {
+function loweredModule(opts?: any): {
+  bindings: Map<string, any>;
+  publicSet: Set<string>;
+  source: any;
+  moduleRegistry?: Record<string, any>;
+} {
   opts = opts || {};
   return {
     bindings: new Map(),       // name → LoweredBinding (insertion-ordered)

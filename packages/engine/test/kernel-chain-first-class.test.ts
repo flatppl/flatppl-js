@@ -405,13 +405,13 @@ y ~ chain(theta = 0.5)
     assert.equal(components.length, 2, 'two retained variates from K0 and K1');
     // K0 samples ~ Normal(0.5, 1.0). The empirical mean should be
     // near 0.5 with a tolerance for 256 atoms.
-    const k0 = components[0];
+    const k0 = components[0] as { samples: ArrayLike<number> };
     assert.ok(k0.samples && k0.samples.length === 256);
     const mean0 = Array.from(k0.samples).reduce((a: number, b: number) => a + b, 0) / k0.samples.length;
     assert.ok(Math.abs(mean0 - 0.5) < 0.25,
       'K0 sample mean ≈ 0.5 (got ' + mean0 + ')');
     // K1 samples ~ Normal(K0_sample, 0.5). Expected mean ≈ E[K0] ≈ 0.5.
-    const k1 = components[1];
+    const k1 = components[1] as { samples: ArrayLike<number> };
     const mean1 = Array.from(k1.samples).reduce((a: number, b: number) => a + b, 0) / k1.samples.length;
     assert.ok(Math.abs(mean1 - 0.5) < 0.3,
       'K1 sample mean ≈ 0.5 (got ' + mean1 + ')');
