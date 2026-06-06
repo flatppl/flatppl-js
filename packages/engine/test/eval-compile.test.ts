@@ -26,3 +26,54 @@ test('_COMPILE_ARITY: has the scalar op set, excludes structural ops', () => {
   assert.equal(C._COMPILE_ARITY.get_field, undefined);
   assert.equal(C._COMPILE_ARITY.aggregate, undefined);
 });
+
+// --- compiler core: a Normal-like inverse expression ---
+// Mirror the dependency injection sampler-eval-batched does at init.
+const ARITH = {
+  add: (a, b) => a + b, sub: (a, b) => a - b, mul: (a, b) => a * b,
+  div: (a, b) => a / b, divide: (a, b) => a / b, neg: (a) => -a,
+  pow: (a, b) => Math.pow(a, b), exp: (a) => Math.exp(a), log: (a) => Math.log(a),
+};
+C.initCompiler({ ARITH_OPS: ARITH, evaluateExpr: require('../sampler.ts').evaluateExpr,
+                 resolveConst: (n) => { throw new Error('no const ' + n); } });
+
+test('compilePlan + runPlan: bit-exact to hand arithmetic over a batch', () => {
+  // u = ((cbrt(z*2 / exp(x - b)) - x)/a - 1)/2, with a,b folded scalars.
+  // Build it from refs x,z (per-atom) and folded a=0.1,b=0.3.
+  const irB = lit(0.3), irA = lit(0.1);
+  const ir = call('divide',
+    call('sub',
+      call('divide',
+        call('sub',
+          call('pow', call('divide', call('mul', ref('z'), lit(2)),
+                            call('exp', call('sub', ref('x'), irB))),
+               lit(1 / 3)),
+          ref('x')),
+        irA),
+      lit(1)),
+    lit(2));
+  const perAtom = new Set(['x', 'z']);
+  const plan = C.compilePlan(ir, perAtom);
+  assert.ok(plan, 'expression must be compilable');
+  const N = 1000;
+  const x = new Float64Array(N), z = new Float64Array(N);
+  for (let i = 0; i < N; i++) { x[i] = 0.5 + i * 1e-3; z[i] = 1 + i * 2e-3; }
+  const refArrays = { x, z };
+  const out = C.runPlan(plan, refArrays, {}, null, N);
+  assert.equal(out.length, N);
+  for (let i = 0; i < N; i++) {
+    const inner = (z[i] * 2) / Math.exp(x[i] - 0.3);
+    const expected = ((Math.pow(inner, 1 / 3) - x[i]) / 0.1 - 1) / 2;
+    assert.equal(out[i], expected, `atom ${i}: ${out[i]} vs ${expected}`);
+  }
+});
+
+test('compilePlan: returns null for a non-compilable op (get_field with per-atom ref)', () => {
+  const ir = call('get_field', ref('x'), lit('a'));   // structural over per-atom x
+  assert.equal(C.compilePlan(ir, new Set(['x'])), null);
+});
+
+test('compilePlan: returns null for unknown op over per-atom data', () => {
+  const ir = call('mystery_op', ref('x'));
+  assert.equal(C.compilePlan(ir, new Set(['x'])), null);
+});
