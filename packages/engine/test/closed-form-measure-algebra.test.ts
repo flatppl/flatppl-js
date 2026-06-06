@@ -669,29 +669,24 @@ lpm = logdensityof(m, 0.4)
 
 test('normalized mixture: integrates to 1 (trapezoid over a wide grid)', async () => {
   // ∫ p_mix(x) dx ≈ 1 for a proper normalized mixture. Evaluate the
-  // closed-form density on a fine grid and trapezoid-integrate.
+  // closed-form density on a grid in ONE binding via vectorized
+  // broadcast(fn(logdensityof(mix, _)), grid) — bit-identical to a
+  // per-point loop (same logpdf catalogue), but one materialise instead
+  // of thousands. Then trapezoid-integrate in JS.
+  const lo = -12, hi = 15, n = 1500, h = (hi - lo) / n;
   const ctx = makeCtx(`
 A = Normal(mu = -2.0, sigma = 0.8)
 B = Normal(mu =  3.0, sigma = 1.3)
 mix = normalize(superpose(weighted(0.4, A), weighted(0.6, B)))
+grid = linspace(${lo.toFixed(1)}, ${hi.toFixed(1)}, ${n + 1})
+logd = broadcast(fn(logdensityof(mix, _)), grid)
 `);
-  // logdensityof at each grid point (one binding per point keeps the
-  // harness simple; closed-form ⇒ exact, no sampling).
-  const lo = -12, hi = 15, n = 6000, h = (hi - lo) / n;
-  let src = `
-A = Normal(mu = -2.0, sigma = 0.8)
-B = Normal(mu =  3.0, sigma = 1.3)
-mix = normalize(superpose(weighted(0.4, A), weighted(0.6, B)))
-`;
-  for (let i = 0; i <= n; i++) {
-    src += `p${i} = logdensityof(mix, ${(lo + i * h).toFixed(6)})\n`;
-  }
-  const c2 = makeCtx(src);
+  const lp = (await ctx.getMeasure('logd')).samples;
+  assert.equal(lp.length, n + 1, `expected ${n + 1} grid densities`);
   let integral = 0;
   for (let i = 0; i <= n; i++) {
-    const lp = (await c2.getMeasure('p' + i)).samples[0];
     const w = (i === 0 || i === n) ? 0.5 : 1.0;
-    integral += w * Math.exp(lp);
+    integral += w * Math.exp(lp[i]);
   }
   integral *= h;
   assert.ok(Math.abs(integral - 1.0) < 2e-3,
