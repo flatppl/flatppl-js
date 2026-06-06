@@ -10,6 +10,12 @@ import type { Ctx, Plan } from './types';
 import { collectRefArrays } from './engine-facade.js';
 import { sendWorker } from './worker.js';
 import { resolveMeasureAlias } from './util.js';
+// esbuild rewrites this CommonJS require at bundle time; declare it for
+// the type-only tsc pass (the viewer tsconfig omits node types on
+// purpose — this is browser code). The require here is a pre-existing
+// lazy-load of engine-facade; not refactored as part of the typecheck
+// cleanup.
+declare function require(id: string): any;
 export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan | null {
   if (!binding || !ctx.derivationsState) return null;
   const name = binding.name;

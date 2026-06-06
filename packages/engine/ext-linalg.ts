@@ -204,7 +204,7 @@ function _matexp(A: any): any {
   // Solve (V - U) · R = (V + U) column-wise via _linsolveLU.
   const { LU, piv, sign } = sLinalg._luDecompValue(VminusU, n);
   if (sign === 0) throw new Error('matexp: scaling-and-squaring solve was singular');
-  let R = new Float64Array(n * n);
+  let R: Float64Array = new Float64Array(n * n);
   const col = new Float64Array(n);
   for (let c = 0; c < n; c++) {
     for (let i = 0; i < n; i++) col[i] = VplusU[i * n + c];

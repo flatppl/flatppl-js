@@ -215,7 +215,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   const rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
   Promise.all([
     rangePromise,
-    Promise.all(selfRefs.map(function(n) { return tryGetMeasure(ctx, n); })),
+    Promise.all(selfRefs.map(function(n: any) { return tryGetMeasure(ctx, n); })),
     Promise.all(nonSweptBindingSources.map(function(s) {
       return tryGetMeasure(ctx, s.sourceName);
     })),
