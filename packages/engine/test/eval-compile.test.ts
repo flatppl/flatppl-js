@@ -120,3 +120,46 @@ test('evaluateExprN: ineligible IR (get_field) falls back, still correct', () =>
   else for (let i = 0; i < N; i++) assert.equal(on[i], off[i]);
   batched._setCompileEvalN(true);
 });
+
+const fc = require('fast-check');
+// fc.xorshift128plus does not exist in fast-check 4.x; the RNG lives in
+// the peer package pure-rand. Require it via its sub-path export so we
+// can pass a seeded RandomGenerator to new fc.Random(rng).
+const { xorshift128plus: _prandXor } = require('pure-rand/generator/xorshift128plus');
+
+// Build a random IR over the ops the compiler emits. Leaves are a
+// per-atom ref ('x'/'y') or a numeric literal. Depth-bounded.
+function randIR(rng, depth) {
+  const UN = ['neg', 'abs', 'exp', 'log', 'sqrt', 'sin', 'cos', 'tanh', 'log1p', 'expm1'];
+  const BIN = ['add', 'sub', 'mul', 'div', 'pow', 'min', 'max', 'atan2'];
+  if (depth <= 0 || rng.nextInt(0, 2) === 0) {
+    // Only per-atom leaves so every generated IR is eligible (has a
+    // per-atom ref) — atom-independent IRs are a separate correctness
+    // concern the earlier unit tests already cover.
+    return rng.nextInt(0, 1) === 0 ? ref('x') : ref('y');
+  }
+  if (rng.nextInt(0, 1) === 0) {
+    return call(UN[rng.nextInt(0, UN.length - 1)], randIR(rng, depth - 1));
+  }
+  return call(BIN[rng.nextInt(0, BIN.length - 1)], randIR(rng, depth - 1), randIR(rng, depth - 1));
+}
+
+test('fuzz: compiled === interpreted bit-for-bit over random eligible IRs', () => {
+  fc.assert(fc.property(fc.integer({ min: 1, max: 2 ** 31 - 1 }), (seed) => {
+    const rng = new fc.Random(_prandXor(seed, 0));
+    const ir = call('add', randIR(rng, 4), lit(0));   // ensure a call root
+    const N = 257;
+    const x = new Float64Array(N), y = new Float64Array(N);
+    for (let i = 0; i < N; i++) { x[i] = (i - 128) * 0.05; y[i] = 0.2 + (i % 13) * 0.07; }
+    batched._setCompileEvalN(false);
+    const off = sampler.evaluateExprN(ir, { x, y }, N, {}, undefined);
+    batched._setCompileEvalN(true);
+    const on = sampler.evaluateExprN(ir, { x, y }, N, {}, undefined);
+    // Both must be Float64Array(N) and bit-identical (NaN===NaN handled
+    // via Object.is so a NaN-producing op like sqrt(neg) still matches).
+    if (!(off && off.length === N && on && on.length === N)) return false;
+    for (let i = 0; i < N; i++) if (!Object.is(on[i], off[i])) return false;
+    return true;
+  }), { numRuns: 300 });
+  batched._setCompileEvalN(true);
+});

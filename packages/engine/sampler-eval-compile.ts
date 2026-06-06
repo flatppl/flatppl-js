@@ -120,6 +120,13 @@ function _numLit(v: number): string {
 
 // Build a Plan from an IR, or null if not compilable.
 function compilePlan(ir: any, perAtomNames: Set<string>): Plan | null {
+  // Only compile expressions that actually depend on per-atom data.
+  // A fully atom-independent root would fold to a single constant and
+  // return Float64Array(N), but the interpreter returns a scalar there
+  // (broadcastN short-circuit) — bail so the interpreter owns that case
+  // and the contract (and bit-exact type) is preserved.
+  if (!_hasPerAtomRef(ir, perAtomNames)) return null;
+
   const atomRefs: string[] = [];
   const atomIdx = new Map<string, number>();
   const foldIRs: any[] = [];
