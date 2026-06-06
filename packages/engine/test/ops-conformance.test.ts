@@ -813,3 +813,21 @@ test('ops dispatch: arg rank incompatible with logical rank surfaces clear error
   assert.throws(() => ops.dispatch('cross', [bad, vec3Value([1, 0, 0])]),
     /incompatible with logical rank/);
 });
+
+test('ops dispatchHigherOrder: higher-order op without a logical impl surfaces clear error', () => {
+  // A higher-order op may be registered with only `variants` (no
+  // `logical`) — register() permits that. dispatchHigherOrder has no
+  // variant path, so it must reject the missing logical with a clear
+  // error rather than throwing an opaque "not a function". Give the
+  // decl a dummy variant so registration passes; dispatch never
+  // consults it (it throws on the absent logical first).
+  const name = '__test_higherorder_no_logical';
+  ops.register({
+    name,
+    kind: 'higher-order',
+    variants: [{ pattern: [], impl: () => null }],
+  });
+  assert.throws(
+    () => ops.dispatchHigherOrder(name, _callIR(name, []), _testCtx({})),
+    /has no logical impl/);
+});

@@ -1134,11 +1134,13 @@ function _vectorLogical(...xs: any[]): any {
     } else {
       return xs;
     }
-    if (s === null) return xs;
+    // s is provably non-null here: every branch above either assigned
+    // it a number[] or returned. tsc can't carry that narrowing past
+    // the chain, so assert it (type-only, no runtime line).
     if (innerShape === null) { innerShape = s; stackOuterRank = nestedTag; }
     else {
-      if (s.length !== innerShape.length) return xs;
-      for (let a = 0; a < s.length; a++) if (s[a] !== innerShape[a]) return xs;
+      if (s!.length !== innerShape.length) return xs;
+      for (let a = 0; a < s!.length; a++) if (s![a] !== innerShape[a]) return xs;
       // Ragged stacking across args ⇒ fall back to JS-array form.
       if (nestedTag !== stackOuterRank) return xs;
     }
