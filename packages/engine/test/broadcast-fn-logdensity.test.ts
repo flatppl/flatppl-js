@@ -87,3 +87,34 @@ test('dot-sugar fn(logdensityof(M,_)).(grid): bit-exact to scalar loop', async (
       `point ${PTS[i]}: dot=${m.samples[i]} scalar=${ref[i]}`);
   }
 });
+
+// --- Regression: shapes that must NOT be captured by the new classifier ---
+
+test('regression: value-fn broadcast still maps elementwise', async () => {
+  // broadcast(fn(2*_ + 1), A) is a pure-arithmetic value function — body
+  // op is `add`/`mul`, not logdensityof, so the new classifier returns
+  // null and the existing value-fn path handles it.
+  const ctx = mk(`A = [1.0, 2.0, 3.0]\ngv = broadcast(fn(2 * _ + 1), A)`);
+  const m = await ctx.getMeasure('gv');
+  assert.deepEqual(Array.from(m.samples), [3.0, 5.0, 7.0]);
+});
+
+test('regression: kernel broadcast (Normal over params) still samples', async () => {
+  // broadcast(Normal, mus, sigmas) is a kernel broadcast — head is a
+  // bare distribution ref, not a functionof, so the new classifier
+  // returns null. Must still produce a materialisable measure.
+  const ctx = mk(`
+mus = [-5.0, 0.0, 5.0]
+sigmas = [0.1, 0.1, 0.1]
+gv = broadcast(Normal, mus, sigmas)
+`);
+  const m = await ctx.getMeasure('gv');
+  assert.ok(m && (m.samples || m.fields || m.dims), 'kernel broadcast must materialise');
+});
+
+test('regression: bare 3-arg broadcast(logdensityof, M, pts) unchanged', async () => {
+  const ctx = mk(MODEL + `grid = [${PTS.join(', ')}]\ngv = broadcast(logdensityof, mix, grid)`);
+  const m = await ctx.getMeasure('gv');
+  const ref = await scalarRef();
+  for (let i = 0; i < PTS.length; i++) assert.equal(m.samples[i], ref[i]);
+});
