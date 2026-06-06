@@ -1134,6 +1134,7 @@ function _vectorLogical(...xs: any[]): any {
     } else {
       return xs;
     }
+    if (s === null) return xs;
     if (innerShape === null) { innerShape = s; stackOuterRank = nestedTag; }
     else {
       if (s.length !== innerShape.length) return xs;
