@@ -581,6 +581,9 @@ let _COMPILE_EVALN = !(typeof process !== 'undefined' && process.env
   && process.env.FLATPPL_NO_EVALN_COMPILE === '1');
 function _setCompileEvalN(on: boolean) { _COMPILE_EVALN = !!on; }
 
+// Fast path lives in sampler-eval-compile.ts (fused-loop codegen).
+// It is a pure accelerator: bit-identical to _evalN below, which
+// remains the source of truth and the fallback for ineligible IR.
 function evaluateExprN(ir: any, refArrays: any, count: any, baseEnv: any, opts: any) {
   const N = count | 0;
   if (N <= 0) throw new Error('evaluateExprN: count must be positive');
