@@ -48,6 +48,19 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
+      - name: Typecheck
+        # tsc across every workspace with a typecheck script
+        # (--workspaces --if-present). Catches type errors the esbuild
+        # bundle step below would miss — esbuild strips types without
+        # checking them.
+        #
+        # NON-BLOCKING for now: engine + viewer carry ~40 pre-existing
+        # type errors. continue-on-error surfaces the signal (the step
+        # shows red in the run) without failing the job. Drop this
+        # once those packages typecheck clean.
+        continue-on-error: true
+        run: npm run typecheck
+
       - name: Run engine tests with coverage
         # npm run test:coverage at the root delegates to every
         # workspace's `test:coverage` script via --workspaces
@@ -67,6 +80,11 @@ jobs:
         uses: codecov/codecov-action@v6
         with:
           files: packages/engine/coverage/lcov.info
+          # Upload only the file named above. Without this the action
+          # also auto-searches the tree and sweeps up c8's per-process
+          # v8 coverage fragments (~171 stray reports), defeating the
+          # explicit `files:` narrowing.
+          disable_search: true
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
