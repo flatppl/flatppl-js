@@ -1254,6 +1254,44 @@ function classifyBroadcastLogdensity(rhsIR: IRNode, ast: any, bindings: any): De
   return { kind: 'broadcast_logdensity', measureName: mIR.name, pointsIR: pIR };
 }
 
+// broadcast(fn(logdensityof(M, _)), pts) — the idiomatic broadcasting
+// surface (and its dot-sugar fn(logdensityof(M,_)).(pts)) for grid
+// density evaluation. Lowers to a 2-arg broadcast whose head is an
+// inline functionof of one parameter whose body is EXACTLY
+// logdensityof(<self-measure>, <that param>). Recognise that precise
+// shape and emit the SAME broadcast_logdensity derivation the bare
+// 3-arg broadcast(logdensityof, M, pts) form produces, so it reuses
+// matBroadcastLogdensity verbatim. Anything richer (a transformed
+// point, a scaled/offset density, multiple params) does NOT match and
+// falls through unchanged.
+function classifyBroadcastFnLogdensity(
+  rhsIR: IRNode, ast: any, bindings: any,
+): DerivationBroadcastLogdensity | null {
+  if (rhsIR.op !== 'broadcast' || !Array.isArray(rhsIR.args)
+      || rhsIR.args.length !== 2) return null;
+  const headIR: any = rhsIR.args[0];
+  const pIR: any = rhsIR.args[1];
+  // Head: inline functionof with exactly one parameter.
+  if (!headIR || headIR.kind !== 'call' || headIR.op !== 'functionof'
+      || !Array.isArray(headIR.params) || headIR.params.length !== 1) {
+    return null;
+  }
+  const paramName = headIR.params[0];
+  const body: any = headIR.body;
+  // Body: exactly logdensityof(<measure>, <param>).
+  if (!body || body.kind !== 'call' || body.op !== 'logdensityof'
+      || !Array.isArray(body.args) || body.args.length !== 2) {
+    return null;
+  }
+  const mIR: any = body.args[0];
+  const xIR: any = body.args[1];
+  if (!isSelfRef(mIR) || !bindings.has(mIR.name)) return null;
+  // The point must be the functionof's own parameter, untouched — not
+  // a transformed expression. Match by name (ns is the local param ns).
+  if (!xIR || xIR.kind !== 'ref' || xIR.name !== paramName) return null;
+  return { kind: 'broadcast_logdensity', measureName: mIR.name, pointsIR: pIR };
+}
+
 // `broadcast` is overloaded: stochastic kernel-broadcast
 // (broadcast(Normal, mus, sigmas)) vs. broadcast(logdensityof, M,
 // pts). Try the logdensity form first; fall back to kernel-broadcast
@@ -1261,6 +1299,7 @@ function classifyBroadcastLogdensity(rhsIR: IRNode, ast: any, bindings: any): De
 // collide).
 function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationBroadcastLogdensity | DerivationKernelBroadcast | null {
   return classifyBroadcastLogdensity(rhsIR, ast, bindings)
+      || classifyBroadcastFnLogdensity(rhsIR, ast, bindings)
       || classifyKernelBroadcast(rhsIR, ast, bindings);
 }
 
