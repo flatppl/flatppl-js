@@ -206,3 +206,14 @@ test('perf: evaluateExprN compiled is faster than interpreted on the MC inverse'
   }
   batched._setCompileEvalN(true);
 });
+
+test('toggle: _setCompileEvalN(false) forces the interpreter path', () => {
+  const N = 64; const x = new Float64Array(N); for (let i = 0; i < N; i++) x[i] = i * 0.01;
+  const ir = call('exp', ref('x'));
+  batched._setCompileEvalN(false);
+  const off = sampler.evaluateExprN(ir, { x }, N, {}, undefined);
+  batched._setCompileEvalN(true);
+  const on = sampler.evaluateExprN(ir, { x }, N, {}, undefined);
+  for (let i = 0; i < N; i++) assert.equal(on[i], off[i]);
+  batched._setCompileEvalN(true);
+});

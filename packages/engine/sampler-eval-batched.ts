@@ -575,7 +575,10 @@ function initARITHOPSN(ARITH_OPS: any) {
 // (vector/matrix/record builders typically take atom-indep inputs);
 // future batched-non-scalar rewrites would eliminate the fallback.
 
-let _COMPILE_EVALN = true;   // master switch (Task 7 exposes a setter)
+// Default ON; FLATPPL_NO_EVALN_COMPILE=1 forces the interpreter (kill
+// switch for debugging a suspected codegen divergence in the field).
+let _COMPILE_EVALN = !(typeof process !== 'undefined' && process.env
+  && process.env.FLATPPL_NO_EVALN_COMPILE === '1');
 function _setCompileEvalN(on: boolean) { _COMPILE_EVALN = !!on; }
 
 function evaluateExprN(ir: any, refArrays: any, count: any, baseEnv: any, opts: any) {
