@@ -176,7 +176,11 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
       // density-side dispatch reports a clear error.
       continue;
     }
-    binding.bijection = { fName: fA.name, fInvName: fIA.name, logVolume };
+    binding.bijection = { fName: fA.name, fInvName: fIA.name, logVolume } as {
+      fName: string; fInvName: string; logVolume: any;
+      registryName?: string;
+      paramIRs?: Record<string, any>;
+    };
     // Phase 5.1 Session 5e — synthetic MvNormal-lowering marker.
     //
     // `lift.inlineMvNormalLift` rewrites `MvNormal(mu, cov)` IR to

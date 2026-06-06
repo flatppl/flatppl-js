@@ -1038,7 +1038,7 @@ function liftInlineSubexpressions(bindings: any) {
     // IR for mu and cov so the materialiser-time resolveIRToValue
     // pass evaluates them through their actual binding refs (closed
     // over the user's surface bindings, not a copy).
-    bijBinding.__mvnormalLowering = {
+    (bijBinding as any).__mvnormalLowering = {
       muIR:  lowerExpr(cloneAst(muAst),  liftLowerCtx),
       covIR: lowerExpr(cloneAst(covAst), liftLowerCtx),
     };

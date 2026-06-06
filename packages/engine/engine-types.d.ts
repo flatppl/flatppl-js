@@ -602,7 +602,8 @@ export interface BindingInfo {
   /** Phase: 'fixed' | 'parameterized' | 'stochastic'. */
   phase?: 'fixed' | 'parameterized' | 'stochastic';
   /** Bijection metadata for bijection-typed bindings. */
-  bijection?: { fName: string; fInvName: string; logVolume: any };
+  bijection?: { fName: string; fInvName: string; logVolume: any;
+                registryName?: string; paramIRs?: Record<string, any> };
   [extra: string]: any;
 }
 
@@ -625,6 +626,9 @@ export interface DerivationsState {
   /** Classifier diagnostics surfaced by buildDerivations (e.g.
    *  fixed-phase dead ends). Empty when nothing to report. */
   diagnostics?: Array<{ message: string; [extra: string]: any }>;
+  /** alias → resolved module descriptor, copied from the lowered
+   *  module by the viewer bridge. Populated by pir.lowerToModule. */
+  moduleRegistry?: Record<string, any>;
 }
 
 // ---------------------------------------------------------------------
