@@ -9,6 +9,14 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Only one VSIX build per ref. cancel-in-progress so a rapid run of
+# pushes to main doesn't leave two jobs racing to push the shared
+# `nightly` release tag (action-gh-release below) — the later commit
+# wins, the earlier is cancelled.
+concurrency:
+  group: build-vsix-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,6 +37,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
 
       - run: npm install -g @vscode/vsce
 
