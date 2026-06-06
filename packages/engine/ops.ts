@@ -1088,6 +1088,10 @@ function dispatchHigherOrder(name: string, ir: any, ctx: HigherOrderCtx): any {
     throw new Error('ops.dispatchHigherOrder: ctx must provide env, ' +
       'evaluateExpr, and resolveFn');
   }
+  if (typeof decl.logical !== 'function') {
+    throw new Error("ops.dispatchHigherOrder: op '" + name +
+      "' has no logical impl");
+  }
   return decl.logical(ir, ctx);
 }
 

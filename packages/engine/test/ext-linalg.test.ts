@@ -56,7 +56,7 @@ test('lu: 3x3 — round-trip P·A = L·U holds for arbitrary matrix', () => {
   // A = [[4, 3, 1], [2, 5, 7], [6, 8, 9]]
   const A_data = [4, 3, 1, 2, 5, 7, 6, 8, 9];
   const A = matVal(3, 3, A_data);
-  const { fields } = extLinalg._lu(A);
+  const { fields } = extLinalg._lu(A) as { fields: Record<string, { data: ArrayLike<number> }> };
   const P = Array.from(fields.P.data);
   const L = Array.from(fields.L.data);
   const U = Array.from(fields.U.data);
@@ -191,7 +191,7 @@ test('qr: 2x2 — round-trip A = Q · R', () => {
   // A = [[4, 3], [2, 1]]
   const A_data = [4, 3, 2, 1];
   const A = matVal(2, 2, A_data);
-  const { fields } = extLinalg._qr(A);
+  const { fields } = extLinalg._qr(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
   const Q = Array.from(fields.Q.data);
   const R = Array.from(fields.R.data);
   // Q · R should equal A.
@@ -207,7 +207,7 @@ test('qr: 4x2 thin QR — Q is 4x2 orthonormal, R is 2x2 upper', () => {
   // A = arbitrary 4x2 matrix
   const A_data = [1, 2, 3, 4, 5, 6, 7, 8];
   const A = matVal(4, 2, A_data);
-  const { fields } = extLinalg._qr(A);
+  const { fields } = extLinalg._qr(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
   assert.deepEqual(fields.Q.shape, [4, 2]);
   assert.deepEqual(fields.R.shape, [2, 2]);
   const Q = Array.from(fields.Q.data);
@@ -273,14 +273,14 @@ test('lstsq: rejects b length mismatch', () => {
 
 test('eigen: diagonal — eigenvalues are diag, vectors are identity (up to ordering)', () => {
   const A = matVal(3, 3, [5, 0, 0, 0, 2, 0, 0, 0, 8]);
-  const { fields } = extLinalg._eigen(A);
+  const { fields } = extLinalg._eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
   const vals = Array.from(fields.values.data).slice().sort((a: number, b: number) => a - b);
   assertClose(vals, [2, 5, 8], 1e-12);
 });
 
 test('eigen: 2x2 symmetric — known case [[2,1],[1,2]] → eigvals 1, 3', () => {
   const A = matVal(2, 2, [2, 1, 1, 2]);
-  const { fields } = extLinalg._eigen(A);
+  const { fields } = extLinalg._eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
   const vals = Array.from(fields.values.data).slice().sort((a: number, b: number) => a - b);
   assertClose(vals, [1, 3], 1e-12);
   // Vectors should diagonalise: V^T · A · V = diag(values).
@@ -297,7 +297,7 @@ test('eigen: 3x3 symmetric — round-trip A = V · diag(values) · V^T', () => {
   // A = [[4, -2, 1], [-2, 4, -2], [1, -2, 4]]
   const A_data = [4, -2, 1, -2, 4, -2, 1, -2, 4];
   const A = matVal(3, 3, A_data);
-  const { fields } = extLinalg._eigen(A);
+  const { fields } = extLinalg._eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
   const V = Array.from(fields.vectors.data);
   const values = Array.from(fields.values.data);
   // V · diag(values) · V^T
@@ -339,7 +339,7 @@ test('svd: 2x2 symmetric — round-trip A = U · diag(S) · V^T', () => {
   // A = [[2, 1], [1, 2]] — symmetric, singular values 3 and 1.
   const A_data = [2, 1, 1, 2];
   const A = matVal(2, 2, A_data);
-  const { fields } = extLinalg._svd(A);
+  const { fields } = extLinalg._svd(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
   const U = Array.from(fields.U.data);
   const V = Array.from(fields.V.data);
   const S = Array.from(fields.S.data);
@@ -356,7 +356,7 @@ test('svd: 4x2 thin — round-trip + singular values descending', () => {
   // A = arbitrary 4x2 matrix
   const A_data = [1, 2, 3, 4, 5, 6, 7, 8];
   const A = matVal(4, 2, A_data);
-  const { fields } = extLinalg._svd(A);
+  const { fields } = extLinalg._svd(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
   assert.deepEqual(fields.U.shape, [4, 2]);
   assert.deepEqual(fields.V.shape, [2, 2]);
   assert.deepEqual(fields.S.shape, [2]);

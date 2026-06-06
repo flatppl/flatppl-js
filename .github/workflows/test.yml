@@ -54,10 +54,10 @@ jobs:
         # bundle step below would miss — esbuild strips types without
         # checking them.
         #
-        # NON-BLOCKING for now: engine + viewer carry ~40 pre-existing
-        # type errors. continue-on-error surfaces the signal (the step
-        # shows red in the run) without failing the job. Drop this
-        # once those packages typecheck clean.
+        # NON-BLOCKING by choice: the tree currently typechecks clean,
+        # but the step is kept advisory (surfaces red in the run without
+        # failing the job) so a type regression doesn't block the Test
+        # workflow. Flip off continue-on-error to make it a hard gate.
         continue-on-error: true
         run: npm run typecheck
 
