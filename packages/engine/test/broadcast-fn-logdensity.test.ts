@@ -75,3 +75,15 @@ test('broadcast(fn(logdensityof(M,_)), grid): agrees with the existing 3-arg for
   assert.equal(b.samples.length, a.samples.length);
   for (let i = 0; i < a.samples.length; i++) assert.equal(b.samples[i], a.samples[i]);
 });
+
+test('dot-sugar fn(logdensityof(M,_)).(grid): bit-exact to scalar loop', async () => {
+  const ctx = mk(MODEL + `grid = [${PTS.join(', ')}]\ngv = (fn(logdensityof(mix, _))).(grid)`);
+  const m = await ctx.getMeasure('gv');
+  assert.ok(m && m.samples, 'gv must materialise to a measure with samples');
+  assert.equal(m.samples.length, PTS.length);
+  const ref = await scalarRef();
+  for (let i = 0; i < PTS.length; i++) {
+    assert.equal(m.samples[i], ref[i],
+      `point ${PTS[i]}: dot=${m.samples[i]} scalar=${ref[i]}`);
+  }
+});
