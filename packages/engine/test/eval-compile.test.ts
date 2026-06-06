@@ -77,3 +77,46 @@ test('compilePlan: returns null for unknown op over per-atom data', () => {
   const ir = call('mystery_op', ref('x'));
   assert.equal(C.compilePlan(ir, new Set(['x'])), null);
 });
+
+// --- differential: evaluateExprN with compiler ON must bit-match OFF ---
+const batched = require('../sampler-eval-batched.ts');
+const sampler = require('../sampler.ts');
+
+function evalBoth(ir, refArrays, N) {
+  batched._setCompileEvalN(false);
+  const off = sampler.evaluateExprN(ir, refArrays, N, {}, undefined);
+  batched._setCompileEvalN(true);
+  const on = sampler.evaluateExprN(ir, refArrays, N, {}, undefined);
+  return { off, on };
+}
+
+test('evaluateExprN: compiled === interpreted, bit-for-bit (real expr)', () => {
+  const N = 4096;
+  const x = new Float64Array(N), z = new Float64Array(N);
+  for (let i = 0; i < N; i++) { x[i] = Math.sin(i) * 2; z[i] = 1 + (i % 50) * 0.1; }
+  const ir = call('add',
+    call('mul', call('exp', call('sub', ref('x'), lit(0.3))), ref('z')),
+    call('log', call('add', call('abs', ref('z')), lit(1))));
+  const { off, on } = evalBoth(ir, { x, z }, N);
+  for (let i = 0; i < N; i++) assert.equal(on[i], off[i], `atom ${i}`);
+  batched._setCompileEvalN(true);
+});
+
+test('evaluateExprN: ineligible IR (get_field) falls back, still correct', () => {
+  // record with a per-atom field forces the compiler to bail; result
+  // must equal the interpreter (which handles get_field per-atom).
+  const N = 16;
+  const x = new Float64Array(N); for (let i = 0; i < N; i++) x[i] = i;
+  const ir = call('add', call('get_field', ref('rec'), lit('v')), lit(1));
+  // rec is per-atom records — interpreter path; just assert ON===OFF.
+  const recs = { rec: Array.from({ length: N }, (_, i) => ({ v: i })) };
+  // Pass records via refArrays as a plain array (back-compat path);
+  // compiler bails (get_field), interpreter computes v+1.
+  batched._setCompileEvalN(false);
+  let off; try { off = sampler.evaluateExprN(ir, recs, N, {}, undefined); } catch (e) { off = 'ERR:' + e.message; }
+  batched._setCompileEvalN(true);
+  let on; try { on = sampler.evaluateExprN(ir, recs, N, {}, undefined); } catch (e) { on = 'ERR:' + e.message; }
+  if (typeof off === 'string') assert.equal(on, off);
+  else for (let i = 0; i < N; i++) assert.equal(on[i], off[i]);
+  batched._setCompileEvalN(true);
+});

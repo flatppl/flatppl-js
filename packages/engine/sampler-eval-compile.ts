@@ -140,9 +140,13 @@ function compilePlan(ir: any, perAtomNames: Set<string>): Plan | null {
 // Float64Array or a Value with shape [N] (scalar atoms). Returns null
 // (→ caller bails) for vector atoms (shape length > 1) or anything else.
 function _atomArray(v: any, N: number): Float64Array | null {
-  if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === N) return v as Float64Array;
-  if (v && Array.isArray(v.shape) && v.data && v.data.BYTES_PER_ELEMENT !== undefined) {
-    if (v.shape.length === 1 && v.shape[0] === N) return v.data as Float64Array;
+  if (v instanceof Float64Array && v.length === N) return v;
+  if (v && Array.isArray(v.shape) && v.data instanceof Float64Array) {
+    // Bail on complex values — the compiler handles real scalar atoms only.
+    // A complex Value carries v.im (the imaginary part); passing only v.data
+    // (the real part) to the loop would give wrong results for ops like abs2.
+    if (v.dtype === 'complex' || v.im instanceof Float64Array) return null;
+    if (v.shape.length === 1 && v.shape[0] === N) return v.data;
   }
   return null;
 }

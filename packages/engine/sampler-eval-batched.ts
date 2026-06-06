@@ -25,6 +25,7 @@ const valueLib = require('./value.ts');
 const valueOps = require('./value-ops.ts');
 const opsLib = require('./ops.ts');
 const { _isComplex } = require('./sampler-complex.ts');
+const _compile = require('./sampler-eval-compile.ts');
 
 // Lazy access to sampler.ts (cycle: this module evaluates IR via the
 // single-point evaluator + reads runtime constants from sampler.ts).
@@ -548,6 +549,10 @@ function initARITHOPSN(ARITH_OPS: any) {
     const prim = (ARITH_OPS as any)[op];
     ARITH_OPS_N[op] = (args: any, N: any) => _cxBroadcast(prim, args, N);
   }
+
+  // Hand the fused-loop compiler the same scalar primitives + helpers
+  // the interpreter uses, so compiled output is bit-identical.
+  _compile.initCompiler({ ARITH_OPS, evaluateExpr, resolveConst });
 }
 
 // =====================================================================
@@ -570,11 +575,47 @@ function initARITHOPSN(ARITH_OPS: any) {
 // (vector/matrix/record builders typically take atom-indep inputs);
 // future batched-non-scalar rewrites would eliminate the fallback.
 
+let _COMPILE_EVALN = true;   // master switch (Task 7 exposes a setter)
+function _setCompileEvalN(on: boolean) { _COMPILE_EVALN = !!on; }
+
 function evaluateExprN(ir: any, refArrays: any, count: any, baseEnv: any, opts: any) {
   const N = count | 0;
   if (N <= 0) throw new Error('evaluateExprN: count must be positive');
   const overlay = (opts && opts.overlay) || null;
+  // Fused-loop fast path: compile the whole IR to a single pass. The
+  // compiler returns null (ineligible) or runPlan returns null (runtime
+  // precondition failed) → fall through to the node-by-node interpreter,
+  // which is the source of truth. A throw in codegen is contained here.
+  if (_COMPILE_EVALN && ir && ir.kind === 'call') {
+    // perAtom = refArrays keys MINUS any overlay key (overlay wins over
+    // refArrays, so an overlaid name is atom-independent for this call).
+    const perAtom = new Set<string>(refArrays ? Object.keys(refArrays) : []);
+    if (overlay) for (const k of Object.keys(overlay)) perAtom.delete(k);
+    if (perAtom.size > 0) {
+      try {
+        const plan = _compilePlanCached(ir, perAtom);
+        if (plan) {
+          const out = _compile.runPlan(plan, refArrays, baseEnv || {}, overlay, N);
+          if (out !== null) return out;
+        }
+      } catch (_e) { /* fall through to interpreter */ }
+    }
+  }
   return _evalN(ir, refArrays || null, N, baseEnv || {}, overlay);
+}
+
+// Per-IR plan cache. Keyed by IR object identity (the MC sweep reuses
+// one inverse/ladj IR across all points) then by the sorted per-atom
+// name set (so a different ref layout recompiles rather than misfires).
+const _PLAN_CACHE = new WeakMap<object, Map<string, any>>();
+function _compilePlanCached(ir: any, perAtom: Set<string>): any {
+  let byKey = _PLAN_CACHE.get(ir);
+  if (!byKey) { byKey = new Map(); _PLAN_CACHE.set(ir, byKey); }
+  const key = Array.from(perAtom).sort().join(' ');
+  if (byKey.has(key)) return byKey.get(key);
+  const plan = _compile.compilePlan(ir, perAtom);   // Plan | null
+  byKey.set(key, plan);
+  return plan;
 }
 
 function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
@@ -966,4 +1007,5 @@ module.exports = {
   broadcast2,
   broadcast3,
   broadcastN,
+  _setCompileEvalN,
 };
