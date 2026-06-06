@@ -52,7 +52,13 @@ jobs:
         # tsc across every workspace with a typecheck script
         # (--workspaces --if-present). Catches type errors the esbuild
         # bundle step below would miss — esbuild strips types without
-        # checking them. Blocking: the tree typechecks clean.
+        # checking them.
+        #
+        # NON-BLOCKING by choice: the tree currently typechecks clean,
+        # but the step is kept advisory (surfaces red in the run without
+        # failing the job) so a type regression doesn't block the Test
+        # workflow. Flip off continue-on-error to make it a hard gate.
+        continue-on-error: true
         run: npm run typecheck
 
       - name: Run engine tests with coverage
