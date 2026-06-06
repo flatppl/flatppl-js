@@ -3,9 +3,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const C = require('../sampler-eval-compile.ts');
 
-const ref = (name) => ({ kind: 'ref', ns: 'self', name });
-const lit = (v) => ({ kind: 'lit', value: v });
-const call = (op, ...args) => ({ kind: 'call', op, args });
+const ref = (name: any) => ({ kind: 'ref', ns: 'self', name });
+const lit = (v: any) => ({ kind: 'lit', value: v });
+const call = (op: any, ...args: any[]) => ({ kind: 'call', op, args });
 
 test('_hasPerAtomRef: true when a per-atom name appears', () => {
   const ir = call('add', ref('x'), call('mul', ref('pars'), lit(2)));
@@ -30,12 +30,12 @@ test('_COMPILE_ARITY: has the scalar op set, excludes structural ops', () => {
 // --- compiler core: a Normal-like inverse expression ---
 // Mirror the dependency injection sampler-eval-batched does at init.
 const ARITH = {
-  add: (a, b) => a + b, sub: (a, b) => a - b, mul: (a, b) => a * b,
-  div: (a, b) => a / b, divide: (a, b) => a / b, neg: (a) => -a,
-  pow: (a, b) => Math.pow(a, b), exp: (a) => Math.exp(a), log: (a) => Math.log(a),
+  add: (a: any, b: any) => a + b, sub: (a: any, b: any) => a - b, mul: (a: any, b: any) => a * b,
+  div: (a: any, b: any) => a / b, divide: (a: any, b: any) => a / b, neg: (a: any) => -a,
+  pow: (a: any, b: any) => Math.pow(a, b), exp: (a: any) => Math.exp(a), log: (a: any) => Math.log(a),
 };
 C.initCompiler({ ARITH_OPS: ARITH, evaluateExpr: require('../sampler.ts').evaluateExpr,
-                 resolveConst: (n) => { throw new Error('no const ' + n); } });
+                 resolveConst: (n: any) => { throw new Error('no const ' + n); } });
 
 test('compilePlan + runPlan: bit-exact to hand arithmetic over a batch', () => {
   // u = ((cbrt(z*2 / exp(x - b)) - x)/a - 1)/2, with a,b folded scalars.
@@ -82,7 +82,7 @@ test('compilePlan: returns null for unknown op over per-atom data', () => {
 const batched = require('../sampler-eval-batched.ts');
 const sampler = require('../sampler.ts');
 
-function evalBoth(ir, refArrays, N) {
+function evalBoth(ir: any, refArrays: any, N: any) {
   batched._setCompileEvalN(false);
   const off = sampler.evaluateExprN(ir, refArrays, N, {}, undefined);
   batched._setCompileEvalN(true);
@@ -113,9 +113,9 @@ test('evaluateExprN: ineligible IR (get_field) falls back, still correct', () =>
   // Pass records via refArrays as a plain array (back-compat path);
   // compiler bails (get_field), interpreter computes v+1.
   batched._setCompileEvalN(false);
-  let off; try { off = sampler.evaluateExprN(ir, recs, N, {}, undefined); } catch (e) { off = 'ERR:' + e.message; }
+  let off; try { off = sampler.evaluateExprN(ir, recs, N, {}, undefined); } catch (e: any) { off = 'ERR:' + e.message; }
   batched._setCompileEvalN(true);
-  let on; try { on = sampler.evaluateExprN(ir, recs, N, {}, undefined); } catch (e) { on = 'ERR:' + e.message; }
+  let on; try { on = sampler.evaluateExprN(ir, recs, N, {}, undefined); } catch (e: any) { on = 'ERR:' + e.message; }
   if (typeof off === 'string') assert.equal(on, off);
   else for (let i = 0; i < N; i++) assert.equal(on[i], off[i]);
   batched._setCompileEvalN(true);
@@ -129,7 +129,7 @@ const { xorshift128plus: _prandXor } = require('pure-rand/generator/xorshift128p
 
 // Build a random IR over the ops the compiler emits. Leaves are a
 // per-atom ref ('x'/'y') or a numeric literal. Depth-bounded.
-function randIR(rng, depth) {
+function randIR(rng: any, depth: any): any {
   const UN = ['neg', 'abs', 'exp', 'log', 'sqrt', 'sin', 'cos', 'tanh', 'log1p', 'expm1'];
   const BIN = ['add', 'sub', 'mul', 'div', 'pow', 'min', 'max', 'atan2'];
   if (depth <= 0 || rng.nextInt(0, 2) === 0) {
@@ -145,7 +145,7 @@ function randIR(rng, depth) {
 }
 
 test('fuzz: compiled === interpreted bit-for-bit over random eligible IRs', () => {
-  fc.assert(fc.property(fc.integer({ min: 1, max: 2 ** 31 - 1 }), (seed) => {
+  fc.assert(fc.property(fc.integer({ min: 1, max: 2 ** 31 - 1 }), (seed: any) => {
     const rng = new fc.Random(_prandXor(seed, 0));
     const ir = call('add', randIR(rng, 4), lit(0));   // ensure a call root
     const N = 257;
