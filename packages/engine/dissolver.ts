@@ -1961,47 +1961,6 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
 //   - Atom axis: deliberately NOT in IR axisStack (engine-internal
 //     concept; materialiser-time prepended).
 
-// Measure-constructing IR ops: a `functionof` over one of these reifies
-// a transition kernel (spec §sec:functionof-measure, 04-design.md:293).
-// Bare distribution heads are covered separately via the registries.
-const _MEASURE_CONSTRUCT_OPS = new Set([
-  'iid', 'joint', 'jointchain', 'superpose', 'mixture', 'kernelof',
-  'normalize', 'truncate', 'weighted', 'logweighted', 'restrict',
-  'pushfwd', 'bayesupdate',
-]);
-
-// Does this IR node denote a measure construction? Recognises the
-// arrow-lambda kernel form `(args) -> <measure>`, which lowers to
-// `functionof(<measure>)` with NO `lawof` wrap and whose inferred type
-// is `function`/`deferred` rather than `kernel` — so the type-driven
-// `_isKernelHead` test below misses it. Mirrors the structural
-// acceptance the kernel-broadcast detectors apply (peelKernelBody).
-function _irNodeIsMeasure(node: any, bindings: any): boolean {
-  if (!node || node.kind !== 'call' || !node.op) return false;
-  let n = node;
-  if (n.op === 'lawof') {            // `kernelof` form: functionof(lawof(M))
-    n = (n.args && n.args[0]) || null;
-    if (!n || n.kind !== 'call' || !n.op) return false;
-  }
-  if (_MEASURE_CONSTRUCT_OPS.has(n.op)) return true;
-  let irShared: any = null;
-  try { irShared = require('./ir-shared.ts'); } catch (_) { /* cycle */ }
-  const isDist = (op: any): boolean => !!(irShared && op
-    && ((irShared.SAMPLEABLE_DISTRIBUTIONS && irShared.SAMPLEABLE_DISTRIBUTIONS.has(op))
-        || (irShared.VECTOR_OUTPUT_DISTRIBUTIONS && irShared.VECTOR_OUTPUT_DISTRIBUTIONS.has(op))));
-  if (isDist(n.op)) return true;       // bare-distribution-bodied kernel
-  if (n.op === 'broadcast') {
-    // broadcast is a measure iff its head is a distribution / kernel;
-    // broadcasting a plain function yields values, not a measure.
-    const head = (n.args && n.args[0]) || null;
-    if (!head) return false;
-    if (isDist(head.op) || isDist(head.name)) return true;
-    if (head.kind === 'ref') return _isKernelHead(head, bindings);
-    return false;
-  }
-  return false;
-}
-
 function _isKernelHead(head: any, bindings: any): boolean {
   if (!head) return false;
   if (head.kind !== 'ref' || head.ns !== 'self') return false;
@@ -2018,9 +1977,29 @@ function _isKernelHead(head: any, bindings: any): boolean {
   // and the kernel body's inner axis ladder is never appended, so the
   // nested-broadcast executor sees a null outer axis size.
   const t = b.inferredType;
+  // PRIMARY check: the type-driven branch. The real fix for arrow-lambda
+  // kernels now lives in typeinfer (fixer-A) — an arrow lambda whose body
+  // is a measure infers inferredType.kind==='kernel', so this branch
+  // catches it directly.
   if (t && t.kind === 'kernel') return true;
+  // STRUCTURAL fallback (belt-and-suspenders): pre-lift synthetic anons
+  // can reach here lacking inferredType. `signatures.bodyImpliesKernel`
+  // is the canonical IR-level "body denotes a measure" predicate; it
+  // recognises the arrow-lambda kernel form `(args) -> <measure>`
+  // (functionof(<measure>), no lawof wrap) and the kernelof form
+  // (functionof(lawof(<measure>))). Lazy-require to avoid an import cycle.
   if (b.ir && b.ir.kind === 'call' && b.ir.op === 'functionof') {
-    return _irNodeIsMeasure(b.ir.body, bindings);
+    let signatures: any = null;
+    try { signatures = require('./signatures.ts'); } catch (_) { /* cycle */ }
+    if (!signatures || !signatures.bodyImpliesKernel) return false;
+    let body = b.ir.body;
+    // `kernelof` lowers to functionof(lawof(<measure>)); peel the lawof
+    // so bodyImpliesKernel sees the underlying measure construction.
+    if (body && body.kind === 'call' && body.op === 'lawof'
+        && Array.isArray(body.args)) {
+      body = body.args[0];
+    }
+    return signatures.bodyImpliesKernel(body, bindings);
   }
   return false;
 }

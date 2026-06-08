@@ -1051,6 +1051,19 @@ function _executeGenerativeComposite(
     //     inlined body's boundary formals get substituted to `ref __bf_` —
     //     numeric ones resolve to columns in flatRefs, record ones to the
     //     baseEnv record (field-accessed by the body).
+    //
+    //     `bcKwargs` must be keyed by SURFACE kwarg name (`x`), NOT the
+    //     internal `%local` formal (`_x_`): `_substituteKernelParams` maps a
+    //     body ref's `%local` name → its index in `params`, then looks the
+    //     replacement up under `paramKwargs[idx]` (the surface name). Keying
+    //     by formal here would leave the body's `_x_` ref unresolved
+    //     ("unbound %local reference '_x_'"), the H1 bug. We re-root the
+    //     inlined body's boundary refs onto the `__bf_` columns exactly the
+    //     way the iid/joint/jointchain/nested executors re-root theirs.
+    const formalToSurface: Record<string, string> = {};
+    for (let i = 0; i < compositeBody.params.length; i++) {
+      formalToSurface[compositeBody.params[i]] = compositeBody.paramKwargs[i];
+    }
     const flatRefs: Record<string, any> = {};
     const bcKwargs: Record<string, any> = {};
     for (const formal of Object.keys(bcArgIRByFormal)) {
@@ -1063,7 +1076,7 @@ function _executeGenerativeComposite(
         flatRefs[flatName] = valueLib.batchedScalar(
           _layoutFlat(numArgVal[formal], N, axes, sp.atomVaries, sp.axisSizes));
       }
-      bcKwargs[formal] = { kind: 'ref', ns: 'self', name: flatName };
+      bcKwargs[formalToSurface[formal]] = { kind: 'ref', ns: 'self', name: flatName };
     }
 
     // Substitute boundary formals → `__bf_` refs in the inlined body. After

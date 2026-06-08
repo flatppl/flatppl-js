@@ -110,6 +110,23 @@ function peelKernelBody(body: any): any {
   return body;
 }
 
+// Resolve a component / inner-measure node that is either an INLINE
+// DistCall (the arrow surface leaves it inline) or a `self`-ref to an anon
+// binding holding the DistCall (the `kernelof` lowering hoists distribution
+// calls). Returns the inline call as-is; else derefs one `self`-binding
+// level via `_derefSelfBinding`; else null. The iid/joint/jointchain
+// detectors share this deref-or-inline ladder (formerly copy-pasted). The
+// caller still validates `distCall.kind === 'call' && distCall.op` — this
+// helper only collapses the ref/inline duality.
+function resolveComponentDist(ir: any, bindings: any): any {
+  if (ir && ir.kind === 'call' && ir.op) return ir;
+  if (ir && ir.kind === 'ref' && ir.ns === 'self'
+      && bindings && bindings.has && bindings.has(ir.name)) {
+    return _derefSelfBinding(ir, bindings);
+  }
+  return null;
+}
+
 // Normalise an inner builtin-distribution call's POSITIONAL args into a
 // named-kwargs map keyed by the REGISTRY param order. The iid/joint/nested
 // executors build the per-cell dist call from `Object.keys(distKwargs)`,
@@ -121,13 +138,15 @@ function peelKernelBody(body: any): any {
 //
 // A positional arg and a kwarg targeting the SAME param (`Beta(a_g, alpha
 // = 2.0)` — `a_g` is the first positional, hence `alpha`, AND `alpha`
-// arrives by keyword) is a DUPLICATE binding, a static error per spec
-// §04 (a name may be bound at most once per call). `resolveParams`
-// silently prefers the kwarg, but the kernel-broadcast executor's
-// kwargs-only path would then drop the per-cell positional boundary; we
-// refuse loudly and NAME the colliding param so the diagnostic is
+// arrives by keyword) binds that param TWICE. `resolveParams` silently
+// prefers the kwarg, but the kernel-broadcast executor's kwargs-only path
+// would then drop the per-cell positional boundary; this engine policy
+// refuses loudly and NAMES the colliding param so the diagnostic is
 // actionable (contrast: silent "kwargs win" surfaced downstream as an
-// unrelated "unbound self reference" crash).
+// unrelated "unbound self reference" crash). This is an engine
+// (kernel-broadcast executor) rule, not a spec mandate — the spec
+// calling-convention section does not define a positional/keyword
+// collision rule for inner distributions.
 function distKwargsWithPositional(distCall: any, distParams: string[]): Record<string, any> {
   const kwargs: Record<string, any> = { ...(distCall.kwargs || {}) };
   const args = Array.isArray(distCall.args) ? distCall.args : [];
@@ -135,9 +154,9 @@ function distKwargsWithPositional(distCall: any, distParams: string[]): Record<s
     if (Object.prototype.hasOwnProperty.call(kwargs, distParams[i])) {
       throw new Error('kernel-broadcast: inner distribution \''
         + (distCall.op || '?') + '\' binds parameter \'' + distParams[i]
-        + '\' both positional and keyword — a parameter may be bound at '
-        + 'most once per call (spec §04); remove one binding of \''
-        + distParams[i] + '\'.');
+        + '\' both positional and keyword — the kernel-broadcast executor '
+        + 'requires each inner-distribution parameter to be bound once '
+        + '(engine policy); remove one binding of \'' + distParams[i] + '\'.');
     }
     kwargs[distParams[i]] = args[i];
   }
@@ -161,15 +180,10 @@ function detectIidKernelBinding(
       || innerMeasure.op !== 'iid') return null;
   const iidArgs = innerMeasure.args || [];
   if (iidArgs.length !== 2) return null;
-  // Dereference one level of anon ref. Post-lift, `iid(Normal(...), N)`
-  // becomes `iid(ref(__anonM), N)` where the anon's IR holds the
-  // literal Normal call.
-  let distCall = iidArgs[0];
-  if (distCall && distCall.kind === 'ref' && distCall.ns === 'self'
-      && bindings.has(distCall.name)) {
-    const anon = bindings.get(distCall.name);
-    if (anon && anon.ir) distCall = anon.ir;
-  }
+  // Resolve the inner dist: inline call (arrow form) or one-level anon
+  // deref. Post-lift, `iid(Normal(...), N)` becomes `iid(ref(__anonM), N)`
+  // where the anon's IR holds the literal Normal call.
+  const distCall = resolveComponentDist(iidArgs[0], bindings);
   if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
   // The inner builtin must be sampleable. We lazy-require the
   // SAMPLEABLE_DISTRIBUTIONS set from ir-shared.ts (avoids an
@@ -397,20 +411,10 @@ function detectJointKernelBinding(
   for (let i = 0; i < componentRefs.length; i++) {
     const ref = componentRefs[i];
     // The `kernelof` lowering hoists each component to an anon `self`-ref;
-    // the ARROW form leaves the component INLINE as a DistCall. Accept
-    // the inline call directly, else deref the ref one level (mirrors the
-    // iid detector's deref-or-inline of the iid measure arg).
-    let distCall: any;
-    if (ref && ref.kind === 'call' && ref.op) {
-      distCall = ref;
-    } else if (ref && ref.kind === 'ref' && ref.ns === 'self'
-        && bindings.has(ref.name)) {
-      const anon = bindings.get(ref.name);
-      if (!anon || !anon.ir) return null;
-      distCall = anon.ir;
-    } else {
-      return null;
-    }
+    // the ARROW form leaves the component INLINE as a DistCall. Accept the
+    // inline call directly, else deref the ref one level (shared
+    // deref-or-inline ladder with the iid / jointchain detectors).
+    const distCall = resolveComponentDist(ref, bindings);
     if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
     const op = distCall.op;
     const isScalarSampleable = SAMPLEABLE && SAMPLEABLE.has(op);
@@ -667,19 +671,9 @@ function detectJointChainKernelBinding(
     if (i === 0) {
       // Base step: a sampleable DistCall (closed-first). The `kernelof`
       // lowering hoists it to an anon `self`-ref; the ARROW form leaves
-      // it inline. Accept inline, else deref the ref one level (mirrors
-      // the iid detector's deref-or-inline).
-      let distCall: any;
-      if (arg && arg.kind === 'call' && arg.op) {
-        distCall = arg;
-      } else if (arg && arg.kind === 'ref' && arg.ns === 'self'
-          && bindings.has(arg.name)) {
-        const dep = bindings.get(arg.name);
-        if (!dep || !dep.ir) return null;
-        distCall = dep.ir;
-      } else {
-        return null;
-      }
+      // it inline. Accept inline, else deref the ref one level (shared
+      // deref-or-inline ladder with the iid / joint detectors).
+      const distCall = resolveComponentDist(arg, bindings);
       if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
       if (!SAMPLEABLE || !SAMPLEABLE.has(distCall.op)) return null;
       const distParams = lookupDistParams(distCall.op);

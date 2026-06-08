@@ -804,7 +804,7 @@ function _lowerReification(op: string, node: any, ctx: any): any {
   let body: any = _lowerExpr(args[0], innerCtx);
 
   // kernelof(x, kw) ≡ functionof(lawof(x), kw) per spec §sec:kernelof
-  // line 421-422. The boundary substitution applies BEFORE the inner
+  // (04-design.md:445-446). The boundary substitution applies BEFORE the inner
   // lawof is interpreted — exactly what we get by wrapping the body
   // in lawof inside the same scope and emitting functionof. After
   // this rewrite, downstream IR consumers (type inference,
