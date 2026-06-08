@@ -409,3 +409,30 @@ test('H3: an unrecognised inline matrix-valued scale fails loudly (regression pi
     /.+/,
     'an off-list matrix scale must throw rather than silently return a density');
 });
+
+// =====================================================================
+// L6 — defensive guards on the locscale lift path leave malformed calls
+//      for the analyzer (no crash, no silent lowering)
+// =====================================================================
+
+test('L6: wrong-arity locscale surfaces a diagnostic (no crash, no silent lowering)', () => {
+  let lifted: any = null, err: any = null;
+  try { ({ lifted } = makeCtx(`
+    base = Normal(mu = 0, sigma = 1)
+    Y = locscale(base, 3.0)
+  `)); } catch (e) { err = e; }
+  const reported = err
+    || (lifted && lifted.diagnostics.some((d: any) => d.severity === 'error'));
+  assert.ok(reported, 'a 2-arg locscale must be reported, not silently lowered');
+});
+
+test('L6: a keyword arg to locscale surfaces a diagnostic (no crash, no silent lowering)', () => {
+  let lifted: any = null, err: any = null;
+  try { ({ lifted } = makeCtx(`
+    base = Normal(mu = 0, sigma = 1)
+    Y = locscale(base, 3.0, scale = 2.0)
+  `)); } catch (e) { err = e; }
+  const reported = err
+    || (lifted && lifted.diagnostics.some((d: any) => d.severity === 'error'));
+  assert.ok(reported, 'a kwarg-bearing locscale must be reported, not silently lowered');
+});
