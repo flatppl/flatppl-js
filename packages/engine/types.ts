@@ -1314,6 +1314,38 @@ const SIGNATURE_FACTORIES = {
     kwargs: {},
     result: any(),
   }),
+  // joint_likelihood(L1, L2, ...) — combine ≥2 likelihood objects by
+  // multiplying their densities / summing their log-densities (spec §06
+  // sec:joint_likelihood). The result is itself a LIKELIHOOD object
+  // (consumed via densityof / logdensityof / bayesupdate), so it types
+  // as `likelihood`, mirroring `likelihoodof`. Each argument is a
+  // likelihood; typed loosely as `any()` here (the likelihood-object
+  // type carries kernel-specific `inputs` that aren't unified across
+  // components in this DSL). Variadic with two fixed slots so arity ≥ 2
+  // is enforced at the type level too (the analyzer also flags < 2).
+  // Desugared at lift time (lift.inlineJointLikelihoodLift) into a fold
+  // of single-likelihood `bayesupdate`s at its consumption site, so it
+  // has no derivation / density / materialiser handler of its own.
+  joint_likelihood: () => ({
+    args: [any(), any(), any()],
+    kwargs: {},
+    result: likelihood(),
+    variadic: 'positional',
+  }),
+  // locscale(m, shift, scale) — affine (location-scale) pushforward,
+  // sugar for `pushfwd(fn(scale * _ + shift), m)` (spec §06
+  // sec:locscale). Desugared at lift time (lift.inlineLocscaleLift) into
+  // a first-class pushfwd, so it has no derivation/density/materialiser
+  // handler of its own. The first arg is the base measure; `shift` /
+  // `scale` are value-compatible with its variate (scalar, vector, or —
+  // for vector m — a matrix scale). Result is a measure; the variate's
+  // codomain isn't statically tracked (a type variable suffices for the
+  // downstream "is this a measure" checks, matching pushfwd's stub).
+  locscale: () => ({
+    args: [measure(tvar('T')), any(), any()],
+    kwargs: {},
+    result: measure(tvar('T')),
+  }),
 };
 
 function arith2() { return { args: [REAL, REAL], kwargs: {}, result: REAL }; }

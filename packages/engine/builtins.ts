@@ -189,7 +189,10 @@ const MEASURE_OPS = new Set([
   // Composition
   'superpose', 'joint', 'iid', 'kchain', 'jointchain',
   // Restriction and transformation
-  'truncate', 'pushfwd',
+  // `locscale` is affine-pushforward sugar (spec §06 sec:locscale);
+  // lift.inlineLocscaleLift rewrites it to `pushfwd(fn(scale*_+shift), m)`
+  // so it has no derivation kind of its own.
+  'truncate', 'pushfwd', 'locscale',
   // Likelihoods
   'likelihoodof', 'joint_likelihood',
   'densityof', 'logdensityof',
@@ -210,7 +213,8 @@ const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
   'weighted', 'logweighted', 'bayesupdate', 'normalize',
   'superpose', 'joint', 'iid', 'kchain', 'jointchain',
-  'truncate', 'pushfwd',
+  // `locscale` returns a measure (affine pushforward sugar, spec §06).
+  'truncate', 'pushfwd', 'locscale',
 ]);
 
 // All known names (union of everything that is a built-in callable, set, or constant)

@@ -197,6 +197,20 @@ function inferSyntheticType(astNode: any) {
       // skip the synthetic binding entirely, leaving binding.bijection
       // unpopulated and registryName + paramIRs unattached.
       case 'bijection':  return 'bijection';
+      // M2 (spec §06): synthetic bayesupdate / likelihoodof bindings —
+      // emitted when `lift.inlineJointLikelihoodLift` folds a
+      // `bayesupdate(joint_likelihood(L1,…), prior)` into nested
+      // `bayesupdate`s (each inner update is hoisted to an anon binding
+      // during the inlineUserCall loop), or when any inline bayesupdate /
+      // likelihoodof is hoisted by the measure-arg lift. Without these
+      // cases the synthetic binding gets `type: 'call'` and
+      // buildDerivations' `binding.type === 'bayesupdate'` dispatch
+      // (derivations.ts:466) skips classifyBayesupdate, leaving the
+      // nested update underived. Mirror the analyzer's own classification
+      // (analyzer.ts:106-107) so a hoisted update behaves identically to
+      // a user-written one.
+      case 'bayesupdate':  return 'bayesupdate';
+      case 'likelihoodof': return 'likelihood';
     }
     return 'call';
   }
@@ -753,6 +767,11 @@ function liftInlineSubexpressions(bindings: any) {
       // structure. Only the f-position lift remains — inline
       // fn / functionof shapes get hoisted to anon bindings so the
       // classifier sees a clean self-ref.
+      // locscale(m, shift, scale) is pure sugar for an affine pushfwd
+      // (spec §06 sec:locscale). Desugar BEFORE inlinePushfwdLift so the
+      // emitted inline `fn(...)` gets hoisted to an anon binding on the
+      // same fixed-point iteration.
+      astArg = inlineLocscaleLift(astArg);
       astArg = inlinePushfwdLift(astArg);
       astArg = inlineBijectionLift(astArg);
       // Phase 5.1 Session 5e — lower MvNormal CallExpr to the
@@ -777,6 +796,11 @@ function liftInlineSubexpressions(bindings: any) {
       // handles.
       astArg = inlineMetricsumLift(astArg);
       astArg = inlineFilterLift(astArg);
+      // joint_likelihood(L1,…) inside a bayesupdate is sugar for a fold
+      // of single-likelihood bayesupdates (spec §06). Desugar BEFORE
+      // inlineLikelihoodofLift so each emitted nested bayesupdate's
+      // likelihood arg is re-walked + lifted on subsequent iterations.
+      astArg = inlineJointLikelihoodLift(astArg);
       astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
     }
@@ -882,6 +906,118 @@ function liftInlineSubexpressions(bindings: any) {
     out.set(n, makeSyntheticBinding(n, fArg));
     astArg.args[0] = makeIdent(n, astArg.loc);
     return astArg;
+  }
+
+  /**
+   * Desugar `locscale(m, shift, scale)` to the equivalent affine
+   * pushforward per spec §06 sec:locscale:
+   *
+   *   locscale(m, shift, scale)  ≡  pushfwd(fn(scale * _ + shift), m)
+   *
+   * `locscale` is pure sugar — it has no derivation / density /
+   * materialiser handler of its own. We rewrite it here, at lift time,
+   * into a first-class `pushfwd(<bijection>, m)` CallExpr.
+   *
+   * We desugar to a `bijection(f, f_inv, logvolume)` (NOT a bare
+   * `fn(...)`): density of a `pushfwd` requires bijection metadata —
+   * a plain `fn(...)` forward raises "requires a bijection annotation"
+   * on the density side (see test/bijection-density.test.ts). For the
+   * affine map the inverse and log-volume are known in closed form, so
+   * we synthesize all three slots:
+   *
+   *   f        = fn(scale * _ + shift)
+   *   f_inv    = fn((_ - shift) / scale)
+   *   logvol   = fn(log(abs(scale)))      // log|d/dx (scale·x+shift)|
+   *
+   * The subsequent `inlineBijectionLift` (same fixed-point loop) hoists
+   * the bijection to an anon binding; `inlinePushfwdLift` hoists the
+   * resulting pushfwd's function arg; and from there the existing
+   * first-class pushfwd path (classifyPushfwd + matPushfwd + the
+   * bijection-metadata branch of density.walkPushfwd) handles sampling
+   * AND density for free. Example: `locscale(Normal(0,1), mu, sigma)`
+   * ≡ `Normal(mu, sigma)` — confirmed by test/locscale.test.ts.
+   *
+   * The forward body is `scale * _ + shift` (`*` binds tighter than `+`,
+   * matching the spec's `scale * x + shift`). `scale`/`shift` are kept
+   * as whatever expressions the caller wrote (literals, refs, inline
+   * calls); the lift re-walks the rewritten node so any lift needed
+   * inside them happens normally. We deep-clone `scale`/`shift` for the
+   * inverse + logvolume slots so the three bodies don't share mutated
+   * subtrees.
+   *
+   * Gate: positional 3-arg form (the only surface form, spec §06). A
+   * kwarg or wrong-arity call is left unchanged (typeinfer/analyzer
+   * surface the error).
+   *
+   * SCOPE: the synthesized closed-form inverse + logvolume are the
+   * SCALAR / elementwise affine case (scalar or per-component `scale`).
+   * Per spec §06 the matrix-`scale` vector case (`locscale(MvNormal(...),
+   * mu, lower_cholesky(cov))`) is a matrix-vector affine map whose
+   * inverse is `L \ (y − mu)` and whose log-volume is `log|det L|` — not
+   * the elementwise `(_ − shift)/scale` form. That case is left for a
+   * follow-up (the spec already advises "for general matrix-vector
+   * affine maps use `pushfwd` directly"); sampling still works, only the
+   * matrix-form density is out of scope here.
+   */
+  function inlineLocscaleLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'locscale') return astArg;
+    if (!astArg.args || astArg.args.length !== 3) return astArg;
+    // Positional-only: any KeywordArg means a malformed call — leave it
+    // for the analyzer/typeinfer to diagnose.
+    for (const a of astArg.args) {
+      if (a && a.type === 'KeywordArg') return astArg;
+    }
+    const loc = astArg.loc;
+    const m = astArg.args[0];
+    const shift = astArg.args[1];
+    const scale = astArg.args[2];
+
+    const bin = (op: any, left: any, right: any) =>
+      ({ type: 'BinaryExpr', op, left, right, loc });
+    const fnOf = (body: any) =>
+      ({ type: 'CallExpr', callee: makeIdent('fn', loc), args: [body], loc });
+    const callOf = (name: any, ...args: any[]) =>
+      ({ type: 'CallExpr', callee: makeIdent(name, loc), args, loc });
+
+    // f(x) = scale * _ + shift
+    const fwd = fnOf(bin('+', bin('*', cloneAst(scale), makeHole(loc)),
+                         cloneAst(shift)));
+    // f_inv(y) = (_ - shift) / scale
+    const inv = fnOf(bin('/', bin('-', makeHole(loc), cloneAst(shift)),
+                         cloneAst(scale)));
+    // logvolume(x) = log(abs(scale)) — constant in x for an affine map,
+    // but we keep it as a `fn(...)` (the bijection slot accepts a
+    // function or a scalar; a function keeps it correct when `scale` is
+    // itself a parameterized ref).
+    const logvol = fnOf(callOf('log', callOf('abs', cloneAst(scale))));
+
+    // The three `fn(...)` sub-expressions MUST be pre-hoisted to anon
+    // bindings here so buildDerivations' bijection-construction loop
+    // (derivations.ts:159-179) sees the bijection's three args as
+    // Identifiers. Synthetic bindings inserted into `out` during the
+    // inlineUserCall loop bypass the per-binding visit() pass that would
+    // otherwise hoist them via inlineBijectionLift. Same technique as
+    // inlineMvNormalLift's fwd/inv stub hoisting (see ~line 1116).
+    const fwdAnon = freshName();
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, fwd));
+    const invAnon = freshName();
+    out.set(invAnon, makeSyntheticBinding(invAnon, inv));
+    const lvAnon = freshName();
+    out.set(lvAnon, makeSyntheticBinding(lvAnon, logvol));
+
+    const bijAst = callOf('bijection',
+      makeIdent(fwdAnon, loc), makeIdent(invAnon, loc), makeIdent(lvAnon, loc));
+    const bijName = freshName();
+    out.set(bijName, makeSyntheticBinding(bijName, bijAst));
+
+    return {
+      type: 'CallExpr',
+      callee: makeIdent('pushfwd', loc),
+      args: [makeIdent(bijName, loc), m],
+      loc,
+    };
   }
 
   /**
@@ -1607,6 +1743,88 @@ function liftInlineSubexpressions(bindings: any) {
    * kernel-arg position safely contains them and hoists the whole
    * function expression as a unit.
    */
+  /**
+   * Desugar `bayesupdate(joint_likelihood(L1, …, Ln), prior)` into a
+   * left-fold of single-likelihood `bayesupdate`s (spec §06
+   * sec:joint_likelihood + sec:bayesupdate):
+   *
+   *   bayesupdate(joint_likelihood(L1, …, Ln), prior)
+   *     ≡  bayesupdate(Ln, … bayesupdate(L2, bayesupdate(L1, prior)) …)
+   *
+   * Soundness: `joint_likelihood` multiplies likelihood densities
+   * (sums log-densities), so its log-density is Σ_i log L_i(θ). A
+   * `bayesupdate(L, π)` reweights `π` by `L(θ)` (spec §06: dν(θ) =
+   * L(θ)·dπ(θ)). Chaining n single-likelihood updates therefore
+   * reweights the prior by ∏_i L_i(θ) = exp(Σ_i log L_i(θ)) — exactly
+   * the joint-likelihood posterior. Each nested `bayesupdate` is the
+   * already-implemented, fully-tested first-class path
+   * (classifyBayesupdate + matBayesupdate, which issues one
+   * worker.logDensityN per likelihood and accumulates logWeights), so
+   * this rewrite introduces NO new derivation / density / materialiser
+   * surface — it reuses stable paths only.
+   *
+   * `joint_likelihood` is unordered/commutative over its arguments
+   * (density multiplication commutes), so the fold order is immaterial.
+   *
+   * SCOPE: this handles `joint_likelihood` in its documented consumption
+   * site — posterior construction via `bayesupdate` (spec §06 worked
+   * example). A bare `joint_likelihood` scored directly by
+   * `logdensityof` / `densityof` (not wrapped in a bayesupdate) is NOT
+   * rewritten here; that would need a likelihood-object derivation kind
+   * (owned by derivations.ts) and is left for a follow-up.
+   *
+   * The likelihood arg may be an inline `joint_likelihood(...)` call OR
+   * a self-ref to a binding whose RHS is one (the common surface form —
+   * `L = joint_likelihood(L1, L2); posterior = bayesupdate(L, prior)`).
+   * We resolve one level of ref through `out`. Each Li is kept as
+   * whatever the user wrote (typically a `likelihoodof(...)` ref); the
+   * lift re-walks the rewritten tree so each nested bayesupdate's args
+   * get lifted normally.
+   */
+  function _resolveJointLikelihoodArgs(lArg: any): any[] | null {
+    // Returns the joint_likelihood's positional argument list when
+    // `lArg` is (or refs) a `joint_likelihood(...)` call; else null.
+    const isJL = (n: any) =>
+      n && n.type === 'CallExpr' && n.callee
+      && n.callee.type === 'Identifier'
+      && n.callee.name === 'joint_likelihood';
+    let node = lArg;
+    if (node && node.type === 'Identifier') {
+      const b = out.get(node.name);
+      const targetAst = b && (b.effectiveValue || (b.node && b.node.value));
+      if (isJL(targetAst)) node = targetAst;
+      else return null;
+    }
+    if (!isJL(node)) return null;
+    const pos = (node.args || []).filter((a: any) => a && a.type !== 'KeywordArg');
+    if (pos.length < 2) return null;   // analyzer flags <2; leave as-is
+    return pos;
+  }
+
+  function inlineJointLikelihoodLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'bayesupdate') return astArg;
+    if (!astArg.args || astArg.args.length !== 2) return astArg;
+    if (astArg.args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
+    const lArg = astArg.args[0];
+    const priorArg = astArg.args[1];
+    const likes = _resolveJointLikelihoodArgs(lArg);
+    if (!likes) return astArg;
+    const loc = astArg.loc;
+    // Left-fold: acc starts at the prior; wrap once per likelihood.
+    let acc = priorArg;
+    for (const Li of likes) {
+      acc = {
+        type: 'CallExpr',
+        callee: makeIdent('bayesupdate', loc),
+        args: [cloneAst(Li), acc],
+        loc,
+      };
+    }
+    return acc;
+  }
+
   function inlineLikelihoodofLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
