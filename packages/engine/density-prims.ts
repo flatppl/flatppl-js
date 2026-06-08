@@ -374,7 +374,19 @@ function _wishart(x: any, kw: any, invert: boolean): number {
        - logG;
 }
 
-// LKJ normalization constant log c_n(η).
+// LKJ log-density multiplicative constant `log c_n(η)`.
+//
+// The LKJ density is `p(C) = c_n(η)·det(C)^(η-1)`, where `c_n(η) = 1/Z` and
+// `Z = ∫ det(C)^(η-1) dC` is the normalizing INTEGRAL over the correlation
+// manifold. The closed form below is the standard product expansion of `log Z`
+// (see the LKJ normalizer in e.g. Lewandowski–Kurowicka–Joe 2009 / Stan);
+// since `c_n = 1/Z`, `log c_n(η) = −log Z`. We therefore NEGATE the accumulated
+// `log Z` on return. Both call sites (LKJ and LKJCholesky) ADD this quantity,
+// which is correct now that it carries the density's multiplicative constant
+// rather than the integral.
+//
+// Anchor: n=2, η=1 gives the uniform density over ρ∈(−1,1) = 1/2, so
+// `log c_2(1) = −log 2 ≈ −0.6931`.
 function _logCnLKJ(n: number, eta: number) {
   let lc = 0;
   for (let k = 1; k <= n - 1; k++) {
@@ -383,7 +395,7 @@ function _logCnLKJ(n: number, eta: number) {
     const a = eta + (m - 1) / 2;
     lc += m * (2 * stdlibGammaln(a) - stdlibGammaln(2 * a));
   }
-  return lc;
+  return -lc;
 }
 
 // =====================================================================

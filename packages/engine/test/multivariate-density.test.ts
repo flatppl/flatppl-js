@@ -213,18 +213,29 @@ test('density LKJ: η=1 yields uniform density (constant log p, independent of C
     `LKJ(3, 1) should be uniform: logp(I)=${logp1}, logp(C2)=${logp2}`);
 });
 
-test('density LKJ: n=2, η=1 normalization integrates to 1 numerically (sanity)', () => {
+test('density LKJ: n=2, η=1 is the uniform density log c_2(1) = -log 2', () => {
   // For n=2, the correlation matrix has a single off-diag ρ ∈ (-1, 1).
-  // det(C) = 1 - ρ². At η=1 the density is constant. The constant equals
-  // 1/Volume — for n=2, the integral of 1 over ρ ∈ (-1, 1) is 2, so
-  // log c_2(1) = -log(2) ≈ -0.6931.
+  // det(C) = 1 - ρ². At η=1 the density is constant (det(C)^0 = 1), so
+  // log p = log c_2(1) for any valid C. The constant equals 1/Volume — the
+  // integral of 1 over ρ ∈ (-1, 1) is 2, so the density is the uniform 1/2
+  // and log c_2(1) = -log 2 ≈ -0.6931.
   const ir = LKJ(2, 1);
-  const C = [[1, 0.5], [0.5, 1]];
-  const logp = density.logDensity(ir, C, {});
-  // The LKJ density expressed on the manifold via Cholesky-factor
-  // parameterisation differs from the natural-coordinate density by the
-  // Jacobian. Just check it's finite and dimension-consistent.
-  assert.ok(Number.isFinite(logp));
+  const I = [[1, 0], [0, 1]];
+  const logp = density.logDensity(ir, I, {});
+  assert.ok(Math.abs(logp - (-Math.LN2)) < 1e-9,
+    `LKJ(2,1) logp(I) should be -log 2 ≈ ${-Math.LN2}, got ${logp}`);
+});
+
+test('density LKJ: n=2, η=2 matches closed-form log c_2(2) = -log(4/3)', () => {
+  // For n=2, the normalizing integral is Z = 2^(2η-1)·B(η, η). At η=2,
+  // Z = 2^3 · B(2, 2) = 8 · (1/6) = 4/3, so log c_2(2) = -log(4/3) ≈ -0.28768.
+  // At C = I, det(C)^(η-1) = 1, so logp(I) = log c_2(2).
+  const ir = LKJ(2, 2);
+  const I = [[1, 0], [0, 1]];
+  const logp = density.logDensity(ir, I, {});
+  const expected = -Math.log(4 / 3);
+  assert.ok(Math.abs(logp - expected) < 1e-9,
+    `LKJ(2,2) logp(I) should be -log(4/3) ≈ ${expected}, got ${logp}`);
 });
 
 test('density LKJCholesky: η=1 simplifies to Π L_ii^(n-i)', () => {
