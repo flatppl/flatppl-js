@@ -1816,6 +1816,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // Booleans embed into integers (spec §03's `booleans ⊂ integers ⊂
     // reals`), so they are permitted; deferred/any/type-var operands
     // are left to runtime (can't disprove integer statically).
+    // DEVIATION (intentional): spec §07 lists `b ≠ 0` as a mod precondition,
+    // but we do NOT statically reject a zero divisor — consistent with how
+    // the engine treats `div` (which itself is typed as real division here,
+    // not §07's integer floor-division). A zero divisor yields a runtime NaN
+    // (a − 0·floor(a/0) = NaN); see test/mod-conformance.test.ts L1. Enforcing
+    // the precondition statically (and making div §07-conformant) is a
+    // separate, tracked follow-up.
     if (expr.op === 'mod') {
       // Drill through arrays to the element scalar's primitive.
       const elemPrim = (t: any): string | null => {

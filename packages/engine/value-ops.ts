@@ -875,6 +875,8 @@ const sub = _makeElementwiseBinop((a: any, b: any) => a - b, 'sub');
 // NaN at runtime (unguarded, matching `div`'s IEEE convention). This
 // is THE canonical definition — the sampler scalar path and the
 // materialiser constant folder are kept identical to it.
+// NOTE: no b≠0 guard (spec §07 precondition) — b=0 yields NaN, matching
+// div's unguarded IEEE convention. See test/mod-conformance.test.ts L1.
 function floorMod(a: number, b: number): number {
   return a - b * Math.floor(a / b);
 }
