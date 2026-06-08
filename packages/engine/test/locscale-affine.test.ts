@@ -387,3 +387,25 @@ test('M6: a rowstack of a FLAT array classifies rank-1 → vector diagnostic', (
   assert.ok(/(vector|per-component)/.test(String(err && err.message)),
     `expected a vector diagnostic, got: ${err && err.message}`);
 });
+
+// =====================================================================
+// H3 — an off-list inline matrix-valued scale must FAIL LOUDLY
+// =====================================================================
+//
+// `matprod(A, A)` is matrix-valued but is NOT in __discoveredScaleRank's
+// MATRIX_OPS, so it falls through to the scalar path. It must NOT silently
+// sample/score garbage — today it fails loudly (sampler/density rejects it).
+// This test PINS that loud failure: if a future change ever lets this case
+// return a value silently, this test fails and flags the regression.
+test('H3: an unrecognised inline matrix-valued scale fails loudly (regression pin against silent sampling)', async () => {
+  const { ctx } = makeCtx(`
+    base = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))
+    A = rowstack([[1.0, 0.0], [0.5, 1.0]])
+    Y = locscale(base, [1.0, 2.0], matprod(A, A))
+    lp = logdensityof(Y, [0.5, 1.5])
+  `);
+  await assert.rejects(
+    async () => { await ctx.getMeasure('lp'); },
+    /.+/,
+    'an off-list matrix scale must throw rather than silently return a density');
+});
