@@ -64,13 +64,16 @@ test('fromSexpr: %kwarg __proto__ does not pollute the kwargs map', () => {
   const { module } = pirSexpr.fromSexpr(src);
   const g = module.bindings.get('g');
   const kwargs = g.rhs.kwargs;
-  // The crafted key must be an OWN, enumerable key holding the value —
-  // not a write through to Object.prototype.
-  assert.equal(Object.getPrototypeOf({}).__proto__nonsense, undefined);
+  // The crafted key must be an OWN key on the kwargs map holding the value —
+  // NOT a write-through to Object.prototype. Probe real pollution: a FRESH
+  // plain object must not have gained a `value` property via the prototype
+  // chain, and `__proto__` must be an OWN (not inherited) key of kwargs.
+  assert.equal(({} as any).value, undefined,
+    'parsing a __proto__ kwarg must not pollute Object.prototype');
+  assert.ok(Object.prototype.hasOwnProperty.call(kwargs, '__proto__'),
+    'the crafted key must be an OWN key on the kwargs map');
   // The kwargs map carries the value safely under the literal name.
   assert.equal(kwargs.__proto__.value, 1);
-  // And it does not leak onto a fresh plain object's prototype chain.
-  assert.equal(({} as any).__proto__poison, undefined);
 });
 
 // ---- NIT-2: recursion depth cap -----------------------------------------
