@@ -199,10 +199,18 @@ function _callToSexpr(e: any, ind: string): string {
 // a list of bindings into a LoweredModule shape consumable by the rest
 // of the engine.
 
+// Recursion guard for the descent reader (NIT-2). Adversarial input such
+// as `(add (add (add … 1 …)))` nested thousands deep would otherwise
+// overflow the JS call stack with a RangeError. We cap the nesting and
+// surface a diagnostic instead.
+const MAX_DEPTH = 2000;
+
 function fromSexpr(text: any) {
   const tokens = _tokenize(text);
   const diagnostics: any[] = [];
   let pos = 0;
+  let depth = 0;
+  let depthTripped = false;
   function peek() { return tokens[pos]; }
   function eat() { return tokens[pos++]; }
   function eof() { return pos >= tokens.length; }
@@ -229,6 +237,31 @@ function fromSexpr(text: any) {
       diagnostics.push({ severity: 'error', message: 'pir-sexpr: unclosed (' });
       return null;
     }
+    // NIT-2: bound recursion depth. Past the cap we stop descending and
+    // consume the rest of this subtree's tokens iteratively (balancing
+    // parens) so the token stream stays consistent for any trailing forms.
+    if (depth >= MAX_DEPTH) {
+      if (!depthTripped) {
+        depthTripped = true;
+        diagnostics.push({ severity: 'error', message: 'pir-sexpr: nesting too deep' });
+      }
+      let nest = 1; // we've already consumed this list's opening '('
+      while (!eof() && nest > 0) {
+        const tk = eat();
+        if (tk.type === '(') nest++;
+        else if (tk.type === ')') nest--;
+      }
+      return null;
+    }
+    depth++;
+    try {
+      return readListBody();
+    } finally {
+      depth--;
+    }
+  }
+
+  function readListBody(): any {
     const head = peek();
     // Head of list determines the form.
     if (head.type === ')') {
@@ -258,7 +291,10 @@ function fromSexpr(text: any) {
     // Default: parse as call (head is op name).
     eat();
     const op = head.value;
-    const callShape: any = { kind: 'call', op, args: [], kwargs: {} };
+    // NIT-1: kwargs is a null-prototype map so a crafted `(%kwarg __proto__ …)`
+    // becomes an ordinary own key instead of mutating Object.prototype or
+    // hiding behind the prototype chain.
+    const callShape: any = { kind: 'call', op, args: [], kwargs: Object.create(null) };
     while (!eof() && peek().type !== ')') {
       const part = readForm();
       _absorbCallPart(callShape, part);
@@ -449,11 +485,23 @@ function fromSexpr(text: any) {
   // `%assign`/`%meta` parts are absorbed the same way as for built-ins.
   function readCallForm(): any {
     eat(); // %call
-    const callShape: any = { kind: 'call', args: [], kwargs: {} };
+    // NIT-1: null-prototype kwargs map (see readListBody for rationale).
+    const callShape: any = { kind: 'call', args: [], kwargs: Object.create(null) };
     // Head: a `(%ref ns name)` form.
     if (peek() && peek().type === '(') {
       const headForm = readForm();
       if (headForm && headForm.kind === 'ref') {
+        // L4: spec §11 allows exactly three `%call` head namespaces:
+        // `self`, `%local`, and a module-alias symbol. A `%local` ref
+        // names a parameter — not a callable — so it is invalid as a
+        // `%call` head and must be rejected with a diagnostic. `self`
+        // and module-alias symbols are accepted; we stay lenient about
+        // the exact alias spelling so legitimate module heads parse.
+        if (headForm.ns === '%local') {
+          diagnostics.push({ severity: 'error',
+            message: 'pir-sexpr: %call head cannot reference %local '
+              + '(parameters are not callable)' });
+        }
         callShape.target = { ns: headForm.ns, name: headForm.name };
       } else {
         diagnostics.push({ severity: 'error',
