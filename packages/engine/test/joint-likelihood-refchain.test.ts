@@ -22,39 +22,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker.ts');
+const { makeCtxFactory } = require('./_measure-helpers.ts');
 
 const SAMPLE_COUNT = 2048;
 const ROOT_SEED    = 0x70C7A11D;
 
-function makeCtx(source: any, opts?: any) {
-  opts = opts || {};
-  const lifted = processSource(source);
-  const built  = orchestrator.buildDerivations(lifted.bindings);
-  const worker = createWorkerHandler();
-  worker.handle({ type: 'init', seed: ROOT_SEED });
-  const cache = new Map();
-  const ctx: any = {
-    derivations: built.derivations,
-    bindings:    built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name: any) => {
-      if (cache.has(name)) return cache.get(name);
-      const p = materialiser.materialiseMeasure(name, ctx);
-      cache.set(name, p);
-      return p;
-    },
-    sendWorker:  (msg: any) => {
-      const reply = worker.handle(msg);
-      if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
-      return Promise.resolve(reply);
-    },
-    sampleCount: opts.sampleCount != null ? opts.sampleCount : SAMPLE_COUNT,
-    rootSeed:    ROOT_SEED,
-  };
-  return { ctx, lifted, built };
-}
+const makeCtx = makeCtxFactory({ sampleCount: SAMPLE_COUNT, rootSeed: ROOT_SEED });
 
 // Same conjugate model as joint-likelihood.test.ts: two likelihoods over
 // a shared parameter mu, in the record-shaped form the bayesupdate

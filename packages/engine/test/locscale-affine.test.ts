@@ -27,39 +27,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker.ts');
+const { orchestrator } = require('..');
+const { makeCtxFactory } = require('./_measure-helpers.ts');
 
 const SAMPLE_COUNT = 20000;
 const ROOT_SEED    = 0x10C5CA1E;
 
-function makeCtx(source: any, opts?: any) {
-  opts = opts || {};
-  const lifted = processSource(source);
-  const built  = orchestrator.buildDerivations(lifted.bindings);
-  const worker = createWorkerHandler();
-  worker.handle({ type: 'init', seed: ROOT_SEED });
-  const cache = new Map();
-  const ctx: any = {
-    derivations: built.derivations,
-    bindings:    built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    getMeasure:  (name: any) => {
-      if (cache.has(name)) return cache.get(name);
-      const p = materialiser.materialiseMeasure(name, ctx);
-      cache.set(name, p);
-      return p;
-    },
-    sendWorker:  (msg: any) => {
-      const reply = worker.handle(msg);
-      if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
-      return Promise.resolve(reply);
-    },
-    sampleCount: opts.sampleCount != null ? opts.sampleCount : SAMPLE_COUNT,
-    rootSeed:    ROOT_SEED,
-  };
-  return { ctx, lifted, built };
-}
+const makeCtx = makeCtxFactory({ sampleCount: SAMPLE_COUNT, rootSeed: ROOT_SEED });
 
 // =====================================================================
 // 1. SCALAR scale regression — incl. scale < 0
@@ -314,7 +288,7 @@ test('H1: a runtime-zero scalar scale trips the non-finite-inverse density guard
 
 // =====================================================================
 // H2 — NAMED scale bindings (the documented workaround) — Identifier
-// branch of __discoveredScaleRank
+// branch of __staticArrayRank
 // =====================================================================
 
 test('H2: a named matrix-scale binding (rank-2) routes through the affine registry and density is correct', () => {
@@ -362,7 +336,7 @@ test('H2: a named vector-scale binding yields the unsupported diagnostic (same a
 });
 
 // =====================================================================
-// M6 — remaining __discoveredScaleRank classification arms
+// M6 — remaining __staticArrayRank classification arms
 // =====================================================================
 
 test('M6: a bare nested-array-literal scale ([[…],[…]]) classifies rank-2 → affine registry', () => {
@@ -393,7 +367,7 @@ test('M6: a rowstack of a FLAT array classifies rank-1 → vector diagnostic', (
 // H3 — an off-list inline matrix-valued scale must FAIL LOUDLY
 // =====================================================================
 //
-// `matprod(A, A)` is matrix-valued but is NOT in __discoveredScaleRank's
+// `matprod(A, A)` is matrix-valued but is NOT in __staticArrayRank's
 // MATRIX_OPS, so it falls through to the scalar path. It must NOT silently
 // sample/score garbage — today it fails loudly (sampler/density rejects it).
 // This test PINS that loud failure: if a future change ever lets this case
