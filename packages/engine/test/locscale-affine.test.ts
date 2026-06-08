@@ -359,3 +359,31 @@ test('H2: a named vector-scale binding yields the unsupported diagnostic (same a
   assert.ok(/locscale/.test(msg) && /(vector|per-component)/.test(msg),
     `diagnostic must mention vector/per-component scale, got: ${msg}`);
 });
+
+// =====================================================================
+// M6 — remaining __discoveredScaleRank classification arms
+// =====================================================================
+
+test('M6: a bare nested-array-literal scale ([[…],[…]]) classifies rank-2 → affine registry', () => {
+  const { built } = makeCtx(`
+    base = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))
+    Y = locscale(base, [1.0, 2.0], [[1.0, 0.0], [0.0, 1.0]])
+  `);
+  const expanded = orchestrator.expandMeasure('Y',
+    { derivations: built.derivations, bindings: built.bindings });
+  assert.equal(expanded.bijection.registryName, 'affine',
+    'a bare [[…],[…]] literal scale must classify as a matrix (rank-2)');
+});
+
+test('M6: a rowstack of a FLAT array classifies rank-1 → vector diagnostic', () => {
+  let err: any = null;
+  try {
+    makeCtx(`
+      base = MvNormal(mu = [0.0, 0.0, 0.0], cov = rowstack([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]))
+      Y = locscale(base, [0.0, 0.0, 0.0], rowstack([1.0, 2.0, 3.0]))
+    `);
+  } catch (e) { err = e; }
+  assert.ok(err, 'rowstack of a flat array is a rank-1 (vector) scale and must throw');
+  assert.ok(/(vector|per-component)/.test(String(err && err.message)),
+    `expected a vector diagnostic, got: ${err && err.message}`);
+});
