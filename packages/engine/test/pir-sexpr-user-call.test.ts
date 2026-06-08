@@ -119,3 +119,18 @@ test('fromSexpr: unclosed (%call …) reports a diagnostic', () => {
   assert.ok(diagnostics.some((d: any) => /unclosed \(%call/.test(d.message)),
     `expected an unclosed-%call diagnostic, got ${JSON.stringify(diagnostics)}`);
 });
+
+test('L7: a user-call target with no explicit namespace emits the default `self` ref', () => {
+  // Build the module IR directly: a `call` node whose target omits `ns`.
+  // (fromSexpr always sets ns, so this default arm is only reachable by
+  // constructing the IR — e.g. a lowering that did not record a namespace.)
+  const mod = {
+    publicSet: new Set(['g']),
+    bindings: new Map([
+      ['g', { rhs: { kind: 'call', target: { name: 'f' }, args: [{ kind: 'lit', value: 2 }] } }],
+    ]),
+  };
+  const out = pirSexpr.toSexpr(mod);
+  assert.match(out, /\(%call \(%ref self f\) 2\)/,
+    `a target without ns must default to self, got: ${out}`);
+});
