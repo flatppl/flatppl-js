@@ -953,6 +953,18 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       + (typeof x) + '); per-atom or vector-valued bijections not yet '
       + 'supported here');
   }
+  // H2(a): a non-finite inverse means the scalar AST f_inv path was
+  // applied to a map it can't represent — e.g. a matrix/vector `scale`
+  // in `locscale` produces `scalar / matrix` through the non-shape-aware
+  // `div`, yielding NaN, which would otherwise slip past the
+  // `typeof x !== 'number'` guard above (NaN IS a number) and recurse
+  // into a silently-garbage log-density. Surface it as a thrown error.
+  if (!Number.isFinite(x)) {
+    throw new Error('density: pushfwd f_inv returned non-finite scalar ('
+      + x + '); the closed-form scalar inverse does not apply to this map '
+      + '(e.g. matrix/vector-scale locscale) — use pushfwd with a '
+      + 'matrix-aware bijection (registryName) instead');
+  }
   // Recurse on M scoring at x. x is atom-independent → walks through
   // M's structure with the standard consume/rest semantics.
   walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);

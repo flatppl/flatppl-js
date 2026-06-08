@@ -543,6 +543,25 @@ function liftInlineSubexpressions(bindings: any) {
   // `rand_succ` successor (engine-concepts §11 / §17.4). After the IR-cache
   // loop + alias-resolution, so every `b.ir` and inner-measure ref resolves.
   rewriteCompositeRandSucc(out);
+  // H3 fix — surviving-joint_likelihood diagnostic. `joint_likelihood`
+  // is pure sugar with NO derivation / density / materialiser handler:
+  // its ONLY supported consumption site is `bayesupdate(joint_likelihood
+  // (...), prior)`, which inlineJointLikelihoodLift folds into nested
+  // bayesupdates (after which nothing references the original
+  // joint_likelihood binding through a real consumer).
+  //
+  // After lifting, a residual `joint_likelihood(...)` binding is
+  // ACCEPTABLE only when it is an orphan alias-source — reachable solely
+  // through pure-alias bindings (`X = Y`) that themselves terminate at
+  // nobody (the bayesupdate that consumed it was already desugared away).
+  // It is UNSUPPORTED when a real (non-alias) consumer still references
+  // it — directly or through an alias chain — e.g. `logdensityof(
+  // joint_likelihood(L1, L2), pt)` (the JL is hoisted to an anon binding
+  // referenced by the logdensityof). Left unwrapped such a node reaches
+  // the materialiser with no derivation kind and fails with an opaque
+  // "no derivation for '<name>'". Surface that case here as an explicit,
+  // actionable diagnostic so future unsupported forms fail loudly.
+  __diagnoseSurvivingJointLikelihood(out);
   return out;
 
   function cloneAst(node: any): any {
@@ -551,6 +570,69 @@ function liftInlineSubexpressions(bindings: any) {
     const copy: Record<string, any> = {};
     for (const k in node) copy[k] = cloneAst(node[k]);
     return copy;
+  }
+
+  // H3 surviving-joint_likelihood diagnostic. See the call site for the
+  // acceptable-vs-unsupported distinction. A residual `joint_likelihood`
+  // binding is unsupported iff some NON-alias binding references it,
+  // directly or through a chain of pure aliases (`X = Y`).
+  function __diagnoseSurvivingJointLikelihood(bindings: any): void {
+    const isJL = (b: any) =>
+      b && b.node && b.node.value
+      && b.node.value.type === 'CallExpr' && b.node.value.callee
+      && b.node.value.callee.type === 'Identifier'
+      && b.node.value.callee.name === 'joint_likelihood';
+    // Collect surviving joint_likelihood bindings.
+    const jlNames: string[] = [];
+    for (const [name, b] of bindings) if (isJL(b)) jlNames.push(name);
+    if (jlNames.length === 0) return;
+
+    // Is binding `b` a pure alias (`X = Y`, RHS a bare Identifier)?
+    const aliasTarget = (b: any): string | null => {
+      const v = b && b.node && b.node.value;
+      return v && v.type === 'Identifier' ? v.name : null;
+    };
+    // Names referenced (anywhere) by a binding's RHS.
+    const refsOf = (node: any, into: Set<string>): void => {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) refsOf(c, into); return; }
+      if (node.type === 'Identifier') into.add(node.name);
+      for (const k in node) { if (k === 'loc') continue; refsOf(node[k], into); }
+    };
+
+    for (const jl of jlNames) {
+      // BFS the reverse-reference graph from `jl`, climbing ONLY through
+      // pure-alias bindings. Any non-alias referrer is a real consumer →
+      // unsupported. (A nested joint_likelihood inside one binding — i.e.
+      // a binding whose RHS is NOT itself a top-level joint_likelihood
+      // but contains one — is also a real consumer of that JL.)
+      const reachAliases = new Set<string>([jl]);
+      const queue = [jl];
+      while (queue.length) {
+        const target = queue.shift() as string;
+        for (const [name, b] of bindings) {
+          if (name === target || reachAliases.has(name)) continue;
+          if (!b || !b.node || !b.node.value) continue;
+          const refs = new Set<string>();
+          refsOf(b.node.value, refs);
+          if (!refs.has(target)) continue;
+          // `name` references `target`. If `name` is a pure alias, climb
+          // through it; otherwise it's a real consumer → diagnose.
+          if (aliasTarget(b) === target) {
+            reachAliases.add(name);
+            queue.push(name);
+          } else {
+            throw new Error("joint_likelihood survived lifting in binding '"
+              + jl + "' (consumed by '" + name + "'): joint_likelihood is "
+              + "sugar with no standalone derivation — its only supported "
+              + "use is `bayesupdate(joint_likelihood(L1, …), prior)`. "
+              + "Scoring or otherwise consuming a joint_likelihood directly "
+              + "(e.g. logdensityof) is not supported; combine the component "
+              + "likelihoods via nested bayesupdate instead");
+          }
+        }
+      }
+    }
   }
 
   // -- Visitor ----------------------------------------------------------
@@ -949,15 +1031,35 @@ function liftInlineSubexpressions(bindings: any) {
    * kwarg or wrong-arity call is left unchanged (typeinfer/analyzer
    * surface the error).
    *
-   * SCOPE: the synthesized closed-form inverse + logvolume are the
-   * SCALAR / elementwise affine case (scalar or per-component `scale`).
-   * Per spec §06 the matrix-`scale` vector case (`locscale(MvNormal(...),
-   * mu, lower_cholesky(cov))`) is a matrix-vector affine map whose
-   * inverse is `L \ (y − mu)` and whose log-volume is `log|det L|` — not
-   * the elementwise `(_ − shift)/scale` form. That case is left for a
-   * follow-up (the spec already advises "for general matrix-vector
-   * affine maps use `pushfwd` directly"); sampling still works, only the
-   * matrix-form density is out of scope here.
+   * SCOPE (post H2/L2 conformance fix):
+   *   - SCALAR `scale` (the common case): synthesized closed-form scalar
+   *     inverse `(_ − shift)/scale` + scalar log-volume `log|scale|`.
+   *     Sampling AND density both correct via the scalar AST pushfwd
+   *     path. `scale < 0` is fine (`abs` in the log-volume).
+   *   - MATRIX `scale` (the spec-§06 `locscale(MvNormal(zeros(n),eye(n)),
+   *     mu, lower_cholesky(cov))` form ≡ `MvNormal(mu, cov)`): a matrix-
+   *     vector affine map `x → L·x + b`. The elementwise scalar inverse
+   *     `(_ − shift)/scale` would be `scalar / matrix` → NaN through the
+   *     non-shape-aware `div`, silently corrupting the density. We
+   *     instead route this case through the AFFINE bijection-REGISTRY
+   *     (registryName='affine', paramIRs {b: shift, L: scale}) — the same
+   *     atom-batched forward (sampling) + atomBatchedInverse / logDetJ
+   *     (density) path the lowered MvNormal uses, which is shape-correct.
+   *     We reuse the existing `__mvnormalLowering = {muIR, covIR}` marker
+   *     forwarded by buildDerivations (derivations.ts:206-213) into
+   *     `paramIRs = {L: lower_cholesky(covIR), b: muIR}`. To make the
+   *     registry's L equal the scale matrix directly, we set
+   *     `covIR = row_gram(scale) = scale·scaleᵀ`; for the spec form's
+   *     lower-triangular scale `lower_cholesky(scale·scaleᵀ) = scale`
+   *     exactly, so the registry computes the intended affine map.
+   *   - VECTOR (per-component / elementwise) `scale`: NOT supported. The
+   *     scalar bijection path throws "cannot consume vector from scalar"
+   *     and the matrix-registry path expects a rank-2 L; rather than
+   *     emit a silently-wrong density we throw a clear lift-time
+   *     diagnostic pointing at `pushfwd` / `broadcast`.
+   *   - ZERO constant `scale` (L2): non-invertible (density +Inf/NaN);
+   *     we throw a clear "scale must be non-zero/invertible" diagnostic
+   *     for a statically-known-zero scalar scale.
    */
   function inlineLocscaleLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
@@ -981,6 +1083,61 @@ function liftInlineSubexpressions(bindings: any) {
     const callOf = (name: any, ...args: any[]) =>
       ({ type: 'CallExpr', callee: makeIdent(name, loc), args, loc });
 
+    // L2: a statically-known-zero scalar scale is non-invertible — the
+    // map collapses every point onto `shift`, so the pushforward has no
+    // density (a Dirac, log-density +Inf at shift, −Inf elsewhere). Fail
+    // loudly rather than synthesize a `/ 0` inverse that yields garbage.
+    const zeroLit = __isLiteralZero(scale);
+    if (zeroLit) {
+      throw new Error("locscale: scale must be non-zero/invertible — a zero "
+        + "scale collapses the distribution to a point (Dirac at the shift) "
+        + "and has no density");
+    }
+
+    // Determine the scale's rank so we route scalar vs matrix vs vector.
+    const scaleRank = __discoveredScaleRank(scale, out);
+    if (scaleRank === 1) {
+      // VECTOR (per-component) scale: unsupported. Neither the scalar AST
+      // inverse (`scalar / vector` → wrong) nor the matrix registry
+      // (expects rank-2 L) applies. Diagnose loudly.
+      throw new Error("locscale: vector (per-component) scale is not "
+        + "supported — its density has no closed-form scalar inverse; use "
+        + "`pushfwd` with an explicit bijection, or `broadcast` a scalar "
+        + "locscale per component");
+    }
+    if (scaleRank === 2) {
+      // MATRIX scale → affine-registry path (CORRECT density + sampling).
+      // Emit the synthetic bijection with the SAME identity-stub forward
+      // / inverse fn bodies the MvNormal lowering uses (the registry
+      // entry, not the AST, supplies the real numerics) and mark it with
+      // `__mvnormalLowering = {muIR, covIR}` so derivations forwards
+      // `registryName='affine'` + `paramIRs {L: lower_cholesky(covIR),
+      // b: muIR}`. covIR = row_gram(scale) (= scale·scaleᵀ) makes
+      // `lower_cholesky(covIR) = scale` for the spec's lower-triangular
+      // scale, so the registry's L is exactly the user's scale matrix.
+      const fwdAnon = freshName();
+      out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(loc)));
+      const invAnon = freshName();
+      out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(loc)));
+      const bijAst = callOf('bijection',
+        makeIdent(fwdAnon, loc), makeIdent(invAnon, loc), makeNumLit(0, loc));
+      const bijName = freshBijName();
+      const bijBinding = makeSyntheticBinding(bijName, bijAst);
+      const covGram = callOf('row_gram', cloneAst(scale));
+      (bijBinding as any).__mvnormalLowering = {
+        muIR:  lowerExpr(cloneAst(shift), liftLowerCtx),
+        covIR: lowerExpr(covGram, liftLowerCtx),
+      };
+      out.set(bijName, bijBinding);
+      return {
+        type: 'CallExpr',
+        callee: makeIdent('pushfwd', loc),
+        args: [makeIdent(bijName, loc), m],
+        loc,
+      };
+    }
+
+    // SCALAR scale (default / rank 0) — original closed-form path.
     // f(x) = scale * _ + shift
     const fwd = fnOf(bin('+', bin('*', cloneAst(scale), makeHole(loc)),
                          cloneAst(shift)));
@@ -1018,6 +1175,67 @@ function liftInlineSubexpressions(bindings: any) {
       args: [makeIdent(bijName, loc), m],
       loc,
     };
+  }
+
+  /**
+   * True iff `ast` is a statically-known scalar zero — a `NumberLiteral`
+   * 0 (the L2 degenerate-scale guard). Conservative: only literal zero,
+   * never a ref / expression (a runtime-zero scale is a runtime concern).
+   */
+  function __isLiteralZero(ast: any): boolean {
+    return !!ast && ast.type === 'NumberLiteral' && +ast.value === 0;
+  }
+
+  /**
+   * Discover the static rank of a `locscale` scale argument:
+   *   0 → scalar (or unknown — default; preserves the scalar path)
+   *   1 → vector (per-component)
+   *   2 → matrix
+   * Recognised matrix shapes: known matrix-producing CallExprs
+   * (`lower_cholesky`, `eye`, `diagmat`, `inv`, `transpose`, `adjoint`,
+   * `row_gram`, `col_gram`, `blockdiagmat`, `bandedmat`, `self_outer`),
+   * a `rowstack(<ArrayLiteral-of-ArrayLiterals>)`, a literal
+   * ArrayLiteral whose elements are ArrayLiterals, or an Identifier ref
+   * to a binding whose `inferredType` is a rank-2 array. Vector shapes:
+   * a literal ArrayLiteral of scalars, or an Identifier ref to a rank-1
+   * array binding. Anything else (numbers, scalar arithmetic, scalar
+   * refs, unresolvable expressions) → 0.
+   */
+  function __discoveredScaleRank(ast: any, bindings: any): number {
+    if (!ast) return 0;
+    const MATRIX_OPS = new Set([
+      'lower_cholesky', 'eye', 'diagmat', 'inv', 'transpose', 'adjoint',
+      'row_gram', 'col_gram', 'blockdiagmat', 'bandedmat', 'self_outer',
+    ]);
+    if (ast.type === 'CallExpr' && ast.callee
+        && ast.callee.type === 'Identifier') {
+      if (MATRIX_OPS.has(ast.callee.name)) return 2;
+      if (ast.callee.name === 'rowstack'
+          && Array.isArray(ast.args) && ast.args.length === 1
+          && ast.args[0] && ast.args[0].type === 'ArrayLiteral') {
+        const rows = ast.args[0].elements || [];
+        return (rows[0] && rows[0].type === 'ArrayLiteral') ? 2 : 1;
+      }
+    }
+    if (ast.type === 'ArrayLiteral') {
+      const els = ast.elements || [];
+      if (els.length === 0) return 0;
+      return (els[0] && els[0].type === 'ArrayLiteral') ? 2 : 1;
+    }
+    if (ast.type === 'Identifier') {
+      const b = bindings.get(ast.name);
+      const t = b && b.inferredType;
+      if (t && t.kind === 'array' && Number.isInteger(t.rank)) return t.rank;
+      // Ref to an ArrayLiteral binding without a resolved inferredType.
+      if (b && b.node && b.node.value
+          && b.node.value.type === 'ArrayLiteral') {
+        const els = b.node.value.elements || [];
+        if (els.length > 0) {
+          return (els[0] && els[0].type === 'ArrayLiteral') ? 2 : 1;
+        }
+      }
+    }
+    return 0;
   }
 
   /**
@@ -1774,26 +1992,36 @@ function liftInlineSubexpressions(bindings: any) {
    * (owned by derivations.ts) and is left for a follow-up.
    *
    * The likelihood arg may be an inline `joint_likelihood(...)` call OR
-   * a self-ref to a binding whose RHS is one (the common surface form —
-   * `L = joint_likelihood(L1, L2); posterior = bayesupdate(L, prior)`).
-   * We resolve one level of ref through `out`. Each Li is kept as
-   * whatever the user wrote (typically a `likelihoodof(...)` ref); the
-   * lift re-walks the rewritten tree so each nested bayesupdate's args
-   * get lifted normally.
+   * a self-ref to a binding whose RHS is one — INCLUDING through an
+   * alias chain (H3 fix): the natural surface form
+   * `L = M;  M = joint_likelihood(L1, L2);  bayesupdate(L, prior)`
+   * binds the bayesupdate's likelihood arg to `L`, which aliases `M`,
+   * which is the `joint_likelihood`. We chase Identifier→binding refs to
+   * a FIXPOINT (guarding against ref cycles). Each Li is kept as whatever
+   * the user wrote (typically a `likelihoodof(...)` ref); the lift
+   * re-walks the rewritten tree so each nested bayesupdate's args get
+   * lifted normally.
    */
   function _resolveJointLikelihoodArgs(lArg: any): any[] | null {
     // Returns the joint_likelihood's positional argument list when
-    // `lArg` is (or refs) a `joint_likelihood(...)` call; else null.
+    // `lArg` is (or refs, through any depth of alias) a
+    // `joint_likelihood(...)` call; else null.
     const isJL = (n: any) =>
       n && n.type === 'CallExpr' && n.callee
       && n.callee.type === 'Identifier'
       && n.callee.name === 'joint_likelihood';
     let node = lArg;
-    if (node && node.type === 'Identifier') {
+    // Chase Identifier alias chains to a fixpoint. `seen` guards against
+    // a binding-ref cycle (a malformed self-referential alias) so we
+    // never loop forever.
+    const seen = new Set<string>();
+    while (node && node.type === 'Identifier') {
+      if (seen.has(node.name)) return null;   // ref cycle — bail
+      seen.add(node.name);
       const b = out.get(node.name);
       const targetAst = b && (b.effectiveValue || (b.node && b.node.value));
-      if (isJL(targetAst)) node = targetAst;
-      else return null;
+      if (!targetAst) return null;
+      node = targetAst;
     }
     if (!isJL(node)) return null;
     const pos = (node.args || []).filter((a: any) => a && a.type !== 'KeywordArg');
