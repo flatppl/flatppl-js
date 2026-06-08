@@ -53,6 +53,13 @@ const FLATPPL = Object.freeze({
 /**
  * Always canonical FlatPPL. Retained for call-site compatibility;
  * `null`/empty path returns null (no path), any other path → FlatPPL.
+ *
+ * @deprecated There is exactly one canonical FlatPPL surface syntax
+ * (spec §05), so path-based variant dispatch no longer carries meaning —
+ * this resolves to {@link FLATPPL} for every non-empty path. No production
+ * caller remains (repo-wide grep finds only this module, its bundled
+ * artifact, and `test/builtins-variants.test.ts`). Kept exported because it
+ * is part of the published bundle API; use {@link resolveVariant} instead.
  */
 function variantForPath(path: string | null | undefined) {
   if (typeof path !== 'string' || path.length === 0) return null;

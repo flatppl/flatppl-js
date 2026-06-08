@@ -53,8 +53,6 @@
 import type { IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
-const { isMeasureExpr } = require('./analyzer.ts');
-const { MEASURE_PRODUCING } = require('./builtins.ts');
 const { quantileSorted } = require('./histogram.ts');
 
 // Facade re-bind of the leaf IR utilities now living in ir-shared.js.
