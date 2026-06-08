@@ -1045,7 +1045,7 @@ function liftInlineSubexpressions(bindings: any) {
    *     (registryName='affine', paramIRs {b: shift, L: scale}) — the same
    *     atom-batched forward (sampling) + atomBatchedInverse / logDetJ
    *     (density) path the lowered MvNormal uses, which is shape-correct.
-   *     We reuse the existing `__mvnormalLowering = {muIR, covIR}` marker
+   *     We reuse the existing `__affineRegistryLowering = {muIR, covIR}` marker
    *     forwarded by buildDerivations (derivations.ts:206-213) into
    *     `paramIRs = {L: lower_cholesky(covIR), b: muIR}`. To make the
    *     registry's L equal the scale matrix directly, we set
@@ -1121,7 +1121,7 @@ function liftInlineSubexpressions(bindings: any) {
       // Emit the synthetic bijection with the SAME identity-stub forward
       // / inverse fn bodies the MvNormal lowering uses (the registry
       // entry, not the AST, supplies the real numerics) and mark it with
-      // `__mvnormalLowering = {muIR, covIR}` so derivations forwards
+      // `__affineRegistryLowering = {muIR, covIR}` so derivations forwards
       // `registryName='affine'` + `paramIRs {L: lower_cholesky(covIR),
       // b: muIR}`. covIR = row_gram(scale) (= scale·scaleᵀ) makes
       // `lower_cholesky(covIR) = scale` for the spec's lower-triangular
@@ -1135,7 +1135,7 @@ function liftInlineSubexpressions(bindings: any) {
       const bijName = freshBijName();
       const bijBinding = makeSyntheticBinding(bijName, bijAst);
       const covGram = callOf('row_gram', cloneAst(scale));
-      (bijBinding as any).__mvnormalLowering = {
+      (bijBinding as any).__affineRegistryLowering = {
         muIR:  lowerExpr(cloneAst(shift), liftLowerCtx),
         covIR: lowerExpr(covGram, liftLowerCtx),
       };
@@ -1287,7 +1287,7 @@ function liftInlineSubexpressions(bindings: any) {
    * where:
    *   __bij_N = bijection(fn(_), fn(_), 0.0)
    *             // additionally marked via the binding's
-   *             // .__mvnormalLowering field, which buildDerivations'
+   *             // .__affineRegistryLowering field, which buildDerivations'
    *             // bijection-construction loop reads to populate
    *             // binding.bijection.registryName = 'affine' and
    *             // binding.bijection.paramIRs = {L: lower_cholesky(cov),
@@ -1403,7 +1403,7 @@ function liftInlineSubexpressions(bindings: any) {
     // IR for mu and cov so the materialiser-time resolveIRToValue
     // pass evaluates them through their actual binding refs (closed
     // over the user's surface bindings, not a copy).
-    (bijBinding as any).__mvnormalLowering = {
+    (bijBinding as any).__affineRegistryLowering = {
       muIR:  lowerExpr(cloneAst(muAst),  liftLowerCtx),
       covIR: lowerExpr(cloneAst(covAst), liftLowerCtx),
     };

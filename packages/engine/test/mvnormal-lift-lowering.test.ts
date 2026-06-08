@@ -15,7 +15,7 @@
 //      helper emits two synthetic bindings:
 //        - __bij_N = bijection(fn(_), fn(_), 0.0)
 //                    with the side-channel marker
-//                    `binding.__mvnormalLowering = {muIR, covIR}`
+//                    `binding.__affineRegistryLowering = {muIR, covIR}`
 //        - __iid_N = iid(Normal(mu=0, sigma=1), D)
 //      and rewrites the original `MvNormal(...)` call to
 //      `pushfwd(__bij_N, __iid_N)` in place.
