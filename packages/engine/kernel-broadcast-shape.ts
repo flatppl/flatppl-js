@@ -82,6 +82,48 @@ interface IidKernelDescriptor {
  * KernelBroadcast`'s sub-helper and `mat-broadcast._detectIid-
  * KernelBody` delegate here.
  */
+// A kernel's reified body comes in two equivalent surface forms:
+//
+//   - `kernelof(x, kw)` lowers to `functionof(lawof(x), kw)` — the body
+//     is `lawof(<measure-construction>)` (spec §sec:kernelof; lower.ts).
+//   - a measure-bodied arrow lambda `(args) -> <measure-construction>`
+//     lowers to `functionof(<measure-construction>, kw)` — NO `lawof`
+//     wrap (spec §04: a lambda is `functionof` sugar; the engine treats
+//     "functionof on a measure" as a kernel, analyzer.ts).
+//
+// Both denote the SAME kernel. `peelKernelBody` strips an optional
+// leading `lawof` so the structural detectors below recognise either
+// form; without it, the arrow form misclassifies as a deterministic
+// value-broadcast and its measure body leaks into the value evaluator
+// ("call op 'iid' not evaluable in sampler context").
+function peelKernelBody(body: any): any {
+  if (body && body.kind === 'call' && body.op === 'lawof'
+      && Array.isArray(body.args) && body.args.length >= 1) {
+    return body.args[0];
+  }
+  return body;
+}
+
+// Normalise an inner builtin-distribution call's POSITIONAL args into a
+// named-kwargs map keyed by the REGISTRY param order, merging over any
+// explicit kwargs (kwargs win). The iid/joint/nested executors build
+// the per-cell dist call from `Object.keys(distKwargs)`, so positional
+// args (`Beta(a_g, b_g)`) would otherwise be dropped — the normal
+// sampler path resolves positional via `resolveParams`, but the
+// kernel-broadcast executor does not. `distParams` is empty when the
+// sampler isn't loadable (classify-time yes/no only); then positional
+// normalisation is skipped (the caller doesn't need distKwargs).
+function distKwargsWithPositional(distCall: any, distParams: string[]): Record<string, any> {
+  const kwargs: Record<string, any> = { ...(distCall.kwargs || {}) };
+  const args = Array.isArray(distCall.args) ? distCall.args : [];
+  for (let i = 0; i < args.length && i < distParams.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(kwargs, distParams[i])) {
+      kwargs[distParams[i]] = args[i];
+    }
+  }
+  return kwargs;
+}
+
 function detectIidKernelBinding(
   name: string, bindings: any, fixedValues?: any,
 ): IidKernelDescriptor | null {
@@ -94,9 +136,7 @@ function detectIidKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'iid') return null;
   const iidArgs = innerMeasure.args || [];
@@ -174,7 +214,7 @@ function detectIidKernelBinding(
     paramKwargs,
     distOp: distCall.op,
     distParams,
-    distKwargs: distCall.kwargs || {},
+    distKwargs: distKwargsWithPositional(distCall, distParams),
     n: nLit,
   };
 }
@@ -285,9 +325,7 @@ function detectJointKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'joint') return null;
 
@@ -557,9 +595,7 @@ function detectJointChainKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'jointchain') return null;
   // MVP: positional layout only. Keyword (record-typed variate) defers.
@@ -761,9 +797,7 @@ function detectNestedBroadcastKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'broadcast') return null;
 

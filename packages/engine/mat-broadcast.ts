@@ -38,6 +38,30 @@ const compositeBodies = require('./composite-body-recognizers.ts');
 
 const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 
+// Positional broadcast args to a USER kernel (`K.(a, b)`) bind to the
+// kernel's surface params by position. The composite-body executors
+// substitute via `kwargIRs` keyed by surface name, so a positional call
+// would leave the body placeholders unbound ("unbound %local reference
+// '_a_g_'"). Map positional `argIRs` onto `kwargIRs` here using the
+// kernel's `paramKwargs`, so positional and keyword broadcast calls
+// behave identically — the bare-dist head does the analogous
+// positional→param mapping inline below.
+function _normalizeCompositeBroadcastArgs(
+  d: any, compositeBody: any,
+): any {
+  const hasKw = d.kwargIRs && Object.keys(d.kwargIRs).length > 0;
+  const argIRs = Array.isArray(d.argIRs) ? d.argIRs : [];
+  if (hasKw || argIRs.length === 0) return d;
+  const pk: string[] = (compositeBody && (compositeBody.paramKwargs
+    || compositeBody.params)) || [];
+  if (pk.length === 0) return d;
+  const kwargIRs: Record<string, any> = {};
+  for (let i = 0; i < argIRs.length && i < pk.length; i++) {
+    kwargIRs[pk[i]] = argIRs[i];
+  }
+  return Object.assign({}, d, { kwargIRs, argIRs: [] });
+}
+
 function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any) {
   const sampler = require('./sampler.ts');
   const irShared = require('./ir-shared.ts');
@@ -80,6 +104,9 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         'broadcast: no composite-body recogniser matches kernel \''
         + d.distOp + '\'. ' + diag.message));
     }
+    // Bind positional broadcast args to the kernel's surface params
+    // (keyword/positional parity) before any executor dispatch.
+    d = _normalizeCompositeBroadcastArgs(d, compositeBody);
     // Phase 4.2: joint-bodied composite — execute via the per-cell
     // multi-component pathway. paramIRs assembly + the per-cell loop
     // live in `_executeJointComposite`; we route there before touching
