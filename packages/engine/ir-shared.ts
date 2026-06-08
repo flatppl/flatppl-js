@@ -118,7 +118,7 @@ function resolveConstant(
       case 'add': return args.length === 2 ? args[0] + args[1] : null;
       case 'sub': return args.length === 2 ? args[0] - args[1] : null;
       case 'mul': return args.length === 2 ? args[0] * args[1] : null;
-      case 'div': return args.length === 2 ? Math.floor(args[0] / args[1]) : null;
+      case 'div': return args.length === 2 ? require('./value-ops.ts').floorDiv(args[0], args[1]) : null;
       default: return null;
     }
   }

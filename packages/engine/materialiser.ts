@@ -1356,20 +1356,16 @@ function _foldNumericIR(ir: any): number | null {
     if (op === 'add') return a + b;
     if (op === 'sub') return a - b;
     if (op === 'mul') return a * b;
-    // Integer floor-division (spec §07 line 419): `div(a, b) = floor(a/b)`.
-    // Distinct from `divide` (line 449), which is real/complex division.
-    // Kept identical to value-ops.floorDiv (the canonical definition);
-    // inlined here to avoid pulling value-ops into the materialiser's
-    // module-load graph for one arithmetic primitive.
-    if (op === 'div') return Math.floor(a / b);
+    // Integer floor-division `div` (spec §07 line 419, floor(a/b)) and
+    // floor-modulo `mod` (a − b·floor(a/b)) both delegate to the canonical
+    // value-ops definitions so the formula lives in exactly one place.
+    // `divide` (line 449) stays real/complex division. A call-time require
+    // (memoised by Node) keeps value-ops out of the materialiser's
+    // module-load graph — the same lazy pattern used for ir-shared above.
+    if (op === 'div') return require('./value-ops.ts').floorDiv(a, b);
     if (op === 'divide') return a / b;
     if (op === 'pow') return Math.pow(a, b);
-    // Floor-modulo (spec §07): `mod(a, b) = a − b·floor(a/b)`, NOT JS
-    // `%` (truncated remainder) — `mod(-7, 3)` folds to 2, not -1.
-    // Kept identical to value-ops.floorMod (the canonical definition);
-    // inlined here to avoid pulling value-ops into the materialiser's
-    // module-load graph for one arithmetic primitive.
-    if (op === 'mod') return a - b * Math.floor(a / b);
+    if (op === 'mod') return require('./value-ops.ts').floorMod(a, b);
   }
   if (args.length === 1) {
     const a = args[0] as number;

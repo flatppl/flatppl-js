@@ -600,15 +600,16 @@ const ARITH_OPS = {
   // floor(a/b)`, domain integers. Distinct from `divide` (real/complex
   // division) below. Complex operands have no integer floor-division, so
   // they fall through to true division (rare; kept for total dispatch).
-  // No b≠0 guard (spec precondition): b=0 → non-finite IEEE result
-  // (floor(±Inf) = ±Inf for a ≠ 0, NaN for 0/0), the same unguarded
-  // convention shared with `mod`. Kept bit-identical to value-ops.floorDiv
-  // and the materialiser fold path.
+  // Delegates the real path to the canonical value-ops.floorDiv so the
+  // floor-division formula lives in exactly one place. No b≠0 guard (spec
+  // precondition): b=0 → non-finite IEEE result, the same unguarded
+  // convention shared with `mod`. Complex operands are dead under §07
+  // (div is integer-typed) but kept for total dispatch.
   div: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cDiv(_toComplex(a), _toComplex(b));
     }
-    return Math.floor(a / b);
+    return valueOps.floorDiv(a, b);
   },
   divide: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
@@ -616,14 +617,13 @@ const ARITH_OPS = {
     }
     return a / b;
   },
-  // mod(a, b): floor-modulo per spec §07 — `mod(a, b) = a − b·floor(a/b)`.
-  // NOT JS `%`, which is the truncated remainder (sign follows the
-  // dividend) and disagrees for mixed signs: JS `-7 % 3 === -1`, but the
-  // spec's floor-modulo gives `mod(-7, 3) === 2`. The result always shares
-  // the sign of the divisor `b`. The batched `ARITH_OPS_N.mod`
-  // (sampler-eval-batched) derives its impl from this scalar entry via
-  // `initARITHOPSN`, so the two paths stay bit-identical.
-  mod: (a: any, b: any) => a - b * Math.floor(a / b),
+  // mod(a, b): floor-modulo per spec §07. Delegates to the canonical
+  // value-ops.floorMod so the formula lives in one place — NOT JS `%`
+  // (truncated remainder), which disagrees for mixed signs (`mod(-7, 3)`
+  // is 2, not -1). The batched `ARITH_OPS_N.mod` (sampler-eval-batched)
+  // derives its impl from this scalar entry via `initARITHOPSN`, so the
+  // two paths stay identical.
+  mod: (a: any, b: any) => valueOps.floorMod(a, b),
   neg: (a: any) => {
     if (_isComplex(a)) return _cNeg(a);
     if (valueLib.isValue(a)) return valueOps.neg(a);
