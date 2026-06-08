@@ -1961,6 +1961,47 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
 //   - Atom axis: deliberately NOT in IR axisStack (engine-internal
 //     concept; materialiser-time prepended).
 
+// Measure-constructing IR ops: a `functionof` over one of these reifies
+// a transition kernel (spec §sec:functionof-measure, 04-design.md:293).
+// Bare distribution heads are covered separately via the registries.
+const _MEASURE_CONSTRUCT_OPS = new Set([
+  'iid', 'joint', 'jointchain', 'superpose', 'mixture', 'kernelof',
+  'normalize', 'truncate', 'weighted', 'logweighted', 'restrict',
+  'pushfwd', 'bayesupdate',
+]);
+
+// Does this IR node denote a measure construction? Recognises the
+// arrow-lambda kernel form `(args) -> <measure>`, which lowers to
+// `functionof(<measure>)` with NO `lawof` wrap and whose inferred type
+// is `function`/`deferred` rather than `kernel` — so the type-driven
+// `_isKernelHead` test below misses it. Mirrors the structural
+// acceptance the kernel-broadcast detectors apply (peelKernelBody).
+function _irNodeIsMeasure(node: any, bindings: any): boolean {
+  if (!node || node.kind !== 'call' || !node.op) return false;
+  let n = node;
+  if (n.op === 'lawof') {            // `kernelof` form: functionof(lawof(M))
+    n = (n.args && n.args[0]) || null;
+    if (!n || n.kind !== 'call' || !n.op) return false;
+  }
+  if (_MEASURE_CONSTRUCT_OPS.has(n.op)) return true;
+  let irShared: any = null;
+  try { irShared = require('./ir-shared.ts'); } catch (_) { /* cycle */ }
+  const isDist = (op: any): boolean => !!(irShared && op
+    && ((irShared.SAMPLEABLE_DISTRIBUTIONS && irShared.SAMPLEABLE_DISTRIBUTIONS.has(op))
+        || (irShared.VECTOR_OUTPUT_DISTRIBUTIONS && irShared.VECTOR_OUTPUT_DISTRIBUTIONS.has(op))));
+  if (isDist(n.op)) return true;       // bare-distribution-bodied kernel
+  if (n.op === 'broadcast') {
+    // broadcast is a measure iff its head is a distribution / kernel;
+    // broadcasting a plain function yields values, not a measure.
+    const head = (n.args && n.args[0]) || null;
+    if (!head) return false;
+    if (isDist(head.op) || isDist(head.name)) return true;
+    if (head.kind === 'ref') return _isKernelHead(head, bindings);
+    return false;
+  }
+  return false;
+}
+
 function _isKernelHead(head: any, bindings: any): boolean {
   if (!head) return false;
   if (head.kind !== 'ref' || head.ns !== 'self') return false;
@@ -1968,13 +2009,20 @@ function _isKernelHead(head: any, bindings: any): boolean {
   const b = bindings.get(head.name);
   if (!b) return false;
   // Either the binding is explicitly kernel-typed, OR its IR
-  // constructs a measure (e.g. `kernelof(...)`). For the minimum-
-  // viable pass we recognise only the type-driven case; the dissolver
-  // already inlines `functionof` bodies, so a function head wouldn't
-  // appear in a kernel-broadcast pattern.
+  // structurally constructs a measure under `functionof`. The
+  // type-driven case covers `kernelof(...)` (inferred type `kernel`);
+  // the structural case covers the arrow-lambda form
+  // `(args) -> <measure>` ≡ `functionof(<measure>)`, which types as
+  // `function`/`deferred` yet denotes a kernel (§sec:functionof-measure)
+  // — without it the outer broadcast axis is mislabelled `broadcast`
+  // and the kernel body's inner axis ladder is never appended, so the
+  // nested-broadcast executor sees a null outer axis size.
   const t = b.inferredType;
-  if (!t) return false;
-  return t.kind === 'kernel';
+  if (t && t.kind === 'kernel') return true;
+  if (b.ir && b.ir.kind === 'call' && b.ir.op === 'functionof') {
+    return _irNodeIsMeasure(b.ir.body, bindings);
+  }
+  return false;
 }
 
 function _argSizeIdentifier(arg: any, bindings: any): number | string {

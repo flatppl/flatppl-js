@@ -186,6 +186,12 @@ function parse(tokens: any[], variant: any) {
   // body' is `expr` with every free occurrence of each `arg_i`
   // rewritten to Placeholder('arg_i'). The functionof+Placeholder
   // path is what `_lowerReification` already understands.
+  //
+  // When `body` is a measure construction, this emits `functionof(
+  // <measure>)` with NO `lawof` wrap — unlike `kernelof`, which lowers
+  // to `functionof(lawof(<measure>))` (lower.ts). Both denote the same
+  // kernel (§sec:functionof-measure); the two forms are reconciled
+  // downstream rather than unified here (see lower.ts NB + peelKernelBody).
   function parseLambda(): any {
     const lparen = advance();  // (
     const argNames: string[] = [];

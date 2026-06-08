@@ -46,18 +46,45 @@ const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 // kernel's `paramKwargs`, so positional and keyword broadcast calls
 // behave identically — the bare-dist head does the analogous
 // positional→param mapping inline below.
+//
+// MIXED positional + keyword (`K.(a, b_g = b)`) is supported: each
+// positional arg binds to its surface param by index and is MERGED with
+// the explicit kwargs. A positional slot whose surface param is ALSO set
+// by keyword is a COLLISION (the same param bound twice) — a static
+// error naming the param, NOT a silent override. Surplus positional args
+// (more than the kernel has params) are an arity error rather than being
+// silently dropped (the bare-dist head does the analogous check inline
+// below). Returns a FRESH object (never mutates the shared cached
+// derivation).
 function _normalizeCompositeBroadcastArgs(
   d: any, compositeBody: any,
 ): any {
-  const hasKw = d.kwargIRs && Object.keys(d.kwargIRs).length > 0;
   const argIRs = Array.isArray(d.argIRs) ? d.argIRs : [];
-  if (hasKw || argIRs.length === 0) return d;
+  if (argIRs.length === 0) return d;
   const pk: string[] = (compositeBody && (compositeBody.paramKwargs
     || compositeBody.params)) || [];
   if (pk.length === 0) return d;
+  // Surplus positional args have no surface param to bind to — error
+  // loudly rather than silently dropping them (M4 too-many-args).
+  if (argIRs.length > pk.length) {
+    throw new Error('broadcast(' + d.distOp + '): expected ' + pk.length
+      + ' positional arrays (' + pk.join(', ') + '), got ' + argIRs.length
+      + ' (too many positional args)');
+  }
   const kwargIRs: Record<string, any> = {};
+  // Carry the explicit kwargs through first; positional slots merge in.
+  if (d.kwargIRs) {
+    for (const k of Object.keys(d.kwargIRs)) kwargIRs[k] = d.kwargIRs[k];
+  }
   for (let i = 0; i < argIRs.length && i < pk.length; i++) {
-    kwargIRs[pk[i]] = argIRs[i];
+    const surf = pk[i];
+    // A positional slot whose surface param is also set by keyword binds
+    // the same param twice — a clear static error naming the param.
+    if (Object.prototype.hasOwnProperty.call(kwargIRs, surf)) {
+      throw new Error('broadcast(' + d.distOp + '): surface param \'' + surf
+        + '\' bound both positional and keyword — bind it once');
+    }
+    kwargIRs[surf] = argIRs[i];
   }
   return Object.assign({}, d, { kwargIRs, argIRs: [] });
 }
@@ -105,8 +132,15 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         + d.distOp + '\'. ' + diag.message));
     }
     // Bind positional broadcast args to the kernel's surface params
-    // (keyword/positional parity) before any executor dispatch.
-    d = _normalizeCompositeBroadcastArgs(d, compositeBody);
+    // (keyword/positional parity) before any executor dispatch. A
+    // positional+keyword collision or too-many-args arity error throws
+    // here — surface it as a rejection so the materialiser's promise
+    // chain reports it cleanly.
+    try {
+      d = _normalizeCompositeBroadcastArgs(d, compositeBody);
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
     // Phase 4.2: joint-bodied composite — execute via the per-cell
     // multi-component pathway. paramIRs assembly + the per-cell loop
     // live in `_executeJointComposite`; we route there before touching
@@ -886,11 +920,12 @@ function _executeGenerativeComposite(
   const inlinedBody = _inlineGenerativeBody(
     compositeBody.bodyValueExprIR, ctx.bindings, drawNames, boundary);
 
-  // (3) Map kernel boundary formals → their broadcast-arg IRs. The broadcast
-  //     args (d.kwargIRs / d.argIRs) carry the per-cell / per-atom inputs;
-  //     map formals onto their surface kwargs. POSITIONAL args bind to
-  //     paramKwargs positionally (the canonical `transport.(xs, [pars])`
-  //     surface lowers to positional argIRs).
+  // (3) Map kernel boundary formals → their broadcast-arg IRs. Outer-arg
+  //     normalisation already ran in `_normalizeCompositeBroadcastArgs`
+  //     before dispatch (matKernelBroadcast ~line 109), so positional
+  //     args (the canonical `transport.(xs, [pars])` surface) have been
+  //     folded into `d.kwargIRs` keyed by surface name — we only consult
+  //     kwargs here, keeping outer-arg binding in one place.
   const bcArgIRByFormal: Record<string, any> = {};   // formal name → arg IR
   if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
     for (let i = 0; i < compositeBody.params.length; i++) {
@@ -898,10 +933,6 @@ function _executeGenerativeComposite(
       if (Object.prototype.hasOwnProperty.call(d.kwargIRs, surf)) {
         bcArgIRByFormal[compositeBody.params[i]] = d.kwargIRs[surf];
       }
-    }
-  } else if (Array.isArray(d.argIRs)) {
-    for (let i = 0; i < compositeBody.params.length && i < d.argIRs.length; i++) {
-      bcArgIRByFormal[compositeBody.params[i]] = d.argIRs[i];
     }
   }
 
