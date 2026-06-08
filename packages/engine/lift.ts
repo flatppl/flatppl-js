@@ -604,6 +604,23 @@ function liftInlineSubexpressions(bindings: any) {
       for (const k in node) { if (k === 'loc') continue; refsOf(node[k], into); }
     };
 
+    // Precompute, ONCE, a reverse-reference index `referrersOf`: each
+    // target name → list of binding names whose RHS references it, in
+    // binding insertion order. The BFS below walks this index instead of
+    // rescanning every binding (and recomputing refsOf) per dequeue,
+    // which was O(bindings²). refsOf now runs exactly once per binding.
+    const referrersOf = new Map<string, string[]>();
+    for (const [name, b] of bindings) {
+      if (!b || !b.node || !b.node.value) continue;
+      const refs = new Set<string>();
+      refsOf(b.node.value, refs);
+      for (const r of refs) {
+        let list = referrersOf.get(r);
+        if (!list) { list = []; referrersOf.set(r, list); }
+        list.push(name);
+      }
+    }
+
     for (const jl of jlNames) {
       // BFS the reverse-reference graph from `jl`, climbing ONLY through
       // pure-alias bindings. Any non-alias referrer is a real consumer →
@@ -614,12 +631,10 @@ function liftInlineSubexpressions(bindings: any) {
       const queue = [jl];
       while (queue.length) {
         const target = queue.shift() as string;
-        for (const [name, b] of bindings) {
+        for (const name of referrersOf.get(target) || []) {
           if (name === target || reachAliases.has(name)) continue;
+          const b = bindings.get(name);
           if (!b || !b.node || !b.node.value) continue;
-          const refs = new Set<string>();
-          refsOf(b.node.value, refs);
-          if (!refs.has(target)) continue;
           // `name` references `target`. If `name` is a pure alias, climb
           // through it; otherwise it's a real consumer → diagnose.
           if (aliasTarget(b) === target) {
@@ -898,10 +913,12 @@ function liftInlineSubexpressions(bindings: any) {
       // handles.
       astArg = inlineMetricsumLift(astArg);
       astArg = inlineFilterLift(astArg);
-      // joint_likelihood(L1,…) inside a bayesupdate is sugar for a fold
-      // of single-likelihood bayesupdates (spec §06). Desugar BEFORE
-      // inlineLikelihoodofLift so each emitted nested bayesupdate's
-      // likelihood arg is re-walked + lifted on subsequent iterations.
+      // joint_likelihood(L1,…) inside a bayesupdate folds to a chain of
+      // single-likelihood bayesupdates — a sound derived rewrite (not a
+      // spec-stated equivalence; see inlineJointLikelihoodLift's
+      // soundness note). Desugar BEFORE inlineLikelihoodofLift so each
+      // emitted nested bayesupdate's likelihood arg is re-walked + lifted
+      // on subsequent iterations.
       astArg = inlineJointLikelihoodLift(astArg);
       astArg = inlineLikelihoodofLift(astArg);
       astArg = inlineBroadcasted(astArg);
@@ -1080,8 +1097,8 @@ function liftInlineSubexpressions(bindings: any) {
    *   - ZERO constant `scale` (L2): non-invertible (density +Inf/NaN);
    *     we throw a clear "scale must be non-zero/invertible" diagnostic
    *     for a statically-known-zero scalar scale.
-   *   - OFF-LIST matrix scale (a matrix-VALUED expression `__discovered
-   *     ScaleRank` does not recognise — e.g. an inline matrix product, or
+   *   - OFF-LIST matrix scale (a matrix-VALUED expression `__staticArray
+   *     Rank` does not recognise — e.g. an inline matrix product, or
    *     a callable returning a matrix): falls through to the SCALAR path.
    *     The density side fails LOUDLY via density.walkPushfwd's non-finite
    *     guard (H2(a)), but forward SAMPLING of `scale * _ + shift` may
@@ -1150,20 +1167,12 @@ function liftInlineSubexpressions(bindings: any) {
       // b: muIR}`. covIR = row_gram(scale) (= scale·scaleᵀ) makes
       // `lower_cholesky(covIR) = scale` for the spec's lower-triangular
       // scale, so the registry's L is exactly the user's scale matrix.
-      const fwdAnon = freshName();
-      out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(loc)));
-      const invAnon = freshName();
-      out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(loc)));
-      const bijAst = callOf('bijection',
-        makeIdent(fwdAnon, loc), makeIdent(invAnon, loc), makeNumLit(0, loc));
-      const bijName = freshBijName();
-      const bijBinding = makeSyntheticBinding(bijName, bijAst);
       const covGram = callOf('row_gram', cloneAst(scale));
-      (bijBinding as any).__affineRegistryLowering = {
+      const bijName = emitAffineRegistryBijection({
         muIR:  lowerExpr(cloneAst(shift), liftLowerCtx),
         covIR: lowerExpr(covGram, liftLowerCtx),
-      };
-      out.set(bijName, bijBinding);
+        loc,
+      });
       return {
         type: 'CallExpr',
         callee: makeIdent('pushfwd', loc),
@@ -1394,35 +1403,16 @@ function liftInlineSubexpressions(bindings: any) {
     // Identifiers. Synthetic bindings inserted into `out` during the
     // inlineUserCall loop bypass the per-binding visit() pass that
     // would normally hoist them via inlineBijectionLift.
-    const fwdAnon = freshName();
-    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(astArg.loc)));
-    const invAnon = freshName();
-    out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(astArg.loc)));
-    const bijAst = {
-      type: 'CallExpr',
-      callee: makeIdent('bijection', astArg.loc),
-      args: [
-        makeIdent(fwdAnon, astArg.loc),
-        makeIdent(invAnon, astArg.loc),
-        makeNumLit(0, astArg.loc),
-      ],
-      loc: astArg.loc,
-    };
-    const bijName = freshBijName();
-    const bijBinding = makeSyntheticBinding(bijName, bijAst);
-    // STEP-1 patched inferSyntheticType to return 'bijection' for this
-    // AST head; if the patch is in place, bijBinding.type ==='bijection'.
-    // Side-channel marker for buildDerivations' bijection-construction
-    // loop (derivations.ts:159-179) to forward registryName +
-    // paramIRs onto binding.bijection. The marker carries the lowered
-    // IR for mu and cov so the materialiser-time resolveIRToValue
-    // pass evaluates them through their actual binding refs (closed
-    // over the user's surface bindings, not a copy).
-    (bijBinding as any).__affineRegistryLowering = {
+    // The marker carries the lowered IR for mu and cov so the
+    // materialiser-time resolveIRToValue pass evaluates them through
+    // their actual binding refs (closed over the user's surface
+    // bindings, not a copy). See emitAffineRegistryBijection for the
+    // shared stub + `__affineRegistryLowering` contract details.
+    const bijName = emitAffineRegistryBijection({
       muIR:  lowerExpr(cloneAst(muAst),  liftLowerCtx),
       covIR: lowerExpr(cloneAst(covAst), liftLowerCtx),
-    };
-    out.set(bijName, bijBinding);
+      loc:   astArg.loc,
+    });
     // Emit the synthetic iid base binding `__iid_N`. The inner
     // `Normal(mu=0, sigma=1)` MUST be pre-hoisted to an anon binding
     // so classifyIid's `resolveMeasureBaseName(ast.args[0], bindings)`
@@ -1895,6 +1885,51 @@ function liftInlineSubexpressions(bindings: any) {
       loc: loc || null,
     };
   }
+  /**
+   * Emit the synthetic affine-registry bijection stub shared by the
+   * matrix-`locscale` lowering and `inlineMvNormalLift`. Both lower a
+   * Gaussian-family measure to `pushfwd(<bij>, <base>)` where `<bij>`
+   * is an identity-stub `bijection(fn(_), fn(_), 0.0)`; the registry's
+   * `affine` entry supplies the real numerics. The (L, b) parameters
+   * travel via the binding's `__affineRegistryLowering = {muIR, covIR}`
+   * side-channel marker, which buildDerivations' bijection-construction
+   * loop (derivations.ts:159-179) reads to set
+   * `binding.bijection.registryName = 'affine'` and
+   * `binding.bijection.paramIRs = {L: lower_cholesky(covIR), b: muIR}`.
+   *
+   * The `fn(_)` sub-expressions are pre-hoisted to anon bindings so the
+   * derivations loop sees args[0]/args[1] as Identifiers (synthetic
+   * bindings inserted during the inlineUserCall loop bypass the
+   * per-binding visit() pass that would otherwise hoist them via
+   * inlineBijectionLift).
+   *
+   * The marker shape `{muIR, covIR}` is a contract with derivations.ts —
+   * keep it identical. Returns the fresh `__bij_N` binding name.
+   */
+  function emitAffineRegistryBijection(
+    opts: { muIR: any; covIR: any; loc: any },
+  ): string {
+    const { muIR, covIR, loc } = opts;
+    const fwdAnon = freshName();
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(loc)));
+    const invAnon = freshName();
+    out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(loc)));
+    const bijAst = {
+      type: 'CallExpr',
+      callee: makeIdent('bijection', loc),
+      args: [
+        makeIdent(fwdAnon, loc),
+        makeIdent(invAnon, loc),
+        makeNumLit(0, loc),
+      ],
+      loc,
+    };
+    const bijName = freshBijName();
+    const bijBinding = makeSyntheticBinding(bijName, bijAst);
+    (bijBinding as any).__affineRegistryLowering = { muIR, covIR };
+    out.set(bijName, bijBinding);
+    return bijName;
+  }
   function __resolveLiteralArrayRef(ast: any, bindings: any): any {
     // Returns the ArrayLiteral AST node when `ast` is one OR is a
     // direct ref to a binding whose RHS is one. Otherwise null. No
@@ -1989,8 +2024,10 @@ function liftInlineSubexpressions(bindings: any) {
    */
   /**
    * Desugar `bayesupdate(joint_likelihood(L1, …, Ln), prior)` into a
-   * left-fold of single-likelihood `bayesupdate`s (spec §06
-   * sec:joint_likelihood + sec:bayesupdate):
+   * left-fold of single-likelihood `bayesupdate`s — a sound derived
+   * rewrite (not a spec-stated equivalence); the soundness argument
+   * below derives it from the spec §06 sec:joint_likelihood +
+   * sec:bayesupdate density definitions:
    *
    *   bayesupdate(joint_likelihood(L1, …, Ln), prior)
    *     ≡  bayesupdate(Ln, … bayesupdate(L2, bayesupdate(L1, prior)) …)
