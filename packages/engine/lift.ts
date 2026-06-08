@@ -362,6 +362,10 @@ function liftInlineSubexpressions(bindings: any) {
   bindings = canonicalizeImplicitBoundaries(bindings);
   const out: Map<string, any> = new Map(bindings);
   let counter = 0;
+  const MATRIX_ARRAY_OPS = new Set([
+    'lower_cholesky', 'eye', 'diagmat', 'inv', 'transpose', 'adjoint',
+    'row_gram', 'col_gram', 'blockdiagmat', 'bandedmat', 'self_outer',
+  ]);
   function freshName() {
     let n: string;
     do { n = '__anon' + (counter++); } while (out.has(n));
@@ -1106,7 +1110,7 @@ function liftInlineSubexpressions(bindings: any) {
     }
 
     // Determine the scale's rank so we route scalar vs matrix vs vector.
-    const scaleRank = __discoveredScaleRank(scale, out);
+    const scaleRank = __staticArrayRank(scale, out);
     if (scaleRank === 1) {
       // VECTOR (per-component) scale: unsupported. Neither the scalar AST
       // inverse (`scalar / vector` → wrong) nor the matrix registry
@@ -1198,29 +1202,21 @@ function liftInlineSubexpressions(bindings: any) {
   }
 
   /**
-   * Discover the static rank of a `locscale` scale argument:
-   *   0 → scalar (or unknown — default; preserves the scalar path)
-   *   1 → vector (per-component)
-   *   2 → matrix
-   * Recognised matrix shapes: known matrix-producing CallExprs
-   * (`lower_cholesky`, `eye`, `diagmat`, `inv`, `transpose`, `adjoint`,
-   * `row_gram`, `col_gram`, `blockdiagmat`, `bandedmat`, `self_outer`),
-   * a `rowstack(<ArrayLiteral-of-ArrayLiterals>)`, a literal
-   * ArrayLiteral whose elements are ArrayLiterals, or an Identifier ref
-   * to a binding whose `inferredType` is a rank-2 array. Vector shapes:
-   * a literal ArrayLiteral of scalars, or an Identifier ref to a rank-1
-   * array binding. Anything else (numbers, scalar arithmetic, scalar
-   * refs, unresolvable expressions) → 0.
+   * Static rank of an array-shaped expression, or 0 when scalar/unknown:
+   *   0 → scalar or not statically classifiable
+   *   1 → vector  (rank-1 array)
+   *   2 → matrix  (rank-2 array)
+   * Recognises: matrix-producing builtin CallExprs (MATRIX_ARRAY_OPS),
+   * `rowstack(<ArrayLiteral>)` (rank 2 if rows are ArrayLiterals else 1),
+   * a literal `ArrayLiteral` (rank 2 if elements are ArrayLiterals else 1),
+   * and an Identifier ref to a binding with a rank-N `inferredType` array
+   * (or, absent inferredType, an ArrayLiteral-valued binding).
    */
-  function __discoveredScaleRank(ast: any, bindings: any): number {
+  function __staticArrayRank(ast: any, bindings: any): number {
     if (!ast) return 0;
-    const MATRIX_OPS = new Set([
-      'lower_cholesky', 'eye', 'diagmat', 'inv', 'transpose', 'adjoint',
-      'row_gram', 'col_gram', 'blockdiagmat', 'bandedmat', 'self_outer',
-    ]);
     if (ast.type === 'CallExpr' && ast.callee
         && ast.callee.type === 'Identifier') {
-      if (MATRIX_OPS.has(ast.callee.name)) return 2;
+      if (MATRIX_ARRAY_OPS.has(ast.callee.name)) return 2;
       if (ast.callee.name === 'rowstack'
           && Array.isArray(ast.args) && ast.args.length === 1
           && ast.args[0] && ast.args[0].type === 'ArrayLiteral') {
@@ -1237,7 +1233,6 @@ function liftInlineSubexpressions(bindings: any) {
       const b = bindings.get(ast.name);
       const t = b && b.inferredType;
       if (t && t.kind === 'array' && Number.isInteger(t.rank)) return t.rank;
-      // Ref to an ArrayLiteral binding without a resolved inferredType.
       if (b && b.node && b.node.value
           && b.node.value.type === 'ArrayLiteral') {
         const els = b.node.value.elements || [];
