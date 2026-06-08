@@ -310,3 +310,52 @@ test('H1: a runtime-zero scalar scale trips the non-finite-inverse density guard
     /non-finite/,
     'a non-finite closed-form inverse must throw the guard error, not return a finite-but-garbage density');
 });
+
+// =====================================================================
+// H2 — NAMED scale bindings (the documented workaround) — Identifier
+// branch of __discoveredScaleRank
+// =====================================================================
+
+test('H2: a named matrix-scale binding (rank-2) routes through the affine registry and density is correct', () => {
+  // S = lower_cholesky(COV) ⇒ S·Sᵀ = COV, so Y ≡ MvNormal(MU_VEC, COV).
+  const { built } = makeCtx(`
+    base = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))
+    S = lower_cholesky(rowstack([[${COV[0][0]}, ${COV[0][1]}], [${COV[1][0]}, ${COV[1][1]}]]))
+    Y = locscale(base, [${MU_VEC[0]}, ${MU_VEC[1]}], S)
+  `);
+  const expanded = orchestrator.expandMeasure('Y',
+    { derivations: built.derivations, bindings: built.bindings });
+  assert.equal(expanded.bijection.registryName, 'affine',
+    'a NAMED matrix scale must route to the affine registry, not the scalar path');
+
+  const density = require('../density.ts');
+  const densityPrims = require('../density-prims.ts');
+  // The bijection's paramIRs reference the NAMED binding `S`, so the density
+  // entry point needs its value in the env — sourced from the precomputed
+  // fixedValues (cf. the inline matrix tests, which are self-contained).
+  const env: any = {};
+  for (const [k, v] of built.fixedValues) env[k] = v;
+  for (const obsArr of [[0.5, 1.5], [1.0, 2.0]]) {
+    const obs = toValue(obsArr);
+    const lp = density.logDensity(expanded, obs, env, {});
+    const expected = densityPrims.MV_DENSITY_FNS.MvNormal(obs,
+      { mu: toValue(MU_VEC), cov: toMatValue(COV) });
+    assert.ok(Number.isFinite(lp) && Math.abs(lp - expected) < 1e-9,
+      `named matrix-scale density at ${obsArr}: got ${lp}, want ${expected}`);
+  }
+});
+
+test('H2: a named vector-scale binding yields the unsupported diagnostic (same as inline)', () => {
+  let err: any = null;
+  try {
+    makeCtx(`
+      base = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))
+      s = [2.0, 0.5]
+      Y = locscale(base, [1.0, 2.0], s)
+    `);
+  } catch (e) { err = e; }
+  assert.ok(err, 'a named vector scale must throw, not fall through to the scalar path');
+  const msg = String(err && err.message);
+  assert.ok(/locscale/.test(msg) && /(vector|per-component)/.test(msg),
+    `diagnostic must mention vector/per-component scale, got: ${msg}`);
+});
