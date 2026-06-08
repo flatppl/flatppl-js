@@ -127,17 +127,31 @@ function _atomToSexpr(v: any) {
 }
 
 function _callToSexpr(e: any, ind: string): string {
-  // Determine if this is a user-defined-callable call. Lower.ts emits
-  // `op: '%call'` with first arg being the ref-head for user calls;
-  // we don't gate on that yet — we just print the op as the head.
-  const parts: string[] = [e.op];
+  // FlatPIR (spec §11) distinguishes built-in operations from calls to
+  // user-defined callables by expression SHAPE, not name:
+  //   - Built-ins are bare-headed: `(add x y)`, `(Normal …)`. lower.ts
+  //     records these with `e.op` set to the built-in name.
+  //   - User-defined calls use `(%call <ref-head> args…)` where the head is
+  //     a `(%ref <ns> <name>)`. lower.ts records these with `e.target =
+  //     { ns, name }` and leaves `e.op` undefined.
+  // Emit the matching surface form for each so a rewriter's `(%call ?head …)`
+  // pattern fires only on user calls and `(add ?x ?y)` only on the built-in.
+  const parts: string[] = [];
+  if (e.target && typeof e.target === 'object') {
+    const ns = e.target.ns != null ? e.target.ns : 'self';
+    parts.push('%call');
+    parts.push('(%ref ' + ns + ' ' + e.target.name + ')');
+  } else {
+    parts.push(e.op);
+  }
   // Positional args
   if (e.args) {
     for (const a of e.args) parts.push(_exprToSexpr(a, ind));
   }
-  // params (functionof / kernelof)
+  // params (functionof / kernelof). Spec §11: the parameter list is a NESTED
+  // list `(%params (x y z))`, not a flat `(%params x y z)`.
   if (e.params && e.params.length > 0) {
-    parts.push('(%params ' + e.params.join(' ') + ')');
+    parts.push('(%params (' + e.params.join(' ') + '))');
   }
   // kwargs
   if (e.kwargs) {
@@ -239,6 +253,7 @@ function fromSexpr(text: any) {
       if (head.value === '%assign')   return readAssignForm();
       if (head.value === '%params')   return readParamsForm();
       if (head.value === '%meta')     return readMetaForm();
+      if (head.value === '%call')     return readCallForm();
     }
     // Default: parse as call (head is op name).
     eat();
@@ -397,9 +412,21 @@ function fromSexpr(text: any) {
   function readParamsForm(): any {
     eat(); // %params
     const names: string[] = [];
-    while (!eof() && peek().type !== ')') {
-      const t = eat();
-      if (t.type === 'sym') names.push(t.value);
+    // Spec §11: the parameter list is a NESTED list `(%params (x y z))`.
+    // Read the inner `(...)` list of bare parameter symbols. We tolerate a
+    // legacy flat `(%params x y z)` here too, for any pre-spec input.
+    if (peek() && peek().type === '(') {
+      eat(); // inner (
+      while (!eof() && peek().type !== ')') {
+        const t = eat();
+        if (t.type === 'sym') names.push(t.value);
+      }
+      if (peek() && peek().type === ')') eat(); // inner )
+    } else {
+      while (!eof() && peek().type !== ')') {
+        const t = eat();
+        if (t.type === 'sym') names.push(t.value);
+      }
     }
     if (peek() && peek().type === ')') eat();
     return { __kind: 'params', names };
@@ -413,6 +440,41 @@ function fromSexpr(text: any) {
     const ph  = readForm();
     if (peek() && peek().type === ')') eat();
     return { __kind: 'meta', type: typ, phase: ph };
+  }
+
+  // Spec §11: `(%call <ref-head> args…)` — a call to a user-defined
+  // callable. The head is a `(%ref <ns> <name>)`; we record it as
+  // `target: { ns, name }` to mirror lower.ts' user-call shape (the
+  // inverse of `_callToSexpr`'s `%call` emission). `%kwarg`/`%field`/
+  // `%assign`/`%meta` parts are absorbed the same way as for built-ins.
+  function readCallForm(): any {
+    eat(); // %call
+    const callShape: any = { kind: 'call', args: [], kwargs: {} };
+    // Head: a `(%ref ns name)` form.
+    if (peek() && peek().type === '(') {
+      const headForm = readForm();
+      if (headForm && headForm.kind === 'ref') {
+        callShape.target = { ns: headForm.ns, name: headForm.name };
+      } else {
+        diagnostics.push({ severity: 'error',
+          message: 'pir-sexpr: %call head must be a (%ref …) form' });
+      }
+    } else {
+      diagnostics.push({ severity: 'error',
+        message: 'pir-sexpr: %call expects a (%ref …) head' });
+    }
+    while (!eof() && peek().type !== ')') {
+      const part = readForm();
+      _absorbCallPart(callShape, part);
+    }
+    if (eof()) {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unclosed (%call …)' });
+    } else {
+      eat(); // ')'
+    }
+    if (Object.keys(callShape.kwargs).length === 0) delete callShape.kwargs;
+    if (callShape.args.length === 0) delete callShape.args;
+    return callShape;
   }
 
   function _absorbCallPart(call: any, part: any) {
