@@ -166,6 +166,91 @@ test('matrix-scale locscale samples recover the right mean (forward sampling wor
 });
 
 // =====================================================================
+// 2b. NON-lower-triangular MATRIX scale — distribution still correct
+// =====================================================================
+//
+// For a non-triangular scale S, lower_cholesky(S·Sᵀ) ≠ S, but L·Lᵀ =
+// S·Sᵀ, so the pushforward distribution is N(mu, S·Sᵀ) regardless of
+// which factor the registry picks. Density must equal MvNormal(mu, S·Sᵀ)
+// and never be NaN/Inf.
+
+const S_NONTRI = [[1.0, 0.5], [0.3, 1.0]];   // upper entry 0.5 ≠ 0
+// S·Sᵀ = [[1.25, 0.8], [0.8, 1.09]]
+function matGram(m: number[][]) {
+  const r = m.length, c = m[0].length;
+  const g: number[][] = [];
+  for (let i = 0; i < r; i++) {
+    g[i] = [];
+    for (let j = 0; j < r; j++) {
+      let s = 0;
+      for (let k = 0; k < c; k++) s += m[i][k] * m[j][k];
+      g[i][j] = s;
+    }
+  }
+  return g;
+}
+
+const NONTRI_MODEL = `
+base = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))
+Y = locscale(base, [${MU_VEC[0]}, ${MU_VEC[1]}], rowstack([[${S_NONTRI[0][0]}, ${S_NONTRI[0][1]}], [${S_NONTRI[1][0]}, ${S_NONTRI[1][1]}]]))
+`;
+
+test('non-triangular matrix-scale locscale density == MvNormal(mu, S·Sᵀ), never NaN/Inf', () => {
+  const { built } = makeCtx(NONTRI_MODEL);
+  const expanded = orchestrator.expandMeasure('Y',
+    { derivations: built.derivations, bindings: built.bindings });
+  assert.equal(expanded.bijection.registryName, 'affine',
+    'non-triangular matrix scale must still route through the affine registry');
+
+  const density = require('../density.ts');
+  const densityPrims = require('../density-prims.ts');
+  const cov = matGram(S_NONTRI);               // S·Sᵀ
+  for (const obsArr of [[0.5, 1.5], [1.0, 2.0], [-0.3, 3.1]]) {
+    const obs = toValue(obsArr);
+    const lp = density.logDensity(expanded, obs, {}, {});
+    const expected = densityPrims.MV_DENSITY_FNS.MvNormal(obs,
+      { mu: toValue(MU_VEC), cov: toMatValue(cov) });
+    assert.ok(Number.isFinite(lp),
+      `density at ${obsArr} must be finite, got ${lp}`);
+    assert.ok(Math.abs(lp - expected) < 1e-9,
+      `non-triangular locscale density at ${obsArr}: got ${lp}, want ${expected}`);
+  }
+});
+
+test('non-triangular matrix-scale locscale uses S·Sᵀ, not Sᵀ·S or raw S (adversarial)', () => {
+  // S_NONTRI is non-symmetric, so S·Sᵀ ≠ Sᵀ·S (diagonals swap). The density
+  // must match MvNormal(mu, S·Sᵀ) and NOT MvNormal(mu, Sᵀ·S) (a row/col-gram
+  // swap) nor MvNormal(mu, S) (treating the scale as covariance directly).
+  const { built } = makeCtx(NONTRI_MODEL);
+  const expanded = orchestrator.expandMeasure('Y',
+    { derivations: built.derivations, bindings: built.bindings });
+  const density = require('../density.ts');
+  const densityPrims = require('../density-prims.ts');
+
+  const colGram = (m: number[][]) => {        // Sᵀ·S
+    const r = m.length, c = m[0].length, g: number[][] = [];
+    for (let i = 0; i < c; i++) { g[i] = [];
+      for (let j = 0; j < c; j++) { let s = 0;
+        for (let k = 0; k < r; k++) s += m[k][i] * m[k][j]; g[i][j] = s; } }
+    return g;
+  };
+  const cov = matGram(S_NONTRI);              // S·Sᵀ (the correct one)
+  const wrongCol = colGram(S_NONTRI);         // Sᵀ·S
+  // Sanity: the two grams genuinely differ (else the test proves nothing).
+  assert.ok(Math.abs(cov[0][0] - wrongCol[0][0]) > 1e-6,
+    'S·Sᵀ and Sᵀ·S must differ for this adversarial test to bite');
+
+  const obs = toValue([0.0, 2.0]);            // x−mu=[-1,0]: asymmetric, breaks the S·Sᵀ vs Sᵀ·S tie
+  const lp = density.logDensity(expanded, obs, {}, {});
+  const right = densityPrims.MV_DENSITY_FNS.MvNormal(obs,
+    { mu: toValue(MU_VEC), cov: toMatValue(cov) });
+  const wrong = densityPrims.MV_DENSITY_FNS.MvNormal(obs,
+    { mu: toValue(MU_VEC), cov: toMatValue(wrongCol) });
+  assert.ok(Math.abs(lp - right) < 1e-9, `must equal S·Sᵀ density: got ${lp}, want ${right}`);
+  assert.ok(Math.abs(lp - wrong) > 1e-6, `must NOT equal Sᵀ·S density (${wrong})`);
+});
+
+// =====================================================================
 // 3. L2 — scale = 0 degenerate → clear diagnostic
 // =====================================================================
 
