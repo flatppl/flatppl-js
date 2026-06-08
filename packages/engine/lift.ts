@@ -1177,7 +1177,7 @@ function liftInlineSubexpressions(bindings: any) {
 
     const bijAst = callOf('bijection',
       makeIdent(fwdAnon, loc), makeIdent(invAnon, loc), makeIdent(lvAnon, loc));
-    const bijName = freshName();
+    const bijName = freshBijName();
     out.set(bijName, makeSyntheticBinding(bijName, bijAst));
 
     return {
