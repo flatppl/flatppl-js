@@ -76,3 +76,46 @@ test('round-trip: user call + functionof params survive toSexpr ∘ fromSexpr', 
   const sexp2 = pirSexpr.toSexpr(mod2);
   assert.equal(sexp1, sexp2);
 });
+
+test('fromSexpr: %call absorbs a kwarg part', () => {
+  const src = `(%module
+    (%public f g)
+    (%bind f (functionof (%params (_x_)) (add (%ref %local _x_) 1)))
+    (%bind g (%call (%ref self f) (%kwarg x 2))))`;
+  const { module, diagnostics } = pirSexpr.fromSexpr(src);
+  assert.deepEqual(diagnostics, []);
+  const g = module.bindings.get('g');
+  assert.deepEqual(g.rhs.target, { ns: 'self', name: 'f' });
+  assert.equal(g.rhs.kwargs.x.value, 2);
+});
+
+test('fromSexpr: legacy flat (%params a b) is tolerated', () => {
+  // Pre-spec flat form (no inner list) still parses to the param list.
+  const src = `(%module
+    (%public f)
+    (%bind f (functionof (%params a b _x_) (add (%ref %local a) (%ref %local _x_)))))`;
+  const { module, diagnostics } = pirSexpr.fromSexpr(src);
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(module.bindings.get('f').rhs.params, ['a', 'b', '_x_']);
+});
+
+test('fromSexpr: %call with a non-(%ref …) head reports a diagnostic', () => {
+  const src = `(%module (%public g) (%bind g (%call (add 1 2) 3)))`;
+  const { diagnostics } = pirSexpr.fromSexpr(src);
+  assert.ok(diagnostics.some((d: any) => /%call head must be a \(%ref/.test(d.message)),
+    `expected a %call-head diagnostic, got ${JSON.stringify(diagnostics)}`);
+});
+
+test('fromSexpr: %call with no (%ref …) head reports a diagnostic', () => {
+  const src = `(%module (%public g) (%bind g (%call foo 3)))`;
+  const { diagnostics } = pirSexpr.fromSexpr(src);
+  assert.ok(diagnostics.some((d: any) => /%call expects a \(%ref/.test(d.message)),
+    `expected a missing-head diagnostic, got ${JSON.stringify(diagnostics)}`);
+});
+
+test('fromSexpr: unclosed (%call …) reports a diagnostic', () => {
+  const src = `(%module (%public g) (%bind g (%call (%ref self f) 2`;
+  const { diagnostics } = pirSexpr.fromSexpr(src);
+  assert.ok(diagnostics.some((d: any) => /unclosed \(%call/.test(d.message)),
+    `expected an unclosed-%call diagnostic, got ${JSON.stringify(diagnostics)}`);
+});
