@@ -289,3 +289,24 @@ test('locscale with vector (per-component) scale yields a clear unsupported diag
   assert.ok(/locscale/.test(msg) && /(vector|per-component)/.test(msg),
     `diagnostic must mention vector/per-component scale, got: ${msg}`);
 });
+
+// =====================================================================
+// H1 — the non-finite-inverse density guard (density.ts H2(a)) fires
+// =====================================================================
+//
+// A RUNTIME-zero scalar scale (`sub(1.0, 1.0)` = 0) is NOT a NumberLiteral,
+// so `__isLiteralZero` misses it and it routes through the SCALAR path.
+// Its closed-form inverse `(y - shift)/0` is ±Inf, which must trip
+// density.walkPushfwd's non-finite guard and THROW, rather than recurse
+// into a silently-garbage log-density.
+test('H1: a runtime-zero scalar scale trips the non-finite-inverse density guard (throws, not garbage)', async () => {
+  const { ctx } = makeCtx(`
+    base = Normal(mu = 0, sigma = 1)
+    Y = locscale(base, 3.0, sub(1.0, 1.0))
+    lp = logdensityof(Y, 5.0)
+  `);
+  await assert.rejects(
+    async () => { await ctx.getMeasure('lp'); },
+    /non-finite/,
+    'a non-finite closed-form inverse must throw the guard error, not return a finite-but-garbage density');
+});
