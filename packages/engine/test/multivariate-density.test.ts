@@ -255,3 +255,56 @@ test('density LKJCholesky: non-positive diagonal → -Infinity', () => {
   const logp = density.logDensity(ir, L, {});
   assert.equal(logp, -Infinity);
 });
+
+test('density LKJCholesky: n=2, η=1 anchor — logp = log c_2(1) = -log 2', () => {
+  // At η=1 the diagonal exponent (n − i + 2η − 2) is 0 for every i, so the
+  // product term vanishes and logp(L) = log c_2(1) for ANY valid factor L.
+  // This directly pins the SIGN of _logCnLKJ on the Cholesky path: a sign
+  // regression would give +log 2.
+  const ir = LKJCholesky(2, 1);
+  const L = [[1, 0], [0, 1]];
+  const logp = density.logDensity(ir, L, {});
+  assert.ok(Math.abs(logp - (-Math.LN2)) < 1e-9,
+    `LKJCholesky(2,1) logp should be -log 2 ≈ ${-Math.LN2}, got ${logp}`);
+});
+
+test('density LKJCholesky: n=2, η=2 anchor exercises the diagonal product term', () => {
+  // Z = 2^(2η-1)·B(η,η); at η=2, Z = 4/3 so log c_2(2) = -log(4/3).
+  // Diagonal exponent for i=2 is n − i + 2η − 2 = 2, so logp(L) =
+  // log c_2(2) + 2·log L_22. L is a unit-row Cholesky factor of a
+  // correlation matrix: row 2 has L_21² + L_22² = 1.
+  const ir = LKJCholesky(2, 2);
+  const L21 = 0.6, L22 = 0.8;            // 0.6² + 0.8² = 1
+  const L = [[1, 0], [L21, L22]];
+  const logp = density.logDensity(ir, L, {});
+  const expected = -Math.log(4 / 3) + 2 * Math.log(L22);
+  assert.ok(Math.abs(logp - expected) < 1e-9,
+    `LKJCholesky(2,2) logp should be ${expected}, got ${logp}`);
+});
+
+test('density LKJCholesky: η=1 product term is inert — logp factor-invariant (adversarial)', () => {
+  // At η=1 the diagonal exponent (n − i + 2η − 2) must be EXACTLY 0, so
+  // logp is identical for ANY unit-row factor, not just I. A bug giving the
+  // exponent a nonzero value at η=1 would make these differ.
+  const ir = LKJCholesky(2, 1);
+  const lpI = density.logDensity(ir, [[1, 0], [0, 1]], {});
+  const lpTilt = density.logDensity(ir, [[1, 0], [0.6, 0.8]], {});
+  assert.ok(Math.abs(lpI - lpTilt) < 1e-9,
+    `η=1 logp must be factor-invariant: I=${lpI}, tilted=${lpTilt}`);
+  assert.ok(Math.abs(lpI - (-Math.LN2)) < 1e-9, `and equal -log 2, got ${lpI}`);
+});
+
+test('density LKJCholesky: η=2 diagonal-exponent coefficient is exactly 2 (adversarial)', () => {
+  // Difference of logp at two factors sharing (n, η) but differing in L_22
+  // cancels log c_2(2) entirely, leaving (n − i + 2η − 2)·Δlog L22 =
+  // 2·Δlog L22. A wrong exponent (e.g. the η=1 form n−i, or an off-by-one)
+  // fails this even when the c_n constant is correct.
+  const ir = LKJCholesky(2, 2);
+  const La = [[1, 0], [0.6, 0.8]];                  // L22 = 0.8
+  const Lb = [[1, 0], [Math.sqrt(0.75), 0.5]];      // L22 = 0.5, unit row
+  const lpa = density.logDensity(ir, La, {});
+  const lpb = density.logDensity(ir, Lb, {});
+  const expectedDiff = 2 * (Math.log(0.8) - Math.log(0.5));
+  assert.ok(Math.abs((lpa - lpb) - expectedDiff) < 1e-9,
+    `η=2 Δlogp should be ${expectedDiff} (coeff 2), got ${lpa - lpb}`);
+});
