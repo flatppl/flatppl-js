@@ -1060,6 +1060,17 @@ function liftInlineSubexpressions(bindings: any) {
    *   - ZERO constant `scale` (L2): non-invertible (density +Inf/NaN);
    *     we throw a clear "scale must be non-zero/invertible" diagnostic
    *     for a statically-known-zero scalar scale.
+   *   - OFF-LIST matrix scale (a matrix-VALUED expression `__discovered
+   *     ScaleRank` does not recognise — e.g. an inline matrix product, or
+   *     a callable returning a matrix): falls through to the SCALAR path.
+   *     The density side fails LOUDLY via density.walkPushfwd's non-finite
+   *     guard (H2(a)), but forward SAMPLING of `scale * _ + shift` may
+   *     produce a silently-wrong sample before any density call. Accepted
+   *     limitation: statically classifying arbitrary matrix-valued
+   *     expressions is out of scope. WORKAROUND: bind the scale to a name
+   *     with a rank-2 inferred type, wrap it in a recognised matrix op
+   *     (e.g. `lower_cholesky`), or use `pushfwd` with an explicit
+   *     matrix-aware bijection.
    */
   function inlineLocscaleLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
