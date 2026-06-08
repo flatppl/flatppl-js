@@ -881,8 +881,24 @@ function floorMod(a: number, b: number): number {
   return a - b * Math.floor(a / b);
 }
 
+// Canonical integer floor-division (spec §07): `div(a, b) = floor(a/b)`,
+// domain integers, `b ≠ 0`. This is THE definition shared by the sampler
+// scalar path and the materialiser constant folder — they are kept
+// identical to it. Distinct from real/complex division `divide(a, b) =
+// a/b` (see `divElem`), which spec §07 lists as a separate op. As with
+// `floorMod`, there is NO b≠0 guard (spec precondition): `b === 0` yields
+// a non-finite IEEE result — `floor(±Inf) = ±Inf` for `a ≠ 0`, NaN for
+// `0/0`. See test/div-conformance.test.ts L1.
+function floorDiv(a: number, b: number): number {
+  return Math.floor(a / b);
+}
+
 const mulElem = _makeElementwiseBinop((a: any, b: any) => a * b, 'mulElem');
+// Real/complex division for the `divide` op (spec §07, line 449). `div`
+// (integer floor-division) routes to `floorDivElem` instead — keep these
+// two separate so `divide` stays real.
 const divElem = _makeElementwiseBinop((a: any, b: any) => a / b, 'divElem');
+const floorDivElem = _makeElementwiseBinop((a: any, b: any) => floorDiv(a, b), 'floorDivElem');
 const powElem = _makeElementwiseBinop((a: any, b: any) => Math.pow(a, b), 'powElem');
 const modElem = _makeElementwiseBinop((a: any, b: any) => floorMod(a, b), 'modElem');
 
@@ -1796,6 +1812,7 @@ module.exports = {
   // dispatcher's fast path when the head is a known scalar primitive.
   mulElem,
   divElem,
+  floorDivElem,
   powElem,
   modElem,
   expElem,
@@ -1837,6 +1854,7 @@ module.exports = {
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
   floorMod,
+  floorDiv,
   _valueToNested,
   _nestedToValue,
   _innerProduct,

@@ -1401,7 +1401,10 @@ function _ensureBroadcastedRegistered(): void {
     // Binary multiplicative (spec has matrix semantics on rank ≥ 1;
     // engine primitives are separate elementwise impls).
     ['mul',    2, (vs) => vo.mulElem(vs[0], vs[1])],
-    ['div',    2, (vs) => vo.divElem(vs[0], vs[1])],
+    // `div` is integer floor-division (spec §07 line 419): route to the
+    // floor primitive. `divide` (line 449) is real/complex division and
+    // stays on the plain `divElem` (a/b) — div ≠ divide.
+    ['div',    2, (vs) => vo.floorDivElem(vs[0], vs[1])],
     ['divide', 2, (vs) => vo.divElem(vs[0], vs[1])],
     ['pow',    2, (vs) => vo.powElem(vs[0], vs[1])],
     ['mod',    2, (vs) => vo.modElem(vs[0], vs[1])],

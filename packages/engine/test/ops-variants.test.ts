@@ -196,7 +196,7 @@ const BCAST_BINARY: Array<[string, (a: any, b: any) => any]> = [
   ['add',    (a, b) => valueOps.add(a, b)],
   ['sub',    (a, b) => valueOps.sub(a, b)],
   ['mul',    (a, b) => valueOps.mulElem(a, b)],
-  ['div',    (a, b) => valueOps.divElem(a, b)],
+  ['div',    (a, b) => valueOps.floorDivElem(a, b)],
   ['divide', (a, b) => valueOps.divElem(a, b)],
   ['pow',    (a, b) => valueOps.powElem(a, b)],
   ['mod',    (a, b) => valueOps.modElem(a, b)],

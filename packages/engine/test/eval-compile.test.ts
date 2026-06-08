@@ -31,7 +31,7 @@ test('_COMPILE_ARITY: has the scalar op set, excludes structural ops', () => {
 // Mirror the dependency injection sampler-eval-batched does at init.
 const ARITH = {
   add: (a: any, b: any) => a + b, sub: (a: any, b: any) => a - b, mul: (a: any, b: any) => a * b,
-  div: (a: any, b: any) => a / b, divide: (a: any, b: any) => a / b, neg: (a: any) => -a,
+  div: (a: any, b: any) => Math.floor(a / b), divide: (a: any, b: any) => a / b, neg: (a: any) => -a,
   pow: (a: any, b: any) => Math.pow(a, b), exp: (a: any) => Math.exp(a), log: (a: any) => Math.log(a),
 };
 C.initCompiler({ ARITH_OPS: ARITH, evaluateExpr: require('../sampler.ts').evaluateExpr,

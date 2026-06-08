@@ -1809,21 +1809,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     const aT: any = inferExpr(args[0], scopes);
     const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
-    // `mod` is integer-domain (spec §07: `mod(a, b) = a − b·floor(a/b)`
-    // over integers, `b ≠ 0`). The general arith ladder admits reals,
-    // so enforce the integer restriction here — a real (or complex)
-    // operand is a static error rather than a silent fractional result.
-    // Booleans embed into integers (spec §03's `booleans ⊂ integers ⊂
-    // reals`), so they are permitted; deferred/any/type-var operands
-    // are left to runtime (can't disprove integer statically).
-    // DEVIATION (intentional): spec §07 lists `b ≠ 0` as a mod precondition,
-    // but we do NOT statically reject a zero divisor — consistent with how
-    // the engine treats `div` (which itself is typed as real division here,
-    // not §07's integer floor-division). A zero divisor yields a runtime NaN
-    // (a − 0·floor(a/0) = NaN); see test/mod-conformance.test.ts L1. Enforcing
-    // the precondition statically (and making div §07-conformant) is a
-    // separate, tracked follow-up.
-    if (expr.op === 'mod') {
+    // `mod` and `div` are integer-domain (spec §07: `mod(a, b) =
+    // a − b·floor(a/b)`, line 419 `div(a, b) = floor(a/b)`, both over
+    // integers with `b ≠ 0`). The general arith ladder admits reals, so
+    // enforce the integer restriction here — a real (or complex) operand
+    // is a static error rather than a silent fractional result. Real
+    // division is the separate `divide` op (line 449), which keeps its
+    // (real, real) → real signature and is NOT checked here. Booleans
+    // embed into integers (spec §03's `booleans ⊂ integers ⊂ reals`), so
+    // they are permitted; deferred/any/type-var operands are left to
+    // runtime (can't disprove integer statically).
+    // DEVIATION (intentional): spec §07 lists `b ≠ 0` as a precondition for
+    // both `mod` and `div`, but we do NOT statically reject a zero divisor.
+    // A zero divisor yields a non-finite IEEE result at runtime (mod:
+    // a − 0·floor(a/0) = NaN always; div: floor(a/0) = ±Inf for a ≠ 0, NaN
+    // for 0/0); see test/{mod,div}-conformance.test.ts L1. Enforcing the
+    // precondition statically is a separate follow-up.
+    if (expr.op === 'mod' || expr.op === 'div') {
       // Drill through arrays to the element scalar's primitive.
       const elemPrim = (t: any): string | null => {
         if (!t) return null;
@@ -1840,12 +1842,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         const o = offenders[0];
         diagnostics.push({
           severity: 'error',
-          message: 'mod: operands must be integer (spec §07 integer '
+          message: expr.op + ': operands must be integer (spec §07 integer '
             + 'domain), but argument ' + (o.idx + 1) + ' has type '
             + T.show(o.t),
           loc: (args[o.idx] && args[o.idx].loc) || expr.loc,
         });
-        return T.failed('mod non-integer operand');
+        return T.failed(expr.op + ' non-integer operand');
       }
     }
     const r: any = T.unifyArith(aT, bT, new Map());

@@ -852,7 +852,11 @@ const SIGNATURE_FACTORIES = {
   add:    () => arith2(),
   sub:    () => arith2(),
   mul:    () => arith2(),
-  div:    () => ({ args: [REAL, REAL], kwargs: {}, result: REAL }),  // div always real
+  // div(a, b) = floor(a/b), spec §07 (line 419): domain `integers`,
+  // `b ≠ 0`, result integer (integer floor-division, NOT real division).
+  // Real/complex division is the separate `divide` op (line 449), still
+  // typed (real, real) → real below — div ≠ divide.
+  div:    () => ({ args: [INTEGER, INTEGER], kwargs: {}, result: INTEGER }),
   divide: () => ({ args: [REAL, REAL], kwargs: {}, result: REAL }),
   // mod(a, b) = a − b·floor(a/b), spec §07: domain `integers`, `b ≠ 0`,
   // result integer (floor-modulo, NOT JS `%` truncated remainder). The

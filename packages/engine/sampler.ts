@@ -596,11 +596,19 @@ const ARITH_OPS = {
     }
     return a * b;
   },
+  // `div` is integer floor-division (spec §07 line 419): `div(a, b) =
+  // floor(a/b)`, domain integers. Distinct from `divide` (real/complex
+  // division) below. Complex operands have no integer floor-division, so
+  // they fall through to true division (rare; kept for total dispatch).
+  // No b≠0 guard (spec precondition): b=0 → non-finite IEEE result
+  // (floor(±Inf) = ±Inf for a ≠ 0, NaN for 0/0), the same unguarded
+  // convention shared with `mod`. Kept bit-identical to value-ops.floorDiv
+  // and the materialiser fold path.
   div: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cDiv(_toComplex(a), _toComplex(b));
     }
-    return a / b;
+    return Math.floor(a / b);
   },
   divide: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {

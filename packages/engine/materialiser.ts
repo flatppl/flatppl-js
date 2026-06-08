@@ -1356,7 +1356,13 @@ function _foldNumericIR(ir: any): number | null {
     if (op === 'add') return a + b;
     if (op === 'sub') return a - b;
     if (op === 'mul') return a * b;
-    if (op === 'div' || op === 'divide') return a / b;
+    // Integer floor-division (spec §07 line 419): `div(a, b) = floor(a/b)`.
+    // Distinct from `divide` (line 449), which is real/complex division.
+    // Kept identical to value-ops.floorDiv (the canonical definition);
+    // inlined here to avoid pulling value-ops into the materialiser's
+    // module-load graph for one arithmetic primitive.
+    if (op === 'div') return Math.floor(a / b);
+    if (op === 'divide') return a / b;
     if (op === 'pow') return Math.pow(a, b);
     // Floor-modulo (spec §07): `mod(a, b) = a − b·floor(a/b)`, NOT JS
     // `%` (truncated remainder) — `mod(-7, 3)` folds to 2, not -1.
