@@ -868,10 +868,21 @@ const sub = _makeElementwiseBinop((a: any, b: any) => a - b, 'sub');
 // broadcasts via `_scalarBroadcastBinop`; shapes must otherwise
 // match.
 
+// Canonical floor-modulo (spec §07): `mod(a, b) = a − b·floor(a/b)`.
+// Result shares the sign of the divisor, unlike JS `%` (truncated
+// remainder, sign of the dividend): `floorMod(-7, 3) === 2` whereas
+// `-7 % 3 === -1`. Domain is integers with `b ≠ 0`; `b === 0` yields
+// NaN at runtime (unguarded, matching `div`'s IEEE convention). This
+// is THE canonical definition — the sampler scalar path and the
+// materialiser constant folder are kept identical to it.
+function floorMod(a: number, b: number): number {
+  return a - b * Math.floor(a / b);
+}
+
 const mulElem = _makeElementwiseBinop((a: any, b: any) => a * b, 'mulElem');
 const divElem = _makeElementwiseBinop((a: any, b: any) => a / b, 'divElem');
 const powElem = _makeElementwiseBinop((a: any, b: any) => Math.pow(a, b), 'powElem');
-const modElem = _makeElementwiseBinop((a: any, b: any) => a % b, 'modElem');
+const modElem = _makeElementwiseBinop((a: any, b: any) => floorMod(a, b), 'modElem');
 
 // Unary elementwise factory: same shape as `_makeElementwiseBinop` but
 // for one-argument scalar functions. Applies `scalarFn` pointwise over
@@ -1823,6 +1834,7 @@ module.exports = {
   complexElem, realElem, imagElem, conjElem, cisElem,
   // Exposed for direct use / test access; the public functions cover
   // every dispatch path.
+  floorMod,
   _valueToNested,
   _nestedToValue,
   _innerProduct,

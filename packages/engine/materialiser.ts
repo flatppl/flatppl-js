@@ -1358,7 +1358,12 @@ function _foldNumericIR(ir: any): number | null {
     if (op === 'mul') return a * b;
     if (op === 'div' || op === 'divide') return a / b;
     if (op === 'pow') return Math.pow(a, b);
-    if (op === 'mod') return a % b;
+    // Floor-modulo (spec §07): `mod(a, b) = a − b·floor(a/b)`, NOT JS
+    // `%` (truncated remainder) — `mod(-7, 3)` folds to 2, not -1.
+    // Kept identical to value-ops.floorMod (the canonical definition);
+    // inlined here to avoid pulling value-ops into the materialiser's
+    // module-load graph for one arithmetic primitive.
+    if (op === 'mod') return a - b * Math.floor(a / b);
   }
   if (args.length === 1) {
     const a = args[0] as number;
@@ -1592,4 +1597,7 @@ module.exports = {
   // Value ↔ Measure bridges.
   valueOf,
   measureFromValue,
+  // Compile-time numeric constant folder over arith-over-literals IR.
+  // Exposed for conformance tests pinning the floor-modulo fold.
+  _foldNumericIR,
 };

@@ -1809,6 +1809,38 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     const aT: any = inferExpr(args[0], scopes);
     const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    // `mod` is integer-domain (spec §07: `mod(a, b) = a − b·floor(a/b)`
+    // over integers, `b ≠ 0`). The general arith ladder admits reals,
+    // so enforce the integer restriction here — a real (or complex)
+    // operand is a static error rather than a silent fractional result.
+    // Booleans embed into integers (spec §03's `booleans ⊂ integers ⊂
+    // reals`), so they are permitted; deferred/any/type-var operands
+    // are left to runtime (can't disprove integer statically).
+    if (expr.op === 'mod') {
+      // Drill through arrays to the element scalar's primitive.
+      const elemPrim = (t: any): string | null => {
+        if (!t) return null;
+        if (t.kind === 'scalar') return t.prim;
+        if (t.kind === 'array') return elemPrim(t.elem);
+        return null;
+      };
+      const offenders: Array<{ idx: number; t: any }> = [];
+      [aT, bT].forEach((t, i) => {
+        const p = elemPrim(t);
+        if (p === 'real' || p === 'complex') offenders.push({ idx: i, t });
+      });
+      if (offenders.length > 0) {
+        const o = offenders[0];
+        diagnostics.push({
+          severity: 'error',
+          message: 'mod: operands must be integer (spec §07 integer '
+            + 'domain), but argument ' + (o.idx + 1) + ' has type '
+            + T.show(o.t),
+          loc: (args[o.idx] && args[o.idx].loc) || expr.loc,
+        });
+        return T.failed('mod non-integer operand');
+      }
+    }
     const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({
