@@ -804,7 +804,7 @@ function _lowerReification(op: string, node: any, ctx: any): any {
   let body: any = _lowerExpr(args[0], innerCtx);
 
   // kernelof(x, kw) ≡ functionof(lawof(x), kw) per spec §sec:kernelof
-  // line 421-422. The boundary substitution applies BEFORE the inner
+  // (04-design.md:445-446). The boundary substitution applies BEFORE the inner
   // lawof is interpreted — exactly what we get by wrapping the body
   // in lawof inside the same scope and emitting functionof. After
   // this rewrite, downstream IR consumers (type inference,
@@ -814,6 +814,16 @@ function _lowerReification(op: string, node: any, ctx: any): any {
     body = { kind: 'call', op: 'lawof', args: [body], loc: args[0].loc };
     outOp = 'functionof';
   }
+  // NB: the arrow-lambda kernel form `(args) -> <measure>` (desugared in
+  // parser.ts) emits `functionof(<measure>)` with NO `lawof` wrap, while
+  // `kernelof` emits `functionof(lawof(<measure>))` above. These two
+  // surface forms are deliberately NOT unified into one canonical IR
+  // here; they denote the same kernel (§sec:kernelof, §sec:functionof-
+  // measure) and are reconciled downstream by `peelKernelBody`
+  // (kernel-broadcast-shape.ts) and `_irNodeIsMeasure` (dissolver.ts).
+  // Canonicalising at lowering instead would let those consumers drop
+  // the peel — revisit if the set of measure-body detectors keeps
+  // growing.
 
   return {
     kind:        'call',

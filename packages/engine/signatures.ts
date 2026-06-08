@@ -29,7 +29,7 @@
 
 import type { IRNode } from './engine-types';
 
-const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS } = require('./ir-shared.ts');
+const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS, VECTOR_OUTPUT_DISTRIBUTIONS } = require('./ir-shared.ts');
 const { mapIR } = require('./ir-walk.ts');
 
 function signatureOf(name: string, bindings: any): any {
@@ -95,30 +95,63 @@ function signatureOf(name: string, bindings: any): any {
 // the body IR. Used as a fallback when typeinfer left the binding
 // type as 'deferred'. Conservative: only returns true when we can
 // see a measure-shaped op or a self-ref to a measure-typed binding.
+// Measure-constructing IR ops: a `functionof` body headed by one of
+// these reifies a transition kernel. `jointchain`/`kchain` are the two
+// real measure-algebra chain constructors in the engine (verified by
+// grep — `markovchain`/`kscan` are NOT engine ops, so they are
+// deliberately absent). `mixture` is likewise absent: it is the derived
+// `normalize(superpose(weighted(...)))`, not a FlatPPL op (spec
+// 06-measure-algebra has no `mixture`).
 const KNOWN_MEASURE_OPS = new Set([
   'joint', 'record', 'iid', 'weighted', 'logweighted', 'normalize',
-  'superpose', 'lawof', 'pushfwd', 'truncate', 'mixture',
+  'superpose', 'lawof', 'pushfwd', 'truncate', 'jointchain', 'kchain',
   // leaf distributions are measures too — we don't enumerate them
   // here; they'd need the full SAMPLEABLE_DISTRIBUTIONS set, but a
   // reified callable typically has its leaf wrapped in a record /
   // joint / lawof anyway.
 ]);
 
-function bodyImpliesKernel(body: IRNode | null | undefined, bindings: any): boolean {
+// Is `op` a leaf distribution (scalar- or vector-output)?
+function _isDistributionOp(op: any): boolean {
+  return !!(op != null
+    && (SAMPLEABLE_DISTRIBUTIONS.has(op) || VECTOR_OUTPUT_DISTRIBUTIONS.has(op)));
+}
+
+function bodyImpliesKernel(body: IRNode | null | undefined, bindings: any,
+                           _seen?: Set<string>): boolean {
   if (!body) return false;
-  if (body.kind === 'call' && body.op != null) {
-    if (KNOWN_MEASURE_OPS.has(body.op))                  return true;
-    if (SAMPLEABLE_DISTRIBUTIONS.has(body.op))           return true;
+  if (body.kind === 'call' && (body as any).op != null) {
+    const op = (body as any).op;
+    if (KNOWN_MEASURE_OPS.has(op))      return true;
+    if (_isDistributionOp(op))          return true;
+    // `broadcast(<head>, …)` is a measure IFF its head is a measure:
+    // a distribution (checking head.op OR head.name, since a
+    // distribution head can surface as either) or a self-ref kernel
+    // (recurse). A broadcast of a plain function yields values, not a
+    // measure, so it is NOT a kernel head.
+    if (op === 'broadcast') {
+      const head = ((body as any).args && (body as any).args[0]) || null;
+      if (!head) return false;
+      if (_isDistributionOp(head.op) || _isDistributionOp(head.name)) return true;
+      if (head.kind === 'ref') return bodyImpliesKernel(head, bindings, _seen);
+      return false;
+    }
   }
-  if (body.kind === 'ref' && body.ns === 'self' && bindings) {
-    const target = bindings.get(body.name);
+  if (body.kind === 'ref' && (body as any).ns === 'self' && bindings) {
+    const name = (body as any).name;
+    // Visited-set guard: cyclic self-refs (a kernel whose body refers
+    // back to itself, directly or transitively) must not infinite-loop.
+    const seen = _seen || new Set<string>();
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const target = bindings.get(name);
     if (target && target.inferredType
         && target.inferredType.kind === 'measure') {
       return true;
     }
     // Some derived measure bindings have inferredType='deferred' too;
     // recurse into THEIR body / IR if it's a call we recognise.
-    if (target && target.ir) return bodyImpliesKernel(target.ir, bindings);
+    if (target && target.ir) return bodyImpliesKernel(target.ir, bindings, seen);
   }
   return false;
 }

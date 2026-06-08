@@ -1968,13 +1968,40 @@ function _isKernelHead(head: any, bindings: any): boolean {
   const b = bindings.get(head.name);
   if (!b) return false;
   // Either the binding is explicitly kernel-typed, OR its IR
-  // constructs a measure (e.g. `kernelof(...)`). For the minimum-
-  // viable pass we recognise only the type-driven case; the dissolver
-  // already inlines `functionof` bodies, so a function head wouldn't
-  // appear in a kernel-broadcast pattern.
+  // structurally constructs a measure under `functionof`. The
+  // type-driven case covers `kernelof(...)` (inferred type `kernel`);
+  // the structural case covers the arrow-lambda form
+  // `(args) -> <measure>` ≡ `functionof(<measure>)`, which types as
+  // `function`/`deferred` yet denotes a kernel (§sec:functionof-measure)
+  // — without it the outer broadcast axis is mislabelled `broadcast`
+  // and the kernel body's inner axis ladder is never appended, so the
+  // nested-broadcast executor sees a null outer axis size.
   const t = b.inferredType;
-  if (!t) return false;
-  return t.kind === 'kernel';
+  // PRIMARY check: the type-driven branch. The real fix for arrow-lambda
+  // kernels now lives in typeinfer (fixer-A) — an arrow lambda whose body
+  // is a measure infers inferredType.kind==='kernel', so this branch
+  // catches it directly.
+  if (t && t.kind === 'kernel') return true;
+  // STRUCTURAL fallback (belt-and-suspenders): pre-lift synthetic anons
+  // can reach here lacking inferredType. `signatures.bodyImpliesKernel`
+  // is the canonical IR-level "body denotes a measure" predicate; it
+  // recognises the arrow-lambda kernel form `(args) -> <measure>`
+  // (functionof(<measure>), no lawof wrap) and the kernelof form
+  // (functionof(lawof(<measure>))). Lazy-require to avoid an import cycle.
+  if (b.ir && b.ir.kind === 'call' && b.ir.op === 'functionof') {
+    let signatures: any = null;
+    try { signatures = require('./signatures.ts'); } catch (_) { /* cycle */ }
+    if (!signatures || !signatures.bodyImpliesKernel) return false;
+    let body = b.ir.body;
+    // `kernelof` lowers to functionof(lawof(<measure>)); peel the lawof
+    // so bodyImpliesKernel sees the underlying measure construction.
+    if (body && body.kind === 'call' && body.op === 'lawof'
+        && Array.isArray(body.args)) {
+      body = body.args[0];
+    }
+    return signatures.bodyImpliesKernel(body, bindings);
+  }
+  return false;
 }
 
 function _argSizeIdentifier(arg: any, bindings: any): number | string {

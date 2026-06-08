@@ -82,6 +82,87 @@ interface IidKernelDescriptor {
  * KernelBroadcast`'s sub-helper and `mat-broadcast._detectIid-
  * KernelBody` delegate here.
  */
+// A kernel's reified body comes in two equivalent surface forms:
+//
+//   - `kernelof(x, kw)` lowers to `functionof(lawof(x), kw)` — the body
+//     is `lawof(<measure-construction>)` (spec §sec:kernelof; lower.ts).
+//   - a measure-bodied arrow lambda `(args) -> <measure-construction>`
+//     lowers to `functionof(<measure-construction>, kw)` — NO `lawof`
+//     wrap (spec §04: a lambda is `functionof` sugar). Per spec
+//     §sec:functionof-measure (04-design.md:293-296), `functionof`
+//     applied to a measure node NORMATIVELY reifies a transition kernel
+//     (not a value function) — so the bare-measure body IS a kernel by
+//     definition, not by engine liberty.
+//
+// Both denote the SAME kernel. `peelKernelBody` strips an optional
+// leading `lawof` so the structural detectors below recognise either
+// form; without it, the arrow form misclassifies as a deterministic
+// value-broadcast and its measure body leaks into the value evaluator
+// ("call op 'iid' not evaluable in sampler context").
+function peelKernelBody(body: any): any {
+  // `lawof` is unary (analyzer.ts:157) — its sole distinguished input is
+  // the measure-construction it reifies. Match arity exactly so a
+  // malformed multi-arg node isn't silently peeled to its first arg.
+  if (body && body.kind === 'call' && body.op === 'lawof'
+      && Array.isArray(body.args) && body.args.length === 1) {
+    return body.args[0];
+  }
+  return body;
+}
+
+// Resolve a component / inner-measure node that is either an INLINE
+// DistCall (the arrow surface leaves it inline) or a `self`-ref to an anon
+// binding holding the DistCall (the `kernelof` lowering hoists distribution
+// calls). Returns the inline call as-is; else derefs one `self`-binding
+// level via `_derefSelfBinding`; else null. The iid/joint/jointchain
+// detectors share this deref-or-inline ladder (formerly copy-pasted). The
+// caller still validates `distCall.kind === 'call' && distCall.op` — this
+// helper only collapses the ref/inline duality.
+function resolveComponentDist(ir: any, bindings: any): any {
+  if (ir && ir.kind === 'call' && ir.op) return ir;
+  if (ir && ir.kind === 'ref' && ir.ns === 'self'
+      && bindings && bindings.has && bindings.has(ir.name)) {
+    return _derefSelfBinding(ir, bindings);
+  }
+  return null;
+}
+
+// Normalise an inner builtin-distribution call's POSITIONAL args into a
+// named-kwargs map keyed by the REGISTRY param order. The iid/joint/nested
+// executors build the per-cell dist call from `Object.keys(distKwargs)`,
+// so positional args (`Beta(a_g, b_g)`) would otherwise be dropped — the
+// normal sampler path resolves positional via `resolveParams`, but the
+// kernel-broadcast executor does not. `distParams` is empty when the
+// sampler isn't loadable (classify-time yes/no only); then positional
+// normalisation is skipped (the caller doesn't need distKwargs).
+//
+// A positional arg and a kwarg targeting the SAME param (`Beta(a_g, alpha
+// = 2.0)` — `a_g` is the first positional, hence `alpha`, AND `alpha`
+// arrives by keyword) binds that param TWICE. `resolveParams` silently
+// prefers the kwarg, but the kernel-broadcast executor's kwargs-only path
+// would then drop the per-cell positional boundary; this engine policy
+// refuses loudly and NAMES the colliding param so the diagnostic is
+// actionable (contrast: silent "kwargs win" surfaced downstream as an
+// unrelated "unbound self reference" crash). This is an engine
+// (kernel-broadcast executor) rule, not a spec mandate — the spec
+// calling-convention section does not define a positional/keyword
+// collision rule for inner distributions.
+function distKwargsWithPositional(distCall: any, distParams: string[]): Record<string, any> {
+  const kwargs: Record<string, any> = { ...(distCall.kwargs || {}) };
+  const args = Array.isArray(distCall.args) ? distCall.args : [];
+  for (let i = 0; i < args.length && i < distParams.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(kwargs, distParams[i])) {
+      throw new Error('kernel-broadcast: inner distribution \''
+        + (distCall.op || '?') + '\' binds parameter \'' + distParams[i]
+        + '\' both positional and keyword — the kernel-broadcast executor '
+        + 'requires each inner-distribution parameter to be bound once '
+        + '(engine policy); remove one binding of \'' + distParams[i] + '\'.');
+    }
+    kwargs[distParams[i]] = args[i];
+  }
+  return kwargs;
+}
+
 function detectIidKernelBinding(
   name: string, bindings: any, fixedValues?: any,
 ): IidKernelDescriptor | null {
@@ -94,22 +175,15 @@ function detectIidKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'iid') return null;
   const iidArgs = innerMeasure.args || [];
   if (iidArgs.length !== 2) return null;
-  // Dereference one level of anon ref. Post-lift, `iid(Normal(...), N)`
-  // becomes `iid(ref(__anonM), N)` where the anon's IR holds the
-  // literal Normal call.
-  let distCall = iidArgs[0];
-  if (distCall && distCall.kind === 'ref' && distCall.ns === 'self'
-      && bindings.has(distCall.name)) {
-    const anon = bindings.get(distCall.name);
-    if (anon && anon.ir) distCall = anon.ir;
-  }
+  // Resolve the inner dist: inline call (arrow form) or one-level anon
+  // deref. Post-lift, `iid(Normal(...), N)` becomes `iid(ref(__anonM), N)`
+  // where the anon's IR holds the literal Normal call.
+  const distCall = resolveComponentDist(iidArgs[0], bindings);
   if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
   // The inner builtin must be sampleable. We lazy-require the
   // SAMPLEABLE_DISTRIBUTIONS set from ir-shared.ts (avoids an
@@ -174,7 +248,7 @@ function detectIidKernelBinding(
     paramKwargs,
     distOp: distCall.op,
     distParams,
-    distKwargs: distCall.kwargs || {},
+    distKwargs: distKwargsWithPositional(distCall, distParams),
     n: nLit,
   };
 }
@@ -285,9 +359,7 @@ function detectJointKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'joint') return null;
 
@@ -338,11 +410,11 @@ function detectJointKernelBinding(
   const components: JointKernelComponent[] = [];
   for (let i = 0; i < componentRefs.length; i++) {
     const ref = componentRefs[i];
-    if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
-        || !bindings.has(ref.name)) return null;
-    const anon = bindings.get(ref.name);
-    if (!anon || !anon.ir) return null;
-    const distCall = anon.ir;
+    // The `kernelof` lowering hoists each component to an anon `self`-ref;
+    // the ARROW form leaves the component INLINE as a DistCall. Accept the
+    // inline call directly, else deref the ref one level (shared
+    // deref-or-inline ladder with the iid / jointchain detectors).
+    const distCall = resolveComponentDist(ref, bindings);
     if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
     const op = distCall.op;
     const isScalarSampleable = SAMPLEABLE && SAMPLEABLE.has(op);
@@ -368,7 +440,10 @@ function detectJointKernelBinding(
       surfaceName: surfaceNames[i],
       distOp: op,
       distParams,
-      distKwargs: distCall.kwargs || {},
+      // Normalise positional component args (`Normal(a, 1.0)`) into
+      // named kwargs for the executor's kwargs-driven per-cell build,
+      // and reject a positional/keyword duplicate on the same param.
+      distKwargs: distKwargsWithPositional(distCall, distParams),
       isVectorOutput: isVectorOutput,
       eventDim: eventDim,
     });
@@ -557,9 +632,7 @@ function detectJointChainKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'jointchain') return null;
   // MVP: positional layout only. Keyword (record-typed variate) defers.
@@ -594,15 +667,14 @@ function detectJointChainKernelBinding(
 
   const steps: JointChainStep[] = [];
   for (let i = 0; i < innerMeasure.args.length; i++) {
-    const ref = innerMeasure.args[i];
-    if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
-        || !bindings.has(ref.name)) return null;
-    const dep = bindings.get(ref.name);
-    if (!dep || !dep.ir) return null;
+    const arg = innerMeasure.args[i];
     if (i === 0) {
-      // Base step: dep.ir must be a sampleable DistCall (closed-first).
-      const distCall = dep.ir;
-      if (distCall.kind !== 'call' || !distCall.op) return null;
+      // Base step: a sampleable DistCall (closed-first). The `kernelof`
+      // lowering hoists it to an anon `self`-ref; the ARROW form leaves
+      // it inline. Accept inline, else deref the ref one level (shared
+      // deref-or-inline ladder with the iid / joint detectors).
+      const distCall = resolveComponentDist(arg, bindings);
+      if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
       if (!SAMPLEABLE || !SAMPLEABLE.has(distCall.op)) return null;
       const distParams = lookupDistParams(distCall.op);
       if (distParams === null) return null;
@@ -610,12 +682,20 @@ function detectJointChainKernelBinding(
         base: {
           distOp: distCall.op,
           distParams,
-          distKwargs: distCall.kwargs || {},
+          distKwargs: distKwargsWithPositional(distCall, distParams),
         },
       });
     } else {
-      // Kernel step: dep must be a kernel binding with single param,
-      // body lawof(<sampleable DistCall>).
+      // Kernel step: a kernel binding with a single param, body
+      // peelKernelBody(...) === <sampleable DistCall>. The step kernel is
+      // always a NAMED binding ref (`step_kernel` in the surface); deref
+      // it. Its body may be `lawof(<DistCall>)` (kernelof form) or a bare
+      // `<DistCall>` (arrow form) — peelKernelBody strips the optional
+      // lawof so both step surfaces are recognised.
+      if (!arg || arg.kind !== 'ref' || arg.ns !== 'self'
+          || !bindings.has(arg.name)) return null;
+      const dep = bindings.get(arg.name);
+      if (!dep || !dep.ir) return null;
       const stepIR = dep.ir;
       if (stepIR.kind !== 'call' || stepIR.op !== 'functionof') return null;
       const stepParams: string[] = Array.isArray(stepIR.params)
@@ -623,10 +703,7 @@ function detectJointChainKernelBinding(
       // MVP: single-input kernels only (the canonical prev-variate
       // form). Multi-input kernels defer.
       if (stepParams.length !== 1) return null;
-      const stepBody = stepIR.body;
-      if (!stepBody || stepBody.kind !== 'call'
-          || stepBody.op !== 'lawof') return null;
-      const stepDist = stepBody.args && stepBody.args[0];
+      const stepDist = peelKernelBody(stepIR.body);
       if (!stepDist || stepDist.kind !== 'call' || !stepDist.op) return null;
       if (!SAMPLEABLE || !SAMPLEABLE.has(stepDist.op)) return null;
       const distParams = lookupDistParams(stepDist.op);
@@ -636,7 +713,7 @@ function detectJointChainKernelBinding(
           inputParam: stepParams[0],
           distOp: stepDist.op,
           distParams,
-          distKwargs: stepDist.kwargs || {},
+          distKwargs: distKwargsWithPositional(stepDist, distParams),
         },
       });
     }
@@ -761,9 +838,7 @@ function detectNestedBroadcastKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = peelKernelBody(ir.body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'broadcast') return null;
 
@@ -975,9 +1050,12 @@ function detectGenerativeKernelBinding(
   if (params.length === 0) return null;
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
-  const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const lawArg = body.args && body.args[0];
+  // The body is the kernel's reified value-expr. `kernelof` wraps it in
+  // `lawof`; the arrow form leaves it bare. peelKernelBody strips the
+  // optional lawof so a measure-bodied arrow generative kernel
+  // (`(x) -> <value-expr with internal draw>`) is recognised, not just
+  // the kernelof form.
+  const lawArg = peelKernelBody(ir.body);
   if (!lawArg) return null;
 
   // The lawof arg must NOT be a measure construction (those belong to the
@@ -1138,18 +1216,15 @@ function diagnoseKernelBodyNearMiss(
       detail,
     };
   }
+  // Peel the optional `lawof`: kernelof lowers to functionof(lawof(...)),
+  // the arrow form to functionof(<bare measure/value-expr>). Both denote
+  // the same kernel body, so the diagnostic inspects the peeled inner
+  // shape — without this, an arrow kernel would mis-report as "body is
+  // not lawof(...)" rather than describing its actual near-miss.
   const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') {
-    return {
-      closestKind: 'unknown',
-      message: 'kernel \'' + name + '\' body is not lawof(...) '
-        + '(got ' + (body && body.op) + '); canonical kernelof '
-        + 'lowering produces functionof(body=lawof(...))',
-      detail,
-    };
-  }
-  const inner = body.args && body.args[0];
-  detail.bodyOp = 'lawof';
+  const inner = peelKernelBody(body);
+  detail.bodyOp = (body && body.kind === 'call' && body.op === 'lawof')
+    ? 'lawof' : (body && body.op);
   // A bare-ref / value-expr lawof arg (`lawof(y)` where y is a value
   // binding, or an inline op tree that isn't a measure construction) is
   // the generative shape's territory. Describe it via the generative

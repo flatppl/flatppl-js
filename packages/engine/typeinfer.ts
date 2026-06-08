@@ -1636,16 +1636,54 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     return T.substitute(sig.result, s);
   }
 
+  // Keyword-arg counterpart of `inferMeasureHeadCellResult`: resolve the
+  // per-cell measure type for a bare measure-producing builtin head
+  // (`Normal`, `Binomial`, …) called with KEYWORD args under broadcast
+  // (`broadcast(Normal, mu = …, sigma = …)`). Distributions are
+  // kwargs-only (sig.args === null), so kwarg names index directly into
+  // sig.kwargs (spec §05 calling conventions). Returns the per-cell
+  // measure type, or null if `opName` is not a measure-producing builtin.
+  function inferMeasureHeadCellResultKw(opName: any, cellTypesByKw: any): any {
+    const sig: any = T.signatureOf(opName);
+    if (!sig || !T.isMeasure(sig.result)) return null;
+    let s = new Map();
+    if (sig.kwargs) {
+      for (const k of Object.keys(cellTypesByKw)) {
+        const declared = sig.kwargs[k];
+        if (declared == null) continue;
+        const next = T.unify(declared, cellTypesByKw[k], s);
+        if (next != null) s = next;
+      }
+    }
+    return T.substitute(sig.result, s);
+  }
+
   function inferBroadcast(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length < 2) return T.deferred();
+    // Data args arrive positionally (`broadcast(f, a, b)`) OR by keyword
+    // (`broadcast(Normal, mu = …, sigma = …)`, the surface form a bare
+    // measure head takes — distributions are kwargs-only). Both flow to
+    // the per-cell callable; track kwarg names so a measure head can bind
+    // its declared params (spec §sec:broadcasting; 04-design.md:772).
+    const kwargs = expr.kwargs || {};
+    const kwNames = Object.keys(kwargs);
+    if (args.length < 2 && kwNames.length === 0) return T.deferred();
 
-    // Phase 1: infer each data arg's type.
+    // Phase 1: infer each data arg's type. `kwOf[i]` records the keyword
+    // name for kwarg-sourced data args (null for positional).
     const dataTypes: any[] = [];
+    const kwOf: any[] = [];
     for (let i = 1; i < args.length; i++) {
       const t = inferExpr(args[i], scopes);
       if (t && t.kind === 'failed') return T.failed('broadcast cascade');
       dataTypes.push(t);
+      kwOf.push(null);
+    }
+    for (const k of kwNames) {
+      const t = inferExpr(kwargs[k], scopes);
+      if (t && t.kind === 'failed') return T.failed('broadcast cascade');
+      dataTypes.push(t);
+      kwOf.push(k);
     }
 
     // Phase 2: per-arg classification — collection (outer shape +
@@ -1756,7 +1794,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         // lets a `(n,p) -> Binomial.(n,p)` lambda reify to a kernel:
         // its body's broadcast now types as a measure, so inferReification
         // makes the lambda a kernelType rather than a function.
-        const headResult = inferMeasureHeadCellResult(fn.name, cellTypes);
+        //
+        // NORMATIVE FIX (spec §sec:functionof-measure + §sec:broadcasting):
+        // a broadcast whose HEAD is a distribution/kernel is a MEASURE, so
+        // `sigma_g -> broadcast(Normal, mu = …, sigma = sigma_g)` reifies
+        // to a KERNEL (not a value function). The kwargs-only surface form
+        // routes through the keyword-aware resolver; positional through the
+        // ordered one. (Downstream structural fallbacks —
+        // signatures.bodyImpliesKernel, the dissolver — are now
+        // belt-and-suspenders.)
+        const anyKw = kwOf.some((k) => k != null);
+        let headResult: any = null;
+        if (anyKw) {
+          const cellTypesByKw: any = {};
+          for (let i = 0; i < cellTypes.length; i++) {
+            if (kwOf[i] != null) cellTypesByKw[kwOf[i]] = cellTypes[i];
+          }
+          headResult = inferMeasureHeadCellResultKw(fn.name, cellTypesByKw);
+        } else {
+          headResult = inferMeasureHeadCellResult(fn.name, cellTypes);
+        }
         if (headResult) elem = headResult;
         else return T.deferred();
       }
