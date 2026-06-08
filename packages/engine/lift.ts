@@ -855,6 +855,20 @@ function liftInlineSubexpressions(bindings: any) {
       // structure. Only the f-position lift remains — inline
       // fn / functionof shapes get hoisted to anon bindings so the
       // classifier sees a clean self-ref.
+      // ---- Lift pass ordering (REQUIRED) -----------------------------------
+      // Sugar-lowering passes that synthesize bindings which LATER passes must
+      // see as already-hoisted Identifiers run in a fixed order:
+      //   1. inlineLocscaleLift   BEFORE inlinePushfwdLift / inlineBijectionLift
+      //      (locscale emits `pushfwd(bijection(...), m)` whose fn args are
+      //       pre-hoisted here; the bijection/pushfwd passes then see Identifiers).
+      //   2. inlineJointLikelihoodLift BEFORE inlineLikelihoodofLift
+      //      (joint_likelihood folds to nested bayesupdate over likelihoodof
+      //       refs; the likelihoodof pass then lifts each one normally).
+      // Synthetic bindings inserted into `out` during the inlineUserCall loop
+      // bypass the per-binding visit() pass, so each producing pass MUST itself
+      // pre-hoist any inline fn(...) sub-expressions it emits (see the fwd/inv/
+      // logvol hoisting in inlineLocscaleLift and inlineMvNormalLift).
+      // ----------------------------------------------------------------------
       // locscale(m, shift, scale) is pure sugar for an affine pushfwd
       // (spec §06 sec:locscale). Desugar BEFORE inlinePushfwdLift so the
       // emitted inline `fn(...)` gets hoisted to an anon binding on the
