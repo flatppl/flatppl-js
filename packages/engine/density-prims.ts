@@ -379,6 +379,8 @@ function _wishart(x: any, kw: any, invert: boolean): number {
 // The LKJ density is `p(C) = c_n(η)·det(C)^(η-1)`, where `c_n(η) = 1/Z` and
 // `Z = ∫ det(C)^(η-1) dC` is the normalizing INTEGRAL over the correlation
 // manifold. The closed form below is the standard product expansion of `log Z`
+// (NOTE: the formula PRINTED as `c_n(η)` in docs/08-distributions.md is in fact
+// `Z`, its reciprocal — that is why we accumulate it as `log Z` and return the negation)
 // (see the LKJ normalizer in e.g. Lewandowski–Kurowicka–Joe 2009 / Stan);
 // since `c_n = 1/Z`, `log c_n(η) = −log Z`. We therefore NEGATE the accumulated
 // `log Z` on return. Both call sites (LKJ and LKJCholesky) ADD this quantity,
