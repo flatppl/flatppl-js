@@ -2013,7 +2013,7 @@ function liftInlineSubexpressions(bindings: any) {
    * re-walks the rewritten tree so each nested bayesupdate's args get
    * lifted normally.
    */
-  function _resolveJointLikelihoodArgs(lArg: any): any[] | null {
+  function __resolveJointLikelihoodArgs(lArg: any): any[] | null {
     // Returns the joint_likelihood's positional argument list when
     // `lArg` is (or refs, through any depth of alias) a
     // `joint_likelihood(...)` call; else null.
@@ -2048,7 +2048,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (astArg.args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
     const lArg = astArg.args[0];
     const priorArg = astArg.args[1];
-    const likes = _resolveJointLikelihoodArgs(lArg);
+    const likes = __resolveJointLikelihoodArgs(lArg);
     if (!likes) return astArg;
     const loc = astArg.loc;
     // Left-fold: acc starts at the prior; wrap once per likelihood.

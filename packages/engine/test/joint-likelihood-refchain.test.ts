@@ -135,3 +135,30 @@ lp = logdensityof(joint_likelihood(L1, L2), record(y = 1.5))
   assert.ok(!/no derivation/.test(msg),
     `diagnostic must NOT be the opaque 'no derivation' failure, got: ${msg}`);
 });
+
+test('M1: scoring a NAMED-REF joint_likelihood directly (J = joint_likelihood(...); logdensityof(J, ...)) is rejected loudly', () => {
+  // joint_likelihood's only supported consumption site is bayesupdate.
+  // The sibling test above pins the INLINE shape
+  // (logdensityof(joint_likelihood(L1, L2), ...)). This pins the distinct
+  // NAMED-REF chain: a `J = joint_likelihood(...)` binding consumed by a
+  // bare `logdensityof(J, ...)`. That follows a different lift path (J's
+  // binding must resolve back to a surviving joint_likelihood node), so it
+  // gets its own pin. Direct scoring needs a likelihood-object derivation
+  // (follow-up); until then it MUST be reported loudly, naming both
+  // joint_likelihood and its only supported site, bayesupdate.
+  let err: any = null;
+  try {
+    makeCtx(MODEL + `
+J = joint_likelihood(L1, L2)
+s = logdensityof(J, record(y = 1.5))
+`);
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'directly scoring a named-ref joint_likelihood must throw');
+  const msg = String(err && err.message);
+  assert.ok(/joint_likelihood/.test(msg),
+    `rejection must mention joint_likelihood, got: ${msg}`);
+  assert.ok(/bayesupdate/.test(msg),
+    `rejection must point to the only supported site (bayesupdate), got: ${msg}`);
+});
