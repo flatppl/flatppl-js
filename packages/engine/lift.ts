@@ -626,13 +626,15 @@ function liftInlineSubexpressions(bindings: any) {
             reachAliases.add(name);
             queue.push(name);
           } else {
-            throw new Error("joint_likelihood survived lifting in binding '"
+            const err: any = new Error("joint_likelihood survived lifting in binding '"
               + jl + "' (consumed by '" + name + "'): joint_likelihood is "
               + "sugar with no standalone derivation — its only supported "
               + "use is `bayesupdate(joint_likelihood(L1, …), prior)`. "
               + "Scoring or otherwise consuming a joint_likelihood directly "
               + "(e.g. logdensityof) is not supported; combine the component "
               + "likelihoods via nested bayesupdate instead");
+            err.loc = bindings.get(jl)?.node?.loc;
+            throw err;
           }
         }
       }
@@ -1104,9 +1106,11 @@ function liftInlineSubexpressions(bindings: any) {
     // loudly rather than synthesize a `/ 0` inverse that yields garbage.
     const zeroLit = __isLiteralZero(scale);
     if (zeroLit) {
-      throw new Error("locscale: scale must be non-zero/invertible — a zero "
+      const err: any = new Error("locscale: scale must be non-zero/invertible — a zero "
         + "scale collapses the distribution to a point (Dirac at the shift) "
         + "and has no density");
+      err.loc = loc;
+      throw err;
     }
 
     // Determine the scale's rank so we route scalar vs matrix vs vector.
@@ -1115,10 +1119,12 @@ function liftInlineSubexpressions(bindings: any) {
       // VECTOR (per-component) scale: unsupported. Neither the scalar AST
       // inverse (`scalar / vector` → wrong) nor the matrix registry
       // (expects rank-2 L) applies. Diagnose loudly.
-      throw new Error("locscale: vector (per-component) scale is not "
+      const err: any = new Error("locscale: vector (per-component) scale is not "
         + "supported — its density has no closed-form scalar inverse; use "
         + "`pushfwd` with an explicit bijection, or `broadcast` a scalar "
         + "locscale per component");
+      err.loc = loc;
+      throw err;
     }
     if (scaleRank === 2) {
       // MATRIX scale → affine-registry path (CORRECT density + sampling).

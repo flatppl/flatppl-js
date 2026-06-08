@@ -268,6 +268,7 @@ test('locscale with literal zero scale (L2) yields a clear non-invertible diagno
   const msg = String(err && err.message);
   assert.ok(/locscale/.test(msg) && /(non-zero|invertible)/.test(msg),
     `diagnostic must mention non-zero/invertible scale, got: ${msg}`);
+  assert.ok(err && err.loc != null, 'the zero-scale diagnostic should carry a source loc');
 });
 
 // =====================================================================
