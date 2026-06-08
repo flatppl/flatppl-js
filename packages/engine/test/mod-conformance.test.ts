@@ -88,6 +88,29 @@ test('M1: integer-literal mod typechecks clean', () => {
 });
 
 // =====================================================================
+// M4 — integer-domain enforcement drills through arrays (elemPrim)
+// =====================================================================
+
+test('M4: a real-element ARRAY operand to mod produces the integer-domain diagnostic', () => {
+  const { diagnostics } = processSource('m = mod([1.5, 2.5], [1, 2])');
+  const hit = diagnostics.find((d: any) =>
+    d.severity === 'error' && /mod/.test(d.message) && /integer/i.test(d.message));
+  assert.ok(hit,
+    'expected a mod integer-domain diagnostic for a real-element array operand, got: '
+    + JSON.stringify(diagnostics.map((d: any) => d.message)));
+  assert.ok(/argument 1/.test(hit.message),
+    `diagnostic should point at the offending (first) argument, got: ${hit.message}`);
+});
+
+test('M4: an integer-element ARRAY mod typechecks clean', () => {
+  const { diagnostics } = processSource('m = mod([1, 2], [3, 4])');
+  const errs = diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errs, [],
+    'mod over integer-element arrays should be clean, got: '
+    + JSON.stringify(errs.map((d: any) => d.message)));
+});
+
+// =====================================================================
 // L1 — mod(a, 0) runtime behaviour (matches `div`'s unguarded IEEE
 // convention: no diagnostic, runtime NaN).
 // =====================================================================
