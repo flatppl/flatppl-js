@@ -914,7 +914,10 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
   add:    (x, y) => x + y,
   sub:    (x, y) => x - y,
   mul:    (x, y) => x * y,
-  div:    (x, y) => x / y,
+  // Integer floor-division (spec §07): div(a, b) = floor(a/b). Result
+  // rounds toward −∞, NOT JS `/` (true division). The separate `divide`
+  // op below is real division. div(-7, 3) === -3 (not -2.33…).
+  div:    (x, y) => Math.floor(x / y),
   divide: (x, y) => x / y,
   pow:    (x, y) => {
     // Math.pow is ~100 ns per call; for the common integer-exponent
@@ -930,7 +933,10 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
     }
     return Math.pow(x, y);
   },
-  mod:    (x, y) => x % y,
+  // Floor-modulo (spec §07): mod(a, b) = a − b·floor(a/b). Result shares
+  // the sign of the divisor, NOT JS `%` (truncated remainder). Kept byte-
+  // for-byte identical to value-ops.floorMod. mod(-7, 3) === 2 (not -1).
+  mod:    (x, y) => x - y * Math.floor(x / y),
 };
 
 const _AGG_UN: Record<string, (x: number) => number> = {
