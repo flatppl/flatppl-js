@@ -27,7 +27,7 @@
     "esbuild": "^0.28.0",
     "cytoscape": "^3.30.4",
     "@dagrejs/dagre": "^3.0.0",
-    "cytoscape-dagre": "^3.0.0",
+    "cytoscape-dagre": "^4.0.0",
     "cytoscape-bubblesets": "^4.1.0",
     "cytoscape-layers": "^3.1.0",
     "echarts": "^6.0.0",
