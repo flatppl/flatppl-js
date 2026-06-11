@@ -119,6 +119,24 @@ test('builtinLogdensityof: Multinomial(n=4, p=[.5,.3,.2]) at [2,1,1]', () => {
   assert.ok(Math.abs(lp - expected) < 1e-12);
 });
 
+test('builtinLogdensityof: LKJ/LKJCholesky density divides by c_n(eta)', () => {
+  // Oracle: density = det(C)^(eta-1) / c_n(eta), confirmed against Distributions.jl
+  // and numpyro. At eta=1 (n=2) the density is uniform over rho in (-1,1) => 1/2 =>
+  // log(1/2) = -0.6931 (NOT +0.6931 — the pre-fix value multiplied by c_n). See
+  // flatppl-design#43.
+  const C2 = (off: any) => ({ shape: [2, 2], data: new Float64Array([1, off, off, 1]) });
+  const C3 = { shape: [3, 3], data: new Float64Array([1, 0.3, 0.2, 0.3, 1, 0.1, 0.2, 0.1, 1]) };
+  const lkj = (n: any, eta: any, x: any) => densityPrims.builtinLogdensityof('LKJ', { n, eta }, x);
+  assert.ok(Math.abs(lkj(2, 1.0, C2(0.4)) - (-0.6931471805599453)) < 1e-9, 'LKJ n=2 eta=1 (uniform)');
+  assert.ok(Math.abs(lkj(2, 2.0, C2(0.4)) - (-0.46203545959655856)) < 1e-9, 'LKJ n=2 eta=2');
+  assert.ok(Math.abs(lkj(3, 2.0, C3) - (-0.7524491932002857)) < 1e-9, 'LKJ n=3 eta=2');
+  // LKJCholesky of C2(0.4): L = [[1,0],[0.4, sqrt(1-0.16)]]
+  const s = Math.sqrt(1 - 0.16);
+  const Lfac = { shape: [2, 2], data: new Float64Array([1, 0, 0.4, s]) };
+  const lpc = densityPrims.builtinLogdensityof('LKJCholesky', { n: 2, eta: 2.0 }, Lfac);
+  assert.ok(Math.abs(lpc - (-0.46203545959655856)) < 1e-9, 'LKJCholesky n=2 eta=2 matches LKJ');
+});
+
 // =====================================================================
 // Surface evaluation through processSource (fixed-phase binding)
 // =====================================================================

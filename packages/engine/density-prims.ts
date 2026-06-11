@@ -310,7 +310,7 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
   },
 
   // LKJ(n, eta) — correlation-matrix density:
-  //   p(C) = c_n(η) · det(C)^(η-1)
+  //   p(C) = det(C)^(η-1) / c_n(η)   (c_n is the normalizing integral)
   LKJ: function (x: any, kw: any): number {
     if (kw == null || !('n' in kw) || !('eta' in kw)) {
       throw new Error('builtin_logdensityof(LKJ): requires n and eta');
@@ -320,11 +320,11 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     const C = _asMatrixOfSize(x, n, 'LKJ');
     const ld = logDetSPD(C);
     if (ld == null) return -Infinity;
-    return _logCnLKJ(n, eta) + (eta - 1) * ld;
+    return (eta - 1) * ld - _logCnLKJ(n, eta);
   },
 
   // LKJCholesky(n, eta) — Cholesky factor of an LKJ-distributed C:
-  //   p(L) = c_n(η) · Π_{i=2..n} L_ii^(n − i + 2η − 2)
+  //   p(L) = (Π_{i=2..n} L_ii^(n − i + 2η − 2)) / c_n(η)
   LKJCholesky: function (x: any, kw: any): number {
     if (kw == null || !('n' in kw) || !('eta' in kw)) {
       throw new Error('builtin_logdensityof(LKJCholesky): requires n and eta');
@@ -332,7 +332,7 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     const n = +kw.n | 0;
     const eta = +kw.eta;
     const L = _asMatrixOfSize(x, n, 'LKJCholesky');
-    let lp = _logCnLKJ(n, eta);
+    let lp = -_logCnLKJ(n, eta);
     for (let i = 1; i < n; i++) {
       const lii = L.data[i * n + i];
       if (!(lii > 0)) return -Infinity;
