@@ -59,13 +59,11 @@ function makeCtx(source: any) {
   return { ctx, lowered: lifted.loweredModule };
 }
 
-// Strip loc/meta AND numType: the int-vs-real lit tag is the documented
-// engine-internal round-trip loss (TODO §11 — neither emitted nor
-// reconstructed by pir-sexpr; coordinate with the Rust side).
+// Strip loc/meta only — numType round-trips since the lexical-form fix
+// (spec §11: a lit's type IS its wire form; `3` integer, `3.0` real).
 function stripped(ir: any): any {
   return JSON.parse(JSON.stringify(ir, (k, v) =>
-    (k === 'loc' || k === 'meta' || k === 'originLoc' || k === 'numType')
-      ? undefined : v));
+    (k === 'loc' || k === 'meta' || k === 'originLoc') ? undefined : v));
 }
 
 function normWs(s: string): string {
@@ -147,8 +145,7 @@ f = x -> 2.0 * x
 y = f(3.0)
 `);
   const out = normWs(pirSexpr.toSexpr(lowered));
-  // (`3.0` emits as `3` — the documented numType wire loss, TODO §11.)
-  assert.ok(out.includes('(%bind y (%call (%ref self f) 3))'),
+  assert.ok(out.includes('(%bind y (%call (%ref self f) 3.0))'),
     'ref heads keep the plain (%ref …) head form; got: ' + out);
 });
 

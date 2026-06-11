@@ -169,6 +169,10 @@ function lowerToModule(parsedBindings: Map<string, any>) {
       doc: binding.node && binding.node.doc ? binding.node.doc : null,
       originLoc: binding.node.loc,
       synthetic: !!binding.synthetic,
+      // The analyzer's computePhases ran before lowering (pass 5); carry
+      // the binding's phase so consumers of the LoweredModule (e.g. the
+      // FlatPIR %meta emitter) don't need the BindingInfo map.
+      phase: binding.phase || null,
     }));
     // Module-typed binding: extract the (stdName, stdCompat) from its
     // lowered `standard_module(<name>, <compat>)` call so downstream

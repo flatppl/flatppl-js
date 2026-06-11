@@ -63,7 +63,14 @@ function toSexpr(mod: any, opts?: any) {
   }
   // bindings
   for (const [name, binding] of mod.bindings) {
-    const rhsText = _exprToSexpr(binding.rhs, indent ? '  ' : '');
+    // %meta emission (opt-in; bare FlatPIR is the canonical pre-inference
+    // shape — annotated output is for tooling export). The OUTERMOST call
+    // of each binding's RHS carries the binding-level phase; inner calls
+    // carry type-only slots (phase %deferred) where typeinfer annotated.
+    const mopts = opts.meta
+      ? { meta: true, outerPhase: binding.phase || null }
+      : null;
+    const rhsText = _exprToSexpr(binding.rhs, indent ? '  ' : '', mopts);
     // Optional `(%doc <markup> <line>...)` trailing sub-form (spec
     // §11 Documentation). Absent when the binding has no doc OR when
     // the doc has zero content lines (canonical form for undocumented).
@@ -80,11 +87,11 @@ function toSexpr(mod: any, opts?: any) {
   return indent ? lines.join('\n') : lines.join(' ');
 }
 
-function _exprToSexpr(e: any, ind: string): string {
+function _exprToSexpr(e: any, ind: string, mopts?: any): string {
   if (e == null) return 'null';
   if (typeof e !== 'object') return _atomToSexpr(e);
   switch (e.kind) {
-    case 'lit':   return _atomToSexpr(e.value);
+    case 'lit':   return _atomToSexpr(e.value, e.numType);
     case 'hole':  return '_';
     case 'const': return String(e.name);
     case 'axis': {
@@ -97,7 +104,7 @@ function _exprToSexpr(e: any, ind: string): string {
       return '(%axis ' + e.name + ')';
     }
     case 'ref':   return '(%ref ' + e.ns + ' ' + e.name + ')';
-    case 'call':  return _callToSexpr(e, ind);
+    case 'call':  return _callToSexpr(e, ind, mopts);
     default:
       throw new Error('pir-sexpr: unknown IR kind ' + JSON.stringify(e.kind));
   }
@@ -118,7 +125,76 @@ function _docToSexpr(doc: any): string | null {
   return '(' + parts.join(' ') + ')';
 }
 
-function _atomToSexpr(v: any) {
+// ---------------------------------------------------------------------
+// %meta emission (spec §11 "Type and phase annotations") — opt-in via
+// toSexpr(mod, {meta: true}). The TYPE slot renders the engine type the
+// typeinfer pass wrote on the call (`meta.type`); the PHASE slot carries
+// the binding-level phase on the OUTERMOST call of each binding's RHS
+// (the spec explicitly allows annotating only the outermost call) and
+// %deferred on inner calls. Anything without a clean spec category
+// (rngstate, type vars, set markers, callables with unknown inputs)
+// downgrades to %deferred — semantically equivalent to omission, never
+// wrong. A call where both slots would be %deferred emits NO %meta.
+
+function _metaToSexpr(e: any, mopts: any): string | null {
+  const t = e.meta && e.meta.type;
+  const phase = (mopts && mopts.outerPhase) ? '%' + mopts.outerPhase : '%deferred';
+  const tStr = _typeToSexpr(t);
+  if (tStr === '%deferred' && phase === '%deferred') return null;
+  return '(%meta ' + tStr + ' ' + phase + ')';
+}
+
+function _typeToSexpr(t: any): string {
+  if (!t || t.kind === 'deferred') return '%deferred';
+  switch (t.kind) {
+    case 'failed':
+      return '(%failed ' + JSON.stringify(String(t.reason || 'inference failed')) + ')';
+    case 'any': return '%any';
+    case 'scalar': return '(%scalar ' + t.prim + ')';
+    case 'array': {
+      const dims = Array.isArray(t.shape) ? t.shape : [];
+      if (typeof t.rank !== 'number') return '%deferred';
+      const shape = dims.map((d: any) =>
+        (typeof d === 'number' ? String(d) : '%dynamic')).join(' ');
+      return '(%array ' + t.rank + ' (' + shape + ') ' + _typeToSexpr(t.elem) + ')';
+    }
+    case 'tvector':
+      return '(%tvector '
+        + (typeof t.length === 'number' ? String(t.length) : '%dynamic')
+        + ' ' + _typeToSexpr(t.elem) + ')';
+    case 'record': {
+      const fields = t.fields || {};
+      const entries = Object.keys(fields).map(
+        (k) => '(' + k + ' ' + _typeToSexpr(fields[k]) + ')');
+      return '(%record ' + entries.join(' ') + ')';
+    }
+    case 'table': {
+      const cols = t.columns || {};
+      const entries = Object.keys(cols).map(
+        (k) => '(' + k + ' ' + _typeToSexpr(cols[k]) + ')');
+      const nrows = typeof t.nrows === 'number' ? String(t.nrows) : '%dynamic';
+      return '(%table (%columns ' + entries.join(' ') + ') (%nrows ' + nrows + '))';
+    }
+    case 'tuple': {
+      const elems = Array.isArray(t.elems) ? t.elems : [];
+      return '(%tuple ' + elems.map(_typeToSexpr).join(' ') + ')';
+    }
+    case 'measure': return '(%measure (%domain ' + _typeToSexpr(t.domain) + '))';
+    case 'function':
+    case 'kernel': {
+      const names = Array.isArray(t.inputs)
+        ? t.inputs.map((i: any) => i && i.name).filter(Boolean) : [];
+      if (names.length === 0) return '%deferred';   // inputs unknown
+      return '(%' + t.kind + ' (%inputs ' + names.join(' ') + '))';
+    }
+    // likelihood: the spec category requires (%inputs …) AND (%obstype
+    // <type>); the engine's likelihood type carries no obstype, so a
+    // conformant emission isn't possible yet — downgrade.
+    default: return '%deferred';
+  }
+}
+
+function _atomToSexpr(v: any, numType?: string) {
   if (v === true) return 'true';
   if (v === false) return 'false';
   if (v === null) return 'null';
@@ -129,6 +205,12 @@ function _atomToSexpr(v: any) {
       if (v === -Infinity) return '(neg inf)';
       return 'nan';
     }
+    // Spec §11: a literal's type IS its lexical form on the wire
+    // (`3` integer, `1.0` real). An integer-VALUED real lit must
+    // therefore carry a decimal point — emitting `3.0` as `3` would
+    // change its type. The reader reconstructs `numType` from the
+    // same lexical rule, so the tag round-trips.
+    if (numType === 'real' && Number.isInteger(v)) return v.toFixed(1);
     return String(v);
   }
   // Anything else (an object that's not an IR node) — emit as JSON
@@ -136,12 +218,12 @@ function _atomToSexpr(v: any) {
   return JSON.stringify(v);
 }
 
-function _callToSexpr(e: any, ind: string): string {
+function _callToSexpr(e: any, ind: string, mopts?: any): string {
   // Reified callables take the spec §11 fixed-arity form, not the
   // generic call shape. (kernelof is accepted defensively; the lowerer
   // canonicalises it to functionof so it never appears internally.)
   if (!e.target && (e.op === 'functionof' || e.op === 'kernelof') && e.body) {
-    return _reificationToSexpr(e, ind);
+    return _reificationToSexpr(e, ind, mopts);
   }
   // Head shape (spec §11): a built-in call uses a bare op symbol as the
   // head; a user-defined-callable call (lower.ts emits `target:{ns,name}`
@@ -156,31 +238,39 @@ function _callToSexpr(e: any, ind: string): string {
     // an inline reification `(%call (functionof …) 2.5)`. Ref heads
     // keep the `target` form above (unchanged on the wire).
     parts.push('%call');
-    parts.push(_exprToSexpr(e.callee, ind));
+    parts.push(_exprToSexpr(e.callee, ind, mopts ? { meta: true } : null));
   } else {
     parts.push(e.op);
   }
+  // Optional `(%meta <type> <phase>)` immediately after the head (spec
+  // §11 — calls and only calls). Skipped when both slots would be
+  // %deferred (a missing annotation is equivalent).
+  const inner = mopts ? { meta: true } : null;
+  if (mopts) {
+    const m = _metaToSexpr(e, mopts);
+    if (m) parts.push(m);
+  }
   // Positional args
   if (e.args) {
-    for (const a of e.args) parts.push(_exprToSexpr(a, ind));
+    for (const a of e.args) parts.push(_exprToSexpr(a, ind, inner));
   }
   // kwargs
   if (e.kwargs) {
     const names = Object.keys(e.kwargs);
     for (const k of names) {
-      parts.push('(%kwarg ' + k + ' ' + _exprToSexpr(e.kwargs[k], ind) + ')');
+      parts.push('(%kwarg ' + k + ' ' + _exprToSexpr(e.kwargs[k], ind, inner) + ')');
     }
   }
   // record / joint / cartprod / table fields
   if (e.fields) {
     for (const f of e.fields) {
-      parts.push('(%field ' + f.name + ' ' + _exprToSexpr(f.value, ind) + ')');
+      parts.push('(%field ' + f.name + ' ' + _exprToSexpr(f.value, ind, inner) + ')');
     }
   }
   // load_module / standard_module assigns
   if (e.assigns) {
     for (const a of e.assigns) {
-      parts.push('(%assign ' + a.name + ' ' + _exprToSexpr(a.value, ind) + ')');
+      parts.push('(%assign ' + a.name + ' ' + _exprToSexpr(a.value, ind, inner) + ')');
     }
   }
   return '(' + parts.join(' ') + ')';
@@ -203,7 +293,7 @@ function _callToSexpr(e: any, ind: string): string {
 // JS never emits a FILLED %autoinputs list — that is inference
 // metadata (strippable like %meta), and the engine does not serialize
 // inference results yet (rides the %meta-emission item).
-function _reificationToSexpr(e: any, ind: string): string {
+function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
   const params: string[] = e.params || [];
   const paramKwargs: string[] = e.paramKwargs || [];
   const paramSources: any[] = e.paramSources || [];
@@ -225,7 +315,13 @@ function _reificationToSexpr(e: any, ind: string): string {
     return isPlaceholderName(p) ? p.slice(1, -1) : p;
   };
   const parts: string[] = [e.op === 'kernelof' ? 'kernelof' : 'functionof'];
-  parts.push(_exprToSexpr(e.body, ind));
+  // Optional %meta after the head (the spec's annotated example puts the
+  // reification's own kernel/function annotation here).
+  if (mopts) {
+    const m = _metaToSexpr(e, mopts);
+    if (m) parts.push(m);
+  }
+  parts.push(_exprToSexpr(e.body, ind, mopts ? { meta: true } : null));
   if (params.length === 0) {
     parts.push('%autoinputs', '%deferred');
   } else {
@@ -685,7 +781,9 @@ function fromSexpr(text: any) {
 
 function _atomFromToken(t: any) {
   if (t.type === 'str') return { kind: 'lit', value: t.value };
-  if (t.type === 'num') return { kind: 'lit', value: t.value };
+  if (t.type === 'num') {
+    return { kind: 'lit', value: t.value, numType: t.real ? 'real' : 'integer' };
+  }
   if (t.type === 'bool') return { kind: 'lit', value: t.value };
   if (t.type === '_') return { kind: 'hole' };
   if (t.type === 'sym' || t.type === '%kw') {
@@ -743,8 +841,10 @@ function _tokenize(text: any) {
     if (tok === 'true')       { tokens.push({ type: 'bool', value: true }); continue; }
     if (tok === 'false')      { tokens.push({ type: 'bool', value: false }); continue; }
     // Numeric literal: matches integer or real (incl. scientific notation).
+    // The lexical form carries the TYPE (spec §11: `3` integer, `1.0`
+    // real) — record it so the lit reconstructs `numType`.
     if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(tok)) {
-      tokens.push({ type: 'num', value: Number(tok) });
+      tokens.push({ type: 'num', value: Number(tok), real: /[.eE]/.test(tok) });
       continue;
     }
     if (tok[0] === '%') {
