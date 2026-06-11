@@ -96,6 +96,34 @@
 const rngLib = require('./rng.ts');
 const samplerLib = require('./sampler.ts');
 const densityLib = require('./density.ts');
+const irShared = require('./ir-shared.ts');
+
+// Resolve a `truncate(M, S)` set IR to a structural descriptor for
+// density.walkTruncate (`opts.parseSet`). The dumb worker has no `bindings`
+// (so it can't call orchestrator/parseSetIR with the binding map the main
+// thread uses), but the set forms that reach density are simple: a named set
+// (`posreals`, `unitinterval`, …) or `interval(lo, hi)`. ir-shared.parseSetIR
+// handles named sets + literal-bound intervals with no bindings; for an
+// interval whose bounds are env-resolved refs (a fixed const folded to a
+// session-env value), fall back to evaluating the bounds against the worker
+// env. Returns null for set forms we can't reduce → walkTruncate's `inSet`
+// treats null as no constraint (matching the pre-existing non-throwing intent
+// for unrecognised sets, just without the hard crash).
+function makeParseSet(env: any) {
+  return (setIR: any) => {
+    const d = irShared.parseSetIR(setIR, null);
+    if (d) return d;
+    if (setIR && setIR.kind === 'call' && setIR.op === 'interval'
+        && Array.isArray(setIR.args) && setIR.args.length === 2) {
+      try {
+        const lo = +samplerLib.evaluateExpr(setIR.args[0], env);
+        const hi = +samplerLib.evaluateExpr(setIR.args[1], env);
+        if (Number.isFinite(lo) || Number.isFinite(hi)) return { kind: 'interval', lo, hi };
+      } catch (_) { /* fall through to null */ }
+    }
+    return null;
+  };
+}
 
 // refArrays uniformly carry Values internally (post-
 // unification). Worker handlers like sampleN / truncateSampleN read
@@ -435,6 +463,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             msg.refArrays || null,
             count,
             { baseEnv: env, pointsBatched: !!msg.pointsBatched,
+              parseSet: makeParseSet(env),
               mcRng, mcMarginalizationCount: (msg.mcMarginalizationCount | 0) || 100 });
           return { type: 'samples', id, samples: logps, logWeights: null };
         }

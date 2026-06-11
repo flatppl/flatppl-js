@@ -2697,6 +2697,17 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     if (!inner) return null;
     return { ...ir, args: [ir.args[0], inner] };
   }
+  if (ir.op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
+    // truncate(M, S): args[0] is the BASE MEASURE, args[1] the set. Inline
+    // the base (it is commonly a hoisted anon binding, e.g.
+    // `truncate(Normal(0,1), interval(-1,1))` → `truncate(ref __anon0, …)`)
+    // so the density walker doesn't dead-end on a bare measure ref it can't
+    // resolve (the dumb worker has no resolveMeasureRef). The set IR is left
+    // verbatim for walkTruncate's parseSet.
+    const inner: any = _expandStructural(ir.args[0], ctx, visited);
+    if (!inner) return null;
+    return { ...ir, args: [inner, ir.args[1]] };
+  }
   // Sampleable distribution / select / broadcast / superpose / etc.:
   // pass through unchanged. Their kwargs / args hold value-position
   // refs that the density / sample walker resolves per-atom; we
