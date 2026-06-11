@@ -529,6 +529,15 @@ function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: a
   // lowering — never re-materialised via getMeasure (audit §3 / H1). When
   // `boundRefArrays` supplies a name, use that column and skip getMeasure.
   const bound = boundRefArrays && typeof boundRefArrays === 'object' ? boundRefArrays : null;
+  // CLM boundary feed (measure-lowering unification Phase 4): matClm threads the
+  // fed boundary columns through `ctx._extraRefArrays`, the overlay
+  // `collectRefArrays` already honours (above). Honour it here too so the
+  // density / evaluate ref-prep reached from a CLM-fed child ctx (the Smell A
+  // materialiser merge) conditions on the FED prior, not a re-materialised
+  // like-named binding (audit §3). Treated exactly like `bound`: skip
+  // getMeasure for a supplied ref, then overlay the columns at the end.
+  const extra = ctx && ctx._extraRefArrays && typeof ctx._extraRefArrays === 'object'
+    ? ctx._extraRefArrays : null;
   // Bijection bindings reachable from `ir` carry their registry
   // parameters (affine's mu/cov → {b, L} paramIRs) in a side-channel on
   // `binding.bijection`, NOT in the walked IR tree — so collectSelfRefs
@@ -580,6 +589,7 @@ function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: a
     // Boundary inputs the caller fed take precedence over any like-named
     // module binding — do NOT getMeasure them (that is the conflation bug).
     if (bound && Object.prototype.hasOwnProperty.call(bound, n)) return;
+    if (extra && extra[n] != null) return;
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     const isBinding = !!(ctx.bindings && ctx.bindings.has(n));
     const isFixed   = !!(ctx.fixedValues && ctx.fixedValues.has(n));
@@ -597,6 +607,7 @@ function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: a
         measureToRefValue(measures[i], perAtomNames[i], label);
     }
     if (bound) for (const k in bound) refArrays[k] = bound[k];
+    if (extra) for (const k in extra) { if (extra[k] != null) refArrays[k] = extra[k]; }
     return { refArrays, fixedEnv, perAtomNames };
   });
 }

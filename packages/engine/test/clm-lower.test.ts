@@ -24,6 +24,7 @@ const der = require('../derivations.ts');
 const { collectSelfRefs } = require('../ir-shared.ts');
 const { lowerMeasure, feedInputs } = require('../clm.ts');
 const { buildCtx } = require('./_agreement-harness.ts');
+const shared = require('../materialiser-shared.ts');
 
 // Mean / std of a measure's scalar atoms (uniform weights — these fixtures
 // have none) for the sample-side matClm equivalence check.
@@ -285,4 +286,43 @@ K = functionof(Normal(mu = a, sigma = 1.0), a = a)`;
   const fed = await feedInputs(node, ctx);
   assert.ok(!Object.prototype.hasOwnProperty.call(fed.refArrays, 'a'),
     'a free input is not bound into refArrays (the worker varies it per sweep point)');
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// Smell A, Stage 0 — prepareDensityRefs honours ctx._extraRefArrays.
+//
+// The CLM boundary feed threads fed columns through `ctx._extraRefArrays`,
+// the overlay `collectRefArrays` already honours. `prepareDensityRefs` (the
+// density / evaluate ref-prep) must honour it too, so a matEvaluate-class
+// handler reached from a CLM-fed child ctx (the Smell A materialiser merge)
+// conditions on the FED prior rather than re-materialising a like-named
+// binding via getMeasure (the boundary-conflation bug, audit §3). No
+// production caller hits prepareDensityRefs inside a CLM-fed ctx today, so
+// this is a no-op for the current suite; the test pins the contract directly.
+// ════════════════════════════════════════════════════════════════════════
+test('Stage 0: prepareDensityRefs honours ctx._extraRefArrays (CLM feed overlay)', async () => {
+  const N = 4;
+  const col = { shape: [N], data: Float64Array.from([1, 2, 3, 4]) };  // a fed per-atom column
+  let getMeasureCalled = false;
+  const ir = { kind: 'call', op: 'add', args: [
+    { kind: 'ref', ns: 'self', name: 'theta' },
+    { kind: 'lit', value: 1, numType: 'real' },
+  ] };
+  const ctx = {
+    bindings: new Map(),
+    fixedValues: new Map(),
+    sampleCount: N,
+    getMeasure: (n: any) => {
+      getMeasureCalled = true;
+      return Promise.reject(new Error('getMeasure must not run for fed ref ' + n));
+    },
+    _extraRefArrays: { theta: col },
+  };
+  const prep = await shared.prepareDensityRefs(ir, ctx, 'stage0-test');
+  assert.strictEqual(prep.refArrays.theta, col,
+    'fed column overlaid into refArrays by reference (not cloned)');
+  assert.ok(!prep.perAtomNames.includes('theta'),
+    'fed ref must not be queued for getMeasure');
+  assert.strictEqual(getMeasureCalled, false,
+    'getMeasure must not run for a CLM-fed boundary ref');
 });
