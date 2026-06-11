@@ -2227,6 +2227,57 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
 }
 
 /**
+ * Splice nested-chain steps into a flat step list (lowering-time; the home
+ * of the retired `matJointchain._flattenNestedChainSteps`). When a step's
+ * `ref` is itself a jointchain/kchain (kernel-first inner chain), replace it
+ * with the inner's steps so the positional jointchain expansion covers the
+ * combined sequence — spec §06 cat-of-variates / flat retention. Outer step 0
+ * (the base) is never spliced; non-chain steps pass through. Inner step vars
+ * get an `<outer-var>__` prefix to avoid collision (expandMeasure names
+ * positionally, so the rename is cosmetic there, but kept for any var-keyed
+ * consumer). Throws on a marginalize-mismatch (inner retain vs outer marginal
+ * or vice-versa) — that needs per-atom delegation, a documented follow-up.
+ */
+function _flattenNestedChainSteps(steps: any[], outerMarginalize: boolean, ctx: any): any[] {
+  const out: any[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    const innerDeriv = s.ref != null && ctx && ctx.derivations
+      ? ctx.derivations[s.ref] : null;
+    const isNested = !!innerDeriv && innerDeriv.kind === 'jointchain'
+      && Array.isArray(innerDeriv.steps);
+    if (i === 0 || !isNested) { out.push(s); continue; }
+    const innerMarginalize = !!innerDeriv.marginalize;
+    if (innerMarginalize !== outerMarginalize) {
+      throw new Error(
+        `jointchain: step ${i} ref '${s.ref}' has marginalize=${innerMarginalize} `
+        + `while outer has marginalize=${outerMarginalize}; mixed-marginalize `
+        + `nested chains need per-atom delegation, a runtime follow-up. The `
+        + `same-marginalize case (both retain or both marginal) flattens `
+        + `correctly today; spell out the chain explicitly as a workaround.`);
+    }
+    const priorVars = out.map((p) => p.var);
+    const renamePrefix = s.var + '__';
+    const innerVarMap = new Map<string, string>();
+    for (const is of innerDeriv.steps) innerVarMap.set(is.var, renamePrefix + is.var);
+    const inner0 = innerDeriv.steps[0];
+    out.push({
+      var: innerVarMap.get(inner0.var), role: 'kernel', inputs: priorVars.slice(),
+      ref: inner0.ref, kernelIR: inner0.kernelIR,
+    });
+    for (let j = 1; j < innerDeriv.steps.length; j++) {
+      const isj = innerDeriv.steps[j];
+      out.push({
+        var: innerVarMap.get(isj.var), role: 'kernel',
+        inputs: (isj.inputs || []).map((n: string) => innerVarMap.get(n) || n),
+        ref: isj.ref, kernelIR: isj.kernelIR,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Unified measure-IR expansion (engine-concepts §17.4).
  *
  * Single canonical entry point. Replaces the four-way maze of
@@ -2414,11 +2465,33 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // (`b~K2(a)` for one prior, `c~K3([a,b])` for ≥2), realised by
         // rewiring the kernel's param ref to ref(prior_0) / vector(ref
         // prior_0, …) over the prior step-var names.
-        const steps = d.steps || [];
+        //
+        // Nested chains (`outer = jointchain(prior, inner)`, inner itself a
+        // chain) are flattened FIRST — splice inner's steps into a flat list
+        // (spec §06 cat-of-variates / flat retention) — so the positional
+        // expansion below covers them. This is the lowering-time home of the
+        // former materialise-time `matJointchain._flattenNestedChainSteps`
+        // (retired with matJointchain). Throws on a marginalize-mismatch
+        // nested chain (a clear follow-up diagnostic).
+        const steps = _flattenNestedChainSteps(d.steps || [], !!d.marginalize, ctx);
         if (steps.length < 2) return null;
         const base = steps[0];
-        if (base.kernel || base.ref == null) return null;
-        const baseIR: any = expandMeasureIR(base.ref, derivations, next, bindings);
+        if (base.kernel) return null;
+        // Base is a binding ref (the common case) OR an inline CLOSED measure
+        // (applied-chain: `chain(theta=0.5)` — classifyAppliedChain substitutes
+        // the bound args into the kernel-first chain's step 0, yielding a
+        // ref-less `measureIR`). The marginal path below rewires a hole to
+        // base.ref, so an inline base is only lowered here for the RETAIN path;
+        // a marginal applied-chain (no base binding to feed per-atom) returns
+        // null (unimplemented — a clean lowering refusal).
+        let baseIR: any;
+        if (base.ref != null) {
+          baseIR = expandMeasureIR(base.ref, derivations, next, bindings);
+        } else if (base.measureIR && !d.marginalize) {
+          baseIR = _expandStructural(base.measureIR, ctx, next);
+        } else {
+          return null;
+        }
         if (!baseIR) return null;
         const vname = (i: any) => (d.labels && d.labels[i]) || ('s' + i);
 

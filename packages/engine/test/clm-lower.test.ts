@@ -22,7 +22,7 @@ const assert = require('node:assert');
 const eng = require('../index.ts');
 const der = require('../derivations.ts');
 const { collectSelfRefs } = require('../ir-shared.ts');
-const { lowerMeasure, setClmEnabled } = require('../clm.ts');
+const { lowerMeasure } = require('../clm.ts');
 const { buildCtx } = require('./_agreement-harness.ts');
 
 // Mean / std of a measure's scalar atoms (uniform weights — these fixtures
@@ -171,78 +171,58 @@ post = bayesupdate(L, prior)`);
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// Phase 4 LIVE REROUTE — §15 dual-mode validation (engine-concepts §15/§18).
-//
-// The clmRerouteStage routes a `jointchain`-kind binding through lowerMeasure
-// + matClm when `isClmEnabled()`. The legacy matJointchain path stays the
-// equivalence ORACLE: materialising the SAME chain with the flag OFF and ON
-// must agree (statistically — the two paths seed independently, so moments
-// within MC tolerance, not bit-identical). This is the gate the reroute must
-// hold before matJointchain.bindLeaf is retired (scaffolding removed last).
+// Phase 4 LIVE REROUTE — chain sampling through the CLM path (matJointchain
+// retired). jointchain/kchain bindings sample SOLELY via clmRerouteStage →
+// lowerMeasure → matClm. These assert the chain marginals' moments against
+// ANALYTICAL truth (a stronger check than the former reroute-≡-legacy
+// dual-mode comparison, now that there is no legacy path to compare to).
 // ════════════════════════════════════════════════════════════════════════
 
-function momentsOf(name: string, src: string, N: number, seed: number) {
-  const { ctx } = buildCtx(src, N, seed);
-  return Promise.resolve(ctx.getMeasure(name));
-}
-
-// Materialise `name` with the live reroute forced OFF then ON; return both.
-async function bothModes(name: string, src: string, N: number, seed: number) {
-  setClmEnabled(false);
-  const off = await momentsOf(name, src, N, seed);
-  setClmEnabled(true);
-  try {
-    const on = await momentsOf(name, src, N, seed);
-    return { off, on };
-  } finally {
-    setClmEnabled(false);          // never leak the flag into other tests
-  }
-}
-
-const CHAIN_FIXTURES: Array<[string, string, string]> = [
+const CHAIN_FIXTURES: Array<[string, string, string, number]> = [
+  // 2-step kchain marginal: M=N(0,10), K=N(a,1) ⇒ N(0, √101), std≈10.05.
   ['2-step kchain marginal', 'ch', `
 M = Normal(mu = 0.0, sigma = 10.0)
 K = functionof(Normal(mu = a, sigma = 1.0), a = a)
-ch = kchain(M, K)`],
+ch = kchain(M, K)`, Math.sqrt(101)],
+  // N-ary 3-step: a0~N(0,1); a1~N(a0,1); a2~N(a1,1) ⇒ N(0, √3), std≈1.73.
   ['N-ary (3-step) kchain marginal', 'd', `
 M  = Normal(mu = 0.0, sigma = 1.0)
 K1 = fn(Normal(mu = _, sigma = 1.0))
 K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))
-d  = kchain(M, K1, K2)`],
+d  = kchain(M, K1, K2)`, Math.sqrt(3)],
+  // Record-base (cat-arity A): obs~N(t1,t2), t1~N(0,1), t2~Exp(1).
+  // Var(obs) = Var(t1) + E[t2²] = 1 + 2 = 3 ⇒ std≈√3.
   ['record-base kchain (cat-arity A)', 'ch', `
 joint_indep = joint(t1 = Normal(mu = 0.0, sigma = 1.0), t2 = Exponential(rate = 1.0))
 K = functionof(Normal(mu = t1, sigma = t2), t1 = t1, t2 = t2)
-ch = kchain(joint_indep, K)`],
+ch = kchain(joint_indep, K)`, Math.sqrt(3)],
 ];
 
-for (const [id, name, src] of CHAIN_FIXTURES) {
-  test(`[clm Phase 4 dual-mode] ${id} — reroute ≡ legacy (moments)`, async () => {
-    const { off, on } = await bothModes(name, src, 40000, 99);
-    assert.ok(off.samples && on.samples, `${id}: both modes scalar marginal`);
-    const a = meanStd(off), b = meanStd(on);
-    assert.ok(Math.abs(a.mean - b.mean) < 0.15,
-      `${id}: mean off=${a.mean.toFixed(3)} on=${b.mean.toFixed(3)}`);
-    assert.ok(Math.abs(a.std - b.std) / Math.max(a.std, 1e-9) < 0.08,
-      `${id}: std off=${a.std.toFixed(3)} on=${b.std.toFixed(3)} (>8% apart)`);
+for (const [id, name, src, wantStd] of CHAIN_FIXTURES) {
+  test(`[clm Phase 4] ${id} — CLM marginal moments ≈ analytic`, async () => {
+    const { ctx } = buildCtx(src, 40000, 99);
+    const m = await ctx.getMeasure(name);
+    assert.ok(m.samples, `${id}: scalar marginal`);
+    const s = meanStd(m);
+    assert.ok(Math.abs(s.mean) < 0.2, `${id}: mean ${s.mean.toFixed(3)} ≉ 0`);
+    assert.ok(Math.abs(s.std - wantStd) / wantStd < 0.08,
+      `${id}: std ${s.std.toFixed(3)} vs analytic ${wantStd.toFixed(3)} (>8% apart)`);
   });
 }
 
-test('[clm Phase 4 dual-mode] jointchain RETAIN — reroute ≡ legacy (per-variate + cov)', async () => {
+test('[clm Phase 4] jointchain RETAIN — CLM keeps (a,b) with Cov(a,b)=Var(a)=1', async () => {
   const src = `
 M = Normal(mu = 0.0, sigma = 1.0)
 K = functionof(Normal(mu = x, sigma = 1.0), x = x)
 jc = jointchain(M, K)`;
-  const { off, on } = await bothModes('jc', src, 40000, 99);
-  assert.ok(off.elems && on.elems && off.elems.length === 2 && on.elems.length === 2,
-    'both modes retain a 2-tuple');
-  const covOf = (m: any) => {
-    const a = m.elems[0].samples, b = m.elems[1].samples;
-    let ma = 0, mb = 0; const n = a.length;
-    for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; } ma /= n; mb /= n;
-    let c = 0; for (let i = 0; i < n; i++) c += (a[i] - ma) * (b[i] - mb);
-    return c / n;
-  };
-  // Cov(a,b) = Var(a) = 1 for b = a + N(0,1). Both paths must recover it.
-  assert.ok(Math.abs(covOf(off) - covOf(on)) < 0.12,
-    `retain cov off=${covOf(off).toFixed(3)} on=${covOf(on).toFixed(3)}`);
+  const { ctx } = buildCtx(src, 40000, 99);
+  const m = await ctx.getMeasure('jc');
+  assert.ok(m.elems && m.elems.length === 2, 'retains a 2-tuple (a, b)');
+  const a = m.elems[0].samples, b = m.elems[1].samples;
+  let ma = 0, mb = 0; const n = a.length;
+  for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; } ma /= n; mb /= n;
+  let cov = 0; for (let i = 0; i < n; i++) cov += (a[i] - ma) * (b[i] - mb);
+  cov /= n;
+  // b = a + N(0,1) ⇒ Cov(a,b) = Var(a) = 1.
+  assert.ok(Math.abs(cov - 1.0) < 0.1, `retain cov ${cov.toFixed(3)} ≉ 1`);
 });

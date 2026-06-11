@@ -958,8 +958,9 @@ const KIND_HANDLERS = {
   logdensityof: (name: any, d: any, ctx: any) => density.matLogdensityof(d, ctx),
   broadcast_logdensity: (name: any, d: any, ctx: any) => density.matBroadcastLogdensity(d, ctx),
   totalmass:    (name: any, d: any, ctx: any) => density.matTotalmass(d, ctx),
-  // jointchain/kchain first-class kind
-  jointchain:   (name: any, d: any, ctx: any) => density.matJointchain(name, d, ctx),
+  // jointchain/kchain: SOLE path is clmRerouteStage → lowerMeasure → matClm
+  // (matJointchain retired). No KIND_HANDLERS entry — the reroute stage
+  // intercepts the kind before kindDispatch; reaching here would be a bug.
   // transformations (mat-transformations.ts)
   truncate:     (name: any, d: any, ctx: any) => transforms.matTruncate(d, ctx),
   pushfwd:      (name: any, d: any, ctx: any) => transforms.matPushfwd(name, d, ctx),
@@ -1129,32 +1130,31 @@ const fixedPhaseStage: MaterialiserStage = function (name, ctx, next) {
 fixedPhaseStage.label = 'fixedPhaseShortCircuit';
 
 // CLM reroute stage (measure-lowering unification Phase 4 — live reroute).
-// When `clm.isClmEnabled()`, a binding whose derivation kind is one CLM
-// canonicalises (initially `jointchain` — the kchain/jointchain family whose
-// bespoke `matJointchain.bindLeaf` boundary-feeding CLM retires) is lowered to
+// A binding whose derivation kind is one CLM canonicalises (`jointchain` — the
+// whole kchain/jointchain family, incl. nested + applied chains) is lowered to
 // its canonical clm node and materialised by `matClm`, so SAMPLE and DENSITY
-// consume ONE lowering (the structural sample≡density guarantee). The set
-// grows additively as each kind's body coverage in `materialiseMeasureIR` is
-// proven dual-mode-green against the legacy handler (§15 / engine-concepts §18
-// phased-additive migration). OFF by default — the legacy KIND_HANDLERS path
-// stays the equivalence oracle until the reroute is full-suite green and the
-// retired handlers are deleted (scaffolding removed last).
+// consume ONE lowering (the structural sample≡density guarantee). This is now
+// the SOLE path for these kinds — `matJointchain` + `bindLeaf` are retired and
+// the flag is gone (the reroute was full-suite green, zero-fallback verified).
 const CLM_REROUTED_KINDS = new Set<string>(['jointchain']);
 const clmRerouteStage: MaterialiserStage = function (name, ctx, next) {
   const clm = require('./clm.ts');
-  if (!clm.isClmEnabled()) return next(name, ctx);
   const d = ctx.derivations && ctx.derivations[name];
   if (!d || !CLM_REROUTED_KINDS.has(d.kind)) return next(name, ctx);
+  // CLM is the SOLE jointchain/kchain materialisation path (matJointchain
+  // retired). lowerMeasure → matClm; a lowering failure or null is surfaced
+  // as a clear error — there is no legacy fallback handler to defer to.
   let node: any;
   try {
     node = clm.lowerMeasure(name, ctx, { derivation: d });
   } catch (e) {
-    // A lowering failure must not silently fall back to the legacy path
-    // (that would mask a real gap and defeat dual-mode validation); surface
-    // it. The dual-mode test asserts both paths succeed identically.
     return Promise.reject(e);
   }
-  if (!node) return next(name, ctx);   // didn't expand to a measure — legacy
+  if (!node) {
+    return Promise.reject(new Error(
+      "cannot lower " + d.kind + " '" + name + "' to a canonical measure "
+      + '(e.g. a marginal applied-chain with an inline base — unimplemented)'));
+  }
   return matClm(node, ctx);
 };
 clmRerouteStage.label = 'clmReroute';
