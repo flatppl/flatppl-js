@@ -148,7 +148,7 @@ after the table.
 | `dag.ts` (~800) | `computeSubDAG` / `computeFullDAG` for the cytoscape renderer; materialises reified-callable scopes as "bubbles" with scope-local phase colouring. **Gotcha:** synthetic node IDs use `:` separator (`binding:boundary`); the renderer detects scope-local nodes via `id.indexOf(':')` — fragile to refactor. |
 | `disintegrate.ts` (~880) | Structural disintegration of joints → `(kernel, prior)`: `Synthesized` / `Delegate` / `Unsupported`, factored `decompose → partition → admissibility → synthesize` (engine-concepts §8). Hosts `disintegratePlan`. `restrict(M, x)` (spec §06) expands here + in analyzer pass 3 as a pure structural rewrite over disintegrate + bayesupdate + likelihoodof — no new derivation kind. |
 | `lower.ts` (~800) | AST expr → FlatPIR-JSON (pure). `kernelof(x,kw)` → `functionof(lawof(x),kw)`; `fn(holes)` → functionof with `_argN_` placeholders; operators desugar to calls (`BIN_OP_MAP`/`UN_OP_MAP`); ordered-named forms (record/joint/jointchain/cartprod/table) use `fields:[{name,value}]`. IR-JSON shapes: `lit`/`const`/`ref`/`hole`/`call`(builtin or `target`)/`functionof`/`load_module`. |
-| `pir.ts` (~250) + `pir-sexpr.ts` (~750) | `LoweredModule` (insertion-ordered `bindings`, `publicSet`, `source`) + `LoweredBinding` (`rhs` PIR-JSON, `originLoc`/`originName`, `inferredType`, `phase`). `walkCalls` post-order visitor (args/kwargs/fields/body). `pir-sexpr` round-trips `.flatpir` ↔ LoweredModule (spec §11). Reified callables use the spec's fixed-arity form (`<output> %specinputs ((name ref)…)` \| `%autoinputs %deferred`); the writer UN-ALIASES identifier-boundary `%local` body refs to `self` (the wire shape) and the reader re-aliases on ingest, so the engine-internal aliasing (load-bearing, see lower.ts) is untouched — a serialization-boundary translation only. `kernelof` is desugared to `functionof(lawof(…))` at BOTH ingest points (surface lower + PIR read); JS never emits it. `%meta` + cross-module `(%ref mod name)` are TODO. |
+| `pir.ts` (~250) + `pir-sexpr.ts` (~750) | `LoweredModule` (insertion-ordered `bindings`, `publicSet`, `source`) + `LoweredBinding` (`rhs` PIR-JSON, `originLoc`/`originName`, `inferredType`, `phase`). `walkCalls` post-order visitor (args/kwargs/fields/body). `pir-sexpr` round-trips `.flatpir` ↔ LoweredModule (spec §11). Reified callables use the spec's fixed-arity form (`<output> %specinputs ((name ref)…)` \| `%autoinputs %deferred`); bodies are carried VERBATIM — engine-internal IR is spec-shaped (`%local` is placeholders-only; see "Engine-internal vs. spec FlatPIR"). `kernelof` is desugared to `functionof(lawof(…))` at BOTH ingest points (surface lower + PIR read); JS never emits it. `%meta` + cross-module `(%ref mod name)` are TODO. |
 | `types.ts` (~800) | Type constructors (`deferred`/`failed`/`any`/`scalar`/`array(rank,shape,elem)`/`record`/`tuple`/`measure(domain,opts?)`/`funcType`/`kernelType`/`likelihood(inputs?)`/`rngstate`/`tvar`) + `unify` (deferred/any unify with anything; failed never unifies; scalar promotion `bool⊂int⊂real→complex`) + `SIGNATURE_FACTORIES` (per-call fresh tvars). `measure.opts` carries optional `{sampleShape,batchShape,eventShape}` — purely additive. ~90 ops covered; gaps in TODO §07/§17. |
 | `typeinfer.ts` (~1600) + `fixed-eval.ts` (~250) | Inference over a LoweredModule; sets `inferredType` + per-call `meta.type`. `inferTypes(module)`; `inferExprInScope` (viewer profile-plot). Special-cased ops + `inferReification` (body in extended scope → kernel/func) + monomorphic-at-definition `inferUserCall` + auto-splat detection. **`fixed-eval`**: demand-driven const-eval at shape positions (engine-concepts §17.1) — lazy resolver, shape-observer short-circuit (`length`/`sizeof` read off inferredType), side-table only. **Invariant: typeinfer never changes bytes in the IR.** |
 | `orchestrator.ts` (~460) + splits | `buildSampleChain`, `buildDerivations` (→ `{derivations, discrete, bindings, fixedValues}`), `signatureOf`, profile-plot range derivation, scope materialisation. Facade over 5 one-way-dependency modules (below). |
@@ -297,8 +297,8 @@ vs Placeholder boundary kwarg — feeds the §11 input-entry refs + viewer plot
 ranges); `numType` on lit nodes (`1` integer vs `1.0` real);
 `originLoc`/`originName` on LoweredBindings (diagnostics/DAG back-refs).
 
-Two deliberate divergences from the *syntactic image* of a source (both
-still valid spec FlatPIR):
+One deliberate divergence from the *syntactic image* of a source (still
+valid spec FlatPIR):
 
 - **`kernelof` never exists internally.** Both ingest points apply the
   §04 lowering rule `kernelof(x, kw) ≡ functionof(lawof(x), kw)` —
@@ -308,14 +308,25 @@ still valid spec FlatPIR):
   source is the `functionof∘lawof` image. Preserving `kernelof` would
   touch every `op === 'functionof'` consumer for no engine benefit; a
   syntax-preserving round-tripping tool is flatppl-rust's role.
-- **Identifier-form boundary aliasing.** Internally, body refs to
-  identifier-form boundary inputs live in the `%local` namespace
-  (lower.ts adds them to the reification's localScope — load-bearing
-  across many runtime consumers); the spec wire shape keeps them plain
-  `self`/module refs. `pir-sexpr` translates at the serialization
-  boundary (un-alias on write, re-alias on read). The internal
-  narrowing to spec-shaped bodies is a tracked, separately-scoped item
-  (TODO §11).
+
+**Reified-body namespaces are spec-shaped** (spec §11): `%local` is the
+placeholder namespace ONLY (`_x_`-class formals — lambda / fn-hole params
+and identifier boundary kwargs that name no module node, which lower
+treats as formals per the §04 lambda rule); body refs to identifier-form
+boundary inputs that designate REAL nodes are plain `self`/module refs.
+The cut lives in the entry list (`params`/`paramKwargs`/`paramSources`),
+and the §04 input substitution is applied by boundary-aware consumers:
+`ir-walk`'s `identifierBoundParams` + `walkIRScoped`/`mapIRScoped` give
+collectors and rewriters nesting-aware shadowing (a body ref naming an
+identifier-bound param is the callable's INPUT, not an outer-scope dep);
+application/substitution sites accept the self-form param ref alongside
+`%local` (the param list disambiguates from captures). The Phase-4 net
+backs this: feeders declare `ctx._boundaryNames`, and
+`collectRefArrays`/`prepareDensityRefs` THROW if a declared boundary ref
+reaches getMeasure uncovered (a feed gap is loud, never a silent
+re-materialisation of the like-named module binding — audit §3).
+`pir-sexpr` consequently carries bodies VERBATIM (no serialization-
+boundary namespace translation).
 
 ## Phase analysis
 

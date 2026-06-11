@@ -827,10 +827,13 @@ function validateSpecialOperation(valueNode: any) {
  *     argument.
  *
  * The body-internal occurrences of boundary names are excluded from
- * deps entirely (they correspond to the IR's `ns:'%local'` refs after
- * lowering). Refs that fall in neither bucket (everything else,
- * including nested non-reification calls) go into the default bucket
- * and contribute to `deps`.
+ * deps entirely — they designate the callable's INPUTS (fed at
+ * application, decoupled from the like-named module nodes per spec
+ * §04), regardless of how they lower (placeholder formals → `%local`;
+ * identifier-form cuts → plain `self` refs, spec §11 — the dep on the
+ * cut node itself is the paramSourceDeps entry). Refs that fall in
+ * neither bucket (everything else, including nested non-reification
+ * calls) go into the default bucket and contribute to `deps`.
  *
  * Returns { deps, callDeps, bodyDeps, paramSourceDeps }. `deps` is the
  * union of bodyDeps + paramSourceDeps + other refs, preserving the
@@ -844,8 +847,9 @@ function collectDeps(node: any, definedNames: Set<string>) {
 
   // localStack tracks the formal-parameter names of every enclosing
   // reification. An Identifier whose name is on the stack is a
-  // body-internal reference to a formal — it lowers to `ns:'%local'`
-  // and is NOT a dep at the outer-scope level.
+  // body-internal reference to a formal / boundary input and is NOT a
+  // dep at the outer-scope level (the cut-node dep rides
+  // paramSourceDeps).
   const localStack: Set<string>[] = [];
 
   function isLocal(name: string): boolean {
