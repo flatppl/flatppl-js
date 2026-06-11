@@ -95,14 +95,16 @@ test('VonMises(mu, kappa): classifier OK + samples within (μ−π, μ+π]', asy
 
 test('VonMises: density value pinned at canonical point (mu=0, kappa=1, x=0)', () => {
   const sampler = require('../sampler.ts');
-  // At x = μ: pdf = 1/(2π · I_0(κ)) · exp(κ)
-  // For κ=1, I_0(1) ≈ 1.26606587775200834, exp(1) ≈ 2.71828182845904
-  // density ≈ 2.71828 / (2π · 1.26607) ≈ 0.34199 → log ≈ -1.07289
+  // At x = μ: logpdf = κ·cos(0) − log(2π) − log(I_0(κ)) = 1 − log(2π) − log(I_0(1)).
+  // I_0(1) = 1.2660658777520084, so the exact value is -1.0737914249165241 (matches
+  // Distributions.jl / numpyro). The engine's Chebyshev I_0 approximation is within
+  // ~2.3e-8, so pin the TRUE value with a tolerance just looser than that — not the
+  // old loose 1e-3 against a wrong target (flatppl-js#22).
   const reg = sampler._internal.REGISTRY.VonMises;
   // Reach into the logpdfFn directly (mu, kappa).
   const lp = reg.logpdfFn(0, 0, 1);
-  assert.ok(Math.abs(lp - (-1.07289)) < 1e-3,
-    `VonMises logpdf(x=0, mu=0, kappa=1) = ${lp}, expected ≈ -1.07289`);
+  assert.ok(Math.abs(lp - (-1.0737914249165241)) < 1e-6,
+    `VonMises logpdf(x=0, mu=0, kappa=1) = ${lp}, expected ≈ -1.0737914249`);
 });
 
 test('VonMises: kappa=0 reduces to uniform density 1/(2π) at any x', () => {
