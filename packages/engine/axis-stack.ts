@@ -106,6 +106,43 @@ function outerAxisSize(
 }
 
 /**
+ * Resolve the size of the FIRST axis-stack entry matching `sourceTag` to a
+ * concrete positive integer at MATERIALISE time. Unlike `outerAxisSize` (which
+ * only returns literal sizes and gives null for any symbolic size), this also
+ * resolves a SYMBOLIC binding-ref-name size (`_argSizeIdentifier` records the
+ * binding name when a collection arg's length isn't statically literal but the
+ * binding is fixed-phase) by const-folding it against `ctx.fixedValues` — the
+ * value the surrounding derivation would compute anyway, already cached.
+ *
+ * Returns the integer when literal or fixed-phase-resolvable; null only for a
+ * genuinely dynamic ('%dynamic') or unresolvable size. `ctx` must expose
+ * `bindings` (and ideally `fixedValues`). This lets the nested-broadcast fold
+ * accept a symbolic axis ladder (`broadcast(K, xs)` with `xs` a fixed-phase
+ * array of statically-%dynamic length) instead of refusing it.
+ */
+function resolveOuterAxisSize(
+  stack: AxisStackEntry[] | null,
+  sourceTag: AxisStackEntry['source'],
+  ctx: any,
+): number | null {
+  if (!stack) return null;
+  for (const e of stack) {
+    if (e.source !== sourceTag) continue;
+    if (typeof e.size === 'number') return e.size;
+    if (typeof e.size === 'string' && e.size !== '%dynamic'
+        && ctx && ctx.bindings && typeof ctx.bindings.get === 'function') {
+      const { resolveConstant } = require('./ir-shared.ts');
+      const v = resolveConstant(
+        { kind: 'ref', ns: 'self', name: e.size },
+        ctx.bindings, new Set(), ctx.fixedValues);
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 1) return Math.round(v);
+    }
+    return null;   // '%dynamic', or a symbolic name that didn't resolve
+  }
+  return null;
+}
+
+/**
  * Whether the axisStack signals an iid axis at the OUTERMOST position.
  * Used by consumers (e.g. matIid composite fallback) to detect the
  * per-atom-shared-prior structure that today's inflated-count fallback
@@ -127,5 +164,6 @@ module.exports = {
   getAxisStack,
   bindingAxisStack,
   outerAxisSize,
+  resolveOuterAxisSize,
   outermostIidAxis,
 };

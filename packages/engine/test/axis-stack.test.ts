@@ -513,3 +513,51 @@ test('axisStack: iid-composite kernel-broadcast records [kernel_broadcast K, iid
     { source: 'iid', size: 5 },
   ]);
 });
+
+// =====================================================================
+// 5. resolveOuterAxisSize — materialise-time symbolic-size resolution
+// =====================================================================
+//
+// The symbolic-ladder fix: literal sizes pass through; a SYMBOLIC
+// binding-name size (recorded when a collection arg's length isn't a
+// compile-time literal but the binding is fixed-phase) const-folds
+// against ctx.fixedValues; a genuinely '%dynamic' / unresolvable size
+// returns null (the nested-broadcast fold then refuses rather than
+// folding a wrong size). Unlike `outerAxisSize`, which returns null for
+// ALL symbolic sizes.
+
+const { resolveOuterAxisSize, outerAxisSize: _outerAxisSizeLit } = require('../axis-stack.ts');
+
+const mkFixed = (entries: Record<string, any>) => new Map(Object.entries(entries));
+
+test('resolveOuterAxisSize: literal sizes pass through', () => {
+  const stack = [{ source: 'kernel_broadcast', size: 4 }, { source: 'broadcast', size: 3 }];
+  const ctx = { bindings: mkBindings({}) };
+  assert.equal(resolveOuterAxisSize(stack, 'kernel_broadcast', ctx), 4);
+  assert.equal(resolveOuterAxisSize(stack, 'broadcast', ctx), 3);
+});
+
+test('resolveOuterAxisSize: symbolic binding-name resolves from fixedValues', () => {
+  const stack = [{ source: 'broadcast', size: 'k' }];
+  const ctx = { bindings: mkBindings({ k: {} }), fixedValues: mkFixed({ k: 7 }) };
+  assert.equal(resolveOuterAxisSize(stack, 'broadcast', ctx), 7);
+  // outerAxisSize (literal-only) gives null for the same symbolic stack.
+  assert.equal(_outerAxisSizeLit(stack, 'broadcast'), null);
+});
+
+test('resolveOuterAxisSize: %dynamic is unresolvable → null', () => {
+  const stack = [{ source: 'broadcast', size: '%dynamic' }];
+  const ctx = { bindings: mkBindings({}), fixedValues: mkFixed({}) };
+  assert.equal(resolveOuterAxisSize(stack, 'broadcast', ctx), null);
+});
+
+test('resolveOuterAxisSize: symbolic name with no fixed value → null', () => {
+  const stack = [{ source: 'broadcast', size: 'k' }];
+  const ctx = { bindings: mkBindings({ k: {} }), fixedValues: mkFixed({}) };
+  assert.equal(resolveOuterAxisSize(stack, 'broadcast', ctx), null);
+});
+
+test('resolveOuterAxisSize: absent axis / null stack → null', () => {
+  assert.equal(resolveOuterAxisSize([{ source: 'iid', size: 5 }], 'kernel_broadcast', { bindings: mkBindings({}) }), null);
+  assert.equal(resolveOuterAxisSize(null, 'broadcast', { bindings: mkBindings({}) }), null);
+});

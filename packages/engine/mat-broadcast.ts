@@ -1674,20 +1674,21 @@ function _executeNestedBroadcastComposite(
     return _executeNestedBroadcastVectorFold(name, d, ctx, compositeBody);
   }
   const stack = axisStackMod.bindingAxisStack(name, ctx);
-  const Kout = axisStackMod.outerAxisSize(stack, 'kernel_broadcast');
-  const Kin = axisStackMod.outerAxisSize(stack, 'broadcast');
+  // Resolve each axis size to a concrete integer — literal, OR a SYMBOLIC
+  // binding-name size const-folded against `ctx.fixedValues` at materialise
+  // time (a fixed-phase collection whose length the type pass left %dynamic).
+  // Only a genuinely '%dynamic' / unresolvable size stays null below.
+  const Kout = axisStackMod.resolveOuterAxisSize(stack, 'kernel_broadcast', ctx);
+  const Kin = axisStackMod.resolveOuterAxisSize(stack, 'broadcast', ctx);
   if (Kout && Kout >= 1 && Kin && Kin >= 1) {
     return _executeNestedBroadcastBatchFlatten(name, d, ctx, compositeBody, Kout, Kin);
   }
-  // A non-static ladder (a symbolic axis length) is not folded — no silent
-  // per-cell fallback (the fold is the only path, as for jointchain). The
-  // concrete-need-gated follow-up is to resolve symbolic axis sizes from
-  // fixedValues at materialise time and feed the fold (TODO Phase 8).
+  // A truly dynamic ladder (per-atom-ragged / unresolvable size) is not folded
+  // — no silent per-cell fallback (the fold is the only path, as for jointchain).
   return Promise.reject(new Error('broadcast: nested-broadcast \'' + name
-    + '\' has a non-static axis ladder (outer=' + Kout + ', inner=' + Kin
-    + ') — folding a symbolic nested ladder is not yet supported; the axis '
-    + 'sizes must be statically resolvable (use literal / fixed-phase '
-    + 'collection lengths).'));
+    + '\' has a non-resolvable axis ladder (outer=' + Kout + ', inner=' + Kin
+    + ') — the axis sizes must be literal or fixed-phase resolvable (ragged '
+    + 'per-atom lengths are not yet supported).'));
 }
 
 function _executeNestedBroadcastBatchFlatten(
