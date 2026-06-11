@@ -31,10 +31,17 @@
 //   IR { kind: 'const', name }        → bare symbol (pi, inf, im, etc.)
 //   IR { kind: 'axis', name }         → (%axis <name>)
 //   IR { kind: 'call', op, args,
-//         kwargs, fields, assigns,
-//         params, body }              → (<op> [%meta]? args... %kwarg...
-//                                              %field... %assign...
-//                                              %params... body?)
+//         kwargs, fields, assigns }   → (<op> [%meta]? args... %kwarg...
+//                                              %field... %assign...)
+//   IR { kind: 'call', op:'functionof',
+//         params, paramKwargs,
+//         paramSources, body }        → (functionof <output> %specinputs
+//                                          ((<name> <ref>) ...))
+//                                       | (functionof <output> %autoinputs
+//                                          %deferred)
+//                                       (spec §11 "Reified callables" —
+//                                       fixed arity; see
+//                                       _reificationToSexpr)
 //   IR { kind: 'call', target:{ns,name},
 //         args, kwargs }              → (%call (%ref <ns> <name>) args... %kwarg...)
 //                                       (call to a user-defined callable)
@@ -130,6 +137,12 @@ function _atomToSexpr(v: any) {
 }
 
 function _callToSexpr(e: any, ind: string): string {
+  // Reified callables take the spec §11 fixed-arity form, not the
+  // generic call shape. (kernelof is accepted defensively; the lowerer
+  // canonicalises it to functionof so it never appears internally.)
+  if (!e.target && (e.op === 'functionof' || e.op === 'kernelof') && e.body) {
+    return _reificationToSexpr(e, ind);
+  }
   // Head shape (spec §11): a built-in call uses a bare op symbol as the
   // head; a user-defined-callable call (lower.ts emits `target:{ns,name}`
   // and no `op`) uses `(%call (%ref <ns> <name>) …)`.
@@ -143,10 +156,6 @@ function _callToSexpr(e: any, ind: string): string {
   // Positional args
   if (e.args) {
     for (const a of e.args) parts.push(_exprToSexpr(a, ind));
-  }
-  // params (functionof / kernelof)
-  if (e.params && e.params.length > 0) {
-    parts.push('(%params ' + e.params.join(' ') + ')');
   }
   // kwargs
   if (e.kwargs) {
@@ -167,11 +176,109 @@ function _callToSexpr(e: any, ind: string): string {
       parts.push('(%assign ' + a.name + ' ' + _exprToSexpr(a.value, ind) + ')');
     }
   }
-  // body (functionof / kernelof / fn / aggregate)
-  if (e.body) {
-    parts.push(_exprToSexpr(e.body, ind));
+  return '(' + parts.join(' ') + ')';
+}
+
+// ---------------------------------------------------------------------
+// Reified callables (spec §11 "Reified callables") — fixed arity after
+// the head: output expression, input-origin tag, input list.
+//
+//   (functionof <output> %specinputs ((<name> <ref>) ...))
+//   (functionof <output> %autoinputs %deferred)
+//
+// Each input entry pairs the callable's CALL-NAME with the node it
+// reifies (the old `(%params <node-names>)` form was lossy — it dropped
+// the call-names). The body is emitted in the SPEC shape: body refs to
+// identifier-form boundary inputs are plain self/module refs; only
+// placeholders (`_x_`-class) live in the `%local` namespace. The
+// engine-internal IR aliases identifier boundaries into `%local`
+// (lower.ts adds them to the body's localScope — load-bearing for many
+// runtime consumers), so the translation happens HERE, at the
+// serialization boundary only: un-alias on write, re-alias on read
+// (fromSexpr). The internal narrowing to spec-shaped bodies is a
+// separately-scoped item (TODO §11).
+//
+// JS never emits a FILLED %autoinputs list — that is inference
+// metadata (strippable like %meta), and the engine does not serialize
+// inference results yet (rides the %meta-emission item).
+function _reificationToSexpr(e: any, ind: string): string {
+  const params: string[] = e.params || [];
+  const paramKwargs: string[] = e.paramKwargs || [];
+  const paramSources: any[] = e.paramSources || [];
+  const isPlaceholderName = (p: string) => /^_.*_$/.test(p);
+  const sourceOf = (i: number) => {
+    const s = paramSources[i];
+    if (s && s.kind) return s;
+    // Defensive default mirroring lower.ts conventions: `_x_`-class
+    // names are placeholders, everything else identifier bindings.
+    return isPlaceholderName(params[i])
+      ? { kind: 'placeholder', name: params[i] }
+      : { kind: 'binding', name: params[i] };
+  };
+  const callNameOf = (i: number) => {
+    if (paramKwargs[i]) return paramKwargs[i];
+    // Placeholder `_x_` declares call-name `x`; identifier-form keeps
+    // its own name (the lower.ts `functionof(e, a = a)` convention).
+    const p = params[i];
+    return isPlaceholderName(p) ? p.slice(1, -1) : p;
+  };
+  // Un-alias the body: binding-sourced params' `%local` refs → `self`.
+  const bindingParams = new Set<string>();
+  for (let i = 0; i < params.length; i++) {
+    if (sourceOf(i).kind === 'binding') bindingParams.add(params[i]);
+  }
+  const body = bindingParams.size > 0
+    ? _renameRefNs(e.body, bindingParams, '%local', 'self')
+    : e.body;
+  const parts: string[] = [e.op === 'kernelof' ? 'kernelof' : 'functionof'];
+  parts.push(_exprToSexpr(body, ind));
+  if (params.length === 0) {
+    parts.push('%autoinputs', '%deferred');
+  } else {
+    const entries = params.map((p: string, i: number) => {
+      const s = sourceOf(i);
+      const ref = s.kind === 'placeholder'
+        ? '(%ref %local ' + s.name + ')'
+        : '(%ref ' + (s.ns || 'self') + ' ' + (s.name || p) + ')';
+      return '(' + callNameOf(i) + ' ' + ref + ')';
+    });
+    parts.push('%specinputs', '(' + entries.join(' ') + ')');
   }
   return '(' + parts.join(' ') + ')';
+}
+
+// Rewrite `(%ref <fromNs> <name ∈ names>)` → `(%ref <toNs> <name>)`
+// through an IR tree, respecting NESTED reification scopes: descending
+// into a nested functionof/kernelof BODY removes that reification's own
+// param names from the active set (they are the inner scope's inputs —
+// the inner node performs its own translation when it is itself
+// emitted/read). Pure: returns a rewritten copy; untouched subtrees are
+// shared. Used by the writer (un-alias, %local→self) and the reader
+// (re-alias, self→%local) for identifier-form boundary inputs.
+function _renameRefNs(node: any, names: Set<string>, fromNs: string, toNs: string): any {
+  function walk(n: any, active: Set<string>): any {
+    if (n == null || typeof n !== 'object') return n;
+    if (Array.isArray(n)) return n.map((x) => walk(x, active));
+    if (n.kind === 'ref' && n.ns === fromNs && active.has(n.name)) {
+      return Object.assign({}, n, { ns: toNs });
+    }
+    if (n.kind === 'call' && (n.op === 'functionof' || n.op === 'kernelof')
+        && n.body && Array.isArray(n.params)) {
+      const shadowed = n.params.filter((p: string) => active.has(p));
+      const inner = shadowed.length > 0
+        ? (() => { const s = new Set(active); for (const p of shadowed) s.delete(p); return s; })()
+        : active;
+      const out: Record<string, any> = {};
+      for (const k in n) {
+        out[k] = k === 'body' ? walk(n[k], inner) : walk(n[k], active);
+      }
+      return out;
+    }
+    const out: Record<string, any> = {};
+    for (const k in n) out[k] = walk(n[k], active);
+    return out;
+  }
+  return walk(node, names);
 }
 
 // =====================================================================
@@ -186,8 +293,9 @@ function _callToSexpr(e: any, ind: string): string {
 //   true false   — boolean literal
 //   _            — hole
 //   %name        — structural keyword (%module, %ref, %kwarg, %field,
-//                  %assign, %params, %bind, %public, %meta, %axis, %local,
-//                  %deferred, %fixed, %parameterized, %stochastic, …)
+//                  %assign, %bind, %public, %meta, %axis, %local,
+//                  %specinputs, %autoinputs, %deferred, %fixed,
+//                  %parameterized, %stochastic, …)
 //   name         — bare symbol (built-in op name, set name, constant)
 //
 // The parser builds the same JSON-shaped IR that lower.ts emits, plus
@@ -246,9 +354,14 @@ function fromSexpr(text: any) {
       if (head.value === '%kwarg')    return readKwargForm();
       if (head.value === '%field')    return readFieldForm();
       if (head.value === '%assign')   return readAssignForm();
-      if (head.value === '%params')   return readParamsForm();
       if (head.value === '%meta')     return readMetaForm();
       if (head.value === '%call')     return readCallForm();
+      // Reified callables have a fixed-arity tail (spec §11):
+      // output, input-origin tag, input list.
+      if (head.value === 'functionof' || head.value === 'kernelof') {
+        eat();
+        return readReificationTail(head.value);
+      }
     }
     // Default: parse as call (head is op name).
     eat();
@@ -404,15 +517,140 @@ function fromSexpr(text: any) {
       value };
   }
 
-  function readParamsForm(): any {
-    eat(); // %params
-    const names: string[] = [];
+  // (functionof <output> %specinputs ((<name> <ref>) ...)) |
+  // (functionof <output> %autoinputs (%deferred | ((<name> <ref>) ...)))
+  // — spec §11 "Reified callables", fixed arity after the head. Called
+  // with the head symbol already eaten. An optional %meta may appear
+  // immediately after the head, before the output.
+  function readReificationTail(op: string): any {
+    const callShape: any = { kind: 'call', op: 'functionof' };
+    let body: any = null;
+    // Output (+ optional leading %meta).
     while (!eof() && peek().type !== ')') {
-      const t = eat();
-      if (t.type === 'sym') names.push(t.value);
+      const t = peek();
+      if (t.type === '%kw'
+          && (t.value === '%specinputs' || t.value === '%autoinputs')) break;
+      const part = readForm();
+      if (part && part.__kind === 'meta') {
+        callShape.meta = { type: part.type, phase: part.phase };
+        continue;
+      }
+      if (body == null) { body = part; continue; }
+      diagnostics.push({ severity: 'error',
+        message: 'pir-sexpr: ' + op + ' has more than one output form '
+          + 'before the input-origin tag' });
     }
-    if (peek() && peek().type === ')') eat();
-    return { __kind: 'params', names };
+    if (body == null) {
+      diagnostics.push({ severity: 'error',
+        message: 'pir-sexpr: ' + op + ' is missing its output expression' });
+    }
+    // Input-origin tag.
+    let tag: string | null = null;
+    if (!eof() && peek().type === '%kw'
+        && (peek().value === '%specinputs' || peek().value === '%autoinputs')) {
+      tag = eat().value;
+    } else {
+      diagnostics.push({ severity: 'error',
+        message: 'pir-sexpr: ' + op + ' requires an input-origin tag '
+          + '(%specinputs | %autoinputs)' });
+    }
+    // Input list (or %deferred for a pre-inference %autoinputs).
+    let entries: Array<{ name: string; ref: any }> | null = null;
+    if (!eof() && peek().type === '%kw' && peek().value === '%deferred') {
+      eat();
+      if (tag === '%specinputs') {
+        diagnostics.push({ severity: 'error',
+          message: 'pir-sexpr: %specinputs requires an input list '
+            + '(%deferred is only valid under %autoinputs)' });
+      }
+    } else if (!eof() && peek().type === '(') {
+      entries = readInputEntries(op);
+    } else if (tag != null) {
+      diagnostics.push({ severity: 'error',
+        message: 'pir-sexpr: ' + op + ' ' + tag
+          + ' requires an input list or %deferred' });
+    }
+    if (!eof() && peek().type === ')') {
+      eat();
+    } else {
+      diagnostics.push({ severity: 'error',
+        message: 'pir-sexpr: unclosed ' + op });
+    }
+    // Reconstruct the engine-internal arrays for an AUTHORED boundary
+    // (%specinputs). A filled %autoinputs list is inference METADATA
+    // (spec: strippable, like %meta) — the engine re-infers; parse and
+    // drop. Entry refs map: `%local` ⇒ placeholder source; `self` (or
+    // a module ns) ⇒ identifier binding source.
+    if (tag === '%specinputs' && entries) {
+      const params: string[] = [];
+      const paramKwargs: string[] = [];
+      const paramSources: any[] = [];
+      const bindingParams = new Set<string>();
+      for (const en of entries) {
+        paramKwargs.push(en.name);
+        params.push(en.ref.name);
+        if (en.ref.ns === '%local') {
+          paramSources.push({ kind: 'placeholder', name: en.ref.name });
+        } else {
+          const src: any = { kind: 'binding', name: en.ref.name };
+          if (en.ref.ns !== 'self') src.ns = en.ref.ns;  // module-sourced (lossless)
+          else bindingParams.add(en.ref.name);
+          paramSources.push(src);
+        }
+      }
+      // Re-establish the engine-internal aliasing: body refs to
+      // identifier-form (self-sourced) boundary inputs live in %local
+      // inside the reified scope (lower.ts's localScope behavior), so
+      // post-read modules are indistinguishable from processSource
+      // output (the writer applies the inverse rename on emit).
+      if (body && bindingParams.size > 0) {
+        body = _renameRefNs(body, bindingParams, 'self', '%local');
+      }
+      callShape.params = params;
+      callShape.paramKwargs = paramKwargs;
+      callShape.paramSources = paramSources;
+    }
+    // kernelof(x, …) ≡ functionof(lawof(x), …) (spec §04): apply the
+    // same lowering rule lower.ts applies at the surface ingest point,
+    // so post-read modules carry ONE uniform reification form — op
+    // 'kernelof' never exists in engine-internal IR. (JS output is
+    // therefore the functionof∘lawof image, valid FlatPIR though not
+    // the syntactic image of a kernelof-authored source — see
+    // ARCHITECTURE "Engine-internal vs spec FlatPIR".)
+    if (op === 'kernelof' && body) {
+      body = { kind: 'call', op: 'lawof', args: [body] };
+    }
+    callShape.body = body;
+    return callShape;
+  }
+
+  // ((<name> <ref>) (<name> <ref>) ...) — the reification input list.
+  // Plain 2-lists, deliberately NOT %-keyword forms (spec §11).
+  function readInputEntries(op: string): Array<{ name: string; ref: any }> {
+    eat(); // outer '('
+    const entries: Array<{ name: string; ref: any }> = [];
+    while (!eof() && peek().type !== ')') {
+      if (peek().type !== '(') {
+        diagnostics.push({ severity: 'error',
+          message: 'pir-sexpr: ' + op + ' input entry must be a '
+            + '(<name> <ref>) pair' });
+        eat();
+        continue;
+      }
+      eat(); // inner '('
+      const nameTok = eat();
+      const ref = readForm();
+      if (!nameTok || nameTok.type !== 'sym' || !ref || ref.kind !== 'ref') {
+        diagnostics.push({ severity: 'error',
+          message: 'pir-sexpr: malformed ' + op + ' input entry '
+            + '(expected (<name> (%ref <ns> <node>)))' });
+      } else {
+        entries.push({ name: nameTok.value, ref });
+      }
+      if (!eof() && peek().type === ')') eat();
+    }
+    if (!eof() && peek().type === ')') eat();
+    return entries;
   }
 
   function readMetaForm(): any {
@@ -460,18 +698,10 @@ function fromSexpr(text: any) {
     if (part.__kind === 'kwarg')  { call.kwargs[part.name] = part.value; return; }
     if (part.__kind === 'field')  { (call.fields ||= []).push({ name: part.name, value: part.value }); return; }
     if (part.__kind === 'assign') { (call.assigns ||= []).push({ name: part.name, value: part.value }); return; }
-    if (part.__kind === 'params') { call.params = part.names; return; }
     if (part.__kind === 'meta')   { call.meta = { type: part.type, phase: part.phase }; return; }
-    // The body of functionof/kernelof/fn/aggregate is the trailing
-    // non-structural expression. We treat the LAST non-structural arg
-    // as the body when the op is one of those forms; otherwise add
-    // to positional args.
-    if ((call.op === 'functionof' || call.op === 'kernelof'
-         || call.op === 'fn'        || call.op === 'aggregate')
-        && (call.params || call.fields)) {
-      call.body = part;
-      return;
-    }
+    // Reified callables (the only body-carrying form) never reach this
+    // absorb loop — they parse through readReificationTail; aggregate
+    // and every other op are plain args-based.
     call.args.push(part);
   }
 
