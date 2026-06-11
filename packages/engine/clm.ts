@@ -98,6 +98,10 @@ function describeInputShape(source: any, name: string, ctx: any): any {
   return { kind, perAtom: source.kind !== 'fixed', repeatTile, fields };
 }
 
+function _isStochastic(b: any): boolean {
+  return !!(b && b.phase === 'stochastic');
+}
+
 function _domKind(dom: any): string {
   if (!dom) return 'opaque';
   if (dom.kind === 'scalar') return 'scalar';
@@ -304,8 +308,31 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   const built = _buildBody(input, deriv, ctx);
   if (!built) return null;
   const { body, boundarySet, mc } = built;
-  const reduce = _reduce(deriv);
+  let reduce = _reduce(deriv);
   const { inputs, missing } = _enumerateInputs(body, deriv, boundarySet, ctx);
+
+  // Marginalised stochastic ancestor (H8 — the kchain/lawof unification). A
+  // standalone measure whose body references a STOCHASTIC binding that is not
+  // a retained variate (e.g. `pp = lawof(obs)`, obs ~ Normal(theta,1),
+  // theta ~ Normal(0,1)) is the marginal law: p(x) = ∫ p(x|theta) p(theta) dθ.
+  // The ancestor is already fed from its own law (the `shared` getMeasure path
+  // yields theta ~ prior atoms), so scoring per atom then logsumexp − logN is
+  // the MC marginal — the SAME reduction kchain uses, reached structurally
+  // instead of via a derivation flag. Sampling draws obs ancestrally and is
+  // already the marginal, so this makes density agree with the histogram
+  // (the conditional Normal(·,1) vs the marginal Normal(0,√2), audit H8).
+  // bayesupdate is excluded — it reweights prior atoms, not logsumexp, and
+  // ignores `reduce` anyway (matBayesupdate owns its reduction).
+  if (!reduce && (!deriv || deriv.kind !== 'bayesupdate')) {
+    const latents = inputs.filter((i: any) => i.source.kind === 'shared'
+      && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref)));
+    if (latents.length > 0) {
+      reduce = {
+        kind: 'marginal', method: 'logsumexp-logN',
+        over: latents.map((i: any) => i.source.ref),
+      };
+    }
+  }
 
   // ⊆ invariant (Phase 1: LOG, do not throw). With prereq D landed,
   // collectSelfRefs descends .bijection, so a non-empty `missing` is a REAL

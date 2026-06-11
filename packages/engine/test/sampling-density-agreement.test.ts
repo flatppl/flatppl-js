@@ -79,18 +79,21 @@ for (const [id, mname, src] of GREEN) {
 
 // ---- WILL-FLIP (red today, for the right reason; flip loudly when fixed) --
 
-test('[WILL-FLIP H8] lawof(draw with a stochastic ancestor) scores the narrow conditional, not the marginal', async () => {
+test('[GREEN H8] lawof(draw with a stochastic ancestor) marginalises — density ≡ histogram', async () => {
   // pp = lawof(obs), obs~Normal(theta,1), theta~Normal(0,1). Sample ⇒ marginal
-  // Normal(0,√2); density (H8 bug) ⇒ the per-atom conditional Normal(·,1) — a
-  // VARIANCE mismatch glaring in the tails. Fixed by routing lawof-of-record
-  // through the marginal reduction (reduce={marginal}).
+  // Normal(0,√2). The density used to score the per-atom conditional Normal(·,1)
+  // — a VARIANCE mismatch glaring in the tails (maxErr≈4.15). FIXED (CLM Phase 3):
+  // lowerMeasure recognises the marginalised stochastic ancestor (theta is a
+  // `shared` body ref to a stochastic binding, not a retained variate) and sets
+  // reduce={marginal}; applyReduce does the logsumexp − logN over theta ~ prior,
+  // the same MC marginal kchain uses. Now a regression guard.
   const r = await agreement(`
 theta ~ Normal(0.0, 1.0)
 obs ~ Normal(mu = theta, sigma = 1.0)
 pp = lawof(obs)`, 'pp', { N: 60000, tol: 0.35 });
-  assert.ok(!r.ok && (r.maxErr || 0) > 1.0,
-    `H8 is expected to still DIVERGE (variance mismatch, maxErr>1) until lawof-marginalisation lands; ` +
-    `got ${r.ok ? 'GREEN — FLIP IT to a regression guard' : 'maxErr=' + (r.maxErr || 0).toFixed(2)}`);
+  assert.ok(r.ok, `H8 regression — expected marginal agreement (Normal(0,√2)), got ` +
+    `${r.crashed ? 'CRASH:' + r.reason : 'maxErr=' + (r.maxErr || 0).toFixed(2)}: ` +
+    JSON.stringify(r.probes || r.reason));
 });
 
 test('[WILL-FLIP gen] standalone logdensityof(lawof(generative composite)) is unimplemented', async () => {
