@@ -1531,12 +1531,19 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     for (const b of ir.branches) {
       let inner = b;
       let w = 1;
-      if (b && b.kind === 'call' && b.op === 'weighted'
+      // A constant-weighted branch: `weighted(w, M)` OR — the canonical
+      // lowered form — `logweighted(log w, M)` (`weighted(const, M)` lowers to
+      // `logweighted`, so the expanded superpose/select branches carry
+      // `logweighted`). Extract the linear weight either way; a non-constant
+      // weight flips `allConst` off → matSelect refuses loudly (no synth).
+      if (b && b.kind === 'call' && (b.op === 'weighted' || b.op === 'logweighted')
           && Array.isArray(b.args) && b.args.length === 2) {
         const wv = irShared.resolveConstant(b.args[0], childCtx.bindings,
           new Set(), childCtx.fixedValues);
-        if (wv == null || !Number.isFinite(wv) || !(wv > 0)) allConst = false;
-        else w = wv;
+        const ww = (wv != null && Number.isFinite(wv))
+          ? (b.op === 'logweighted' ? Math.exp(wv) : wv) : null;
+        if (ww == null || !Number.isFinite(ww) || !(ww > 0)) allConst = false;
+        else w = ww;
         inner = b.args[1];
       }
       synthWeights.push(w);
@@ -1567,6 +1574,29 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       const from = (mIR && mIR.kind === 'ref' && mIR.ns === 'self')
         ? mIR.name : register(mIR, 'pushfwd:base');
       return { kind: 'pushfwd', from, fnRef: fIR.name };
+    }
+  }
+  // iid(M, n…) over a COMPOSITE inner — route to matIid for the REPEAT axis
+  // (within-atom conditional independence, §22.4). matIid's composite fallback
+  // inflates the ctx to N·k with `repeatBlock=k`, tiles atom-level value draws
+  // ×k (atom-major) and redraws M's measure subtree fresh, threading that
+  // inflated ctx through the whole sub-materialisation — so atom i's k inner
+  // draws all condition on atom i's shared value draws. Register the inner as a
+  // synthetic binding (matIid resolves d.from by name). The iid-of-LEAF fast
+  // path stays in materialiseMeasureIR (sampleN repeat=k pins per-atom params
+  // already), so ONLY composite inners route here; the dims must be integer
+  // literals (matIid's contract) or we leave it to the leaf default.
+  if (op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
+    const dims: number[] = [];
+    let dimsOk = true;
+    for (let di = 1; di < ir.args.length; di++) {
+      const dv = ir.args[di];
+      if (!dv || dv.kind !== 'lit' || !Number.isInteger(dv.value)) { dimsOk = false; break; }
+      dims.push(dv.value);
+    }
+    if (dimsOk) {
+      const from = register(ir.args[0], 'iid:inner');
+      return { kind: 'iid', from, dims };
     }
   }
   // Default: treat as a leaf sample (the prior leaf-fallback behaviour — the
@@ -1659,21 +1689,16 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         return m;
       });
     }
-    // Nested inner — recurse with count*k, then reshape.
-    const innerCtx = Object.assign({}, ctx, { sampleCount: ctx.sampleCount * k });
-    return materialiseMeasureIR(inner, innerCtx).then((innerM: any) => {
-      const m = empirical.arrayMeasure(innerM.samples, dims, null);
-      if (m && !m.value) {
-        m.value = {
-          shape: [ctx.sampleCount | 0].concat(dims),
-          data: innerM.samples,
-          outerRank: 1,
-        };
-      } else if (m && m.value) {
-        (m.value as any).outerRank = 1;
-      }
-      return m;
-    });
+    // Nested (composite) inner → canonical matIid via the bridge, for the
+    // REPEAT axis (within-atom conditional independence, §22.4). The earlier
+    // `materialiseMeasureIR(inner, {sampleCount: N·k})` recurse dropped that:
+    // it inflated the count but resolved the inner's atom-level value draws at
+    // the PARENT's N (no repeatBlock, no tiling), so an inline
+    // `iid(<composite conditioning on a per-atom draw>, k)` either mismatched
+    // shapes or decoupled the k inner draws from atom i's shared draw (correct
+    // marginal, wrong joint). matIid's composite fallback tiles those value
+    // draws ×k and redraws the measure subtree at N·k. [Smell A]
+    return _bridgeToHandler(ir, ctx);
   }
   // joint / record → DEPENDENT field-wise materialise + combine.
   //

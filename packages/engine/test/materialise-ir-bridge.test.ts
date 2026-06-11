@@ -187,3 +187,51 @@ test('Stage 5: pushfwd IR (lowered MvNormal) materialises via matPushfwd through
   c /= N;
   assert.ok(Math.abs(c - 0.5) < 0.2, `cov(x0,x1) ≈ 0.5; got ${c}`);
 });
+
+test('Stage 6: iid of a composite conditioning on a per-atom draw — repeat axis (§22.4)', async () => {
+  // y = iid(mixture, 4), each mixture component conditioning on a per-atom draw
+  // `loc`. Spec §06 / §22.4: the 4 inner draws of atom i are iid from the
+  // mixture *at loc_i* — they SHARE atom i's loc. materialiseMeasureIR's nested-
+  // iid branch used to recurse at count·k WITHOUT the repeat axis (loc resolved
+  // at the parent N, not tiled), decoupling the k draws from loc_i (or
+  // mismatching shapes). Now it routes to matIid, whose composite fallback tiles
+  // loc ×k and redraws the mixture subtree at N·k. Observable: within each
+  // k-block the draws share loc_i (spread ~0.3), while loc varies across atoms
+  // (~2) — so the mean within-block std is far below the overall std.
+  const src = `
+loc ~ Normal(mu = 0.0, sigma = 2.0)
+a = Normal(mu = loc, sigma = 0.3)
+b = Normal(mu = loc, sigma = 0.3)
+mix = superpose(weighted(0.5, a), weighted(0.5, b))
+y = iid(mix, 4)`;
+  const der = require('../derivations.ts');
+  const mat = require('../materialiser.ts');
+  const { built } = buildCtx(src, 1, 13);
+  const ir = der.expandMeasure('y',
+    { derivations: built.derivations, bindings: built.bindings });
+  assert.ok(ir && ir.op === 'iid', `expandMeasure('y') → iid; got ${ir && (ir.op || ir.kind)}`);
+  const N = 3000, k = 4;
+  const { ctx } = buildCtx(src, N, 13);
+  const m = await mat.materialiseMeasureIR(ir, ctx);
+  assert.ok(m.value && m.value.shape.length === 2 && m.value.shape[1] === k,
+    `iid composite → [N,${k}]; got shape ${m.value && JSON.stringify(m.value.shape)}`);
+  const d = m.value.data;
+  const all: number[] = [];
+  let sumWithin = 0;
+  for (let i = 0; i < N; i++) {
+    let bm = 0;
+    for (let j = 0; j < k; j++) { bm += d[i * k + j]; all.push(d[i * k + j]); }
+    bm /= k;
+    let bv = 0;
+    for (let j = 0; j < k; j++) { const e = d[i * k + j] - bm; bv += e * e; }
+    sumWithin += Math.sqrt(bv / k);
+  }
+  const meanWithin = sumWithin / N;
+  let om = 0; for (const v of all) om += v; om /= all.length;
+  let ov = 0; for (const v of all) ov += (v - om) * (v - om);
+  const overall = Math.sqrt(ov / all.length);
+  assert.ok(meanWithin < 0.8, `within-block std small (shared loc_i); got ${meanWithin}`);
+  assert.ok(overall > 1.5, `overall std tracks loc spread ~2; got ${overall}`);
+  assert.ok(meanWithin < 0.5 * overall,
+    `repeat axis: within-block std << overall (${meanWithin.toFixed(3)} vs ${overall.toFixed(3)})`);
+});
