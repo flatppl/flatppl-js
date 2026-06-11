@@ -9,9 +9,8 @@
 // evaluator — no async worker round-trips.
 //
 // We validate the per-event log-density through the real worker logDensityN
-// path against an INDEPENDENT forward-sim oracle (the same one that pins
-// mat-density.mcMarginalLogDensity), and confirm `iid(mcmarginal, n)`
-// factorises per-event via walkIid.
+// path against an INDEPENDENT forward-sim oracle, and confirm `iid(mcmarginal,
+// n)` factorises per-event via walkIid.
 //
 // Per-event law (θ baked as lits):  z = ((x + (2u+1)·0.1)^3 · exp(x−0.3))/2
 //   x ~ Normal(1.1, 0.2)   (marginalised latent),  u ~ Uniform(0,1) (retained).
