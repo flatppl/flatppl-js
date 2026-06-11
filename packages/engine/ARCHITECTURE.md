@@ -185,6 +185,31 @@ a parallel mini-interpreter** — when the evaluator misses an op, implement it 
 `evaluateCall`, not in a caller. A fixed-phase binding that hits the residual
 throw is surfaced loudly by `buildDerivations`' fixed-phase-dead-end diagnostic.
 
+**Materialiser authority — one set of measure-op handlers (Smell A).** The
+measure-algebra ops have ONE realisation: the by-name `KIND_HANDLERS`
+(matTruncate / matWeighted / matNormalize / matSelect / matPushfwd / matIid /
+…). `materialiseMeasureIR` — the IR-direct walker the viewer's
+`materialiseConcreteMeasure` and `matClm` (CLM bodies) consume for an inline /
+reified measure IR — does **not** re-implement them. A thin per-op
+IR→derivation bridge (`_bridgeDerivation` + `_bridgeToHandler`) installs an
+inline sub-measure as a first-class synthetic binding (resolvable by
+`getMeasure` / `expandMeasure`) and DELEGATES to the canonical handler ("by
+reuse not reimplementation", engine-concepts §7 — the same
+anti-parallel-interpreter discipline as the evaluator above): truncate,
+weighted/logweighted, normalize, select (constant-weight selector synthesis
+folded into matSelect — the former IR-direct `materialiseSelectIR` is **gone**),
+pushfwd (§22 affine fast-path; lowered MvNormal), iid-of-composite (matIid's
+repeat axis, §22.4). The cases that stay IR-native are the ones the by-name
+handlers can't express: the **dependent-threaded** joint/record walk (matRecord
+is independent-product only) and the §21 generative / scalar pushforward
+(`evaluateN` of a value-expr; no by-name analogue), plus the iid-of-LEAF
+`sampleN repeat=k` fast path. A full collapse of `materialiseMeasure(name)` into
+`materialiseMeasureIR(expandMeasure(name))` is **deferred** — the duplication is
+already removed by the delegations, so the inversion would add an
+`expandMeasure` round-trip per by-name materialisation without removing any
+parallel code (and the density/scoring kinds — bayesupdate / logdensityof /
+totalmass — have no `materialiseMeasureIR` coverage).
+
 ## Cross-file invariants
 
 These lists must agree across files; drift produces silent runtime failures.
