@@ -598,6 +598,44 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
                 out[i] = NaN;
               }
             }
+          } else if (mode === 'logdensity' && msg.mcSeed != null) {
+            // MC marginalising-pushforward profile (density.walkMcMarginal,
+            // spec §06 case-3). The viewer sets mcSeed only when it rewrote
+            // msg.ir through buildMcMarginalForm into `iid(mcmarginal,…)`.
+            // walkMcMarginal is atom-independent (it fans one estimate to all
+            // atoms) and rejects a per-atom marginal refArray, so the swept
+            // axis CANNOT ride refArrays — it must vary through the ENV, one
+            // logDensityN(count=1) per point. For a record-valued parameter
+            // axis (e.g. pars.mu) the viewer sends an `mcSweep` descriptor
+            // {recordName, field, template} and we vary that one field;
+            // otherwise we vary the scalar external `sweepName` directly.
+            //
+            // COMMON RANDOM NUMBERS: re-key a FRESH RNG from the SAME mcSeed
+            // at EACH point so every point draws the identical M-latent stream
+            // (a smooth curve — adjacent-point differences come from the swept
+            // parameter, not RNG jitter). walkMcMarginal MUTATES opts.mcRng, so
+            // a hoisted state would desync the stream across points.
+            const mcMarg = (msg.mcMarginalizationCount | 0) || 100;
+            const mcSweep = msg.mcSweep || null;
+            const callEnv = Object.assign({}, baseEnv);
+            for (let i = 0; i < count; i++) {
+              const t = count === 1 ? 0 : i / (count - 1);
+              const x = lo + t * (hi - lo);
+              if (mcSweep && mcSweep.recordName) {
+                callEnv[mcSweep.recordName] =
+                  Object.assign({}, mcSweep.template, { [mcSweep.field]: x });
+              } else {
+                callEnv[sweepName] = x;
+              }
+              try {
+                const mcRng = _stateFromSeed(msg.mcSeed);   // re-keyed per point (CRN)
+                out[i] = densityLib.logDensityN(
+                  msg.ir, msg.observed, null, 1,
+                  { baseEnv: callEnv, mcRng, mcMarginalizationCount: mcMarg })[0];
+              } catch (_) {
+                out[i] = NaN;
+              }
+            }
           } else if (mode === 'logdensity') {
             // Build a per-atom refArray for the swept axis and call
             // density.logDensityN once for the whole sweep. Per-atom

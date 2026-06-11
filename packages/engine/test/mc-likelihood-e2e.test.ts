@@ -175,3 +175,37 @@ test('logdensityof path: likelihood profile over pars.mu peaks at the generating
   assert.ok(top - curve[0] > 1 && top - curve[mus.length - 1] > 1,
     `profile too flat to be a real likelihood (Δ ends: ${(top - curve[0]).toFixed(2)}, ${(top - curve[mus.length - 1]).toFixed(2)})`);
 });
+
+test('profileN: MC marginalising-pushforward likelihood profile (the worker MC branch) peaks at truth', () => {
+  // Drives the NEW worker profileN MC branch end-to-end — the surface the
+  // viewer's render-profile now targets: ir = buildMcMarginalForm output,
+  // mode 'logdensity', mcSeed (common random numbers across the sweep), and an
+  // mcSweep descriptor that varies the record field pars.mu through the env
+  // per point (the standard __sweep__/refArray path can't reach the opaque
+  // mcmarginal node). The result must be a peaked curve over pars.mu.
+  const form = buildForm();
+  const data = [3.81359, 2.91195, 3.20085, 3.09185, 3.34005, 4.96067, 0.842412,
+    2.34128, 3.06224, 2.59162, 2.5017, 5.39892, 1.19806, 1.60855, 1.44647,
+    0.771489, 0.26153, 1.56184, 0.561171, 4.4823];
+  const mus = [0.6, 0.8, 1.0, 1.2, 1.4];
+  const w = createWorkerHandler();
+  w.handle({ type: 'init', seed: 4242 });
+  w.handle({ type: 'setEnv', env: { sigma: 0.2, n: data.length }, merge: true });
+  const r = w.handle({
+    type: 'profileN', mode: 'logdensity', ir: form, observed: data,
+    sweepName: 'pars', range: [0.6, 1.4], count: mus.length,
+    tally: 'clamped', mcSeed: 12345, mcMarginalizationCount: 5000,
+    mcSweep: { recordName: 'pars', field: 'mu', template: { a: 0.1, b: 0.3, mu: 0 } },
+  });
+  assert.notStrictEqual(r.type, 'error', r.message);
+  const curve = Array.from(r.samples) as number[];
+  process.stderr.write('  profileN MC curve: '
+    + mus.map((m, i) => `mu=${m}:${curve[i].toFixed(1)}`).join('  ') + '\n');
+  const top = Math.max(...curve);
+  assert.ok(Number.isFinite(top), 'a finite maximum in the sweep');
+  const k = curve.indexOf(top);
+  assert.ok(k > 0 && k < curve.length - 1,
+    `profileN MC peak at the boundary (mu=${mus[k]}), not an interior MLE`);
+  assert.ok(top - curve[0] > 1 && top - curve[curve.length - 1] > 1,
+    `profileN MC profile too flat (Δ ends: ${(top - curve[0]).toFixed(2)}, ${(top - curve[curve.length - 1]).toFixed(2)})`);
+});
