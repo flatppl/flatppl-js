@@ -1408,6 +1408,19 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
     return materialiseMeasureIR(ir.args[0], ctx);
   }
+  // draw(M) → peel, recurse on M. `obs ~ M` lowers to a binding
+  // `obs = draw(M)`; when that binding is inlined into a MEASURE position
+  // (e.g. a reified kernel body's record field — `kernelof(record(obs = obs))`)
+  // it denotes the measure M, not a value-position draw. Peeling here lets the
+  // measure walk see M instead of dead-ending on a `draw` op the leaf sampler
+  // rejects as an unknown distribution. Mirrors the lawof peel and the
+  // _expandStructural draw-unwrap; position-correct because materialiseMeasureIR
+  // only ever receives measures (a draw NESTED in a value expression, e.g.
+  // `delta = (2*draw(Uniform)+1)*a`, never reaches here as a top-level node —
+  // it rides the evaluateN value path).
+  if (ir.op === 'draw' && Array.isArray(ir.args) && ir.args.length === 1) {
+    return materialiseMeasureIR(ir.args[0], ctx);
+  }
   // iid(M, n…) — sample-major output [N, ...dims].
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
     const inner = ir.args[0];

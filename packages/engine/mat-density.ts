@@ -38,6 +38,7 @@ const {
   measureFromReply,
   measureToRefValue,
   measureToPerAtomRecords,
+  inlineBoundaryDerivations,
   measureN,
   scalarMeasureN,
   resolveFnBody,
@@ -85,7 +86,19 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // Generative-composite likelihood (the transport model): score via the
   // MC marginalising-pushforward form instead of refusing (§06 case-3).
   const mcForm = mcDensityForm(bodyIR, ctx);
-  const densIR = mcForm || bodyIR;
+  // Closed-form likelihood: inline the kernel's DERIVED value bindings down to
+  // the boundary inputs (audit §3 #4, H5/H3). E.g. a body
+  // `iid(Normal(mu = a, sigma = b), n)` with `a = 5*theta2`,
+  // `b = abs(theta1)*theta2` becomes `iid(Normal(5*theta2, abs(theta1)*theta2),
+  // n)` so the fed boundaries (theta1, theta2) — not the like-named value
+  // bindings a/b (which have no measure derivation) — drive the density. The
+  // mc form does its own boundary inlining inside the recipe, so leave it.
+  const boundarySet = new Set<string>([
+    ...((d.paramKwargs as string[]) || []),
+    ...((d.params as string[]) || []),
+  ]);
+  const densIR = mcForm
+    || inlineBoundaryDerivations(bodyIR, boundarySet, ctx);
   // Materialise the PRIOR first, then FEED its atoms as the kernel's boundary
   // inputs (the spec lowering bayesupdate(L,prior)=logweighted(fn(logdensityof
   // (L,_)),prior) makes the prior's variate the kernel's parametric input) —

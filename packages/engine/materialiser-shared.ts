@@ -450,6 +450,57 @@ function inlineCallableRefs(ir: any, bindings: any): any {
   return walked;
 }
 
+// Transitive boundary substitution (audit §3 #4, fixes H5 + H3's
+// derived-parameter case). A reified kernel's distribution parameters often
+// reach the boundary inputs through DERIVED value bindings — e.g. a kernel
+// with boundaries `theta1`/`theta2` whose body is `iid(Normal(mu = a,
+// sigma = b), 10)` with `a = 5*theta2`, `b = abs(theta1)*theta2`. The density
+// side must score against the FED boundary atoms, but `a`/`b` are value
+// bindings (no measure derivation), so prepareDensityRefs would try to
+// getMeasure them → "no derivation for 'a'".
+//
+// This walk inlines every evaluable VALUE binding (recursively) so the
+// dist-params end up expressed in the boundary inputs, which it keeps as
+// `self` refs (NOT %local) so the caller's boundRefArrays feeding + the
+// per-atom accessor — both keyed by bare self-ref name — still resolve them.
+// Measures / draws carry a derivation and are left as refs for the density
+// walker; boundary inputs are stopped before inlining. Cycle-guarded.
+function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any): any {
+  const bindings = ctx && ctx.bindings;
+  const derivations = ctx && ctx.derivations;
+  const visiting = new Set<string>();
+  function walk(node: any): any {
+    if (node == null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(walk);
+    if (node.kind === 'ref' && node.ns === 'self' && node.name) {
+      const name = node.name;
+      if (boundarySet.has(name)) return node;     // fed boundary input — keep
+      if (visiting.has(name)) return node;
+      const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, name)
+        ? derivations[name] : null;
+      const target = bindings && bindings.get(name);
+      // Evaluable value binding: an 'evaluate' derivation, or no derivation
+      // with a call-shaped ir (a pruned computed value like `a = 5*theta2`).
+      // Measures / draws carry a sample/iid/record/… derivation and are NOT
+      // inlined — they stay refs the density walker resolves per-atom.
+      const isEvaluableValue =
+        (drv && drv.kind === 'evaluate')
+        || (!drv && target && target.ir && target.ir.kind === 'call');
+      if (isEvaluableValue && target && target.ir) {
+        visiting.add(name);
+        const sub = walk(target.ir);
+        visiting.delete(name);
+        return sub;
+      }
+      return node;
+    }
+    const out: Record<string, any> = {};
+    for (const k in node) out[k] = walk(node[k]);
+    return out;
+  }
+  return walk(ir);
+}
+
 function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: any) {
   const refs = orchestrator.collectSelfRefs(ir);
   // Reified-kernel boundary inputs are FED by the caller (the prior's atoms
@@ -1067,6 +1118,7 @@ module.exports = {
   measureToRefValue,
   measureToParamValue,
   measureToPerAtomRecords,
+  inlineBoundaryDerivations,
   tileMeasureAtomMajor,
   collectRefArrays,
   prepareDensityRefs,

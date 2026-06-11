@@ -1887,6 +1887,18 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     }
     if (d.bodyIR) {
       for (const r of collectSelfRefs(d.bodyIR)) {
+        // The kernel body's PARAMETERIZED / STOCHASTIC internals — the variate
+        // draw (`obs`), the reified boundary inputs (`theta1`/`theta2`), and
+        // the value bindings derived from them (`a = 5*theta2`) — are resolved
+        // by the bayesupdate materialiser (fed from the prior's atoms, then
+        // inlined to the boundaries), NOT via a derivation / fixedValue. Only a
+        // FIXED external dependency (e.g. a constant `sigma`) must resolve here.
+        // Without this skip, a prior + likelihood defined fully separately
+        // (boundaries = `elementof`, so the body's internals are parameterized)
+        // gets its whole posterior cascade-pruned → "Not plottable", even
+        // though it materialises correctly.
+        const rb = bindings.get(r);
+        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
       }
       return true;

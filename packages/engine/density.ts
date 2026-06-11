@@ -478,6 +478,17 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     throw new Error('density: unsupported IR kind \'' + ir.kind + '\'');
   }
   const op = ir.op;
+  // draw(M) / lawof(M) → peel and recurse on M. `obs ~ M` lowers to a binding
+  // `obs = draw(M)`; inlined into a MEASURE position (a reified kernel body's
+  // record field) it denotes the measure M, not a value-position draw — so for
+  // density it is transparent. Mirrors the materialiser's sampler-side peel;
+  // position-correct because walkAcc only ever walks measures. (A draw NESTED
+  // in a value expression rides the per-atom value evaluator, never reaching
+  // here as a top-level measure node.)
+  if ((op === 'draw' || op === 'lawof')
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
   const handler: any = op != null ? (OP_HANDLERS as any)[op] : null;
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
 
