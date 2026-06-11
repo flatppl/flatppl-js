@@ -1062,3 +1062,45 @@ test('logdensityof: scalar measure vs array data — substituted domain shows re
     'expected concrete real type, got: ' + genericArg.message);
 });
 
+
+// =====================================================================
+// Spec §04: first-class objects (measures / kernels / likelihoods /
+// functions) may NOT appear inside arrays, records, or tables.
+// =====================================================================
+
+test('§04: a measure inside a record is rejected (record→joint hint)', () => {
+  // The classic bug: a "prior" written as a record of distributions
+  // instead of a joint. Used to infer an uninhabitable record-of-measures
+  // type silently; now a static error pointing at joint(...).
+  const { errors } = infer(
+    `prior = record(a = Exponential(0.1), b = Exponential(0.3), mu = Exponential(1.1))`);
+  assert.ok(errors.length >= 1, 'expected a §04 error');
+  assert.match(errors[0].message, /measure may not appear inside a record/);
+  assert.match(errors[0].message, /joint\(/, 'hints at joint(...)');
+});
+
+test('§04: a measure inside an array is rejected', () => {
+  const { errors } = infer(`xs = [Normal(0.0, 1.0), Normal(1.0, 1.0)]`);
+  assert.ok(errors.some((e: any) => /measure may not appear inside an array/.test(e.message)));
+});
+
+test('§04: a measure column inside a table is rejected', () => {
+  const { errors } = infer(`t = table(a = [Normal(0.0, 1.0), Normal(1.0, 1.0)])`);
+  assert.ok(errors.some((e: any) => /measure may not appear inside/.test(e.message)));
+});
+
+test('§04: lawof(record(<values>)) is NOT rejected (records of VALUES are fine)', () => {
+  // The valid idiom: the record fields are variates (values), not measures;
+  // lawof reifies the record-valued draw into a measure. No §04 error.
+  const { errors } = infer(
+    `a ~ Normal(0.0, 1.0)\nb ~ Normal(0.0, 1.0)\nj = lawof(record(a = a, b = b))`);
+  assert.equal(errors.length, 0, 'record of values must not trip the guard: '
+    + JSON.stringify(errors.map((e: any) => e.message)));
+});
+
+test('§04: joint(name = M, …) is the accepted measure-over-records form', () => {
+  const { bindings, errors } = infer(
+    `prior = joint(a = Exponential(0.1), b = Normal(0.0, 1.0))`);
+  assert.equal(errors.length, 0);
+  assert.equal(typeOf(bindings, 'prior').kind, 'measure');
+});

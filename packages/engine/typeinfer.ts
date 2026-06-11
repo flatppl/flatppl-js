@@ -699,11 +699,52 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     return T.failed('lawof bad arg');
   }
 
+  // Spec §04: measures, kernels, likelihood objects and functions are
+  // first-class objects but "may not appear inside arrays, records, or
+  // tables" — only value types (scalars, arrays, records, tables, tuples)
+  // may. Without this guard a `record(a = Exponential(...), …)` infers an
+  // uninhabitable record-of-measures type silently (no LSP/plot error) and
+  // then mis-materialises downstream. Reject the object-layer field/element
+  // types with a clear, spec-citing diagnostic. (A field like `a = draw(M)`
+  // or `a = some_variate` is a VALUE — scalar-typed — and passes; the prior
+  // idiom `joint(a = M, …)` is the correct way to build a measure over
+  // records.) Does not return `failed` — the type still builds, so the rest
+  // of inference proceeds; this is an additive diagnostic.
+  function objectLayerNoun(t: any): string | null {
+    if (!t) return null;
+    switch (t.kind) {
+      case 'measure':    return 'measure';
+      case 'kernel':     return 'kernel';
+      case 'function':   return 'function';
+      case 'likelihood': return 'likelihood object';
+      default:           return null;
+    }
+  }
+  function checkContainerElem(t: any, loc: any, container: string, label: string) {
+    const noun = objectLayerNoun(t);
+    if (!noun) return;
+    const art = container === 'array' ? 'an ' : 'a ';
+    diagnostics.push({
+      severity: 'error',
+      message: container + ' ' + label + ': a ' + noun + ' may not appear inside ' + art
+        + container + ' (spec §04 — measures, kernels, likelihoods and functions '
+        + 'are first-class objects but cannot be stored in arrays, records, or tables)'
+        + (t.kind === 'measure'
+          ? '; use joint(' + (container === 'record' ? 'name = M, …' : 'M, …')
+            + ') to build a measure over ' + container + 's' : ''),
+      loc,
+    });
+  }
+
   function inferRecord(expr: any, scopes: any) {
     // record uses `fields` (ordered), not `kwargs`.
     const fields = expr.fields || [];
     const out: Record<string, any> = {};
-    for (const f of fields) out[f.name] = inferExpr(f.value, scopes);
+    for (const f of fields) {
+      const ft = inferExpr(f.value, scopes);
+      checkContainerElem(ft, f.loc || expr.loc, 'record', "field '" + f.name + "'");
+      out[f.name] = ft;
+    }
     return T.record(out);
   }
 
@@ -754,6 +795,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // through with deferred column type — engine still produces
       // a table at runtime.
       if (ct && ct.kind === 'array' && ct.rank === 1) {
+        // Spec §04: a table column may not hold measures / kernels / etc.
+        checkContainerElem(ct.elem, f.loc || expr.loc, 'table', "column '" + f.name + "'");
         columns[f.name] = ct.elem;
         const dim = ct.shape[0];
         if (typeof dim === 'number') {
@@ -1543,7 +1586,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       s = nextSubst;
       elem = T.substitute(nextElem, s);
     }
-    return T.array(1, [args.length], T.substitute(elem, s));
+    const elemT = T.substitute(elem, s);
+    // Spec §04: no measure / kernel / likelihood / function inside an array.
+    checkContainerElem(elemT, expr.loc, 'array', 'element');
+    return T.array(1, [args.length], elemT);
   }
 
   // -------------------------------------------------------------------
