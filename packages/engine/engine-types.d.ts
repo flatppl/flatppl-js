@@ -233,7 +233,8 @@ export type DerivationKind =
   | 'inversewishart'
   | 'lkjcholesky'
   | 'lkj'
-  | 'binnedpoissonprocess';
+  | 'binnedpoissonprocess'
+  | 'likelihood_density';
 
 /**
  * Base derivation shape. Each per-kind interface below extends this
