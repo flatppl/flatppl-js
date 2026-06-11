@@ -1535,6 +1535,85 @@ function _foldNumericIR(ir: any): number | null {
  * `materialiseConcreteMeasure` to delegate to engine KIND_HANDLERS"
  * — this entry IS that delegation point for the IR-direct path.)
  */
+// ── Smell A: IR → canonical-handler bridge ───────────────────────────────
+// The by-name KIND_HANDLERS recurse through the binding graph
+// (ctx.getMeasure / expandMeasure / ctx.derivations[name]) and carry the rich
+// machinery (matTruncate rejection sampling, matIid repeat-axis, matWeighted
+// IS-weights, …). materialiseMeasureIR walks anonymous sub-IR. The bridge
+// makes an inline sub-measure resolvable as a FIRST-CLASS synthetic binding so
+// a canonical handler can be REUSED instead of re-implementing per-op sampling
+// (engine-concepts §7, "by reuse not reimplementation"). Precedent: the leaf
+// fallback (matSample with `{kind:'sample',distIR}`) + materialiseKernelBroadcastIR.
+//
+// `_bridgeRegister(ctx)` → an overlaid child ctx + a `register(ir, label)→name`
+// that installs `ir` as a synthetic binding: its derivation (built recursively
+// by `_bridgeDerivation`) lands in childCtx.derivations (so `expandMeasure(name)`
+// resolves it), childCtx.bindings carries it, and childCtx.getMeasure(name)
+// routes back to materialiseMeasureIR(ir). Copy-on-write — never mutates the
+// parent's maps. A childCtx-local counter gives deterministic (reproducible),
+// collision-free synthetic names even under nesting; seed independence between
+// sibling sub-measures comes from the per-field rootKey foldIn upstream.
+function _bridgeRegister(ctx: any) {
+  const derivs: any = Object.assign({}, ctx.derivations);
+  const binds = new Map(ctx.bindings || []);
+  const routes = new Map<string, any>();
+  const parentGet = ctx.getMeasure;
+  let n = 0;
+  const childCtx: any = Object.assign({}, ctx, {
+    derivations: derivs,
+    bindings: binds,
+    getMeasure: (nm: string) =>
+      routes.has(nm) ? materialiseMeasureIR(routes.get(nm), childCtx) : parentGet(nm),
+  });
+  function register(ir: any, label: string): string {
+    const name = '%mir:' + label + ':' + (n++);
+    routes.set(name, ir);
+    binds.set(name, { name, ir, type: 'call', synthetic: true,
+      inferredType: (ir && ir.meta && ir.meta.type) || null });
+    derivs[name] = _bridgeDerivation(ir, register, childCtx);
+    return name;
+  }
+  return { register, childCtx };
+}
+
+// Thin per-op IR → derivation map — the expanded-IR sibling of derivations.ts's
+// classifier arm. The real classifiers can't be reused here: classifyTruncate
+// et al. read the AST (`resolveMeasureBaseName(ast.args[0])`) and require
+// named-ref sub-measures, neither of which an inline, already-expanded measure
+// IR has. So map the structural fields by hand (reusing IR-based helpers like
+// parseSetIR) and reuse the rich materialisation in the handler. Drift-guarded
+// by the agreement harness + per-gap fixtures; grows one op per Smell A stage.
+function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
+  const irShared = require('./ir-shared.ts');
+  const op = ir && ir.op;
+  if (op && irShared.SAMPLEABLE_DISTRIBUTIONS && irShared.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
+    return { kind: 'sample', distIR: ir };
+  }
+  if (op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const from = register(ir.args[0], 'truncate:base');
+    const setDescr = irShared.parseSetIR(ir.args[1], childCtx.bindings);
+    return { kind: 'truncate', from, setDescr };
+  }
+  // Default: treat as a leaf sample (the prior leaf-fallback behaviour — the
+  // worker's sampleN surfaces a clear diagnostic if the op isn't a kernel).
+  return { kind: 'sample', distIR: ir };
+}
+
+// Dispatch an inline measure IR node to its canonical KIND_HANDLER through the
+// synthetic-binding bridge. Used by the materialiseMeasureIR cases that would
+// otherwise dead-end at the leaf fallback (truncate; weighted/normalize/… as
+// later stages land).
+function _bridgeToHandler(ir: any, ctx: any): Promise<any> {
+  const { register, childCtx } = _bridgeRegister(ctx);
+  const d = _bridgeDerivation(ir, register, childCtx);
+  const handler = (KIND_HANDLERS as any)[d.kind];
+  if (!handler) {
+    return Promise.reject(new Error(
+      'materialiseMeasureIR bridge: no handler for kind ' + d.kind));
+  }
+  return handler('%mir:' + ir.op, d, childCtx);
+}
+
 function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   if (!ir) return Promise.reject(new Error('materialiseMeasureIR: null IR'));
   if (ir.kind !== 'call') {
@@ -1698,6 +1777,16 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // select(branches=…) → engine select IR-direct entry.
   if (ir.op === 'select' && Array.isArray(ir.branches) && ir.branches.length >= 1) {
     return materialiseSelectIR(ir, ctx);
+  }
+  // truncate(M, S) → canonical matTruncate via the Smell A bridge: register
+  // the inline base M as a synthetic binding (resolvable by getMeasure +
+  // expandMeasure + derivations) and reuse matTruncate's CDF / rejection
+  // sampling, instead of dead-ending at the leaf fallback below (which can't
+  // sample a `truncate` op — the worker's sampleN has no such kernel). The
+  // base's own refs (a fed prior column `s0`, a `%local` param) still resolve
+  // through the inherited _extraRefArrays / parent ctx. [Smell A, Stage 1]
+  if (ir.op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
+    return _bridgeToHandler(ir, ctx);
   }
   // Generative pushforward: lawof(<value expr>). After the lawof peel
   // (above), a body like transport's `y = (x + δ)³ · exp(x − b)` is a
