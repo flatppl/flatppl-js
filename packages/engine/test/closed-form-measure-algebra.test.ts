@@ -245,6 +245,56 @@ function normalLogpdf(x: any, mu: any, sigma: any) {
 }
 
 // =====================================================================
+// pushfwd through a functionof with derived / multiple params (audit
+// H5 tail). The body is inlined down to the param set BEFORE
+// evaluation (inlineBoundaryDerivations) so a derived value binding
+// between the boundary and the body transforms the BASE's atoms —
+// previously it resolved via getMeasure to the like-named module-graph
+// value (computed from the module's decoupled draw): silent-wrong.
+// Multi-param functions auto-splat a record base by field name (§04).
+// =====================================================================
+
+test('pushfwd(f, M) with a derived-param body transforms M, not the module draw (H5)', async () => {
+  // b = 2·x reaches f's boundary x through a derived binding. The
+  // module x ~ N(0,1) is DECOUPLED from the base M = N(5, 0.1); the
+  // conflated answer is exp(2·x_module) (mean ≈ e² ≈ 7.4), the correct
+  // one exp(2·m_i) exactly per atom.
+  const ctx = makeCtx(`
+x = draw(Normal(mu = 0.0, sigma = 1.0))
+b = 2.0 * x
+f = functionof(exp(b), x = x)
+M = Normal(mu = 5.0, sigma = 0.1)
+nu = pushfwd(f, M)
+`);
+  const [NU, M] = await Promise.all([ctx.getMeasure('nu'), ctx.getMeasure('M')]);
+  let maxErr = 0;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    maxErr = Math.max(maxErr,
+      Math.abs(NU.samples[i] - Math.exp(2 * M.samples[i])) / Math.exp(2 * M.samples[i]));
+  }
+  assert.ok(maxErr < 1e-12,
+    `pushfwd must transform the BASE atoms exactly; max rel err ${maxErr}`);
+});
+
+test('pushfwd(f, M): multi-param f auto-splats a record base by field name (§04)', async () => {
+  const ctx = makeCtx(`
+a = elementof(reals)
+b = elementof(reals)
+f = functionof(a + 2.0 * b, a = a, b = b)
+M = joint(a = Normal(1.0, 0.1), b = Normal(10.0, 0.1))
+nu = pushfwd(f, M)
+`);
+  const [NU, M] = await Promise.all([ctx.getMeasure('nu'), ctx.getMeasure('M')]);
+  let maxErr = 0;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    const expect = M.fields.a.samples[i] + 2 * M.fields.b.samples[i];
+    maxErr = Math.max(maxErr, Math.abs(NU.samples[i] - expect));
+  }
+  assert.ok(maxErr < 1e-12,
+    `multi-param pushfwd must splat the record base; max err ${maxErr}`);
+});
+
+// =====================================================================
 // Labelled jointchain components (spec §06 keyword form ≡
 // relabel(component, [label]); audit M5). A single-field record
 // component is RENAMED to the chain label (relabel's positional

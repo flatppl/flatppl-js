@@ -31,6 +31,9 @@ const {
   setBoundsForMat,
   resolveFnBody,
   measureToParamValue,
+  measureToPerAtomRecords,
+  inlineBoundaryDerivations,
+  measureN,
 } = shared;
 // Bijection-registry handle (Phase 5.1 Session 5d): when the bijection
 // binding carries `registryName` + `paramIRs`, matPushfwd short-
@@ -214,26 +217,67 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         });
       });
     }
-    // Scalar AST path (pre-§22 baseline).
-    if (!M.samples) {
-      return Promise.reject(new Error(`pushfwd: base measure '${d.from}' is not scalar `
-        + `(record/tuple/iid not yet supported for first-class pushfwd materialisation)`));
+    // AST path (pre-§22 baseline).
+    //
+    // H5 (transitive boundary substitution): f's body may reach its
+    // parameter THROUGH derived value bindings (`b = 2 * x;
+    // f = functionof(exp(b), x = x)`). Inline those down to the param
+    // set FIRST — otherwise collectRefArrays resolves `b` via
+    // getMeasure to the like-named MODULE-graph value (computed from
+    // the module's decoupled `x` draw), silently transforming the
+    // wrong atoms (the audit-§3 boundary-conflation, on pushfwd's
+    // sample side).
+    const paramSet = new Set<string>(fnInfo.params);
+    const body = inlineBoundaryDerivations(fnInfo.body, paramSet, ctx);
+    // Bind the param(s) to the base variate per spec §04 application:
+    //   - single param, scalar base   → the sample column;
+    //   - single param, record base   → per-atom records (the same
+    //     whole-record contract feedInputs uses; get_field consumes);
+    //   - multi param, record base    → auto-splat by field name;
+    //   - multi param, scalar base    → loud error (no splat source).
+    const N = measureN(M);
+    const paramBind: Record<string, any> = {};
+    if (fnInfo.params.length === 1) {
+      const p0 = fnInfo.params[0];
+      if (M.samples) {
+        paramBind[p0] = M.samples;
+      } else if (M.fields) {
+        paramBind[p0] = measureToPerAtomRecords(M, p0, 'pushfwd');
+      } else {
+        return Promise.reject(new Error(`pushfwd: base measure '${d.from}' has `
+          + `neither scalar samples nor record fields`));
+      }
+    } else {
+      if (!M.fields) {
+        return Promise.reject(new Error(`pushfwd: function '${d.fnRef}' takes `
+          + fnInfo.params.length + ` inputs but base measure '${d.from}' is `
+          + `not record-shaped (auto-splat needs named fields, spec §04)`));
+      }
+      for (const p of fnInfo.params) {
+        const fm = M.fields[p];
+        if (!fm || !fm.samples) {
+          return Promise.reject(new Error(`pushfwd: function input '${p}' has `
+            + `no matching field in the record variate of '${d.from}' `
+            + `(fields: ${Object.keys(M.fields).join(', ')})`));
+        }
+        paramBind[p] = fm.samples;
+      }
     }
-    // The body may reference values BEYOND f's own parameter — e.g.
+    // The body may also reference values BEYOND f's parameters — e.g.
     // `pushfwd(fn(_ + mu), base)` where `mu` is a per-atom draw or a
     // fixed binding. Collect those external self-refs (fixed refs are
     // auto-pushed to the worker session env by collectRefArrays); the
-    // param itself is a `%local` placeholder, not a self-ref, so it
-    // isn't double-collected. Under an iid composite fallback ctx these
-    // external refs are the tiled per-atom values (the repeat axis), so
-    // f's body sees atom i's shared `mu` across the k inner draws.
-    return collectRefArrays(fnInfo.body, ctx).then((bodyRefs: any) => ctx.sendWorker({
+    // params are bound LAST so they always win over a like-named
+    // module binding. Under an iid composite fallback ctx the external
+    // refs are the tiled per-atom values (the repeat axis), so f's
+    // body sees atom i's shared `mu` across the k inner draws.
+    return collectRefArrays(body, ctx).then((bodyRefs: any) => ctx.sendWorker({
       type: 'evaluateN',
-      ir: fnInfo.body,
-      count: M.samples.length,
-      refArrays: Object.assign({}, bodyRefs, { [fnInfo.paramName]: M.samples }),
+      ir: body,
+      count: N,
+      refArrays: Object.assign({}, bodyRefs, paramBind),
     })).then((reply: any) => {
-      return measureFromReply(reply, M.samples.length, {
+      return measureFromReply(reply, N, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
         n_eff: M.n_eff,

@@ -1137,8 +1137,12 @@ function resolveFnBody(binding: any, bindings: any): any {
     return null;
   }
   const params = binding.ir.params || [];
-  if (params.length !== 1) return null;
-  return { body: binding.ir.body, paramName: params[0] };
+  if (params.length === 0) return null;
+  // `paramName` is the single-param convenience (the common case);
+  // `params` carries the full list for multi-input callables — the
+  // caller decides how to bind them (matPushfwd auto-splats a record
+  // base by field name, spec §04).
+  return { body: binding.ir.body, paramName: params[0], params };
 }
 
 module.exports = {
