@@ -1,51 +1,43 @@
-# A simple Bayesian example using structural disintegration: build the joint
-# distribution first, then disintegrate to extract the forward kernel and prior.
-# Same model as bayesian_inference.flatppl, expressed by disintegration of the
-# joint instead of separate prior/model reifications.
+# Same semantics as bayesian_inference_1.flatppl, but uses structural
+# disintegration: build the joint model first, then disintegrate into
+# forward model kernel and prior.
 
 # Prior distributions
-theta1_dist = Normal(mu = 0.0, sigma = 1.0)
-theta2_dist = Exponential(rate = 1.0)
+theta1_dist = Normal(0, 1)
+theta2_dist = Exponential(1)
 
 # Prior variates
-theta1 = draw(theta1_dist)
-theta2 = draw(theta2_dist)
+theta1 ~ theta1_dist
+theta2 ~ theta2_dist
 
-c = 5.0
-
-f_a = functionof(c * _par_, par = _par_)
-f_b = fn(abs(_) * _)
-
-# Deterministic transform
-a = f_a(par = theta1)
+# Deterministic computation
+c = 5                   % Scaling factor
+f_a = par -> c * par    % Scale by c
+f_b = fn(abs(_) * _)    % abs(arg1) * arg2
+a = f_a(theta2)
 b = f_b(theta1, theta2)
 
 # IID observations from the forward model
-obs_dist = joint(obs = iid(Normal(mu = a, sigma = b), 10))
-
-# prior and forward model
-prior = lawof(record(theta1 = theta1, theta2 = theta2))
-forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
+obs ~ iid(Normal(mu = a, sigma = b), 10)
 
 # Joint distribution over parameters and observations
-joint_model = jointchain(prior, forward_kernel)
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
 
-# Structural disintegration, should be eqivalent to forward_kernel and prior
-forward_kernel2, prior2 = disintegrate(["obs"], joint_model)
+# Structural disintegration
+forward_kernel, prior = disintegrate(["obs"], joint_model)
 
 # Observed data
 observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]
 
-# Likelihood
-L = likelihoodof(forward_kernel2, record(obs = observed_data))
+# Likelihood and posterior
+% The likelihood
+L = likelihoodof(forward_kernel, record(obs = observed_data))
+% Non-normalized posterior
+posterior = bayesupdate(L, prior)
 
-# Non-normalized posterior
-posterior = bayesupdate(L, prior2)
+# Preset points:
+default_pars = record(theta1 = 0.5,  theta2 = 1.0)
+alternative_pars = record(theta1 = -1.5, theta2 = fixed(0.8))
 
-# Log-density evaluation as a first-class binding. obs_dist depends on
-# theta1 and theta2 via a / b, so per prior atom this gives
-# logp(observed_data | theta1, theta2).
-lp_obs = logdensityof(obs_dist, record(obs = observed_data))
-
-# densityof(M, x) is sugar for exp(logdensityof(M, x)).
-d_obs  = densityof(obs_dist, record(obs = observed_data))
+# Preset domain:
+pars_domain = cartprod(theta1 = interval(-3, 3), theta2 = interval(0, 2))

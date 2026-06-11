@@ -50,11 +50,14 @@ test('integration: bayesian_inference_1 forward_kernel DAG includes correct ance
   assert.equal(dag.nodes.find((n: any) => n.id === 'theta2').isBoundary, true);
 });
 
-// --- bayesian_inference_3: structural disintegration via positional
-//     jointchain → Delegate plan ----------------------------------------
+// --- disintegrate_dual_kernel: structural disintegration via positional
+//     jointchain → Delegate plan. This fixture (a functionof forward_kernel
+//     PLUS a forward_kernel2/prior2 = disintegrate(...) in one module) is a
+//     test-only superset — it has no public example; the renamed example
+//     bayesian_inference_3 is the plain single-disintegrate form. -----------
 
-test('integration: bayesian_inference_3 disintegration produces Delegate plans', () => {
-  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
+test('integration: disintegrate_dual_kernel disintegration produces Delegate plans', () => {
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'disintegrate_dual_kernel.flatppl'), 'utf8');
   const { bindings, diagnostics } = processSource(src);
   assert.equal(diagnostics.filter((d: any) => d.severity === 'error').length, 0);
 
@@ -75,10 +78,10 @@ test('integration: bayesian_inference_3 disintegration produces Delegate plans',
   assert.equal(pr2.type, 'lawof');
 });
 
-test('integration: bayesian_inference_3 forward_kernel2 sub-DAG mirrors forward_kernel', () => {
+test('integration: disintegrate_dual_kernel forward_kernel2 sub-DAG mirrors forward_kernel', () => {
   // Delegate semantics: forward_kernel2 should render with the same
   // structural ancestors and boundaries as forward_kernel.
-  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'disintegrate_dual_kernel.flatppl'), 'utf8');
   const { bindings } = processSource(src);
 
   const fkDag  = computeSubDAG(bindings, 'forward_kernel');
@@ -122,14 +125,14 @@ test('integration: bayesian_inference_3 posterior derivation cascade', () => {
   assert.ok(derivations.posterior.obsIR, 'posterior.obsIR set');
 });
 
-test('integration: bayesian_inference_3 lp_obs / d_obs classify end-to-end', () => {
+test('integration: disintegrate_dual_kernel lp_obs / d_obs classify end-to-end', () => {
   // logdensityof binding broadcasts log p(observed_data | theta1, theta2)
   // over prior atoms (the same primitive as bayesupdate's reweight,
   // exposed as a scalar binding). densityof rewrites to
   // exp(logdensityof(...)) at AST time. Both must reach a derivation
   // when their inputs are derivable.
   const { buildDerivations, resolveIRToValue } = require('../orchestrator.ts');
-  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'disintegrate_dual_kernel.flatppl'), 'utf8');
   const { bindings } = processSource(src);
   const ds = buildDerivations(bindings);
   const { derivations } = ds;
@@ -390,12 +393,12 @@ test('integration: polyeval-iid-broadcast fixture — Ref-wrap broadcast over ii
   assert.deepEqual(yBinding.inferredType.shape, [10]);
 });
 
-test('integration: bayesian_inference_3 posterior view uses the literal source structure', () => {
+test('integration: disintegrate_dual_kernel posterior view uses the literal source structure', () => {
   // When viewing posterior (transitively reaches prior2 / forward_kernel2),
   // the trace should follow the user's source — not the rewriter's
   // delegate view. So joint_model must be reachable, and prior2 /
   // forward_kernel2 must NOT receive their own reification bubbles.
-  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
+  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'disintegrate_dual_kernel.flatppl'), 'utf8');
   const { bindings } = processSource(src);
   const dag = computeSubDAG(bindings, 'posterior');
   const ids = new Set(dag.nodes.map((n: any) => n.id));

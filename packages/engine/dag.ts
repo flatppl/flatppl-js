@@ -256,14 +256,27 @@ function computeSubDAG(bindings: any, nodeName: string) {
   const rootValue = eff(binding).value;
   let boundaryVars = new Set();
   let boundaryLabels = new Map(); // varName -> argName
+  // Implicit reification: `kernelof(record(obs = obs))` / `functionof(body)`
+  // with NO explicit boundary kwargs reifies the `elementof` leaves it reaches
+  // as its boundaries (spec §04). extractBoundaries only sees the explicit
+  // kwargs, so flag the discovered elementof-leaf inputs (`b.type === 'input'`)
+  // as boundaries below — matching the explicit-kwarg form's backward-trace
+  // stop. (The example bayesian_inference_1 uses exactly this implicit form.)
+  let implicitKernelRoot = false;
 
   if (binding.type === 'functionof' || binding.type === 'kernelof') {
     const boundaries = extractBoundaries(rootValue);
-    if (boundaries) {
+    if (boundaries && boundaries.size > 0) {
       boundaryVars = new Set(boundaries.values());
       for (const [argName, varName] of boundaries) {
         boundaryLabels.set(varName, argName);
       }
+    } else if (!binding.disintegratePlan) {
+      // No explicit boundary kwargs AND not a disintegrate-synthesised kernel
+      // (whose ancestors are free inputs of the joint, not reified boundaries)
+      // ⇒ a genuine implicit `kernelof(record(…))` / `functionof(body)` whose
+      // elementof leaves are its boundaries.
+      implicitKernelRoot = true;
     }
   }
 
@@ -278,7 +291,8 @@ function computeSubDAG(bindings: any, nodeName: string) {
     // user's source structure — e.g., descending through `prior2` reaches
     // `joint_model`, not the rewriter's synthesized view of it.
     const e = useEffective ? eff(b) : { value: b && b.node && b.node.value, deps: (b && b.deps) || [], callDeps: (b && b.callDeps) || [] };
-    const isBoundary = boundaryVars.has(name);
+    const isBoundary = boundaryVars.has(name)
+      || (implicitKernelRoot && name !== nodeName && b && b.type === 'input');
 
     // If this binding is a disintegration result whose Plan came back
     // Unsupported, surface that to the renderer so it can mark the node

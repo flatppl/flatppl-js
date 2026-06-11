@@ -1,15 +1,13 @@
-# A simple Bayesian example: two fit parameters with independent priors and a
-# deterministic computation followed by IID normal observations. Prior and
-# likelihood are defined separately.
+# Same semantics as bayesian_inference_1.flatppl, but uses measure restriction:
+# build the joint model first, then restrict to observation.
 
 # Prior distributions
 theta1_dist = Normal(0, 1)
 theta2_dist = Exponential(1)
-prior = joint(theta1 = theta1_dist, theta2 = theta2_dist)
 
 # Prior variates
-theta1 = elementof(reals)
-theta2 = elementof(reals)
+theta1 ~ theta1_dist
+theta2 ~ theta2_dist
 
 # Deterministic computation
 c = 5                   % Scaling factor
@@ -21,17 +19,17 @@ b = f_b(theta1, theta2)
 # IID observations from the forward model
 obs ~ iid(Normal(mu = a, sigma = b), 10)
 
-# Reify different sub-DAGs to prior and forward model kernel
-forward_kernel = kernelof(record(obs = obs))
+# Joint distribution over parameters and observations
+joint_model = lawof(record(theta1 = theta1, theta2 = theta2, obs = obs))
 
 # Observed data
 observed_data = [1.2, 3.4, 5.1, 2.8, 4.0, 3.7, 5.5, 2.1, 4.3, 3.9]
 
-# Likelihood and posterior
-% The likelihood
-L = likelihoodof(forward_kernel, record(obs = observed_data))
-% Non-normalized posterior
-posterior = bayesupdate(L, prior)
+# Structural disintegration
+posterior = restrict(joint_model, record(obs = observed_data))
+
+# Distribution of obs data for default_pars
+pars_predictive = restrict(joint_model, default_pars)
 
 # Preset points:
 default_pars = record(theta1 = 0.5,  theta2 = 1.0)

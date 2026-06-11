@@ -83,11 +83,14 @@ a = mu_p + n
 
 // --- Bayesian inference example ---
 
-test('phase: bayesian_inference_2 fixture has correct phases', () => {
+test('phase: bayesian_inference_3 fixture has correct phases', () => {
+  // bayesian_inference_3 is the disintegrate model (joint_model = lawof(...));
+  // after the example rename it carries the joint_model + stochastic theta
+  // chain this test pins (the old _2 number held this model).
   const fs = require('node:fs');
   const path = require('node:path');
   const src = fs.readFileSync(
-    path.join(__dirname, 'fixtures', 'bayesian_inference_2.flatppl'), 'utf8');
+    path.join(__dirname, 'fixtures', 'bayesian_inference_3.flatppl'), 'utf8');
   const p: any = phasesOf(src);
 
   // Stochastic chain
