@@ -66,13 +66,14 @@ function _isMeasureNode(ir: any): boolean {
 // Feature flag (Phase 4 live reroute). The sample-side reroute
 // (materialiser's clmRerouteStage) consults `isClmEnabled()` so the §15
 // dual-mode test can flip it on↔off and assert identical results against the
-// legacy per-kind path (the equivalence oracle). Production default is OFF
-// until the reroute is full-suite green in both modes and bindLeaf is retired.
-// Tests call lowerMeasure directly regardless of the flag.
-// Env seed lets a whole test run flip into CLM mode (`FLATPPL_CLM=1 npm …`)
-// for §15 dual-mode validation without editing a default; unset ⇒ OFF.
-let _clmEnabled = (typeof process !== 'undefined' && process.env
-  && process.env.FLATPPL_CLM === '1') || false;
+// legacy per-kind path (the equivalence oracle). Production default is now ON
+// — the reroute is full-suite green in both modes (jointchain through matClm);
+// matJointchain survives only as the lowerMeasure-returns-null fallback. Tests
+// call lowerMeasure directly regardless of the flag.
+// Env override lets a whole run flip BACK to the legacy path (`FLATPPL_CLM=0
+// npm …`) for §15 dual-mode comparison without editing the default.
+let _clmEnabled = !(typeof process !== 'undefined' && process.env
+  && process.env.FLATPPL_CLM === '0');
 function isClmEnabled(): boolean { return _clmEnabled; }
 function setClmEnabled(on: boolean): boolean {
   const prev = _clmEnabled;
