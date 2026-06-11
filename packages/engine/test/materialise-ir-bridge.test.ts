@@ -61,3 +61,28 @@ m = jointchain(prior, fwd)`;
   assert.ok(Math.abs(tm - 2.0) < 0.2, `prior theta mean≈2, got ${tm}`);
   assert.ok(ym > 1.5 && ym < 3.5, `truncated y mean tracks theta≈2, got ${ym}`);
 });
+
+test('Stage 2: inline weighted kernel in a CLM body materialises via matWeighted', async () => {
+  // fwd = functionof(weighted(2.0, Normal(mu=theta, 1)), theta=theta). Before
+  // the bridge the leaf fallback crashed (no `weighted` sampler kernel). Now
+  // routes to matWeighted: a constant weight is a log-mass shift log(2) on the
+  // base; the atoms are the (unchanged) base Normal draws. Per the composite-
+  // measure invariant the mass lives at the OUTER measure (sub-fields are pure
+  // SoA), so the log-2 shift surfaces on m.logTotalmass.
+  const src = `
+theta = elementof(reals)
+yw = weighted(2.0, Normal(mu = theta, sigma = 1.0))
+fwd = functionof(yw, theta = theta)
+prior = Normal(mu = 0.0, sigma = 1.0)
+m = jointchain(prior, fwd)`;
+  const N = 1500;
+  const { ctx } = buildCtx(src, N, 23);
+  const m = await ctx.getMeasure('m');
+  assert.ok(m.elems && m.elems.length === 2, 'jointchain retain → 2-tuple measure');
+  assert.ok(Math.abs(m.logTotalmass - Math.log(2)) < 1e-9,
+    `weighted(2, ·) shifts log-total-mass by log 2; got ${m.logTotalmass}`);
+  const yS = m.elems[1].samples;
+  let anyNaN = false;
+  for (let i = 0; i < N; i++) if (Number.isNaN(yS[i])) { anyNaN = true; break; }
+  assert.ok(!anyNaN, 'no NaN atoms');
+});

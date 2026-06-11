@@ -1594,6 +1594,28 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const setDescr = irShared.parseSetIR(ir.args[1], childCtx.bindings);
     return { kind: 'truncate', from, setDescr };
   }
+  // weighted(w, M) / logweighted(lw, M) with a CONSTANT weight: a log-mass shift
+  // on the base (matWeighted's `logShift` path). `weighted(const, M)` lowers to
+  // `logweighted(log const, M)`, so the CLM body usually carries `logweighted`;
+  // handle both. A function-of-the-variate weight (spec §06) needs the
+  // _classifyWeightedByFunction param-substitution and is deferred — it falls
+  // through to the leaf default below (an unchanged clear diagnostic).
+  if (op === 'weighted' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const w = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
+      childCtx.fixedValues);
+    if (w != null && Number.isFinite(w) && w > 0) {
+      const from = register(ir.args[1], 'weighted:base');
+      return { kind: 'weighted', from, logShift: Math.log(w) };
+    }
+  }
+  if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const lw = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
+      childCtx.fixedValues);
+    if (lw != null && Number.isFinite(lw)) {
+      const from = register(ir.args[1], 'logweighted:base');
+      return { kind: 'weighted', from, logShift: lw };
+    }
+  }
   // Default: treat as a leaf sample (the prior leaf-fallback behaviour — the
   // worker's sampleN surfaces a clear diagnostic if the op isn't a kernel).
   return { kind: 'sample', distIR: ir };
@@ -1786,6 +1808,14 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // base's own refs (a fed prior column `s0`, a `%local` param) still resolve
   // through the inherited _extraRefArrays / parent ctx. [Smell A, Stage 1]
   if (ir.op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
+    return _bridgeToHandler(ir, ctx);
+  }
+  // weighted / logweighted(const, M) → canonical matWeighted via the bridge
+  // (constant weight → log-mass shift). `weighted(const,·)` lowers to
+  // `logweighted`, so both ops route here. Same rationale as truncate: the leaf
+  // fallback can't sample a weighted/logweighted op. [Smell A, Stage 2]
+  if ((ir.op === 'weighted' || ir.op === 'logweighted')
+      && Array.isArray(ir.args) && ir.args.length === 2) {
     return _bridgeToHandler(ir, ctx);
   }
   // Generative pushforward: lawof(<value expr>). After the lawof peel
