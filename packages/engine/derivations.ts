@@ -72,7 +72,7 @@ import type {
 } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
-const { isMeasureExpr } = require('./analyzer.ts');
+const { isMeasureExpr, computePhases } = require('./analyzer.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
@@ -129,6 +129,48 @@ function isCallableLikeBindingType(t: string | undefined): boolean {
       || t === 'bijection' || t === 'fchain';
 }
 
+// Smell D — propagate phase to lift-introduced anons.
+//
+// `liftInlineSubexpressions` runs AFTER analyzer.computePhases, so the
+// synthetic anons it hoists (composite pieces, inner draws, MvNormal
+// bijection/iid bases, metricsum cascades) carry NO phase. Consumers that read
+// a binding's phase — the cascade-prune resolvability check, the CLM input
+// classifier, the viewer's is-fixed-phase signals — otherwise have to
+// special-case null (the bayesupdate cascade-prune `|| rb.phase == null` skip).
+// Re-run the phase pass over the post-lift bindings so every anon gets a REAL
+// phase, propagated from its IR refs.
+//
+// computePhases reads `node.value` (AST) + `deps`. A synthetic anon carries its
+// lifted AST as node.value but `deps: []`; populate deps from the anon's IR
+// self-refs so the phase propagates through the lifted DAG. Originals keep
+// their analyzer-computed deps + unchanged AST (lift preserves node.value), so
+// computePhases recomputes their phases identically — we apply the result ONLY
+// to the phase-less anons, leaving originals byte-identical (zero blast radius
+// on the established bindings).
+function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
+  let any = false;
+  const withDeps = new Map<string, any>();
+  for (const [name, b] of bindings) {
+    if (b && b.synthetic && b.phase == null && b.ir) {
+      any = true;
+      withDeps.set(name, { ...b, deps: Array.from(collectSelfRefs(b.ir)) });
+    } else {
+      withDeps.set(name, b);
+    }
+  }
+  if (!any) return bindings;
+  const phases = computePhases(withDeps);
+  const out = new Map<string, any>();
+  for (const [name, b] of withDeps) {
+    if (b && b.synthetic && b.phase == null && phases.has(name)) {
+      out.set(name, { ...b, phase: phases.get(name) });
+    } else {
+      out.set(name, b);
+    }
+  }
+  return out;
+}
+
 function buildDerivations(bindings: Map<string, BindingInfo>) {
   // Pre-pass: lift inline subexpressions so every measure-arg position
   // is a bare ref and every value-arg is evaluable. After lifting, the
@@ -136,6 +178,10 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // case for inline weighted/normalize/superpose/draw inside another
   // measure expression.
   bindings = liftInlineSubexpressions(bindings);
+
+  // Smell D: give the lift-introduced anons real phases (they're created after
+  // analyzer.computePhases, so they'd otherwise carry phase == null).
+  bindings = _propagateLiftedPhases(bindings);
 
   // Post-lift: dissolve broadcast / aggregate constructs whose body is
   // an inherently-batched single op (engine-concepts §20 / Phase 2 of
@@ -1952,16 +1998,14 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
         // gets its whole posterior cascade-pruned → "Not plottable", even
         // though it materialises correctly.
         const rb = bindings.get(r);
-        // phase == null: a LIFT-INTRODUCED anon (liftInlineSubexpressions runs
-        // AFTER computePhases, so hoisted subexpressions carry no phase). These
-        // are body-internal nodes — a generative-composite measure
-        // (`zs = post.(transport.(…))`), an inner draw — that the materialiser
-        // resolves through the measure-expansion path, exactly like the
-        // parameterized/stochastic internals above. Skip them too (a genuinely
-        // missing dep has NO binding → rb is null → still pruned below; a real
-        // fixed external dep keeps phase 'fixed' → still validated).
-        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic'
-          || rb.phase == null)) continue;
+        // Body-internal lift anons (a generative-composite measure
+        // `zs = post.(transport.(…))`, an inner draw) are now carried with REAL
+        // phases by `_propagateLiftedPhases` (Smell D) — parameterized/stochastic
+        // exactly like the hand-written internals above — so the former
+        // `|| rb.phase == null` lift-anon skip is gone. A genuinely missing dep
+        // has NO binding → rb is null → still pruned below; a real fixed external
+        // dep keeps phase 'fixed' → still validated.
+        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
       }
       return true;

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { processSource, computePhases } = require('../index.ts');
 const { computePhasesForScope } = require('../analyzer.ts');
 const { computeSubDAG } = require('../dag.ts');
+const der = require('../derivations.ts');
 
 function phasesOf(src: any) {
   const { bindings } = processSource(src);
@@ -33,6 +34,52 @@ test('phase: literal is fixed', () => {
   const p: any = phasesOf('x = 1.5\narr = [1, 2, 3]\n');
   assert.equal(p.x, 'fixed');
   assert.equal(p.arr, 'fixed');
+});
+
+// --- Smell D: lift-introduced anons carry real phases ---
+// liftInlineSubexpressions runs AFTER analyzer.computePhases, so the synthetic
+// anons it hoists used to carry phase == null (forcing null special-cases in
+// the cascade-prune et al). buildDerivations now re-runs the phase pass over
+// the post-lift bindings (_propagateLiftedPhases) so every anon gets a phase.
+
+test('phase: lift-introduced anons all carry a non-null phase', () => {
+  // A generative composite (inner draws + a parameterized record input) — the
+  // shape that hoists many anons (broadcast / iid / draw pieces).
+  const src = `
+sigma = 0.2
+pars = elementof(cartprod(a = reals, mu = reals))
+x ~ Normal(pars.mu, sigma)
+y = (x + pars.a)^3
+gen = kernelof(y, pars = pars)
+n = elementof(posintegers)
+xs ~ iid(gen(pars), n)
+model = kernelof(xs, n = n, pars = pars)`;
+  const b = der.buildDerivations(processSource(src).bindings);
+  const offenders: string[] = [];
+  let anons = 0;
+  for (const [name, bind] of b.bindings) {
+    if (bind && bind.synthetic) {
+      anons++;
+      if (bind.phase == null) offenders.push(name);
+    }
+  }
+  assert.ok(anons > 0, 'fixture should hoist at least one synthetic anon');
+  assert.deepEqual(offenders, [], 'every synthetic anon must carry a phase');
+});
+
+test('phase: a lifted composite piece with a draw ancestor is stochastic', () => {
+  const src = `
+mu = elementof(reals)
+inner = lawof(draw(Normal(mu, 1.0)) + draw(Normal(0.0, 1.0)))`;
+  const b = der.buildDerivations(processSource(src).bindings);
+  // At least one synthetic anon should be stochastic (the inner draw piece)
+  // and at least one parameterized (a mu-dependent value) — never all fixed.
+  const phases = new Set<string>();
+  for (const [, bind] of b.bindings) {
+    if (bind && bind.synthetic && bind.phase != null) phases.add(bind.phase);
+  }
+  assert.ok(phases.has('stochastic') || phases.has('parameterized'),
+    `expected a non-fixed anon phase, got ${JSON.stringify([...phases])}`);
 });
 
 // --- Propagation through ancestors ---
