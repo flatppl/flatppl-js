@@ -302,7 +302,6 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // matJointchain materialises the retained (n−1)-joint history ONCE
   // and we bind its variate columns as the per-atom refArrays the
   // last kernel's hole-rewired cat consumes.
-  const measureDeriv = ctx.derivations[d.measureName];
   // Lower the measure ONCE to its canonical form (lowerMeasure): peel/expand,
   // inline derived value bindings down to the boundary inputs OR apply the
   // generative MC marginalising-pushforward form (§06 case-3), declare the
@@ -316,19 +315,18 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
       + d.measureName + '" into a self-contained IR'));
   }
-  const isChain = !!(node.reduce && node.reduce.kind === 'marginal');
   // N-ary kchain (engine-concepts §6 chain-associativity): the retained
   // (n−1)-joint history's variate columns s_i can't be sourced by a plain
-  // getMeasure, so materialise them ONCE via matJointchain and pass as
-  // extraRefArrays (overriding the boundary feeds feedInputs anchors to
-  // base.ref). The last kernel's hole-rewired cat over s_i consumes them.
-  const naryKchain = isChain && measureDeriv
-    && Array.isArray(measureDeriv.steps) && measureDeriv.steps.length > 2
-    && !measureDeriv.labels;
-  const innerJointP = naryKchain
-    ? matJointchain(d.measureName + '$jchist',
-        { kind: 'jointchain', marginalize: false, labels: null,
-          steps: measureDeriv.steps.slice(0, -1) }, ctx)
+  // getMeasure, so materialise them ONCE and pass as extraRefArrays (the last
+  // kernel's hole-rewired cat over s_i consumes them, overriding the boundary
+  // feeds feedInputs anchors to base.ref). lowerMeasure attaches the retained
+  // history body (node.marginalHistoryBody) — the SAME structure matClm
+  // samples on the sample side — so density and sample reconstruct the history
+  // through ONE mechanism (the dependent-threaded retain joint), not two. (Was
+  // a direct matJointchain call; that path is now only reached as the
+  // lowerMeasure-returns-null sample fallback.)
+  const innerJointP = node.marginalHistoryBody
+    ? require('./materialiser.ts').materialiseMeasureIR(node.marginalHistoryBody, ctx)
     : Promise.resolve(null);
   const observed = orchestrator.resolveIRToValue(
     d.obsIR, ctx.bindings, ctx.fixedValues);
