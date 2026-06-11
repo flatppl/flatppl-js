@@ -134,6 +134,8 @@ const {
   isEvaluable,
 } = require('./lift.ts');
 
+const AST = require('./ast.ts');
+
 // Facade re-bind of the derivation builder + classifiers now living in
 // derivations.js. The cluster is a leaf w.r.t. the orchestrator core
 // (it never calls buildSampleChain / classifyForChain / resolveMeasure),
@@ -304,6 +306,83 @@ function buildSampleChain(targetName: string, bindings: any) {
   return { chain: order, discrete };
 }
 
+/**
+ * Materialise-prep for plotting a KERNEL applied to a concrete input point —
+ * the working concrete-application path (`model_dist = k_model(glob_pars)`),
+ * generalised to an arbitrary point.
+ *
+ * Composite-generative kernels (e.g. `k_model` / `k_model_n` reifying
+ * `lawof(broadcast(post, broadcast(transport, iid(generator, n), [pars])))`)
+ * cannot be sampled by the viewer's substitute-IR reconstruction
+ * (`inlineForProfile` + `substituteLocals` + `materialiseMeasureIR` flattens the
+ * binding graph, and the generative composite then tangles — re-inlining `x`'s
+ * module definition into transport's body instead of feeding the `xs` broadcast
+ * arg → "undefined length"). Simpler kernels (a bare leaf / pushforward) lower
+ * fine that way; only the generative composites fall off the edge.
+ *
+ * Instead, synthesize the concrete application `<kernel>(<point>)` as a fresh
+ * module binding and RE-DERIVE: `buildDerivations`' lift inlines the application
+ * into a by-name-materialisable generative derivation, exactly as it does for
+ * the hand-written `model_dist`. Returns the augmented derivation state + the
+ * synthetic binding name so the caller materialises the applied measure BY NAME
+ * (the generative derivation), NOT via the IR-direct substitute path.
+ *
+ * `bindings` MUST be the RAW analyzer `BindingInfo` map (pre-lift — the viewer's
+ * `ctx.currentBindings`, the input to `buildDerivations`), NOT a post-`buildDerivations`
+ * map: this re-runs `buildDerivations` (which lifts), and re-lifting already-lifted
+ * bindings won't classify the synthetic application. `sig` is `signatureOf(kernel)`;
+ * `env` maps each input's `paramName` → a concrete value (number | boolean |
+ * number[] | nested record object) — the same env the kernel-sample path builds.
+ */
+function deriveAppliedKernel(bindings: any, kernelName: string, sig: any, env: any): any {
+  const L = null;        // synthetic nodes carry no source location
+  function valueToAst(v: any): any {
+    if (typeof v === 'number') return AST.NumberLiteral(v, String(v), L);
+    if (typeof v === 'boolean') return AST.BoolLiteral(v, L);
+    if (Array.isArray(v)) return AST.ArrayLiteral(v.map(valueToAst), L);
+    if (v && typeof v === 'object') {           // record point (e.g. pars)
+      const kw = Object.keys(v).map((k) => AST.KeywordArg(k, valueToAst(v[k]), L));
+      return AST.CallExpr(AST.Identifier('record', L), kw, L);
+    }
+    throw new Error('deriveAppliedKernel: unsupported env value for kernel \''
+      + kernelName + '\' input (got ' + typeof v + ')');
+  }
+  function mkSynthBinding(name: string, valueAst: any, deps: string[]): any {
+    return {
+      name, names: [name], line: 0, rhs: null, type: 'call',
+      deps, callDeps: [], bodyDeps: [], paramSourceDeps: [],
+      node: AST.AssignStatement([name], valueAst, L), nameLoc: L,
+      phase: null, inferredType: null,
+    };
+  }
+  // Apply the kernel POSITIONALLY in signature order, each input bound to its own
+  // synthetic POINT BINDING referenced by name — mirroring the working
+  // `model_dist = k_model(glob_pars)` (a ref-arg application lift inlines). Both
+  // choices matter: positional binding is what the fixtures use
+  // (`k_model_n(lengthof(data), pars)`) and is robust to a lambda's placeholder
+  // formal (`pars -> …` lowers to `_pars_`, so a `pars=` kwarg wouldn't bind);
+  // and a ref arg (not an inline record literal) is what lift's application
+  // inliner substitutes. `sig.inputs` is in positional order.
+  const clone = new Map(bindings);
+  const pointNames: string[] = [];
+  const argRefs = (sig.inputs || []).map((inp: any, i: number) => {
+    const pname = '__kspoint_' + i;
+    clone.set(pname, mkSynthBinding(pname, valueToAst(env[inp.paramName]), []));
+    pointNames.push(pname);
+    return AST.Identifier(pname, L);
+  });
+  const appAst = AST.CallExpr(AST.Identifier(kernelName, L), argRefs, L);
+  const synthName = '__kernelsample';
+  clone.set(synthName, mkSynthBinding(synthName, appAst, [kernelName].concat(pointNames)));
+  const built = buildDerivations(clone);
+  return {
+    name: synthName,
+    derivations: built.derivations,
+    bindings: built.bindings,
+    fixedValues: built.fixedValues,
+  };
+}
+
 
 /**
  * Decide how a single binding contributes to the chain.
@@ -433,6 +512,7 @@ function resolveMeasure(ir: IRNode | null, bindings: any, seen: Set<string>): IR
 
 module.exports = {
   buildSampleChain,
+  deriveAppliedKernel,
   buildDerivations,
   liftInlineSubexpressions,
   canonicalizeImplicitBoundaries,
