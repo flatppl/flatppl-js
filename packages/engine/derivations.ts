@@ -1043,29 +1043,32 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelec
   const pIR = resolveBernoulliP(rhsIR.args[0], bindings, new Set());
   if (pIR == null) {
     // Non-closed-form condition (comparisons of continuous RVs,
-    // arbitrary boolean expressions, …). The mixture is still
-    // STRUCTURALLY exact — only the selector probability P(true)
-    // lacks a closed form. If the condition is a materialisable
-    // {0,1} self-ref we estimate P(true) ONCE from its sampled
-    // ensemble at materialisation time (engine-concepts §11
-    // MC-weight selector): density then uses the constant logweights
-    // [log p̂, log(1−p̂)], the exact discrete-mixture form with an
-    // estimated weight rather than an estimated structure. Sampling
-    // never needed P(true) at all (matSelect gathers by the realised
-    // condition). Without a materialisable selector we can do
-    // neither → decline, so value-valued ifelse and opaque
-    // conditions stay on the evaluator path untouched.
+    // arbitrary boolean expressions, …): the selector is DETERMINISTIC
+    // given the ensemble (c_i = cond(θ_i) is a {0,1} value per atom),
+    // so the per-atom branch weights are EXACT indicators — log(c_i) is
+    // 0 for the selected branch and −inf for the other. Emit them as
+    // value IRs over the selector ref, evaluated per atom by walkSelect
+    // exactly like the closed-form parametric-p weights (booleans
+    // promote to 0/1 in arithmetic per spec §03). This replaces the
+    // former pooled estimate (P̂(true) = ensemble frequency, an
+    // atom-INDEPENDENT constant — audit M2: scoring a mixture over a
+    // non-marginalised stochastic/parametric selector at atom i used the
+    // pooled marginal instead of the conditional p(x | θ_i), off by the
+    // full branch separation). Sampling never needed P(true) at all
+    // (matSelect gathers by the realised condition). Without a
+    // materialisable {0,1} self-ref we decline, so value-valued ifelse
+    // and opaque conditions stay on the evaluator path untouched.
     if (selectorRef == null) return null;
+    const condRef = { kind: 'ref', ns: 'self', name: selectorRef };
     return {
       kind: 'select',
       branches: [aB, bB],
-      // Weights deferred to materialisation: p̂_0 = P(cond TRUE) =
-      // empirical frequency of the {0,1} selector being truthy
-      // (branch 0 = the TRUE branch, matching matSelect's sel?0:1
-      // gather), p̂_1 = 1 − p̂_0. The materialiser's runtime-weight
-      // resolver fills the select node's logweights from this spec.
-      logweightIRs: null,
-      runtimeWeights: { ref: selectorRef, K: 2, base: 0 },
+      // Branch 0 = the TRUE branch (matching matSelect's sel?0:1 gather):
+      // logw_0 = log(c), logw_1 = log(1 − c) — per-atom indicators.
+      logweightIRs: [
+        call('log', [condRef]),
+        call('log', [call('sub', [lit1, condRef])]),
+      ],
       selectorRef,
       marginalize: true,
       mode: 'mixture',
@@ -2537,13 +2540,14 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         if (branches.length === 0) return null;
         return {
           kind: 'call', op: 'select', branches,
+          // Per-branch log-weight value IRs, evaluated per atom by
+          // walkSelect. Closed-form selectors carry [log p, log(1−p)]
+          // over the selector's parameter IR; deterministic-given-θ
+          // selectors (comparison conditions) carry the EXACT per-atom
+          // indicators [log c, log(1−c)] over the selector ref (audit
+          // M2 — the former pooled-frequency runtime-weight spec is
+          // retired).
           logweights: d.logweightIRs || null,
-          // Unresolved runtime-weight spec (non-closed-form selector,
-          // engine-concepts §11). expandMeasureIR is pure — it cannot
-          // reduce the selector ensemble — so it carries the spec
-          // through for the materialiser's runtime-weight resolver to
-          // turn into literal logweights before density evaluation.
-          weightsFrom: d.runtimeWeights || null,
           // Retain-mode hint (engine-concepts §11): the selector
           // binding name, plus its base (Categorical 1-based,
           // Categorical0 0-based; absent ⇒ Bernoulli/ifelse and the

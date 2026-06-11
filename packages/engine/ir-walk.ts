@@ -27,7 +27,7 @@
  *
  *   params, paramKwargs       string arrays
  *   paramSources              [{ kind: 'binding' | 'placeholder', name }]
- *   kind, op, target, ns, name, numType, mode, marginalize, weightsFrom,
+ *   kind, op, target, ns, name, numType, mode, marginalize,
  *   axisStack, loc, meta       discriminators + diagnostics + dispatch
  *                              metadata
  *

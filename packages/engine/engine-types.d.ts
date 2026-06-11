@@ -188,7 +188,6 @@ export interface IRCall extends IRBase {
   // Select-IR specific (engine-concepts §11):
   branches?: any[];
   logweights?: IRNode[] | null;
-  weightsFrom?: { ref: string; K: number; base: number } | null;
   selectorName?: string | null;
   selectorBase?: number | null;
   // Static axis-context metadata (P3a; engine-concepts §18.11 /
@@ -470,8 +469,6 @@ export interface DerivationSelect {
   selectorBase?: number;
   marginalize?: boolean;
   mode?: string;
-  /** Spec for runtime-computed weights when logweightIRs is null. */
-  runtimeWeights?: { ref: string; K: number; base: number };
   /** CONSTANT per-branch weights for a no-external-selector mixture /
    *  superpose (engine-concepts §12): matSelect synthesizes the selector
    *  (Bernoulli/Categorical over the normalised weights) when selectorRef

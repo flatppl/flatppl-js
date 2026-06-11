@@ -2,10 +2,9 @@
 
 // Density-related materialiser handlers: matScore (the ONE CLM density
 // consumer), matBayesupdate, matLogdensityof, matBroadcastLogdensity,
-// matTotalmass. Plus the runtime-weight selector resolution
-// (collectRuntimeWeightNodes / resolveRuntimeWeights) that matLogdensityof
-// and matBroadcastLogdensity both run before density evaluation
-// (engine-concepts §11 MC-weight selector).
+// matLikelihoodDensity, matTotalmass. Plus the normalize-mass
+// resolve-then-literalise pass (audit M3) every scoring path runs
+// before density evaluation.
 //
 // jointchain/kchain sampling AND density both flow through the canonical
 // CLM lowering now (lowerMeasure → matClm / matScore); the former bespoke
@@ -81,22 +80,13 @@ function mcDensityOpts(ctx: any): any {
 
 function matScore(node: any, ctx: any, opts?: any): Promise<any> {
   opts = opts || {};
-  // Runtime-weight selectors (engine-concepts §11): resolve the body's
-  // non-closed-form mixture/select weights to literal logweights before
-  // scoring. matLogdensityof/matBroadcastLogdensity opt in; bayesupdate did
-  // not, so it stays off there (preserving the Phase-2 byte-identical path).
-  // node.body is freshly built per lowerMeasure call (no cache), so the
-  // in-place resolution is safe (mutation hazard — plan critique).
-  //
-  // Normalize-mass specs (audit M3) resolve UNCONDITIONALLY — on every
-  // matScore path including bayesupdate: a massFrom-carrying normalize is
-  // new IR (the bare node previously scored with a silent 0 shift), the
-  // resolution is a pure correctness fix (−log Z), and walkNormalize
-  // refuses an unresolved spec loudly.
-  const bodyP = (opts.resolveWeights
-    ? resolveRuntimeWeights(node.body, ctx)
-    : Promise.resolve(node.body)
-  ).then((body: any) => resolveNormalizeMasses(body, ctx));
+  // Normalize-mass specs (audit M3) resolve on every matScore path
+  // including bayesupdate: the resolution is a pure correctness fix
+  // (−log Z literalised from the inner measure's tracked logTotalmass),
+  // and walkNormalize refuses an unresolved spec loudly. node.body is
+  // freshly built per lowerMeasure call (no cache), so the in-place
+  // resolution is safe (mutation hazard — plan critique).
+  const bodyP = resolveNormalizeMasses(node.body, ctx);
   return bodyP.then((body: any) =>
     clm.feedInputs(node, ctx).then((fed: any) => {
       // extraRefArrays carries columns the declared inputs can't source via a
@@ -227,7 +217,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
       'logdensityof(L, θ): cannot expand the likelihood body into measure IR'));
   }
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
-  return matScore(node, ctx, { observed, resolveWeights: true })
+  return matScore(node, ctx, { observed })
     .then((reply: any) => applyReduce(reply, node));
 }
 
@@ -255,42 +245,17 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
 }
 
 // =====================================================================
-// Runtime-weight selector resolution (engine-concepts §11)
+// Resolve-then-literalise specs (audit M3)
 // =====================================================================
 //
-// Walk an expanded measure IR collecting every `select` node that
-// still carries an unresolved runtime-weight spec (`weightsFrom`).
-// A non-closed-form selector condition yields a structurally-exact
-// mixture whose per-branch weights must be estimated ONCE from the
-// materialised selector ensemble. expandMeasureIR is pure and cannot
-// reduce an ensemble, so it threads the spec through; the materialiser
-// resolves it here. The estimate is a single scalar per branch (the
-// selector is marginalised in the density), so it fits the existing
-// IR `logweights` slot exactly, just supplied at materialisation
-// instead of by classify.
-
-function collectRuntimeWeightNodes(node: any, out: any, seen: any) {
-  if (!node || typeof node !== 'object') return;
-  if (seen.has(node)) return;
-  seen.add(node);
-  if (Array.isArray(node)) {
-    for (const x of node) collectRuntimeWeightNodes(x, out, seen);
-    return;
-  }
-  if (node.kind === 'call' && node.op === 'select'
-      && node.weightsFrom && node.logweights == null) {
-    out.push(node);
-  }
-  for (const k in node) {
-    const v = node[k];
-    if (v && typeof v === 'object') collectRuntimeWeightNodes(v, out, seen);
-  }
-}
+// (The former select runtime-weight resolver — a POOLED P̂(true)
+// frequency estimated once from the selector ensemble — is retired:
+// a deterministic-given-θ selector now carries EXACT per-atom
+// indicator logweight IRs straight from classifyIfelse, audit M2.)
 
 // normalize(M) nodes whose −log Z is NOT closed-form carry a massFrom
-// spec ({ref: <inner binding>}) — see expandMeasure's normalize case.
-// Same resolve-once-then-literalise contract as the select runtime
-// weights below (audit M3).
+// spec ({ref: <inner binding>}) — see expandMeasure's normalize case
+// (audit M3).
 function collectNormalizeMassNodes(node: any, out: any, seen: any) {
   if (!node || typeof node !== 'object') return;
   if (seen.has(node)) return;
@@ -314,8 +279,8 @@ function collectNormalizeMassNodes(node: any, out: any, seen: any) {
 // node IN PLACE to the same logweighted(−logZ, inner) form the
 // closed-form expansion emits — one downstream representation, the
 // worker never sees a mass-carrying normalize. The in-place mutation is
-// safe for the same reason resolveRuntimeWeights' is: the body is
-// freshly built per lowerMeasure call (no cache).
+// safe because the body is freshly built per lowerMeasure call (no
+// cache; the CLM mutation-hazard rule).
 function resolveNormalizeMasses(measureIR: any, ctx: any) {
   const nodes: any[] = [];
   collectNormalizeMassNodes(measureIR, nodes, new Set());
@@ -340,49 +305,6 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       }
       return measureIR;
     });
-}
-
-function resolveRuntimeWeights(measureIR: any, ctx: any) {
-  const nodes: any[] = [];
-  collectRuntimeWeightNodes(measureIR, nodes, new Set());
-  if (nodes.length === 0) return Promise.resolve(measureIR);
-  const refNames = Array.from(new Set(nodes.map((n) => n.weightsFrom.ref)));
-  return Promise.all(refNames.map(ctx.getMeasure)).then((measures) => {
-    const byName: Record<string, any> = {};
-    refNames.forEach((nm: string, i: number) => { byName[nm] = measures[i]; });
-    for (const node of nodes) {
-      const spec = node.weightsFrom;
-      const M = byName[spec.ref];
-      if (!M || !M.samples || !M.samples.length) {
-        throw new Error('select runtime weights: selector "' + spec.ref
-          + '" did not materialise to a sampled ensemble');
-      }
-      const sel = M.samples;
-      const Nn = sel.length;
-      const K = spec.K | 0;
-      const base = spec.base | 0;
-      const cnt = new Float64Array(K);
-      if (K === 2 && base === 0) {
-        let t = 0;
-        for (let i = 0; i < Nn; i++) if (sel[i]) t++;
-        cnt[0] = t; cnt[1] = Nn - t;
-      } else {
-        for (let i = 0; i < Nn; i++) {
-          let idx = (sel[i] | 0) - base;
-          if (idx < 0) idx = 0; else if (idx >= K) idx = K - 1;
-          cnt[idx]++;
-        }
-      }
-      const lw = new Array(K);
-      for (let k = 0; k < K; k++) {
-        const p = cnt[k] / Nn;
-        lw[k] = { kind: 'lit', value: p > 0 ? Math.log(p) : -Infinity };
-      }
-      node.logweights = lw;
-      delete node.weightsFrom;
-    }
-    return measureIR;
-  });
 }
 
 // =====================================================================
@@ -455,7 +377,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
         extraRefArrays['s' + i] = cs;
       }
     }
-    return matScore(node, ctx, { observed, resolveWeights: true, extraRefArrays })
+    return matScore(node, ctx, { observed, extraRefArrays })
       .then((reply: any) => applyReduce(reply, node));
   });
 }
@@ -499,8 +421,7 @@ function matBroadcastLogdensity(d: DerivationBroadcastLogdensity, ctx: any) {
     { derivations: ctx.derivations, bindings: ctx.bindings });
   // The batched fast path sends its own worker message (not via matScore),
   // so it must resolve normalize-mass specs (audit M3) here as well.
-  return resolveRuntimeWeights(measureIR0, ctx)
-    .then((b: any) => resolveNormalizeMasses(b, ctx))
+  return resolveNormalizeMasses(measureIR0, ctx)
     .then((measureIR) => {
   let batchable = !!measureIR && !isChain;
   const fixedRefs: any[] = [];

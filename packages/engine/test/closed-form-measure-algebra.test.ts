@@ -546,16 +546,21 @@ xF = draw(ifelse(cF, A, B))
     `p=0 ⇒ branch B (μ=+5), got ${unweightedMean(F.samples)}`);
 });
 
-// ---- MC-weight ifelse: NON-closed-form selector condition ----------
-// engine-concepts §11. The condition `c = z > 0` (z ~ Normal) is a
-// {0,1} selector with NO closed-form P(true) — classifyIfelse can't
-// resolve a Bernoulli p. The mixture is still STRUCTURALLY exact; the
-// per-branch weight P(true) is estimated ONCE from the materialised
-// selector ensemble (the general materialiser runtime-weight
-// resolver) and substituted as a constant logweight. With z~N(0,1),
-// P(z>0)=0.5, so the density must match the closed-form symmetric
-// mixture to within the p̂ Monte-Carlo error (statistical, not exact).
-test('MC-weight ifelse: non-closed-form condition density ≈ estimated mixture', async () => {
+// ---- comparison-selector ifelse: deterministic-given-θ condition ----
+// engine-concepts §11/§12. The condition `c = z > 0` (z ~ Normal) is a
+// {0,1} selector with no closed-form Bernoulli p — but it is
+// DETERMINISTIC given the ensemble, so the per-atom branch weights are
+// EXACT indicators (log c_i / log(1 − c_i)), emitted by classifyIfelse
+// as value IRs over the selector ref and evaluated per atom by
+// walkSelect. The rule (audit M2): the selector's INTRINSIC draw is
+// marginalised; everything the selector CONDITIONS ON stays per-atom.
+test('comparison-selector ifelse density: EXACT per-atom conditional (M2)', async () => {
+  // The selector c = (z > 0) is DETERMINISTIC given the ensemble — the
+  // per-atom branch weights are exact indicators, so logdensityof scores
+  // the per-atom CONDITIONAL p(x | z_i): atom i gets logp_A(x) when
+  // z_i > 0 and logp_B(x) otherwise (audit M2 — the former pooled
+  // P̂(true) frequency scored every atom at the atom-independent
+  // marginal, off by the full branch separation).
   const ctx = makeCtx(`
 z = draw(Normal(mu = 0.0, sigma = 1.0))
 c = z > 0.0
@@ -564,24 +569,25 @@ B = Normal(mu =  3.0, sigma = 1.0)
 M = ifelse(c, A, B)
 lp = logdensityof(M, 0.5)
 `);
-  const m = await ctx.getMeasure('lp');
-  // True P(z>0) = 0.5; analytic symmetric mixture density at x=0.5.
-  const expected = Math.log(
-    0.5 * Math.exp(normalLogpdf(0.5, -3, 1))
-    + 0.5 * Math.exp(normalLogpdf(0.5, 3, 1)));
-  // p̂ SE ≈ 1/(2√N) ≈ 0.0055 (N=8192); local d(logp)/dp ≈ −1.8 here,
-  // so 3σ on logp ≈ 0.03 — allow a comfortable 0.08 margin.
-  assert.ok(Number.isFinite(m.samples[0])
-    && Math.abs(m.samples[0] - expected) < 0.08,
-    `MC-weight ifelse logp: got ${m.samples[0]}, expected ≈ ${expected}`);
+  const [m, zs] = await Promise.all([ctx.getMeasure('lp'), ctx.getMeasure('z')]);
+  const lpA = normalLogpdf(0.5, -3, 1);
+  const lpB = normalLogpdf(0.5, 3, 1);
+  let maxErr = 0;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    const expected = zs.samples[i] > 0 ? lpA : lpB;
+    maxErr = Math.max(maxErr, Math.abs(m.samples[i] - expected));
+  }
+  assert.ok(maxErr < 1e-10,
+    `per-atom conditional must be exact; max err ${maxErr}`);
 });
 
-test('MC-weight ifelse: density ≈ closed-form Bernoulli(0.5) ifelse (same structure)', async () => {
-  // The non-closed-form-condition spelling and the closed-form
-  // Bernoulli spelling are the SAME mixture; only the weight's
-  // PROVENANCE differs (MC-estimated vs analytic). They must agree to
-  // within the estimator error — proves the structure is exact and
-  // only the weight is approximated.
+test('selector semantics: intrinsic draw marginalised, stochastic ancestors conditioned', async () => {
+  // Two ifelse spellings with stochastic selectors, two DIFFERENT
+  // conditionals (engine-concepts §12: weights are P(i=k | θ)):
+  //  - cCF ~ Bernoulli(0.5): the selector's own draw is marginalised
+  //    → every atom scores the atom-independent 50/50 MIXTURE.
+  //  - cMC = (z > 0): no intrinsic draw; the selector conditions on z
+  //    → atom i scores the CONDITIONAL of the branch z_i selects.
   const ctx = makeCtx(`
 z = draw(Normal(mu = 0.0, sigma = 1.0))
 cMC = z > 0.0
@@ -591,11 +597,23 @@ B = Normal(mu = 4.0, sigma = 2.0)
 lpMC = logdensityof(ifelse(cMC, A, B), 1.7)
 lpCF = logdensityof(ifelse(cCF, A, B), 1.7)
 `);
-  const [MC, CF] = await Promise.all(
-    [ctx.getMeasure('lpMC'), ctx.getMeasure('lpCF')]);
-  assert.ok(Math.abs(MC.samples[0] - CF.samples[0]) < 0.05,
-    `MC-weight=${MC.samples[0]} vs closed-form=${CF.samples[0]} `
-    + '— same structure, weight only estimated');
+  const [MC, CF, zs] = await Promise.all(
+    [ctx.getMeasure('lpMC'), ctx.getMeasure('lpCF'), ctx.getMeasure('z')]);
+  const lpA = normalLogpdf(1.7, 0, 1);
+  const lpB = normalLogpdf(1.7, 4, 2);
+  // Bernoulli spelling: exact mixture, identical at every atom.
+  const mix = Math.log(0.5 * Math.exp(lpA) + 0.5 * Math.exp(lpB));
+  assert.ok(Math.abs(CF.samples[0] - mix) < 1e-10
+    && Math.abs(CF.samples[SAMPLE_COUNT - 1] - mix) < 1e-10,
+    `Bernoulli selector: expected the marginal mixture ${mix}, got ${CF.samples[0]}`);
+  // Comparison spelling: exact per-atom conditional.
+  let maxErr = 0;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    const expected = zs.samples[i] > 0 ? lpA : lpB;
+    maxErr = Math.max(maxErr, Math.abs(MC.samples[i] - expected));
+  }
+  assert.ok(maxErr < 1e-10,
+    `comparison selector: per-atom conditional max err ${maxErr}`);
 });
 
 test('MC-weight ifelse: sampling mixture mean / variance (closed-form)', async () => {
