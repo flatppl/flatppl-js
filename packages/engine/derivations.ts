@@ -786,7 +786,7 @@ function classifyWeighted(
 // they're out of scope for now (could be lifted to additional
 // per-atom refs in a follow-up).
 function _classifyWeightedByFunction(
-  weightExpr: any, baseName: string, bindings: any,
+  weightExpr: any, baseName: string, bindings: any, isLog?: boolean,
 ): DerivationWeighted | null {
   if (!weightExpr || weightExpr.kind !== 'ref' || weightExpr.ns !== 'self') return null;
   const fnBinding = bindings.get(weightExpr.name);
@@ -815,7 +815,7 @@ function _classifyWeightedByFunction(
     }
     return n;
   });
-  return { kind: 'weighted', from: baseName, weightIR: synth, isLog: false };
+  return { kind: 'weighted', from: baseName, weightIR: synth, isLog: !!isLog };
 }
 
 function classifyLogWeighted(
@@ -833,6 +833,15 @@ function classifyLogWeighted(
     if (!Number.isFinite(lw)) return null;
     return { kind: 'weighted', from: baseName, logShift: lw };
   }
+  // Spec §06: the log-weight is "a constant OR a function of the variate"
+  // — the function form is the exact lowering target for bayesupdate /
+  // restrict (audit H9). Same branch (and same ordering rationale: a
+  // function-typed self-ref is syntactically evaluable but semantically
+  // a callable) as classifyWeighted, with the weight kept in log space.
+  // The consumers (matWeighted, walkLogWeighted, expandMeasureIR) already
+  // handle weightIR + isLog:true.
+  const fnDeriv = _classifyWeightedByFunction(lwExpr, baseName, bindings, true);
+  if (fnDeriv) return fnDeriv;
   if (isEvaluable(lwExpr)) {
     return { kind: 'weighted', from: baseName, weightIR: lwExpr, isLog: true };
   }

@@ -398,6 +398,36 @@ test('identity: weighted(a, weighted(b, m)) ≡ weighted(a*b, m) — log-shifts 
   assert.ok(Math.abs(empirical.totalLogMass(lhs) - Math.log(6)) < 1e-10);
 });
 
+test('identity: logweighted(g_log, m) ≡ weighted(exp∘g_log, m) — fn-of-variate log weight (H9)', () => {
+  // Spec §06: logweighted's weight is "a constant OR a function of the
+  // variate" — the function form is the canonical lowering target for
+  // bayesupdate / restrict. Audit H9: classifyLogWeighted never took the
+  // _classifyWeightedByFunction branch, so the identical program with
+  // `weighted` classified while `logweighted` silently got no derivation.
+  // Identity: g(x) = exp(g_log(x)) ⇒ the two forms reweight the SAME
+  // atoms with the SAME log-weights.
+  const src = `
+    m = Normal(mu=0, sigma=1)
+    g_log = x -> 0 - x^2 / 2
+    g = x -> exp(0 - x^2 / 2)
+    w_form = weighted(g, m)
+    lw_form = logweighted(g_log, m)
+  `;
+  const { bindings } = processSource(src);
+  // Classification pin: the log form gets a weighted derivation with the
+  // substituted weightIR in LOG space.
+  const { derivations } = orchestrator.buildDerivations(processSource(src).bindings);
+  assert.ok(derivations['lw_form'], 'logweighted(fn, m) classifies (H9)');
+  assert.equal(derivations['lw_form'].kind, 'weighted');
+  assert.equal(derivations['lw_form'].isLog, true);
+  assert.ok(derivations['lw_form'].weightIR, 'carries the substituted weightIR');
+  const cache = new Map();
+  const lhs = materialise('lw_form', bindings, { cache });
+  const rhs = materialise('w_form',  bindings, { cache });
+  assertSameSamples(lhs, rhs, 'logweighted fn-of-variate samples');
+  assertSameLogWeights(lhs, rhs, 1e-10, 'logweighted fn-of-variate logWeights');
+});
+
 test('identity: normalize(weighted(c, m)) ≡ normalize(m) — scalar absorbed by normalisation', () => {
   // Multiplying every weight by a positive constant shifts logSumExp
   // by the same constant, so subtracting it back leaves the same
