@@ -22,7 +22,7 @@ const assert = require('node:assert');
 const eng = require('../index.ts');
 const der = require('../derivations.ts');
 const { collectSelfRefs } = require('../ir-shared.ts');
-const { lowerMeasure } = require('../clm.ts');
+const { lowerMeasure, feedInputs } = require('../clm.ts');
 const { buildCtx } = require('./_agreement-harness.ts');
 
 // Mean / std of a measure's scalar atoms (uniform weights — these fixtures
@@ -225,4 +225,64 @@ jc = jointchain(M, K)`;
   cov /= n;
   // b = a + N(0,1) ⇒ Cov(a,b) = Var(a) = 1.
   assert.ok(Math.abs(cov - 1.0) < 0.1, `retain cov ${cov.toFixed(3)} ≉ 1`);
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// Phase 5 — explicit-boundary lowering (the viewer kernel/profile plot path).
+// lowerMeasure(<kernel body IR>, ctx, {boundaries, freeInputs}) feeds the
+// caller-supplied input VALUES through the ONE feedInputs contract, replacing
+// the viewer's inlineForProfile + substituteLocals bake. matClm routes the
+// `node.fed` lowering through its feed path even with reduce=null.
+// ════════════════════════════════════════════════════════════════════════
+
+test('[clm Phase 5] explicit scalar boundary — kernel fed at a=5, samples ~ Normal(5,1)', async () => {
+  const src = `
+a = elementof(reals)
+K = functionof(Normal(mu = a, sigma = 1.0), a = a)`;
+  const { ctx } = buildCtx(src, 40000, 7);
+  const body = ctx.bindings.get('K').ir.body;            // the reified kernel body (Normal(mu=%local a, …))
+  const node = lowerMeasure(body, ctx, { boundaries: { a: 5.0 } });
+  assert.ok(node && node.op === 'clm', 'lowers to a clm node');
+  assert.ok(node.fed, 'explicit-boundary lowering sets node.fed → matClm feed path');
+  const aIn = node.inputs.find((i: any) => i.name === 'a');
+  assert.ok(aIn, 'a is a declared input');
+  assert.strictEqual(aIn.source.kind, 'explicit');
+  assert.strictEqual(aIn.source.value, 5.0);
+  const m = await eng.materialiser.materialiseMeasureIR(node, ctx);
+  const s = meanStd(m);
+  assert.ok(Math.abs(s.mean - 5.0) < 0.1, `mean ${s.mean.toFixed(3)} ≉ 5 (boundary not fed?)`);
+  assert.ok(Math.abs(s.std - 1.0) < 0.1, `std ${s.std.toFixed(3)} ≉ 1`);
+});
+
+test('[clm Phase 5] explicit RECORD boundary — pars fed per-atom, samples ~ Normal(5,2)', async () => {
+  // The transport `pars` shape: a record-typed kernel input field-accessed in
+  // the body. feedInputs binds it as the per-atom-record array get_field
+  // consumes (matching measureToPerAtomRecords) — the `_pars_`-class case.
+  const src = `
+pars = elementof(cartprod(a = reals, b = posreals))
+K = functionof(Normal(mu = pars.a, sigma = pars.b), pars = pars)`;
+  const { ctx } = buildCtx(src, 40000, 7);
+  const body = ctx.bindings.get('K').ir.body;
+  const node = lowerMeasure(body, ctx, { boundaries: { pars: { a: 5.0, b: 2.0 } } });
+  const parsIn = node.inputs.find((i: any) => i.name === 'pars');
+  assert.ok(parsIn && parsIn.source.kind === 'explicit', 'pars is an explicit input');
+  assert.strictEqual(parsIn.shape.kind, 'record', 'record-shaped boundary');
+  const m = await eng.materialiser.materialiseMeasureIR(node, ctx);
+  const s = meanStd(m);
+  assert.ok(Math.abs(s.mean - 5.0) < 0.15, `mean ${s.mean.toFixed(3)} ≉ 5 (record field not fed?)`);
+  assert.ok(Math.abs(s.std - 2.0) < 0.15, `std ${s.std.toFixed(3)} ≉ 2`);
+});
+
+test('[clm Phase 5] free input (the profile sweep axis) is declared but UNFED', async () => {
+  const src = `
+a = elementof(reals)
+K = functionof(Normal(mu = a, sigma = 1.0), a = a)`;
+  const { ctx } = buildCtx(src, 100, 7);
+  const body = ctx.bindings.get('K').ir.body;
+  const node = lowerMeasure(body, ctx, { freeInputs: ['a'] });
+  const aIn = node.inputs.find((i: any) => i.name === 'a');
+  assert.ok(aIn && aIn.source.kind === 'free', 'a is a free input');
+  const fed = await feedInputs(node, ctx);
+  assert.ok(!Object.prototype.hasOwnProperty.call(fed.refArrays, 'a'),
+    'a free input is not bound into refArrays (the worker varies it per sweep point)');
 });

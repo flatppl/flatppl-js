@@ -710,7 +710,7 @@ function matClm(ir: any, ctx: any): Promise<any> {
   // joint — the base measure is materialised INLINE as a field and threaded to
   // dependent kernels by materialiseMeasureIR's joint walk. No external
   // boundary feed; walk it directly (the kchain/jointchain retain output).
-  if (!marginal && !ir.marginalHistoryBody) {
+  if (!marginal && !ir.marginalHistoryBody && !ir.fed) {
     return materialiseMeasureIR(ir.body, ctx);
   }
 

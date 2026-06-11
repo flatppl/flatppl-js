@@ -48,6 +48,7 @@
 const orchestrator = require('./orchestrator.ts');
 const shared = require('./materialiser-shared.ts');
 const builtins = require('./builtins.ts');
+const valueLib = require('./value.ts');
 
 // A scorable measure node (a distribution or measure-algebra op) vs a value
 // transform. The stochastic-ancestor marginal (H8) applies only to a measure
@@ -81,6 +82,13 @@ function _isMeasureNode(ir: any): boolean {
 //               'fixed'  — a fixed-phase value (session env; no tiling)
 //   fields?     for kind:'record', the field labels (declaration order)
 function describeInputShape(source: any, name: string, ctx: any): any {
+  // Explicit boundary (a viewer preset / selected kernel input) carries its
+  // value directly — describe it off the value, not off a binding. A free
+  // input (the profile sweep axis) is left opaque (it is not fed).
+  if (source.kind === 'explicit') return _describeValueShape(source.value);
+  if (source.kind === 'free') {
+    return { kind: 'opaque', perAtom: false, repeatTile: 'value', fields: null };
+  }
   const bindings = ctx && ctx.bindings;
   const repeatTile = source.kind === 'fixed' ? 'fixed'
     : source.kind === 'shared' ? 'measure'
@@ -119,6 +127,24 @@ function _domKind(dom: any): string {
   if (dom.kind === 'array') return (dom.rank && dom.rank >= 2) ? 'matrix' : 'vector';
   if (dom.kind === 'record') return 'record';
   return 'opaque';
+}
+
+// Shape descriptor for an EXPLICIT boundary VALUE (a raw JS preset / selected
+// kernel input, not a binding). A plain object that is not a Value (no
+// shape/data fields) is a record param (the transport `pars` case); an array /
+// Float64Array / Value is a vector; anything else a scalar. perAtom:false — the
+// one value is broadcast across every atom.
+function _describeValueShape(v: any): any {
+  const base = { perAtom: false, repeatTile: 'value' as const, fields: null as any };
+  if (v != null && typeof v === 'object'
+      && !Array.isArray(v) && !(v.data instanceof Float64Array) && v.shape === undefined) {
+    return Object.assign({}, base, { kind: 'record', fields: Object.keys(v) });
+  }
+  if (Array.isArray(v) || v instanceof Float64Array
+      || (v && Array.isArray(v.shape) && v.data instanceof Float64Array)) {
+    return Object.assign({}, base, { kind: 'vector' });
+  }
+  return Object.assign({}, base, { kind: 'scalar' });
 }
 
 // ── body construction ────────────────────────────────────────────────────
@@ -252,7 +278,7 @@ function _structuralBoundaries(deriv: any): any[] {
 // declared input. The classification mirrors prepareDensityRefs (the function
 // feedInputs replaces): fixed-phase → fixed; a fed boundary → boundary;
 // otherwise a measure ref → shared (today's getMeasure path, now explicit).
-function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: any): { inputs: any[]; missing: string[] } {
+function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: any, opts?: any): { inputs: any[]; missing: string[] } {
   const bindings = ctx && ctx.bindings;
   const fixedValues = ctx && ctx.fixedValues;
   const inputs: any[] = [];
@@ -265,6 +291,26 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
     seen.add(name);
     inputs.push({ name, ns: 'self', source, shape: describeInputShape(source, name, ctx) });
   };
+
+  // 0. Explicit boundaries + free inputs (the viewer kernel/profile plot —
+  //    spec §04 functionof boundary inputs). The caller supplies VALUES for
+  //    named kernel inputs (fed via the ONE feedInputs contract,
+  //    source.kind:'explicit', replacing the viewer's substituteLocals bake)
+  //    and names a FREE input — the profile sweep axis — declared but left
+  //    UNFED so the worker varies it per grid point. Added FIRST so a
+  //    same-named body self-ref is already `seen` and not re-classified as
+  //    shared/missing.
+  const explicit = opts && opts.boundaries;
+  if (explicit) {
+    for (const nm in explicit) {
+      if (Object.prototype.hasOwnProperty.call(explicit, nm)) {
+        add(nm, { kind: 'explicit', value: explicit[nm] });
+      }
+    }
+  }
+  if (opts && Array.isArray(opts.freeInputs)) {
+    for (const nm of opts.freeInputs) add(nm, { kind: 'free' });
+  }
 
   // 1. Declared structural boundaries (independent of body self-refs).
   for (const sb of _structuralBoundaries(deriv)) add(sb.name, sb.source);
@@ -320,7 +366,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   if (!built) return null;
   const { body, boundarySet, mc } = built;
   let reduce = _reduce(deriv);
-  const { inputs, missing } = _enumerateInputs(body, deriv, boundarySet, ctx);
+  const { inputs, missing } = _enumerateInputs(body, deriv, boundarySet, ctx, opts);
 
   // Marginalised stochastic ancestor (H8 — the kchain/lawof unification). A
   // standalone measure whose body references a STOCHASTIC binding that is not
@@ -358,6 +404,12 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
 
   const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
   if (mc) node.mc = true;          // body carries an mcmarginal recipe → MC opts
+  // Explicit-boundary lowering (viewer kernel/profile plot): the boundary
+  // VALUES are supplied by the caller and must be FED (matClm's feed path),
+  // even when reduce is null — unlike a jointchain RETAIN, whose prior is
+  // inlined into the body and needs no external feed. The flag forces the feed
+  // path so the body's `%local`/`self` boundary refs resolve to the fed values.
+  if (opts && (opts.boundaries || opts.freeInputs)) node.fed = true;
 
   // N-ary kchain marginal (engine-concepts §6 chain-associativity): the body is
   // the FINAL kernel only, with its hole rewired to a cat over the retained
@@ -412,6 +464,39 @@ function _marginalHistoryBody(deriv: any, ctx: any): any {
 //   shared   — getMeasure(ref) → measureToRefValue (the explicit getMeasure path).
 //   fixed    — fixedValues.get(ref) → fixedEnv (pushed via setEnv merge by the
 //              caller / matScore).
+// An EXPLICIT boundary value (a viewer preset / selected kernel input) → the
+// refArray entry the body's `%local`/`self` ref resolves to. Atom-independent
+// (one value for every atom): a record becomes the per-atom-record array
+// get_field consumes (matching measureToPerAtomRecords — N identical refs, the
+// preset is constant across atoms); a scalar/vector becomes a shape-tagged
+// Value (rank-0 broadcasts; rank-1 is an atom-indep vector).
+function _explicitToRefValue(value: any, shape: any, ctx: any): any {
+  const N = (ctx && ctx.sampleCount) || 1;
+  // A record param → the per-atom-record array get_field consumes (atom-
+  // independent: the same preset record for every atom).
+  if (shape && shape.kind === 'record') {
+    return new Array(N).fill(value);
+  }
+  // Scalar / vector → BROADCAST the atom-independent constant to a per-atom
+  // batched column ([N] or [N, k]). A refArray entry consumed as a distribution
+  // parameter must be the per-atom shape measureToRefValue produces (a rank-0
+  // Value is the FIXED-value/session-env contract, not the refArray one — the
+  // worker's param path would read it as NaN).
+  const v = valueLib.asValue(value);
+  if (!v.shape || v.shape.length === 0) {
+    return valueLib.batchedScalar(new Float64Array(N).fill(v.data[0]));
+  }
+  if (v.shape.length === 1) {
+    const k = v.shape[0];
+    const data = new Float64Array(N * k);
+    for (let i = 0; i < N; i++) data.set(v.data, i * k);
+    const out: any = { shape: [N, k], data };
+    if (v.outerRank != null) out.outerRank = v.outerRank;
+    return out;
+  }
+  return v;                              // higher-rank constant: pass through
+}
+
 function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: any }> {
   const refArrays: Record<string, any> = {};
   const fixedEnv: Record<string, any> = {};
@@ -421,7 +506,14 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
   for (const inp of node.inputs || []) {
     const src = inp.source;
     if (!src) continue;
-    if (src.kind === 'fixed') {
+    if (src.kind === 'free') {
+      continue;                       // the profile sweep axis — fed by the worker, not here
+    } else if (src.kind === 'explicit') {
+      // A viewer preset / selected kernel input: an atom-independent VALUE,
+      // bound under the bare name (collectRefArrays merges _extraRefArrays by
+      // name, so the body's `%local`/`self` ref resolves to it).
+      refArrays[inp.name] = _explicitToRefValue(src.value, inp.shape, ctx);
+    } else if (src.kind === 'fixed') {
       const nm = src.ref != null ? src.ref : inp.name;
       if (ctx.fixedValues && ctx.fixedValues.has(nm)) fixedEnv[nm] = ctx.fixedValues.get(nm);
     } else if (src.kind === 'shared') {
