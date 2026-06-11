@@ -109,8 +109,10 @@ fetching for data (separate `dataResolver(path)` callback). Modules don't
 flatten — each compiles to its own `LoweredModule`; cross-module access
 (`mod.x`) lowers to `(ref mod x)`; the viewer navigates between module DAGs.
 Standard modules are engine-provided (a JS registry, not `.flatppl` text).
-Currently implemented: bundle-shape API plumbing only; cross-module resolution,
-`load_module` end-to-end, and the std-module registry wiring are TODO items.
+Currently implemented: bundle-shape API plumbing + cross-module resolution and
+dispatch for **standard** modules (registry + typeinfer `resolveStandardModuleRef`
++ sampler `_evaluateStandardModuleCall`). Still TODO: `load_module` end-to-end
+(`.flatppl` cross-module resolution + substitution + host pre-fetch).
 
 ## Bundle build gotcha — ESM/CJS mixing (load-bearing)
 
@@ -162,13 +164,13 @@ after the table.
 | `value.ts` (~700) + `value-ops.ts` (~1100) | The shape-tagged `Value` (engine-concepts §2.1): `shape`/`data`/`dtype`/`im`/`t` (Klein-4)/`struct`/`outerRank`. `transpose`/`adjoint`/`conjugate` toggle tag bits (no storage). `struct` bitmask (§2.2). `requireMatrix(v, op)` gates matrix-input ops (refuses nested-vector, spec §03); `promoteNestedToMatrix` is the sanctioned tag-stripper; `densify(v)` the one structured→dense fallback (**correctness never depends on a fast-path existing**). `value-ops`: shape-aware add/sub/neg/mul (+ batched `mulN`/`addN`), structured Cholesky/det/inv, complex (planar). |
 | `worker.ts` (~430) + `worker-entry.ts` (~90) | Stateless message handler over sampler/density; transport shim sniffs Web Worker vs Node. Messages: init/sample/density/evaluate/sampleN/evaluateN/logDensityN/profileN/dispose (transferable-aware). `sampleN` static path and per-i path both fold onto the single batched leaf math (`makeBulkSampler`): the per-i branch dispatches on `hasRandNFn` — the randNFn family (Normal/LogNormal/Uniform/Exp) takes `makeBulkSampler`'s `perI` mode (per-atom param columns, one batched draw, atom-major for repeat>1); non-randNFn dists + non-interval Uniform return `{unhandled:true}` and fall back to `makeParametricSampler` (per-draw factory built ONCE — naive rebuild is ~10× the sampling cost). *One endpoint, not one algorithm*; the variable-length truncate-rejection loops stay on the scalar samplers. |
 | `sampler.ts` (~2800) + splits | Single-point deterministic evaluator (`evaluateExpr`/`evaluateCall`), `ARITH_OPS`, worker entry points (`rand`/`makeSampler`/`makeParametricSampler`/`density`). **Hosts the measure walker** `walk` (was `traceeval.ts`; folded in §17.4 stage 4, so the sampler↔traceeval require cycle is gone) — the per-draw value-position sampling primitive for `rand(state, M)` / `builtin_sample`. Leaf base case → the **single batched leaf endpoint** `sampleLeafN` (scalar = batch-of-1, so `rand(state, <leaf>)` ≡ `rand(state, iid(<leaf>, 1))[0]`); composite (joint / record / iid-of-composite / weighted / lawof) recurses via `MEASURE_OP_WALKERS`. Sample-side only — scoring is `density.ts`. Also dispatches the value-domain `rand_succ(state)` op (the COMPOSITE-`rand` successor — split lane 1 via the shared `rng.randSplitLanes`; counter-reset fresh state; engine-concepts §11), inline like `rand`/`rngstate` (not ARITH_OPS). Split: `sampler-registry` (REGISTRY + custom Ctors + PRNG bridge), `sampler-complex` (ESM leaf), `sampler-linalg` (ESM leaf — nested-array + Value-native LU/Cholesky/etc.), `sampler-aggregate` (CJS — `AGGREGATE_PATTERNS` + broadcast-reduce default), `sampler-eval-batched` (CJS — `evaluateExprN` + `ARITH_OPS_N` + complex-batched). ESM=pure-leaf, CJS=needs require()-back-to-sampler cycle (lazy, non-memoised). |
-| `ops.ts` (~250) + `ops-declarations.ts` (~650) | Unified op-declaration registry + atom-batched dispatcher (engine-concepts §18). 20 ops across fixed-rank / rank-polymorphic / variadic / higher-order kinds; 3 batched fast-paths (cross/inv/lower_cholesky). **Shape-pattern variants** (`OpVariant` with `argPatterns` + `wrappingOp` + specificity scoring): 19 broadcasted primitives + 11 `mul` direct variants register as variants; `dispatch`/`dispatchVariant`/`dispatchTyped`(ArgInfo value+measure). |
+| `ops.ts` (~250) + `ops-declarations.ts` (~650) | Unified op-declaration registry + atom-batched dispatcher (engine-concepts §18). 20 ops across fixed-rank / rank-polymorphic / variadic / higher-order kinds; 12 batched fast-paths (incl. cross/inv/lower_cholesky/det/logabsdet/diagmat/row_gram/col_gram/linsolve). **Shape-pattern variants** (`OpVariant` with `argPatterns` + `wrappingOp` + specificity scoring): 19 broadcasted primitives + 11 `mul` direct variants register as variants; `dispatch`/`dispatchVariant`/`dispatchTyped`(ArgInfo value+measure). |
 | `dissolver.ts` (~750) | Broadcast/aggregate dissolution term-rewriter (engine-concepts §20; JS specifics below). `dissolveBindings` runs in `buildDerivations` after lift; rewrites `.ir` in place. Phases 1–6 + shape-fold + fusion (a)/(b) MVPs + `propagateAxisStack` (authoritative for the iid / kernel_broadcast / aggregate axes it records; consumed by `axis-stack.ts` → matIid repeat axis + mat-broadcast K). |
 | `empirical.ts` (~700) | Weighted empirical measure utilities (log-space, ESS, resample). Null-uniform-weight protocol (null = uniform, no alloc); `logSumExp` max-subtraction; `totalLogMass` = 0 for null. |
 | `histogram.ts` (~350) | Freedman-Diaconis / integer-atom binning, weighted histogram + quantile + plot range. |
 | `rng.ts` (~400) | Pure Philox-4x32-10 counter-PRNG (`(key,counter)→4-tuple`, no sequential state — reproducible, parallel, cross-impl parity). 32×32→64 via 16-bit decomposition (no BigInt on the hot path). |
 | `dataload.ts` (~400) | `load_data` parsers: JSON / CSV / WSV (pure, no I/O; host fetches bytes). Arrow IPC deferred. |
-| `standard-modules.ts` (~250) | Std-module registry skeleton (spec §09). Exact (name, compat) match; analyzer/orchestrator wiring pending. |
+| `standard-modules.ts` (~430) | Std-module registry (spec §09): `_registerBuiltinStandardModules` auto-registers polynomials / particle-physics / ext-linear-algebra at load; typeinfer (`resolveStandardModuleRef`) + sampler (`_evaluateStandardModuleCall`, incl. higher-order std-module callables) dispatch are wired. Exact (name, compat) match (semver / loose-compat pending). |
 | `engine-types.d.ts` | Cross-file type declarations (`Value`, `IRNode` union, `DerivationKind`, `EmpiricalMeasure`, `BindingInfo`, …). Re-exported as `@flatppl/engine/engine-types`. |
 
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value): `samples`
@@ -412,14 +414,14 @@ test`.
 
 Full list + priorities in `flatppl-dev/TODO-flatppl-js.md` (the checkable source
 of truth — no status duplication here). Shortlist: multi-file `load_module`
-end-to-end (bundle API landed; cross-module resolution + substitution +
-host pre-fetch pending); standard modules (registry skeleton landed; analyzer/
-orchestrator wiring + the named modules pending); `PoissonProcess` (needs a
+end-to-end (bundle API landed; `.flatppl` cross-module resolution + substitution +
+host pre-fetch pending); standard modules (registry + typeinfer/sampler dispatch
+wired; the named-module contents + semver matching pending); `PoissonProcess` (needs a
 ragged-vector-per-atom measure shape class); multivariate transports beyond
 MvNormal (Dirichlet stick-breaking etc.); a few array-construction shape rules
 (`fill`/`zeros`/`ones`/`eye`/`cartpow`/`cartprod`) + new stdlib fns still
-`deferred()`; `viewer/src/viewer.js` (~5700 lines) is the next decomposition
-target.
+`deferred()`; `packages/viewer/src/main.ts` (~69 KB) is the next decomposition
+target (the monolithic `viewer.js` is now ~24 split modules).
 
 ## Broadcast / aggregate dissolution (JS-engine specifics)
 

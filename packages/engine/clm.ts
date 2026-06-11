@@ -38,11 +38,10 @@
 // {i.name for i in inputs} (callable refs excluded — they resolve by name,
 // not by feeding), descending into .bijection (ir-walk prereq D / H4).
 //
-// PHASE 1 (this file's first landing): additive, ASSERT-ONLY. No consumer
-// reads clm yet; lowerMeasure is exercised only by tests. The ⊆ check LOGS
-// (it does not throw — the throw is the main-thread Phase-6 flip). The
-// design's "feeding" half (feedInputs) and the consumers (matScore, the
-// sampler/density clm branches) land in Phases 2–4.
+// Phases 2–4 LANDED: feedInputs + the consumers (matScore, the sampler/density
+// clm branches) are live — clm is the production jointchain/kchain path, not
+// test-only. The ⊆ check still LOGS, it does not throw (the throw is the
+// main-thread Phase-6 flip, gated on Phase 5b — see flatppl-dev/TODO-flatppl-js.md).
 // ════════════════════════════════════════════════════════════════════════
 
 const orchestrator = require('./orchestrator.ts');
