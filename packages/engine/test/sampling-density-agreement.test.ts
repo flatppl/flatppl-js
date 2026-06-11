@@ -96,10 +96,18 @@ pp = lawof(obs)`, 'pp', { N: 60000, tol: 0.35 });
     JSON.stringify(r.probes || r.reason));
 });
 
-test('[WILL-FLIP gen] standalone logdensityof(lawof(generative composite)) is unimplemented', async () => {
+test('[GREEN gen] standalone logdensityof(lawof(generative composite)) marginalises — density ≡ histogram', async () => {
   // Single-event transport: z = f(x, uniform) at fixed pars. The MC-marginal
-  // density works through the profile/bayesupdate path but NOT as a bare
-  // logdensityof(lawof(z), x) — a density gap the CLM reduce={marginal} closes.
+  // density used to be a GAP as a bare logdensityof(lawof(z), x) (crash).
+  // FIXED (CLM Phase 4): buildMcMarginalForm gained a non-broadcast branch
+  // (_buildFromValueExpr) — it inlines z's value closure, finds the draws, and
+  // picks the bijective retained innovation (the Uniform, invertExpr succeeds)
+  // vs the marginalised latent (the Normal x), emitting the bare `mcmarginal`
+  // node density.walkMcMarginal scores (batched in-worker MC over x — the SAME
+  // estimator the broadcast/iid generative composites use; that batched path is
+  // untouched). Converges to the sampled marginal as M grows (maxErr 0.51 → 0.12
+  // → 0.11 at M=200/1000/4000), so this is a true agreement at M=1000, not a
+  // loosened tolerance. Now a regression guard.
   const r = await agreement(`
 sigma = 0.2
 mu = 1.1
@@ -109,10 +117,10 @@ x ~ Normal(mu, sigma)
 delta = (2.0 * draw(Uniform(interval(0, 1))) + 1.0) * a
 y = (x + delta)^3 * exp(x - b)
 z = y / 2.0
-m = lawof(z)`, 'm', { N: 30000, tol: 0.4 });
-  assert.ok(!r.ok && r.crashed === 'density',
-    `generative-composite standalone density is expected to be an unimplemented GAP (density crash) until CLM; ` +
-    `got ${r.ok ? 'GREEN — FLIP IT' : (r.crashed || 'RED') + ': ' + (r.reason || r.maxErr)}`);
+m = lawof(z)`, 'm', { N: 40000, tol: 0.4, mc: 1000 });
+  assert.ok(r.ok, `generative-standalone regression — expected MC-marginal agreement, got ` +
+    `${r.crashed ? 'CRASH:' + r.reason : 'maxErr=' + (r.maxErr || 0).toFixed(2)}: ` +
+    JSON.stringify(r.probes || r.reason));
 });
 
 test('[GREEN H7] joint(m, m) is the INDEPENDENT product (Corr≈0)', async () => {

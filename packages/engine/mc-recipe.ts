@@ -111,6 +111,38 @@ function _uniformInterval(mIR: any, bindings: any): number[] | null {
   return [lo, hi];
 }
 
+// Follow a draw binding `name = draw(ref M)` to M's measure IR, else null.
+function _drawMeasureIR(name: string, bindings: any): any {
+  const b = bindings.has(name) ? bindings.get(name) : null;
+  if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'draw') return null;
+  const arg = b.ir.args && b.ir.args[0];
+  if (arg && arg.kind === 'ref' && arg.ns === 'self' && bindings.has(arg.name)) {
+    const mb = bindings.get(arg.name);
+    return (mb && mb.ir) ? mb.ir : arg;
+  }
+  return arg || null;
+}
+
+// Collect the draw-binding names reachable from an expression's `self`-refs
+// (stopping AT a draw binding — its own measure is the leaf). Bounded by a
+// visited set; spec §04 modules are DAGs.
+function _collectDrawAncestors(ir: any, bindings: any, draws: Set<string>, seen: Set<string>): void {
+  if (!ir || typeof ir !== 'object') return;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    const nm = ir.name;
+    if (seen.has(nm)) return;
+    seen.add(nm);
+    const b = bindings.has(nm) ? bindings.get(nm) : null;
+    if (b && b.ir && b.ir.kind === 'call' && b.ir.op === 'draw') { draws.add(nm); return; }
+    if (b && b.ir) _collectDrawAncestors(b.ir, bindings, draws, seen);
+    return;
+  }
+  if (ir.kind !== 'call') return;
+  if (Array.isArray(ir.args)) for (const a of ir.args) _collectDrawAncestors(a, bindings, draws, seen);
+  if (ir.kwargs) for (const k in ir.kwargs) _collectDrawAncestors(ir.kwargs[k], bindings, draws, seen);
+  if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectDrawAncestors(f && f.value, bindings, draws, seen);
+}
+
 // True if `ir` contains a `draw` op anywhere (a non-deterministic body).
 function _containsDraw(ir: any): boolean {
   if (!ir || typeof ir !== 'object') return false;
@@ -170,7 +202,67 @@ function buildMcMarginalForm(measureIR: any, bindings: any, expand: any): any {
     detMaps.push({ paramName: hir.params[0], body: hir.body });
     cur = _resolveMeasure(cur.args[1], bindings, expand);
   }
+  // No broadcast tree: the bare single-event form `m = lawof(z)` where z is a
+  // value transform of stochastic ancestors. Only attempt it when nothing was
+  // peeled (guard===0 — a measure with a half-peeled broadcast prefix is a
+  // malformed generative composite, not a bare transform) and `cur` is a value
+  // call (not a leaf measure/distribution — those have no draw ancestors and
+  // _buildFromValueExpr returns null anyway, but the guard keeps intent clear).
+  if (guard === 0 && cur && cur.kind === 'call') {
+    return _buildFromValueExpr(cur, bindings);
+  }
   return null;
+}
+
+// Bare single-event form: `m = lawof(z)` where z is a deterministic value
+// transform of stochastic ancestors — at least one internal draw (the
+// retained innovation, bijective in z) and exactly one MARGINALISED latent.
+// This is the un-broadcasted sibling of _buildFromGenerative: there is no iid
+// collection / broadcast axis (z is one scalar event), so the result is the
+// bare `mcmarginal` node (NOT iid-wrapped) — density.walkMcMarginal scores the
+// single event, marginalising the latent over its M in-worker MC samples
+// (sampleLeafN + batched evaluateExprN). The broadcast/iid generative
+// composites still take the batched per-event path above; this fallback only
+// fires when there is no broadcast tree, so it never bypasses that batching.
+//
+// Draw classification is by-construction, not heuristic: invertExpr succeeds
+// only for the draw z is a straight-line bijection of (it appears once on the
+// path) — that is the retained innovation; the rest are marginalised.
+function _buildFromValueExpr(exprIR: any, bindings: any): any {
+  const draws = new Set<string>();
+  _collectDrawAncestors(exprIR, bindings, draws, new Set<string>());
+  if (draws.size < 2) return null;               // need ≥1 retained + ≥1 marginal
+  // Inline the value closure down to its draw leaves (draws stay refs).
+  const recipe = _inline(exprIR, bindings, draws, new Set<string>());
+  const OUT = { kind: 'ref', ns: '%mc', name: OUT_NAME };
+  let retainedRef: string | null = null;
+  let retainedInterval: number[] | null = null;
+  let inv: any = null;
+  const marginals: string[] = [];
+  for (const dn of draws) {
+    if (!retainedRef) {
+      const r = bijReg.invertExpr({ outputExpr: recipe, freeRef: { name: dn }, outputValue: OUT });
+      const ivl = r ? _uniformInterval(_drawMeasureIR(dn, bindings), bindings) : null;
+      if (r && ivl) { retainedRef = dn; retainedInterval = ivl; inv = r; continue; }
+    }
+    marginals.push(dn);
+  }
+  if (!retainedRef || !inv || marginals.length !== 1) return null;   // v1 shape
+  const marginalRef = marginals[0];
+  const marginalDistIR = _drawMeasureIR(marginalRef, bindings);
+  if (!marginalDistIR) return null;
+  const ext = new Set<string>();
+  for (const r of shared.collectSelfRefs(inv.inverseIR)) ext.add(r);
+  for (const r of shared.collectSelfRefs(inv.ladjIR)) ext.add(r);
+  for (const r of shared.collectSelfRefs(marginalDistIR)) ext.add(r);
+  ext.delete(retainedRef);
+  ext.delete(marginalRef);
+  return {
+    kind: 'call', op: 'mcmarginal',
+    inverseIR: inv.inverseIR, ladjIR: inv.ladjIR, outName: OUT_NAME,
+    retainedRef, retainedInterval, marginalRef, marginalDistIR,
+    externalRefs: Array.from(ext),
+  };
 }
 
 function _buildFromGenerative(genBcastIR: any, gen: any, detMaps: Array<{ paramName: string; body: any }>, bindings: any, expand: any): any {

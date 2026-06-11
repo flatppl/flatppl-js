@@ -15,7 +15,7 @@ const { processSource, orchestrator, materialiser } = require(ENG + 'index.ts');
 const der = require(ENG + 'derivations.ts');
 const { createWorkerHandler } = require(ENG + 'worker.ts');
 
-function buildCtx(src: string, N: number, seed: number) {
+function buildCtx(src: string, N: number, seed: number, mc?: number) {
   const built = orchestrator.buildDerivations(processSource(src).bindings);
   for (const [nm, b] of built.bindings) {
     if (!built.derivations[nm]) {
@@ -29,7 +29,7 @@ function buildCtx(src: string, N: number, seed: number) {
   const ctx: any = {
     derivations: built.derivations, bindings: built.bindings,
     fixedValues: built.fixedValues || new Map(), sampleCount: N, rootKey: seed,
-    rootSeed: seed, marginalizationCount: 200,
+    rootSeed: seed, marginalizationCount: mc || 200,
     getMeasure: (n: string) => {
       if (cache.has(n)) return cache.get(n);
       const p = materialiser.materialiseMeasure(n, ctx); cache.set(n, p); return p;
@@ -106,7 +106,7 @@ async function agreement(src: string, measureName: string, opts: any = {}) {
   const nbins = opts.nbins || 40;
   let sampleM: any;
   try {
-    const { ctx } = buildCtx(src, N, opts.seed || 1234);
+    const { ctx } = buildCtx(src, N, opts.seed || 1234, opts.mc);
     sampleM = await ctx.getMeasure(measureName);
   } catch (e: any) { return { ok: false, crashed: 'sample', reason: 'SAMPLE threw: ' + e.message }; }
 
@@ -118,7 +118,7 @@ async function agreement(src: string, measureName: string, opts: any = {}) {
   if (centres.length < 3) return { ok: false, crashed: 'sample', reason: 'sample too concentrated for a histogram' };
 
   let dCtx: any;
-  try { dCtx = buildCtx(src, N, (opts.seed || 1234) + 7).ctx; }
+  try { dCtx = buildCtx(src, N, (opts.seed || 1234) + 7, opts.mc).ctx; }
   catch (e: any) { return { ok: false, crashed: 'density', reason: 'density-ctx build threw: ' + e.message }; }
 
   let dRef: number;
