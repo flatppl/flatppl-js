@@ -35,7 +35,6 @@ const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
 const stdlibLn          = require('@stdlib/math-base-special-ln');
 const stdlibErfc        = require('@stdlib/math-base-special-erfc');
 const stdlibErfcinv     = require('@stdlib/math-base-special-erfcinv');
-const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
 
 // Distribution constructors (analytical PDF/CDF/quantile/mean/etc.)
 const Normal      = require('@stdlib/stats-base-dists-normal-ctor');
@@ -610,7 +609,10 @@ NegativeBinomialCtor.prototype.logpdf = function(this: any, k: any) { return thi
 function _logpmfNegativeBinomial(k: any, alpha: any, beta: any) {
   const ki = k | 0;
   if (ki < 0 || ki !== +k) return -Infinity;
-  return stdlibBinomcoefln(ki + alpha - 1, alpha - 1)
+  // Generalized binomial coefficient C(k+alpha-1, k) via gammaln. alpha is posreals
+  // (spec), so it may be non-integer; stdlibBinomcoefln returns NaN for non-integer
+  // args. gammaln agrees with binomcoefln on integer alpha.
+  return (stdlibGammaln(ki + alpha) - stdlibGammaln(alpha) - stdlibGammaln(ki + 1))
        + alpha * (Math.log(beta) - Math.log(beta + 1))
        - ki * Math.log(beta + 1);
 }
@@ -659,7 +661,10 @@ NegativeBinomial2Ctor.prototype.logpdf = function(this: any, k: any) { return th
 function _logpmfNegativeBinomial2(k: any, mu: any, psi: any) {
   const ki = k | 0;
   if (ki < 0 || ki !== +k) return -Infinity;
-  return stdlibBinomcoefln(ki + psi - 1, ki)
+  // Generalized binomial coefficient C(k+psi-1, k) via gammaln. psi is posreals
+  // (spec), so it may be non-integer; stdlibBinomcoefln returns NaN for non-integer
+  // args. gammaln agrees with binomcoefln on integer psi.
+  return (stdlibGammaln(ki + psi) - stdlibGammaln(ki + 1) - stdlibGammaln(psi))
        + ki * (Math.log(mu) - Math.log(mu + psi))
        + psi * (Math.log(psi) - Math.log(mu + psi));
 }
