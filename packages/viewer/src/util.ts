@@ -521,7 +521,14 @@ export function presetValuesText(values: unknown): string {
 export function defaultValueForLeafType(leafType: any) {
   if (!leafType) return 0;
   if (leafType.kind === 'scalar') {
-    if (leafType.prim === 'integer') return 0;
+    // Integer inputs default to 1, not 0: the dominant integer-input
+    // role is a COUNT (an iid size `n = elementof(posintegers)`, a
+    // trial count) where 0 is out-of-domain (posintegers) or a
+    // degenerate empty product — it silently broke the k_model_n
+    // kernel plot (`iid(…, 0)` declines the applied-kernel route and
+    // the fallback error is cryptic). 1 is valid for posintegers,
+    // nonnegintegers, and plain integers alike.
+    if (leafType.prim === 'integer') return 1;
     if (leafType.prim === 'boolean') return false;
     return 0;
   }
