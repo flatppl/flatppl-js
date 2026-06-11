@@ -382,3 +382,33 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
   return FlatPPLEngine.materialiser.materialiseMeasureIR(ir, matCtx);
 }
 
+/**
+ * Materialise a KERNEL applied to a concrete input point BY NAME — the
+ * concrete-application path (`model_dist = k_model(glob_pars)`). Used as the
+ * fallback when the substitute-IR `materialiseConcreteMeasure` can't handle a
+ * composite-generative kernel (k_model / k_model_n): `deriveAppliedKernel`
+ * synthesizes `<kernel>(<point>)` + re-derives, and we materialise the synthetic
+ * binding through the by-name generative derivation (getMeasure recursion over
+ * the AUGMENTED derivation state — NOT the session derivationsState).
+ */
+export function materialiseAppliedKernelByName(ctx: Ctx, applied: any, count: number, seed: number | null): Promise<any> {
+  const cache = new Map<string, any>();
+  const matCtx: any = {
+    derivations: applied.derivations,
+    bindings:    applied.bindings,
+    fixedValues: applied.fixedValues,
+    getMeasure:  function(n: any) {
+      if (cache.has(n)) return cache.get(n);
+      const m = FlatPPLEngine.materialiser.materialiseMeasure(n, matCtx);
+      cache.set(n, m);
+      return m;
+    },
+    sendWorker:  function(m: any) { return sendWorker(ctx, m); },
+    sampleCount: count,
+    rootSeed:    seed != null ? seed : ctx.rootSeed,
+    rootKey:     seed != null ? seed : ctx.rootSeed,
+    rejectionBudget: ctx.REJECTION_BUDGET,
+  };
+  return matCtx.getMeasure(applied.name);
+}
+

@@ -7,7 +7,7 @@
 
 import type { Ctx, FixedRecordPlan, KernelSamplePlan } from './types';
 import { nameSeed } from './orchestration.js';
-import { materialiseConcreteMeasure } from './plot-plan.js';
+import { materialiseConcreteMeasure, materialiseAppliedKernelByName } from './plot-plan.js';
 import { buildPresetControl } from './render-controls.js';
 
 import { getMeasure, tryGetMeasure } from './engine-facade.js';
@@ -182,7 +182,28 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
     // the per-atom semantics of the closed-measure getMeasure
     // path. Per spec §04, stochastic ancestors that aren't
     // boundary inputs participate in the kernel's randomness.
-    return materialiseConcreteMeasure(ctx, ir, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name));
+    return materialiseConcreteMeasure(ctx, ir, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name))
+      .catch(function(substErr: any) {
+        // Composite-generative kernels (k_model / k_model_n reifying
+        // `lawof(broadcast(post, broadcast(transport, iid(generator, n), [pars])))`)
+        // tangle in the substitute-IR reconstruction above — it flattens the
+        // binding graph and the generative composite can't materialise
+        // ("undefined length"). Fall back to the concrete-application-by-name
+        // path: synthesize `<kernel>(<env point>)` over the RAW bindings,
+        // re-derive, and materialise the synthetic binding through its by-name
+        // generative derivation — the same path `model_dist = k_model(glob_pars)`
+        // uses. Re-throw the ORIGINAL error if the fallback can't apply, so a
+        // genuine simple-kernel failure isn't masked by a fallback miss.
+        let applied: any;
+        try {
+          applied = FlatPPLEngine.orchestrator.deriveAppliedKernel(
+            ctx.currentBindings, plan.name, sig, env);
+        } catch (e) { return Promise.reject(substErr); }
+        if (!applied || !applied.derivations || !applied.derivations[applied.name]) {
+          return Promise.reject(substErr);
+        }
+        return materialiseAppliedKernelByName(ctx, applied, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name));
+      });
   }).then(function(measure) {
     if (ctx.currentPlotPlan !== planForCall) return;
     ctx.measureCache.set(cacheKey, measure);
