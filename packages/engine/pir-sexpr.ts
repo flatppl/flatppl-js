@@ -35,6 +35,9 @@
 //         params, body }              → (<op> [%meta]? args... %kwarg...
 //                                              %field... %assign...
 //                                              %params... body?)
+//   IR { kind: 'call', target:{ns,name},
+//         args, kwargs }              → (%call (%ref <ns> <name>) args... %kwarg...)
+//                                       (call to a user-defined callable)
 
 const pir = require('./pir.ts');
 
@@ -127,10 +130,16 @@ function _atomToSexpr(v: any) {
 }
 
 function _callToSexpr(e: any, ind: string): string {
-  // Determine if this is a user-defined-callable call. Lower.ts emits
-  // `op: '%call'` with first arg being the ref-head for user calls;
-  // we don't gate on that yet — we just print the op as the head.
-  const parts: string[] = [e.op];
+  // Head shape (spec §11): a built-in call uses a bare op symbol as the
+  // head; a user-defined-callable call (lower.ts emits `target:{ns,name}`
+  // and no `op`) uses `(%call (%ref <ns> <name>) …)`.
+  const parts: string[] = [];
+  if (e.target) {
+    parts.push('%call');
+    parts.push('(%ref ' + e.target.ns + ' ' + e.target.name + ')');
+  } else {
+    parts.push(e.op);
+  }
   // Positional args
   if (e.args) {
     for (const a of e.args) parts.push(_exprToSexpr(a, ind));
@@ -239,6 +248,7 @@ function fromSexpr(text: any) {
       if (head.value === '%assign')   return readAssignForm();
       if (head.value === '%params')   return readParamsForm();
       if (head.value === '%meta')     return readMetaForm();
+      if (head.value === '%call')     return readCallForm();
     }
     // Default: parse as call (head is op name).
     eat();
@@ -413,6 +423,36 @@ function fromSexpr(text: any) {
     const ph  = readForm();
     if (peek() && peek().type === ')') eat();
     return { __kind: 'meta', type: typ, phase: ph };
+  }
+
+  function readCallForm(): any {
+    // (%call <ref-head> [%meta]? <args/%kwarg…>) — a call to a user-defined
+    // callable (spec §11). The ref-head reconstructs the `target:{ns,name}`;
+    // the remaining parts are ordinary positional args / %kwarg entries (and
+    // an optional %meta, which may appear before or after the ref-head).
+    eat(); // %call
+    const callShape: any = { kind: 'call', args: [], kwargs: {} };
+    while (!eof() && peek().type !== ')') {
+      const part = readForm();
+      if (part == null) continue;
+      if (part.__kind === 'meta') {
+        callShape.meta = { type: part.type, phase: part.phase };
+        continue;
+      }
+      if (!callShape.target && part.kind === 'ref') {
+        callShape.target = { ns: part.ns, name: part.name };
+        continue;
+      }
+      _absorbCallPart(callShape, part);
+    }
+    if (eof()) {
+      diagnostics.push({ severity: 'error', message: 'pir-sexpr: unclosed %call' });
+    } else {
+      eat();  // ')'
+    }
+    if (Object.keys(callShape.kwargs).length === 0) delete callShape.kwargs;
+    if (callShape.args.length === 0) delete callShape.args;
+    return callShape;
   }
 
   function _absorbCallPart(call: any, part: any) {

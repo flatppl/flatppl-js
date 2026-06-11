@@ -155,3 +155,71 @@ m = Normal(mu = x, sigma = 1.0)
   const { diagnostics: d2 } = pirSexpr.fromSexpr(sexp2);
   assert.deepEqual(d2.filter((d: any) => d.severity === 'error'), []);
 });
+
+// ---------------------------------------------------------------------
+// User-defined-callable calls — spec §11 `(%call (%ref …) …)`
+//
+// lower.ts emits a user call as `{kind:'call', target:{ns,name}}` (no `op`).
+// The emitter must head it with `(%call (%ref <ns> <name>) …)`, not with the
+// (undefined) `op` — the old code printed a headless `( (%kwarg a 5))`, losing
+// the callee name entirely.
+// ---------------------------------------------------------------------
+
+test('toSexpr: user-defined-callable call → (%call (%ref self g) …)', () => {
+  const mod = buildModule(
+    `a = elementof(reals)\ng = functionof(2 * a + 1, a = a)\ny = g(a = 5.0)`);
+  const out = pirSexpr.toSexpr(mod);
+  assert.match(out, /\(%bind y \(%call \(%ref self g\) \(%kwarg a 5\)\)\)/);
+});
+
+test('fromSexpr: (%call (%ref …) …) reconstructs target + kwargs', () => {
+  const src = `
+(%module
+  (%bind y (%call (%ref self g) (%kwarg a 5))))
+`;
+  const { module, diagnostics } = pirSexpr.fromSexpr(src);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const y = module.bindings.get('y');
+  assert.equal(y.rhs.kind, 'call');
+  assert.equal(y.rhs.op, undefined, 'a user call must not carry a bare op head');
+  assert.deepEqual(y.rhs.target, { ns: 'self', name: 'g' });
+  assert.equal(y.rhs.kwargs.a.value, 5);
+});
+
+test('fromSexpr: the ref-head is the target; a following ref is an arg', () => {
+  // Disambiguation: the FIRST ref after %call is the callee head; any
+  // further ref is an ordinary positional argument.
+  const src = `
+(%module
+  (%bind z (%call (%ref self h) (%ref self b))))
+`;
+  const { module, diagnostics } = pirSexpr.fromSexpr(src);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const z = module.bindings.get('z');
+  assert.deepEqual(z.rhs.target, { ns: 'self', name: 'h' });
+  assert.equal(z.rhs.args.length, 1);
+  assert.equal(z.rhs.args[0].kind, 'ref');
+  assert.equal(z.rhs.args[0].name, 'b');
+});
+
+test('round-trip: user-call survives module → S-expr → module (kwarg + positional)', () => {
+  const src = `
+a = elementof(reals)
+g = functionof(2 * a + 1, a = a)
+b = 4.0
+y = g(a = 5.0)
+z = g(b)
+`;
+  const mod = buildModule(src);
+  const sexp = pirSexpr.toSexpr(mod);
+  const { module: mod2, diagnostics } = pirSexpr.fromSexpr(sexp);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  for (const name of ['y', 'z']) {
+    const r = mod2.bindings.get(name).rhs;
+    assert.equal(r.kind, 'call');
+    assert.deepEqual(r.target, { ns: 'self', name: 'g' },
+      `${name}: callee target lost on round-trip`);
+  }
+  assert.equal(mod2.bindings.get('y').rhs.kwargs.a.value, 5);  // kwarg preserved
+  assert.equal(mod2.bindings.get('z').rhs.args[0].name, 'b');  // positional ref preserved
+});
