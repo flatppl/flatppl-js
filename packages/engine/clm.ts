@@ -197,6 +197,12 @@ function _boundarySet(deriv: any, ctx: any): Set<string> {
     // inline down to the kernel's inputs (H5/H3) — but the inputs are fed
     // EXPLICITLY from the given θ (opts.boundaries), not from a prior.
     for (const k of deriv.paramKwargs) s.add(k);
+    // The kernel body's refs name the PARAMS (node names — `%local`
+    // placeholders or, spec-shaped §11, plain `self` refs), which differ
+    // from the kwarg names when the boundary renames (`functionof(e,
+    // p = a)`). Both are the fed cut — inlining must stop at either
+    // (feedInputs binds the columns under both via `localAlias`).
+    if (Array.isArray(deriv.params)) for (const p of deriv.params) s.add(p);
   } else if (deriv.kind === 'jointchain' && Array.isArray(deriv.steps)) {
     // Prior step variates: the base var (+ its record fields) and every
     // non-final kernel step's variate are integration variables the kernel
@@ -317,7 +323,14 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   }
 
   // 1. Declared structural boundaries (independent of body self-refs).
-  for (const sb of _structuralBoundaries(deriv)) add(sb.name, sb.source);
+  //    A source's `localAlias` (the param node name when it differs from
+  //    the kwarg name) is marked seen too: feedInputs binds the column
+  //    under BOTH names, so a body ref to the alias is covered by the
+  //    declared input — it must not re-classify as shared/missing.
+  for (const sb of _structuralBoundaries(deriv)) {
+    add(sb.name, sb.source);
+    if (sb.source && sb.source.localAlias) seen.add(sb.source.localAlias);
+  }
 
   // 2. Remaining body self-refs: classify fixed / shared (the explicit
   //    surviving getMeasure path) / boundary, mirroring prepareDensityRefs.

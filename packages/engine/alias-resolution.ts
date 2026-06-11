@@ -48,7 +48,7 @@
 // can't appear at top level, so the canonicalised RHS must have
 // `ns ∈ {'self', <module-alias>}`.
 
-const { mapIR } = require('./ir-walk.ts');
+const { mapIRScoped } = require('./ir-walk.ts');
 
 /**
  * Recognise the IR shape of an alias binding. Returns the RHS ref node
@@ -148,13 +148,23 @@ function resolveAliasesOnBindings(bindings: any, irField: string): any {
   //
   // Identity-preserving — bindings whose IR contains no alias-resolved
   // refs / targets are untouched (no copy allocated).
+  //
+  // SCOPE-AWARE: a `self` ref inside a reified callable's body whose
+  // name is an identifier-bound boundary param of that callable
+  // designates the callable's INPUT (spec §04 boundary substitution),
+  // not the module binding — rewriting it through an alias chain would
+  // desync the body from the node's `params` list (the application
+  // sites bind values under the param names). Shadow those names when
+  // descending a body, nesting-aware; everything else rewrites as
+  // before. (`call.target` rewriting needs no shadowing — boundary
+  // inputs are values per spec §04/typeinfer, never callables.)
   for (const [name, lb] of bindings) {
     if (aliases.has(name)) continue;  // alias bindings handled in pass 4
     if (!lb || lb[irField] == null) continue;
-    lb[irField] = mapIR(lb[irField], (n: any) => {
+    lb[irField] = mapIRScoped(lb[irField], (n: any, shadowed: Set<string>) => {
       if (!n || typeof n !== 'object') return n;
       if (n.kind === 'ref' && n.ns === 'self'
-          && canonicalByName.has(n.name)) {
+          && !shadowed.has(n.name) && canonicalByName.has(n.name)) {
         const canon = canonicalByName.get(n.name);
         // Preserve source-location for downstream diagnostics.
         return { kind: 'ref', ns: canon.ns, name: canon.name, loc: n.loc };

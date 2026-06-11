@@ -649,7 +649,10 @@ function _substituteAllowingAxes(
     return expr;
   }
   if (expr.kind === 'ref') {
-    if (expr.ns === '%local') {
+    // A param ref is `%local` (placeholder form) OR a `self` ref naming
+    // an identifier-bound boundary param (spec-shaped bodies keep those
+    // in the self namespace — §11; the param list disambiguates).
+    if (expr.ns === '%local' || (expr.ns === 'self' && paramIndex.has(expr.name))) {
       const idx = paramIndex.get(expr.name);
       if (idx === undefined) return null;
       return bcArgs[idx];
@@ -1081,7 +1084,12 @@ function _substituteBody(
     case 'const':
       return expr;
     case 'ref':
-      if (expr.ns === '%local') {
+      // Param refs come in two namespaces: `%local` (placeholder form)
+      // and `self` naming an identifier-bound boundary param (spec-shaped
+      // bodies, §11). Check the param index BEFORE the closure-capture
+      // gate — a self ref naming a param is the bound input, not a
+      // held-constant capture.
+      if (expr.ns === '%local' || (expr.ns === 'self' && paramIndex.has(expr.name))) {
         const idx = paramIndex.get(expr.name);
         if (idx === undefined) return null;  // unknown placeholder
         return bcArgs[idx];

@@ -266,12 +266,19 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     // The body may also reference values BEYOND f's parameters — e.g.
     // `pushfwd(fn(_ + mu), base)` where `mu` is a per-atom draw or a
     // fixed binding. Collect those external self-refs (fixed refs are
-    // auto-pushed to the worker session env by collectRefArrays); the
-    // params are bound LAST so they always win over a like-named
-    // module binding. Under an iid composite fallback ctx the external
-    // refs are the tiled per-atom values (the repeat axis), so f's
-    // body sees atom i's shared `mu` across the k inner draws.
-    return collectRefArrays(body, ctx).then((bodyRefs: any) => ctx.sendWorker({
+    // auto-pushed to the worker session env by collectRefArrays). The
+    // params ride the `_extraRefArrays` overlay so the collector never
+    // resolves them via getMeasure — a body param ref names the BOUND
+    // input (spec §04 boundary substitution), not the like-named module
+    // binding; resolving it would re-materialise the module draw (the
+    // audit-§3 conflation) or throw for a free `elementof` boundary.
+    // Under an iid composite fallback ctx the external refs are the
+    // tiled per-atom values (the repeat axis), so f's body sees atom
+    // i's shared `mu` across the k inner draws.
+    const fedCtx = Object.assign({}, ctx, {
+      _extraRefArrays: Object.assign({}, ctx._extraRefArrays, paramBind),
+    });
+    return collectRefArrays(body, fedCtx).then((bodyRefs: any) => ctx.sendWorker({
       type: 'evaluateN',
       ir: body,
       count: N,

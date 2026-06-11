@@ -1930,12 +1930,15 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
     const bodyArgs: any[] = body.args || [];
     if (bodyArgs.length !== head.params.length) return null;
     if (!ops.hasVariantFor(body.op, 'broadcast')) return null;
-    // Body args must each be a `%local` ref to one of head.params;
-    // record the param index for each body position.
+    // Body args must each be a ref to one of head.params — `%local`
+    // for placeholder formals, `self` for identifier-bound boundary
+    // params (spec-shaped bodies §11); the indexOf check disambiguates
+    // a self ref naming a param from a closure capture.
     const order = new Array(bodyArgs.length);
     for (let i = 0; i < bodyArgs.length; i++) {
       const ba = bodyArgs[i];
-      if (!ba || ba.kind !== 'ref' || ba.ns !== '%local') return null;
+      if (!ba || ba.kind !== 'ref'
+          || (ba.ns !== '%local' && ba.ns !== 'self')) return null;
       const idx = head.params.indexOf(ba.name);
       if (idx < 0) return null;
       order[i] = idx;

@@ -153,11 +153,14 @@ function _containsDraw(ir: any): boolean {
   return false;
 }
 
-// Substitute a `%local` parameter ref (a deterministic functionof formal)
-// with `arg` throughout `body`.
+// Substitute a parameter ref (a deterministic functionof formal) with
+// `arg` throughout `body`. The formal is `%local` (placeholder form) or
+// a `self` ref of the param's name (identifier-bound boundary input,
+// spec-shaped bodies §11).
 function _substLocal(body: any, paramName: string, arg: any): any {
   if (!body || typeof body !== 'object') return body;
-  if (body.kind === 'ref' && body.ns === '%local' && body.name === paramName) return arg;
+  if (body.kind === 'ref' && body.name === paramName
+      && (body.ns === '%local' || body.ns === 'self')) return arg;
   if (body.kind !== 'call') return body;
   const out: any = { kind: 'call' };
   if (body.op) out.op = body.op;

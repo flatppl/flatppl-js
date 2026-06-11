@@ -821,8 +821,11 @@ function _classifyWeightedByFunction(
   // references with the original — the binding's body keeps its
   // IR intact for other consumers (signatures, dag).
   const { mapIR } = require('./ir-walk.ts');
+  // The formal's ref is `%local` (placeholder form) or a `self` ref of
+  // the param's name (identifier-bound boundary, spec-shaped bodies §11).
   const synth = mapIR(fnIR.body, (n: any) => {
-    if (n && n.kind === 'ref' && n.ns === '%local' && n.name === paramName) {
+    if (n && n.kind === 'ref' && n.name === paramName
+        && (n.ns === '%local' || n.ns === 'self')) {
       return { kind: 'ref', ns: 'self', name: baseName, loc: n.loc };
     }
     return n;
@@ -1547,7 +1550,11 @@ function _detectStructuralProjection(
   const params: any[] = Array.isArray(fb.ir.params) ? fb.ir.params : [];
   if (params.length !== 1) return null;
   const holeRef = body.args[0];
-  if (!holeRef || holeRef.kind !== 'ref' || holeRef.ns !== '%local'
+  // The lone param ref: `%local` (fn-hole / placeholder form) or a
+  // `self` ref of the param's name (identifier-bound boundary form,
+  // spec-shaped bodies §11 — `functionof(get(x, [...]), x = x)`).
+  if (!holeRef || holeRef.kind !== 'ref'
+      || (holeRef.ns !== '%local' && holeRef.ns !== 'self')
       || holeRef.name !== params[0]) return null;
   const names = _selectorNames(body.args[1]);
   if (!names) return null;

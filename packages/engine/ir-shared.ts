@@ -13,7 +13,7 @@ import type { IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
-const { walkIR } = require('./ir-walk.ts');
+const { walkIR, walkIRScoped } = require('./ir-walk.ts');
 
 /**
  * Resolve a measure-typed AST argument (the measure operand of
@@ -303,9 +303,20 @@ function valueToPlain(v: any): any {
  */
 function collectSelfRefs(ir: IRNode | null | undefined) {
   const seen = new Set<string>();
-  walkIR(ir, (n: any) => {
+  // Scope-aware (spec §11 / engine-concepts §8): a `self` ref inside a
+  // reified callable's body whose name is an IDENTIFIER-bound boundary
+  // param of that callable designates the callable's INPUT — fed at
+  // application, decoupled from the like-named module node (spec §04) —
+  // NOT an outer-scope dependency. Collecting it would re-materialise
+  // the module binding (the audit-§3 boundary-conflation class).
+  // Placeholder params are `%local` and invisible to this collector
+  // anyway; nesting-aware shadowing comes from walkIRScoped.
+  walkIRScoped(ir, (n: any, shadowed: Set<string>) => {
     if (!n) return;
-    if (n.kind === 'ref' && n.ns === 'self') { seen.add(n.name); return; }
+    if (n.kind === 'ref' && n.ns === 'self') {
+      if (!shadowed.has(n.name)) seen.add(n.name);
+      return;
+    }
     // The `mcmarginal` density node (density.walkMcMarginal) carries a
     // self-contained recipe in custom fields (inverseIR / ladjIR /
     // marginalDistIR) that `forEachIRChild` does NOT descend — the worker

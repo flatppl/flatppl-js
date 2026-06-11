@@ -187,7 +187,15 @@ function walkIR(node: any, visit: (n: any) => void): void {
  */
 function mapIR<T>(node: any, transform: (n: any) => any): any {
   if (!node || typeof node !== 'object') return transform(node);
+  return transform(_mapChildren(node, (c: any) => mapIR(c, transform)));
+}
 
+// Shared child-rebuild for mapIR / mapIRScoped: returns a shallow copy
+// of `node` with each IR child replaced by `mapChild(child, isBody)`,
+// or `node` itself when nothing changed (identity preservation).
+// `isBody` flags the `body` sub-position so scope-aware callers can
+// extend the shadow set for it (see mapIRScoped).
+function _mapChildren(node: any, mapChild: (c: any, isBody: boolean) => any): any {
   let copy: any = null;
   function ensureCopy(): any {
     if (copy) return copy;
@@ -200,7 +208,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     let changed = false;
     const a2 = new Array(node.args.length);
     for (let i = 0; i < node.args.length; i++) {
-      a2[i] = mapIR(node.args[i], transform);
+      a2[i] = mapChild(node.args[i], false);
       if (a2[i] !== node.args[i]) changed = true;
     }
     if (changed) ensureCopy().args = a2;
@@ -209,7 +217,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     let changed = false;
     const k2: any = {};
     for (const k in node.kwargs) {
-      k2[k] = mapIR(node.kwargs[k], transform);
+      k2[k] = mapChild(node.kwargs[k], false);
       if (k2[k] !== node.kwargs[k]) changed = true;
     }
     if (changed) ensureCopy().kwargs = k2;
@@ -220,7 +228,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     for (let i = 0; i < node.fields.length; i++) {
       const f = node.fields[i];
       if (f && f.value) {
-        const nv = mapIR(f.value, transform);
+        const nv = mapChild(f.value, false);
         if (nv !== f.value) {
           f2[i] = { ...f, value: nv };
           changed = true;
@@ -239,7 +247,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     for (let i = 0; i < node.assigns.length; i++) {
       const a = node.assigns[i];
       if (a && a.value) {
-        const nv = mapIR(a.value, transform);
+        const nv = mapChild(a.value, false);
         if (nv !== a.value) {
           a2[i] = { ...a, value: nv };
           changed = true;
@@ -253,7 +261,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     if (changed) ensureCopy().assigns = a2;
   }
   if (node.body) {
-    const b2 = mapIR(node.body, transform);
+    const b2 = mapChild(node.body, true);
     if (b2 !== node.body) ensureCopy().body = b2;
   }
   if (node.branches) {
@@ -263,7 +271,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
       const b = node.branches[i];
       if (b && b.ir) {
         // Classifier wrapper {ir: <IR>}: rewrite b.ir, preserve wrapper.
-        const ni = mapIR(b.ir, transform);
+        const ni = mapChild(b.ir, false);
         if (ni !== b.ir) {
           br2[i] = { ...b, ir: ni };
           changed = true;
@@ -272,7 +280,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
         }
       } else if (b && b.kind) {
         // Post-expand bare IR: recurse directly.
-        const ni = mapIR(b, transform);
+        const ni = mapChild(b, false);
         if (ni !== b) changed = true;
         br2[i] = ni;
       } else {
@@ -282,7 +290,7 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     if (changed) ensureCopy().branches = br2;
   }
   if (node.selector) {
-    const s2 = mapIR(node.selector, transform);
+    const s2 = mapChild(node.selector, false);
     if (s2 !== node.selector) ensureCopy().selector = s2;
   }
   if (node.logweights) {
@@ -290,17 +298,115 @@ function mapIR<T>(node: any, transform: (n: any) => any): any {
     const lw2 = new Array(node.logweights.length);
     for (let i = 0; i < node.logweights.length; i++) {
       const w = node.logweights[i];
-      lw2[i] = w ? mapIR(w, transform) : w;
+      lw2[i] = w ? mapChild(w, false) : w;
       if (lw2[i] !== w) changed = true;
     }
     if (changed) ensureCopy().logweights = lw2;
   }
 
-  return transform(copy || node);
+  return copy || node;
+}
+
+/**
+ * Scope-aware functional rebuild: like `mapIR`, but tracks the active
+ * identifier-bound boundary params (see `identifierBoundParams`) and
+ * passes the shadow set to `transform(n, shadowed)`. Descending into a
+ * reified callable's `body` extends the set with that node's
+ * identifier-bound params (nesting-aware). The scoped sibling of
+ * `walkIRScoped`, for REWRITING passes that must not touch body refs
+ * designating boundary inputs (e.g. alias resolution — rewriting one
+ * through an alias chain would desync the body from `params`).
+ */
+function mapIRScoped(
+  node: any, transform: (n: any, shadowed: Set<string>) => any,
+  shadowed?: Set<string>,
+): any {
+  const active = shadowed || new Set<string>();
+  if (!node || typeof node !== 'object') return transform(node, active);
+  const bound = identifierBoundParams(node);
+  let inner = active;
+  if (bound && node.body) {
+    inner = new Set(active);
+    for (const p of bound) inner.add(p);
+  }
+  const rebuilt = _mapChildren(node, (c: any, isBody: boolean) =>
+    mapIRScoped(c, transform, isBody ? inner : active));
+  return transform(rebuilt, active);
+}
+
+/**
+ * The IDENTIFIER-bound boundary-input names of a reified callable node
+ * (spec §11 / engine-concepts §8): for `functionof(e, p = a)` the cut
+ * node `a`; for the placeholder form (`x = _x_`) nothing — placeholders
+ * live in `%local` and never collide with module names. Body refs to
+ * these names designate the callable's INPUTS (decoupled from the
+ * like-named module nodes per spec §04 boundary substitution), so
+ * scope-aware walkers shadow them when descending `body`.
+ *
+ * Reads `paramSources` (kind 'binding' vs 'placeholder'); a node
+ * without it (hand-built synthetic functionofs are placeholder-only)
+ * contributes nothing. Returns null when there is nothing to shadow —
+ * callers can skip allocating an extended shadow set.
+ */
+function identifierBoundParams(node: any): string[] | null {
+  if (!node || node.kind !== 'call'
+      || (node.op !== 'functionof' && node.op !== 'kernelof')
+      || !Array.isArray(node.params) || !Array.isArray(node.paramSources)) {
+    return null;
+  }
+  let out: string[] | null = null;
+  for (let i = 0; i < node.paramSources.length; i++) {
+    const s = node.paramSources[i];
+    if (s && s.kind === 'binding' && node.params[i] != null) {
+      (out || (out = [])).push(node.params[i]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Scope-aware post-order walk: like `walkIR`, but tracks the active
+ * identifier-bound boundary params (see `identifierBoundParams`) and
+ * passes the shadow set to `visit(n, shadowed)`. Descending into a
+ * reified callable's `body` extends the set with that node's
+ * identifier-bound params (nesting-aware — an inner reification that
+ * re-declares an outer name shadows it for its own body).
+ *
+ * Use this instead of `walkIR` whenever the visitor must distinguish a
+ * body ref that designates a BOUNDARY INPUT (fed at application; not an
+ * outer-scope dependency) from a genuine outer-scope ref — the
+ * spec-shaped IR keeps both in the `self` namespace (spec §11; only
+ * placeholders are `%local`), so the distinction is scoping, not
+ * namespace.
+ */
+function walkIRScoped(
+  node: any, visit: (n: any, shadowed: Set<string>) => void,
+  shadowed?: Set<string>,
+): void {
+  const active = shadowed || new Set<string>();
+  if (!node || typeof node !== 'object') return;
+  const bound = identifierBoundParams(node);
+  if (bound && node.body) {
+    // Children other than `body` (a reified node carries none today,
+    // but stay future-proof) walk under the OUTER scope; `body` under
+    // the extended scope.
+    const inner = new Set(active);
+    for (const p of bound) inner.add(p);
+    forEachIRChild(node, (child) => {
+      if (child === node.body) walkIRScoped(child, visit, inner);
+      else walkIRScoped(child, visit, active);
+    });
+  } else {
+    forEachIRChild(node, (child) => walkIRScoped(child, visit, active));
+  }
+  visit(node, active);
 }
 
 module.exports = {
   forEachIRChild,
   walkIR,
+  walkIRScoped,
+  identifierBoundParams,
   mapIR,
+  mapIRScoped,
 };
