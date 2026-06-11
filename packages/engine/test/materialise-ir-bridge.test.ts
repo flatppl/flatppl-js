@@ -151,3 +151,39 @@ test('Stage 4: inline select IR materialises via matSelect (one select sampler)'
   assert.ok(nearHi > 0.15 * N && nearHi < 0.35 * N,
     `~25% near +5 (both modes present); got ${nearHi / N}`);
 });
+
+test('Stage 5: pushfwd IR (lowered MvNormal) materialises via matPushfwd through the bridge', async () => {
+  // A fixed-D MvNormal lowers (lift, §22) to pushfwd(affine-bijection,
+  // iid(Normal, D)). By-name it samples via matPushfwd's bijection-registry
+  // affine fast-path. Through materialiseMeasureIR (the IR-direct path: viewer
+  // concrete measure / a CLM kernel body / the collapse), expandMeasure('X')
+  // yields a `pushfwd` node — fn = self-ref to the synthetic bijection binding
+  // (matPushfwd reads its registryName='affine' + paramIRs from ctx.bindings),
+  // base = the expanded iid(Normal, 2). Before the bridge's pushfwd arm this
+  // dead-ended at the leaf fallback (the worker has no `pushfwd` kernel); now it
+  // routes to matPushfwd. Assert a valid MvNormal sample: [N,2], mean ≈ [1,2],
+  // and the off-diagonal covariance 0.5 reproduced (the affine L·z + b).
+  const der = require('../derivations.ts');
+  const mat = require('../materialiser.ts');
+  const src = 'X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))';
+  const { built } = buildCtx(src, 1, 7);
+  const ir = der.expandMeasure('X',
+    { derivations: built.derivations, bindings: built.bindings });
+  assert.ok(ir && ir.op === 'pushfwd',
+    `expandMeasure('X') → pushfwd (§22 lowering); got ${ir && (ir.op || ir.kind)}`);
+  const N = 5000;
+  const { ctx } = buildCtx(src, N, 7);
+  const m = await mat.materialiseMeasureIR(ir, ctx);
+  assert.ok(m.value && Array.isArray(m.value.shape) && m.value.shape.length === 2
+    && m.value.shape[1] === 2, 'MvNormal pushfwd → [N,2] vector-atom measure');
+  const dd = m.value.data;
+  let m0 = 0, m1 = 0;
+  for (let i = 0; i < N; i++) { m0 += dd[i * 2]; m1 += dd[i * 2 + 1]; }
+  m0 /= N; m1 /= N;
+  assert.ok(Math.abs(m0 - 1.0) < 0.1, `MvNormal mean[0] ≈ 1; got ${m0}`);
+  assert.ok(Math.abs(m1 - 2.0) < 0.1, `MvNormal mean[1] ≈ 2; got ${m1}`);
+  let c = 0;
+  for (let i = 0; i < N; i++) c += (dd[i * 2] - m0) * (dd[i * 2 + 1] - m1);
+  c /= N;
+  assert.ok(Math.abs(c - 0.5) < 0.2, `cov(x0,x1) ≈ 0.5; got ${c}`);
+});

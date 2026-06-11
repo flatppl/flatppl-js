@@ -1549,6 +1549,26 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     else if (allConst) dSel.synthWeights = synthWeights;
     return dSel;
   }
+  // pushfwd(f, M) — variable transformation / projection (spec §06; §22's
+  // pushfwd(affine, iid) for multivariate dists). expandMeasure always emits
+  // the fn as a self-ref to the real fn/bijection binding (matPushfwd reads its
+  // registry metadata / callable body from ctx.bindings) and the base inline.
+  // So pass the fn ref through as fnRef; register an inline base (a self-ref
+  // base is used directly). An inline (non-ref) fn would need synthetic
+  // bijection-binding construction — deferred: it falls through to the leaf
+  // default below (a loud diagnostic, never a silently-wrong transform). A
+  // bare-builtin fn (`pushfwd(exp, M)`) is not a binding, so it also falls
+  // through — matching the by-name path, which doesn't classify it either.
+  if (op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const fIR = ir.args[0];
+    const mIR = ir.args[1];
+    if (fIR && fIR.kind === 'ref' && fIR.ns === 'self'
+        && childCtx.bindings && childCtx.bindings.has(fIR.name)) {
+      const from = (mIR && mIR.kind === 'ref' && mIR.ns === 'self')
+        ? mIR.name : register(mIR, 'pushfwd:base');
+      return { kind: 'pushfwd', from, fnRef: fIR.name };
+    }
+  }
   // Default: treat as a leaf sample (the prior leaf-fallback behaviour — the
   // worker's sampleN surfaces a clear diagnostic if the op isn't a kernel).
   return { kind: 'sample', distIR: ir };
@@ -1759,6 +1779,22 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // normalize(M) → canonical matNormalize via the bridge. [Smell A, Stage 3]
   if (ir.op === 'normalize' && Array.isArray(ir.args) && ir.args.length === 1) {
     return _bridgeToHandler(ir, ctx);
+  }
+  // pushfwd(f, M) → canonical matPushfwd via the bridge — variable
+  // transformation / projection (spec §06), and the §22 multivariate path
+  // (`MvNormal` etc. lower to `pushfwd(affine, iid(Normal, D))`; matPushfwd's
+  // bijection-registry affine fast-path samples the vector-atom base). The
+  // bridge passes the fn self-ref through as fnRef and registers an inline
+  // base. Before this, an inline pushfwd dead-ended at the leaf fallback (the
+  // worker has no `pushfwd` kernel). An unresolvable fn (bare builtin / inline)
+  // falls through to the leaf fallback's loud diagnostic. [Smell A]
+  if (ir.op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const fIR = ir.args[0];
+    if (fIR && fIR.kind === 'ref' && fIR.ns === 'self'
+        && ctx.bindings && typeof ctx.bindings.has === 'function'
+        && ctx.bindings.has(fIR.name)) {
+      return _bridgeToHandler(ir, ctx);
+    }
   }
   // Generative pushforward: lawof(<value expr>). After the lawof peel
   // (above), a body like transport's `y = (x + δ)³ · exp(x − b)` is a
