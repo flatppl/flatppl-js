@@ -80,9 +80,6 @@ function setClmEnabled(on: boolean): boolean {
   _clmEnabled = !!on;
   return prev;
 }
-// Back-compat: a static snapshot read at import time. New code calls
-// isClmEnabled() (live) rather than reading this constant.
-const CLM_ENABLED = _clmEnabled;
 
 // ── shape / axis descriptor (critique C) ────────────────────────────────
 //
@@ -491,5 +488,5 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
 
 module.exports = {
   lowerMeasure, feedInputs, describeInputShape,
-  CLM_ENABLED, isClmEnabled, setClmEnabled,
+  isClmEnabled, setClmEnabled,
 };

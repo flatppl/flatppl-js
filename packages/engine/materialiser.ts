@@ -1543,13 +1543,12 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   }
   _ensureRootKey(ctx);
   // clm{body, inputs, reduce} — the canonical lowered measure (measure-
-  // lowering unification Phase 4, sample half). matClm binds the boundary
-  // inputs as measures in a child ctx, then walks the SAME body the density
-  // side scores — so sampling and density consume one lowering. Empty inputs
-  // ⇒ materialiseMeasureIR(body) bit-for-bit. Additive: lowerMeasure is the
-  // only producer and no sample-side caller routes through it in production
-  // yet (the reroute + bindLeaf retirement are staged behind CLM_ENABLED per
-  // the plan); exercised today by the sample≡density equivalence test.
+  // lowering unification Phase 4, sample half). matClm feeds the boundary
+  // inputs via clm.feedInputs, then walks the SAME body the density side
+  // scores — so sampling and density consume one lowering. The live sample
+  // path reaches this via clmRerouteStage (CLM on by default); the legacy
+  // matJointchain stays the fallback for shapes lowerMeasure can't lower yet
+  // (nested chains) + the FLATPPL_CLM=0 dual-mode oracle.
   if (ir.op === 'clm') {
     return matClm(ir, ctx);
   }
