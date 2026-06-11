@@ -223,6 +223,22 @@ test('NegativeBinomial / NegativeBinomial2 agree at α=ψ, β=ψ/μ', () => {
   }
 });
 
+test('NegativeBinomial / NegativeBinomial2: finite logpdf for non-integer shape', () => {
+  // Spec: alpha (NB) and psi (NB2) are elementof(posreals) — non-integer is valid, and
+  // the generalized binomial coefficient is finite. Regression for the bug where the
+  // integer-only binomcoefln returned NaN for non-integer shape (flatppl-js#20).
+  // Oracle values are the closed-form spec densities, derived independently:
+  //   NB(alpha=2.5, beta=1)  @ k=3  = ln Γ(5.5) - ln Γ(2.5) - ln Γ(4) + 2.5·ln(1/2) + 3·ln(1/2)
+  //   NB2(mu=4,  psi=2.5)    @ k=3  = ln Γ(5.5) - ln Γ(4) - ln Γ(2.5) + 3·ln(4/6.5) + 2.5·ln(2.5/6.5)
+  const sampler = require('../sampler.ts');
+  const nb  = sampler._internal.REGISTRY.NegativeBinomial.logpdfFn(3, 2.5, 1.0);
+  const nb2 = sampler._internal.REGISTRY.NegativeBinomial2.logpdfFn(3, 4.0, 2.5);
+  assert.ok(Number.isFinite(nb),  `NB(2.5,1) logpdf must be finite, got ${nb}`);
+  assert.ok(Number.isFinite(nb2), `NB2(4,2.5) logpdf must be finite, got ${nb2}`);
+  assert.ok(Math.abs(nb  - (-1.9309378651619566)) < 1e-12, `NB(2.5,1)@3 logpdf = ${nb}`);
+  assert.ok(Math.abs(nb2 - (-1.9639304319959507)) < 1e-12, `NB2(4,2.5)@3 logpdf = ${nb2}`);
+});
+
 // ---------------------------------------------------------------------
 // Spec equivalences
 // ---------------------------------------------------------------------
