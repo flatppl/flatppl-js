@@ -259,6 +259,19 @@ function _resonanceBreitwigner(
   return { re: reDen / norm, im: -imDen / norm };
 }
 
+// --- spec-surfaced particle-physics helpers (§09) --------------------
+// `kallen` is `_kaellen` directly. The spec's `breakup_momentum(m, ma, mb)`
+// takes the invariant mass m (not σ=m²) that `_breakupMomentum` expects, and
+// `blatt_weisskopf(l, p, d)` is F_ℓ = √(zˡ/χ_ℓ(z)) with z=(d·p)², whereas
+// `_blattWeisskopfSquared` is 1/χ_ℓ(z) (the zˡ numerator is supplied here).
+function _breakupMomentumMass(m: number, ma: number, mb: number): number {
+  return _breakupMomentum(m * m, ma, mb);
+}
+function _blattWeisskopf(l: number, p: number, d: number): number {
+  const z = (d * p) * (d * p);
+  return Math.sqrt(Math.pow(z, l) * _blattWeisskopfSquared(l, z));
+}
+
 function _registerParticlePhysics() {
   const bindings = new Map<string, BindingDescriptor>();
   bindings.set('resonance_breitwigner', {
@@ -277,8 +290,34 @@ function _registerParticlePhysics() {
     ),
     impl: _resonanceBreitwigner,
   });
-  // Other particle-physics bindings (interp_*, CrystalBall, Argus, …)
-  // are deferred until a consumer needs them.
+  bindings.set('kallen', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'x', type: T.REAL }, { name: 'y', type: T.REAL }, { name: 'z', type: T.REAL }],
+      T.REAL,
+    ),
+    impl: _kaellen,
+  });
+  bindings.set('breakup_momentum', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'm', type: T.REAL }, { name: 'ma', type: T.REAL }, { name: 'mb', type: T.REAL }],
+      T.REAL,
+    ),
+    impl: _breakupMomentumMass,
+  });
+  bindings.set('blatt_weisskopf', {
+    kind: 'function',
+    sig: T.funcType(
+      [{ name: 'l', type: T.INTEGER }, { name: 'p', type: T.REAL }, { name: 'd', type: T.REAL }],
+      T.REAL,
+    ),
+    impl: _blattWeisskopf,
+  });
+  // Remaining particle-physics bindings (interp_*, CrystalBall, Argus, wignerd,
+  // …) are deferred until a consumer needs them. blatt_weisskopf supports
+  // ℓ=0..4 (the underlying barrier polynomials); ℓ=5..7 from the spec are not
+  // yet implemented.
   registerStandardModule({
     name: 'particle-physics',
     compat: '0.1',
@@ -442,7 +481,9 @@ module.exports = {
     _chebyshev,
     _resonanceBreitwigner,
     _breakupMomentum,
+    _breakupMomentumMass,
     _kaellen,
     _blattWeisskopfSquared,
+    _blattWeisskopf,
   },
 };

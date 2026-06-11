@@ -90,3 +90,27 @@ test('standard-modules: exposed on engine index as standardModules', () => {
   assert.equal(typeof e.standardModules.registerStandardModule, 'function');
   assert.equal(typeof e.standardModules.listStandardModules, 'function');
 });
+
+test('particle-physics: kallen / breakup_momentum / blatt_weisskopf match spec §09 formulas', () => {
+  stdmod._clearStandardModules();
+  stdmod._registerBuiltinStandardModules();
+  const pp = stdmod.lookupStandardModule('particle-physics', '0.1').bindings;
+  // Independent spec closed-form oracles (NOT the engine impls):
+  const kallen = (x: any, y: any, z: any) => x*x + y*y + z*z - 2*(x*y + y*z + z*x);
+  const chi = (l: any, z: any) =>
+    [1, 1+z, 9+3*z+z*z, 225+45*z+6*z*z+z**3, 11025+1575*z+135*z*z+10*z**3+z**4][l];
+  const breakup = (m: any, a: any, b: any) => Math.sqrt(kallen(m*m, a*a, b*b)) / (2*m);
+  const blatt = (l: any, p: any, d: any) => { const z = (d*p)**2; return Math.sqrt(z**l / chi(l, z)); };
+  const close = (a: any, b: any) => Math.abs(a - b) < 1e-12;
+
+  const K = pp.get('kallen').impl, BM = pp.get('breakup_momentum').impl, BW = pp.get('blatt_weisskopf').impl;
+  assert.ok(close(K(2, 3, 4), -23), 'kallen(2,3,4) = -23');
+  assert.ok(close(K(2, 3, 4), kallen(2, 3, 4)), 'kallen matches formula');
+  assert.ok(close(BM(5, 1, 2), breakup(5, 1, 2)), 'breakup_momentum matches √λ(m²,ma²,mb²)/(2m)');
+  for (const [l, p, d] of [[0,2,3],[1,2,3],[2,1,1],[3,1.5,2],[4,0.8,1.2]]) {
+    assert.ok(close(BW(l, p, d), blatt(l, p, d)), `blatt_weisskopf l=${l} = √(zˡ/χ_ℓ(z))`);
+  }
+  assert.ok(close(BW(0, 2, 3), 1), 'F_0 = 1');
+  // ℓ=5..7 are spec'd but not yet implemented (barrier polynomials 0..4 only).
+  assert.throws(() => BW(5, 1, 1), 'blatt_weisskopf l=5 not implemented');
+});
