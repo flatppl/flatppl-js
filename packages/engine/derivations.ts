@@ -56,6 +56,7 @@ import type {
   DerivationIid,
   DerivationJointchain,
   DerivationKernelBroadcast,
+  DerivationLikelihoodDensity,
   DerivationLogdensityof,
   DerivationMvNormal,
   DerivationNormalize,
@@ -1374,12 +1375,34 @@ function classifyBroadcast(rhsIR: IRNode, ast: any, bindings: any): DerivationBr
 //     (x is itself a variate) are deferred — they require encoding
 //     the observation into refArrays per atom, an extra path the
 //     materialiser doesn't yet take.
-function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): DerivationLogdensityof | null {
+function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): DerivationLogdensityof | DerivationLikelihoodDensity | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const Mref   = rhsIR.args[0];
   const obsIR  = rhsIR.args[1];
   if (!isSelfRef(Mref)) return null;
   if (!bindings.has(Mref.name)) return null;
+  // Standalone likelihood density (spec §06, audit H2):
+  // `logdensityof(L, θ)` with L = likelihoodof(K, obs) is the kernel
+  // scored at the GIVEN θ against the FIXED obs — pdf(κ(θ), obs) —
+  // the spec's primary likelihood extraction. L is not a measure (no
+  // derivation of its own), so the generic measure shape below can't
+  // serve it; unwrap the L→K chain instead (the same resolution
+  // bayesupdate uses) and carry θ as pointIR. matLikelihoodDensity
+  // feeds the kernel's parametric inputs EXPLICITLY from θ.
+  // `densityof(L, θ)` rides for free — it lowers to
+  // `exp(<anon logdensityof>)`.
+  const lk = _resolveLikelihood(Mref, bindings);
+  if (lk) {
+    return {
+      kind: 'likelihood_density',
+      bodyName: lk.bodyName,
+      bodyIR: lk.bodyIR,
+      obsIR: lk.obsIR,
+      paramKwargs: lk.paramKwargs,
+      params: lk.params,
+      pointIR: obsIR,
+    };
+  }
   // Hold the obs IR — the materialiser resolves it to a concrete JS
   // value at sample time, consulting fixedValues for any binding
   // refs. Classification cares only that an obs argument exists in
@@ -2025,6 +2048,25 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   if (d.kind === 'array') return true;
   if (d.kind === 'logdensityof') {
     return resolvable(d.measureName);
+  }
+  // Standalone likelihood density: same body-ref rules as bayesupdate
+  // (the kernel body's parameterized/stochastic internals are fed by the
+  // materialiser — here from the given point θ — not via derivations),
+  // plus the point expression's own refs must be resolvable.
+  if (d.kind === 'likelihood_density') {
+    for (const r of collectSelfRefs(d.pointIR)) {
+      if (!resolvable(r)) return false;
+    }
+    if (d.bodyName) return resolvable(d.bodyName);
+    if (d.bodyIR) {
+      for (const r of collectSelfRefs(d.bodyIR)) {
+        const rb = bindings.get(r);
+        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+        if (!resolvable(r)) return false;
+      }
+      return true;
+    }
+    return false;
   }
   if (d.kind === 'totalmass') {
     return resolvable(d.measureName);
@@ -3167,19 +3209,29 @@ function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited?: an
 // without introducing a new IR-evaluator call. Future work: lift
 // this into a true AST rewrite once we have a worker primitive that
 // directly evaluates `logdensityof` calls inside arithmetic IR.
-function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate | null {
-  // Walk the L→K chain through cached IR rather than AST. The lowerer
-  // canonicalises kernelof → functionof and fn → functionof, so we
-  // only need to check for op === 'functionof' here regardless of
-  // which surface keyword the user wrote.
-  const ir = binding.ir;
-  if (!isCallOp(ir, 'bayesupdate', 2)) return null;
-  const Lref = ir.args[0];
-  const priorRef = ir.args[1];
-  if (!isSelfRef(Lref) || !isSelfRef(priorRef)) return null;
-  if (!bindings.has(priorRef.name)) return null;
-
-  // Resolve L → likelihoodof(K, obs) at IR level.
+// Resolve a likelihood ref `L → likelihoodof(K, obs) → K →
+// functionof(body, kw=...)` at IR level into the payload both the
+// bayesupdate classifier and the standalone likelihood-density
+// classifier (audit H2) consume. The lowerer canonicalises kernelof →
+// functionof and fn → functionof, so only op === 'functionof' needs
+// checking regardless of which surface keyword the user wrote. The
+// lowerer's _lowerReification stores the body as `Kir.body` (NOT
+// `args[0]` — params/paramKwargs/body sit at the top of the IR node).
+//
+// The body has two shapes:
+//   - (ref self <name>) → bodyName; expanded via expandMeasureIR.
+//   - inline call IR → bodyIR; expanded via expandMeasureRefsInIR.
+// Both converge on the same expanded measure IR for the walker; they
+// differ only in WHERE the body roots in the binding graph.
+//
+// paramKwargs are the kernel's parametric-input call-site names (the
+// reified boundary names) the caller feeds — bayesupdate from the
+// prior's atoms, standalone density from the given point θ.
+function _resolveLikelihood(Lref: any, bindings: any): {
+  bodyName: string | null; bodyIR: any; obsIR: any;
+  paramKwargs: string[]; params: string[];
+} | null {
+  if (!isSelfRef(Lref)) return null;
   const Lbinding = bindings.get(Lref.name);
   const Lir = Lbinding && Lbinding.ir;
   if (!isCallOp(Lir, 'likelihoodof', 2)) return null;
@@ -3187,23 +3239,10 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
   const obsIR = Lir.args[1];
   if (!isSelfRef(Kref)) return null;
 
-  // Resolve K → functionof(body, kw=...). Both kernelof and fn lower
-  // to functionof, so the IR shape is uniform. The lowerer's
-  // _lowerReification stores the body as `Kir.body` (NOT `args[0]`;
-  // see lower.js _lowerReification — params/paramKwargs/body sit at
-  // the top of the IR node, no `args` array).
   const Kbinding = bindings.get(Kref.name);
   const Kir = Kbinding && Kbinding.ir;
   if (!Kir || Kir.kind !== 'call' || Kir.op !== 'functionof' || !Kir.body) return null;
 
-  // The body has two shapes:
-  //   - (ref self <name>) → store bodyName, visualPanel expands via
-  //     expandMeasureIR(bodyName, derivations).
-  //   - inline call IR → store as bodyIR, visualPanel expands measure
-  //     refs in it via expandMeasureRefsInIR(bodyIR, derivations).
-  // Both paths converge on the same expanded measure IR for the
-  // walker; they differ only in WHERE the body roots in the binding
-  // graph.
   const bodyIRArg = Kir.body;
   let bodyName = null;
   let bodyIR = null;
@@ -3215,28 +3254,48 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
   } else {
     return null;
   }
-
-  // Hold the obs IR; resolution to a JS value happens at materialise
-  // time via resolveIRToValue + fixedValues. The classifier cares
-  // only about the structural shape — does this binding look like a
-  // bayesupdate over a likelihood of a kernel? — not about WHAT the
-  // observation is.
-  // Record the kernel's parametric inputs (the reified boundary names).
-  // matBayesupdate must FEED these from the prior's atoms — per the spec
-  // lowering bayesupdate(L,prior) = logweighted(fn(logdensityof(L,_)),prior),
-  // the prior's variate IS the kernel's parametric input — rather than let
-  // prepareDensityRefs re-materialise a like-named module binding via
-  // getMeasure (the boundary-conflation bug, audit §3 / H1/H6). paramKwargs
-  // are the call-site names the prior fields map onto.
   return {
-    kind: 'bayesupdate',
-    from: priorRef.name,
     bodyName,
     bodyIR,
     obsIR,
     paramKwargs: Array.isArray(Kir.paramKwargs) ? Kir.paramKwargs.slice()
       : (Array.isArray(Kir.params) ? Kir.params.slice() : []),
     params: Array.isArray(Kir.params) ? Kir.params.slice() : [],
+  };
+}
+
+function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate | null {
+  const ir = binding.ir;
+  if (!isCallOp(ir, 'bayesupdate', 2)) return null;
+  const Lref = ir.args[0];
+  const priorRef = ir.args[1];
+  if (!isSelfRef(Lref) || !isSelfRef(priorRef)) return null;
+  if (!bindings.has(priorRef.name)) return null;
+
+  // Resolve the L→K chain (shared with the standalone likelihood-
+  // density classifier — _resolveLikelihood holds the shape notes).
+  const lk = _resolveLikelihood(Lref, bindings);
+  if (!lk) return null;
+
+  // Hold the obs IR; resolution to a JS value happens at materialise
+  // time via resolveIRToValue + fixedValues. The classifier cares
+  // only about the structural shape — does this binding look like a
+  // bayesupdate over a likelihood of a kernel? — not about WHAT the
+  // observation is.
+  // matBayesupdate must FEED the paramKwargs from the prior's atoms — per
+  // the spec lowering bayesupdate(L,prior) = logweighted(fn(logdensityof(
+  // L,_)),prior), the prior's variate IS the kernel's parametric input —
+  // rather than let prepareDensityRefs re-materialise a like-named module
+  // binding via getMeasure (the boundary-conflation bug, audit §3 / H1/H6).
+  // paramKwargs are the call-site names the prior fields map onto.
+  return {
+    kind: 'bayesupdate',
+    from: priorRef.name,
+    bodyName: lk.bodyName,
+    bodyIR: lk.bodyIR,
+    obsIR: lk.obsIR,
+    paramKwargs: lk.paramKwargs,
+    params: lk.params,
   };
 }
 

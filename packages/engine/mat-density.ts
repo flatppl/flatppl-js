@@ -179,6 +179,52 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
 }
 
 // =====================================================================
+// Standalone likelihood density — pdf(κ(θ), obs) (spec §06, audit H2)
+// =====================================================================
+
+function matLikelihoodDensity(d: any, ctx: any) {
+  // logdensityof(L, θ) with L = likelihoodof(K, obs): score the kernel at
+  // the GIVEN θ against the FIXED obs. The body is lowered ONCE via the
+  // same lowerMeasure call matBayesupdate uses (derived value bindings
+  // inline down to the kernel's parametric inputs, H5/H3; a generative
+  // body takes the MC-marginal form), but the parametric inputs are fed
+  // EXPLICITLY from θ (opts.boundaries → feedInputs' explicit path —
+  // an atom-independent value broadcast across N) instead of from a
+  // prior's atoms. Result is a per-atom scalar (constant across atoms,
+  // matching the matTotalmass broadcast convention).
+  const theta = orchestrator.resolveIRToValue(d.pointIR, ctx.bindings, ctx.fixedValues);
+  if (theta == null) {
+    return Promise.reject(new Error(
+      'logdensityof(L, θ): cannot resolve θ to a concrete value'));
+  }
+  // Map θ onto the kernel's parametric inputs: a single input takes the
+  // whole value; multiple inputs require a record with one field each
+  // (the kernel's input space is the cat of its params, spec §04).
+  const kwargs: string[] = d.paramKwargs || [];
+  const boundaries: Record<string, any> = {};
+  if (kwargs.length === 1) {
+    boundaries[kwargs[0]] = theta;
+  } else {
+    for (const k of kwargs) {
+      if (theta === null || typeof theta !== 'object' || !(k in theta)) {
+        return Promise.reject(new Error(
+          'logdensityof(L, θ): θ must be a record with a "' + k
+          + '" field (kernel inputs: ' + kwargs.join(', ') + ')'));
+      }
+      boundaries[k] = (theta as any)[k];
+    }
+  }
+  const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d, boundaries });
+  if (!node) {
+    return Promise.reject(new Error(
+      'logdensityof(L, θ): cannot expand the likelihood body into measure IR'));
+  }
+  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
+  return matScore(node, ctx, { observed, resolveWeights: true })
+    .then((reply: any) => applyReduce(reply, node));
+}
+
+// =====================================================================
 // Totalmass — surface the tracked logTotalmass as a per-atom value
 // =====================================================================
 
@@ -450,6 +496,7 @@ function matBroadcastLogdensity(d: DerivationBroadcastLogdensity, ctx: any) {
 module.exports = {
   matBayesupdate,
   matLogdensityof,
+  matLikelihoodDensity,
   matBroadcastLogdensity,
   matTotalmass,
 };

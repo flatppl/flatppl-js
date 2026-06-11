@@ -1004,6 +1004,7 @@ const KIND_HANDLERS = {
   // density-related (mat-density.ts)
   bayesupdate:  (name: any, d: any, ctx: any) => density.matBayesupdate(d, ctx),
   logdensityof: (name: any, d: any, ctx: any) => density.matLogdensityof(d, ctx),
+  likelihood_density: (name: any, d: any, ctx: any) => density.matLikelihoodDensity(d, ctx),
   broadcast_logdensity: (name: any, d: any, ctx: any) => density.matBroadcastLogdensity(d, ctx),
   totalmass:    (name: any, d: any, ctx: any) => density.matTotalmass(d, ctx),
   // jointchain/kchain: SOLE path is clmRerouteStage → lowerMeasure → matClm

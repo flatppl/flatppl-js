@@ -190,7 +190,12 @@ function _buildBody(input: any, deriv: any, ctx: any): { body: any; boundarySet:
 function _boundarySet(deriv: any, ctx: any): Set<string> {
   const s = new Set<string>();
   if (!deriv) return s;
-  if (deriv.kind === 'bayesupdate' && Array.isArray(deriv.paramKwargs)) {
+  if ((deriv.kind === 'bayesupdate' || deriv.kind === 'likelihood_density')
+      && Array.isArray(deriv.paramKwargs)) {
+    // likelihood_density (standalone pdf(κ(θ), obs), audit H2): the same
+    // parametric-input boundary set as bayesupdate — derived value bindings
+    // inline down to the kernel's inputs (H5/H3) — but the inputs are fed
+    // EXPLICITLY from the given θ (opts.boundaries), not from a prior.
     for (const k of deriv.paramKwargs) s.add(k);
   } else if (deriv.kind === 'jointchain' && Array.isArray(deriv.steps)) {
     // Prior step variates: the base var (+ its record fields) and every

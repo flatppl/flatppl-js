@@ -210,7 +210,7 @@ is independent-product only) and the §21 generative / scalar pushforward
 already removed by the delegations, so the inversion would add an
 `expandMeasure` round-trip per by-name materialisation without removing any
 parallel code (and the density/scoring kinds — bayesupdate / logdensityof /
-totalmass — have no `materialiseMeasureIR` coverage).
+likelihood_density / totalmass — have no `materialiseMeasureIR` coverage).
 
 ## Cross-file invariants
 

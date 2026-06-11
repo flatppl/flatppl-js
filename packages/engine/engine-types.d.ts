@@ -416,6 +416,22 @@ export interface DerivationLogdensityof {
   obsIR: IRNode;
 }
 
+/** Standalone likelihood density (spec §06, audit H2):
+ *  `logdensityof(L, θ)` with L = likelihoodof(K, obs) scores the kernel
+ *  at the GIVEN θ against the FIXED obs — pdf(κ(θ), obs). Carries the
+ *  same L→K payload as DerivationBayesupdate plus the evaluation point;
+ *  matLikelihoodDensity feeds paramKwargs EXPLICITLY from θ (no prior). */
+export interface DerivationLikelihoodDensity {
+  kind: 'likelihood_density';
+  name?: string;
+  bodyName: string | null;
+  bodyIR: IRNode | null;
+  obsIR: IRNode;
+  paramKwargs: string[];
+  params: string[];
+  pointIR: IRNode;
+}
+
 /** `totalmass(M)` — surface measure's tracked totalmass as scalar value. */
 export interface DerivationTotalmass {
   kind: 'totalmass';
@@ -546,6 +562,7 @@ export type Derivation =
   | DerivationPushfwd
   | DerivationBayesupdate
   | DerivationLogdensityof
+  | DerivationLikelihoodDensity
   | DerivationTotalmass
   | DerivationBroadcastLogdensity
   | DerivationSelect
