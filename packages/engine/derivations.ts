@@ -2566,6 +2566,21 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           if (body.kind === 'ref' && body.ns === 'self') {
             body = expandMeasureIR(body.name, derivations, next, bindings);
             if (!body) return null;
+          } else if (body.kind === 'call') {
+            // Inline measure-call body: `kernelof` / `disintegrate` reify
+            // `functionof(lawof(record(obs = obs)), theta = theta)` — the
+            // body is an inline `lawof(record(field = <draw ref>))`, not a
+            // binding ref. The same closure walk applies STRUCTURALLY:
+            // peel lawof/draw, recurse record/joint fields, expand the
+            // draw refs to their distIRs so the kernel's boundary params
+            // surface as leaf refs (audit H6(b): without this the body
+            // ships with bare draw refs and the walkers dead-end —
+            // legacy: "'lawof' is not a known distribution"; CLM:
+            // "non-call IR (kind 'ref')"). _expandStructural is identity
+            // on already self-contained bodies (`fn(Normal(_, 1))`), so
+            // the proven inline-fn path is untouched.
+            body = _expandStructural(body, ctx, next);
+            if (!body) return null;
           }
           return { params: f.params, body };
         };

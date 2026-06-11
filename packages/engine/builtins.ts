@@ -203,11 +203,17 @@ const MEASURE_OPS = new Set([
 
 // Built-in callables that produce a measure-typed value. Used to decide
 // whether `functionof(expr, ...)` reifies a function (value expr) or a
-// kernel (measure expr). NB: `totalmass`, `densityof`, `logdensityof`,
-// `likelihoodof`, `joint_likelihood`, and `disintegrate` are excluded —
+// kernel (measure expr), and IR-side whether a binding/node is measure-
+// typed (classifyJointchain components, isMeasureBinding, clm._isMeasureNode).
+// `lawof` belongs here: `lawof(x)` reifies the law of a variate — a measure
+// (audit Phase 9: its absence made `jointchain(<disintegrate-prior>, …)`
+// unclassifiable, since the destructured prior's IR head is `lawof`).
+// NB: `totalmass`, `densityof`, `logdensityof`, `likelihoodof`,
+// `joint_likelihood`, and `disintegrate` are excluded —
 // they return scalars, density functions, or tuples, not measures.
 const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
+  'lawof',
   'weighted', 'logweighted', 'bayesupdate', 'normalize',
   'superpose', 'joint', 'iid', 'kchain', 'jointchain',
   'truncate', 'pushfwd',
