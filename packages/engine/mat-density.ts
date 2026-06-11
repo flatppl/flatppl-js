@@ -84,19 +84,51 @@ function mcDensityOpts(ctx: any): any {
 
 function matScore(node: any, ctx: any, opts?: any): Promise<any> {
   opts = opts || {};
-  return clm.feedInputs(node, ctx).then((fed: any) =>
-    pushFixedEnv(ctx, fed.fixedEnv).then(() => ctx.sendWorker({
-      type: 'logDensityN',
-      ir: node.body,
-      count: ctx.sampleCount,
-      refArrays: fed.refArrays,
-      observed: opts.observed,
-      tally: 'clamped',
-      // body carries an mcmarginal recipe ⇒ thread the MC marginalisation
-      // count + common-random-number seed (Phase 3 routes the marginal
-      // REDUCE here too; bayesupdate's reduce is null — it reweights).
-      ...(node.mc ? mcDensityOpts(ctx) : {}),
-    })));
+  // Runtime-weight selectors (engine-concepts §11): resolve the body's
+  // non-closed-form mixture/select weights to literal logweights before
+  // scoring. matLogdensityof/matBroadcastLogdensity opt in; bayesupdate did
+  // not, so it stays off there (preserving the Phase-2 byte-identical path).
+  // node.body is freshly built per lowerMeasure call (no cache), so the
+  // in-place resolution is safe (mutation hazard — plan critique).
+  const bodyP = opts.resolveWeights
+    ? resolveRuntimeWeights(node.body, ctx)
+    : Promise.resolve(node.body);
+  return bodyP.then((body: any) =>
+    clm.feedInputs(node, ctx).then((fed: any) => {
+      // extraRefArrays carries columns the declared inputs can't source via a
+      // plain getMeasure — the N-ary kchain retained-history variates s_i,
+      // materialised by matJointchain. They override the fed entries.
+      const refArrays = opts.extraRefArrays
+        ? Object.assign({}, fed.refArrays, opts.extraRefArrays)
+        : fed.refArrays;
+      return pushFixedEnv(ctx, fed.fixedEnv).then(() => ctx.sendWorker({
+        type: 'logDensityN',
+        ir: body,
+        count: ctx.sampleCount,
+        refArrays,
+        observed: opts.observed,
+        tally: 'clamped',
+        // body carries an mcmarginal recipe ⇒ thread the MC marginalisation
+        // count + common-random-number seed.
+        ...(node.mc ? mcDensityOpts(ctx) : {}),
+      }));
+    }));
+}
+
+// Apply a clm node's marginal reduction to the worker's per-atom log-densities:
+// logsumexp_i − log N (engine-concepts §6). Broadcasts the scalar marginal back
+// across N so the result is a plain scalar measure. reduce=null ⇒ pass through.
+function applyReduce(reply: any, node: any): any {
+  const perAtom = reply.samples;
+  if (!node.reduce || node.reduce.kind !== 'marginal') {
+    return scalarMeasureN(perAtom, {
+      logWeights: null, logTotalmass: 0, n_eff: perAtom.length,
+    });
+  }
+  const margLogp = empirical.logSumExp(perAtom) - Math.log(perAtom.length);
+  const out = new Float64Array(perAtom.length);
+  out.fill(margLogp);
+  return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: 1 });
 }
 
 // =====================================================================
@@ -271,21 +303,25 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // and we bind its variate columns as the per-atom refArrays the
   // last kernel's hole-rewired cat consumes.
   const measureDeriv = ctx.derivations[d.measureName];
-  const isChain = !!(measureDeriv
-    && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
-
-  const measureIR0 = orchestrator.expandMeasure(d.measureName,
-    { derivations: ctx.derivations, bindings: ctx.bindings });
-  if (!measureIR0) {
+  // Lower the measure ONCE to its canonical form (lowerMeasure): peel/expand,
+  // inline derived value bindings down to the boundary inputs OR apply the
+  // generative MC marginalising-pushforward form (§06 case-3), declare the
+  // prior / integration-variable boundary inputs (the M1/H1 fix — the kernel's
+  // NAMED params score against the FED prior, not the like-named draw), and
+  // carry reduce={marginal} for a kchain. The marginal reduction is now a
+  // property of the node (applyReduce), not a re-derived isChain/naryKchain
+  // flag scattered through this function.
+  const node = clm.lowerMeasure(d.measureName, ctx);
+  if (!node) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
       + d.measureName + '" into a self-contained IR'));
   }
-  return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
-  // Generative-composite measure (the transport model): score via the MC
-  // marginalising-pushforward form (§06 case-3) instead of refusing. Not a
-  // kchain, so the N-ary kchain branch below stays inert for it.
-  const mcForm = mcDensityForm(measureIR, ctx);
-  const densIR = mcForm || measureIR;
+  const isChain = !!(node.reduce && node.reduce.kind === 'marginal');
+  // N-ary kchain (engine-concepts §6 chain-associativity): the retained
+  // (n−1)-joint history's variate columns s_i can't be sourced by a plain
+  // getMeasure, so materialise them ONCE via matJointchain and pass as
+  // extraRefArrays (overriding the boundary feeds feedInputs anchors to
+  // base.ref). The last kernel's hole-rewired cat over s_i consumes them.
   const naryKchain = isChain && measureDeriv
     && Array.isArray(measureDeriv.steps) && measureDeriv.steps.length > 2
     && !measureDeriv.labels;
@@ -294,38 +330,10 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
         { kind: 'jointchain', marginalize: false, labels: null,
           steps: measureDeriv.steps.slice(0, -1) }, ctx)
     : Promise.resolve(null);
-  // M1 fix (same boundary-binding family as H1): for a 2-step kchain, the
-  // kernel's NAMED boundary params (the prior variate field names) are left as
-  // self-refs in the expanded body; prepareDensityRefs would resolve them via
-  // getMeasure — the like-named DRAW, not the prior measure. When the prior
-  // DECOUPLES from those draws (relabelled / transformed prior), that scores
-  // the wrong measure (density contradicts the sample histogram by ~hundreds
-  // of nats). So materialise base.ref (the prior) and FEED its variate columns
-  // — the sample-side matJointchain.bindLeaf already binds the prior this way.
-  // (The scalar HOLE-param case already refs base.ref directly and resolves
-  // correctly via getMeasure; feeding it again is a harmless no-op override.)
-  const twoStepChain = isChain && !naryKchain && measureDeriv
-    && Array.isArray(measureDeriv.steps) && measureDeriv.steps.length === 2
-    && measureDeriv.steps[0] && measureDeriv.steps[0].ref != null;
-  const basePriorP = twoStepChain
-    ? ctx.getMeasure(measureDeriv.steps[0].ref)
-    : Promise.resolve(null);
-  return Promise.all([
-    basePriorP,
-    innerJointP,
-  ]).then(([basePrior, innerJoint]: [any, any]) => {
-    const boundRefArrays: Record<string, any> = {};
-    if (basePrior && basePrior.fields) {
-      for (const k in basePrior.fields) {
-        const fm = basePrior.fields[k];
-        if (fm && fm.samples) boundRefArrays[k] = measureToRefValue(fm, k, 'logdensityof-kchain');
-      }
-    } else if (basePrior && basePrior.samples) {
-      boundRefArrays[measureDeriv.steps[0].ref] =
-        measureToRefValue(basePrior, measureDeriv.steps[0].ref, 'logdensityof-kchain');
-    }
-    return prepareDensityRefs(densIR, ctx, 'logdensityof', boundRefArrays).then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+  const observed = orchestrator.resolveIRToValue(
+    d.obsIR, ctx.bindings, ctx.fixedValues);
+  return innerJointP.then((innerJoint: any) => {
+    const extraRefArrays: Record<string, any> = {};
     if (innerJoint) {
       const comps = innerJoint.elems
         || (innerJoint.fields
@@ -341,41 +349,11 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
           throw new Error('logdensityof: N-ary kchain history component '
             + i + ' did not materialise to a scalar ensemble');
         }
-        refArrays['s' + i] = cs;
+        extraRefArrays['s' + i] = cs;
       }
     }
-    const observed = orchestrator.resolveIRToValue(
-      d.obsIR, ctx.bindings, ctx.fixedValues);
-    return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
-      type: 'logDensityN',
-      ir: densIR,
-      count: ctx.sampleCount,
-      refArrays: refArrays,
-      observed: observed,
-      tally: 'clamped',
-      ...(mcForm ? mcDensityOpts(ctx) : {}),
-    })).then((reply: any) => {
-      if (!isChain) {
-        return scalarMeasureN(reply.samples, {
-          logWeights: null,
-          logTotalmass: 0,
-          n_eff: reply.samples.length,
-        });
-      }
-      // chain marginalisation reduction.
-      const perAtom = reply.samples;
-      const lse = empirical.logSumExp(perAtom);
-      const margLogp = lse - Math.log(perAtom.length);
-      const out = new Float64Array(perAtom.length);
-      out.fill(margLogp);
-      return scalarMeasureN(out, {
-        logWeights: null,
-        logTotalmass: 0,
-        n_eff: 1,
-      });
-    });
-    });
-  });
+    return matScore(node, ctx, { observed, resolveWeights: true, extraRefArrays })
+      .then((reply: any) => applyReduce(reply, node));
   });
 }
 
