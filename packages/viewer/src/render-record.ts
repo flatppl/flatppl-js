@@ -12,7 +12,7 @@ import { renderCornerGrid, renderDensityStrips } from './render-density.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
-import { renderPlotFrame, renderTextValue } from './render-frame.js';
+import { renderPlotFrame, renderConstantValue } from './render-frame.js';
 import { listScalarAxes, qualityTooltip, samplesAreConstant } from './util.js';
 export function measureIsConstant(ctx: Ctx, m: any): boolean {
   if (!m) return false;
@@ -93,8 +93,14 @@ export function formatConstantMeasure(ctx: Ctx, m: any): string {
   return '?';
 }
 
-export function renderConstantRecord(ctx: Ctx, measure: any, bindingName: string) {
-  renderTextValue(ctx, bindingName, formatConstantMeasure(ctx, measure));
+export function renderConstantRecord(ctx: Ctx, measure: any, bindingName: string, toolbarControls?: any) {
+  // A callable (kernel / function) is a MAPPING inputs→output: keep the
+  // input-selection toolbar mounted even when THIS input yields a degenerate
+  // (constant) output — never trap the user at the degenerate point (e.g. a
+  // kernel at its 0-valued type-default inputs collapsing to record(obs=[0,…])).
+  // renderConstantValue falls back to plain hero text when no toolbar is given
+  // (a genuinely fixed-phase record binding).
+  renderConstantValue(ctx, bindingName, formatConstantMeasure(ctx, measure), toolbarControls);
 }
 
 export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: string, extraToolbarControls: any) {

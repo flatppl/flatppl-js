@@ -11,7 +11,7 @@ import { measureIsConstant, renderConstantRecord, renderRecordMarginals } from '
 import { colorForBinding } from './palette.js';
 import { complexReBadge, esc, formatComplexScalar, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
-import { renderPlotFrame, renderTextValue } from './render-frame.js';
+import { renderPlotFrame, renderTextValue, renderConstantValue } from './render-frame.js';
 import { plotZoomOptions, samplesAreConstant } from './util.js';
 
 // renderSamplesAndDensity's `plan` parameter is NOT a full Plan union
@@ -261,7 +261,10 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     // histograms.
     if ((measure.shape === 'record' || measure.shape === 'tuple')
         && measureIsConstant(ctx, measure)) {
-      renderConstantRecord(ctx, measure, name);
+      // Pass the toolbar so a kernel/function plot keeps its input selector
+      // even when the current input yields a degenerate (constant) output —
+      // the user must always be able to pick another input.
+      renderConstantRecord(ctx, measure, name, opts.toolbarControls);
       return;
     }
     renderRecordMarginals(ctx, measure, name, opts.toolbarControls);
@@ -310,11 +313,13 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // complex value shows both parts ("a + b i") — showing only Re
   // would be actively misleading for a fixed complex constant.
   if (samplesAreConstant(samples)) {
-    if (isComplex) {
-      renderTextValue(ctx, name, formatComplexScalar(samples[0], measure.imag[0]));
-    } else {
-      renderTextValue(ctx, name, formatScalar(samples[0]));
-    }
+    // Keep the input toolbar mounted for a kernel/function plot whose current
+    // input collapses to a constant scalar (same principle as the record case
+    // above) — renderConstantValue falls back to plain text without a toolbar.
+    const constText = isComplex
+      ? formatComplexScalar(samples[0], measure.imag[0])
+      : formatScalar(samples[0]);
+    renderConstantValue(ctx, name, constText, opts.toolbarControls);
     return;
   }
   // Histogram lives on the main thread now — no round-trip.

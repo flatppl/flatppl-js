@@ -233,6 +233,35 @@ export function renderPlotFrame(ctx: Ctx, opts: any) {
  * The font-size auto-shrinks for long renderings (record(...) with
  * many fields) so the value still fits within the pane.
  */
+// Render a constant value as text, but KEEP an input-selection toolbar mounted
+// when one is supplied (a kernel / function plot whose current input yields a
+// degenerate / constant output). A callable is a mapping inputs→output, so its
+// input controls must always be reachable — never trap the user at a degenerate
+// input with no way to pick another. With no toolbar (a genuinely fixed-phase
+// binding) this is exactly renderTextValue. One place so the record and scalar
+// constant paths stay unified.
+export function renderConstantValue(ctx: Ctx, bindingName: any, text: any, toolbarControls?: any) {
+  if (!toolbarControls) { renderTextValue(ctx, bindingName, text); return; }
+  const resolved = typeof toolbarControls === 'function' ? toolbarControls() : toolbarControls;
+  const composite = ('' + text).length > 16 && /[(\[]/.test(text);
+  const name = bindingName ? esc(bindingName) : '';
+  renderPlotFrame(ctx, {
+    measure: null,
+    toolbarControls: resolved,
+    chartCallback: function(chartHost: any) {
+      const d = document.createElement('div');
+      d.className = 'scalar-display';
+      d.style.display = 'flex';
+      d.style.flexDirection = 'column';
+      d.style.justifyContent = 'center';
+      d.style.height = '100%';
+      d.innerHTML = (name ? '<div class="name">' + name + '</div>' : '')
+        + '<div class="' + (composite ? 'value composite' : 'value') + '">' + esc(text) + '</div>';
+      chartHost.appendChild(d);
+    },
+  });
+}
+
 export function renderTextValue(ctx: Ctx, bindingName: any, text: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
