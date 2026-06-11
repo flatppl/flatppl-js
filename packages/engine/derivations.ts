@@ -789,20 +789,31 @@ function classifyWeighted(
 function _classifyWeightedByFunction(
   weightExpr: any, baseName: string, bindings: any, isLog?: boolean,
 ): DerivationWeighted | null {
-  if (!weightExpr || weightExpr.kind !== 'ref' || weightExpr.ns !== 'self') return null;
-  const fnBinding = bindings.get(weightExpr.name);
-  if (!fnBinding) return null;
-  const fnIR = fnBinding.ir;
-  if (!fnIR || fnIR.kind !== 'call' || fnIR.op !== 'functionof'
-      || !Array.isArray(fnIR.params) || fnIR.params.length !== 1
+  let fnIR: any = null;
+  if (weightExpr && weightExpr.kind === 'call' && weightExpr.op === 'functionof') {
+    // INLINE lambda / fn(...) weight (audit M6(3)): the lowered functionof
+    // IR sits directly in the weight slot — callables are not lifted, so
+    // there is no binding (and no inferredType) to consult. A reified
+    // function is a callable by construction. Previously this shape fell
+    // through every branch and the binding was silently dropped.
+    fnIR = weightExpr;
+  } else if (weightExpr && weightExpr.kind === 'ref' && weightExpr.ns === 'self') {
+    const fnBinding = bindings.get(weightExpr.name);
+    if (!fnBinding) return null;
+    fnIR = fnBinding.ir;
+    if (!fnIR || fnIR.kind !== 'call' || fnIR.op !== 'functionof') return null;
+    // Callable-layer check (function-layer or kernel-layer per engine-
+    // concepts §19.2). Aliases to standard-module functions pass too
+    // — the alias-resolution pass canonicalises their RHS to a module-
+    // namespaced ref, and the inferred function type is set by typeinfer's
+    // cross-module-ref resolution.
+    const ic = fnBinding.inferredType && fnBinding.inferredType.kind;
+    if (ic !== 'function' && ic !== 'kernel') return null;
+  } else {
+    return null;
+  }
+  if (!Array.isArray(fnIR.params) || fnIR.params.length !== 1
       || !fnIR.body) return null;
-  // Callable-layer check (function-layer or kernel-layer per engine-
-  // concepts §19.2). Aliases to standard-module functions pass too
-  // — the alias-resolution pass canonicalises their RHS to a module-
-  // namespaced ref, and the inferred function type is set by typeinfer's
-  // cross-module-ref resolution.
-  const ic = fnBinding.inferredType && fnBinding.inferredType.kind;
-  if (ic !== 'function' && ic !== 'kernel') return null;
   const paramName = fnIR.params[0];
   // Replace every `(ref %local <paramName>)` in the body with
   // `(ref self <baseName>)`. mapIR's identity-preserving rebuild

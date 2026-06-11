@@ -456,14 +456,18 @@ ms = superpose(m1, m2)
   assert.equal(discrete.ms, false);
 });
 
-test('derivations: weighted with function-of-variate weight is unsupported (for now)', () => {
-  // weighted(fn(_*2), m) — the weight depends on the base's variate.
-  // Future work; current orchestrator only handles constant weights.
+test('derivations: weighted with an inline fn-of-variate weight classifies (M6)', () => {
+  // weighted(fn(_*2), m) — the weight is a function of the base's
+  // variate, supplied as an INLINE fn. Classifies through the same
+  // fn-of-variate path a named function weight takes: the substituted
+  // weightIR references the base binding.
   const { derivations } = derivationsOf(`
 m = Normal(mu = 0, sigma = 1)
 mw = weighted(fn(_ * 2), m)
 `);
-  assert.ok(!('mw' in derivations));
+  assert.equal(derivations.mw.kind, 'weighted');
+  assert.equal(derivations.mw.isLog, false);
+  assert.ok(derivations.mw.weightIR, 'carries the substituted weightIR');
 });
 
 test('derivations: numeric array literal becomes an array derivation', () => {

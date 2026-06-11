@@ -209,7 +209,22 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         return out;
       };
       if (d.weightIR) {
-        return collectRefArrays(d.weightIR, ctx).then((refArrays: any) =>
+        // Function-of-variate weight over a RECORD base (audit M6(2)):
+        // the substituted weight body refs the base binding — the WHOLE
+        // structured variate. A record measure has no scalar column for
+        // collectRefArrays' measureToRefValue (it used to throw "neither
+        // .value nor .samples"); pre-bind the base as the per-atom-record
+        // array get_field consumes — the same contract feedInputs uses
+        // for whole-record kernel params — via the _extraRefArrays
+        // overlay. (Tuple bases stay a loud refusal: there is no
+        // per-atom-tuple feed contract yet.)
+        let refCtx = ctx;
+        if (isRecord) {
+          const overlay = Object.assign({}, ctx._extraRefArrays);
+          overlay[d.from] = shared.measureToPerAtomRecords(parent, d.from, 'matWeighted');
+          refCtx = Object.assign({}, ctx, { _extraRefArrays: overlay });
+        }
+        return collectRefArrays(d.weightIR, refCtx).then((refArrays: any) =>
           ctx.sendWorker({
             type: 'evaluateN',
             ir: d.weightIR,

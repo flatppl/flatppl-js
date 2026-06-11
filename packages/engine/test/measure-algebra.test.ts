@@ -398,6 +398,32 @@ test('identity: weighted(a, weighted(b, m)) ≡ weighted(a*b, m) — log-shifts 
   assert.ok(Math.abs(empirical.totalLogMass(lhs) - Math.log(6)) < 1e-10);
 });
 
+test('inline-lambda weight classifies: weighted(x -> g(x), m) ≡ weighted(g, m) (M6)', () => {
+  // An INLINE lambda in the weight slot used to fall through every
+  // classifier branch (the fn-of-variate path required a named self-ref)
+  // and the binding was silently dropped. The lowered functionof IR now
+  // classifies directly; identical semantics to the named form.
+  const src = `
+    m = Normal(mu=0, sigma=1)
+    g = x -> exp(0 - x^2)
+    w_named  = weighted(g, m)
+    w_inline = weighted(x -> exp(0 - x^2), m)
+    lw_inline = logweighted(x -> 0 - x^2, m)
+  `;
+  const { bindings } = processSource(src);
+  const { derivations } = orchestrator.buildDerivations(bindings);
+  assert.ok(derivations['w_inline'], 'inline-lambda weighted classifies (M6)');
+  assert.ok(derivations['lw_inline'], 'inline-lambda logweighted classifies (M6)');
+  const cache = new Map();
+  const named   = materialise('w_named',   bindings, { cache });
+  const inline  = materialise('w_inline',  bindings, { cache });
+  const linline = materialise('lw_inline', bindings, { cache });
+  assertSameSamples(named, inline, 'inline-lambda vs named samples');
+  assertSameLogWeights(named, inline, 1e-12, 'inline-lambda vs named logWeights');
+  // logweighted(x -> -x², m) ≡ weighted(x -> exp(-x²), m).
+  assertSameLogWeights(named, linline, 1e-10, 'logweighted inline-lambda logWeights');
+});
+
 test('identity: logweighted(g_log, m) ≡ weighted(exp∘g_log, m) — fn-of-variate log weight (H9)', () => {
   // Spec §06: logweighted's weight is "a constant OR a function of the
   // variate" — the function form is the canonical lowering target for

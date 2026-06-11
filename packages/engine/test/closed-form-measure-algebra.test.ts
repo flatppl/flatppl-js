@@ -245,6 +245,34 @@ function normalLogpdf(x: any, mu: any, sigma: any) {
 }
 
 // =====================================================================
+// Function-of-variate weight over a RECORD base (audit M6(2)).
+// The weight is a function of the WHOLE structured variate; matWeighted
+// feeds the base as per-atom records (the same contract whole-record
+// kernel params use) so get_field resolves per atom. Used to throw
+// "collectRefArrays: … neither .value nor .samples".
+// =====================================================================
+
+test('weighted(fn-of-record-variate, joint(...)): logW_i = log g(r_i), atom-aligned (M6)', async () => {
+  const ctx = makeCtx(`
+m = joint(a = Normal(0.0, 1.0), b = Normal(2.0, 1.0))
+g = r -> exp(0 - r.a^2)
+w = weighted(g, m)
+`);
+  const [W, M] = await Promise.all([ctx.getMeasure('w'), ctx.getMeasure('m')]);
+  const N = SAMPLE_COUNT;
+  const baseline = -Math.log(N);
+  let maxErr = 0;
+  for (let i = 0; i < N; i++) {
+    const expected = -(M.fields.a.samples[i] ** 2);
+    maxErr = Math.max(maxErr, Math.abs((W.logWeights[i] - baseline) - expected));
+  }
+  assert.ok(maxErr < 1e-12,
+    `record-base weight must be g(r_i) atom-aligned; max err ${maxErr}`);
+  // Field structure intact (the weight shifts top-level logWeights only).
+  assert.deepEqual(Object.keys(W.fields).sort(), ['a', 'b']);
+});
+
+// =====================================================================
 // normalize density with NON-closed-form mass (audit M3).
 // normalize(M) = M / Z; density shifts by −log Z. The closed-form-Z case
 // lowers to logweighted(−logZ, inner) at expansion; the non-closed case
