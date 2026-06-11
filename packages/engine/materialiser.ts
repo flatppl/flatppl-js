@@ -1736,22 +1736,14 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
     });
   }
   // Leaf distribution (or any unrecognised call op — the worker's
-  // sampleN throws if the op isn't in the sampler REGISTRY,
-  // surfacing a clear diagnostic).
-  return shared.collectRefArrays(ir, ctx).then((refArrays: any) =>
-    ctx.sendWorker({
-      type: 'sampleN', ir: ir, count: ctx.sampleCount,
-      refArrays: refArrays,
-      seed: nameSeed('%materialise_ir:leaf', ctx.rootKey),
-    })
-  ).then((reply: any) => {
-    const data = reply.samples;
-    return {
-      samples: data,
-      value: { shape: [data.length], data: data },
-      logWeights: reply.logWeights || null,
-    };
-  });
+  // sampleN throws if the op isn't in the sampler REGISTRY, surfacing a
+  // clear diagnostic). Smell A (materialiser merge, A1): delegate to the
+  // canonical `matSample` via a synthetic `sample` derivation instead of
+  // re-implementing the collectRefArrays → sampleN → wrap path — so the
+  // CLM-body leaf draw and a binding-graph leaf draw share one handler
+  // (and one logTotalmass / n_eff convention). The seed label is unchanged
+  // (matSample keys on its name arg).
+  return matSample('%materialise_ir:leaf', { kind: 'sample', distIR: ir } as any, ctx);
 }
 
 module.exports = {
