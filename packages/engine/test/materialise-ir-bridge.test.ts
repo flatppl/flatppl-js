@@ -113,3 +113,41 @@ m = jointchain(prior, fwd)`;
   assert.ok(!anyNaN, 'no NaN atoms');
   assert.ok(minY > 0, `truncation still enforced under normalize; min=${minY}`);
 });
+
+test('Stage 4: inline select IR materialises via matSelect (one select sampler)', async () => {
+  // An inline `select` with two constant-weighted, well-separated Normal
+  // branches — the viewer kernel-plot / CLM-body mixture shape. It used to
+  // sample via the IR-direct `materialiseSelectIR` (now deleted); it routes
+  // through the bridge → matSelect, the ONE select sampler (engine-concepts
+  // §12). matSelect synthesizes a Bernoulli(p₀) selector from the CONSTANT
+  // branch weights (no external selectorRef) — the capability folded out of
+  // materialiseSelectIR — then eval-all-branches-then-gather. Before the fold
+  // matSelect REFUSED a no-selectorRef select ("needs a materialisable
+  // selector"), so this is red-for-the-right-reason on the new synth path.
+  const materialiser = require('../materialiser.ts');
+  const N = 4000;
+  // A trivial module just to get a fully-wired ctx (worker, rootKey, maps).
+  const { ctx } = buildCtx('x = elementof(reals)', N, 41);
+  const branch = (w: number, mu: number) => ({ kind: 'call', op: 'weighted', args: [
+    { kind: 'lit', value: w, numType: 'real' },
+    { kind: 'call', op: 'Normal', kwargs: {
+      mu: { kind: 'lit', value: mu, numType: 'real' },
+      sigma: { kind: 'lit', value: 1.0, numType: 'real' } } },
+  ] });
+  // 0.75·Normal(-5,1) + 0.25·Normal(+5,1). K=2 synth → Bernoulli(0.75); the
+  // sel?0:1 gather sends sel=1 (p=0.75) to branch 0 (mu=-5).
+  const selIR = { kind: 'call', op: 'select',
+    branches: [branch(0.75, -5.0), branch(0.25, 5.0)] };
+  const m = await materialiser.materialiseMeasureIR(selIR, ctx);
+  const s = m.samples;
+  assert.equal(s.length, N);
+  let neg = 0, nearHi = 0;
+  for (let i = 0; i < N; i++) {
+    if (s[i] < 0) neg++;
+    if (s[i] > 3) nearHi++;
+  }
+  // ~75% of atoms come from the mu=-5 branch (negative), ~25% from mu=+5.
+  assert.ok(Math.abs(neg / N - 0.75) < 0.05, `mixing ratio ≈ 0.75; got ${neg / N}`);
+  assert.ok(nearHi > 0.15 * N && nearHi < 0.35 * N,
+    `~25% near +5 (both modes present); got ${nearHi / N}`);
+});

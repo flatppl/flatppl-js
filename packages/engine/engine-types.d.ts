@@ -456,6 +456,11 @@ export interface DerivationSelect {
   mode?: string;
   /** Spec for runtime-computed weights when logweightIRs is null. */
   runtimeWeights?: { ref: string; K: number; base: number };
+  /** CONSTANT per-branch weights for a no-external-selector mixture /
+   *  superpose (engine-concepts §12): matSelect synthesizes the selector
+   *  (Bernoulli/Categorical over the normalised weights) when selectorRef
+   *  is absent. Folds in the former materialiseSelectIR. */
+  synthWeights?: number[] | null;
 }
 
 /** Stochastic kernel-broadcast (`broadcast(Normal, mus, sigmas)`). */

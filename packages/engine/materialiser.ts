@@ -874,29 +874,73 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   });
 }
 
+// Synthesize the discrete-selector samples from CONSTANT branch weights
+// (engine-concepts §12). A no-external-selector mixture / superpose realises
+// its selector as Bernoulli(p₀) (K=2) or Categorical(p) (K≥3, 1-based per
+// engine convention) over the normalised weights, sampled once over N atoms.
+// Lifted verbatim from the former `materialiseSelectIR` so the constant-weight
+// case shares matSelect's single gather path rather than duplicating it.
+function _synthSelectorSamples(
+    name: string, weights: number[], N: number, ctx: any): Promise<any> {
+  const K = weights.length;
+  let wSum = 0;
+  for (const w of weights) wSum += w;
+  if (!(wSum > 0)) {
+    return Promise.reject(new Error('matSelect: branch weights sum to non-positive'));
+  }
+  const probs = weights.map((w) => w / wSum);
+  // K=2 → Bernoulli (1 → branch 0, 0 → branch 1, matching the sel?0:1 gather).
+  // K≥3 → Categorical (1-based; the gather subtracts selectorBase).
+  let selectorIR: any;
+  if (K === 2) {
+    selectorIR = { kind: 'call', op: 'Bernoulli',
+      kwargs: { p: { kind: 'lit', value: probs[0], numType: 'real' } } };
+  } else {
+    selectorIR = { kind: 'call', op: 'Categorical',
+      kwargs: { p: { kind: 'call', op: 'vector',
+        args: probs.map((pp) => ({ kind: 'lit', value: pp, numType: 'real' })) } } };
+  }
+  return ctx.sendWorker({
+    type: 'sampleN', ir: selectorIR, count: N,
+    seed: nameSeed(name + ':selector', ctx.rootKey),
+  }).then((reply: any) => reply.samples);
+}
+
 function matSelect(name: string, d: DerivationSelect, ctx: any) {
-  // Discrete-selector mixture generation (engine-concepts §11): the
-  // SAMPLING half of the shared select core (density is walkSelect).
-  // Eval-all-branches-then-gather — draw every branch's full N-atom
-  // batch AND the realised per-atom selector, then pick per atom:
+  // Discrete-selector mixture generation (engine-concepts §12): the SAMPLING
+  // half of the ONE select sampler (density is walkSelect). Eval-all-branches-
+  // then-gather — draw every branch's full N-atom batch AND the per-atom
+  // selector, then pick per atom:
   //
   //   out[i] = branch_{idx(selector[i])}.samples[i]
   //
-  // Drawing all branches for every atom (even unpicked ones) keeps
-  // the per-atom RNG threading consistent (the same property matIid /
-  // the worker sampleN rely on); the gather itself is deterministic.
-  // `marginalize` is a DENSITY-only concept — for sampling the
-  // selector is always realised (never marginalised).
+  // Drawing all branches for every atom (even unpicked ones) keeps the
+  // per-atom RNG threading consistent (the same property matIid / the worker
+  // sampleN rely on); the gather itself is deterministic. `marginalize` is a
+  // DENSITY-only concept — for sampling the selector is always realised.
+  //
+  // The selector has TWO sources, unified here (engine-concepts §12, "matSelect
+  // generalises matSuperpose; one node, thin policies"):
+  //   - **named** (`d.selectorRef`): a materialisable {0,1}/category condition
+  //     binding (ifelse / xs[i~Categorical]); read its realised per-atom value.
+  //   - **synthesized** (`d.synthWeights`): CONSTANT branch weights (a
+  //     superpose / constant mixture with no external selector) → realise the
+  //     selector from the weights (`_synthSelectorSamples`). This folds in the
+  //     former IR-direct `materialiseSelectIR` so there is ONE select sampler,
+  //     not a parallel reimplementation (Smell A).
+  // The gather is IDENTICAL for both sources; only the selector origin differs.
   const branchEntries = d.branches || [];
   if (branchEntries.length === 0) {
     return Promise.reject(new Error('matSelect: select has no branches'));
   }
-  if (!d.selectorRef) {
+  const hasSynth = Array.isArray(d.synthWeights)
+    && d.synthWeights.length === branchEntries.length;
+  if (!d.selectorRef && !hasSynth) {
     return Promise.reject(new Error(
-      'matSelect: sampling a select/ifelse needs a materialisable '
-      + 'selector (a named Bernoulli/Categorical condition). Its '
-      + 'density is tractable, but this binding cannot be sampled in '
-      + 'the current scope (inline / non-closed-form selector).'));
+      'matSelect: sampling a select/ifelse needs a materialisable selector '
+      + '(a named Bernoulli/Categorical condition) or constant branch weights. '
+      + 'Its density is tractable, but this binding cannot be sampled in the '
+      + 'current scope (inline / non-closed-form selector, no constant weights).'));
   }
   const branchP = branchEntries.map((b: any, bi: any) => {
     if (b && b.ref != null) return ctx.getMeasure(b.ref);
@@ -909,20 +953,24 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
         logWeights: reply.logWeights || null, logTotalmass: 0,
         n_eff: reply.samples.length }));
   });
-  const want = branchP.concat([ctx.getMeasure(d.selectorRef)]);
-  return Promise.all(want).then((ms) => {
-    const sel = empirical.materialiseUniform(ms[ms.length - 1]).samples;
-    const branches = ms.slice(0, ms.length - 1)
+  // Selector samples: realise the named condition, or synthesize from the
+  // constant weights (engine-concepts §12).
+  const selP: Promise<any> = d.selectorRef
+    ? ctx.getMeasure(d.selectorRef).then((m: any) => empirical.materialiseUniform(m).samples)
+    : _synthSelectorSamples(name, d.synthWeights as number[], ctx.sampleCount, ctx);
+  return Promise.all(([selP] as any[]).concat(branchP)).then((results: any[]) => {
+    const sel = results[0];
+    const branches = results.slice(1)
       .map((m: any) => empirical.materialiseUniform(m).samples);
     const K = branches.length;
     const N = ctx.sampleCount;
     const out = new Float64Array(N);
+    const base = (d.selectorBase != null) ? d.selectorBase : 1;
     for (let i = 0; i < N; i++) {
       let k;
       if (K === 2) {
         k = sel[i] ? 0 : 1;
       } else {
-        const base = (d.selectorBase != null) ? d.selectorBase : 1;
         k = (sel[i] | 0) - base;
       }
       if (k < 0) k = 0; else if (k >= K) k = K - 1;
@@ -1272,7 +1320,7 @@ function makeTracingStage(opts?: TracingStageOpts): MaterialiserStage {
 // re-key explicitly) all see the same root.
 //
 // Called at every public-API materialiser entry — materialiseMeasure,
-// materialiseMeasureIR, materialiseKernelBroadcastIR, materialiseSelectIR
+// materialiseMeasureIR, materialiseKernelBroadcastIR
 // — because hosts (viewer plot-plan.ts, tests in kernel-broadcast.test.ts)
 // can land at any of those without going through materialiseMeasure
 // first. Idempotent and cheap (one assignment after the first call).
@@ -1354,163 +1402,6 @@ function materialiseKernelBroadcastIR(ir: any, ctx: any) {
 }
 
 /**
- * IR-direct sampling of a `select(branches=[weighted(w_i, M_i)], …)`
- * shape (engine-concepts §11). Used by the viewer's kernel-plot path
- * (`plot-plan.materialiseConcreteMeasure`) when a kernel body's
- * realised measure contains a superpose / mixture / ifelse — the
- * lift form is a `select` IR with weighted branches but no
- * binding-graph derivation (the kernel body is sampled after
- * placeholder substitution; matSelect's derivation-keyed path
- * doesn't fit).
- *
- * Implementation mirrors matSelect's eval-all-branches-then-gather:
- *   - Fold per-branch weights to JS numbers (lits + arith over
- *     lits + Math consts).
- *   - Build a Bernoulli (K=2) / Categorical (K≥3) selector IR with
- *     the normalised probs.
- *   - Sample selector + each branch independently over N atoms.
- *   - Gather per atom from the chosen branch.
- *
- * Limitation: weights must reduce to numbers. Variable-weight
- * mixtures (e.g. `weighted(w_atom, …)` where w_atom is a per-atom
- * ref) need either a derivation-keyed materialiser (matSelect's
- * runtimeWeights branch) or an extension here. Out of scope today.
- */
-function materialiseSelectIR(ir: any, ctx: any) {
-  if (!ir || ir.kind !== 'call' || ir.op !== 'select') {
-    return Promise.reject(new Error('materialiseSelectIR: not a select call'));
-  }
-  _ensureRootKey(ctx);
-  const branches = ir.branches;
-  if (!Array.isArray(branches) || branches.length === 0) {
-    return Promise.reject(new Error('materialiseSelectIR: select has no branches'));
-  }
-  const K = branches.length;
-  const N = ctx.sampleCount;
-  const branchPairs: Array<{ weight: number; measureIR: any }> = [];
-  for (const b of branches) {
-    if (!b || b.kind !== 'call' || b.op !== 'weighted'
-        || !Array.isArray(b.args) || b.args.length !== 2) {
-      return Promise.reject(new Error(
-        'materialiseSelectIR: select branch must be weighted(w, m); got '
-        + JSON.stringify(b).slice(0, 80)));
-    }
-    const w = _foldNumericIR(b.args[0]);
-    if (w == null) {
-      return Promise.reject(new Error(
-        'materialiseSelectIR: select branch weight must reduce to a '
-        + 'number (literal or arith over literals); got '
-        + JSON.stringify(b.args[0]).slice(0, 100)));
-    }
-    branchPairs.push({ weight: w, measureIR: b.args[1] });
-  }
-  const wSum = branchPairs.reduce((a, p) => a + p.weight, 0);
-  if (!(wSum > 0)) {
-    return Promise.reject(new Error('materialiseSelectIR: weights sum to non-positive'));
-  }
-  const probs = branchPairs.map((p) => p.weight / wSum);
-  // Selector IR. K=2 → Bernoulli (1 → branch 0, 0 → branch 1,
-  // matching matSelect's gather convention). K≥3 → Categorical
-  // (1-based per engine convention; subtract 1 at gather time).
-  let selectorIR: any;
-  if (K === 2) {
-    selectorIR = { kind: 'call', op: 'Bernoulli',
-      kwargs: { p: { kind: 'lit', value: probs[0], numType: 'real' } } };
-  } else {
-    selectorIR = { kind: 'call', op: 'Categorical',
-      kwargs: { p: { kind: 'call', op: 'vector',
-        args: probs.map((pp) => ({ kind: 'lit', value: pp, numType: 'real' })) } } };
-  }
-  const selectorSeed = nameSeed('%select_ir:selector', ctx.rootKey);
-  const selectorP = ctx.sendWorker({
-    type: 'sampleN', ir: selectorIR, count: N, seed: selectorSeed,
-  });
-  // Sample each branch's measure. The measureIR can itself be any
-  // measure shape — recurse via the viewer's materialiseConcrete-
-  // Measure (which routes back here for nested selects). To keep
-  // this engine helper self-contained AND avoid a viewer↔engine
-  // cycle, we require branches to be either:
-  //   - a leaf distribution (sampleN-able directly), OR
-  //   - a closed-measure ref the caller's ctx.getMeasure resolves.
-  // For richer nested shapes (iid inside select etc.) the caller's
-  // materialiseConcreteMeasure should peel structure FIRST and
-  // call materialiseSelectIR once it reaches a select node.
-  const branchPs = branchPairs.map((p, bi) => {
-    const inner = p.measureIR;
-    if (inner && inner.kind === 'ref' && inner.ns === 'self') {
-      return ctx.getMeasure(inner.name);
-    }
-    // Leaf-distribution branch: collectRefArrays + worker sampleN
-    // (the engine's standard sample path).
-    return shared.collectRefArrays(inner, ctx)
-      .then((refArrays: any) => ctx.sendWorker({
-        type: 'sampleN', ir: inner, count: N, refArrays: refArrays,
-        seed: nameSeed('%select_ir:b' + bi, ctx.rootKey),
-      }))
-      .then((reply: any) => scalarMeasureN(reply.samples, {
-        logWeights: reply.logWeights || null,
-        logTotalmass: 0, n_eff: reply.samples.length,
-      }));
-  });
-  return Promise.all(([selectorP] as any[]).concat(branchPs)).then((results: any[]) => {
-    const sel = empirical.materialiseUniform(results[0]).samples
-      || results[0].samples;
-    const branchMs = results.slice(1).map((m: any) =>
-      empirical.materialiseUniform(m).samples || m.samples);
-    const out = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      let k;
-      if (K === 2) {
-        k = sel[i] ? 0 : 1;
-      } else {
-        k = (sel[i] | 0) - 1;
-      }
-      if (k < 0) k = 0; else if (k >= K) k = K - 1;
-      out[i] = branchMs[k][i];
-    }
-    return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N });
-  });
-}
-
-// Fold a numeric IR expression (literals + arithmetic ops over
-// literals + named constants) to a JS number. Returns null when
-// the expression isn't fully constant — viewer-side
-// substituteLocals inlines `%local` refs to lits but doesn't
-// constant-fold downstream arith.
-function _foldNumericIR(ir: any): number | null {
-  if (!ir || typeof ir !== 'object') return null;
-  if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
-  if (ir.kind === 'const') {
-    if (ir.name === 'pi') return Math.PI;
-    if (ir.name === 'inf') return Infinity;
-    return null;
-  }
-  if (ir.kind !== 'call' || !Array.isArray(ir.args)) return null;
-  const args = ir.args.map(_foldNumericIR);
-  for (const a of args) if (a == null) return null;
-  const op = ir.op;
-  if (args.length === 2) {
-    const a = args[0] as number, b = args[1] as number;
-    if (op === 'add') return a + b;
-    if (op === 'sub') return a - b;
-    if (op === 'mul') return a * b;
-    if (op === 'div' || op === 'divide') return a / b;
-    if (op === 'pow') return Math.pow(a, b);
-    if (op === 'mod') return a % b;
-  }
-  if (args.length === 1) {
-    const a = args[0] as number;
-    if (op === 'neg') return -a;
-    if (op === 'pos') return +a;
-    if (op === 'exp')  return Math.exp(a);
-    if (op === 'log')  return Math.log(a);
-    if (op === 'sqrt') return Math.sqrt(a);
-    if (op === 'abs')  return Math.abs(a);
-  }
-  return null;
-}
-
-/**
  * IR-direct measure materialisation — single engine entry for
  * callers that have a CONCRETE (closed, no-refs) measure IR and
  * need samples back. The viewer's kernel-plot path uses this
@@ -1525,7 +1416,7 @@ function _foldNumericIR(ir: any): number | null {
  *   - `joint`/`record`   → per-field materialise, combine via
  *                          `empirical.recordMeasure`.
  *   - `broadcast(<Dist>, args…)` → `materialiseKernelBroadcastIR`.
- *   - `select(branches=…)`       → `materialiseSelectIR`.
+ *   - `select(branches=…)`       → `matSelect` via the bridge.
  *   - leaf distribution → `collectRefArrays` + worker `sampleN`.
  *
  * Single source of truth for IR-direct measure dispatch — viewer
@@ -1622,6 +1513,41 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     // be composite (e.g. normalize(truncate(…))) — register() recurses.
     const from = register(ir.args[0], 'normalize:base');
     return { kind: 'normalize', from };
+  }
+  // select(branches=…) — inline mixture / superpose / ifelse (the viewer's
+  // kernel-plot select, or a CLM-body select). Map to a DerivationSelect for
+  // matSelect, the ONE select sampler (engine-concepts §12), instead of the
+  // former IR-direct materialiseSelectIR. Selector source: an external named
+  // selector (`ir.selectorName`, e.g. an expanded ifelse / xs[i]) → selectorRef;
+  // else CONSTANT branch weights (weighted(w, m) branches) → synthWeights (the
+  // former materialiseSelectIR synthesis). Each branch becomes matSelect's
+  // {ref}|{ir}: the inner measure m (a self-ref → {ref}, else inline {ir}). A
+  // non-constant weight with no named selector leaves both unset → matSelect
+  // refuses loudly (never a silently-wrong selector).
+  if (op === 'select' && Array.isArray(ir.branches) && ir.branches.length >= 1) {
+    const branches: any[] = [];
+    const synthWeights: number[] = [];
+    let allConst = true;
+    for (const b of ir.branches) {
+      let inner = b;
+      let w = 1;
+      if (b && b.kind === 'call' && b.op === 'weighted'
+          && Array.isArray(b.args) && b.args.length === 2) {
+        const wv = irShared.resolveConstant(b.args[0], childCtx.bindings,
+          new Set(), childCtx.fixedValues);
+        if (wv == null || !Number.isFinite(wv) || !(wv > 0)) allConst = false;
+        else w = wv;
+        inner = b.args[1];
+      }
+      synthWeights.push(w);
+      branches.push((inner && inner.kind === 'ref' && inner.ns === 'self')
+        ? { ref: inner.name } : { ir: inner });
+    }
+    const dSel: any = { kind: 'select', branches,
+      selectorBase: (ir.selectorBase != null) ? ir.selectorBase : 1 };
+    if (ir.selectorName) dSel.selectorRef = ir.selectorName;
+    else if (allConst) dSel.synthWeights = synthWeights;
+    return dSel;
   }
   // Default: treat as a leaf sample (the prior leaf-fallback behaviour — the
   // worker's sampleN surfaces a clear diagnostic if the op isn't a kernel).
@@ -1803,9 +1729,14 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       return materialiseKernelBroadcastIR(ir, ctx);
     }
   }
-  // select(branches=…) → engine select IR-direct entry.
+  // select(branches=…) → canonical matSelect via the Smell A bridge (the ONE
+  // select sampler, engine-concepts §12). The bridge maps the inline select to
+  // a DerivationSelect — branches → {ref}|{ir}, constant branch weights →
+  // synthWeights (selector synthesized in matSelect) or a named selectorName →
+  // selectorRef — and reuses matSelect's eval-all-branches-then-gather instead
+  // of the former IR-direct materialiseSelectIR reimplementation. [Smell A]
   if (ir.op === 'select' && Array.isArray(ir.branches) && ir.branches.length >= 1) {
-    return materialiseSelectIR(ir, ctx);
+    return _bridgeToHandler(ir, ctx);
   }
   // truncate(M, S) → canonical matTruncate via the Smell A bridge: register
   // the inline base M as a synthetic binding (resolvable by getMeasure +
@@ -1879,7 +1810,6 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
 module.exports = {
   materialiseMeasure,
   materialiseKernelBroadcastIR,
-  materialiseSelectIR,
   materialiseMeasureIR,
   // P3b — materialiser pipeline (engine-concepts §18.11 / §20.10.5
   // item 5). Stages get prepended to the default pipeline via
