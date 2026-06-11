@@ -111,7 +111,7 @@ function _domKind(dom: any): string {
 // (1)+(2) peel + expand-refs are done by expandMeasure. (3) computeClosureIR
 // inlines derived value bindings to the boundary set. (4) buildMcMarginalForm
 // rewrites a generative-composite tree into the canonical mcmarginal form.
-function _buildBody(input: any, deriv: any, ctx: any): { body: any; boundarySet: Set<string> } | null {
+function _buildBody(input: any, deriv: any, ctx: any): { body: any; boundarySet: Set<string>; mc: boolean } | null {
   const expanded = orchestrator.expandMeasure(input, ctx);
   if (!expanded) return null;
 
@@ -121,25 +121,29 @@ function _buildBody(input: any, deriv: any, ctx: any): { body: any; boundarySet:
   // its derived values down to its own leaf refs, which become inputs).
   const boundarySet = _boundarySet(deriv, ctx);
 
-  // (3) Inline derived VALUE bindings transitively down to the boundary set
-  // (multi-hop: b ← a ← theta). Reuses materialiser-shared's proven walk —
-  // the single IR-space closure (critique E: NOT shared with lift.ts's
-  // AST-space computeClosure).
-  let body = boundarySet.size > 0
-    ? shared.inlineBoundaryDerivations(expanded, boundarySet, ctx)
-    : expanded;
-
-  // (4) Generative-composite → canonical mcmarginal form (last). On every
-  // non-generative shape buildMcMarginalForm returns null and body is
-  // unchanged, so body === expandMeasure(name) on the green fixtures.
+  // (3)+(4) Generative-composite → canonical mcmarginal form, OR closed-form
+  // boundary inlining — mutually exclusive, matching the legacy
+  // `densIR = mcForm || inlineBoundaryDerivations(...)`. The mc-recipe peels
+  // and FOLDS the deterministic layers into the per-event recipe itself
+  // ("mc-form last" in spirit — it internalises the closure), so it consumes
+  // the EXPANDED body; only when it doesn't fire do we inline derived value
+  // bindings transitively down to the boundary set (multi-hop b ← a ← theta,
+  // the single IR-space closure — critique E). On every non-generative,
+  // no-derived-param shape both are no-ops, so body === expandMeasure(name)
+  // (the green-fixture snapshot).
+  let body = expanded;
+  let mc = false;
   try {
-    const mc = require('./mc-recipe.ts');
-    const form = mc.buildMcMarginalForm(body, ctx.bindings,
+    const mcr = require('./mc-recipe.ts');
+    const form = mcr.buildMcMarginalForm(expanded, ctx.bindings,
       (nm: any) => orchestrator.expandMeasure(nm, ctx));
-    if (form) body = form;
+    if (form) { body = form; mc = true; }
   } catch (_) { /* mc-recipe is best-effort here; density owns the hard path */ }
+  if (!mc && boundarySet.size > 0) {
+    body = shared.inlineBoundaryDerivations(expanded, boundarySet, ctx);
+  }
 
-  return { body, boundarySet };
+  return { body, boundarySet, mc };
 }
 
 // The fed-boundary names for a derivation, by kind.
@@ -197,8 +201,17 @@ function _structuralBoundaries(deriv: any): any[] {
     out.push({ name, source: src });
   };
   if (deriv.kind === 'bayesupdate' && Array.isArray(deriv.paramKwargs)) {
-    // Each kernel param is fed from the like-named prior record field.
-    for (const k of deriv.paramKwargs) push(k, deriv.from, k);
+    // Each kernel param is fed from the like-named prior record field. The
+    // bayesupdate expansion also references the boundary under a `%local`
+    // placeholder (deriv.params[i], e.g. `_pars_`); feedInputs binds the
+    // per-atom value under BOTH names, so record the alias on the source.
+    const plc: string[] = Array.isArray(deriv.params) ? deriv.params : [];
+    for (let i = 0; i < deriv.paramKwargs.length; i++) {
+      const k = deriv.paramKwargs[i];
+      const src: any = { kind: 'boundary', from: deriv.from, field: k };
+      if (plc[i] && plc[i] !== k) src.localAlias = plc[i];
+      out.push({ name: k, source: src });
+    }
   } else if (deriv.kind === 'jointchain' && Array.isArray(deriv.steps)) {
     const base = deriv.steps[0];
     if (base && base.ref != null) {
@@ -290,7 +303,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
     || (typeof input === 'string' && ctx && ctx.derivations ? ctx.derivations[input] : null);
   const built = _buildBody(input, deriv, ctx);
   if (!built) return null;
-  const { body, boundarySet } = built;
+  const { body, boundarySet, mc } = built;
   const reduce = _reduce(deriv);
   const { inputs, missing } = _enumerateInputs(body, deriv, boundarySet, ctx);
 
@@ -305,7 +318,86 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
       + ' — ⊆ invariant gap (Phase 1 advisory).');
   }
 
-  return { kind: 'call', op: 'clm', body, inputs, reduce };
+  const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
+  if (mc) node.mc = true;          // body carries an mcmarginal recipe → MC opts
+  return node;
 }
 
-module.exports = { lowerMeasure, describeInputShape, CLM_ENABLED };
+// ── feedInputs: the ONE feeding contract (Phase 2) ────────────────────────
+//
+// Materialise each clm input and bind it into refArrays / fixedEnv exactly as
+// the legacy matBayesupdate boundRefArrays loop + prepareDensityRefs did, so
+// the result is byte-identical on the bayesupdate fixtures — but driven by the
+// declared `inputs` instead of caller-specific knowledge, so sampler and
+// density (and the viewer) feed identically. Reference-identity preserving:
+// columns are bound BY REFERENCE (never `.slice()`d — a clone silently breaks
+// propagateLogWeights' independence dedupe and reintroduces M4-class bugs).
+//
+// Per input source:
+//   boundary — materialise `from` ONCE (getMeasure is cached); then per the
+//              shape: 'record' (whole-record param) → measureToPerAtomRecords;
+//              a present record field → measureToRefValue(parent.fields[field]);
+//              a scalar parent → measureToRefValue(parent). Bound under the
+//              input name AND its `localAlias` (the bayesupdate `%local`
+//              placeholder), matching the old dual-key feed.
+//   shared   — getMeasure(ref) → measureToRefValue (the explicit getMeasure path).
+//   fixed    — fixedValues.get(ref) → fixedEnv (pushed via setEnv merge by the
+//              caller / matScore).
+function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: any }> {
+  const refArrays: Record<string, any> = {};
+  const fixedEnv: Record<string, any> = {};
+  const byFrom = new Map<string, any[]>();
+  const sharedRefs: string[] = [];
+
+  for (const inp of node.inputs || []) {
+    const src = inp.source;
+    if (!src) continue;
+    if (src.kind === 'fixed') {
+      const nm = src.ref != null ? src.ref : inp.name;
+      if (ctx.fixedValues && ctx.fixedValues.has(nm)) fixedEnv[nm] = ctx.fixedValues.get(nm);
+    } else if (src.kind === 'shared') {
+      sharedRefs.push(src.ref != null ? src.ref : inp.name);
+    } else if (src.kind === 'boundary' && src.from != null) {
+      if (!byFrom.has(src.from)) byFrom.set(src.from, []);
+      byFrom.get(src.from)!.push(inp);
+    }
+  }
+
+  const bindOne = (parent: any, inp: any) => {
+    const src = inp.source;
+    const name = inp.name;
+    let val: any = null;
+    if (inp.shape && inp.shape.kind === 'record' && parent && parent.fields) {
+      // Whole-record param: each per-atom record object (field access resolves
+      // per atom). e.g. transport `pars` = record(a,b,mu).
+      val = shared.measureToPerAtomRecords(parent, name, 'feedInputs');
+    } else if (parent && parent.fields && src.field != null
+        && parent.fields[src.field] && parent.fields[src.field].samples) {
+      val = shared.measureToRefValue(parent.fields[src.field], src.field, 'feedInputs');
+    } else if (parent && parent.samples) {
+      val = shared.measureToRefValue(parent, name, 'feedInputs');
+    } else {
+      return;                         // nothing materialisable for this input
+    }
+    refArrays[name] = val;            // by reference — never clone
+    if (src.localAlias && src.localAlias !== name) refArrays[src.localAlias] = val;
+  };
+
+  const froms = Array.from(byFrom.keys());
+  return Promise.all(froms.map((f) => Promise.resolve(ctx.getMeasure(f))))
+    .then((parents: any[]) => {
+      for (let i = 0; i < froms.length; i++) {
+        for (const inp of byFrom.get(froms[i])!) bindOne(parents[i], inp);
+      }
+      return Promise.all(sharedRefs.map((r) => Promise.resolve(ctx.getMeasure(r))));
+    })
+    .then((measures: any[]) => {
+      for (let i = 0; i < sharedRefs.length; i++) {
+        refArrays[sharedRefs[i]] =
+          shared.measureToRefValue(measures[i], sharedRefs[i], 'feedInputs');
+      }
+      return { refArrays, fixedEnv };
+    });
+}
+
+module.exports = { lowerMeasure, feedInputs, describeInputShape, CLM_ENABLED };

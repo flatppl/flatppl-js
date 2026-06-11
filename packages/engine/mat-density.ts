@@ -27,6 +27,7 @@ const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
 const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
+const clm          = require('./clm.ts');
 
 const {
   nameSeed,
@@ -71,108 +72,79 @@ function mcDensityOpts(ctx: any): any {
 }
 
 // =====================================================================
+// matScore — the ONE CLM density consumer (engine-concepts §4 / the
+// measure-lowering unification Phase 2-3). Feed a clm node's inputs
+// (clm.feedInputs), score its body via the worker's logDensityN, and
+// apply the marginal reduce when the node declares one. Collapses the
+// bespoke refArrays plumbing that matBayesupdate / matLogdensityof /
+// matBroadcastLogdensity each carried (and drifted). Returns the raw
+// worker reply (per-atom log-densities in reply.samples) for reduce=null;
+// callers that need the reduced scalar pass through `applyReduce`.
+// =====================================================================
+
+function matScore(node: any, ctx: any, opts?: any): Promise<any> {
+  opts = opts || {};
+  return clm.feedInputs(node, ctx).then((fed: any) =>
+    pushFixedEnv(ctx, fed.fixedEnv).then(() => ctx.sendWorker({
+      type: 'logDensityN',
+      ir: node.body,
+      count: ctx.sampleCount,
+      refArrays: fed.refArrays,
+      observed: opts.observed,
+      tally: 'clamped',
+      // body carries an mcmarginal recipe ⇒ thread the MC marginalisation
+      // count + common-random-number seed (Phase 3 routes the marginal
+      // REDUCE here too; bayesupdate's reduce is null — it reweights).
+      ...(node.mc ? mcDensityOpts(ctx) : {}),
+    })));
+}
+
+// =====================================================================
 // Bayesupdate — reweight prior atoms by per-atom log-likelihood
 // =====================================================================
 
 function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
-  // Per spec: posterior = bayesupdate(L, prior), L = likelihoodof(K, obs)
-  // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs).
-  // The atoms are the prior's; logWeights = prior.logWeights + per-i logp.
-  const bodyIR = orchestrator.expandMeasure(d.bodyIR || d.bodyName,
-    { derivations: ctx.derivations, bindings: ctx.bindings });
-  if (!bodyIR) {
+  // Per spec: posterior = bayesupdate(L, prior), L = likelihoodof(K, obs).
+  // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs); the atoms
+  // are the prior's, logWeights = prior.logWeights + per-i logp.
+  //
+  // The likelihood body is lowered ONCE to a clm node: lowerMeasure peels +
+  // expands, inlines derived value bindings to the boundary inputs (H5/H3) or
+  // applies the generative MC form (§06 case-3), and declares the kernel's
+  // parametric inputs as boundaries fed from the prior — the spec lowering
+  // (bayesupdate(L,prior) makes the prior's variate the kernel's parametric
+  // input) instead of re-materialising a like-named binding via getMeasure
+  // (the boundary-conflation bug, audit §3 / H1/H6). matScore + clm.feedInputs
+  // own the feeding; this function keeps only the reweighting.
+  const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d });
+  if (!node) {
     return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
   }
-  // Generative-composite likelihood (the transport model): score via the
-  // MC marginalising-pushforward form instead of refusing (§06 case-3).
-  const mcForm = mcDensityForm(bodyIR, ctx);
-  // Closed-form likelihood: inline the kernel's DERIVED value bindings down to
-  // the boundary inputs (audit §3 #4, H5/H3). E.g. a body
-  // `iid(Normal(mu = a, sigma = b), n)` with `a = 5*theta2`,
-  // `b = abs(theta1)*theta2` becomes `iid(Normal(5*theta2, abs(theta1)*theta2),
-  // n)` so the fed boundaries (theta1, theta2) — not the like-named value
-  // bindings a/b (which have no measure derivation) — drive the density. The
-  // mc form does its own boundary inlining inside the recipe, so leave it.
-  const boundarySet = new Set<string>([
-    ...((d.paramKwargs as string[]) || []),
-    ...((d.params as string[]) || []),
-  ]);
-  const densIR = mcForm
-    || inlineBoundaryDerivations(bodyIR, boundarySet, ctx);
-  // Materialise the PRIOR first, then FEED its atoms as the kernel's boundary
-  // inputs (the spec lowering bayesupdate(L,prior)=logweighted(fn(logdensityof
-  // (L,_)),prior) makes the prior's variate the kernel's parametric input) —
-  // instead of letting prepareDensityRefs re-materialise a like-named module
-  // binding via getMeasure (the boundary-conflation bug, audit §3 / H1/H6).
-  return ctx.getMeasure(d.from).then((parent: any) => {
-    const boundRefArrays: Record<string, any> = {};
-    const pkw: string[] = d.paramKwargs || [];
-    const plc: string[] = d.params || [];
-    // Feed each kernel parametric input under BOTH the call-site kwarg name
-    // (`self pars`) AND the `%local` placeholder the bayesupdate expansion
-    // introduces (`%local _pars_`): the recipe references the same boundary
-    // under either namespace (resolveRef looks both up by bare name in env),
-    // so the per-atom value must be visible under both keys. measureToRefValue
-    // gives the SAME per-atom ref shape the normal getMeasure path produces
-    // (vector-atom inputs wrapped to [N,k] so body indexing like `ability[i]`
-    // still sees an array, not a scalar).
-    const feed = (idx: number, val: any) => {
-      if (pkw[idx]) boundRefArrays[pkw[idx]] = val;
-      if (plc[idx] && plc[idx] !== pkw[idx]) boundRefArrays[plc[idx]] = val;
-    };
-    const wholeRecordParam = pkw.length === 1 && parent && parent.fields
-      && !Object.prototype.hasOwnProperty.call(parent.fields, pkw[0]);
-    if (wholeRecordParam) {
-      // Single record-valued param consumes the WHOLE prior record (the
-      // transport `pars`: prior = record(a, b, mu), kernel body field-accesses
-      // pars.a/.b/.mu). Feed per-atom record objects so each access resolves
-      // per atom (audit §3 / H1 record-param case).
-      feed(0, measureToPerAtomRecords(parent, pkw[0], 'bayesupdate'));
-    } else if (parent && parent.fields) {
-      // Record prior, names match: map each field onto the like-named param.
-      for (let i = 0; i < pkw.length; i++) {
-        const fm = parent.fields[pkw[i]];
-        if (fm && fm.samples) feed(i, measureToRefValue(fm, pkw[i], 'bayesupdate'));
-      }
-    } else if (parent && parent.samples && pkw.length === 1) {
-      // Scalar prior → the single kernel parameter.
-      feed(0, measureToRefValue(parent, pkw[0], 'bayesupdate'));
+  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
+  return Promise.all([
+    Promise.resolve(ctx.getMeasure(d.from)),
+    matScore(node, ctx, { observed }),
+  ]).then(([parent, reply]: any[]) => {
+    const N = measureN(parent);
+    const existingLW = parent.logWeights;
+    const uniformLW = -Math.log(N);
+    const newLW = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const base = existingLW ? existingLW[i] : uniformLW;
+      newLW[i] = base + reply.samples[i];
     }
-    return prepareDensityRefs(densIR, ctx, 'bayesupdate', boundRefArrays).then((prep: any) => {
-      const { refArrays, fixedEnv } = prep;
-      const observed = orchestrator.resolveIRToValue(
-        d.obsIR, ctx.bindings, ctx.fixedValues);
-      return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
-        type: 'logDensityN',
-        ir: densIR,
-        count: ctx.sampleCount,
-        refArrays: refArrays,
-        observed: observed,
-        tally: 'clamped',
-        ...(mcForm ? mcDensityOpts(ctx) : {}),
-      })).then((reply: any) => {
-        const N = measureN(parent);
-        const existingLW = parent.logWeights;
-        const uniformLW = -Math.log(N);
-        const newLW = new Float64Array(N);
-        for (let i = 0; i < N; i++) {
-          const base = existingLW ? existingLW[i] : uniformLW;
-          newLW[i] = base + reply.samples[i];
-        }
-        const lTM = empirical.logSumExp(newLW);
-        const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
-        if (parent.fields) {
-          return Object.assign(
-            empirical.recordMeasure(parent.fields, newLW),
-            { logTotalmass: lTM, n_eff: nEff },
-          );
-        }
-        return scalarMeasureN(parent.samples, {
-          logWeights: newLW,
-          logTotalmass: lTM,
-          n_eff: nEff,
-        });
-      });
+    const lTM = empirical.logSumExp(newLW);
+    const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
+    if (parent.fields) {
+      return Object.assign(
+        empirical.recordMeasure(parent.fields, newLW),
+        { logTotalmass: lTM, n_eff: nEff },
+      );
+    }
+    return scalarMeasureN(parent.samples, {
+      logWeights: newLW,
+      logTotalmass: lTM,
+      n_eff: nEff,
     });
   });
 }
