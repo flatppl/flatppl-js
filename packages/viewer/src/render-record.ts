@@ -140,8 +140,22 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     };
   } else {
     // Drop any selections that no longer exist (rare — defensive).
+    // If the present-filter empties a previously non-empty selection,
+    // every selected key vanished from this measure's axes — a transient
+    // shape mismatch across re-renders of the "same" binding (e.g. a
+    // single-axis posterior whose one key (`lambda`) didn't survive an
+    // earlier render's seeding). Re-seed the default rather than strand
+    // the user on "Select at least one axis to plot" with no way back
+    // except a manual re-pick. This mirrors the marginalGroups empty-
+    // guard just below; the two selection states now self-heal alike.
+    // (A deliberate in-panel deselect-all routes through rerenderChart,
+    // not this reconciliation, so it is never undone here.)
     const present: Record<string, boolean> = {}; axes.forEach(function(a: any) { present[a.key] = true; });
-    ctx.recordSelection!.selected = ctx.recordSelection!.selected.filter(function(k: any) { return present[k]; });
+    const prevSelected = ctx.recordSelection!.selected;
+    const keptSelected = prevSelected.filter(function(k: any) { return present[k]; });
+    ctx.recordSelection!.selected = (prevSelected.length > 0 && keptSelected.length === 0)
+      ? axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a: any) { return a.key; })
+      : keptSelected;
     if (!ctx.recordSelection!.marginalGroups) ctx.recordSelection!.marginalGroups = allGroups.slice();
     else {
       const presentGroups: Record<string, boolean> = {}; allGroups.forEach(function(g: any) { presentGroups[g] = true; });
