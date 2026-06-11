@@ -309,10 +309,37 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
         { kind: 'jointchain', marginalize: false, labels: null,
           steps: measureDeriv.steps.slice(0, -1) }, ctx)
     : Promise.resolve(null);
+  // M1 fix (same boundary-binding family as H1): for a 2-step kchain, the
+  // kernel's NAMED boundary params (the prior variate field names) are left as
+  // self-refs in the expanded body; prepareDensityRefs would resolve them via
+  // getMeasure — the like-named DRAW, not the prior measure. When the prior
+  // DECOUPLES from those draws (relabelled / transformed prior), that scores
+  // the wrong measure (density contradicts the sample histogram by ~hundreds
+  // of nats). So materialise base.ref (the prior) and FEED its variate columns
+  // — the sample-side matJointchain.bindLeaf already binds the prior this way.
+  // (The scalar HOLE-param case already refs base.ref directly and resolves
+  // correctly via getMeasure; feeding it again is a harmless no-op override.)
+  const twoStepChain = isChain && !naryKchain && measureDeriv
+    && Array.isArray(measureDeriv.steps) && measureDeriv.steps.length === 2
+    && measureDeriv.steps[0] && measureDeriv.steps[0].ref != null;
+  const basePriorP = twoStepChain
+    ? ctx.getMeasure(measureDeriv.steps[0].ref)
+    : Promise.resolve(null);
   return Promise.all([
-    prepareDensityRefs(densIR, ctx, 'logdensityof'),
+    basePriorP,
     innerJointP,
-  ]).then(([prep, innerJoint]: [any, any]) => {
+  ]).then(([basePrior, innerJoint]: [any, any]) => {
+    const boundRefArrays: Record<string, any> = {};
+    if (basePrior && basePrior.fields) {
+      for (const k in basePrior.fields) {
+        const fm = basePrior.fields[k];
+        if (fm && fm.samples) boundRefArrays[k] = measureToRefValue(fm, k, 'logdensityof-kchain');
+      }
+    } else if (basePrior && basePrior.samples) {
+      boundRefArrays[measureDeriv.steps[0].ref] =
+        measureToRefValue(basePrior, measureDeriv.steps[0].ref, 'logdensityof-kchain');
+    }
+    return prepareDensityRefs(densIR, ctx, 'logdensityof', boundRefArrays).then((prep: any) => {
     const { refArrays, fixedEnv } = prep;
     if (innerJoint) {
       const comps = innerJoint.elems
@@ -361,6 +388,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
         logTotalmass: 0,
         n_eff: 1,
       });
+    });
     });
   });
   });
