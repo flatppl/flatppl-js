@@ -384,8 +384,13 @@ function inlineCallableRefs(ir: any, bindings: any): any {
   return walked;
 }
 
-function prepareDensityRefs(ir: any, ctx: any, label: string) {
+function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: any) {
   const refs = orchestrator.collectSelfRefs(ir);
+  // Reified-kernel boundary inputs are FED by the caller (the prior's atoms
+  // in bayesupdate, the integration variable in kchain), per the spec
+  // lowering — never re-materialised via getMeasure (audit §3 / H1). When
+  // `boundRefArrays` supplies a name, use that column and skip getMeasure.
+  const bound = boundRefArrays && typeof boundRefArrays === 'object' ? boundRefArrays : null;
   // Bijection bindings reachable from `ir` carry their registry
   // parameters (affine's mu/cov → {b, L} paramIRs) in a side-channel on
   // `binding.bijection`, NOT in the walked IR tree — so collectSelfRefs
@@ -434,6 +439,9 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
   const perAtomNames: string[] = [];
   const fixedEnv: Record<string, any> = {};
   refs.forEach((n: any) => {
+    // Boundary inputs the caller fed take precedence over any like-named
+    // module binding — do NOT getMeasure them (that is the conflation bug).
+    if (bound && Object.prototype.hasOwnProperty.call(bound, n)) return;
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     const isBinding = !!(ctx.bindings && ctx.bindings.has(n));
     const isFixed   = !!(ctx.fixedValues && ctx.fixedValues.has(n));
@@ -450,6 +458,7 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
       refArrays[perAtomNames[i]] =
         measureToRefValue(measures[i], perAtomNames[i], label);
     }
+    if (bound) for (const k in bound) refArrays[k] = bound[k];
     return { refArrays, fixedEnv, perAtomNames };
   });
 }

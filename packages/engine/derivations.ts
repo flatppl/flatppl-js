@@ -2994,12 +2994,22 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
   // only about the structural shape — does this binding look like a
   // bayesupdate over a likelihood of a kernel? — not about WHAT the
   // observation is.
+  // Record the kernel's parametric inputs (the reified boundary names).
+  // matBayesupdate must FEED these from the prior's atoms — per the spec
+  // lowering bayesupdate(L,prior) = logweighted(fn(logdensityof(L,_)),prior),
+  // the prior's variate IS the kernel's parametric input — rather than let
+  // prepareDensityRefs re-materialise a like-named module binding via
+  // getMeasure (the boundary-conflation bug, audit §3 / H1/H6). paramKwargs
+  // are the call-site names the prior fields map onto.
   return {
     kind: 'bayesupdate',
     from: priorRef.name,
     bodyName,
     bodyIR,
     obsIR,
+    paramKwargs: Array.isArray(Kir.paramKwargs) ? Kir.paramKwargs.slice()
+      : (Array.isArray(Kir.params) ? Kir.params.slice() : []),
+    params: Array.isArray(Kir.params) ? Kir.params.slice() : [],
   };
 }
 

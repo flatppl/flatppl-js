@@ -36,6 +36,7 @@ const {
   pushFixedEnv,
   measureFromValue,
   measureFromReply,
+  measureToRefValue,
   measureN,
   scalarMeasureN,
   resolveFnBody,
@@ -84,42 +85,64 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // MC marginalising-pushforward form instead of refusing (§06 case-3).
   const mcForm = mcDensityForm(bodyIR, ctx);
   const densIR = mcForm || bodyIR;
-  return Promise.all([
-    ctx.getMeasure(d.from),
-    prepareDensityRefs(densIR, ctx, 'bayesupdate'),
-  ]).then(([parent, prep]: [any, any]) => {
-    const { refArrays, fixedEnv } = prep;
-    const observed = orchestrator.resolveIRToValue(
-      d.obsIR, ctx.bindings, ctx.fixedValues);
-    return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
-      type: 'logDensityN',
-      ir: densIR,
-      count: ctx.sampleCount,
-      refArrays: refArrays,
-      observed: observed,
-      tally: 'clamped',
-      ...(mcForm ? mcDensityOpts(ctx) : {}),
-    })).then((reply: any) => {
-      const N = measureN(parent);
-      const existingLW = parent.logWeights;
-      const uniformLW = -Math.log(N);
-      const newLW = new Float64Array(N);
-      for (let i = 0; i < N; i++) {
-        const base = existingLW ? existingLW[i] : uniformLW;
-        newLW[i] = base + reply.samples[i];
+  // Materialise the PRIOR first, then FEED its atoms as the kernel's boundary
+  // inputs (the spec lowering bayesupdate(L,prior)=logweighted(fn(logdensityof
+  // (L,_)),prior) makes the prior's variate the kernel's parametric input) —
+  // instead of letting prepareDensityRefs re-materialise a like-named module
+  // binding via getMeasure (the boundary-conflation bug, audit §3 / H1/H6).
+  return ctx.getMeasure(d.from).then((parent: any) => {
+    const boundRefArrays: Record<string, any> = {};
+    const pk: string[] = d.paramKwargs || [];
+    // measureToRefValue gives the SAME per-atom ref shape the normal
+    // getMeasure path produces (e.g. vector-atom inputs wrapped to [N,k] so
+    // body indexing like `ability[i]` still sees an array, not a scalar).
+    if (parent && parent.fields) {
+      // Record prior: map each field onto the kernel param of the same name.
+      for (const p of pk) {
+        const fm = parent.fields[p];
+        if (fm && fm.samples) boundRefArrays[p] = measureToRefValue(fm, p, 'bayesupdate');
       }
-      const lTM = empirical.logSumExp(newLW);
-      const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
-      if (parent.fields) {
-        return Object.assign(
-          empirical.recordMeasure(parent.fields, newLW),
-          { logTotalmass: lTM, n_eff: nEff },
-        );
-      }
-      return scalarMeasureN(parent.samples, {
-        logWeights: newLW,
-        logTotalmass: lTM,
-        n_eff: nEff,
+    } else if (parent && parent.samples && pk.length === 1) {
+      // Scalar prior → the single kernel parameter.
+      boundRefArrays[pk[0]] = measureToRefValue(parent, pk[0], 'bayesupdate');
+    }
+    // (A record-valued single param whose fields match a record prior — the
+    // transport `pars` case — isn't name-matched here; it falls through unfed
+    // and is handled in the record-param follow-up.)
+    return prepareDensityRefs(densIR, ctx, 'bayesupdate', boundRefArrays).then((prep: any) => {
+      const { refArrays, fixedEnv } = prep;
+      const observed = orchestrator.resolveIRToValue(
+        d.obsIR, ctx.bindings, ctx.fixedValues);
+      return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
+        type: 'logDensityN',
+        ir: densIR,
+        count: ctx.sampleCount,
+        refArrays: refArrays,
+        observed: observed,
+        tally: 'clamped',
+        ...(mcForm ? mcDensityOpts(ctx) : {}),
+      })).then((reply: any) => {
+        const N = measureN(parent);
+        const existingLW = parent.logWeights;
+        const uniformLW = -Math.log(N);
+        const newLW = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+          const base = existingLW ? existingLW[i] : uniformLW;
+          newLW[i] = base + reply.samples[i];
+        }
+        const lTM = empirical.logSumExp(newLW);
+        const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
+        if (parent.fields) {
+          return Object.assign(
+            empirical.recordMeasure(parent.fields, newLW),
+            { logTotalmass: lTM, n_eff: nEff },
+          );
+        }
+        return scalarMeasureN(parent.samples, {
+          logWeights: newLW,
+          logTotalmass: lTM,
+          n_eff: nEff,
+        });
       });
     });
   });

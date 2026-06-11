@@ -399,6 +399,13 @@ export interface DerivationBayesupdate {
   bodyName: string | null;
   bodyIR: IRNode | null;
   obsIR: IRNode;
+  /** The kernel's parametric (reified-boundary) input names. matBayesupdate
+   *  FEEDS these from the prior's atoms — per the spec lowering
+   *  bayesupdate(L,prior)=logweighted(fn(logdensityof(L,_)),prior) the prior's
+   *  variate IS the kernel's parametric input — rather than re-materialise a
+   *  like-named module binding via getMeasure (audit §3 / H1/H6). */
+  paramKwargs?: string[];
+  params?: string[];
 }
 
 /** `logdensityof(M, x)` — evaluate density at fixed observation `x`. */
