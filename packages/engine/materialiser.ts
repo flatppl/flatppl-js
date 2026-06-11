@@ -692,6 +692,42 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
   }));
 }
 
+// CLM sample-side consumer (measure-lowering unification Phase 4). A clm node
+// from lowerMeasure carries the canonical `body` + the declared boundary
+// `inputs`. On the sample side a boundary is fed as a MEASURE: bind each
+// boundary name (and its localAlias) to the materialised `from` measure (or
+// its record field) in a child ctx, then walk `body` through the UNCHANGED
+// materialiser — the body's draws resolve their boundary refs via the child
+// getMeasure to the fed measure, exactly as matJointchain.bindLeaf feeds the
+// prior, but driven by the shared clm.inputs descriptor density also reads.
+// `shared` / `fixed` inputs need no override (the parent ctx already resolves
+// them via getMeasure / fixedValues). Empty boundary set ⇒ today's path.
+function matClm(ir: any, ctx: any): Promise<any> {
+  const overrides = new Map<string, () => Promise<any>>();
+  for (const inp of ir.inputs || []) {
+    const src = inp.source;
+    if (src && src.kind === 'boundary' && src.from != null) {
+      const fetch = () => Promise.resolve(ctx.getMeasure(src.from)).then((m: any) =>
+        (src.field != null && m && m.fields && m.fields[src.field])
+          ? m.fields[src.field] : m);
+      overrides.set(inp.name, fetch);
+      if (src.localAlias && src.localAlias !== inp.name) overrides.set(src.localAlias, fetch);
+    }
+  }
+  if (overrides.size === 0) return materialiseMeasureIR(ir.body, ctx);
+  const cache = new Map<string, any>();
+  const child: any = Object.assign({}, ctx);
+  child.getMeasure = function (n: string) {
+    if (cache.has(n)) return cache.get(n);
+    const p = overrides.has(n)
+      ? Promise.resolve(overrides.get(n)!())
+      : Promise.resolve(ctx.getMeasure(n));
+    cache.set(n, p);
+    return p;
+  };
+  return materialiseMeasureIR(ir.body, child);
+}
+
 function matTuple(d: DerivationTuple, ctx: any) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
@@ -1450,6 +1486,17 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       "materialiseMeasureIR: non-call IR (kind '" + ir.kind + "')"));
   }
   _ensureRootKey(ctx);
+  // clm{body, inputs, reduce} — the canonical lowered measure (measure-
+  // lowering unification Phase 4, sample half). matClm binds the boundary
+  // inputs as measures in a child ctx, then walks the SAME body the density
+  // side scores — so sampling and density consume one lowering. Empty inputs
+  // ⇒ materialiseMeasureIR(body) bit-for-bit. Additive: lowerMeasure is the
+  // only producer and no sample-side caller routes through it in production
+  // yet (the reroute + bindLeaf retirement are staged behind CLM_ENABLED per
+  // the plan); exercised today by the sample≡density equivalence test.
+  if (ir.op === 'clm') {
+    return matClm(ir, ctx);
+  }
   // lawof(M) → peel, recurse on M.
   if (ir.op === 'lawof' && Array.isArray(ir.args) && ir.args.length === 1) {
     return materialiseMeasureIR(ir.args[0], ctx);

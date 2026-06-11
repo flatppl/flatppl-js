@@ -23,6 +23,16 @@ const eng = require('../index.ts');
 const der = require('../derivations.ts');
 const { collectSelfRefs } = require('../ir-shared.ts');
 const { lowerMeasure } = require('../clm.ts');
+const { buildCtx } = require('./_agreement-harness.ts');
+
+// Mean / std of a measure's scalar atoms (uniform weights — these fixtures
+// have none) for the sample-side matClm equivalence check.
+function meanStd(m: any): { mean: number; std: number; n: number } {
+  const s = m.samples || (m.value && m.value.data);
+  let mean = 0; for (let i = 0; i < s.length; i++) mean += s[i]; mean /= s.length;
+  let v = 0; for (let i = 0; i < s.length; i++) v += (s[i] - mean) ** 2; v /= s.length;
+  return { mean, std: Math.sqrt(v), n: s.length };
+}
 
 function ctxOf(src: string) {
   const b = der.buildDerivations(eng.processSource(src).bindings);
@@ -117,6 +127,29 @@ test('[clm Phase 1] a plain product measure has reduce=null', () => {
   assert.ok(node && node.op === 'clm');
   assert.strictEqual(node.reduce, null);
   assertSubset(node, ctx, 'plain-normal');
+});
+
+test('[clm Phase 4] matClm samples a kchain through the canonical body ≡ the direct path', async () => {
+  // Sample-side CLM consumer: lowerMeasure(ch) → clm; materialiseMeasureIR(clm)
+  // routes through matClm (binds the prior M as a boundary measure, walks the
+  // body). Must match the direct matJointchain marginal sample distribution —
+  // kchain(Normal(0,10), Normal(mu=a,sigma=1)) marginalises to ~Normal(0,√101).
+  // (Statistical, not bit-identical: independent seeding of the two paths.)
+  const src = `
+a ~ Normal(0.0, 0.01)
+K = functionof(Normal(mu = a, sigma = 1.0), a = a)
+M = Normal(0.0, 10.0)
+ch = kchain(M, K)`;
+  const direct = meanStd(await buildCtx(src, 40000, 1234).ctx.getMeasure('ch'));
+  const { ctx } = buildCtx(src, 40000, 1234);
+  const node = lowerMeasure('ch', ctx);
+  const viaClm = meanStd(await eng.materialiser.materialiseMeasureIR(node, ctx));
+  assert.ok(Math.abs(direct.mean - viaClm.mean) < 0.4,
+    `matClm mean ${viaClm.mean.toFixed(3)} vs direct ${direct.mean.toFixed(3)}`);
+  assert.ok(Math.abs(direct.std - viaClm.std) / direct.std < 0.1,
+    `matClm std ${viaClm.std.toFixed(3)} vs direct ${direct.std.toFixed(3)} (>10% apart)`);
+  // And it really is the marginal spread (√101 ≈ 10.05), not the kernel's σ=1.
+  assert.ok(viaClm.std > 5, `matClm should sample the marginal (std≈10), got ${viaClm.std.toFixed(2)}`);
 });
 
 test('[clm Phase 1] bayesupdate — kernel params are boundary inputs fed from the prior (separate-prior idiom)', () => {
