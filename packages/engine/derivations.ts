@@ -1478,7 +1478,95 @@ function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any): DerivationTru
 // pushfwd's f-position lift signature (see signatureOf) lifts inline
 // fn / functionof shapes to anon bindings, so by the time we classify
 // here both args are self-refs.
-function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPushfwd | null {
+// The literal field names of a `get` selector IR: a single string literal
+// (`get(_, "a")`) → ['a']; a `vector` of string literals
+// (`get(_, ["a", "c"])`) → ['a','c']. Integer-index selectors (positional
+// projection of an iid/array measure) return null — a documented follow-up
+// (spec §06 case-2 lists iid, but its closed-form needs a positional rewrite
+// + the H7 reused-factor re-seed; the named-product case is the common one).
+function _selectorNames(sel: any): string[] | null {
+  if (!sel) return null;
+  if (sel.kind === 'lit' && typeof sel.value === 'string') return [sel.value];
+  if (sel.kind === 'call' && sel.op === 'vector' && Array.isArray(sel.args)) {
+    const names: string[] = [];
+    for (const a of sel.args) {
+      if (!a || a.kind !== 'lit' || typeof a.value !== 'string') return null;
+      names.push(a.value);
+    }
+    return names.length > 0 ? names : null;
+  }
+  return null;
+}
+
+// The component map { fieldName → sub-measure binding ref } of a measure
+// binding whose IR is an explicit NAMED product (`joint`/`record` with
+// `fields`), following plain aliases. Returns null for any other shape
+// (positional joint, iid, relabel, distribution, …). Mirrors
+// classifyRecordOrJoint's named-field extraction so the projected derivation
+// references the exact same sub-measure bindings the base uses.
+function _namedProductComponents(
+  name: string, bindings: any, seen: Set<string>,
+): Record<string, string> | null {
+  if (!name || seen.has(name)) return null;
+  seen.add(name);
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    return _namedProductComponents(ir.name, bindings, seen);
+  }
+  if (ir.kind === 'call' && (ir.op === 'joint' || ir.op === 'record')
+      && Array.isArray(ir.fields) && ir.fields.length > 0) {
+    const comp: Record<string, string> = {};
+    for (const f of ir.fields) {
+      if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
+      comp[f.name] = f.value.name;
+    }
+    return comp;
+  }
+  return null;
+}
+
+// Spec §06 case-2 detector. `pushfwd(fn(get(_, S)), M)` where M is an
+// explicit named product is the closed-form marginal over the selected
+// components. Returns a `record` derivation (multi-name S) or an `alias`
+// derivation (single-name S — the bare component), or null when this is not
+// a structural projection of a named product (→ the bijection path).
+function _detectStructuralProjection(
+  fnRef: string, baseRef: string, bindings: any,
+): DerivationRecord | DerivationAlias | null {
+  const fb = bindings.get(fnRef);
+  // The caller already verified fnRef is a callable-like binding; an
+  // `fn(...)` projection lowers to a `functionof` IR but carries binding
+  // type 'fn', so gate on the IR op, not the type label.
+  if (!fb || !fb.ir || fb.ir.op !== 'functionof') return null;
+  const body = fb.ir.body;
+  // A pure single-input projection: body is `get(<the lone param>, <selector>)`.
+  if (!body || body.kind !== 'call' || body.op !== 'get'
+      || !Array.isArray(body.args) || body.args.length !== 2) return null;
+  const params: any[] = Array.isArray(fb.ir.params) ? fb.ir.params : [];
+  if (params.length !== 1) return null;
+  const holeRef = body.args[0];
+  if (!holeRef || holeRef.kind !== 'ref' || holeRef.ns !== '%local'
+      || holeRef.name !== params[0]) return null;
+  const names = _selectorNames(body.args[1]);
+  if (!names) return null;
+  const comp = _namedProductComponents(baseRef, bindings, new Set<string>());
+  if (!comp) return null;
+  for (const nm of names) {
+    if (!Object.prototype.hasOwnProperty.call(comp, nm)) return null;
+  }
+  // Single-name selector → the bare component value (a scalar measure): an
+  // alias to that sub-measure. Multi-name → the projected record.
+  if (body.args[1].kind === 'lit') {
+    return { kind: 'alias', from: comp[names[0]] };
+  }
+  const fields: Record<string, string> = {};
+  for (const nm of names) fields[nm] = comp[nm];   // selector order (get semantics)
+  return { kind: 'record', fields };
+}
+
+function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPushfwd | DerivationRecord | DerivationAlias | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const fIR = rhsIR.args[0];
   const mIR = rhsIR.args[1];
@@ -1499,6 +1587,23 @@ function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPush
   if (!isCallableLikeBindingType(fBinding.type)) {
     return null;
   }
+  // Spec §06 case-2: the non-bijective projection pattern
+  // `pushfwd(fn(get(_, [...])), M)` on a measure with explicit named
+  // product structure (joint / record) is a MARGINALIZATION whose
+  // marginal density is closed-form — the product over the SELECTED
+  // components (the un-selected ones integrate to 1 since independent).
+  // Rather than special-case it in walkPushfwd AND matPushfwd, rewrite it
+  // to the projected product here: a multi-name selector → a `record`
+  // derivation over the selected fields, a single-name selector → the bare
+  // component (`alias`). Both sides then route through the existing
+  // record/alias handlers — sampling drops the marginalized fields (same
+  // sub-measure refs ⇒ same per-binding atoms, so it is the exact
+  // projection of M's joint draw), density scores Σ_{k∈S} logp_{M_k}. A
+  // non-projection f, or a base without explicit named product structure
+  // (positional iid + integer indices, jointchain), returns null and falls
+  // to the bijection-required `pushfwd` path (follow-ups in TODO §06).
+  const proj = _detectStructuralProjection(fIR.name, mIR.name, bindings);
+  if (proj) return proj;
   return { kind: 'pushfwd', from: mIR.name, fnRef: fIR.name };
 }
 

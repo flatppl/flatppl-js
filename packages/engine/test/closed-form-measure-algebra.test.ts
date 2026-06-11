@@ -1384,3 +1384,77 @@ posterior = bayesupdate(L, prior)
   assert.ok(post.n_eff > SAMPLE_COUNT * 0.02,
     'n_eff > 2% of N (importance overlap), got ' + post.n_eff);
 });
+
+// =====================================================================
+// Structural projection — spec §06 case-2 (the closed-form marginal).
+// `pushfwd(fn(get(_, S)), M)` on an explicit named product (joint/record)
+// is a MARGINALIZATION over the un-selected components. The engine rewrites
+// it at classification time to the projected product (a `record` derivation,
+// or an `alias` for a single-name selector), so sampling drops the
+// marginalized fields (selected fields stay atom-for-atom equal to M's, the
+// exact projection of the joint draw) and density scores Σ_{k∈S} logp_{M_k}
+// closed-form (the dropped components integrate to 1). Non-projection f and
+// non-named-product bases (positional iid + integer indices, jointchain)
+// stay on the bijection-required `pushfwd` path.
+// =====================================================================
+
+test('structural projection: density is the closed-form marginal Σ_{k∈S} logp_k (§06 case-2)', async () => {
+  const ctx = makeCtx(`
+M = joint(a = Normal(0.0, 1.0), b = Normal(5.0, 1.0), c = Normal(-2.0, 1.0))
+proj = pushfwd(fn(get(_, ["a", "c"])), M)
+lp = logdensityof(proj, record(a = 0.5, c = -0.3))
+`);
+  // proj rewrites to the projected record — no bijection needed; b is gone.
+  assert.equal(ctx.derivations.proj.kind, 'record');
+  assert.deepEqual(Object.keys(ctx.derivations.proj.fields).sort(), ['a', 'c']);
+  const lp = await ctx.getMeasure('lp');
+  // logφ(0.5; 0,1) + logφ(−0.3; −2,1) — b marginalised (integrates to 1).
+  const expected = normalLogpdf(0.5, 0, 1) + normalLogpdf(-0.3, -2, 1);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
+    `projection marginal density: got ${lp.samples[0]}, expected ${expected}`);
+});
+
+test('structural projection: sampling drops marginalised fields, keeps selected atom-for-atom (§06 case-2)', async () => {
+  const ctx = makeCtx(`
+M = joint(a = Normal(0.0, 1.0), b = Normal(5.0, 1.0), c = Normal(-2.0, 1.0))
+proj = pushfwd(fn(get(_, ["a", "c"])), M)
+`);
+  const [M, proj] = await Promise.all([ctx.getMeasure('M'), ctx.getMeasure('proj')]);
+  assert.deepEqual(Object.keys(proj.fields).sort(), ['a', 'c'],
+    'projection keeps only the selected fields (b marginalised out)');
+  let maxA = 0; let maxC = 0;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    maxA = Math.max(maxA, Math.abs(proj.fields.a.samples[i] - M.fields.a.samples[i]));
+    maxC = Math.max(maxC, Math.abs(proj.fields.c.samples[i] - M.fields.c.samples[i]));
+  }
+  assert.equal(maxA, 0, 'projected a is exactly M.a (same sub-measure refs)');
+  assert.equal(maxC, 0, 'projected c is exactly M.c');
+});
+
+test('structural projection: single-name selector is the bare component (alias), density exact (§06 case-2)', async () => {
+  const ctx = makeCtx(`
+M = joint(a = Normal(1.0, 0.5), b = Normal(5.0, 1.0))
+pa = pushfwd(fn(get(_, "a")), M)
+lp = logdensityof(pa, 1.3)
+`);
+  assert.equal(ctx.derivations.pa.kind, 'alias');
+  const lp = await ctx.getMeasure('lp');
+  const expected = normalLogpdf(1.3, 1.0, 0.5);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
+    `single-field projection density: got ${lp.samples[0]}, expected ${expected}`);
+});
+
+test('structural projection: a non-projection f stays on the bijection-required pushfwd path', async () => {
+  // `get(_, "a") + 1.0` is a genuine transform, not a pure projection — it
+  // must NOT be rewritten to a record/alias, and density without a bijection
+  // annotation refuses loudly (spec §06 case-3).
+  const ctx = makeCtx(`
+M = joint(a = Normal(0.0, 1.0), b = Normal(0.0, 1.0))
+nu = pushfwd(fn(get(_, "a") + 1.0), M)
+lp = logdensityof(nu, 1.2)
+`);
+  assert.equal(ctx.derivations.nu.kind, 'pushfwd');
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('lp')),
+    /requires a bijection annotation/,
+    'a non-projection pushfwd density must refuse without a bijection');
+});
