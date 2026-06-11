@@ -1,0 +1,40 @@
+sigma = 0.2
+
+a = elementof(reals)
+b = elementof(reals)
+mu = elementof(reals)
+
+glob_pars = record(a = 0.1, b = 0.3, mu = 1.1)
+
+generator_dist = Normal(mu, sigma)
+x ~ generator_dist
+
+delta_alpha = (2 * draw(Uniform(interval(0, 1))) + 1 ) * a
+y = (x + delta_alpha)^3 * exp(x - b)
+
+z = post(y)
+
+generator = kernelof(x, a = a, b = b, mu = mu)
+transport = kernelof(y, x = x, a = a, b = b, mu = mu)
+post = x -> x/2
+
+n = elementof(posintegers)
+xs ~ iid(generator(a, b, mu), n)
+ys ~ transport.(xs, [a], [b], [mu])
+zs = post.(ys)
+
+k_model_n = kernelof(zs, n = n, a = a, b = b, mu = mu)
+
+data = [3.81359, 2.91195, 3.20085, 3.09185, 3.34005, 4.96067, 0.842412, 2.34128, 3.06224, 2.59162, 2.5017, 5.39892, 1.19806, 1.60855, 1.44647, 0.771489, 0.26153, 1.56184, 0.561171, 4.4823]
+
+k_model = (a, b, mu) -> k_model_n(lengthof(data), a, b, mu)
+
+L = likelihoodof(k_model, data)
+
+prior = joint(a = Exponential(0.1), b = Exponential(0.3), mu = Exponential(1.1))
+
+posterior = bayesupdate(L, prior)
+
+model_dist = k_model(glob_pars)
+rstate = rnginit([1, 2, 3, 4])
+sim_data, _ = rand(rstate, model_dist)

@@ -9,7 +9,7 @@
 //   broadcast(kernelof(<value-expr-with-internal-draw>, …), args…)
 //
 // The motivating model is the stochastic transport kernel
-// (flatppl-examples/simple-transport.flatppl):
+// (test/fixtures/simple-transport1.flatppl):
 //
 //   delta_alpha = (2 * draw(Uniform(interval(0,1))) + 1) * a
 //   y           = (x + delta_alpha)^3 * exp(x - b)
@@ -53,7 +53,7 @@ const { createWorkerHandler } = require('../worker.ts');
 
 const TRANSPORT_PATH =
   'test/fixtures'
-  + '/simple-transport.flatppl';
+  + '/simple-transport1.flatppl';
 
 // Real (async) materialiser harness — mirrors measure-algebra.test.ts's
 // `materialiseReal` and the joint-composite test's ctx.

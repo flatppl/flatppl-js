@@ -849,7 +849,7 @@ function isNestedBroadcastCompositeKernelBinding(
 // deterministic transform that closes over ONE OR MORE INTERNAL DRAWS —
 // hoisted `draw(<DistCall>)` bindings that are NOT kernel boundary
 // params. The canonical motivating model is the stochastic transport
-// kernel (flatppl-examples/simple-transport.flatppl):
+// kernel (test/fixtures/simple-transport1.flatppl):
 //
 //   delta_alpha = (2 * draw(Uniform(interval(0,1))) + 1) * a
 //   y           = (x + delta_alpha)^3 * exp(x - b)

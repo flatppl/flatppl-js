@@ -20,7 +20,7 @@ const { buildMcMarginalForm } = require(ENG + 'mc-recipe.ts');
 const { createWorkerHandler } = require(ENG + 'worker.ts');
 const fs = require('node:fs');
 
-const MODEL = 'test/fixtures/simple-transport.flatppl';
+const MODEL = 'test/fixtures/simple-transport1.flatppl';
 
 function buildForm() {
   const src = fs.readFileSync(MODEL, 'utf8');

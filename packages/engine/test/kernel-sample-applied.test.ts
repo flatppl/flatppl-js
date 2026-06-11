@@ -17,7 +17,7 @@ const ENG = '../';
 const { processSource, orchestrator, materialiser } = require(ENG + 'index.ts');
 const { createWorkerHandler } = require(ENG + 'worker.ts');
 
-const SRC = fs.readFileSync(path.join(__dirname, 'fixtures', 'simple-transport.flatppl'), 'utf8');
+const SRC = fs.readFileSync(path.join(__dirname, 'fixtures', 'simple-transport1.flatppl'), 'utf8');
 // `raw` = the analyzer bindings (pre-lift; what the viewer keeps as
 // ctx.currentBindings). deriveAppliedKernel re-runs buildDerivations, so it must
 // start from RAW bindings — re-lifting already-lifted bindings won't classify

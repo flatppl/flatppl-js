@@ -20,6 +20,13 @@ const PARSE_FIXTURES = [
   'flatppl-uncorrelated_background-draws-auxm.flatppl',
   'flatppl-uncorrelated_background-draws-priors.flatppl',
   'minimal.flatppl',
+  // Generative transport-kernel variants (the k_model / k_model_n
+  // motivating model): `1` reifies via a `pars` RECORD boundary, `2`
+  // via scalar `a`/`b`/`mu` boundaries. `1` also has deeper coverage
+  // in kernel-sample-applied / mc-likelihood-e2e / generative-kernel-
+  // broadcast; the parse-smoke here is the shared tripwire for the pair.
+  'simple-transport1.flatppl',
+  'simple-transport2.flatppl',
 ];
 
 for (const name of PARSE_FIXTURES) {
