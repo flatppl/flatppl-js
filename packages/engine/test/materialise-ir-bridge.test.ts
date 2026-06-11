@@ -86,3 +86,30 @@ m = jointchain(prior, fwd)`;
   for (let i = 0; i < N; i++) if (Number.isNaN(yS[i])) { anyNaN = true; break; }
   assert.ok(!anyNaN, 'no NaN atoms');
 });
+
+test('Stage 3: inline normalize(truncate) kernel in a CLM body materialises via matNormalize', async () => {
+  // fwd = functionof(normalize(truncate(Normal(mu=theta,1),(0,inf))), theta=theta).
+  // normalize wraps truncate (itself bridged): the base is composite, so the
+  // bridge's register() recurses (normalize→truncate→leaf). matNormalize
+  // renormalises → outer log-total-mass 0; truncation still enforced (y>0).
+  const src = `
+theta = elementof(reals)
+yn = normalize(truncate(Normal(mu = theta, sigma = 1.0), interval(0.0, inf)))
+fwd = functionof(yn, theta = theta)
+prior = Normal(mu = 2.0, sigma = 0.5)
+m = jointchain(prior, fwd)`;
+  const N = 1500;
+  const { ctx } = buildCtx(src, N, 29);
+  const m = await ctx.getMeasure('m');
+  assert.ok(m.elems && m.elems.length === 2, 'jointchain retain → 2-tuple measure');
+  assert.ok(Math.abs(m.logTotalmass) < 1e-9,
+    `normalize(·) → log-total-mass 0; got ${m.logTotalmass}`);
+  const yS = m.elems[1].samples;
+  let minY = Infinity, anyNaN = false;
+  for (let i = 0; i < N; i++) {
+    if (Number.isNaN(yS[i])) { anyNaN = true; break; }
+    if (yS[i] < minY) minY = yS[i];
+  }
+  assert.ok(!anyNaN, 'no NaN atoms');
+  assert.ok(minY > 0, `truncation still enforced under normalize; min=${minY}`);
+});

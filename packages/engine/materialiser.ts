@@ -1616,6 +1616,13 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       return { kind: 'weighted', from, logShift: lw };
     }
   }
+  if (op === 'normalize' && Array.isArray(ir.args) && ir.args.length === 1) {
+    // normalize(M): renormalise the base's weights (logTotalmass→0). matNormalize
+    // just getMeasures the base, so registering it is enough. The base itself may
+    // be composite (e.g. normalize(truncate(…))) — register() recurses.
+    const from = register(ir.args[0], 'normalize:base');
+    return { kind: 'normalize', from };
+  }
   // Default: treat as a leaf sample (the prior leaf-fallback behaviour — the
   // worker's sampleN surfaces a clear diagnostic if the op isn't a kernel).
   return { kind: 'sample', distIR: ir };
@@ -1816,6 +1823,10 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // fallback can't sample a weighted/logweighted op. [Smell A, Stage 2]
   if ((ir.op === 'weighted' || ir.op === 'logweighted')
       && Array.isArray(ir.args) && ir.args.length === 2) {
+    return _bridgeToHandler(ir, ctx);
+  }
+  // normalize(M) → canonical matNormalize via the bridge. [Smell A, Stage 3]
+  if (ir.op === 'normalize' && Array.isArray(ir.args) && ir.args.length === 1) {
     return _bridgeToHandler(ir, ctx);
   }
   // Generative pushforward: lawof(<value expr>). After the lawof peel
