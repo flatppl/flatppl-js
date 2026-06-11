@@ -168,25 +168,33 @@ test('perf: evaluateExprN compiled is faster than interpreted on the MC inverse'
   const path = require('node:path');
   const ENG = path.resolve(__dirname, '..') + '/';
   const { processSource, orchestrator } = require(ENG + 'index.ts');
-  const { deriveMcLikelihoodRecipe } = require(ENG + 'mat-density.ts');
-  const bijReg = require(ENG + 'bijection-registry.ts');
+  // The mcmarginal recipe comes from the live functor-law transform
+  // (mc-recipe.buildMcMarginalForm — the name-based mat-density
+  // deriveMcLikelihoodRecipe it was written against is retired); the
+  // node carries the EXACT inverse pre-derived (inverseIR), plus the
+  // out/retained/marginal descriptors this benchmark feeds.
+  const mcr = require(ENG + 'mc-recipe.ts');
   const { createWorkerHandler } = require(ENG + 'worker.ts');
   const fs = require('node:fs');
-  const src = fs.readFileSync('test/fixtures/simple-transport.flatppl', 'utf8');
+  const src = fs.readFileSync('test/fixtures/simple-transport1.flatppl', 'utf8');
   const { bindings } = processSource(src);
   const built = orchestrator.buildDerivations(bindings);
-  const r = deriveMcLikelihoodRecipe('z', ['pars'], built.bindings);
-  const OUT = { kind: 'ref', ns: '%mc', name: '__mc_z__' };
-  const inv = bijReg.invertExpr({ outputExpr: r.recipeIR, freeRef: r.retainedRef, outputValue: OUT });
+  const expand = (nm: any) => orchestrator.expandMeasure(
+    nm, { derivations: built.derivations, bindings: built.bindings });
+  const form = mcr.buildMcMarginalForm(expand('zs'), built.bindings, expand);
+  assert.ok(form && form.args && form.args[0] && form.args[0].op === 'mcmarginal',
+    'transport zs must re-express as iid(mcmarginal, n)');
+  const mc = form.args[0];
   const baseEnv = { pars: { a: 0.1, b: 0.3, mu: 1.0 }, sigma: 0.2 };
   const w = createWorkerHandler(); w.handle({ type: 'init', seed: [1, 2, 3] });
   w.handle({ type: 'setEnv', env: baseEnv, merge: true });
   const data = [3.8, 2.9, 3.2, 3.1, 3.3, 5.0, 0.84, 2.3, 3.1, 2.6, 2.5, 5.4, 1.2, 1.6, 1.4, 0.77, 0.26, 1.6, 0.56, 4.5];
   const M = 6000, D = data.length, count = D * M;
-  const xs = w.handle({ type: 'sampleN', ir: r.marginalDistIR, count: M, refArrays: {}, seed: [1, 2, 3, 4] }).samples;
+  const xs = w.handle({ type: 'sampleN', ir: mc.marginalDistIR, count: M, refArrays: {}, seed: [1, 2, 3, 4] }).samples;
   const zcol = new Float64Array(count), xcol = new Float64Array(count);
   for (let d = 0; d < D; d++) for (let m = 0; m < M; m++) { zcol[d * M + m] = data[d]; xcol[d * M + m] = xs[m]; }
-  const refArrays = { [OUT.name]: zcol, [r.retainedRef.name]: xcol, x: xcol };
+  const refArrays: any = { [mc.outName]: zcol, [mc.retainedRef]: xcol, x: xcol };
+  const inv = { inverseIR: mc.inverseIR };
   const hr = () => Number(process.hrtime.bigint()) / 1e6;
   const RUNS = 9;
   batched._setCompileEvalN(false);
