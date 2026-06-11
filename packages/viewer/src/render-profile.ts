@@ -14,6 +14,7 @@ import { buildDomainControl, buildPresetControl } from './render-controls.js';
 import { showPlotMessage } from './render-frame.js';
 import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
+import { nameSeed } from './orchestration.js';
 import { renderPlotFrame } from './render-frame.js';
 import { plotZoomOptions } from './util.js';
 export function renderProfilePlotForCurrent(ctx: Ctx) {
@@ -143,6 +144,25 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   if (mode === 'logdensity') {
     ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
       ir, ctx.derivationsState!.derivations);
+  }
+  // MC marginalising-pushforward (spec §06 case-3; engine-concepts §6): if the
+  // expanded measure is a generative composite (the transport L —
+  // broadcast(post, broadcast(transport, iid(Normal(pars.mu,σ),n), [pars]))),
+  // re-express it as `iid(mcmarginal{…}, n)` so the density walker can score
+  // it (otherwise density throws on the bare broadcast → an all-NaN curve).
+  // MUST run BEFORE inlineForProfile, which would %local-rewrite the boundary
+  // self-refs the transform recognises. Needs a bindings-ful expand callback
+  // (the line above is bindings-less). Returns null for ordinary kernels /
+  // likelihoods → `ir` and the closed-form path are unchanged.
+  let isMcForm = false;
+  if (mode === 'logdensity') {
+    const dst = ctx.derivationsState!;
+    const mcExpand = (nm: string) => FlatPPLEngine.orchestrator.expandMeasure(
+      nm, { derivations: dst.derivations, bindings: dst.bindings });
+    let mcForm: any = null;
+    try { mcForm = FlatPPLEngine.mcRecipe.buildMcMarginalForm(ir, dst.bindings, mcExpand); }
+    catch (_) { mcForm = null; }
+    if (mcForm) { ir = mcForm; isMcForm = true; }
   }
   // Propagate the swept axis (and other params) through transitive
   // deterministic deps. Without this, e.g. sweeping `theta1` in a
@@ -330,7 +350,23 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
         if (fvMap.has(n)) profileFixedEnv[n] = fvMap.get(n);
       }
     }
-    const profileMsg = {
+    // MC path (isMcForm): the swept axis must reach the OPAQUE mcmarginal
+    // node through the env — it's unreachable via __sweep__/refArrays/
+    // substituteLocals (which don't descend the node's recipe fields). For a
+    // record-field axis (e.g. pars.mu — a cartprod field, path = ['mu'], a
+    // string), send an `mcSweep` descriptor so the worker varies that one
+    // field of the record template per sweep point (the rest from the
+    // preset/source-populated `fixedEnv[pars]`); a scalar external axis just
+    // varies `sweepName` directly in the worker.
+    let mcSweep: any = null;
+    if (isMcForm && isPerSlotSweep && typeof sweepAxis.path[0] === 'string') {
+      const tmpl = fixedEnv[sweepParamName];
+      if (tmpl && typeof tmpl === 'object' && !Array.isArray(tmpl)) {
+        mcSweep = { recordName: sweepParamName, field: sweepAxis.path[0],
+          template: Object.assign({}, tmpl) };
+      }
+    }
+    const profileMsg: any = {
       type: 'profileN',
       ir: irForWorker,
       sweepName: effectiveSweepName,
@@ -341,6 +377,14 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       observed: observed,
       tally: 'clamped',
     };
+    if (isMcForm) {
+      // M from the VS Code/web setting; a CONSTANT per-render mcSeed → common
+      // random numbers across the sweep → a smooth curve (worker re-keys per
+      // point). Closed-form profiles set neither (worker keeps its batched path).
+      profileMsg.mcMarginalizationCount = (ctx.MARGINALIZATION_COUNT | 0) || 100;
+      profileMsg.mcSeed = nameSeed(ctx, '%mcprofile:' + plan.name);
+      if (mcSweep) profileMsg.mcSweep = mcSweep;
+    }
     return (Object.keys(profileFixedEnv).length > 0
       ? sendWorker(ctx, { type: 'setEnv', env: profileFixedEnv, merge: true })
           .then(function() { return sendWorker(ctx, profileMsg); })
