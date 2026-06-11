@@ -87,9 +87,16 @@ function matScore(node: any, ctx: any, opts?: any): Promise<any> {
   // not, so it stays off there (preserving the Phase-2 byte-identical path).
   // node.body is freshly built per lowerMeasure call (no cache), so the
   // in-place resolution is safe (mutation hazard — plan critique).
-  const bodyP = opts.resolveWeights
+  //
+  // Normalize-mass specs (audit M3) resolve UNCONDITIONALLY — on every
+  // matScore path including bayesupdate: a massFrom-carrying normalize is
+  // new IR (the bare node previously scored with a silent 0 shift), the
+  // resolution is a pure correctness fix (−log Z), and walkNormalize
+  // refuses an unresolved spec loudly.
+  const bodyP = (opts.resolveWeights
     ? resolveRuntimeWeights(node.body, ctx)
-    : Promise.resolve(node.body);
+    : Promise.resolve(node.body)
+  ).then((body: any) => resolveNormalizeMasses(body, ctx));
   return bodyP.then((body: any) =>
     clm.feedInputs(node, ctx).then((fed: any) => {
       // extraRefArrays carries columns the declared inputs can't source via a
@@ -280,6 +287,61 @@ function collectRuntimeWeightNodes(node: any, out: any, seen: any) {
   }
 }
 
+// normalize(M) nodes whose −log Z is NOT closed-form carry a massFrom
+// spec ({ref: <inner binding>}) — see expandMeasure's normalize case.
+// Same resolve-once-then-literalise contract as the select runtime
+// weights below (audit M3).
+function collectNormalizeMassNodes(node: any, out: any, seen: any) {
+  if (!node || typeof node !== 'object') return;
+  if (seen.has(node)) return;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const x of node) collectNormalizeMassNodes(x, out, seen);
+    return;
+  }
+  if (node.kind === 'call' && node.op === 'normalize' && node.massFrom) {
+    out.push(node);
+  }
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === 'object') collectNormalizeMassNodes(v, out, seen);
+  }
+}
+
+// Resolve each massFrom-carrying normalize node by materialising its
+// inner measure ONCE and reading the TRACKED logTotalmass (truncate's
+// accept-rate estimate, weighted's algebraic shift, …), then rewrite the
+// node IN PLACE to the same logweighted(−logZ, inner) form the
+// closed-form expansion emits — one downstream representation, the
+// worker never sees a mass-carrying normalize. The in-place mutation is
+// safe for the same reason resolveRuntimeWeights' is: the body is
+// freshly built per lowerMeasure call (no cache).
+function resolveNormalizeMasses(measureIR: any, ctx: any) {
+  const nodes: any[] = [];
+  collectNormalizeMassNodes(measureIR, nodes, new Set());
+  if (nodes.length === 0) return Promise.resolve(measureIR);
+  const refNames = Array.from(new Set(nodes.map((n) => n.massFrom.ref)));
+  return Promise.all(refNames.map((r) => Promise.resolve(ctx.getMeasure(r))))
+    .then((measures: any[]) => {
+      const byName: Record<string, any> = {};
+      refNames.forEach((nm: string, i: number) => { byName[nm] = measures[i]; });
+      for (const node of nodes) {
+        const M = byName[node.massFrom.ref];
+        const logZ = M && typeof M.logTotalmass === 'number' ? M.logTotalmass : null;
+        if (logZ == null || !Number.isFinite(logZ)) {
+          throw new Error('normalize density: inner measure "' + node.massFrom.ref
+            + '" did not materialise to a finite tracked logTotalmass'
+            + ' (Z = 0 or ∞ is undefined per spec §06)');
+        }
+        const inner = node.args[0];
+        node.op = 'logweighted';
+        node.args = [{ kind: 'lit', value: -logZ }, inner];
+        delete node.massFrom;
+      }
+      return measureIR;
+    });
+}
+
 function resolveRuntimeWeights(measureIR: any, ctx: any) {
   const nodes: any[] = [];
   collectRuntimeWeightNodes(measureIR, nodes, new Set());
@@ -435,7 +497,11 @@ function matBroadcastLogdensity(d: DerivationBroadcastLogdensity, ctx: any) {
     && measureDeriv.kind === 'jointchain' && measureDeriv.marginalize);
   const measureIR0 = orchestrator.expandMeasure(d.measureName,
     { derivations: ctx.derivations, bindings: ctx.bindings });
-  return resolveRuntimeWeights(measureIR0, ctx).then((measureIR) => {
+  // The batched fast path sends its own worker message (not via matScore),
+  // so it must resolve normalize-mass specs (audit M3) here as well.
+  return resolveRuntimeWeights(measureIR0, ctx)
+    .then((b: any) => resolveNormalizeMasses(b, ctx))
+    .then((measureIR) => {
   let batchable = !!measureIR && !isChain;
   const fixedRefs: any[] = [];
   if (batchable) {

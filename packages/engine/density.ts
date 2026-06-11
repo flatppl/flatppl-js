@@ -651,6 +651,17 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     throw new Error('density: truncate requires parseSet opt');
   }
   const setDescr = parseSet(ir.args[1]);
+  // Unreducible set IR (dynamic / per-atom bounds): scoring while IGNORING
+  // the support restriction would return the un-truncated density for
+  // out-of-support points — silent-wrong (audit Phase 6, inSet(null)→throw).
+  // Fail loud instead; supported forms are named sets + intervals with
+  // literal or session-env-resolvable bounds.
+  if (setDescr == null) {
+    throw new Error('density: truncate set could not be resolved to a '
+      + 'structural descriptor (op \''
+      + (ir.args[1] && (ir.args[1] as any).op) + '\') — dynamic / per-atom '
+      + 'set bounds are not supported in density evaluation');
+  }
   const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
   const consumed = inferConsumedScalar(value, rest);
   if (consumed != null && !inSet(consumed, setDescr)) {
@@ -660,17 +671,22 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
 }
 
 function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  // normalize(base) = base / totalmass(base). Density shifts by
-  // -log(totalmass(base)). The caller supplies the parent's
-  // logTotalmass via opts.measureLogTotalmass — atom-independent today;
-  // a per-atom variant can be added when needed.
-  const getLTM = opts.measureLogTotalmass;
-  const baseLTM = typeof getLTM === 'function' ? +getLTM(ir.args[0]) : 0;
-  const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
-  if (baseLTM !== 0) {
-    for (let i = 0; i < N; i++) acc[i] -= baseLTM;
+  // normalize(base) = base / totalmass(base); density shifts by −log Z.
+  // A normalize node should not normally reach the worker: the expansion
+  // lowers the closed-form-Z case to logweighted(−logZ, inner) directly,
+  // and the non-closed-form case carries a massFrom spec the materialiser
+  // resolves to the same logweighted form pre-scoring (audit M3,
+  // mat-density.resolveNormalizeMasses). An UNRESOLVED massFrom here
+  // means a scoring path skipped that resolution — scoring with a silent
+  // 0 shift would be the unnormalized density, so fail loud instead.
+  if ((ir as any).massFrom) {
+    throw new Error('density: normalize with unresolved totalmass'
+      + ' (massFrom "' + (ir as any).massFrom.ref + '") reached the worker —'
+      + ' the scoring path must resolve it via resolveNormalizeMasses');
   }
-  return rest;
+  // Legacy bare normalize (no spec): Z treated as 1 — only correct when
+  // the inner is already a probability measure.
+  return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
 }
 
 function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
@@ -1876,14 +1892,28 @@ function inferConsumedScalar(value: any, rest: any) {
 }
 
 function inSet(x: any, setDescr: any) {
-  if (!setDescr) return true;
+  // No null-allow: walkTruncate throws on an unresolved set BEFORE this is
+  // reached; an unknown descriptor kind is an engine drift (a new set kind
+  // wired into parseSetIR but not here) — silently treating it as "inside"
+  // would score the un-truncated density, so fail loud (audit Phase 6).
+  if (!setDescr) {
+    throw new Error('density: inSet called with no set descriptor');
+  }
   switch (setDescr.kind) {
     case 'interval':    return x >= +setDescr.lo && x <= +setDescr.hi;
     case 'reals':       return Number.isFinite(x) || x === -Infinity || x === Infinity;
     case 'posreals':    return x > 0;
     case 'nonnegreals': return x >= 0;
     case 'unitinterval':return x >= 0 && x <= 1;
-    default: return true;
+    // Discrete sets (previously fell to the silent-allow default — a
+    // non-integer point got the un-truncated density instead of −inf).
+    case 'integers':       return Number.isInteger(x);
+    case 'posintegers':    return Number.isInteger(x) && x >= 1;
+    case 'nonnegintegers': return Number.isInteger(x) && x >= 0;
+    case 'booleans':       return x === 0 || x === 1;
+    default:
+      throw new Error('density: unknown set descriptor kind \''
+        + setDescr.kind + '\' in truncate support check');
   }
 }
 

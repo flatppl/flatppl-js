@@ -2829,10 +2829,20 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           };
         }
         // Z not closed-form here (truncate base, data-dependent
-        // weights, …): emit the normalize IR; walkNormalize falls
-        // back to opts.measureLogTotalmass (default 0) — a documented
-        // limitation, not silently wrong for the common closed cases.
-        return { kind: 'call', op: 'normalize', args: [inner] };
+        // weights, …): emit the normalize IR carrying a massFrom spec —
+        // the named inner measure whose TRACKED logTotalmass supplies
+        // −log Z (truncate estimates it via accept-rate; weighted tracks
+        // it algebraically). expandMeasureIR is pure (cannot materialise),
+        // so the spec is resolved ONCE by the materialiser pre-scoring
+        // (mat-density.resolveRuntimeWeights — the same pattern as select
+        // runtime weights), which rewrites this node to the SAME
+        // logweighted(−logZ, inner) form the closed-form branch emits
+        // (audit M3: previously the bare node defaulted to a 0 shift —
+        // silently unnormalized).
+        return {
+          kind: 'call', op: 'normalize', args: [inner],
+          massFrom: { ref: d.from },
+        };
       }
       case 'pushfwd': {
         // pushfwd(f, M): the f-arg surfaces as a self-ref to the

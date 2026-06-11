@@ -244,6 +244,60 @@ function normalLogpdf(x: any, mu: any, sigma: any) {
     - (x - mu) * (x - mu) / (2 * sigma * sigma);
 }
 
+// =====================================================================
+// normalize density with NON-closed-form mass (audit M3).
+// normalize(M) = M / Z; density shifts by −log Z. The closed-form-Z case
+// lowers to logweighted(−logZ, inner) at expansion; the non-closed case
+// (truncate base, …) carries a massFrom spec the materialiser resolves
+// from the inner measure's TRACKED logTotalmass (truncate's exact CDF
+// mass here) and rewrites to the same logweighted form. Previously the
+// bare normalize node scored with a silent 0 shift — the UNNORMALIZED
+// density (off by exactly log 2 for the half-normal).
+// =====================================================================
+
+test('normalize(truncate) density: exact half-normal (M3 — −logZ applied)', async () => {
+  const ctx = makeCtx(`
+half_normal = normalize(truncate(Normal(0.0, 1.0), interval(0.0, inf)))
+lp1 = logdensityof(half_normal, 0.5)
+lp2 = logdensityof(half_normal, 1.5)
+`);
+  const [m1, m2] = await Promise.all([ctx.getMeasure('lp1'), ctx.getMeasure('lp2')]);
+  // Half-normal: p(x) = 2·φ(x) for x ≥ 0 (Z = 0.5 via the exact CDF mass).
+  const e1 = Math.LN2 + normalLogpdf(0.5, 0, 1);
+  const e2 = Math.LN2 + normalLogpdf(1.5, 0, 1);
+  assert.ok(Math.abs(m1.samples[0] - e1) < 1e-9,
+    `half-normal logp(0.5): got ${m1.samples[0]}, expected ${e1}`);
+  assert.ok(Math.abs(m2.samples[0] - e2) < 1e-9,
+    `half-normal logp(1.5): got ${m2.samples[0]}, expected ${e2}`);
+});
+
+test('normalize(truncate) density via broadcast(logdensityof, M, pts) (M3 batched route)', async () => {
+  const ctx = makeCtx(`
+half_normal = normalize(truncate(Normal(0.0, 1.0), interval(0.0, inf)))
+pts = [0.5, 1.5]
+lps = broadcast(logdensityof, half_normal, pts)
+`);
+  const m = await ctx.getMeasure('lps');
+  const expected = [0.5, 1.5].map((x) => Math.LN2 + normalLogpdf(x, 0, 1));
+  assert.ok(Math.abs(m.samples[0] - expected[0]) < 1e-9
+    && Math.abs(m.samples[1] - expected[1]) < 1e-9,
+    `batched half-normal logp: got [${m.samples[0]}, ${m.samples[1]}], expected [${expected}]`);
+});
+
+test('normalize(weighted(2, truncate)) density: weight absorbed by the mass (Z = 1)', async () => {
+  // The tracked mass composes algebraically through the chain:
+  // Z = 2 · 0.5 = 1, so the normalized density equals the half-normal —
+  // the constant weight is absorbed exactly.
+  const ctx = makeCtx(`
+m = normalize(weighted(2.0, truncate(Normal(0.0, 1.0), interval(0.0, inf))))
+lp = logdensityof(m, 0.5)
+`);
+  const m = await ctx.getMeasure('lp');
+  const expected = Math.LN2 + normalLogpdf(0.5, 0, 1);
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-9,
+    `normalize(weighted(2, trunc)) logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
 test('superpose density: log p(x) = log[ p_A(x) + p_B(x) ] (raw additive)', async () => {
   const ctx = makeCtx(`
 A = Normal(mu = 0.0, sigma = 1.0)
