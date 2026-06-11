@@ -241,6 +241,26 @@ test('NegativeBinomial / NegativeBinomial2: finite logpdf for non-integer shape'
   assert.ok(Math.abs(nb2 - (-1.9639304319959507)) < 1e-12, `NB2(4,2.5)@3 logpdf = ${nb2}`);
 });
 
+test('Pareto(shape, scale): logpdf matches Distributions.jl, support is [scale, ∞)', () => {
+  // Oracle: Pareto(α, θ) pdf = α·θ^α / x^(α+1) for x ≥ θ; logpdf values from
+  // Distributions.jl Pareto(α=shape, θ=scale).
+  const sampler = require('../sampler.ts');
+  const reg = sampler._internal.REGISTRY.Pareto;
+  const lp = (x: any, a: any, sc: any) => reg.logpdfFn(x, a, sc);
+  assert.ok(Math.abs(lp(3.0, 2.5, 1.5) - (-1.915189508193818)) < 1e-12, 'Pareto(2.5,1.5)@3');
+  assert.ok(Math.abs(lp(1.5, 2.5, 1.5) - (0.5108256237659909)) < 1e-12, 'Pareto(2.5,1.5)@scale = log(α/θ)');
+  assert.ok(Math.abs(lp(5.0, 3.0, 2.0) - (-3.259697819388456)) < 1e-12, 'Pareto(3,2)@5');
+  assert.equal(lp(1.0, 2.5, 1.5), -Infinity, 'below scale ⇒ -Inf');
+});
+
+test('Pareto(shape, scale): samples are all ≥ scale', async () => {
+  const ctx = makeCtx(`m = Pareto(shape = 2.5, scale = 1.5)`);
+  const m = await ctx.getMeasure('m');
+  for (let i = 0; i < m.samples.length; i++) {
+    assert.ok(m.samples[i] >= 1.5, `samples[${i}] = ${m.samples[i]} must be ≥ scale=1.5`);
+  }
+});
+
 // ---------------------------------------------------------------------
 // Spec equivalences
 // ---------------------------------------------------------------------
