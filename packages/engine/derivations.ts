@@ -2653,10 +2653,35 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // Spread a (record/joint) measure IR into its named field
         // descriptors (preserving `source` for env-threading); a
         // scalar measure IR contributes one field under `fallback`.
+        //
+        // LABELLED chains (spec §06 keyword form ≡ relabel(component,
+        // [label]); audit M5): a record-valued component is RENAMED to
+        // the chain label when it has exactly one field (relabel's
+        // positional rename; the original field name rides `source` so
+        // env-threading by source still resolves), and REFUSED loudly
+        // when it has more — relabel of an n-field record under one
+        // name has no spec meaning (relabel is positional, §04) and
+        // records cannot nest (§03), so the former silent label-drop
+        // produced a variate space the observation can't match.
+        const labelled = !!d.labels;
         const spreadFields = (ir: any, fallback: any, src: any) => {
           if (ir && ir.kind === 'call'
               && (ir.op === 'joint' || ir.op === 'record')
               && Array.isArray(ir.fields)) {
+            if (labelled) {
+              if (ir.fields.length !== 1) {
+                throw new Error('jointchain: label "' + fallback + '" cannot '
+                  + 'relabel a ' + ir.fields.length + '-field record variate '
+                  + '(spec §04 relabel is positional; records cannot nest, '
+                  + 'spec §03) — use the positional form for a flat merged '
+                  + 'record, or single-field components');
+              }
+              const fl = ir.fields[0];
+              return [{
+                name: fallback, value: fl.value,
+                source: fl.source != null ? fl.source : fl.name,
+              }];
+            }
             return ir.fields.map((fl: any) => ({
               name: fl.name, value: fl.value,
               source: fl.source != null ? fl.source : fl.name,
@@ -2687,15 +2712,44 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           };
           return sub(body);
         };
-        // Bind a kernel's expanded body to the available prior field
-        // names. Named params already matching a prior field thread
-        // for free; a single unmatched param is a hole bound to the
-        // prior cat; an unmatched param in a multi-param kernel is
+        // Normalise a kernel's MATCHED param ref to the `self`
+        // namespace: a reified body may carry the param as
+        // `ref(%local, p)` (lambda / inline-body forms), which the
+        // density worker resolves by bare name from refArrays but the
+        // SAMPLE-side dependent-threaded joint walk cannot —
+        // collectSelfRefs only sees `self` refs, so the threaded prior
+        // field was never requested and the leaf draw crashed on an
+        // unbound ref (audit M5's opaque "reading 'length'"). As a
+        // `self` ref it threads through BOTH walkers' name/source
+        // overlays, and the ⊆ input invariant sees it.
+        const localToSelf = (body: any, param: any) => {
+          const sub: any = (node: any) => {
+            if (node == null || typeof node !== 'object') return node;
+            if (Array.isArray(node)) return node.map(sub);
+            if (node.kind === 'ref' && node.ns === '%local'
+                && node.name === param) {
+              return { kind: 'ref', ns: 'self', name: param, loc: node.loc };
+            }
+            const out: Record<string, any> = {};
+            for (const k in node) out[k] = sub(node[k]);
+            return out;
+          };
+          return sub(body);
+        };
+        // Bind a kernel's expanded body to the available prior fields.
+        // A param matching a prior field NAME (the chain label) or its
+        // SOURCE (the original binding a renamed label rides on)
+        // threads via the walkers' name/source overlay — normalised to
+        // a `self` ref. A single unmatched param is a hole bound to
+        // the prior cat; an unmatched param in a multi-param kernel is
         // unsupported (clean null).
-        const bindKernel = (ke: any, priorNames: any) => {
+        const bindKernel = (ke: any, priorNames: any, priorSources: any) => {
           let body = ke.body;
           for (const p of ke.params) {
-            if (priorNames.indexOf(p) === -1) {
+            if (priorNames.indexOf(p) >= 0
+                || (priorSources && priorSources.indexOf(p) >= 0)) {
+              body = localToSelf(body, p);
+            } else {
               if (ke.params.length !== 1) return null;
               body = rewireHole(body, p, priorNames);
             }
@@ -2706,6 +2760,9 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // Flatten all step variates left-associatively into one joint.
         const outFields = spreadFields(baseIR, vname(0), base.ref);
         const priorNames = outFields.map((f: any) => f.name);
+        const priorSources = outFields
+          .map((f: any) => f.source)
+          .filter((s: any) => s != null && typeof s === 'string');
 
         if (d.marginalize) {
           // kchain: marginal of the LAST step's variate(s); the prior
@@ -2718,12 +2775,15 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             // BINDING ref — a single materialisable scalar prior that
             // matLogdensityof resolves per-atom (the synthetic spread
             // name `s0` is NOT a binding, so it must not be the
-            // rewire target here). NAMED params (record-kchain)
-            // already ref the base record's draw bindings — leave
-            // them for matLogdensityof + isChain.
+            // rewire target here). NAMED params (record-kchain,
+            // matching a prior field name or its source) are fed by
+            // matLogdensityof per-atom — normalised to `self` refs so
+            // both walkers resolve them by bare name.
             let body = ke.body;
             for (const p of ke.params) {
-              if (priorNames.indexOf(p) === -1) {
+              if (priorNames.indexOf(p) >= 0 || priorSources.indexOf(p) >= 0) {
+                body = localToSelf(body, p);
+              } else {
                 if (ke.params.length !== 1) return null;
                 body = rewireHole(body, p, [base.ref]);
               }
@@ -2750,7 +2810,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           for (let i = 1; i < steps.length - 1; i++) {
             const ik = kernelExpand(steps[i]);
             if (!ik) return null;
-            const ib = bindKernel(ik, priorNames.slice());
+            const ib = bindKernel(ik, priorNames.slice(), priorSources.slice());
             if (!ib) return null;
             const ifs = spreadFields(ib, vname(i), null);
             for (const fl of ifs) {
@@ -2758,7 +2818,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
               priorNames.push(fl.name);
             }
           }
-          const kb = bindKernel(ke, priorNames.slice());
+          const kb = bindKernel(ke, priorNames.slice(), priorSources.slice());
           if (!kb) return null;
           return kb;
         }
@@ -2787,7 +2847,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           for (let i = 1; i < steps.length; i++) {
             const ke = kernelExpand(steps[i]);
             if (!ke) return null;
-            const kb = bindKernel(ke, positionalPriorNames.slice());
+            const kb = bindKernel(ke, positionalPriorNames.slice(), []);
             if (!kb) return null;
             positionalArgs.push(kb);
             positionalPriorNames.push('s' + i);
@@ -2797,12 +2857,15 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         for (let i = 1; i < steps.length; i++) {
           const ke = kernelExpand(steps[i]);
           if (!ke) return null;
-          const kb = bindKernel(ke, priorNames.slice());
+          const kb = bindKernel(ke, priorNames.slice(), priorSources.slice());
           if (!kb) return null;
           const kfs = spreadFields(kb, vname(i), null);
           for (const fl of kfs) {
             outFields.push(fl);
             priorNames.push(fl.name);
+            if (fl.source != null && typeof fl.source === 'string') {
+              priorSources.push(fl.source);
+            }
           }
         }
         return { kind: 'call', op: 'joint', fields: outFields };

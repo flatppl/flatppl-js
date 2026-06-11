@@ -80,18 +80,20 @@ test('jointchain over a disintegrate prior + kernel classifies and samples the j
 
   const m = await ctx.getMeasure('chained');
   assert.strictEqual(m.shape, 'record');
-  assert.deepStrictEqual(Object.keys(m.fields).sort(), ['obs', 'theta']);
-  const st = stats(m.fields.theta.samples);
-  const so = stats(m.fields.obs.samples);
+  // Spec §06 keyword form ≡ relabel(component, [label]): the labelled
+  // single-field components are RENAMED to the chain labels (p, o).
+  assert.deepStrictEqual(Object.keys(m.fields).sort(), ['o', 'p']);
+  const st = stats(m.fields.p.samples);
+  const so = stats(m.fields.o.samples);
   assert.ok(Math.abs(st.mean) < 0.1 && Math.abs(st.sd - 1) < 0.1,
     `theta marginal ~ N(0,1): mean ${st.mean.toFixed(3)} sd ${st.sd.toFixed(3)}`);
   assert.ok(Math.abs(so.mean) < 0.15 && Math.abs(so.sd - Math.SQRT2) < 0.15,
     `obs marginal ~ N(0,sqrt2): mean ${so.mean.toFixed(3)} sd ${so.sd.toFixed(3)}`);
   // The joint dependence must survive (env-threading of the kernel's
   // theta ref to the per-atom prior draw): corr = 1/sqrt(2).
-  const c = corr(m.fields.theta.samples, m.fields.obs.samples);
+  const c = corr(m.fields.p.samples, m.fields.o.samples);
   assert.ok(Math.abs(c - Math.SQRT1_2) < 0.08,
-    `corr(theta, obs) ${c.toFixed(3)} ≈ 1/sqrt(2)`);
+    `corr(p, o) ${c.toFixed(3)} ≈ 1/sqrt(2)`);
 });
 
 test('kchain over a disintegrate prior + kernel samples the marginal of the kernel variate', async () => {
@@ -112,11 +114,11 @@ test('jointchain over a hand-written kernelof(record(…)) kernel samples the jo
   assert.ok(ctx.derivations['chained2'], 'jointchain(prior, kernelof(record(…))) gets a derivation');
   const m = await ctx.getMeasure('chained2');
   assert.strictEqual(m.shape, 'record');
-  assert.deepStrictEqual(Object.keys(m.fields).sort(), ['obs', 'theta']);
-  const so = stats(m.fields.obs.samples);
+  assert.deepStrictEqual(Object.keys(m.fields).sort(), ['o', 'p']);
+  const so = stats(m.fields.o.samples);
   assert.ok(Math.abs(so.mean) < 0.15 && Math.abs(so.sd - Math.SQRT2) < 0.15,
     `obs marginal ~ N(0,sqrt2): mean ${so.mean.toFixed(3)} sd ${so.sd.toFixed(3)}`);
-  const c = corr(m.fields.theta.samples, m.fields.obs.samples);
+  const c = corr(m.fields.p.samples, m.fields.o.samples);
   assert.ok(Math.abs(c - Math.SQRT1_2) < 0.08,
-    `corr(theta, obs) ${c.toFixed(3)} ≈ 1/sqrt(2)`);
+    `corr(p, o) ${c.toFixed(3)} ≈ 1/sqrt(2)`);
 });

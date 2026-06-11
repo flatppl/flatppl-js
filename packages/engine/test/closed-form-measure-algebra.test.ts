@@ -245,6 +245,48 @@ function normalLogpdf(x: any, mu: any, sigma: any) {
 }
 
 // =====================================================================
+// Labelled jointchain components (spec §06 keyword form ≡
+// relabel(component, [label]); audit M5). A single-field record
+// component is RENAMED to the chain label (relabel's positional
+// rename); a multi-field record component under one label is
+// ill-formed (relabel is positional, §04; records cannot nest, §03)
+// and refused loudly. Sampling and density agree on the renamed shape.
+// =====================================================================
+
+test('labelled jointchain: single-field components rename to the labels; density consumes the spec shape (M5)', async () => {
+  const ctx = makeCtx(`
+theta = draw(Normal(mu = 0.0, sigma = 1.0))
+prior = lawof(record(theta = theta))
+K = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
+jc = jointchain(p = prior, o = K)
+lp = logdensityof(jc, record(p = 0.3, o = 0.8))
+`);
+  // Sampling shape: the labels, not the source names.
+  const m = await ctx.getMeasure('jc');
+  assert.deepEqual(Object.keys(m.fields).sort(), ['o', 'p']);
+  // Density consumes the SAME spec-labelled shape, closed form:
+  // logp = logφ(0.3; 0, 1) + logφ(0.8; 0.3, 1).
+  const lp = await ctx.getMeasure('lp');
+  const expected = normalLogpdf(0.3, 0, 1) + normalLogpdf(0.8, 0.3, 1);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
+    `labelled jointchain density: got ${lp.samples[0]}, expected ${expected}`);
+});
+
+test('labelled jointchain: a multi-field record component is refused loudly (M5)', async () => {
+  const ctx = makeCtx(`
+mu = elementof(reals)
+sigma = elementof(posreals)
+prior = joint(mu = Normal(0.0, 1.0), sigma = Exponential(1.0))
+K = functionof(Normal(mu = mu, sigma = sigma), mu = mu, sigma = sigma)
+jc = jointchain(theta = prior, y = K)
+`);
+  await assert.rejects(
+    () => Promise.resolve(ctx.getMeasure('jc')),
+    /cannot relabel a 2-field record variate/,
+    'multi-field labelled component must refuse with the relabel-arity message');
+});
+
+// =====================================================================
 // Function-of-variate weight over a RECORD base (audit M6(2)).
 // The weight is a function of the WHOLE structured variate; matWeighted
 // feeds the base as per-atom records (the same contract whole-record
