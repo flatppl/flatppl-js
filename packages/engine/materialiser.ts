@@ -703,29 +703,51 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
 // `shared` / `fixed` inputs need no override (the parent ctx already resolves
 // them via getMeasure / fixedValues). Empty boundary set ⇒ today's path.
 function matClm(ir: any, ctx: any): Promise<any> {
-  const overrides = new Map<string, () => Promise<any>>();
-  for (const inp of ir.inputs || []) {
-    const src = inp.source;
-    if (src && src.kind === 'boundary' && src.from != null) {
-      const fetch = () => Promise.resolve(ctx.getMeasure(src.from)).then((m: any) =>
-        (src.field != null && m && m.fields && m.fields[src.field])
-          ? m.fields[src.field] : m);
-      overrides.set(inp.name, fetch);
-      if (src.localAlias && src.localAlias !== inp.name) overrides.set(src.localAlias, fetch);
-    }
+  const clm = require('./clm.ts');
+  const marginal = !!(ir.reduce && ir.reduce.kind === 'marginal');
+
+  // RETAIN (reduce=null, no history): the body is a self-contained dependent
+  // joint — the base measure is materialised INLINE as a field and threaded to
+  // dependent kernels by materialiseMeasureIR's joint walk. No external
+  // boundary feed; walk it directly (the kchain/jointchain retain output).
+  if (!marginal && !ir.marginalHistoryBody) {
+    return materialiseMeasureIR(ir.body, ctx);
   }
-  if (overrides.size === 0) return materialiseMeasureIR(ir.body, ctx);
-  const cache = new Map<string, any>();
-  const child: any = Object.assign({}, ctx);
-  child.getMeasure = function (n: string) {
-    if (cache.has(n)) return cache.get(n);
-    const p = overrides.has(n)
-      ? Promise.resolve(overrides.get(n)!())
-      : Promise.resolve(ctx.getMeasure(n));
-    cache.set(n, p);
-    return p;
-  };
-  return materialiseMeasureIR(ir.body, child);
+
+  // MARGINAL (kchain): the body is the FINAL kernel only, referencing the prior
+  // EXTERNALLY — a `self`-ref to base.ref (scalar prior) or `%local` NAMED
+  // params (a record-base kernel keeps `ref(%local, t1)`). Feed those columns
+  // via the ONE feeding contract (clm.feedInputs, shared with the density
+  // side), plus the reconstructed N-ary retained history (s_i). collectSelfRefs
+  // can't see `%local` refs and the synthetic s_i aren't bindings, so feeding
+  // through `ctx._extraRefArrays` (consulted by collectRefArrays before
+  // getMeasure) is what reaches them. Sampling the kernel conditioned on the
+  // fed prior atoms IS an ancestral draw of the marginal — reduce is a no-op on
+  // the sample side (the prior columns aren't part of the output). Mirrors
+  // matLogdensityof's feedInputs + extraRefArrays history feed exactly.
+  return clm.feedInputs(ir, ctx).then((fed: any) => {
+    const histP = ir.marginalHistoryBody
+      ? materialiseMeasureIR(ir.marginalHistoryBody, ctx).then((histM: any) => {
+          const comps = histM.elems
+            || (histM.fields ? Object.keys(histM.fields).map((k) => histM.fields[k]) : null);
+          if (!comps) {
+            throw new Error('matClm: N-ary kchain history did not materialise '
+              + 'to a joint (tuple/record) measure');
+          }
+          const ex: Record<string, any> = {};
+          for (let i = 0; i < comps.length; i++) {
+            ex['s' + i] = shared.measureToRefValue(comps[i], 's' + i, 'matClm');
+          }
+          return ex;
+        })
+      : Promise.resolve({});
+    return histP.then((histExtra: any) => {
+      const extra = Object.assign({}, fed.refArrays, histExtra);
+      const child: any = Object.assign({}, ctx, { _extraRefArrays: extra });
+      return shared.pushFixedEnv(child, fed.fixedEnv)
+        .then(() => materialiseMeasureIR(ir.body, child));
+    });
+  });
 }
 
 function matTuple(d: DerivationTuple, ctx: any) {
@@ -1106,14 +1128,48 @@ const fixedPhaseStage: MaterialiserStage = function (name, ctx, next) {
 };
 fixedPhaseStage.label = 'fixedPhaseShortCircuit';
 
-// Default pipeline ships with the two pre-dispatch stages above,
-// in callable-guard → fixed-phase → kindDispatch order. Tests that
-// need a clean slate call `_resetMaterialiserPipeline()` first, then
+// CLM reroute stage (measure-lowering unification Phase 4 — live reroute).
+// When `clm.isClmEnabled()`, a binding whose derivation kind is one CLM
+// canonicalises (initially `jointchain` — the kchain/jointchain family whose
+// bespoke `matJointchain.bindLeaf` boundary-feeding CLM retires) is lowered to
+// its canonical clm node and materialised by `matClm`, so SAMPLE and DENSITY
+// consume ONE lowering (the structural sample≡density guarantee). The set
+// grows additively as each kind's body coverage in `materialiseMeasureIR` is
+// proven dual-mode-green against the legacy handler (§15 / engine-concepts §18
+// phased-additive migration). OFF by default — the legacy KIND_HANDLERS path
+// stays the equivalence oracle until the reroute is full-suite green and the
+// retired handlers are deleted (scaffolding removed last).
+const CLM_REROUTED_KINDS = new Set<string>(['jointchain']);
+const clmRerouteStage: MaterialiserStage = function (name, ctx, next) {
+  const clm = require('./clm.ts');
+  if (!clm.isClmEnabled()) return next(name, ctx);
+  const d = ctx.derivations && ctx.derivations[name];
+  if (!d || !CLM_REROUTED_KINDS.has(d.kind)) return next(name, ctx);
+  let node: any;
+  try {
+    node = clm.lowerMeasure(name, ctx, { derivation: d });
+  } catch (e) {
+    // A lowering failure must not silently fall back to the legacy path
+    // (that would mask a real gap and defeat dual-mode validation); surface
+    // it. The dual-mode test asserts both paths succeed identically.
+    return Promise.reject(e);
+  }
+  if (!node) return next(name, ctx);   // didn't expand to a measure — legacy
+  return matClm(node, ctx);
+};
+clmRerouteStage.label = 'clmReroute';
+
+// Default pipeline ships with the pre-dispatch stages above, in
+// callable-guard → fixed-phase → clm-reroute → kindDispatch order. The
+// clm-reroute stage is inert unless `clm.isClmEnabled()` (production default
+// OFF), so installing it unconditionally changes nothing until the flag flips.
+// Tests that need a clean slate call `_resetMaterialiserPipeline()` first, then
 // re-register if they want the defaults back via
 // `_installDefaultMaterialiserStages()`.
 function _installDefaultMaterialiserStages(): void {
   registerMaterialiserStage(callableGuardStage);
   registerMaterialiserStage(fixedPhaseStage);
+  registerMaterialiserStage(clmRerouteStage);
 }
 _installDefaultMaterialiserStages();
 
@@ -1566,31 +1622,69 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       return m;
     });
   }
-  // joint / record → field-wise materialise + recordMeasure.
-  if ((ir.op === 'joint' || ir.op === 'record') && Array.isArray(ir.fields)) {
-    const fieldNames = ir.fields.map((f: any) => f.name);
-    const fieldIRs   = ir.fields.map((f: any) => f.value);
-    return Promise.all(fieldIRs.map((v: any, i: number) => {
-      // Per-field child key: foldIn the field index (1-based to keep
-      // i=0 from collapsing into the parent key). The XOR shape this
-      // replaced was a single-uint32 discriminator with no proper
-      // mixing; foldIn gives us a fully-mixed two-lane key for each
-      // field with the same independence guarantees split() would
-      // give but without forcing the caller to know the fan-out
-      // ahead of time.
-      const subCtx = Object.assign({}, ctx, {
-        rootKey: ctx.rootKey != null
-          ? rng.foldIn(ctx.rootKey, i + 1) : ctx.rootKey,
+  // joint / record → DEPENDENT field-wise materialise + combine.
+  //
+  // This is the sample-side analogue of the density walker's env-threading
+  // (engine-concepts §5): each field is materialised in a child ctx whose
+  // getMeasure resolves the variates of fields ALREADY produced to their left.
+  // So a `jointchain`/`kchain` retain body — `joint(args=[base, K(ref s0), …])`
+  // (positional, variate names s0,s1,… by position) or a record/labelled
+  // `joint(fields=[…])` — threads each kernel's `ref(sN)` to the prior draw,
+  // exactly as matJointchain.bindLeaf did, but driven by the canonical body so
+  // sampling consumes the SAME lowering density scores. An INDEPENDENT
+  // `joint(M1,M2)` has no cross-field refs, so the threading is a no-op there
+  // (the per-field foldIn key preserves the re-seed independence H7 relies on,
+  // and shared-ancestor refs still resolve through the parent cache).
+  const isPositionalJoint = (ir.op === 'joint' || ir.op === 'record')
+    && !Array.isArray(ir.fields) && Array.isArray(ir.args);
+  if ((ir.op === 'joint' || ir.op === 'record')
+      && (Array.isArray(ir.fields) || isPositionalJoint)) {
+    const rawFields: Array<{ name: string; value: any; source: any }> =
+      Array.isArray(ir.fields)
+        ? ir.fields.map((f: any) => ({ name: f.name, value: f.value, source: f.source }))
+        : ir.args.map((v: any, i: number) => ({ name: 's' + i, value: v, source: null }));
+    // Threaded child ctx: produced variates resolve from threadCache, every
+    // other name delegates to the parent cache (shared ancestors, fixed refs).
+    const threadCache = new Map<string, any>();
+    const childThread: any = Object.assign({}, ctx);
+    childThread.getMeasure = function (nn: string) {
+      if (threadCache.has(nn)) return threadCache.get(nn);
+      return ctx.getMeasure(nn);
+    };
+    const produced: Array<{ name: string; m: any }> = [];
+    let seq: Promise<void> = Promise.resolve();
+    rawFields.forEach((f, i) => {
+      seq = seq.then(() => {
+        const subCtx = Object.assign({}, childThread, {
+          rootKey: ctx.rootKey != null ? rng.foldIn(ctx.rootKey, i + 1) : ctx.rootKey,
+        });
+        return materialiseMeasureIR(f.value, subCtx).then((m: any) => {
+          produced.push({ name: f.name, m });
+          const pm = Promise.resolve(m);
+          threadCache.set(f.name, pm);
+          if (f.source != null && f.source !== f.name) threadCache.set(f.source, pm);
+        });
       });
-      return materialiseMeasureIR(v, subCtx);
-    })).then((subs: any[]) => {
-      const fields: Record<string, any> = {};
-      for (let i = 0; i < fieldNames.length; i++) fields[fieldNames[i]] = subs[i];
-      // Propagate per-field weights to the outer level. recordMeasure
-      // then strips them at the leaves so the invariant holds at every
-      // layer (empirical.ts §"composite-measure invariant").
+    });
+    return seq.then(() => {
+      const subs = produced.map((p) => p.m);
+      // Propagate per-field weights to the outer level; recordMeasure /
+      // tupleMeasure strip them at the leaves so the composite-measure
+      // invariant holds at every layer (empirical.ts).
       const lw = empirical.propagateLogWeights(subs);
-      return empirical.recordMeasure(fields, lw);
+      let lTM = 0; let nEff = ctx.sampleCount;
+      for (const s of subs) {
+        if (typeof s.logTotalmass === 'number') lTM += s.logTotalmass;
+        if (typeof s.n_eff === 'number') nEff = Math.min(nEff, s.n_eff);
+      }
+      if (isPositionalJoint) {
+        return Object.assign(empirical.tupleMeasure(subs, lw),
+          { logTotalmass: lTM, n_eff: nEff });
+      }
+      const fields: Record<string, any> = {};
+      for (const p of produced) fields[p.name] = p.m;
+      return Object.assign(empirical.recordMeasure(fields, lw),
+        { logTotalmass: lTM, n_eff: nEff });
     });
   }
   // broadcast(<Dist>, args…) → engine kernel-broadcast IR-direct entry.

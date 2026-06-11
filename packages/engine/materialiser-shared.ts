@@ -336,7 +336,14 @@ function collectRefArrays(ir: any, ctx: any) {
   const fixedEnv: Record<string, any> = {};
   let anyFixed = false;
   const fixedValues = ctx && ctx.fixedValues;
+  const extra = ctx && ctx._extraRefArrays;
   refs.forEach((n: string) => {
+    // A ref the CLM boundary feed already supplies (ctx._extraRefArrays) is
+    // taken from the overlay, NOT re-materialised via getMeasure — this both
+    // avoids the boundary-conflation re-draw (audit §3) and lets SYNTHETIC
+    // history-variate names (s0, s1, … — not bindings) resolve without a
+    // "no derivation" throw.
+    if (extra && extra[n] != null) return;
     if (fixedValues && fixedValues.has(n)) {
       fixedEnv[n] = fixedValues.get(n);
       anyFixed = true;
@@ -351,6 +358,20 @@ function collectRefArrays(ir: any, ctx: any) {
       const out: any = {};
       for (let i = 0; i < names.length; i++) {
         out[names[i]] = measureToRefValue(measures[i], names[i], 'collectRefArrays');
+      }
+      // CLM boundary feed (measure-lowering unification Phase 4). matClm feeds
+      // a lowered body's boundary inputs via feedInputs (the ONE feeding
+      // contract sample + density share) and threads the columns through
+      // `ctx._extraRefArrays`. These cover refs `collectSelfRefs` does NOT
+      // see — crucially the kernel's `%local`-namespaced param refs (a NAMED
+      // record-base kchain kernel keeps `ref(%local, t1)`, which the worker
+      // resolves by bare name from refArrays). They override the getMeasure
+      // results so the body conditions on the FED prior, not a re-materialised
+      // like-named binding (the boundary-conflation bug, audit §3).
+      if (ctx && ctx._extraRefArrays) {
+        for (const k in ctx._extraRefArrays) {
+          if (ctx._extraRefArrays[k] != null) out[k] = ctx._extraRefArrays[k];
+        }
       }
       return out;
     });

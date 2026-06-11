@@ -63,10 +63,25 @@ function _isMeasureNode(ir: any): boolean {
       || builtins.MEASURE_OPS.has(ir.op)));
 }
 
-// Feature flag. Phase 1 keeps clm strictly off the production paths; the
-// flag is the seam Phases 2–6 flip on per-consumer. Tests call lowerMeasure
-// directly regardless of the flag.
-const CLM_ENABLED = false;
+// Feature flag (Phase 4 live reroute). The sample-side reroute
+// (materialiser's clmRerouteStage) consults `isClmEnabled()` so the §15
+// dual-mode test can flip it on↔off and assert identical results against the
+// legacy per-kind path (the equivalence oracle). Production default is OFF
+// until the reroute is full-suite green in both modes and bindLeaf is retired.
+// Tests call lowerMeasure directly regardless of the flag.
+// Env seed lets a whole test run flip into CLM mode (`FLATPPL_CLM=1 npm …`)
+// for §15 dual-mode validation without editing a default; unset ⇒ OFF.
+let _clmEnabled = (typeof process !== 'undefined' && process.env
+  && process.env.FLATPPL_CLM === '1') || false;
+function isClmEnabled(): boolean { return _clmEnabled; }
+function setClmEnabled(on: boolean): boolean {
+  const prev = _clmEnabled;
+  _clmEnabled = !!on;
+  return prev;
+}
+// Back-compat: a static snapshot read at import time. New code calls
+// isClmEnabled() (live) rather than reading this constant.
+const CLM_ENABLED = _clmEnabled;
 
 // ── shape / axis descriptor (critique C) ────────────────────────────────
 //
@@ -362,7 +377,38 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
 
   const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
   if (mc) node.mc = true;          // body carries an mcmarginal recipe → MC opts
+
+  // N-ary kchain marginal (engine-concepts §6 chain-associativity): the body is
+  // the FINAL kernel only, with its hole rewired to a cat over the retained
+  // history variates s0..s_{n-2} (`vector(ref s0, ref s1, …)`). Those variates
+  // are NOT in `body`, so the sample side must reconstruct the retained
+  // (n−1)-joint history and bind its columns (the density side does the same
+  // via extraRefArrays). Expand a synthetic RETAIN history derivation through
+  // the existing jointchain expander (no inline-logic duplication) and attach
+  // its body IR; matClm materialises it (the dependent-threaded retain joint)
+  // and binds s_i. 2-step marginals rewire their hole to base.ref directly and
+  // need no history (matClm's boundary path covers them).
+  const hist = _marginalHistoryBody(deriv, ctx);
+  if (hist) node.marginalHistoryBody = hist;
   return node;
+}
+
+// Build the retained (n−1)-joint history body IR for an N-ary marginal kchain
+// by expanding a synthetic RETAIN jointchain derivation through the existing
+// expander. Mirrors matLogdensityof's `steps.slice(0, -1)` history. Returns
+// null for non-chains, 2-step chains (base.ref suffices), labelled chains
+// (matches expandMeasure's labelled-N-ary deferral), or when expansion fails.
+function _marginalHistoryBody(deriv: any, ctx: any): any {
+  if (!deriv || deriv.kind !== 'jointchain' || !deriv.marginalize) return null;
+  const steps = deriv.steps;
+  if (!Array.isArray(steps) || steps.length <= 2 || deriv.labels) return null;
+  const histName = '__clmhist';
+  const derivs = Object.assign({}, ctx.derivations, {
+    [histName]: { kind: 'jointchain', marginalize: false, labels: null,
+                  steps: steps.slice(0, -1) },
+  });
+  return orchestrator.expandMeasure(histName,
+    { derivations: derivs, bindings: ctx.bindings });
 }
 
 // ── feedInputs: the ONE feeding contract (Phase 2) ────────────────────────
@@ -442,4 +488,7 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
     });
 }
 
-module.exports = { lowerMeasure, feedInputs, describeInputShape, CLM_ENABLED };
+module.exports = {
+  lowerMeasure, feedInputs, describeInputShape,
+  CLM_ENABLED, isClmEnabled, setClmEnabled,
+};
