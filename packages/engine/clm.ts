@@ -47,6 +47,21 @@
 
 const orchestrator = require('./orchestrator.ts');
 const shared = require('./materialiser-shared.ts');
+const builtins = require('./builtins.ts');
+
+// A scorable measure node (a distribution or measure-algebra op) vs a value
+// transform. The stochastic-ancestor marginal (H8) applies only to a measure
+// body — `lawof(Normal(theta,1))` → marginalise theta. A deterministic
+// transform body, `lawof(z)` with z = f(stochastic…), is a PUSHFORWARD whose
+// density needs the mc-marginal recipe (inverse + LADJ), not a plain
+// logsumexp; applying the marginal there would mis-score it, so it is left to
+// the mc-form path (and stays a loud refusal until that recogniser lands).
+function _isMeasureNode(ir: any): boolean {
+  return !!(ir && ir.kind === 'call' && ir.op
+    && (builtins.DISTRIBUTIONS.has(ir.op)
+      || builtins.MEASURE_PRODUCING.has(ir.op)
+      || builtins.MEASURE_OPS.has(ir.op)));
+}
 
 // Feature flag. Phase 1 keeps clm strictly off the production paths; the
 // flag is the seam Phases 2–6 flip on per-consumer. Tests call lowerMeasure
@@ -323,7 +338,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // (the conditional Normal(·,1) vs the marginal Normal(0,√2), audit H8).
   // bayesupdate is excluded — it reweights prior atoms, not logsumexp, and
   // ignores `reduce` anyway (matBayesupdate owns its reduction).
-  if (!reduce && (!deriv || deriv.kind !== 'bayesupdate')) {
+  if (!reduce && (!deriv || deriv.kind !== 'bayesupdate') && _isMeasureNode(body)) {
     const latents = inputs.filter((i: any) => i.source.kind === 'shared'
       && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref)));
     if (latents.length > 0) {
