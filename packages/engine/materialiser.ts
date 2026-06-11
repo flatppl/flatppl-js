@@ -646,11 +646,57 @@ function matRandSample(name: string, d: any, ctx: any) {
   });
 }
 
+// Materialise a joint/record/tuple's factor bindings as the INDEPENDENT
+// product (spec §06). The FIRST occurrence of each dep name uses the shared
+// cached materialisation — preserving the shared-ancestor alignment derived
+// factors rely on (joint(a=x, b=g(x)): a and b are DISTINCT binding names, so
+// both ride the parent cache and g(x) sees the same x). A DUPLICATE direct dep
+// (joint(a=m, b=m)) is a reuse of the SAME measure as two independent factors;
+// the cached path would hand back the identical atom batch (Corr=1), but the
+// spec product is independent (Corr≈0), so the duplicate redraws in a re-seeded
+// child ctx (matches what materialiseMeasureIR's joint case already does via
+// foldIn-per-field). A reused WEIGHTED / posterior factor is refused loudly:
+// re-seeding gives independent draws whose sample-side outer weight is w1+w2,
+// but the density path reads outer-only weights — a silent IS-weight asymmetry
+// (measure-lowering-unification-plan critique B). Combining the sub-field
+// weight streams is the deferred enhancement.
+function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
+  const seenCount = new Map<any, number>();
+  return Promise.all(deps.map((dep: any, i: number) => {
+    const n = seenCount.get(dep) || 0;
+    seenCount.set(dep, n + 1);
+    if (n === 0) return Promise.resolve(ctx.getMeasure(dep));
+    return Promise.resolve(ctx.getMeasure(dep)).then((first: any) => {
+      if (first && first.logWeights) {
+        return Promise.reject(new Error(
+          'joint/record: measure "' + dep + '" is reused as ≥ 2 independent '
+          + 'factors but carries importance weights; the independent re-seed '
+          + 'would make the sample-side outer weight (w1+w2) disagree with the '
+          + 'density (which reads outer-only weights) — a silent IS-weight '
+          + 'asymmetry. Reused WEIGHTED/posterior factors are refused; use '
+          + 'distinct bindings for independent draws (combining the weight '
+          + 'streams is a future enhancement).'));
+      }
+      const childCache = new Map();
+      const child: any = Object.assign({}, ctx, {
+        rootKey: nameSeed('__jointfactor$' + dep + '$' + i, ctx.rootKey),
+      });
+      child.getMeasure = function (nn: string) {
+        if (childCache.has(nn)) return childCache.get(nn);
+        const p = materialiseMeasure(nn, child);
+        childCache.set(nn, p);
+        return p;
+      };
+      return child.getMeasure(dep);
+    });
+  }));
+}
+
 function matTuple(d: DerivationTuple, ctx: any) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
   // in elems. Top-level logWeights is the join of components'.
-  return Promise.all(d.elems.map(ctx.getMeasure)).then((subs: any[]) => {
+  return _materialiseFactorsIndependent(d.elems, ctx).then((subs: any[]) => {
     const lw = empirical.propagateLogWeights(subs);
     let lTM = 0;
     let nEff = ctx.sampleCount;
@@ -673,7 +719,7 @@ function matRecord(d: DerivationRecord, ctx: any) {
   // measures multiply masses).
   const fieldNames = Object.keys(d.fields);
   const fieldDeps  = fieldNames.map((k) => d.fields[k]);
-  return Promise.all(fieldDeps.map(ctx.getMeasure)).then((subs: any[]) => {
+  return _materialiseFactorsIndependent(fieldDeps, ctx).then((subs: any[]) => {
     const fields: any = {};
     let lTM = 0;
     let nEff = ctx.sampleCount;

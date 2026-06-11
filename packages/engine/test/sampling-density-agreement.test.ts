@@ -115,21 +115,26 @@ m = lawof(z)`, 'm', { N: 30000, tol: 0.4 });
     `got ${r.ok ? 'GREEN — FLIP IT' : (r.crashed || 'RED') + ': ' + (r.reason || r.maxErr)}`);
 });
 
-test('[WILL-FLIP H7] joint(m, m) reuses the identical atoms instead of independent draws', async () => {
-  // joint is the INDEPENDENT product (spec §06) ⇒ corr≈0; the bug returns the
-  // memoised atom batch ⇒ corr=1. Fixed by re-seeding a reused factor.
+test('[GREEN H7] joint(m, m) is the INDEPENDENT product (Corr≈0)', async () => {
+  // joint is the INDEPENDENT product (spec §06) ⇒ corr≈0; the bug returned the
+  // memoised atom batch ⇒ corr=1. FIXED (CLM Phase 4): matRecord/matTuple
+  // re-seed a DUPLICATE direct factor in a child ctx (the first occurrence
+  // stays on the shared cache so derived factors joint(a=x,b=g(x)) keep their
+  // shared-ancestor alignment). Now a regression guard.
   const corr = await fieldCorrelation(`
 m = Normal(0.0, 1.0)
 j = joint(a = m, b = m)`, 'j', 'a', 'b', { N: 30000 });
-  assert.ok(corr > 0.9,
-    `H7 is expected to still be perfectly correlated (corr>0.9) until the reused-factor re-seed lands; ` +
-    `got corr=${corr.toFixed(3)} — if ≈0, FLIP IT to a regression guard`);
+  assert.ok(Math.abs(corr) < 0.1,
+    `H7 regression — joint(m,m) must be independent (|corr|<0.1), got corr=${corr.toFixed(3)}`);
 });
 
-test('[WILL-FLIP H7b/B] joint(posterior, posterior) — reused weighted factor', async () => {
-  // The critique's high-severity case: reusing a bayesupdate posterior as two
-  // factors must agree on the IS-weighted estimate, not just corr. Today it is
-  // an outright gap (crash); CLM must re-seed AND combine the weight streams.
+test('[GREEN H7b/B] joint(posterior, posterior) — reused WEIGHTED factor refused loudly', async () => {
+  // The critique's high-severity case (B): re-seeding a reused posterior gives
+  // corr≈0 but the sample-side outer weight (w1+w2) disagrees with the density
+  // (outer-only) — a silent IS-weight asymmetry a corr test can't see. CLM
+  // Phase 4 REFUSES a reused weighted/posterior factor with a loud error rather
+  // than be silently wrong (combining the sub-field weight streams is the
+  // deferred enhancement). This guards that the refusal stays loud.
   let crashed = false;
   try {
     await fieldCorrelation(`
@@ -143,8 +148,9 @@ post = bayesupdate(L, prior)
 j = joint(a = post, b = post)`, 'j', 'a', 'b', { N: 6000 });
   } catch (_) { crashed = true; }
   assert.ok(crashed,
-    'joint(posterior, posterior) is expected to still be an unsupported GAP until CLM handles reused weighted factors; ' +
-    'if it now succeeds, FLIP IT to an IS-weight agreement guard');
+    'joint(posterior, posterior) must be refused loudly (reused WEIGHTED factor — '
+    + 'IS-weight asymmetry); if it now succeeds, weight-stream combination landed '
+    + '→ replace with an IS-weight agreement guard');
 });
 
 // ---- OUT-OF-SCOPE for CLM (documented; not gated by the "all green" goal) --
