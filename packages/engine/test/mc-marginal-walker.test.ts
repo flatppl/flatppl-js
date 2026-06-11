@@ -43,8 +43,9 @@ function makeNode() {
 }
 
 // Independent oracle: forward-simulate z with a seeded PRNG, histogram,
-// read density at d. No inverse/LADJ — pure simulation.
-function oracleLogP(d: number, Nn: number): number {
+// read density at d. No inverse/LADJ — pure simulation. `mu` is the latent
+// x's mean (1.1 for the atom-independent tests; varied for the per-atom one).
+function oracleLogPmu(d: number, mu: number, Nn: number): number {
   let s = 0x2545f491 >>> 0;
   const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return (s & 0x7fffffff) / 0x7fffffff; };
   const lo = 0, binW = 0.02, nb = 1200;
@@ -52,7 +53,7 @@ function oracleLogP(d: number, Nn: number): number {
   for (let i = 0; i < Nn; i++) {
     const u1 = rnd(), u2 = rnd();
     const xstd = Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
-    const x = 1.1 + 0.2 * xstd;
+    const x = mu + 0.2 * xstd;
     const u = rnd();
     const dlt = (2 * u + 1) * 0.1;
     const z = (Math.pow(x + dlt, 3) * Math.exp(x - 0.3)) / 2;
@@ -61,6 +62,7 @@ function oracleLogP(d: number, Nn: number): number {
   }
   return Math.log(counts[Math.floor((d - lo) / binW)] / (Nn * binW));
 }
+const oracleLogP = (d: number, Nn: number) => oracleLogPmu(d, 1.1, Nn);
 
 function makeWorker() {
   const w = createWorkerHandler();
@@ -99,14 +101,28 @@ test('walkMcMarginal: iid(mcmarginal, n) factorises per-event via walkIid', () =
     `iid total=${total.toFixed(4)} vs Σ oracle=${oraSum.toFixed(4)} (Δ=${(total - oraSum).toFixed(4)})`);
 });
 
-test('walkMcMarginal: refuses a per-atom (hierarchical) marginal loudly', () => {
+test('walkMcMarginal: per-atom (hierarchical) marginal scores each atom at its own θ', () => {
   const w = makeWorker();
   // A marginal dist that references a per-atom ref `mu_i` (supplied via
-  // refArrays) is the hierarchical/posterior case — deferred in v1.
+  // refArrays) is the hierarchical/posterior case — each prior particle
+  // carries its own latent mean. The walker must produce one estimate PER
+  // ATOM at that atom's θ (this is what makes bayesupdate over a reified
+  // generative kernel yield a posterior — audit §3 / H1), not one shared
+  // estimate and not a refusal.
   const node: any = makeNode();
   node.marginalDistIR = C('Normal', ref('mu_i'), lit(0.2));
   const r = w.handle({ type: 'logDensityN', ir: node, observed: [2.4], count: 2,
-    refArrays: { mu_i: new Float64Array([1.0, 1.2]) }, mcMarginalizationCount: 100, mcSeed: 7 });
-  assert.strictEqual(r.type, 'error');
-  assert.match(r.message, /per-atom|hierarchical/);
+    refArrays: { mu_i: new Float64Array([1.0, 1.2]) }, mcMarginalizationCount: 20000, mcSeed: 7 });
+  assert.notStrictEqual(r.type, 'error', r.message);
+  assert.strictEqual(r.samples.length, 2, 'one log-density per atom');
+  // Atom 0 (mu=1.0) and atom 1 (mu=1.2) score the SAME observation z=2.4 at
+  // DIFFERENT latent means → distinct, each matching its own forward-sim oracle.
+  const ora0 = oracleLogPmu(2.4, 1.0, 2_000_000);
+  const ora1 = oracleLogPmu(2.4, 1.2, 2_000_000);
+  assert.ok(Number.isFinite(r.samples[0]) && Number.isFinite(r.samples[1]), 'per-atom estimates finite');
+  assert.ok(Math.abs(r.samples[0] - ora0) < 0.12,
+    `atom0 (mu=1.0): walker ${r.samples[0].toFixed(4)} vs oracle ${ora0.toFixed(4)}`);
+  assert.ok(Math.abs(r.samples[1] - ora1) < 0.12,
+    `atom1 (mu=1.2): walker ${r.samples[1].toFixed(4)} vs oracle ${ora1.toFixed(4)}`);
+  assert.notStrictEqual(r.samples[0], r.samples[1], 'per-atom estimates must differ across θ');
 });

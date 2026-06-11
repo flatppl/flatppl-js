@@ -994,12 +994,14 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
 // contract). Per-event: `walkIid` factorises the iid product and calls us
 // once per event, consuming one scalar.
 //
-// v1 scope mirrors mat-density.mcMarginalLogDensity: the retained latent
-// is a Uniform innovation on `retainedInterval` (logp_ret = −log(hi−lo)
-// inside the fibre, −inf outside) and the marginal is ATOM-INDEPENDENT
-// (the profile use case: θ in the session env). A per-atom marginal (the
-// hierarchical/posterior case, θ in refArrays) is the documented next
-// extension — refused loudly here, never silently mis-scored.
+// The retained latent is a Uniform innovation on `retainedInterval`
+// (logp_ret = −log(hi−lo) inside the fibre, −inf outside). Two atom modes:
+//   - ATOM-INDEPENDENT marginal (profile case: θ in the session env) — one
+//     MC estimate fanned out to every atom.
+//   - PER-ATOM marginal (hierarchical/posterior: θ_i in refArrays, e.g. each
+//     prior particle's `pars`) — a common-random-numbers loop estimates log
+//     p(z | θ_i) per atom. This is what makes bayesupdate over a reified
+//     generative kernel produce a posterior (audit §3 / H1 record-param).
 
 // Numerically-stable log Σ exp over a Float64Array (all −inf ⇒ −inf).
 function _logSumExp(a: Float64Array): number {
@@ -1011,14 +1013,67 @@ function _logSumExp(a: Float64Array): number {
   return mx + Math.log(s);
 }
 
-// Collect every `self`-namespace ref name reachable in an IR (for the
-// atom-dependence check below).
+// Collect every externally-fed ref name reachable in an IR (for the
+// atom-dependence check below). BOTH `self` and `%local` are collected:
+// the bayesupdate expansion can name the kernel's parametric input either
+// way (`self pars` in the inverse/LADJ but `%local _pars_` in the inlined
+// marginal dist), and both are looked up by bare name in env (resolveRef).
 function _collectSelfRefNames(ir: any, out: Set<string>): void {
   if (!ir || typeof ir !== 'object') return;
-  if (ir.kind === 'ref' && ir.ns === 'self' && ir.name) { out.add(ir.name); return; }
+  if (ir.kind === 'ref' && (ir.ns === 'self' || ir.ns === '%local') && ir.name) { out.add(ir.name); return; }
   if (Array.isArray(ir.args)) for (const a of ir.args) _collectSelfRefNames(a, out);
   if (ir.kwargs) for (const k in ir.kwargs) _collectSelfRefNames(ir.kwargs[k], out);
   if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectSelfRefNames(f && f.value, out);
+}
+
+// One Monte-Carlo marginal estimate of log p(z | env), drawing M latents from
+// `rng`. The retained innovation is inverted EXACTLY (bijection-registry) and
+// the latent is integrated by Monte Carlo:
+//   logp ≈ logsumexp_m[ logp_ret(u*_m) − ladj_fwd(u*_m) ] − log M
+//   u*_m = f⁻¹(z; x_m),  x_m ~ marginalDistIR,  m = 1..M.
+// Returns the estimate plus the advanced RNG state. Splitting this out lets
+// the per-atom loop reuse the SAME starting `rng` for every atom (common
+// random numbers) — see walkMcMarginal.
+function _mcMarginalEstimate(node: any, z: number, M: number, rng: any, env: any) {
+  // 1. Draw M marginalised latents x_m ~ marginalDistIR (sync, in-worker).
+  const drawn = samplerLib.sampleLeafN(rng, node.marginalDistIR, env, [M]);
+  const xcol = Float64Array.from(drawn.value);
+  // 2. u*_m = inverseIR(z; x), one batched pass (the §20.10 vertical collapse).
+  const zcol = new Float64Array(M);
+  zcol.fill(z);
+  const invRefs: any = { [node.outName]: zcol, [node.marginalRef]: xcol };
+  const ustar = _asFloatColumn(samplerLib.evaluateExprN(node.inverseIR, invRefs, M, env), M);
+  // 3. ladj_fwd(u*; x), one batched pass.
+  const ladjRefs: any = { [node.retainedRef]: ustar, [node.marginalRef]: xcol };
+  const ladj = _asFloatColumn(samplerLib.evaluateExprN(node.ladjIR, ladjRefs, M, env), M);
+  // 4. Conditional log-density per latent: logp_ret(u*) − ladj_fwd(u*).
+  //    Uniform innovation on [lo,hi]: logp_ret = −log(hi−lo) inside, −inf
+  //    outside (the support mask bounding the fibre).
+  const lo = node.retainedInterval[0], hi = node.retainedInterval[1];
+  const logWidth = Math.log(hi - lo);
+  const cond = new Float64Array(M);
+  for (let m = 0; m < M; m++) {
+    const u = ustar[m];
+    cond[m] = (u >= lo && u <= hi && Number.isFinite(ladj[m]))
+      ? (-logWidth - ladj[m]) : -Infinity;
+  }
+  // 5. logsumexp over the M innovations − log M.
+  return { logp: _logSumExp(cond) - Math.log(M), state: drawn.state };
+}
+
+// Per-atom accessor for a refArray entry — mirrors walkLeaf's accessor build.
+// A Value unwraps to a scalar (shape [N]) or a leading-axis slice (shape
+// [N, …]); a plain JS array (e.g. per-atom record objects from
+// measureToPerAtomRecords) indexes directly.
+function _refAtomAccessor(v: any): (i: number) => any {
+  if (valueLib.isValue(v)) {
+    const shape = v.shape, data = v.data;
+    if (shape.length === 1) return (i: number) => data[i];
+    const tail = shape.slice(1);
+    const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
+    return (i: number) => ({ shape: tail, data: data.subarray(i * tailLen, (i + 1) * tailLen) });
+  }
+  return (i: number) => v[i];
 }
 
 function walkMcMarginal(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
@@ -1031,59 +1086,52 @@ function walkMcMarginal(ir: IRNode, value: any, refArrays: any, N: any, opts: an
       + 'the logDensityN handler must thread it (Monte Carlo marginalisation '
       + 'draws latents in-worker)');
   }
-  // Atom-dependence: if any self-ref in the marginal dist / inverse / LADJ
-  // is supplied PER-ATOM (refArrays), the marginal differs per atom — the
-  // hierarchical/posterior case. v1 handles the atom-INDEPENDENT profile
-  // case (θ resolved from the session env); defer per-atom loudly.
+  // Atom-dependence: which self-refs in the marginal dist / inverse / LADJ
+  // arrive PER-ATOM (in refArrays)? If any, the marginal differs per atom —
+  // the hierarchical/posterior case (each prior particle carries its own θ,
+  // e.g. `pars`). None → the atom-independent profile case (θ in session env).
   const refKeys = refArrays ? Object.keys(refArrays) : [];
+  let perAtomKeys: string[] | null = null;
   if (refKeys.length > 0) {
     const names = new Set<string>();
     _collectSelfRefNames(node.marginalDistIR, names);
     _collectSelfRefNames(node.inverseIR, names);
     _collectSelfRefNames(node.ladjIR, names);
-    for (const k of refKeys) {
-      if (k !== node.outName && names.has(k)) {
-        throw new Error("density: mcmarginal has a per-atom marginal/recipe ref '"
-          + k + "' (hierarchical pushforward — e.g. a posterior whose θ varies "
-          + 'per prior atom). The per-atom Monte Carlo marginal is deferred; v1 '
-          + 'supports an atom-independent marginal (θ in the session env, the '
-          + 'likelihood-profile case).');
-      }
-    }
+    const pk = refKeys.filter((k) => k !== node.outName && names.has(k));
+    if (pk.length > 0) perAtomKeys = pk;
   }
-  const env = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(env, overlay);
-  // 1. Draw M marginalised latents x_m ~ marginalDistIR (sync, in-worker).
-  //    Thread the RNG state back so successive events draw fresh latents.
-  const drawn = samplerLib.sampleLeafN(rng, node.marginalDistIR, env, [M]);
-  opts.mcRng = drawn.state;
-  const xcol = Float64Array.from(drawn.value);
-  // 2. u*_m = inverseIR(z; x), one batched pass (the §20.10 vertical
-  //    collapse over the M latents).
-  const zcol = new Float64Array(M);
-  zcol.fill(z);
-  const invRefs: any = { [node.outName]: zcol, [node.marginalRef]: xcol };
-  const ustarRaw = samplerLib.evaluateExprN(node.inverseIR, invRefs, M, env);
-  const ustar = _asFloatColumn(ustarRaw, M);
-  // 3. ladj_fwd(u*; x), one batched pass.
-  const ladjRefs: any = { [node.retainedRef]: ustar, [node.marginalRef]: xcol };
-  const ladjRaw = samplerLib.evaluateExprN(node.ladjIR, ladjRefs, M, env);
-  const ladj = _asFloatColumn(ladjRaw, M);
-  // 4. Conditional log-density per latent: logp_ret(u*) − ladj_fwd(u*).
-  //    Uniform innovation on [lo,hi]: logp_ret = −log(hi−lo) inside, −inf
-  //    outside (the support mask bounding the fibre).
-  const lo = node.retainedInterval[0], hi = node.retainedInterval[1];
-  const logWidth = Math.log(hi - lo);
-  const cond = new Float64Array(M);
-  for (let m = 0; m < M; m++) {
-    const u = ustar[m];
-    cond[m] = (u >= lo && u <= hi && Number.isFinite(ladj[m]))
-      ? (-logWidth - ladj[m]) : -Infinity;
+
+  if (!perAtomKeys) {
+    // Atom-independent: one estimate fanned out to every atom (iid ⇒ walkIid
+    // sums events). Thread the RNG forward so successive events draw fresh.
+    const env = Object.assign({}, baseEnv);
+    if (overlay) Object.assign(env, overlay);
+    const est = _mcMarginalEstimate(node, z, M, rng, env);
+    opts.mcRng = est.state;
+    for (let i = 0; i < N; i++) acc[i] += est.logp;
+    return rest;
   }
-  // 5. logsumexp over the M innovations − log M. Atom-independent here →
-  //    one estimate fanned out to every atom (iid ⇒ walkIid sums events).
-  const logp = _logSumExp(cond) - Math.log(M);
-  for (let i = 0; i < N; i++) acc[i] += logp;
+
+  // Per-atom MC marginal (posterior / hierarchical): for each atom build an
+  // env carrying that atom's refs and estimate log p(z | θ_i). COMMON RANDOM
+  // NUMBERS — every atom reuses the SAME starting `rng` for this event, so the
+  // M latents share standard innovations and differ across atoms ONLY through
+  // θ_i. The MC noise is then common-mode and largely cancels in the relative
+  // posterior weights (otherwise independent per-atom noise makes the
+  // importance weights pathological). The stream is advanced once (post-draw
+  // state) so the next event draws fresh latents.
+  const accessors: Record<string, (i: number) => any> = {};
+  for (const k of perAtomKeys) accessors[k] = _refAtomAccessor(refArrays[k]);
+  let advanced = rng;
+  for (let i = 0; i < N; i++) {
+    const env = Object.assign({}, baseEnv);
+    for (const k of perAtomKeys) env[k] = accessors[k](i);
+    if (overlay) Object.assign(env, overlay);
+    const est = _mcMarginalEstimate(node, z, M, rng, env);
+    advanced = est.state;
+    acc[i] += est.logp;
+  }
+  opts.mcRng = advanced;
   return rest;
 }
 

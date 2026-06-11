@@ -179,6 +179,72 @@ function measureToParamValue(m: any, name: string, label: string) {
     + '(needs .value, scalar-component .elems, or scalar .samples)');
 }
 
+/**
+ * Convert a RECORD-shaped measure (`m.fields = {a, b, …}`, each a per-atom
+ * sub-measure) into a plain JS array of `N` per-atom record objects:
+ * `out[i] = { a: <atom-i of field a>, b: …, … }`.
+ *
+ * This is the density-side feeding shape for a reified kernel whose SINGLE
+ * parametric input is a whole record (the transport `pars` case): the prior
+ * is `record(a, b, mu)` and the kernel body field-accesses `pars.a` / `.b` /
+ * `.mu`. Fed as `refArrays[<param>]`, the density per-atom accessor returns
+ * `arr[i]` — the record object — so `get_field(pars, "a")` resolves per atom
+ * (audit §3 / H1 record-param case). Unlike `measureToRefValue`, which only
+ * handles scalar/Value leaves, this descends the record structure:
+ *   - scalar field (`.samples`)         → `samples[i]` (a number)
+ *   - nested record field (`.fields`)   → recurse (a per-atom object)
+ *   - vector field (`.value`, rank ≥ 1) → the atom-`i` leading-axis slice
+ *
+ * Per-atom objects (not typed-array columns + IR substitution like the
+ * sampling-side `matJointchain.bindLeaf`) are chosen for correctness and
+ * generality: a whole-record reference, not just `record.field`, just works,
+ * and structuredClone carries plain number objects across the worker
+ * boundary. The cost is `N` small allocations — acceptable for a one-shot
+ * posterior materialisation.
+ */
+function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
+  if (m == null || !m.fields) {
+    throw new Error(label + ': record measure for "' + name
+      + '" has no .fields to expand into per-atom objects');
+  }
+  const fnames = Object.keys(m.fields);
+  // Per-field per-atom accessor, precomputed so the N-loop stays tight.
+  const access = fnames.map((f) => {
+    const fm = m.fields[f];
+    if (fm && fm.samples && fm.samples.BYTES_PER_ELEMENT !== undefined) {
+      const s = fm.samples;
+      return (i: number) => s[i];
+    }
+    if (fm && fm.fields) {
+      const sub = measureToPerAtomRecords(fm, name + '.' + f, label);
+      return (i: number) => sub[i];
+    }
+    if (fm && fm.value && Array.isArray(fm.value.shape)) {
+      const v = fm.value, shape = v.shape, data = v.data;
+      if (shape.length === 1) return (i: number) => data[i];
+      const tail = shape.slice(1);
+      const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
+      return (i: number) => ({ shape: tail, data: data.subarray(i * tailLen, (i + 1) * tailLen) });
+    }
+    throw new Error(label + ': record field "' + name + '.' + f
+      + '" is neither scalar (.samples), record (.fields), nor vector (.value)');
+  });
+  // N from the first scalar/Value field that exposes a length.
+  let N = 0;
+  for (const f of fnames) {
+    const fm = m.fields[f];
+    if (fm && fm.samples && typeof fm.samples.length === 'number') { N = fm.samples.length; break; }
+    if (fm && fm.value && Array.isArray(fm.value.shape)) { N = fm.value.shape[0]; break; }
+  }
+  const out = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const o: Record<string, any> = {};
+    for (let j = 0; j < fnames.length; j++) o[fnames[j]] = access[j](i);
+    out[i] = o;
+  }
+  return out;
+}
+
 // Repeat each per-atom block `k` times into a fresh contiguous buffer:
 // `dst[(i*k + j)*blockLen + l] = src[i*blockLen + l]`. The constructor
 // is reused so dtype is preserved (Float64Array / Int32Array / …).
@@ -1000,6 +1066,7 @@ module.exports = {
   isCallableLayerBinding,
   measureToRefValue,
   measureToParamValue,
+  measureToPerAtomRecords,
   tileMeasureAtomMajor,
   collectRefArrays,
   prepareDensityRefs,

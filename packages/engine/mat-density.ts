@@ -37,6 +37,7 @@ const {
   measureFromValue,
   measureFromReply,
   measureToRefValue,
+  measureToPerAtomRecords,
   measureN,
   scalarMeasureN,
   resolveFnBody,
@@ -92,23 +93,38 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // binding via getMeasure (the boundary-conflation bug, audit §3 / H1/H6).
   return ctx.getMeasure(d.from).then((parent: any) => {
     const boundRefArrays: Record<string, any> = {};
-    const pk: string[] = d.paramKwargs || [];
-    // measureToRefValue gives the SAME per-atom ref shape the normal
-    // getMeasure path produces (e.g. vector-atom inputs wrapped to [N,k] so
-    // body indexing like `ability[i]` still sees an array, not a scalar).
-    if (parent && parent.fields) {
-      // Record prior: map each field onto the kernel param of the same name.
-      for (const p of pk) {
-        const fm = parent.fields[p];
-        if (fm && fm.samples) boundRefArrays[p] = measureToRefValue(fm, p, 'bayesupdate');
+    const pkw: string[] = d.paramKwargs || [];
+    const plc: string[] = d.params || [];
+    // Feed each kernel parametric input under BOTH the call-site kwarg name
+    // (`self pars`) AND the `%local` placeholder the bayesupdate expansion
+    // introduces (`%local _pars_`): the recipe references the same boundary
+    // under either namespace (resolveRef looks both up by bare name in env),
+    // so the per-atom value must be visible under both keys. measureToRefValue
+    // gives the SAME per-atom ref shape the normal getMeasure path produces
+    // (vector-atom inputs wrapped to [N,k] so body indexing like `ability[i]`
+    // still sees an array, not a scalar).
+    const feed = (idx: number, val: any) => {
+      if (pkw[idx]) boundRefArrays[pkw[idx]] = val;
+      if (plc[idx] && plc[idx] !== pkw[idx]) boundRefArrays[plc[idx]] = val;
+    };
+    const wholeRecordParam = pkw.length === 1 && parent && parent.fields
+      && !Object.prototype.hasOwnProperty.call(parent.fields, pkw[0]);
+    if (wholeRecordParam) {
+      // Single record-valued param consumes the WHOLE prior record (the
+      // transport `pars`: prior = record(a, b, mu), kernel body field-accesses
+      // pars.a/.b/.mu). Feed per-atom record objects so each access resolves
+      // per atom (audit §3 / H1 record-param case).
+      feed(0, measureToPerAtomRecords(parent, pkw[0], 'bayesupdate'));
+    } else if (parent && parent.fields) {
+      // Record prior, names match: map each field onto the like-named param.
+      for (let i = 0; i < pkw.length; i++) {
+        const fm = parent.fields[pkw[i]];
+        if (fm && fm.samples) feed(i, measureToRefValue(fm, pkw[i], 'bayesupdate'));
       }
-    } else if (parent && parent.samples && pk.length === 1) {
+    } else if (parent && parent.samples && pkw.length === 1) {
       // Scalar prior → the single kernel parameter.
-      boundRefArrays[pk[0]] = measureToRefValue(parent, pk[0], 'bayesupdate');
+      feed(0, measureToRefValue(parent, pkw[0], 'bayesupdate'));
     }
-    // (A record-valued single param whose fields match a record prior — the
-    // transport `pars` case — isn't name-matched here; it falls through unfed
-    // and is handled in the record-param follow-up.)
     return prepareDensityRefs(densIR, ctx, 'bayesupdate', boundRefArrays).then((prep: any) => {
       const { refArrays, fixedEnv } = prep;
       const observed = orchestrator.resolveIRToValue(
