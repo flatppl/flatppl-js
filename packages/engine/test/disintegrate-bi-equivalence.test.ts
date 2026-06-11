@@ -20,9 +20,12 @@
 //      anon-binding indices, so we can compare IR exactly modulo
 //      source-location stripping.
 //
-//   2. CROSS-MODULE pair (BI1 vs BI2 in flatppl-examples):
-//        bayesian_inference_1: forward_kernel = kernelof(...) directly.
-//        bayesian_inference_2: forward_kernel = disintegrate(...).
+//   2. CROSS-MODULE pair (the direct-kernelof vs disintegrate forms in
+//      flatppl-examples; "BI1"/"BI2" below name those ROLES, not file
+//      numbers — the example set gained a new bayesian_inference_1 that
+//      defines prior + likelihood fully separately, shifting these two):
+//        bayesian_inference_2: forward_kernel = kernelof(...) directly.
+//        bayesian_inference_3: forward_kernel = disintegrate(...).
 //      Different modules generate independent anon-binding indices,
 //      so we compare the IR's **structural skeleton** (op, params,
 //      paramKwargs) — not the anon labels themselves.
@@ -114,8 +117,8 @@ function ifaceOf(ir: any): any {
 // delegate-path-specific output equality and stays single-mode.
 inBothModes('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disintegrate) — structural interface',
   'disintegrate.delegate', () => {
-  const bi1Src = loadIfPresent('bayesian_inference_1.flatppl');
-  const bi2Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi2Src = loadIfPresent('bayesian_inference_3.flatppl');
   if (!bi1Src || !bi2Src) {
     // Tests inert if the flatppl-examples sibling isn't available.
     return;
@@ -160,8 +163,8 @@ inBothModes('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disint
 
 inBothModes('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)',
   'disintegrate.delegate', () => {
-  const bi1Src = loadIfPresent('bayesian_inference_1.flatppl');
-  const bi2Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi2Src = loadIfPresent('bayesian_inference_3.flatppl');
   if (!bi1Src || !bi2Src) return;
 
   const ctx1 = processSource(bi1Src);
@@ -179,8 +182,8 @@ inBothModes('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)',
 
 inBothModes('BI1 posterior derivation kind = BI2 posterior derivation kind',
   'disintegrate.delegate', () => {
-  const bi1Src = loadIfPresent('bayesian_inference_1.flatppl');
-  const bi2Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi2Src = loadIfPresent('bayesian_inference_3.flatppl');
   if (!bi1Src || !bi2Src) return;
 
   const { buildDerivations } = require('../orchestrator.ts');
