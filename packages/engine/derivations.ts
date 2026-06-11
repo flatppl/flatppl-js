@@ -1444,6 +1444,46 @@ function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPush
  * classify" → the binding surfaces an error rather than being
  * silently mis-handled).
  */
+/**
+ * Static field labels of a jointchain/kchain BASE measure when it is a
+ * record/joint (the cat-arity its kernel steps splat over), or null for
+ * a scalar / opaque / unknown base. Two sources, in order:
+ *   1. inline record/joint `measureIR` → its `fields` names;
+ *   2. a ref to a measure binding → the record domain of its
+ *      `inferredType` (typeinfer runs before derivation classification,
+ *      so this is populated). Field order is declaration order in both
+ *      sources, matching runtime `M0.fields` key order and density-side
+ *      `spreadFields` — so the recorded labels, the sample-side splat and
+ *      the density-side splat all agree.
+ * `desc` is a `describe()` result: `{ref}` | `{measureIR}` | `{kernelIR}`.
+ */
+function _baseRecordFields(desc: any, bindings: any): string[] | null {
+  if (desc.measureIR && desc.measureIR.kind === 'call'
+      && (desc.measureIR.op === 'joint' || desc.measureIR.op === 'record')
+      && Array.isArray(desc.measureIR.fields)) {
+    return desc.measureIR.fields.map((f: any) => f.name);
+  }
+  if (desc.ref != null && bindings && bindings.has(desc.ref)) {
+    const b = bindings.get(desc.ref);
+    const t = b.inferredType;
+    if (t && t.kind === 'measure' && t.domain && t.domain.kind === 'record'
+        && t.domain.fields) {
+      return Object.keys(t.domain.fields);
+    }
+    // Fallback for a lifted inline base: the hoisted anon binding is
+    // created after typeinfer (no inferredType), but its raw IR is the
+    // record/joint call — read the field labels directly. (A wrapped or
+    // aliased base without a record inferredType falls through to null →
+    // runtime M0.fields, as today.)
+    if (b.ir && b.ir.kind === 'call'
+        && (b.ir.op === 'joint' || b.ir.op === 'record')
+        && Array.isArray(b.ir.fields)) {
+      return b.ir.fields.map((f: any) => f.name);
+    }
+  }
+  return null;
+}
+
 function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): DerivationJointchain | null {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
@@ -1514,6 +1554,20 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
       if (d.ref != null) step.ref = d.ref;
       else if (d.kernelIR) step.kernelIR = d.kernelIR;
       else step.measureIR = d.measureIR;
+      // Record the static field decomposition of a record/joint base —
+      // the cat-arity the kernel steps splat over (PRIOR(j) columns).
+      // Recorded HERE so the CLM lowering enumerates one boundary input
+      // per field and feedInputs builds the splat from these SAME labels
+      // at runtime (from M0.fields), instead of the sample side
+      // (matJointchain.bindLeaf, runtime priorVars.length) and density
+      // side (expandMeasure's rewireHole, expand-time spreadFields) each
+      // deriving cat-arity independently and drifting
+      // (measure-lowering-unification-plan critique A). Additive — null /
+      // absent ⇒ scalar or opaque base (single column), today's behaviour.
+      if (!isKernelComp) {
+        const bf = _baseRecordFields(d, bindings);
+        if (bf) step.baseFields = bf;
+      }
       steps.push(step);
     } else {
       if (!isKernelComp) return null;               // K_i must be a kernel
