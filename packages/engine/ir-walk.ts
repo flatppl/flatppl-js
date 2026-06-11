@@ -18,6 +18,10 @@
  *   selector     IR                               (select)
  *   logweights   array of IR | null               (select)
  *   assigns      array of {name, value: IR}       (load_module)
+ *   bijection    pushfwd metadata (READ-side only) — `.fInv.body`,
+ *                  `.logVolume.body` (when kind:'fn'), `.paramIRs[*]`
+ *                  carry IR. Attached by expandMeasureIR's pushfwd case;
+ *                  see the note in forEachIRChild.
  *
  * NOT recursive (carry strings / non-IR metadata):
  *
@@ -116,6 +120,38 @@ function forEachIRChild(node: any, visit: (child: any) => void): void {
     for (let i = 0; i < node.logweights.length; i++) {
       const w = node.logweights[i];
       if (w) visit(w);
+    }
+  }
+  // `.bijection` (pushfwd metadata attached by expandMeasureIR's pushfwd
+  // case, see resolveBijectionMeta) carries IR in three sub-positions:
+  // the inverse-function body, the optional log-volume function body, and
+  // the registry `paramIRs`. These hold captured `ns:'self'` refs to free
+  // boundaries (e.g. an affine shift `b` reading a prior field), so a
+  // self-ref collector MUST descend them or the CLM ⊆-invariant
+  // undercounts and passes vacuously (measure-lowering-unification-plan
+  // critique D / audit H4). Formal-parameter refs inside the bodies are
+  // `ns:'%local'`, so a `ns:'self'`-only collector naturally excludes the
+  // bound variable; `paramIRs` was already hand-descended in
+  // materialiser-shared.prepareDensityRefs, so surfacing it here is
+  // idempotent for that consumer.
+  //
+  // READ-SIDE ONLY. `mapIR` deliberately does NOT mirror this descent:
+  // rewriting bijection bodies (substituteLocals / computeClosureIR) is a
+  // semantic change deferred to the CLM viewer phase so it lands under its
+  // own tests rather than silently flipping every existing rewrite. The
+  // resulting asymmetry is safe — walkIR over-reporting refs vs mapIR
+  // under-rewriting them is the conservative direction for the ⊆ check.
+  if (node.bijection) {
+    const bj = node.bijection;
+    if (bj.fInv && bj.fInv.body) visit(bj.fInv.body);
+    if (bj.logVolume && bj.logVolume.kind === 'fn' && bj.logVolume.body) {
+      visit(bj.logVolume.body);
+    }
+    if (bj.paramIRs) {
+      for (const k in bj.paramIRs) {
+        const p = bj.paramIRs[k];
+        if (p) visit(p);
+      }
     }
   }
 }
