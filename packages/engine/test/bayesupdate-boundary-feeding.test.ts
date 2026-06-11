@@ -98,3 +98,38 @@ posterior = bayesupdate(L, prior)
   assert.ok(mean > 2.0 && mean < 3.0,
     `aligned posterior mean ${mean.toFixed(3)} off the conjugate range (~2.6-2.9)`);
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Cascade-prune regression: a bayesupdate over a likelihood of a USER-KERNEL
+// whose body is a LIFT-INTRODUCED generative composite must KEEP its
+// derivation (so the viewer plots it). liftInlineSubexpressions runs after
+// computePhases, so a hoisted composite (`ys = post.(xs)` dot-broadcast)
+// carries phase == null; the cascade-prune used to treat that null-phase
+// body-internal ref as an unresolvable fixed dep and prune the WHOLE posterior
+// → "Not plottable", even though it materialises correctly. The prune now
+// skips lift-introduced (null-phase) body internals, same as parameterized /
+// stochastic ones (the materialiser resolves them via the expand path).
+// ─────────────────────────────────────────────────────────────────────────
+
+test('bayesupdate over a generative-composite likelihood keeps its derivation (not cascade-pruned)', () => {
+  const src = `
+mu = elementof(reals)
+x ~ Normal(mu, 1.0)
+y = x * 2.0
+post = z -> z + 1.0
+k_inner = kernelof(y, mu = mu)
+n = elementof(posintegers)
+xs ~ iid(k_inner(mu), n)
+ys = post.(xs)
+k = kernelof(ys, mu = mu, n = n)
+data = [1.0, 2.0, 3.0]
+km = mu -> k(lengthof(data), mu)
+L = likelihoodof(km, data)
+prior = joint(mu = Normal(0.0, 1.0))
+posterior = bayesupdate(L, prior)
+`;
+  const built = orchestrator.buildDerivations(processSource(src).bindings);
+  const d = built.derivations.posterior;
+  assert.ok(d, 'posterior must keep a derivation (not cascade-pruned)');
+  assert.strictEqual(d.kind, 'bayesupdate');
+});

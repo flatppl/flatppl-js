@@ -1952,7 +1952,16 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
         // gets its whole posterior cascade-pruned → "Not plottable", even
         // though it materialises correctly.
         const rb = bindings.get(r);
-        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+        // phase == null: a LIFT-INTRODUCED anon (liftInlineSubexpressions runs
+        // AFTER computePhases, so hoisted subexpressions carry no phase). These
+        // are body-internal nodes — a generative-composite measure
+        // (`zs = post.(transport.(…))`), an inner draw — that the materialiser
+        // resolves through the measure-expansion path, exactly like the
+        // parameterized/stochastic internals above. Skip them too (a genuinely
+        // missing dep has NO binding → rb is null → still pruned below; a real
+        // fixed external dep keeps phase 'fixed' → still validated).
+        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic'
+          || rb.phase == null)) continue;
         if (!resolvable(r)) return false;
       }
       return true;
