@@ -7,6 +7,14 @@
  * encode (engine-concepts §11, FlatPIR §11):
  *
  *   args         positional IR array              (every call)
+ *   callee       IR                               (expression-headed user
+ *                                                    call, spec §11 %call —
+ *                                                    e.g. an inline
+ *                                                    reification applied
+ *                                                    directly; ref-headed
+ *                                                    calls use `target`, a
+ *                                                    {ns,name} string pair,
+ *                                                    NOT a child node)
  *   kwargs       object of named IR values        (most calls)
  *   fields       ordered named entries            (record / joint /
  *                  [{name, value: IR}, …]            jointchain / cartprod /
@@ -76,6 +84,7 @@
 function forEachIRChild(node: any, visit: (child: any) => void): void {
   if (!node || typeof node !== 'object') return;
 
+  if (node.callee) visit(node.callee);
   if (node.args) {
     for (let i = 0; i < node.args.length; i++) {
       const a = node.args[i];
@@ -204,6 +213,10 @@ function _mapChildren(node: any, mapChild: (c: any, isBody: boolean) => any): an
     return copy;
   }
 
+  if (node.callee) {
+    const c2 = mapChild(node.callee, false);
+    if (c2 !== node.callee) ensureCopy().callee = c2;
+  }
   if (node.args) {
     let changed = false;
     const a2 = new Array(node.args.length);

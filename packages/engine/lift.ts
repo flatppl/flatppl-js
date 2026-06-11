@@ -1896,6 +1896,23 @@ function liftInlineSubexpressions(bindings: any) {
 
   function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    // Expression-headed call (spec §11 / §05 Postfix Call*): the callee
+    // is an INLINE reification applied directly — `functionof(e, p=a)(2.5)`,
+    // `(x -> 2*x)(3.0)` (the parser desugars lambdas to functionof
+    // CallExprs), `fn(2*_)(3.0)`. Treat the callee AST as fnAst with a
+    // synthetic binding-type from its head — the entire named-callable
+    // substitution machinery below applies unchanged (no name ⇒ no
+    // recursion possible). Other expression callees (chained `f(x)(y)`
+    // where f(x) yields a callable) are left un-inlined — they lower to
+    // the callee-form IR and surface a clean classification refusal.
+    if (astArg.callee && astArg.callee.type === 'CallExpr'
+        && astArg.callee.callee && astArg.callee.callee.type === 'Identifier'
+        && (astArg.callee.callee.name === 'functionof'
+          || astArg.callee.callee.name === 'kernelof'
+          || astArg.callee.callee.name === 'fn')) {
+      return _inlineApplication(astArg,
+        { type: astArg.callee.callee.name }, astArg.callee);
+    }
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     const fnName = astArg.callee.name;
     // Use `out`, not `bindings`, so synthesized anon bindings created
@@ -1945,6 +1962,16 @@ function liftInlineSubexpressions(bindings: any) {
     // wrong inlinings (the restrict-expand complement-route bug).
     const fnAst = (fnBinding.effectiveValue
       || (fnBinding.node && fnBinding.node.value));
+    return _inlineApplication(astArg, fnBinding, fnAst);
+  }
+
+  // Apply a reified callable's AST (`fnAst` — a functionof / kernelof /
+  // fn CallExpr) to a call site (`astArg`), substituting boundary args +
+  // synthesizing the closure. Shared by the named path (inlineOnce
+  // resolves fnAst from the callee binding) and the expression-headed
+  // path (spec §11 — fnAst IS the inline callee). `fnBinding` carries at
+  // least the callable's `type`; synthetic for the inline case.
+  function _inlineApplication(astArg: any, fnBinding: any, fnAst: any) {
     if (!fnAst || fnAst.type !== 'CallExpr' || !fnAst.args || fnAst.args.length === 0) {
       return astArg;
     }

@@ -525,9 +525,38 @@ function _lowerCallExpr(node: any, ctx: any): any {
         return lowered;
       }
     }
-    // Otherwise: higher-order or computed callees aren't part of
-    // the FlatPPL surface grammar today. If we ever add them, they'd
-    // lower with a computed-target form. For now, refuse loudly.
+    // Expression-headed user call (spec §11, b070d0a / §05 Postfix
+    // Call*): the callee is an expression that must evaluate to a
+    // user-defined callable — an inline reification in the common case
+    // (`functionof(e, p = a)(2.5)`, `(x -> 2*x)(3.0)`), or a chained
+    // call (`f(x)(y)`). Lower to the callee-form user call: the head
+    // lives in `callee` (a child IR node), structurally distinct from
+    // the ref-headed `target` form (a {ns,name} string pair). The
+    // "must evaluate to a callable" condition is inference's job —
+    // the lowerer stays liberal (matching the FlatPIR reader).
+    if (node.callee && node.callee.type === 'CallExpr') {
+      const lowered: any = {
+        kind: 'call',
+        callee: _lowerExpr(node.callee, ctx),
+        loc: node.loc,
+      };
+      const posArgs: any[] = [];
+      const kw: Record<string, any> = {};
+      let hasKw = false;
+      for (const a of node.args || []) {
+        if (a.type === 'KeywordArg') {
+          kw[a.name] = _lowerExpr(a.value, ctx);
+          hasKw = true;
+        } else {
+          posArgs.push(_lowerExpr(a, ctx));
+        }
+      }
+      lowered.args = posArgs;
+      if (hasKw) lowered.kwargs = kw;
+      return lowered;
+    }
+    // Otherwise: refuse loudly (a computed callee shape outside the
+    // grammar — e.g. an indexing-produced callable — has no IR form yet).
     throw new Error(`lower: unsupported callee type '${node.callee?.type}'`);
   }
   const calleeName = node.callee.name;

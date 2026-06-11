@@ -312,6 +312,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // User-defined call: lower.js puts the callee on `target`.
     if (expr.target) return inferUserCall(expr, scopes);
 
+    // Expression-headed user call (spec §11 %call, b070d0a): the callee
+    // is an expression — an inline reification in the common case
+    // (`functionof(e, p = a)(2.5)`, a lambda application) — that must
+    // evaluate to a user-defined callable. Infer the callee; a
+    // function / kernel type applies to its result (monomorphic, like
+    // inferUserCall); anything else is the typing-condition failure.
+    if (expr.callee) {
+      const calleeT = inferExpr(expr.callee, scopes);
+      if (calleeT && (calleeT.kind === 'function' || calleeT.kind === 'kernel')) {
+        return write(calleeT.result != null ? calleeT.result : T.deferred(), expr);
+      }
+      if (calleeT && calleeT.kind === 'failed') {
+        return write(T.failed('expression-headed call cascade'), expr);
+      }
+      if (calleeT && calleeT.kind === 'deferred') return write(T.deferred(), expr);
+      return write(T.failed('expression-headed call: callee must evaluate to a '
+        + 'user-defined callable (function or kernel), got '
+        + T.show(calleeT)), expr);
+    }
+
     // Special-cased ops whose result type depends on actuals or
     // structural shape in ways that don't fit the static signature
     // table.

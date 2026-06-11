@@ -150,6 +150,13 @@ function _callToSexpr(e: any, ind: string): string {
   if (e.target) {
     parts.push('%call');
     parts.push('(%ref ' + e.target.ns + ' ' + e.target.name + ')');
+  } else if (e.callee) {
+    // Expression-headed user call (spec §11, b070d0a): the head is an
+    // expression that must evaluate to a user-defined callable — e.g.
+    // an inline reification `(%call (functionof …) 2.5)`. Ref heads
+    // keep the `target` form above (unchanged on the wire).
+    parts.push('%call');
+    parts.push(_exprToSexpr(e.callee, ind));
   } else {
     parts.push(e.op);
   }
@@ -612,12 +619,18 @@ function fromSexpr(text: any) {
   }
 
   function readCallForm(): any {
-    // (%call <ref-head> [%meta]? <args/%kwarg…>) — a call to a user-defined
-    // callable (spec §11). The ref-head reconstructs the `target:{ns,name}`;
-    // the remaining parts are ordinary positional args / %kwarg entries (and
-    // an optional %meta, which may appear before or after the ref-head).
+    // (%call <callable> [%meta]? <args/%kwarg…>) — a call to a user-defined
+    // callable (spec §11, b070d0a). The head is an EXPRESSION that must
+    // evaluate to a user-defined callable: a `(%ref …)` in the common case
+    // (reconstructing the engine's `target:{ns,name}` ref-head form), or an
+    // inline callable expression such as a reification — kept as a `callee`
+    // child node. The "must evaluate to a callable" condition is
+    // inference's job; the reader stays liberal. Remaining parts are
+    // ordinary positional args / %kwarg entries (and an optional %meta,
+    // which may appear before or after the head).
     eat(); // %call
     const callShape: any = { kind: 'call', args: [], kwargs: {} };
+    let headDone = false;
     while (!eof() && peek().type !== ')') {
       const part = readForm();
       if (part == null) continue;
@@ -625,8 +638,10 @@ function fromSexpr(text: any) {
         callShape.meta = { type: part.type, phase: part.phase };
         continue;
       }
-      if (!callShape.target && part.kind === 'ref') {
-        callShape.target = { ns: part.ns, name: part.name };
+      if (!headDone) {
+        headDone = true;
+        if (part.kind === 'ref') callShape.target = { ns: part.ns, name: part.name };
+        else callShape.callee = part;
         continue;
       }
       _absorbCallPart(callShape, part);
