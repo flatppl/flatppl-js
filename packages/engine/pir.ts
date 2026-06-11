@@ -131,7 +131,12 @@ function lowerToModule(parsedBindings: Map<string, any>) {
   for (const [name, binding] of parsedBindings) {
     if (binding && binding.type === 'module') moduleNames.add(name);
   }
-  const lowerCtx = { localScope: null, moduleNames };
+  // All module binding names: lets `_lowerReification` distinguish an
+  // identifier-form boundary kwarg that designates a real node (a cut —
+  // body refs stay `self`, spec §11) from one naming nothing (a pure
+  // formal — placeholder semantics, the spec §04 lambda rule).
+  const bindingNames = new Set<string>(parsedBindings.keys());
+  const lowerCtx = { localScope: null, moduleNames, bindingNames };
 
   // Module registry: alias → resolved descriptor for downstream
   // consumers (typeinfer / materialiser / sampler) that need to

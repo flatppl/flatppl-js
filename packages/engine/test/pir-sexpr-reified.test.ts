@@ -10,11 +10,10 @@
 // The old `(%params <node-names>)` wrapper is gone (it was lossy: a
 // placeholder entry `x = _x_` declares call-name `x`, but %params kept
 // only `_x_`). Body refs to identifier-form boundary inputs are plain
-// `self` refs on the wire; only placeholders are `%local`. The engine
-// internally aliases identifier boundaries into `%local` (lower.ts
-// localScope) — the writer un-aliases at the boundary, the reader
-// re-aliases, so round-tripped modules are bit-identical to
-// processSource output and runtime consumers are untouched.
+// `self` refs on the wire; only placeholders are `%local`. The
+// engine-internal IR is spec-shaped too (lower.ts: `%local` is
+// placeholders-only), so writer and reader carry bodies VERBATIM — no
+// namespace translation at the serialization boundary.
 //
 // The concrete syntax is pinned against the spec §11 worked example
 // (helpers.flatpir) and flatppl-rust's reified.flatpir round-trip
@@ -78,21 +77,21 @@ test('writer: %specinputs emission matches the spec §11 worked example exactly'
   assert.ok(!out.includes('%params'), 'old %params form must not be emitted');
 });
 
-test('writer: identifier-form boundary refs are un-aliased to self; placeholders stay %local', () => {
+test('writer: identifier-form boundary refs are self on the wire AND internally; placeholders stay %local', () => {
   const mod = buildModule(HELPERS_SURFACE);
   const out = normWs(pirSexpr.toSexpr(mod));
   // Body: center/spread are identifier-form boundaries → plain self refs
-  // on the wire (engine-internal IR has them as %local — lower.ts
-  // localScope aliasing).
+  // on the wire, `_x_` the placeholder → %local.
   assert.ok(out.includes('(%kwarg mu (add (%ref self center) (%ref %local _x_)))'),
     'body must carry self refs for identifier boundaries, %local for placeholders');
-  // Internal IR really is aliased (the un-alias is doing work).
+  // The engine-internal IR is spec-shaped (lower.ts narrowing): the
+  // writer emits the body verbatim, no un-alias pass.
   const rhs = mod.bindings.get('obs_kernel').rhs;
-  assert.equal(rhs.body.kwargs.mu.args[0].ns, '%local',
-    'engine-internal body ref must be %local (lower.ts aliasing)');
+  assert.equal(rhs.body.kwargs.mu.args[0].ns, 'self',
+    'engine-internal body ref must be self (spec-shaped, %local is placeholders-only)');
 });
 
-test('reader: %specinputs restores params/paramKwargs/paramSources and re-aliases the body', () => {
+test('reader: %specinputs restores params/paramKwargs/paramSources; body verbatim', () => {
   const mod = buildModule(HELPERS_SURFACE);
   const text = pirSexpr.toSexpr(mod);
   const { module: mod2, diagnostics } = pirSexpr.fromSexpr(text);
@@ -103,9 +102,10 @@ test('reader: %specinputs restores params/paramKwargs/paramSources and re-aliase
   assert.deepEqual(back.params, orig.params);             // node names
   assert.deepEqual(back.paramKwargs, orig.paramKwargs);   // call-names (was lossy before)
   assert.deepEqual(back.paramSources, orig.paramSources); // origins
-  // Body re-aliased: bit-identical to the lowered internal shape.
+  // Body carried verbatim: bit-identical to the lowered internal shape
+  // (both spec-shaped — no namespace translation either way).
   assert.deepEqual(stripped(back.body), stripped(orig.body),
-    'round-tripped body must equal the engine-internal (re-aliased) shape');
+    'round-tripped body must equal the engine-internal shape');
 });
 
 test('reader: the spec helpers.flatpir text itself reconstructs the lowered surface form', () => {
@@ -225,14 +225,17 @@ test('reader: kernelof with %specinputs restores boundaries + lawof-wraps', () =
 });
 
 // ---------------------------------------------------------------------
-// Nested reifications — scope-aware un-alias/re-alias
+// Nested reifications — spec-shaped bodies round-trip verbatim
 // ---------------------------------------------------------------------
 
-test('round-trip: nested reification shadows the outer boundary name correctly', () => {
-  // Hand-built IR: an outer functionof with identifier boundary `a`
-  // whose body contains a NESTED functionof that re-declares `a` as its
-  // own boundary. The outer un-alias must not touch the inner body's
-  // `%local a` (inner scope), and vice versa on read.
+test('round-trip: nested reification with a re-declared boundary name round-trips verbatim', () => {
+  // Hand-built SPEC-SHAPED IR (lower.ts narrowing: identifier-bound
+  // boundary refs are plain `self` refs; only placeholders are %local):
+  // an outer functionof with identifier boundary `a` whose body contains
+  // a NESTED functionof that re-declares `a` as its own boundary. Both
+  // scopes' bodies carry `self a`; the entry lists designate which scope
+  // cuts where (the shadow logic lives in the scope-aware consumers —
+  // walkIRScoped/mapIRScoped — not in serialization).
   const pir = require('../pir.ts');
   const inner = {
     kind: 'call', op: 'functionof',
@@ -242,7 +245,7 @@ test('round-trip: nested reification shadows the outer boundary name correctly',
       { kind: 'placeholder', name: '_y_' },
     ],
     body: { kind: 'call', op: 'mul', args: [
-      { kind: 'ref', ns: '%local', name: 'a' },
+      { kind: 'ref', ns: 'self', name: 'a' },
       { kind: 'ref', ns: '%local', name: '_y_' },
     ] },
   };
@@ -251,7 +254,7 @@ test('round-trip: nested reification shadows the outer boundary name correctly',
     params: ['a'], paramKwargs: ['p'],
     paramSources: [{ kind: 'binding', name: 'a' }],
     body: { kind: 'call', op: 'add', args: [
-      { kind: 'ref', ns: '%local', name: 'a' },   // outer scope's a
+      { kind: 'ref', ns: 'self', name: 'a' },   // outer scope's a
       inner,
     ] },
   };

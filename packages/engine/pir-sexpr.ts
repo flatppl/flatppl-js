@@ -188,15 +188,10 @@ function _callToSexpr(e: any, ind: string): string {
 //
 // Each input entry pairs the callable's CALL-NAME with the node it
 // reifies (the old `(%params <node-names>)` form was lossy — it dropped
-// the call-names). The body is emitted in the SPEC shape: body refs to
-// identifier-form boundary inputs are plain self/module refs; only
-// placeholders (`_x_`-class) live in the `%local` namespace. The
-// engine-internal IR aliases identifier boundaries into `%local`
-// (lower.ts adds them to the body's localScope — load-bearing for many
-// runtime consumers), so the translation happens HERE, at the
-// serialization boundary only: un-alias on write, re-alias on read
-// (fromSexpr). The internal narrowing to spec-shaped bodies is a
-// separately-scoped item (TODO §11).
+// the call-names). The engine-internal IR is spec-shaped (lower.ts:
+// `%local` is placeholders-only; identifier-form boundary refs are plain
+// self/module refs), so the body is emitted VERBATIM — no namespace
+// translation at the serialization boundary.
 //
 // JS never emits a FILLED %autoinputs list — that is inference
 // metadata (strippable like %meta), and the engine does not serialize
@@ -222,16 +217,8 @@ function _reificationToSexpr(e: any, ind: string): string {
     const p = params[i];
     return isPlaceholderName(p) ? p.slice(1, -1) : p;
   };
-  // Un-alias the body: binding-sourced params' `%local` refs → `self`.
-  const bindingParams = new Set<string>();
-  for (let i = 0; i < params.length; i++) {
-    if (sourceOf(i).kind === 'binding') bindingParams.add(params[i]);
-  }
-  const body = bindingParams.size > 0
-    ? _renameRefNs(e.body, bindingParams, '%local', 'self')
-    : e.body;
   const parts: string[] = [e.op === 'kernelof' ? 'kernelof' : 'functionof'];
-  parts.push(_exprToSexpr(body, ind));
+  parts.push(_exprToSexpr(e.body, ind));
   if (params.length === 0) {
     parts.push('%autoinputs', '%deferred');
   } else {
@@ -245,40 +232,6 @@ function _reificationToSexpr(e: any, ind: string): string {
     parts.push('%specinputs', '(' + entries.join(' ') + ')');
   }
   return '(' + parts.join(' ') + ')';
-}
-
-// Rewrite `(%ref <fromNs> <name ∈ names>)` → `(%ref <toNs> <name>)`
-// through an IR tree, respecting NESTED reification scopes: descending
-// into a nested functionof/kernelof BODY removes that reification's own
-// param names from the active set (they are the inner scope's inputs —
-// the inner node performs its own translation when it is itself
-// emitted/read). Pure: returns a rewritten copy; untouched subtrees are
-// shared. Used by the writer (un-alias, %local→self) and the reader
-// (re-alias, self→%local) for identifier-form boundary inputs.
-function _renameRefNs(node: any, names: Set<string>, fromNs: string, toNs: string): any {
-  function walk(n: any, active: Set<string>): any {
-    if (n == null || typeof n !== 'object') return n;
-    if (Array.isArray(n)) return n.map((x) => walk(x, active));
-    if (n.kind === 'ref' && n.ns === fromNs && active.has(n.name)) {
-      return Object.assign({}, n, { ns: toNs });
-    }
-    if (n.kind === 'call' && (n.op === 'functionof' || n.op === 'kernelof')
-        && n.body && Array.isArray(n.params)) {
-      const shadowed = n.params.filter((p: string) => active.has(p));
-      const inner = shadowed.length > 0
-        ? (() => { const s = new Set(active); for (const p of shadowed) s.delete(p); return s; })()
-        : active;
-      const out: Record<string, any> = {};
-      for (const k in n) {
-        out[k] = k === 'body' ? walk(n[k], inner) : walk(n[k], active);
-      }
-      return out;
-    }
-    const out: Record<string, any> = {};
-    for (const k in n) out[k] = walk(n[k], active);
-    return out;
-  }
-  return walk(node, names);
 }
 
 // =====================================================================
@@ -585,7 +538,6 @@ function fromSexpr(text: any) {
       const params: string[] = [];
       const paramKwargs: string[] = [];
       const paramSources: any[] = [];
-      const bindingParams = new Set<string>();
       for (const en of entries) {
         paramKwargs.push(en.name);
         params.push(en.ref.name);
@@ -594,18 +546,14 @@ function fromSexpr(text: any) {
         } else {
           const src: any = { kind: 'binding', name: en.ref.name };
           if (en.ref.ns !== 'self') src.ns = en.ref.ns;  // module-sourced (lossless)
-          else bindingParams.add(en.ref.name);
           paramSources.push(src);
         }
       }
-      // Re-establish the engine-internal aliasing: body refs to
-      // identifier-form (self-sourced) boundary inputs live in %local
-      // inside the reified scope (lower.ts's localScope behavior), so
-      // post-read modules are indistinguishable from processSource
-      // output (the writer applies the inverse rename on emit).
-      if (body && bindingParams.size > 0) {
-        body = _renameRefNs(body, bindingParams, 'self', '%local');
-      }
+      // The body is kept verbatim — engine-internal IR is spec-shaped
+      // (lower.ts: `%local` is placeholders-only; identifier-form
+      // boundary refs stay plain self/module refs), so post-read modules
+      // are indistinguishable from processSource output with no
+      // namespace translation.
       callShape.params = params;
       callShape.paramKwargs = paramKwargs;
       callShape.paramSources = paramSources;

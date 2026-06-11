@@ -288,10 +288,16 @@ test('spec-coverage GAP: jointchain non-suffix selector (picks a middle field)',
   // the engine's current rule only handles suffix selectors per the
   // existing disintegrate-plan.test.ts "non-suffix selector → Unsupported"
   // case. Recorded here as a known gap.
+  // (`b = draw(K1(a = a))` yields the kernel's record variate
+  // `{b: real}`; K2's boundary `b = b` therefore cuts a RECORD node, so
+  // its body uses the field — `b.b` — to stay well-typed. The lower.ts
+  // %local narrowing made body boundary refs carry their REAL module
+  // types, surfacing the previous bare-`b` form as the type error it
+  // always was.)
   const src = `
 M = Normal(mu = 0, sigma = 1)
 K1 = functionof(joint(b = Normal(mu = a, sigma = 1)), a = a)
-K2 = functionof(joint(c = Normal(mu = b, sigma = 1)), b = b)
+K2 = functionof(joint(c = Normal(mu = b.b, sigma = 1)), b = b)
 a = draw(M)
 b = draw(K1(a = a))
 J = jointchain(a = M, b = K1, c = K2)

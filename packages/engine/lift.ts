@@ -377,7 +377,13 @@ function liftInlineSubexpressions(bindings: any) {
   for (const [bname, b] of out) {
     if (b && b.type === 'module') moduleNames.add(bname);
   }
-  const liftLowerCtx = { localScope: null, moduleNames };
+  // All binding names (mirrors pir.lowerToModule): `_lowerReification`
+  // consults this to tell a real-node boundary cut (body refs stay
+  // `self`) from a pure formal (placeholder semantics). `out` already
+  // holds every user binding at this point; lift-synthesized anons are
+  // never boundary-kwarg names.
+  const bindingNames = new Set<string>(out.keys());
+  const liftLowerCtx = { localScope: null, moduleNames, bindingNames };
   function makeIdent(name: string, loc: any) {
     return { type: 'Identifier', name, loc: loc || null };
   }

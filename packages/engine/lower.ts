@@ -56,9 +56,13 @@
 //
 // Reified callables (`functionof`, `kernelof`, `fn`) introduce a parameter
 // scope. We surface `params` (a list of names) and the `body` expression
-// directly; references inside the body to those names lower as
-// `{ ns: '%local', name }`. The surface kwarg names are also preserved
-// in `paramKwargs` for callsite-keyword matching at higher layers.
+// directly. Per spec §11, only PLACEHOLDER params (`_x_`-class — lambda /
+// fn-hole formals with no module binding) live in the `%local` namespace;
+// body references to IDENTIFIER-form boundary inputs stay plain `self`/
+// module refs designating the cut nodes — the params list carries the
+// cut, and boundary-aware consumers apply the §04 input substitution at
+// evaluation. The surface kwarg names are preserved in `paramKwargs` for
+// callsite-keyword matching at higher layers.
 //   { kind: 'call', op: 'functionof',
 //                   params:      [<name>, …],
 //                   paramKwargs: [<surface-kwarg-name>, …],   // parallel to params
@@ -95,7 +99,9 @@
 // Reified callables introduce an inner `%local` scope. We pass `ctx`
 // through every recursive `lowerExpr` call; `ctx.localScope` is a Set of
 // names visible as `%local`. Inside `functionof`/`kernelof` bodies we
-// extend the scope with the new params before recursing.
+// extend the scope with the new PLACEHOLDER params before recursing
+// (identifier-form boundary names stay out — their body refs lower as
+// ordinary `self` refs, spec §11).
 //
 // For ordinary identifiers, the resolution rule is:
 //   1. If the name is in `ctx.localScope`         → `{ ref: '%local', name }`
@@ -781,7 +787,20 @@ function _lowerReification(op: string, node: any, ctx: any): any {
     let source: any;
     if (arg.value.type === 'Identifier') {
       paramName = arg.value.name;
-      source = { kind: 'binding', name: arg.value.name };
+      // An identifier that designates a real module node is a boundary
+      // CUT (spec §04 — "the trace stops at nodes a and d"); one that
+      // names nothing is a pure FORMAL, semantically a placeholder (the
+      // spec §04 lambda rule binds formals as `x = _x_`; the engine
+      // accepts the bare-identifier shorthand `x = x`). The distinction
+      // drives the body namespace: cut refs stay `self` (spec §11),
+      // formals live in `%local`. Without `ctx.bindingNames` (legacy
+      // re-lower fallback paths) default to the cut reading — the
+      // dual-ns consumers handle either shape.
+      if (ctx.bindingNames && !ctx.bindingNames.has(paramName)) {
+        source = { kind: 'placeholder', name: paramName };
+      } else {
+        source = { kind: 'binding', name: arg.value.name };
+      }
     } else if (arg.value.type === 'Placeholder') {
       paramName = '_' + arg.value.name + '_';
       source = { kind: 'placeholder', name: paramName };
@@ -796,9 +815,18 @@ function _lowerReification(op: string, node: any, ctx: any): any {
     paramSources.push(source);
   }
 
-  // Inner scope: existing %local plus the new params. Used for the body.
+  // Inner scope: existing %local plus the new PLACEHOLDER params only
+  // (spec §11: `%local` is the placeholder namespace — `_x_`-class names
+  // with no module binding). Identifier-form boundary refs in the body
+  // stay plain `self`/module refs designating the cut nodes; the entry
+  // list (`params`/`paramKwargs`/`paramSources`) carries the cut, and
+  // the §04 input substitution is applied at evaluation/lowering by the
+  // boundary-aware consumers (scope-aware collectSelfRefs etc.), never
+  // encoded in the namespace.
   const innerLocal = new Set(ctx.localScope || []);
-  for (const p of params) innerLocal.add(p);
+  for (let i = 0; i < params.length; i++) {
+    if (paramSources[i].kind === 'placeholder') innerLocal.add(params[i]);
+  }
   const innerCtx = { ...ctx, localScope: innerLocal };
 
   let body: any = _lowerExpr(args[0], innerCtx);

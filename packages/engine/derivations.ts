@@ -1851,12 +1851,15 @@ function classifyAppliedChain(rhsIR: any, bindings: any): any {
     if (!Object.prototype.hasOwnProperty.call(kwargs, p)) return null;
   }
   // Substitute params with kwargs. Walk the body IR, replace any
-  // (ref %local <param>) with the corresponding kwarg IR. Other refs
-  // — self refs, other %local refs — pass through unchanged.
+  // param ref — `(ref %local <param>)` for placeholder formals, or a
+  // `(ref self <param>)` identifier-bound boundary (spec-shaped bodies
+  // §11; the param list disambiguates from captures) — with the
+  // corresponding kwarg IR. Other refs pass through unchanged.
   function subst(node: any): any {
     if (node == null || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(subst);
-    if (node.kind === 'ref' && node.ns === '%local'
+    if (node.kind === 'ref'
+        && (node.ns === '%local' || node.ns === 'self')
         && k0params.indexOf(node.name) !== -1) {
       return kwargs[node.name];
     }

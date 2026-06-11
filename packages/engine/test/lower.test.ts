@@ -339,11 +339,14 @@ test('lower: functionof with simple identifier params', () => {
   assert.equal(ir.op, 'functionof');
   assert.deepEqual(ir.params, ['a', 'b']);
   assert.deepEqual(ir.paramKwargs, ['a', 'b']);
-  // Body is `add(a, b)` with both as %local refs.
+  // Spec-shaped body (§11): identifier-form boundary refs stay plain
+  // `self` refs designating the cut nodes — only placeholders live in
+  // `%local`. (lowerBinding here has no ctx.bindingNames, so the
+  // identifiers default to the cut reading.)
   assert.equal(ir.body.op, 'add');
-  assert.equal(ir.body.args[0].ns, '%local');
+  assert.equal(ir.body.args[0].ns, 'self');
   assert.equal(ir.body.args[0].name, 'a');
-  assert.equal(ir.body.args[1].ns, '%local');
+  assert.equal(ir.body.args[1].ns, 'self');
   assert.equal(ir.body.args[1].name, 'b');
 });
 
