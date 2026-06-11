@@ -18,6 +18,7 @@ const empirical = require('./empirical.ts');
 const materialiser = require('./materialiser.ts');
 const density = require('./density.ts');
 const mcRecipe = require('./mc-recipe.ts');
+const clm = require('./clm.ts');
 const value = require('./value.ts');
 const types = require('./types.ts');
 const typeinfer = require('./typeinfer.ts');
@@ -109,7 +110,7 @@ module.exports = {
   AST, builtins,
   // Lightweight sampling-stack components (no stdlib pull-in)
   rng, lower, orchestrator, histogram, empirical, materialiser, density,
-  mcRecipe,
+  mcRecipe, clm,
   value,
   types, typeinfer, pir, pirSexpr, standardModules, dataload,
   // Optimization toggles for dual-mode testing (engine-concepts §15).

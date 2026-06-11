@@ -77,7 +77,7 @@ const { isMeasureExpr, computePhases } = require('./analyzer.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
-const { signatureOf, substituteLocals } = require('./signatures.ts');
+const { signatureOf } = require('./signatures.ts');
 const { FixedValues } = require('./fixed-values.ts');
 const {
   collectSelfRefs,

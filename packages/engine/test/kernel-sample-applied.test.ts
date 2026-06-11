@@ -68,26 +68,31 @@ test('deriveAppliedKernel: k_model at glob_pars matches the model_dist oracle', 
     `k_model(glob_pars) mean ${meanA.toFixed(3)} ≈ model_dist mean ${meanB.toFixed(3)}`);
 });
 
-test('the substitute-IR kernel-sample path throws for k_model (the gap the fallback closes)', async () => {
-  // This pins WHY the viewer falls back to deriveAppliedKernel: the substitute-IR
-  // reconstruction (expandMeasureRefsInIR → inlineForProfile → substituteLocals →
-  // materialiseMeasureIR), which renderKernelSampleForCurrent runs first and which
-  // works for simple kernels, TANGLES on the composite-generative k_model.
+test('the clm kernel-sample path rejects for k_model (the gap the applied route closes)', async () => {
+  // This pins WHY renderKernelSampleForCurrent falls through to
+  // deriveAppliedKernel: the canonical-lowering primary (lowerMeasure
+  // with explicit boundaries → materialiseMeasureIR), which works for
+  // simple kernels, cannot materialise the APPLIED composite k_model —
+  // its body is a user-call of k_model_n, so the by-name concrete-
+  // application route is the correct mechanism (spec §06 uniform kernel
+  // extension), not the IR-direct walk.
+  const clm = require('../clm.ts');
   const built = build();
   const sig = orchestrator.signatureOf('k_model', built.bindings, built.derivations);
-  const paramNames = sig.inputs.map((i: any) => i.paramName);
   const env: any = {};
   for (const i of sig.inputs) env[i.paramName] = { a: 0.1, b: 0.3, mu: 1.1 };
-  let ir = orchestrator.expandMeasureRefsInIR(sig.body, built.derivations, undefined, built.bindings);
-  if (ir && ir.kind === 'ref' && ir.ns === 'self') {
-    const ex = orchestrator.expandMeasureIR(ir.name, built.derivations, undefined, built.bindings);
-    if (ex) ir = ex;
+  const lowCtx = { derivations: built.derivations, bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map() };
+  let node: any = null;
+  try { node = clm.lowerMeasure(sig.body, lowCtx, { boundaries: env }); }
+  catch (_e) { node = null; }
+  if (node) {
+    await assert.rejects(
+      () => Promise.resolve(materialiser.materialiseMeasureIR(node, makeCtx(built, 500))),
+      'clm materialiseMeasureIR should reject for the applied composite k_model');
   }
-  ir = orchestrator.inlineForProfile(ir, paramNames, built.bindings, built.derivations);
-  ir = orchestrator.substituteLocals(ir, env);
-  await assert.rejects(
-    () => materialiser.materialiseMeasureIR(ir, makeCtx(built, 500)),
-    'substitute-IR materialiseMeasureIR should reject for the composite-generative k_model');
+  // (node === null is equally a clean refusal — either way the viewer
+  // proceeds to the applied route, pinned green by the tests above.)
 });
 
 test('deriveAppliedKernel: k_model_n (multi-input n + pars) materialises by name', async () => {

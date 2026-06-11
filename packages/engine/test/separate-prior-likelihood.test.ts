@@ -78,9 +78,11 @@ test('separate prior/likelihood: forward_kernel samples (draw-of-measure peel)',
   const paramNames = sig.inputs.map((i: any) => i.paramName);
   const env: Record<string, number> = {};
   for (const i of sig.inputs) env[i.paramName] = (i.kwargName === 'theta2' ? 1.0 : 0.5);
-  let ir = orchestrator.expandMeasureRefsInIR(sig.body, built.derivations, undefined, built.bindings);
-  ir = orchestrator.inlineForProfile(ir, paramNames, built.bindings, built.derivations);
-  ir = orchestrator.substituteLocals(ir, env);
+  const clm = require('../clm.ts');
+  const lowCtx = { derivations: built.derivations, bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map() };
+  const node = clm.lowerMeasure(sig.body, lowCtx, { boundaries: env });
+  const ir = orchestrator.substituteBoundaryValues(node.body, env);
   const m = await materialiser.materialiseMeasureIR(ir, ctx);
   const f = m.fields ? m.fields.obs : m;
   const s = f.samples || (f.value && f.value.data);
@@ -95,9 +97,13 @@ test('separate prior/likelihood: likelihood density is finite and peaks near the
   const built = build();
   const { w } = makeCtx(built, 1);
   const sig = orchestrator.signatureOf('forward_kernel', built.bindings, built.derivations);
-  let ir = orchestrator.expandMeasureRefsInIR(sig.body, built.derivations);
-  ir = orchestrator.inlineForProfile(ir, sig.inputs.map((i: any) => i.paramName),
-    built.bindings, built.derivations);
+  const clm = require('../clm.ts');
+  const boundaries: Record<string, any> = {};
+  for (const i of sig.inputs) boundaries[i.paramName] = true;
+  const node = clm.lowerMeasure(sig.body, { derivations: built.derivations,
+    bindings: built.bindings, fixedValues: built.fixedValues || new Map() },
+    { boundaries });
+  const ir = node.body;   // boundary refs resolve by NAME via worker env
   const observed = { obs: DATA };
   const logL = (t1: number, t2: number) => {
     w.handle({ type: 'setEnv', env: { theta1: t1, theta2: t2 } });

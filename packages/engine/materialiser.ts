@@ -1379,7 +1379,7 @@ function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
 /**
  * Materialise a `broadcast(<Dist>, args…)` IR directly, without a
  * binding-graph derivation. The viewer's kernel-sample path produces
- * such IR after `expandMeasureRefsInIR` + `substituteLocals` flatten
+ * such IR after the canonical lowering (clm) or value-baking flatten
  * a kernel body that contained a `~ Dist.(…)` draw — the resulting
  * IR is `record(field = broadcast(<ref Dist>, …))`, and the field
  * value needs an independent-product sample without going through

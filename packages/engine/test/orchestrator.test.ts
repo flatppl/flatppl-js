@@ -23,7 +23,7 @@ const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const {
   buildSampleChain, buildDerivations, collectSelfRefs, leafSampleIR,
-  signatureOf, distributeAxes, inlineForProfile, substituteLocals,
+  signatureOf, distributeAxes, substituteBoundaryValues,
   resolveAxisBaseSet, fourSigmaQuantileRange,
   findMatchingPresets, findMatchingDomains,
   arrayInputLength, computeAutoInputs, computeAutoDomain,
@@ -1335,11 +1335,14 @@ f = functionof(combined)
   assert.equal(sig.inputs[0].paramName, 'a');
 });
 
-test('inlineForProfile: multi-input auto-promoted functionof rewrites every ref', () => {
+test('explicit-boundary lowering: multi-input auto-promoted functionof declares every input', () => {
   // End-to-end on the no-kwarg multi-input shape that signatureOf
-  // synthesizes: a single inlineForProfile call must rewrite every
-  // ref-to-input as %local. The profile evaluator can then sweep one
-  // axis while binding the others via fixedEnv.
+  // synthesizes: lowering the body with the auto-promoted params as
+  // explicit boundaries inlines the derived binding `s` so the body is
+  // (add self.a self.b) — spec-shaped refs (the worker resolves by
+  // name; no %local rewrite) — and both params are declared inputs.
+  // (The retired inlineForProfile pass did this with a %local rewrite.)
+  const clm = require('../clm.ts');
   const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 a = elementof(reals)
@@ -1353,15 +1356,19 @@ f = functionof(s)
   const paramNames = sig.inputs.map((inp: any) => inp.paramName);
   assert.deepEqual(paramNames.sort(), ['a', 'b']);
 
-  const out = inlineForProfile(sig.body, paramNames, ds.bindings, ds.derivations);
-  // After inlining, the body is (add %local.a %local.b) — both
-  // refs rewritten, no stray (ref self ...) left.
+  const ctx = { derivations: ds.derivations, bindings: ds.bindings,
+    fixedValues: ds.fixedValues || new Map() };
+  const node = clm.lowerMeasure(sig.body, ctx,
+    { boundaries: { a: true }, freeInputs: ['b'] });
+  const out = node.body;
   assert.equal(out.kind, 'call');
   assert.equal(out.op, 'add');
-  assert.equal(out.args[0].ns, '%local');
-  assert.equal(out.args[1].ns, '%local');
-  const localNames = [out.args[0].name, out.args[1].name].sort();
-  assert.deepEqual(localNames, ['a', 'b']);
+  const refNames = [out.args[0].name, out.args[1].name].sort();
+  assert.deepEqual(refNames, ['a', 'b']);
+  assert.equal(out.args[0].ns, 'self');
+  assert.equal(out.args[1].ns, 'self');
+  const inputNames = node.inputs.map((i: any) => i.name).sort();
+  assert.deepEqual(inputNames, ['a', 'b']);
 });
 
 test('signatureOf: auto-promote stops at non-input ancestors (constants, draws)', () => {
@@ -1468,139 +1475,89 @@ test('distributeAxes: empty signature → empty axis list', () => {
 });
 
 // =====================================================================
-// inlineForProfile — propagate swept axis through deterministic deps
+// Explicit-boundary lowering — propagate a swept/fed axis through
+// deterministic deps (the live owner of the retired inlineForProfile's
+// job: clm.lowerMeasure with opts.boundaries/freeInputs inlines derived
+// value bindings DOWN TO the declared inputs; body refs stay
+// spec-shaped `self` refs the worker resolves by name).
 // =====================================================================
 
-test('inlineForProfile: param self-ref rewrites to %local', () => {
-  // (ref self theta1) where theta1 is a swept input becomes
-  // (ref %local theta1). The body's evaluator picks the swept value
-  // out of env keyed by paramName.
-  const ir = { kind: 'ref', ns: 'self', name: 'theta1' };
-  const out = inlineForProfile(ir, ['theta1'], new Map(), {});
-  assert.equal(out.ns, '%local');
-  assert.equal(out.name, 'theta1');
-});
-
-test('inlineForProfile: non-param ref left intact when binding non-evaluable', () => {
-  // Constants (sample / iid / etc.) stay as self-refs for the
-  // viewer's pre-materialise step to bind via fixedEnv.
-  const ir = { kind: 'ref', ns: 'self', name: 'c' };
-  const bindings = new Map([['c', { ir: { kind: 'lit', value: 5 } }]]);
-  const derivations = { c: { kind: 'sample' } }; // non-evaluate
-  const out = inlineForProfile(ir, [], bindings, derivations);
-  assert.equal(out.ns, 'self');
-  assert.equal(out.name, 'c');
-});
-
-test('inlineForProfile: evaluate-kind binding inlines its IR', () => {
-  // a = c * theta1 (deterministic). When sweeping theta1 we want the
-  // evaluator to see (mul <c-inlined> %local.theta1) — `a`'s body
-  // gets inlined recursively (c is also evaluate-kind, so its lit IR
-  // takes the place of self.c), and theta1 rewrites to %local.
-  const aIR = {
-    kind: 'call', op: 'mul',
-    args: [
-      { kind: 'ref', ns: 'self', name: 'c' },
-      { kind: 'ref', ns: 'self', name: 'theta1' },
-    ],
-  };
-  const bindings = new Map([
-    ['a', { ir: aIR }],
-    ['c', { ir: { kind: 'lit', value: 5 } }],
-    ['theta1', { ir: { kind: 'call', op: 'Normal', kwargs: {} } }],
-  ]);
-  const derivations = {
-    a: { kind: 'evaluate' },
-    c: { kind: 'evaluate' },
-    theta1: { kind: 'sample' },
-  };
-  const body = { kind: 'ref', ns: 'self', name: 'a' };
-  const out = inlineForProfile(body, ['theta1'], bindings, derivations);
-  assert.equal(out.kind, 'call');
-  assert.equal(out.op, 'mul');
-  // c inlined as the literal 5 (its full ir).
-  assert.equal(out.args[0].kind, 'lit');
-  assert.equal(out.args[0].value, 5);
-  // theta1 rewritten to %local (it's the swept param).
-  assert.equal(out.args[1].ns, '%local');
-  assert.equal(out.args[1].name, 'theta1');
-});
-
-test('inlineForProfile: stochastic dep stays as self-ref (only evaluable inlined)', () => {
-  // theta1 is sampled (kind: 'sample'); even when not the swept
-  // param, we leave it as a self-ref so the viewer's pre-materialise
-  // step picks one atom's value via fixedEnv. Inlining a stochastic
-  // body would substitute the sampling IR, which the per-point
-  // evaluator can't run.
-  const ir = { kind: 'ref', ns: 'self', name: 'theta1' };
-  const bindings = new Map([
-    ['theta1', { ir: { kind: 'call', op: 'Normal', kwargs: {} } }],
-  ]);
-  const derivations = { theta1: { kind: 'sample' } };
-  const out = inlineForProfile(ir, [], bindings, derivations);
-  assert.equal(out.ns, 'self');
-  assert.equal(out.name, 'theta1');
-});
-
-test('inlineForProfile: cycle guard — does not loop on self-cycle', () => {
-  // Pathological case: a binding whose evaluable derivation refers
-  // back to itself. The cycle guard leaves the second-encounter ref
-  // intact rather than infinite-recursing.
-  const aIR = { kind: 'ref', ns: 'self', name: 'a' };
-  const bindings = new Map([['a', { ir: aIR }]]);
-  const derivations = { a: { kind: 'evaluate' } };
-  const out = inlineForProfile(
-    { kind: 'ref', ns: 'self', name: 'a' }, [], bindings, derivations);
-  // First lookup expands to aIR, then the cycle guard activates;
-  // resulting IR is a self-ref to 'a' (unchanged), no exception.
-  assert.equal(out.kind, 'ref');
-  assert.equal(out.ns, 'self');
-  assert.equal(out.name, 'a');
-});
-
-test('inlineForProfile: inlines pruned-but-evaluable call binding', () => {
-  // The scenario that motivates the bindings-fallback in
-  // inlineForProfile: buildDerivations prunes mu2's derivation
-  // because mu2 transitively depends on a parameterized ancestor
-  // (mu = elementof). The profile-plot pipeline still needs to
-  // inline mu2's body so the swept `ref self mu` reaches the
-  // %local rewrite. Without the fallback the body stays at
-  // `ref self mu2` and profileN evaluates to NaN every point.
+function lowerWith(src: string, bodyName: string, opts: any) {
+  const clm = require('../clm.ts');
   const { liftInlineSubexpressions } = require('../orchestrator.ts');
-  const { bindings } = processSource(`
-mu = elementof(reals)
-mu2 = mu^2
-`);
+  const { bindings } = processSource(src);
   const lifted = liftInlineSubexpressions(bindings);
   const ds = buildDerivations(lifted);
-  // Pre-condition: mu2's derivation was pruned (sanity-check that
-  // we're exercising the fallback rather than the happy path).
-  assert.ok(!ds.derivations['mu2'],
-    'expected buildDerivations to prune mu2 (depends on parameterized mu)');
+  const ctx = { derivations: ds.derivations, bindings: ds.bindings,
+    fixedValues: ds.fixedValues || new Map() };
+  return clm.lowerMeasure({ kind: 'ref', ns: 'self', name: bodyName }, ctx, opts);
+}
 
-  const body = { kind: 'ref', ns: 'self', name: 'mu2' };
-  const out = inlineForProfile(body, ['mu'], ds.bindings, ds.derivations);
-  // mu2's IR (pow(mu, 2)) inlined, with self.mu rewritten to %local.mu.
+test('explicit-boundary lowering: derived dep inlines down to the declared input', () => {
+  // mu2 = mu^2 with mu declared free (the profile sweep axis): the body
+  // must inline mu2 so the swept `mu` reaches the leaf — pow(self.mu, 2).
+  // Without the inlining the body stays `ref mu2` and profileN evaluates
+  // a constant (the audit-H5 flat-line failure mode).
+  const node = lowerWith(`
+mu = elementof(reals)
+mu2 = mu^2
+`, 'mu2', { freeInputs: ['mu'] });
+  const out = node.body;
   assert.equal(out.kind, 'call');
   assert.equal(out.op, 'pow');
   assert.equal(out.args[0].kind, 'ref');
-  assert.equal(out.args[0].ns, '%local');
+  assert.equal(out.args[0].ns, 'self');
   assert.equal(out.args[0].name, 'mu');
   assert.equal(out.args[1].kind, 'lit');
   assert.equal(out.args[1].value, 2);
+  // The free input is declared (left unfed — profileN varies it).
+  const free = node.inputs.find((i: any) => i.name === 'mu');
+  assert.ok(free && free.source.kind === 'free');
 });
 
-test('inlineForProfile: walks call args / kwargs / fields recursively', () => {
-  // Coverage: substitution must reach into all structural slots.
-  const ir = {
-    kind: 'call', op: 'Normal',
-    kwargs: {
-      mu:    { kind: 'ref', ns: 'self', name: 'theta1' },
-      sigma: { kind: 'lit', value: 1 },
-    },
+test('explicit-boundary lowering: stochastic dep stays a ref, declared shared', () => {
+  // A sampled ancestor must NOT inline (its body is sampling IR the
+  // per-point evaluator cannot run); it stays a self-ref and is
+  // declared a `shared` input the feeder materialises per-atom.
+  const node = lowerWith(`
+theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
+y = theta1 + 1.0
+`, 'y', { freeInputs: ['z_unused'] });
+  const out = node.body;
+  assert.equal(out.op, 'add');
+  assert.equal(out.args[0].ns, 'self');
+  assert.equal(out.args[0].name, 'theta1');
+  const sh = node.inputs.find((i: any) => i.name === 'theta1');
+  assert.ok(sh && sh.source.kind === 'shared');
+});
+
+test('explicit-boundary lowering: cycle guard — does not loop on self-cycle', () => {
+  // Pathological self-referential evaluable binding: the inlining's
+  // cycle guard leaves the second-encounter ref intact, no exception.
+  const clm = require('../clm.ts');
+  const aIR = { kind: 'ref', ns: 'self', name: 'a' };
+  const ctx = {
+    derivations: { a: { kind: 'evaluate' } },
+    bindings: new Map([['a', { ir: aIR }]]),
+    fixedValues: new Map(),
   };
-  const out = inlineForProfile(ir, ['theta1'], new Map(), {});
-  assert.equal(out.kwargs.mu.ns, '%local');
+  const node = clm.lowerMeasure({ kind: 'ref', ns: 'self', name: 'a' }, ctx,
+    { freeInputs: ['b_unused'] });
+  assert.ok(node, 'lowering must not infinite-loop');
+});
+
+test('explicit-boundary lowering: reaches kwargs recursively', () => {
+  // The inlining must reach every structural slot — a kernel kwarg
+  // referencing a derived binding of a declared boundary inlines too.
+  const node = lowerWith(`
+theta = elementof(reals)
+a = 5.0 * theta
+m = Normal(mu = a, sigma = 1.0)
+`, 'm', { boundaries: { theta: true } });
+  const mu = node.body.kwargs.mu;
+  assert.equal(mu.op, 'mul');
+  assert.equal(mu.args[1].ns, 'self');
+  assert.equal(mu.args[1].name, 'theta');
 });
 
 // =====================================================================
@@ -2329,7 +2286,7 @@ test('findMatchingDomains: empty / null sig → empty list', () => {
 // substituteLocals — replace %local refs with literals from an env
 // =====================================================================
 
-test('substituteLocals: replaces %local refs with lit values', () => {
+test('substituteBoundaryValues: replaces %local refs with lit values', () => {
   const ir = {
     kind: 'call', op: 'Normal',
     kwargs: {
@@ -2337,35 +2294,63 @@ test('substituteLocals: replaces %local refs with lit values', () => {
       sigma: { kind: 'ref', ns: '%local', name: 'theta2' },
     },
   };
-  const out = substituteLocals(ir, { theta1: 1.4, theta2: 1.0 });
+  const out = substituteBoundaryValues(ir, { theta1: 1.4, theta2: 1.0 });
   assert.equal(out.kwargs.mu.kind,    'lit');
   assert.equal(out.kwargs.mu.value,    1.4);
   assert.equal(out.kwargs.sigma.kind, 'lit');
   assert.equal(out.kwargs.sigma.value, 1.0);
 });
 
-test('substituteLocals: leaves self-refs intact', () => {
+test('substituteBoundaryValues: substitutes self refs named in env (spec-shaped boundaries)', () => {
+  // Identifier-form boundary refs are plain `self` refs (spec §11 —
+  // %local is placeholders-only), so the bake matches by NAME across
+  // both namespaces. This is the contract change vs the retired
+  // substituteLocals (which was %local-only and needed a preceding
+  // self→%local rewrite pass).
   const ir = { kind: 'ref', ns: 'self', name: 'c' };
-  const out = substituteLocals(ir, { c: 5 });
-  assert.equal(out.ns, 'self');
+  const out = substituteBoundaryValues(ir, { c: 5 });
+  assert.equal(out.kind, 'lit');
+  assert.equal(out.value, 5);
 });
 
-test('substituteLocals: leaves %local refs not in env intact', () => {
-  const ir = { kind: 'ref', ns: '%local', name: 'theta1' };
-  const out = substituteLocals(ir, { /* theta1 absent */ });
-  assert.equal(out.ns, '%local');
+test('substituteBoundaryValues: leaves refs not in env intact (both namespaces)', () => {
+  const irL = { kind: 'ref', ns: '%local', name: 'theta1' };
+  assert.equal(substituteBoundaryValues(irL, {}).ns, '%local');
+  const irS = { kind: 'ref', ns: 'self', name: 'other' };
+  assert.equal(substituteBoundaryValues(irS, { c: 5 }).ns, 'self');
 });
 
-test('substituteLocals: array env value emits vector(lit,…) IR', () => {
+test('substituteBoundaryValues: scope-aware — a nested reification shadows an env name', () => {
+  // A nested reified callable that re-declares an env name as its OWN
+  // identifier-bound boundary keeps its inner refs untouched — those
+  // are the inner scope's inputs, fed at its own application.
+  const inner = {
+    kind: 'call', op: 'functionof',
+    params: ['c'], paramKwargs: ['c'],
+    paramSources: [{ kind: 'binding', name: 'c' }],
+    body: { kind: 'ref', ns: 'self', name: 'c' },
+  };
+  const ir = { kind: 'call', op: 'add', args: [
+    { kind: 'ref', ns: 'self', name: 'c' },   // outer — substitutes
+    inner,                                     // inner body — shadowed
+  ] };
+  const out = substituteBoundaryValues(ir, { c: 5 });
+  assert.equal(out.args[0].kind, 'lit');
+  assert.equal(out.args[0].value, 5);
+  assert.equal(out.args[1].body.kind, 'ref',
+    'inner-scope boundary ref must stay a ref');
+  assert.equal(out.args[1].body.name, 'c');
+});
+
+test('substituteBoundaryValues: array env value emits vector(lit,…) IR', () => {
   // For array-typed callable inputs (e.g. `theta` of shape `[J]`),
   // the viewer's kernel/profile paths populate env[paramName] with
   // a J-element array (atom-0 of the source binding's empirical
-  // measure, or a preset's array value). substituteLocals must
-  // emit a `vector(lit,…)` call so downstream evaluators see a
-  // well-formed array expression — not a single lit wrapping the
-  // array (which the worker can't evaluate).
+  // measure, or a preset's array value). The bake must emit a
+  // `vector(lit,…)` call so downstream evaluators see a well-formed
+  // array expression.
   const ir = { kind: 'ref', ns: '%local', name: 'theta' };
-  const out = substituteLocals(ir, { theta: [0.5, -1.0, 2.5] });
+  const out = substituteBoundaryValues(ir, { theta: [0.5, -1.0, 2.5] });
   assert.equal(out.kind, 'call');
   assert.equal(out.op, 'vector');
   assert.equal(out.args.length, 3);
@@ -2377,16 +2362,16 @@ test('substituteLocals: array env value emits vector(lit,…) IR', () => {
   assert.equal(out.args[2].value,  2.5);
 });
 
-test('substituteLocals: per-slot sweep — array env with IR-ref entry passes through', () => {
+test('substituteBoundaryValues: per-slot sweep — array env with IR-ref entry passes through', () => {
   // The profile-plot per-slot sweep populates env[paramName] with
   // an array that has one slot replaced by `{kind: 'ref', ns:
   // '%local', name: SWEEP_VAR}` — the synthetic sweep variable
-  // profileN will iterate over. substituteLocals emits `vector
-  // (lit, lit, (ref %local __sweep__), lit, …)` so the worker sees
-  // a `vector(...)` whose sweep-position is a remaining %local ref.
+  // profileN will iterate over. The bake emits `vector(lit, lit,
+  // (ref %local __sweep__), lit, …)` so the worker sees a
+  // `vector(...)` whose sweep-position is a remaining %local ref.
   const SWEEP = { kind: 'ref', ns: '%local', name: '__sweep__' };
   const ir = { kind: 'ref', ns: '%local', name: 'theta' };
-  const out = substituteLocals(ir, { theta: [0.5, SWEEP, 1.5, 2.0] });
+  const out = substituteBoundaryValues(ir, { theta: [0.5, SWEEP, 1.5, 2.0] });
   assert.equal(out.kind, 'call');
   assert.equal(out.op, 'vector');
   assert.equal(out.args.length, 4);
@@ -2401,11 +2386,11 @@ test('substituteLocals: per-slot sweep — array env with IR-ref entry passes th
   assert.equal(out.args[3].value, 2.0);
 });
 
-test('substituteLocals: array env value works for Float64Array (typed array)', () => {
+test('substituteBoundaryValues: array env value works for Float64Array (typed array)', () => {
   // Source-binding samples slices come back as Float64Array (typed
-  // array). substituteLocals must accept that shape too.
+  // array). The bake must accept that shape too.
   const ir = { kind: 'ref', ns: '%local', name: 'theta' };
-  const out = substituteLocals(ir, { theta: Float64Array.from([1.0, 2.0]) });
+  const out = substituteBoundaryValues(ir, { theta: Float64Array.from([1.0, 2.0]) });
   assert.equal(out.kind, 'call');
   assert.equal(out.op, 'vector');
   assert.equal(out.args.length, 2);
@@ -2413,7 +2398,7 @@ test('substituteLocals: array env value works for Float64Array (typed array)', (
   assert.equal(out.args[1].value, 2.0);
 });
 
-test('substituteLocals: walks nested args / fields', () => {
+test('substituteBoundaryValues: walks nested args / fields', () => {
   const ir = {
     kind: 'call', op: 'joint',
     fields: [
@@ -2429,7 +2414,7 @@ test('substituteLocals: walks nested args / fields', () => {
       }},
     ],
   };
-  const out = substituteLocals(ir, { t: 2.5 });
+  const out = substituteBoundaryValues(ir, { t: 2.5 });
   assert.equal(out.fields[0].value.args[0].kwargs.mu.value, 2.5);
 });
 

@@ -55,8 +55,8 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
   // as ONE env entry: `env[paramName] = [v_1, ..., v_J]`.
   // `walkType` emits one axis per slot, but the kwargName is shared
   // across all slots — so we group by kwargName and do a single
-  // source lookup per array-typed input. `substituteLocals`
-  // handles the array env value by emitting a `vector(lit,…)` IR.
+  // source lookup per array-typed input (clm's feedInputs handles
+  // scalar / array / record env values uniformly).
   const env: Record<string, any> = {};
   const bindingSourceLookups: Array<{ paramName: string; sourceName: string; arrayLen: number | null }> = [];
   const seenKwargs = new Set<string>();
@@ -75,7 +75,23 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
     // so a record-typed input (`pars = elementof(cartprod(a,b,mu))`)
     // seeds a record `{a,b,mu}` rather than a scalar. `arrayLen` is
     // still used below for the binding-source-sample override path.
-    env[inp.paramName] = defaultValueForInputType(inp.type);
+    //
+    // A LAMBDA param types as `any` (no declared boundary type), so the
+    // structural default would collapse a record input to a scalar and
+    // every body field access dies ("get_field target is not a record")
+    // — the k_model trap (`k_model = pars -> …` with `pars` mirroring
+    // the module binding). Enrich the default's type from the axis
+    // SOURCE binding, or from a module binding of the same KWARG name
+    // (the intended mirror). Defaults only — semantics are untouched.
+    let defType = inp.type;
+    if (!defType || defType.kind === 'any' || defType.kind === 'deferred') {
+      const dsBindings = ctx.derivationsState && ctx.derivationsState.bindings;
+      const srcName = (ax.source && ax.source.kind === 'binding' && ax.source.name)
+        || ax.kwargName;
+      const srcBinding = dsBindings && srcName ? dsBindings.get(srcName) : null;
+      if (srcBinding && srcBinding.inferredType) defType = srcBinding.inferredType;
+    }
+    env[inp.paramName] = defaultValueForInputType(defType);
     if (ax.source && ax.source.kind === 'binding') {
       // Queue an empirical-sample lookup unconditionally —
       // tryGetMeasure soft-fails to null for sources that can't
@@ -88,15 +104,8 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
       });
     }
   }
-  // Build the substituted measure IR. expandMeasureRefsInIR peels
-  // any outer lawof and inlines measure-typed self-refs;
-  // inlineForProfile (with all params named) inlines value-position
-  // deterministic deps and rewrites self.<param> → %local.<param>;
-  // substituteLocals replaces %local refs with their concrete env
-  // values. Result: a self-contained measure IR with no refs.
-  const paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
-  // We can do most of the IR work synchronously, but we need
-  // the binding-source samples first to fill env entries.
+  // We need the binding-source samples first to fill env entries; the
+  // canonical lowering + materialisation runs after they land.
   showPlotMessage(ctx, 'Sampling…', { cancellable: true, hint: true });
   const planForCall = plan;
   // Cache hit: use previously-sampled measure directly.
@@ -106,23 +115,11 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
       renderKernelSampleMeasure(ctx, m, plan);
     });
   }
-  // Two-phase pre-materialise:
-  //   (1) binding-typed input sources we already know about (for
-  //       a kernel with input `mu` whose source is `mu` in scope,
-  //       we want samples[0] of that binding to seed the env);
-  //   (2) self-refs captured from the outer scope by the kernel
-  //       body (e.g. `sigma` referenced inside `iid(Normal(mu=0,
-  //       sigma=sigma), 3)` even though `sigma` isn't a kernel
-  //       input). These appear as (ref self sigma) after
-  //       inlineForProfile because sigma is stochastic and so
-  //       isn't inlined as a deterministic dep. substituteLocals
-  //       only touches %local refs, so the materialise would
-  //       otherwise fail with "unbound self reference".
-  //
-  // The actual captured self-refs are collected *after*
-  // inlineForProfile because that pass inlines deterministic
-  // deps. Anything still self-ref'd is genuinely a captured
-  // stochastic/fixed dep from the outer scope.
+  // Pre-materialise binding-typed input sources we already know about
+  // (for a kernel with input `mu` whose source is `mu` in scope, we
+  // want samples[0] of that binding to seed the env). Captured
+  // outer-scope refs need NO pre-pass: the canonical lowering declares
+  // them as `shared` inputs and matClm feeds them per-atom.
   // Latent guard (engine-concepts §19): filter function-like and
   // fixed-phase source bindings from the samples[0] override loop.
   // The same array-collapse failure mode we fixed in render-profile
@@ -155,55 +152,51 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
         env[lookup.paramName] = sm.samples[0];
       }
     }
-    let ir = sig.body;
-    ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
-      ir, ctx.derivationsState!.derivations);
-    // expandMeasureRefsInIR fails closed for refs whose derivation
-    // was pruned by buildDerivations (e.g. `x` here, because its
-    // distIR depends on the parameterized `mu`). The kernel-sample
-    // path substitutes that parameter via env at materialise time,
-    // so it still needs the structural shape. Re-run with the
-    // bindings fallback to recover from binding.ir directly.
-    if (ir && ir.kind === 'ref' && ir.ns === 'self') {
-      const expanded = FlatPPLEngine.orchestrator.expandMeasureIR(
-        ir.name, ctx.derivationsState!.derivations,
-        undefined, ctx.derivationsState!.bindings);
-      if (expanded) ir = expanded;
-    }
-    ir = FlatPPLEngine.orchestrator.inlineForProfile(
-      ir, paramNames, ctx.derivationsState!.bindings, ctx.derivationsState!.derivations);
-    ir = FlatPPLEngine.orchestrator.substituteLocals(ir, env);
-
-    // Captured self-refs (outer-scope stochastic / fixed bindings
-    // that aren't kernel inputs) are no longer collapsed to
-    // samples[0] here. materialiseConcreteMeasure threads
-    // refArrays through to the worker's sampleN — atom i of the
-    // kernel sample uses atom i of every captured ref, matching
-    // the per-atom semantics of the closed-measure getMeasure
-    // path. Per spec §04, stochastic ancestors that aren't
-    // boundary inputs participate in the kernel's randomness.
-    return materialiseConcreteMeasure(ctx, ir, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name))
-      .catch(function(substErr: any) {
-        // Composite-generative kernels (k_model / k_model_n reifying
-        // `lawof(broadcast(post, broadcast(transport, iid(generator, n), [pars])))`)
-        // tangle in the substitute-IR reconstruction above — it flattens the
-        // binding graph and the generative composite can't materialise
-        // ("undefined length"). Fall back to the concrete-application-by-name
-        // path: synthesize `<kernel>(<env point>)` over the RAW bindings,
-        // re-derive, and materialise the synthetic binding through its by-name
-        // generative derivation — the same path `model_dist = k_model(glob_pars)`
-        // uses. Re-throw the ORIGINAL error if the fallback can't apply, so a
-        // genuine simple-kernel failure isn't masked by a fallback miss.
-        let applied: any;
-        try {
-          applied = FlatPPLEngine.orchestrator.deriveAppliedKernel(
-            ctx.currentBindings, plan.name, sig, env);
-        } catch (e) { return Promise.reject(substErr); }
-        if (!applied || !applied.derivations || !applied.derivations[applied.name]) {
-          return Promise.reject(substErr);
-        }
+    // PRIMARY (CLM Phase 5b): one canonical lowering. `lowerMeasure`
+    // expands the kernel's reified output, transitively inlines derived
+    // value bindings down to the FED inputs (H5/H3 — a swept/fed
+    // boundary reaches the leaves), applies the MC-marginal form when
+    // the body is a generative composite, and DECLARES every input;
+    // `matClm` (dispatched by materialiseMeasureIR on the clm node)
+    // feeds the env values through the ONE feeding contract sample +
+    // density share. Captured outer-scope refs are declared `shared`
+    // inputs and feed per-atom — atom i of the kernel sample uses atom
+    // i of every captured ref (spec §04: stochastic ancestors that
+    // aren't boundary inputs participate in the kernel's randomness).
+    const dst = ctx.derivationsState!;
+    const lowCtx = {
+      derivations: dst.derivations,
+      bindings: dst.bindings,
+      fixedValues: dst.fixedValues,
+    };
+    let clmNode: any = null;
+    try {
+      clmNode = FlatPPLEngine.clm.lowerMeasure(sig.body, lowCtx, { boundaries: env });
+    } catch (_e) { clmNode = null; }
+    const primary = clmNode
+      ? materialiseConcreteMeasure(ctx, clmNode, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name))
+      : Promise.reject(new Error('lowerMeasure returned null for ' + plan.name));
+    return primary.catch(function(clmErr: any) {
+      // Concrete-application route: an APPLIED composite kernel
+      // (k_model / k_model_n — the body is a user-call of another
+      // kernel) doesn't lower as a bare measure; synthesize
+      // `<kernel>(<env point>)` over the RAW bindings, re-derive, and
+      // materialise the synthetic binding through its by-name
+      // derivation — the same path `model_dist = k_model(glob_pars)`
+      // uses (gallery-verified).
+      let applied: any;
+      try {
+        applied = FlatPPLEngine.orchestrator.deriveAppliedKernel(
+          ctx.currentBindings, plan.name, sig, env);
+      } catch (e) { applied = null; }
+      if (applied && applied.derivations && applied.derivations[applied.name]) {
         return materialiseAppliedKernelByName(ctx, applied, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name));
-      });
+      }
+      // Neither route applies: surface the canonical-lowering error (the
+      // legacy substitute-IR fallback is retired — CLM Phase 5b, removed
+      // after interactive gallery verification).
+      return Promise.reject(clmErr);
+    });
   }).then(function(measure) {
     if (ctx.currentPlotPlan !== planForCall) return;
     ctx.measureCache.set(cacheKey, measure);

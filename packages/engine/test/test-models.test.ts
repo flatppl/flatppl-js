@@ -516,14 +516,14 @@ test('hadron-physics: closed-form runtime evaluation of std-module callables', (
   const resSig = sigMod.signatureOf('resonance', built.bindings);
   const m_sq = 1.5 * 1.5;
   const resPole = sampler.evaluateExpr(
-    sigMod.substituteLocals(resSig.body, { _s_: m_sq }), env);
+    sigMod.substituteBoundaryValues(resSig.body, { _s_: m_sq }), env);
   assert.ok(Math.abs(resPole.re) < 1e-9,
     `Re(BW(m²)) ≈ 0 at the pole; got ${resPole.re}`);
   assert.ok(Math.abs(resPole.im - 1 / (1.5 * 0.1)) < 1e-9,
     `Im(BW(m²)) = 1/(m·Γ) = 6.6667; got ${resPole.im}`);
   // Off-pole magnitude drops away.
   const resOff = sampler.evaluateExpr(
-    sigMod.substituteLocals(resSig.body, { _s_: 4.0 }), env);
+    sigMod.substituteBoundaryValues(resSig.body, { _s_: 4.0 }), env);
   const polMag = Math.hypot(resPole.re, resPole.im);
   const offMag = Math.hypot(resOff.re, resOff.im);
   assert.ok(offMag < polMag,
@@ -532,19 +532,19 @@ test('hadron-physics: closed-form runtime evaluation of std-module callables', (
   // 2. cheb_density at the affine endpoints.
   const chebSig = sigMod.signatureOf('cheb_density', built.bindings);
   const cAtA = sampler.evaluateExpr(
-    sigMod.substituteLocals(chebSig.body, { _x_: 0.5 }), env);
+    sigMod.substituteBoundaryValues(chebSig.body, { _x_: 0.5 }), env);
   assert.ok(Math.abs(cAtA - 1.1) < 1e-9, `cheb_density(a) = b0−b1+b2 = 1.1; got ${cAtA}`);
   const cAtB = sampler.evaluateExpr(
-    sigMod.substituteLocals(chebSig.body, { _x_: 2.5 }), env);
+    sigMod.substituteBoundaryValues(chebSig.body, { _x_: 2.5 }), env);
   assert.ok(Math.abs(cAtB - 1.5) < 1e-9, `cheb_density(b) = b0+b1+b2 = 1.5; got ${cAtB}`);
 
   // 3. full_intensity peaks at x = m (the resonance mass: x² hits
   //    the BW pole).
   const fiSig = sigMod.signatureOf('full_intensity', built.bindings);
   const fiPeak = sampler.evaluateExpr(
-    sigMod.substituteLocals(fiSig.body, { _x_: 1.5 }), env);
+    sigMod.substituteBoundaryValues(fiSig.body, { _x_: 1.5 }), env);
   const fiOff = sampler.evaluateExpr(
-    sigMod.substituteLocals(fiSig.body, { _x_: 0.6 }), env);
+    sigMod.substituteBoundaryValues(fiSig.body, { _x_: 0.6 }), env);
   assert.ok(fiPeak > 5 * fiOff,
     `full_intensity peaks sharply at resonance: peak=${fiPeak} vs off=${fiOff}`);
 });

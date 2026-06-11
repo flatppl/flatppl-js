@@ -40,7 +40,7 @@
  *                              metadata
  *
  * Without a centralised primitive, every hand-rolled walker
- * (collectSelfRefs, inlineForProfile, substituteLocals,
+ * (collectSelfRefs, substituteBoundaryValues,
  * _substituteAllowingAxes, pir.walkCalls, …) has to re-list these
  * fields and stays in sync by code review. Drift is the dominant
  * bug class — adding `select` to IR was a generator for shape-walker
@@ -66,7 +66,7 @@
  *                                   referential identity when nothing
  *                                   changed — important downstream where
  *                                   `===` comparisons gate work
- *                                   (inlineForProfile / substituteLocals).
+ *                                   (substituteBoundaryValues et al.).
  *
  * The walkers are pure JS: no engine-internal deps. Every consumer
  * can `require('./ir-walk.ts')` without cycle risk.
@@ -145,7 +145,7 @@ function forEachIRChild(node: any, visit: (child: any) => void): void {
   // idempotent for that consumer.
   //
   // READ-SIDE ONLY. `mapIR` deliberately does NOT mirror this descent:
-  // rewriting bijection bodies (substituteLocals / computeClosureIR) is a
+  // rewriting bijection bodies (substituteBoundaryValues / computeClosureIR) is a
   // semantic change deferred to the CLM viewer phase so it lands under its
   // own tests rather than silently flipping every existing rewrite. The
   // resulting asymmetry is safe — walkIR over-reporting refs vs mapIR

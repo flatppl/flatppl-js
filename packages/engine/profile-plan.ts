@@ -755,83 +755,12 @@ function fourSigmaQuantileRange(samples: ArrayLike<number>) {
   ];
 }
 
-/**
- * Substitute IR for the profile-plot evaluator. Two transformations:
- *
- *   1. (ref self <name>) where <name> is a swept input parameter →
- *      (ref %local <name>). The body uses %local refs for its own
- *      params; transitive deps that surface a self-ref to the same
- *      param need to be rewritten so they pick up the swept value
- *      from the worker's env.
- *
- *   2. (ref self <name>) where <name>'s derivation is evaluate-kind
- *      → substitute the binding's lowered IR inline (recursively
- *      processed). Pulls deterministic transforms (e.g. `a = c *
- *      theta1` or `b = abs(theta1) * theta2`) into the body so the
- *      swept axis propagates through them. Constants and other
- *      truly-self-referential bindings (literals, prior atoms) are
- *      left as-is for the viewer's pre-materialise step to bind via
- *      fixedEnv.
- *
- * Used by the profile-plot UI before sending IR to worker.profileN.
- * Without this pass, sweeping `theta1` through a kernel body whose
- * `mu = a` (with `a = c * theta1`) leaves `a` materialised at a
- * single fixed value — the plot shows a flat line because the swept
- * axis doesn't reach the leaf distributions.
- */
-function inlineForProfile(ir: IRNode | null | undefined, paramNames: any, bindings: any, derivations: any) {
-  if (!ir) return ir;
-  const paramSet = new Set(paramNames || []);
-  const visiting = new Set();
-  return walk(ir);
-
-  // Two responsibilities, both keyed off `self`-namespace refs:
-  //   1. Swept input → %local rewrite.
-  //   2. Evaluable-binding ref → inline the target's IR (cycle-guarded,
-  //      so a self-referential chain stays intact).
-  // Everything else (args / kwargs / fields / body / branches /
-  // selector / logweights / assigns) recurses uniformly via mapIR,
-  // which owns IR sub-position enumeration.
-  function walk(node: any): any {
-    return mapIR(node, function(n: any): any {
-      if (!n || n.kind !== 'ref' || n.ns !== 'self') return n;
-      if (paramSet.has(n.name)) return { ...n, ns: '%local' };
-      if (visiting.has(n.name)) return n;
-      const target = bindings && bindings.get(n.name);
-      const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, n.name)
-        ? derivations[n.name] : null;
-      // Inline a computed-value binding into the body so its dependence
-      // on a boundary param (e.g. `a = pars.a` inside a kernel reified
-      // with boundary `pars`) survives substitution. Key off the *IR
-      // shape* (`ir.kind === 'call'`), NOT the binding's `type` label: a
-      // multi-LHS target like `a, b = (pars.a, pars.b)` is classified
-      // `type:'literal'` (tuple-literal RHS) yet its IR is a `tuple_get`
-      // call — it must still inline. The `!drv` guard already excludes
-      // the bindings that must stay captured refs: pure draws and
-      // measures carry a sample / non-'evaluate' derivation. Inline-draw
-      // value bindings (`delta_alpha = (2*draw(Uniform)+1)*a`) have NO
-      // derivation and DO inline — their internal draw surfaces as a
-      // nested `__anon*` ref that is itself sampled per-atom.
-      const isEvaluate =
-        (drv && drv.kind === 'evaluate')
-        || (!drv && target && target.ir && target.ir.kind === 'call');
-      if (isEvaluate && target && target.ir) {
-        visiting.add(n.name);
-        const expanded = walk(target.ir);
-        visiting.delete(n.name);
-        return expanded;
-      }
-      return n;
-    });
-  }
-}
 
 module.exports = {
   resolveAxisBaseSet,
   findMatchingPresets,
   findMatchingDomains,
   fourSigmaQuantileRange,
-  inlineForProfile,
   arrayInputLength,
   defaultValueForLeafType,
   computeAutoInputs,

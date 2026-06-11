@@ -147,22 +147,16 @@ function sampleKernelAtMu(muVal: any, seed: any) {
   assert.equal(sig.inputs.length, 1);
   const paramNames = sig.inputs.map((inp: any) => inp.paramName);
 
-  // 2. Expand the body. expandMeasureRefsInIR strips lawof and tries
-  //    to expand the inner ref via derivations; x's derivation is
-  //    pruned (Normal kwargs reference the parameterized mu), so we
-  //    fall back to the bindings-walking branch of expandMeasureIR.
-  let ir = orchestrator.expandMeasureRefsInIR(sig.body, derivations);
-  if (ir && ir.kind === 'ref' && ir.ns === 'self') {
-    ir = orchestrator.expandMeasureIR(
-      ir.name, derivations, undefined, bindings);
-  }
-  assert.ok(ir, 'kernel body should expand to a measure IR');
-
-  // 3. Substitute the kernel input (mu) — first inlineForProfile
-  //    rewrites `ref self mu` → `ref %local mu`, then substituteLocals
-  //    binds %local.mu to the literal value.
-  ir = orchestrator.inlineForProfile(ir, paramNames, bindings, derivations);
-  ir = orchestrator.substituteLocals(ir, { mu: muVal });
+  // 2.+3. Canonical lowering + value bake (the live viewer pipeline):
+  //    lowerMeasure peels lawof, expands the body (bindings fallback
+  //    included), and declares `mu` a boundary; substituteBoundaryValues
+  //    bakes the literal by NAME (body refs are spec-shaped self refs).
+  const clm = require('../clm.ts');
+  const node = clm.lowerMeasure(sig.body,
+    { derivations, bindings, fixedValues: new Map() },
+    { boundaries: { mu: muVal } });
+  assert.ok(node, 'kernel body should lower to a canonical measure');
+  let ir = orchestrator.substituteBoundaryValues(node.body, { mu: muVal });
 
   // 4. Sample the target distribution with refArrays for the
   //    captured `sigma`. After the substitutions above, ir is

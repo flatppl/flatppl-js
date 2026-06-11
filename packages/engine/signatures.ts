@@ -30,7 +30,7 @@
 import type { IRNode } from './engine-types';
 
 const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS } = require('./ir-shared.ts');
-const { mapIR } = require('./ir-walk.ts');
+const { mapIR, mapIRScoped } = require('./ir-walk.ts');
 
 function signatureOf(name: string, bindings: any): any {
   if (!bindings) return null;
@@ -307,19 +307,26 @@ function envValueToIR(v: any, loc: any): any {
 }
 
 /**
- * Walk an IR replacing every (ref %local <name>) with the IR form of
- * env[name] when env contains a value for that name. Used by the
- * kernel-plot path to substitute preset parameter values into a
- * kernel body before sampling it as a concrete measure.
+ * Bake boundary-input VALUES into an IR: replace every ref naming an
+ * env key with the IR form of env[name] (envValueToIR — scalars, arrays
+ * incl. embedded IR nodes like a per-slot sweep ref, records). The
+ * spec-shaped successor of `substituteLocals` for reified bodies:
+ * boundary refs come in BOTH namespaces (`%local` placeholder formals,
+ * plain `self` refs for identifier-form cuts — spec §11), so the match
+ * is by NAME, scope-aware via mapIRScoped (a nested reified callable
+ * that re-declares an env name shadows it for its own body — those are
+ * the inner scope's inputs, fed at its own application).
  *
- * Leaves self-refs intact (those go through the normal materialiser
- * path via expandMeasureRefsInIR + the binding's derivation) and
- * leaves %local refs not in env intact too (defensive — caller
- * should populate env for every param before calling this).
+ * Used by the viewer kernel/profile paths on a canonical lowered body
+ * (clm.lowerMeasure output): the lowering inlined derived bindings down
+ * to the boundary set, so every remaining boundary ref is a direct
+ * env-name match.
  */
-function substituteLocals(ir: any, env: any): any {
-  return mapIR(ir, function(node: any): any {
-    if (node && node.kind === 'ref' && node.ns === '%local'
+function substituteBoundaryValues(ir: any, env: any): any {
+  return mapIRScoped(ir, function(node: any, shadowed: Set<string>): any {
+    if (node && node.kind === 'ref'
+        && (node.ns === '%local' || node.ns === 'self')
+        && !shadowed.has(node.name)
         && Object.prototype.hasOwnProperty.call(env, node.name)) {
       return envValueToIR(env[node.name], node.loc);
     }
@@ -440,7 +447,7 @@ module.exports = {
   distributeAxes,
   walkType,
   walkArraySlots,
-  substituteLocals,
+  substituteBoundaryValues,
   formatAxisLabel,
   enumerateOutputLeaves,
   extractOutputIR,

@@ -151,7 +151,7 @@ function _describeValueShape(v: any): any {
 // (1)+(2) peel + expand-refs are done by expandMeasure. (3) computeClosureIR
 // inlines derived value bindings to the boundary set. (4) buildMcMarginalForm
 // rewrites a generative-composite tree into the canonical mcmarginal form.
-function _buildBody(input: any, deriv: any, ctx: any): { body: any; boundarySet: Set<string>; mc: boolean } | null {
+function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; boundarySet: Set<string>; mc: boolean } | null {
   const expanded = orchestrator.expandMeasure(input, ctx);
   if (!expanded) return null;
 
@@ -160,6 +160,20 @@ function _buildBody(input: any, deriv: any, ctx: any): { body: any; boundarySet:
   // prior step variates; otherwise empty (a plain product measure inlines
   // its derived values down to its own leaf refs, which become inputs).
   const boundarySet = _boundarySet(deriv, ctx);
+  // EXPLICIT boundaries / free inputs (the viewer kernel/profile path —
+  // spec §04 functionof boundary substitution): the caller-named inputs
+  // are the cut exactly like a derivation's parametric inputs — derived
+  // value bindings between the body and these names must inline DOWN TO
+  // them (H5/H3: sweeping/feeding `theta` through `a = 5*theta` must
+  // reach the leaf), and the names themselves are fed, never inlined.
+  if (opts && opts.boundaries) {
+    for (const nm in opts.boundaries) {
+      if (Object.prototype.hasOwnProperty.call(opts.boundaries, nm)) boundarySet.add(nm);
+    }
+  }
+  if (opts && Array.isArray(opts.freeInputs)) {
+    for (const nm of opts.freeInputs) boundarySet.add(nm);
+  }
 
   // (3)+(4) Generative-composite → canonical mcmarginal form, OR closed-form
   // boundary inlining — mutually exclusive, matching the legacy
@@ -305,7 +319,7 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   // 0. Explicit boundaries + free inputs (the viewer kernel/profile plot —
   //    spec §04 functionof boundary inputs). The caller supplies VALUES for
   //    named kernel inputs (fed via the ONE feedInputs contract,
-  //    source.kind:'explicit', replacing the viewer's substituteLocals bake)
+  //    source.kind:'explicit', replacing the legacy viewer bake)
   //    and names a FREE input — the profile sweep axis — declared but left
   //    UNFED so the worker varies it per grid point. Added FIRST so a
   //    same-named body self-ref is already `seen` and not re-classified as
@@ -379,7 +393,7 @@ function _priorFrom(deriv: any): string | null {
 function lowerMeasure(input: any, ctx: any, opts?: any): any {
   const deriv = (opts && opts.derivation)
     || (typeof input === 'string' && ctx && ctx.derivations ? ctx.derivations[input] : null);
-  const built = _buildBody(input, deriv, ctx);
+  const built = _buildBody(input, deriv, ctx, opts);
   if (!built) return null;
   const { body, boundarySet, mc } = built;
   let reduce = _reduce(deriv);

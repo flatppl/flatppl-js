@@ -43,11 +43,12 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   }
   // Array-typed inputs are supported in TWO roles:
   //   - non-swept: fixedEnv[paramName] = J-element array (atom-0 from
-  //     source, or preset value). substituteLocals emits vector(lit…).
+  //     source, or preset value); substituteBoundaryValues bakes it as
+  //     vector(lit…).
   //   - swept (per-slot): the swept axis lives on `path = [{idx:[i]}]`.
   //     We inject a synthetic `(ref %local __sweep__)` into slot i;
-  //     substituteLocals then emits `vector(lit,…,ref,…,lit)`. profileN
-  //     sweeps over `__sweep__` while the other slots stay fixed.
+  //     substituteBoundaryValues then emits `vector(lit,…,ref,…,lit)`.
+  //     profileN sweeps over `__sweep__` while the other slots stay fixed.
   // A separate fold-out toolbar UI for nested arrays is a follow-up;
   // for now per-slot axes render flat in the axis dropdown
   // (truncated at 50 entries — see buildProfileControls).
@@ -141,39 +142,48 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       if (extracted) ir = extracted;
     }
   }
-  if (mode === 'logdensity') {
-    ir = FlatPPLEngine.orchestrator.expandMeasureRefsInIR(
-      ir, ctx.derivationsState!.derivations);
-  }
-  // MC marginalising-pushforward (spec §06 case-3; engine-concepts §6): if the
-  // expanded measure is a generative composite (the transport L —
-  // broadcast(post, broadcast(transport, iid(Normal(pars.mu,σ),n), [pars]))),
-  // re-express it as `iid(mcmarginal{…}, n)` so the density walker can score
-  // it (otherwise density throws on the bare broadcast → an all-NaN curve).
-  // MUST run BEFORE inlineForProfile, which would %local-rewrite the boundary
-  // self-refs the transform recognises. Needs a bindings-ful expand callback
-  // (the line above is bindings-less). Returns null for ordinary kernels /
-  // likelihoods → `ir` and the closed-form path are unchanged.
-  let isMcForm = false;
-  if (mode === 'logdensity') {
-    const dst = ctx.derivationsState!;
-    const mcExpand = (nm: string) => FlatPPLEngine.orchestrator.expandMeasure(
-      nm, { derivations: dst.derivations, bindings: dst.bindings });
-    let mcForm: any = null;
-    try { mcForm = FlatPPLEngine.mcRecipe.buildMcMarginalForm(ir, dst.bindings, mcExpand); }
-    catch (_) { mcForm = null; }
-    if (mcForm) { ir = mcForm; isMcForm = true; }
-  }
-  // Propagate the swept axis (and other params) through transitive
-  // deterministic deps. Without this, e.g. sweeping `theta1` in a
-  // kernel whose body references `a = c * theta1` leaves `a` at a
-  // single fixed value (collected once by the pre-materialise
-  // step) — the plot is flat because the swept axis never reaches
-  // the leaf. inlineForProfile inlines `a`'s IR into the body and
-  // rewrites self.theta1 → %local.theta1.
+  // PRIMARY (CLM Phase 5b): one canonical lowering for BOTH modes.
+  // `lowerMeasure` expands measure refs, applies the MC-marginal form
+  // when the body is a generative composite (the transport L), and
+  // transitively inlines derived value bindings DOWN TO the declared
+  // inputs — sweeping `theta1` through `a = c * theta1` reaches the
+  // leaf because `a` inlines (H5/H3; previously inlineForProfile's
+  // job). The swept axis is declared a FREE input (left unfed — the
+  // worker varies it per grid point); the other params are declared
+  // boundaries (names only here; their VALUES bake below once the
+  // async source lookups land).
   const paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
-  ir = FlatPPLEngine.orchestrator.inlineForProfile(
-    ir, paramNames, ctx.derivationsState!.bindings, ctx.derivationsState!.derivations);
+  let isMcForm = false;
+  {
+    const dst = ctx.derivationsState!;
+    const lowCtx = {
+      derivations: dst.derivations,
+      bindings: dst.bindings,
+      fixedValues: dst.fixedValues,
+    };
+    const boundaryNames: Record<string, any> = {};
+    for (const pn of paramNames) {
+      if (pn !== sweepParamName) boundaryNames[pn] = true;
+    }
+    let clmNode: any = null;
+    let clmErr: any = null;
+    try {
+      clmNode = FlatPPLEngine.clm.lowerMeasure(ir, lowCtx, {
+        boundaries: boundaryNames, freeInputs: [sweepParamName],
+      });
+    } catch (e) { clmErr = e; }
+    if (!clmNode) {
+      // The legacy inline pipeline is retired (CLM Phase 5b, removed
+      // after interactive gallery verification) — a body the canonical
+      // lowering can't express fails loudly here.
+      showPlotMessage(ctx, 'Profile plot failed: cannot lower <strong>'
+        + esc(plan.name) + '</strong> to a canonical measure'
+        + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.');
+      return;
+    }
+    ir = clmNode.body;
+    isMcForm = !!clmNode.mc;
+  }
   const POINT_COUNT = 200;
   showPlotMessage(ctx, 'Profiling…', { cancellable: true, hint: true });
   const planForCall = plan;
@@ -321,7 +331,15 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     // happen — caller is supposed to populate every non-sweep
     // input). Pass an empty fixedEnv to profileN to avoid double
     // resolution.
-    const irForWorker = FlatPPLEngine.orchestrator.substituteLocals(ir, fixedEnv);
+    // Bake the boundary values into the body. substituteBoundaryValues
+    // is the spec-shaped successor of substituteLocals: boundary refs
+    // come in BOTH namespaces (`%local` placeholder formals, plain
+    // `self` refs for identifier-form cuts — spec §11), matched by
+    // NAME, scope-aware (a nested reified callable that re-declares a
+    // name keeps its own inputs). The swept param has no fixedEnv
+    // entry (scalar sweep) so its ref survives for profileN; per-slot
+    // sweep bakes the array WITH the embedded sweep-ref node.
+    const irForWorker = FlatPPLEngine.orchestrator.substituteBoundaryValues(ir, fixedEnv);
     // For per-slot sweep on an array input the sweep variable lives
     // INSIDE the vector(...) IR substituteLocals built — its name is
     // SWEEP_VAR (the synthetic local injected above), not the array
@@ -366,6 +384,20 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
           template: Object.assign({}, tmpl) };
       }
     }
+    // Boundary values ALSO ride profileN's fixedEnv (layered over the
+    // worker session env): the OPAQUE mcmarginal recipe resolves its
+    // externalRefs from env — unreachable by any IR bake (ir-walk does
+    // not descend the recipe fields by design). Entries holding an
+    // embedded IR node (the per-slot sweep array) stay bake-only —
+    // env values must be plain.
+    const envForWorker: Record<string, any> = {};
+    for (const k in fixedEnv) {
+      if (!Object.prototype.hasOwnProperty.call(fixedEnv, k)) continue;
+      const v = fixedEnv[k];
+      const hasIRNode = Array.isArray(v)
+        && v.some(function(x: any) { return x && typeof x === 'object' && x.kind != null; });
+      if (!hasIRNode) envForWorker[k] = v;
+    }
     const profileMsg: any = {
       type: 'profileN',
       ir: irForWorker,
@@ -373,7 +405,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       range: rangeRef[0],
       count: pointCount,
       mode: mode,
-      fixedEnv: {},
+      fixedEnv: envForWorker,
       observed: observed,
       tally: 'clamped',
     };

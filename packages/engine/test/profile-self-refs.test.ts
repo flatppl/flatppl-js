@@ -60,11 +60,16 @@ function makeProfileIR() {
   const sig = orchestrator.signatureOf('L', bindings);
   assert.ok(sig, 'signature for L');
   assert.equal(sig.kind, 'likelihood');
-  let ir = sig.body;
-  ir = orchestrator.expandMeasureRefsInIR(ir, built.derivations);
-  const paramNames = sig.inputs.map((i: any) => i.paramName);
-  ir = orchestrator.inlineForProfile(
-    ir, paramNames, bindings, built.derivations);
+  // Canonical lowering (the live owner of the retired inlineForProfile's
+  // job): expand + inline derived deps down to the declared inputs.
+  const clm = require('../clm.ts');
+  const boundaries: Record<string, any> = {};
+  for (const i of sig.inputs) boundaries[i.paramName] = true;
+  const lowCtx = { derivations: built.derivations, bindings,
+    fixedValues: built.fixedValues || new Map() };
+  const node = clm.lowerMeasure(sig.body, lowCtx, { boundaries });
+  assert.ok(node, 'L body lowers');
+  let ir = node.body;
   const observed = orchestrator.resolveIRToValue(
     sig.obsIR, bindings, built.fixedValues);
   return { ir, observed, built, bindings };
