@@ -344,6 +344,16 @@ function collectRefArrays(ir: any, ctx: any) {
     // history-variate names (s0, s1, … — not bindings) resolve without a
     // "no derivation" throw.
     if (extra && extra[n] != null) return;
+    // Phase-4 safety net (audit §3 #3): a ref the enclosing feed DECLARED
+    // a boundary but did NOT cover via the overlay must fail loud here —
+    // resolving it via getMeasure would silently re-materialise the
+    // like-named module binding (the boundary-conflation bug class).
+    if (ctx && ctx._boundaryNames && ctx._boundaryNames.has(n)) {
+      throw new Error("collectRefArrays: '" + n + "' is a declared reified-"
+        + 'boundary input but no fed column covers it — boundary inputs are '
+        + 'fed by the caller (spec §04), never re-materialised via getMeasure '
+        + '(audit §3); this is a feed gap in the enclosing materialiser');
+    }
     if (fixedValues && fixedValues.has(n)) {
       fixedEnv[n] = fixedValues.get(n);
       anyFixed = true;
@@ -590,6 +600,15 @@ function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: a
     // module binding — do NOT getMeasure them (that is the conflation bug).
     if (bound && Object.prototype.hasOwnProperty.call(bound, n)) return;
     if (extra && extra[n] != null) return;
+    // Phase-4 safety net (audit §3 #3): a DECLARED boundary input the
+    // feed did not cover must fail loud — getMeasure would silently
+    // re-materialise the like-named module binding (conflation class).
+    if (ctx && ctx._boundaryNames && ctx._boundaryNames.has(n)) {
+      throw new Error(label + ": '" + n + "' is a declared reified-boundary "
+        + 'input but no fed column covers it — boundary inputs are fed by '
+        + 'the caller (spec §04), never re-materialised via getMeasure '
+        + '(audit §3); this is a feed gap in the enclosing materialiser');
+    }
     if (isFunctionLikeBinding(ctx.bindings && ctx.bindings.get(n))) return;
     const isBinding = !!(ctx.bindings && ctx.bindings.has(n));
     const isFixed   = !!(ctx.fixedValues && ctx.fixedValues.has(n));

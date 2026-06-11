@@ -277,6 +277,11 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     // i's shared `mu` across the k inner draws.
     const fedCtx = Object.assign({}, ctx, {
       _extraRefArrays: Object.assign({}, ctx._extraRefArrays, paramBind),
+      // Phase-4 safety net: a param ref reaching getMeasure uncovered is
+      // a feed gap — throw rather than conflate (audit §3).
+      _boundaryNames: new Set([
+        ...(ctx._boundaryNames || []), ...fnInfo.params,
+      ]),
     });
     return collectRefArrays(body, fedCtx).then((bodyRefs: any) => ctx.sendWorker({
       type: 'evaluateN',

@@ -758,7 +758,22 @@ function matClm(ir: any, ctx: any): Promise<any> {
       : Promise.resolve({});
     return histP.then((histExtra: any) => {
       const extra = Object.assign({}, fed.refArrays, histExtra);
-      const child: any = Object.assign({}, ctx, { _extraRefArrays: extra });
+      // Phase-4 safety net (audit §3 #3): declare the FED boundary names
+      // on the child ctx so the module-graph resolution sites
+      // (collectRefArrays / prepareDensityRefs) THROW if a boundary ref
+      // ever reaches getMeasure uncovered — a feed gap must be loud, not
+      // a silent re-materialisation of the like-named module binding.
+      const boundaryNames = new Set<string>();
+      for (const inp of ir.inputs || []) {
+        const k = inp.source && inp.source.kind;
+        if (k === 'boundary' || k === 'explicit') {
+          boundaryNames.add(inp.name);
+          if (inp.source.localAlias) boundaryNames.add(inp.source.localAlias);
+        }
+      }
+      const child: any = Object.assign({}, ctx, {
+        _extraRefArrays: extra, _boundaryNames: boundaryNames,
+      });
       return shared.pushFixedEnv(child, fed.fixedEnv)
         .then(() => materialiseMeasureIR(ir.body, child));
     });

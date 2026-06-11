@@ -326,3 +326,36 @@ test('Stage 0: prepareDensityRefs honours ctx._extraRefArrays (CLM feed overlay)
   assert.strictEqual(getMeasureCalled, false,
     'getMeasure must not run for a CLM-fed boundary ref');
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// Phase-4 safety net (audit §3 #3): a DECLARED boundary input that no fed
+// column covers must throw at the module-graph resolution sites, never
+// silently re-materialise the like-named module binding. Pins both owners
+// (collectRefArrays + prepareDensityRefs); the covered case stays quiet.
+// ════════════════════════════════════════════════════════════════════════
+test('Phase 4: an unfed declared boundary ref throws at collectRefArrays/prepareDensityRefs', async () => {
+  const N = 4;
+  const ir = { kind: 'call', op: 'add', args: [
+    { kind: 'ref', ns: 'self', name: 'theta' },
+    { kind: 'lit', value: 1, numType: 'real' },
+  ] };
+  const baseCtx: any = {
+    bindings: new Map([['theta', { phase: 'parameterized', ir: null }]]),
+    fixedValues: new Map(),
+    sampleCount: N,
+    getMeasure: (_n: any) => Promise.reject(new Error('getMeasure must not be reached')),
+  };
+  // Unfed: declared boundary, no overlay → loud throw (both owners).
+  const unfed = Object.assign({}, baseCtx, { _boundaryNames: new Set(['theta']) });
+  assert.throws(() => shared.collectRefArrays(ir, unfed),
+    /declared reified-boundary input/,
+    'collectRefArrays must refuse an unfed declared boundary');
+  assert.throws(() => shared.prepareDensityRefs(ir, unfed, 'phase4-test'),
+    /declared reified-boundary input/,
+    'prepareDensityRefs must refuse an unfed declared boundary');
+  // Covered: the overlay supplies the column → no throw, no getMeasure.
+  const col = { shape: [N], data: Float64Array.from([1, 2, 3, 4]) };
+  const fed = Object.assign({}, unfed, { _extraRefArrays: { theta: col } });
+  const ras = await shared.collectRefArrays(ir, fed);
+  assert.strictEqual(ras.theta, col, 'fed boundary resolves from the overlay');
+});
