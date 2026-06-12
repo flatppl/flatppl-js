@@ -960,52 +960,90 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'MvNormal') return astArg;
-    // Parse kwargs: kwarg form only in 5e MVP.
+    // Parse kwargs, or the positional form (5h-A): spec §08 defines the
+    // parameter order — `MvNormal(mu, cov)` — so two positional args map
+    // to (mu, cov). Mixed forms beyond that stay un-lowered.
     const kw: Record<string, any> = {};
+    const pos: any[] = [];
     for (const a of (astArg.args || [])) {
       if (a && a.type === 'KeywordArg') kw[a.name] = a.value;
+      else if (a) pos.push(a);
     }
-    const muAst = kw.mu;
-    const covAst = kw.cov;
+    const muAst = kw.mu != null ? kw.mu : (pos.length === 2 ? pos[0] : null);
+    const covAst = kw.cov != null ? kw.cov : (pos.length === 2 ? pos[1] : null);
     if (!muAst || !covAst) return astArg;
-    // 5f-1 widened gate: discover the static event dim D from mu, via
-    // (a) literal / ref-to-literal / inline-rowstack-literal, OR (b) a
-    // named ref whose binding carries a statically-known inferredType
-    // array (shape[0] a concrete integer). When D can't be determined
-    // statically (e.g. `%dynamic` shapes, inline non-ref expressions,
-    // kernel-placeholder mu), return unchanged → the matMvNormal
-    // terminal materialiser handles the MvNormal IR as before.
-    // mu must be a rank-1 vector, cov a rank-2 matrix — pass the
-    // expected rank so a matrix-form mean (`rowstack([[2.0]])`, shape
-    // [1,1]) is REJECTED here and routes to matMvNormal, rather than
-    // lowering to a [1,1] param that the density guard later misreads
-    // as atom-batched (Session 5f adversarial-verify Issue 1).
+    // Discover the event dim D from mu (5f-1 static paths): (a) literal /
+    // ref-to-literal / inline-rowstack-literal, OR (b) a named ref whose
+    // binding carries a statically-known inferredType array (shape[0] a
+    // concrete integer). mu must be rank-1 — a matrix-form mean
+    // (`rowstack([[2.0]])`, shape [1,1]) is REJECTED here (spec §08: mu
+    // is a VECTOR), surfacing as the classifier's clean refusal rather
+    // than lowering to a [1,1] param the density guard would misread as
+    // atom-batched (Session 5f adversarial-verify Issue 1).
     const D = __discoveredMvNormalD(muAst, out, 1);
-    if (D == null || !Number.isInteger(D) || D < 1) return astArg;
-    const covD = __discoveredMvNormalD(covAst, out, 2);
-    if (covD !== D) return astArg;
-    // Literal-form cov gets the full square-[D,D] structural check.
-    // Ref-form cov is validated by its inferredType being a
-    // statically-square rank-2 array (covD only told us shape[0]; we
-    // re-confirm rank 2 + shape[1] === D for the ref case so a [D, k≠D]
-    // ref doesn't slip through).
+    if (D != null && (!Number.isInteger(D) || D < 1)) return astArg;
+    // 5h-A dynamic-D: when D is NOT statically known, the iid count
+    // becomes the runtime expression `lengthof(mu)` — classifyIid's
+    // deferred-count pass resolves it through fixedValues once shapes
+    // are computable. Statically gate only what must hold for the
+    // REWRITE to be meaningful: mu must be rank-1 wherever a rank is
+    // visible at all (the literal/ref guards inside
+    // __discoveredMvNormalD already rejected a visible rank-2 mu by
+    // returning null — distinguish that REJECT from "no info" below).
+    let countAst: any = null;
+    if (D != null) {
+      countAst = makeNumLit(D, astArg.loc);
+    } else {
+      // No static D. Reject the shapes the static paths POSITIVELY
+      // identified as wrong-rank (a literal/ref matrix-form mean);
+      // accept an Identifier whose rank is unknown or confirms rank-1
+      // with a dynamic length — but ONLY when it names a REAL module
+      // binding. A kernel-boundary placeholder / formal (`kernelof(
+      // joint(loc = MvNormal(mu = m, …), …), m = m)` — `m` unbound)
+      // belongs to the composite-body recognizers (engine-concepts
+      // §21/§22.2(d); teaching them the lowered pushfwd form is 5h-B),
+      // and `lengthof(<formal>)` could never resolve anyway.
+      if (__mvNormalRankConflict(muAst, out, 1)) return astArg;
+      const muRefAst = (muAst.type === 'Identifier' && out.has(muAst.name))
+        ? makeIdent(muAst.name, astArg.loc)
+        : null;
+      if (!muRefAst) return astArg;   // formal / inline dynamic mu → composite scope
+      countAst = {
+        type: 'CallExpr',
+        callee: makeIdent('lengthof', astArg.loc),
+        args: [muRefAst],
+        loc: astArg.loc,
+      };
+    }
+    // Cov gating (5h-A relaxation): a STATICALLY VISIBLE shape conflict
+    // (literal non-square, ref with rank ≠ 2 or shape[1] ≠ D) still
+    // refuses the rewrite; shapes that are merely UNKNOWN (inline
+    // `diagmat(...)`, `eye(<param>)`, dynamic refs) lower anyway — the
+    // affine registry resolves mu/cov at materialise time and the
+    // Cholesky/matvec shape checks fail loudly on a real mismatch,
+    // which is exactly the runtime contract the retired matMvNormal
+    // terminal had.
     const covLit = __resolveLiteralArrayRef(covAst, out);
     if (covLit) {
-      if (covLit.elements.length !== D) return astArg;
+      const rows = covLit.elements.length;
+      if (D != null && rows !== D) return astArg;
       for (const row of covLit.elements) {
         if (!row || row.type !== 'ArrayLiteral'
-            || row.elements.length !== D) return astArg;
+            || row.elements.length !== rows) return astArg;
       }
     } else if (covAst.type === 'Identifier') {
       const cb = out.get(covAst.name);
-      const ct = cb && cb.inferredType;
-      if (!(ct && ct.kind === 'array' && ct.rank === 2
-            && Number.isInteger(ct.shape[1]) && ct.shape[1] === D)) {
-        return astArg;   // not a statically square [D,D] ref → matMvNormal
+      if (!cb) return astArg;   // formal / placeholder cov → composite scope
+      const ct = cb.inferredType;
+      if (ct && ct.kind === 'array') {
+        if (ct.rank !== 2) return astArg;            // visibly not a matrix
+        if (D != null && Number.isInteger(ct.shape[1])
+            && ct.shape[1] !== D) return astArg;     // visibly mismatched
+      } else if (ct && ct.kind !== 'deferred' && ct.kind !== 'any') {
+        return astArg;                               // visibly not an array
       }
-    } else {
-      return astArg;     // cov is neither literal nor a named ref → matMvNormal
     }
+    // (inline non-ref cov with unknown shape: lower — runtime checks own it)
     // Emit the synthetic bijection binding `__bij_N`. AST shape is the
     // same identity-stub form used in test/bijection-registry-
     // dispatch.test.ts — `fn(_)` for forward AND inverse, scalar 0
@@ -1074,7 +1112,7 @@ function liftInlineSubexpressions(bindings: any) {
       callee: makeIdent('iid', astArg.loc),
       args: [
         makeIdent(normalAnon, astArg.loc),
-        makeNumLit(D, astArg.loc),
+        countAst,
       ],
       loc: astArg.loc,
     };
@@ -1599,6 +1637,33 @@ function liftInlineSubexpressions(bindings: any) {
       }
     }
     return null;
+  }
+
+  // 5h-A: POSITIVE rank-conflict detector — true only when the argument's
+  // structure is statically VISIBLE and contradicts `expectedRank`
+  // (a nested ArrayLiteral where rank-1 is wanted; a ref whose
+  // inferredType is an array of the wrong rank). "Unknown" (inline
+  // expressions, dynamic/deferred types) is NOT a conflict — the
+  // dynamic-D path lowers those and lets the materialise-time shape
+  // checks own validity. __discoveredMvNormalD conflates conflict with
+  // unknown (both return null), so the dynamic gate needs this split.
+  function __mvNormalRankConflict(ast: any, bindings: any,
+                                  expectedRank: number): boolean {
+    if (!ast) return false;
+    const lit = __resolveLiteralArrayRef(ast, bindings);
+    if (lit && lit.type === 'ArrayLiteral') {
+      const firstElemIsArray = lit.elements.length > 0
+        && lit.elements[0] && lit.elements[0].type === 'ArrayLiteral';
+      if (expectedRank === 1 && firstElemIsArray) return true;
+      if (expectedRank === 2 && !firstElemIsArray) return true;
+      return false;
+    }
+    if (ast.type === 'Identifier') {
+      const b = bindings.get(ast.name);
+      const t = b && b.inferredType;
+      if (t && t.kind === 'array' && t.rank !== expectedRank) return true;
+    }
+    return false;
   }
 
   /**

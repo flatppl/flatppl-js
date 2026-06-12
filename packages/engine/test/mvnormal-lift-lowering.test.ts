@@ -235,32 +235,37 @@ X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))
 // 5. Fallback — non-literal cov stays on matMvNormal (kind=mvnormal)
 // =====================================================================
 
-test('5f-1: dynamic-shape cov falls through to matMvNormal (kind=mvnormal preserved)', async () => {
-  // 5f-1 widened the gate to accept cov whose D is statically known
-  // (literal, ref-to-literal, inline rowstack, OR a named ref with a
-  // static inferredType). `diagmat([1.0, 1.0])` is an inline non-ref
-  // CallExpr whose inferredType is `%dynamic`-shaped (diagmat doesn't
-  // const-fold the vector length), so D is NOT statically known and
-  // the gate correctly skips — matMvNormal still materialises X. This
-  // pins the matMvNormal fallback now that eye(2)/rowstack DO flip
-  // (see the two positive tests below).
+test('5h-A: dynamic-shape cov (diagmat ref) flips to pushfwd + materialises', async () => {
+  // 5h-A relaxed the cov gate: a shape that is merely UNKNOWN (diagmat
+  // doesn't const-fold the vector length → `%dynamic` inferredType)
+  // lowers anyway — mu's static D drives the iid count, and the affine
+  // registry resolves cov at materialise time (a real mismatch fails
+  // loudly in the Cholesky/matvec shape checks, the same runtime
+  // contract the matMvNormal terminal had). Only a statically VISIBLE
+  // conflict (wrong rank, literal non-square, shape[1] ≠ D) refuses.
   const ctx = makeCtx(`
 mu_vec = [1.0, 2.0]
 cov_mat = diagmat([1.0, 1.0])
 X = MvNormal(mu = mu_vec, cov = cov_mat)
 `);
-  // No __bij_N / __iid_N synthesised.
   const names = Array.from(ctx.bindings.keys());
   const bijName = names.find((n: any) => /^__bij/.test(n));
-  assert.equal(bijName, undefined,
-    'dynamic-shape cov → no synthetic bijection binding (gate skipped)');
-  assert.equal(ctx.derivations.X.kind, 'mvnormal',
-    'X stays on the kind=mvnormal classifier branch — matMvNormal handles it');
-
-  // Materialiser still works.
+  assert.ok(bijName, 'dynamic-shape cov → gate fires (synthetic bijection)');
+  assert.equal(ctx.bindings.get(bijName).bijection.registryName, 'affine');
+  assert.notEqual(ctx.derivations.X.kind, 'mvnormal',
+    'X flipped off the kind=mvnormal branch');
   const X = await ctx.getMeasure('X');
-  assert.ok(X && X.value, 'fallback path materialises');
+  assert.ok(X && X.value, 'lowered path materialises');
   assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 2]);
+  // cov = I → X ≈ Normal(mu, I): empirical column means ≈ mu (4σ).
+  for (let d = 0; d < 2; d++) {
+    let sum = 0;
+    for (let i = 0; i < SAMPLE_COUNT; i++) sum += X.value.data[i * 2 + d];
+    const mean = sum / SAMPLE_COUNT;
+    const tol = 4 / Math.sqrt(SAMPLE_COUNT);
+    assert.ok(Math.abs(mean - [1.0, 2.0][d]) < tol,
+      `dim ${d}: mean ${mean} vs mu ${[1.0, 2.0][d]} (tol ${tol})`);
+  }
 });
 
 test('5f-1: matrix-form mean (rowstack([[k]])) does NOT flip — routes to matMvNormal', async () => {
@@ -446,33 +451,29 @@ X = MvNormal(mu = muv, cov = cov)
 // matMvNormal" PR fails loudly. Full retirement is gated on 5h-A
 // (dynamic-D iid routing). See mat-multivariate.matMvNormal docstring.
 
-test('5g fallback: positional-form MvNormal stays kind=mvnormal (unsupported at materialise)', async () => {
-  // The lift gate parses kwargs only (lift.ts inlineMvNormalLift), so a
-  // positional MvNormal(mu_vec, cov_mat) does NOT lower — it classifies
-  // as kind='mvnormal'. But matMvNormal also requires kwargs, so
-  // positional is unsupported end-to-end (matches its zero surface usage
-  // — the spec/examples always use kwarg form). This pins the honest
-  // contract: positional is neither lowered NOR silently mis-handled; it
-  // surfaces a clear kwargs error. 5h-A's positional-parsing sub-task
-  // would make it lower; until then it's an explicit error.
+test('5h-A: positional-form MvNormal lowers to pushfwd + materialises', async () => {
+  // Spec §08 defines the parameter order (mu, cov), so two positional
+  // args map to the kwargs (spec §04 calling conventions). Formerly the
+  // gate parsed kwargs only and positional was an explicit end-to-end
+  // error; 5h-A makes it lower like the kwarg form.
   const ctx = makeCtx(`
 mu_vec = [1.0, 2.0]
 cov_mat = rowstack([[1.0, 0.0], [0.0, 1.0]])
 X = MvNormal(mu_vec, cov_mat)
 `);
   const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
-  assert.equal(bijName, undefined, 'positional form → no lift lowering');
-  assert.equal(ctx.derivations.X.kind, 'mvnormal',
-    'positional MvNormal stays on the matMvNormal terminal path');
-  await assert.rejects(ctx.getMeasure('X'), /requires mu and cov kwargs/,
-    'positional matMvNormal surfaces a clear kwargs error (unsupported)');
+  assert.ok(bijName, 'positional form → gate fires');
+  assert.notEqual(ctx.derivations.X.kind, 'mvnormal');
+  const X = await ctx.getMeasure('X');
+  assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 2]);
 });
 
-test('5g fallback: dynamic-D eye(<param>) cov stays kind=mvnormal + materialises', async () => {
-  // `eye(n)` with n an external (non-literal) integer has a `%dynamic`
-  // inferredType, so __discoveredMvNormalD can't determine D statically
-  // and the gate skips — matMvNormal materialises X with the runtime D.
-  // Complements the diagmat dynamic-D test above with the eye(param) case.
+test('5h-A: dynamic-D eye(<param>) cov lowers (runtime shape ownership)', () => {
+  // `eye(n)` with n an external (valueless here) integer has a
+  // `%dynamic` inferredType. mu's static D drives the iid count; cov
+  // resolves at materialise time (and would fail loudly there while n
+  // has no value — same end state as the retired matMvNormal terminal,
+  // which also could not materialise a valueless n).
   const src = `
 n = external(posintegers)
 mu_vec = [1.0, 2.0]
@@ -482,7 +483,36 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
   const lifted = processSource(src);
   const built = orchestrator.buildDerivations(lifted.bindings);
   const bijName = Array.from(built.bindings.keys()).find((n: any) => /^__bij/.test(n));
-  assert.equal(bijName, undefined, 'dynamic-D eye(param) → no lift lowering');
-  assert.equal(built.derivations.X.kind, 'mvnormal',
-    'dynamic-D MvNormal stays on the matMvNormal terminal path');
+  assert.ok(bijName, 'dynamic-D eye(param) → gate fires');
+  assert.notEqual(built.derivations.X && built.derivations.X.kind, 'mvnormal',
+    'X is off the kind=mvnormal branch');
+});
+
+test('5h-A: dynamic-LENGTH mu — iid count lowers to lengthof(mu) and resolves e2e', async () => {
+  // The genuinely-dynamic-D case: `fill(1.5, 3)` carries a deferred /
+  // dynamic inferredType (fill does not const-fold its shape), so no
+  // static D exists AT LIFT TIME from either argument. The gate emits
+  // `iid(Normal(0,1), lengthof(mu_vec))`; classifyIid's deferred-count
+  // pass resolves the count through fixedValues (mu_vec is fixed-phase)
+  // and the whole model materialises through the §22 pushfwd-of-iid
+  // path — no matMvNormal involved.
+  const ctx = makeCtx(`
+mu_vec = fill(1.5, 3)
+cov_mat = eye(3)
+X = MvNormal(mu = mu_vec, cov = cov_mat)
+`);
+  const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
+  assert.ok(bijName, 'dynamic-length mu → gate fires with a lengthof count');
+  assert.notEqual(ctx.derivations.X.kind, 'mvnormal');
+  const X = await ctx.getMeasure('X');
+  assert.ok(X && X.value, 'materialises end-to-end');
+  assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 3]);
+  for (let d = 0; d < 3; d++) {
+    let sum = 0;
+    for (let i = 0; i < SAMPLE_COUNT; i++) sum += X.value.data[i * 3 + d];
+    const mean = sum / SAMPLE_COUNT;
+    const tol = 4 / Math.sqrt(SAMPLE_COUNT);
+    assert.ok(Math.abs(mean - 1.5) < tol,
+      `dim ${d}: mean ${mean} vs mu 1.5 (tol ${tol})`);
+  }
 });
