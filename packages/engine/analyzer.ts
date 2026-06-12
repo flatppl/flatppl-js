@@ -2443,9 +2443,6 @@ let _locscaleCounter = 0;
 
 const _LOCSCALE_LITERAL_TYPES = new Set([
   'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
-function _isNonScalarLiteral(e: any) {
-  return e && (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral');
-}
 
 function expandLocscaleStatements(ast: any, diagnostics: any[]) {
   if (!ast || !ast.body) return;
