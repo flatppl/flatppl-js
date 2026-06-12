@@ -1356,6 +1356,22 @@ function computePhases(bindings: any) {
     const cn = calleeName(b);
     if (cn === 'elementof')          { absorbedCache.set(name, 'parameterized'); return 'parameterized'; }
     if (cn === 'external')           { absorbedCache.set(name, 'fixed');         return 'fixed'; }
+    // CALLABLE bindings contribute 'fixed' — do NOT descend into the body
+    // closure. A callable's parameterization is decided at its APPLICATION
+    // (spec §04: boundary substitution precedes the ancestor trace), and the
+    // application node's args are ordinary deps this walker already visits
+    // (`k(theta)` surfaces theta's phase through the arg). Descending into
+    // the body instead surfaces elementof leaves BEHIND the declared cut —
+    // `kernelof(zs, pars = pars)` reaches the module `pars` through body
+    // refs — so an applied kernel with FIXED args (`rand(state,
+    // k_model(glob_pars))`) would mis-phase as parameterized, knocking the
+    // draw off the fixed pre-eval path (spec §07: rand propagates phases
+    // normally). Type list mirrors derivations.isCallableLikeBindingType.
+    if (b.type === 'fn' || b.type === 'functionof' || b.type === 'kernelof'
+        || b.type === 'bijection' || b.type === 'fchain') {
+      absorbedCache.set(name, 'fixed');
+      return 'fixed';
+    }
     const deps = (b.bodyDeps != null) ? b.bodyDeps : b.deps;
     let phase = 'fixed';
     for (const dep of deps) {

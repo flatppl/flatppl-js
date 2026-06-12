@@ -359,3 +359,37 @@ f = functionof(mu * 2)
 `);
   assert.equal(diags.length, 0);
 });
+
+test('rand of an APPLIED kernel with fixed args is fixed-phase (absorbed walk stops at callables)', () => {
+  // Spec §07: rand propagates phases normally — fixed inputs, fixed output.
+  // Spec §04: boundary substitution precedes the ancestor trace, so an
+  // applied kernel's parameterization is decided by its APPLICATION args,
+  // not by the elementof leaves behind the declared cut. The absorbed
+  // walk (lawof/rand) must therefore stop at callable bindings: descending
+  // into k_model_n's body reaches the module `pars` elementof THROUGH the
+  // cut and mis-phased `sim = rand(state, k(fixed))` as parameterized —
+  // knocking the draw off the fixed pre-eval path (the simple-transport
+  // sim_data shape).
+  const { bindings } = processSource(`
+pars = elementof(reals)
+x ~ Normal(mu = pars, sigma = 0.1)
+K = kernelof(x, pars = pars)
+model_dist = K(1.5)
+rstate = rnginit([1, 2, 3])
+sim, rs2 = rand(rstate, model_dist)
+`);
+  assert.equal(bindings.get('model_dist').phase, 'fixed');
+  assert.equal(bindings.get('sim').phase, 'fixed');
+  // The arg path still propagates: applying with a PARAMETERIZED arg
+  // keeps the draw parameterized.
+  const p2 = processSource(`
+pars = elementof(reals)
+other = elementof(reals)
+x ~ Normal(mu = pars, sigma = 0.1)
+K = kernelof(x, pars = pars)
+model_dist = K(other)
+rstate = rnginit([1, 2, 3])
+sim, rs2 = rand(rstate, model_dist)
+`).bindings;
+  assert.equal(p2.get('sim').phase, 'parameterized');
+});
