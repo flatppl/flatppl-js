@@ -57,6 +57,18 @@ function makeCtx(source: any, opts?: any) {
   return ctx;
 }
 
+// For error-path tests: run only processSource (parse + analyze) and return
+// the error-severity diagnostics. Does NOT build derivations / materialise,
+// so a deliberately-rejected locscale never reaches the downstream paths.
+function expectError(source: any, substr: any) {
+  const lifted = processSource(source);
+  const errs = lifted.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.ok(errs.length > 0, `expected an error diagnostic, got none for:\n${source}`);
+  assert.ok(errs.some((d: any) => d.message.includes(substr)),
+    `expected an error containing ${JSON.stringify(substr)}; got: `
+      + JSON.stringify(errs.map((d: any) => d.message)));
+}
+
 const nLogpdf = require('@stdlib/stats-base-dists-normal-logpdf');
 
 // Distributions.jl LocationScale(0, 2.5, TDist(3)) logpdf — pinned oracle.
