@@ -1190,8 +1190,16 @@ function liftInlineSubexpressions(bindings: any) {
     // tell us D. For those ops we discover D from the op's ARGUMENT (which
     // carries a concrete [D,D]) — the op preserves the square shape. This is
     // the documented adjustment over MvNormal's gate (P3 plan Task 5).
+    //
+    // ONLY genuinely square/shape-preserving factor ops belong here. NOT
+    // `transpose`/`adjoint`: those swap dims, so the op's argument shape does
+    // NOT certify the result is square (a `transpose([3,2])` is `[2,3]`). A
+    // SQUARE transpose still routes fine via the normal concrete-[D,D]
+    // inferredType path below (square-confirm passes); a NON-square transpose
+    // correctly fails square-confirm and falls to the buildDerivations safety
+    // net rather than feeding a non-square matrix to the affine bijection.
     const SHAPE_PRESERVING_SQUARE_OPS = new Set([
-      'lower_cholesky', 'cholesky', 'inv', 'transpose', 'adjoint']);
+      'lower_cholesky', 'cholesky', 'inv']);
     const discoverScaleD = (e: any): number | null => {
       const direct = __discoveredMvNormalD(e, out, 2);
       if (direct != null) return direct;

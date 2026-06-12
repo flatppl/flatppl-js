@@ -123,3 +123,41 @@ test('matrix locscale over an MvNormal base gives a clean diagnostic (deferred)'
   assert.match(msg, /pushfwd|iid|base/i,
     `expected guidance to use iid base / pushfwd directly, got: ${msg}`);
 });
+
+test('vector-shift + scalar-scale locscale errors cleanly (no [D,D] matrix scale)', () => {
+  // A vector shift forces the call to survive the scalar-expansion pre-pass,
+  // but a SCALAR scale (not a [D,D] matrix) cannot lower to an affine-registry
+  // pushfwd. This must surface a clean locscale-tagged error (analyzer shape
+  // diagnostic OR the buildDerivations safety net), NOT a cryptic downstream
+  // failure or a silently-dropped binding.
+  const src =
+    `X = locscale(iid(Normal(0.0, 1.0), 2), [0.0, 0.0], 2.0)\n`;
+  let msg = '';
+  try {
+    const lifted2 = processSource(src);
+    const errs = lifted2.diagnostics.filter((d: any) => d.severity === 'error');
+    if (errs.length) msg = errs.map((e: any) => e.message).join(' | ');
+    else { orchestrator.buildDerivations(lifted2.bindings); }
+  } catch (e: any) { msg = e.message; }
+  assert.match(msg, /locscale/i,
+    `expected a locscale-tagged error, got: ${msg || '(none)'}`);
+});
+
+test('square transpose scale still routes to the affine registry', () => {
+  // After Fix 1 (transpose removed from the lift gate's square-op set), a
+  // SQUARE transpose still routes via the normal concrete-[D,D] inferredType
+  // path — its result type IS a static [2,2] so square-confirm passes. The
+  // matrix is wrapped in rowstack(...) per spec §03 so it is a rank-2 matrix
+  // (a bare [[...]] literal is a vector-of-vectors, whose transpose is a
+  // transposed-vector, not a square matrix).
+  const ctx = makeCtx(
+    `M = rowstack([[2.0, 0.0], [0.0, 1.5]])\n`
+    + `Lt = transpose(M)\n`
+    + `X = locscale(iid(Normal(0.0, 1.0), 2), [0.0, 0.0], Lt)\n`
+    + `lp = logdensityof(X, [1.5, -0.5])\n`);
+  const d = ctx.derivations['X'];
+  assert.equal(d.kind, 'pushfwd', `X kind = ${d && d.kind}`);
+  const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
+  assert.ok(bijName, 'a __bij_N synthetic bijection binding exists');
+  assert.equal(ctx.bindings.get(bijName).bijection.registryName, 'affine');
+});
