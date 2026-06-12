@@ -790,6 +790,24 @@ function walkJointchainStub() {
     + 'record/joint by expandMeasureIR before reaching density');
 }
 
+// True if the IR expression `body` references any name present in
+// `refArrays` (per-atom kernel inputs). ns-agnostic — `evaluateExpr`'s
+// resolveRef keys the env by bare name regardless of namespace. Walks
+// args/kwargs of the bijection-body expression tree (calls/binops);
+// bijection bodies are flat expressions, no nested measure scopes.
+function _bijBodyRefsAny(body: any, refArrays: any): boolean {
+  if (body == null || typeof body !== 'object') return false;
+  if (body.kind === 'ref' && body.name != null
+      && Object.prototype.hasOwnProperty.call(refArrays, body.name)) return true;
+  if (Array.isArray(body.args)) {
+    for (const a of body.args) if (_bijBodyRefsAny(a, refArrays)) return true;
+  }
+  if (body.kwargs) {
+    for (const k in body.kwargs) if (_bijBodyRefsAny(body.kwargs[k], refArrays)) return true;
+  }
+  return false;
+}
+
 function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // pushfwd(f, M) density per spec §06: requires f to be a
   // `bijection(f, f_inv, logvolume)` annotation so we have an inverse
@@ -970,7 +988,75 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   }
   // Consume the head — pushfwd's variate footprint matches M's.
   const { head: y, rest } = consumeScalar(value);
-  // Compute x = f_inv(y). Atom-indep eval against baseEnv ∪ overlay.
+
+  // Latent (kernel-fed) bijection params: when f_inv's or logvolume's body
+  // references a per-atom refArrays name (the affine shift/scale ARE the
+  // latent kernel inputs — e.g. a location-scale StudentT likelihood with
+  // latent loc+scale via locscale → pushfwd), the bijection must be
+  // evaluated PER ATOM, not once against baseEnv ∪ overlay. The common case
+  // (constant or session-bound bijection params) keeps the atom-independent
+  // fast path below, unchanged.
+  const refNames = Object.keys(refArrays);
+  const needsPerAtom = refNames.length > 0 && (
+    _bijBodyRefsAny(bij.fInv.body, refArrays)
+    || (bij.logVolume.kind !== 'scalar' && bij.logVolume.body
+        && _bijBodyRefsAny(bij.logVolume.body, refArrays)));
+
+  if (needsPerAtom) {
+    const overlayKeys = overlay ? Object.keys(overlay) : null;
+    for (let i = 0; i < N; i++) {
+      // Per-atom env layering (mirrors walkLeaf): baseEnv, then this atom's
+      // refArrays values, then overlay (overlay wins).
+      const envI: Record<string, any> = Object.assign({}, baseEnv);
+      for (let j = 0; j < refNames.length; j++) {
+        const v = refArrays[refNames[j]];
+        envI[refNames[j]] = valueLib.isValue(v) ? v.data[i] : v[i];
+      }
+      if (overlayKeys) {
+        for (let j = 0; j < overlayKeys.length; j++) {
+          envI[overlayKeys[j]] = overlay[overlayKeys[j]];
+        }
+      }
+      envI[bij.fInv.paramName] = y;
+      const xi = samplerLib.evaluateExpr(bij.fInv.body, envI);
+      if (typeof xi !== 'number') {
+        throw new Error('density: pushfwd f_inv returned non-scalar (got '
+          + (typeof xi) + '); per-atom or vector-valued bijections not yet '
+          + 'supported here');
+      }
+      // Score the base measure for THIS atom only (N=1). Slice each refArray
+      // to a length-1 view so M's own latent-param refs resolve to atom i.
+      const refArraysI: Record<string, any> = {};
+      for (let j = 0; j < refNames.length; j++) {
+        const k = refNames[j];
+        const v = refArrays[k];
+        if (valueLib.isValue(v)) {
+          const tailLen = v.data.length / v.shape[0];
+          refArraysI[k] = {
+            shape: [1, ...v.shape.slice(1)],
+            data: v.data.subarray(i * tailLen, (i + 1) * tailLen),
+          };
+        } else {
+          refArraysI[k] = v.subarray(i, i + 1);
+        }
+      }
+      const accI = new Float64Array(1);
+      walkAcc(M_ir, xi, refArraysI, 1, opts, accI, baseEnv, overlay);
+      acc[i] += accI[0];
+      // Subtract logvolume at xi for this atom.
+      let lv: number;
+      if (bij.logVolume.kind === 'scalar') {
+        lv = +bij.logVolume.value;
+      } else {
+        if (bij.logVolume.paramName) envI[bij.logVolume.paramName] = xi;
+        lv = +samplerLib.evaluateExpr(bij.logVolume.body, envI);
+      }
+      if (lv !== 0) acc[i] -= lv;
+    }
+    return rest;
+  }
+
+  // Atom-independent fast path (unchanged): compute x = f_inv(y) once.
   const finvEnv = Object.assign({}, baseEnv);
   if (overlay) Object.assign(finvEnv, overlay);
   finvEnv[bij.fInv.paramName] = y;
@@ -991,10 +1077,6 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   } else {
     const lvEnv = Object.assign({}, baseEnv);
     if (overlay) Object.assign(lvEnv, overlay);
-    // paramName null means a 0-arg function — a closed-form constant
-    // like `fn(log(2.0))`. We still evaluate the body, just without
-    // binding x into env. paramName non-null is the 1-arg case where
-    // logvolume varies with the bijection's domain point.
     if (bij.logVolume.paramName) lvEnv[bij.logVolume.paramName] = x;
     const lv = +samplerLib.evaluateExpr(bij.logVolume.body, lvEnv);
     if (lv !== 0) for (let i = 0; i < N; i++) acc[i] -= lv;
