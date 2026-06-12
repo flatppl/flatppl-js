@@ -117,3 +117,44 @@ A, _ = rand(rstate, iid(Normal(mu = 0, sigma = 1), [3, 3]))
   assert.ok(built.fixedValues.has('A'),
     'leaf-rand is pre-evaluated into fixedValues');
 });
+
+// =====================================================================
+// rand of a NAMED non-iid composite measure (the applied-kernel /
+// lawof-binding draw — `sim_data, _ = rand(rstate, model_dist)` in the
+// simple-transport fixtures). The shared classifyRandTuple gate used to
+// overwrite the measure REF with its resolved IR while probing for the
+// iid shape, so the no-iid fallback handed a `lawof` CALL to the
+// must-be-a-ref check → null → kind='evaluate' → the per-draw evaluator
+// crashed with "no resolveMeasureRef was supplied". The fallback now
+// keeps the original ref → count-1 randsample via matRandSample. Two
+// halves pinned through the SAME gate: the draw half classifies +
+// materialises; the state half rewrites to rand_succ.
+// =====================================================================
+
+test('composite rand: named non-iid measure ref draws via randsample (count 1)', async () => {
+  const src = `
+mu0 = elementof(reals)
+x ~ Normal(mu = mu0, sigma = 0.1)
+ys ~ iid(Normal(mu = x, sigma = 0.1), 4)
+K = kernelof(ys, mu0 = mu0)
+model_dist = K(1.5)
+rstate = rnginit([1, 2, 3, 4])
+sim, rs2 = rand(rstate, model_dist)
+`;
+  const { ctx, built } = makeMatCtx(src, { sampleCount: 64 });
+  const d = built.derivations.sim;
+  assert.ok(d, 'sim must carry a derivation');
+  assert.equal(d.kind, 'randsample', 'named composite-measure rand → randsample');
+  assert.equal(d.count, 1, 'no-iid draw is a single realization');
+  const m = await ctx.getMeasure('sim');
+  const vals = m.value ? m.value.data : m.samples;
+  assert.ok(vals && vals.length >= 4, 'one realization of the length-4 variate');
+  for (let i = 0; i < vals.length; i++) {
+    assert.ok(Number.isFinite(vals[i]), 'draw values are finite');
+    assert.ok(Math.abs(vals[i] - 1.5) < 1.5, 'draws cluster near mu0=1.5');
+  }
+  // State half rides the SAME gate: composite successor → rand_succ.
+  const rs2b = built.bindings.get('rs2');
+  assert.equal(rs2b.ir && rs2b.ir.op, 'rand_succ',
+    'composite state half rewrites to the value-domain successor');
+});

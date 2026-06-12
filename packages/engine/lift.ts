@@ -2445,7 +2445,15 @@ function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
   const stateIR = randIR.args[0];
 
   // Decompose the measure arg (iid inline or a lift-hoisted anon ref).
-  let measureIR: any = randIR.args[1];
+  // The resolved IR is inspected for the iid shape ONLY — the no-iid
+  // fallback hands back the ORIGINAL node, so a by-name ref to a non-iid
+  // composite measure (`v, s2 = rand(state, model_dist)` over an
+  // applied-kernel / lawof binding) keeps its ref and classifies as a
+  // count-1 randsample instead of failing the must-be-a-ref check below
+  // and falling onto the per-draw evaluator (which cannot resolve a
+  // measure ref — "no resolveMeasureRef was supplied").
+  const measureArg: any = randIR.args[1];
+  let measureIR: any = measureArg;
   if (measureIR && measureIR.kind === 'ref' && measureIR.ns === 'self') {
     const mb = bindings.get(measureIR.name);
     if (mb && mb.ir) measureIR = mb.ir;
@@ -2456,7 +2464,7 @@ function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
     fromIR = measureIR.args[0];
     countIR = measureIR.args[1];
   } else {
-    fromIR = measureIR;
+    fromIR = measureArg;
     countIR = { kind: 'lit', value: 1, numType: 'integer' };
   }
   // The inner measure must be a named binding (lift hoists inline inner
