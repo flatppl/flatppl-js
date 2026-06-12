@@ -201,7 +201,7 @@ function broadcastN(fn: any, args: any[], N: any) {
 
 // Thin shims — broadcast1/2/3 delegate to broadcastN. Kept for any
 // external caller that imports them directly; internal call sites
-// (ARITH_OPS_N initialiser, line ~442) now call broadcastN directly.
+// (the `initARITHOPSN` initialiser below) call broadcastN directly.
 function broadcast1(fn: any, a: any, N: any) {
   return broadcastN(fn, [a], N);
 }
@@ -569,11 +569,17 @@ function initARITHOPSN(ARITH_OPS: any) {
 //
 // Env-precedence at refs (highest first): overlay > refArrays > baseEnv.
 //
-// Scalar arith ops dispatch through ARITH_OPS_N (batched broadcast).
-// Non-scalar ops fall back to per-atom dispatch via the single-point
-// `evaluateExpr` — fine for ops where per-atom inputs are uncommon
-// (vector/matrix/record builders typically take atom-indep inputs);
-// future batched-non-scalar rewrites would eliminate the fallback.
+// _evalN call-dispatch order:
+//   1. scalar arith ops → ARITH_OPS_N (batched broadcast);
+//   2. polynomial / bernstein / stepwise → _batchedApproximation
+//      (when x batches; else falls through);
+//   3. aggregate → _tryBatchedAggregatePatterns, then the generic
+//      `_evalAggregateBroadcastReduceN`;
+//   4. declared fixed-rank OpDecls with a `batched` slot →
+//      `ops.dispatch(op, args, { atomN: N })` (atom-aware variants);
+//   5. residue (undeclared ops, kwargs calls, variadic / higher-order)
+//      → `_perAtomFallback`, which one-shots atom-indep subtrees and
+//      per-atom-loops the rest via the single-point `evaluateExpr`.
 
 // Default ON; FLATPPL_NO_EVALN_COMPILE=1 forces the interpreter (kill
 // switch for debugging a suspected codegen divergence in the field).
@@ -845,12 +851,61 @@ function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv
   return out;
 }
 
+// Referenced-name set of an IR subtree, memoised per node identity.
+// Collects EVERY `kind:'ref'` name regardless of namespace — _evalN's
+// ref case resolves overlay/refArrays/baseEnv purely by name (refArray
+// keys may be `%local` boundary names, not just `self` bindings) — and
+// descends every child position `forEachIRChild` enumerates (incl.
+// `.bijection` bodies). Over-collection across reified-body scopes is
+// deliberate: a false positive only skips the one-shot optimisation
+// below; a false negative would mis-collapse a per-atom subtree.
+const _SUBTREE_REF_NAMES = new WeakMap<object, Set<string>>();
+function _subtreeRefNames(ir: any): Set<string> {
+  if (ir && typeof ir === 'object') {
+    const hit = _SUBTREE_REF_NAMES.get(ir);
+    if (hit) return hit;
+  }
+  const irWalk = require('./ir-walk.ts');
+  const names = new Set<string>();
+  (function walk(node: any) {
+    if (!node || typeof node !== 'object') return;
+    if (node.kind === 'ref' && typeof node.name === 'string') names.add(node.name);
+    irWalk.forEachIRChild(node, walk);
+  })(ir);
+  if (ir && typeof ir === 'object') _SUBTREE_REF_NAMES.set(ir, names);
+  return names;
+}
+
 function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
   // Fast path: nothing varies per atom AND overlay is empty → one shot.
   if (refNames.length === 0 && !overlayKeys) {
     return evaluateExpr(ir, baseEnv);
+  }
+  // Subtree-level pruning: the call-level check above only sees what
+  // the CALLER carries; a sub-expression evaluated under a shared
+  // refArrays map (the mat-* per-param loops, CLM body feeding) may
+  // itself reference none of the per-atom names. A name covered by
+  // overlay is atom-indep for this call (overlay wins over refArrays),
+  // so the per-atom set is refNames MINUS overlay keys; when the
+  // subtree references none of those, one-shot with overlay merged.
+  // Returns an atom-indep value — the same return class the empty-
+  // refArrays fast path above produces, which every consumer of the
+  // batched evaluator already dispatches on (engine-concepts §2.1
+  // leading-axis convention).
+  {
+    const subtreeRefs = _subtreeRefNames(ir);
+    let touchesPerAtom = false;
+    for (let j = 0; j < refNames.length; j++) {
+      const k = refNames[j];
+      if (overlay && Object.prototype.hasOwnProperty.call(overlay, k)) continue;
+      if (subtreeRefs.has(k)) { touchesPerAtom = true; break; }
+    }
+    if (!touchesPerAtom) {
+      return evaluateExpr(
+        ir, overlayKeys ? Object.assign({}, baseEnv, overlay) : baseEnv);
+    }
   }
   // Per-atom loop. Build a callEnv that overlays per-atom refArrays
   // values + the overlay (overlay last so it wins over refArrays).
