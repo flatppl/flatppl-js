@@ -447,3 +447,66 @@ test('Phase 6: a localAlias column satisfies coverage for its input', () => {
   assertFedCoverage(node, { _pars_: new Float64Array(2) }, 'phase6-test');
   assertFedCoverage(node, { pars: new Float64Array(2) }, 'phase6-test');
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// Smell C — cascade-prune via the canonical lowering. derivationRefsValid
+// routes the measure kinds (bayesupdate / likelihood_density / logdensityof
+// / jointchain) through lowerMeasure: ⊆ violation (CLM_SUBSET_VIOLATION)
+// → prune; a clm node → leaf-check the DECLARED INPUTS (replacing the
+// drift-prone parameterized/stochastic body-walk skip); null / other throw
+// → the legacy walk decides (loud materialise error preserved).
+// ════════════════════════════════════════════════════════════════════════
+test('[Smell C] separate-prior bayesupdate posterior keeps its derivation', () => {
+  // The exact idiom the old parameterized/stochastic skip existed for
+  // (audit H1/H2): prior and likelihood defined fully separately — the
+  // kernel's boundary inputs are fed from the prior at materialise time,
+  // so the body's parameterized internals must NOT prune the posterior.
+  // Now handled structurally: they are declared boundary/shared inputs of
+  // the lowering, not skipped-by-phase.
+  const ctx = ctxOf(`
+theta = elementof(reals)
+obs ~ Normal(mu = theta, sigma = 1.0)
+L = likelihoodof(kernelof(obs, theta = theta), 2.5)
+prior = joint(theta = Normal(mu = 0.0, sigma = 2.0))
+post = bayesupdate(L, prior)
+`);
+  assert.ok(ctx.derivations.post,
+    'separate-prior posterior must survive the cascade-prune');
+  assert.strictEqual(ctx.derivations.post.kind, 'bayesupdate');
+});
+
+test('[Smell C] the ⊆ violation carries the structured CLM_SUBSET_VIOLATION code', () => {
+  const ctx = ctxOf('m = Normal(0.0, 1.0)\n');
+  const ir = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'ref', ns: 'self', name: 'ghost' },
+    sigma: { kind: 'lit', value: 1, numType: 'real' },
+  } };
+  try {
+    lowerMeasure(ir, ctx);
+    assert.fail('must throw');
+  } catch (e: any) {
+    assert.strictEqual(e.code, 'CLM_SUBSET_VIOLATION',
+      'the prune matches the ⊆ verdict by code, not message text');
+  }
+});
+
+test('[Smell C] derivationRefsValid prunes a lowering whose shared input is unresolvable', () => {
+  // A free parameterized binding (elementof) referenced by the kernel body
+  // WITHOUT being a declared boundary kwarg: the lowering classifies it as
+  // a `shared` input; getMeasure(sigma_free) cannot materialise it, so the
+  // faithful verdict is prune. The OLD body-walk skipped it by phase
+  // (parameterized → continue) and kept a binding that fails at
+  // materialise — the drift-prone skip this replaces.
+  const src = `
+theta = elementof(reals)
+sigma_free = elementof(reals)
+obs ~ Normal(mu = theta, sigma = sigma_free)
+L = likelihoodof(kernelof(obs, theta = theta), 2.5)
+prior = joint(theta = Normal(mu = 0.0, sigma = 2.0))
+post = bayesupdate(L, prior)
+`;
+  const built = der.buildDerivations(eng.processSource(src).bindings);
+  assert.ok(!built.derivations.post,
+    'a posterior whose kernel references an unfed, underived free input '
+    + 'must cascade-prune (it cannot materialise)');
+});

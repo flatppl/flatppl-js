@@ -393,7 +393,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   while (changed) {
     changed = false;
     for (const name of Object.keys(derivations)) {
-      if (!derivationRefsValid(derivations[name], derivations, bindings, fixedValues)) {
+      if (!derivationRefsValid(derivations[name], derivations, bindings, fixedValues, name)) {
         delete derivations[name];
         changed = true;
       }
@@ -1977,7 +1977,7 @@ function isMeasureBinding(b: any): boolean {
   return false;
 }
 
-function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<string, BindingInfo>, fixedValues: any) {
+function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<string, BindingInfo>, fixedValues: any, name?: string) {
   // A name is "resolvable downstream" if there's a derivation for it
   // (the materialiser knows how to compute samples) OR it is a
   // fixed-phase VALUE the worker resolves through its session env.
@@ -2068,6 +2068,83 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     return seen;
   }
 
+  // ── Smell C: the canonical lowering as the plottability authority ──────
+  // For the measure kinds whose ref-validity used to be a hand-rolled body
+  // walk with a drift-prone skip-list (the bayesupdate parameterized/
+  // stochastic skip — each new measure shape needed a new skip), ask the
+  // materialiser's own lowering instead:
+  //   lowerMeasure THROWS (the Phase-6 ⊆ check) → not self-contained →
+  //     prune;
+  //   a clm node → leaf-check its DECLARED INPUTS — boundary inputs are
+  //     fed from `from` (which must itself be resolvable), shared refs
+  //     need a derivation/value, fixed refs need a value. The structural
+  //     classification subsumes the phase heuristic: derived value
+  //     bindings are inlined down to the boundary set by the lowering,
+  //     and stochastic internals surface as derivation-backed shared
+  //     refs;
+  //   null (a shape the lowering can't express) → fall through to the
+  //     legacy per-kind walk below, so such bindings keep their LOUD
+  //     materialise-time error instead of going silently un-plottable.
+  // Probed 2026-06-12 across the fixture corpus: zero over-prunes; keep
+  // verdicts identical to the legacy walk (the 3 keeps that fail at
+  // materialise are pre-existing engine gaps both verdicts keep).
+  function _clmRefsValid(): boolean | null {
+    let input: any;
+    let opts: any;
+    if (d.kind === 'bayesupdate' || d.kind === 'likelihood_density') {
+      // The prior (bayesupdate) and a NAMED kernel body must themselves be
+      // derivable — the lowering refines the body analysis but does not
+      // replace the named-target gates (a callable-layer binding in a
+      // measure position must keep pruning: expandMeasure would happily
+      // peel through a kernelof, hiding the layer violation).
+      if (d.kind === 'bayesupdate' && !resolvable((d as any).from)) return false;
+      if ((d as any).bodyName && !resolvable((d as any).bodyName)) return false;
+      input = (d as any).bodyIR || (d as any).bodyName;
+      opts = { derivation: d };
+    } else if (d.kind === 'logdensityof') {
+      if (!resolvable((d as any).measureName)) return false;   // named-target gate
+      input = (d as any).measureName;                 // mirrors matLogdensityof
+    } else if (d.kind === 'jointchain') {
+      if (name == null) return null;                  // caller didn't pass a name
+      input = name;
+      opts = { derivation: d };
+    } else {
+      return null;                                    // not a lowering-routed kind
+    }
+    if (input == null) return null;
+    // Lazy require — derivations → clm → orchestrator → derivations would
+    // otherwise be a top-level CJS cycle.
+    const clmMod = require('./clm.ts');
+    let node: any;
+    try { node = clmMod.lowerMeasure(input, { derivations, bindings, fixedValues }, opts); }
+    catch (e: any) {
+      // Only the ⊆ violation is the authoritative not-self-contained
+      // verdict; any OTHER lowering throw is a shape the pass mishandles —
+      // fall back to the legacy walk so the binding keeps its loud
+      // materialise-time error instead of going silently un-plottable.
+      if (e && e.code === 'CLM_SUBSET_VIOLATION') return false;
+      return null;
+    }
+    if (!node) return null;             // not lowerable → legacy walk decides
+    for (const inp of node.inputs || []) {
+      const src = inp.source || {};
+      if (src.kind === 'shared' && !resolvable(src.ref)) return false;
+      if (src.kind === 'boundary' && src.from != null && !resolvable(src.from)) return false;
+      if (src.kind === 'fixed' && !(fixedValues && fixedValues.has(src.ref))) return false;
+    }
+    // The observed / point expressions resolve at materialise time via
+    // resolveIRToValue — their own refs still need values/derivations.
+    for (const ir of [(d as any).obsIR, (d as any).pointIR]) {
+      if (!ir) continue;
+      for (const r of collectSelfRefs(ir)) {
+        if (!resolvable(r)) return false;
+      }
+    }
+    return true;
+  }
+  const viaClm = _clmRefsValid();
+  if (viaClm != null) return viaClm;
+
   if (d.kind === 'alias' || d.kind === 'normalize') {
     return resolvable(d.from);
   }
@@ -2140,6 +2217,10 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   if (d.kind === 'pushfwd') {
     return resolvable(d.from);
   }
+  // NOTE: bayesupdate / likelihood_density / logdensityof / jointchain
+  // normally take the `_clmRefsValid` route above (Smell C); the branches
+  // below survive ONLY as the lowerMeasure-returns-null fallback, keeping
+  // un-lowerable shapes on their loud materialise-time error.
   if (d.kind === 'bayesupdate') {
     if (!resolvable(d.from)) return false;
     if (d.bodyName) {

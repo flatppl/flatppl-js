@@ -447,10 +447,16 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // and degrades per-target.
   if (missing.length > 0) {
     const label = typeof input === 'string' ? input : (deriv && deriv.kind) || '<ir>';
-    throw new Error('clm.lowerMeasure(' + label + '): body self-refs not covered '
+    const err: any = new Error('clm.lowerMeasure(' + label + '): body self-refs not covered '
       + 'by declared inputs: ' + JSON.stringify(missing)
       + ' — the lowering is not self-contained (⊆ invariant, audit §3); '
       + 'feeding it would re-materialise like-named module bindings');
+    // Structured marker: the cascade-prune (derivationRefsValid) treats the
+    // ⊆ violation as the authoritative not-plottable verdict, while every
+    // OTHER lowering throw falls back to the legacy walk — matched by code,
+    // not by message text.
+    err.code = 'CLM_SUBSET_VIOLATION';
+    throw err;
   }
 
   const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
