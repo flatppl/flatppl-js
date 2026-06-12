@@ -2519,6 +2519,23 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
     });
     return call;
   }
+  // Interim scope guard: the scalar affine density/sampler path this expansion
+  // targets cannot serve a vector/matrix shift or scale. Reject the
+  // syntactically-detectable non-scalar literal cases with a clear message.
+  // (Full multivariate locscale — including opaque/named matrix scale — is
+  // tracked separately as a type-inference-directed routing change; until then
+  // use pushfwd directly per spec §06.)
+  const isNonScalarLiteral = (e: any) =>
+    e && (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral');
+  if (isNonScalarLiteral(args[1]) || isNonScalarLiteral(args[2])) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale() supports only scalar shift and scale; for `
+        + `vector/matrix affine maps use pushfwd directly (spec §06)`,
+      loc: call.loc,
+    });
+    return call;
+  }
   // The base measure may itself contain a nested locscale.
   const mExpr = _rewriteLocscale(args[0], synth, diagnostics);
   const shiftExpr = args[1];

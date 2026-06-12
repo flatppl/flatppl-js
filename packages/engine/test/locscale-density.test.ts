@@ -150,3 +150,15 @@ test('locscale rejects a zero literal scale', () => {
 test('locscale rejects a non-finite literal scale', () => {
   expectError('B = locscale(Normal(0.0, 1.0), 0.0, 0.0)\n', 'nonzero');
 });
+
+test('locscale rejects a vector-literal scale (interim: use pushfwd)', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), 0.0, [1.0, 2.0])\n', 'pushfwd');
+});
+
+test('locscale rejects a matrix-literal scale (interim: use pushfwd)', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), 0.0, [[1.0, 0.0], [0.0, 1.0]])\n', 'pushfwd');
+});
+
+test('locscale rejects a vector-literal shift (interim: use pushfwd)', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), [1.0, 2.0], 2.0)\n', 'pushfwd');
+});
