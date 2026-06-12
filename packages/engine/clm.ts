@@ -199,7 +199,15 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
       (nm: any) => orchestrator.expandMeasure(nm, ctx));
     if (form) { body = form; mc = true; }
   } catch (_) { /* mc-recipe is best-effort here; density owns the hard path */ }
-  if (!mc && boundarySet.size > 0) {
+  if (!mc) {
+    // Inline derived value bindings transitively down to the boundary set
+    // (multi-hop b ← a ← theta) so a deterministic field-dependent param
+    // (`Beta(phi*kappa, …)`) is expressed via the fed/observed atoms rather
+    // than fed as an independent `shared` column materialised from the prior
+    // (which decouples it from the point being scored — a silent wrong
+    // number for `logdensityof(lawof(record(...)), point)` whose boundary
+    // set is empty). With no derived value bindings this is a no-op, so
+    // body === expandMeasure(name) for the green-fixture shapes.
     body = shared.inlineBoundaryDerivations(expanded, boundarySet, ctx);
   }
 
