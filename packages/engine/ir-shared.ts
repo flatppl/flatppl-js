@@ -158,6 +158,21 @@ function isSelfRef(ir: IRNode | null | undefined) {
   return !!ir && ir.kind === 'ref' && ir.ns === 'self';
 }
 
+// THE catalogue of callable-producing binding types (the spec §04
+// callable layer: function / kernel producers — never values or
+// measures). One owner at the dependency root; consumers:
+// `derivations.isCallableLikeBindingType` (re-export),
+// `materialiser-shared.isFunctionLikeBinding` (binding-level wrapper),
+// mc-recipe's generative-closure inliner. analyzer.absorbedPhaseOf
+// carries a documented inline mirror of this list (analyzer is BELOW
+// ir-shared in the require graph — ir-shared imports analyzer — so it
+// cannot consume this export at load time). When a new callable
+// producer lands, update here + the analyzer mirror.
+function isCallableLikeBindingType(t: string | undefined): boolean {
+  return t === 'fn' || t === 'functionof' || t === 'kernelof'
+      || t === 'bijection' || t === 'fchain';
+}
+
 /**
  * Convert a lowered IR expression to a concrete JS value (number,
  * array of values, plain object). Used by the viewer's bayesupdate /
@@ -691,6 +706,7 @@ module.exports = {
   resolveConstant,
   isCallOp,
   isSelfRef,
+  isCallableLikeBindingType,
   resolveIRToValue,
   valueToPlain,
   collectSelfRefs,

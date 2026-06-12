@@ -42,17 +42,10 @@ const shared = require('./ir-shared.ts');
 
 const OUT_NAME = '__mc_z__';
 
-// Function/kernel-like bindings are left as refs by the inliner (mirrors
-// materialiser-shared.isFunctionLikeBinding — inlined here to keep this
-// transform free of any materialiser dependency).
-function _isFunctionLike(binding: any): boolean {
-  if (!binding) return false;
-  switch (binding.type) {
-    case 'fn': case 'functionof': case 'kernelof': case 'bijection': case 'fchain':
-      return true;
-    default: return false;
-  }
-}
+// Function/kernel-like bindings are left as refs by the inliner — the
+// catalogue is `ir-shared.isCallableLikeBindingType` (the one owner at
+// the dependency root; this module already imports ir-shared, so the
+// transform stays free of any materialiser dependency).
 
 // Resolve a measure-position node to its FULLY-EXPANDED measure call.
 // A `self`-ref is followed through a `draw(M)` to M, then deep-expanded
@@ -73,27 +66,41 @@ function _resolveMeasure(node: any, bindings: any, expand: any): any {
   return (b && b.ir) || node;
 }
 
-// Inline module value bindings into a self-contained expression: draws,
-// boundary formals, fixed-phase and function-like bindings stay as refs;
-// every other value binding is inlined (cf. mat-broadcast._inlineGenerative-
-// Body). Bounded recursion (spec §04 modules are DAGs).
-function _inline(ir: any, bindings: any, drawNames: Set<string>, boundary: Set<string>): any {
+// THE generative-closure inliner — inline module value bindings into a
+// self-contained expression: draws, boundary formals, fixed-phase and
+// function-like bindings stay as refs; every other value binding is
+// inlined. Bounded recursion (spec §04 modules are DAGs). Shared by
+// BOTH evaluation directions of a generative composite — the density
+// recipe builders in this module and the sampling-side
+// `mat-broadcast._executeGenerativeComposite` — so the two sides
+// cannot drift on which refs a generative body closes over (the
+// Phase-C functor-law unification's extract-the-shared-builder step;
+// the full sampling re-expression stays deferred — it would change
+// exact samples). `loc` provenance is preserved on cloned call nodes
+// (diagnostics point at the original source).
+function inlineGenerativeClosure(
+  ir: any, bindings: any, drawNames: Set<string>, boundary: Set<string>,
+): any {
   if (!ir || typeof ir !== 'object') return ir;
   if (ir.kind === 'ref' && ir.ns === 'self') {
     const nm = ir.name;
     if (drawNames.has(nm) || boundary.has(nm)) return ir;
-    if (!bindings.has(nm)) return ir;
+    if (!bindings || !bindings.has || !bindings.has(nm)) return ir;
     const b = bindings.get(nm);
-    if (!b || !b.ir || _isFunctionLike(b) || b.phase === 'fixed') return ir;
-    return _inline(b.ir, bindings, drawNames, boundary);
+    if (!b || !b.ir || shared.isCallableLikeBindingType(b.type)
+        || b.phase === 'fixed') {
+      return ir;
+    }
+    return inlineGenerativeClosure(b.ir, bindings, drawNames, boundary);
   }
   if (ir.kind !== 'call') return ir;
   const out: any = { kind: 'call' };
   if (ir.op) out.op = ir.op;
   if (ir.target) out.target = ir.target;
-  if (Array.isArray(ir.args)) out.args = ir.args.map((a: any) => _inline(a, bindings, drawNames, boundary));
-  if (ir.kwargs) { out.kwargs = {}; for (const k in ir.kwargs) out.kwargs[k] = _inline(ir.kwargs[k], bindings, drawNames, boundary); }
-  if (Array.isArray(ir.fields)) out.fields = ir.fields.map((f: any) => ({ ...f, value: _inline(f && f.value, bindings, drawNames, boundary) }));
+  if (Array.isArray(ir.args)) out.args = ir.args.map((a: any) => inlineGenerativeClosure(a, bindings, drawNames, boundary));
+  if (ir.kwargs) { out.kwargs = {}; for (const k in ir.kwargs) out.kwargs[k] = inlineGenerativeClosure(ir.kwargs[k], bindings, drawNames, boundary); }
+  if (Array.isArray(ir.fields)) out.fields = ir.fields.map((f: any) => ({ ...f, value: inlineGenerativeClosure(f && f.value, bindings, drawNames, boundary) }));
+  if (ir.loc) out.loc = ir.loc;
   return out;
 }
 
@@ -236,7 +243,7 @@ function _buildFromValueExpr(exprIR: any, bindings: any): any {
   _collectDrawAncestors(exprIR, bindings, draws, new Set<string>());
   if (draws.size < 2) return null;               // need ≥1 retained + ≥1 marginal
   // Inline the value closure down to its draw leaves (draws stay refs).
-  const recipe = _inline(exprIR, bindings, draws, new Set<string>());
+  const recipe = inlineGenerativeClosure(exprIR, bindings, draws, new Set<string>());
   const OUT = { kind: 'ref', ns: '%mc', name: OUT_NAME };
   let retainedRef: string | null = null;
   let retainedInterval: number[] | null = null;
@@ -300,7 +307,7 @@ function _buildFromGenerative(genBcastIR: any, gen: any, detMaps: Array<{ paramN
   // deterministic outer maps in (functor law, innermost-first).
   const drawNames = new Set<string>(internalDraws.map((d) => d.bindingName));
   const boundary = new Set<string>(params);
-  let recipe = _inline(gen.bodyValueExprIR, bindings, drawNames, boundary);
+  let recipe = inlineGenerativeClosure(gen.bodyValueExprIR, bindings, drawNames, boundary);
   for (let i = detMaps.length - 1; i >= 0; i--) {
     recipe = _substLocal(detMaps[i].body, detMaps[i].paramName, recipe);
   }
@@ -334,4 +341,4 @@ function _buildFromGenerative(genBcastIR: any, gen: any, detMaps: Array<{ paramN
   return { kind: 'call', op: 'iid', args: [node, nIR] };
 }
 
-module.exports = { buildMcMarginalForm, OUT_NAME };
+module.exports = { buildMcMarginalForm, inlineGenerativeClosure, OUT_NAME };

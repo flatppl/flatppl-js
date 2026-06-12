@@ -739,55 +739,20 @@ function _executeIidCompositeBatchFlatten(
 // baseEnv record (verified), so a/b evaluate per-atom from the supplied
 // record.
 
-// A module value binding is "inlinable" when it is a value binding with an
-// IR and is not a boundary formal, an internal draw, a fixed-phase binding,
-// or a callable. Fixed-phase bindings are left as refs (resolved via the
-// worker's session env / baseEnv); callables aren't values.
-function _isInlinableValueBinding(
-  name: string, bindings: any, drawNames: Set<string>, boundary: Set<string>,
-): boolean {
-  if (drawNames.has(name) || boundary.has(name)) return false;
-  if (!bindings || !bindings.has || !bindings.has(name)) return false;
-  const b = bindings.get(name);
-  if (!b || !b.ir) return false;
-  if (shared.isFunctionLikeBinding(b)) return false;
-  if (b.phase === 'fixed') return false;            // resolved via baseEnv
-  return true;
-}
-
-// Recursively inline the generative body's value-expr. See the strategy
-// note above. Bounded recursion (spec §04 modules are DAGs).
+// The recursive closure-inlining walk itself is the SHARED
+// `mc-recipe.inlineGenerativeClosure` — one inliner for both
+// evaluation directions of a generative composite (this sampling-side
+// executor and the density-side recipe builders), so the two sides
+// cannot drift on which refs a generative body closes over (the
+// inlinable-binding predicate: not a boundary formal, not an internal
+// draw, not fixed-phase — resolved via baseEnv — and not callable).
+// Lazy require: mc-recipe is a pure IR-transform leaf (bijection-
+// registry + kernel-broadcast-shape + ir-shared), no cycle back here.
 function _inlineGenerativeBody(
   ir: any, bindings: any, drawNames: Set<string>, boundary: Set<string>,
 ): any {
-  if (!ir || typeof ir !== 'object') return ir;
-  if (ir.kind === 'ref' && ir.ns === 'self') {
-    if (!_isInlinableValueBinding(ir.name, bindings, drawNames, boundary)) {
-      return ir;
-    }
-    const b = bindings.get(ir.name);
-    return _inlineGenerativeBody(b.ir, bindings, drawNames, boundary);
-  }
-  if (ir.kind !== 'call') return ir;
-  const out: any = { kind: 'call' };
-  if (ir.op) out.op = ir.op;
-  if (ir.target) out.target = ir.target;
-  if (Array.isArray(ir.args)) {
-    out.args = ir.args.map((a: any) =>
-      _inlineGenerativeBody(a, bindings, drawNames, boundary));
-  }
-  if (ir.kwargs) {
-    out.kwargs = {};
-    for (const k in ir.kwargs) {
-      out.kwargs[k] = _inlineGenerativeBody(ir.kwargs[k], bindings, drawNames, boundary);
-    }
-  }
-  if (Array.isArray(ir.fields)) {
-    out.fields = ir.fields.map((f: any) =>
-      ({ ...f, value: _inlineGenerativeBody(f && f.value, bindings, drawNames, boundary) }));
-  }
-  if (ir.loc) out.loc = ir.loc;
-  return out;
+  return require('./mc-recipe.ts')
+    .inlineGenerativeClosure(ir, bindings, drawNames, boundary);
 }
 
 // Replace every boundary-formal ref and internal-draw ref in `ir` with a

@@ -1366,7 +1366,9 @@ function computePhases(bindings: any) {
     // refs — so an applied kernel with FIXED args (`rand(state,
     // k_model(glob_pars))`) would mis-phase as parameterized, knocking the
     // draw off the fixed pre-eval path (spec §07: rand propagates phases
-    // normally). Type list mirrors derivations.isCallableLikeBindingType.
+    // normally). Type list mirrors ir-shared.isCallableLikeBindingType
+    // (the canonical catalogue; inlined here because ir-shared imports
+    // analyzer at module load — the one consumer below the root).
     if (b.type === 'fn' || b.type === 'functionof' || b.type === 'kernelof'
         || b.type === 'bijection' || b.type === 'fchain') {
       absorbedCache.set(name, 'fixed');

@@ -103,7 +103,7 @@ const {
  * }}
  */
 // ---------------------------------------------------------------------
-// Callable-like binding-type predicate (canonical).
+// Callable-like binding-type predicate.
 //
 // Every classifier site that needs to recognise "this binding holds a
 // function-like callable" consults this predicate instead of inlining
@@ -112,23 +112,15 @@ const {
 // fchain was missing from every callable-acceptance check, bijection
 // was missing from some, etc.
 //
-// **Included**: every analyzer-tagged callable producer that can hold
-// a function or kernel that's referenceable elsewhere (broadcast head,
-// pushfwd map, filter / reduce / scan head, etc.). Specifically:
-//   - 'fn'         — fn(...) hole-lifted anonymous function
-//   - 'functionof' — explicit functionof / lambda
-//   - 'kernelof'   — kernelof — reifies a stochastic sub-DAG as a kernel
-//   - 'bijection'  — bijection(f, finv, logvol) — annotated function
-//   - 'fchain'     — fchain(f1, f2, ...) — composition; surface-level
-//                    fchain bindings whose value is the composed function
-//
-// **Excluded**: any binding type whose value is a measure or a non-
-// callable object. The `isKernel` predicate elsewhere is intentionally
-// narrower (kernel-producing only) and stays separate.
-function isCallableLikeBindingType(t: string | undefined): boolean {
-  return t === 'fn' || t === 'functionof' || t === 'kernelof'
-      || t === 'bijection' || t === 'fchain';
-}
+// The catalogue itself now lives at the dependency ROOT
+// (`ir-shared.isCallableLikeBindingType` — included: fn / functionof /
+// kernelof / bijection / fchain; excluded: any binding type whose
+// value is a measure or a non-callable object) so the materialiser
+// layer and mc-recipe consume the same list without importing this
+// module. Re-exported here unchanged for the existing consumers. The
+// `isKernel` predicate elsewhere is intentionally narrower
+// (kernel-producing only) and stays separate.
+const { isCallableLikeBindingType } = require('./ir-shared.ts');
 
 // Smell D — propagate phase to lift-introduced anons.
 //

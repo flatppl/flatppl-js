@@ -70,6 +70,10 @@ function makeMainThreadPrng(key: [number, number]) {
 // to filter such refs out of their "materialise the parents" pre-pass;
 // the parents that ARE values still need materialising.
 //
+// The type catalogue is `ir-shared.isCallableLikeBindingType` (the
+// one owner at the dependency root, shared with derivations and
+// mc-recipe); this is its binding-level wrapper.
+//
 // Phase 2 will add `'kernel-chain'` (kernel-first jointchain/kchain)
 // to this set; at that point the by-tag enumeration here is
 // supplemented (not replaced) by the type-driven predicate
@@ -77,16 +81,7 @@ function makeMainThreadPrng(key: [number, number]) {
 // {'func', 'kernel'}` — same answer, two source-of-truth angles.
 function isFunctionLikeBinding(binding: any) {
   if (!binding) return false;
-  switch (binding.type) {
-    case 'fn':
-    case 'functionof':
-    case 'kernelof':
-    case 'bijection':
-    case 'fchain':
-      return true;
-    default:
-      return false;
-  }
+  return require('./ir-shared.ts').isCallableLikeBindingType(binding.type);
 }
 
 /**
