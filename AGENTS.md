@@ -35,12 +35,12 @@ flatppl-js/
 ├── packages/
 │   ├── engine/                          ← parser, analyzer, IR, orchestrator, sampler
 │   │   ├── ARCHITECTURE.md              ← READ THIS before non-trivial engine work
-│   │   └── *.js                         ← ~13 KLOC
+│   │   └── *.ts                         ← ~65 top-level modules, ~60 KLOC
 │   ├── viewer/                          ← browser-side DAG + plot rendering
-│   │   └── src/viewer.js                ← single-file IIFE, ~5.7 KLOC
+│   │   └── src/                         ← ~24 TS modules, ~9 KLOC
 │   ├── vscode-extension/                ← thin VS Code wrapper
-│   │   ├── extension.js                 ← extension host
-│   │   └── src/visualPanel.js           ← webview panel singleton
+│   │   ├── extension.ts                 ← extension host
+│   │   └── src/visualPanel.ts           ← webview panel singleton
 │   └── web/                             ← standalone gallery shell for static hosts
 │       ├── src/                         ← page entry, app, resolver, router,
 │       │                                  manifest loader, syntax highlighter
@@ -48,10 +48,13 @@ flatppl-js/
 └── package.json                         ← workspace root
 ```
 
-**Engine is the bulk of the work.** Viewer is one large IIFE (no internal modules
-yet); vscode-extension is a thin wrapper around the engine + viewer; web is a
-gallery shell built on top of viewer for non-VS-Code hosts (GitHub Pages, docs
-sites, web app deploys). The viewer and web hosts are independent surfaces —
+**Engine is the bulk of the work.** Sources are TypeScript throughout; `.js`
+siblings of the extension sources are git-ignored build artifacts. Viewer is
+~24 ES modules (`main.ts` is the orchestrating entry, ~1.6 KLOC) bundled to a
+single IIFE at build time; vscode-extension is a thin wrapper around the
+engine + viewer; web is a gallery shell built on top of viewer for non-VS-Code
+hosts (GitHub Pages, docs sites, web app deploys). The viewer and web hosts
+are independent surfaces —
 viewer's `embed-test.html` is for embedding only the DAG/plot panes inside a
 larger page; `packages/web` adds the file tree, source pane, hash routing, and
 manifest-driven model discovery on top.
@@ -60,10 +63,12 @@ manifest-driven model discovery on top.
 
 `tokenizer → parser → analyzer → pir.lowerToModule → typeinfer → orchestrator
 → worker (sampler / density / empirical / histogram / rng)`. The engine's
-`processSource(src)` runs the first six stages and returns
-`{ ast, bindings, loweredModule, symbols, diagnostics }`. The worker runs in a
+`processSource(src)` runs tokenize → parse → analyze (lowering and type
+inference run *inside* `analyze`) and returns
+`{ ast, bindings, loweredModule, symbols, diagnostics, variant, bundle }`;
+the orchestrator runs on demand, not in `processSource`. The worker runs in a
 separate thread (Web Worker in browser, `worker_threads` in Node) and is
-addressed via postMessage; `engine/index.js` deliberately does **not** re-export
+addressed via postMessage; `engine/index.ts` deliberately does **not** re-export
 `sampler`/`worker` because they pull in ~1 MB of stdlib distribution code.
 
 Full diagram, per-file responsibilities, IR shapes, and "where to look for X"
@@ -91,12 +96,14 @@ These are the things that catch out first-time contributors. Read each one.
   not `obs[0]`). Other engines (Julia, …) may store 1-indexed natively;
   the spec is 1-indexed regardless.
 
-- **Idiomatic JavaScript, prototype/closure-based.** The codebase is intentionally
-  not class-OO. Type representations are `{kind, ...}` plain objects with a
+- **Idiomatic JavaScript (TypeScript-typed), prototype/closure-based.** The
+  codebase is intentionally not class-OO. Type representations are
+  `{kind, ...}` plain objects with a
   discriminator. State lives in closures or `Map`s, not class instances. Two
-  classes exist (`FlatPPLPanel` for the VS Code panel singleton, one supporting
-  class in viewer.js); both are well-justified. Don't introduce more without a
-  reason.
+  classes exist (`FlatPPLPanel`, the VS Code panel singleton in
+  `vscode-extension/src/visualPanel.ts`; `FixedValues`, the demand-driven
+  fixed-value resolver in `engine/fixed-values.ts`); both are well-justified.
+  Don't introduce more without a reason.
 
 - **Generous code comments.** This codebase deliberately overrides the "minimal
   comments" default. Every non-trivial function has a JSDoc block citing the
@@ -104,11 +111,14 @@ These are the things that catch out first-time contributors. Read each one.
   not do. When you add code, write comments that explain *why*, not *what* —
   future AI agents (and humans) will thank you.
 
-- **Cross-file invariants exist that aren't enforced by tests.** Several catalogs
-  must agree across multiple files (built-in name lists, sampleable distribution
-  lists, evaluable op lists). Drifting them produces silent runtime failures.
-  See "Cross-file invariants" in `packages/engine/ARCHITECTURE.md` before
-  adding distributions, built-in functions, or measure-algebra ops.
+- **Cross-file invariants: several catalogs must agree across files** (built-in
+  name lists, sampleable distribution lists, evaluable op lists); drift produces
+  silent runtime failures. The cleanly-checkable ones ARE enforced by
+  `packages/engine/test/invariants.test.ts` — a failing test names the mirror
+  catalog to update. The `MEASURE_OP_*` catalogs are intentionally hand-watched
+  (no clean equivalence holds). See "Cross-file invariants" in
+  `packages/engine/ARCHITECTURE.md` before adding distributions, built-in
+  functions, or measure-algebra ops.
 
 - **Vectors of vectors are NOT matrices (spec §03).** A bare nested
   literal `[[1, 2], [3, 4]]` is a vector-of-vectors, semantically
@@ -134,24 +144,29 @@ These are the things that catch out first-time contributors. Read each one.
     - See `test/spec-vec-of-vec-not-matrix.test.ts` for the 29
       pinned invariants.
 
-- **Fixed-phase bindings flow through `fixedValues`, not refArrays.** The
-  orchestrator pre-evaluates fixed-phase bindings and exposes the values via
-  `buildDerivations(...).fixedValues`. The viewer pushes that map to the
-  worker as session env on every rebuild; per-atom evaluators layer session
-  env underneath refArrays. When you touch the chain / derivation / refArrays
-  machinery, remember that fixed-phase refs are env-resolved, not slice-
-  indexed — see ARCHITECTURE.md's "Fixed-phase pre-eval and fixedValues"
-  section.
+- **Fixed-phase bindings flow through `fixedValues`, not refArrays.**
+  `buildDerivations(...).fixedValues` is a demand-driven, memoised,
+  cycle-guarded `FixedValues` resolver (`engine/fixed-values.ts`,
+  Map-compatible) — a binding's value is computed on first demand, not
+  eagerly. Materialisation pushes the fixed refs each evaluation needs to
+  the worker session env via `pushFixedEnv` (per-materialisation `setEnv`
+  merge, `materialiser-shared.ts`); evaluators layer session env underneath
+  refArrays. When you touch the chain / derivation / refArrays machinery,
+  remember that fixed-phase refs are env-resolved, not slice-indexed — see
+  ARCHITECTURE.md's "Fixed-phase values: `fixedValues` (demand-driven,
+  `fixed-values.ts`)" section.
 
-- **Two webview deployments.** The viewer's bundled output lives in BOTH
-  `packages/viewer/vendor/` (standalone embed) AND
-  `packages/vscode-extension/lib/` (extension webview). Engine and viewer
-  changes that affect runtime behaviour require rebuilding **both** bundles
-  (`npm run build:vendor` from the workspace root, plus
-  `npm run --workspace=packages/vscode-extension build:vendor`). Don't assume
-  the user is testing one or the other — rebuild both.
+- **Three bundle deployments.** The engine+viewer bundles are deployed in
+  THREE places: `packages/viewer/vendor/` (standalone embed),
+  `packages/vscode-extension/lib/` (extension webview), and
+  `packages/web/dist/vendor/` (web gallery). Engine and viewer changes that
+  affect runtime behaviour require rebuilding **all** of them — `npm run build`
+  from the workspace root does that (workspace builds + `build:vendor`).
+  `npm run build:vendor` alone only refreshes the extension's `lib/` (it is
+  an alias for `npm run --workspace=packages/vscode-extension build:vendor`).
+  Don't assume the user is testing one host — rebuild all.
 
-- **Webview escape traps in `vscode-extension/src/visualPanel.js`.** The
+- **Webview escape traps in `vscode-extension/src/visualPanel.ts`.** The
   webview HTML lives inside the outer template literal returned by
   `_getHtml()`. The bulk of inline JS is now gone (viewer loaded as a
   separate script), but `${nonce}` / `${...Uri}` interpolations and any
@@ -168,10 +183,12 @@ These are the things that catch out first-time contributors. Read each one.
      rendered HTML. Write `\\n` in source for a literal `\n` in the
      rendered JS, or avoid multi-line strings entirely.
 
-  **Detection:** `node --check src/visualPanel.js` catches case (1)
-  (backticks close the host template literal, leaving syntactically
-  invalid JS host-side). It does NOT catch case (2) — that breakage
-  manifests only in the rendered HTML the webview iframe parses.
+  **Detection:** `npm run --workspace=packages/vscode-extension typecheck`
+  (tsc) catches case (1) on the `.ts` source, as does
+  `node --check src/visualPanel.js` on the transpiled artifact after a
+  `build:vendor` (`node --check` does not accept `.ts` directly). Neither
+  catches case (2) — that breakage manifests only in the rendered HTML the
+  webview iframe parses.
 
   Failure signature is webviews that go silently empty with
   `Uncaught SyntaxError: Invalid or unexpected token` in the iframe,
@@ -195,14 +212,20 @@ These are the things that catch out first-time contributors. Read each one.
 npm install                          # first time only
 
 npm test                             # run all workspace test suites
-                                     # (671 tests, ~3.5 s)
+                                     # (~190 test files, all under
+                                     #  packages/engine/test/)
 
-# rebuild bundles after engine or viewer changes:
-npm run build:vendor                 # both standalone-vendor and extension lib
-npm run watch:vendor                 # watch mode
+# rebuild ALL deployed bundles after engine or viewer changes:
+npm run build                        # viewer vendor/ + web dist/ + extension lib/
+
+# narrower rebuilds when only one host matters:
+npm run --workspace=packages/viewer build   # packages/viewer/vendor/
+npm run --workspace=packages/web build      # packages/web/dist/
+npm run build:vendor                        # extension lib/ ONLY
+npm run watch:vendor                        # extension lib/ watch mode
 
 # run a single test file:
-node --test packages/engine/test/orchestrator.test.js
+node --test packages/engine/test/orchestrator.test.ts
 ```
 
 CI on this repo is GitHub Actions; see `.github/workflows/`.
@@ -226,16 +249,20 @@ A point-in-time architectural review (May 2026) flagged a number of bugs and
 gaps. Most of the small consistency bugs have since been fixed; the remaining
 items below are larger structural work or open feature gaps.
 
-- **Type system covers ~50 ops.** Many spec ops fall through to `deferred()`
-  silently — most multivariate distributions, the array/table-generation
-  suite, linear algebra, several measure-algebra ops. If you add a new
-  distribution or built-in, also add its signature in `types.js`.
-- **`orchestrator.js` was split** into five facade modules (`ir-shared`,
-  `lift`, `derivations`, `signatures`, `profile-plan`); it is now ~460
-  lines (core + facades). See the "Module map" in `ARCHITECTURE.md` for
-  what lives where and the one-way dependency order. **`viewer/src/viewer.js`
-  is still oversized** (~5 683 lines) — be aware before opening it; it has
-  natural decomposition seams documented in `ARCHITECTURE.md`.
+- **Type signatures cover ~185 ops** (`types.ts` `SIGNATURE_FACTORIES`), plus
+  typeinfer special-case handlers — the array-construction shape rules
+  (`fill`/`zeros`/`ones`/`eye`/`cartpow`/`cartprod`/`stdsimplex`) have landed.
+  Still falling through to `deferred()` silently: the multivariate
+  distributions (`MvNormal`, `Wishart`, `Dirichlet`, `Multinomial`, …) and a
+  handful of measure-algebra / structural ops (`kernelof`, `disintegrate`,
+  `restrict`, `relabel`, …). If you add a new distribution or built-in, also
+  add its signature in `types.ts`.
+- **`orchestrator.ts` was split** into five facade modules (`ir-shared`,
+  `lift`, `derivations`, `signatures`, `profile-plan`); the core is now a
+  thin facade (~550 lines). See the "Module map" in `ARCHITECTURE.md` for
+  what lives where and the one-way dependency order. **The viewer
+  decomposition landed** — `viewer/src/` is ~24 modules; the largest
+  remaining file is `main.ts` (~1 600 lines), the next decomposition target.
 - **The planning document `flatppl-dev/TODO-flatppl-js.md`** (in the
   sibling `flatppl-dev` repo, resolved the same way as `flatppl-design`)
   tracks the remaining work toward complete spec coverage. `flatppl-dev`
