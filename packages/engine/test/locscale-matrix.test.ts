@@ -100,3 +100,26 @@ test('matrix locscale with named lower_cholesky scale routes the same way', () =
   assert.ok(bijName, 'a __bij_N synthetic bijection binding exists');
   assert.equal(ctx.bindings.get(bijName).bijection.registryName, 'affine');
 });
+
+test('matrix locscale over an MvNormal base gives a clean diagnostic (deferred)', () => {
+  const src =
+    `mu = [0.0, 0.0]\n`
+    + `cov = [[1.0, 0.0], [0.0, 1.0]]\n`
+    + `L = [[2.0, 0.0], [0.0, 1.5]]\n`
+    + `shift = [1.0, -1.0]\n`
+    + `X = locscale(MvNormal(mu = mu, cov = cov), shift, L)\n`;
+  // The deferred composition case must surface a clear diagnostic somewhere
+  // in the pipeline (analyzer diagnostics OR a buildDerivations throw with a
+  // locscale-tagged message), NOT a cryptic registry shape error.
+  let msg = '';
+  try {
+    const lifted2 = processSource(src);
+    const errs = lifted2.diagnostics.filter((d: any) => d.severity === 'error');
+    if (errs.length) msg = errs.map((e: any) => e.message).join(' | ');
+    else { orchestrator.buildDerivations(lifted2.bindings); }
+  } catch (e: any) { msg = e.message; }
+  assert.match(msg, /locscale/i,
+    `expected a locscale-tagged diagnostic, got: ${msg || '(none)'}`);
+  assert.match(msg, /pushfwd|iid|base/i,
+    `expected guidance to use iid base / pushfwd directly, got: ${msg}`);
+});

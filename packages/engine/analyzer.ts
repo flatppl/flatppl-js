@@ -2568,8 +2568,90 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
     }
     return false;
   };
+  // The registry affine-density path that lift routes a non-scalar locscale
+  // through requires the base to score as `iid(<scalar dist>, D)`. Detect an
+  // iid base (an `iid(...)` call, or a 1-level ref to such) so we can tell a
+  // routable locscale from a deferred one.
+  const baseIsIid = (e: any): boolean => {
+    if (!e) return false;
+    if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+        && e.callee.name === 'iid') return true;
+    if (e.type === 'Identifier') {
+      for (const st of body || []) {
+        if (st.type === 'AssignStatement' && st.names
+            && st.names.some((n: any) => n.name === e.name)) {
+          return baseIsIid(st.value);
+        }
+      }
+    }
+    return false;
+  };
   if (looksNonScalar(args[1]) || looksNonScalar(args[2])) {
-    return call;  // survive to lift's affine-registry lowering
+    // Only an iid base routes through lift's affine-registry lowering. For
+    // any other base — including MvNormal, itself a pushfwd∘pushfwd whose
+    // affine registry entries do not auto-compose — emit a clean diagnostic
+    // HERE (the pre-pass owns the diagnostic channel; lift has none) rather
+    // than letting an unhandled locscale IR node survive to materialisation
+    // and fail with a cryptic registry shape error. This keeps the iid-base
+    // detection and lift's gate in agreement: exactly the iid-base forms are
+    // left to survive; everything else multivariate is diagnosed.
+    if (!baseIsIid(args[0])) {
+      diagnostics.push({
+        severity: 'error',
+        message: `locscale() with a vector/matrix scale requires an iid(<dist>, D) `
+          + `base (it lowers to an affine-registry pushfwd); for other bases — `
+          + `including MvNormal — compose with pushfwd directly (spec §06)`,
+        loc: call.loc,
+      });
+      return call;
+    }
+    // Base IS iid → lift's affine-registry gate handles it. But lift's gate
+    // only fires for a square [D,D] scale + matching [D] shift; an
+    // unroutable shape would otherwise leave an unhandled locscale that
+    // silently drops the binding at materialisation. The pre-pass can
+    // syntactically validate the LITERAL forms here (it runs before type
+    // inference, so ref/op shapes defer to lift). For a literal scale we
+    // require a square [D,D] matrix and a literal shift (if literal) of
+    // length D — anything else is diagnosed now, keeping the invariant
+    // "no locscale survives unhandled to materialisation" for literal forms.
+    const resolveLit = (e: any): any => {
+      if (!e) return null;
+      if (e.type === 'ArrayLiteral') return e;
+      if (e.type === 'Identifier') {
+        for (const st of body || []) {
+          if (st.type === 'AssignStatement' && st.names
+              && st.names.some((n: any) => n.name === e.name)) {
+            return resolveLit(st.value);
+          }
+        }
+      }
+      return null;
+    };
+    const litRows = (e: any): any[] | null => {
+      const lit = resolveLit(e);
+      return lit ? lit.elements : null;
+    };
+    const scaleRows = litRows(args[2]);
+    if (scaleRows) {
+      const D = scaleRows.length;
+      const squareMatrix = D >= 1 && scaleRows.every((r: any) =>
+        r && r.type === 'ArrayLiteral' && r.elements.length === D);
+      const shiftRows = litRows(args[1]);
+      const shiftOk = shiftRows == null
+        || (shiftRows.length === D
+            && shiftRows.every((s: any) => !(s && s.type === 'ArrayLiteral')));
+      if (!squareMatrix || !shiftOk) {
+        diagnostics.push({
+          severity: 'error',
+          message: `locscale() with a matrix scale over an iid base requires a `
+            + `square [D, D] scale and a length-D vector shift (the affine-registry `
+            + `pushfwd contract); for other shapes use pushfwd directly (spec §06)`,
+          loc: call.loc,
+        });
+        return call;
+      }
+    }
+    return call;  // iid base, routable shape: survive to lift's lowering
   }
   // The base measure may itself contain a nested locscale.
   const mExpr = _rewriteLocscale(args[0], synth, diagnostics, body);
