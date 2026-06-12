@@ -492,7 +492,7 @@ function inlineCallableRefs(ir: any, bindings: any): any {
 //
 // This walk inlines every evaluable VALUE binding (recursively) so the
 // dist-params end up expressed in the boundary inputs, which it keeps as
-// `self` refs (NOT %local) so the caller's boundRefArrays feeding + the
+// `self` refs (NOT %local) so the caller's fed-column overlay + the
 // per-atom accessor — both keyed by bare self-ref name — still resolve them.
 // Measures / draws carry a derivation and are left as refs for the density
 // walker; boundary inputs are stopped before inlining. Cycle-guarded.
@@ -532,20 +532,21 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
   return walk(ir);
 }
 
-function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: any) {
+function prepareDensityRefs(ir: any, ctx: any, label: string) {
   const refs = orchestrator.collectSelfRefs(ir);
   // Reified-kernel boundary inputs are FED by the caller (the prior's atoms
   // in bayesupdate, the integration variable in kchain), per the spec
-  // lowering — never re-materialised via getMeasure (audit §3 / H1). When
-  // `boundRefArrays` supplies a name, use that column and skip getMeasure.
-  const bound = boundRefArrays && typeof boundRefArrays === 'object' ? boundRefArrays : null;
-  // CLM boundary feed (measure-lowering unification Phase 4): matClm threads the
-  // fed boundary columns through `ctx._extraRefArrays`, the overlay
-  // `collectRefArrays` already honours (above). Honour it here too so the
-  // density / evaluate ref-prep reached from a CLM-fed child ctx (the Smell A
-  // materialiser merge) conditions on the FED prior, not a re-materialised
-  // like-named binding (audit §3). Treated exactly like `bound`: skip
-  // getMeasure for a supplied ref, then overlay the columns at the end.
+  // lowering — never re-materialised via getMeasure (audit §3 / H1). The ONE
+  // feeding channel is the CLM contract (clm.feedInputs → ctx._extraRefArrays):
+  // matClm threads the fed boundary columns through `ctx._extraRefArrays`, the
+  // overlay `collectRefArrays` already honours (above). Honour it here too so
+  // the density / evaluate ref-prep reached from a CLM-fed child ctx (the
+  // Smell A materialiser merge) conditions on the FED prior, not a
+  // re-materialised like-named binding (audit §3): skip getMeasure for a
+  // supplied ref, then overlay the columns at the end. (A per-call
+  // `boundRefArrays` parameter was the pre-CLM legacy boundary channel; it
+  // ended with zero callers once every feeder routed through feedInputs and
+  // was deleted in the Phase-6 cleanup.)
   const extra = ctx && ctx._extraRefArrays && typeof ctx._extraRefArrays === 'object'
     ? ctx._extraRefArrays : null;
   // Bijection bindings reachable from `ir` carry their registry
@@ -596,9 +597,9 @@ function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: a
   const perAtomNames: string[] = [];
   const fixedEnv: Record<string, any> = {};
   refs.forEach((n: any) => {
-    // Boundary inputs the caller fed take precedence over any like-named
-    // module binding — do NOT getMeasure them (that is the conflation bug).
-    if (bound && Object.prototype.hasOwnProperty.call(bound, n)) return;
+    // Boundary inputs the caller fed (the CLM overlay) take precedence over
+    // any like-named module binding — do NOT getMeasure them (that is the
+    // conflation bug).
     if (extra && extra[n] != null) return;
     // Phase-4 safety net (audit §3 #3): a DECLARED boundary input the
     // feed did not cover must fail loud — getMeasure would silently
@@ -625,7 +626,6 @@ function prepareDensityRefs(ir: any, ctx: any, label: string, boundRefArrays?: a
       refArrays[perAtomNames[i]] =
         measureToRefValue(measures[i], perAtomNames[i], label);
     }
-    if (bound) for (const k in bound) refArrays[k] = bound[k];
     if (extra) for (const k in extra) { if (extra[k] != null) refArrays[k] = extra[k]; }
     return { refArrays, fixedEnv, perAtomNames };
   });

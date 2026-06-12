@@ -713,8 +713,9 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
 // boundary name (and its localAlias) to the materialised `from` measure (or
 // its record field) in a child ctx, then walk `body` through the UNCHANGED
 // materialiser — the body's draws resolve their boundary refs via the child
-// getMeasure to the fed measure, exactly as matJointchain.bindLeaf feeds the
-// prior, but driven by the shared clm.inputs descriptor density also reads.
+// getMeasure to the fed measure (the prior-feeding role the retired
+// matJointchain.bindLeaf used to play), driven by the shared clm.inputs
+// descriptor density also reads.
 // `shared` / `fixed` inputs need no override (the parent ctx already resolves
 // them via getMeasure / fixedValues). Empty boundary set ⇒ today's path.
 function matClm(ir: any, ctx: any): Promise<any> {
@@ -1240,8 +1241,8 @@ clmRerouteStage.label = 'clmReroute';
 
 // Default pipeline ships with the pre-dispatch stages above, in
 // callable-guard → fixed-phase → clm-reroute → kindDispatch order. The
-// clm-reroute stage is inert unless `clm.isClmEnabled()` (production default
-// OFF), so installing it unconditionally changes nothing until the flag flips.
+// clm-reroute stage is unconditional — CLM is the sole jointchain/kchain
+// path (the FLATPPL_CLM toggle and the matJointchain fallback are retired).
 // Tests that need a clean slate call `_resetMaterialiserPipeline()` first, then
 // re-register if they want the defaults back via
 // `_installDefaultMaterialiserStages()`.
@@ -1661,9 +1662,8 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   // lowering unification Phase 4, sample half). matClm feeds the boundary
   // inputs via clm.feedInputs, then walks the SAME body the density side
   // scores — so sampling and density consume one lowering. The live sample
-  // path reaches this via clmRerouteStage (CLM on by default); the legacy
-  // matJointchain stays the fallback for shapes lowerMeasure can't lower yet
-  // (nested chains) + the FLATPPL_CLM=0 dual-mode oracle.
+  // path reaches this via clmRerouteStage — the SOLE jointchain/kchain path
+  // (matJointchain and the FLATPPL_CLM dual-mode toggle are retired).
   if (ir.op === 'clm') {
     return matClm(ir, ctx);
   }
