@@ -2415,6 +2415,148 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
   ast.body = newBody;
 }
 
+// `locscale(m, shift, scale)` expansion (spec §06 "locscale").
+//
+// `locscale(m, shift, scale)` is shorthand for the affine pushforward
+// `pushfwd(x -> scale * x + shift, m)`. We expand it before analysis to
+// a synthetic `bijection(fwd, inv, logvolume)` driving a `pushfwd`, so
+// the existing pushforward density (density.walkPushfwd, AST bijection
+// path) and sampler (matPushfwd) handle it with no new derivation kind —
+// exactly as `restrict` reduces to disintegrate/bayesupdate. The
+// synthesised `__locscale_*` names are elidable per spec §04
+// "Auto-generated names".
+//
+//   __locscale_fwd_N = scale * _x + shift        # functionof, arg x
+//   __locscale_inv_N = (_y - shift) / scale       # functionof, arg y
+//   __locscale_lv_N  = log(abs(scale))            # forward log|J|, 0-arg
+//   __locscale_bij_N = bijection(fwd, inv, lv)
+//   <original RHS with locscale(m, .., ..) → pushfwd(__locscale_bij_N, m)>
+//
+// Scope: the scalar / vector-with-scalar-scale location-scale family the
+// AST bijection density path supports. Matrix-valued `scale` (the
+// `MvNormal(mu, Sigma) = locscale(MvNormal(0, I), mu, L)` case) is NOT
+// expanded here — per spec, "for general matrix-vector affine maps use
+// pushfwd directly"; such calls fall through unchanged.
+let _locscaleCounter = 0;
+
+function expandLocscaleStatements(ast: any, diagnostics: any[]) {
+  if (!ast || !ast.body) return;
+  const newBody: any[] = [];
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement' || !stmt.value) {
+      newBody.push(stmt);
+      continue;
+    }
+    const synth: any[] = [];
+    const rewritten = _rewriteLocscale(stmt.value, synth, diagnostics);
+    for (const s of synth) newBody.push(s);
+    newBody.push(rewritten === stmt.value
+      ? stmt
+      : AST.AssignStatement(stmt.names, rewritten, stmt.loc));
+  }
+  ast.body = newBody;
+}
+
+// Recursively rewrite every `locscale(...)` call node within `node`,
+// appending the synthetic bijection/functionof binding statements to
+// `synth` (in dependency order). Returns the rewritten node (=== node
+// when nothing changed, so the caller can preserve the original stmt).
+function _rewriteLocscale(node: any, synth: any[], diagnostics: any[]): any {
+  if (node == null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) {
+    let changed = false;
+    const out = node.map((x: any) => {
+      const r = _rewriteLocscale(x, synth, diagnostics);
+      if (r !== x) changed = true;
+      return r;
+    });
+    return changed ? out : node;
+  }
+  if (node.type === 'CallExpr' && node.callee
+      && node.callee.type === 'Identifier'
+      && node.callee.name === 'locscale') {
+    return _buildLocscalePushfwd(node, synth, diagnostics);
+  }
+  // Generic structural recursion: rewrite child expr nodes in place so a
+  // nested `locscale` (e.g. inside `draw(...)`, `iid(...)`) is caught.
+  let changed = false;
+  const out: any = Array.isArray(node) ? [] : { ...node };
+  for (const k of Object.keys(node)) {
+    if (k === 'loc' || k === 'type') continue;
+    const r = _rewriteLocscale(node[k], synth, diagnostics);
+    if (r !== node[k]) { changed = true; out[k] = r; }
+  }
+  return changed ? out : node;
+}
+
+function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any {
+  // Reuse the call's real line/col (marked synthetic) so source-slicing
+  // for symbols stays well-formed — mirrors restrict-expand's sloc.
+  const sloc = { ...call.loc, synthetic: true, source: 'locscale-expand' };
+  const args = call.args || [];
+  if (args.length !== 3 || args.some((a: any) => a && a.type === 'KeywordArg')) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale() takes exactly three positional arguments `
+        + `(measure, shift, scale); got ${args.length}`,
+      loc: call.loc,
+    });
+    return call;
+  }
+  // The base measure may itself contain a nested locscale.
+  const mExpr = _rewriteLocscale(args[0], synth, diagnostics);
+  const shiftExpr = args[1];
+  const scaleExpr = args[2];
+  const clone = (n: any) => structuredClone(n);
+
+  const n = _locscaleCounter++;
+  const fwdName = `__locscale_fwd_${n}`;
+  const invName = `__locscale_inv_${n}`;
+  const lvName  = `__locscale_lv_${n}`;
+  const bijName = `__locscale_bij_${n}`;
+
+  // fwd: functionof(scale * _x + shift, x = _x) — mirrors the parser's
+  // single-arg lambda desugaring (functionof body + Placeholder kwarg).
+  const fwdBody = AST.BinaryExpr('+',
+    AST.BinaryExpr('*', clone(scaleExpr), AST.Placeholder('x', sloc), sloc),
+    clone(shiftExpr), sloc);
+  const fwd = AST.CallExpr(AST.Identifier('functionof', sloc),
+    [fwdBody, AST.KeywordArg('x', AST.Placeholder('x', sloc), sloc)], sloc);
+
+  // inv: functionof((_y - shift) / scale, y = _y)
+  const invBody = AST.BinaryExpr('/',
+    AST.BinaryExpr('-', AST.Placeholder('y', sloc), clone(shiftExpr), sloc),
+    clone(scaleExpr), sloc);
+  const inv = AST.CallExpr(AST.Identifier('functionof', sloc),
+    [invBody, AST.KeywordArg('y', AST.Placeholder('y', sloc), sloc)], sloc);
+
+  // logvolume: the forward Jacobian of x -> scale*x + shift is constant
+  // |scale|, so log|J| = log(abs(scale)). When `scale` is a numeric
+  // literal we fold it to a scalar NumberLiteral (the cheapest density
+  // path); otherwise a 0-arg `functionof(log(abs(scale)))` constant.
+  let lvArg: any;
+  if (scaleExpr.type === 'NumberLiteral') {
+    const v = Math.log(Math.abs(+scaleExpr.value));
+    lvArg = AST.NumberLiteral(v, String(v), sloc);
+  } else {
+    const lvBody = AST.CallExpr(AST.Identifier('log', sloc),
+      [AST.CallExpr(AST.Identifier('abs', sloc), [clone(scaleExpr)], sloc)], sloc);
+    const lv = AST.CallExpr(AST.Identifier('functionof', sloc), [lvBody], sloc);
+    synth.push(AST.AssignStatement([AST.Identifier(lvName, sloc)], lv, sloc));
+    lvArg = AST.Identifier(lvName, sloc);
+  }
+
+  const bij = AST.CallExpr(AST.Identifier('bijection', sloc),
+    [AST.Identifier(fwdName, sloc), AST.Identifier(invName, sloc), lvArg], sloc);
+
+  synth.push(AST.AssignStatement([AST.Identifier(fwdName, sloc)], fwd, sloc));
+  synth.push(AST.AssignStatement([AST.Identifier(invName, sloc)], inv, sloc));
+  synth.push(AST.AssignStatement([AST.Identifier(bijName, sloc)], bij, sloc));
+
+  return AST.CallExpr(AST.Identifier('pushfwd', sloc),
+    [AST.Identifier(bijName, sloc), mExpr], sloc);
+}
+
 /**
  * Analyze a parsed AST.
  * Returns { bindings, diagnostics, symbols }.
@@ -2435,6 +2577,12 @@ function analyze(ast: any, source: string) {
   // already classified and materialised, so restrict needs no
   // derivation kind of its own.
   expandRestrictStatements(ast, diagnostics);
+
+  // Pre-pass: expand `locscale(m, shift, scale)` into a synthetic affine
+  // `bijection` + `pushfwd` per spec §06 "locscale". Like restrict, the
+  // ops it introduces (bijection, functionof, pushfwd) are already
+  // first-class, so locscale needs no derivation kind of its own.
+  expandLocscaleStatements(ast, diagnostics);
 
   // First pass: collect all defined names
   for (const stmt of ast.body) {
