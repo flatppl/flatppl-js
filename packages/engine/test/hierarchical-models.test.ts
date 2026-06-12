@@ -6,7 +6,7 @@
 //
 // Documents the CURRENT behavior of two canonical SOTA hierarchical-
 // model patterns (composite kernel bodies + outer-axis propagation —
-// engine-concepts §20.10.9 / TODO-flatppl-js fusion thread (b)
+// engine-concepts §20.10 / TODO-flatppl-js fusion thread (b)
 // remaining sub-items). Each test fixes the expected end-state once
 // Phase F/G land, and the present-day behavior so regressions in
 // either direction are caught.

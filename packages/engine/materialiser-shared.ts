@@ -64,7 +64,7 @@ function makeMainThreadPrng(key: [number, number]) {
 }
 
 // Callable-layer bindings (fn / functionof / kernelof / bijection /
-// fchain — engine-concepts §19.3) aren't materialisable as values —
+// fchain — engine-concepts §19) aren't materialisable as values —
 // they're consulted by name at density / sample dispatch time.
 // matLogdensityof / matBayesupdate / classifyProfileSelfRefs use this
 // to filter such refs out of their "materialise the parents" pre-pass;
@@ -85,7 +85,7 @@ function isFunctionLikeBinding(binding: any) {
 }
 
 /**
- * Type-driven callable-layer predicate (engine-concepts §19.2). Reads
+ * Type-driven callable-layer predicate (engine-concepts §19). Reads
  * `inferredType.kind ∈ {'function', 'kernel'}` — function-layer and
  * kernel-layer bindings sit in the "callable layer" (consulted by
  * name at dispatch time, not materialised as a value or measure).
@@ -645,7 +645,7 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
  * The viewer's profile-plot path (`render-profile.ts`) needs the same
  * filtering as `prepareDensityRefs` — drop function-like bindings, drop
  * built-in distribution names and other unbound refs, drop fixed-phase
- * refs — but NOT the async per-atom measure-fetch. (Demand-driven, §17.4:
+ * refs — but NOT the async per-atom measure-fetch. (Demand-driven, §17.1:
  * fixed-phase refs are no longer pre-loaded by a bulk setEnv push;
  * render-profile now pushes THIS profile body's own fixed refs to the
  * worker session env on demand before the profileN call. The filter

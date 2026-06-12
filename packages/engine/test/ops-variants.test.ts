@@ -4,7 +4,7 @@
 // ops-variants.test.ts — shape-pattern variant dispatch conformance
 // =====================================================================
 //
-// Pins the type-directed op dispatch registry (engine-concepts §18.11
+// Pins the type-directed op dispatch registry (engine-concepts §18.2
 // / P1 keystone). Three property layers:
 //
 //   1. PATTERN MATCHER — `_matchArgPattern` accepts / rejects args
@@ -336,7 +336,7 @@ test('registry: all broadcasted primitives have wrappingOp=broadcast variants', 
 });
 
 // =====================================================================
-// 4. `mul` direct-wrapping variants (engine-concepts §18.11)
+// 4. `mul` direct-wrapping variants (engine-concepts §18.2)
 // =====================================================================
 //
 // Pins that the rank-based shape switch previously in valueOps.mul

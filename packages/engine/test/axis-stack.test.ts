@@ -4,8 +4,8 @@
 // axis-stack.test.ts — P3a IR-axis-context annotation
 // =====================================================================
 //
-// Pins `propagateAxisStack` (dissolver.ts, engine-concepts §18.11 /
-// §20.10.5 item 4): the static outer-axis metadata attached to
+// Pins `propagateAxisStack` (dissolver.ts, engine-concepts §18.2 /
+// §20.10): the static outer-axis metadata attached to
 // measure-op IR nodes after dissolution settles. The annotation is
 // pure IR metadata; no runtime semantics depend on it yet, but the
 // schema and the propagation are infrastructure for fusion thread (b)

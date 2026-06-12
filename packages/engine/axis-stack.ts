@@ -4,8 +4,8 @@
 // axis-stack.ts — consumer-side API for the axisStack IR annotation
 // =====================================================================
 //
-// **Background.** `dissolver.propagateAxisStack` (engine-concepts §18.11
-// / §20.10.5 item 4) annotates measure-op IR nodes with `axisStack`
+// **Background.** `dissolver.propagateAxisStack` (engine-concepts §18.2
+// / §20.10) annotates measure-op IR nodes with `axisStack`
 // metadata recording the outer iteration axes their variate carries
 // from enclosing axis-introducing constructs (iid / kernel-broadcast /
 // aggregate / value broadcast). The annotation is PURE METADATA — it

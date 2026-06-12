@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// Demand-driven fixed-value boundary (engine-concepts §17.4).
+// Demand-driven fixed-value boundary (engine-concepts §17.1).
 // =====================================================================
 //
 // fixed-eval has TWO failure modes, not one:

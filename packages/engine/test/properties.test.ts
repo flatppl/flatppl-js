@@ -117,7 +117,7 @@ test('property: every binding has a valid phase tag', () => {
 // Property 3: bodyDeps ⊆ deps
 // ---------------------------------------------------------------------
 //
-// Engine-concepts §8.2: bodyDeps is the body-internal subset of a
+// Engine-concepts §8: bodyDeps is the body-internal subset of a
 // binding's refs (paramSourceDeps is the complement for reification
 // bindings). Their union is `deps` (preserved for back-compat).
 // Invariant: bodyDeps ⊆ deps, paramSourceDeps ⊆ deps, and

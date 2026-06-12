@@ -3,7 +3,7 @@
 // small-matrix sized)
 // =====================================================================
 //
-// Extracted from sampler.ts as part of the §17.5 sampler split
+// Extracted from sampler.ts as part of the sampler split
 // (engine-concepts §11). Pure leaf module — operates on plain
 // Float64Array / nested-array data; no engine-internal deps.
 //

@@ -17,11 +17,11 @@
 //     Parses a `.flatpir` text into a LoweredModule. Designed to
 //     round-trip toSexpr output and to consume hand-written .flatpir.
 //
-// Not yet: cross-module loading, %meta annotations (we print the call
-// shape but no meta slot today — type/phase are computed by passes
-// that consume the in-memory IR, not the S-expr form). Adding meta
-// later is a straightforward extension; the parser already accepts it
-// (skips %meta forms it doesn't recognise).
+// Not yet: cross-module loading; %meta READER reconstruction —
+// emission is opt-in via `toSexpr(mod, { meta: true })` (see
+// `_metaToSexpr` below), while the reader parses-and-skips %meta
+// forms rather than converting them back into engine `meta.type`
+// objects (consumers re-run inference today).
 //
 // Spec mapping (high level):
 //   IR { kind: 'lit', value: x }      → bare literal (number / string /
@@ -291,8 +291,10 @@ function _callToSexpr(e: any, ind: string, mopts?: any): string {
 // translation at the serialization boundary.
 //
 // JS never emits a FILLED %autoinputs list — that is inference
-// metadata (strippable like %meta), and the engine does not serialize
-// inference results yet (rides the %meta-emission item).
+// metadata (strippable like %meta), and the engine's auto-trace
+// (parametric-leaf discovery for a boundary-less reification) is not
+// implemented; `inferReification`'s inputs come from authored params
+// only (TODO §11).
 function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
   const params: string[] = e.params || [];
   const paramKwargs: string[] = e.paramKwargs || [];

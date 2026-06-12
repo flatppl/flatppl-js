@@ -495,7 +495,7 @@ function evaluateExpr(ir: IRNode, env: any): any {
 // Batched IR evaluation — the foundation for per-atom paths across the
 // engine (worker.evaluateN, density.applyAtomScalar, future profileN).
 // =====================================================================
-// Extracted to sampler-eval-batched.ts (engine-concepts §17.5 split).
+// Extracted to sampler-eval-batched.ts (sampler split; module map in ARCHITECTURE.md).
 // The module exposes the ARITH_OPS_N table + dispatcher functions;
 // sampler.ts calls `initARITHOPSN(ARITH_OPS)` below (after ARITH_OPS is
 // fully defined) to populate the table.
@@ -520,7 +520,7 @@ function resolveConst(name: any) {
 // =====================================================================
 // Complex arithmetic primitives (spec §03 / §07)
 // =====================================================================
-// Extracted to sampler-complex.ts (engine-concepts §17.5 split).
+// Extracted to sampler-complex.ts (sampler split; module map in ARCHITECTURE.md).
 
 const _complex = require('./sampler-complex.ts');
 const {
@@ -725,7 +725,7 @@ const ARITH_OPS = {
   // spec §03 establishes (matrices are made explicitly via rowstack /
   // colstack).
   // Migrated to ops-declarations.ts as kind='variadic' (engine-
-  // concepts §18.7 Phase 5b).
+  // concepts §18 Phase 5b).
   vector: (...xs: any[]) => opsModule.dispatch('vector', xs),
   // cat(...) — structural concatenation per spec §07. Three shape
   // classes; mixing is a runtime error (the type checker rejects
@@ -831,7 +831,7 @@ const ARITH_OPS = {
   // Matrices in legacy form are nested JS arrays (row-major):
   // M[i][j] is row i, col j. Vectors are flat JS arrays.
   // Migrated to ops-declarations.ts as kind='rank-polymorphic'
-  // (engine-concepts §18.7 Phase 5a). The dispatcher hands the input
+  // (engine-concepts §18 Phase 5a). The dispatcher hands the input
   // to `logical` as-is — atom-batched callers wrap with explicit
   // `broadcast(fn(transpose(_)), …)`.
   transpose: (M: any) => opsModule.dispatch('transpose', [M]),
@@ -853,7 +853,7 @@ const ARITH_OPS = {
   // square metrics; returns the input unchanged on success.
   _ms_check_symmetric: (A: any): any => opsModule.dispatch('_ms_check_symmetric', [A]),
   // Migrated to ops-declarations.ts as kind='rank-polymorphic'
-  // (engine-concepts §18.7 Phase 5a): A is square matrix, b is
+  // (engine-concepts §18 Phase 5a): A is square matrix, b is
   // vector OR matrix. The dispatcher passes both through to logical
   // as-is.
   linsolve: (A: any, b: any): any => opsModule.dispatch('linsolve', [A, b]),
@@ -1457,7 +1457,7 @@ const ARITH_OPS = {
     return out;
   },
   // Migrated to ops-declarations.ts as kind='variadic' (engine-
-  // concepts §18.7 Phase 5b).
+  // concepts §18 Phase 5b).
   cat: (...xs: any[]) => opsModule.dispatch('cat', xs),
   // Reductions over an array. Spec §07:
   //   sum / mean / prod  — real or complex arrays (any rank)
@@ -1840,7 +1840,7 @@ _evalBatched.initARITHOPSN(ARITH_OPS);
 // =====================================================================
 // Linear-algebra helpers (textbook algorithms; small-matrix sized)
 // =====================================================================
-// Extracted to sampler-linalg.ts (engine-concepts §17.5 split).
+// Extracted to sampler-linalg.ts (sampler split; module map in ARCHITECTURE.md).
 
 const _linalg = require('./sampler-linalg.ts');
 const _broadcastShape = require('./broadcast-shape.ts');
@@ -1874,7 +1874,7 @@ function reduce(step: any, init: any) {
 // =====================================================================
 // aggregate(f_reduction, output_axes, expr) — spec §04 §sec:aggregate
 // =====================================================================
-// Extracted to sampler-aggregate.ts (engine-concepts §17.5 split).
+// Extracted to sampler-aggregate.ts (sampler split; module map in ARCHITECTURE.md).
 
 const _aggregate = require('./sampler-aggregate.ts');
 const { _evalAggregate } = _aggregate;
@@ -2540,7 +2540,7 @@ function evaluateCall(ir: any, env: any): any {
     }
     return out;
   }
-  // Higher-order value-domain ops (engine-concepts §18.8 Phase 5c):
+  // Higher-order value-domain ops (engine-concepts §18.1 Phase 5c):
   // broadcast / reduce / scan / filter migrated to ops-declarations.ts
   // as kind='higher-order'. Their `logical(ir, ctx)` does its own
   // callable resolution and iteration using ctx.evaluateExpr +
@@ -2696,7 +2696,7 @@ function evaluateCall(ir: any, env: any): any {
     return evaluateRand(ir, env);
   }
   // rand_succ(state) — the value-domain successor rngstate for a COMPOSITE
-  // `rand` (engine-concepts §11/§17.4). Synthesised by the lift rand_succ
+  // `rand` (engine-concepts §11). Synthesised by the lift rand_succ
   // rewrite for the state half `tuple_get(rand(state, iid(<composite>,n)), 1)`;
   // never surface syntax. The composite draw (matRandSample) takes split
   // lane 0 of the parent key; the successor is split lane 1 — so this
@@ -2933,7 +2933,7 @@ function _resolveKernelName(ir: any, _env: any): string {
 // recurse here. Scoring lives in density.ts (the single density impl); this
 // is sample-side only. Folded in from the former traceeval.ts so the
 // sampler↔traceeval require cycle disappears and there is one sampling
-// model in one module (engine-concepts §11 / §17.4 stage 4).
+// model in one module (engine-concepts §11).
 //
 // Public entry: walk(state, ir, env, opts) → { value, state }
 //   opts.resolveMeasureRef - `(name) → measureIR` for measure self-refs.
@@ -3024,7 +3024,7 @@ function walkLeaf(state: any, ir: IRNode, env: any, ctx: any) {
   // randFn.factory — ziggurat for Normal/LogNormal) onto the one batched
   // endpoint, so `rand(state, <leaf>)` and `rand(state, iid(<leaf>, 1))[0]`
   // are now bit-for-bit identical with no second leaf realisation in the
-  // value-position rand / builtin_sample path (engine-concepts §11 / §17.4
+  // value-position rand / builtin_sample path (engine-concepts §11
   // stage 4). The worker's per-binding materialisation samplers (rand /
   // makeSampler / makeParametricSampler) are a separate path; folding them
   // onto sampleLeafN too is a follow-up (TODO RNG).

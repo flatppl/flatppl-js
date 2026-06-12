@@ -38,10 +38,11 @@ const _REAL = { kind: 'scalar', prim: 'real' };
 // =====================================================================
 //
 // Logical shape: vec3 × vec3 → vec3 (rank 1 inputs, rank 1 output).
-// The atom-batched form (shape=[N, 3]) is handled by the dispatcher's
-// per-atom fallback — no `batched` fast-path yet (Phase 3 follow-up).
-// Logical impl mirrors `ARITH_OPS.cross` exactly; the conformance
-// suite pins equivalence.
+// The atom-batched form (shape=[N, 3]) takes the real-only
+// `_crossBatched` tight loop below; complex / non-atom-batched
+// shapes fall back to the inline per-atom loop in
+// `_crossBatchedOrFallback`. Logical impl mirrors `ARITH_OPS.cross`
+// exactly; the conformance suite pins equivalence.
 
 function _crossLogical(a: any, b: any): any {
   const aIsVal = valueLib.isValue(a);
@@ -938,7 +939,7 @@ ops.register({
 });
 
 // =====================================================================
-// Rank-polymorphic ops (Phase 5a — engine-concepts §18.7)
+// Rank-polymorphic ops (Phase 5a — engine-concepts §18)
 // =====================================================================
 //
 // transpose / adjoint accept vector OR matrix; linsolve(A, b) takes b
@@ -1069,7 +1070,7 @@ ops.registerVariant('linsolve', {
 });
 
 // =====================================================================
-// Variadic ops (Phase 5b — engine-concepts §18.7)
+// Variadic ops (Phase 5b — engine-concepts §18)
 // =====================================================================
 //
 // vector / cat take a variable number of positional args. The
@@ -1228,7 +1229,7 @@ ops.register({
 });
 
 // =====================================================================
-// Higher-order ops (Phase 5c — engine-concepts §18.8)
+// Higher-order ops (Phase 5c — engine-concepts §18.1)
 // =====================================================================
 //
 // reduce / scan / filter take a callable + data inputs. Their
@@ -1364,7 +1365,7 @@ ops.register({
 
 // engine-concepts §20.1 — `broadcasted(<scalar_op>)` engine primitives.
 // Each op registers a variant with `wrappingOp: 'broadcast'` on the
-// ops.ts shape-pattern registry (engine-concepts §18.11). The variant
+// ops.ts shape-pattern registry (engine-concepts §18.2). The variant
 // matches when the dispatcher is called with `opts.wrappingOp ===
 // 'broadcast'`; argPatterns are empty constraints (the impls accept
 // any shape — value-ops' elementwise impls handle same-shape,
@@ -1384,8 +1385,8 @@ ops.register({
 // ops.ts), but the registration runs at module load — keeping the
 // table as a one-shot cache avoids re-resolving value-ops on every
 // dispatch. The vo binding initialises on first call to
-// _ensureBroadcastedRegistered() at module-load time of this file
-// (right after the table definition).
+// _ensureBroadcastedRegistered() (the eager call at the bottom of
+// this module, alongside the mul-direct and atom-batched ensures).
 let _BCAST_VARIANTS_REGISTERED = false;
 function _ensureBroadcastedRegistered(): void {
   if (_BCAST_VARIANTS_REGISTERED) return;
@@ -1423,7 +1424,7 @@ function _ensureBroadcastedRegistered(): void {
     ['floor',  1, (vs) => vo.floorElem(vs[0])],
     ['ceil',   1, (vs) => vo.ceilElem(vs[0])],
     ['round',  1, (vs) => vo.roundElem(vs[0])],
-    // P9 additions — finish the §18.11 keystone migration so every
+    // P9 additions — finish the §18.2 keystone migration so every
     // ARITH_OPS_N scalar primitive flows through the variant registry.
     ['min',    2, (vs) => vo.minElem(vs[0], vs[1])],
     ['max',    2, (vs) => vo.maxElem(vs[0], vs[1])],
@@ -1486,7 +1487,7 @@ function _ensureBroadcastedRegistered(): void {
 }
 
 // =====================================================================
-// Atom-batched fast-path variants (P1 follow-up; engine-concepts §18.11)
+// Atom-batched fast-path variants (P1 follow-up; engine-concepts §18.2)
 // =====================================================================
 //
 // The §2.1 leading-axis-batch convention: a Value of shape=[N, …rest]
@@ -1709,7 +1710,7 @@ function _ensureAtomBatchedRegistered(): void {
 }
 
 // =====================================================================
-// `mul` direct-wrapping variants (engine-concepts §18.11)
+// `mul` direct-wrapping variants (engine-concepts §18.2)
 // =====================================================================
 //
 // Spec §07 mul has shape-dependent semantics: scalar broadcast,
@@ -1896,11 +1897,15 @@ function _ensureMulDirectRegistered(): void {
 //      `<op>` is in BUILTIN_FUNCTIONS).
 //
 // Soundness gates:
-//   - All evaluated broadcast args must be Values (or coercible via
-//     asValue — bare numbers / Float64Arrays / nested JS arrays).
-//   - For binary ops the args' shapes must match or one is rank-0
-//     (value-ops elementwise handles the rest including rank-0 ×
-//     rank-N broadcasting).
+//   - All evaluated broadcast args must be Values or coercible via
+//     asValue — bare numbers / typed arrays / FLAT all-scalar JS
+//     arrays (`_isFlatScalarArray`); nested JS arrays and
+//     outerRank-tagged Values stay on the cold path (spec §03
+//     nested-vector semantics must not elementwise-dispatch).
+//   - Shapes must agree per the ONE shared combine rule,
+//     `value-ops._broadcastOutShape` (spec §04): same rank among
+//     rank ≥ 1 inputs, per-axis sizes equal or 1 (singleton axes
+//     expand by stride-0 reads); rank-0 broadcasts against any rank.
 //   - For ops with kwargs the head's `paramKwargs` (functionof case)
 //     or arity-bound positional order applies; mismatches return
 //     null (cold path takes over).
@@ -2172,17 +2177,17 @@ ops.register({
 });
 
 // Eagerly register the broadcasted-primitives variants at module
-// load (engine-concepts §18.11 / §20.1). value-ops is already
+// load (engine-concepts §18.2 / §20.1). value-ops is already
 // required at the top of this file so there's no cycle risk.
 _ensureBroadcastedRegistered();
 
 // Eagerly register the `mul` direct-wrapping variants — the
 // rank-based shape switch that previously lived in valueOps.mul
-// (engine-concepts §18.11).
+// (engine-concepts §18.2).
 _ensureMulDirectRegistered();
 
 // Eagerly register the atom-batched fast-path variants for
-// add/sub/neg/mul (engine-concepts §18.11 — P1 follow-up). Variant
+// add/sub/neg/mul (engine-concepts §18.2 — P1 follow-up). Variant
 // `batched` slots make `ops.dispatch` route atom-batched inputs
 // uniformly through the registry; legacy `value-ops.addN/subN/
 // negN/mulN` callers now have a registry path available.

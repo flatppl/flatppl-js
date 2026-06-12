@@ -11,7 +11,7 @@
 //     materialiser per-atom paths)
 //   - the builtins / EVALUABLE_OPS catalogue checks
 //
-// The §17.5 sampler split landed the *structural* decomposition; this
+// The sampler split landed the *structural* decomposition; this
 // declaration model is the *semantic* unification — one shape model
 // shared between static analysis and runtime dispatch.
 //
@@ -64,7 +64,7 @@ const valueLib = require('./value.ts');
 // involved than we need now, so we list ranks explicitly per op until
 // the signature-driven derivation matures.
 
-// Op kind discriminator (engine-concepts §18.7):
+// Op kind discriminator (engine-concepts §18):
 //
 //   - 'fixed-rank'        — each arg has a fixed logical rank; the
 //                           dispatcher detects atom-batching as
@@ -82,7 +82,7 @@ const valueLib = require('./value.ts');
 //   - 'higher-order'      — at least one arg is a callable; the op
 //                           threads body-inference / function-call
 //                           machinery through dispatch. Deferred —
-//                           see §18.7. Engines must surface a clear
+//                           see §18.1. Engines must surface a clear
 //                           error if the dispatcher encounters this
 //                           kind before the dedicated dispatch
 //                           extension lands.
@@ -98,7 +98,7 @@ interface OpDecl {
   logical?: (...args: any[]) => any;  // optional: variant-only ops omit it
   batched?: (args: any[], N: number) => any;
   // Type-directed shape-pattern variants — the P1 keystone per
-  // engine-concepts §18.11. Each variant declares the input shape
+  // engine-concepts §18.2. Each variant declares the input shape
   // pattern it applies to (per-arg rank / shape / Klein-4 tag /
   // struct flag / dtype) plus the surrounding wrapping op
   // ('broadcast' / 'aggregate' / 'direct'). The dispatcher picks the
@@ -110,7 +110,7 @@ interface OpDecl {
 }
 
 // ---------------------------------------------------------------------
-// Type-directed shape-pattern variants (engine-concepts §18.11)
+// Type-directed shape-pattern variants (engine-concepts §18.2)
 // ---------------------------------------------------------------------
 //
 // A variant declares: "for input args matching THESE patterns, under
@@ -137,11 +137,13 @@ interface OpDecl {
 //   - explicit shape dim:     1 pt/dim
 //   - dtype constraint:       1 pt/arg
 //
-// Ties broken by registration order: first registered wins. This is
-// deterministic but inverts the usual Julia-multimethod convention; we
-// pick it because most variants are registered ONCE per category and
-// later-registered variants conceptually OVERRIDE earlier ones
-// (consistent with module-load order).
+// Ties broken by registration order: first registered wins
+// (`_pickVariant` replaces the best match only on a STRICTLY higher
+// score). This is deterministic and treats the earliest registration
+// as the canonical entry for its specificity class — an
+// equal-specificity addition registered later can never silently
+// shadow it; to override, a new variant must be made strictly more
+// specific (which is also what makes the override reviewable).
 //
 // **Extensibility.** Adding new pattern dimensions (e.g. P2's
 // sample/batch/event shape; P3a's axisStack) means adding optional
@@ -221,7 +223,7 @@ interface ArgPattern {
   // Measure-side constraints (apply when arg.kind === 'measure', P2).
   // ---------------------------------------------------------------
   // Three-shape decomposition (Pyro/TFP convention; engine-concepts
-  // §20.10.5 item 2). Each shape uses ShapePattern semantics: '*'
+  // §20.10). Each shape uses ShapePattern semantics: '*'
   // matches any dim; '%dynamic' matches '%dynamic' literally; a
   // number matches the exact value. The pattern's length must equal
   // the arg's shape length (no rank polymorphism here; if you want
@@ -977,7 +979,7 @@ function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   // the op handles whatever rank/arity it received. Callers that
   // want atom-batched semantics over a rank-polymorphic op wrap
   // with explicit `broadcast(fn(op(_)), atom_batched)` —
-  // engine-concepts §18.7.
+  // engine-concepts §18.
   if (kind === 'rank-polymorphic' || kind === 'variadic') {
     return decl.logical(...args);
   }

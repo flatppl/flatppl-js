@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // Pins the MVP scope of `_tryDissolveBroadcastReduction` in
-// dissolver.ts (engine-concepts §20.10.8 / TODO-flatppl-js fusion
+// dissolver.ts (engine-concepts §20.10 / TODO-flatppl-js fusion
 // thread (a)). The rewrite recognises:
 //
 //   broadcast(<head>, args…)
@@ -21,7 +21,7 @@
 //     stay on the runtime path until fusion (b) lands).
 //   - Inner expression has no nested broadcast / aggregate /
 //     functionof / kernel_broadcast / measure-algebra ops.
-//   - Reducer is sum / mean / prod (matches the §20.10.5 calibrated
+//   - Reducer is sum / mean / prod (matches the §20.10 calibrated
 //     set; var/std/min/max stay on the runtime path).
 //
 // What's pinned:

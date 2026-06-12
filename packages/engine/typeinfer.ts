@@ -99,7 +99,7 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
  * concrete integers — `iid(M, n)` where `n = length(data)` becomes
  * `array([N], elem)` rather than `array([%dynamic], elem)`. Caller
  * builds the resolver via `fixed-eval.makeResolver(...)`; typeinfer
- * stays unaware of the value-mode evaluator. Engine-concepts §17.4
+ * stays unaware of the value-mode evaluator. Engine-concepts §17.1
  * "resolve, don't rewrite" — the resolver is consulted only at
  * narrowly-identified shape positions, and only the resulting
  * integer is embedded in type annotations; the source IR is left
@@ -110,7 +110,7 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
   for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
   return ctx.diagnostics;
   // NOTE: no eager post-binding const-eval pass. The resolver is
-  // demand-driven (engine-concepts §17.4) — it's invoked only from
+  // demand-driven (engine-concepts §17.1) — it's invoked only from
   // shape positions and recursively descends into refs ONLY as
   // needed. Shape-observer short-circuits (length/lengthof/sizeof
   // reading from inferredType) prevent the recursion from
@@ -379,7 +379,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // lengthof(t) for a table returns the row count (an integer).
       // The signature factory already returns INTEGER unconditionally
       // (it works for vectors and tables uniformly); no extra case here.
-      // Const-eval-driven shape inference (engine-concepts §17.4).
+      // Const-eval-driven shape inference (engine-concepts §17.1).
       // Shape-determining producers whose result rank/shape depends
       // on their dim arg(s). All of them consult the resolver via
       // resolveIntegerShape / resolveIntegerVectorShape; if the dim
@@ -445,7 +445,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'functionof': return write(inferReification(expr, scopes), expr);
       // fchain(f1, f2, ...) — deterministic function composition
       // (spec §04 Function composition and annotation, engine-concepts
-      // §19.4). Result type is the composed function type computed by
+      // §19). Result type is the composed function type computed by
       // the shared `inferChainComposition` helper (consume/rest at the
       // chain's input-set level — engine-concepts §17.3 extended).
       case 'fchain':    return write(inferFchain(expr, scopes), expr);
@@ -453,7 +453,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // 192-266). Closed-first ⇒ measureType; kernel-first ⇒
       // kernelType with residual inputs (collapses to measure when
       // residual is empty). Routes through inferChainComposition's
-      // kernel modes (engine-concepts §19.4).
+      // kernel modes (engine-concepts §19).
       case 'jointchain': return write(inferJointchain(expr, scopes, 'jointchain-retain'), expr);
       case 'kchain':     return write(inferJointchain(expr, scopes, 'kchain-marginal'), expr);
       // transpose / adjoint: spec §07 — apply to vectors and matrices.
@@ -543,7 +543,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
             // bare type variable. E.g. `logdensityof(iid(Normal,3), data_5)`
             // reports "arg 2 expects array of real (length 3), got
             // array of real (length 5)" instead of the noisy
-            // "arg 2 expects any, got …" (engine-concepts §17.4).
+            // "arg 2 expects any, got …" (engine-concepts §17.1).
             return argError(op, i, T.substitute(sig.args[i], s), at, args[i].loc);
           }
           s = next;
@@ -877,7 +877,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   /**
    * fchain(f1, f2, ..., fN) — deterministic function composition per
    * spec §04. Result type is the composed funcType, computed by the
-   * shared `inferChainComposition` helper (engine-concepts §19.4).
+   * shared `inferChainComposition` helper (engine-concepts §19).
    *
    * Per-step requirement: each arg's inferred type must be `funcType`.
    * Non-function step types surface as a step-anchored diagnostic
@@ -907,7 +907,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
 
   /**
    * jointchain / kchain — dependent composition (spec §06 line
-   * 192-266; engine-concepts §19.4). Lowering surfaces:
+   * 192-266; engine-concepts §19). Lowering surfaces:
    *
    *   - Positional `jointchain(M, K1, K2)` → `args: [...]`
    *   - Keyword    `jointchain(name1 = M, name2 = K)` → `fields:
@@ -2124,7 +2124,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // arg may be an integer (rank-1 result) or an integer vector
   // (rank-N result, one dim per element). Tries literal forms first;
   // falls back to the resolver. Returns null if neither works.
-  // Demand-driven fixed-value boundary (engine-concepts §17.4): a shape
+  // Demand-driven fixed-value boundary (engine-concepts §17.1): a shape
   // position asked the resolver for a value and every input resolved (so
   // the computation is fixed-phase and computable in principle), but an
   // operation in it isn't implemented in simple-eval mode — so the shape
@@ -2331,7 +2331,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // Resolve a shape-position IR expression to a non-negative integer
   // if possible. Tries the cheap literal-extract first; falls back to
   // the resolver callback (set up via fixed-eval.makeResolver) when
-  // const-eval is enabled by the caller. Per engine-concepts §17.4:
+  // const-eval is enabled by the caller. Per engine-concepts §17.1:
   // invoked ONLY at known shape positions, never at general
   // sub-expressions — and the source IR is left intact regardless.
   //
@@ -2345,7 +2345,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // Shape-only short-circuit: `length(x)` / `lengthof(x)` reads
     // the leading-axis length from x's inferred type. Works on ANY
     // x — ref, inline call, anything inferExpr can give a type for.
-    // The principle the engine-concepts §17.4 design was built for
+    // The principle the engine-concepts §17.1 design was built for
     // — most common shape-determining expression in real models, and
     // the only safe way to chain through expensive intermediates.
     // (`sizeof(x)` returns the shape *vector* and is handled by
@@ -2638,7 +2638,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
             && Array.isArray(dimArgs[0].args)) {
           dimArgs = dimArgs[0].args;
         }
-        // Engine-concepts §17.4 — const-eval-driven shape resolution.
+        // Engine-concepts §17.1 — const-eval-driven shape resolution.
         // Same pattern as `iid`: try literal first, then the resolver
         // callback (which short-circuits length/lengthof/sizeof through
         // the inferred type). Falls back to %dynamic when const-eval

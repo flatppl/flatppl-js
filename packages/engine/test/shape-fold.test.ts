@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// shape-fold.test.ts — shape-driven constant folding (§20.10.6)
+// shape-fold.test.ts — shape-driven constant folding (§20.10)
 // =====================================================================
 //
 // Pins the precomputation pass added in the dissolver that lifts

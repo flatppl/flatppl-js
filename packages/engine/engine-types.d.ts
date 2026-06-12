@@ -118,7 +118,7 @@ export interface IRAxis extends IRBase {
 
 /**
  * Static outer-axis metadata attached to measure-op IR nodes
- * (engine-concepts §18.11 / P3a). Lists the outer iteration axes
+ * (engine-concepts §18.2 / P3a). Lists the outer iteration axes
  * surrounding a node — the spec-§04 / §06 "axis context" made
  * explicit at the IR layer.
  *
@@ -190,8 +190,8 @@ export interface IRCall extends IRBase {
   logweights?: IRNode[] | null;
   selectorName?: string | null;
   selectorBase?: number | null;
-  // Static axis-context metadata (P3a; engine-concepts §18.11 /
-  // §20.10.5 item 4). Populated by `propagateAxisStack` in
+  // Static axis-context metadata (P3a; engine-concepts §18.2 /
+  // §20.10). Populated by `propagateAxisStack` in
   // dissolver.ts for measure-op IR nodes whose variate carries
   // outer iteration axes (iid / kernel_broadcast / aggregate).
   // Not all calls have this — only measure-op calls in a
@@ -353,7 +353,7 @@ export interface DerivationIid {
 }
 
 /**
- * Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2).
+ * Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand)).
  * The draw half (`samples, _ = rand(state, iid(M, count))`, i.e.
  * `tuple_get(<rand>, 0)`) for a COMPOSITE inner measure `M` — one the
  * per-draw measure walker (sampler.walk) can't sample (a forward `lawof` of a

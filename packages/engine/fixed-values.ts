@@ -4,7 +4,7 @@
 // fixed-values.ts — demand-driven fixed-phase VALUE resolver.
 // =====================================================================
 //
-// Engine-concepts §17.4 ("demand-driven on both sides"). A fixed-phase
+// Engine-concepts §17.1 ("demand-driven on both sides"). A fixed-phase
 // binding is compile-time determinate, so its value CAN be computed
 // without sampling. The question is WHEN. Historically `buildDerivations`
 // ran an eager `while (progress) { for (binding of bindings) … }` fixpoint

@@ -1,7 +1,7 @@
 'use strict';
 
 // Tests for the in-module measure walker (sampler.walk; was traceeval.ts,
-// folded into sampler.ts in §17.4 stage 4). Density evaluation lives in
+// folded into sampler.ts in §11). Density evaluation lives in
 // density.ts (see test/density.test.ts); the cases below cover only the
 // sampling primitive: leaf draws, env-resolved distribution params,
 // joint / record / iid structural recursion, weighted / logweighted
@@ -165,7 +165,7 @@ test('walk: unknown op gives a clear "not a measure expression" error', () => {
 });
 
 // =====================================================================
-// Single leaf endpoint (§17.4 stage 4): a scalar leaf draw and the first
+// Single leaf endpoint (§11): a scalar leaf draw and the first
 // element of a 1-element iid draw of the same leaf are bit-for-bit equal
 // — both route through the one batched leaf endpoint (sampleLeafN), with
 // no separate ziggurat scalar realisation. Pins the leaf-collapse.

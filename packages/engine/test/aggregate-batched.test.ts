@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // Pins `_evalAggregateBroadcastReduceN` in sampler-aggregate.ts
-// (engine-concepts §20.10.10). This is the atom-batched analogue of
+// (engine-concepts §20.10). This is the atom-batched analogue of
 // `_evalAggregateBroadcastReduce`: lifts the aggregate body tensor
 // to shape [N, ...outAxes, ...reduceAxes] in ONE pass and
 // tail-reduces, replacing the per-atom-evaluate-aggregate loop.

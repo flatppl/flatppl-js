@@ -10,8 +10,11 @@
 //           matrix/vector, vector/transpose(vector) (outer),
 //           transpose(vector)/vector (inner). vector*vector is an
 //           error per spec §07 wording + design clarification.
-//   - add / sub: scalar/scalar, elementwise on arrays of same shape,
-//                with scalar broadcast in either direction.
+//   - add / sub: scalar/scalar, elementwise on same-shape arrays OR
+//                per-axis equal-or-1 shapes (spec §04 singleton-axis
+//                expansion — the ONE combine-rule owner is
+//                `_broadcastOutShape` below), with rank-0 broadcast
+//                in either direction.
 //   - neg:  pointwise negation; shape and tag preserved.
 //
 // All operations consume Values and produce Values. The Klein-4
@@ -21,12 +24,12 @@
 // materialisation of transposes), inner/outer dispatch on vector
 // orientation, and tag is preserved through scalar broadcast.
 //
-// For real-valued data (dtype='f64') the conjugate bit is observation-
-// ally a no-op, but it is plumbed through compositions so the algebra
-// stays correct once complex dtypes arrive: conjugate-aware reads (in
-// matmul, inner-product, etc.) would call a complex-aware multiply
-// instead of a plain `*` — the existing dispatch sites are the
-// extension points.
+// Complex Values (planar re/im, dtype='complex') are first-class
+// here: conjugation-aware complex gemm helpers (`_cxVecVecMul` /
+// `_cxInnerProduct` / `_cxMatMatMul` / …) and `_complexLinearBinop`
+// for add/sub. For real-valued data (dtype='f64') the conjugate bit
+// is observationally a no-op but is plumbed through compositions so
+// the dispatch stays tag-correct.
 //
 // =====================================================================
 
@@ -35,7 +38,7 @@ const valueLib = require('./value.ts');
 const {
   isValue, getTag, isTransposeView, isConjugateView,
   isComplexValue, readComplex, complexValue,
-  scalar, batchedScalar, vector, withShape,
+  scalar,
 } = valueLib;
 
 // ---------------------------------------------------------------------
@@ -69,21 +72,14 @@ function _packCx(re: any, im: any, shape: any, swapped: any) {
 }
 
 // ---------------------------------------------------------------------
-// Indexing helpers
+// Matrix index layout (the convention every product kernel inlines)
 // ---------------------------------------------------------------------
 // For a matrix Value with logical shape [m, n] the underlying
 // Float64Array layout depends on the tag's swapped bit:
-//   - swapped=false (tag N or C): data is row-major [m × n].
-//     logical (i, k) lives at data[i*n + k].
+//   - swapped=false (tag N or C): data is row-major [m × n];
+//     logical (i, j) lives at data[i*n + j].
 //   - swapped=true  (tag T or A): data is row-major in the
-//     pre-transpose shape [n × m].
-//     logical (i, k) lives at data[k*m + i].
-//
-// These two helpers compute the linear index for a logical (i, j)
-// position in O(1) without allocation.
-
-function _matIdxN(i: any, j: any, n: any) { return i * n + j; }
-function _matIdxT(i: any, j: any, m: any) { return j * m + i; }
+//     pre-transpose shape [n × m]; logical (i, j) at data[j*m + i].
 
 // ---------------------------------------------------------------------
 // mul — shape-dispatched multiplication
@@ -220,7 +216,7 @@ function mul(a: Value, b: Value): Value {
       JSON.stringify(sa) + ' × ' + JSON.stringify(sb));
   }
   // Real path: dispatched via the variant registry (engine-concepts
-  // §18.11). Each (rank-A tag-X) × (rank-B tag-Y) combination maps
+  // §18.2). Each (rank-A tag-X) × (rank-B tag-Y) combination maps
   // to one registered variant entry pointing at the corresponding
   // helper (_scalarBroadcastMul / _vecVecMul split into inner /
   // outer / error / _matVecMul / _vecMatMul / _matMatMul).
@@ -595,16 +591,17 @@ function _cxMatMatMul(A: any, B: any) {
 // add / sub — shape-dispatched elementwise addition / subtraction
 // =====================================================================
 //
-// Spec §07: `add` and `sub` operate on "scalars or arrays of same
-// shape". Both operands must share LOGICAL shape AND the swapped bit
-// of their tag (a column vector and a row vector of the same length
-// are NOT compatible — they have the same `shape` field but differ in
-// orientation, and elementwise data-level addition would be a category
-// error). The conjugate bit can differ for real-valued data without
-// observational effect; once complex dtypes arrive, conjugation
-// differences will need explicit handling at the per-cell level.
+// Spec §07: direct `add` and `sub` operate on "scalars or arrays of
+// same shape"; the broadcast-wrapped forms additionally expand
+// singleton axes per spec §04 — both routes share the
+// `_broadcastOutShape` combine rule + strided loops. Both operands
+// must share the swapped bit of their tag (a column vector and a row
+// vector of the same length are NOT compatible — same `shape` field,
+// different orientation; elementwise data-level addition would be a
+// category error). Complex operands route through
+// `_complexLinearBinop` (planar re/im, conj folded at read).
 //
-// Scalar broadcast is allowed in either direction (scalar + array
+// Rank-0 broadcast is allowed in either direction (scalar + array
 // scales the scalar over every cell, tag preserved).
 
 // Build the elementwise binary op from a scalar primitive. Used to
@@ -1305,7 +1302,8 @@ function _nestedToValue(nested: any) {
 }
 
 // =====================================================================
-// Atom-batched cross
+// Atom-batched arithmetic — mulN / addN / subN / negN + batched
+// matmul kernels (atom-batched × atom-indep cross-combinations)
 // =====================================================================
 //
 // When an operand carries a leading axis of size N (the atom count),
@@ -1326,11 +1324,14 @@ function _nestedToValue(nested: any) {
 //   - scalar + shape=[N, ...]     → broadcast (data-level; works via
 //                                              the atom-indep add)
 //   - pointwise neg               → works at any rank via atom-indep neg
+//   - per-atom matrix × matrix (all three [N,m,n]/[m,n] mixes, real +
+//     complex) → `_matBatchedMatMul` / `_cxMatBatchedMatMul` below —
+//     reachable via the atom-aware variant registry
+//     (`ops.dispatch('mul', …, { atomN })`), NOT via mulN itself
 //
 // Deferred (uncommon today; lands when a use-case surfaces):
 //   - shape=[N, m, n] × shape=[N, n]    (atom-batched matrix × vector)
 //   - shape=[N] (batched scalar) ⊙ shape=[N, k]
-//   - per-atom matrix × per-atom matrix
 
 // Atom-batched matrix × matrix → atom-batched matrix. Per-atom
 // matmul; supports three operand-batching patterns:
@@ -1917,6 +1918,4 @@ module.exports = {
   _atomBroadcastBinop,
   _scalarBroadcastMul,
   _scalarBroadcastBinop,
-  _matIdxN,
-  _matIdxT,
 };

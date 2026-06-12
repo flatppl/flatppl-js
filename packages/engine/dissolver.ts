@@ -355,7 +355,7 @@ function dissolveExpr(ir: any, bindings: any): any {
   // Shape-driven constant folding: rewrite shape→value calls
   // (`indicesof`, `indicesof0`, `sizeof`, `lengthof`) whose argument
   // has a statically-known shape into a literal vector / integer
-  // (engine-concepts §20.10.6). The fold runs AFTER children are
+  // (engine-concepts §20.10). The fold runs AFTER children are
   // walked so nested shape calls fold inside-out.
   if (walked.kind === 'call' && walked.op) {
     const folded = _foldShapeCall(walked, bindings);
@@ -387,7 +387,7 @@ function dissolveExpr(ir: any, bindings: any): any {
 }
 
 // =====================================================================
-// Shape-driven constant folding (engine-concepts §20.10.6)
+// Shape-driven constant folding (engine-concepts §20.10)
 // =====================================================================
 //
 // Folds spec §07 shape→value functions whose argument's shape is
@@ -1121,7 +1121,7 @@ function _substituteBody(
 
 // =====================================================================
 // Fusion (a) Step 2 — broadcast → aggregate rewrite
-// (engine-concepts §20.10.8; TODO-flatppl-js fusion thread (a))
+// (engine-concepts §20.10; TODO-flatppl-js fusion thread (a))
 // =====================================================================
 //
 // Recognises `broadcast(<head>, <args>…)` whose head functionof body
@@ -1137,7 +1137,7 @@ function _substituteBody(
 //   polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
 //   Y = polyeval.([C], X)
 //
-// After shape-folding (§20.10.7), `indicesof0(coeffs)` resolves to
+// After shape-folding (§20.10), `indicesof0(coeffs)` resolves to
 // a literal vector once `coeffs` substitutes to a ref with static
 // shape. Then the body is structurally a reduction over an
 // elementwise expression mixing rank-1 leaves (vector refs +
@@ -1522,7 +1522,7 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   // or rank-K broadcast-over (per-cell value = get(arg, .atom_0,
   // ..., .atom_{K-1})). Build the placeholder→replacement map.
   //
-  // **Multi-axis broadcast** (engine-concepts §20.10.8 follow-up):
+  // **Multi-axis broadcast** (engine-concepts §20.10 follow-up):
   // when broadcast-over args have rank K > 1, the broadcast
   // iterates over K outer axes; the fusion emits K output axes on
   // the aggregate. Spec §04 requires all collection args to have
@@ -1599,7 +1599,7 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
   // Shape-fold the substituted body — placeholders (e.g. `coeffs` in
   // `indicesof0(coeffs)`) are now bound to refs with static shapes,
   // so calls like `indicesof0(<Cref>)` resolve to literal vectors
-  // (engine-concepts §20.10.7) BEFORE the wrap step turns them into
+  // (engine-concepts §20.10) BEFORE the wrap step turns them into
   // scalar `.j`-indexed leaves. Without this pre-fold, the wrap step
   // would mistakenly turn `indicesof0(C)` into `indicesof0(get(C,
   // .j))` (rank-0 input to indicesof0 → wrong).
@@ -1629,7 +1629,7 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
 
 // =====================================================================
 // Fusion (b) MVP — kernel-broadcast inlining
-// (engine-concepts §20.10.9; TODO-flatppl-js fusion thread (b))
+// (engine-concepts §20.10; TODO-flatppl-js fusion thread (b))
 // =====================================================================
 //
 // When the broadcast head is a ref to a user-defined kernel binding
@@ -1911,7 +1911,7 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
 }
 
 // =====================================================================
-// Axis-stack annotation (P3a; engine-concepts §18.11 / §20.10.5 item 4)
+// Axis-stack annotation (P3a; engine-concepts §18.2 / §20.10)
 // =====================================================================
 //
 // `propagateAxisStack` walks each binding's IR and annotates measure-

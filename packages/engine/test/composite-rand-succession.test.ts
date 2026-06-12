@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// Composite-`rand` succession (engine-concepts §11 / §17.4).
+// Composite-`rand` succession (engine-concepts §11).
 // =====================================================================
 //
 // The STATE half of a composite `rand` — `tuple_get(<rand>, 1)`, a

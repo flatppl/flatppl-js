@@ -7,24 +7,25 @@
 // `broadcast(K, args…)` where K is a user-defined kernel binding (not
 // a built-in distribution) needs structural recognition of K's body
 // shape so the materialiser knows HOW to execute the broadcast. The
-// composite shapes the engine targets (one per Phase-4 entry of the
-// broadcast staged plan) are:
+// landed kind set (engine-concepts §21):
 //
 //   - iid:               `lawof(iid(<BuiltinDist>(<kw>), <n>))`
-//   - vector_per_cell:   inner DistCall's params are rank-1 per cell
-//                        (random-effects pattern); Phase 4.1.
-//   - joint:             `lawof(joint(<kernels>))`; Phase 4.2.
-//   - jointchain:        `lawof(jointchain(<base>, <kernels…>))`;
-//                        Phase 4.3.
-//   - nested_broadcast:  body contains a `broadcast(…)` itself;
-//                        Phase 4.4.
+//   - joint:             `lawof(joint(<kernels>))`
+//   - jointchain:        `lawof(jointchain(<base>, <kernels…>))`
+//   - nested_broadcast:  body contains a `broadcast(…)` itself
+//   - generative:        `lawof(<value-expr with an internal draw>)`
+//                        — the most-permissive catch-all, tried LAST
+//
+// Vector-output / vector-per-cell inner draws are NOT a separate
+// kind: the iid / nested_broadcast executors handle them via the
+// `innerIsVectorOutput` flag on their descriptors.
 //
 // Each recognizer is a (d, ctx) → CompositeBody | null function. They
 // are tried in registration order; the first non-null result wins.
 //
-// The matching catch-all walker (Phase 4.5) reads the registry's
-// supported set when emitting its "this shape isn't supported by any
-// fast path, falling to per-atom interpretation" diagnostic.
+// The matching catch-all walker reads the registry's supported set
+// when emitting its "this shape isn't supported by any fast path,
+// falling to per-atom interpretation" diagnostic.
 //
 // === Cross-engine architecture note ===========================
 // The recognizer SURFACE is cross-engine architecture. JAX/MLIR or
@@ -34,8 +35,8 @@
 // (closed-form expand in JS; per-shape codegen rule emission in
 // MLIR); the SURFACE shape is shared.
 //
-// Phase 1.2 lands the registry surface + the iid entry. Subsequent
-// composite shapes get added as Phase 4 entries.
+// New composite shapes land as additional recognizer entries + a
+// matching executor; keep `generative` last (most permissive).
 
 // ---------------------------------------------------------------------
 // Tagged-union body descriptor + recognizer interface
@@ -59,10 +60,9 @@ interface CompositeBodyBase {
 /**
  * Tagged-union descriptor returned by composite-body recognizers.
  *
- * Phase 1.2 lands `kind: 'iid'` only. Phase 4 entries will add
- * 'vector_per_cell', 'joint', 'jointchain', 'nested_broadcast' — each
- * with their own structured fields. matKernelBroadcast (and any
- * future composite executor) discriminates on `kind` before reading
+ * Five kinds: 'iid' | 'nested_broadcast' | 'jointchain' | 'joint' |
+ * 'generative' (see the header). matKernelBroadcast (and any future
+ * composite executor) discriminates on `kind` before reading
  * variant-specific fields.
  */
 type CompositeBody =

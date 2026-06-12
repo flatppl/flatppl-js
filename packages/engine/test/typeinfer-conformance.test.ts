@@ -98,7 +98,7 @@ test('conformance: linspace static vs runtime shape', () => {
 });
 
 // =====================================================================
-// Const-eval-driven shapes (§17.4 — the recent landing)
+// Const-eval-driven shapes (§17.1 — the recent landing)
 // =====================================================================
 
 test('conformance: iid(M, n) with n a literal-int binding — static shape resolves', () => {
@@ -220,7 +220,7 @@ s = sizeof(M)
 
 // =====================================================================
 // Demand-driven const-eval: shape inference never materialises bindings
-// whose value isn't needed (engine-concepts §17.4 lazy-evaluation pattern).
+// whose value isn't needed (engine-concepts §17.1 lazy-evaluation pattern).
 // =====================================================================
 
 test('demand-driven: zeros/fill/ones/eye fold their dim args via the resolver', () => {

@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // Pins `_tryDissolveKernelBroadcast` in dissolver.ts (engine-concepts
-// §20.10.9 / TODO-flatppl-js fusion thread (b)). The rewrite catches:
+// §20.10 / TODO-flatppl-js fusion thread (b)). The rewrite catches:
 //
 //   broadcast(<ref to user kernel binding>, args…)
 //     where kernel binding's IR is

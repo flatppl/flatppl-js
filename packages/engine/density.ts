@@ -57,7 +57,7 @@
 //     (matBayesupdate / matLogdensityof / matBroadcastLogdensity /
 //     materialiser.ts in general) PRE-EXPAND via `orchestrator.expand
 //     Measure(input, { derivations, bindings })` (engine-concepts
-//     §17.4 unification) before invoking the density walker — refs
+//     §17.1 unification) before invoking the density walker — refs
 //     in measure position then never reach walkAcc. The opt is the
 //     escape hatch for callers that feed un-expanded IR directly
 //     (test/density.test.ts:317 covers it; tests are today's only
@@ -315,7 +315,7 @@ function consumeField(value: any, name: any) {
 //   - Returns the (atom-independent) `rest` of `value`.
 
 // ---------------------------------------------------------------------
-// Density-walker pipeline (P3b; engine-concepts §18.11 / §20.10.5 item 5)
+// Density-walker pipeline (P3b; engine-concepts §18.2 / §20.10)
 // ---------------------------------------------------------------------
 //
 // `logDensityConsumeN(ir, value, refArrays, count, opts)` runs through
@@ -2028,8 +2028,8 @@ module.exports = {
   // Single-point conveniences (count=1 of the foundation)
   logDensityConsume,
   logDensity,
-  // P3b — density-walker pipeline (engine-concepts §18.11 /
-  // §20.10.5 item 5). Stages compose around `densityCoreStage`
+  // P3b — density-walker pipeline (engine-concepts §18.2 /
+  // §20.10). Stages compose around `densityCoreStage`
   // (the terminal acc+walkAcc dispatch). Caching, tracing,
   // shape-validation, and custom inference hooks all land as
   // additional stages without touching per-op-handler code.

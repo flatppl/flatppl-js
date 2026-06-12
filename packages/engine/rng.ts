@@ -560,7 +560,7 @@ function foldIn(key: PhiloxKey, tag: number): PhiloxKey {
   return [block[0] >>> 0, block[1] >>> 0];
 }
 
-// Composite-rand lane contract (engine-concepts §11, §17.4). A composite
+// Composite-rand lane contract (engine-concepts §11). A composite
 // `rand(state, M)` derives BOTH its draw seed and its successor rngstate
 // from the parent key via ONE 2-way split: lane 0 seeds the draw (consumed
 // by the materialiser's matRandSample), lane 1 IS the successor rngstate

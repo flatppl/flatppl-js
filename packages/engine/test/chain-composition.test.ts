@@ -1,6 +1,6 @@
 'use strict';
 
-// Unit tests for `inferChainComposition` (engine-concepts §19.4) and
+// Unit tests for `inferChainComposition` (engine-concepts §19) and
 // its helper `_matchChainBoundary`. Pure helper — no IR walking — so
 // tests construct funcType / kernelType / record types directly and
 // assert the composed result.

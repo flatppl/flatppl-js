@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// Demand-driven composite `rand` (engine-concepts §17.4 stage 2).
+// Demand-driven composite `rand` (engine-concepts §11 (demand-driven composite rand)).
 // =====================================================================
 //
 // `samples, _ = rand(state, iid(M, count))` for a COMPOSITE M — a

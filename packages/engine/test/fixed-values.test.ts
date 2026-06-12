@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// Demand-driven fixed-value resolver (engine-concepts §17.4, stage 3).
+// Demand-driven fixed-value resolver (engine-concepts §17.1).
 // =====================================================================
 //
 // FixedValues replaces the former eager `while (progress)` pre-eval loop

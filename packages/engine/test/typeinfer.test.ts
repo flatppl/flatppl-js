@@ -765,7 +765,7 @@ test('iid: with literal n produces a measure over a concrete-shape array', () =>
 });
 
 test('iid: integer-typed binding ref resolves via const-eval', () => {
-  // Before the engine-concepts §17.4 const-eval-in-typeinfer pass
+  // Before the engine-concepts §17.1 const-eval-in-typeinfer pass
   // landed, this fell back to %dynamic. With const-eval, the shape
   // position folds `n` to the integer literal at type-check time.
   const { bindings, errors } = infer(`
@@ -791,7 +791,7 @@ test('iid: n = arithmetic on literals resolves to a literal shape', () => {
 test('iid: n = length(literal-array) resolves via shape-only short-circuit', () => {
   // The shape-only short-circuit reads `length` from the type's shape
   // when available, without invoking the full evaluator. Engine-
-  // concepts §17.4 — most important optimisation for keeping
+  // concepts §17.1 — most important optimisation for keeping
   // compile-time eval cheap.
   const { bindings, errors } = infer(`
     data = [1.0, 2.0, 3.0, 4.0]

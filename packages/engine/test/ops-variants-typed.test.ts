@@ -7,7 +7,7 @@
 // Pins the unified variant model that lets a single registry dispatch
 // on EITHER value-domain args (Value with shape/tag/struct/dtype)
 // OR measure-domain args (measure type with sample/batch/event shape
-// from P2) OR IR-context (axisStack from P3a). Engine-concepts §18.11
+// from P2) OR IR-context (axisStack from P3a). Engine-concepts §18.2
 // extended.
 //
 // What's pinned:

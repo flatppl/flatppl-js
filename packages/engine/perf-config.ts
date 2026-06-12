@@ -13,8 +13,9 @@
 // Several engine subsystems compose a "general / reference"
 // implementation with one or more "specialised / fast" paths:
 //
-//   - aggregate         : nested-loop interpreter + AGGREGATE_PATTERNS
-//                         specialisers (matmul → BLAS-style mul, …)
+//   - aggregate         : broadcast-reduce reference lowering +
+//                         AGGREGATE_PATTERNS specialisers
+//                         (matmul → BLAS-style mul, …)
 //   - disintegrate      : `delegate` plan (reuse existing bindings) +
 //                         `synthesize` plan (emit fresh AST)
 //   - select / mixture  : closed-form `logsumexp` + MC-estimated
@@ -52,9 +53,11 @@
 //   3. Use the `inBothModes(name, optKey, fn)` helper from
 //      `test/_perf-helpers.ts` to register tests that should run
 //      under both settings.
-//   4. Mention the toggle in `flatppl-engine-concepts.md` §15
-//      (Optimization toggles & dual-mode testing) so future
-//      contributors know the pattern.
+//   4. Mention the toggle in ARCHITECTURE.md's "Optimization toggles
+//      & dual-mode testing" note so future contributors know the
+//      pattern (the cross-engine principle lives in
+//      `flatppl-engine-concepts.md` §15; per-toggle detail is
+//      JS-engine-specific and stays out of that doc).
 //
 // Globally-scoped registry, mutated by setOptimization. Per-context
 // scoping would be cleaner but the engine doesn't thread context
@@ -64,9 +67,10 @@
 
 const OPTIMIZATIONS: Record<string, boolean> = {
   // aggregate(...) pattern dispatch — matmul, dot-product, outer-
-  // product, etc. specialisers in sampler.AGGREGATE_PATTERNS. When
-  // disabled, every aggregate falls through to the nested-loop
-  // interpreter (`_evalAggregateGeneral`).
+  // product, etc. specialisers in sampler-aggregate.AGGREGATE_PATTERNS.
+  // When disabled, every aggregate falls through to the
+  // broadcast-reduce reference lowering
+  // (`_evalAggregateBroadcastReduce`, engine-concepts §16).
   'aggregate': true,
 
   // disintegrate's `delegate` plan — reuses existing bindings when

@@ -532,7 +532,7 @@ function liftInlineSubexpressions(bindings: any) {
   const { resolveAliasesOnBindings } = require('./alias-resolution.ts');
   resolveAliasesOnBindings(out, 'ir');
   // Rewrite the state half of a composite `rand` to the value-domain
-  // `rand_succ` successor (engine-concepts §11 / §17.4). After the IR-cache
+  // `rand_succ` successor (engine-concepts §11). After the IR-cache
   // loop + alias-resolution, so every `b.ir` and inner-measure ref resolves.
   rewriteCompositeRandSucc(out);
   return out;
@@ -2712,7 +2712,7 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
 }
 
 // =====================================================================
-// Composite-`rand` successor rewrite (engine-concepts §11 / §17.4)
+// Composite-`rand` successor rewrite (engine-concepts §11)
 // =====================================================================
 
 // Shared gate for the two halves of a composite `rand` tuple_get. Given a

@@ -4,7 +4,7 @@
 // fixed-eval.ts — demand-driven const-evaluation for type/shape inference.
 // =====================================================================
 //
-// Engine-concepts §17.4 ("resolve, don't rewrite"): type inference may
+// Engine-concepts §17.1 ("resolve, don't rewrite"): type inference may
 // need fixed-phase values to fold shape positions. This module is the
 // adapter that lets typeinfer ask "what's the value of this IR?"
 // without itself importing the value-mode evaluator.
@@ -36,7 +36,7 @@
 
 const samplerLib = require('./sampler.ts');
 
-// Distinguished resolver outcome (engine-concepts §17.4, demand-driven
+// Distinguished resolver outcome (engine-concepts §17.1, demand-driven
 // fixed-value model). The resolver has TWO failure modes, not one:
 //
 //   undefined    — the value isn't statically knowable: it depends on
@@ -94,7 +94,7 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
       // Shape-observer short-circuit: read the result off the
       // operand's INFERRED TYPE without recursing into its value.
       // The single most important pattern for keeping const-eval
-      // cheap (engine-concepts §17.4).
+      // cheap (engine-concepts §17.1).
       const sc = _shapeObserverShortCircuit(ir);
       if (sc !== undefined) return sc;
       // General path: evaluate args (recursively, with short-circuits
@@ -123,7 +123,7 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
   // has a statically-known shape; otherwise returns undefined and
   // the caller falls through to general evaluation.
   //
-  // Two operand shapes both supported (engine-concepts §17.4 — the
+  // Two operand shapes both supported (engine-concepts §17.1 — the
   // short-circuit must apply uniformly):
   //  (a) Self-ref to a binding — read shape from binding's inferredType.
   //  (b) Inline call (e.g. `length(rowstack(...))`) — typeinfer wrote

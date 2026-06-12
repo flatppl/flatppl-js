@@ -92,7 +92,7 @@ function table(columns: any, nrows: any) { return { kind: 'table', columns, nrow
  * Closed measure over a value domain.
  *
  * The `opts` argument carries optional three-shape decomposition of
- * the variate's axes (P2; engine-concepts §18.11 / §20.10.5 item 2):
+ * the variate's axes (P2; engine-concepts §18.2 / §20.10):
  *
  *  - `eventShape`: dimensions of a single variate (the measure's
  *    intrinsic dimensionality). `[]` for scalar distributions; `[k]`
@@ -695,7 +695,7 @@ function unifyArith(a: any, b: any, subst: any): any {
 // scalar distribution has the same signature shape (kwargs are values,
 // result is a real-valued measure). Reduces repetition below.
 //
-// P2 (engine-concepts §18.11 / §20.10.5 item 2): scalar distributions
+// P2 (engine-concepts §18.2 / §20.10): scalar distributions
 // have empty `eventShape` (one scalar per variate, no intrinsic
 // dimensions). `sampleShape` / `batchShape` are introduced later by
 // `iid` / kernel-broadcast contexts that wrap the leaf distribution.
@@ -819,7 +819,7 @@ const SIGNATURE_FACTORIES = {
   // input signature is f1's, its result is fN's, intermediate types
   // must match per spec §04 sec:calling-convention (auto-splatting at
   // record→kwargs boundaries). The result type is composed by
-  // inferChainComposition (engine-concepts §19.4) in typeinfer's
+  // inferChainComposition (engine-concepts §19) in typeinfer's
   // `inferFchain` handler — pure structural signature can't express
   // multi-step type unification.
   fchain: () => ({ args: [], kwargs: {}, result: deferred(),
@@ -832,7 +832,7 @@ const SIGNATURE_FACTORIES = {
   // residual inputs (collapses to measureType when residual is
   // empty, per the spec §06 line 87-90 kernel↔measure boundary).
   // Result type is computed by inferChainComposition (engine-concepts
-  // §19.4) in typeinfer's `inferJointchain` / `inferKchain` handlers.
+  // §19) in typeinfer's `inferJointchain` / `inferKchain` handlers.
   jointchain: () => ({ args: [], kwargs: {}, result: deferred(),
                        variadic: 'positional', special: 'jointchain' }),
   kchain:     () => ({ args: [], kwargs: {}, result: deferred(),

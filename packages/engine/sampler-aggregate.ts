@@ -5,7 +5,7 @@
 // (spec §04 §sec:aggregate; engine-concepts §16)
 // =====================================================================
 //
-// Extracted from sampler.ts as part of the §17.5 sampler split
+// Extracted from sampler.ts as part of the sampler split
 // (engine-concepts §11). Holds the AGGREGATE_PATTERNS specialiser
 // table + the canonical broadcast-reduce default lowering.
 //
@@ -1484,7 +1484,7 @@ function _broadcastTo(
 }
 
 // =====================================================================
-// Atom-batched aggregate evaluator entry (engine-concepts §20.10.10)
+// Atom-batched aggregate evaluator entry (engine-concepts §20.10)
 // =====================================================================
 //
 // `_evalAggregateBroadcastReduceN(ir, refArrays, N, baseEnv, overlay)`

@@ -4,7 +4,7 @@
 // sampler-eval-batched.ts — batched IR evaluator + ARITH_OPS_N table
 // =====================================================================
 //
-// Extracted from sampler.ts as part of the §17.5 sampler split
+// Extracted from sampler.ts as part of the sampler split
 // (engine-concepts §11). Holds the batched evaluator dispatcher
 // (evaluateExprN / _evalN / _batchedApproximation / _perAtomFallback),
 // the scalar-batched broadcast helpers (broadcast1/2/3, isBatch), the
@@ -665,7 +665,7 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
         const r = _batchedApproximation(op, ir, refArrays, N, baseEnv, overlay);
         if (r !== _BATCH_FELL_THROUGH) return r;
       }
-      // Atom-batched aggregate (engine-concepts §20.10.10): the
+      // Atom-batched aggregate (engine-concepts §20.10): the
       // fusion (a) Step 2 rewrite emits `aggregate(R, [.atom], body)`
       // IRs where some body refs are atom-batched. The non-batched
       // evaluator would per-atom-loop here (~60 µs/atom); the

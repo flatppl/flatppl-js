@@ -569,7 +569,7 @@ const EVALUABLE_OPS = new Set([
   // their inputs. sampler.evaluateCall dispatches each.
   'rnginit', 'rngstate', 'rand',
   // rand_succ(state): the composite-rand successor rngstate (split lane 1
-  // of the parent key; engine-concepts §11/§17.4). Engine-INTERNAL —
+  // of the parent key; engine-concepts §11). Engine-INTERNAL —
   // synthesised by the lift `rand_succ` rewrite for the state half of a
   // composite `rand`, never written in surface syntax. Value-typed (an
   // rngstate), so sampler.evaluateCall dispatches it like rand/rngstate,

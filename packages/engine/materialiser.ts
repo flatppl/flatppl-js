@@ -22,7 +22,7 @@
 //                                             //   vector-atom measures (matIid)
 //     ... }
 //
-// The materialiser was split (engine-concepts §17.5) across:
+// The materialiser was split (module map in ARCHITECTURE.md) across:
 //   - materialiser-shared.ts — shape builders, refArrays plumbing,
 //     fixedValueToMeasure, RNG helpers, setBoundsForMat.
 //   - mat-multivariate.ts — 8 multivariate distribution handlers.
@@ -597,7 +597,7 @@ function _resolveRandState(ir: any, ctx: any): any {
 }
 
 function matRandSample(name: string, d: any, ctx: any) {
-  // Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2;
+  // Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand);
   // classifier: derivations.classifyRandSample). `samples, _ =
   // rand(state, iid(M, count))` for a COMPOSITE M: produce `count`
   // independent iid draws by materialising M in a CHILD ctx at
@@ -1073,7 +1073,7 @@ const KIND_HANDLERS = {
  * already-computed measures.
  */
 // ---------------------------------------------------------------------
-// Materialiser pipeline (P3b; engine-concepts §18.11 / §20.10.5 item 5)
+// Materialiser pipeline (P3b; engine-concepts §18.2 / §20.10)
 // ---------------------------------------------------------------------
 //
 // `materialiseMeasure(name, ctx)` runs through a pipeline of stages.
@@ -1091,7 +1091,7 @@ const KIND_HANDLERS = {
 // pipeline ships with only the kindDispatch stage so backward
 // compat is exact.
 //
-// Engine-concepts §18.11 / §20.10.5 item 5: this is the "not-
+// Engine-concepts §18.2 / §20.10: this is the "not-
 // Messenger" version of the effect-handler pattern — a static
 // pipeline over IR-walking requests, not a runtime handler stack
 // over message dicts.
@@ -1170,7 +1170,7 @@ function _runPipeline(name: string, ctx: any): Promise<EmpiricalMeasure> {
   return chain(name, ctx);
 }
 
-// Callable-layer rejection stage (engine-concepts §19.2 + §19.5).
+// Callable-layer rejection stage (engine-concepts §19).
 // Bindings in the function or kernel layer (functionof / kernelof /
 // fn / bijection / fchain — and, when its inferredType is
 // kernelType, a kernel-first jointchain/kchain) are not
@@ -1903,7 +1903,7 @@ module.exports = {
   materialiseMeasure,
   materialiseKernelBroadcastIR,
   materialiseMeasureIR,
-  // P3b — materialiser pipeline (engine-concepts §18.11 / §20.10.5
+  // P3b — materialiser pipeline (engine-concepts §18.2 / §20.10
   // item 5). Stages get prepended to the default pipeline via
   // `registerMaterialiserStage(stage)`; they wrap the terminal
   // kindDispatch stage. Stages call `next(name, ctx)` to forward.
@@ -1923,7 +1923,7 @@ module.exports = {
   fixedValueToMeasure,
   collectRefArrays,
   classifyProfileSelfRefs,
-  // Callable-layer predicates (engine-concepts §19.2). Exposed for
+  // Callable-layer predicates (engine-concepts §19). Exposed for
   // viewer-side filters that need to skip function-like / kernel-
   // typed source bindings before pulling samples[0] (the same array-
   // collapse failure mode fixed in render-profile.ts; flatppl-js

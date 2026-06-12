@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // Pins the three-shape decomposition added to the measure type by P2
-// (engine-concepts §18.11 / §20.10.5 item 2):
+// (engine-concepts §18.2 / §20.10):
 //
 //   variate.shape == sampleShape ++ batchShape ++ eventShape
 //

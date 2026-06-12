@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // Pins the per-variant `batched` slot + atom-aware variant matching
-// added to `ops.dispatch` (engine-concepts §18.11 / TODO-flatppl-js
+// added to `ops.dispatch` (engine-concepts §18.2 / TODO-flatppl-js
 // P1 follow-up). Variants registered with a `batched: (args, N, ctx)`
 // impl are picked when the caller signals atom-batching via
 // `opts.atomN`. The matcher tries each variant with the leading atom

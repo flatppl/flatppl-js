@@ -1339,7 +1339,7 @@ function computePhases(bindings: any) {
   // body-deps, collapsing 'stochastic' verdicts to 'fixed' along the
   // way and surfacing only the highest non-stochastic phase.
   //
-  // The walker reads `bodyDeps` (engine-concepts §8.2) rather than
+  // The walker reads `bodyDeps` (engine-concepts §8) rather than
   // `deps`. For non-reification bindings the two sets coincide; for
   // `functionof` / `kernelof` they differ — the kwarg RHS refs
   // (paramSources) are real outer-scope refs but they declare formal
@@ -2863,7 +2863,7 @@ function analyze(ast: any, source: string) {
         callDeps: [...callDeps],
         // For functionof / kernelof bindings these split out the body's
         // closure captures from the kwarg-RHS value-set declarations
-        // (engine-concepts §8.2). For non-reification bindings the body
+        // (engine-concepts §8). For non-reification bindings the body
         // bucket carries everything and paramSource is empty. Walkers
         // that need the spec's two-scope semantics (absorbedPhaseOf,
         // future inlineOnce cleanup) consume `bodyDeps`.
@@ -3128,7 +3128,7 @@ function analyze(ast: any, source: string) {
   // `meta.type` annotations. We mirror inferredType back onto the
   // analyzer-level bindings for consumers that haven't migrated yet.
   //
-  // Const-eval shim (engine-concepts §17.4 "resolve, don't rewrite"):
+  // Const-eval shim (engine-concepts §17.1 "resolve, don't rewrite"):
   // a fixed-eval resolver is handed to typeinfer so shape positions
   // can fold computed integers (`iid(M, length(data))` → array([N],
   // elem)) without typeinfer importing the value-mode evaluator

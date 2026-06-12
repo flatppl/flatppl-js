@@ -4,8 +4,8 @@
 // materialiser-pipeline.test.ts — P3b stage composition
 // =====================================================================
 //
-// Pins the materialiser pipeline added by P3b (engine-concepts §18.11
-// / §20.10.5 item 5):
+// Pins the materialiser pipeline added by P3b (engine-concepts §18.2
+// / §20.10):
 //
 //   materialise(name, ctx) runs a pipeline of stages
 //     (name, ctx, next) => Promise<Measure>

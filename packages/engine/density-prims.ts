@@ -1137,7 +1137,7 @@ function staticDensityShapeCheck(ir: any, variateType: any): string | null {
 
 // =====================================================================
 // Chain composition: consume/rest at the chain's input-set level
-// (engine-concepts §19.4)
+// (engine-concepts §19)
 // =====================================================================
 //
 // fchain, kchain, jointchain all share the same structural pattern: a
@@ -1385,7 +1385,7 @@ function _inferKernelChain(
 
 /**
  * Compose a typed chain of steps left-to-right. See engine-concepts
- * §19.4 for the design.
+ * §19 for the design.
  *
  * `mode` selects the per-step rule:
  *   - 'func'              — fchain. Steps are funcType; each step's
@@ -1503,7 +1503,7 @@ module.exports = {
   // Type-mode consume/rest (engine-concepts §17.3)
   staticConsume,
   staticDensityShapeCheck,
-  // Chain composition (engine-concepts §19.4) — consume/rest at the
+  // Chain composition (engine-concepts §19) — consume/rest at the
   // chain's input-set level. Used by fchain (mode='func') and, in
   // Phase 2, by kchain / jointchain.
   inferChainComposition,

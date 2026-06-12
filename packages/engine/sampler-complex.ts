@@ -2,7 +2,7 @@
 // sampler-complex.ts — scalar complex arithmetic primitives (spec §03/§07)
 // =====================================================================
 //
-// Extracted from sampler.ts as part of the §17.5 sampler split
+// Extracted from sampler.ts as part of the sampler split
 // (engine-concepts §11). Pure leaf module — no engine-internal deps.
 //
 // Scalar complex representation: a plain JS object `{re, im}` of two

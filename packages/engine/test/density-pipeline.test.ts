@@ -5,8 +5,8 @@
 // =====================================================================
 //
 // Mirrors materialiser-pipeline.test.ts for the density side. Pins
-// the composable-stage pipeline added by P3b (engine-concepts §18.11
-// / §20.10.5 item 5).
+// the composable-stage pipeline added by P3b (engine-concepts §18.2
+// / §20.10).
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

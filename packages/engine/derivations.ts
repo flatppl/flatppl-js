@@ -283,7 +283,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     }
   }
 
-  // Fixed-phase value resolution is DEMAND-DRIVEN (engine-concepts §17.4).
+  // Fixed-phase value resolution is DEMAND-DRIVEN (engine-concepts §17.1).
   // `fixedValues` is a lazy, memoised, cycle-guarded resolver (FixedValues
   // — see fixed-values.ts), NOT an eager map. A binding's fixed value is
   // computed only when a consumer first asks for it — a shape const-eval
@@ -409,7 +409,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // (derivations); neither means the engine silently gave up on a
   // deterministic computation.
   //
-  // Demand-driven note (§17.4): with the lazy resolver this `.has(name)`
+  // Demand-driven note (§17.1): with the lazy resolver this `.has(name)`
   // is the ONE intentional bounded forcing point. It resolves only
   // bindings that are fixed-phase AND not object-typed AND have no
   // derivation — exactly the set the old eager sweep would have left
@@ -724,7 +724,7 @@ function classifyDerivation(
     // `tuple_get(<rand>, 0)`. The DRAW of a forward composite measure
     // (lawof of a broadcast/aggregate, a pushfwd, …) can't be sampled by
     // the per-draw measure walker (sampler.walk), but the batched materialiser can —
-    // so route it there on demand (engine-concepts §17.4 stage 2). Leaf
+    // so route it there on demand (engine-concepts §11 (demand-driven composite rand)). Leaf
     // rand stays on the existing batched-leaf path (sampleLeafN via
     // pre-eval); the gate lives in classifyRandSample. Checked before the
     // generic `evaluate` fallback below (tuple_get is otherwise evaluable).
@@ -820,7 +820,7 @@ function _classifyWeightedByFunction(
     fnIR = fnBinding.ir;
     if (!fnIR || fnIR.kind !== 'call' || fnIR.op !== 'functionof') return null;
     // Callable-layer check (function-layer or kernel-layer per engine-
-    // concepts §19.2). Aliases to standard-module functions pass too
+    // concepts §19). Aliases to standard-module functions pass too
     // — the alias-resolution pass canonicalises their RHS to a module-
     // namespaced ref, and the inferred function type is set by typeinfer's
     // cross-module-ref resolution.
@@ -1176,7 +1176,7 @@ function classifyIid(
   return { kind: 'iid', from: baseName, dims };
 }
 
-// Demand-driven composite `rand` draw (engine-concepts §17.4 stage 2).
+// Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand)).
 //
 // `samples, _ = rand(state, iid(M, count))` lowers (multi-LHS) to
 // `samples = tuple_get(%mlhs, 0)` / `_ = tuple_get(%mlhs, 1)` with
@@ -1744,7 +1744,7 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
       // Kernel detection by producer tag (functionof/kernelof/fn) OR
       // by inferredType (a kernel-first jointchain/kchain binding
       // whose inferred type is kernelType). Engine-concepts §19 +
-      // §19.5: the layer is read from the type system; the producer
+      // §19: the layer is read from the type system; the producer
       // tag's traditional set isn't authoritative for ordinary-call
       // bindings that produce a kernel-typed value.
       const isKernel = !!b && (
@@ -2005,7 +2005,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // cascade-prune the moment the orchestrator dropped rp's
   // derivation (it's a record, not numeric — pre-eval drops those).
   //
-  // Demand-driven (§17.4), but FAITHFUL to the old prune. Three cases:
+  // Demand-driven (§17.1), but FAITHFUL to the old prune. Three cases:
   //   1. Has a derivation → resolvable (the materialiser computes it).
   //      First, and cheapest — no value resolution. This is the headline
   //      laziness win: a never-displayed `B = expensive(A)` where A/B
@@ -2600,7 +2600,7 @@ function _flattenNestedChainSteps(steps: any[], outerMarginalize: boolean, ctx: 
 }
 
 /**
- * Unified measure-IR expansion (engine-concepts §17.4).
+ * Unified measure-IR expansion (engine-concepts §11, one-owner mechanisms).
  *
  * Single canonical entry point. Replaces the four-way maze of
  * `expandMeasureIR` (by-name) + `expandMeasureRefsInIR` (by-IR) +
