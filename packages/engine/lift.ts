@@ -1246,12 +1246,24 @@ function liftInlineSubexpressions(bindings: any) {
       const isSquareOpRef = rhs && rhs.type === 'CallExpr' && rhs.callee
         && rhs.callee.type === 'Identifier'
         && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name);
+      // Defensive: discoverScaleD only returns a valid D for an Identifier
+      // scale via the square-op path (→ isSquareOpRef) or via a square rank-2
+      // inferredType (→ isSquareRefType), so a named ref that reaches here with
+      // valid D already satisfies one of the two predicates.
+      /* c8 ignore start */
       if (!isSquareRefType && !isSquareOpRef) {
         return astArg;   // not a statically square [D,D] ref → fallback
       }
+      /* c8 ignore stop */
+    // Defensive: a non-literal, non-Identifier scaleAst cannot pass
+    // discoverScaleD (it resolves D only from ArrayLiterals, which take the
+    // `if (scaleLit)` branch, or from Identifiers), so D is null and the early
+    // `return astArg` at the D-check fires before this else.
+    /* c8 ignore start */
     } else {
       return astArg;     // scale is neither literal nor a named ref → fallback
     }
+    /* c8 ignore stop */
     // Reconcile the iid BASE dimension against the scale dimension D: the
     // affine map scale@x + shift needs a length-D base. Discover the base's
     // static iid count K — base is `iid(<dist>, K)` with a NumberLiteral size
@@ -1279,7 +1291,13 @@ function liftInlineSubexpressions(bindings: any) {
         const rhs = b && b.node && b.node.value;
         if (rhs) return baseIidCount(rhs);
       }
+      /* c8 ignore start */
+      // Defensive tail: only an iid-base locscale survives the analyzer
+      // pre-pass to lift, so baseAst is an iid CallExpr or a named ref to one
+      // (both resolved above); this falls through only for a binding with no
+      // node.value, which does not occur for a real iid base.
       return null;
+      /* c8 ignore stop */
     };
     const baseK = baseIidCount(baseAst);
     if (baseK != null && baseK !== D) return astArg;   // → buildDerivations safety net

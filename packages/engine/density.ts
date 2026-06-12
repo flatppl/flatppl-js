@@ -802,9 +802,14 @@ function _bijBodyRefsAny(body: any, refArrays: any): boolean {
   if (Array.isArray(body.args)) {
     for (const a of body.args) if (_bijBodyRefsAny(a, refArrays)) return true;
   }
+  // Defensive kwargs recursion: bijection bodies are flat deterministic
+  // transforms (binops / positional calls), so a kwarg-bearing sub-node does
+  // not arise in practice; mirrors the covered args recursion above.
+  /* c8 ignore start */
   if (body.kwargs) {
     for (const k of Object.keys(body.kwargs)) if (_bijBodyRefsAny(body.kwargs[k], refArrays)) return true;
   }
+  /* c8 ignore stop */
   return false;
 }
 
@@ -978,12 +983,16 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
     const zForRecurse = { shape: [D], data: z.data };
     walkAcc(M_ir, zForRecurse, refArrays, N, opts, acc, baseEnv, overlay);
     // ADD logDetJ per atom (sign convention — see comment block above).
+    // Float64Array per-atom logDetJ (future: per-atom params) is not yet
+    // reachable: the affine-registry entry returns a scalar logDetJ for a
+    // static [D,D] scale, so only the `typeof === 'number'` branch executes.
     if (typeof logDetJ === 'number') {
       if (logDetJ !== 0) for (let i = 0; i < N; i++) acc[i] += logDetJ;
+    /* c8 ignore start */
     } else {
-      // Float64Array per-atom logDetJ (future: per-atom params).
       for (let i = 0; i < N; i++) acc[i] += logDetJ[i];
     }
+    /* c8 ignore stop */
     return yRest;
   }
   // Consume the head — pushfwd's variate footprint matches M's.
@@ -1019,17 +1028,29 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       }
       envI[bij.fInv.paramName] = y;
       const xi = samplerLib.evaluateExpr(bij.fInv.body, envI);
+      // Defensive: a scalar bijection's f_inv always returns a number here;
+      // mirrors the identical (also-unreached) guard on the atom-independent
+      // fast path below. Vector-valued bijections are rejected upstream, so
+      // this throw is not reachable from a valid model.
+      /* c8 ignore start */
       if (typeof xi !== 'number') {
         throw new Error('density: pushfwd f_inv returned non-scalar (got '
           + (typeof xi) + '); per-atom or vector-valued bijections not yet '
           + 'supported here');
       }
+      /* c8 ignore stop */
       // Score the base measure for THIS atom only (N=1). Slice each refArray
       // to a length-1 view so M's own latent-param refs resolve to atom i.
       const refArraysI: Record<string, any> = {};
       for (let j = 0; j < refNames.length; j++) {
         const k = refNames[j];
         const v = refArrays[k];
+        // Vector-atom (shape rank>1) latent refArrays stay Value-typed at the
+        // worker boundary; scalar-column latents (the common and tested case)
+        // are unwrapped to a Float64Array and take the else branch below. The
+        // Value slice mirrors that Float64Array slice; a vector-latent
+        // bijection is not currently constructible at this site.
+        /* c8 ignore start */
         if (valueLib.isValue(v)) {
           const tailLen = v.data.length / v.shape[0];
           refArraysI[k] = {
@@ -1037,6 +1058,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
             data: v.data.subarray(i * tailLen, (i + 1) * tailLen),
           };
         } else {
+          /* c8 ignore stop */
           refArraysI[k] = v.subarray(i, i + 1);
         }
       }

@@ -2562,7 +2562,12 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
           return looksNonScalar(st.value);
         }
       }
+      /* c8 ignore start */
+      // Defensive loop-completion: a bound identifier matches an
+      // AssignStatement (or a `~`-statement carrying its name) and returns
+      // above; only an unbound name runs the loop to completion.
     }
+    /* c8 ignore stop */
     return false;
   };
   // The registry affine-density path that lift routes a non-scalar locscale
@@ -2580,7 +2585,11 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
           return baseIsIid(st.value);
         }
       }
+      /* c8 ignore start */
+      // Defensive loop-completion: only an unbound base name runs the loop to
+      // completion; a bound name matches and returns above.
     }
+    /* c8 ignore stop */
     return false;
   };
   if (looksNonScalar(args[1]) || looksNonScalar(args[2])) {
@@ -2621,7 +2630,12 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
             return resolveLit(st.value);
           }
         }
+      /* c8 ignore start */
+      // Defensive loop-completion: only an unbound scale|shift name runs the
+      // loop to completion; a bound name matches and returns above. (The tail
+      // `return null` below IS reached — e.g. a named lower_cholesky ref.)
       }
+      /* c8 ignore stop */
       return null;
     };
     const litRows = (e: any): any[] | null => {
@@ -2650,8 +2664,15 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
             return baseIidCount(st.value);
           }
         }
+      /* c8 ignore start */
+      // Defensive tail: baseIidCount is only called after baseIsIid(args[0])
+      // returned true, which for an Identifier base means the same 1-level loop
+      // found an AssignStatement binding to iid above; an inline iid base hits
+      // the CallExpr branch. The fall-through is unreachable for a routed
+      // locscale, so the loop-completing brace + tail return aren't exercised.
       }
       return null;
+      /* c8 ignore stop */
     };
     const scaleRows = litRows(args[2]);
     if (scaleRows) {
