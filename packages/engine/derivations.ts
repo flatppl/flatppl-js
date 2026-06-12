@@ -258,6 +258,18 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
         b: m.muIR,
       };
     }
+    // Synthetic locscale-affine marker (P3). `lift.inlineLocscaleAffineLift`
+    // rewrites `locscale(base, shift, scale)` with a matrix scale to
+    // `pushfwd(<bij>, base)` and marks the synthetic bijection with
+    // `__locscaleAffineLowering = {LIR, bIR}`. Unlike MvNormal (given `cov`,
+    // so L = lower_cholesky(cov)), locscale is given the affine matrix
+    // DIRECTLY as `scale`, so paramIRs.L = LIR with no cholesky wrap. b is
+    // the shift vector.
+    if ((binding as any).__locscaleAffineLowering) {
+      const m = (binding as any).__locscaleAffineLowering;
+      binding.bijection.registryName = 'affine';
+      binding.bijection.paramIRs = { L: m.LIR, b: m.bIR };
+    }
   }
 
   const derivations = Object.create(null);
