@@ -184,3 +184,24 @@ test('locscale nested inside draw (~ desugar) is expanded and scores correctly',
   assert.ok(Math.abs(lp.samples[0] - nLogpdfLocal(5.0, 3.0, 2.0)) < 1e-12,
     `got ${lp.samples[0]}, expected ${nLogpdfLocal(5.0, 3.0, 2.0)}`);
 });
+
+// Negative scale: orientation-flips but log|scale| keeps the density correct.
+// locscale(Normal(0,1), 3, -2) == Normal(3, 2). Closed-form oracle.
+test('locscale with negative scale matches Normal(mu, |scale|)', async () => {
+  for (const yVal of [5.0, 3.0, 0.0, -1.2]) {
+    const ctx = makeCtx(
+      `B = locscale(Normal(0.0, 1.0), 3.0, -2.0)\nlp = logdensityof(B, ${yVal})\n`);
+    const lp = await ctx.getMeasure('lp');
+    const expected = nLogpdf(yVal, 3.0, 2.0);
+    assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+      `y=${yVal}: got ${lp.samples[0]}, expected ${expected}`);
+  }
+});
+
+test('locscale rejects the wrong number of arguments', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), 0.0)\n', 'three');
+});
+
+test('locscale rejects keyword arguments', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), shift = 0.0, scale = 2.0)\n', 'three');
+});
