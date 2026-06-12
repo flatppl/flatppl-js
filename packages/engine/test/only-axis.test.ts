@@ -53,7 +53,7 @@ function evalRHS(src: string, binding: string, env: any) {
 // Normalise a rank-≥2 aggregate result to a flat number array.
 // The broadcast-reduce path now returns a shape-explicit Value {shape, data};
 // specialisers (opt=on) may still return nested JS arrays. Both forms carry
-// the same row-major data; flatData/shapeOf normalise across both.
+// the same row-major data; flatData normalises across both.
 function flatData(got: any): number[] {
   if (got && got.data instanceof Float64Array) return Array.from(got.data);
   if (Array.isArray(got)) {
@@ -69,11 +69,6 @@ function flatData(got: any): number[] {
     return out;
   }
   return Array.from(got);
-}
-function shapeOf(got: any): number[] {
-  if (got && got.shape) return got.shape;
-  if (Array.isArray(got) && Array.isArray(got[0])) return [got.length, got[0].length];
-  return [got.length];
 }
 
 // ---------------------------------------------------------------------

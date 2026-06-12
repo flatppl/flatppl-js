@@ -49,6 +49,7 @@ function assertMatrix(m: any, data: number[], intrinsic: number[], label: any) {
 // A rank-1 aggregate result: plain vector value, no intrinsicShape rank-2 tag.
 function assertVector(m: any, data: number[], label: any) {
   assert.equal(m.elems, undefined, `${label}: must not be an {elems} tuple`);
+  assert.equal(m.intrinsicShape, undefined, `${label}: rank-1 result must not carry an intrinsicShape`);
   assert.deepEqual(Array.from(m.value.data), data, `${label}: value.data`);
 }
 
