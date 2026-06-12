@@ -137,14 +137,17 @@ m = MvNormal(mu = mu, cov = sigma)
     /(MvNormal|lower_cholesky):.*positive definite/i);
 });
 
-test('MvNormal: dim mismatch error mu vs cov', async () => {
+test('MvNormal: statically visible mu/cov dim mismatch refuses cleanly', async () => {
+  // D=2 mu against a [3,3] cov is a POSITIVE static conflict — the 5h-A
+  // lift gate refuses the lowering and the thin kind='mvnormal' refusal
+  // channel (matMvNormal) names the spec-§08 contract.
   const ctx = makeCtx(`
 mu = [0.0, 0.0]
 sigma = rowstack([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
 m = MvNormal(mu = mu, cov = sigma)
 `);
   await assert.rejects(ctx.getMeasure('m'),
-    /MvNormal.*must be 2x2|3x3/);
+    /MvNormal.*SQUARE matrix matching mu's length/);
 });
 
 // =====================================================================

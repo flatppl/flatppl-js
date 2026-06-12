@@ -1616,12 +1616,17 @@ const OP_HANDLERS = {
   // multivariate kernels below — only MvNormal has a §22 pushfwd-of-iid
   // lowering; the other 7 (Dirichlet, Multinomial, BinnedPoissonProcess,
   // Wishart, InverseWishart, LKJ, LKJCholesky) have no lowering and this
-  // is their sole density path. So neither walkMultivariate nor
-  // MV_DENSITY_FNS can be retired; at most the MvNormal ENTRY could, and
-  // only after 5h-A makes dynamic-D MvNormal lower to pushfwd (a
-  // gate-skipped MvNormal still scores here today, using the SAME affine
-  // registry as walkPushfwd — equivalence pinned in
-  // mvnormal-lift-lowering.test.ts).
+  // is their sole density path. 5h-A ADJUDICATION (the lift gate now
+  // lowers every binding-level MvNormal; matMvNormal is a thin refusal):
+  // the MvNormal entries here still CANNOT retire —
+  //   (a) MV_DENSITY_FNS.MvNormal backs builtin_logdensityof('MvNormal',…),
+  //       the spec §07 FlatPDL ABI ("an engine must implement
+  //       builtin_logdensityof … for every built-in measure kernel");
+  //   (b) this OP_HANDLERS walker entry scores raw MvNormal nodes inside
+  //       composite kernel bodies (per-atom mu/cov — the formal-carrying
+  //       shapes the lift gate deliberately skips; pinned by the
+  //       walkMultivariate per-atom tests). Retiring (b) is 5h-B scope
+  //       (teach the composite recognizers the lowered pushfwd form).
   MvNormal:             walkMultivariate,
   Dirichlet:            walkMultivariate,
   Multinomial:          walkMultivariate,

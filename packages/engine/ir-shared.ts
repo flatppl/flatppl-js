@@ -104,6 +104,29 @@ function resolveConstant(
     try { bIR = lowerExpr(b.node.value); } catch (_) { return null; }
     return resolveConstant(bIR, bindings, seen, fixedValues);
   }
+  // `lengthof(<ref>)` of a fixed-phase ARRAY value. The §22 dynamic-D
+  // MvNormal lowering emits `iid(Normal(0,1), lengthof(<mu-ref>))` when
+  // mu's length is not statically typed; classifyIid's deferred-count
+  // pass resolves it HERE once pre-eval has the vector cached. Sits
+  // before the numeric fold below because the argument resolves to an
+  // ARRAY (JS array / Float64Array / shape-tagged Value), which the
+  // generic numeric arg-mapping would reject.
+  if (ir.kind === 'call' && ir.op === 'lengthof'
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    const a = ir.args[0];
+    if (a && a.kind === 'ref' && a.ns === 'self'
+        && fixedValues && typeof fixedValues.get === 'function'
+        && fixedValues.has && fixedValues.has(a.name)) {
+      const v = fixedValues.get(a.name);
+      if (Array.isArray(v)) return v.length;
+      if (v instanceof Float64Array) return v.length;
+      if (v && typeof v === 'object' && Array.isArray(v.shape)
+          && v.shape.length >= 1 && Number.isInteger(v.shape[0])) {
+        return v.shape[0];
+      }
+    }
+    return null;
+  }
   // Constant-fold small arithmetic. Crucially, the parser lowers a
   // negative literal `-3.5` to `(call neg (lit 3.5))`, so without this
   // we'd fail to recognise plain negative numbers as constants. The

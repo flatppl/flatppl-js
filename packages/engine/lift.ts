@@ -1004,10 +1004,23 @@ function liftInlineSubexpressions(bindings: any) {
       // §21/§22.2(d); teaching them the lowered pushfwd form is 5h-B),
       // and `lengthof(<formal>)` could never resolve anyway.
       if (__mvNormalRankConflict(muAst, out, 1)) return astArg;
-      const muRefAst = (muAst.type === 'Identifier' && out.has(muAst.name))
-        ? makeIdent(muAst.name, astArg.loc)
-        : null;
-      if (!muRefAst) return astArg;   // formal / inline dynamic mu → composite scope
+      let muRefAst: any = null;
+      if (muAst.type === 'Identifier') {
+        // Must name a REAL module binding — a bare formal skips (above).
+        if (out.has(muAst.name)) muRefAst = makeIdent(muAst.name, astArg.loc);
+      } else if (muAst.type === 'CallExpr' || muAst.type === 'ArrayLiteral') {
+        // Inline dynamic-shape mu (`MvNormal(mu = fill(0.0, k), …)`):
+        // hoist it to an anon binding so the count expression has a
+        // name to measure. Skip if it contains formals/placeholders —
+        // those can't escape the enclosing reification scope (the
+        // composite recognizers own that shape).
+        if (!__containsFormalRef(muAst, out)) {
+          const muAnon = freshName();
+          out.set(muAnon, makeSyntheticBinding(muAnon, muAst));
+          muRefAst = makeIdent(muAnon, astArg.loc);
+        }
+      }
+      if (!muRefAst) return astArg;   // formal-carrying mu → composite scope
       countAst = {
         type: 'CallExpr',
         callee: makeIdent('lengthof', astArg.loc),
@@ -1637,6 +1650,28 @@ function liftInlineSubexpressions(bindings: any) {
       }
     }
     return null;
+  }
+
+  // 5h-A: true when the AST contains an Identifier that names neither a
+  // module binding nor a builtin — a reification formal / boundary
+  // placeholder (`m` in `kernelof(…, m = m)`, `_x_`-class names). Such an
+  // expression cannot be hoisted to a module-level anon (the name only
+  // has per-call-site meaning inside the enclosing reified scope).
+  function __containsFormalRef(ast: any, bindings: any): boolean {
+    const builtins = require('./builtins.ts');
+    let found = false;
+    (function walk(n: any) {
+      if (found || !n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+      if (n.type === 'Identifier') {
+        if (!bindings.has(n.name) && !builtins.ALL_KNOWN.has(n.name)) found = true;
+        return;
+      }
+      // Callee identifiers are op names, not value refs — walk args only.
+      if (n.type === 'CallExpr') { walk(n.args); return; }
+      for (const k in n) { if (k !== 'loc' && k !== 'callee') walk(n[k]); }
+    })(ast);
+    return found;
   }
 
   // 5h-A: POSITIVE rank-conflict detector — true only when the argument's

@@ -37,107 +37,33 @@ const { nameSeed, measureFromValue } = shared;
 // =====================================================================
 
 function matMvNormal(name: string, d: DerivationMvNormal, ctx: any) {
-  // MvNormal(mu, cov) — per spec §08, samples are n-vectors with
-  // x ~ Normal_n(mu, cov). Implementation IS the canonical
-  // decomposition (engine-concepts §22):
-  //     MvNormal(mu, Sigma) = pushfwd(affine(L, mu), iid(Normal(0,1), n))
-  // with L = lower_cholesky(Sigma). Pipeline:
-  //   1. Resolve mu (atom-indep vector, shape=[n]) and cov ([n,n]).
-  //   2. L = lower_cholesky(cov) — one O(n³) call, once per
-  //      materialise (Sigma is atom-independent today; per-atom Sigma
-  //      lands with the matPushfwd vector-base extension).
-  //   3. Draw N atoms of n standard normals → shape=[N, n]. This IS
-  //      the iid(Normal(0,1), n) leaf of the decomposition.
-  //   4. Apply the `affine` bijection registry entry's atom-batched
-  //      forward — `y = L·z + mu`. This IS the pushfwd half of the
-  //      decomposition; the registry entry routes the matmul through
-  //      ops.dispatch + the diag-stored fast lane, identical to the
-  //      inline code that lived here pre-§22.
-  //
-  // INTENTIONAL TERMINAL MATERIALISER — do NOT delete (status as of
-  // Phase 5.1 Session 5g). The §22 lift-time lowering
-  // (`lift.inlineMvNormalLift`) rewrites `MvNormal(mu, cov)` to
-  // `pushfwd(affine, iid(Normal, D))` whenever the event dim D is
-  // STATICALLY known; those calls never reach here (their IR carries no
-  // MvNormal node). matMvNormal is reached ONLY for the three cases the
-  // 5f gate provably cannot statically lower — and for which it remains
-  // the correct materialiser BECAUSE its body already IS the §22 affine
-  // decomposition (same bijection-registry entry as the lowered path):
-  //   1. dynamic-shape cov (`diagmat([…])`, `eye(<param>)` — `%dynamic`
-  //      inferredType): the gate needs a static D to emit
-  //      `iid(Normal, D)` (lift.ts `__discoveredMvNormalD`). Routing
-  //      this through pushfwd needs a runtime-count iid base — deferred
-  //      (TODO §22 follow-up 5h-A: dynamic-D iid routing).
-  //   2. matrix-form mean (`mu = rowstack([[k]])`): the rank-1 mean
-  //      guard in the gate (lift.ts, §5f Issue 1) intentionally rejects
-  //      it so it routes here rather than mis-lowering to a [1,1] param.
-  //   3. positional form `MvNormal(mu_vec, cov_mat)`: the gate parses
-  //      kwargs only.
-  // Full retirement is gated on 5h (dynamic-D iid routing + positional
-  // parsing). Until then this is load-bearing, NOT a legacy shortcut.
-  //
-  // logTotalmass = 0 (normalized probability measure); n_eff = N.
-  const valueLib    = require('./value.ts');
-  const sampler     = require('./sampler.ts');
-  const bijRegistry = require('./bijection-registry.ts');
-  const distIR = d.distIR;
-  if (!distIR || !distIR.kwargs || !distIR.kwargs.mu || !distIR.kwargs.cov) {
-    return Promise.reject(new Error('MvNormal: requires mu and cov kwargs'));
-  }
-  const muVal = orchestrator.resolveIRToValue(
-    distIR.kwargs.mu, ctx.bindings, ctx.fixedValues);
-  const covVal = orchestrator.resolveIRToValue(
-    distIR.kwargs.cov, ctx.bindings, ctx.fixedValues);
-  if (muVal == null) {
-    return Promise.reject(new Error('MvNormal: cannot resolve mu (per-atom params deferred)'));
-  }
-  if (covVal == null) {
-    return Promise.reject(new Error('MvNormal: cannot resolve cov (per-atom params deferred)'));
-  }
-  const valueOps = require('./value-ops.ts');
-  const muValue = valueLib.asValue(muVal);
-  if (muValue.shape.length !== 1) {
-    return Promise.reject(new Error(
-      'MvNormal: mu must be a vector, got shape=' + JSON.stringify(muValue.shape)));
-  }
-  const n = muValue.shape[0];
-  const covValue = Array.isArray(covVal) && covVal.length > 0 && Array.isArray(covVal[0])
-    ? valueOps._nestedToValue(covVal)
-    : valueLib.asValue(covVal);
-  if (covValue.shape.length !== 2 || covValue.shape[0] !== n || covValue.shape[1] !== n) {
-    return Promise.reject(new Error(
-      'MvNormal: cov must be ' + n + 'x' + n + ', got shape='
-      + JSON.stringify(covValue.shape)));
-  }
-  let L;
-  try {
-    L = sampler._internal.ARITH_OPS.lower_cholesky(covValue);
-  } catch (err) {
-    return Promise.reject(new Error('MvNormal: ' + (err as any).message));
-  }
-  const N = ctx.sampleCount;
-  const stdNormalIR = {
-    kind: 'call', op: 'Normal',
-    kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
-  };
-  return ctx.sendWorker({
-    type: 'sampleN', ir: stdNormalIR, count: N, repeat: n,
-    refArrays: {},
-    seed: nameSeed(name, ctx.rootKey),
-  }).then((reply: any) => {
-    const z = { shape: [N, n], data: reply.samples };
-    // Hand the affine pushforward off to the bijection registry.
-    // Atom-batched forward = `L·z + mu`; the registry entry routes
-    // the matmul through ops.dispatch (dense L) or valueOps.mulN
-    // (diag-stored L) and the shift through ops.dispatch atom-aware.
-    const result = bijRegistry.affineAtomBatchedForward(
-      z, { L: L, b: muValue }, N);
-    return measureFromValue(result, {
-      logWeights: null,
-      logTotalmass: 0,
-      n_eff: N,
-    });
-  });
+  // THIN REFUSAL (5h-A retired the terminal materialiser). Every
+  // lowerable MvNormal is rewritten at lift time to the canonical §22
+  // decomposition `pushfwd(affine(chol(cov), mu), iid(Normal(0,1), D))`
+  // — static D, dynamic D (lengthof count), positional form, dynamic /
+  // hoisted-inline shapes all included (lift.inlineMvNormalLift). An
+  // MvNormal IR node that still reaches classification is one the gate
+  // POSITIVELY refused, and it could not have materialised on the old
+  // affine machinery either:
+  //   - a matrix-form mean (spec §08: mu is a VECTOR — the [1,1]
+  //     rowstack mean is invalid input, formerly "worked" by accident);
+  //   - mu/cov carrying reification formals OUTSIDE a recognized
+  //     composite-body shape (the §21 recognizers own those);
+  //   - a malformed call (missing mu/cov).
+  // Refusing here keeps the error channel clean and per-binding instead
+  // of a vague "no derivation".
+  const distIR: any = d.distIR || {};
+  const hasMu = !!(distIR.kwargs && distIR.kwargs.mu);
+  const hasCov = !!(distIR.kwargs && distIR.kwargs.cov);
+  const why = (!hasMu || !hasCov)
+    ? 'mu and cov are required (spec §08)'
+    : 'mu must be a rank-1 VECTOR and cov a SQUARE matrix matching '
+      + "mu's length (spec §08) — a matrix-form mean, mismatched mu/cov "
+      + 'dims, or a formal-carrying argument outside a recognized '
+      + 'kernel-composite shape does not lower to the §22 '
+      + 'pushfwd-of-iid decomposition';
+  return Promise.reject(new Error(
+    "MvNormal '" + name + "': not lowerable to pushfwd(affine, iid) — " + why));
 }
 
 // =====================================================================

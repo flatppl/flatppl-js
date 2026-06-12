@@ -268,27 +268,26 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
   }
 });
 
-test('5f-1: matrix-form mean (rowstack([[k]])) does NOT flip — routes to matMvNormal', async () => {
-  // 5f adversarial-verify Issue 1: a [1,1] matrix-shaped mean must be
-  // REJECTED by the gate (mu must be rank-1). Otherwise it lowers to a
-  // [1,1] param the density guard misreads as atom-batched, breaking a
-  // density that worked pre-5f. The rank-1 guard in __discoveredMvNormalD
-  // routes it to matMvNormal; density(N(2,4) at 3) = -1.737085713764618.
+test('5h-A: matrix-form mean refuses cleanly (spec §08 — mu is a vector)', async () => {
+  // 5f adversarial-verify Issue 1 kept a [1,1] matrix-shaped mean OFF
+  // the lowering (it would misread as an atom-batched param). With the
+  // matMvNormal terminal retired (5h-A Stage 2), the shape is now an
+  // explicit per-binding refusal rather than an accidental success:
+  // spec §08 declares mu a VECTOR, so a matrix-form mean is invalid
+  // input. The gate's POSITIVE rank-conflict detector keeps it from
+  // lowering; the thin matMvNormal refusal names the §08 contract.
   const ctx = makeCtx(`
 mu = rowstack([[2.0]])
 sigma = rowstack([[4.0]])
 m = MvNormal(mu = mu, cov = sigma)
-lp = logdensityof(m, [3.0])
 `);
   const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
   assert.equal(bijName, undefined,
-    'matrix-form mean → gate skipped (no synthetic bijection)');
+    'matrix-form mean → gate refused (no synthetic bijection)');
   assert.equal(ctx.derivations.m.kind, 'mvnormal',
-    'm stays on the matMvNormal path');
-  const lp = await ctx.getMeasure('lp');
-  const got = lp.samples ? lp.samples[0] : lp.value.data[0];
-  assert.ok(Math.abs(got - (-1.737085713764618)) < 1e-9,
-    `density N(2,4) at 3: got ${got}, expected -1.737085713764618`);
+    'm classifies onto the refusal channel');
+  await assert.rejects(ctx.getMeasure('m'), /mu must be a rank-1 VECTOR/,
+    'materialise surfaces the clean spec-§08 refusal');
 });
 
 // =====================================================================
@@ -514,5 +513,28 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
     const tol = 4 / Math.sqrt(SAMPLE_COUNT);
     assert.ok(Math.abs(mean - 1.5) < tol,
       `dim ${d}: mean ${mean} vs mu 1.5 (tol ${tol})`);
+  }
+});
+
+test('5h-A: INLINE dynamic mu (fill(…) expression) hoists + lowers e2e', async () => {
+  // mu is an inline CallExpr (no binding, deferred/dynamic type): the
+  // gate hoists it to an anon binding so the iid count has a name to
+  // measure (`lengthof(<anon>)`), then lowers as usual. Without the
+  // hoist this shape would have refused — and with matMvNormal retired,
+  // refused shapes must be REAL spec violations, not engineering gaps.
+  const ctx = makeCtx(`
+X = MvNormal(mu = fill(0.5, 3), cov = eye(3))
+`);
+  const bijName = Array.from(ctx.bindings.keys()).find((n: any) => /^__bij/.test(n));
+  assert.ok(bijName, 'inline dynamic mu → gate fires via the hoisted anon');
+  assert.notEqual(ctx.derivations.X.kind, 'mvnormal');
+  const X = await ctx.getMeasure('X');
+  assert.deepEqual(Array.from(X.value.shape), [SAMPLE_COUNT, 3]);
+  for (let d = 0; d < 3; d++) {
+    let sum = 0;
+    for (let i = 0; i < SAMPLE_COUNT; i++) sum += X.value.data[i * 3 + d];
+    const mean = sum / SAMPLE_COUNT;
+    const tol = 4 / Math.sqrt(SAMPLE_COUNT);
+    assert.ok(Math.abs(mean - 0.5) < tol, `dim ${d}: mean ${mean} vs 0.5`);
   }
 });
