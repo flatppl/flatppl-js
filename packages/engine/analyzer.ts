@@ -2441,6 +2441,12 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
 // locscale via type-inference-directed routing is tracked separately.)
 let _locscaleCounter = 0;
 
+const _LOCSCALE_LITERAL_TYPES = new Set([
+  'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
+function _isNonScalarLiteral(e: any) {
+  return e && (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral');
+}
+
 function expandLocscaleStatements(ast: any, diagnostics: any[]) {
   if (!ast || !ast.body) return;
   const newBody: any[] = [];
@@ -2506,7 +2512,16 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
   // for symbols stays well-formed — mirrors restrict-expand's sloc.
   const sloc = { ...call.loc, synthetic: true, source: 'locscale-expand' };
   const args = call.args || [];
-  if (args.length !== 3 || args.some((a: any) => a && a.type === 'KeywordArg')) {
+  if (args.some((a: any) => a && a.type === 'KeywordArg')) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale() does not accept keyword arguments; pass `
+        + `(measure, shift, scale) positionally`,
+      loc: call.loc,
+    });
+    return call;
+  }
+  if (args.length !== 3) {
     diagnostics.push({
       severity: 'error',
       message: `locscale() takes exactly three positional arguments `
@@ -2520,9 +2535,7 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
   // literal. Mirrors restrict-expand's measure-arg guard (this combinator
   // wraps the base in pushfwd, so unlike restrict it allows a CallExpr base,
   // not only an Identifier).
-  const LITERAL_TYPES = new Set([
-    'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
-  if (args[0] && LITERAL_TYPES.has(args[0].type)) {
+  if (args[0] && _LOCSCALE_LITERAL_TYPES.has(args[0].type)) {
     diagnostics.push({
       severity: 'error',
       message: `locscale()'s first argument (the measure) must be a measure `
@@ -2537,9 +2550,7 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
   // (Full multivariate locscale — including opaque/named matrix scale — is
   // tracked separately as a type-inference-directed routing change; until then
   // use pushfwd directly per spec §06.)
-  const isNonScalarLiteral = (e: any) =>
-    e && (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral');
-  if (isNonScalarLiteral(args[1]) || isNonScalarLiteral(args[2])) {
+  if (_isNonScalarLiteral(args[1]) || _isNonScalarLiteral(args[2])) {
     diagnostics.push({
       severity: 'error',
       message: `locscale() supports only scalar shift and scale; for `

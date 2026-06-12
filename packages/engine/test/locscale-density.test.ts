@@ -126,7 +126,7 @@ test('locscale(Normal(0,1), mu, sigma) density ≡ Normal(mu, sigma) (closed for
 // =====================================================================
 
 test('locscale rejects a non-measure (literal) base argument', () => {
-  expectError('B = locscale(5.0, 0.0, 2.0)\n', 'measure');
+  expectError('B = locscale(5.0, 0.0, 2.0)\n', 'must be a measure expression');
 });
 
 test('locscale sampling produces the affine-mapped base draws', async () => {
@@ -148,7 +148,7 @@ test('locscale rejects a zero literal scale', () => {
 });
 
 test('locscale rejects a non-finite literal scale', () => {
-  expectError('B = locscale(Normal(0.0, 1.0), 0.0, 1e999)\n', 'finite');
+  expectError('B = locscale(Normal(0.0, 1.0), 0.0, 1e999)\n', 'nonzero finite');
 });
 
 test('locscale rejects a vector-literal scale (interim: use pushfwd)', () => {
@@ -203,5 +203,5 @@ test('locscale rejects the wrong number of arguments', () => {
 });
 
 test('locscale rejects keyword arguments', () => {
-  expectError('B = locscale(Normal(0.0, 1.0), shift = 0.0, scale = 2.0)\n', 'three');
+  expectError('B = locscale(Normal(0.0, 1.0), shift = 0.0, scale = 2.0)\n', 'keyword');
 });
