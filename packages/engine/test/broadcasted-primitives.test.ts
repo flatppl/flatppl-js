@@ -11,10 +11,15 @@
 //     product).
 //   - Scalar-broadcast cases (rank-0 × rank-N) work.
 //   - `exp.(A)` / `log.(A)` for any-rank flat arrays.
-//   - Shape mismatch + singleton expansion correctly fall through to
-//     the cold `_broadcastApply` path (the existing tests there are
-//     unaffected; here we just confirm singleton-expansion still
-//     works).
+//   - Spec §04 singleton-axis expansion ([2,3] .* [1,3], addaxes-
+//     aligned operands) dispatches on the SAME fast path (stride-0
+//     reads in the value-ops elementwise impls; the shared
+//     `_broadcastOutShape` combiner owns the equal-or-1 rule).
+//   - Inputs the fast path must NOT claim still ride the cold
+//     `_broadcastApply` path: nested-vector (Ref-wrap) args,
+//     outerRank-tagged vec-of-vec Values (per-cell sees the inner
+//     vector WHOLE — §04 outer-axis semantics), incompatible ranks/
+//     sizes (so the cold path's spec diagnostics fire).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -185,15 +190,12 @@ Y = A * B
 });
 
 // =====================================================================
-// Cold-path fallthrough — singleton-axis expansion is NOT handled by
-// the fast path; falls through to `_broadcastApply` which does the
-// spec §04 size-1 expansion.
+// Spec §04 singleton-axis expansion — now ON the fast path (stride-0
+// reads in value-ops; previously fell through to the per-cell cold
+// path). Results are pinned identical to the cold path's.
 // =====================================================================
 
-test('singleton-axis broadcast falls through to cold path (spec §04)', () => {
-  // [3] .* [1] — spec broadcast expands the size-1 axis by repetition.
-  // The fast path detects shape mismatch and returns null; cold path
-  // produces [3].
+test('singleton-axis broadcast: [3] .* [1] expands by repetition (spec §04)', () => {
   const r = evalBinding(`
 A = [10.0, 20.0, 30.0]
 B = [2.0]
@@ -203,4 +205,208 @@ Y = A .* B
   const out = toArray(r);
   assert.equal(out.length, 3);
   assert.deepEqual(out, [20, 40, 60]);
+});
+
+test('addaxes row-broadcast (NumPy-style): [2,3] .+ [1,3]', () => {
+  // Spec §04's own alignment idiom: `addaxes(b, 1, 0)` turns the
+  // length-3 vector into a [1,3] operand whose singleton leading axis
+  // repeats across A's rows.
+  const r = evalBinding(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+b = [10.0, 20.0, 30.0]
+Y = A .+ addaxes(b, 1, 0)
+`, 'Y');
+  assert.deepEqual(r.shape, [2, 3]);
+  assert.deepEqual(toArray(r), [11, 22, 33, 14, 25, 36]);
+});
+
+test('addaxes column-broadcast (Julia-style): [2,3] .+ [2,1]', () => {
+  const r = evalBinding(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+b = [100.0, 200.0]
+Y = A .+ addaxes(b, 0, 1)
+`, 'Y');
+  assert.deepEqual(r.shape, [2, 3]);
+  assert.deepEqual(toArray(r), [101, 102, 103, 204, 205, 206]);
+});
+
+test('singleton expansion on both operands: [2,1] .* [1,3]', () => {
+  const r = evalBinding(`
+a = [2.0, 3.0]
+b = [10.0, 100.0, 1000.0]
+Y = addaxes(a, 0, 1) .* addaxes(b, 1, 0)
+`, 'Y');
+  // Outer product via singleton broadcast: out[i,j] = a[i]*b[j].
+  assert.deepEqual(r.shape, [2, 3]);
+  assert.deepEqual(toArray(r), [20, 200, 2000, 30, 300, 3000]);
+});
+
+test('ifelse.(cond, then, else) with a singleton branch', () => {
+  // ifelseElem rides the same combiner: the size-1 `then` operand
+  // repeats along the condition's axis.
+  const r = evalBinding(`
+c = [true, false, true]
+t = [7.0]
+e = [1.0, 2.0, 3.0]
+Y = ifelse.(c, t, e)
+`, 'Y');
+  assert.deepEqual(toArray(r), [7, 2, 7]);
+});
+
+// =====================================================================
+// Fast-vs-cold routing pins — the fast path must claim exactly the
+// flat-Value singleton/equal-shape cases and NOTHING with nested-
+// vector semantics. Pinned by counting `_broadcastApply` (cold) calls
+// through the monkeypatch seam (node:test runs each file in its own
+// process, so the patch can't leak).
+// =====================================================================
+
+const valueLib = require('../value.ts');
+
+function routeOf(fn: () => any): { path: string; result?: any; error?: string } {
+  const internal = sampler._internal;
+  const orig = internal._broadcastApply;
+  let cold = 0;
+  internal._broadcastApply = function (...a: any[]) { cold++; return orig.apply(null, a); };
+  try {
+    const result = fn();
+    return { path: cold > 0 ? 'cold' : 'fast', result };
+  } catch (e: any) {
+    return { path: cold > 0 ? 'cold' : 'fast', error: e.message };
+  } finally {
+    internal._broadcastApply = orig;
+  }
+}
+
+test('routing: singleton-expansion broadcasts dispatch FAST', () => {
+  const r = routeOf(() => evalBinding(`
+A = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+b = [10.0, 20.0, 30.0]
+Y = A .+ addaxes(b, 1, 0)
+`, 'Y'));
+  assert.equal(r.path, 'fast');
+  assert.deepEqual(toArray(r.result), [11, 22, 33, 14, 25, 36]);
+});
+
+test('routing: flat-scalar JS-array args coerce and dispatch FAST', () => {
+  // Args reaching the broadcast as plain JS number arrays (not
+  // Values) coerce via asValue on the fast path.
+  const ref = (n: string) => ({ kind: 'ref', ns: 'self', name: n });
+  const fnOf = { kind: 'call', op: 'functionof', params: ['a', 'b'],
+    body: { kind: 'call', op: 'add', args: [ref('a'), ref('b')] } };
+  const ir = { kind: 'call', op: 'broadcast',
+    args: [fnOf, { kind: 'lit', value: [1, 2, 3] }, { kind: 'lit', value: [10] }] };
+  const r = routeOf(() => sampler.evaluateExpr(ir, {}));
+  assert.equal(r.path, 'fast');
+  assert.deepEqual(toArray(r.result), [11, 12, 13]);
+});
+
+test('routing: nested-vector (Ref-wrap) args stay COLD with per-cell semantics', () => {
+  // `[C]`-style hold-constant idiom: the JS-array layer is one loop
+  // axis; per cell the body sees the inner VECTOR whole. Must not be
+  // claimed by the elementwise fast path.
+  const C = valueLib.asValue([1, 2, 3]);
+  const ref = (n: string) => ({ kind: 'ref', ns: 'self', name: n });
+  const fnOf = { kind: 'call', op: 'functionof', params: ['a', 'b'],
+    body: { kind: 'call', op: 'add', args: [ref('a'), ref('b')] } };
+  const ir = { kind: 'call', op: 'broadcast',
+    args: [fnOf, ref('wrapped'), { kind: 'lit', value: [10, 20] }] };
+  const r = routeOf(() => sampler.evaluateExpr(ir, { wrapped: [C, C] }));
+  assert.equal(r.path, 'cold');
+  // Two cells, each add(C, scalar): [[11,12,13],[21,22,23]].
+  assert.deepEqual(r.result.shape, [2, 3]);
+  assert.deepEqual(toArray(r.result), [11, 12, 13, 21, 22, 23]);
+});
+
+test('routing: outerRank-tagged vec-of-vec + matrix REFUSES (spec §04 outer axes)', () => {
+  // A vec-of-vec Value (outerRank=1, storage shape [2,3]) has ONE
+  // outer axis whose cells are 3-vectors; a [2,3] matrix has two.
+  // Pre-widening the fast path compared storage shapes and silently
+  // elementwise-added — semantically wrong. The gate now bails to the
+  // cold path, whose classifier throws the §04 outer-axis error.
+  const vov = valueLib.asValue([[1, 2, 3], [4, 5, 6]]);
+  assert.equal(vov.outerRank, 1, 'precondition: asValue tags vec-of-vec');
+  const ref = (n: string) => ({ kind: 'ref', ns: 'self', name: n });
+  const fnOf = { kind: 'call', op: 'functionof', params: ['a', 'b'],
+    body: { kind: 'call', op: 'add', args: [ref('a'), ref('b')] } };
+  const mat = { kind: 'call', op: 'rowstack',
+    args: [{ kind: 'lit', value: [[1, 1, 1], [1, 1, 1]] }] };
+  const ir = { kind: 'call', op: 'broadcast', args: [fnOf, ref('vov'), mat] };
+  const r = routeOf(() => sampler.evaluateExpr(ir, { vov }));
+  assert.equal(r.path, 'cold');
+  assert.match(r.error || '', /same number of axes/);
+});
+
+test('routing: incompatible sizes fall back COLD for the spec diagnostic', () => {
+  const r = routeOf(() => evalBinding(`
+A = [1.0, 2.0, 3.0]
+B = [1.0, 2.0]
+Y = A .+ B
+`, 'Y'));
+  assert.equal(r.path, 'cold');
+  assert.match(r.error || '', /incompatible sizes|equal or 1/);
+});
+
+// =====================================================================
+// ifelseElem direct units — the three-arg elementwise impl now rides
+// the shared `_broadcastOutShape` combiner (singleton expansion) and
+// handles complex BRANCHES (planar buffers picked per cell; a real
+// branch contributes im = 0). The condition must be real.
+// =====================================================================
+
+const vo = require('../value-ops.ts');
+
+test('ifelseElem: singleton then-branch expands along the condition axis', () => {
+  const r = vo.ifelseElem(
+    valueLib.asValue([1, 0, 1]),
+    valueLib.asValue([7]),
+    valueLib.asValue([10, 20, 30]));
+  assert.deepEqual(r.shape, [3]);
+  assert.deepEqual(Array.from(r.data), [7, 20, 7]);
+});
+
+test('ifelseElem: singleton condition selects whole branches', () => {
+  const rThen = vo.ifelseElem(
+    valueLib.asValue([1]),
+    valueLib.asValue([1, 2, 3]),
+    valueLib.asValue([9, 9, 9]));
+  assert.deepEqual(Array.from(rThen.data), [1, 2, 3]);
+  const rElse = vo.ifelseElem(
+    valueLib.asValue([0]),
+    valueLib.asValue([1, 2, 3]),
+    valueLib.asValue([9, 9, 9]));
+  assert.deepEqual(Array.from(rElse.data), [9, 9, 9]);
+});
+
+test('ifelseElem: rank-2 condition with [2,1] singleton else', () => {
+  const cond = { shape: [2, 3], data: new Float64Array([1, 1, 0, 0, 1, 0]) };
+  const thn = { shape: [2, 3], data: new Float64Array([1, 2, 3, 4, 5, 6]) };
+  const els = { shape: [2, 1], data: new Float64Array([100, 200]) };
+  const r = vo.ifelseElem(cond, thn, els);
+  assert.deepEqual(r.shape, [2, 3]);
+  assert.deepEqual(Array.from(r.data), [1, 2, 100, 200, 5, 200]);
+});
+
+test('ifelseElem: complex branches select planar cells; real branch gets im 0', () => {
+  const z = vo.complexElem(valueLib.asValue([1, 2]), valueLib.asValue([3, 4]));
+  const r = vo.ifelseElem(valueLib.asValue([1, 0]), z, valueLib.asValue([9, 9]));
+  assert.equal(r.dtype, 'complex');
+  assert.deepEqual(Array.from(r.data), [1, 9]);
+  assert.deepEqual(Array.from(r.im), [3, 0]);
+});
+
+test('ifelseElem: complex condition refuses', () => {
+  const z = vo.complexElem(valueLib.asValue([1, 0]), valueLib.asValue([0, 1]));
+  assert.throws(
+    () => vo.ifelseElem(z, valueLib.asValue([1, 2]), valueLib.asValue([3, 4])),
+    /real-valued/);
+});
+
+test('ifelseElem: incompatible non-singleton shapes still refuse', () => {
+  assert.throws(
+    () => vo.ifelseElem(
+      valueLib.asValue([1, 0]),
+      valueLib.asValue([1, 2, 3]),
+      valueLib.asValue([4, 5])),
+    /mismatch/);
 });

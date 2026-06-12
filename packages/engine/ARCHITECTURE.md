@@ -515,10 +515,18 @@ stack by design.
 
 **Runtime fast-path.** For broadcasts the dissolver leaves (or that the user
 writes as `broadcasted(op)(args)`), `_maybeFastBroadcasted` recognises the
-`broadcast(<scalar op>, args)` shape, coerces args to Values, checks all
-non-rank-0 inputs share a shape (singleton-axis expansion falls to the cold
-path), and dispatches through value-ops' `*Elem` primitives (flat row-major,
-no per-cell `evaluateExpr` reentry). Spec-`mul` matrix semantics are preserved —
+`broadcast(<scalar op>, args)` shape, coerces args to Values (incl. flat
+all-scalar JS arrays), gates on the spec-§04 collection rule — same rank
+among rank ≥ 1 inputs, per-axis sizes equal-or-1 — and dispatches through
+value-ops' `*Elem` primitives (flat row-major or stride-0-strided for
+singleton axes; no per-cell `evaluateExpr` reentry). The equal-or-1 rule has
+ONE owner, `value-ops._broadcastOutShape`, shared by the gate and every
+elementwise impl (binop factory, complex binop, ifelseElem, complexElem).
+The cold path keeps what it alone can express: nested-vector (Ref-wrap)
+args, outerRank-tagged vec-of-vec Values (per-cell sees the inner vector
+WHOLE — the gate bails on `outerRank < rank` so §04 outer-axis semantics
+can't be silently elementwise-dispatched), tables, multi-op bodies, and all
+incompatible-shape diagnostics. Spec-`mul` matrix semantics are preserved —
 the fast path intercepts only `broadcast(...)` IRs, not direct `mul(A,B)`.
 **Constants stay rank-0** (`fixedValueToMeasure` carries the rank-0 Value at
 `m.value`; the length-N `.samples` buffer is transitional for legacy consumers);

@@ -55,6 +55,29 @@ test('complexElem: shape mismatch throws', () => {
   assert.throws(() => vo.complexElem(re, im), /shape mismatch|rank mismatch/);
 });
 
+test('complexElem: rank-0 im broadcasts over rank-1 re (complex.(arr, 0.0))', () => {
+  // The `complex.(values, 0.0)` idiom: a scalar imaginary part
+  // broadcasts over the real array (shared `_broadcastOutShape`
+  // rule — rank-0 expands trivially).
+  const re = vl.vector([1, 2, 3]);
+  const c = vo.complexElem(re, vl.scalar(0));
+  assert.deepEqual(c.shape, [3]);
+  assert.equal(c.dtype, 'complex');
+  assert.deepEqual(Array.from(c.data), [1, 2, 3]);
+  assert.deepEqual(Array.from(c.im), [0, 0, 0]);
+});
+
+test('complexElem: singleton-axis im expands (spec §04)', () => {
+  // [2,3] re with a [1,3] im — the size-1 leading axis repeats per
+  // row (stride-0 gather).
+  const re = { shape: [2, 3], data: new Float64Array([1, 2, 3, 4, 5, 6]) };
+  const im = { shape: [1, 3], data: new Float64Array([9, 8, 7]) };
+  const c = vo.complexElem(re, im);
+  assert.deepEqual(c.shape, [2, 3]);
+  assert.deepEqual(Array.from(c.data), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(Array.from(c.im), [9, 8, 7, 9, 8, 7]);
+});
+
 test('realElem: identity on real Values', () => {
   const x = vl.vector([1, 2, 3]);
   const r = vo.realElem(x);

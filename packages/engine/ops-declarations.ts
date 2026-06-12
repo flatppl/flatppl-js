@@ -1367,9 +1367,9 @@ ops.register({
 // ops.ts shape-pattern registry (engine-concepts §18.11). The variant
 // matches when the dispatcher is called with `opts.wrappingOp ===
 // 'broadcast'`; argPatterns are empty constraints (the impls accept
-// any shape — value-ops' elementwise factory handles same-shape and
-// rank-0 × rank-N broadcasting; spec §04's singleton-axis expansion
-// stays on the cold path for now).
+// any shape — value-ops' elementwise impls handle same-shape,
+// rank-0 × rank-N, AND spec §04 singleton-axis expansion via stride-0
+// reads; the shared `_broadcastOutShape` combiner owns the rule).
 //
 // Set membership: every scalar primitive whose `broadcasted(<op>)`
 // engine primitive exists. For ops whose spec semantics ARE
@@ -1888,6 +1888,19 @@ function _ensureMulDirectRegistered(): void {
 //   - For ops with kwargs the head's `paramKwargs` (functionof case)
 //     or arity-bound positional order applies; mismatches return
 //     null (cold path takes over).
+// A JS array every element of which is a plain scalar (number /
+// boolean) — the only JS-array shape the broadcast fast path coerces
+// via asValue. Mirrors `broadcast-shape.classifyAxisStructure`'s
+// allFlatScalars test MINUS complex {re, im} scalars (planar complex
+// coercion is the cold path's job).
+function _isFlatScalarArray(v: any[]): boolean {
+  for (let i = 0; i < v.length; i++) {
+    const t = typeof v[i];
+    if (t !== 'number' && t !== 'boolean') return false;
+  }
+  return true;
+}
+
 function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
   _ensureBroadcastedRegistered();
   const args   = ir.args   || [];
@@ -1981,16 +1994,14 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
   }
 
   // Evaluate broadcast arg IRs to Values. The fast path requires
-  // every evaluated arg to be a Value (rank ≥ 0); bare nested JS
-  // arrays (the "Ref-wrap" idiom) or per-atom params not yet
-  // coerced fall to the per-cell `_broadcastApply` path.
+  // every evaluated arg to coerce to a Value (rank ≥ 0); anything
+  // else (records, tables, function objects) bails to the cold path.
   const valueLib = require('./value.ts');
+  const vo = require('./value-ops.ts');   // module-cached; cycle-safe
   const inputs: any[] = new Array(arity);
   for (let i = 0; i < arity; i++) {
     const v = ctx.evaluateExpr(sources[i], ctx.env);
-    if (!v) return null;
-    // Coerce friendly scalar/typed-array inputs to Values; anything
-    // else (records, nested JS arrays, etc.) bails to the cold path.
+    if (v == null) return null;
     if (valueLib.isValue(v)) {
       inputs[i] = v;
       continue;
@@ -1998,6 +2009,17 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
     if (typeof v === 'number' || typeof v === 'boolean'
         || v instanceof Float64Array
         || (ArrayBuffer.isView(v) && typeof (v as any).length === 'number')) {
+      inputs[i] = valueLib.asValue(v);
+      continue;
+    }
+    // Plain FLAT-SCALAR JS arrays coerce to rank-1 Values (the same
+    // all-flat-scalars predicate `classifyAxisStructure` uses, so the
+    // two paths agree on which arrays are flat collections). Anything
+    // else — nested arrays (the Ref-wrap hold-constant idiom wraps
+    // VALUES; nested numeric arrays carry classifyNestedJSArray's
+    // outer-axis semantics), arrays of records, ragged input — stays
+    // on the cold path, which owns those semantics and diagnostics.
+    if (Array.isArray(v) && _isFlatScalarArray(v)) {
       inputs[i] = valueLib.asValue(v);
       continue;
     }
@@ -2014,24 +2036,34 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
     opInputs = inputs;
   }
 
-  // Shape compatibility check — the fast-path requires either:
-  //  (a) all inputs are rank-0 (scalar), OR
-  //  (b) every non-rank-0 input has the SAME shape (value-ops'
-  //      elementwise contract handles this). Spec §04's singleton-
-  //      axis broadcast (size-1 → size-N by repetition) is NOT
-  //      handled here; those broadcasts ride the cold path
-  //      `_broadcastApply` which expands singletons correctly.
-  // Return null on shape mismatch so the caller falls back.
-  let referenceShape: number[] | null = null;
+  // Shape compatibility gate — the fast path implements the spec §04
+  // collection rule directly: all rank ≥ 1 inputs must share the same
+  // rank (no implicit axis insertion — `addaxes` aligns), and along
+  // each axis sizes must be equal or 1 (a singleton expands by
+  // repetition; the value-ops elementwise impls realise it via
+  // stride-0 reads — the shared `_broadcastOutShape` combiner is the
+  // one owner of the rule). Rank-0 inputs broadcast trivially.
+  //
+  // Bails to the cold path (return null) on:
+  //   - a Value with NESTED-VECTOR semantics (outerRank < rank): per
+  //     cell the body sees an inner sub-Value WHOLE, not a scalar —
+  //     `_broadcastApply` + `classifyAxisStructure` own that walk
+  //     (and its §04 outer-axis rank check, which compares OUTER
+  //     ranks, not storage ranks — elementwise dispatch here would be
+  //     semantically wrong, not just slower);
+  //   - incompatible ranks/sizes, so `_broadcastApply`'s spec-§04
+  //     diagnostics (with the addaxes hint) fire instead of a
+  //     value-ops-flavoured error.
   for (const v of opInputs) {
-    if (v.shape.length === 0) continue;  // rank-0 broadcasts trivially
-    if (referenceShape === null) referenceShape = v.shape;
-    else {
-      if (v.shape.length !== referenceShape.length) return null;
-      for (let i = 0; i < v.shape.length; i++) {
-        if (v.shape[i] !== referenceShape[i]) return null;
-      }
+    if (typeof v.outerRank === 'number'
+        && v.outerRank !== v.shape.length) {
+      return null;
     }
+  }
+  try {
+    vo._broadcastOutShape(opName!, opInputs.map((v: any) => v.shape));
+  } catch (_e) {
+    return null;
   }
 
   // Dispatch through the variant registry. The 'broadcast'-wrapping

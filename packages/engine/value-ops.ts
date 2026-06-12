@@ -640,18 +640,9 @@ function _complexLinearBinop(scalarFn: any, a: any, b: any, opName: any) {
     return _packCx(re, im, arrV.shape, isTransposeView(arrV));
   }
   // array ∘ array — same rank required; per-axis sizes match OR one
-  // is size 1 (NumPy / spec §04 singleton-axis broadcast).
-  if (sa.length !== sb.length) {
-    throw new Error(opName + ': rank mismatch (' + JSON.stringify(sa) +
-      ' vs ' + JSON.stringify(sb) + ')');
-  }
-  let needsBroadcast = false;
-  for (let i = 0; i < sa.length; i++) {
-    if (sa[i] === sb[i]) continue;
-    if (sa[i] === 1 || sb[i] === 1) { needsBroadcast = true; continue; }
-    throw new Error(opName + ': shape mismatch (' + JSON.stringify(sa) +
-      ' vs ' + JSON.stringify(sb) + ')');
-  }
+  // is size 1 (NumPy / spec §04 singleton-axis broadcast). The shared
+  // combiner owns the rule (one validator across every elementwise impl).
+  const { needsBroadcast } = _broadcastOutShape(opName, [sa, sb]);
   if (isTransposeView(a) !== isTransposeView(b)) {
     throw new Error(opName + ': cannot combine values of opposite ' +
       'orientation (one is transposed). Apply transpose to align them first.');
@@ -721,21 +712,9 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
     // singleton-axis broadcast (NumPy convention; spec §04: "size-
     // one array axes are implicitly expanded by repetition to match
     // the size of the other collection arguments along these axes").
-    if (sa.length !== sb.length) {
-      throw new Error(
-        opName + ': rank mismatch (' + JSON.stringify(sa) +
-        ' vs ' + JSON.stringify(sb) + ')');
-    }
-    let needsBroadcast = false;
-    for (let i = 0; i < sa.length; i++) {
-      if (sa[i] === sb[i]) continue;
-      if (sa[i] === 1 || sb[i] === 1) { needsBroadcast = true; continue; }
-      throw new Error(
-        opName + ': shape mismatch (' + JSON.stringify(sa) +
-        ' vs ' + JSON.stringify(sb) + '; singleton-axis '
-        + 'broadcast requires the differing dim to be 1 on at '
-        + 'least one operand)');
-    }
+    // The shared combiner `_broadcastOutShape` owns the rule.
+    const { outShape: out_shape, needsBroadcast } =
+      _broadcastOutShape(opName, [sa, sb]);
     // Orientation (swapped bit) must agree.
     if (isTransposeView(a) !== isTransposeView(b)) {
       throw new Error(
@@ -753,14 +732,9 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
       if (a.dtype) r.dtype = a.dtype;
       return r;
     }
-    // Singleton-axis broadcast: compute the per-operand row-major
-    // strides where any size-1 dim contributes stride 0 (the
-    // singleton broadcasts by repetition). Output shape: max of
-    // the two per-axis. NumPy convention.
-    const out_shape = new Array(sa.length);
-    for (let i = 0; i < sa.length; i++) {
-      out_shape[i] = Math.max(sa[i], sb[i]);
-    }
+    // Singleton-axis broadcast: per-operand row-major strides where
+    // any size-1 dim contributes stride 0 (the singleton broadcasts
+    // by repetition); out_shape from the combiner.
     const aStrides = _broadcastStridesForShape(sa, out_shape);
     const bStrides = _broadcastStridesForShape(sb, out_shape);
     const N = sa.length;
@@ -813,6 +787,57 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
     if (a.dtype) r.dtype = a.dtype;
     return r;
   };
+}
+
+// N-ary broadcast shape combiner — THE one owner of the spec-§04
+// collection-compatibility rule for elementwise impls (NumPy
+// convention): rank-0 ([]) entries broadcast trivially and are
+// skipped; all rank ≥ 1 shapes must share the same rank (the spec
+// inserts no axes implicitly — `addaxes` is the user-facing aligner);
+// along each axis sizes must be equal or 1 (a singleton expands by
+// repetition — realised downstream via stride-0 reads). Returns the
+// combined output shape plus whether any operand actually needs
+// singleton expansion; throws the op-named rank/shape error
+// otherwise. Every elementwise impl (the binop factory, the complex
+// binop, ifelseElem, complexElem) validates through here so the rule
+// can't drift between them.
+function _broadcastOutShape(opName: string, shapes: number[][]):
+    { outShape: number[]; needsBroadcast: boolean } {
+  let outShape: number[] | null = null;
+  let needsBroadcast = false;
+  for (const s of shapes) {
+    if (s.length === 0) continue;
+    if (outShape === null) { outShape = s.slice(); continue; }
+    if (s.length !== outShape.length) {
+      throw new Error(
+        opName + ': rank mismatch (' + JSON.stringify(outShape) +
+        ' vs ' + JSON.stringify(s) + ')');
+    }
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === outShape[i]) continue;
+      if (s[i] === 1) { needsBroadcast = true; continue; }
+      if (outShape[i] === 1) {
+        outShape[i] = s[i];
+        needsBroadcast = true;
+        continue;
+      }
+      throw new Error(
+        opName + ': shape mismatch (' + JSON.stringify(outShape) +
+        ' vs ' + JSON.stringify(s) + '; singleton-axis '
+        + 'broadcast requires the differing dim to be 1 on at '
+        + 'least one operand)');
+    }
+  }
+  return { outShape: outShape || [], needsBroadcast };
+}
+
+// Per-operand broadcasting strides against a combined output shape,
+// tolerating rank-0 sources (a scalar reads cell [0] everywhere —
+// all-zero strides of the output rank). Rank ≥ 1 sources must already
+// share the output rank (validated by `_broadcastOutShape`).
+function _operandStrides(src: number[], outShape: number[]): number[] {
+  if (src.length === 0) return new Array(outShape.length).fill(0);
+  return _broadcastStridesForShape(src, outShape);
 }
 
 // Per-axis broadcasting stride for source shape `src` against target
@@ -1093,48 +1118,75 @@ function _erfInv(x: number): number {
 }
 
 // ifelse(cond, then, else) — three-arg elementwise. Doesn't fit the
-// _makeElementwiseBinop pattern; hand-rolled over flat data.
+// _makeElementwiseBinop pattern; hand-rolled strided walk over the
+// combined broadcast shape. Validates through the same
+// `_broadcastOutShape` combiner as the binop factory, so spec §04
+// singleton-axis expansion works here too (stride-0 reads along
+// size-1 axes). The condition must be real-valued; the branches may
+// be complex (planar buffers picked per cell; a real branch
+// contributes im = 0 via readComplex's implicit zero buffer).
 function ifelseElem(cond: any, thn: any, els: any): any {
-  // Determine output shape by max-rank; broadcast singletons.
-  const shapes = [cond, thn, els].map((v: any) =>
-    isValue(v) ? v.shape : (typeof v === 'number' || typeof v === 'boolean'
-      ? [] : null));
-  if (shapes.some((s: any) => s == null)) {
+  const vals = [cond, thn, els].map((v: any) => {
+    if (typeof v === 'number' || typeof v === 'boolean') {
+      return valueLib.scalar(+v);
+    }
+    return isValue(v) ? v : null;
+  });
+  if (vals.some((v: any) => v == null)) {
     throw new Error('ifelseElem: all operands must be scalar or Value');
   }
-  // Pick the output shape = the first non-empty shape; require any
-  // others to match or be scalar (rank-0). Singleton-axis broadcasting
-  // not supported in v1 here (matches the other elementwise impls).
-  let outShape: number[] = [];
-  for (const s of shapes) {
-    if ((s as number[]).length > outShape.length) outShape = s as number[];
+  let c = vals[0], t = vals[1], e = vals[2];
+  if (isComplexValue(c)) {
+    throw new Error('ifelseElem: condition must be real-valued (booleans), '
+      + 'got a complex Value');
   }
-  for (const s of shapes) {
-    const sa = s as number[];
-    if (sa.length === 0) continue;            // scalar OK
-    if (sa.length !== outShape.length) {
-      throw new Error('ifelseElem: rank mismatch ' + JSON.stringify(sa)
-        + ' vs ' + JSON.stringify(outShape));
-    }
-    for (let k = 0; k < outShape.length; k++) {
-      if (sa[k] !== outShape[k]) {
-        throw new Error('ifelseElem: shape mismatch ' + JSON.stringify(sa)
-          + ' vs ' + JSON.stringify(outShape));
-      }
-    }
-  }
+  // diag-stored densifies (selection need not preserve zero structure).
+  if (valueLib.isDiagStored(c)) c = valueLib.densify(c);
+  if (valueLib.isDiagStored(t)) t = valueLib.densify(t);
+  if (valueLib.isDiagStored(e)) e = valueLib.densify(e);
+  const { outShape } =
+    _broadcastOutShape('ifelseElem', [c.shape, t.shape, e.shape]);
   const len = outShape.reduce((a: number, b: number) => a * b, 1) || 1;
-  function readAt(v: any, i: number) {
-    if (typeof v === 'number' || typeof v === 'boolean') return +v;
-    return v.shape.length === 0 ? v.data[0] : v.data[i];
-  }
+  const cS = _operandStrides(c.shape, outShape);
+  const tS = _operandStrides(t.shape, outShape);
+  const eS = _operandStrides(e.shape, outShape);
+  const anyCx = isComplexValue(t) || isComplexValue(e);
+  // For complex branches, read the LOGICAL parts once (conj bit
+  // folded; real branch gets an implicit zero im buffer).
+  const tCx = anyCx ? readComplex(t) : null;
+  const eCx = anyCx ? readComplex(e) : null;
   const out = new Float64Array(len);
-  for (let i = 0; i < len; i++) {
-    out[i] = readAt(cond, i) ? readAt(thn, i) : readAt(els, i);
+  const outIm = anyCx ? new Float64Array(len) : null;
+  const R = outShape.length;
+  const coord = new Array(R).fill(0);
+  for (let linear = 0; linear < len; linear++) {
+    let cOff = 0, tOff = 0, eOff = 0;
+    for (let i = 0; i < R; i++) {
+      cOff += coord[i] * cS[i];
+      tOff += coord[i] * tS[i];
+      eOff += coord[i] * eS[i];
+    }
+    if (c.data[cOff]) {
+      out[linear] = anyCx ? (tCx as any).re[tOff] : t.data[tOff];
+      if (outIm) outIm[linear] = (tCx as any).im[tOff];
+    } else {
+      out[linear] = anyCx ? (eCx as any).re[eOff] : e.data[eOff];
+      if (outIm) outIm[linear] = (eCx as any).im[eOff];
+    }
+    for (let i = R - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < outShape[i]) break;
+      coord[i] = 0;
+    }
   }
-  return outShape.length === 0
-    ? valueLib.scalar(out[0])
-    : { shape: outShape.slice(), data: out };
+  if (outShape.length === 0) {
+    return anyCx
+      ? _packCx([out[0]], [(outIm as Float64Array)[0]], [], false)
+      : valueLib.scalar(out[0]);
+  }
+  return anyCx
+    ? _packCx(out, outIm as Float64Array, outShape, false)
+    : { shape: outShape, data: out };
 }
 
 // =====================================================================
@@ -1644,12 +1696,14 @@ function negN(a: any, _N: any) {
 // 'broadcast'` variants so `complex.(re, im)` / `real.(z)` / etc. and
 // `broadcast(complex, re, im)` dispatch through the fast path.
 
-// complex(re, im) — combine two real Values of matching shape into a
-// single complex Value (planar layout: re's data → .data; im's data →
-// .im). Inputs are validated as real (no incoming complex), and shapes
-// must match exactly (spec §07 takes two reals). The orientation tag
-// is propagated from the `re` operand; the `im` operand's tag must
-// agree (mismatched orientation is an error).
+// complex(re, im) — combine two real Values into a single complex
+// Value (planar layout: re's data → .data; im's data → .im). Inputs
+// are validated as real (no incoming complex). Shapes combine through
+// the shared `_broadcastOutShape` rule: equal, rank-0 × rank-N, or
+// spec-§04 singleton-axis expansion (so `complex.(arr, 0.0)` works on
+// this path). The orientation tag is propagated from the higher-rank
+// operand; mixed orientations between two rank ≥ 1 operands are an
+// error.
 function complexElem(re: any, im: any): any {
   if (!isValue(re) || !isValue(im)) {
     throw new Error('value-ops.complexElem: both operands must be Values');
@@ -1659,26 +1713,48 @@ function complexElem(re: any, im: any): any {
       + 'got complex re or im');
   }
   const sa = re.shape, sb = im.shape;
-  if (sa.length !== sb.length) {
-    throw new Error('value-ops.complexElem: shape rank mismatch ('
-      + JSON.stringify(sa) + ' vs ' + JSON.stringify(sb) + ')');
-  }
-  for (let i = 0; i < sa.length; i++) {
-    if (sa[i] !== sb[i]) {
-      throw new Error('value-ops.complexElem: shape mismatch ('
-        + JSON.stringify(sa) + ' vs ' + JSON.stringify(sb) + ')');
-    }
-  }
-  if (isTransposeView(re) !== isTransposeView(im)) {
+  const { outShape, needsBroadcast } =
+    _broadcastOutShape('value-ops.complexElem', [sa, sb]);
+  if (sa.length > 0 && sb.length > 0
+      && isTransposeView(re) !== isTransposeView(im)) {
     throw new Error('value-ops.complexElem: operand orientations differ '
       + '(one is transposed). Apply transpose to align them first.');
   }
-  // Copy each buffer so re/im aren't shared with the caller's source
-  // Values (predictable lifetime — downstream complex ops may mutate
-  // via _packCx after readComplex).
-  const reCopy = new Float64Array(re.data);
-  const imCopy = new Float64Array(im.data);
-  return _packCx(reCopy, imCopy, re.shape.slice(), isTransposeView(re));
+  if (!needsBroadcast && sa.length === sb.length) {
+    // Equal shapes (incl. both rank-0) — straight buffer copies so
+    // re/im aren't shared with the caller's source Values (predictable
+    // lifetime — downstream complex ops may mutate via _packCx after
+    // readComplex).
+    const reCopy = new Float64Array(re.data);
+    const imCopy = new Float64Array(im.data);
+    return _packCx(reCopy, imCopy, re.shape.slice(), isTransposeView(re));
+  }
+  // Mixed shapes (rank-0 × rank-N or singleton axes) — strided gather
+  // over the combined shape.
+  const len = outShape.reduce((a: number, b: number) => a * b, 1) || 1;
+  const rS = _operandStrides(sa, outShape);
+  const iS = _operandStrides(sb, outShape);
+  const reOut = new Float64Array(len);
+  const imOut = new Float64Array(len);
+  const R = outShape.length;
+  const coord = new Array(R).fill(0);
+  for (let linear = 0; linear < len; linear++) {
+    let rOff = 0, iOff = 0;
+    for (let i = 0; i < R; i++) {
+      rOff += coord[i] * rS[i];
+      iOff += coord[i] * iS[i];
+    }
+    reOut[linear] = re.data[rOff];
+    imOut[linear] = im.data[iOff];
+    for (let i = R - 1; i >= 0; i--) {
+      coord[i]++;
+      if (coord[i] < outShape[i]) break;
+      coord[i] = 0;
+    }
+  }
+  const swapped = sa.length > 0 ? isTransposeView(re)
+    : (sb.length > 0 ? isTransposeView(im) : false);
+  return _packCx(reOut, imOut, outShape, swapped);
 }
 
 // real(z) — real part of a Value. Identity on real inputs (returns
@@ -1778,6 +1854,11 @@ module.exports = {
   addN,
   subN,
   negN,
+  // Shared spec-§04 elementwise shape combiner (one owner of the
+  // equal-or-1 rule). Throws on incompatibility — the broadcast
+  // fast-path gate wraps it and maps a throw to "fall back to the
+  // cold path", which re-raises the broadcast-specific diagnostic.
+  _broadcastOutShape,
   // engine-concepts §20.1 — batched-elementwise primitives for the
   // canonical `broadcasted(<op>)` form. Used by the broadcast
   // dispatcher's fast path when the head is a known scalar primitive.
