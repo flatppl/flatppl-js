@@ -2552,7 +2552,18 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
   // path); otherwise a 0-arg `functionof(log(abs(scale)))` constant.
   let lvArg: any;
   if (scaleExpr.type === 'NumberLiteral') {
-    const v = Math.log(Math.abs(+scaleExpr.value));
+    const sv = +scaleExpr.value;
+    if (sv === 0 || !Number.isFinite(sv)) {
+      diagnostics.push({
+        severity: 'error',
+        message: `locscale() scale must be a nonzero finite value `
+          + `(got ${scaleExpr.value}); a zero or non-finite scale is a `
+          + `degenerate, non-invertible affine map`,
+        loc: scaleExpr.loc,
+      });
+      return call;
+    }
+    const v = Math.log(Math.abs(sv));
     lvArg = AST.NumberLiteral(v, String(v), sloc);
   } else {
     const lvBody = AST.CallExpr(AST.Identifier('log', sloc),

@@ -142,3 +142,11 @@ test('locscale sampling produces the affine-mapped base draws', async () => {
   assert.ok(Math.abs(mean - 10) < 0.3, `mean ${mean} not ≈ 10`);
   assert.ok(Math.abs(Math.sqrt(v) - 2) < 0.3, `sd ${Math.sqrt(v)} not ≈ 2`);
 });
+
+test('locscale rejects a zero literal scale', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), 0.0, 0.0)\n', 'nonzero');
+});
+
+test('locscale rejects a non-finite literal scale', () => {
+  expectError('B = locscale(Normal(0.0, 1.0), 0.0, 0.0)\n', 'nonzero');
+});
