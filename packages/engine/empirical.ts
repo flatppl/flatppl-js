@@ -110,6 +110,10 @@ function effectiveSampleSize(measure: any) {
   const N = w.length;
   if (N === 0) return 0;
   const a = logSumExp(w);
+  // Zero total mass (every weight -inf — e.g. a posterior whose every
+  // prior atom scores the data at -inf under a small-N/MC-starved run):
+  // zero effective samples, not exp(2·(-inf) - (-inf)) = NaN.
+  if (a === -Infinity) return 0;
   // Square the weights in log-space (multiply by 2). We allocate a
   // small temp array because Float64Array doesn't have a vectorised
   // map; for N ~ 1e5 this is well under a millisecond.

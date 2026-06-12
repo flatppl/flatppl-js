@@ -457,7 +457,12 @@ test('makeParametricSampler: factory built once across many draws', () => {
     s.drawWith(env);
   }
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 2000, `parametric path too slow: ${elapsed}ms for ${N} draws`);
+  // Bound generous on purpose: the assertion discriminates "factory built
+  // once" (~0.1-4s depending on machine, tsx/c8 instrumentation, and
+  // parallel-suite load) from "rebuilt per draw" (~10x that — tens of
+  // seconds). The former 2s bound flaked on instrumented local runs while
+  // passing CI.
+  assert.ok(elapsed < 8000, `parametric path too slow: ${elapsed}ms for ${N} draws`);
 });
 
 // =====================================================================

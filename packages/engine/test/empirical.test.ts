@@ -566,3 +566,17 @@ test('tupleMeasure: strips sub-element metadata', () => {
   assert.equal(m.elems[0].n_eff, undefined);
   assert.equal(m.elems[1], e1, 'clean elements pass through by reference');
 });
+
+test('effectiveSampleSize: all -inf weights → 0, not NaN', () => {
+  // A zero-total-mass ensemble (every atom scored -inf — the MC-starved
+  // small-N posterior case) has zero effective samples; the naive
+  // exp(2a - b) is exp(-inf - -inf) = NaN.
+  const N = 8;
+  const w = new Float64Array(N).fill(-Infinity);
+  const ess = effectiveSampleSize({ samples: new Float64Array(N), logWeights: w });
+  assert.equal(ess, 0);
+  // One finite atom → ESS 1 (a single effective sample), unaffected.
+  w[3] = -2.0;
+  const ess1 = effectiveSampleSize({ samples: new Float64Array(N), logWeights: w });
+  assert.ok(Math.abs(ess1 - 1) < 1e-12, `got ${ess1}`);
+});

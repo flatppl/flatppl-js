@@ -698,3 +698,29 @@ test('beta-binomial-pushfwd: full fixture type-checks; measure-bodied lambdas re
   assert.equal(kindOf('forward_kernel'), 'kernel');
   assert.equal(kindOf('prior'), 'measure');
 });
+
+// =====================================================================
+// Transport posteriors (simple-transport1/2) — DELIBERATELY tiny counts.
+// These posteriors are the most expensive shapes in the corpus (per
+// prior atom: an mcmarginal density = M marginal draws × 20 events), so
+// the smoke test pins "materialises with a well-defined n_eff" at
+// N=40 / M=16 — NOT statistical quality. At these counts most (often
+// all) prior atoms score -inf under the vague Exponential priors; the
+// all--inf ensemble must yield n_eff = 0 (zero-mass posterior), never
+// NaN. Anything statistical belongs in a fixture-specific test with a
+// justified budget, not here.
+// =====================================================================
+
+for (const fx of ['simple-transport1.flatppl', 'simple-transport2.flatppl']) {
+  test(`${fx}: posterior materialises at tiny N/M with well-defined n_eff`, async () => {
+    const { errs, ctx, built } = setupCtx(readFixture(fx), 40);
+    assert.equal(errs.length, 0, 'no parse/typeinfer errors');
+    assert.ok(built.derivations.posterior, 'posterior classifies');
+    assert.equal(built.derivations.posterior.kind, 'bayesupdate');
+    ctx!.marginalizationCount = 16;          // bound the per-atom MC marginal
+    const m = await ctx!.getMeasure('posterior');
+    assert.ok(m, 'posterior materialises');
+    assert.ok(typeof m.n_eff === 'number' && !Number.isNaN(m.n_eff) && m.n_eff >= 0,
+      `n_eff well-defined (0 allowed for a zero-mass small-N run; got ${m.n_eff})`);
+  });
+}
