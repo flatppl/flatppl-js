@@ -50,6 +50,32 @@ function evalRHS(src: string, binding: string, env: any) {
   throw new Error(`binding ${binding} not found`);
 }
 
+// Normalise a rank-≥2 aggregate result to a flat number array.
+// The broadcast-reduce path now returns a shape-explicit Value {shape, data};
+// specialisers (opt=on) may still return nested JS arrays. Both forms carry
+// the same row-major data; flatData/shapeOf normalise across both.
+function flatData(got: any): number[] {
+  if (got && got.data instanceof Float64Array) return Array.from(got.data);
+  if (Array.isArray(got)) {
+    const out: number[] = [];
+    function flatten(v: any) {
+      if (Array.isArray(v) || (v && v.BYTES_PER_ELEMENT)) {
+        for (let i = 0; i < v.length; i++) flatten(v[i]);
+      } else {
+        out.push(v);
+      }
+    }
+    flatten(got);
+    return out;
+  }
+  return Array.from(got);
+}
+function shapeOf(got: any): number[] {
+  if (got && got.shape) return got.shape;
+  if (Array.isArray(got) && Array.isArray(got[0])) return [got.length, got[0].length];
+  return [got.length];
+}
+
 // ---------------------------------------------------------------------
 // Surface forms parse cleanly
 // ---------------------------------------------------------------------
@@ -203,12 +229,14 @@ test('only: aggregate + ! matches broadcast for singleton-axis pattern (spec §0
     'out', { A, B });
   // Expected element-wise: A row i times B[i, 0]:
   //   [[10, 20, 30], [80, 100, 120]]
-  assert.equal(got[0][0], 10);
-  assert.equal(got[0][1], 20);
-  assert.equal(got[0][2], 30);
-  assert.equal(got[1][0], 80);
-  assert.equal(got[1][1], 100);
-  assert.equal(got[1][2], 120);
+  // Shape [2,3]; row-major flat: [10,20,30, 80,100,120]
+  const d = flatData(got);
+  assert.equal(d[0], 10);
+  assert.equal(d[1], 20);
+  assert.equal(d[2], 30);
+  assert.equal(d[3], 80);
+  assert.equal(d[4], 100);
+  assert.equal(d[5], 120);
 });
 
 test('only: aggregate runtime error if a non-singleton dim is indexed with `!`', () => {
@@ -276,12 +304,14 @@ inBothModes('broadcast/aggregate equivalence: outer product via independent axes
     'out = aggregate(sum, [.i, .j], A[.i] * B[.j])',
     'out', { A, B });
   // Expected: [[10,20],[20,40],[30,60]]
-  assert.equal(got[0][0], 10);
-  assert.equal(got[0][1], 20);
-  assert.equal(got[1][0], 20);
-  assert.equal(got[1][1], 40);
-  assert.equal(got[2][0], 30);
-  assert.equal(got[2][1], 60);
+  // Shape [3,2]; row-major flat: [10,20, 20,40, 30,60]
+  const d = flatData(got);
+  assert.equal(d[0], 10);
+  assert.equal(d[1], 20);
+  assert.equal(d[2], 20);
+  assert.equal(d[3], 40);
+  assert.equal(d[4], 30);
+  assert.equal(d[5], 60);
 });
 
 inBothModes('broadcast/aggregate equivalence: row-vector broadcast (singleton on first axis)',
@@ -294,9 +324,11 @@ inBothModes('broadcast/aggregate equivalence: row-vector broadcast (singleton on
   const got = evalRHS(
     'out = aggregate(sum, [.i, .j], A[.i, .j] + B[!, .j])',
     'out', { A, B });
-  assert.equal(got[0][0], 101);
-  assert.equal(got[1][2], 307);
-  assert.equal(got[2][3], 412);
+  // Shape [3,4]; row-major: [101,201,301,401, 105,205,305,405, 109,209,309,409]
+  const d = flatData(got);
+  assert.equal(d[0], 101);     // got[0][0]
+  assert.equal(d[6], 307);     // got[1][2] = d[1*4+2]
+  assert.equal(d[11], 412);    // got[2][3] = d[2*4+3]
 });
 
 inBothModes('broadcast/aggregate equivalence: scalar-Value broadcast (rank-1 length-1)',
@@ -309,11 +341,13 @@ inBothModes('broadcast/aggregate equivalence: scalar-Value broadcast (rank-1 len
   const got = evalRHS(
     'out = aggregate(sum, [.i, .j], A[.i, .j] * s[!])',
     'out', { A, s });
-  // Expected: 7 * A
-  assert.equal(got[0][0], 7);
-  assert.equal(got[0][1], 14);
-  assert.equal(got[1][0], 21);
-  assert.equal(got[1][1], 28);
+  // Expected: 7 * A → [[7,14],[21,28]]
+  // Shape [2,2]; row-major flat: [7,14, 21,28]
+  const d = flatData(got);
+  assert.equal(d[0], 7);
+  assert.equal(d[1], 14);
+  assert.equal(d[2], 21);
+  assert.equal(d[3], 28);
 });
 
 inBothModes('broadcast/aggregate equivalence: doubly-singleton broadcast',
@@ -325,8 +359,10 @@ inBothModes('broadcast/aggregate equivalence: doubly-singleton broadcast',
   const got = evalRHS(
     'out = aggregate(sum, [.i, .j], A[.i, .j] + s[!, !])',
     'out', { A, s });
-  assert.equal(got[0][0], 11);
-  assert.equal(got[1][2], 16);
+  // Shape [2,3]; row-major: [11,12,13, 14,15,16]
+  const d = flatData(got);
+  assert.equal(d[0], 11);    // got[0][0]
+  assert.equal(d[5], 16);    // got[1][2] = d[1*3+2]
 });
 
 inBothModes('broadcast/aggregate equivalence: bilinear form (matrix-vec-vec contraction)',
@@ -446,8 +482,10 @@ inBothModes('broadcast/aggregate equivalence: := shorthand matrix multiplication
   const B = [[5, 6], [7, 8]];
   // C = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19, 22], [43, 50]]
   const got = evalRHS('C[.i, .k] := A[.i, .j] * B[.j, .k]', 'C', { A, B });
-  assert.equal(got[0][0], 19);
-  assert.equal(got[0][1], 22);
-  assert.equal(got[1][0], 43);
-  assert.equal(got[1][1], 50);
+  // Shape [2,2]; row-major flat: [19,22, 43,50]
+  const d = flatData(got);
+  assert.equal(d[0], 19);
+  assert.equal(d[1], 22);
+  assert.equal(d[2], 43);
+  assert.equal(d[3], 50);
 });
