@@ -352,6 +352,66 @@ AGGREGATE_PATTERNS.push({
 });
 
 // ---------------------------------------------------------------------
+// Specialiser: dot product (full reduction, zero output axes)
+//
+//   aggregate(sum, [], u[.j] * v[.j])   ≡  Σⱼ uⱼ·vⱼ
+//
+// — the spec's `s[] := u[.i] * v[.i]` shorthand. One fused
+// multiply-accumulate loop instead of the broadcast-reduce default's
+// elementwise-product intermediate (the alloc save). Returns a plain
+// JS number, exactly like the default's scalar full-reduction output.
+// Anything beyond flat real rank-1 operands (complex, diag-stored,
+// transposed views, higher rank) falls back to the default, which
+// owns those semantics and diagnostics.
+// ---------------------------------------------------------------------
+AGGREGATE_PATTERNS.push({
+  name: 'dot-product',
+  match(ir: any, _env: any): any {
+    const args = ir.args || [];
+    if (args.length !== 3) return null;
+    const [fIR, axesIR, bodyIR] = args;
+    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
+    const outAxes = axesIR.args || [];
+    if (outAxes.length !== 0) return null;
+    const cls = aggregatePatterns.classifyMatmulBody(bodyIR, outAxes);
+    if (!cls || cls.kind !== 'dot') return null;
+    return { uIR: cls.uIR, vIR: cls.vIR };
+  },
+  execute(ir: any, env: any, match: any): any {
+    const u = evaluateExpr(match.uIR, env);
+    const v = evaluateExpr(match.vIR, env);
+    // Resolve each operand to a flat numeric buffer, or bail.
+    const buf = (x: any): Float64Array | number[] | null => {
+      if (Array.isArray(x)) {
+        for (let i = 0; i < x.length; i++) {
+          if (typeof x[i] !== 'number') return null;
+        }
+        return x;
+      }
+      if (x instanceof Float64Array) return x;
+      if (valueLib.isValue(x)) {
+        if (x.shape.length !== 1) return null;        // rank-1 only
+        if (x.im || x.dtype === 'complex') return null;
+        if (x.t && x.t !== 'N') return null;          // no transposed views
+        if (valueLib.isDiagStored && valueLib.isDiagStored(x)) return null;
+        return x.data;
+      }
+      return null;
+    };
+    const ub = buf(u), vb = buf(v);
+    if (!ub || !vb || ub.length !== vb.length) {
+      // Unsupported shape (or a length mismatch — the default raises
+      // the canonical aggregate diagnostic for it).
+      return _evalAggregateBroadcastReduce(ir, env);
+    }
+    let s = 0;
+    for (let i = 0; i < ub.length; i++) s += ub[i] * vb[i];
+    return s;
+  },
+});
+
+// ---------------------------------------------------------------------
 // Specialiser: batched matmul
 //
 //   aggregate(sum, [.b, .i, .k],

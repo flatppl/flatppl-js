@@ -103,6 +103,21 @@ function classifyAxisGetV(fac: any, jName: string): any | null {
 }
 
 /**
+ * The axis name of a 1-axis vector indexing `v[.j]`, or null if the
+ * factor isn't that shape. Used by the dot-product recogniser, which
+ * doesn't know the contraction axis upfront (no output axes to read
+ * it from) — it reads the name off the first factor and requires the
+ * second to match.
+ */
+function singleAxisGetName(fac: any): string | null {
+  if (!fac || fac.kind !== 'call' || fac.op !== 'get') return null;
+  if (!fac.args || fac.args.length !== 2) return null;
+  const s0 = fac.args[1];
+  if (!s0 || s0.kind !== 'axis') return null;
+  return s0.name;
+}
+
+/**
  * Top-level matmul-family recogniser. Given an aggregate body
  * `mul(_, _)` and the output-axis names from `aggregate`'s
  * `output_axes`, return one of:
@@ -110,6 +125,7 @@ function classifyAxisGetV(fac: any, jName: string): any | null {
  *   { kind: 'matmul',  aIR, bIR, transA, transB, jName }
  *   { kind: 'matvec',  aIR, vIR, transA, jName }
  *   { kind: 'outer',   uIR, vIR }
+ *   { kind: 'dot',     uIR, vIR, jName }
  *
  * — or null if the body isn't a recognised contraction shape.
  *
@@ -175,6 +191,20 @@ function classifyMatmulBody(bodyIR: any, outAxes: any[]): any | null {
     return null;
   }
 
+  // Zero output axes → dot product: `aggregate(sum, [], u[.j] * v[.j])`
+  // (the spec's `s[] := u[.i] * v[.i]` full-reduction shorthand). Both
+  // factors must be 1-axis gets over the SAME axis. `u[.i] * v[.j]`
+  // with DISTINCT axes is a full reduction of the outer product — a
+  // different contraction; it stays on the broadcast-reduce default.
+  if (outAxes.length === 0) {
+    const jName = singleAxisGetName(f1);
+    if (!jName) return null;
+    const uSrc = classifyAxisGetV(f1, jName);
+    const vSrc = classifyAxisGetV(f2, jName);
+    if (!uSrc || !vSrc) return null;
+    return { kind: 'dot', uIR: uSrc, vIR: vSrc, jName };
+  }
+
   return null;
 }
 
@@ -182,5 +212,6 @@ module.exports = {
   classifyAxisGetA,
   classifyAxisGetB,
   classifyAxisGetV,
+  singleAxisGetName,
   classifyMatmulBody,
 };

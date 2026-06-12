@@ -719,6 +719,37 @@ d[] := A[.i] * B[.i]
   assert.equal(built.fixedValues.get('d'), 32);
 });
 
+inBothModes('aggregate: dot-product specialiser agrees with broadcast-reduce',
+  'aggregate', () => {
+    // The dot-product specialiser (fused multiply-accumulate, no
+    // elementwise intermediate) must agree with the broadcast-reduce
+    // default bit-for-bit. A·B = 1*4 + 2*5 + 3*6 = 32.
+    const src = `
+A = [1.0, 2.0, 3.0]
+B = [4.0, 5.0, 6.0]
+d[] := A[.i] * B[.i]
+`;
+    const ctx = processSource(src);
+    const built = orchestrator.buildDerivations(ctx.bindings);
+    assert.equal(built.fixedValues.get('d'), 32);
+  });
+
+inBothModes('aggregate: DISTINCT-axes full reduction is NOT a dot (sum of outer)',
+  'aggregate', () => {
+    // `u[.i] * v[.j]` with empty output axes reduces over BOTH axes —
+    // the full reduction of the outer product, Σᵢⱼ uᵢvⱼ = 6 · 15 = 90.
+    // The dot-product recogniser must NOT claim it (same-axis factors
+    // only); both modes flow through broadcast-reduce and agree.
+    const src = `
+u = [1.0, 2.0, 3.0]
+v = [4.0, 5.0, 6.0]
+s[] := u[.i] * v[.j]
+`;
+    const ctx = processSource(src);
+    const built = orchestrator.buildDerivations(ctx.bindings);
+    assert.equal(built.fixedValues.get('s'), 90);
+  });
+
 test('aggregate: full-reduction prod over a single axis', () => {
   // Spec §04: full-reduction with prod over a single index.
   const src = `
