@@ -2423,8 +2423,11 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
 // the existing pushforward density (density.walkPushfwd, AST bijection
 // path) and sampler (matPushfwd) handle it with no new derivation kind —
 // exactly as `restrict` reduces to disintegrate/bayesupdate. The
-// synthesised `__locscale_*` names are elidable per spec §04
-// "Auto-generated names".
+// synthesised `__locscale_*` names carry the conventional `__`-prefix for
+// auto-generated bindings (spec §04); like `__restrict_*` they are NOT
+// elided inside this engine — they appear in the exported `symbols` array
+// the same way restrict's synthetics do (any LSP/outline elision happens in
+// the downstream consumer, not here).
 //
 //   __locscale_fwd_N = scale * _x + shift        # functionof, arg x
 //   __locscale_inv_N = (_y - shift) / scale       # functionof, arg y
@@ -2432,11 +2435,10 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
 //   __locscale_bij_N = bijection(fwd, inv, lv)
 //   <original RHS with locscale(m, .., ..) → pushfwd(__locscale_bij_N, m)>
 //
-// Scope: the scalar / vector-with-scalar-scale location-scale family the
-// AST bijection density path supports. Matrix-valued `scale` (the
-// `MvNormal(mu, Sigma) = locscale(MvNormal(0, I), mu, L)` case) is NOT
-// expanded here — per spec, "for general matrix-vector affine maps use
-// pushfwd directly"; such calls fall through unchanged.
+// Scope: SCALAR shift and SCALAR scale only. A non-scalar literal shift or
+// scale is rejected with a diagnostic in _buildLocscalePushfwd; a matrix or
+// vector affine map should use pushfwd directly (spec §06). (Multivariate
+// locscale via type-inference-directed routing is tracked separately.)
 let _locscaleCounter = 0;
 
 function expandLocscaleStatements(ast: any, diagnostics: any[]) {
