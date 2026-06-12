@@ -36,6 +36,39 @@ function evalAggregateRHS(src: string, binding: string, env: any) {
   return sampler.evaluateExpr(ir, env);
 }
 
+// Normalise a rank-≥2 aggregate result to a flat number array.
+// The matmul specialiser (opt=on) still returns nested JS arrays from
+// `_matmul`; the broadcast-reduce path (opt=off) and the pure-axis
+// specialiser now return a shape-explicit Value {shape, data} (the fix
+// from this branch). Both forms carry the same row-major data.
+function flatData(got: any): number[] {
+  if (got && got.data instanceof Float64Array) return Array.from(got.data);
+  if (Array.isArray(got)) {
+    // Recursively flatten nested JS arrays (handles rank-2 and rank-3).
+    const out: number[] = [];
+    function flatten(v: any) {
+      if (Array.isArray(v) || (v && v.BYTES_PER_ELEMENT)) {
+        for (let i = 0; i < v.length; i++) flatten(v[i]);
+      } else {
+        out.push(v);
+      }
+    }
+    flatten(got);
+    return out;
+  }
+  return Array.from(got);
+}
+
+// Return the [rows, cols, ...] shape from a rank-≥2 result, normalised
+// across nested-array (opt=on matmul) and Value (opt=off / pure-axis).
+function shapeOf(got: any): number[] {
+  if (got && got.shape) return got.shape;
+  if (Array.isArray(got) && Array.isArray(got[0])) {
+    return [got.length, got[0].length];
+  }
+  return [got.length];
+}
+
 // ---------------------------------------------------------------------
 // Surface forms
 // ---------------------------------------------------------------------
@@ -101,16 +134,17 @@ inBothModes('aggregate: matrix multiplication agrees with `mul` (spec §04 examp
   // = [[58, 64], [139, 154]]
   const src = 'C_agg = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])';
   const got = evalAggregateRHS(src, 'C_agg', { A, B });
-  // 2-D output: nested-array form in both modes (matmul specialiser
-  // returns plain JS arrays of plain JS arrays; general loop
-  // returns plain JS arrays of Float64Array). Element-access syntax
-  // `got[i][j]` works on both, which is what we assert.
-  assert.equal(got.length, 2);
-  assert.equal(got[0].length, 2);
-  assert.equal(got[0][0], 58);
-  assert.equal(got[0][1], 64);
-  assert.equal(got[1][0], 139);
-  assert.equal(got[1][1], 154);
+  // 2-D output: opt=on (matmul specialiser) returns nested JS arrays;
+  // opt=off (broadcast-reduce) returns a shape-explicit Value {shape, data}.
+  // flatData() + shapeOf() normalise both forms for consistent checking.
+  const sh = shapeOf(got);
+  const d = flatData(got);
+  assert.equal(sh[0], 2);
+  assert.equal(sh[1], 2);
+  assert.equal(d[0], 58);
+  assert.equal(d[1], 64);
+  assert.equal(d[2], 139);
+  assert.equal(d[3], 154);
 });
 
 // Same equivalence test with the multiplicative operands swapped —
@@ -123,8 +157,9 @@ inBothModes('aggregate: matmul with operand order swapped — same result',
   const B = [[7, 8], [9, 10], [11, 12]];
   const src = 'C_agg = aggregate(sum, [.i, .k], B[.j, .k] * A[.i, .j])';
   const got = evalAggregateRHS(src, 'C_agg', { A, B });
-  assert.equal(got[0][0], 58);
-  assert.equal(got[1][1], 154);
+  const d = flatData(got);
+  assert.equal(d[0], 58);
+  assert.equal(d[3], 154);
 });
 
 // ---------------------------------------------------------------------
@@ -143,8 +178,9 @@ inBothModes('aggregate: left-transpose matmul (Aᵀ·B)',
   //   row 1 of Aᵀ = [4, 5, 6]; ·col1 B = 4*8+5*10+6*12 = 154
   const src = 'C = aggregate(sum, [.i, .k], A[.j, .i] * B[.j, .k])';
   const got = evalAggregateRHS(src, 'C', { A, B });
-  assert.equal(got[0][0], 58);
-  assert.equal(got[1][1], 154);
+  const d = flatData(got);
+  assert.equal(d[0], 58);
+  assert.equal(d[3], 154);
 });
 
 inBothModes('aggregate: right-transpose matmul (A·Bᵀ)',
@@ -158,8 +194,9 @@ inBothModes('aggregate: right-transpose matmul (A·Bᵀ)',
   //   (A·Bᵀ)[1,1] = 4*8+5*10+6*12 = 154
   const src = 'C = aggregate(sum, [.i, .k], A[.i, .j] * B[.k, .j])';
   const got = evalAggregateRHS(src, 'C', { A, B });
-  assert.equal(got[0][0], 58);
-  assert.equal(got[1][1], 154);
+  const d = flatData(got);
+  assert.equal(d[0], 58);
+  assert.equal(d[3], 154);
 });
 
 inBothModes('aggregate: both-transpose matmul (Aᵀ·Bᵀ)',
@@ -172,8 +209,9 @@ inBothModes('aggregate: both-transpose matmul (Aᵀ·Bᵀ)',
   //   (Aᵀ·Bᵀ)[1,1] = 4*8+5*10+6*12 = 154
   const src = 'C = aggregate(sum, [.i, .k], A[.j, .i] * B[.k, .j])';
   const got = evalAggregateRHS(src, 'C', { A, B });
-  assert.equal(got[0][0], 58);
-  assert.equal(got[1][1], 154);
+  const d = flatData(got);
+  assert.equal(d[0], 58);
+  assert.equal(d[3], 154);
 });
 
 // ---------------------------------------------------------------------
@@ -225,12 +263,14 @@ inBothModes('aggregate: outer product (u · vᵀ)',
   //       = [[10, 20], [20, 40], [30, 60]]
   const src = 'M = aggregate(sum, [.i, .j], u[.i] * v[.j])';
   const got = evalAggregateRHS(src, 'M', { u, v });
-  assert.equal(got[0][0], 10);
-  assert.equal(got[0][1], 20);
-  assert.equal(got[1][0], 20);
-  assert.equal(got[1][1], 40);
-  assert.equal(got[2][0], 30);
-  assert.equal(got[2][1], 60);
+  // Shape [3, 2]; row-major flat: [10,20, 20,40, 30,60]
+  const d = flatData(got);
+  assert.equal(d[0], 10);
+  assert.equal(d[1], 20);
+  assert.equal(d[2], 20);
+  assert.equal(d[3], 40);
+  assert.equal(d[4], 30);
+  assert.equal(d[5], 60);
 });
 
 // ---------------------------------------------------------------------
@@ -257,12 +297,16 @@ inBothModes('aggregate: batched matmul (per-batch A·B)',
   //   = [[220, 244], [301, 334]]
   const src = 'C = aggregate(sum, [.b, .i, .k], A[.b, .i, .j] * B[.b, .j, .k])';
   const got = evalAggregateRHS(src, 'C', { A, B });
-  assert.equal(got[0][0][0], 22);
-  assert.equal(got[0][0][1], 28);
-  assert.equal(got[0][1][0], 49);
-  assert.equal(got[0][1][1], 64);
-  assert.equal(got[1][0][0], 220);
-  assert.equal(got[1][1][1], 334);
+  // Shape [2,2,2]; row-major flat: [22,28,49,64, 220,244,301,334]
+  // opt=on (batched matmul specialiser) returns nested arrays;
+  // opt=off (broadcast-reduce) returns a Value {shape:[2,2,2], data}.
+  const d = flatData(got);
+  assert.equal(d[0], 22);   // b=0,i=0,k=0
+  assert.equal(d[1], 28);   // b=0,i=0,k=1
+  assert.equal(d[2], 49);   // b=0,i=1,k=0
+  assert.equal(d[3], 64);   // b=0,i=1,k=1
+  assert.equal(d[4], 220);  // b=1,i=0,k=0
+  assert.equal(d[7], 334);  // b=1,i=1,k=1
 });
 
 // ---------------------------------------------------------------------
@@ -338,10 +382,12 @@ inBothModes('aggregate: pure axis reduction with axis order permuted',
   //   result[0][0] = 101, result[0][1] = 103, result[1][0] = 102, result[1][1] = 104
   const src = 'r = aggregate(sum, [.j, .i], A[.i, .j, .k])';
   const got = evalAggregateRHS(src, 'r', { A });
-  assert.equal(got[0][0], 101);
-  assert.equal(got[0][1], 103);
-  assert.equal(got[1][0], 102);
-  assert.equal(got[1][1], 104);
+  // Shape [2,2]; row-major flat: [101,103, 102,104]
+  const d = flatData(got);
+  assert.equal(d[0], 101);
+  assert.equal(d[1], 103);
+  assert.equal(d[2], 102);
+  assert.equal(d[3], 104);
 });
 
 inBothModes('aggregate: weighted sum-of-squared-differences (spec §04 example 2)',
@@ -358,10 +404,12 @@ inBothModes('aggregate: weighted sum-of-squared-differences (spec §04 example 2
   // D[1,1] = (3-0)^2*1 + (4-1)^2*2 = 9 + 18 = 27
   const src = 'D = aggregate(sum, [.i, .k], (A[.i, .j] - B[.j, .k])^2 * W[.j])';
   const got = evalAggregateRHS(src, 'D', { A, B, W });
-  assert.equal(got[0][0], 8);
-  assert.equal(got[0][1], 3);
-  assert.equal(got[1][0], 36);
-  assert.equal(got[1][1], 27);
+  // Shape [2,2]; row-major flat: [8,3, 36,27]
+  const d = flatData(got);
+  assert.equal(d[0], 8);
+  assert.equal(d[1], 3);
+  assert.equal(d[2], 36);
+  assert.equal(d[3], 27);
 });
 
 inBothModes('aggregate: column-wise variance (spec §04 example 3)',
@@ -724,16 +772,19 @@ inBothModes('aggregate: weighted Frobenius distance (sum over j of squared diff)
   const src = 'D = aggregate(sum, [.i, .k], (A[.i, .j] - B[.j, .k])^2 * w[.j])';
   const got = evalAggregateRHS(src, 'D', { A, B, w });
   // By hand:
-  // D[1,1] = (1-1)²·1 + (3-0)²·2 + (5-1)²·1 = 0 + 18 + 16 = 34
-  // D[1,2] = (1-0)²·1 + (3-1)²·2 + (5-1)²·1 = 1 + 8  + 16 = 25
-  // D[2,1] = (9-1)²·1 + (5-0)²·2 + (1-1)²·1 = 64 + 50 + 0 = 114
-  // D[2,2] = (9-0)²·1 + (5-1)²·2 + (1-1)²·1 = 81 + 32 + 0 = 113
-  assert.equal(got.length, 2);
-  assert.equal(got[0].length, 2);
-  assert.equal(got[0][0], 34);
-  assert.equal(got[0][1], 25);
-  assert.equal(got[1][0], 114);
-  assert.equal(got[1][1], 113);
+  // D[0,0] = (1-1)²·1 + (3-0)²·2 + (5-1)²·1 = 0 + 18 + 16 = 34
+  // D[0,1] = (1-0)²·1 + (3-1)²·2 + (5-1)²·1 = 1 + 8  + 16 = 25
+  // D[1,0] = (9-1)²·1 + (5-0)²·2 + (1-1)²·1 = 64 + 50 + 0 = 114
+  // D[1,1] = (9-0)²·1 + (5-1)²·2 + (1-1)²·1 = 81 + 32 + 0 = 113
+  // Shape [2,2]; row-major flat: [34,25, 114,113]
+  const sh = shapeOf(got);
+  const d = flatData(got);
+  assert.equal(sh[0], 2);
+  assert.equal(sh[1], 2);
+  assert.equal(d[0], 34);
+  assert.equal(d[1], 25);
+  assert.equal(d[2], 114);
+  assert.equal(d[3], 113);
 });
 
 inBothModes('aggregate: column variance with sample-variance (Bessel) semantics',
@@ -758,14 +809,17 @@ inBothModes('aggregate: multi-axis prod over a non-trivial body (sum-of-getters)
   const src = 'P = aggregate(prod, [.i, .k], A[.i, .j] + B[.j, .k])';
   const got = evalAggregateRHS(src, 'P', { A, B });
   // By hand:
-  // P[1,1] = (1+1)·(3+0)·(5+1) = 2·3·6 = 36
-  // P[1,2] = (1+0)·(3+1)·(5+1) = 1·4·6 = 24
-  // P[2,1] = (9+1)·(5+0)·(1+1) = 10·5·2 = 100
-  // P[2,2] = (9+0)·(5+1)·(1+1) = 9·6·2 = 108
-  assert.equal(got.length, 2);
-  assert.equal(got[0].length, 2);
-  assert.equal(got[0][0], 36);
-  assert.equal(got[0][1], 24);
-  assert.equal(got[1][0], 100);
-  assert.equal(got[1][1], 108);
+  // P[0,0] = (1+1)·(3+0)·(5+1) = 2·3·6 = 36
+  // P[0,1] = (1+0)·(3+1)·(5+1) = 1·4·6 = 24
+  // P[1,0] = (9+1)·(5+0)·(1+1) = 10·5·2 = 100
+  // P[1,1] = (9+0)·(5+1)·(1+1) = 9·6·2 = 108
+  // Shape [2,2]; row-major flat: [36,24, 100,108]
+  const sh = shapeOf(got);
+  const d = flatData(got);
+  assert.equal(sh[0], 2);
+  assert.equal(sh[1], 2);
+  assert.equal(d[0], 36);
+  assert.equal(d[1], 24);
+  assert.equal(d[2], 100);
+  assert.equal(d[3], 108);
 });
