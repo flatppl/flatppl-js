@@ -769,6 +769,12 @@ function liftInlineSubexpressions(bindings: any) {
       // ArrayLiteral bindings). Non-resolvable cases fall through to
       // the AST-preserved matMvNormal path.
       astArg = inlineMvNormalLift(astArg);
+      // P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to
+      // the canonical affine-registry pushfwd (mirrors inlineMvNormalLift).
+      // Scalar locscale never reaches here — the analyzer pre-pass expands
+      // it; only detected-non-scalar locscale with an iid base survives to
+      // this routing.
+      astArg = inlineLocscaleAffineLift(astArg);
       // Metric-aware Einstein summation (spec §04 §sec:metricsum). The
       // surface shorthand `metric: result[output_indices] := expr`
       // desugars (in the parser) to `metricsum(metric, [output_axes], expr)`
@@ -1139,6 +1145,106 @@ function liftInlineSubexpressions(bindings: any) {
       makeIdent(bijName, astArg.loc),
       makeIdent(iidName, astArg.loc),
     ];
+    if (astArg.kwargs) delete astArg.kwargs;
+    return astArg;
+  }
+
+  /**
+   * P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to the
+   * canonical affine-registry pushfwd, mirroring `inlineMvNormalLift`. The
+   * analyzer pre-pass leaves vector/matrix locscale unexpanded (only iid-base
+   * forms reach here; other bases are diagnosed in the pre-pass), so the call
+   * arrives as `locscale(<base>, <shift [D]>, <scale [D,D]>)`.
+   *
+   * Differences from MvNormal:
+   *   - positional args [base, shift, scale], NOT kwargs mu/cov.
+   *   - the user's own base (args[0]) is the pushfwd base — we do NOT
+   *     synthesize a fresh iid(Normal,0,1). (The registry density path
+   *     requires the base to score as iid(<scalar>, D); the analyzer
+   *     pre-pass guarantees that for the forms that reach here.)
+   *   - the marker carries `scale` as L DIRECTLY (no lower_cholesky wrap) —
+   *     locscale's matrix IS the affine matrix, unlike MvNormal's cov.
+   *
+   * Static shape gate (same conservative discovery as MvNormal): scale must
+   * be a rank-2 [D,D], shift a rank-1 [D]. When D can't be determined
+   * statically the call is returned unchanged (the analyzer already emits a
+   * diagnostic for detected-non-scalar locscale it can't route, so an
+   * unhandled locscale never survives to materialisation).
+   */
+  function inlineLocscaleAffineLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'locscale') return astArg;
+    const args = astArg.args || [];
+    if (args.length !== 3) return astArg;
+    if (args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
+    const baseAst = args[0], shiftAst = args[1], scaleAst = args[2];
+    // Static shape gate (mirror MvNormal's cov/mu discovery): scale [D,D],
+    // shift [D]. scale is rank-2, shift rank-1.
+    const D = __discoveredMvNormalD(scaleAst, out, 2);
+    if (D == null || !Number.isInteger(D) || D < 1) return astArg;
+    const shiftD = __discoveredMvNormalD(shiftAst, out, 1);
+    if (shiftD !== D) return astArg;
+    // Square-confirm scale exactly as inlineMvNormalLift confirms cov:
+    // literal-form gets the full square-[D,D] structural check; ref-form is
+    // validated by its inferredType being a statically-square rank-2 array
+    // (D only told us shape[0]; re-confirm rank 2 + shape[1] === D so a
+    // [D, k≠D] ref doesn't slip through).
+    const scaleLit = __resolveLiteralArrayRef(scaleAst, out);
+    if (scaleLit) {
+      if (scaleLit.elements.length !== D) return astArg;
+      for (const row of scaleLit.elements) {
+        if (!row || row.type !== 'ArrayLiteral'
+            || row.elements.length !== D) return astArg;
+      }
+    } else if (scaleAst.type === 'Identifier') {
+      const cb = out.get(scaleAst.name);
+      const ct = cb && cb.inferredType;
+      if (!(ct && ct.kind === 'array' && ct.rank === 2
+            && Number.isInteger(ct.shape[1]) && ct.shape[1] === D)) {
+        return astArg;   // not a statically square [D,D] ref → fallback
+      }
+    } else {
+      return astArg;     // scale is neither literal nor a named ref → fallback
+    }
+    // Synthetic bijection stub (identical to MvNormal): fn-hole fwd/inv +
+    // scalar-0 log-volume, pre-hoisted to anon bindings so derivations'
+    // bijection-construction loop sees Identifiers.
+    const fwdAnon = freshName();
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(astArg.loc)));
+    const invAnon = freshName();
+    out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(astArg.loc)));
+    const bijAst = {
+      type: 'CallExpr',
+      callee: makeIdent('bijection', astArg.loc),
+      args: [
+        makeIdent(fwdAnon, astArg.loc),
+        makeIdent(invAnon, astArg.loc),
+        makeNumLit(0, astArg.loc),
+      ],
+      loc: astArg.loc,
+    };
+    const bijName = freshBijName();
+    const bijBinding = makeSyntheticBinding(bijName, bijAst);
+    // Side-channel marker for buildDerivations' bijection-construction loop
+    // to forward registryName + paramIRs onto binding.bijection. L is the
+    // scale matrix DIRECTLY (no lower_cholesky wrap); b is the shift vector.
+    (bijBinding as any).__locscaleAffineLowering = {
+      LIR: lowerExpr(cloneAst(scaleAst), liftLowerCtx),   // scale matrix directly
+      bIR: lowerExpr(cloneAst(shiftAst), liftLowerCtx),   // shift vector
+    };
+    out.set(bijName, bijBinding);
+    // Base ref: the user's own base. classifyPushfwd / bijection
+    // construction need an Identifier — hoist to an anon binding if not
+    // already one (mirror how MvNormal hoists Normal(0,1) to normalAnon).
+    let baseRef = baseAst;
+    if (!baseAst || baseAst.type !== 'Identifier') {
+      const baseAnon = freshName();
+      out.set(baseAnon, makeSyntheticBinding(baseAnon, baseAst));
+      baseRef = makeIdent(baseAnon, astArg.loc);
+    }
+    astArg.callee = makeIdent('pushfwd', astArg.loc);
+    astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
     if (astArg.kwargs) delete astArg.kwargs;
     return astArg;
   }
