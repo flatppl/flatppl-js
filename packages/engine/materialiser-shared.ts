@@ -514,9 +514,19 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       // with a call-shaped ir (a pruned computed value like `a = 5*theta2`).
       // Measures / draws carry a sample/iid/record/… derivation and are NOT
       // inlined — they stay refs the density walker resolves per-atom.
-      const isEvaluableValue =
-        (drv && drv.kind === 'evaluate')
-        || (!drv && target && target.ir && target.ir.kind === 'call');
+      // Parametric/input LEAVES (`elementof` / `external` — spec §04's
+      // unresolved values) are NOT computed values: inlining their RHS
+      // would bake a never-evaluable op into the body AND hide the ref
+      // from the clm input enumeration + ⊆ check (the binding would look
+      // self-contained while being unmaterialisable). They stay refs —
+      // fed when they are declared boundaries (caught above), surfaced as
+      // unresolvable inputs when they are not.
+      const isInputLeaf = !drv && target && target.ir
+        && target.ir.kind === 'call'
+        && (target.ir.op === 'elementof' || target.ir.op === 'external');
+      const isEvaluableValue = !isInputLeaf
+        && ((drv && drv.kind === 'evaluate')
+          || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
         visiting.add(name);
         const sub = walk(target.ir);
