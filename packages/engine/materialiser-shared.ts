@@ -842,7 +842,19 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
  */
 function measureN(m: any): number {
   if (!m) return 0;
-  if (m.samples) return m.samples.length;
+  if (m.samples) {
+    // Atom count = leading (atom) axis, NOT the flattened sample buffer:
+    // a vector-atom leaf stores N*prod(dims) scalars with the per-atom
+    // shape in `m.dims` (mirrors valueOf below). Dividing by prod(dims)
+    // recovers N. Without this, a record whose FIRST field is a vector
+    // atom (e.g. `theta ~ iid(Normal, K)` with no scalar field ahead of
+    // it) reported N*K atoms — over-sizing every downstream per-atom array
+    // (bayesupdate logWeights got N*K entries, N*(K-1) of them NaN, so
+    // logTotalmass / n_eff came out NaN).
+    const per = m.dims && m.dims.length
+      ? m.dims.reduce((a: any, b: any) => a * b, 1) : 1;
+    return per > 1 ? (m.samples.length / per) | 0 : m.samples.length;
+  }
   if (m.fields) {
     const k = Object.keys(m.fields)[0];
     if (k != null) return measureN(m.fields[k]);

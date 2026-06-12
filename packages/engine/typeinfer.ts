@@ -1196,6 +1196,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
           outShape.push(Array.isArray(sel.args) ? sel.args.length : '%dynamic');
           continue;
         }
+        // Array-valued selector (array-of-indices subset selection / gather,
+        // spec §07): `A[idx]` where `idx` is any rank-1 integer array — a
+        // named binding (`theta[person]`), an `indicesof`, etc. The result
+        // dim length is the INDEX array's length, not the indexed array's.
+        // Without this the dim was dropped with no length, so a gather whose
+        // index is a ref (not an inline `[...]`) lost its axis — and an
+        // expression of two such gathers (`theta[person] .- b[item]`, no
+        // literal-length operand to anchor it) inferred a %dynamic broadcast
+        // axis, mis-sizing the downstream density variate footprint.
+        {
+          const selT: any = inferExpr(sel, scopes);
+          if (selT && selT.kind === 'array' && Array.isArray(selT.shape)
+              && selT.shape.length === 1) {
+            outShape.push(selT.shape[0]);
+            continue;
+          }
+        }
         // Unrecognised selector shape — be conservative and drop the
         // dim with a deferred length. This still keeps the rest of
         // the array's shape information.
