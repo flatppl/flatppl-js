@@ -162,3 +162,25 @@ test('locscale rejects a matrix-literal scale (interim: use pushfwd)', () => {
 test('locscale rejects a vector-literal shift (interim: use pushfwd)', () => {
   expectError('B = locscale(Normal(0.0, 1.0), [1.0, 2.0], 2.0)\n', 'pushfwd');
 });
+
+// Regression guard for the zero-alloc rewriter: a model with NO locscale must
+// still analyze cleanly (the rewriter must pass every node through unchanged).
+test('a model with no locscale analyzes unchanged', async () => {
+  const ctx = makeCtx('a = Normal(0.0, 1.0)\nlp = logdensityof(a, 0.5)\n');
+  const lp = await ctx.getMeasure('lp');
+  const nLogpdfLocal = require('@stdlib/stats-base-dists-normal-logpdf');
+  assert.ok(Math.abs(lp.samples[0] - nLogpdfLocal(0.5, 0.0, 1.0)) < 1e-12);
+});
+
+// locscale nested inside draw (via the ~ desugar) must still be expanded.
+// `b ~ locscale(...)` parses to `b = draw(locscale(...))`, so the rewriter's
+// generic recursion is what reaches it.
+test('locscale nested inside draw (~ desugar) is expanded and scores correctly', async () => {
+  const ctx = makeCtx(
+    'b ~ locscale(Normal(0.0, 1.0), 3.0, 2.0)\nB = lawof(b)\nlp = logdensityof(B, 5.0)\n');
+  const lp = await ctx.getMeasure('lp');
+  const nLogpdfLocal = require('@stdlib/stats-base-dists-normal-logpdf');
+  // locscale(Normal(0,1),3,2) == Normal(3,2); logpdf at 5.
+  assert.ok(Math.abs(lp.samples[0] - nLogpdfLocal(5.0, 3.0, 2.0)) < 1e-12,
+    `got ${lp.samples[0]}, expected ${nLogpdfLocal(5.0, 3.0, 2.0)}`);
+});

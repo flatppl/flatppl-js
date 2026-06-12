@@ -2461,34 +2461,44 @@ function expandLocscaleStatements(ast: any, diagnostics: any[]) {
 
 // Recursively rewrite every `locscale(...)` call node within `node`,
 // appending the synthetic bijection/functionof binding statements to
-// `synth` (in dependency order). Returns the rewritten node (=== node
-// when nothing changed, so the caller can preserve the original stmt).
+// `synth` (in dependency order). Returns the rewritten node, and crucially
+// returns `node` *unchanged* (same reference, no allocation) when nothing
+// was rewritten — so a model with no locscale pays no per-node clone cost.
+//
+// The generic structural recursion is REQUIRED, not speculative: `x ~ M`
+// desugars to `x = draw(M)` at parse time (parser.ts), so a locscale written
+// as `b ~ locscale(...)` arrives nested inside `draw(...)`; nested positions
+// inside iid/superpose/etc. are reached the same way.
 function _rewriteLocscale(node: any, synth: any[], diagnostics: any[]): any {
   if (node == null || typeof node !== 'object') return node;
   if (Array.isArray(node)) {
-    let changed = false;
-    const out = node.map((x: any) => {
-      const r = _rewriteLocscale(x, synth, diagnostics);
-      if (r !== x) changed = true;
-      return r;
-    });
-    return changed ? out : node;
+    let out: any = node;
+    for (let i = 0; i < node.length; i++) {
+      const r = _rewriteLocscale(node[i], synth, diagnostics);
+      if (r !== node[i]) {
+        if (out === node) out = node.slice();
+        out[i] = r;
+      }
+    }
+    return out;
   }
   if (node.type === 'CallExpr' && node.callee
       && node.callee.type === 'Identifier'
       && node.callee.name === 'locscale') {
     return _buildLocscalePushfwd(node, synth, diagnostics);
   }
-  // Generic structural recursion: rewrite child expr nodes in place so a
-  // nested `locscale` (e.g. inside `draw(...)`, `iid(...)`) is caught.
-  let changed = false;
-  const out: any = Array.isArray(node) ? [] : { ...node };
+  // Lazy-clone structural recursion: only spread `node` once a child actually
+  // changes, so the no-locscale common case returns the original reference.
+  let out: any = node;
   for (const k of Object.keys(node)) {
     if (k === 'loc' || k === 'type') continue;
     const r = _rewriteLocscale(node[k], synth, diagnostics);
-    if (r !== node[k]) { changed = true; out[k] = r; }
+    if (r !== node[k]) {
+      if (out === node) out = { ...node };
+      out[k] = r;
+    }
   }
-  return changed ? out : node;
+  return out;
 }
 
 function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any {
