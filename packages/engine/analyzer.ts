@@ -2456,7 +2456,7 @@ function expandLocscaleStatements(ast: any, diagnostics: any[]) {
       continue;
     }
     const synth: any[] = [];
-    const rewritten = _rewriteLocscale(stmt.value, synth, diagnostics);
+    const rewritten = _rewriteLocscale(stmt.value, synth, diagnostics, ast.body);
     for (const s of synth) newBody.push(s);
     newBody.push(rewritten === stmt.value
       ? stmt
@@ -2475,12 +2475,12 @@ function expandLocscaleStatements(ast: any, diagnostics: any[]) {
 // desugars to `x = draw(M)` at parse time (parser.ts), so a locscale written
 // as `b ~ locscale(...)` arrives nested inside `draw(...)`; nested positions
 // inside iid/superpose/etc. are reached the same way.
-function _rewriteLocscale(node: any, synth: any[], diagnostics: any[]): any {
+function _rewriteLocscale(node: any, synth: any[], diagnostics: any[], body: any[]): any {
   if (node == null || typeof node !== 'object') return node;
   if (Array.isArray(node)) {
     let out: any = node;
     for (let i = 0; i < node.length; i++) {
-      const r = _rewriteLocscale(node[i], synth, diagnostics);
+      const r = _rewriteLocscale(node[i], synth, diagnostics, body);
       if (r !== node[i]) {
         if (out === node) out = node.slice();
         out[i] = r;
@@ -2491,14 +2491,14 @@ function _rewriteLocscale(node: any, synth: any[], diagnostics: any[]): any {
   if (node.type === 'CallExpr' && node.callee
       && node.callee.type === 'Identifier'
       && node.callee.name === 'locscale') {
-    return _buildLocscalePushfwd(node, synth, diagnostics);
+    return _buildLocscalePushfwd(node, synth, diagnostics, body);
   }
   // Lazy-clone structural recursion: only spread `node` once a child actually
   // changes, so the no-locscale common case returns the original reference.
   let out: any = node;
   for (const k of Object.keys(node)) {
     if (k === 'loc' || k === 'type') continue;
-    const r = _rewriteLocscale(node[k], synth, diagnostics);
+    const r = _rewriteLocscale(node[k], synth, diagnostics, body);
     if (r !== node[k]) {
       if (out === node) out = { ...node };
       out[k] = r;
@@ -2507,7 +2507,7 @@ function _rewriteLocscale(node: any, synth: any[], diagnostics: any[]): any {
   return out;
 }
 
-function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any {
+function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body: any[]): any {
   // Reuse the call's real line/col (marked synthetic) so source-slicing
   // for symbols stays well-formed — mirrors restrict-expand's sloc.
   const sloc = { ...call.loc, synthetic: true, source: 'locscale-expand' };
@@ -2544,23 +2544,35 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
     });
     return call;
   }
-  // Interim scope guard: the scalar affine density/sampler path this expansion
-  // targets cannot serve a vector/matrix shift or scale. Reject the
-  // syntactically-detectable non-scalar literal cases with a clear message.
-  // (Full multivariate locscale — including opaque/named matrix scale — is
-  // tracked separately as a type-inference-directed routing change; until then
-  // use pushfwd directly per spec §06.)
-  if (_isNonScalarLiteral(args[1]) || _isNonScalarLiteral(args[2])) {
-    diagnostics.push({
-      severity: 'error',
-      message: `locscale() supports only scalar shift and scale; for `
-        + `vector/matrix affine maps use pushfwd directly (spec §06)`,
-      loc: call.loc,
-    });
-    return call;
+  // P3: a vector/matrix shift or scale routes through lift's affine-registry
+  // lowering (lift.inlineLocscaleAffineLift), NOT the scalar expansion here.
+  // Detect the non-scalar forms statically (the analyzer pre-pass runs before
+  // type inference, so this mirrors lift's own conservative syntactic gate)
+  // and leave the call UNEXPANDED so it survives `analyze()` to reach lift.
+  const MATRIXY_OPS = new Set([
+    'lower_cholesky', 'cholesky', 'inv', 'transpose', 'rowstack', 'colstack',
+    'eye', 'diagm', 'diag']);
+  const looksNonScalar = (e: any): boolean => {
+    if (!e) return false;
+    if (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral') return true;
+    if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+        && MATRIXY_OPS.has(e.callee.name)) return true;
+    if (e.type === 'Identifier') {
+      // 1-level binding lookup within this program body.
+      for (const st of body || []) {
+        if (st.type === 'AssignStatement' && st.names
+            && st.names.some((n: any) => n.name === e.name)) {
+          return looksNonScalar(st.value);
+        }
+      }
+    }
+    return false;
+  };
+  if (looksNonScalar(args[1]) || looksNonScalar(args[2])) {
+    return call;  // survive to lift's affine-registry lowering
   }
   // The base measure may itself contain a nested locscale.
-  const mExpr = _rewriteLocscale(args[0], synth, diagnostics);
+  const mExpr = _rewriteLocscale(args[0], synth, diagnostics, body);
   const shiftExpr = args[1];
   const scaleExpr = args[2];
   const clone = (n: any) => structuredClone(n);

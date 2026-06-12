@@ -151,16 +151,15 @@ test('locscale rejects a non-finite literal scale', () => {
   expectError('B = locscale(Normal(0.0, 1.0), 0.0, 1e999)\n', 'nonzero finite');
 });
 
-test('locscale rejects a vector-literal scale (interim: use pushfwd)', () => {
-  expectError('B = locscale(Normal(0.0, 1.0), 0.0, [1.0, 2.0])\n', 'pushfwd');
-});
-
-test('locscale rejects a matrix-literal scale (interim: use pushfwd)', () => {
-  expectError('B = locscale(Normal(0.0, 1.0), 0.0, [[1.0, 0.0], [0.0, 1.0]])\n', 'pushfwd');
-});
-
-test('locscale rejects a vector-literal shift (interim: use pushfwd)', () => {
-  expectError('B = locscale(Normal(0.0, 1.0), [1.0, 2.0], 2.0)\n', 'pushfwd');
+// P3: non-scalar shift/scale are no longer rejected at the analyzer — they
+// survive the pre-pass and route through lift's affine-registry lowering
+// (see locscale-matrix.test.ts for the end-to-end density). Here we only
+// assert the analyzer no longer emits a rejection diagnostic.
+test('locscale with matrix-literal scale is not rejected by the analyzer', () => {
+  const lifted = processSource(
+    'B = locscale(iid(Normal, 2), [0.0, 0.0], [[2.0, 0.0], [0.0, 1.5]])\n');
+  const errs = lifted.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errs, [], 'expected no analyzer error: ' + JSON.stringify(errs));
 });
 
 // Regression guard for the zero-alloc rewriter: a model with NO locscale must
