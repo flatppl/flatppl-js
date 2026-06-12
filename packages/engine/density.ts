@@ -803,7 +803,7 @@ function _bijBodyRefsAny(body: any, refArrays: any): boolean {
     for (const a of body.args) if (_bijBodyRefsAny(a, refArrays)) return true;
   }
   if (body.kwargs) {
-    for (const k in body.kwargs) if (_bijBodyRefsAny(body.kwargs[k], refArrays)) return true;
+    for (const k of Object.keys(body.kwargs)) if (_bijBodyRefsAny(body.kwargs[k], refArrays)) return true;
   }
   return false;
 }
@@ -1077,6 +1077,10 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   } else {
     const lvEnv = Object.assign({}, baseEnv);
     if (overlay) Object.assign(lvEnv, overlay);
+    // paramName null means a 0-arg function — a closed-form constant
+    // like `fn(log(2.0))`. We still evaluate the body, just without
+    // binding x into env. paramName non-null is the 1-arg case where
+    // logvolume varies with the bijection's domain point.
     if (bij.logVolume.paramName) lvEnv[bij.logVolume.paramName] = x;
     const lv = +samplerLib.evaluateExpr(bij.logVolume.body, lvEnv);
     if (lv !== 0) for (let i = 0; i < N; i++) acc[i] -= lv;
