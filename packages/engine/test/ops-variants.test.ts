@@ -76,6 +76,23 @@ function valuesEqual(a: any, b: any, tol = 1e-9): boolean {
       return false;
     }
   }
+  // Complex payloads (planar layout: `.data` = re, `.im` = im) — both
+  // sides must agree on complexness, and the imaginary parts must
+  // match elementwise under the same tolerance. Without this, a
+  // complex-returning op (complex / cis / conj-on-complex) could
+  // silently drift in its imaginary component.
+  const aIm = a.im instanceof Float64Array ? a.im : null;
+  const bIm = b.im instanceof Float64Array ? b.im : null;
+  if ((aIm == null) !== (bIm == null)) return false;
+  if (aIm && bIm) {
+    if (aIm.length !== bIm.length) return false;
+    for (let i = 0; i < aIm.length; i++) {
+      if (Math.abs(aIm[i] - bIm[i]) > tol
+          && !(Number.isNaN(aIm[i]) && Number.isNaN(bIm[i]))) {
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -189,6 +206,21 @@ test('pickVariant: no match returns null', () => {
 // the registry must produce identical results to the corresponding
 // direct value-ops call. Drift here would mean the registry-routed
 // fast path has diverged from the canonical impl.
+//
+// COVERAGE INVARIANT: every op registered in the ops-declarations
+// BCAST_TABLE (_ensureBroadcastedRegistered) appears in exactly one of
+//   - BCAST_BINARY / BCAST_UNARY below (property-tested equivalence), or
+//   - a bespoke test below (ifelse — ternary, doesn't fit the
+//     unary/binary table loops).
+// There are NO silently excluded ops. The registry-bookkeeping test at
+// the bottom of section 3 lists the full expected op set; keep all
+// three places in sync when BCAST_TABLE grows.
+//
+// Note on result dtypes: comparison / logic / predicate ops return
+// 0/1-valued REAL Values (see the value-ops Elem impls), so the
+// tolerance-based valuesEqual works unchanged for them. Complex-
+// returning ops (complex / cis, accessors on complex inputs) are
+// covered because valuesEqual also compares the planar `.im` payload.
 
 // Binary primitives: (op, valueOps fn). Each maps the registered
 // `(opName, wrappingOp:'broadcast')` variant to its expected impl.
@@ -200,6 +232,24 @@ const BCAST_BINARY: Array<[string, (a: any, b: any) => any]> = [
   ['divide', (a, b) => valueOps.divElem(a, b)],
   ['pow',    (a, b) => valueOps.powElem(a, b)],
   ['mod',    (a, b) => valueOps.modElem(a, b)],
+  // P9 / coverage-closure additions — order mirrors the BCAST_TABLE
+  // in ops-declarations. min/max/atan2 are plain numeric; the
+  // comparison + logic ops return 0/1 real Values (exact, so the
+  // tolerance comparison is trivially fine); `complex` returns a
+  // planar complex Value (im payload checked by valuesEqual).
+  ['min',     (a, b) => valueOps.minElem(a, b)],
+  ['max',     (a, b) => valueOps.maxElem(a, b)],
+  ['lt',      (a, b) => valueOps.ltElem(a, b)],
+  ['le',      (a, b) => valueOps.leElem(a, b)],
+  ['gt',      (a, b) => valueOps.gtElem(a, b)],
+  ['ge',      (a, b) => valueOps.geElem(a, b)],
+  ['equal',   (a, b) => valueOps.equalElem(a, b)],
+  ['unequal', (a, b) => valueOps.unequalElem(a, b)],
+  ['land',    (a, b) => valueOps.landElem(a, b)],
+  ['lor',     (a, b) => valueOps.lorElem(a, b)],
+  ['lxor',    (a, b) => valueOps.lxorElem(a, b)],
+  ['atan2',   (a, b) => valueOps.atan2Elem(a, b)],
+  ['complex', (a, b) => valueOps.complexElem(a, b)],
 ];
 
 // Unary primitives: (op, valueOps fn).
@@ -219,6 +269,43 @@ const BCAST_UNARY: Array<[string, (a: any) => any]> = [
   ['floor',  (a) => valueOps.floorElem(a)],
   ['ceil',   (a) => valueOps.ceilElem(a)],
   ['round',  (a) => valueOps.roundElem(a)],
+  // P9 / coverage-closure additions — order mirrors the BCAST_TABLE
+  // in ops-declarations. Predicates / lnot return 0/1 real Values.
+  ['isfinite', (a) => valueOps.isfiniteElem(a)],
+  ['isinf',  (a) => valueOps.isinfElem(a)],
+  ['isnan',  (a) => valueOps.isnanElem(a)],
+  ['iszero', (a) => valueOps.iszeroElem(a)],
+  ['lnot',   (a) => valueOps.lnotElem(a)],
+  // Inverse trig / hyperbolics (domain guards in the property body).
+  ['asin',   (a) => valueOps.asinElem(a)],
+  ['acos',   (a) => valueOps.acosElem(a)],
+  ['atan',   (a) => valueOps.atanElem(a)],
+  ['sinh',   (a) => valueOps.sinhElem(a)],
+  ['cosh',   (a) => valueOps.coshElem(a)],
+  ['tanh',   (a) => valueOps.tanhElem(a)],
+  ['asinh',  (a) => valueOps.asinhElem(a)],
+  ['acosh',  (a) => valueOps.acoshElem(a)],
+  ['atanh',  (a) => valueOps.atanhElem(a)],
+  // Unary plus + casts (boolean: truthiness→0/1; integer: trunc).
+  ['pos',     (a) => valueOps.posElem(a)],
+  ['boolean', (a) => valueOps.booleanElem(a)],
+  ['integer', (a) => valueOps.integerElem(a)],
+  // Link functions (logit/probit need (0,1) inputs — guarded below).
+  ['logit',     (a) => valueOps.logitElem(a)],
+  ['invlogit',  (a) => valueOps.invlogitElem(a)],
+  ['probit',    (a) => valueOps.probitElem(a)],
+  ['invprobit', (a) => valueOps.invprobitElem(a)],
+  // Special functions (positive inputs — guarded below).
+  ['gamma',     (a) => valueOps.gammaElem(a)],
+  ['loggamma',  (a) => valueOps.loggammaElem(a)],
+  // Complex accessors / constructor on REAL inputs: real → identity,
+  // imag → zeros, conj → tag flip, cis → complex e^{iθ} (im payload
+  // compared by valuesEqual). Complex-INPUT accessor equivalence is
+  // pinned by the bespoke test below.
+  ['real',   (a) => valueOps.realElem(a)],
+  ['imag',   (a) => valueOps.imagElem(a)],
+  ['conj',   (a) => valueOps.conjElem(a)],
+  ['cis',    (a) => valueOps.cisElem(a)],
 ];
 
 for (const [opName, refFn] of BCAST_BINARY) {
@@ -267,6 +354,24 @@ for (const [opName, refFn] of BCAST_UNARY) {
           if (opName === 'log1p') {
             A = a.map((x: number) => Math.max(-0.99, x));
           }
+          // asin/acos/atanh: domain (-1, 1) — rescale the [-1e3, 1e3]
+          // draws into the open interval
+          if (opName === 'asin' || opName === 'acos' || opName === 'atanh') {
+            A = a.map((x: number) => (x / 1e3) * 0.99);
+          }
+          // acosh: domain [1, ∞)
+          if (opName === 'acosh') {
+            A = a.map((x: number) => Math.abs(x) + 1);
+          }
+          // logit/probit: domain (0, 1)
+          if (opName === 'logit' || opName === 'probit') {
+            A = a.map((x: number) => 0.005 + 0.99 * (Math.abs(x) / 1e3));
+          }
+          // gamma/loggamma: positive args, bounded away from gamma
+          // overflow (gamma(x) is finite up to x ≈ 171.6)
+          if (opName === 'gamma' || opName === 'loggamma') {
+            A = a.map((x: number) => 0.1 + (Math.abs(x) / 1e3) * 20);
+          }
           const va = vecValue(A);
           const r1 = ops.dispatchVariant(opName, [va], { wrappingOp: 'broadcast' });
           const r2 = refFn(va);
@@ -304,6 +409,85 @@ test('broadcast variant: rank-0 × rank-N scalar broadcast', () => {
   assert.ok(valuesEqual(r1, r2));
 });
 
+// ifelse is TERNARY — the table loops above are unary/binary only, so
+// it rides a bespoke equivalence check of the same harness shape:
+// registry dispatch with wrappingOp='broadcast' vs direct
+// valueOps.ifelseElem. Covers the elementwise select and the rank-0
+// condition broadcast.
+test('broadcast variant: ifelse (ternary) ≡ ifelseElem direct', () => {
+  const cond = vecValue([1, 0, 1, 0]);
+  const thn  = vecValue([10, 20, 30, 40]);
+  const els  = vecValue([-1, -2, -3, -4]);
+  const r1 = ops.dispatchVariant('ifelse', [cond, thn, els],
+                                 { wrappingOp: 'broadcast' });
+  const r2 = valueOps.ifelseElem(cond, thn, els);
+  assert.ok(valuesEqual(r1, r2), 'ifelse: dispatchVariant ≠ direct');
+  assert.deepEqual(Array.from(r1.data), [10, -2, 30, -4]);
+  // rank-0 condition broadcast across rank-1 branches.
+  const r3 = ops.dispatchVariant('ifelse', [scalarValue(0), thn, els],
+                                 { wrappingOp: 'broadcast' });
+  const r4 = valueOps.ifelseElem(scalarValue(0), thn, els);
+  assert.ok(valuesEqual(r3, r4), 'ifelse rank-0 cond: dispatchVariant ≠ direct');
+  assert.deepEqual(Array.from(r3.data), [-1, -2, -3, -4]);
+});
+
+// Complex-returning ops, deterministic pins. The table runs above
+// already prove registry ≡ direct (valuesEqual checks the planar `.im`
+// payload), but a wrong-on-both-sides bug would slip through an
+// equivalence-only check — pin the actual numbers once.
+test('broadcast variant: complex constructor returns planar complex value', () => {
+  const re = vecValue([1, 2, 3]);
+  const im = vecValue([4, 5, 6]);
+  const r1 = ops.dispatchVariant('complex', [re, im], { wrappingOp: 'broadcast' });
+  const r2 = valueOps.complexElem(re, im);
+  assert.ok(valuesEqual(r1, r2));
+  assert.equal(r1.dtype, 'complex');
+  assert.deepEqual(Array.from(r1.data), [1, 2, 3]);
+  assert.deepEqual(Array.from(r1.im), [4, 5, 6]);
+});
+
+test('broadcast variant: cis returns complex e^{iθ}', () => {
+  const theta = vecValue([0, Math.PI / 2]);
+  const r1 = ops.dispatchVariant('cis', [theta], { wrappingOp: 'broadcast' });
+  const r2 = valueOps.cisElem(theta);
+  assert.ok(valuesEqual(r1, r2));
+  assert.equal(r1.dtype, 'complex');
+  assert.ok(Math.abs(r1.data[0] - 1) < 1e-12 && Math.abs(r1.im[0]) < 1e-12,
+    'cis(0) should be 1 + 0i');
+  assert.ok(Math.abs(r1.data[1]) < 1e-12 && Math.abs(r1.im[1] - 1) < 1e-12,
+    'cis(π/2) should be 0 + 1i');
+});
+
+// Complex-INPUT accessors: the unary-table runs only exercise real
+// inputs, where real → identity, imag → zeros, conj → tag flip.
+// Equivalence must also hold on actual complex Values (and for the
+// modulus ops abs/abs2, which switch to their complex handlers).
+test('broadcast variant: real/imag/conj/abs/abs2 on complex input ≡ direct', () => {
+  const z = valueLib.complexValue(
+    new Float64Array([1, 2, 3]), new Float64Array([-4, 5, -6]), [3]);
+  const accessors: Array<[string, (v: any) => any]> = [
+    ['real', (v) => valueOps.realElem(v)],
+    ['imag', (v) => valueOps.imagElem(v)],
+    ['conj', (v) => valueOps.conjElem(v)],
+    ['abs',  (v) => valueOps.absElem(v)],
+    ['abs2', (v) => valueOps.abs2Elem(v)],
+  ];
+  for (const [opName, refFn] of accessors) {
+    const r1 = ops.dispatchVariant(opName, [z], { wrappingOp: 'broadcast' });
+    const r2 = refFn(z);
+    assert.ok(valuesEqual(r1, r2),
+      opName + ' on complex input: dispatchVariant ≠ direct');
+  }
+  // Spot-check the numbers: real strips im, imag extracts it,
+  // abs2 = re² + im².
+  const re = ops.dispatchVariant('real', [z], { wrappingOp: 'broadcast' });
+  const im = ops.dispatchVariant('imag', [z], { wrappingOp: 'broadcast' });
+  const a2 = ops.dispatchVariant('abs2', [z], { wrappingOp: 'broadcast' });
+  assert.deepEqual(Array.from(re.data), [1, 2, 3]);
+  assert.deepEqual(Array.from(im.data), [-4, 5, -6]);
+  assert.deepEqual(Array.from(a2.data), [17, 29, 45]);
+});
+
 // Without wrappingOp='broadcast' opt, the broadcast variant doesn't
 // match — broadcast-only ops (like `exp`) have NO direct variant and
 // dispatchVariant returns null on the default opts ('direct'
@@ -319,11 +503,28 @@ test('dispatchVariant: without wrappingOp, broadcast-only variant does NOT match
 // registered with wrappingOp='broadcast'. Drift between this test and
 // the actual registration table signals a missing migration.
 test('registry: all broadcasted primitives have wrappingOp=broadcast variants', () => {
+  // Full BCAST_TABLE op set from ops-declarations
+  // _ensureBroadcastedRegistered — keep in sync with the registration
+  // table AND with BCAST_BINARY / BCAST_UNARY / the bespoke ifelse
+  // test above (the coverage invariant in the section-3 header).
   const expected = [
     'add', 'sub', 'mul', 'div', 'divide', 'pow', 'mod',
     'neg', 'exp', 'log', 'sqrt', 'sin', 'cos', 'tan',
     'abs', 'abs2', 'log10', 'log1p', 'expm1',
     'floor', 'ceil', 'round',
+    // P9 additions — min/max, comparisons, predicates, logic, atan2,
+    // inverse trig, hyperbolics.
+    'min', 'max', 'lt', 'le', 'gt', 'ge', 'equal', 'unequal',
+    'isfinite', 'isinf', 'isnan', 'iszero',
+    'land', 'lor', 'lxor', 'lnot',
+    'atan2', 'asin', 'acos', 'atan',
+    'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+    // ARITH_OPS_N closure — pos, casts, link fns, special fns, ifelse.
+    'pos', 'boolean', 'integer',
+    'logit', 'invlogit', 'probit', 'invprobit',
+    'gamma', 'loggamma', 'ifelse',
+    // Phase 3.2 — complex constructor / accessors.
+    'complex', 'real', 'imag', 'conj', 'cis',
   ];
   for (const name of expected) {
     const decl = ops.lookup(name);
@@ -484,7 +685,7 @@ test('mul direct equivalence: valueOps.mul ≡ dispatchVariant for random matmul
 });
 
 // Registry bookkeeping: mul has the expected direct-wrapping variants.
-test('registry: mul has 9 direct-wrapping variants', () => {
+test('registry: mul has 11 direct-wrapping variants', () => {
   const decl = ops.lookup('mul');
   const direct = decl.variants.filter((v: any) => v.wrappingOp === 'direct');
   // 2 scalar broadcast + 4 vec×vec (inner/outer/2 error) + 2 matvec/vecmat
