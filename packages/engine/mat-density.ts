@@ -91,10 +91,17 @@ function matScore(node: any, ctx: any, opts?: any): Promise<any> {
     clm.feedInputs(node, ctx).then((fed: any) => {
       // extraRefArrays carries columns the declared inputs can't source via a
       // plain getMeasure — the N-ary kchain retained-history variates s_i,
-      // materialised by matJointchain. They override the fed entries.
+      // materialised from node.marginalHistoryBody (matLogdensityof). They
+      // override the fed entries.
       const refArrays = opts.extraRefArrays
         ? Object.assign({}, fed.refArrays, opts.extraRefArrays)
         : fed.refArrays;
+      // Phase-6 unfed-boundary throw (plan critique F): the worker cannot
+      // distinguish a shared ref from an unfed boundary, so verify HERE —
+      // after the overlay merge — that every body-referenced boundary input
+      // has a fed column. Without this, a feed gap either dies cryptically
+      // in the worker or silently reads the stale session env (audit H4).
+      clm.assertFedCoverage(node, refArrays, 'matScore');
       return pushFixedEnv(ctx, fed.fixedEnv).then(() => ctx.sendWorker({
         type: 'logDensityN',
         ir: body,
@@ -325,9 +332,9 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // the first-class derivation (kind:'jointchain' with
   // marginalize:true).
   //
-  // For N-ary kchain (engine-concepts §6 chain-associativity),
-  // matJointchain materialises the retained (n−1)-joint history ONCE
-  // and we bind its variate columns as the per-atom refArrays the
+  // For N-ary kchain (engine-concepts §6 chain-associativity), the
+  // retained (n−1)-joint history (node.marginalHistoryBody) materialises
+  // ONCE and we bind its variate columns as the per-atom refArrays the
   // last kernel's hole-rewired cat consumes.
   // Lower the measure ONCE to its canonical form (lowerMeasure): peel/expand,
   // inline derived value bindings down to the boundary inputs OR apply the
@@ -349,9 +356,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // feeds feedInputs anchors to base.ref). lowerMeasure attaches the retained
   // history body (node.marginalHistoryBody) — the SAME structure matClm
   // samples on the sample side — so density and sample reconstruct the history
-  // through ONE mechanism (the dependent-threaded retain joint), not two. (Was
-  // a direct matJointchain call; that path is now only reached as the
-  // lowerMeasure-returns-null sample fallback.)
+  // through ONE mechanism (the dependent-threaded retain joint), not two.
   const innerJointP = node.marginalHistoryBody
     ? require('./materialiser.ts').materialiseMeasureIR(node.marginalHistoryBody, ctx)
     : Promise.resolve(null);

@@ -38,10 +38,16 @@
 // {i.name for i in inputs} (callable refs excluded — they resolve by name,
 // not by feeding), descending into .bijection (ir-walk prereq D / H4).
 //
-// Phases 2–4 LANDED: feedInputs + the consumers (matScore, the sampler/density
-// clm branches) are live — clm is the production jointchain/kchain path, not
-// test-only. The ⊆ check still LOGS, it does not throw (the throw is the
-// main-thread Phase-6 flip, gated on Phase 5b — see flatppl-dev/TODO-flatppl-js.md).
+// Phases 2–6 LANDED: feedInputs + the consumers (matScore, the sampler/density
+// clm branches) are live — clm is the production jointchain/kchain path. The
+// ⊆ check THROWS (the Phase-6 assertion flip, main-thread per plan critique F):
+// a lowering that cannot declare every body self-ref is not self-contained,
+// and feeding it would silently re-materialise like-named module bindings
+// (the audit-§3 boundary-conflation class). The dual guarantee:
+//   lowerMeasure — every body ref is DECLARED (⊆ throw, here);
+//   matScore + assertFedCoverage — every declared boundary the body
+//   references is FED (coverage throw, after the extraRefArrays merge);
+//   matClm — the body walk re-checks via the ctx._boundaryNames net.
 // ════════════════════════════════════════════════════════════════════════
 
 const orchestrator = require('./orchestrator.ts');
@@ -364,6 +370,14 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
     } else if (priorFrom != null) {
       // A synthetic prior-variate (s0 / __jc$j) the chain feeds.
       add(n, { kind: 'boundary', from: priorFrom, field: n });
+    } else if (builtins.ALL_KNOWN.has(n)) {
+      // A BUILT-IN name riding as a `self` ref (engine IR keeps builtins in
+      // ref form — the §11 export divergence): `broadcast(Normal, …)` heads,
+      // kernel constructors. Resolved BY NAME at dispatch (worker REGISTRY /
+      // walker tables), never fed — excluded from the ⊆ set exactly like
+      // callable bindings. Checked AFTER the bindings branch so a user
+      // binding that shadows a builtin (spec §04) still classifies as
+      // shared/boundary.
     } else {
       missing.push(n);     // names nothing we can feed — a real ⊆ gap.
     }
@@ -422,15 +436,21 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
     }
   }
 
-  // ⊆ invariant (Phase 1: LOG, do not throw). With prereq D landed,
-  // collectSelfRefs descends .bijection, so a non-empty `missing` is a REAL
-  // gap (an undeclared body ref) rather than the former vacuous pass.
+  // ⊆ invariant (Phase 6: THROW). With prereq D landed, collectSelfRefs
+  // descends .bijection, so a non-empty `missing` is a REAL gap: a body
+  // self-ref no declared input covers. Feeding such a body would fall back to
+  // module-graph getMeasure resolution of the like-named binding — exactly the
+  // boundary-conflation class the audit (§3) traced through ~10 operators.
+  // Loud HERE, at the lowering on the main thread (plan critique F — the
+  // worker cannot distinguish a shared ref from an unfed boundary), where
+  // every caller (materialiser pipeline, viewer plot routing) already catches
+  // and degrades per-target.
   if (missing.length > 0) {
     const label = typeof input === 'string' ? input : (deriv && deriv.kind) || '<ir>';
-    // eslint-disable-next-line no-console
-    console.warn('[clm] lowerMeasure(' + label + '): body self-refs not covered '
+    throw new Error('clm.lowerMeasure(' + label + '): body self-refs not covered '
       + 'by declared inputs: ' + JSON.stringify(missing)
-      + ' — ⊆ invariant gap (Phase 1 advisory).');
+      + ' — the lowering is not self-contained (⊆ invariant, audit §3); '
+      + 'feeding it would re-materialise like-named module bindings');
   }
 
   const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
@@ -592,6 +612,51 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
     });
 }
 
+// ── assertFedCoverage: the Phase-6 unfed-boundary throw (critique F) ─────
+//
+// matScore sends `body` + `refArrays` straight to the worker, which cannot
+// distinguish a shared ref from an unfed boundary — so an unfed boundary
+// there either dies with a cryptic "unbound self reference" or, worse,
+// silently resolves from the CUMULATIVE WORKER SESSION ENV (the audit-H4
+// ambient-state leak: crash-vs-wrong depended on materialisation order).
+// This main-thread check closes that hole: every declared boundary /
+// explicit input the body actually REFERENCES must have a fed column after
+// the caller's overlay merge. Declared-but-unreferenced inputs are vacuous
+// (no ref ⇒ no conflation) — a record-base prior declares every field but a
+// kernel may consume only some. References are collected over BOTH
+// namespaces (`self` and `%local`) because the `%local` param refs are
+// exactly the ones collectSelfRefs — and hence the ⊆ check — cannot see.
+function _referencedRefNames(body: any): Set<string> {
+  const { walkIR } = require('./ir-walk.ts');
+  const out = new Set<string>();
+  walkIR(body, (n: any) => {
+    if (n && n.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')) out.add(n.name);
+  });
+  return out;
+}
+
+function assertFedCoverage(node: any, refArrays: any, where: string): void {
+  if (!node || !Array.isArray(node.inputs)) return;
+  let referenced: Set<string> | null = null;   // lazy — most paths fully fed
+  for (const inp of node.inputs) {
+    const src = inp.source;
+    if (!src) continue;
+    // shared/fixed resolve via getMeasure / session env; free is the worker-
+    // fed profile sweep axis. Only fed-by-the-caller kinds can gap.
+    if (src.kind !== 'boundary' && src.kind !== 'explicit') continue;
+    if (refArrays && refArrays[inp.name] != null) continue;
+    if (src.localAlias && refArrays && refArrays[src.localAlias] != null) continue;
+    if (!referenced) referenced = _referencedRefNames(node.body);
+    if (!referenced.has(inp.name)
+        && !(src.localAlias && referenced.has(src.localAlias))) continue;
+    throw new Error(where + ": declared boundary input '" + inp.name + "' is "
+      + 'referenced by the lowered body but no fed column covers it — '
+      + 'boundary inputs are fed by the caller (spec §04), never resolved '
+      + 'from the worker session env or a like-named module binding '
+      + '(audit §3/H4); this is a feed gap in the enclosing materialiser');
+  }
+}
+
 module.exports = {
-  lowerMeasure, feedInputs, describeInputShape,
+  lowerMeasure, feedInputs, describeInputShape, assertFedCoverage,
 };

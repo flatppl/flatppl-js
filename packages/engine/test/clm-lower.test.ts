@@ -359,3 +359,91 @@ test('Phase 4: an unfed declared boundary ref throws at collectRefArrays/prepare
   const ras = await shared.collectRefArrays(ir, fed);
   assert.strictEqual(ras.theta, col, 'fed boundary resolves from the overlay');
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// Phase 6 — the assertion flip (plan critique F; flatppl-dev plan "Phase 6
+// remainder"). Two complementary main-thread throws close the conflation
+// loop end-to-end:
+//   (a) lowerMeasure: a body self-ref NO declared input covers → THROW
+//       (the ⊆ check, formerly a Phase-1 advisory console.warn);
+//   (b) assertFedCoverage (matScore): a declared boundary the body
+//       REFERENCES with no fed column after the overlay merge → THROW —
+//       the worker cannot distinguish a shared ref from an unfed boundary,
+//       so an unfed one would die cryptically or silently read the stale
+//       session env (audit H4).
+// ════════════════════════════════════════════════════════════════════════
+test('Phase 6: lowerMeasure THROWS on a body self-ref no input covers (⊆ flip)', () => {
+  const ctx = ctxOf('m = Normal(0.0, 1.0)\n');
+  // Hand-built measure IR referencing a name that is no binding, no fixed
+  // value, no boundary: nothing can feed it, the lowering is not
+  // self-contained — Phase 1 logged this; Phase 6 throws.
+  const ir = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'ref', ns: 'self', name: 'ghost' },
+    sigma: { kind: 'lit', value: 1, numType: 'real' },
+  } };
+  assert.throws(() => lowerMeasure(ir, ctx),
+    /not covered by declared inputs.*ghost|ghost.*not covered/s,
+    '⊆ violation must throw, not warn');
+});
+
+test('Phase 6: assertFedCoverage throws on a referenced-but-unfed boundary input', () => {
+  const { assertFedCoverage } = require('../clm.ts');
+  const body = { kind: 'call', op: 'Normal', kwargs: {
+    mu: { kind: 'ref', ns: 'self', name: 'theta' },
+    sigma: { kind: 'lit', value: 1, numType: 'real' },
+  } };
+  const node = (refd: boolean) => ({
+    kind: 'call', op: 'clm', reduce: null,
+    body,
+    inputs: [{ name: refd ? 'theta' : 'unused', ns: 'self',
+      source: { kind: 'boundary', from: null }, shape: { kind: 'scalar' } }],
+  });
+  // Referenced + unfed → loud feed-gap throw.
+  assert.throws(() => assertFedCoverage(node(true), {}, 'phase6-test'),
+    /referenced by the lowered body but no fed column/,
+    'a referenced, unfed boundary is a feed gap');
+  // Fed → quiet.
+  assertFedCoverage(node(true), { theta: new Float64Array(4) }, 'phase6-test');
+  // Declared-but-UNREFERENCED → vacuous, quiet (a record-base prior declares
+  // every field; a kernel may consume only some — no ref, no conflation).
+  assertFedCoverage(node(false), {}, 'phase6-test');
+});
+
+test('Phase 6: assertFedCoverage sees %local param refs (invisible to collectSelfRefs)', () => {
+  const { assertFedCoverage } = require('../clm.ts');
+  // A record-base kchain kernel keeps `ref(%local, t1)` — the exact case the
+  // declared-inputs descriptor exists for, since collectSelfRefs only walks
+  // the `self` namespace. The coverage check must treat it as referenced.
+  const node = {
+    kind: 'call', op: 'clm', reduce: { kind: 'marginal' },
+    body: { kind: 'call', op: 'Normal', kwargs: {
+      mu: { kind: 'ref', ns: '%local', name: 't1' },
+      sigma: { kind: 'lit', value: 1, numType: 'real' },
+    } },
+    inputs: [{ name: 't1', ns: 'self',
+      source: { kind: 'boundary', from: null }, shape: { kind: 'scalar' } }],
+  };
+  assert.throws(() => assertFedCoverage(node, {}, 'phase6-test'),
+    /no fed column/,
+    'a %local-referenced, unfed boundary is a feed gap');
+  assertFedCoverage(node, { t1: new Float64Array(4) }, 'phase6-test');
+});
+
+test('Phase 6: a localAlias column satisfies coverage for its input', () => {
+  const { assertFedCoverage } = require('../clm.ts');
+  // bayesupdate binds each prior column under the kwarg name AND the %local
+  // placeholder alias (deriv.params[i]); either column satisfies coverage.
+  const node = {
+    kind: 'call', op: 'clm', reduce: null,
+    body: { kind: 'call', op: 'Normal', kwargs: {
+      mu: { kind: 'ref', ns: '%local', name: '_pars_' },
+      sigma: { kind: 'lit', value: 1, numType: 'real' },
+    } },
+    inputs: [{ name: 'pars', ns: 'self',
+      source: { kind: 'boundary', from: 'prior', field: 'pars', localAlias: '_pars_' },
+      shape: { kind: 'record' } }],
+  };
+  assert.throws(() => assertFedCoverage(node, {}, 'phase6-test'), /no fed column/);
+  assertFedCoverage(node, { _pars_: new Float64Array(2) }, 'phase6-test');
+  assertFedCoverage(node, { pars: new Float64Array(2) }, 'phase6-test');
+});
