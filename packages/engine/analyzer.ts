@@ -2503,6 +2503,22 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[]): any
     });
     return call;
   }
+  // The base measure must be a measure-producing expression (a distribution
+  // call like Normal(...)/StudentT(...) or a bound measure name) — never a
+  // literal. Mirrors restrict-expand's measure-arg guard (this combinator
+  // wraps the base in pushfwd, so unlike restrict it allows a CallExpr base,
+  // not only an Identifier).
+  const LITERAL_TYPES = new Set([
+    'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
+  if (args[0] && LITERAL_TYPES.has(args[0].type)) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale()'s first argument (the measure) must be a measure `
+        + `expression, not a ${args[0].type}`,
+      loc: args[0].loc,
+    });
+    return call;
+  }
   // The base measure may itself contain a nested locscale.
   const mExpr = _rewriteLocscale(args[0], synth, diagnostics);
   const shiftExpr = args[1];

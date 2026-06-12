@@ -125,6 +125,10 @@ test('locscale(Normal(0,1), mu, sigma) density ≡ Normal(mu, sigma) (closed for
 // Sampling regression: forward affine map applied to base draws
 // =====================================================================
 
+test('locscale rejects a non-measure (literal) base argument', () => {
+  expectError('B = locscale(5.0, 0.0, 2.0)\n', 'measure');
+});
+
 test('locscale sampling produces the affine-mapped base draws', async () => {
   // locscale(Normal(0,1), 10, 2) — mean ≈ 10, sd ≈ 2 (Normal base is
   // light-tailed, so the empirical moments are tight at n=2048).
