@@ -521,7 +521,7 @@ AGGREGATE_PATTERNS.push({
         outCoord[k] = 0;
       }
     }
-    return _flatToNested(outData, outDimSizes);
+    return _flatToValueSP(outData, outDimSizes);
   },
 });
 
@@ -699,6 +699,19 @@ function _flatToNested(data: Float64Array, shape: number[]): any {
     return out;
   }
   return build(0, shape);
+}
+
+// Single-point aggregate result packer. Rank-0/1 keep their existing
+// scalar / Float64Array form (unchanged downstream + materialiser
+// behaviour); rank >= 2 returns a shape-explicit Value {shape, data},
+// MATCHING the atom-batched path (`return { shape: outShape, data }`)
+// and the matmul specialiser. A nested JS array here would otherwise
+// materialise as an {elems} tuple-of-row-measures rather than a matrix
+// (materialiser-shared.fixedValueToMeasure). `_toFlat` already accepts
+// both Values and nested arrays, so downstream consumers are unaffected.
+function _flatToValueSP(data: Float64Array, shape: number[]): any {
+  if (shape.length >= 2) return { shape: shape.slice(), data };
+  return _flatToNested(data, shape);
 }
 
 // True if `node` (an IR subtree) contains any `kind: 'axis'` node.
@@ -1231,7 +1244,7 @@ function _evalAggregateGeneric(
   if (reduceAxes.length === 0) {
     const full = _broadcastTo(lifted, outShape);
     if (isBatched) return { shape: outShape, data: full.data };
-    return _flatToNested(full.data, outShape);
+    return _flatToValueSP(full.data, outShape);
   }
 
   // Stretch any remaining singletons to their full length, then
@@ -1276,7 +1289,7 @@ function _evalAggregateGeneric(
     }
   }
   if (isBatched) return { shape: outShape, data: outData };
-  return _flatToNested(outData, outShape);
+  return _flatToValueSP(outData, outShape);
 }
 
 // Thin shim — single-point callers use this entry; atom-batched
