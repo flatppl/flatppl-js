@@ -550,6 +550,28 @@ function initARITHOPSN(ARITH_OPS: any) {
     ARITH_OPS_N[op] = (args: any, N: any) => _cxBroadcast(prim, args, N);
   }
 
+  // Real shape-rich (per-atom vector/matrix, or atom-indep vector) inputs to
+  // a UNARY scalar primitive: the scalar `broadcastN` path assumes rank-0 /
+  // rank-1 scalar inputs and collapses the inner axis — so a dissolved
+  // `invlogit.(eta)` whose `eta` is an atom-batched `[N, K]` gather (e.g.
+  // `theta[person] .- b[item]`) loses K and is scored against a length-1
+  // variate ("field did not fully consume its value"). Route a real
+  // shape-rich arg through `_cxBroadcast`, which applies the primitive
+  // elementwise via `_cxElementwise` and preserves the shape. Non-rich
+  // (scalar / shape=[N]) and complex inputs keep their existing entry, so
+  // this is a no-op everywhere the bug doesn't occur. (Binary ops already
+  // have shape-aware value-ops wrappers; this closes the unary gap.)
+  for (const op of Object.keys(_SCALAR_PRIM_ARITY)) {
+    if ((_SCALAR_PRIM_ARITY as any)[op] !== 1) continue;
+    const cur = ARITH_OPS_N[op];
+    const prim = (ARITH_OPS as any)[op];
+    if (typeof cur !== 'function' || typeof prim !== 'function') continue;
+    ARITH_OPS_N[op] = (args: any, N: any) => {
+      if (!_cxInPlay(args) && _cxIsRich(args[0], N)) return _cxBroadcast(prim, args, N);
+      return cur(args, N);
+    };
+  }
+
   // Hand the fused-loop compiler the same scalar primitives + helpers
   // the interpreter uses, so compiled output is bit-identical.
   _compile.initCompiler({ ARITH_OPS, evaluateExpr, resolveConst });
