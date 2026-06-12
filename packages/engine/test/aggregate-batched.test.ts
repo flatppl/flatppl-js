@@ -274,3 +274,135 @@ test('aggregateN: evaluateExprN routes aggregate IRs to the batched evaluator', 
   assert.equal(result.data[2], 30);
   assert.equal(result.data[3], 40);
 });
+
+// =====================================================================
+// 9. Specialiser batched-context regressions (2026-06-13 sweep)
+// =====================================================================
+//
+// Three bugs the staleness sweep surfaced: specialiser execute()
+// paths that returned a SINGLE-POINT result (or garbage) from inside
+// the atom-batched harness instead of throwing / refusing so
+// `_tryBatchedAggregatePatterns` falls through to the generic
+// batched lowering.
+
+test('aggregateN: dot-product over an atom-batched operand takes the generic batched path', () => {
+  // aggregate(sum, [], u[.j] * v[.j]) with per-atom u (shape=[N, n])
+  // and atom-indep v. The dot specialiser refuses `__atomN` envs
+  // (its flat-buffer fast path can't distinguish a per-atom column
+  // from vector elements); the generic batched lowering produces the
+  // per-atom dots. Pre-fix this returned ONE single-point number.
+  const { evaluateExprN } = require('../sampler-eval-batched.ts');
+  const N = 3, n = 4;
+  const u = batchedVal(N, [n], [1, 2, 3, 4, 10, 20, 30, 40, 100, 200, 300, 400]);
+  const v = val([n], [1, 1, 1, 1]);
+  const ir = aggregateIR('sum', [],
+    callOp('mul',
+      getOp(refr('u'), axis('j')),
+      getOp(refr('v'), axis('j'))));
+  const result = evaluateExprN(ir, { u }, N, { v }, null);
+  assert.deepEqual(result.shape, [N]);
+  assert.equal(result.data[0], 10);
+  assert.equal(result.data[1], 100);
+  assert.equal(result.data[2], 1000);
+});
+
+test('aggregateN: dot-product never returns a single-point scalar for a per-atom-scalar operand', () => {
+  // The ambiguity that motivates the dot specialiser's batched-env
+  // refusal: a per-atom SCALAR ref u (Value shape=[N]) is shape-
+  // indistinguishable from an atom-indep length-N vector. Indexing
+  // it with an axis (`u[.j]`) is semantically invalid; pre-fix the
+  // specialiser fused u's per-atom column with v as if it were
+  // vector elements and returned a plausible-but-wrong plain number.
+  // Pin only the bug signature: the result must NOT be a plain
+  // JS number (a loud throw or a visibly-degenerate batched result
+  // from the generic path are both acceptable).
+  const { evaluateExprN } = require('../sampler-eval-batched.ts');
+  const N = 3;
+  const u = { shape: [N], data: new Float64Array([10, 100, 1000]) };
+  const v = val([N], [1, 1, 1]);
+  const ir = aggregateIR('sum', [],
+    callOp('mul',
+      getOp(refr('u'), axis('j')),
+      getOp(refr('v'), axis('j'))));
+  let result: any = null;
+  try {
+    result = evaluateExprN(ir, { u }, N, { v }, null);
+  } catch (_e) {
+    return;  // a loud diagnostic is acceptable
+  }
+  assert.notEqual(typeof result, 'number',
+    'pre-fix bug signature: single-point scalar from the batched harness');
+});
+
+test('aggregateN: batched-matmul with Value operands — single-point falls back to broadcast-reduce', () => {
+  // Rank-3 Values have no useful `.length`; pre-fix the specialiser
+  // read `A.length === undefined` and returned `[undefined]`.
+  // Post-fix: Values route to the generic broadcast-reduce.
+  const A = val([2, 2, 2], [1, 2, 3, 4, 5, 6, 7, 8]);
+  const B = val([2, 2, 2], [1, 0, 0, 1, 2, 0, 0, 2]);   // [I, 2I]
+  const ir = aggregateIR('sum', ['b', 'i', 'k'],
+    callOp('mul',
+      getOp(refr('A'), axis('b'), axis('i'), axis('j')),
+      getOp(refr('B'), axis('b'), axis('j'), axis('k'))));
+  const result = sampler.evaluateExpr(ir, { A, B });
+  assert.deepEqual(result.shape, [2, 2, 2]);
+  // Batch 0: [[1,2],[3,4]]·I; batch 1: [[5,6],[7,8]]·2I.
+  assert.deepEqual(Array.from(result.data), [1, 2, 3, 4, 10, 12, 14, 16]);
+});
+
+test('aggregateN: batched-matmul with Value operands — batched harness falls through to generic', () => {
+  // Same IR in the atom-batched context: the specialiser throws on
+  // Value operands (caught by `_tryBatchedAggregatePatterns` as
+  // fall-through); the generic batched lowering broadcasts the
+  // atom-indep refs across the atom axis. Pre-fix the harness
+  // accepted the specialiser's `[undefined]` as the batched result.
+  const { evaluateExprN } = require('../sampler-eval-batched.ts');
+  const N = 2;
+  const A = val([2, 2, 2], [1, 2, 3, 4, 5, 6, 7, 8]);
+  const B = val([2, 2, 2], [1, 0, 0, 1, 2, 0, 0, 2]);
+  const ir = aggregateIR('sum', ['b', 'i', 'k'],
+    callOp('mul',
+      getOp(refr('A'), axis('b'), axis('i'), axis('j')),
+      getOp(refr('B'), axis('b'), axis('j'), axis('k'))));
+  const result = evaluateExprN(ir, {}, N, { A, B }, null);
+  assert.deepEqual(result.shape, [N, 2, 2, 2]);
+  const perAtom = [1, 2, 3, 4, 10, 12, 14, 16];
+  assert.deepEqual(Array.from(result.data), [...perAtom, ...perAtom]);
+});
+
+test('aggregateN: matvec with atom-batched vector — square corner (n === N) is per-atom, not mat×mat', () => {
+  // A=[m, n] atom-indep, v=[N, n] atom-batched with m = n = N: the
+  // matvec specialiser now threads `__atomN` into the atom-aware
+  // mul(rank-2, rank-1) variant (`_matBatchedVecMul`). Pre-fix it
+  // called valueOps.mul directly, which matched the direct mat×mat
+  // variant — and at n === N silently computed a WRONG plain matrix
+  // product instead of per-atom gemv.
+  const { evaluateExprN } = require('../sampler-eval-batched.ts');
+  const N = 3;
+  const A = val([3, 3], [1, 0, 0, 0, 2, 0, 0, 0, 3]);   // diag(1,2,3), dense storage
+  const v = batchedVal(N, [3], [1, 1, 1, 2, 2, 2, 3, 3, 3]);
+  const ir = aggregateIR('sum', ['i'],
+    callOp('mul',
+      getOp(refr('A'), axis('i'), axis('j')),
+      getOp(refr('v'), axis('j'))));
+  const oracle = perAtomOracle(ir, { v }, N, { A });
+  const result = evaluateExprN(ir, { v }, N, { A }, null);
+  assertBatchedEqOracle(result, oracle, N, [3]);
+  assert.deepEqual(Array.from(result.data), [1, 2, 3, 2, 4, 6, 3, 6, 9]);
+});
+
+test('ops.mul atom-aware: atom-batched matrix × atom-batched vector throws the explicit guard', () => {
+  // The atom-aware matcher accepts each arg independently as
+  // exact-rank OR rank+1-with-leading-N, so A=[N, m, n] matches the
+  // mul(rank-2, rank-1) variant. Its batched impl only reads A as
+  // [m, n] — the explicit guard turns what would be a misread (or a
+  // confusing downstream shape error) into a targeted diagnostic.
+  const ops = require('../ops.ts');
+  require('../ops-declarations.ts');
+  const N = 2;
+  const A = { shape: [N, 2, 2], data: new Float64Array([1, 0, 0, 1, 2, 0, 0, 2]) };
+  const v = { shape: [N, 2], data: new Float64Array([1, 2, 3, 4]) };
+  assert.throws(
+    () => ops.dispatch('mul', [A, v], { atomN: N, wrappingOp: 'direct' }),
+    /atom-batched matrix operand .* is not implemented/);
+});

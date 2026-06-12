@@ -167,15 +167,15 @@ test('einsum: prod_all[] := prod-reduction over an indexed vector', () => {
 });
 
 // =====================================================================
-// Engine-gap regressions: the introduction documents one gap;
-// pin it so a future fix surfaces the change clearly.
+// Rank-3 batched matmul end-to-end (was an engine-gap pin)
 // =====================================================================
 
-test('engine gap: rank-3 batched-matmul parses but pre-eval lacks value', () => {
-  // Pins that the parser + classifier accept the pattern (so the
-  // editor / lint paths stay green), but pre-eval doesn't produce
-  // a numeric Value yet (a follow-up: rank-3 array-literal
-  // threading through aggregate eval).
+test('einsum: rank-3 batched-matmul pre-evaluates to a [2, 2, 2] Value', () => {
+  // Formerly a gap pin: the batched-matmul AGGREGATE_PATTERNS
+  // specialiser misread Value-typed operands (`A.length` on a
+  // shape-explicit Value → `[undefined]`). Fixed 2026-06-13: Value
+  // operands route to the generic broadcast-reduce, so the rank-3
+  // array-literal pipeline produces the real per-batch product.
   const r = processSource(`
 batch_A = [[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]]
 batch_B = [[[1.0, 1.0], [1.0, 1.0]], [[1.0, 0.0], [0.0, 1.0]]]
@@ -186,11 +186,9 @@ bmm[.b, .i, .k] := batch_A[.b, .i, .j] * batch_B[.b, .j, .k]
   const out = orchestrator.buildDerivations(r.bindings);
   const bmm = out.bindings.get('bmm');
   assert.ok(bmm && bmm.ir, 'bmm has IR (classifies)');
-  // Pre-eval doesn't produce a numeric Value (rank-3 array literal
-  // gap). A future fix should make `out.fixedValues.has('bmm')`
-  // return true and `out.fixedValues.get('bmm')` a [2, 2, 2]
-  // Value; this assertion will start failing then — flip it.
+  assert.ok(out.fixedValues.has('bmm'), 'bmm pre-evaluates');
   const v = out.fixedValues.get('bmm');
-  assert.ok(v === undefined || (Array.isArray(v) && v[0] === undefined),
-    'rank-3 batched matmul pre-eval gap (flip to value-check once fixed)');
+  // Batch 0: I · [[1,1],[1,1]] = [[1,1],[1,1]]; batch 1: 2I · I = 2I.
+  assert.deepEqual(v.shape, [2, 2, 2]);
+  assert.deepEqual(Array.from(v.data), [1, 1, 1, 1, 2, 0, 0, 2]);
 });

@@ -282,9 +282,15 @@ AGGREGATE_PATTERNS.push({
     const A = evaluateExpr(match.aIR, env);
     const v = evaluateExpr(match.vIR, env);
     if (valueLib.isValue(A) || valueLib.isValue(v)) {
-      let aV = valueLib.asValue(A);
-      if (match.transA) aV = valueLib.transpose(aV);
-      return valueOps.mul(aV, valueLib.asValue(v));
+      // _matmulDispatch threads env.__atomN (atom-batched harness) so
+      // an atom-batched v (shape=[N, n]) fires the registered
+      // mul(rank-2, rank-1) atom-aware variant (_matBatchedVecMul)
+      // instead of mis-matching the direct mat×mat variant — which
+      // throws on n ≠ N, and at n === N would have computed a WRONG
+      // plain matrix product. All-atom-indep operands keep the direct
+      // valueOps.mul path (the atom-aware matcher requires ≥1
+      // atom-batched arg).
+      return _matmulDispatch(A, v, match.transA, false, env && env.__atomN);
     }
     // Nested-array matvec.
     const Ax = match.transA ? (ARITH_OPS as any).transpose(A) : A;
@@ -363,10 +369,18 @@ AGGREGATE_PATTERNS.push({
 // Anything beyond flat real rank-1 operands (complex, diag-stored,
 // transposed views, higher rank) falls back to the default, which
 // owns those semantics and diagnostics.
+//
+// SINGLE-POINT ONLY: the matcher refuses the atom-batched harness
+// (`env.__atomN`). In that context a per-atom scalar ref is a Value
+// of shape=[N] — indistinguishable by shape from an atom-indep
+// length-N vector — so a fused flat-buffer dot would silently
+// multiply a per-atom column as if it were vector elements. The
+// generic `_evalAggregateBroadcastReduceN` owns the batched case.
 // ---------------------------------------------------------------------
 AGGREGATE_PATTERNS.push({
   name: 'dot-product',
-  match(ir: any, _env: any): any {
+  match(ir: any, env: any): any {
+    if (env && typeof env.__atomN === 'number') return null;  // batched: generic only
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
@@ -465,12 +479,24 @@ AGGREGATE_PATTERNS.push({
     }
     return null;
   },
-  execute(_ir: any, env: any, match: any): any {
+  execute(ir: any, env: any, match: any): any {
     const A = evaluateExpr(match.aIR, env);
     const B = evaluateExpr(match.bIR, env);
-    // Per-batch nested-array matmul. (Value-typed batched matmul
-    // would go through valueOps with the batch axis as leading dim;
-    // for v0.1 the nested-array path covers the typical user case.)
+    // Nested-array operands only. A shape-explicit Value has no
+    // useful `.length` (the per-batch loop below would read
+    // `A.length === undefined` and return garbage), so Values route
+    // to the generic broadcast-reduce, which owns rank-3 Value
+    // semantics. In the atom-batched harness (`env.__atomN`) we must
+    // not return the SINGLE-POINT generic — throw instead, so
+    // `_tryBatchedAggregatePatterns` catches and falls through to
+    // `_evalAggregateBroadcastReduceN`.
+    if (valueLib.isValue(A) || valueLib.isValue(B)) {
+      if (env && typeof env.__atomN === 'number') {
+        throw new Error('batched-matmul specialiser: Value operands in '
+          + 'atom-batched context — fall through to the generic lowering');
+      }
+      return _evalAggregateBroadcastReduce(ir, env);
+    }
     const Nb = A.length;
     const out: any[] = new Array(Nb);
     for (let b = 0; b < Nb; b++) {
@@ -1364,18 +1390,19 @@ function _evalAggregateBroadcastReduce(ir: any, env: any): any {
 // result on hit; null on miss (caller falls through to
 // `_evalAggregateBroadcastReduceN`).
 //
-// Today only the matvec specialiser opportunistically vectorises in
-// atom-batched mode: `aggregate(sum, [.i], A[.i, .j] * v[.j])` with
-// atom-indep A and atom-batched v dispatches to `valueOps.mul(A, v)`
-// via the rank-2 × atom-batched rank-1 atom-aware variant (registered
-// in ops-declarations.ts). Phase 2.2 (2026-05-31) extended this to
-// rank-2 × rank-2 atom-batched matmul: the env carries `__atomN`,
-// which the matmul-family specialiser's `_matmulDispatch` reads and
-// passes to `ops.dispatch('mul', ..., { atomN })` so the atom-aware
-// `_matBatchedMatMul` variant fires for `[N, m, n] × [N, n, p] →
-// [N, m, p]`. Without `__atomN`, the dispatcher treats the operands
-// as rank-3 × rank-3 (no matching variant) and throws, which we
-// catch as a fall-through signal.
+// The env carries the atom count under `__atomN`; specialisers thread
+// it into `ops.dispatch('mul', ..., { atomN })` (via `_matmulDispatch`
+// for matmul-family and matvec) so the atom-aware mul variants fire:
+//   - matvec: atom-indep A=[m, n] × atom-batched v=[N, n] →
+//     `_matBatchedVecMul` (the linear-regression `X · betas` shape);
+//   - matmul: `[N, m, n] × [N, n, p] → [N, m, p]` (and the shared-A /
+//     shared-B mixes) → `_matBatchedMatMul` (Phase 2.2, 2026-05-31).
+// When no atom-aware variant matches, the dispatcher throws ("no
+// variant matched"), which we catch as a fall-through signal. The
+// dot-product specialiser refuses `__atomN` envs outright (a per-atom
+// scalar column is shape-indistinguishable from a length-N vector);
+// the batched-matmul specialiser throws on Value operands here. Both
+// fall through to the generic batched lowering.
 //
 // The wire lets the polyeval-style hot path AND linear-regression-
 // style `X · betas` AND any model with `A · v_per_atom` AND batched

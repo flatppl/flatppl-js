@@ -1516,14 +1516,18 @@ function _ensureBroadcastedRegistered(): void {
 //     variant registration makes routing uniform.
 //   - mul: matrix × rank-1 vec (rank-2 + rank-1). When the second
 //     arg is atom-batched (shape=[N, n] meaning [N] vectors of
-//     length n), routes to _matBatchedVecMul / _cxMatBatchedVecMul
-//     for the MvNormal `L·z` hot path. Diag-stored matrix arg
+//     length n), routes to _matBatchedVecMul for the MvNormal `L·z`
+//     hot path (complex matvec stays in value-ops.mulN —
+//     _cxMatBatchedVecMul is internal there). Diag-stored matrix arg
 //     stays as a value-ops pre-check (the diag fast-path's null-
 //     fallthrough doesn't fit variant matching).
 //
-// Real-only for now; complex stays on the value-ops pre-check path
-// in `value-ops.mulN`. Migration of complex is a separate item
-// (parallel complex variants, like the existing direct-mul migration).
+// Mostly real-only; the one complex variant below (rank-2 × rank-2
+// batched matmul, both-operands-complex) is the precedent the broader
+// complex migration extends. Everything else complex stays on the
+// value-ops pre-check path in `value-ops.mulN`; the full migration is
+// a separate item (parallel complex variants + an either-operand
+// dtype pattern form — see the TODO's complex-mul migration entry).
 
 let _ATOM_BATCHED_VARIANTS_REGISTERED = false;
 function _ensureAtomBatchedRegistered(): void {
@@ -1598,10 +1602,11 @@ function _ensureAtomBatchedRegistered(): void {
   // The MvNormal `L · z` hot path: L is shape=[n, n] (atom-indep
   // matrix), z is shape=[N, n] (atom-batched rank-1 vector). The
   // existing `_matBatchedVecMul` runs the per-atom gemv loop in one
-  // pass. Diag-stored L is filtered out by the matrix's struct
-  // pattern (no diag variant here — the diag fast-path stays in
-  // value-ops.mulN's pre-check until a separate complex+diag
-  // migration). Real-only via dtype: 'real'.
+  // pass. The argPatterns declare NO struct constraint, so a
+  // diag-stored L matches too — the tripwire throw below catches a
+  // caller that should have gone through value-ops.mulN's diag
+  // pre-check (the diag fast-path stays there until a separate
+  // complex+diag migration). Real-only via dtype: 'real'.
   ops.registerVariant('mul', {
     argPatterns: [
       { rank: 2, dtype: 'real' },
@@ -1610,18 +1615,24 @@ function _ensureAtomBatchedRegistered(): void {
     impl: (vs: any[]) => vo._matVecMul(vs[0], vs[1]),
     batched: (args: any[], N: number) => {
       const A = args[0], v = args[1];
-      // Only the vector is atom-batched (a stays rank-2). If A were
-      // also batched (rank-3) the atom-aware matcher would reject —
-      // its rank constraint is 2 here. So this impl handles exactly
-      // the matrix × [N, n] pattern.
+      // This impl handles exactly the atom-indep matrix × atom-
+      // batched [N, n] vector pattern. NOTE the atom-aware matcher
+      // would ALSO accept an atom-batched A=[N, m, n] (each arg
+      // independently matches exact-rank OR rank+1 with leading N) —
+      // `_matBatchedVecMul` only reads A as [m, n], so guard
+      // explicitly rather than misread [N, m] as the matrix dims.
+      if (A.shape.length !== 2) {
+        throw new Error(
+          'ops.mul.batched(rank-2 × atom-batched rank-1): atom-batched '
+          + 'matrix operand (shape=[N, m, n]) is not implemented — this '
+          + 'variant handles an atom-indep matrix × per-atom vector only');
+      }
       if (valueLib.isDiagStored && valueLib.isDiagStored(A)) {
-        // Diag stays on the value-ops mulN pre-check path; reject
-        // here so the caller can densify-and-retry. The variant
-        // matcher rejects struct constraints by default, but we
-        // don't gate on struct in the pattern — instead, route
-        // through value-ops.mulN's diag pre-check explicitly when
-        // diag-stored is detected. For now, throw a clear error so
-        // a missed caller surfaces.
+        // Diag-stored matrices belong on value-ops.mulN's diag
+        // pre-check path (O(n) scale per atom). Reaching this impl
+        // with one means a caller bypassed that pre-check — throw
+        // loudly so the missed caller surfaces instead of paying the
+        // densified gemv silently.
         throw new Error(
           'ops.mul.batched(rank-2 × atom-batched rank-1): diag-stored matrix ' +
           'should route through value-ops.mulN (diag fast-path), not the variant registry');
@@ -1669,9 +1680,14 @@ function _ensureAtomBatchedRegistered(): void {
 
   // Complex counterpart — per-atom complex matmul over [N, m, n] ×
   // [N, n, p]. Routes through _cxMatBatchedMatMul (planar re/im).
-  // The dtype: 'complex' pattern matches when either operand is
-  // complex; the impl handles real/complex auto-promotion via
-  // readComplex inside.
+  // The per-arg dtype matcher is strict: this variant fires only when
+  // BOTH operands are complex Values. A mixed real × complex pair
+  // matches NEITHER this variant nor the real one — dispatch throws
+  // "no variant matched" and the batched-aggregate harness catches it
+  // as fall-through to the generic lowering (correct, just not
+  // vectorised). An either-operand dtype pattern form would close
+  // that; it's the concrete motivation noted in the TODO's
+  // complex-mul migration item.
   ops.registerVariant('mul', {
     argPatterns: [
       { rank: 2, dtype: 'complex' },
