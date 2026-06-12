@@ -167,7 +167,7 @@ const DISTRIBUTIONS = new Set([
   // Continuous
   'Uniform', 'Normal', 'GeneralizedNormal', 'Cauchy', 'StudentT',
   'Logistic', 'LogNormal', 'Exponential', 'Gamma', 'Weibull',
-  'InverseGamma', 'Beta', 'ChiSquared', 'VonMises', 'Laplace',
+  'Pareto', 'InverseGamma', 'Beta', 'ChiSquared', 'VonMises', 'Laplace',
   // Discrete
   'Bernoulli', 'Categorical', 'Categorical0', 'Binomial', 'Poisson',
   'Geometric', 'NegativeBinomial', 'NegativeBinomial2',

@@ -241,6 +241,47 @@ test('NegativeBinomial / NegativeBinomial2: finite logpdf for non-integer shape'
   assert.ok(Math.abs(nb2 - (-1.9639304319959507)) < 1e-12, `NB2(4,2.5)@3 logpdf = ${nb2}`);
 });
 
+test('Pareto(shape, scale): logpdf matches Distributions.jl, support is [scale, ∞)', () => {
+  // Oracle: Pareto(α, θ) pdf = α·θ^α / x^(α+1) for x ≥ θ; logpdf values from
+  // Distributions.jl Pareto(α=shape, θ=scale).
+  const sampler = require('../sampler.ts');
+  const reg = sampler._internal.REGISTRY.Pareto;
+  const lp = (x: any, a: any, sc: any) => reg.logpdfFn(x, a, sc);
+  assert.ok(Math.abs(lp(3.0, 2.5, 1.5) - (-1.915189508193818)) < 1e-12, 'Pareto(2.5,1.5)@3');
+  assert.ok(Math.abs(lp(1.5, 2.5, 1.5) - (0.5108256237659909)) < 1e-12, 'Pareto(2.5,1.5)@scale = log(α/θ)');
+  assert.ok(Math.abs(lp(5.0, 3.0, 2.0) - (-3.259697819388456)) < 1e-12, 'Pareto(3,2)@5');
+  assert.equal(lp(1.0, 2.5, 1.5), -Infinity, 'below scale ⇒ -Inf');
+});
+
+test('Pareto(shape, scale): samples are all ≥ scale', async () => {
+  const ctx = makeCtx(`m = Pareto(shape = 2.5, scale = 1.5)`);
+  const m = await ctx.getMeasure('m');
+  for (let i = 0; i < m.samples.length; i++) {
+    assert.ok(m.samples[i] >= 1.5, `samples[${i}] = ${m.samples[i]} must be ≥ scale=1.5`);
+  }
+});
+
+test('Pareto: Ctor pdf/cdf/quantile and both sampler branches (α=2.5, θ=1.5)', () => {
+  const sampler = require('../sampler.ts');
+  const R = sampler._internal.REGISTRY.Pareto;
+  const d = new R.Ctor(2.5, 1.5);
+  const close = (a: any, b: any) => Math.abs(a - b) < 1e-12;
+  // pdf = (α/x)·(θ/x)^α ; below scale ⇒ 0
+  assert.ok(close(d.pdf(3.0), (2.5 / 3.0) * Math.pow(1.5 / 3.0, 2.5)), 'pdf');
+  assert.equal(d.pdf(1.0), 0, 'pdf below scale = 0');
+  // cdf = 1 − (θ/x)^α ; below scale ⇒ 0; quantile inverts it
+  assert.ok(close(d.cdf(3.0), 1 - Math.pow(1.5 / 3.0, 2.5)), 'cdf');
+  assert.equal(d.cdf(1.0), 0, 'cdf below scale = 0');
+  assert.equal(d.quantile(0), 1.5, 'quantile(0) = scale');
+  assert.equal(d.quantile(1), Infinity, 'quantile(1) = ∞');
+  assert.ok(close(d.quantile(d.cdf(3.0)), 3.0), 'quantile∘cdf = id');
+  // sampler: static and parametric branches, deterministic prng=0.5, both ≥ scale
+  const prng = () => 0.5;
+  const expected = 1.5 * Math.pow(1 - 0.5, -1 / 2.5);
+  assert.ok(close(R.randFn.factory(2.5, 1.5, { prng })(), expected), 'static sampler');
+  assert.ok(close(R.randFn.factory({ prng })(2.5, 1.5), expected), 'parametric sampler');
+});
+
 // ---------------------------------------------------------------------
 // Spec equivalences
 // ---------------------------------------------------------------------

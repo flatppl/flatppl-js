@@ -238,6 +238,56 @@ function logpdfWeibull(x: any, k: any, lambda: any) {
   return Math.log(k / lambda) + (k - 1) * Math.log(z) - Math.pow(z, k);
 }
 
+// Pareto(shape α, scale θ): pdf = α·θ^α / x^(α+1) for x ≥ θ, else 0.
+// Inverse-CDF sampler: x = θ·(1−u)^(−1/α). Matches Distributions.jl Pareto(α, θ).
+const randPareto = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    const prng = opts.prng || Math.random;
+    if (args.length === 1 && args[0] === opts) {
+      return function parametricParetoSampler(alpha: any, scale: any) {
+        const u = uClip(prng());
+        return (+scale) * Math.pow(1 - u, -1 / (+alpha));
+      };
+    }
+    const alpha = +args[0], scale = +args[1];
+    return function staticParetoSampler() {
+      const u = uClip(prng());
+      return scale * Math.pow(1 - u, -1 / alpha);
+    };
+  },
+};
+function ParetoCtor(this: any, shape: any, scale: any) {
+  this.alpha = +shape; this.xm = +scale;
+  this.support = [+scale, Infinity];
+}
+ParetoCtor.prototype.pdf = function(this: any, x: any) {
+  if (x < this.xm) return 0;
+  return (this.alpha / x) * Math.pow(this.xm / x, this.alpha);
+};
+ParetoCtor.prototype.logpdf = function(this: any, x: any) {
+  if (x < this.xm) return -Infinity;
+  return Math.log(this.alpha) + this.alpha * Math.log(this.xm)
+       - (this.alpha + 1) * Math.log(x);
+};
+ParetoCtor.prototype.cdf = function(this: any, x: any) {
+  if (x <= this.xm) return 0;
+  return 1 - Math.pow(this.xm / x, this.alpha);
+};
+ParetoCtor.prototype.quantile = function(this: any, p: any) {
+  if (p <= 0) return this.xm;
+  if (p >= 1) return Infinity;
+  return this.xm * Math.pow(1 - p, -1 / this.alpha);
+};
+function logpdfPareto(x: any, alpha: any, scale: any) {
+  if (x < scale) return -Infinity;
+  return Math.log(alpha) + alpha * Math.log(scale) - (alpha + 1) * Math.log(x);
+}
+
 // GeneralizedNormal(mean, alpha, beta) — canonical scaled-gamma +
 // Rademacher construction:  Y ~ Gamma(1/β, 1), R = ±1, X = μ + R·α·Y^(1/β)
 const randGeneralizedNormal = {
@@ -932,6 +982,14 @@ const REGISTRY = {
     Ctor:     WeibullCtor,
     randFn:   randWeibull,
     logpdfFn: logpdfWeibull,
+  },
+  Pareto: {
+    params:   ['shape', 'scale'],
+    aliases:  {},
+    discrete: false,
+    Ctor:     ParetoCtor,
+    randFn:   randPareto,
+    logpdfFn: logpdfPareto,
   },
   LogNormal: {
     params:   ['mu', 'sigma'],

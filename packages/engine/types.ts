@@ -730,6 +730,7 @@ const SIGNATURE_FACTORIES = {
   Gamma:             () => realDistKwargs({ shape: REAL, rate: REAL }),
   InverseGamma:      () => realDistKwargs({ shape: REAL, scale: REAL }),
   Weibull:           () => realDistKwargs({ shape: REAL, scale: REAL }),
+  Pareto:            () => realDistKwargs({ shape: REAL, scale: REAL }),
   Beta:              () => realDistKwargs({ alpha: REAL, beta: REAL }),
   Uniform:           () => realDistKwargs({ support: any() }),
   GeneralizedNormal: () => realDistKwargs({ mean: REAL, alpha: REAL, beta: REAL }),
