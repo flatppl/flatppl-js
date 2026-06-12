@@ -190,6 +190,11 @@ const MEASURE_OPS = new Set([
   'superpose', 'joint', 'iid', 'kchain', 'jointchain',
   // Restriction and transformation
   'truncate', 'pushfwd',
+  // Affine pushforward sugar (spec §06 "locscale"). Expanded in the
+  // analyzer to `pushfwd(<affine bijection>, m)` before classification,
+  // so — like `restrict` — it carries no derivation kind of its own;
+  // listed here only to be a known name.
+  'locscale',
   // Likelihoods
   'likelihoodof', 'joint_likelihood',
   'densityof', 'logdensityof',

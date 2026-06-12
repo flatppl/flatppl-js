@@ -2415,6 +2415,367 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
   ast.body = newBody;
 }
 
+// `locscale(m, shift, scale)` expansion (spec §06 "locscale").
+//
+// `locscale(m, shift, scale)` is shorthand for the affine pushforward
+// `pushfwd(x -> scale * x + shift, m)`. We expand it before analysis to
+// a synthetic `bijection(fwd, inv, logvolume)` driving a `pushfwd`, so
+// the existing pushforward density (density.walkPushfwd, AST bijection
+// path) and sampler (matPushfwd) handle it with no new derivation kind —
+// exactly as `restrict` reduces to disintegrate/bayesupdate. The
+// synthesised `__locscale_*` names carry the conventional `__`-prefix for
+// auto-generated bindings (spec §04); like `__restrict_*` they are NOT
+// elided inside this engine — they appear in the exported `symbols` array
+// the same way restrict's synthetics do (any LSP/outline elision happens in
+// the downstream consumer, not here).
+//
+//   __locscale_fwd_N = scale * _x + shift        # functionof, arg x
+//   __locscale_inv_N = (_y - shift) / scale       # functionof, arg y
+//   __locscale_lv_N  = log(abs(scale))            # forward log|J|, 0-arg
+//   __locscale_bij_N = bijection(fwd, inv, lv)
+//   <original RHS with locscale(m, .., ..) → pushfwd(__locscale_bij_N, m)>
+//
+// Scope: SCALAR shift and SCALAR scale only. A non-scalar literal shift or
+// scale is rejected with a diagnostic in _buildLocscalePushfwd; a matrix or
+// vector affine map should use pushfwd directly (spec §06). (Multivariate
+// locscale via type-inference-directed routing is tracked separately.)
+let _locscaleCounter = 0;
+
+const _LOCSCALE_LITERAL_TYPES = new Set([
+  'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
+
+function expandLocscaleStatements(ast: any, diagnostics: any[]) {
+  if (!ast || !ast.body) return;
+  const newBody: any[] = [];
+  for (const stmt of ast.body) {
+    if (stmt.type !== 'AssignStatement' || !stmt.value) {
+      newBody.push(stmt);
+      continue;
+    }
+    const synth: any[] = [];
+    const rewritten = _rewriteLocscale(stmt.value, synth, diagnostics, ast.body);
+    for (const s of synth) newBody.push(s);
+    newBody.push(rewritten === stmt.value
+      ? stmt
+      : AST.AssignStatement(stmt.names, rewritten, stmt.loc));
+  }
+  ast.body = newBody;
+}
+
+// Recursively rewrite every `locscale(...)` call node within `node`,
+// appending the synthetic bijection/functionof binding statements to
+// `synth` (in dependency order). Returns the rewritten node, and crucially
+// returns `node` *unchanged* (same reference, no allocation) when nothing
+// was rewritten — so a model with no locscale pays no per-node clone cost.
+//
+// The generic structural recursion is REQUIRED, not speculative: `x ~ M`
+// desugars to `x = draw(M)` at parse time (parser.ts), so a locscale written
+// as `b ~ locscale(...)` arrives nested inside `draw(...)`; nested positions
+// inside iid/superpose/etc. are reached the same way.
+function _rewriteLocscale(node: any, synth: any[], diagnostics: any[], body: any[]): any {
+  if (node == null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) {
+    let out: any = node;
+    for (let i = 0; i < node.length; i++) {
+      const r = _rewriteLocscale(node[i], synth, diagnostics, body);
+      if (r !== node[i]) {
+        if (out === node) out = node.slice();
+        out[i] = r;
+      }
+    }
+    return out;
+  }
+  if (node.type === 'CallExpr' && node.callee
+      && node.callee.type === 'Identifier'
+      && node.callee.name === 'locscale') {
+    return _buildLocscalePushfwd(node, synth, diagnostics, body);
+  }
+  // Lazy-clone structural recursion: only spread `node` once a child actually
+  // changes, so the no-locscale common case returns the original reference.
+  let out: any = node;
+  for (const k of Object.keys(node)) {
+    if (k === 'loc' || k === 'type') continue;
+    const r = _rewriteLocscale(node[k], synth, diagnostics, body);
+    if (r !== node[k]) {
+      if (out === node) out = { ...node };
+      out[k] = r;
+    }
+  }
+  return out;
+}
+
+function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body: any[]): any {
+  // Reuse the call's real line/col (marked synthetic) so source-slicing
+  // for symbols stays well-formed — mirrors restrict-expand's sloc.
+  const sloc = { ...call.loc, synthetic: true, source: 'locscale-expand' };
+  const args = call.args || [];
+  if (args.some((a: any) => a && a.type === 'KeywordArg')) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale() does not accept keyword arguments; pass `
+        + `(measure, shift, scale) positionally`,
+      loc: call.loc,
+    });
+    return call;
+  }
+  if (args.length !== 3) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale() takes exactly three positional arguments `
+        + `(measure, shift, scale); got ${args.length}`,
+      loc: call.loc,
+    });
+    return call;
+  }
+  // The base measure must be a measure-producing expression (a distribution
+  // call like Normal(...)/StudentT(...) or a bound measure name) — never a
+  // literal. Mirrors restrict-expand's measure-arg guard (this combinator
+  // wraps the base in pushfwd, so unlike restrict it allows a CallExpr base,
+  // not only an Identifier).
+  if (args[0] && _LOCSCALE_LITERAL_TYPES.has(args[0].type)) {
+    diagnostics.push({
+      severity: 'error',
+      message: `locscale()'s first argument (the measure) must be a measure `
+        + `expression, not a ${args[0].type}`,
+      loc: args[0].loc,
+    });
+    return call;
+  }
+  // P3: a vector/matrix shift or scale routes through lift's affine-registry
+  // lowering (lift.inlineLocscaleAffineLift), NOT the scalar expansion here.
+  // Detect the non-scalar forms statically (the analyzer pre-pass runs before
+  // type inference, so this mirrors lift's own conservative syntactic gate)
+  // and leave the call UNEXPANDED so it survives `analyze()` to reach lift.
+  const MATRIXY_OPS = new Set([
+    'lower_cholesky', 'cholesky', 'inv', 'transpose', 'rowstack', 'colstack',
+    'eye', 'diagm', 'diag']);
+  const looksNonScalar = (e: any): boolean => {
+    if (!e) return false;
+    if (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral') return true;
+    if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+        && MATRIXY_OPS.has(e.callee.name)) return true;
+    if (e.type === 'Identifier') {
+      // 1-level binding lookup within this program body.
+      for (const st of body || []) {
+        if (st.type === 'AssignStatement' && st.names
+            && st.names.some((n: any) => n.name === e.name)) {
+          return looksNonScalar(st.value);
+        }
+      }
+      /* c8 ignore start */
+      // Defensive loop-completion: a bound identifier matches an
+      // AssignStatement (or a `~`-statement carrying its name) and returns
+      // above; only an unbound name runs the loop to completion.
+    }
+    /* c8 ignore stop */
+    return false;
+  };
+  // The registry affine-density path that lift routes a non-scalar locscale
+  // through requires the base to score as `iid(<scalar dist>, D)`. Detect an
+  // iid base (an `iid(...)` call, or a 1-level ref to such) so we can tell a
+  // routable locscale from a deferred one.
+  const baseIsIid = (e: any): boolean => {
+    if (!e) return false;
+    if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+        && e.callee.name === 'iid') return true;
+    if (e.type === 'Identifier') {
+      for (const st of body || []) {
+        if (st.type === 'AssignStatement' && st.names
+            && st.names.some((n: any) => n.name === e.name)) {
+          return baseIsIid(st.value);
+        }
+      }
+      /* c8 ignore start */
+      // Defensive loop-completion: only an unbound base name runs the loop to
+      // completion; a bound name matches and returns above.
+    }
+    /* c8 ignore stop */
+    return false;
+  };
+  if (looksNonScalar(args[1]) || looksNonScalar(args[2])) {
+    // Only an iid base routes through lift's affine-registry lowering. For
+    // any other base — including MvNormal, itself a pushfwd∘pushfwd whose
+    // affine registry entries do not auto-compose — emit a clean diagnostic
+    // HERE (the pre-pass owns the diagnostic channel; lift has none) rather
+    // than letting an unhandled locscale IR node survive to materialisation
+    // and fail with a cryptic registry shape error. This keeps the iid-base
+    // detection and lift's gate in agreement: exactly the iid-base forms are
+    // left to survive; everything else multivariate is diagnosed.
+    if (!baseIsIid(args[0])) {
+      diagnostics.push({
+        severity: 'error',
+        message: `locscale() with a vector/matrix scale requires an iid(<dist>, D) `
+          + `base (it lowers to an affine-registry pushfwd); for other bases — `
+          + `including MvNormal — compose with pushfwd directly (spec §06)`,
+        loc: call.loc,
+      });
+      return call;
+    }
+    // Base IS iid → lift's affine-registry gate handles it. But lift's gate
+    // only fires for a square [D,D] scale + matching [D] shift; an
+    // unroutable shape would otherwise leave an unhandled locscale that
+    // silently drops the binding at materialisation. The pre-pass can
+    // syntactically validate the LITERAL forms here (it runs before type
+    // inference, so ref/op shapes defer to lift). For a literal scale we
+    // require a square [D,D] matrix and a literal shift (if literal) of
+    // length D — anything else is diagnosed now, keeping the invariant
+    // "no locscale survives unhandled to materialisation" for literal forms.
+    const resolveLit = (e: any): any => {
+      if (!e) return null;
+      if (e.type === 'ArrayLiteral') return e;
+      if (e.type === 'Identifier') {
+        for (const st of body || []) {
+          if (st.type === 'AssignStatement' && st.names
+              && st.names.some((n: any) => n.name === e.name)) {
+            return resolveLit(st.value);
+          }
+        }
+      /* c8 ignore start */
+      // Defensive loop-completion: only an unbound scale|shift name runs the
+      // loop to completion; a bound name matches and returns above. (The tail
+      // `return null` below IS reached — e.g. a named lower_cholesky ref.)
+      }
+      /* c8 ignore stop */
+      return null;
+    };
+    const litRows = (e: any): any[] | null => {
+      const lit = resolveLit(e);
+      return lit ? lit.elements : null;
+    };
+    // Static iid base count K: base is `iid(<dist>, K)` with a NumberLiteral
+    // 2nd positional arg, or a 1-level ref to such. Returns null when K is
+    // not a statically-known integer (then we defer the cross-check to lift).
+    const baseIidCount = (e: any): number | null => {
+      if (!e) return null;
+      if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+          && e.callee.name === 'iid' && Array.isArray(e.args)) {
+        const positional = e.args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+        const sizeArg = positional[1];
+        if (sizeArg && sizeArg.type === 'NumberLiteral'
+            && Number.isInteger(sizeArg.value)) {
+          return sizeArg.value;
+        }
+        return null;
+      }
+      if (e.type === 'Identifier') {
+        for (const st of body || []) {
+          if (st.type === 'AssignStatement' && st.names
+              && st.names.some((n: any) => n.name === e.name)) {
+            return baseIidCount(st.value);
+          }
+        }
+      /* c8 ignore start */
+      // Defensive tail: baseIidCount is only called after baseIsIid(args[0])
+      // returned true, which for an Identifier base means the same 1-level loop
+      // found an AssignStatement binding to iid above; an inline iid base hits
+      // the CallExpr branch. The fall-through is unreachable for a routed
+      // locscale, so the loop-completing brace + tail return aren't exercised.
+      }
+      return null;
+      /* c8 ignore stop */
+    };
+    const scaleRows = litRows(args[2]);
+    if (scaleRows) {
+      const D = scaleRows.length;
+      const squareMatrix = D >= 1 && scaleRows.every((r: any) =>
+        r && r.type === 'ArrayLiteral' && r.elements.length === D);
+      const shiftRows = litRows(args[1]);
+      const shiftOk = shiftRows == null
+        || (shiftRows.length === D
+            && shiftRows.every((s: any) => !(s && s.type === 'ArrayLiteral')));
+      if (!squareMatrix || !shiftOk) {
+        diagnostics.push({
+          severity: 'error',
+          message: `locscale() with a matrix scale over an iid base requires a `
+            + `square [D, D] scale and a length-D vector shift (the affine-registry `
+            + `pushfwd contract); for other shapes use pushfwd directly (spec §06)`,
+          loc: call.loc,
+        });
+        return call;
+      }
+      // Reconcile the iid base dimension against the scale dimension: the
+      // affine map scale@x + shift needs a length-D base. Only enforce when
+      // BOTH are statically known (dynamic K is left to lift's gate / the
+      // buildDerivations safety net).
+      const K = baseIidCount(args[0]);
+      if (K != null && K !== D) {
+        diagnostics.push({
+          severity: 'error',
+          message: `locscale(): iid base dimension (${K}) does not match the `
+            + `scale matrix dimension (${D}); the affine map scale@x+shift requires `
+            + `a length-${D} base`,
+          loc: call.loc,
+        });
+        return call;
+      }
+    }
+    return call;  // iid base, routable shape: survive to lift's lowering
+  }
+  // The base measure may itself contain a nested locscale.
+  const mExpr = _rewriteLocscale(args[0], synth, diagnostics, body);
+  const shiftExpr = args[1];
+  const scaleExpr = args[2];
+  const clone = (n: any) => structuredClone(n);
+
+  const n = _locscaleCounter++;
+  const fwdName = `__locscale_fwd_${n}`;
+  const invName = `__locscale_inv_${n}`;
+  const lvName  = `__locscale_lv_${n}`;
+  const bijName = `__locscale_bij_${n}`;
+
+  // fwd: functionof(scale * _x + shift, x = _x) — mirrors the parser's
+  // single-arg lambda desugaring (functionof body + Placeholder kwarg).
+  const fwdBody = AST.BinaryExpr('+',
+    AST.BinaryExpr('*', clone(scaleExpr), AST.Placeholder('x', sloc), sloc),
+    clone(shiftExpr), sloc);
+  const fwd = AST.CallExpr(AST.Identifier('functionof', sloc),
+    [fwdBody, AST.KeywordArg('x', AST.Placeholder('x', sloc), sloc)], sloc);
+
+  // inv: functionof((_y - shift) / scale, y = _y)
+  const invBody = AST.BinaryExpr('/',
+    AST.BinaryExpr('-', AST.Placeholder('y', sloc), clone(shiftExpr), sloc),
+    clone(scaleExpr), sloc);
+  const inv = AST.CallExpr(AST.Identifier('functionof', sloc),
+    [invBody, AST.KeywordArg('y', AST.Placeholder('y', sloc), sloc)], sloc);
+
+  // logvolume: the forward Jacobian of x -> scale*x + shift is constant
+  // |scale|, so log|J| = log(abs(scale)). When `scale` is a numeric
+  // literal we fold it to a scalar NumberLiteral (the cheapest density
+  // path); otherwise a 0-arg `functionof(log(abs(scale)))` constant.
+  let lvArg: any;
+  if (scaleExpr.type === 'NumberLiteral') {
+    const sv = +scaleExpr.value;
+    if (sv === 0 || !Number.isFinite(sv)) {
+      diagnostics.push({
+        severity: 'error',
+        message: `locscale() scale must be a nonzero finite value `
+          + `(got ${scaleExpr.value}); a zero or non-finite scale is a `
+          + `degenerate, non-invertible affine map`,
+        loc: scaleExpr.loc,
+      });
+      return call;
+    }
+    const v = Math.log(Math.abs(sv));
+    lvArg = AST.NumberLiteral(v, String(v), sloc);
+  } else {
+    const lvBody = AST.CallExpr(AST.Identifier('log', sloc),
+      [AST.CallExpr(AST.Identifier('abs', sloc), [clone(scaleExpr)], sloc)], sloc);
+    const lv = AST.CallExpr(AST.Identifier('functionof', sloc), [lvBody], sloc);
+    synth.push(AST.AssignStatement([AST.Identifier(lvName, sloc)], lv, sloc));
+    lvArg = AST.Identifier(lvName, sloc);
+  }
+
+  const bij = AST.CallExpr(AST.Identifier('bijection', sloc),
+    [AST.Identifier(fwdName, sloc), AST.Identifier(invName, sloc), lvArg], sloc);
+
+  synth.push(AST.AssignStatement([AST.Identifier(fwdName, sloc)], fwd, sloc));
+  synth.push(AST.AssignStatement([AST.Identifier(invName, sloc)], inv, sloc));
+  synth.push(AST.AssignStatement([AST.Identifier(bijName, sloc)], bij, sloc));
+
+  return AST.CallExpr(AST.Identifier('pushfwd', sloc),
+    [AST.Identifier(bijName, sloc), mExpr], sloc);
+}
+
 /**
  * Analyze a parsed AST.
  * Returns { bindings, diagnostics, symbols }.
@@ -2435,6 +2796,12 @@ function analyze(ast: any, source: string) {
   // already classified and materialised, so restrict needs no
   // derivation kind of its own.
   expandRestrictStatements(ast, diagnostics);
+
+  // Pre-pass: expand `locscale(m, shift, scale)` into a synthetic affine
+  // `bijection` + `pushfwd` per spec §06 "locscale". Like restrict, the
+  // ops it introduces (bijection, functionof, pushfwd) are already
+  // first-class, so locscale needs no derivation kind of its own.
+  expandLocscaleStatements(ast, diagnostics);
 
   // First pass: collect all defined names
   for (const stmt of ast.body) {

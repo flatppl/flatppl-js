@@ -471,6 +471,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'weighted':
       case 'logweighted': return write(inferWeighted(expr, scopes), expr);
       case 'pushfwd':     return write(inferPushfwd(expr, scopes), expr);
+      // A non-scalar locscale survives the analyzer pre-pass as an
+      // `{op:'locscale'}` node (it routes through lift's affine-registry
+      // lowering, not the scalar expansion). Its type follows the base
+      // measure — an affine pushforward changes neither domain nor shape.
+      case 'locscale':    return write(inferLocscale(expr, scopes), expr);
     }
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
@@ -1988,6 +1993,28 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // via-exp, affine-transformed Normals). Per-call bijection
   // annotations could later refine this; the classifier validates
   // the f / M shapes structurally at routing time.
+  // A surviving non-scalar `locscale(base, shift, scale)` node (the
+  // analyzer pre-pass leaves vector/matrix forms unexpanded so they reach
+  // lift's affine-registry routing). An affine pushforward preserves the
+  // base measure's type (domain + shape), so the result type is the base
+  // measure's type. Modeled on inferPushfwd.
+  function inferLocscale(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 3) return arityError('locscale', '3', args.length, expr.loc);
+    const baseT = inferExpr(args[0], scopes);  // base measure
+    inferExpr(args[1], scopes);                // shift — infer so refs resolve
+    inferExpr(args[2], scopes);                // scale — infer so refs resolve
+    // An affine pushforward preserves the base measure's type (domain +
+    // shape), so the result type IS the base measure's type. When the base
+    // doesn't infer to a clean measure (e.g. `iid(Normal, D)` with a bare
+    // `Normal` distribution-symbol infers `failed`, exactly as it does when
+    // used directly — see inferIid), DEFER rather than fabricating a scalar
+    // `measure(real)`: a scalar default would wrongly drive the density
+    // shape check to expect a real point for a vector-variate locscale.
+    if (T.isMeasure(baseT)) return baseT;
+    return T.deferred();
+  }
+
   function inferPushfwd(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2) return arityError('pushfwd', '2', args.length, expr.loc);

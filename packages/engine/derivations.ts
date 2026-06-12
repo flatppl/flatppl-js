@@ -258,6 +258,18 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
         b: m.muIR,
       };
     }
+    // Synthetic locscale-affine marker (P3). `lift.inlineLocscaleAffineLift`
+    // rewrites `locscale(base, shift, scale)` with a matrix scale to
+    // `pushfwd(<bij>, base)` and marks the synthetic bijection with
+    // `__locscaleAffineLowering = {LIR, bIR}`. Unlike MvNormal (given `cov`,
+    // so L = lower_cholesky(cov)), locscale is given the affine matrix
+    // DIRECTLY as `scale`, so paramIRs.L = LIR with no cholesky wrap. b is
+    // the shift vector.
+    if ((binding as any).__locscaleAffineLowering) {
+      const m = (binding as any).__locscaleAffineLowering;
+      binding.bijection.registryName = 'affine';
+      binding.bijection.paramIRs = { L: m.LIR, b: m.bIR };
+    }
   }
 
   const derivations = Object.create(null);
@@ -627,6 +639,20 @@ function classifyDerivation(
     // combinators are involved). The lowered IR tells us *which* op
     // we're matching; the AST tells us which operands are measures.
     const ast = binding.node.value;
+    // Safety net: a non-scalar locscale that passed the analyzer pre-pass
+    // (iid base) but that lift's affine gate could NOT route (dynamic D,
+    // non-square scale, mismatched shift) survives here as an unrouted
+    // `op:'locscale'` call. classifyDerivation reaches this point only AFTER
+    // liftInlineSubexpressions, so a routed locscale is already a `pushfwd`
+    // — anything still tagged `locscale` is genuinely unhandled. Fail loudly
+    // with a locscale-tagged message rather than returning null (which would
+    // silently drop the binding and surface a cryptic downstream error).
+    if (rhsIR && rhsIR.kind === 'call' && rhsIR.op === 'locscale') {
+      throw new Error(
+        'locscale: could not statically determine the scale shape to lower this '
+        + 'affine pushforward — use an iid(<dist>, D) base with a static [D,D] '
+        + 'scale, or use pushfwd directly (spec §06)');
+    }
     if (rhsIR && rhsIR.kind === 'call' && rhsIR.op != null
         && (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op]) {
       const result = (MEASURE_OP_CLASSIFIERS as any)[rhsIR.op](

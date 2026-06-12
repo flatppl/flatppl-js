@@ -769,6 +769,12 @@ function liftInlineSubexpressions(bindings: any) {
       // ArrayLiteral bindings). Non-resolvable cases fall through to
       // the AST-preserved matMvNormal path.
       astArg = inlineMvNormalLift(astArg);
+      // P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to
+      // the canonical affine-registry pushfwd (mirrors inlineMvNormalLift).
+      // Scalar locscale never reaches here — the analyzer pre-pass expands
+      // it; only detected-non-scalar locscale with an iid base survives to
+      // this routing.
+      astArg = inlineLocscaleAffineLift(astArg);
       // Metric-aware Einstein summation (spec §04 §sec:metricsum). The
       // surface shorthand `metric: result[output_indices] := expr`
       // desugars (in the parser) to `metricsum(metric, [output_axes], expr)`
@@ -1139,6 +1145,201 @@ function liftInlineSubexpressions(bindings: any) {
       makeIdent(bijName, astArg.loc),
       makeIdent(iidName, astArg.loc),
     ];
+    if (astArg.kwargs) delete astArg.kwargs;
+    return astArg;
+  }
+
+  /**
+   * P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to the
+   * canonical affine-registry pushfwd, mirroring `inlineMvNormalLift`. The
+   * analyzer pre-pass leaves vector/matrix locscale unexpanded (only iid-base
+   * forms reach here; other bases are diagnosed in the pre-pass), so the call
+   * arrives as `locscale(<base>, <shift [D]>, <scale [D,D]>)`.
+   *
+   * Differences from MvNormal:
+   *   - positional args [base, shift, scale], NOT kwargs mu/cov.
+   *   - the user's own base (args[0]) is the pushfwd base — we do NOT
+   *     synthesize a fresh iid(Normal,0,1). (The registry density path
+   *     requires the base to score as iid(<scalar>, D); the analyzer
+   *     pre-pass guarantees that for the forms that reach here.)
+   *   - the marker carries `scale` as L DIRECTLY (no lower_cholesky wrap) —
+   *     locscale's matrix IS the affine matrix, unlike MvNormal's cov.
+   *
+   * Static shape gate (same conservative discovery as MvNormal): scale must
+   * be a rank-2 [D,D], shift a rank-1 [D]. When D can't be determined
+   * statically the call is returned unchanged (the analyzer already emits a
+   * diagnostic for detected-non-scalar locscale it can't route, so an
+   * unhandled locscale never survives to materialisation).
+   */
+  function inlineLocscaleAffineLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'locscale') return astArg;
+    const args = astArg.args || [];
+    if (args.length !== 3) return astArg;
+    if (args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
+    const baseAst = args[0], shiftAst = args[1], scaleAst = args[2];
+    // Static shape gate (mirror MvNormal's cov/mu discovery): scale [D,D],
+    // shift [D]. scale is rank-2, shift rank-1.
+    //
+    // The scale can be a literal/ref matrix (handled exactly as MvNormal's
+    // cov) OR a named SHAPE-PRESERVING square matrix op like
+    // `Lc = lower_cholesky(cov)` — the spec's MvNormal idiom. Unlike a cov
+    // literal, lower_cholesky's RESULT type is `array(2,[%dynamic,%dynamic])`
+    // (types.ts SIGNATURE_FACTORIES), so the ref's own inferredType can't
+    // tell us D. For those ops we discover D from the op's ARGUMENT (which
+    // carries a concrete [D,D]) — the op preserves the square shape. This is
+    // the documented adjustment over MvNormal's gate (P3 plan Task 5).
+    //
+    // ONLY genuinely square/shape-preserving factor ops belong here. NOT
+    // `transpose`/`adjoint`: those swap dims, so the op's argument shape does
+    // NOT certify the result is square (a `transpose([3,2])` is `[2,3]`). A
+    // SQUARE transpose still routes fine via the normal concrete-[D,D]
+    // inferredType path below (square-confirm passes); a NON-square transpose
+    // correctly fails square-confirm and falls to the buildDerivations safety
+    // net rather than feeding a non-square matrix to the affine bijection.
+    const SHAPE_PRESERVING_SQUARE_OPS = new Set([
+      'lower_cholesky', 'cholesky', 'inv']);
+    const discoverScaleD = (e: any): number | null => {
+      const direct = __discoveredMvNormalD(e, out, 2);
+      if (direct != null) return direct;
+      // Follow a 1-level ref to a shape-preserving square op and discover D
+      // from its (concrete-shape) argument.
+      if (e && e.type === 'Identifier') {
+        const b = out.get(e.name);
+        const rhs = b && b.node && b.node.value;
+        if (rhs && rhs.type === 'CallExpr' && rhs.callee
+            && rhs.callee.type === 'Identifier'
+            && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name)
+            && Array.isArray(rhs.args) && rhs.args.length >= 1) {
+          return __discoveredMvNormalD(rhs.args[0], out, 2);
+        }
+      }
+      return null;
+    };
+    const D = discoverScaleD(scaleAst);
+    if (D == null || !Number.isInteger(D) || D < 1) return astArg;
+    const shiftD = __discoveredMvNormalD(shiftAst, out, 1);
+    if (shiftD !== D) return astArg;
+    // Square-confirm scale: literal-form gets the full square-[D,D]
+    // structural check exactly as inlineMvNormalLift confirms cov; a ref to a
+    // statically-square rank-2 array is confirmed via its inferredType; a ref
+    // to a shape-preserving square op (lower_cholesky etc.) was already
+    // square-confirmed by discoverScaleD reading the op's concrete-[D,D]
+    // argument, so it passes here.
+    const scaleLit = __resolveLiteralArrayRef(scaleAst, out);
+    if (scaleLit) {
+      if (scaleLit.elements.length !== D) return astArg;
+      for (const row of scaleLit.elements) {
+        if (!row || row.type !== 'ArrayLiteral'
+            || row.elements.length !== D) return astArg;
+      }
+    } else if (scaleAst.type === 'Identifier') {
+      const cb = out.get(scaleAst.name);
+      const ct = cb && cb.inferredType;
+      const isSquareRefType = ct && ct.kind === 'array' && ct.rank === 2
+        && Number.isInteger(ct.shape[1]) && ct.shape[1] === D;
+      // A shape-preserving square-op ref (lower_cholesky etc.) has a
+      // %dynamic-shape inferredType but was square-confirmed via its
+      // argument in discoverScaleD; admit it.
+      const rhs = cb && cb.node && cb.node.value;
+      const isSquareOpRef = rhs && rhs.type === 'CallExpr' && rhs.callee
+        && rhs.callee.type === 'Identifier'
+        && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name);
+      // Defensive: discoverScaleD only returns a valid D for an Identifier
+      // scale via the square-op path (→ isSquareOpRef) or via a square rank-2
+      // inferredType (→ isSquareRefType), so a named ref that reaches here with
+      // valid D already satisfies one of the two predicates.
+      /* c8 ignore start */
+      if (!isSquareRefType && !isSquareOpRef) {
+        return astArg;   // not a statically square [D,D] ref → fallback
+      }
+      /* c8 ignore stop */
+    // Defensive: a non-literal, non-Identifier scaleAst cannot pass
+    // discoverScaleD (it resolves D only from ArrayLiterals, which take the
+    // `if (scaleLit)` branch, or from Identifiers), so D is null and the early
+    // `return astArg` at the D-check fires before this else.
+    /* c8 ignore start */
+    } else {
+      return astArg;     // scale is neither literal nor a named ref → fallback
+    }
+    /* c8 ignore stop */
+    // Reconcile the iid BASE dimension against the scale dimension D: the
+    // affine map scale@x + shift needs a length-D base. Discover the base's
+    // static iid count K — base is `iid(<dist>, K)` with a NumberLiteral size
+    // arg, or a 1-level ref to such (resolved through `out`). When K is
+    // statically known and !== D, DO NOT route: return unchanged so the
+    // unrouted `op:'locscale'` reaches the buildDerivations safety net, which
+    // throws the clean locscale-tagged error rather than letting a
+    // length-mismatched base reach the registry density (a cryptic
+    // "value exhausted"). When K can't be determined statically, route as
+    // before.
+    const baseIidCount = (e: any): number | null => {
+      if (!e) return null;
+      if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+          && e.callee.name === 'iid' && Array.isArray(e.args)) {
+        const positional = e.args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+        const sizeArg = positional[1];
+        if (sizeArg && sizeArg.type === 'NumberLiteral'
+            && Number.isInteger(sizeArg.value)) {
+          return sizeArg.value;
+        }
+        return null;
+      }
+      if (e.type === 'Identifier') {
+        const b = out.get(e.name);
+        const rhs = b && b.node && b.node.value;
+        if (rhs) return baseIidCount(rhs);
+      }
+      /* c8 ignore start */
+      // Defensive tail: only an iid-base locscale survives the analyzer
+      // pre-pass to lift, so baseAst is an iid CallExpr or a named ref to one
+      // (both resolved above); this falls through only for a binding with no
+      // node.value, which does not occur for a real iid base.
+      return null;
+      /* c8 ignore stop */
+    };
+    const baseK = baseIidCount(baseAst);
+    if (baseK != null && baseK !== D) return astArg;   // → buildDerivations safety net
+    // Synthetic bijection stub (identical to MvNormal): fn-hole fwd/inv +
+    // scalar-0 log-volume, pre-hoisted to anon bindings so derivations'
+    // bijection-construction loop sees Identifiers.
+    const fwdAnon = freshName();
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(astArg.loc)));
+    const invAnon = freshName();
+    out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(astArg.loc)));
+    const bijAst = {
+      type: 'CallExpr',
+      callee: makeIdent('bijection', astArg.loc),
+      args: [
+        makeIdent(fwdAnon, astArg.loc),
+        makeIdent(invAnon, astArg.loc),
+        makeNumLit(0, astArg.loc),
+      ],
+      loc: astArg.loc,
+    };
+    const bijName = freshBijName();
+    const bijBinding = makeSyntheticBinding(bijName, bijAst);
+    // Side-channel marker for buildDerivations' bijection-construction loop
+    // to forward registryName + paramIRs onto binding.bijection. L is the
+    // scale matrix DIRECTLY (no lower_cholesky wrap); b is the shift vector.
+    (bijBinding as any).__locscaleAffineLowering = {
+      LIR: lowerExpr(cloneAst(scaleAst), liftLowerCtx),   // scale matrix directly
+      bIR: lowerExpr(cloneAst(shiftAst), liftLowerCtx),   // shift vector
+    };
+    out.set(bijName, bijBinding);
+    // Base ref: the user's own base. classifyPushfwd needs an Identifier,
+    // and (the load-bearing part) the registry density path requires the
+    // base to classify as `iid(<ref-to-scalar-dist>, D)` — so the iid's
+    // inner distribution CALL (`Normal(0,1)`) must itself be hoisted to an
+    // anon ref, exactly as MvNormal's synthetic iid base is. `liftMeasure`
+    // does both: it visits the base (recursively hoisting the inner
+    // distribution call to its own anon so classifyIid's
+    // resolveMeasureBaseName sees an Identifier) and returns a bare ref to
+    // the (possibly newly-hoisted) base binding.
+    const baseRef = liftMeasure(baseAst);
+    astArg.callee = makeIdent('pushfwd', astArg.loc);
+    astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
     if (astArg.kwargs) delete astArg.kwargs;
     return astArg;
   }
