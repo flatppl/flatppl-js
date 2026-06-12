@@ -69,3 +69,24 @@ test('locscale likelihood with latent loc+scale scores against scipy oracle (y=3
   assert.ok(Math.abs(m.samples[0] - (-2.5325528906644554)) < 1e-12,
     `got ${m.samples[0]}, expected -2.5325528906644554`);
 });
+
+// Constant (literal) locscale in a likelihood: bijection bodies reference
+// no latent param, so needsPerAtom is false and the atom-independent fast
+// path runs. locscale(StudentT(3), 0.5, 2.0) with a CONSTANT loc/scale —
+// same oracle as the latent case at y=1.5, reached via the unchanged path.
+// Fallback form: empty-input kernelof fails at materialisation (record()
+// not evaluable in sampler context), so we give the kernel one unrelated
+// input `d` that the bijection bodies do NOT reference. The essential
+// property: needsPerAtom is false (bijection refs no refArrays name).
+test('constant-bijection locscale likelihood still uses the fast path (oracle unchanged)', async () => {
+  const ctx = buildCtx(
+    `dummy ~ Normal(0, 1)\n`
+    + `obs ~ locscale(StudentT(3.0), 0.5, 2.0)\n`
+    + `fk = kernelof(record(obs = obs), d = dummy)\n`
+    + `observed_data = 1.5\n`
+    + `L = likelihoodof(fk, record(obs = observed_data))\n`
+    + `ld = logdensityof(L, record(d = 0.0))\n`, 64);
+  const m = await ctx.getMeasure('ld');
+  assert.ok(Math.abs(m.samples[0] - (-1.8541214455305277)) < 1e-12,
+    `got ${m.samples[0]}, expected -1.8541214455305277`);
+});
