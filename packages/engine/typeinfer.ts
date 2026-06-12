@@ -2004,8 +2004,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     const baseT = inferExpr(args[0], scopes);  // base measure
     inferExpr(args[1], scopes);                // shift — infer so refs resolve
     inferExpr(args[2], scopes);                // scale — infer so refs resolve
+    // An affine pushforward preserves the base measure's type (domain +
+    // shape), so the result type IS the base measure's type. When the base
+    // doesn't infer to a clean measure (e.g. `iid(Normal, D)` with a bare
+    // `Normal` distribution-symbol infers `failed`, exactly as it does when
+    // used directly — see inferIid), DEFER rather than fabricating a scalar
+    // `measure(real)`: a scalar default would wrongly drive the density
+    // shape check to expect a real point for a vector-variate locscale.
     if (T.isMeasure(baseT)) return baseT;
-    return T.measure(T.REAL);
+    return T.deferred();
   }
 
   function inferPushfwd(expr: any, scopes: any): any {

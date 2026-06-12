@@ -1181,15 +1181,44 @@ function liftInlineSubexpressions(bindings: any) {
     const baseAst = args[0], shiftAst = args[1], scaleAst = args[2];
     // Static shape gate (mirror MvNormal's cov/mu discovery): scale [D,D],
     // shift [D]. scale is rank-2, shift rank-1.
-    const D = __discoveredMvNormalD(scaleAst, out, 2);
+    //
+    // The scale can be a literal/ref matrix (handled exactly as MvNormal's
+    // cov) OR a named SHAPE-PRESERVING square matrix op like
+    // `Lc = lower_cholesky(cov)` — the spec's MvNormal idiom. Unlike a cov
+    // literal, lower_cholesky's RESULT type is `array(2,[%dynamic,%dynamic])`
+    // (types.ts SIGNATURE_FACTORIES), so the ref's own inferredType can't
+    // tell us D. For those ops we discover D from the op's ARGUMENT (which
+    // carries a concrete [D,D]) — the op preserves the square shape. This is
+    // the documented adjustment over MvNormal's gate (P3 plan Task 5).
+    const SHAPE_PRESERVING_SQUARE_OPS = new Set([
+      'lower_cholesky', 'cholesky', 'inv', 'transpose', 'adjoint']);
+    const discoverScaleD = (e: any): number | null => {
+      const direct = __discoveredMvNormalD(e, out, 2);
+      if (direct != null) return direct;
+      // Follow a 1-level ref to a shape-preserving square op and discover D
+      // from its (concrete-shape) argument.
+      if (e && e.type === 'Identifier') {
+        const b = out.get(e.name);
+        const rhs = b && b.node && b.node.value;
+        if (rhs && rhs.type === 'CallExpr' && rhs.callee
+            && rhs.callee.type === 'Identifier'
+            && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name)
+            && Array.isArray(rhs.args) && rhs.args.length >= 1) {
+          return __discoveredMvNormalD(rhs.args[0], out, 2);
+        }
+      }
+      return null;
+    };
+    const D = discoverScaleD(scaleAst);
     if (D == null || !Number.isInteger(D) || D < 1) return astArg;
     const shiftD = __discoveredMvNormalD(shiftAst, out, 1);
     if (shiftD !== D) return astArg;
-    // Square-confirm scale exactly as inlineMvNormalLift confirms cov:
-    // literal-form gets the full square-[D,D] structural check; ref-form is
-    // validated by its inferredType being a statically-square rank-2 array
-    // (D only told us shape[0]; re-confirm rank 2 + shape[1] === D so a
-    // [D, k≠D] ref doesn't slip through).
+    // Square-confirm scale: literal-form gets the full square-[D,D]
+    // structural check exactly as inlineMvNormalLift confirms cov; a ref to a
+    // statically-square rank-2 array is confirmed via its inferredType; a ref
+    // to a shape-preserving square op (lower_cholesky etc.) was already
+    // square-confirmed by discoverScaleD reading the op's concrete-[D,D]
+    // argument, so it passes here.
     const scaleLit = __resolveLiteralArrayRef(scaleAst, out);
     if (scaleLit) {
       if (scaleLit.elements.length !== D) return astArg;
@@ -1200,8 +1229,16 @@ function liftInlineSubexpressions(bindings: any) {
     } else if (scaleAst.type === 'Identifier') {
       const cb = out.get(scaleAst.name);
       const ct = cb && cb.inferredType;
-      if (!(ct && ct.kind === 'array' && ct.rank === 2
-            && Number.isInteger(ct.shape[1]) && ct.shape[1] === D)) {
+      const isSquareRefType = ct && ct.kind === 'array' && ct.rank === 2
+        && Number.isInteger(ct.shape[1]) && ct.shape[1] === D;
+      // A shape-preserving square-op ref (lower_cholesky etc.) has a
+      // %dynamic-shape inferredType but was square-confirmed via its
+      // argument in discoverScaleD; admit it.
+      const rhs = cb && cb.node && cb.node.value;
+      const isSquareOpRef = rhs && rhs.type === 'CallExpr' && rhs.callee
+        && rhs.callee.type === 'Identifier'
+        && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name);
+      if (!isSquareRefType && !isSquareOpRef) {
         return astArg;   // not a statically square [D,D] ref → fallback
       }
     } else {
@@ -1234,15 +1271,16 @@ function liftInlineSubexpressions(bindings: any) {
       bIR: lowerExpr(cloneAst(shiftAst), liftLowerCtx),   // shift vector
     };
     out.set(bijName, bijBinding);
-    // Base ref: the user's own base. classifyPushfwd / bijection
-    // construction need an Identifier — hoist to an anon binding if not
-    // already one (mirror how MvNormal hoists Normal(0,1) to normalAnon).
-    let baseRef = baseAst;
-    if (!baseAst || baseAst.type !== 'Identifier') {
-      const baseAnon = freshName();
-      out.set(baseAnon, makeSyntheticBinding(baseAnon, baseAst));
-      baseRef = makeIdent(baseAnon, astArg.loc);
-    }
+    // Base ref: the user's own base. classifyPushfwd needs an Identifier,
+    // and (the load-bearing part) the registry density path requires the
+    // base to classify as `iid(<ref-to-scalar-dist>, D)` — so the iid's
+    // inner distribution CALL (`Normal(0,1)`) must itself be hoisted to an
+    // anon ref, exactly as MvNormal's synthetic iid base is. `liftMeasure`
+    // does both: it visits the base (recursively hoisting the inner
+    // distribution call to its own anon so classifyIid's
+    // resolveMeasureBaseName sees an Identifier) and returns a bare ref to
+    // the (possibly newly-hoisted) base binding.
+    const baseRef = liftMeasure(baseAst);
     astArg.callee = makeIdent('pushfwd', astArg.loc);
     astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
     if (astArg.kwargs) delete astArg.kwargs;
