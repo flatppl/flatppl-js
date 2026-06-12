@@ -19,11 +19,18 @@ LKJ / LKJCholesky, BinnedPoissonProcess), the FlatPDL measure-eval primitives
 (`builtin_logdensityof` / `builtin_sample` / the four transports), `metricsum`
 (metric-aware Einstein summation), and spec §03 vec-of-vec ≠ matrix
 enforcement all landed. The §22 multivariate-as-derived-measure arc
-(engine-concepts §22) is live: static-D `MvNormal` lowers at lift time to
-`pushfwd(affine, iid(Normal, D))` and dispatches through the bijection
-registry on both sample and density sides; `matMvNormal` / `density-prims`
-persist as the terminal materialisers for the cases the lift gate can't
-statically lower (dynamic-shape cov, matrix-form mean, positional form).
+(engine-concepts §22) is live and, for MvNormal, COMPLETE at the binding
+level (5h-A): every lowerable `MvNormal` — static OR dynamic D
+(`lengthof(<mu-ref>)` count, resolved by classifyIid's deferred pass),
+kwarg or positional form, named or hoisted-inline args — rewrites at
+lift time to `pushfwd(affine, iid(Normal, D))` and dispatches through
+the bijection registry on both sample and density sides. `matMvNormal`
+is a THIN refusal channel for the shapes the gate positively rejects
+(matrix-form mean, visible dim mismatch — spec §08 violations). The
+density-side MvNormal entries stay: `MV_DENSITY_FNS.MvNormal` is the
+spec-§07 `builtin_logdensityof` FlatPDL ABI, and the `OP_HANDLERS`
+walker scores raw MvNormal nodes inside composite kernel bodies
+(formal-carrying mu/cov — the 5h-B scope).
 
 Outstanding work (the single source of truth is
 `flatppl-dev/TODO-flatppl-js.md`): standard modules (particle-physics, GLM,
