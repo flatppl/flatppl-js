@@ -535,39 +535,39 @@ function _foldShapeCall(ir: any, bindings: any): any | null {
 // direct op calls (and other backends — StableHLO / TF.js — can
 // consume them without re-recognising the aggregate shape).
 //
-// Coverage (Phase 5 — narrow start):
+// Coverage:
 //   - Matmul-family (4 transpose variants):
 //       aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])  ≡  A · B
 //     dissolves to `mul(<maybe transpose>(A), <maybe transpose>(B))`.
 //   - Matvec-family (2 transpose variants):
 //       aggregate(sum, [.i], A[.i, .j] * v[.j])          ≡  A · v
 //     dissolves similarly.
+//   - Outer product (sum only):
+//       aggregate(sum, [.i, .j], u[.i] * v[.j])          ≡  u · vᵀ
+//     dissolves to `mul(u, transpose(v))`; mean falls back (no
+//     contraction axis to divide by).
 //
-// Both rewrites preserve spec semantics: `mul` on rank-2 matrices
-// is matrix product per the Klein-4 transpose-tag dispatch in
-// value-ops; a Klein-4 transpose is a free tag flip (no allocation)
-// so emitting `transpose(A)` ahead of `mul` is cheap.
+// All three rewrites preserve spec semantics: `mul` dispatches per
+// the Klein-4 transpose-tag rules in value-ops; a Klein-4 transpose
+// is a free tag flip (no allocation) so emitting `transpose(...)`
+// ahead of `mul` is cheap.
 //
-// Soundness gate: both source operands of the body's `mul` must be
-// binding refs (or otherwise resolvable to a concrete inferredType
-// via the lazy resolver). The runtime AGGREGATE_PATTERNS path
-// remains as the cold fallback for everything else (outer-product,
-// batched-matmul, pure-axis-reduction, non-matched shapes).
+// Soundness gate: every source operand of the body's `mul` must be
+// resolvable to a concrete inferredType via the lazy resolver. The
+// runtime AGGREGATE_PATTERNS path remains as the cold fallback for
+// everything else: batched-matmul, pure-axis-reduction, dot-product,
+// and non-matched shapes. Dot-product (`aggregate(sum, [], u[.j] *
+// v[.j])`) is DELIBERATELY runtime-only: the dissolved form
+// `mul(transpose(u), v)` returns a rank-0 Value where the aggregate
+// scalar contract is a plain JS number — the runtime dot specialiser
+// owns the fused loop without changing the output convention.
 
-// P5: the structural recognisers moved to `aggregate-patterns.ts`
-// (one source of truth shared with the runtime AGGREGATE_PATTERNS
-// table). These thin shims preserve the dissolver's existing call
-// sites; the bodies delegate to the canonical classifiers.
+// P5: ONE structural classifier — `aggregate-patterns.classifyMatmulBody`
+// — owns the body-level factor pairing (factor-order iteration, jName
+// agreement, reduce-axis shadowing). The dissolver maps its output to
+// IR rewrites below; the runtime AGGREGATE_PATTERNS table maps the
+// same output to specialised evaluators.
 const _aggregatePatterns = require('./aggregate-patterns.ts');
-function _aggregateBodyClassifyA(fac: any, iName: string) {
-  return _aggregatePatterns.classifyAxisGetA(fac, iName);
-}
-function _aggregateBodyClassifyB(fac: any, kName: string) {
-  return _aggregatePatterns.classifyAxisGetB(fac, kName);
-}
-function _aggregateBodyClassifyV(fac: any, jName: string) {
-  return _aggregatePatterns.classifyAxisGetV(fac, jName);
-}
 
 function _wrapTranspose(ir: any, doTranspose: boolean): any {
   if (!doTranspose) return ir;
@@ -961,97 +961,81 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'mul') return _fusedFallback();
   if (!bodyIR.args || bodyIR.args.length !== 2) return _fusedFallback();
 
-  // Matmul / Outer-product: 2 output axes (.i, .k or .i, .j).
-  if (outAxes.length === 2) {
-    const iName = outAxes[0].name;
-    const kName = outAxes[1].name;
-    if (iName === kName) return _fusedFallback();
-    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
+  // P5: the shared classifier owns ALL body-level pairing (factor
+  // order, jName agreement, reduce-axis shadowing) — the same call
+  // the runtime AGGREGATE_PATTERNS entries make. The dissolver only
+  // maps the classification to an IR rewrite, gated on resolvable
+  // operand types + matching phase.
+  const cls = _aggregatePatterns.classifyMatmulBody(bodyIR, outAxes);
+  if (!cls) return _fusedFallback();
 
-    // Matmul: body is mul of two-axis indexings sharing a reduction
-    // axis (e.g. A[.i, .j] * B[.j, .k] reducing over .j).
-    for (const [fA, fB] of [[f1, f2], [f2, f1]]) {
-      const ca = _aggregateBodyClassifyA(fA, iName);
-      const cb = _aggregateBodyClassifyB(fB, kName);
-      if (!ca || !cb) continue;
-      if (ca.jName !== cb.jName) continue;
-      if (ca.jName === iName || ca.jName === kName) continue;
-      const tA = _checkSourceType(ca.src, bindings);
-      const tB = _checkSourceType(cb.src, bindings);
-      if (!tA || !tB) return _fusedFallback();
-      if (tA.phase !== tB.phase) return _fusedFallback();
-      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return _fusedFallback();
-      if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return _fusedFallback();
-      const A = _wrapTranspose(ca.src, ca.trans);
-      const B = _wrapTranspose(cb.src, cb.trans);
-      const mulCall: any = { kind: 'call', op: 'mul', args: [A, B] };
-      // Apply the closed-form reducer correction. For 'sum' this is
-      // identity; for 'mean' we wrap in `(1/k) * mulCall` where k is
-      // the contraction-axis length (resolved from A's shape +
-      // transposition state). Returns null on `mean` with dynamic
-      // dim — falls back to the cold AGGREGATE_PATTERNS path.
-      const k = _contractionSizeFromA(tA, ca.trans);
-      const out = _applyReducerCorrection(reducer, mulCall, k);
-      if (!out) return _fusedFallback();
-      if (aggIR.loc) out.loc = aggIR.loc;
-      return out;
-    }
-
-    // Outer product: body is mul of two 1-axis indexings with
-    // distinct axes (e.g. u[.i] * v[.j]) — no reduction axis. Only
-    // sum-reduction is meaningful here (no contraction axis means
-    // 'mean' has no axis-length to divide by); mean falls back to
-    // the cold path.
-    if (reducer === 'sum') {
-      for (const [fU, fV] of [[f1, f2], [f2, f1]]) {
-        const uSrc = _aggregateBodyClassifyV(fU, iName);
-        const vSrc = _aggregateBodyClassifyV(fV, kName);
-        if (!uSrc || !vSrc) continue;
-        const tU = _checkSourceType(uSrc, bindings);
-        const tV = _checkSourceType(vSrc, bindings);
-        if (!tU || !tV) return _fusedFallback();
-        if (tU.phase !== tV.phase) return _fusedFallback();
-        if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return _fusedFallback();
-        if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return _fusedFallback();
-        const out: any = {
-          kind: 'call', op: 'mul',
-          args: [uSrc, { kind: 'call', op: 'transpose', args: [vSrc] }],
-        };
-        if (aggIR.loc) out.loc = aggIR.loc;
-        return out;
-      }
-    }
-    return _fusedFallback();
+  // Matmul: A[.i, .j] * B[.j, .k] (either factor order, either axis
+  // order per operand) → mul(<maybe transpose>(A), <maybe transpose>(B)).
+  if (cls.kind === 'matmul') {
+    const tA = _checkSourceType(cls.aIR, bindings);
+    const tB = _checkSourceType(cls.bIR, bindings);
+    if (!tA || !tB) return _fusedFallback();
+    if (tA.phase !== tB.phase) return _fusedFallback();
+    if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return _fusedFallback();
+    if (!tB.type || tB.type.kind !== 'array' || tB.type.rank !== 2) return _fusedFallback();
+    const A = _wrapTranspose(cls.aIR, cls.transA);
+    const B = _wrapTranspose(cls.bIR, cls.transB);
+    const mulCall: any = { kind: 'call', op: 'mul', args: [A, B] };
+    // Apply the closed-form reducer correction. For 'sum' this is
+    // identity; for 'mean' we wrap in `(1/k) * mulCall` where k is
+    // the contraction-axis length (resolved from A's shape +
+    // transposition state). Returns null on `mean` with dynamic
+    // dim — falls back to the cold AGGREGATE_PATTERNS path.
+    const k = _contractionSizeFromA(tA, cls.transA);
+    const out = _applyReducerCorrection(reducer, mulCall, k);
+    if (!out) return _fusedFallback();
+    if (aggIR.loc) out.loc = aggIR.loc;
+    return out;
   }
 
-  // Matvec: 1 output axis (.i); body is mul of a 2-axis indexing (A)
-  // and a 1-axis indexing (v), sharing a reduction axis.
-  if (outAxes.length === 1) {
-    const iName = outAxes[0].name;
-    const f1 = bodyIR.args[0], f2 = bodyIR.args[1];
-    for (const [fA, fV] of [[f1, f2], [f2, f1]]) {
-      const ca = _aggregateBodyClassifyA(fA, iName);
-      if (!ca) continue;
-      const vSrc = _aggregateBodyClassifyV(fV, ca.jName);
-      if (!vSrc) continue;
-      const tA = _checkSourceType(ca.src, bindings);
-      const tV = _checkSourceType(vSrc, bindings);
-      if (!tA || !tV) return _fusedFallback();
-      if (tA.phase !== tV.phase) return _fusedFallback();
-      if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return _fusedFallback();
-      if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return _fusedFallback();
-      const A = _wrapTranspose(ca.src, ca.trans);
-      const mulCall: any = { kind: 'call', op: 'mul', args: [A, vSrc] };
-      // Mean correction via the same closed-form factor as matmul.
-      const k = _contractionSizeFromA(tA, ca.trans);
-      const out = _applyReducerCorrection(reducer, mulCall, k);
-      if (!out) return _fusedFallback();
-      if (aggIR.loc) out.loc = aggIR.loc;
-      return out;
-    }
-    return _fusedFallback();
+  // Outer product: u[.i] * v[.j] with distinct output axes — no
+  // reduction axis. Only sum-reduction is meaningful here (no
+  // contraction axis means 'mean' has no axis-length to divide by);
+  // mean falls back to the cold path.
+  if (cls.kind === 'outer') {
+    if (reducer !== 'sum') return _fusedFallback();
+    const tU = _checkSourceType(cls.uIR, bindings);
+    const tV = _checkSourceType(cls.vIR, bindings);
+    if (!tU || !tV) return _fusedFallback();
+    if (tU.phase !== tV.phase) return _fusedFallback();
+    if (!tU.type || tU.type.kind !== 'array' || tU.type.rank !== 1) return _fusedFallback();
+    if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return _fusedFallback();
+    const out: any = {
+      kind: 'call', op: 'mul',
+      args: [cls.uIR, { kind: 'call', op: 'transpose', args: [cls.vIR] }],
+    };
+    if (aggIR.loc) out.loc = aggIR.loc;
+    return out;
   }
 
+  // Matvec: A[.i, .j] * v[.j] → mul(<maybe transpose>(A), v).
+  if (cls.kind === 'matvec') {
+    const tA = _checkSourceType(cls.aIR, bindings);
+    const tV = _checkSourceType(cls.vIR, bindings);
+    if (!tA || !tV) return _fusedFallback();
+    if (tA.phase !== tV.phase) return _fusedFallback();
+    if (!tA.type || tA.type.kind !== 'array' || tA.type.rank !== 2) return _fusedFallback();
+    if (!tV.type || tV.type.kind !== 'array' || tV.type.rank !== 1) return _fusedFallback();
+    const A = _wrapTranspose(cls.aIR, cls.transA);
+    const mulCall: any = { kind: 'call', op: 'mul', args: [A, cls.vIR] };
+    // Mean correction via the same closed-form factor as matmul.
+    const k = _contractionSizeFromA(tA, cls.transA);
+    const out = _applyReducerCorrection(reducer, mulCall, k);
+    if (!out) return _fusedFallback();
+    if (aggIR.loc) out.loc = aggIR.loc;
+    return out;
+  }
+
+  // Dot product ('dot', zero output axes): DELIBERATELY not dissolved
+  // — `mul(transpose(u), v)` returns a rank-0 Value where the
+  // aggregate scalar contract is a plain JS number; the runtime
+  // dot-product specialiser owns the fused loop without changing the
+  // output convention (see the coverage comment above).
   return _fusedFallback();
 }
 

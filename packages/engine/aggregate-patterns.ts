@@ -5,30 +5,31 @@
 // =====================================================================
 //
 // **Background.** Before P5 of the broadcast/aggregate/batching
-// consolidation (TODO-flatppl-js.md "In-flight P1-P9"), THREE layers
-// independently recognised the same IR shapes:
+// consolidation, THREE layers independently recognised the same IR
+// shapes:
 //
-//   1. `dissolver.ts:884-1044` (`_tryDissolveAggregate`) — matmul /
-//      matvec / outer matchers at IR-rewrite time; emits direct
-//      `mul(A, B)` IR.
-//   2. `sampler-aggregate.ts:150-577` (`AGGREGATE_PATTERNS` table) —
-//      matchers at runtime; dispatches to specialised evaluators.
-//   3. `ops-declarations.ts:1469-1618` (`_maybeFastBroadcasted`) —
-//      broadcast-head recogniser at runtime; re-does what
+//   1. dissolver.ts `_tryDissolveAggregate` — matmul / matvec /
+//      outer matchers at IR-rewrite time; emits direct `mul(A, B)` IR.
+//   2. sampler-aggregate.ts `AGGREGATE_PATTERNS` table — matchers at
+//      runtime; dispatches to specialised evaluators.
+//   3. ops-declarations.ts `_maybeFastBroadcasted` — broadcast-head
+//      recogniser at runtime; re-does what
 //      `dissolver._tryDissolveSingleOp` did.
 //
-// Each carried identical-but-separate structural pattern matchers
-// (`_aggregateBodyClassifyA/B/V` in dissolver; `classifyA/B/V`
-// inside each AGGREGATE_PATTERNS entry). Drift surface = three places
-// to keep in sync; the mean-correction logic, the matmul/matvec
-// axis-swapping convention, and the `get`-arity validation all had to
-// agree across files.
+// Each carried identical-but-separate structural pattern matchers.
+// Drift surface = three places to keep in sync; the mean-correction
+// logic, the matmul/matvec axis-swapping convention, and the
+// `get`-arity validation all had to agree across files.
 //
 // **P5 contract.** ONE module hoists the structural recognisers; both
-// dissolver and runtime consume them. Dissolver maps the classifier
-// output to an IR rewrite (mul / matvec / outer); runtime maps the
-// same output to its specialised evaluator. The pure-structural
-// classification is bindings-free and side-effect-free.
+// dissolver and runtime consume `classifyMatmulBody` (the body-level
+// pairing — factor order, jName agreement, reduce-axis shadowing —
+// has one owner). The dissolver maps the classifier output to an IR
+// rewrite (matmul / matvec / outer; 'dot' deliberately stays
+// runtime-only — see the dissolver's coverage comment); the runtime
+// maps the same output to its specialised evaluator. The
+// pure-structural classification is bindings-free and
+// side-effect-free.
 //
 // Per spec §04 §sec:aggregate the matmul-family conventions are:
 //
