@@ -161,3 +161,40 @@ test('square transpose scale still routes to the affine registry', () => {
   assert.ok(bijName, 'a __bij_N synthetic bijection binding exists');
   assert.equal(ctx.bindings.get(bijName).bijection.registryName, 'affine');
 });
+
+test('iid base dim mismatched with scale dim errors cleanly (not "value exhausted")', () => {
+  // Base D=3, scale/shift D=2. The affine map scale@x+shift needs a length-D
+  // base; a mismatch must surface a clean locscale-tagged error (analyzer
+  // dimension diagnostic OR the buildDerivations safety net), NOT the cryptic
+  // density-time "value exhausted" / undefined-length throw.
+  const src =
+    `B = locscale(iid(Normal(0.0,1.0), 3), [0.0, 0.0], [[1.0,0.0],[0.0,1.0]])\n`
+    + `lp = logdensityof(B, [1.0,1.0,1.0])\n`;
+  let msg = '';
+  try {
+    const lifted2 = processSource(src);
+    const errs = lifted2.diagnostics.filter((d: any) => d.severity === 'error');
+    if (errs.length) msg = errs.map((e: any) => e.message).join(' | ');
+    else {
+      const built = orchestrator.buildDerivations(lifted2.bindings);
+      const worker = createWorkerHandler();
+      worker.handle({ type: 'init', seed: ROOT_SEED });
+      const cache = new Map();
+      const ctx2: any = {
+        derivations: built.derivations, bindings: built.bindings,
+        fixedValues: built.fixedValues || new Map(),
+        getMeasure: (name: any) => {
+          if (cache.has(name)) return cache.get(name);
+          const p = materialiser.materialiseMeasure(name, ctx2); cache.set(name, p); return p;
+        },
+        sendWorker: (m: any) => Promise.resolve(worker.handle(m)),
+        sampleCount: 4, rootSeed: ROOT_SEED,
+      };
+      ctx2.getMeasure('lp');
+    }
+  } catch (e: any) { msg = e.message; }
+  assert.match(msg, /locscale/i,
+    `expected a locscale-tagged error, got: ${msg || '(none)'}`);
+  assert.doesNotMatch(msg, /value exhausted/i,
+    `expected a clean diagnostic, not the cryptic density throw: ${msg}`);
+});

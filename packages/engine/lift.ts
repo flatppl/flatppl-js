@@ -1252,6 +1252,37 @@ function liftInlineSubexpressions(bindings: any) {
     } else {
       return astArg;     // scale is neither literal nor a named ref → fallback
     }
+    // Reconcile the iid BASE dimension against the scale dimension D: the
+    // affine map scale@x + shift needs a length-D base. Discover the base's
+    // static iid count K — base is `iid(<dist>, K)` with a NumberLiteral size
+    // arg, or a 1-level ref to such (resolved through `out`). When K is
+    // statically known and !== D, DO NOT route: return unchanged so the
+    // unrouted `op:'locscale'` reaches the buildDerivations safety net, which
+    // throws the clean locscale-tagged error rather than letting a
+    // length-mismatched base reach the registry density (a cryptic
+    // "value exhausted"). When K can't be determined statically, route as
+    // before.
+    const baseIidCount = (e: any): number | null => {
+      if (!e) return null;
+      if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+          && e.callee.name === 'iid' && Array.isArray(e.args)) {
+        const positional = e.args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+        const sizeArg = positional[1];
+        if (sizeArg && sizeArg.type === 'NumberLiteral'
+            && Number.isInteger(sizeArg.value)) {
+          return sizeArg.value;
+        }
+        return null;
+      }
+      if (e.type === 'Identifier') {
+        const b = out.get(e.name);
+        const rhs = b && b.node && b.node.value;
+        if (rhs) return baseIidCount(rhs);
+      }
+      return null;
+    };
+    const baseK = baseIidCount(baseAst);
+    if (baseK != null && baseK !== D) return astArg;   // → buildDerivations safety net
     // Synthetic bijection stub (identical to MvNormal): fn-hole fwd/inv +
     // scalar-0 log-volume, pre-hoisted to anon bindings so derivations'
     // bijection-construction loop sees Identifiers.

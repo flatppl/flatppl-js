@@ -2628,6 +2628,31 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
       const lit = resolveLit(e);
       return lit ? lit.elements : null;
     };
+    // Static iid base count K: base is `iid(<dist>, K)` with a NumberLiteral
+    // 2nd positional arg, or a 1-level ref to such. Returns null when K is
+    // not a statically-known integer (then we defer the cross-check to lift).
+    const baseIidCount = (e: any): number | null => {
+      if (!e) return null;
+      if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+          && e.callee.name === 'iid' && Array.isArray(e.args)) {
+        const positional = e.args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+        const sizeArg = positional[1];
+        if (sizeArg && sizeArg.type === 'NumberLiteral'
+            && Number.isInteger(sizeArg.value)) {
+          return sizeArg.value;
+        }
+        return null;
+      }
+      if (e.type === 'Identifier') {
+        for (const st of body || []) {
+          if (st.type === 'AssignStatement' && st.names
+              && st.names.some((n: any) => n.name === e.name)) {
+            return baseIidCount(st.value);
+          }
+        }
+      }
+      return null;
+    };
     const scaleRows = litRows(args[2]);
     if (scaleRows) {
       const D = scaleRows.length;
@@ -2643,6 +2668,21 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
           message: `locscale() with a matrix scale over an iid base requires a `
             + `square [D, D] scale and a length-D vector shift (the affine-registry `
             + `pushfwd contract); for other shapes use pushfwd directly (spec §06)`,
+          loc: call.loc,
+        });
+        return call;
+      }
+      // Reconcile the iid base dimension against the scale dimension: the
+      // affine map scale@x + shift needs a length-D base. Only enforce when
+      // BOTH are statically known (dynamic K is left to lift's gate / the
+      // buildDerivations safety net).
+      const K = baseIidCount(args[0]);
+      if (K != null && K !== D) {
+        diagnostics.push({
+          severity: 'error',
+          message: `locscale(): iid base dimension (${K}) does not match the `
+            + `scale matrix dimension (${D}); the affine map scale@x+shift requires `
+            + `a length-${D} base`,
           loc: call.loc,
         });
         return call;
