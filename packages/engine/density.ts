@@ -100,6 +100,12 @@ function consumeScalar(value: any) {
     throw new Error('density: scalar leaf has no entry to consume (value exhausted)');
   }
   if (typeof value === 'number') return { head: value, rest: null };
+  // A boolean observation for a scalar discrete leaf (e.g. a non-broadcast
+  // `z ~ Bernoulli(t)` scored against `true`/`false`) — coerce to 0/1, the
+  // same numeric form the array/typed-array branches below already produce
+  // for boolean vectors. Without this a single-coin Bernoulli likelihood
+  // threw "cannot consume scalar from value of type boolean".
+  if (typeof value === 'boolean') return { head: value ? 1 : 0, rest: null };
   // Shape-explicit Value: a rank-1 Value behaves like a
   // typed array; rank-0 yields head and a null rest. Higher-rank
   // Values (matrix observations) can't be consumed by a scalar leaf.
