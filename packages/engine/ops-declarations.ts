@@ -1387,6 +1387,32 @@ ops.register({
 // dispatch. The vo binding initialises on first call to
 // _ensureBroadcastedRegistered() (the eager call at the bottom of
 // this module, alongside the mul-direct and atom-batched ensures).
+// Atom-indep `logical` impls for the scalar primitives (engine-concepts
+// §18). The logical-rank-0 (scalar) math; the batched path is the op's
+// broadcast variant (value-ops *Elem, registered above). `kind:
+// 'rank-polymorphic'` hands the scalar arg to `logical` as-is — exactly
+// the legacy `ARITH_OPS` entry's behavior, so the migration is
+// behavior-preserving (conformance-pinned). Migrating a family =
+// extending the tables here.
+//
+// Family 1: pure-real unary elementary math (`Math.X`, no complex / Value
+// branch — the simplest, zero-risk family). Complex-aware unary
+// (exp/log/sqrt/abs/abs2), binary, Value-aware (add/sub/neg/mul), and the
+// complex accessors follow in subsequent families.
+function _registerScalarLogicals(): void {
+  const REAL_UNARY: Record<string, (a: number) => number> = {
+    log10: Math.log10, log1p: Math.log1p, expm1: Math.expm1,
+    sin: Math.sin, cos: Math.cos, tan: Math.tan,
+    asin: Math.asin, acos: Math.acos, atan: Math.atan,
+    sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+    asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
+    floor: Math.floor, ceil: Math.ceil, round: Math.round,
+  };
+  for (const name in REAL_UNARY) {
+    ops.attachLogical(name, REAL_UNARY[name], 'rank-polymorphic');
+  }
+}
+
 let _BCAST_VARIANTS_REGISTERED = false;
 function _ensureBroadcastedRegistered(): void {
   if (_BCAST_VARIANTS_REGISTERED) return;
@@ -2200,6 +2226,14 @@ _ensureMulDirectRegistered();
 // uniformly through the registry; legacy `value-ops.addN/subN/
 // negN/mulN` callers now have a registry path available.
 _ensureAtomBatchedRegistered();
+
+// Attach atom-indep `logical` impls for the scalar primitives, migrating
+// their single-point eval onto `ops.dispatch` (engine-concepts §18 —
+// "one source of truth per op"). Phased-additive: one family at a time,
+// conformance-tested (test/ops-conformance.test.ts) against the legacy
+// `ARITH_OPS` reference, which stays as the fallback until every family
+// has migrated (then ARITH_OPS becomes a derived facade).
+_registerScalarLogicals();
 
 module.exports = {
   // Re-export for tests that want to call the logical impls directly

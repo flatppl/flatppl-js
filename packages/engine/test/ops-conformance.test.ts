@@ -831,3 +831,32 @@ test('ops dispatchHigherOrder: higher-order op without a logical impl surfaces c
     () => ops.dispatchHigherOrder(name, _callIR(name, []), _testCtx({})),
     /has no logical impl/);
 });
+
+// ---------------------------------------------------------------------
+// Scalar-primitive logical migration (engine-concepts §18). As each
+// scalar family attaches a `logical` impl, its single-point eval routes
+// through ops.dispatch; pin atom-indep dispatch ≡ ARITH_OPS over random
+// scalars (the batched path is the broadcast variant, tested elsewhere).
+//
+// Family 1: pure-real unary elementary math.
+// ---------------------------------------------------------------------
+
+const REAL_UNARY_PRIMS = [
+  'log10', 'log1p', 'expm1',
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+  'floor', 'ceil', 'round',
+];
+
+for (const op of REAL_UNARY_PRIMS) {
+  test('ops conformance: ' + op + ' (scalar logical) — dispatch matches ARITH_OPS', () => {
+    assert.ok(ops.isDeclared(op), op + ' must be declared (logical attached)');
+    fc.assert(fc.property(arbReal, (x: any) => {
+      const viaDispatch = ops.dispatch(op, [x]);
+      const viaArith = ARITH_OPS[op](x);
+      // Object.is so NaN (out-of-domain, e.g. asin(2)) compares equal.
+      return Object.is(viaDispatch, viaArith)
+        || Math.abs(viaDispatch - viaArith) < 1e-15;
+    }), { numRuns: 200 });
+  });
+}

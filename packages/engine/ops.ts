@@ -745,6 +745,24 @@ function registerVariant(opName: string, variant: OpVariant): void {
   decl.variants.push(variant);
 }
 
+// Attach an atom-indep `logical` impl (and optional kind) to an op,
+// creating a minimal decl if none exists. The migration entry point for
+// a previously variant-only or unregistered op: once an op has a
+// `logical`, `isDeclared(name)` is true and `evaluateCall` routes its
+// single-point eval through `ops.dispatch` (engine-concepts §18). For a
+// scalar primitive the canonical batched path is its broadcast variant;
+// `kind: 'rank-polymorphic'` hands the args to `logical` as-is (matching
+// the legacy ARITH_OPS scalar entry exactly).
+function attachLogical(name: string, logical: any, kind?: OpKind): void {
+  if (typeof logical !== 'function') {
+    throw new Error('ops.attachLogical: logical must be a function for ' + name);
+  }
+  let decl = REGISTRY.get(name);
+  if (!decl) { decl = { name, kind: kind || 'fixed-rank' }; REGISTRY.set(name, decl); }
+  decl.logical = logical;
+  if (kind) decl.kind = kind;
+}
+
 function lookup(name: string): OpDecl | null {
   return REGISTRY.get(name) || null;
 }
@@ -1153,6 +1171,7 @@ function dispatchHigherOrder(name: string, ir: any, ctx: HigherOrderCtx): any {
 module.exports = {
   register,
   registerVariant,
+  attachLogical,
   lookup,
   isDeclared,
   hasVariantFor,
