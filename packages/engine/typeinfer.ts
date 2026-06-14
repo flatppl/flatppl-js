@@ -368,6 +368,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
+      // Normalization functions (spec §07): vector → vector, LENGTH-
+      // PRESERVING. The static signature returns `array(1, %dynamic,
+      // real)`; refine the result to the input's concrete length so a
+      // downstream `aggregate`/`broadcast` sees a known dim (and the
+      // %meta type slot matches the value-set's concrete dim).
+      case 'softmax':
+      case 'logsoftmax':
+      case 'l1unit':
+      case 'l2unit': {
+        const a = expr.args || [];
+        if (a.length === 1) {
+          const at = inferExpr(a[0], scopes);
+          if (at && at.kind === 'array' && at.rank === 1
+              && Array.isArray(at.shape) && at.shape.length === 1
+              && at.shape[0] !== '%dynamic'
+              && at.elem && at.elem.kind === 'scalar' && at.elem.prim === 'real') {
+            return write(T.array(1, [at.shape[0]], T.REAL), expr);
+          }
+        }
+        break;   // unknown / non-concrete length → generic signature
+      }
       // Spec §07 table reductions: when sum / mean / var / std / prod /
       // maximum / minimum is applied to a table, the result is a record
       // whose fields are the column names and values are the per-column

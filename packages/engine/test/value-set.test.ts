@@ -133,10 +133,12 @@ test('valueset: toSexpr emits the third %meta slot (golden parity)', () => {
     + 'z = softmax([0.0, 1.0])\nc = Categorical(p = x)');
   const out = require('../pir-sexpr.ts').toSexpr(r.loweredModule, { meta: true })
     .replace(/\s+/g, ' ');
-  assert.ok(/\(draw \(%meta [^)]*[^%]\) %stochastic \(stdsimplex 3\)\)/.test(out)
-    || out.includes('%stochastic (stdsimplex 3)'),
+  assert.ok(out.includes('%stochastic (stdsimplex 3)'),
     'Dirichlet draw → (stdsimplex 3): ' + out);
-  assert.ok(out.includes('(stdsimplex 2)'), 'softmax → (stdsimplex 2): ' + out);
+  // softmax matches the Rust golden byte-for-byte on BOTH slots — the
+  // type (length-preserving → concrete 2) and the value-set.
+  assert.ok(out.includes('(softmax (%meta (%array 1 (2) (%scalar real)) %fixed (stdsimplex 2))'),
+    'softmax → (%array 1 (2) real) %fixed (stdsimplex 2): ' + out);
   assert.ok(/\(Categorical \(%meta .*\) %stochastic posintegers\)/.test(out),
     'Categorical support → posintegers: ' + out);
 });
