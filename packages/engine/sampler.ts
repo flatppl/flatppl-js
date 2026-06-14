@@ -2882,14 +2882,17 @@ function evaluateRand(ir: any, env: any): any {
 // by `builtin_sample(rngstate, kernel, kernel_input, n, m, ...)` to
 // route through the in-module `walk` — same path `rand(state, m)` takes.
 //
-// `kernelInputIR` MUST be either:
-//   - an inline `record(...)` call (fields → kernel call kwargs), or
+// `kernelInputIR` may be:
+//   - an inline `record(...)` call (fields → kernel call kwargs),
 //   - a call whose `.kwargs` field is already in the right shape (which
-//     the surface grammar doesn't emit but tests may build directly).
-// Refs to record-typed bindings are an open follow-up; for now we
-// throw a clear error so users see the supported surface.
+//     the surface grammar doesn't emit but tests may build directly), or
+//   - a REF (or any expr) that resolves to a record VALUE — evaluated in
+//     `env`, its fields lifted to `lit` IR so the synthesised kernel call
+//     carries IR kwargs the same as the inline case (spec §07: kernel_input
+//     is a record matching the kernel's kwarg interface; nothing restricts
+//     it to a syntactic literal).
 function _synthSampleMeasureIR(kernelName: string, kernelInputIR: any,
-                                dimIRs: any[], _env: any): any {
+                                dimIRs: any[], env: any): any {
   let kwargs: Record<string, any>;
   if (kernelInputIR && kernelInputIR.kind === 'call'
       && kernelInputIR.op === 'record'
@@ -2901,8 +2904,26 @@ function _synthSampleMeasureIR(kernelName: string, kernelInputIR: any,
              && typeof kernelInputIR.kwargs === 'object') {
     kwargs = kernelInputIR.kwargs;
   } else {
-    throw new Error('builtin_sample: kernel_input must be an inline record(...) '
-      + 'literal (refs to record-typed bindings are an open follow-up)');
+    // Resolve a ref / expr to a record value, then lift each field to a
+    // lit IR. A record value is a plain object — distinct from a Value
+    // (shape-tagged), a typed/JS array, or a table.
+    const recVal: any = evaluateExpr(kernelInputIR, env);
+    const isPlainRecord = recVal && typeof recVal === 'object'
+      && !Array.isArray(recVal)
+      && recVal.BYTES_PER_ELEMENT === undefined
+      && recVal.__table__ !== true
+      && !valueLib.isValue(recVal);
+    if (!isPlainRecord) {
+      throw new Error('builtin_sample: kernel_input must be a record — an inline '
+        + 'record(...) or a binding that resolves to one (got '
+        + (recVal === null ? 'null' : typeof recVal) + ')');
+    }
+    kwargs = {};
+    for (const k in recVal) {
+      if (Object.prototype.hasOwnProperty.call(recVal, k)) {
+        kwargs[k] = { kind: 'lit', value: recVal[k] };
+      }
+    }
   }
   const distIR: any = { kind: 'call', op: kernelName, kwargs };
   if (dimIRs.length === 0) return distIR;

@@ -75,6 +75,34 @@ xs2, _ = rand(state, iid(Normal(mu = 0.0, sigma = 1.0), 8))
   }
 });
 
+test('builtin_sample accepts a record-typed BINDING as kernel_input (not just inline)', () => {
+  // Spec §07: kernel_input is a record matching the kernel's kwarg
+  // interface — nothing restricts it to a syntactic `record(...)`
+  // literal. A ref to a record-typed binding resolves to the same kwargs
+  // and must draw bit-for-bit identically to the inline form.
+  const src = `
+flatppl_compat = "0.1"
+
+state = rnginit([0, 1, 2, 3])
+pars = record(mu = 0.0, sigma = 1.0)
+xs1, _ = builtin_sample(state, Normal, pars, 8)
+xs2, _ = rand(state, iid(Normal(mu = 0.0, sigma = 1.0), 8))
+`;
+  const r = engine.processSource(src);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const orchestrator = require('../orchestrator.ts');
+  const derivs = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const xs1 = derivs.fixedValues.get('xs1');
+  const xs2 = derivs.fixedValues.get('xs2');
+  const xs1Arr = Array.isArray(xs1) ? xs1 : Array.from(xs1.data);
+  const xs2Arr = Array.isArray(xs2) ? xs2 : Array.from(xs2.data);
+  assert.equal(xs1Arr.length, 8);
+  for (let i = 0; i < xs1Arr.length; i++) {
+    assert.ok(Math.abs(xs1Arr[i] - xs2Arr[i]) < 1e-15,
+      `atom ${i}: record-binding=${xs1Arr[i]} vs inline-iid=${xs2Arr[i]}`);
+  }
+});
+
 test('builtin_sample (no dims) returns a scalar + threaded state', () => {
   const src = `
 flatppl_compat = "0.1"
