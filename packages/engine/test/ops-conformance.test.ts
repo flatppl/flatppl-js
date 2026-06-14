@@ -838,25 +838,58 @@ test('ops dispatchHigherOrder: higher-order op without a logical impl surfaces c
 // through ops.dispatch; pin atom-indep dispatch ≡ ARITH_OPS over random
 // scalars (the batched path is the broadcast variant, tested elsewhere).
 //
-// Family 1: pure-real unary elementary math.
+// Migrated families (all scalar prims EXCEPT add/sub/neg/mul).
 // ---------------------------------------------------------------------
 
-const REAL_UNARY_PRIMS = [
-  'log10', 'log1p', 'expm1',
-  'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
-  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
-  'floor', 'ceil', 'round',
-];
-
-for (const op of REAL_UNARY_PRIMS) {
-  test('ops conformance: ' + op + ' (scalar logical) — dispatch matches ARITH_OPS', () => {
+// Object.is first so non-finite components (Inf from exp overflow, NaN
+// from out-of-domain) compare equal; else a tolerance on finite values.
+const _close1 = (a: any, b: any) => Object.is(a, b) || Math.abs(a - b) < 1e-12;
+const _cclose = (a: any, b: any) => {
+  if (a && typeof a === 'object' && 're' in a) {
+    return b && typeof b === 'object' && 're' in b
+      && _close1(a.re, b.re) && _close1(a.im, b.im);
+  }
+  return _close1(a, b);
+};
+const _pinScalar = (label: string, op: string, arb: any, arity: number) => {
+  test('ops conformance: ' + label + ' (scalar logical) — dispatch matches ARITH_OPS', () => {
     assert.ok(ops.isDeclared(op), op + ' must be declared (logical attached)');
-    fc.assert(fc.property(arbReal, (x: any) => {
-      const viaDispatch = ops.dispatch(op, [x]);
-      const viaArith = ARITH_OPS[op](x);
-      // Object.is so NaN (out-of-domain, e.g. asin(2)) compares equal.
-      return Object.is(viaDispatch, viaArith)
-        || Math.abs(viaDispatch - viaArith) < 1e-15;
-    }), { numRuns: 200 });
+    const args = Array(arity).fill(arb);
+    fc.assert(fc.property(...args, (...xs: any[]) =>
+      _cclose(ops.dispatch(op, xs), ARITH_OPS[op](...xs))), { numRuns: 150 });
   });
+};
+
+// Unary, real generator: pure-real unary (family 1) + complex-aware
+// unary/accessors (real-input branch) + gamma/link functions.
+const UNARY_REAL = [
+  'log10', 'log1p', 'expm1', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'floor', 'ceil', 'round',
+  'abs', 'abs2', 'exp', 'log', 'sqrt', 'real', 'imag', 'conj', 'cis', 'pos',
+  'gamma', 'loggamma', 'logit', 'invlogit', 'probit', 'invprobit',
+];
+for (const op of UNARY_REAL) _pinScalar(op, op, arbReal, 1);
+
+// Binary real, comparisons, predicates.
+for (const op of ['div', 'mod', 'min', 'max', 'atan2', 'divide', 'pow']) _pinScalar(op, op, arbReal, 2);
+for (const op of ['lt', 'le', 'gt', 'ge', 'equal', 'unequal']) _pinScalar(op, op, arbReal, 2);
+for (const op of ['isfinite', 'isinf', 'isnan', 'iszero']) _pinScalar(op, op, arbReal, 1);
+
+// Complex-input branch the real generators miss.
+const arbCx = fc.record({ re: arbReal, im: arbReal });
+for (const op of ['abs', 'abs2', 'exp', 'log', 'sqrt', 'real', 'imag', 'conj']) {
+  _pinScalar(op + ' (complex)', op, arbCx, 1);
 }
+
+// Logic / conditional / casts (boolean-domain generators).
+const arbBool = fc.boolean();
+for (const op of ['land', 'lor', 'lxor']) _pinScalar(op, op, arbBool, 2);
+_pinScalar('lnot', 'lnot', arbBool, 1);
+test('ops conformance: ifelse / boolean / integer casts dispatch via logical', () => {
+  fc.assert(fc.property(arbBool, arbReal, arbReal, (c: any, a: any, b: any) =>
+    _cclose(ops.dispatch('ifelse', [c, a, b]), ARITH_OPS.ifelse(c, a, b))), { numRuns: 100 });
+  fc.assert(fc.property(fc.integer({ min: -1000, max: 1000 }), (n: any) =>
+    _cclose(ops.dispatch('integer', [n]), ARITH_OPS.integer(n))), { numRuns: 50 });
+  fc.assert(fc.property(fc.constantFrom(0, 1, true, false), (x: any) =>
+    _cclose(ops.dispatch('boolean', [x]), ARITH_OPS.boolean(x))), { numRuns: 20 });
+});

@@ -1395,11 +1395,20 @@ ops.register({
 // behavior-preserving (conformance-pinned). Migrating a family =
 // extending the tables here.
 //
-// Family 1: pure-real unary elementary math (`Math.X`, no complex / Value
-// branch — the simplest, zero-risk family). Complex-aware unary
-// (exp/log/sqrt/abs/abs2), binary, Value-aware (add/sub/neg/mul), and the
-// complex accessors follow in subsequent families.
+// The impls below mirror `sampler.ARITH_OPS` VERBATIM (the conformance
+// suite pins exact equivalence). Migrated so far: every scalar primitive
+// EXCEPT the Value-aware arithmetic `add` / `sub` / `neg` / `mul`, which
+// carry direct + atom-batched variants whose dispatch interaction needs
+// its own careful pass (TODO §18).
 function _registerScalarLogicals(): void {
+  const cx = require('./sampler-complex.ts');
+  const _isC = cx._isComplex;
+  const stdlibGamma   = require('@stdlib/math-base-special-gamma');
+  const stdlibGammaln = require('@stdlib/math-base-special-gammaln');
+  const stdlibErfc    = require('@stdlib/math-base-special-erfc');
+  const stdlibErfcinv = require('@stdlib/math-base-special-erfcinv');
+
+  // Family 1: pure-real unary elementary math (`Math.X`).
   const REAL_UNARY: Record<string, (a: number) => number> = {
     log10: Math.log10, log1p: Math.log1p, expm1: Math.expm1,
     sin: Math.sin, cos: Math.cos, tan: Math.tan,
@@ -1408,8 +1417,79 @@ function _registerScalarLogicals(): void {
     asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
     floor: Math.floor, ceil: Math.ceil, round: Math.round,
   };
-  for (const name in REAL_UNARY) {
-    ops.attachLogical(name, REAL_UNARY[name], 'rank-polymorphic');
+
+  // The full logical table (rank-polymorphic — args handed to the impl
+  // as-is, exactly as the legacy ARITH_OPS entry receives them).
+  const LOGICALS: Record<string, (...a: any[]) => any> = {
+    ...REAL_UNARY,
+    // Family 2: complex-aware unary + accessors (sampler-complex leaf).
+    abs:  (a: any) => _isC(a) ? cx._cAbs(a)  : Math.abs(a),
+    abs2: (a: any) => _isC(a) ? cx._cAbs2(a) : a * a,
+    exp:  (a: any) => _isC(a) ? cx._cExp(a)  : Math.exp(a),
+    log:  (a: any) => _isC(a) ? cx._cLog(a)  : Math.log(a),
+    sqrt: (a: any) => _isC(a) ? cx._cSqrt(a) : Math.sqrt(a),
+    real: (z: any) => _isC(z) ? z.re : +z,
+    imag: (z: any) => _isC(z) ? z.im : 0,
+    conj: (z: any) => _isC(z) ? cx._cConj(z) : +z,
+    cis:  (theta: any) => ({ re: Math.cos(+theta), im: Math.sin(+theta) }),
+    complex: (re: any, im: any) => {
+      if (im === undefined) {
+        if (_isC(re)) return re;
+        if (typeof re === 'number') return { re: re, im: 0 };
+        throw new Error('complex: single-arg restrictor requires real or complex input');
+      }
+      return { re: +re, im: +im };
+    },
+    pos: (a: any) => _isC(a) ? a : +a,
+    // Family 3: complex-aware binary (only broadcast variants — safe).
+    divide: (a: any, b: any) => (_isC(a) || _isC(b))
+      ? cx._cDiv(cx._toComplex(a), cx._toComplex(b)) : a / b,
+    pow: (a: any, b: any) => (_isC(a) || _isC(b))
+      ? cx._cPow(cx._toComplex(a), cx._toComplex(b)) : Math.pow(a, b),
+    // Family 4: pure-real binary / pairwise.
+    div: (a: any, b: any) => Math.floor(a / b),   // spec §07 ⌊a/b⌋
+    mod: (a: any, b: any) => a % b,
+    min: (a: any, b: any) => Math.min(a, b),
+    max: (a: any, b: any) => Math.max(a, b),
+    atan2: (y: any, x: any) => Math.atan2(y, x),
+    // Family 5: gamma family + link functions (stdlib already bundled
+    // via value-ops's *Elem broadcast impls).
+    gamma:     (a: any) => stdlibGamma(a),
+    loggamma:  (a: any) => stdlibGammaln(a),
+    logit:     (p: any) => Math.log(p / (1 - p)),
+    invlogit:  (x: any) => 1 / (1 + Math.exp(-x)),
+    probit:    (p: any) => -Math.SQRT2 * stdlibErfcinv(2 * p),
+    invprobit: (x: any) => 0.5 * stdlibErfc(-x / Math.SQRT2),
+    // Family 6: comparisons / predicates / logic / conditional / casts.
+    lt: (a: any, b: any) => a < b,
+    le: (a: any, b: any) => a <= b,
+    gt: (a: any, b: any) => a > b,
+    ge: (a: any, b: any) => a >= b,
+    equal:   (a: any, b: any) => a === b,
+    unequal: (a: any, b: any) => a !== b,
+    isfinite: (a: any) => Number.isFinite(a),
+    isinf:    (a: any) => !Number.isNaN(a) && !Number.isFinite(a),
+    isnan:    (a: any) => Number.isNaN(a),
+    iszero:   (a: any) => a === 0,
+    land: (a: any, b: any) => a && b,
+    lor:  (a: any, b: any) => a || b,
+    lxor: (a: any, b: any) => a !== b,
+    lnot: (a: any) => !a,
+    ifelse: (c: any, a: any, b: any) => c ? a : b,
+    boolean: (x: any) => {
+      if (x === true || x === false) return x;
+      if (x === 0) return false;
+      if (x === 1) return true;
+      throw new Error('boolean: value ' + x + ' is not a boolean');
+    },
+    integer: (x: any) => {
+      if (Number.isInteger(x)) return x;
+      throw new Error('integer: value ' + x + ' is not an integer');
+    },
+  };
+
+  for (const name in LOGICALS) {
+    ops.attachLogical(name, LOGICALS[name], 'rank-polymorphic');
   }
 }
 
