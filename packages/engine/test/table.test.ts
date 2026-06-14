@@ -111,6 +111,46 @@ test('table: lengthof(t) returns integer', () => {
   assert.equal(t.prim, 'integer');
 });
 
+// lengthof(t)/lengthof(<vec-of-vec>) must const-fold to the row/outer
+// count in a SHAPE position (engine-concepts §17.1), so a dependent
+// shape stays concrete instead of going %dynamic. The const-eval
+// short-circuit reads array `shape[0]` and now table `nrows` uniformly
+// (resolveIntegerShape + resolveIntegerVectorShape).
+function shapeOf(src: string, name: string) {
+  const r = processSource(src);
+  const lb = r.loweredModule.bindings.get(name);
+  return lb && lb.inferredType;
+}
+
+test('table: lengthof(t) const-folds the row count into a scalar shape position', () => {
+  const t = shapeOf(`
+    events = table(mass = [1.1, 1.2, 1.3], pt = [45.2, 32.1, 67.8])
+    g = eye(lengthof(events))
+  `, 'g');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3, 3]);
+});
+
+test('table: lengthof(t) const-folds into a vector shape position', () => {
+  const t = shapeOf(`
+    events = table(mass = [1.1, 1.2, 1.3, 1.4])
+    z = zeros(lengthof(events))
+  `, 'z');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [4]);
+});
+
+test('lengthof(<vec-of-vec>) const-folds to the OUTER length in a shape position', () => {
+  // Spec §07: lengthof is the number of (outer) elements — a 2×3 matrix
+  // literal has length 2, NOT 6 (the nested/flat distinction is kept).
+  const t = shapeOf(`
+    M = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    z = zeros(lengthof(M))
+  `, 'z');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [2]);
+});
+
 test('table: sum / mean return record of per-column reductions', () => {
   const { bindings, errors } = infer(`
     events = table(mass = [1.1, 1.2, 1.3], pt = [45.2, 32.1, 67.8])

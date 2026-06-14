@@ -2235,6 +2235,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       }
       return dims;
     }
+    // `lengthof(x)` / `length(x)` is a scalar count → a rank-1 shape
+    // `[n]`. Delegate to resolveIntegerShape so the array-of-arrays and
+    // table row-count short-circuits apply here too (resolveFixed's
+    // shape-observer reads only array types, so a table count would
+    // otherwise fall through to %dynamic — e.g. `zeros(lengthof(t))`).
+    if (ir && ir.kind === 'call' && (ir.op === 'length' || ir.op === 'lengthof')) {
+      const n = resolveIntegerShape(ir);
+      if (n != null) return [n];
+    }
     // Resolver fallback. Result is either a number (rank-1 result)
     // or a shape-explicit Value carrying the dims (rank-N).
     if (!resolveFixed) return null;
@@ -2426,10 +2435,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
         && (ir.op === 'length' || ir.op === 'lengthof')
         && Array.isArray(ir.args) && ir.args.length === 1) {
       const argT: any = inferExpr(ir.args[0], []);
+      // Vector / array-of-arrays: the leading-axis length (rows of a
+      // matrix, outer count of a vec-of-vec — spec §07 "number of
+      // elements"). A rank-≥2 array's shape[0] is its outer length.
       if (argT && argT.kind === 'array'
           && Array.isArray(argT.shape) && argT.shape.length > 0
           && typeof argT.shape[0] === 'number') {
         return argT.shape[0];
+      }
+      // Table: the row count (spec §07 "rows (table)"), carried on the
+      // table type as `nrows`. Without this, `lengthof(<table>)` in a
+      // shape position (e.g. `zeros(lengthof(t))`) couldn't const-fold
+      // — the table type isn't an `array`, so it fell through to the
+      // resolver and the dependent shape went %dynamic / deferred.
+      if (argT && argT.kind === 'table' && typeof argT.nrows === 'number') {
+        return argT.nrows;
       }
     }
     // Fall back to the caller-supplied resolver (typically wired by
