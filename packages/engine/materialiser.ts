@@ -1950,4 +1950,8 @@ module.exports = {
   // Value ↔ Measure bridges.
   valueOf,
   measureFromValue,
+  // The kind→handler dispatch table. Exposed so the catalog-coverage
+  // invariant (test/invariants.test.ts) can assert every classified
+  // derivation kind has a materialiser handler (or is reroute-exempt).
+  KIND_HANDLERS,
 };

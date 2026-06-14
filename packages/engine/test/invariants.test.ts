@@ -19,6 +19,7 @@ const types      = require('../types.ts');
 const lower      = require('../lower.ts');
 const orchestrator = require('../orchestrator.ts');
 const sampler    = require('../sampler.ts');
+const materialiser = require('../materialiser.ts');
 
 // ---------------------------------------------------------------------
 // 1. SAMPLEABLE_DISTRIBUTIONS ↔ sampler.REGISTRY
@@ -356,6 +357,92 @@ test('invariant: every measure-algebra op classifies under inline subexpressions
   }
   assert.deepEqual(failures, [],
     'measure-algebra op classification under inline subexpressions:\n  - ' + failures.join('\n  - '));
+});
+
+// ---------------------------------------------------------------------
+// 9. Measure-op / distribution catalog coverage — every classified
+//    derivation kind has a materialiser KIND_HANDLERS entry (or is
+//    reroute-exempt).
+//
+// The measure-op metadata is split across four catalogs (derivations
+// MEASURE_OP_CLASSIFIERS / sampler MEASURE_OP_WALKERS / density OP_HANDLERS
+// / materialiser KIND_HANDLERS) which drift SILENTLY: a new distribution or
+// measure-op whose classifier lands but whose materialiser handler is
+// forgotten throws "no handler for kind X" only when that op is first
+// materialised — far from the wiring mistake. (The earlier subset-invariant
+// attempt was declined because the catalogs are intentionally cross-cut by
+// op-name vs derivation-kind — block 7's note.) These pin the one clean
+// correspondence: classifier-emitted KIND → materialiser handler.
+//
+// `jointchain` is the sole union kind WITHOUT a KIND_HANDLERS entry — it
+// and `kchain` route through clmRerouteStage → matClm before kind dispatch
+// (materialiser.ts ~1054). Listed exempt.
+// ---------------------------------------------------------------------
+
+// The derivation kinds — KEEP IN SYNC with engine-types.d.ts `Derivation`
+// union (the authoritative catalog). A new union member must be added here
+// AND given a KIND_HANDLERS entry (or a KIND_HANDLER_EXEMPT entry); block 9a
+// fails loudly if a handler names a kind missing from this set.
+const ALL_DERIVATION_KINDS = new Set([
+  'alias', 'array', 'tuple', 'record', 'sample', 'evaluate',
+  'weighted', 'normalize', 'superpose', 'iid', 'randsample', 'jointchain',
+  'truncate', 'pushfwd', 'bayesupdate', 'logdensityof', 'likelihood_density',
+  'totalmass', 'broadcast_logdensity', 'select', 'kernelbroadcast',
+  'mvnormal', 'dirichlet', 'multinomial', 'wishart', 'inversewishart',
+  'lkjcholesky', 'lkj', 'binnedpoissonprocess', 'poissonprocess',
+]);
+// Kinds handled OUTSIDE KIND_HANDLERS (clmRerouteStage → matClm).
+const KIND_HANDLER_EXEMPT = new Set(['jointchain']);
+
+test('invariant 9a: every KIND_HANDLERS key is a known derivation kind', () => {
+  for (const kind of Object.keys(materialiser.KIND_HANDLERS)) {
+    assert.ok(ALL_DERIVATION_KINDS.has(kind),
+      `KIND_HANDLERS has a handler for '${kind}', which is not in ` +
+      `ALL_DERIVATION_KINDS — add it (and engine-types.d.ts Derivation), or fix the typo`);
+  }
+});
+
+test('invariant 9b: every derivation kind has a KIND_HANDLERS entry (or is reroute-exempt)', () => {
+  for (const kind of ALL_DERIVATION_KINDS) {
+    if (KIND_HANDLER_EXEMPT.has(kind)) continue;
+    assert.ok(Object.prototype.hasOwnProperty.call(materialiser.KIND_HANDLERS, kind),
+      `derivation kind '${kind}' has no materialiser KIND_HANDLERS entry — the ` +
+      `classifier can emit it but the materialiser would throw "no handler for kind"`);
+  }
+});
+
+test('invariant 9c: every distribution constructor classifies to a handled kind', () => {
+  const { processSource } = require('..');
+  // Measure-binding form `b = Dist(...)` ⇒ b's derivation kind IS the dist's
+  // (the draw form `b ~ Dist` aliases b to an anon carrying the kind). Robust
+  // to lifting: MvNormal lowers to `pushfwd`, also a handled kind.
+  const dists = [
+    'Normal(0.0, 1.0)',
+    'Dirichlet(alpha = [1.0, 1.0, 1.0])',
+    'Multinomial(n = 5, p = [0.2, 0.3, 0.5])',
+    'Wishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])',
+    'InverseWishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])',
+    'LKJ(n = 2, eta = 1.0)',
+    'LKJCholesky(n = 2, eta = 1.0)',
+    'MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])',
+    'BinnedPoissonProcess(rates = [1.0, 2.0, 3.0])',
+    'PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))',
+  ];
+  const failures: string[] = [];
+  for (const call of dists) {
+    const r = processSource(`b = ${call}`);
+    const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
+    if (errs.length) { failures.push(`${call}: parse/analyse — ${errs.map((d: any) => d.message).join('; ')}`); continue; }
+    const built = orchestrator.buildDerivations(orchestrator.liftInlineSubexpressions(r.bindings));
+    const d = built.derivations.b;
+    if (!d) { failures.push(`${call}: no derivation`); continue; }
+    if (!Object.prototype.hasOwnProperty.call(materialiser.KIND_HANDLERS, d.kind)
+        && !KIND_HANDLER_EXEMPT.has(d.kind)) {
+      failures.push(`${call}: classifies to kind '${d.kind}' with no KIND_HANDLERS entry`);
+    }
+  }
+  assert.deepEqual(failures, [],
+    'distribution → handled-kind coverage:\n  - ' + failures.join('\n  - '));
 });
 
 // ---------------------------------------------------------------------
