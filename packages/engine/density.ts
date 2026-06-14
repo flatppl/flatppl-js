@@ -1885,87 +1885,105 @@ function walkMultivariate(ir: IRNode, value: any, refArrays: any, N: any, opts: 
 // walkPoissonProcess — RAGGED point-process density (spec §08, §2.3)
 // =====================================================================
 //
-// Scores ONE shared observed point set {t_1..t_k} against N parameter
-// atoms (the θ samples threaded through refArrays/baseEnv). For the MVP
-// intensity `weighted(M, shape)` (shape = a normalized scalar
-// distribution, so the weight IS the total mass M):
+// Scores ONE shared observed point set {t_1..t_k} against N parameter atoms
+// (the θ samples threaded through refArrays/baseEnv). For a general intensity
+// `superpose(weighted(w_1, s_1), …)` the rate is λ(t) = Σ_i w_i·s_i_pdf(t),
+// and (spec §08):
 //
-//   logp_i = Σ_j log λ(t_j; θ_i) − M_i
-//          = k·log(M_i) + Σ_j shape_logpdf(t_j; θ_i) − M_i
+//   logp_i = Σ_j log λ(t_j; θ_i) − M_i,   M_i = Σ_i w_i(θ_i)
+//          = Σ_j logsumexp_c( log w_c(θ_i) + s_c_logpdf(t_j; θ_i) ) − M_i
 //
-// The per-point `shape_logpdf` is the SAME FlatPDL primitive the scalar
-// leaf path uses (`builtinLogdensityofPositional`); M_i and the shape
-// params resolve per atom exactly as walkLeaf / walkMultivariate do — so
-// the spec's flagship example (a draw-dependent `resolution` inside the
-// shape) scores correctly here even though generative SAMPLING of it is a
-// follow-up. This is the per-θ density axis; the per-MC-atom self-density
-// over a ragged measure is `mat-poisson.poissonProcessLogDensity`.
+// A single `weighted(M, s)` is the one-component case (logsumexp of one term =
+// log M + s_logpdf). The per-point `s_logpdf` is the SAME FlatPDL primitive the
+// scalar leaf path uses (`builtinLogdensityofPositional`); weights and shape
+// params resolve per atom exactly as walkLeaf / walkMultivariate do — so the
+// spec's flagship example (a draw-dependent `resolution` inside a shape) scores
+// correctly here even though generative SAMPLING of it is a follow-up. This is
+// the per-θ density axis; the per-MC-atom self-density over a ragged measure is
+// `mat-poisson.poissonProcessLogDensity`.
 //
 // Consumes the WHOLE observation as the point set (a terminal whole-vector
 // consume → rest=null). A PoissonProcess with a non-empty rest (a sibling
-// field after it in a joint, or a per-atom ragged batched observation) is
-// the documented ragged-boundary follow-up.
+// field after it in a joint, or a per-atom ragged batched observation) is the
+// documented ragged-boundary follow-up.
 function walkPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const intensityIR = ((ir as any).kwargs && (ir as any).kwargs.intensity)
+  const matPoisson = require('./mat-poisson.ts');
+  let intensityIR = ((ir as any).kwargs && (ir as any).kwargs.intensity)
     || ((ir as any).args && (ir as any).args[0]);
   if (!intensityIR) {
     throw new Error('density(PoissonProcess): requires an intensity argument');
   }
-  const resolveRef = (node: any) =>
-    (node && node.kind === 'ref' && typeof opts.resolveMeasureRef === 'function')
-      ? (opts.resolveMeasureRef(node.name) || node) : node;
-  // intensity = weighted(Mexpr, shape) | logweighted(logMexpr, shape).
-  const intIR = resolveRef(intensityIR);
-  let Mexpr: any, isLogM = false, shapeLeafIR: any;
-  if (intIR && intIR.kind === 'call' && Array.isArray(intIR.args) && intIR.args.length === 2
-      && (intIR.op === 'weighted' || intIR.op === 'logweighted')) {
-    Mexpr = intIR.args[0];
-    isLogM = intIR.op === 'logweighted';
-    shapeLeafIR = resolveRef(intIR.args[1]);
-  } else {
-    throw new Error('density(PoissonProcess): the MVP supports intensity = '
-      + 'weighted(<expected count>, <scalar distribution>) only (general-measure '
-      + 'intensity is a follow-up, spec §08)');
+  // Production pre-expands the intensity (derivations._expandStructural); the
+  // resolveMeasureRef opt is the escape hatch for an un-expanded top-level ref.
+  if (intensityIR.kind === 'ref' && typeof opts.resolveMeasureRef === 'function') {
+    intensityIR = opts.resolveMeasureRef(intensityIR.name) || intensityIR;
   }
-  const kernelName: string = shapeLeafIR && shapeLeafIR.op;
-  if (!samplerLib.isKnownDistribution(kernelName)) {
-    throw new Error("density(PoissonProcess): the shape must be a scalar distribution, got '"
-      + kernelName + "'");
+  const comps = matPoisson.parseIntensityComponents(intensityIR);
+  if (!comps) {
+    throw new Error('density(PoissonProcess): intensity must be weighted(<expected '
+      + 'count>, <scalar distribution>) or a superpose of such components (spec §08)');
   }
-  const entry = samplerLib.lookupDistribution(shapeLeafIR);
+  // Validate + cache each component's leaf entry.
+  const entries = comps.map((c: any) => {
+    const kn = c.shapeLeafIR && c.shapeLeafIR.op;
+    if (!samplerLib.isKnownDistribution(kn)) {
+      throw new Error("density(PoissonProcess): a shape must be a scalar distribution, got '"
+        + kn + "'");
+    }
+    return { weightIR: c.weightIR, isLog: c.isLog, shapeLeafIR: c.shapeLeafIR,
+             kernelName: kn, entry: samplerLib.lookupDistribution(c.shapeLeafIR) };
+  });
 
-  // Consume the whole observation as the flat point set.
   const pts = _consumeAllPoints(value);
   const k = pts.length;
-
-  // M_i per atom (value expression over refArrays/baseEnv/overlay).
-  const Mres = samplerLib.evaluateExprN(
-    Mexpr, refArrays || null, N, baseEnv, overlay ? { overlay } : undefined);
-  const Mscalar = (typeof Mres === 'number' || typeof Mres === 'boolean');
-  const Mof = (i: number) => {
-    const raw = Mscalar ? +(Mres as any) : +Mres[i];
-    return isLogM ? Math.exp(raw) : raw;
-  };
-  const poissonTerm = (M: number) => (k > 0 ? k * Math.log(M) : 0) - M;
-
   const blp = densityPrims.builtinLogdensityofPositional;
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
-  const shapeUsesPerAtom = _exprUsesAny(shapeLeafIR, refNames);
+  const anyPerAtom = entries.some((e: any) =>
+    _exprUsesAny(e.weightIR, refNames) || _exprUsesAny(e.shapeLeafIR, refNames));
 
-  // Hot path: atom-independent shape params (no per-atom ref used). Resolve
-  // once against baseEnv+overlay, precompute Σ_j shape_logpdf = S, then per
-  // atom add k·log(M_i) − M_i + S.
-  if (!shapeUsesPerAtom) {
+  // The atom's logp for the shared point set, given a resolved env:
+  //   Σ_j logsumexp_c( log w_c + s_c_logpdf(t_j) ) − Σ_c w_c.
+  const atomLogp = (env: any): number => {
+    const C = entries.length;
+    const logw = new Array(C);
+    const params = new Array(C);
+    let M = 0;
+    for (let c = 0; c < C; c++) {
+      const e = entries[c];
+      const wv = +samplerLib.evaluateExpr(e.weightIR, env);
+      const w = e.isLog ? Math.exp(wv) : wv;
+      M += w;
+      logw[c] = e.isLog ? wv : Math.log(w);   // log 0 = −∞ (component drops out)
+      params[c] = samplerLib.resolveParams(e.shapeLeafIR, e.entry, env);
+    }
+    let S = 0;
+    for (let j = 0; j < k; j++) {
+      // logλ(t_j) = logsumexp_c( logw_c + s_c_logpdf(t_j) ), numerically stable.
+      let mx = -Infinity;
+      const terms = new Array(C);
+      for (let c = 0; c < C; c++) {
+        const t = logw[c] + blp(entries[c].kernelName, params[c], pts[j]);
+        terms[c] = t;
+        if (t > mx) mx = t;
+      }
+      if (mx === -Infinity) { S += -Infinity; continue; }
+      let sm = 0;
+      for (let c = 0; c < C; c++) sm += Math.exp(terms[c] - mx);
+      S += mx + Math.log(sm);
+    }
+    return S - M;
+  };
+
+  // Hot path: every weight & shape atom-independent ⇒ one evaluation, broadcast.
+  if (!anyPerAtom) {
     const env = Object.assign({}, baseEnv);
     if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) env[overlayKeys[j]] = overlay[overlayKeys[j]];
-    const params = samplerLib.resolveParams(shapeLeafIR, entry, env);
-    let S = 0;
-    for (let j = 0; j < k; j++) S += blp(kernelName, params, pts[j]);
-    for (let i = 0; i < N; i++) acc[i] += poissonTerm(Mof(i)) + S;
+    const lp = atomLogp(env);
+    for (let i = 0; i < N; i++) acc[i] += lp;
     return null;
   }
-  // Per-atom shape params: resolve params and Σ_j shape_logpdf per atom.
+  // Per-atom path: rebuild the env per θ-atom.
   const callEnv = Object.assign({}, baseEnv);
   for (let i = 0; i < N; i++) {
     for (let j = 0; j < refNames.length; j++) {
@@ -1973,10 +1991,7 @@ function walkPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts
       callEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
     }
     if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
-    const params = samplerLib.resolveParams(shapeLeafIR, entry, callEnv);
-    let S = 0;
-    for (let j = 0; j < k; j++) S += blp(kernelName, params, pts[j]);
-    acc[i] += poissonTerm(Mof(i)) + S;
+    acc[i] += atomLogp(callEnv);
   }
   return null;
 }

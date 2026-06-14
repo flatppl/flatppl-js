@@ -20,8 +20,12 @@ const lit = (v: any) => ({ kind: 'lit', value: v });
 const ref = (name: any) => ({ kind: 'ref', ns: 'self', name });
 const Normal = (mu: any, sigma: any) =>
   ({ kind: 'call', op: 'Normal', kwargs: { mu, sigma } });
+const Exponential = (rate: any) =>
+  ({ kind: 'call', op: 'Exponential', kwargs: { rate } });
 const weighted = (M: any, shape: any) =>
   ({ kind: 'call', op: 'weighted', args: [M, shape] });
+const superpose = (...comps: any[]) =>
+  ({ kind: 'call', op: 'superpose', args: comps });
 const PP = (intensity: any) =>
   ({ kind: 'call', op: 'PoissonProcess', kwargs: { intensity } });
 const normlogpdf = (t: number) => -0.5 * Math.log(2 * Math.PI) - 0.5 * t * t;
@@ -128,13 +132,23 @@ m ~ PoissonProcess(intensity = weighted(0.0, Normal(mu = 0.0, sigma = 1.0)))
 // MVP boundary — documented rejections (red-for-the-right-reason)
 // =====================================================================
 
-test('PoissonProcess: a superpose intensity is refused (general-intensity follow-up)', async () => {
+test('PoissonProcess: a superpose intensity materialises (superposition union)', async () => {
+  // λ = 3·Normal(0,1) + 2·Exponential(rate=0.5). M = 5; mixture mean =
+  // (3·0 + 2·2)/5 = 0.8 (Exp(rate=0.5) mean = 2).
   const ctx = makeCtx(`
 sig = Normal(mu = 0.0, sigma = 1.0)
-bkg = Normal(mu = 5.0, sigma = 1.0)
+bkg = Exponential(rate = 0.5)
 m ~ PoissonProcess(intensity = superpose(weighted(3.0, sig), weighted(2.0, bkg)))
-`, 64);
-  await assert.rejects(() => ctx.getMeasure('m'), /follow-up|weighted\(<expected count>/);
+`, 40000);
+  const mm = await ctx.getMeasure('m');
+  assert.equal(mm.shape, 'ragged');
+  const N = R.raggedCount(mm.ragged);
+  const meanCount = mm.ragged.data.length / N;
+  assert.ok(Math.abs(meanCount - 5.0) < 0.1, 'meanCount=' + meanCount);
+  let sum = 0;
+  for (let i = 0; i < mm.ragged.data.length; i++) sum += mm.ragged.data[i];
+  const mean = sum / mm.ragged.data.length;
+  assert.ok(Math.abs(mean - 0.8) < 0.1, 'pooled mixture mean=' + mean);
 });
 
 test('PoissonProcess: a draw-dependent (per-atom) shape param is refused for sampling', async () => {
@@ -200,6 +214,39 @@ test('density: per-atom SHAPE param (the spec flagship pattern) resolves per θ'
 });
 
 // =====================================================================
+// General intensity — superpose density (Julia-oracle-pinned; closed-form
+// λ(t)=3·Normal(0,1)+2·Exp(rate=0.5), logp = Σ log λ(t_j) − M, M=5).
+// =====================================================================
+
+test('density superpose: @ [0.5,1.5] = Julia oracle −4.54271174', () => {
+  const ir = PP(superpose(weighted(lit(3.0), Normal(lit(0.0), lit(1.0))),
+                          weighted(lit(2.0), Exponential(lit(0.5)))));
+  const logp = density.logDensity(ir, [0.5, 1.5], {});
+  assert.ok(Math.abs(logp - (-4.54271174)) < 1e-6, 'got ' + logp);
+});
+
+test('density superpose: empty obs scores −M = −5', () => {
+  const ir = PP(superpose(weighted(lit(3.0), Normal(lit(0.0), lit(1.0))),
+                          weighted(lit(2.0), Exponential(lit(0.5)))));
+  assert.ok(Math.abs(density.logDensity(ir, [], {}) - (-5.0)) < 1e-12);
+});
+
+test('density superpose: @ [0,1,2] = Julia oracle −4.56112897', () => {
+  const ir = PP(superpose(weighted(lit(3.0), Normal(lit(0.0), lit(1.0))),
+                          weighted(lit(2.0), Exponential(lit(0.5)))));
+  const logp = density.logDensity(ir, [0.0, 1.0, 2.0], {});
+  assert.ok(Math.abs(logp - (-4.56112897)) < 1e-6, 'got ' + logp);
+});
+
+test('density superpose: one-component superpose ≡ the single weighted form', () => {
+  const a = density.logDensity(PP(superpose(weighted(lit(5.0), Normal(lit(0.0), lit(1.0))))),
+    [0.0, 1.0], {});
+  const b = density.logDensity(PP(weighted(lit(5.0), Normal(lit(0.0), lit(1.0)))),
+    [0.0, 1.0], {});
+  assert.ok(Math.abs(a - b) < 1e-12 && Math.abs(a - (-4.119001)) < 1e-5);
+});
+
+// =====================================================================
 // End-to-end: from source through matLogdensityof (the production path
 // the worker / viewer use), scoring a PoissonProcess measure against an
 // observed point set — reaching the same Julia oracle.
@@ -231,5 +278,36 @@ observed = [0.0, 1.0]
     obsIR: { kind: 'ref', ns: 'self', name: 'observed' } };
   return matLogdensityof(d as any, ctx).then((m: any) => {
     assert.ok(Math.abs(m.samples[0] - (-4.119001)) < 1e-5, 'got ' + m.samples[0]);
+  });
+});
+
+test('e2e: the spec-flagship superpose (separate intensity binding → select path) = −4.54271174', () => {
+  // intensity bound separately ⇒ a ref ⇒ expandMeasure renders it as `select`
+  // (the by-name superpose→select rewrite). Exercises that density path e2e.
+  const { matLogdensityof } = require('../mat-density.ts');
+  const lifted = processSource(`
+sig = Normal(mu = 0.0, sigma = 1.0)
+bkg = Exponential(rate = 0.5)
+intensity = superpose(weighted(3.0, sig), weighted(2.0, bkg))
+events ~ PoissonProcess(intensity = intensity)
+observed = [0.5, 1.5]
+`);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: ROOT_SEED });
+  const ctx: any = {
+    derivations: built.derivations, bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    sampleCount: 1, rootKey: ROOT_SEED,
+    getMeasure: (name: any) => Promise.reject(new Error('getMeasure leaked for ' + name)),
+    sendWorker: (m: any) => {
+      const r = worker.handle(m);
+      return r && r.type === 'error' ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+    },
+  };
+  const d = { kind: 'logdensityof', measureName: 'events',
+    obsIR: { kind: 'ref', ns: 'self', name: 'observed' } };
+  return matLogdensityof(d as any, ctx).then((m: any) => {
+    assert.ok(Math.abs(m.samples[0] - (-4.54271174)) < 1e-6, 'got ' + m.samples[0]);
   });
 });

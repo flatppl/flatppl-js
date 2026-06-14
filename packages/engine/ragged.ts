@@ -159,6 +159,44 @@ function raggedSegmentReduce(v: any, reduce: (acc: number, x: number) => number,
   return { shape: [N], data: out };
 }
 
+// Merge n ragged values over the SAME N atoms into one: atom a becomes the
+// concatenation of each part's atom-a slice. The point-process superposition
+// union (spec §08) — by the superposition theorem a process with intensity
+// Σ_i weighted(w_i, s_i) is the union of independent component processes, so
+// matPoissonProcess samples each component then merges by atom. Order within
+// an atom is irrelevant (point sets are unordered). All parts must share atom
+// count N and kernelShape stride.
+function raggedMerge(parts: any[]): any {
+  if (parts.length === 0) throw new Error('raggedMerge: needs ≥ 1 part');
+  if (parts.length === 1) return parts[0];
+  const N = raggedCount(parts[0]);
+  const ks = parts[0].kernelShape;
+  const ksStride = _prod(ks);
+  for (let i = 1; i < parts.length; i++) {
+    if (raggedCount(parts[i]) !== N) {
+      throw new Error('raggedMerge: atom-count mismatch (' + raggedCount(parts[i]) + ' ≠ ' + N + ')');
+    }
+    if (_prod(parts[i].kernelShape) !== ksStride) {
+      throw new Error('raggedMerge: kernelShape stride mismatch');
+    }
+  }
+  const offsets = new Int32Array(N + 1);
+  let total = 0;
+  for (let a = 0; a < N; a++) {
+    for (let i = 0; i < parts.length; i++) total += parts[i].offsets[a + 1] - parts[i].offsets[a];
+    offsets[a + 1] = total;
+  }
+  const data = new Float64Array(total);
+  let p = 0;
+  for (let a = 0; a < N; a++) {
+    for (let i = 0; i < parts.length; i++) {
+      const pi = parts[i];
+      for (let x = pi.offsets[a]; x < pi.offsets[a + 1]; x++) data[p++] = pi.data[x];
+    }
+  }
+  return ragged(data, offsets, ks);
+}
+
 function _prod(dims: number[]): number {
   let p = 1;
   for (let i = 0; i < dims.length; i++) p *= dims[i];
@@ -177,4 +215,5 @@ module.exports = {
   raggedSameStructure,
   raggedMapFlat,
   raggedSegmentReduce,
+  raggedMerge,
 };

@@ -3275,11 +3275,21 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     if (!inner) return null;
     return { ...ir, args: [inner, ir.args[1]] };
   }
+  if (ir.op === 'superpose' && Array.isArray(ir.args)) {
+    // Expand each component's inner measure (e.g. weighted(w, ref shape) →
+    // weighted(w, <leaf>)). Reached for a PoissonProcess `intensity =
+    // superpose(...)`; the superposition-union sampler / mixture-density
+    // walker need the component shapes resolved (the dumb worker has no
+    // resolveMeasureRef). A NAMED superpose binding lowers to `select` via
+    // _expandByName before reaching here, so this only fires for an inline
+    // superpose (today: a PoissonProcess intensity).
+    return { ...ir, args: ir.args.map((a: any) => _expandStructural(a, ctx, visited)) };
+  }
   if (ir.op === 'PoissonProcess' && ir.kwargs && ir.kwargs.intensity) {
-    // The `intensity` kwarg is a MEASURE (e.g. weighted(M, ref shape)). Expand
-    // it so its inner shape ref resolves to a distribution leaf — same reason
-    // as truncate above: walkPoissonProcess runs in the dumb worker, which has
-    // no resolveMeasureRef. Keep as-is if the intensity can't be expanded.
+    // The `intensity` kwarg is a MEASURE (e.g. weighted(M, ref shape), or a
+    // superpose of them). Expand it so inner shape refs resolve to leaves —
+    // same reason as truncate above: walkPoissonProcess runs in the dumb
+    // worker, which has no resolveMeasureRef. Keep as-is if unexpandable.
     const inner: any = _expandStructural(ir.kwargs.intensity, ctx, visited);
     if (!inner) return ir;
     return { ...ir, kwargs: { ...ir.kwargs, intensity: inner } };

@@ -121,6 +121,25 @@ test('ragged: same-structure check is offsets (+ kernel) equality', () => {
   assert.ok(!R.raggedSameStructure(a, c));
 });
 
+test('ragged: raggedMerge unions parts per atom (the superposition union)', () => {
+  // 3 atoms. Part A: [[1,2],[],[3]]; part B: [[4],[5,6],[]].
+  const a = R.raggedFromArrays([[1, 2], [], [3]]);
+  const b = R.raggedFromArrays([[4], [5, 6], []]);
+  const m = R.raggedMerge([a, b]);
+  assert.equal(R.raggedCount(m), 3);
+  // atom 0 = A0 ++ B0 = [1,2,4]; atom 1 = [] ++ [5,6]; atom 2 = [3] ++ [].
+  assert.deepEqual(R.raggedToNested(m).map((x: any) => Array.from(x)),
+    [[1, 2, 4], [5, 6], [3]]);
+  assert.deepEqual(Array.from(m.offsets), [0, 3, 5, 6]);
+});
+
+test('ragged: raggedMerge of one part is identity; atom-count mismatch throws', () => {
+  const a = R.raggedFromArrays([[1], [2]]);
+  assert.equal(R.raggedMerge([a]), a);
+  const b = R.raggedFromArrays([[3]]);   // 1 atom ≠ 2
+  assert.throws(() => R.raggedMerge([a, b]), /atom-count mismatch/);
+});
+
 // =====================================================================
 // Disjointness from the uniform Value kind
 // =====================================================================

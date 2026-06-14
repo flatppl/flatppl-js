@@ -83,44 +83,73 @@ function _resolveLeafToLiteralIR(leafIR: any, ctx: any): any {
   return out;
 }
 
-// Parse the MVP intensity into { M, shapeLeafIR }. `intensityIR` is first
-// resolved via expandMeasure (so a ref to a separately-bound intensity, and
-// the inner shape ref, both expand). The MVP form is a single weighted shape
-// `weighted(M, shape)` — M = expected count = totalmass (the shape is a
-// normalized probability distribution, so the weight IS the total mass).
-// expandMeasure renders a CONSTANT-weight binding as `logweighted(log M, …)`
-// and an inline call as `weighted(M, …)`; we accept both. Returns null for
-// any other intensity shape (general measure / superpose = the follow-up).
-function _parsePoissonIntensity(intensityIR: any, ctx: any): any {
-  const exp = _orchestrator().expandMeasure(intensityIR, ctx);
-  if (!exp || exp.kind !== 'call' || !Array.isArray(exp.args) || exp.args.length !== 2) {
-    return null;
+// Parse an EXPANDED intensity IR into a list of mixture components
+// `[{ weightIR, isLog, shapeLeafIR }]`, or null for an unsupported shape.
+// PURE / structural (no ctx) — the intensity must already be expanded (refs
+// resolved) by the caller (matPoissonProcess via expandMeasure; the density
+// walker via _expandStructural). Handles:
+//   - `superpose(c1, …)` (inline) / `select(branches, logweights:null)` (the
+//     by-name superpose→select rewrite) — a SUPERPOSITION of components;
+//   - `weighted(w, shape)` / `logweighted(g, shape)` — one weighted component;
+//   - a bare distribution — one component of weight 1.
+// Each component's weight is kept as a value IR (per-θ on the density side);
+// `isLog` marks a log-weight (logweighted / select-branch). By the
+// superposition theorem the process is the union of its components, so a
+// single `weighted(M, shape)` is just the one-component case. Shared by the
+// sampler (mat-poisson) and the density walker (density.ts).
+function parseIntensityComponents(node: any): any {
+  if (!node || node.kind !== 'call') return null;
+  if (node.op === 'superpose' && Array.isArray(node.args)) {
+    return _componentsFrom(node.args);
   }
-  const orch = _orchestrator();
-  if (exp.op === 'weighted') {
-    const w = orch.resolveIRToValue(exp.args[0], ctx.bindings, ctx.fixedValues);
-    if (typeof w !== 'number') return null;
-    return { M: w, shapeLeafIR: exp.args[1] };
+  if (node.op === 'select' && Array.isArray(node.branches)) {
+    // superpose → select carries logweights:null (each branch self-carries its
+    // weight via its own weighted/logweighted sub-IR). A normalized weighted
+    // mixture (non-null logweights) is NOT a superposition intensity — reject.
+    if (node.logweights != null) return null;
+    return _componentsFrom(node.branches);
   }
-  if (exp.op === 'logweighted') {
-    const lw = orch.resolveIRToValue(exp.args[0], ctx.bindings, ctx.fixedValues);
-    if (typeof lw !== 'number') return null;
-    return { M: Math.exp(lw), shapeLeafIR: exp.args[1] };
+  const c = _parseComponent(node);
+  return c ? [c] : null;
+}
+
+function _componentsFrom(arr: any[]): any {
+  const out: any[] = [];
+  for (let i = 0; i < arr.length; i++) {
+    const c = _parseComponent(arr[i]);
+    if (!c) return null;
+    out.push(c);
   }
-  return null;
+  return out.length > 0 ? out : null;
+}
+
+function _parseComponent(node: any): any {
+  if (!node || node.kind !== 'call') return null;
+  if (node.op === 'weighted' && Array.isArray(node.args) && node.args.length === 2) {
+    return { weightIR: node.args[0], isLog: false, shapeLeafIR: node.args[1] };
+  }
+  if (node.op === 'logweighted' && Array.isArray(node.args) && node.args.length === 2) {
+    return { weightIR: node.args[0], isLog: true, shapeLeafIR: node.args[1] };
+  }
+  // Bare measure ⇒ weight 1 (M contribution 1). A non-distribution op falls
+  // through to the caller's isKnownDistribution check, which rejects it.
+  return { weightIR: { kind: 'lit', value: 1 }, isLog: false, shapeLeafIR: node };
 }
 
 // matPoissonProcess — atom-batched draw of variable-length point sets.
 //
-// MVP (spec §08; engine-concepts §2.3): intensity = weighted(M, shape) with
-// an ATOM-INDEPENDENT expected count M = totalmass and an atom-independent
-// scalar shape distribution. Per atom i: k_i ~ Poisson(M) points, each iid
-// from `shape`. Because the points are iid and exchangeable, drawing one
-// pooled sampleN of Σk_i points and partitioning it by the per-atom counts
-// is exactly equivalent to per-atom draws — so this batches into two worker
-// calls (counts, then the pooled points) + a main-thread ragged assembly,
-// mirroring matBinnedPoissonProcess. Per-atom-varying M / shape params are a
-// documented follow-up (the density path already handles per-θ shapes).
+// Spec §08; engine-concepts §2.3. intensity = a SUPERPOSITION of weighted
+// scalar shapes `superpose(weighted(w_1, s_1), …)` (a single `weighted(M, s)`
+// is the one-component case). All weights and shape params must be ATOM-
+// INDEPENDENT (per-atom-varying generative params are a documented follow-up;
+// the density path already handles per-θ).
+//
+// By the SUPERPOSITION THEOREM a process with intensity Σ_i weighted(w_i, s_i)
+// is the union of independent component processes (the i-th: k ~ Poisson(w_i)
+// points from s_i). So each component samples exactly like the single case —
+// per-atom counts `Poisson(w_i)` + one pooled `sampleN(s_i, Σk)` partitioned
+// by counts (exact by iid exchangeability, à la matBinnedPoissonProcess) — and
+// `raggedMerge` unions them per atom.
 function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
   const distIR = d.distIR || {};
   const intensityIR = (distIR.kwargs && distIR.kwargs.intensity)
@@ -128,59 +157,71 @@ function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
   if (!intensityIR) {
     return Promise.reject(new Error('PoissonProcess: requires an intensity argument'));
   }
-  const parsed = _parsePoissonIntensity(intensityIR, ctx);
-  if (!parsed) {
+  const expanded = _orchestrator().expandMeasure(intensityIR, ctx);
+  const comps = parseIntensityComponents(expanded);
+  if (!comps) {
     return Promise.reject(new Error(
-      'PoissonProcess: the MVP supports intensity = weighted(<expected count>, '
-      + '<scalar distribution>) with an atom-independent expected count only; a '
-      + 'general-measure / superpose / per-atom intensity is a follow-up (spec §08)'));
+      'PoissonProcess: intensity must be weighted(<expected count>, <scalar '
+      + 'distribution>) or a superpose of such components (spec §08)'));
   }
-  const shared = _shared();
-  const Mval = parsed.M;
-  if (!(Mval >= 0)) {
-    return Promise.reject(new Error(
-      'PoissonProcess: the intensity weight (expected count) must be ≥ 0, got ' + Mval));
-  }
-  if (!_sampler().isKnownDistribution(parsed.shapeLeafIR.op)) {
-    return Promise.reject(new Error(
-      "PoissonProcess: the MVP shape must be a scalar distribution, got '"
-      + parsed.shapeLeafIR.op + "' (d-dim / composite point kernels are a follow-up)"));
-  }
-  let leafIR: any;
-  try {
-    leafIR = _resolveLeafToLiteralIR(parsed.shapeLeafIR, ctx);
-  } catch (err) {
-    return Promise.reject(err);
+  const orch = _orchestrator();
+  const resolved: any[] = [];
+  for (let i = 0; i < comps.length; i++) {
+    const c = comps[i];
+    let wv: any = null;
+    try { wv = orch.resolveIRToValue(c.weightIR, ctx.bindings, ctx.fixedValues); }
+    catch (_e) { wv = null; }
+    if (typeof wv !== 'number') {
+      return Promise.reject(new Error(
+        'PoissonProcess: cannot resolve an intensity weight to a constant — '
+        + 'per-atom (draw-dependent) intensity is deferred for generative sampling'));
+    }
+    const w = c.isLog ? Math.exp(wv) : wv;
+    if (!(w >= 0)) {
+      return Promise.reject(new Error(
+        'PoissonProcess: an intensity weight (expected count) must be ≥ 0, got ' + w));
+    }
+    if (!_sampler().isKnownDistribution(c.shapeLeafIR.op)) {
+      return Promise.reject(new Error(
+        "PoissonProcess: a shape must be a scalar distribution, got '"
+        + c.shapeLeafIR.op + "' (d-dim / composite point kernels are a follow-up)"));
+    }
+    let leafIR: any;
+    try { leafIR = _resolveLeafToLiteralIR(c.shapeLeafIR, ctx); }
+    catch (err) { return Promise.reject(err); }
+    resolved.push({ w, leafIR });
   }
   const N = ctx.sampleCount;
-  const M = Mval;
+  return Promise.all(resolved.map((r, i) => _sampleComponentRagged(name, i, r.w, r.leafIR, N, ctx)))
+    .then((parts: any[]) => _empirical().raggedMeasure(R.raggedMerge(parts), null));
+}
+
+// One component of the superposition (also the whole single-component case):
+// per-atom counts k ~ Poisson(M), one pooled `sampleN(leaf, Σk)` partitioned
+// by counts → a ragged value over the N atoms.
+function _sampleComponentRagged(name: string, idx: number, M: number,
+                                leafIR: any, N: number, ctx: any): Promise<any> {
+  const shared = _shared();
   // M === 0 ⇒ Poisson(0) is degenerate (every atom draws 0; stdlib disallows
-  // rate 0, cf. matBinnedPoissonProcess). All-empty ragged, no worker calls.
+  // rate 0, cf. matBinnedPoissonProcess). All-empty component, no worker calls.
   if (M === 0) {
-    const ragged = assemblePoissonRagged(new Float64Array(N), new Float64Array(0));
-    return Promise.resolve(_empirical().raggedMeasure(ragged, null));
+    return Promise.resolve(assemblePoissonRagged(new Float64Array(N), new Float64Array(0)));
   }
   const poissonIR = { kind: 'call', op: 'Poisson',
                       kwargs: { rate: { kind: 'lit', value: M } } };
   return ctx.sendWorker({
     type: 'sampleN', ir: poissonIR, count: N, refArrays: {},
-    seed: shared.nameSeed(name + '|counts', ctx.rootKey),
+    seed: shared.nameSeed(name + '|c' + idx + '|counts', ctx.rootKey),
   }).then((countsReply: any) => {
     const countsF = countsReply.samples;
     const counts = new Int32Array(N);
     let tot = 0;
     for (let i = 0; i < N; i++) { counts[i] = countsF[i] | 0; tot += counts[i]; }
-    if (tot === 0) {
-      const ragged = assemblePoissonRagged(counts, new Float64Array(0));
-      return _empirical().raggedMeasure(ragged, null);
-    }
+    if (tot === 0) return assemblePoissonRagged(counts, new Float64Array(0));
     return ctx.sendWorker({
       type: 'sampleN', ir: leafIR, count: tot, refArrays: {},
-      seed: shared.nameSeed(name + '|pts', ctx.rootKey),
-    }).then((ptsReply: any) => {
-      const ragged = assemblePoissonRagged(counts, ptsReply.samples);
-      return _empirical().raggedMeasure(ragged, null);
-    });
+      seed: shared.nameSeed(name + '|c' + idx + '|pts', ctx.rootKey),
+    }).then((ptsReply: any) => assemblePoissonRagged(counts, ptsReply.samples));
   });
 }
 
@@ -227,4 +268,5 @@ module.exports = {
   assemblePoissonRagged,
   poissonProcessLogDensity,
   matPoissonProcess,
+  parseIntensityComponents,
 };
