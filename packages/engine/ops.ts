@@ -39,6 +39,59 @@
 const valueLib = require('./value.ts');
 
 // ---------------------------------------------------------------------
+// Scalar-primitive arity — ONE source of truth (engine-concepts §18:
+// "one source of truth per op")
+// ---------------------------------------------------------------------
+//
+// The closed set of elementwise scalar primitives and their arities.
+// Three consumers used to each carry their own copy of this enumeration
+// (a latent drift surface — a prim added to one but not another fails
+// silently on a specific eval path): the broadcasted-primitive variant
+// table (`ops-declarations.BCAST_TABLE`), the atom-batched evaluator
+// (`sampler-eval-batched._SCALAR_PRIM_ARITY` → ARITH_OPS_N), and the
+// fused-loop compiler (`sampler-eval-compile._COMPILE_ARITY`). They now
+// all read from here. `ops.ts` is the §18 convergence target and a
+// near-leaf module (only requires value.ts), so hosting the canonical
+// map adds no dependency cycle.
+//
+// `complex` / `real` / `imag` / `conj` / `cis` are the complex-valued
+// primitives — part of the broadcast-variant set, but excluded from the
+// REAL subset the batched evaluator and the (real-only) compiler key on
+// (those handle complex via separate paths).
+const COMPLEX_SCALAR_PRIMS: Record<string, number> = {
+  complex: 2, real: 1, imag: 1, conj: 1, cis: 1,
+};
+const REAL_SCALAR_PRIM_ARITY: Record<string, number> = {
+  // Arithmetic. `divide` is the spec §07 function-form of `/`; same
+  // scalar semantics as `div`, on the batched-broadcast path.
+  add: 2, sub: 2, mul: 2, div: 2, divide: 2, mod: 2, neg: 1, pos: 1, pow: 2,
+  // Elementary math
+  abs: 1, abs2: 1, exp: 1, log: 1, log10: 1, log1p: 1, expm1: 1, sqrt: 1,
+  sin: 1, cos: 1, tan: 1,
+  asin: 1, acos: 1, atan: 1, atan2: 2,
+  sinh: 1, cosh: 1, tanh: 1,
+  asinh: 1, acosh: 1, atanh: 1,
+  floor: 1, ceil: 1, round: 1,
+  // Pairwise reductions
+  min: 2, max: 2,
+  // Special + link functions
+  gamma: 1, loggamma: 1,
+  logit: 1, invlogit: 1, probit: 1, invprobit: 1,
+  // Comparison
+  lt: 2, le: 2, gt: 2, ge: 2, equal: 2, unequal: 2,
+  // Predicates
+  isfinite: 1, isinf: 1, isnan: 1, iszero: 1,
+  // Logic + conditional
+  land: 2, lor: 2, lxor: 2, lnot: 1, ifelse: 3,
+  // Scalar restrictors
+  boolean: 1, integer: 1,
+};
+// The full broadcasted-primitive set (real + complex).
+const SCALAR_PRIM_ARITY: Record<string, number> = {
+  ...REAL_SCALAR_PRIM_ARITY, ...COMPLEX_SCALAR_PRIMS,
+};
+
+// ---------------------------------------------------------------------
 // Op declaration shape
 // ---------------------------------------------------------------------
 //
@@ -1109,6 +1162,11 @@ module.exports = {
   dispatchVariant,
   dispatchTyped,
   dispatchHigherOrder,
+  // Scalar-primitive arity — one source of truth (§18); consumed by
+  // ops-declarations (BCAST_TABLE), sampler-eval-batched, sampler-eval-compile.
+  SCALAR_PRIM_ARITY,
+  REAL_SCALAR_PRIM_ARITY,
+  COMPLEX_SCALAR_PRIMS,
   // ArgInfo constructors for typed dispatch (P2 / P3a integration):
   argInfoFromValue,
   argInfoFromMeasure,

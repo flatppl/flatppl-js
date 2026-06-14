@@ -1476,6 +1476,14 @@ function _ensureBroadcastedRegistered(): void {
     ['cis',     1, (vs) => vo.cisElem(vs[0])],
   ];
   for (const [opName, arity, impl] of BCAST_TABLE) {
+    // Arity is anchored to the ONE scalar-primitive source of truth
+    // (`ops.SCALAR_PRIM_ARITY`, engine-concepts §18) — drift between this
+    // table and the batched/compile consumers fails loudly at load.
+    const canonical = (ops.SCALAR_PRIM_ARITY as any)[opName];
+    if (canonical !== arity) {
+      throw new Error(`BCAST_TABLE: '${opName}' arity ${arity} disagrees with `
+        + `ops.SCALAR_PRIM_ARITY (${canonical}) — update the one source of truth`);
+    }
     const argPatterns = new Array(arity).fill(null).map(() => ({}));
     ops.registerVariant(opName, {
       argPatterns,

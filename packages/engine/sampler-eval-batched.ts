@@ -215,34 +215,14 @@ function broadcast3(fn: any, a: any, b: any, c: any, N: any) {
 // =====================================================================
 // Scalar-primitive arity table — drives ARITH_OPS_N construction
 // =====================================================================
-const _SCALAR_PRIM_ARITY = {
-  // Arithmetic. `divide` is the spec §07 function-form of `/` (passed
-  // to broadcast/reduce/scan); same scalar semantics as `div`, so it
-  // belongs on the batched-broadcast path. Without an entry here it
-  // fell to the slow per-atom fallback (real) and broke outright for
-  // complex (the fallback can't pack {re,im}).
-  add: 2, sub: 2, mul: 2, div: 2, divide: 2, mod: 2, neg: 1, pos: 1, pow: 2,
-  // Elementary math
-  abs: 1, abs2: 1, exp: 1, log: 1, log10: 1, log1p: 1, expm1: 1, sqrt: 1,
-  sin: 1, cos: 1, tan: 1,
-  asin: 1, acos: 1, atan: 1, atan2: 2,
-  sinh: 1, cosh: 1, tanh: 1,
-  asinh: 1, acosh: 1, atanh: 1,
-  floor: 1, ceil: 1, round: 1,
-  // Pairwise reductions
-  min: 2, max: 2,
-  // Special functions & link functions
-  gamma: 1, loggamma: 1,
-  logit: 1, invlogit: 1, probit: 1, invprobit: 1,
-  // Comparison
-  lt: 2, le: 2, gt: 2, ge: 2, equal: 2, unequal: 2,
-  // Predicates
-  isfinite: 1, isinf: 1, isnan: 1, iszero: 1,
-  // Logic + conditional
-  land: 2, lor: 2, lxor: 2, lnot: 1, ifelse: 3,
-  // Scalar restrictors
-  boolean: 1, integer: 1,
-};
+// The elementwise scalar-primitive arities — ONE source of truth in
+// `ops.ts` (engine-concepts §18); complex prims (complex/real/imag/conj/
+// cis) are added to ARITH_OPS_N separately below, so this is the REAL
+// subset. (`divide` is the spec §07 function-form of `/`, same scalar
+// semantics as `div`, on the batched-broadcast path; without an entry an
+// op falls to the slow per-atom fallback.)
+const _SCALAR_PRIM_ARITY: Record<string, number> =
+  require('./ops.ts').REAL_SCALAR_PRIM_ARITY;
 
 // =====================================================================
 // ARITH_OPS_N table — populated by initARITHOPSN(ARITH_OPS)

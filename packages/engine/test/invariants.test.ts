@@ -131,6 +131,52 @@ test('invariant: EVALUABLE_OPS ⊆ ARITH_OPS ∪ SAMPLER_INLINE_EVALUABLE', () =
   }
 });
 
+// ---------------------------------------------------------------------
+// Scalar-primitive arity — ONE source of truth (engine-concepts §18)
+//
+// `ops.SCALAR_PRIM_ARITY` is the canonical name→arity for the elementwise
+// scalar primitives. The broadcasted-variant table (BCAST_TABLE), the
+// batched evaluator (ARITH_OPS_N) and the fused-loop compiler all derive
+// from it. The BCAST registration asserts per-entry arity at load; this
+// pins the SET (an op added to the canonical map but missing a variant)
+// and the REAL/COMPLEX partition + the consumer dedup.
+// ---------------------------------------------------------------------
+
+test('invariant: every ops.SCALAR_PRIM_ARITY op has a broadcast variant', () => {
+  const ops = require('../ops.ts');
+  require('../ops-declarations.ts');   // triggers _ensureBroadcastedRegistered
+  // Scalar prims are variant-only (no full OpDecl), so query hasVariantFor
+  // directly rather than enumerating listDeclared (full decls only).
+  for (const op of Object.keys(ops.SCALAR_PRIM_ARITY)) {
+    assert.ok(ops.hasVariantFor(op, 'broadcast'),
+      `SCALAR_PRIM_ARITY lists '${op}' but ops has no broadcast variant for it ` +
+      `(BCAST_TABLE drift)`);
+  }
+});
+
+test('invariant: REAL ⊎ COMPLEX scalar prims partition SCALAR_PRIM_ARITY', () => {
+  const ops = require('../ops.ts');
+  const full = Object.keys(ops.SCALAR_PRIM_ARITY);
+  const real = new Set(Object.keys(ops.REAL_SCALAR_PRIM_ARITY));
+  const complex = new Set(Object.keys(ops.COMPLEX_SCALAR_PRIMS));
+  assert.equal(real.size + complex.size, full.length, 'real + complex count = full');
+  for (const op of full) {
+    assert.ok(real.has(op) !== complex.has(op),
+      `'${op}' must be in exactly one of REAL / COMPLEX scalar prims`);
+    assert.equal((ops.SCALAR_PRIM_ARITY as any)[op],
+      real.has(op) ? (ops.REAL_SCALAR_PRIM_ARITY as any)[op]
+                   : (ops.COMPLEX_SCALAR_PRIMS as any)[op],
+      `arity of '${op}' agrees across the full + subset maps`);
+  }
+});
+
+test('invariant: batched + compile consumers share the canonical REAL map', () => {
+  const ops = require('../ops.ts');
+  const compile = require('../sampler-eval-compile.ts');
+  // Same object reference — the dedup, not a copy that could drift.
+  assert.equal(compile._COMPILE_ARITY, ops.REAL_SCALAR_PRIM_ARITY);
+});
+
 // `vector` is in ARITH_OPS (the sampler can compute `[a, b, c]`) but
 // deliberately NOT in EVALUABLE_OPS — per the comment in orchestrator.js,
 // stochastic-element arrays like `[mu, 1.0]` must NOT classify as evaluable;

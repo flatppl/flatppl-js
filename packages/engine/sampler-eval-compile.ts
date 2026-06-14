@@ -24,23 +24,14 @@ function initCompiler(deps: any): void {
   _resolveConst = deps.resolveConst;
 }
 
-// Compilable scalar ops + arity. Exactly the _SCALAR_PRIM_ARITY set
-// (each has an ARITH_OPS scalar entry). Structural (tuple/get_field),
-// aggregate, approximation (polynomial/...), and complex ops are
-// deliberately ABSENT: such a node either folds (when atom-independent)
-// or forces a bail.
-const _COMPILE_ARITY: Record<string, number> = {
-  add: 2, sub: 2, mul: 2, div: 2, divide: 2, mod: 2, neg: 1, pos: 1, pow: 2,
-  abs: 1, abs2: 1, exp: 1, log: 1, log10: 1, log1p: 1, expm1: 1, sqrt: 1,
-  sin: 1, cos: 1, tan: 1, asin: 1, acos: 1, atan: 1, atan2: 2,
-  sinh: 1, cosh: 1, tanh: 1, asinh: 1, acosh: 1, atanh: 1,
-  floor: 1, ceil: 1, round: 1, min: 2, max: 2,
-  gamma: 1, loggamma: 1, logit: 1, invlogit: 1, probit: 1, invprobit: 1,
-  lt: 2, le: 2, gt: 2, ge: 2, equal: 2, unequal: 2,
-  isfinite: 1, isinf: 1, isnan: 1, iszero: 1,
-  land: 2, lor: 2, lxor: 2, lnot: 1, ifelse: 3,
-  boolean: 1, integer: 1,
-};
+// Compilable scalar ops + arity — the REAL scalar-primitive set, ONE
+// source of truth in `ops.ts` (engine-concepts §18). Each has an
+// ARITH_OPS scalar entry. Structural (tuple/get_field), aggregate,
+// approximation (polynomial/...), and COMPLEX ops are deliberately
+// absent (complex isn't in the REAL subset): such a node either folds
+// (when atom-independent) or forces a bail.
+const _COMPILE_ARITY: Record<string, number> =
+  require('./ops.ts').REAL_SCALAR_PRIM_ARITY;
 
 // True if any `ref` node anywhere under `ir` names a per-atom value.
 function _hasPerAtomRef(ir: any, perAtomNames: Set<string>): boolean {
