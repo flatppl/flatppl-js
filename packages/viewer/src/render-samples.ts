@@ -270,6 +270,21 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     renderRecordMarginals(ctx, measure, name, opts.toolbarControls);
     return;
   }
+  // Ragged point-process measure (PoissonProcess, engine-concepts §2.3): N
+  // atoms, each a VARIABLE-length point set. The pooled points (`.samples`
+  // aliases `ragged.data`) ARE the marginal point/shape distribution — render
+  // that as a histogram via the scalar path below (never array / matrix mode).
+  // Per-atom count distribution + per-atom scatter are tracked follow-ups.
+  if (measure.shape === 'ragged') {
+    const pooled = measure.samples;
+    if (!pooled || pooled.length === 0) {
+      renderConstantValue(ctx, name,
+        'ragged point process — no points drawn (every atom is empty)',
+        opts.toolbarControls);
+      return;
+    }
+    opts = Object.assign({}, opts, { mode: 'dist' });
+  }
   const samples = measure.samples;
   // Complex-valued binding (engine sets dtype:'complex' + .imag,
   // planar with .samples = Re). v1 renders the real part — honest
