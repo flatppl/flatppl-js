@@ -116,6 +116,10 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
   // normalize-of-infinite/null static error.
   ctx.fillValuesets();
   ctx.fillMasses();
+  // Consumer of the valueset domain: flag distribution parameters whose
+  // value set is PROVABLY outside the parameter's required domain (spec
+  // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
+  ctx.checkDomainContracts();
   return ctx.diagnostics;
   // NOTE: no eager post-binding const-eval pass. The resolver is
   // demand-driven (engine-concepts §17.1) — it's invoked only from
@@ -2980,6 +2984,93 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   }
 
   // ===================================================================
+  // Domain-contract checks (spec §08 parameter domains; engine-concepts
+  // §17.3 — a CONSUMER of the valueset domain). On top of the landed
+  // valueset inference: a distribution parameter whose value set is
+  // PROVABLY disjoint from the parameter's required domain is a static
+  // error (e.g. `Normal(sigma = -1.0)`, `Beta(alpha = 0.0)`). Strictly
+  // conservative — fires only on a proven violation (a non-positive real
+  // literal, or a binding whose interval lies wholly outside), never on
+  // a maybe (a bare `reals`/`unknown`/`deferred` parameter passes).
+  //
+  // Scalar params only. A vector param's element signs are not provable
+  // here — a literal weight vector's value set widens to a named set
+  // (`reals`) that has lost per-element negativity, and an array-typed
+  // ref carries only its natural `cartpow(reals, …)` extent — so
+  // Categorical/Dirichlet/Multinomial simplex contracts wait for a
+  // per-element value set (TODO §11). Param names/positions mirror
+  // `sampler.REGISTRY` (verified, not guessed).
+  const _DOMAIN_CONTRACTS: Record<string, any[]> = {
+    Normal:       [{ name: 'sigma', pos: 1, domain: vsLib.POSREALS, label: 'positive (a standard deviation)' }],
+    LogNormal:    [{ name: 'sigma', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Exponential:  [{ name: 'rate',  pos: 0, domain: vsLib.POSREALS, label: 'positive (a rate)' }],
+    Poisson:      [{ name: 'rate',  pos: 0, domain: vsLib.POSREALS, label: 'positive (a rate)' }],
+    Gamma:        [{ name: 'shape', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
+                   { name: 'rate',  pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    InverseGamma: [{ name: 'shape', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
+                   { name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Beta:         [{ name: 'alpha', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
+                   { name: 'beta',  pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Weibull:      [{ name: 'shape', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
+                   { name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Pareto:       [{ name: 'shape', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
+                   { name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Cauchy:       [{ name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Laplace:      [{ name: 'scale', pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Logistic:     [{ name: 's',     pos: 1, domain: vsLib.POSREALS, label: 'positive (a scale)' }],
+    StudentT:     [{ name: 'nu',    pos: 0, domain: vsLib.POSREALS, label: 'positive (degrees of freedom)' }],
+    ChiSquared:   [{ name: 'k',     pos: 0, domain: vsLib.POSREALS, label: 'positive (degrees of freedom)' }],
+    GeneralizedNormal: [{ name: 'alpha', pos: 1, domain: vsLib.POSREALS, label: 'positive' },
+                        { name: 'beta',  pos: 2, domain: vsLib.POSREALS, label: 'positive' }],
+    NegativeBinomial:  [{ name: 'alpha', pos: 0, domain: vsLib.POSREALS, label: 'positive' },
+                        { name: 'beta',  pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    NegativeBinomial2: [{ name: 'psi',   pos: 1, domain: vsLib.POSREALS, label: 'positive' }],
+    Bernoulli:    [{ name: 'p', pos: 0, domain: vsLib.UNITINTERVAL, label: 'in the unit interval [0, 1]' }],
+    Geometric:    [{ name: 'p', pos: 0, domain: vsLib.UNITINTERVAL, label: 'in the unit interval [0, 1]' }],
+    Binomial:     [{ name: 'p', pos: 1, domain: vsLib.UNITINTERVAL, label: 'in the unit interval [0, 1]' }],
+  };
+
+  // A value set PROVABLY disjoint from `domain`. Only an interval value
+  // set (the form a real literal `-1.0` → `interval(-1,-1)` takes, or a
+  // bounded binding) can prove it — every named set straddles 0. Posreals
+  // excludes 0 (so `0.0` violates a `positive` param); nonnegreals admits
+  // it; unitinterval admits `[0,1]`.
+  function _provablyDisjoint(vs: any, domain: any): boolean {
+    if (!vs || typeof vs !== 'object' || vs.vs !== 'interval') return false;
+    const lo = vs.lo, hi = vs.hi;
+    if (domain === vsLib.POSREALS)     return hi <= 0;
+    if (domain === vsLib.NONNEGREALS)  return hi < 0;
+    if (domain === vsLib.UNITINTERVAL) return hi < 0 || lo > 1;
+    return false;
+  }
+
+  function checkDomainContracts() {
+    const irWalk = require('./ir-walk.ts');
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && _DOMAIN_CONTRACTS[ir.op]) {
+        for (const c of _DOMAIN_CONTRACTS[ir.op]) {
+          let arg = ir.kwargs && ir.kwargs[c.name];
+          if (arg == null && Array.isArray(ir.args)) arg = ir.args[c.pos];
+          if (arg == null) continue;
+          const vs = valuesetOfExpr(arg);
+          if (_provablyDisjoint(vs, c.domain)) {
+            diagnostics.push({
+              severity: 'error',
+              message: `${ir.op}: parameter '${c.name}' must be ${c.label}, but its `
+                + `value is provably outside that domain (value set `
+                + `${vsLib.toSexpr(vs)}).`,
+              loc: (arg.loc || ir.loc),
+            });
+          }
+        }
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
+  // ===================================================================
   // Mass-class inference (spec §11 "Total-mass classes"; engine-concepts
   // §17.3 normalization domain). A second pass after the type walk: for
   // every measure-typed binding, classify its total mass by composing
@@ -3196,7 +3287,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
-  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses };
+  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts };
 }
 
 // Mass of an independent product of components (spec §11; Rust
