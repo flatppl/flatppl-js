@@ -182,8 +182,8 @@ after the table.
 | `sampler-eval-compile.ts` (~180) | Fused-loop codegen fast path for `evaluateExprN` (pure accelerator; bit-identical to the `_evalN` interpreter, which stays the source of truth; `FLATPPL_NO_EVALN_COMPILE=1` kill switch). |
 | `ext-linalg.ts` (~690) | `ext-linear-algebra` std-module content (lu / svd / eigen / qr / kron / matexp / lstsq / rank …), registered via `standard-modules.ts`. |
 | `ir-walk.ts` (~430) + `axis-stack.ts` (~170) | One declarative IR child-position enumeration (`forEachIRChild`, incl. `.bijection` descent) + scoped walkers (`walkIRScoped` / `mapIRScoped`, identifier-bound-param shadowing); axis-stack readers for the dissolver's authoritative outer-axis annotations. |
-| `ragged.ts` (~190) | ONE owner of the ragged-per-atom value kind (engine-concepts §2.3) — the `VectorOfArrays`/CSR flat-`data` + `offsets` + `kernelShape` form, sibling of the uniform Value. `ragged`/`raggedFromArrays` (construct + frame validation), `raggedElem` (atom *i* → uniform Value view, the boundary handoff), `raggedMapFlat` (length-preserving elementwise reuses the flat path, offsets carried), `raggedSegmentReduce` (ragged→uniform `[N]`), `raggedSameStructure`, `raggedToNested`. Dependency-free leaf. Foundation for `PoissonProcess` (sampling/density/viewer MVP landed; see `mat-poisson.ts`). |
-| `mat-poisson.ts` (~250) | `PoissonProcess` (spec §08, ragged §2.3). Core: `assemblePoissonRagged` (counts + pooled points → ragged), `poissonProcessLogDensity` (per-MC-atom self-density). Orchestration: `matPoissonProcess` (KIND_HANDLERS `poissonprocess` — counts `Poisson(M)` + one pooled `sampleN(shape,Σk)` partitioned by counts, à la matBinnedPoissonProcess; MVP `weighted(M,scalar-shape)`, atom-independent params). Density walker `walkPoissonProcess` lives in `density.ts`. |
+| `ragged.ts` (~190) | ONE owner of the ragged-per-atom value kind (engine-concepts §2.3) — the `VectorOfArrays`/CSR flat-`data` + `offsets` + `kernelShape` form, sibling of the uniform Value. `ragged`/`raggedFromArrays` (construct + frame validation), `raggedElem` (atom *i* → uniform Value view, the boundary handoff), `raggedMapFlat` (length-preserving elementwise reuses the flat path, offsets carried), `raggedSegmentReduce` (ragged→uniform `[N]`), `raggedMerge` (union n parts per atom — the superposition union), `raggedSameStructure`, `raggedToNested`. Dependency-free leaf. Foundation for `PoissonProcess` (sampling/density/viewer landed; see `mat-poisson.ts`). |
+| `mat-poisson.ts` (~330) | `PoissonProcess` (spec §08, ragged §2.3). Core: `assemblePoissonRagged` (counts + pooled points → ragged), `poissonProcessLogDensity` (per-MC-atom self-density). Orchestration: `matPoissonProcess` (KIND_HANDLERS `poissonprocess`). General intensity = a SUPERPOSITION `superpose(weighted(w_i, s_i), …)` (single `weighted(M,s)` = one-component case); by the superposition theorem each component samples like the single case (counts `Poisson(w_i)` + pooled `sampleN(s_i,Σk)` partitioned by counts, à la matBinnedPoissonProcess) and `raggedMerge` unions them. `parseIntensityComponents` (pure, shared with the density walker) parses inline `superpose` / by-name `superpose→select` / `weighted` / `logweighted` / bare. Atom-independent weights & shape params (per-atom-sampled = follow-up). Density walker `walkPoissonProcess` (`Σ logsumexp_c(log w_c + s_c_logpdf) − Σ w_c`) lives in `density.ts`. |
 | `value-set.ts` (~230) | ONE owner for the §03 value-set vocabulary (spec §11 third `%meta` slot; engine-concepts §17.3), mirroring flatppl-rust `core::ty::ValueSet`: the representation (atom strings + tagged `interval`/`stdsimplex`/`cartpow`), `naturalOf(type)` (natural extent), `isBounded`/`subsetOf` (conservative lattice), `setExprValueset` (the shared set-expression reader, also feeding the mass pass's boundedness), `literalValueset`/`constValueset`, and the `%meta` renderer. Dependency-free leaf — consumed by typeinfer (`fillValuesets`) + pir-sexpr. |
 | `empirical.ts` (~700) | Weighted empirical measure utilities (log-space, ESS, resample). Null-uniform-weight protocol (null = uniform, no alloc); `logSumExp` max-subtraction; `totalLogMass` = 0 for null. |
 | `histogram.ts` (~350) | Freedman-Diaconis / integer-atom binning, weighted histogram + quantile + plot range. |
@@ -211,13 +211,15 @@ length-changing ops need offset-aware kernels. An empirical measure carries it
 as a `shape:'ragged'` variant (sibling of `'array'`): `empirical.raggedMeasure`
 sets `.ragged`, aliases `.samples` to the pooled points, `n_eff=N`, and keeps
 the ragged value OUT of `.value` (disjoint kinds). `matPoissonProcess` samples
-it (counts `Poisson(M)` + one pooled `sampleN(shape,Σk)` partitioned by counts
-— main-thread assembly, no worker transfer), `walkPoissonProcess` scores it
-(per-θ M & shape; `_expandStructural` expands the `intensity` measure first).
-MVP = `VectorOfVectors` (scalar points, `kernelShape=[]`), single
-`weighted(M,shape)` intensity, atom-independent generative params; d-dim
-`kernelShape`, general intensity, per-atom-sampled shapes, ragged-boundary
-density are follow-ups (TODO §08).
+it (per component: counts `Poisson(w_i)` + one pooled `sampleN(s_i,Σk)`
+partitioned by counts — main-thread assembly, no worker transfer — then
+`raggedMerge` unions components per the superposition theorem),
+`walkPoissonProcess` scores it (mixture `Σ logsumexp_c(log w_c + s_c_logpdf) −
+Σ w_c`, per-θ; `_expandStructural` expands the `intensity` measure first).
+Scope = `VectorOfVectors` (scalar points, `kernelShape=[]`), a `superpose` of
+weighted scalar shapes, atom-independent generative params; d-dim `kernelShape`,
+non-superpose general-measure intensity, per-atom-sampled shapes,
+ragged-boundary density are follow-ups (TODO §08).
 
 **Deterministic-evaluation authority.** There is exactly ONE deterministic
 evaluator: `sampler.evaluateExpr` / `evaluateExprN`. Everything routes through
