@@ -1396,10 +1396,15 @@ ops.register({
 // extending the tables here.
 //
 // The impls below mirror `sampler.ARITH_OPS` VERBATIM (the conformance
-// suite pins exact equivalence). Migrated so far: every scalar primitive
-// EXCEPT the Value-aware arithmetic `add` / `sub` / `neg` / `mul`, which
-// carry direct + atom-batched variants whose dispatch interaction needs
-// its own careful pass (TODO §18).
+// suite pins exact equivalence). Migrated: every scalar primitive EXCEPT
+// the Value-aware arithmetic `add` / `sub` / `neg` / `mul`. Those four
+// carry direct / atom-batched variants whose dispatch interacts with a
+// logical fallback in load-bearing ways — e.g. attaching `add`'s logical
+// changes a rank-mismatched atom-batched add from "no variant matched"
+// to the logical's "rank mismatch", and `mul`'s matmul/matvec variants
+// match scalar inputs and throw. They need a deliberate
+// variant-fallthrough pass (decide the refusal contract), kept as one
+// unit (TODO §18).
 function _registerScalarLogicals(): void {
   const cx = require('./sampler-complex.ts');
   const _isC = cx._isComplex;
