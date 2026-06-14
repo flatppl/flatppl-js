@@ -76,18 +76,24 @@ test('mass: every distribution constructor is normalized', () => {
   }
 });
 
-test('mass: multivariate/process dists carry an array measure-domain', () => {
-  // The measure type now has an array domain (the per-atom shape), so the
-  // %meta export carries (%measure (%domain (%array …))). Exact length stays
-  // %dynamic; the precise extent is the valueset (cartpow/stdsimplex).
-  for (const [src, name] of [
-    ['m = Dirichlet(alpha = [1.0, 1.0, 1.0])', 'm'],
-    ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', 'm'],
-  ] as [string, string][]) {
+test('mass: multivariate/process dists carry an array measure-domain (exact vector length)', () => {
+  // The measure type has an array domain (the per-atom shape). The three
+  // statically-sized VECTOR dists carry the exact length (mirrors rust
+  // ops.rs param_dim); matrix dists + the genuinely-ragged PoissonProcess
+  // stay %dynamic. (The precise extent also rides via the valueset.)
+  const cases: [string, Array<number | string>][] = [
+    ['m = Dirichlet(alpha = [1.0, 1.0, 1.0])', [3]],
+    ['m = MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])', [2]],
+    ['m = Multinomial(n = 5, p = [0.2, 0.3, 0.5])', [3]],
+    ['m = Wishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])', ['%dynamic', '%dynamic']],
+    ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', ['%dynamic']],
+  ];
+  for (const [src, shape] of cases) {
     const r = processSource(src);
-    const t = r.loweredModule.bindings.get(name).inferredType;
+    const t = r.loweredModule.bindings.get('m').inferredType;
     assert.equal(t.kind, 'measure', src);
     assert.equal(t.domain.kind, 'array', src + ' domain');
+    assert.deepEqual(t.domain.shape, shape, src + ' shape');
   }
 });
 

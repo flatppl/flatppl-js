@@ -613,8 +613,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       if (next == null) return kwargError(op, k, T.substitute(sig.kwargs[k], s), at, kwargs[k].loc);
       s = next;
     }
-    return T.substitute(sig.result, s);
+    const result = T.substitute(sig.result, s);
+    // Stamp the exact vector length onto the measure-domain of the three
+    // multivariate VECTOR distributions whose atom length is statically known
+    // (mirrors flatppl-rust ops.rs `param_dim`; the valueset path already
+    // derives the same length via `_paramDim`, so this keeps the type-domain
+    // in step — `Dirichlet(alpha=[1,1,1])` ⇒ `array[3]`, not `array[%dynamic]`).
+    // The signature can only yield `%dynamic` (array shapes aren't captured
+    // through unify). Matrix dists + PoissonProcess stay dynamic by design
+    // (Rust's `dynmat` is also dynamic; a point process is genuinely ragged).
+    const lenSpec = (MULTIVARIATE_VECTOR_DIST_LEN as any)[op];
+    if (lenSpec && result && result.kind === 'measure'
+        && result.domain && result.domain.kind === 'array' && result.domain.rank === 1) {
+      const n = _paramDim(expr, lenSpec[0], lenSpec[1]);
+      if (n !== '%dynamic') result.domain.shape = [n];   // freshly substituted ⇒ safe to set
+    }
+    return result;
   }
+  // Length-defining parameter (kwarg name, positional index) for the
+  // statically-sized multivariate vector distributions.
+  const MULTIVARIATE_VECTOR_DIST_LEN: Record<string, [string, number]> = {
+    MvNormal:    ['mu', 0],
+    Dirichlet:   ['alpha', 0],
+    Multinomial: ['p', 1],
+  };
 
   // Likelihood-object ops (spec §06). `likelihoodof(K, obs)` produces a
   // first-class LIKELIHOOD object (not a measure, not callable) whose
