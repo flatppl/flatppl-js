@@ -14,6 +14,17 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator, materialiser } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
 const R = require('../ragged.ts');
+const density = require('../density.ts');
+
+const lit = (v: any) => ({ kind: 'lit', value: v });
+const ref = (name: any) => ({ kind: 'ref', ns: 'self', name });
+const Normal = (mu: any, sigma: any) =>
+  ({ kind: 'call', op: 'Normal', kwargs: { mu, sigma } });
+const weighted = (M: any, shape: any) =>
+  ({ kind: 'call', op: 'weighted', args: [M, shape] });
+const PP = (intensity: any) =>
+  ({ kind: 'call', op: 'PoissonProcess', kwargs: { intensity } });
+const normlogpdf = (t: number) => -0.5 * Math.log(2 * Math.PI) - 0.5 * t * t;
 
 const ROOT_SEED = 0xCAFEBEEF;
 
@@ -133,4 +144,92 @@ res = 2.5 + 0.3 * raw
 m ~ PoissonProcess(intensity = weighted(5.0, Normal(mu = 0.0, sigma = res)))
 `, 64);
   await assert.rejects(() => ctx.getMeasure('m'), /per-atom|cannot resolve/);
+});
+
+// =====================================================================
+// Density walker (walkPoissonProcess) — Julia-oracle-pinned (the same
+// reference as mat-poisson.test.ts: spec density (∏λ(tᵢ))·exp(−M)).
+// =====================================================================
+
+test('density: weighted(5, Normal(0,1)) at points [0,1] = Julia oracle −4.119001', () => {
+  const ir = PP(weighted(lit(5.0), Normal(lit(0.0), lit(1.0))));
+  const logp = density.logDensity(ir, [0.0, 1.0], {});
+  assert.ok(Math.abs(logp - (-4.119001)) < 1e-5, 'got ' + logp);
+});
+
+test('density: empty observation scores −M (no points)', () => {
+  const ir = PP(weighted(lit(4.0), Normal(lit(0.0), lit(1.0))));
+  const logp = density.logDensity(ir, [], {});
+  assert.ok(Math.abs(logp - (-4.0)) < 1e-12, 'got ' + logp);
+});
+
+test('density: logweighted intensity form (expandMeasure-expanded) scores identically', () => {
+  // A constant-weight binding expands to logweighted(log M, shape); M = exp(logM).
+  const ir = PP({ kind: 'call', op: 'logweighted',
+                  args: [lit(Math.log(5.0)), Normal(lit(0.0), lit(1.0))] });
+  const logp = density.logDensity(ir, [0.0, 1.0], {});
+  assert.ok(Math.abs(logp - (-4.119001)) < 1e-5, 'got ' + logp);
+});
+
+test('density: per-atom M (M as a θ-ref) scores each atom with its own count rate', () => {
+  // M is a per-atom ref; one shared observed point set [0,1].
+  const ir = PP(weighted(ref('n'), Normal(lit(0.0), lit(1.0))));
+  const out = density.logDensityN(ir, [0.0, 1.0],
+    { n: Float64Array.from([5.0, 4.0]) }, 2, {});
+  const S = normlogpdf(0.0) + normlogpdf(1.0);
+  const a0 = 2 * Math.log(5.0) - 5.0 + S;   // = −4.119001 (the oracle)
+  const a1 = 2 * Math.log(4.0) - 4.0 + S;
+  assert.ok(Math.abs(out[0] - a0) < 1e-6, 'atom0 ' + out[0]);
+  assert.ok(Math.abs(out[1] - a1) < 1e-6, 'atom1 ' + out[1]);
+  assert.ok(Math.abs(out[0] - (-4.119001)) < 1e-5);
+});
+
+test('density: per-atom SHAPE param (the spec flagship pattern) resolves per θ', () => {
+  // shape sigma varies per atom — the case generative sampling defers, but
+  // the density/likelihood path handles. atom0 σ=1 ⇒ the −4.119001 oracle.
+  const ir = PP(weighted(lit(5.0), Normal(lit(0.0), ref('sg'))));
+  const out = density.logDensityN(ir, [0.0, 1.0],
+    { sg: Float64Array.from([1.0, 2.0]) }, 2, {});
+  const nlp = (t: number, s: number) =>
+    -Math.log(s) - 0.5 * Math.log(2 * Math.PI) - 0.5 * (t / s) * (t / s);
+  const a0 = 2 * Math.log(5.0) - 5.0 + (nlp(0, 1) + nlp(1, 1));
+  const a1 = 2 * Math.log(5.0) - 5.0 + (nlp(0, 2) + nlp(1, 2));
+  assert.ok(Math.abs(out[0] - a0) < 1e-6, 'atom0 ' + out[0]);
+  assert.ok(Math.abs(out[1] - a1) < 1e-6, 'atom1 ' + out[1]);
+  assert.ok(Math.abs(out[0] - (-4.119001)) < 1e-5, 'atom0 = oracle');
+});
+
+// =====================================================================
+// End-to-end: from source through matLogdensityof (the production path
+// the worker / viewer use), scoring a PoissonProcess measure against an
+// observed point set — reaching the same Julia oracle.
+// =====================================================================
+
+test('e2e: matLogdensityof(events @ observed) through the full pipeline = −4.119001', () => {
+  const { matLogdensityof } = require('../mat-density.ts');
+  const lifted = processSource(`
+shape = Normal(mu = 0.0, sigma = 1.0)
+events ~ PoissonProcess(intensity = weighted(5.0, shape))
+observed = [0.0, 1.0]
+`);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: ROOT_SEED });
+  const ctx: any = {
+    derivations: built.derivations, bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    sampleCount: 1, rootKey: ROOT_SEED,
+    // The density path expands the intensity (so the shape leaf is inline) and
+    // must NOT re-materialise any measure binding — assert no getMeasure leak.
+    getMeasure: (name: any) => Promise.reject(new Error('getMeasure leaked for ' + name)),
+    sendWorker: (m: any) => {
+      const r = worker.handle(m);
+      return r && r.type === 'error' ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+    },
+  };
+  const d = { kind: 'logdensityof', measureName: 'events',
+    obsIR: { kind: 'ref', ns: 'self', name: 'observed' } };
+  return matLogdensityof(d as any, ctx).then((m: any) => {
+    assert.ok(Math.abs(m.samples[0] - (-4.119001)) < 1e-5, 'got ' + m.samples[0]);
+  });
 });

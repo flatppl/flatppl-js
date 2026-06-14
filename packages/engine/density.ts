@@ -1745,6 +1745,9 @@ const OP_HANDLERS = {
   Dirichlet:            walkMultivariate,
   Multinomial:          walkMultivariate,
   BinnedPoissonProcess: walkMultivariate,
+  // PoissonProcess is RAGGED (variable-length point sets), not a fixed-shape
+  // vector atom — dedicated walker, not the MV_DENSITY_FNS path.
+  PoissonProcess:       walkPoissonProcess,
   Wishart:              walkMultivariate,
   InverseWishart:       walkMultivariate,
   LKJ:                  walkMultivariate,
@@ -1876,6 +1879,116 @@ function walkMultivariate(ir: IRNode, value: any, refArrays: any, N: any, opts: 
     acc[i] += densityPrims.builtinLogdensityof(kernelName, kwForAtom, head);
   }
   return rest;
+}
+
+// =====================================================================
+// walkPoissonProcess — RAGGED point-process density (spec §08, §2.3)
+// =====================================================================
+//
+// Scores ONE shared observed point set {t_1..t_k} against N parameter
+// atoms (the θ samples threaded through refArrays/baseEnv). For the MVP
+// intensity `weighted(M, shape)` (shape = a normalized scalar
+// distribution, so the weight IS the total mass M):
+//
+//   logp_i = Σ_j log λ(t_j; θ_i) − M_i
+//          = k·log(M_i) + Σ_j shape_logpdf(t_j; θ_i) − M_i
+//
+// The per-point `shape_logpdf` is the SAME FlatPDL primitive the scalar
+// leaf path uses (`builtinLogdensityofPositional`); M_i and the shape
+// params resolve per atom exactly as walkLeaf / walkMultivariate do — so
+// the spec's flagship example (a draw-dependent `resolution` inside the
+// shape) scores correctly here even though generative SAMPLING of it is a
+// follow-up. This is the per-θ density axis; the per-MC-atom self-density
+// over a ragged measure is `mat-poisson.poissonProcessLogDensity`.
+//
+// Consumes the WHOLE observation as the point set (a terminal whole-vector
+// consume → rest=null). A PoissonProcess with a non-empty rest (a sibling
+// field after it in a joint, or a per-atom ragged batched observation) is
+// the documented ragged-boundary follow-up.
+function walkPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const intensityIR = ((ir as any).kwargs && (ir as any).kwargs.intensity)
+    || ((ir as any).args && (ir as any).args[0]);
+  if (!intensityIR) {
+    throw new Error('density(PoissonProcess): requires an intensity argument');
+  }
+  const resolveRef = (node: any) =>
+    (node && node.kind === 'ref' && typeof opts.resolveMeasureRef === 'function')
+      ? (opts.resolveMeasureRef(node.name) || node) : node;
+  // intensity = weighted(Mexpr, shape) | logweighted(logMexpr, shape).
+  const intIR = resolveRef(intensityIR);
+  let Mexpr: any, isLogM = false, shapeLeafIR: any;
+  if (intIR && intIR.kind === 'call' && Array.isArray(intIR.args) && intIR.args.length === 2
+      && (intIR.op === 'weighted' || intIR.op === 'logweighted')) {
+    Mexpr = intIR.args[0];
+    isLogM = intIR.op === 'logweighted';
+    shapeLeafIR = resolveRef(intIR.args[1]);
+  } else {
+    throw new Error('density(PoissonProcess): the MVP supports intensity = '
+      + 'weighted(<expected count>, <scalar distribution>) only (general-measure '
+      + 'intensity is a follow-up, spec §08)');
+  }
+  const kernelName: string = shapeLeafIR && shapeLeafIR.op;
+  if (!samplerLib.isKnownDistribution(kernelName)) {
+    throw new Error("density(PoissonProcess): the shape must be a scalar distribution, got '"
+      + kernelName + "'");
+  }
+  const entry = samplerLib.lookupDistribution(shapeLeafIR);
+
+  // Consume the whole observation as the flat point set.
+  const pts = _consumeAllPoints(value);
+  const k = pts.length;
+
+  // M_i per atom (value expression over refArrays/baseEnv/overlay).
+  const Mres = samplerLib.evaluateExprN(
+    Mexpr, refArrays || null, N, baseEnv, overlay ? { overlay } : undefined);
+  const Mscalar = (typeof Mres === 'number' || typeof Mres === 'boolean');
+  const Mof = (i: number) => {
+    const raw = Mscalar ? +(Mres as any) : +Mres[i];
+    return isLogM ? Math.exp(raw) : raw;
+  };
+  const poissonTerm = (M: number) => (k > 0 ? k * Math.log(M) : 0) - M;
+
+  const blp = densityPrims.builtinLogdensityofPositional;
+  const refNames = refArrays ? Object.keys(refArrays) : [];
+  const overlayKeys = overlay ? Object.keys(overlay) : null;
+  const shapeUsesPerAtom = _exprUsesAny(shapeLeafIR, refNames);
+
+  // Hot path: atom-independent shape params (no per-atom ref used). Resolve
+  // once against baseEnv+overlay, precompute Σ_j shape_logpdf = S, then per
+  // atom add k·log(M_i) − M_i + S.
+  if (!shapeUsesPerAtom) {
+    const env = Object.assign({}, baseEnv);
+    if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) env[overlayKeys[j]] = overlay[overlayKeys[j]];
+    const params = samplerLib.resolveParams(shapeLeafIR, entry, env);
+    let S = 0;
+    for (let j = 0; j < k; j++) S += blp(kernelName, params, pts[j]);
+    for (let i = 0; i < N; i++) acc[i] += poissonTerm(Mof(i)) + S;
+    return null;
+  }
+  // Per-atom shape params: resolve params and Σ_j shape_logpdf per atom.
+  const callEnv = Object.assign({}, baseEnv);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < refNames.length; j++) {
+      const v = refArrays[refNames[j]];
+      callEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
+    }
+    if (overlayKeys) for (let j = 0; j < overlayKeys.length; j++) callEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
+    const params = samplerLib.resolveParams(shapeLeafIR, entry, callEnv);
+    let S = 0;
+    for (let j = 0; j < k; j++) S += blp(kernelName, params, pts[j]);
+    acc[i] += poissonTerm(Mof(i)) + S;
+  }
+  return null;
+}
+
+// Consume an entire observation as a flat point set (PoissonProcess is a
+// terminal whole-vector consumer). Accepts a Value, a typed/plain array, or
+// a bare scalar (a one-point set). Returns a flat indexable of the points.
+function _consumeAllPoints(value: any): any {
+  if (value == null) return [];
+  if (typeof value === 'number') return [value];
+  if (valueLib.isValue(value)) return value.data;
+  return value;   // Float64Array or plain Array
 }
 
 // Per-atom slice of a Value: rank-1 yields a scalar number, rank≥2

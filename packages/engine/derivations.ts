@@ -3275,6 +3275,15 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     if (!inner) return null;
     return { ...ir, args: [inner, ir.args[1]] };
   }
+  if (ir.op === 'PoissonProcess' && ir.kwargs && ir.kwargs.intensity) {
+    // The `intensity` kwarg is a MEASURE (e.g. weighted(M, ref shape)). Expand
+    // it so its inner shape ref resolves to a distribution leaf — same reason
+    // as truncate above: walkPoissonProcess runs in the dumb worker, which has
+    // no resolveMeasureRef. Keep as-is if the intensity can't be expanded.
+    const inner: any = _expandStructural(ir.kwargs.intensity, ctx, visited);
+    if (!inner) return ir;
+    return { ...ir, kwargs: { ...ir.kwargs, intensity: inner } };
+  }
   // Sampleable distribution / select / broadcast / superpose / etc.:
   // pass through unchanged. Their kwargs / args hold value-position
   // refs that the density / sample walker resolves per-atom; we
