@@ -48,6 +48,7 @@ import type { IRNode } from './engine-types';
 const T = require('./types.ts');
 const builtins = require('./builtins.ts');
 const aggregateShape = require('./aggregate-shape.ts');
+const vsLib = require('./value-set.ts');
 
 // =====================================================================
 // Constant maps (carried over from the AST-based version)
@@ -108,9 +109,12 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
 function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
   const ctx = createInferenceContext(loweredModule, opts);
   for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
-  // Mass-class domain (spec §11; engine-concepts §17.3): a second pass
-  // over the type-inferred module — fills the `mass` slot on measure
-  // types and raises the normalize-of-infinite/null static error.
+  // Refinement domains over the type-inferred module (engine-concepts
+  // §17.3), in dependency order: valueset (the third `%meta` slot) THEN
+  // normalization (the `%mass` class — its Lebesgue/Counting rule reads
+  // set boundedness). The mass pass also raises the
+  // normalize-of-infinite/null static error.
+  ctx.fillValuesets();
   ctx.fillMasses();
   return ctx.diagnostics;
   // NOTE: no eager post-binding const-eval pass. The resolver is
@@ -2725,6 +2729,197 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   }
 
   // ===================================================================
+  // Value-set inference (spec §11 third `%meta` slot; engine-concepts
+  // §17.3 valueset domain). Classifies every node's value into the
+  // strongest statically known §03 set (a measure node's set is its
+  // support), via the producer catalogue + a natural-extent fallback
+  // (every value-typed node's set is at least its type's extent).
+  // Mirrors flatppl-rust `flatppl-infer::call_valueset`; the vocabulary
+  // + lattice live in `value-set.ts`. Runs BEFORE the mass pass — the
+  // Lebesgue/Counting mass rule consumes set boundedness (§17.3
+  // dependency order: valueset < normalization).
+  // ===================================================================
+  const vsetCache = new Map<string, any>();
+  const vsetInProgress = new Set<string>();
+
+  // resolveDim for stdsimplex(n) / cartpow(S, n): try the literal, then
+  // the const-eval resolver (length/lengthof short-circuits included).
+  const _resolveDim = (ir: any): any => {
+    const v = resolveIntegerShape(ir);
+    return v != null ? v : null;
+  };
+
+  // The §08 Domain/Support column → a value set. Keys on the op name, so
+  // it works even where the measure TYPE is still `deferred`.
+  function distributionSupport(ir: any): any {
+    const op = ir.op;
+    const args = ir.args || [];
+    switch (op) {
+      case 'Uniform': return vsLib.setExprValueset(supportArgOf(ir), _resolveDim);
+      case 'Normal': case 'GeneralizedNormal': case 'Cauchy': case 'StudentT':
+      case 'Logistic': case 'VonMises': case 'Laplace': return vsLib.REALS;
+      case 'LogNormal': case 'Gamma': case 'InverseGamma': case 'ChiSquared':
+      case 'Pareto': return vsLib.POSREALS;
+      case 'Exponential': case 'Weibull': return vsLib.NONNEGREALS;
+      case 'Beta': return vsLib.UNITINTERVAL;
+      case 'Bernoulli': return vsLib.BOOLEANS;
+      case 'Categorical': return vsLib.POSINTEGERS;
+      case 'Categorical0': case 'Binomial': case 'Geometric':
+      case 'NegativeBinomial': case 'NegativeBinomial2': case 'Poisson':
+        return vsLib.NONNEGINTEGERS;
+      case 'MvNormal': return vsLib.cartpow(vsLib.REALS, _paramDim(ir, 'mu', 0));
+      case 'Dirichlet': return vsLib.stdsimplex(_paramDim(ir, 'alpha', 0));
+      case 'Multinomial': return vsLib.cartpow(vsLib.NONNEGINTEGERS, _paramDim(ir, 'p', 1));
+      default: return vsLib.UNKNOWN;
+    }
+  }
+
+  // The static length of a rank-1-array node — from its inferred type
+  // if annotated, else structurally (an inline `vector(...)` literal, or
+  // a ref's binding type). typeinfer doesn't write `meta.type` on every
+  // kwarg arg node, so the structural fallbacks are load-bearing.
+  function _arrayLenOf(node: any): any {
+    if (!node) return '%dynamic';
+    const t = node.meta && node.meta.type;
+    if (t && t.kind === 'array' && Array.isArray(t.shape) && t.shape.length === 1) return t.shape[0];
+    if (node.kind === 'call' && node.op === 'vector' && Array.isArray(node.args)) return node.args.length;
+    if (node.kind === 'ref' && loweredModule.bindings.has(node.name)) {
+      const bt = loweredModule.bindings.get(node.name).inferredType;
+      if (bt && bt.kind === 'array' && Array.isArray(bt.shape) && bt.shape.length === 1) return bt.shape[0];
+    }
+    return '%dynamic';
+  }
+
+  // The static length of a vector-typed parameter (named kwarg or
+  // positional), for simplex / cartpow sizes.
+  function _paramDim(ir: any, kw: string, posIdx: number): any {
+    let arg = ir.kwargs && ir.kwargs[kw];
+    if (!arg && Array.isArray(ir.args)) arg = ir.args[posIdx];
+    return _arrayLenOf(arg);
+  }
+
+  function _vectorDimOf(ir: any): any { return _arrayLenOf((ir.args || [])[0]); }
+
+  // Widen heterogeneous element sets to the strongest named set
+  // containing all of them (mirrors Rust `join_scalar_sets`): so a
+  // literal weight vector `[0.7, 0.3]` (singleton-interval elements)
+  // widens to `nonnegreals`, letting `l1unit`'s simplex guard fire.
+  const _VECTOR_JOIN_CANDIDATES = [
+    vsLib.POSINTEGERS, vsLib.NONNEGINTEGERS, vsLib.INTEGERS, vsLib.UNITINTERVAL,
+    vsLib.POSREALS, vsLib.NONNEGREALS, vsLib.REALS, vsLib.BOOLEANS, vsLib.COMPLEXES,
+  ];
+  function _joinScalarSets(sets: any[]): any {
+    if (sets.length === 0) return null;
+    const first = sets[0];
+    if (first !== vsLib.UNKNOWN && sets.every((s) => vsLib.equal(s, first))) return first;
+    for (const cand of _VECTOR_JOIN_CANDIDATES) {
+      if (sets.every((s) => vsLib.subsetOf(s, cand))) return cand;
+    }
+    return null;
+  }
+
+  // Value set of a node, attaching `meta.valueset` on calls. Memoised on
+  // the node (and via `vsetOfBinding` for refs). Producer rules +
+  // natural-extent fallback.
+  function valuesetOfExpr(ir: any): any {
+    if (ir && ir.kind === 'call' && ir.meta && ir.meta.valueset !== undefined) {
+      return ir.meta.valueset;
+    }
+    let vs = _computeValueset(ir);
+    // Natural-extent fallback: a value-typed node's set is at least its
+    // type's extent (spec §11 total discipline).
+    if (vs === vsLib.UNKNOWN && ir && ir.kind === 'call' && ir.meta && ir.meta.type) {
+      const nat = vsLib.naturalOf(ir.meta.type);
+      if (nat !== vsLib.UNKNOWN) vs = nat;
+    }
+    if (ir && ir.kind === 'call' && ir.meta) ir.meta.valueset = vs;
+    return vs;
+  }
+
+  function _computeValueset(ir: any): any {
+    if (!ir) return vsLib.UNKNOWN;
+    if (ir.kind === 'lit') return vsLib.literalValueset(ir);
+    if (ir.kind === 'const') return vsLib.constValueset(ir.name);
+    if (ir.kind === 'ref') {
+      return loweredModule.bindings.has(ir.name) ? vsetOfBinding(ir.name) : vsLib.UNKNOWN;
+    }
+    if (ir.kind !== 'call') return vsLib.UNKNOWN;
+    const op = ir.op;
+    const args = ir.args || [];
+    switch (op) {
+      // Parameters / loaded sets, and reference-measure supports.
+      case 'elementof': case 'external':
+        return vsLib.setExprValueset(args[0], _resolveDim);
+      case 'Lebesgue': case 'Counting':
+        return vsLib.setExprValueset(supportArgOf(ir), _resolveDim);
+      // Drawing yields a value in the measure's support.
+      case 'draw': return valuesetOfExpr(args[0]);
+      case 'lawof': return valuesetOfExpr(args[0]);
+      // Reweighting / truncation never grows the support.
+      case 'normalize': case 'bayesupdate': return valuesetOfExpr(args[0]);
+      case 'weighted': case 'logweighted': return valuesetOfExpr(args[1]);
+      case 'truncate': {
+        const s = vsLib.setExprValueset(args[1], _resolveDim);
+        return s === vsLib.UNKNOWN ? valuesetOfExpr(args[0]) : s;
+      }
+      case 'iid': {
+        const inner = valuesetOfExpr(args[0]);
+        const t = ir.meta && ir.meta.type;
+        if (inner !== vsLib.UNKNOWN && t && t.kind === 'measure'
+            && t.domain && t.domain.kind === 'array'
+            && Array.isArray(t.domain.shape) && t.domain.shape.length === 1) {
+          return vsLib.cartpow(inner, t.domain.shape[0]);
+        }
+        return vsLib.UNKNOWN;
+      }
+      // Normalization functions (spec §07).
+      case 'softmax': return vsLib.stdsimplex(_vectorDimOf(ir));
+      case 'l1unit': {
+        const argSet = valuesetOfExpr(args[0]);
+        return vsLib.subsetOf(argSet, vsLib.cartpow(vsLib.NONNEGREALS, '%dynamic'))
+          ? vsLib.stdsimplex(_vectorDimOf(ir)) : vsLib.UNKNOWN;
+      }
+      case 'exp': return vsLib.POSREALS;
+      case 'abs': case 'abs2': case 'sqrt': return vsLib.NONNEGREALS;
+      case 'invlogit': case 'invprobit': return vsLib.UNITINTERVAL;
+      case 'vector': {
+        const sets = args.map(valuesetOfExpr);
+        const elem = _joinScalarSets(sets);
+        return elem == null ? vsLib.UNKNOWN
+          : vsLib.cartpow(elem, args.length);
+      }
+      default:
+        if (builtins.DISTRIBUTIONS.has(op)) return distributionSupport(ir);
+        return vsLib.UNKNOWN;
+    }
+  }
+
+  function vsetOfBinding(name: string): any {
+    if (vsetCache.has(name)) return vsetCache.get(name);
+    if (vsetInProgress.has(name)) return vsLib.UNKNOWN;
+    const b = loweredModule.bindings.get(name);
+    if (!b || !b.rhs) { vsetCache.set(name, vsLib.UNKNOWN); return vsLib.UNKNOWN; }
+    vsetInProgress.add(name);
+    const vs = valuesetOfExpr(b.rhs);
+    vsetInProgress.delete(name);
+    vsetCache.set(name, vs);
+    return vs;
+  }
+
+  // Fill `meta.valueset` on every call node. Run before fillMasses.
+  function fillValuesets() {
+    const irWalk = require('./ir-walk.ts');
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && ir.meta && ir.meta.valueset === undefined) {
+        valuesetOfExpr(ir);
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
+  // ===================================================================
   // Mass-class inference (spec §11 "Total-mass classes"; engine-concepts
   // §17.3 normalization domain). A second pass after the type walk: for
   // every measure-typed binding, classify its total mass by composing
@@ -2742,62 +2937,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   const massInProgress = new Set<string>();
 
   // Boundedness of a set expression (spec §03), for the Lebesgue /
-  // Counting mass rule. true = bounded, false = unbounded, null =
-  // statically unknown. Mirrors Rust `ValueSet::is_bounded`.
+  // Counting mass rule — read through the valueset layer (§17.3: mass
+  // CONSUMES set facts; the set vocabulary + boundedness lattice have
+  // ONE owner, `value-set.ts`). true / false / null (unknown).
   function setBounded(setIR: any): boolean | null {
-    if (!setIR) return null;
-    if ((setIR.kind === 'const' || setIR.kind === 'ref')
-        && typeof setIR.name === 'string') {
-      switch (setIR.name) {
-        case 'unitinterval': case 'booleans': return true;
-        case 'reals': case 'posreals': case 'nonnegreals':
-        case 'integers': case 'posintegers': case 'nonnegintegers':
-        case 'complexes': return false;
-        default: return null;             // anything / rngstates / unknown
-      }
-    }
-    if (setIR.kind !== 'call') return null;
-    switch (setIR.op) {
-      case 'stdsimplex': return true;
-      case 'interval': {
-        const a = setIR.args || [];
-        const lo = resolveSetBound(a[0]);
-        const hi = resolveSetBound(a[1]);
-        if (lo == null || hi == null) return null;
-        return Number.isFinite(lo) && Number.isFinite(hi);
-      }
-      case 'cartpow': return setBounded((setIR.args || [])[0]);
-      case 'cartprod': {
-        const comps = Array.isArray(setIR.fields)
-          ? setIR.fields.map((f: any) => f.value)
-          : (setIR.args || []);
-        let allBounded = true;
-        for (const c of comps) {
-          const b = setBounded(c);
-          if (b === false) return false;
-          if (b == null) allBounded = false;
-        }
-        return allBounded ? true : null;
-      }
-    }
-    return null;
-  }
-
-  // Resolve an interval bound to a JS number, or null. Handles the
-  // `inf` constant and the `-inf` form (`neg(inf)`).
-  function resolveSetBound(ir: any): number | null {
-    if (!ir) return null;
-    if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
-    if ((ir.kind === 'const' || ir.kind === 'ref') && ir.name === 'inf') return Infinity;
-    if (ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args.length === 1) {
-      const inner = resolveSetBound(ir.args[0]);
-      return inner == null ? null : -inner;
-    }
-    return null;
+    return vsLib.isBounded(vsLib.setExprValueset(setIR, _resolveDim));
   }
 
   // Lebesgue/Counting take their support as a `support` kwarg or a lone
-  // positional arg (spec §06).
+  // positional arg (spec §06). Shared by the valueset + mass rules.
   function supportArgOf(ir: any): any {
     if (ir.kwargs && ir.kwargs.support) return ir.kwargs.support;
     return (ir.args || [])[0] || null;
@@ -2988,7 +3136,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
-  return { diagnostics, inferBinding, inferExpr, fillMasses };
+  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses };
 }
 
 // Mass of an independent product of components (spec §11; Rust

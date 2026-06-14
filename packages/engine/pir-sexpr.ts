@@ -140,8 +140,16 @@ function _metaToSexpr(e: any, mopts: any): string | null {
   const t = e.meta && e.meta.type;
   const phase = (mopts && mopts.outerPhase) ? '%' + mopts.outerPhase : '%deferred';
   const tStr = _typeToSexpr(t);
-  if (tStr === '%deferred' && phase === '%deferred') return null;
-  return '(%meta ' + tStr + ' ' + phase + ')';
+  // Third slot: the spec-§11 value-set (engine-concepts §17.3), filled
+  // by typeinfer's valueset pass. `%deferred` when un-inferred.
+  const vsStr = _valuesetToSexpr(e.meta && e.meta.valueset);
+  if (tStr === '%deferred' && phase === '%deferred' && vsStr === '%deferred') return null;
+  return '(%meta ' + tStr + ' ' + phase + ' ' + vsStr + ')';
+}
+
+function _valuesetToSexpr(vs: any): string {
+  if (vs === undefined) return '%deferred';
+  return require('./value-set.ts').toSexpr(vs);
 }
 
 function _typeToSexpr(t: any): string {
@@ -730,13 +738,17 @@ function fromSexpr(text: any) {
   }
 
   function readMetaForm(): any {
-    // Spec §11: (%meta <type> <phase>). We round-trip the raw forms
-    // but don't currently re-feed them to the inference pipeline.
+    // Spec §11: (%meta <type> <phase> [<valueset>]). We round-trip the
+    // raw forms but don't currently re-feed them to inference. Consume
+    // every slot up to the close paren, so 2-slot and 3-slot forms
+    // (and any future slot) parse alike.
     eat(); // %meta
     const typ = readForm();
     const ph  = readForm();
+    const extra: any[] = [];
+    while (peek() && peek().type !== ')') extra.push(readForm());
     if (peek() && peek().type === ')') eat();
-    return { __kind: 'meta', type: typ, phase: ph };
+    return { __kind: 'meta', type: typ, phase: ph, valueset: extra[0] || null };
   }
 
   function readCallForm(): any {
