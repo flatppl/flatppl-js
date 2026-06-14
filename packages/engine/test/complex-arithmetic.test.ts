@@ -100,9 +100,17 @@ test('mul: real * complex broadcasts', () => {
   assert.deepEqual(r, { re: 2, im: 6 });
 });
 
-test('div: (1+i)/(1-i) = i', () => {
-  const r = ARITH_OPS.div({ re: 1, im: 1 }, { re: 1, im: -1 });
+test('divide: (1+i)/(1-i) = i', () => {
+  // `divide` is true/complex division (the `/` operator); `div` is the
+  // spec-§07 integer floor division ⌊a/b⌋ (see div-conformance test).
+  const r = ARITH_OPS.divide({ re: 1, im: 1 }, { re: 1, im: -1 });
   assert.ok(cclose(r, { re: 0, im: 1 }));
+});
+
+test('div: integer floor division ⌊a/b⌋ (spec §07)', () => {
+  assert.equal(ARITH_OPS.div(7, 2), 3);
+  assert.equal(ARITH_OPS.div(-7, 2), -4);   // floor, not truncation
+  assert.equal(ARITH_OPS.div(8, 4), 2);
 });
 
 test('neg of complex', () => {

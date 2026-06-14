@@ -596,12 +596,11 @@ const ARITH_OPS = {
     }
     return a * b;
   },
-  div: (a: any, b: any) => {
-    if (_isComplex(a) || _isComplex(b)) {
-      return _cDiv(_toComplex(a), _toComplex(b));
-    }
-    return a / b;
-  },
+  // Spec §07: `div(a, b) = ⌊a/b⌋` — integer floor division (integer
+  // domain, integer result), distinct from `/` which lowers to `divide`
+  // (true division). Reachable only via an explicit `div(a, b)` call
+  // (the `/` operator lowers to `divide`).
+  div: (a: any, b: any) => Math.floor(a / b),
   divide: (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cDiv(_toComplex(a), _toComplex(b));
