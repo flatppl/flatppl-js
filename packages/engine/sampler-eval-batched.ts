@@ -524,8 +524,9 @@ function initARITHOPSN(ARITH_OPS: any) {
   // through _cxBroadcast: degrades to a real Value when inputs and
   // output are real (e.g. conj / real on real data), and produces a
   // complex Value for the constructors (complex / cis) and for complex
-  // inputs. Arity is taken from the IR args length at call time.
-  for (const op of ['complex', 'real', 'imag', 'conj', 'cis']) {
+  // inputs. Arity is taken from the IR args length at call time. The op
+  // list is the canonical complex-prim set (ops.ts, §18 one source).
+  for (const op of Object.keys(require('./ops.ts').COMPLEX_SCALAR_PRIMS)) {
     const prim = (ARITH_OPS as any)[op];
     ARITH_OPS_N[op] = (args: any, N: any) => _cxBroadcast(prim, args, N);
   }
