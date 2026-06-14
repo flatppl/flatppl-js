@@ -57,6 +57,7 @@ const orchestrator = require('./orchestrator.ts');
 const rng          = require('./rng.ts');
 const shared       = require('./materialiser-shared.ts');
 const multivariate = require('./mat-multivariate.ts');
+const matPoisson   = require('./mat-poisson.ts');
 const broadcast    = require('./mat-broadcast.ts');
 const density      = require('./mat-density.ts');
 const transforms   = require('./mat-transformations.ts');
@@ -1065,6 +1066,8 @@ const KIND_HANDLERS = {
   lkjcholesky:       (name: any, d: any, ctx: any) => multivariate.matLKJCholesky(name, d, ctx),
   lkj:               (name: any, d: any, ctx: any) => multivariate.matLKJ(name, d, ctx),
   binnedpoissonprocess: (name: any, d: any, ctx: any) => multivariate.matBinnedPoissonProcess(name, d, ctx),
+  // PoissonProcess — ragged per-atom point sets (mat-poisson.ts, §2.3)
+  poissonprocess:       (name: any, d: any, ctx: any) => matPoisson.matPoissonProcess(name, d, ctx),
 };
 
 /**

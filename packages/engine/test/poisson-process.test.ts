@@ -1,0 +1,136 @@
+'use strict';
+
+// PoissonProcess end-to-end (spec §08; engine-concepts §2.3) — the ragged
+// per-atom point-set distribution. Pins the materialiser pipeline
+// (classifier → matPoissonProcess → ragged EmpiricalMeasure) and the MVP
+// boundary rejections. The load-bearing sampling assembly + density MATH is
+// pinned separately, oracle-against-Julia, in mat-poisson.test.ts; here we
+// check the wiring and the sampling STATISTICS (counts ~ Poisson(M), points
+// ~ shape) plus the structural invariants of the ragged measure.
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const { processSource, orchestrator, materialiser } = require('..');
+const { createWorkerHandler } = require('../worker.ts');
+const R = require('../ragged.ts');
+
+const ROOT_SEED = 0xCAFEBEEF;
+
+function makeCtx(source: any, sampleCount: any) {
+  const lifted = processSource(source);
+  const built  = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: ROOT_SEED });
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings:    built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure:  (name: any) => {
+      if (cache.has(name)) return cache.get(name);
+      const p = materialiser.materialiseMeasure(name, ctx);
+      cache.set(name, p);
+      return p;
+    },
+    sendWorker:  (msg: any) => {
+      const reply = worker.handle(msg);
+      if (reply && reply.type === 'error') return Promise.reject(new Error(reply.message));
+      return Promise.resolve(reply);
+    },
+    sampleCount: sampleCount || 4096,
+    rootSeed:    ROOT_SEED,
+  };
+  return ctx;
+}
+
+// =====================================================================
+// Classification + ragged measure structure
+// =====================================================================
+
+test('PoissonProcess: classifier recognises and materialises a ragged measure', async () => {
+  const ctx = makeCtx(`
+shape = Normal(mu = 0.0, sigma = 1.0)
+m ~ PoissonProcess(intensity = weighted(5.0, shape))
+`, 256);
+  const mm = await ctx.getMeasure('m');
+  assert.equal(mm.shape, 'ragged');
+  assert.ok(R.isRagged(mm.ragged), 'carries a ragged value');
+  assert.equal(R.raggedCount(mm.ragged), 256, 'one atom per sample');
+  assert.equal(mm.samples, mm.ragged.data, '.samples aliases the pooled flat points');
+  assert.deepEqual(mm.dims, [], 'scalar points → empty kernelShape');
+  // offsets frame the data: monotone, run 0 … data.length.
+  const off = mm.ragged.offsets;
+  assert.equal(off[0], 0);
+  assert.equal(off[off.length - 1], mm.ragged.data.length);
+  for (let i = 1; i < off.length; i++) assert.ok(off[i] >= off[i - 1]);
+});
+
+test('PoissonProcess: inline shape (no intervening binding) also works', async () => {
+  const ctx = makeCtx(`
+m ~ PoissonProcess(intensity = weighted(3.0, Normal(mu = 10.0, sigma = 2.0)))
+`, 256);
+  const mm = await ctx.getMeasure('m');
+  assert.equal(mm.shape, 'ragged');
+  assert.equal(R.raggedCount(mm.ragged), 256);
+});
+
+// =====================================================================
+// Sampling statistics: counts ~ Poisson(M), points ~ shape
+// =====================================================================
+
+test('PoissonProcess: per-atom counts ~ Poisson(M), pooled points ~ shape', async () => {
+  const M = 5.0;
+  const ctx = makeCtx(`
+shape = Normal(mu = 2.0, sigma = 3.0)
+m ~ PoissonProcess(intensity = weighted(${M}, shape))
+`, 40000);
+  const mm = await ctx.getMeasure('m');
+  const N = R.raggedCount(mm.ragged);
+  // Mean count ≈ M (Poisson mean). Variance of the mean ≈ M/N ⇒ tol generous.
+  const meanCount = mm.ragged.data.length / N;
+  assert.ok(Math.abs(meanCount - M) < 0.1, 'meanCount=' + meanCount);
+  // Pooled points ≈ shape moments (mu=2, sigma=3).
+  let sum = 0, sum2 = 0;
+  const d = mm.ragged.data;
+  for (let i = 0; i < d.length; i++) { sum += d[i]; sum2 += d[i] * d[i]; }
+  const mean = sum / d.length;
+  const sd = Math.sqrt(sum2 / d.length - mean * mean);
+  assert.ok(Math.abs(mean - 2.0) < 0.1, 'pooled mean=' + mean);
+  assert.ok(Math.abs(sd - 3.0) < 0.1, 'pooled sd=' + sd);
+});
+
+test('PoissonProcess: M = 0 ⇒ every atom is empty (all-zero offsets)', async () => {
+  const ctx = makeCtx(`
+m ~ PoissonProcess(intensity = weighted(0.0, Normal(mu = 0.0, sigma = 1.0)))
+`, 64);
+  const mm = await ctx.getMeasure('m');
+  assert.equal(mm.shape, 'ragged');
+  assert.equal(R.raggedCount(mm.ragged), 64);
+  assert.equal(mm.ragged.data.length, 0, 'no points');
+  for (let i = 0; i < mm.ragged.offsets.length; i++) {
+    assert.equal(mm.ragged.offsets[i], 0);
+  }
+});
+
+// =====================================================================
+// MVP boundary — documented rejections (red-for-the-right-reason)
+// =====================================================================
+
+test('PoissonProcess: a superpose intensity is refused (general-intensity follow-up)', async () => {
+  const ctx = makeCtx(`
+sig = Normal(mu = 0.0, sigma = 1.0)
+bkg = Normal(mu = 5.0, sigma = 1.0)
+m ~ PoissonProcess(intensity = superpose(weighted(3.0, sig), weighted(2.0, bkg)))
+`, 64);
+  await assert.rejects(() => ctx.getMeasure('m'), /follow-up|weighted\(<expected count>/);
+});
+
+test('PoissonProcess: a draw-dependent (per-atom) shape param is refused for sampling', async () => {
+  const ctx = makeCtx(`
+raw ~ Normal(mu = 0.0, sigma = 1.0)
+res = 2.5 + 0.3 * raw
+m ~ PoissonProcess(intensity = weighted(5.0, Normal(mu = 0.0, sigma = res)))
+`, 64);
+  await assert.rejects(() => ctx.getMeasure('m'), /per-atom|cannot resolve/);
+});

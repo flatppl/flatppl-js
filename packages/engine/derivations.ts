@@ -619,6 +619,14 @@ function classifyDerivation(
         && normalizedRhsIR.op === 'BinnedPoissonProcess') {
       return { kind: 'binnedpoissonprocess', distIR: normalizedRhsIR };
     }
+    // PoissonProcess(intensity) — variable-length point sets per atom. Unlike
+    // the fixed-shape multivariate kinds above, its atom is RAGGED (§2.3):
+    // matPoissonProcess assembles a ragged EmpiricalMeasure, walkPoissonProcess
+    // scores it (dedicated handlers, not the walkMultivariate/MV_DENSITY path).
+    if (normalizedRhsIR && normalizedRhsIR.kind === 'call'
+        && normalizedRhsIR.op === 'PoissonProcess') {
+      return { kind: 'poissonprocess', distIR: normalizedRhsIR };
+    }
 
     // Measure-algebra ops dispatch through MEASURE_OP_CLASSIFIERS
     // below. Each entry is one tightly-scoped handler that decides the

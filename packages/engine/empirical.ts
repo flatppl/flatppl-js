@@ -449,6 +449,28 @@ function arrayMeasure(samples: any, dims: any, logWeights: any) {
   return m;
 }
 
+/**
+ * Build a ragged-shaped measure (engine-concepts §2.3) — the sibling of
+ * `arrayMeasure` for VARIABLE per-atom extent (PoissonProcess point sets).
+ * `raggedVal` is a ragged value `{ragged, data, offsets, kernelShape}`
+ * (ragged.ts); the N atoms are `offsets.length - 1`.
+ *
+ * `.samples` aliases `raggedVal.data` (the pooled flat points across all
+ * atoms), so shape-agnostic scalar consumers (a histogram of all points)
+ * work unchanged; raggedness-aware consumers read `.ragged`. The ragged
+ * kind is DISJOINT from the uniform Value, so it is NOT placed in `.value`.
+ * `logWeights` (if any) is per-ATOM (length N) — one process draw per atom.
+ */
+function raggedMeasure(raggedVal: any, logWeights: any) {
+  return {
+    shape: 'ragged',
+    ragged: raggedVal,
+    samples: raggedVal.data,            // pooled flat points (alias, no copy)
+    dims: raggedVal.kernelShape,        // per-point cell shape ([] scalar)
+    logWeights: logWeights || null,
+  };
+}
+
 /** Effective shape — back-compat shim. Untagged measures are scalar. */
 function shapeOf(measure: any) {
   return (measure && measure.shape) || 'scalar';
@@ -822,7 +844,7 @@ module.exports = {
   systematicResample,
   multinomialResample,
   // Multivariate
-  recordMeasure, tupleMeasure, arrayMeasure, shapeOf,
+  recordMeasure, tupleMeasure, arrayMeasure, raggedMeasure, shapeOf,
   // Importance-sampling diagnostics
   paretoKHat, paretoKThreshold,
   importanceSamplingQuality, estimateDof,

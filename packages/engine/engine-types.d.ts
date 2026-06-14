@@ -70,6 +70,23 @@ export interface Value {
   outerRank?: number;
 }
 
+/**
+ * The ragged-per-atom value kind (engine/ragged.ts; engine-concepts §2.3) —
+ * a vector of variable-length per-atom arrays, stored flat (Julia
+ * `ArraysOfArrays.VectorOfArrays` / CSR layout). The sibling of the uniform
+ * shape-tagged Value: equal-size inner ⇒ uniform `[N,…k]` Value; genuinely
+ * ragged ⇒ this kind. DISJOINT from Value (it carries no `shape`).
+ */
+export interface RaggedValue {
+  ragged: true;
+  /** All atoms' elements concatenated. */
+  data: Float64Array;
+  /** Length N+1; atom i = data[offsets[i] : offsets[i+1]]. */
+  offsets: Int32Array;
+  /** Fixed leading per-element dims (ragged in the last axis only): [] scalar points, [d] for d-dim. */
+  kernelShape: number[];
+}
+
 // ---------------------------------------------------------------------
 // FlatPIR-JSON IR (engine/lower.ts + flatppl-design §11)
 // ---------------------------------------------------------------------
@@ -542,6 +559,13 @@ export interface DerivationBinnedPoissonProcess {
   distIR: IRNode;
 }
 
+/** PoissonProcess(intensity) — atom is a VARIABLE-length point set (ragged, engine-concepts §2.3). */
+export interface DerivationPoissonProcess {
+  kind: 'poissonprocess';
+  name?: string;
+  distIR: IRNode;
+}
+
 /** Discriminated union over every kind buildDerivations may emit. */
 export type Derivation =
   | DerivationAlias
@@ -572,7 +596,8 @@ export type Derivation =
   | DerivationInverseWishart
   | DerivationLKJCholesky
   | DerivationLKJ
-  | DerivationBinnedPoissonProcess;
+  | DerivationBinnedPoissonProcess
+  | DerivationPoissonProcess;
 
 // ---------------------------------------------------------------------
 // BindingInfo (engine/analyzer.ts → ParsedModule.bindings entries)
@@ -686,8 +711,17 @@ export interface EmpiricalMeasure {
   fields?: Record<string, EmpiricalMeasure>;
   /** Composite-tuple measure: positional sub-measures. */
   elems?: EmpiricalMeasure[];
-  /** Shape discriminator for array / tuple variants. */
-  shape?: 'array' | 'tuple';
+  /**
+   * Ragged per-atom point sets (shape='ragged'; PoissonProcess, engine-concepts
+   * §2.3). The sibling of the uniform `shape='array'` variant: variable per-atom
+   * extent carried by `offsets` inside the ragged value. `.samples` aliases
+   * `ragged.data` (the pooled flat points), so scalar consumers see all points;
+   * raggedness-aware consumers read `.ragged`. NOT stuffed into `.value` (the
+   * ragged kind is disjoint from the uniform Value, §2.3).
+   */
+  ragged?: RaggedValue;
+  /** Shape discriminator for array / tuple / ragged variants. */
+  shape?: 'array' | 'tuple' | 'ragged';
   /** Complex-valued measures: parallel imaginary buffer + dtype tag. */
   imag?: Float64Array;
   dtype?: 'complex' | 'f64';
