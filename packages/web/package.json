@@ -14,6 +14,7 @@
     "directory": "packages/web"
   },
   "scripts": {
+    "prebuild": "npm run typecheck",
     "build": "node ./build.mjs",
     "watch": "node ./build.mjs --watch",
     "serve": "node ./serve.mjs",

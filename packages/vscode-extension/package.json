@@ -16,6 +16,7 @@
   },
   "main": "./extension.js",
   "scripts": {
+    "prebuild:vendor": "npm run typecheck",
     "build:vendor":    "node ./build-vendor.mjs",
     "watch:vendor":    "node ./build-vendor.mjs --watch",
     "typecheck":       "tsc -p tsconfig.json",
