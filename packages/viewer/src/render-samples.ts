@@ -279,7 +279,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     const pooled = measure.samples;
     if (!pooled || pooled.length === 0) {
       renderConstantValue(ctx, name,
-        'ragged point process — no points drawn (every atom is empty)',
+        'point process — no points drawn (every draw is empty)',
         opts.toolbarControls);
       return;
     }
