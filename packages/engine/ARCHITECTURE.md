@@ -18,26 +18,13 @@ distributions (MvNormal, Dirichlet, Multinomial, Wishart, InverseWishart,
 LKJ / LKJCholesky, BinnedPoissonProcess), the FlatPDL measure-eval primitives
 (`builtin_logdensityof` / `builtin_sample` / the four transports), `metricsum`
 (metric-aware Einstein summation), and spec §03 vec-of-vec ≠ matrix
-enforcement all landed. The §22 multivariate-as-derived-measure arc
-(engine-concepts §22) is live and, for MvNormal, COMPLETE at the binding
-level (5h-A): every lowerable `MvNormal` — static OR dynamic D
-(`lengthof(<mu-ref>)` count, resolved by classifyIid's deferred pass),
-kwarg or positional form, named or hoisted-inline args — rewrites at
-lift time to `pushfwd(affine, iid(Normal, D))` and dispatches through
-the bijection registry on both sample and density sides. `matMvNormal`
-is a THIN refusal channel for the shapes the gate positively rejects
-(matrix-form mean, visible dim mismatch — spec §08 violations). The
-density-side MvNormal entries stay: `MV_DENSITY_FNS.MvNormal` is the
-spec-§07 `builtin_logdensityof` FlatPDL ABI, and the `OP_HANDLERS`
-walker scores raw MvNormal nodes inside composite kernel bodies
-(formal-carrying mu/cov — the 5h-B scope).
+enforcement all landed. The §22 multivariate-as-derived-measure arc is live:
+MvNormal lowers at lift to `pushfwd(affine, iid(Normal, D))` and dispatches
+through the bijection registry on both sample and density sides (rationale:
+engine-concepts §22; status/scope incl. the 5h-A/5h-B split: TODO §5.1).
 
-Outstanding work (the single source of truth is
-`flatppl-dev/TODO-flatppl-js.md`): standard-module content (GLM,
-special-functions, distances), `PoissonProcess` generalisations, multi-file
-`load_module` end-to-end, multivariate transports beyond MvNormal, and finer
-typeinfer coverage. Test count + per-area status live in the TODO + `git log`,
-not here.
+Outstanding work + per-area status: `flatppl-dev/TODO-flatppl-js.md` and
+`git log` (not duplicated here).
 
 ## Pipeline overview
 
@@ -126,19 +113,14 @@ dispatch for **standard** modules (registry + typeinfer `resolveStandardModuleRe
 esbuild infers each engine source file's module format from its syntax. A file
 must be **pure CJS** (no top-level `export`/`import`; runtime exports via one
 `module.exports = {…}`) or **pure ESM** (every binding `export`ed; no
-`module.exports`). The trap: a file with a top-level `export interface Foo {…}`
-(types-only) that *also* ends with `module.exports = {…}` makes esbuild see
-`export`, classify the file ESM, and emit `[WARNING] The CommonJS "module"
-variable is treated as a global variable in an ECMAScript module`. The build
-succeeds and loads fine in Node + permissive browsers, then **crashes in the
-VS Code webview's strict-CSP Chromium sandbox** (`module is not defined`) — the
-engine global never initialises and the viewer stays blank with no engine-side
-error. Fix: drop the `export` from types-only `interface`/`type` in a CJS file
-(they're already visible within the file); if a type must be importable, make
-the whole file pure ESM. The `commonjs-variable-in-esm` esbuild warning flags
-this regression at build time (far from the webview-load symptom) — SHOULD be
-treated as fatal (`logOverride: {'commonjs-variable-in-esm':'error'}`), though
-that override is not yet wired into the build scripts.
+`module.exports`). The trap: a top-level `export interface Foo {…}` (types-only)
+in a file that *also* ends with `module.exports = {…}` makes esbuild classify it
+ESM and emit the `commonjs-variable-in-esm` warning; the bundle then **crashes in
+the VS Code webview's strict-CSP Chromium sandbox** (`module is not defined`,
+blank viewer, no engine-side error) while loading fine in Node. Fix: drop
+`export` from types-only `interface`/`type` in a CJS file (or make the whole file
+pure ESM). That esbuild warning is the canary — SHOULD be `logOverride: error`
+(not yet wired into the build scripts).
 
 ## Module reference
 
@@ -151,7 +133,7 @@ after the table.
 | `parser.ts` (~1200) | Token[] → AST, recursive-descent precedence climbing. `(x)` parens, `(x,y)` tuple, `(x,)` rejected. MixedArgs admitted (analyzer flags ops disallowing it). |
 | `ast.ts` (~150) | AST node factories (`type` discriminator + `loc`). `synthLoc` for engine-synthesized nodes. |
 | `builtins.ts` (~300) | **Single source of truth** for built-in names (constants, sets, special ops, functions, distributions, measure ops). Drives lower's builtin-vs-user dispatch + analyzer's unknown-name diagnostic. `tuple_get` listed here though engine-internal. |
-| `analyzer.ts` (~3500) | AST → `bindings: Map<name, BindingInfo>`. 8 passes: collect names → classify + validate + deps → disintegrate plans → multi-LHS rewrite (`a,b = call` → `tuple_get`) → `computePhases` → `pir.lowerToModule` → `typeinfer.inferTypes` → bin diagnostics onto bindings. `isMeasureExpr` predicate (historical dup of types' `isMeasure`). |
+| `analyzer.ts` (~3500) | AST → `bindings: Map<name, BindingInfo>`. 8 passes: collect names → classify + validate + deps → disintegrate plans → multi-LHS rewrite (`a,b = call` → `tuple_get`) → `computePhases` → `pir.lowerToModule` → `typeinfer.inferTypes` → bin diagnostics onto bindings. `isMeasureExpr` predicate. |
 | `dag.ts` (~800) | `computeSubDAG` / `computeFullDAG` for the cytoscape renderer; materialises reified-callable scopes as "bubbles" with scope-local phase colouring. **Gotcha:** synthetic node IDs use `:` separator (`binding:boundary`); the renderer detects scope-local nodes via `id.indexOf(':')` — fragile to refactor. |
 | `disintegrate.ts` (~880) | Structural disintegration of joints → `(kernel, prior)`: `Synthesized` / `Delegate` / `Unsupported`, factored `decompose → partition → admissibility → synthesize` (engine-concepts §8). Hosts `disintegratePlan`. `restrict(M, x)` (spec §06) expands here + in analyzer pass 3 as a pure structural rewrite over disintegrate + bayesupdate + likelihoodof — no new derivation kind. |
 | `lower.ts` (~1000) | AST expr → FlatPIR-JSON (pure). `kernelof(x,kw)` → `functionof(lawof(x),kw)`; `fn(holes)` → functionof with `_argN_` placeholders; operators desugar to calls (`BIN_OP_MAP`/`UN_OP_MAP`); ordered-named forms (record/joint/jointchain/cartprod/table) use `fields:[{name,value}]`. IR-JSON shapes: `lit`/`const`/`ref`/`hole`/`call`(builtin or `target`)/`functionof`/`load_module`. |
@@ -163,7 +145,7 @@ after the table.
 | `materialiser-shared.ts` (~1200) | Shared materialiser plumbing (one owner): `prepareDensityRefs` / `collectRefArrays` (boundary-feed nets, `_extraRefArrays` overlay), `measureToRefValue`, `tileMeasureAtomMajor` (repeat-axis tiling), `pushFixedEnv`, `resolveFnBody`, `isFunctionLikeBinding` (delegates to `ir-shared.isCallableLikeBindingType`). |
 | `lift.ts` | Inline-subexpression lifting (`liftInlineSubexpressions`, `isEvaluable`). Hosts `inlineMvNormalLift` (lift-time MvNormal → `pushfwd(affine, iid)`) and `inlineMetricsumLift` (metricsum → aggregate + metric factors, Form-B). Also the composite-`rand` succession rewrite (engine-concepts §11): `classifyRandTuple` (the SHARED decompose + leaf-vs-composite gate used by both the index-0 draw classifier and the index-1 successor rewrite, so they can't drift) + `rewriteCompositeRandSucc` (post-pass after IR-cache + alias-resolution: a binding `tuple_get(<rand>,1)` over a COMPOSITE inner → the value-domain `rand_succ` op; leaf state halves stay `tuple_get`/threaded). Rewrites the BINDING IR so every consumer (FixedValues, resolveIRToValue) agrees. `inlineOnce` wraps a **kernelof** application in `lawof(...)` (a kernel application yields a measure = the law of the reified value, not the bare value — mirrors lower's `kernelof(x,kw)→functionof(lawof(x),kw)`; functionof/fn stay unwrapped). |
 | `derivations.ts` | Measure-algebra heart: `buildDerivations`, `classifyDerivation`, `MEASURE_OP_CLASSIFIERS`, the unified `expandMeasure(input, ctx, visited)` walker (replaces the former 4-walker maze; two back-compat shims survive). Emits the `Derivation` union kinds (~30, in `engine-types.d.ts`): the structural/algebraic ones (alias / sample / iid / weighted / normalize / superpose / select / jointchain / pushfwd / record / tuple / kernelbroadcast / randsample / evaluate / array) + the multivariate-dist + `poissonprocess` kinds + the density-routed kinds (bayesupdate / logdensityof / totalmass / …). `randsample` (`classifyRandSample`) is the demand-driven composite-`rand` draw via the shared `lift.classifyRandTuple` gate (the index-1 STATE half rides lift's `rewriteCompositeRandSucc` → `rand_succ`, so they can't drift). `buildDerivations` returns `fixedValues` as a `FixedValues` resolver (below). |
-| `fixed-values.ts` (~280) | `FixedValues` — demand-driven, memoised, cycle-guarded resolver for fixed-phase VALUES (engine-concepts §17.1); Map-compatible (`.has`/`.get`/`.set`/iterate). Replaces the former eager `while (progress)` pre-eval sweep in `buildDerivations` (per-binding logic moved verbatim into `_compute`). Dependency-injected (zero engine imports). Load-bearing: **iterate-forces-all**, **no negative cache**. See "Fixed-phase values" below. |
+| `fixed-values.ts` (~280) | `FixedValues` — demand-driven, memoised, cycle-guarded resolver for fixed-phase VALUES (engine-concepts §17.1); Map-compatible (`.has`/`.get`/`.set`/iterate). Dependency-injected (zero engine imports). Load-bearing: **iterate-forces-all**, **no negative cache**. See "Fixed-phase values" below. |
 | `signatures.ts` / `profile-plan.ts` | Callable introspection + profile-plot range/preset derivation for the viewer. |
 | `clm.ts` (~650) | **Canonical Lowered Measure** — THE measure-lowering pass (measure-lowering unification, flatppl-dev plan): `lowerMeasure(name\|ir, ctx, opts?) → clm{body, inputs, reduce, mc?}`, the ONE lowering both the sample walker (`matClm`) and the density walker (`mat-density.matScore`) consume, making sampling ≡ density structural. Performs in fixed order: peel + expand (via `expandMeasure`), derived-value inlining to the boundary set (`inlineBoundaryDerivations`) OR the generative `buildMcMarginalForm`, input enumeration with shape/axis descriptors (boundary / shared / fixed / explicit / free). `feedInputs(node, ctx)` is the ONE feeding contract (reference-identity preserving). Phase-6 guarantees (both main-thread, plan critique F): `lowerMeasure` THROWS when a body self-ref is covered by no declared input (⊆ invariant — builtins + callables excluded, they resolve by name); `assertFedCoverage` (called by matScore after the overlay merge) THROWS when a declared boundary the body references (incl. `%local` refs) has no fed column. `opts.boundaries`/`opts.freeInputs` = the viewer kernel/profile explicit-boundary route (spec §04 substitution). |
 | `materialiser.ts` (~1950) | Per-binding-name → `EmpiricalMeasure` via `KIND_HANDLERS` (29 entries: measure-algebra kinds + multivariate dists + FlatPDL surface + `poissonprocess`). Pipeline of composable stages (`kindDispatchStage` default; CLM-reroute for jointchain/kchain). `matRandSample` = demand-driven composite-`rand` draw in a child ctx (engine-concepts §11). Bijection-binding contract (`binding.bijection.{registryName, paramIRs}`) → `matPushfwd` / `density.walkPushfwd` (vector-atom base, outerRank=1). **Batch-flatten** (engine-concepts §20.10): the five composite kernel-broadcast executors live in `mat-broadcast.ts`, sharing ONE N-axis layout primitive (`_layoutFlat`/`_spanOf`) — `_execute*PerCell` paths all retired; vector-output draws fold via `_mvNormalFoldOverCells` (§22). **matIid repeat axis** (`ctx.repeatBlock=k`): shared atom-level value draws tile ×k (`tileMeasureAtomMajor`), the measure subtree redraws fresh (§22.4); resampling handlers are block-aware (within-k-block, base case k=1). Shared plumbing in `materialiser-shared.ts`. |
@@ -171,8 +153,8 @@ after the table.
 | `density.ts` (~2150) + `density-prims.ts` (~1500) | Single density implementation. `logDensityConsumeN(ir, value, refArrays, count, opts)` foundation + 3 wrappers; `OP_HANDLERS` consume/rest table (engine-concepts §4) over 12 measure ops + 8 multivariate kernels (via `walkMultivariate` → `density-prims.builtinLogdensityof`) + `walkPoissonProcess` (ragged point-process: `k·log M − M + Σ shape_logpdf`, per-θ M & shape, the per-point shape logpdf reusing the scalar FlatPDL primitive). `density-prims` is the FlatPDL `builtin_logdensityof` ABI + the four transports; MvNormal density routes through the `affine` registry entry. **`mcmarginal` / `walkMcMarginal`** (engine-concepts §6) is the marginalising-pushforward rule — sibling of `walkPushfwd` for a per-event pushforward bijective in one RETAINED innovation that MARGINALISES a latent; runs SYNC in-worker (`sampler.sampleLeafN` draws M latents, batched `evaluateExprN` for the inverse/LADJ grid, logsumexp); the node is self-contained (the worker supplies retained/marginal/out internally + threads `mcRng`/`mcMarginalizationCount` from `logDensityN`). `iid(mcmarginal, n)` factorises per-event via `walkIid`. Fed by the `mc-recipe` transform (below). Also hosts the type-mode `staticConsume` / `staticDensityShapeCheck` (§17). |
 | `mc-recipe.ts` (~350) | Pure IR→IR functor-law transform `buildMcMarginalForm(measureIR, bindings, expand)` → `iid(mcmarginal{inverse, ladj, retained, marginal}, n)` \| null. Re-expresses a generative-composite measure tree `broadcast(post, broadcast(transport, iid(Normal,n), [pars]))` into the canonical density form: peels deterministic broadcast layers (folds their maps INTO the per-event recipe), reaches the generative kernel layer (`kernel-broadcast-shape.detectGenerativeKernelBinding`), maps broadcast args→kernel params to find the iid-collection latent (marginalised) vs the internal innovation (retained), derives the exact inverse+LADJ via `bijection-registry.invertExpr`. Also exports `inlineGenerativeClosure` — the ONE generative-closure inliner, consumed by BOTH eval directions (mat-broadcast's sampling path delegates to it). No materialiser/sampler dependency. |
 | `value.ts` (~970) + `value-ops.ts` (~1920) | The shape-tagged `Value` (engine-concepts §2.1): `shape`/`data`/`dtype`/`im`/`t` (Klein-4)/`struct`/`outerRank`. `transpose`/`adjoint`/`conjugate` toggle tag bits (no storage). `struct` bitmask (§2.2). `requireMatrix(v, op)` gates matrix-input ops (refuses nested-vector, spec §03); `promoteNestedToMatrix` is the sanctioned tag-stripper; `densify(v)` the one structured→dense fallback (**correctness never depends on a fast-path existing**). `value-ops`: shape-aware add/sub/neg/mul (+ batched `mulN`/`addN`), structured Cholesky/det/inv, complex (planar). |
-| `worker.ts` (~770) + `worker-entry.ts` (~90) | Stateless message handler over sampler/density; transport shim sniffs Web Worker vs Node. Messages: init/sample/density/evaluate/sampleN/evaluateN/logDensityN/profileN/dispose (transferable-aware). `sampleN` static path and per-i path both fold onto the single batched leaf math (`makeBulkSampler`): the per-i branch dispatches on `hasRandNFn` — the randNFn family (Normal/LogNormal/Uniform/Exp) takes `makeBulkSampler`'s `perI` mode (per-atom param columns, one batched draw, atom-major for repeat>1); non-randNFn dists + non-interval Uniform return `{unhandled:true}` and fall back to `makeParametricSampler` (per-draw factory built ONCE — naive rebuild is ~10× the sampling cost). *One endpoint, not one algorithm*; the variable-length truncate-rejection loops stay on the scalar samplers. |
-| `sampler.ts` (~2800) + splits | Single-point deterministic evaluator (`evaluateExpr`/`evaluateCall`), `ARITH_OPS`, worker entry points (`rand`/`makeSampler`/`makeParametricSampler`/`density`). **Hosts the measure walker** `walk` (was `traceeval.ts`; folded into sampler.ts — engine-concepts §11 — so the sampler↔traceeval require cycle is gone) — the per-draw value-position sampling primitive for `rand(state, M)` / `builtin_sample`. Leaf base case → the **single batched leaf endpoint** `sampleLeafN` (scalar = batch-of-1, so `rand(state, <leaf>)` ≡ `rand(state, iid(<leaf>, 1))[0]`); composite (joint / record / iid-of-composite / weighted / lawof) recurses via `MEASURE_OP_WALKERS`. Sample-side only — scoring is `density.ts`. Also dispatches the value-domain `rand_succ(state)` op (the COMPOSITE-`rand` successor — split lane 1 via the shared `rng.randSplitLanes`; counter-reset fresh state; engine-concepts §11), inline like `rand`/`rngstate` (not ARITH_OPS). Split: `sampler-registry` (REGISTRY + custom Ctors + PRNG bridge), `sampler-complex` (ESM leaf), `sampler-linalg` (ESM leaf — nested-array + Value-native LU/Cholesky/etc.), `sampler-aggregate` (CJS — `AGGREGATE_PATTERNS` + broadcast-reduce default), `sampler-eval-batched` (CJS — `evaluateExprN` + `ARITH_OPS_N` + complex-batched). ESM=pure-leaf, CJS=needs require()-back-to-sampler cycle (lazy, non-memoised). |
+| `worker.ts` (~770) + `worker-entry.ts` (~90) | Stateless message handler over sampler/density; transport shim sniffs Web Worker vs Node. Messages: init/sample/density/evaluate/sampleN/evaluateN/logDensityN/profileN/dispose (transferable-aware). `sampleN` static path and per-i path both fold onto the single batched leaf math (`makeBulkSampler`): the per-i branch dispatches on `hasRandNFn` — the randNFn family (Normal/LogNormal/Uniform/Exp) takes `makeBulkSampler`'s `perI` mode (per-atom param columns, one batched draw, atom-major for repeat>1); non-randNFn dists + non-interval Uniform return `{unhandled:true}` and fall back to `makeParametricSampler` (per-draw factory built once). *One endpoint, not one algorithm*; the variable-length truncate-rejection loops stay on the scalar samplers. |
+| `sampler.ts` (~2800) + splits | Single-point deterministic evaluator (`evaluateExpr`/`evaluateCall`), `ARITH_OPS`, worker entry points (`rand`/`makeSampler`/`makeParametricSampler`/`density`). **Hosts the measure walker** `walk` (engine-concepts §11) — the per-draw value-position sampling primitive for `rand(state, M)` / `builtin_sample`. Leaf base case → the **single batched leaf endpoint** `sampleLeafN` (scalar = batch-of-1, so `rand(state, <leaf>)` ≡ `rand(state, iid(<leaf>, 1))[0]`); composite (joint / record / iid-of-composite / weighted / lawof) recurses via `MEASURE_OP_WALKERS`. Sample-side only — scoring is `density.ts`. Also dispatches the value-domain `rand_succ(state)` op (the COMPOSITE-`rand` successor — split lane 1 via the shared `rng.randSplitLanes`; counter-reset fresh state; engine-concepts §11), inline like `rand`/`rngstate` (not ARITH_OPS). Split: `sampler-registry` (REGISTRY + custom Ctors + PRNG bridge), `sampler-complex` (ESM leaf), `sampler-linalg` (ESM leaf — nested-array + Value-native LU/Cholesky/etc.), `sampler-aggregate` (CJS — `AGGREGATE_PATTERNS` + broadcast-reduce default), `sampler-eval-batched` (CJS — `evaluateExprN` + `ARITH_OPS_N` + complex-batched). ESM=pure-leaf, CJS=needs require()-back-to-sampler cycle (lazy, non-memoised). |
 | `ops.ts` (~1100) + `ops-declarations.ts` (~2200) | Unified op-declaration registry + atom-batched dispatcher (engine-concepts §18). 20 ops across fixed-rank / rank-polymorphic / variadic / higher-order kinds; 12 batched fast-paths (incl. cross/inv/lower_cholesky/det/logabsdet/diagmat/row_gram/col_gram/linsolve). **Shape-pattern variants** (`OpVariant` with `argPatterns` + `wrappingOp` + specificity scoring): ~63 broadcasted primitives (the full scalar-primitive closure incl. comparisons / logic / link fns / complex accessors), 11 `mul` direct variants, and 3 atom-aware mul variants (rank-2×rank-1 gemv; rank-2×rank-2 batched matmul, real + complex) register as variants; `dispatch`/`dispatchVariant`/`dispatchTyped`(ArgInfo value+measure). |
 | `dissolver.ts` (~2250) | Broadcast/aggregate dissolution term-rewriter (engine-concepts §20; JS specifics below). `dissolveBindings` runs in `buildDerivations` after lift; rewrites `.ir` in place. Phases 1–6 + shape-fold + fusion (a)/(b) MVPs + `propagateAxisStack` (authoritative for the iid / kernel_broadcast / aggregate axes it records; consumed by `axis-stack.ts` → matIid repeat axis + mat-broadcast K). |
 | `aggregate-patterns.ts` (~220) + `aggregate-shape.ts` (~250) | P5 shared structural classifier: `classifyMatmulBody` (kinds `matmul` / `matvec` / `outer` / `dot`) + the leaf axis-get recognisers — ONE owner of the aggregate body pairing, consumed by BOTH `dissolver._tryDissolveAggregate` (IR rewrite) and `sampler-aggregate.AGGREGATE_PATTERNS` (runtime specialisers: matmul-family, matvec, outer-product, dot-product, batched-matmul, pure-axis-reduction; first-match-wins, gated by the `aggregate` toggle, equivalence-tested against the broadcast-reduce default). `aggregate-shape` infers aggregate output shapes for typeinfer. |
@@ -201,28 +183,15 @@ after the table.
 optional `fields` (record) / `elems` (tuple) / `dims`. Composite measures
 recurse via `ctx.getMeasure(name)`; the orchestrator caches per name-per-context.
 
-**Ragged-per-atom value (engine-concepts §2.3, `PoissonProcess` MVP landed).**
-For non-uniform per-atom length (`PoissonProcess`: atom *i* draws *Nᵢ*
-points), `value`'s uniform `[N,…]` doesn't hold; the realisation is a ragged
-Value kind — `{ data: Float64Array (all atoms' points concatenated), offsets:
-Int32Array (length N+1; atom i = data[offsets[i]:offsets[i+1]]),
-kernelShape:number[] (fixed leading per-point dims) }`. It is the uniform
-Value's sibling (`ArrayOfSimilarArrays` ↔ uniform `[N,k]`; `VectorOfArrays` ↔
-ragged), so a length-preserving elementwise broadcast reuses the flat fast
-path verbatim with `offsets` carried as metadata; only segmented-reduce /
-length-changing ops need offset-aware kernels. An empirical measure carries it
-as a `shape:'ragged'` variant (sibling of `'array'`): `empirical.raggedMeasure`
-sets `.ragged`, aliases `.samples` to the pooled points, `n_eff=N`, and keeps
-the ragged value OUT of `.value` (disjoint kinds). `matPoissonProcess` samples
-it (per component: counts `Poisson(w_i)` + one pooled `sampleN(s_i,Σk)`
-partitioned by counts — main-thread assembly, no worker transfer — then
-`raggedMerge` unions components per the superposition theorem),
-`walkPoissonProcess` scores it (mixture `Σ logsumexp_c(log w_c + s_c_logpdf) −
-Σ w_c`, per-θ; `_expandStructural` expands the `intensity` measure first).
-Scope = `VectorOfVectors` (scalar points, `kernelShape=[]`), a `superpose` of
-weighted scalar shapes, atom-independent generative params; d-dim `kernelShape`,
-non-superpose general-measure intensity, per-atom-sampled shapes,
-ragged-boundary density are follow-ups (TODO §08).
+**Ragged-per-atom value (engine-concepts §2.3; `PoissonProcess`).** A
+`PoissonProcess` atom is a variable-length point set, so the uniform `[N,…]`
+Value doesn't hold; `ragged.ts` owns the flat-`data`+`offsets`+`kernelShape`
+`VectorOfArrays` kind (representation + composition rationale: §2.3). JS-specific
+realisation: an EmpiricalMeasure carries it as a `shape:'ragged'` variant —
+`empirical.raggedMeasure` sets `.ragged`, aliases `.samples` to the pooled
+points, `n_eff=N`, keeps the ragged value OUT of `.value` (disjoint kinds).
+Sampling/density (`matPoissonProcess`/`walkPoissonProcess`) + scope are in the
+`mat-poisson.ts` table row + TODO §08.
 
 **Deterministic-evaluation authority.** There is exactly ONE deterministic
 evaluator: `sampler.evaluateExpr` / `evaluateExprN`. Everything routes through
@@ -232,30 +201,17 @@ a parallel mini-interpreter** — when the evaluator misses an op, implement it 
 `evaluateCall`, not in a caller. A fixed-phase binding that hits the residual
 throw is surfaced loudly by `buildDerivations`' fixed-phase-dead-end diagnostic.
 
-**Materialiser authority — one set of measure-op handlers (Smell A).** The
-measure-algebra ops have ONE realisation: the by-name `KIND_HANDLERS`
-(matTruncate / matWeighted / matNormalize / matSelect / matPushfwd / matIid /
-…). `materialiseMeasureIR` — the IR-direct walker the viewer's
-`materialiseConcreteMeasure` and `matClm` (CLM bodies) consume for an inline /
-reified measure IR — does **not** re-implement them. A thin per-op
-IR→derivation bridge (`_bridgeDerivation` + `_bridgeToHandler`) installs an
-inline sub-measure as a first-class synthetic binding (resolvable by
-`getMeasure` / `expandMeasure`) and DELEGATES to the canonical handler ("by
-reuse not reimplementation", engine-concepts §7 — the same
-anti-parallel-interpreter discipline as the evaluator above): truncate,
-weighted/logweighted, normalize, select (constant-weight selector synthesis
-folded into matSelect — the former IR-direct `materialiseSelectIR` is **gone**),
-pushfwd (§22 affine fast-path; lowered MvNormal), iid-of-composite (matIid's
-repeat axis, §22.4). The cases that stay IR-native are the ones the by-name
-handlers can't express: the **dependent-threaded** joint/record walk (matRecord
-is independent-product only) and the §21 generative / scalar pushforward
-(`evaluateN` of a value-expr; no by-name analogue), plus the iid-of-LEAF
-`sampleN repeat=k` fast path. A full collapse of `materialiseMeasure(name)` into
-`materialiseMeasureIR(expandMeasure(name))` is **deferred** — the duplication is
-already removed by the delegations, so the inversion would add an
-`expandMeasure` round-trip per by-name materialisation without removing any
-parallel code (and the density/scoring kinds — bayesupdate / logdensityof /
-likelihood_density / totalmass — have no `materialiseMeasureIR` coverage).
+**Materialiser authority — one set of measure-op handlers (Smell A, engine-
+concepts §7).** Measure-algebra ops have ONE realisation: the by-name
+`KIND_HANDLERS`. The IR-direct walker `materialiseMeasureIR` (viewer
+`materialiseConcreteMeasure` + `matClm` bodies) does NOT re-implement them — a
+thin per-op bridge (`_bridgeDerivation` + `_bridgeToHandler`) installs an inline
+sub-measure as a synthetic binding and DELEGATES to the canonical handler (the
+former IR-direct `materialiseSelectIR` is **gone**). Stays IR-native (the by-name
+handlers can't express these): the **dependent-threaded** joint/record walk and
+the §21 generative / scalar pushforward, plus the iid-of-LEAF `sampleN repeat=k`
+fast path. The full collapse `materialiseMeasure ≡ materialiseMeasureIR(expand
+Measure)` is deferred (TODO "Smell A residue").
 
 ## Cross-file invariants
 
